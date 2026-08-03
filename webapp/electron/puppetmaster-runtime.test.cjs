@@ -58,10 +58,10 @@ function ensure(opts, extra = {}) {
 }
 
 test("runtime parity: a venv already at the checkout pin is left alone", async () => {
-  const fake = fakeRun({ show: showOutput("Version: 1.21.9\nLocation: /venv/site-packages") });
-  const res = await ensure({ run: fake.run, resolvePin: pinAt("1.21.9") });
+  const fake = fakeRun({ show: showOutput("Version: 1.21.10\nLocation: /venv/site-packages") });
+  const res = await ensure({ run: fake.run, resolvePin: pinAt("1.21.10") });
   assert.equal(res.status, "current");
-  assert.equal(res.version, "1.21.9");
+  assert.equal(res.version, "1.21.10");
   assert.deepEqual(fake.installs(), []);
   assert.equal(runtime.isRuntimeStale(res), false);
 });
@@ -84,20 +84,20 @@ test("runtime parity: an unreachable index reports stale instead of claiming cur
     show: showOutput("Version: 1.20.10"),
     installFails: "Could not resolve host: pypi.org",
   });
-  const res = await ensure({ run: fake.run, resolvePin: pinAt("1.21.9") });
+  const res = await ensure({ run: fake.run, resolvePin: pinAt("1.21.10") });
   assert.equal(res.status, "stale");
   assert.equal(res.have, "1.20.10");
-  assert.equal(res.want, "1.21.9");
+  assert.equal(res.want, "1.21.10");
   assert.match(res.reason, /pypi\.org/);
   assert.equal(runtime.isRuntimeStale(res), true);
-  assert.match(runtime.describeRuntimeParity(res), /1\.21\.9/);
+  assert.match(runtime.describeRuntimeParity(res), /1\.21\.10/);
 });
 
 test("runtime parity: an editable dev checkout is never clobbered", async () => {
   const fake = fakeRun({
     show: showOutput("Version: 1.20.10\nEditable project location: /Users/dev/Puppetmaster"),
   });
-  const res = await ensure({ run: fake.run, resolvePin: pinAt("1.21.9") });
+  const res = await ensure({ run: fake.run, resolvePin: pinAt("1.21.10") });
   assert.equal(res.status, "skipped");
   assert.match(res.reason, /editable/);
   assert.deepEqual(fake.installs(), []);
@@ -107,7 +107,7 @@ test("runtime parity: a custom MARIONETTE_PUPPETMASTER_SPEC is honored", async (
   const fake = fakeRun({ show: showOutput("Version: 1.20.10") });
   const res = await ensure({
     run: fake.run,
-    resolvePin: pinAt("1.21.9"),
+    resolvePin: pinAt("1.21.10"),
     env: { MARIONETTE_PUPPETMASTER_SPEC: "/Users/dev/Puppetmaster" },
   });
   assert.equal(res.status, "skipped");
@@ -117,16 +117,16 @@ test("runtime parity: a custom MARIONETTE_PUPPETMASTER_SPEC is honored", async (
 
 test("runtime parity: without uv it falls back to the venv's own pip", async () => {
   const fake = fakeRun({ show: showOutput("Version: 1.20.10"), hasUv: false });
-  const res = await ensure({ run: fake.run, resolvePin: pinAt("1.21.9") });
+  const res = await ensure({ run: fake.run, resolvePin: pinAt("1.21.10") });
   assert.equal(res.status, "upgraded");
   assert.deepEqual(fake.installs(), [
-    `${PYTHON} -m pip install --upgrade puppetmaster-ai==1.21.9 --quiet`,
+    `${PYTHON} -m pip install --upgrade puppetmaster-ai==1.21.10 --quiet`,
   ]);
 });
 
 test("runtime parity: a missing venv interpreter is stale, not silently current", async () => {
-  const fake = fakeRun({ show: showOutput("Version: 1.21.9") });
-  const res = await ensure({ run: fake.run, resolvePin: pinAt("1.21.9"), exists: () => false });
+  const fake = fakeRun({ show: showOutput("Version: 1.21.10") });
+  const res = await ensure({ run: fake.run, resolvePin: pinAt("1.21.10"), exists: () => false });
   assert.equal(res.status, "stale");
   assert.match(res.reason, /no venv interpreter/);
   assert.deepEqual(fake.calls, []);
@@ -140,15 +140,15 @@ test("runtime parity: a source/dev run with no checkout is a no-op", async () =>
 
 test("runtimeParityFields: only a stale runtime annotates the update-check payload", async () => {
   const fake = fakeRun({ show: showOutput("Version: 1.20.10"), installFails: "offline" });
-  const stale = await ensure({ run: fake.run, resolvePin: pinAt("1.21.9") });
+  const stale = await ensure({ run: fake.run, resolvePin: pinAt("1.21.10") });
   const fields = runtime.runtimeParityFields(stale);
   assert.equal(fields.runtimeStale, true);
   assert.equal(fields.runtimeHave, "1.20.10");
-  assert.equal(fields.runtimeWant, "1.21.9");
-  assert.match(fields.runtimeNote, /1\.21\.9/);
+  assert.equal(fields.runtimeWant, "1.21.10");
+  assert.match(fields.runtimeNote, /1\.21\.10/);
 
-  const ok = fakeRun({ show: showOutput("Version: 1.21.9") });
-  const current = await ensure({ run: ok.run, resolvePin: pinAt("1.21.9") });
+  const ok = fakeRun({ show: showOutput("Version: 1.21.10") });
+  const current = await ensure({ run: ok.run, resolvePin: pinAt("1.21.10") });
   assert.deepEqual(runtime.runtimeParityFields(current), {});
 });
 
