@@ -1183,6 +1183,11 @@ def build_tools_schema(
                     "properties": {
                         "query": {"type": "string", "description": "The plain-text or regex query to search for"},
                         "path": {"type": "string", "description": "Optional subdirectory to scope the search, relative to repo root"},
+                        "paths": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional list of subdirectories/files to scope the search; use instead of 'path' to search several at once",
+                        },
                         "max_results": {"type": "integer", "description": "Optional max results to return, default 50"}
                     },
                     "required": ["query"]
@@ -1951,7 +1956,7 @@ You have direct access to a local CodeGraph-indexed workspace and can explore/ed
 - `web_fetch`: read a web page's text contents. Requires `url`.
 - `read_pdf`: extract plain text from a local PDF file or PDF URL. Requires `path` or `url`.
 - `search_codegraph`: search the CodeGraph index for symbol usages, definitions, context, or affected dependents. Requires `query` and optional `kind` (`search` | `context` | `affected`).
-- `search_files`: plain-text/regex content search over the repository, complementary to symbol search. Requires `query`, optional `path`, and `max_results`.
+- `search_files`: plain-text/regex content search over the repository, complementary to symbol search. Requires `query`, optional `path` (or `paths` for several at once), and `max_results`.
 - `search_state`: look up durable prior jobs/artifacts/spills by keyword (returns job://, artifact://, spill:// URIs). Use before re-dispatching a broad swarm when a prior green analysis may still be valid; open hits with read_file.
 - `lsp`: fetch IDE-style status/diagnostics for Python/TypeScript by invoking locally available tools (pyright/tsc/tsserver). Requires optional `language` ('python'/'typescript'/'auto') and `mode` ('status'/'diagnostics').
 - `search_tools`: search the catalog of available pilot and MCP tools; use `activate` to enable hidden tools for later turns.

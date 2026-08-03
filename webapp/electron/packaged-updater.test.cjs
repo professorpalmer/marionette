@@ -143,3 +143,88 @@ test("registerPackagedUpdater: progress + install path via injected autoUpdater"
   await new Promise((r) => setTimeout(r, 500));
   assert.equal(fakeUpdater._quitCalled, true);
 });
+
+test("registerPackagedUpdater: emits idle when no update is available", async () => {
+  const events = {};
+  const sent = [];
+  const fakeUpdater = {
+    autoDownload: true,
+    autoInstallOnAppQuit: false,
+    allowDowngrade: true,
+    allowPrerelease: true,
+    disableWebInstaller: false,
+    on(name, cb) { events[name] = cb; },
+    async checkForUpdates() {
+      events["checking-for-update"]();
+      events["update-not-available"]({ version: "0.9.162" });
+      return { updateInfo: { version: "0.9.162" } };
+    },
+    async downloadUpdate() {},
+    quitAndInstall() {},
+  };
+  const handle = registerPackagedUpdater(
+    { handle() {} },
+    { isPackaged: true },
+    {
+      createAutoUpdater: () => fakeUpdater,
+      broadcast: (channel, payload) => sent.push({ channel, payload }),
+      log: () => {},
+    },
+  );
+
+  const checked = await handle.check();
+  assert.equal(checked.available, false);
+  assert.ok(sent.some((s) => s.channel === "updates:progress" && s.payload.stage === "check"));
+  assert.ok(sent.some((s) => s.channel === "updates:progress" && s.payload.stage === "idle"));
+});
+
+test("registerPackagedUpdater: concurrent check returns busy without duplicate work", async () => {
+  const events = {};
+  const sent = [];
+  let resolveFirst;
+  const firstDone = new Promise((r) => { resolveFirst = r; });
+  const fakeUpdater = {
+    autoDownload: true,
+    autoInstallOnAppQuit: false,
+    allowDowngrade: true,
+    allowPrerelease: true,
+    disableWebInstaller: false,
+    on(name, cb) { events[name] = cb; },
+    async checkForUpdates() {
+      events["checking-for-update"]();
+      await firstDone;
+      events["update-not-available"]({ version: "0.9.162" });
+      return { updateInfo: { version: "0.9.162" } };
+    },
+    async downloadUpdate() {},
+    quitAndInstall() {},
+  };
+  const handle = registerPackagedUpdater(
+    { handle() {} },
+    { isPackaged: true },
+    {
+      createAutoUpdater: () => fakeUpdater,
+      broadcast: (channel, payload) => sent.push({ channel, payload }),
+      log: () => {},
+    },
+  );
+
+  const first = handle.check();
+  const second = await handle.check();
+  assert.equal(second.busy, true);
+
+  resolveFirst();
+  await first;
+  assert.ok(sent.some((s) => s.channel === "updates:progress" && s.payload.stage === "idle"));
+});
+
+test("mergeUpdateAvailability: forwards packaged busy flag", () => {
+  const merged = mergeUpdateAvailability({
+    gitResult: { available: false, behind: 0 },
+    packagedResult: { available: false, busy: true },
+    isPackaged: true,
+    shellVersion: "0.9.161",
+    checkoutVersion: "0.9.161",
+  });
+  assert.equal(merged.busy, true);
+});

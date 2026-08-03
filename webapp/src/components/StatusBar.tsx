@@ -160,6 +160,7 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
     if (ipc && ipc.updates) {
       off = ipc.updates.onProgress((p: any) => {
         if (!p || !p.stage) return;
+        if (p.stage === "idle") { setApply(null); return; }
         if (p.stage === "error") { setApply(null); return; }
         setApply((prev) => (prev ? { stage: p.stage, message: sanitizeUpdateMessage(p.stage, p.message || ""), percent: p.percent ?? null } : prev));
       });

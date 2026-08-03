@@ -121,6 +121,28 @@ def _run_command_artifact_headline(
     return f"Command exited with {exit_code}"
 
 
+def _with_command_footer(history_text: str, payload: Dict[str, Any]) -> str:
+    """Append cwd / recovery-hint / spill footer lines to model-visible history.
+
+    Kept as a footer so the existing ``(run_command '...' completed with exit
+    code N)`` header and raw output stay byte-identical for every consumer.
+    """
+    footer = []
+    cwd = payload.get("cwd")
+    if cwd:
+        footer.append(f"[cwd: {cwd}]")
+    if payload.get("spill_uri"):
+        footer.append(
+            f"[full output ({payload.get('output_chars')} chars) saved to "
+            f"{payload['spill_uri']}; read_file works on that URI]"
+        )
+    if payload.get("hint"):
+        footer.append(f"[hint: {payload['hint']}]")
+    if not footer:
+        return history_text
+    return history_text + "\n" + "\n".join(footer)
+
+
 def pilot_accepts_session_id(pilot_method: Any) -> bool:
     """True when the driver method declares session_id or accepts **kwargs."""
     try:
@@ -1775,6 +1797,11 @@ def dispatch_local_action(
                     "command": command,
                     "status": "pending_approval",
                     "message": block_msg,
+                    "cwd": block.get("cwd") or session.config.repo,
+                    # Recovery handle only: the command was not run or saved.
+                    "retry_handle": block.get("retry_handle") or command_hash,
+                    "command_preview": block.get("command_preview") or "",
+                    "recovery": block.get("recovery") or "",
                 })
                 session._append_action_result(act, aid, f"(run_command {aid} {block_msg})", is_native)
                 return
@@ -1798,12 +1825,16 @@ def dispatch_local_action(
                     "exit_code": exit_code,
                     "output": ui_output,
                     "status": run_status,
+                    "cwd": val.get("cwd") or session.config.repo,
                     "num": 1,
                     "types": ["command"],
                     "adapter": "local",
                     "mode": "tool",
                     "artifacts": [{"type": "command", "headline": headline}],
                 }
+                for key in ("hint", "spill_uri", "output_spilled", "output_chars"):
+                    if val.get(key) not in (None, ""):
+                        result[key] = val[key]
                 # timeout/error also set error so cards stay expanded; cancelled
                 # relies on status so the UI can map it to an interrupted outcome.
                 if run_status in ("timeout", "error"):
@@ -1812,7 +1843,10 @@ def dispatch_local_action(
                 session._append_action_result(
                     act,
                     aid,
-                    f"(run_command '{command}' {run_status} with exit code {exit_code})\n{output}",
+                    _with_command_footer(
+                        f"(run_command '{command}' {run_status} with exit code {exit_code})\n{output}",
+                        val,
+                    ),
                     is_native,
                     ok=False,
                 )
@@ -1831,7 +1865,7 @@ def dispatch_local_action(
         headline = _run_command_artifact_headline(
             exit_code, ui_output, status=run_status,
         )
-        yield ConvEvent("action_result", {
+        result = {
             "id": aid,
             "kind": "run_command",
             "goal": command,
@@ -1839,12 +1873,17 @@ def dispatch_local_action(
             "exit_code": exit_code,
             "output": ui_output,
             "status": run_status,
+            "cwd": val.get("cwd") or session.config.repo,
             "num": 1,
             "types": ["command"],
             "adapter": "local",
             "mode": "tool",
             "artifacts": [{"type": "command", "headline": headline}],
-        })
+        }
+        for key in ("hint", "spill_uri", "output_spilled", "output_chars"):
+            if val.get(key) not in (None, ""):
+                result[key] = val[key]
+        yield ConvEvent("action_result", result)
         if run_status == "ok":
             hist = (
                 f"(run_command '{command}' completed with exit code {exit_code})\n"
@@ -1856,7 +1895,9 @@ def dispatch_local_action(
                 f"(run_command '{command}' {run_status} with exit code {exit_code})\n"
                 f"{output}"
             )
-        session._append_action_result(act, aid, hist, is_native)
+        session._append_action_result(
+            act, aid, _with_command_footer(hist, val), is_native,
+        )
         return
     # ---- run_command_batch branch (Wave 3) -------------------------
     if act.kind == "run_command_batch":

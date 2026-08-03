@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import StatusBar, { deriveFooterRuntimeStatus } from "../components/StatusBar";
 import { api } from "../lib/api";
@@ -543,5 +543,53 @@ describe("StatusBar runtime stale toast", () => {
       expect(check).toHaveBeenCalled();
     });
     expect(screen.queryByText(/Puppetmaster is at/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("StatusBar update progress mirror", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockWorkspaces.mockResolvedValue([]);
+    mockGetUsage.mockResolvedValue({ session: emptyUsageSession, jobs: [] });
+    mockGetSessionState.mockResolvedValue({
+      state: "idle",
+      pending_swarms: false,
+      runners: {},
+    });
+    mockSessions.mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    delete (window as any).harnessIPC;
+  });
+
+  it("clears apply chrome when a terminal idle progress event arrives", async () => {
+    let progressListener: ((payload: { stage: string; message?: string; percent?: number | null }) => void) | null = null;
+    (window as any).harnessIPC = {
+      updates: {
+        check: vi.fn().mockResolvedValue({ available: false }),
+        onAvailable: null,
+        onProgress: vi.fn((listener) => {
+          progressListener = listener;
+          return () => {};
+        }),
+      },
+    };
+
+    render(<StatusBar {...statusBarProps} />);
+
+    act(() => {
+      window.dispatchEvent(new Event("harness-update-committing"));
+    });
+    expect(screen.getByText("Preparing update")).toBeInTheDocument();
+
+    await waitFor(() => expect(progressListener).not.toBeNull());
+    act(() => {
+      progressListener?.({ stage: "idle" });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText("Preparing update")).not.toBeInTheDocument();
+    });
   });
 });

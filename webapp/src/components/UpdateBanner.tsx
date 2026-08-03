@@ -113,6 +113,13 @@ export default function UpdateBanner() {
       if (!p || !p.stage) return;
       if (p.version) setLatest(p.version);
 
+      // Packaged shell check finished with nothing to install -- drop transient
+      // "Checking for app shell update" chrome without treating idle as progress.
+      if (p.stage === "idle") {
+        clearCheckProgress();
+        return;
+      }
+
       // A failed download/install: recover to an actionable state instead of a
       // permanent spinner, and reopen the gate so the user can retry.
       if (p.stage === "error") {

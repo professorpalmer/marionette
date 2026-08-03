@@ -133,8 +133,9 @@ def annotate_read_content(
         if nl >= 0:
             range_header = payload[: nl + 1]
             payload = payload[nl + 1 :]
-            # Parse "[lines 3-6 of 10]"
-            m = re.match(r"\[lines (\d+)-(\d+) of \d+\]", range_header.strip())
+            # Parse "[lines 3-6 of 10]", tolerating a trailing continuation
+            # note such as "; next start_line=7".
+            m = re.match(r"\[lines (\d+)-(\d+) of \d+", range_header.strip())
             if m:
                 parsed_start = int(m.group(1))
                 parsed_end = int(m.group(2))

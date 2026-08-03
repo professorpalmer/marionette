@@ -35,10 +35,162 @@ __all__ = ["ToolDispatchMixin", "_ANSI_ESCAPE", "_strip_ansi", "is_safe_path"]
 
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
+# Inline cap for synchronous run_command output; overflow spills to the
+# results registry rather than being discarded.
+_FOREGROUND_OUTPUT_CAP = 50 * 1024
+
 
 def _strip_ansi(text: str) -> str:
     """Remove ANSI SGR color codes so CLI output reads cleanly as tool results."""
     return _ANSI_ESCAPE.sub("", text)
+
+
+# Directories that never carry searchable source in the Python fallback.
+_SEARCH_SKIP_DIRS = frozenset({
+    ".git", "node_modules", "results", "build", "dist", "__pycache__",
+})
+# Zero-match probes only need to prove existence, not enumerate everything.
+_PROBE_MATCH_CAP = 50
+
+
+def _slice_header(start_line: int, end_line: int, total_lines: int) -> str:
+    """Header line for a ranged read, naming the next offset when more remains.
+
+    The continuation lives in the header rather than a footer because the
+    header is stripped before hash-anchor computation -- a footer would be
+    hashed as if it were file content and invalidate every anchor.
+    """
+    header = f"[lines {start_line}-{end_line} of {total_lines}"
+    if end_line < total_lines:
+        header += f"; next start_line={end_line + 1}"
+    return header + "]\n"
+
+
+def _result_limit(raw: Any, default: int = 50) -> int:
+    try:
+        return int(raw) if raw is not None else default
+    except (ValueError, TypeError):
+        return default
+
+
+def _normalize_result_path(line: str) -> str:
+    """Render the path prefix with forward slashes so results read the same everywhere."""
+    if os.sep != "\\" or ":" not in line:
+        return line
+    prefix, rest = line.split(":", 1)
+    return prefix.replace("\\", "/") + ":" + rest
+
+
+def _format_match_lines(lines: list[str], max_results: int) -> str:
+    truncated = len(lines) > max_results
+    text = "\n".join(lines[:max_results])
+    if truncated:
+        text += f"\n\n... (results truncated to {max_results} matches) ..."
+    return text
+
+
+def _walk_searchable_files(root: str):
+    """Yield text-file paths under ``root``, skipping vendor dirs and binaries."""
+    if os.path.isfile(root):
+        try:
+            with open(root, "rb") as f:
+                if b"\x00" not in f.read(8000):
+                    yield root
+        except Exception:
+            pass
+        return
+    for current, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in _SEARCH_SKIP_DIRS]
+        for name in files:
+            file_path = os.path.join(current, name)
+            try:
+                with open(file_path, "rb") as f:
+                    if b"\x00" in f.read(8000):
+                        continue
+            except Exception:
+                continue
+            yield file_path
+
+
+def _file_match_lines(
+    compiled: "re.Pattern[str]",
+    file_path: str,
+    rel_path: str,
+    multiline: bool,
+) -> list[str]:
+    """Return ``path:line: text`` rows for every match in one file."""
+    rows: list[str] = []
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+            if not multiline:
+                for line_num, line in enumerate(f, 1):
+                    if compiled.search(line):
+                        line_text = line.rstrip("\r\n")
+                        rows.append(f"{rel_path}:{line_num}: {line_text}")
+                return rows
+            text = f.read()
+    except Exception:
+        return []
+
+    for match in compiled.finditer(text):
+        line_num = text.count("\n", 0, match.start()) + 1
+        first_line = match.group(0).splitlines()[0] if match.group(0) else ""
+        rows.append(f"{rel_path}:{line_num}: {first_line}")
+    return rows
+
+
+def _sum_ripgrep_counts(output: str) -> int:
+    """Sum the counts in ``--count-matches`` output (``path:count`` per line)."""
+    total = 0
+    for line in output.splitlines():
+        _path, _sep, count = line.rpartition(":")
+        if count.strip().isdigit():
+            total += int(count.strip())
+    return total
+
+
+def _command_failure_hint(command: str, exit_code: int, output: str) -> str:
+    """One-line recovery hint for a genuinely failed command ("" when none)."""
+    try:
+        from .command_hints import command_failure_hint
+
+        return command_failure_hint(command, int(exit_code), output) or ""
+    except Exception:
+        return ""
+
+
+def _recoverable_command_output(session: Any, output: str) -> tuple[str, dict]:
+    """Cap foreground output inline while keeping the overflow recoverable.
+
+    Returns ``(inline_output, recovery_fields)``. Beyond the inline cap the
+    full (redacted) output is spilled through the same registry background jobs
+    use, so the tail the pilot needs is a read_file away instead of being
+    dropped on the floor. Takes ``session`` explicitly so duck-typed dispatch
+    hosts without the spill mixin still work.
+    """
+    text = output if isinstance(output, str) else str(output or "")
+    if len(text) <= _FOREGROUND_OUTPUT_CAP:
+        return text, {}
+
+    from .command_jobs import spill_oversized_command_output
+
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+    meta = spill_oversized_command_output(session, f"cmd-{digest}-stdout", text)
+    spill_uri = meta.get("spill_uri") or ""
+    recovery = {
+        "output_chars": meta.get("output_chars", len(text)),
+        "output_spilled": bool(spill_uri or meta.get("spill_path")),
+    }
+    capped = text[:_FOREGROUND_OUTPUT_CAP]
+    if spill_uri:
+        recovery["spill_uri"] = spill_uri
+        capped += (
+            f"\n\n... (output truncated to 50KB; full {len(text):,} chars saved "
+            f"to {spill_uri} — read_file works on that URI) ..."
+        )
+    else:
+        capped += "\n\n... (output truncated to 50KB) ..."
+    return capped, recovery
 
 
 class ToolDispatchMixin:
@@ -131,6 +283,7 @@ class ToolDispatchMixin:
                 head_lines = lines[:100]
                 content = "".join(head_lines)
                 content += f"\n\n[file is large ({total_lines} lines); re-read with start_line and limit to see specific sections]"
+                content += f"\n[truncated after line 100; continue with start_line={len(head_lines) + 1}]"
             else:
                 if start_line is not None or limit is not None:
                     s_line = start_line if start_line is not None else 1
@@ -141,7 +294,7 @@ class ToolDispatchMixin:
                         e_idx = total_lines
                     
                     sliced_lines = lines[s_idx:e_idx]
-                    content = f"[lines {s_idx + 1}-{e_idx} of {total_lines}]\n" + "".join(sliced_lines)
+                    content = _slice_header(s_idx + 1, e_idx, total_lines) + "".join(sliced_lines)
                 else:
                     content = raw_text
 
@@ -343,6 +496,12 @@ class ToolDispatchMixin:
             return False, "exception", str(e)
 
     def _do_search_files(self, act: PilotAction) -> tuple[bool, str, Any]:
+        """Content-search the repo, steering the pilot when nothing matches.
+
+        ``path`` keeps its single-string meaning; a list, or a string naming
+        several existing paths, searches all of them. A zero-match result
+        carries at most one bounded hint explaining the near miss.
+        """
         if not self.config.repo:
             return False, "repo_not_open", "No workspace directory (config.repo) is open."
 
@@ -350,103 +509,167 @@ class ToolDispatchMixin:
         if not query:
             return False, "invalid_arguments", "search_files requires a non-empty 'query'"
 
-        sub_path = act.arguments.get("path") or ""
-        target_path = sub_path
-        if not os.path.isabs(target_path):
-            target_path = os.path.join(self.config.repo, target_path)
-        if not is_safe_path(target_path, self.config.repo):
-            return False, "path_traversal", f"Path traversal attempt rejected: {sub_path}"
+        from .search_hints import (
+            resolve_search_paths,
+            skipped_paths_note,
+            zero_match_steering_hint,
+        )
 
-        max_results = act.arguments.get("max_results")
-        if max_results is None:
-            max_results = 50
-        else:
-            try:
-                max_results = int(max_results)
-            except (ValueError, TypeError):
-                max_results = 50
+        requested = act.arguments.get("path")
+        if not requested:
+            requested = act.arguments.get("paths") or ""
+        search_paths, skipped = resolve_search_paths(requested, self.config.repo)
+        # Validate skipped paths too. A missing traversal path must not become
+        # harmless merely because another requested path exists and was kept.
+        for candidate in (*search_paths, *skipped):
+            if not is_safe_path(self._absolute_repo_path(candidate), self.config.repo):
+                return False, "path_traversal", f"Path traversal attempt rejected: {candidate}"
 
-        # Try ripgrep first
+        max_results = _result_limit(act.arguments.get("max_results"))
+        ok, status, matches = self._search_matching_lines(query, search_paths, max_results)
+        if not ok:
+            return ok, status, matches
+
+        note = skipped_paths_note(skipped)
+        if matches:
+            result_text = _format_match_lines(matches, max_results)
+            return True, "success", f"{result_text}\n\n{note}" if note else result_text
+
+        hint = zero_match_steering_hint(
+            query, self._search_match_counter(query, search_paths)
+        )
+        return True, "success", "\n".join(part for part in (note, hint) if part)
+
+    def _absolute_repo_path(self, path: str) -> str:
+        if os.path.isabs(path):
+            return path
+        return os.path.join(self.config.repo, path)
+
+    def _search_matching_lines(
+        self, query: str, paths: list[str], max_results: int
+    ) -> tuple[bool, str, Any]:
+        """Run the best available search engine; ripgrep first, Python fallback."""
         import shutil
+
         rg_path = shutil.which("rg")
         if rg_path:
-            rg_arg_path = sub_path if sub_path else "."
-            cmd = [rg_path, "--line-number", "--no-heading", "--color=never", "-e", query, rg_arg_path]
-            try:
-                p = subprocess.run(
-                    cmd,
-                    cwd=self.config.repo,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True, encoding="utf-8", errors="replace",
-                    timeout=20
-                )
-                output = p.stdout or ""
-                if p.returncode > 1:
-                    return False, "exception", f"ripgrep failed with code {p.returncode}: {output.strip()}"
+            outcome = self._ripgrep_matching_lines(rg_path, query, paths)
+            if outcome is not None:
+                return outcome
+        return self._python_matching_lines(query, paths, max_results)
 
-                lines = [l for l in output.splitlines() if l.strip()]
-                if os.sep == "\\":
-                    # Normalize the path prefix (everything before the first
-                    # ':') to forward slashes so results read identically on
-                    # every platform. Relative paths carry no drive colon.
-                    lines = [
-                        l.split(":", 1)[0].replace("\\", "/") + ":" + l.split(":", 1)[1]
-                        if ":" in l else l
-                        for l in lines
-                    ]
-                truncated = len(lines) > max_results
-                lines = lines[:max_results]
-                result_text = "\n".join(lines)
-                if truncated:
-                    result_text += f"\n\n... (results truncated to {max_results} matches) ..."
-                return True, "success", result_text
-            except subprocess.TimeoutExpired:
-                return False, "exception", "ripgrep timed out after 20 seconds"
-            except Exception:
-                pass
+    def _ripgrep_matching_lines(
+        self, rg_path: str, query: str, paths: list[str]
+    ) -> Any:
+        """Return ``(ok, status, lines)``, or None when ripgrep is unusable."""
+        from .search_hints import is_multiline_query
 
-        # Fallback to pure-Python os.walk + re scan
-        matches = []
+        cmd = [rg_path, "--line-number", "--no-heading", "--color=never"]
+        if is_multiline_query(query):
+            # A query containing newlines can only match across lines.
+            cmd.append("--multiline")
+        cmd += ["-e", query] + [p if p else "." for p in paths]
         try:
-            compiled_re = re.compile(query)
+            p = subprocess.run(
+                cmd,
+                cwd=self.config.repo,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="replace",
+                timeout=20,
+            )
+        except subprocess.TimeoutExpired:
+            return False, "exception", "ripgrep timed out after 20 seconds"
+        except Exception:
+            return None
+
+        output = p.stdout or ""
+        if p.returncode > 1:
+            return False, "exception", f"ripgrep failed with code {p.returncode}: {output.strip()}"
+        return True, "success", [_normalize_result_path(l) for l in output.splitlines() if l.strip()]
+
+    def _python_matching_lines(
+        self, query: str, paths: list[str], max_results: int
+    ) -> tuple[bool, str, Any]:
+        from .search_hints import is_multiline_query
+
+        multiline = is_multiline_query(query)
+        try:
+            compiled = re.compile(query)
         except re.error as e:
             return False, "invalid_arguments", f"Invalid regex pattern: {e}"
 
-        skip_dirs = {".git", "node_modules", "results", "build", "dist", "__pycache__"}
-        
-        for root, dirs, files in os.walk(target_path):
-            dirs[:] = [d for d in dirs if d not in skip_dirs]
-            for file in files:
-                file_path = os.path.join(root, file)
-                try:
-                    with open(file_path, "rb") as f:
-                        chunk = f.read(8000)
-                        if b"\x00" in chunk:
-                            continue
-                except Exception:
-                    continue
+        matches: list[str] = []
+        for path in paths:
+            for file_path in _walk_searchable_files(self._absolute_repo_path(path)):
+                rel_path = os.path.relpath(file_path, self.config.repo).replace(os.sep, "/")
+                matches.extend(_file_match_lines(compiled, file_path, rel_path, multiline))
+                if len(matches) > max_results:
+                    return True, "success", matches
+        return True, "success", matches
 
-                try:
-                    with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-                        for line_num, line in enumerate(f, 1):
-                            if compiled_re.search(line):
-                                rel_path = os.path.relpath(file_path, self.config.repo).replace(os.sep, "/")
-                                line_text = line.rstrip("\r\n")
-                                matches.append(f"{rel_path}:{line_num}: {line_text}")
-                                if len(matches) > max_results:
-                                    break
-                except Exception:
-                    continue
-            if len(matches) > max_results:
-                break
+    def _search_match_counter(self, query: str, paths: list[str]):
+        """Bounded ``probe(kind) -> count`` used only for zero-match steering."""
+        import shutil
 
-        truncated = len(matches) > max_results
-        matches = matches[:max_results]
-        result_text = "\n".join(matches)
-        if truncated:
-            result_text += f"\n\n... (results truncated to {max_results} matches) ..."
-        return True, "success", result_text
+        rg_path = shutil.which("rg")
+        if rg_path:
+            return lambda kind: self._ripgrep_probe_count(rg_path, query, paths, kind)
+        return lambda kind: self._python_probe_count(query, paths, kind)
+
+    def _ripgrep_probe_count(
+        self, rg_path: str, query: str, paths: list[str], kind: str
+    ) -> int:
+        from .search_hints import (
+            PROBE_CASE_INSENSITIVE,
+            PROBE_HIDDEN,
+            PROBE_LITERAL,
+            is_multiline_query,
+        )
+
+        cmd = [rg_path, "--count-matches", "--no-heading", "--color=never"]
+        if kind == PROBE_CASE_INSENSITIVE:
+            cmd.append("-i")
+        elif kind == PROBE_HIDDEN:
+            # .git is hidden but is never what the pilot meant to search.
+            cmd += ["--hidden", "--no-ignore", "--glob=!.git/**"]
+        elif kind == PROBE_LITERAL:
+            cmd.append("-F")
+        else:
+            return 0
+        if is_multiline_query(query):
+            cmd.append("--multiline")
+        cmd += ["-e", query] + [p if p else "." for p in paths]
+        p = subprocess.run(
+            cmd,
+            cwd=self.config.repo,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True, encoding="utf-8", errors="replace",
+            timeout=10,
+        )
+        return _sum_ripgrep_counts(p.stdout or "")
+
+    def _python_probe_count(self, query: str, paths: list[str], kind: str) -> int:
+        from .search_hints import PROBE_CASE_INSENSITIVE, PROBE_LITERAL, is_multiline_query
+
+        if kind == PROBE_CASE_INSENSITIVE:
+            compiled = re.compile(query, re.IGNORECASE)
+        elif kind == PROBE_LITERAL:
+            compiled = re.compile(re.escape(query))
+        else:
+            # The Python engine never excludes hidden files, so a "hidden
+            # files were skipped" hint would be a false positive here.
+            return 0
+
+        multiline = is_multiline_query(query)
+        found = 0
+        for path in paths:
+            for file_path in _walk_searchable_files(self._absolute_repo_path(path)):
+                found += len(_file_match_lines(compiled, file_path, "", multiline))
+                if found >= _PROBE_MATCH_CAP:
+                    return found
+        return found
 
     def _do_lsp(self, act: PilotAction) -> tuple[bool, str, str]:
         if not self.config.repo:
@@ -608,6 +831,11 @@ class ToolDispatchMixin:
                 if os.path.exists(temp_path):
                     os.remove(temp_path)
                 raise
+            from .edit_hints import verify_written_text
+
+            mismatch = verify_written_text(target_path, act.content)
+            if mismatch:
+                return False, "verification_failed", mismatch
             bytes_written = len(act.content.encode("utf-8"))
             return True, "success", bytes_written
         except Exception as e:
@@ -634,19 +862,41 @@ class ToolDispatchMixin:
             with open(target_path, "r", encoding="utf-8", errors="replace") as f:
                 original_content = f.read()
 
+            from .edit_hints import (
+                describe_match_locations,
+                is_edit_already_applied,
+                verify_written_text,
+                whitespace_near_miss_hint,
+            )
+
             old_str = act.old_str
             new_str = act.new_str
             occurrences = original_content.count(old_str)
             if occurrences == 0:
-                return False, "not_found", (
+                if is_edit_already_applied(original_content, old_str, new_str):
+                    # A re-sent edit that already landed is the pilot's intent
+                    # satisfied, not a failure. Report the no-op and write nothing.
+                    return True, "no_op", (
+                        f"edit_file: {act.path} already contains the target text; "
+                        f"no write performed (do not re-send this edit)"
+                    )
+                message = (
                     f"edit_file: old_str not found in {act.path} "
                     f"(it must match the existing text EXACTLY, including whitespace/indentation)"
                 )
+                near_miss = whitespace_near_miss_hint(original_content, old_str)
+                if near_miss:
+                    message += f"\n{near_miss}"
+                return False, "not_found", message
             if occurrences > 1:
-                return False, "ambiguous", (
+                locations = describe_match_locations(original_content, old_str)
+                message = (
                     f"edit_file: old_str matched {occurrences} times in {act.path}; "
                     f"add more surrounding context to make it unique"
                 )
+                if locations:
+                    message += f"\nMatches at:\n{locations}"
+                return False, "ambiguous", message
 
             new_content = original_content.replace(old_str, new_str, 1)
             headline = (
@@ -666,6 +916,9 @@ class ToolDispatchMixin:
                 if os.path.exists(temp_path):
                     os.remove(temp_path)
                 raise
+            mismatch = verify_written_text(target_path, new_content)
+            if mismatch:
+                return False, "verification_failed", mismatch
             return True, "success", headline
         except Exception as e:
             return False, "exception", str(e)
@@ -680,6 +933,10 @@ class ToolDispatchMixin:
           ``(False, <status>, {output, exit_code, status})`` with partial output kept
         - full-auto danger block →
           ``(False, "blocked", {message, category, reason, matched})``
+
+        Every payload also echoes the effective ``cwd``. Genuine failures carry
+        a one-line ``hint``; output beyond the inline cap carries ``spill_uri``
+        so it stays recoverable instead of being discarded.
         """
         if not self.config.repo:
             return False, "repo_not_open", "No workspace directory (config.repo) is open."
@@ -708,13 +965,19 @@ class ToolDispatchMixin:
                     f"execution of irreversible/remote/escalating commands is gated. "
                     f"Choose a safer approach, or the operator can run this manually."
                 )
-                return False, "blocked", {
+                from .command_hints import blocked_command_recovery
+
+                blocked = {
                     "message": block_msg,
                     "category": verdict.category,
                     "reason": verdict.reason,
                     "matched": verdict.matched,
                     "command_hash": cmd_hash,
+                    "cwd": self.config.repo,
                 }
+                # Recovery metadata only -- the command is neither run nor saved.
+                blocked.update(blocked_command_recovery(act.command or "", cmd_hash))
+                return False, "blocked", blocked
             # One-shot is already enforced by consume_command_approval above.
             # Do not unlocked-discard again: a fresh same-hash re-approval raced
             # in after consume must survive for its own retry.
@@ -729,14 +992,19 @@ class ToolDispatchMixin:
         # Normalize legacy aliases used by older mocks / callers.
         if run_status in ("success", None, ""):
             run_status = "ok"
-        max_cap = 50 * 1024
-        if len(output) > max_cap:
-            output = output[:max_cap] + "\n\n... (output truncated to 50KB) ..."
+        inline_output, recovery = _recoverable_command_output(self, output)
         payload = {
-            "output": output,
+            "output": inline_output,
             "exit_code": exit_code,
             "status": run_status,
+            # Models routinely assume the cwd is wherever they last cd'd to.
+            # Echoing it makes every relative-path failure self-diagnosing.
+            "cwd": self.config.repo,
         }
+        payload.update(recovery)
+        hint = _command_failure_hint(act.command or "", exit_code, output)
+        if hint:
+            payload["hint"] = hint
         # Terminal failures stay on the sync path but must not look like success.
         # truncated keeps ok=True so callers still get the capped output while
         # status remains distinct from a clean ok.

@@ -165,8 +165,8 @@ def test_read_file_offset_limit(tmp_path):
     ok, status, val = session._do_read_file(act2)
     assert ok is True
     assert status == "success"
-    # Lines 3, 4, 5, 6:
-    expected = "[lines 3-6 of 10]\nLine 3\nLine 4\nLine 5\nLine 6\n"
+    # Lines 3, 4, 5, 6 -- the header names the next offset because more remains.
+    expected = "[lines 3-6 of 10; next start_line=7]\nLine 3\nLine 4\nLine 5\nLine 6\n"
     assert val == expected
 
     # Read with start_line only (no limit)
@@ -204,7 +204,7 @@ def test_read_file_large_file_guard(tmp_path):
     assert ok is True
     assert status == "success"
     assert "This is line 105" in val
-    assert "[lines 105-109 of 2100]" in val
+    assert "[lines 105-109 of 2100; next start_line=110]" in val
 
 
 def test_regression_simulated_bug(tmp_path, clear_budget_env):

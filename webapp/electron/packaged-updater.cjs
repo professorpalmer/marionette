@@ -90,6 +90,7 @@ function mergeUpdateAvailability({
     available,
     latest,
     downloaded: packagedDownloaded,
+    busy: !!(packagedResult && packagedResult.busy),
     packagedAvailable,
     installerUpdateRequired,
     shellVersion: shellVersion || gitResult.currentVersion || "",
@@ -179,6 +180,11 @@ function registerPackagedUpdater(ipcMain, app, opts = {}) {
     broadcast("updates:progress", payload);
   };
 
+  /** Terminal signal: a packaged check finished with nothing actionable to show. */
+  const emitCheckIdle = () => {
+    emitProgress({ stage: "idle" });
+  };
+
   autoUpdater.on("checking-for-update", () => {
     emitProgress({ stage: "check", message: "Checking for app shell update", percent: 0 });
   });
@@ -203,6 +209,7 @@ function registerPackagedUpdater(ipcMain, app, opts = {}) {
   autoUpdater.on("update-not-available", (info) => {
     lastAvailable = { available: false, latest: info && info.version ? String(info.version) : "" };
     log("update-not-available");
+    emitCheckIdle();
   });
   autoUpdater.on("download-progress", (p) => {
     const pct = p && typeof p.percent === "number" ? Math.round(p.percent) : null;
@@ -236,6 +243,7 @@ function registerPackagedUpdater(ipcMain, app, opts = {}) {
     const message = String(err && err.message ? err.message : err || "packaged update failed");
     log(`error ${message}`);
     emitProgress({ stage: "error", message });
+    if (checking) emitCheckIdle();
   });
 
   const check = async () => {
@@ -264,6 +272,7 @@ function registerPackagedUpdater(ipcMain, app, opts = {}) {
     } catch (err) {
       const message = String(err && err.message ? err.message : err);
       log(`check failed: ${message}`);
+      emitCheckIdle();
       return { available: false, error: message };
     } finally {
       checking = false;

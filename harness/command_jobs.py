@@ -433,12 +433,22 @@ def _terminal_summary(status: str, exit_code: int, output: str) -> str:
     return f"{base} · {first}" if first else f"Command {base}"
 
 
-def _bound_or_spill_output(
+def spill_oversized_command_output(
     session: Any,
-    job_id: str,
+    result_id: str,
     output: str,
-) -> tuple:
-    """Return (inline_or_preview, spill_metadata) without leaking secrets in paths."""
+) -> Dict[str, Any]:
+    """Persist command output above the inline cap; return secret-free metadata.
+
+    Shared by background jobs and the foreground ``run_command`` path so both
+    recover oversized output through the same results/spill seam. Keys are
+    ``output_chars``, ``spill_uri``, ``spill_path`` and ``output_preview``;
+    empty ``spill_uri``/``spill_path`` means nothing was persisted and the
+    caller must keep applying its own inline cap.
+
+    What lands on disk is redacted -- the spill file is durable and readable
+    long after the turn, so it must never hold raw credentials.
+    """
     text = output if isinstance(output, str) else str(output or "")
     meta: Dict[str, Any] = {
         "output_chars": len(text),
@@ -447,29 +457,24 @@ def _bound_or_spill_output(
         "output_preview": "",
     }
     if len(text) <= _INLINE_OUTPUT_CAP:
-        return text, meta
+        return meta
 
-    # Spill oversized output through the existing results/spill seam.
+    persisted = redact_secret_text(text)
+    meta["output_preview"] = _bounded_preview(persisted)
+
     state_dir = (
         getattr(session, "_state_dir_or_tempdir", None)
         or getattr(session, "state_dir", None)
         or ""
     )
-    session_id = str(getattr(session, "harness_session_id", "") or "")
-    preview = text[:4096]
-    if len(text) > 8192:
-        preview = text[:2048] + "\n...\n" + text[-2048:]
-    meta["output_preview"] = preview
     if not state_dir:
-        # No durable state dir: keep a hard-capped inline excerpt only.
-        capped = text[:_INLINE_OUTPUT_CAP] + "\n\n... (output truncated to 50KB) ..."
-        return capped, meta
+        return meta
+    session_id = str(getattr(session, "harness_session_id", "") or "")
     try:
         from harness.context_budget import spill_to_disk
         from harness.spill_registry import register_spill, spill_uri
 
-        result_id = f"{job_id}-stdout"
-        path = spill_to_disk(text, result_id, state_dir, dedupe=False)
+        path = spill_to_disk(persisted, result_id, state_dir, dedupe=False)
         uri = spill_uri(session_id, result_id) if session_id else None
         if uri and path:
             register_spill(
@@ -478,14 +483,35 @@ def _bound_or_spill_output(
                 tool_call_id=result_id,
                 path=path,
                 chars=len(text),
-                content_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                content_hash=hashlib.sha256(persisted.encode("utf-8")).hexdigest(),
             )
         meta["spill_uri"] = uri or ""
         meta["spill_path"] = path or ""
-        return preview, meta
     except Exception:
-        capped = text[:_INLINE_OUTPUT_CAP] + "\n\n... (output truncated to 50KB) ..."
-        return capped, meta
+        pass
+    return meta
+
+
+def _bounded_preview(text: str) -> str:
+    if len(text) <= 8192:
+        return text[:4096]
+    return text[:2048] + "\n...\n" + text[-2048:]
+
+
+def _bound_or_spill_output(
+    session: Any,
+    job_id: str,
+    output: str,
+) -> tuple:
+    """Return (inline_or_preview, spill_metadata) for a background job row."""
+    text = output if isinstance(output, str) else str(output or "")
+    meta = spill_oversized_command_output(session, f"{job_id}-stdout", text)
+    if len(text) <= _INLINE_OUTPUT_CAP:
+        return text, meta
+    if meta.get("spill_uri") or meta.get("spill_path"):
+        return meta["output_preview"], meta
+    # Nothing durable to point at: keep a hard-capped inline excerpt only.
+    return text[:_INLINE_OUTPUT_CAP] + "\n\n... (output truncated to 50KB) ...", meta
 
 
 def project_command_job_fields(job: Dict[str, Any]) -> Dict[str, Any]:

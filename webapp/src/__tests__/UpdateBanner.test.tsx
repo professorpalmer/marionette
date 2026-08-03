@@ -5,6 +5,7 @@ import UpdateBanner from "../components/UpdateBanner";
 type CheckResult = {
   available: boolean;
   downloaded: boolean;
+  busy?: boolean;
 };
 
 type ProgressPayload = {
@@ -89,6 +90,57 @@ describe("UpdateBanner update checks", () => {
 
     act(() => {
       rejectCheck?.(new Error("network unavailable"));
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("update-banner")).not.toBeInTheDocument();
+    });
+    expect(idleListener).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears checking progress when a terminal idle progress event arrives", async () => {
+    render(<UpdateBanner />);
+
+    await waitFor(() => expect(progressListener).not.toBeNull());
+    act(() => {
+      progressListener?.({
+        stage: "check",
+        message: "Checking for app shell update",
+        percent: 0,
+      });
+    });
+    expect(screen.getByText("Checking for app shell update 0%")).toBeInTheDocument();
+
+    act(() => {
+      progressListener?.({ stage: "idle", message: "", percent: 0 });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("update-banner")).not.toBeInTheDocument();
+    });
+    expect(idleListener).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits for idle when a concurrent packaged check returns busy", async () => {
+    render(<UpdateBanner />);
+
+    await waitFor(() => expect(progressListener).not.toBeNull());
+    act(() => {
+      progressListener?.({
+        stage: "check",
+        message: "Checking for app shell update",
+        percent: 0,
+      });
+    });
+    expect(screen.getByText("Checking for app shell update 0%")).toBeInTheDocument();
+
+    act(() => {
+      resolveCheck?.({ available: false, downloaded: false, busy: true });
+    });
+    expect(screen.getByText("Checking for app shell update 0%")).toBeInTheDocument();
+
+    act(() => {
+      progressListener?.({ stage: "idle", message: "", percent: 0 });
     });
 
     await waitFor(() => {
