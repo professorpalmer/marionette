@@ -283,23 +283,25 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
         });
         return;
       }
-      // Cover check + bubble open must run inside the state updater so
-      // synchronous chatEvents replay / back-to-back SSE never consults an
-      // effect-lagged itemsRef and drop a live post-tool delta.
-      let skipCovered = false;
-      let investigating = false;
+      // React 19 may defer setState updaters (especially after setStatus /
+      // setCompactingStatus above schedule lanes), so locals written inside
+      // the updater are not readable at the call site. Gate against the
+      // synchronous itemsRef mirror first; re-check inside the updater so
+      // back-to-back SSE still sees React's true prev when the mirror lags.
+      const snapshot = itemsRef.current;
+      if (sealedAssistantCoversDelta(snapshot, chunk)) {
+        return;
+      }
+      const investigating = turnHasLiveInvestigation(snapshot, true);
       setItems((p) => {
-        itemsRef.current = p;
         if (sealedAssistantCoversDelta(p, chunk)) {
-          skipCovered = true;
+          itemsRef.current = p;
           return p;
         }
-        investigating = turnHasLiveInvestigation(p, true);
         const next = ensureAssistantStreamingBubble(p, { isPlan: planTurnRef.current });
         itemsRef.current = next;
         return next;
       });
-      if (skipCovered) return;
       if (investigating) {
         flushTypewriter();
         appendStreamingText(chunk);

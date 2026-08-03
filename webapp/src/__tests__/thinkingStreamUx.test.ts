@@ -1037,3 +1037,141 @@ describe("createApplyStreamEvent waitHint lifecycle", () => {
     expect(state.waitHint).toBeNull();
   });
 });
+
+describe("message_delta cover gate without eager setState updaters", () => {
+  /**
+   * React 19 may defer functional updaters when other state updates already
+   * scheduled lanes. Locals written inside setItems are then unread at the
+   * call site — the cover/investigating gates must use itemsRef instead.
+   */
+  function makeDeferredApplyDeps(opts: {
+    items: Item[];
+    itemsRef: { current: Item[] };
+    typeBufRef: { current: string };
+  }) {
+    const pending: Array<(prev: Item[]) => Item[]> = [];
+    let startTypewriterCalls = 0;
+    let appendCalls = 0;
+    const pendingJobIdsRef = { current: [] as string[] };
+    const setItems = (updater: Item[] | ((prev: Item[]) => Item[])) => {
+      if (typeof updater === "function") {
+        pending.push(updater);
+        return;
+      }
+      opts.items = updater;
+      opts.itemsRef.current = updater;
+    };
+    const appendStreamingText = (chunk: string) => {
+      appendCalls += 1;
+      if (!chunk) return;
+      setItems((p) => appendStreamingTextToItems(p, chunk));
+    };
+    const deps = {
+      setCompactingStatus: ((_v?: string | null) => {}) as (v: string | null) => void,
+      setItems,
+      setDistillNotice: () => {},
+      setWikiPrepared: () => {},
+      setMemoryProposals: () => {},
+      setWaitHint: (_value: string | null | ((prev: string | null) => string | null)) => {},
+      setStatus: () => {},
+      setTurnOpen: () => {},
+      setPendingJobIds: () => {},
+      pendingJobIdsRef,
+      setSafeTimeout: () => {},
+      itemsRef: opts.itemsRef,
+      planTurnRef: { current: false },
+      turnSettledRef: { current: false },
+      resumeQueuedRef: { current: false },
+      typeBufRef: opts.typeBufRef,
+      flushTypewriter: () => {},
+      startTypewriter: () => {
+        startTypewriterCalls += 1;
+      },
+      appendStreamingText,
+      setCard: () => {},
+      onArtifacts: () => {},
+      onJobChange: () => {},
+      handleSwarmResult: () => {},
+      refreshQueue: () => {},
+      fetchContextUsage: () => {},
+    };
+    return {
+      apply: createApplyStreamEvent(deps),
+      flushPending: () => {
+        while (pending.length) {
+          const updater = pending.shift()!;
+          const next = updater(opts.items);
+          opts.items = next;
+          opts.itemsRef.current = next;
+        }
+      },
+      get startTypewriterCalls() {
+        return startTypewriterCalls;
+      },
+      get appendCalls() {
+        return appendCalls;
+      },
+    };
+  }
+
+  it("suppresses a covered late delta before typewriter/append even when setItems is deferred", () => {
+    const sealed =
+      "Here is the full verified answer about the streaming pipeline.";
+    const state = {
+      items: [
+        { kind: "msg", msg: { role: "user", text: "audit" } },
+        { kind: "msg", msg: { role: "assistant", text: sealed, streaming: false } },
+      ] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    state.itemsRef.current = state.items;
+    const harness = makeDeferredApplyDeps(state);
+
+    harness.apply({
+      kind: "message_delta",
+      // Exact sealed suffix (>= PROSE_COVER_MIN_CHUNK) so assistantProseCovers hits.
+      data: { text: "the streaming pipeline." },
+    });
+
+    expect(harness.startTypewriterCalls).toBe(0);
+    expect(harness.appendCalls).toBe(0);
+    expect(state.typeBufRef.current).toBe("");
+    expect(state.items.filter((i) => i.kind === "msg")).toHaveLength(2);
+
+    harness.flushPending();
+    expect(state.items.filter((i) => i.kind === "msg")).toHaveLength(2);
+    const assistant = state.items.filter(
+      (i): i is Extract<Item, { kind: "msg" }> =>
+        i.kind === "msg" && i.msg.role === "assistant",
+    );
+    expect(assistant).toHaveLength(1);
+    expect(assistant[0].msg.text).toBe(sealed);
+    expect(assistant[0].msg.streaming).toBe(false);
+  });
+
+  it("instant-paints investigation deltas from itemsRef when setItems is deferred", () => {
+    const state = {
+      items: [
+        { kind: "msg", msg: { role: "user", text: "go" } },
+        {
+          kind: "card",
+          card: { id: "t1", goal: "read streamEventHandler", running: true, open: true },
+        },
+      ] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    state.itemsRef.current = state.items;
+    const harness = makeDeferredApplyDeps(state);
+
+    harness.apply({
+      kind: "message_delta",
+      data: { text: "Looking at the handler next." },
+    });
+
+    expect(harness.startTypewriterCalls).toBe(0);
+    expect(harness.appendCalls).toBe(1);
+    expect(state.typeBufRef.current).toBe("");
+  });
+});
