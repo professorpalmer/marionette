@@ -47,6 +47,12 @@ export default function UpdateBanner() {
       const hasPct = /\d%\s*$/.test(base);
       setProgress(base + (p.percent != null && !hasPct ? ` ${p.percent}%` : ""));
     };
+    const clearCheckProgress = () => {
+      if (readyRef.current) return;
+      setApplying(false);
+      setProgress("");
+      window.dispatchEvent(new Event("harness-update-idle"));
+    };
 
     // Check now, then re-check every 30 minutes and on window focus (throttled)
     // so a release that lands mid-session raises the banner without a relaunch.
@@ -62,7 +68,7 @@ export default function UpdateBanner() {
       ipc.updates
         .check()
         .then((res: any) => {
-          if (cancelled || !res || committedRef.current) return;
+          if (cancelled || committedRef.current || res?.busy) return;
           if (res.available || res.downloaded) {
             // Only a real version string labels the banner. Source-run updates
             // track a branch tip, and falling back to the branch name rendered
@@ -70,9 +76,16 @@ export default function UpdateBanner() {
             setLatest(res.latest || "");
             readyRef.current = true;
             setReady(true);
+          } else {
+            // Packaged shell checks emit transient "Checking for app shell update"
+            // progress; when the poll finishes with nothing to install, drop that
+            // spinner so the banner (and StatusBar pill mirror) cannot stick at 0%.
+            clearCheckProgress();
           }
         })
-        .catch(() => {});
+        .catch(() => {
+          if (!cancelled && !committedRef.current) clearCheckProgress();
+        });
     };
     check(true);
     const interval = window.setInterval(() => check(true), 30 * 60 * 1000);
