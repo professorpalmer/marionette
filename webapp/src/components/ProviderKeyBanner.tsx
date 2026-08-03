@@ -15,7 +15,13 @@ export default function ProviderKeyBanner({ onAddKey }: { onAddKey: () => void }
   if (dismissed) return null;
 
   return (
-    <div className="flex items-center gap-2.5 px-4 py-1.5 bg-accent/10 border-b border-accent/25 text-[11.5px] text-txt select-none shrink-0">
+    // pl-24 clears the macOS traffic-light window controls (hiddenInset titlebar),
+    // matching UpdateBanner. Keep the message visible — never collapse this strip
+    // under the native chrome.
+    <div
+      data-testid="provider-key-banner"
+      className="flex items-center gap-2.5 pl-24 pr-4 py-1.5 bg-accent/10 border-b border-accent/25 text-[11.5px] text-txt select-none shrink-0"
+    >
       <KeyRound size={13} className="text-accent shrink-0" />
       <span className="font-medium">Add a provider key to run real analysis.</span>
       <span className="text-muted hidden sm:inline">

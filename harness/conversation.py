@@ -2297,6 +2297,19 @@ class ConversationalSession(
                     f"API key or plan. Switch to a model your key includes (model "
                     f"picker in the bottom bar), or add a key that grants access." + tail)
 
+        # OpenCode Go can 401 with AuthError "Request blocked by upstream
+        # provider" while the local key remains valid. Surface that detail —
+        # do not collapse it into the generic "API key was rejected" path.
+        try:
+            if _ec.is_upstream_provider_block(s):
+                return (
+                    "pilot: the upstream provider blocked this request "
+                    "(the local API key may still be valid). Retry, switch "
+                    "models, or try again later." + tail
+                )
+        except Exception:
+            pass
+
         if cls is not None:
             EC = _ec.ErrorClass
             if cls == EC.AUTH:

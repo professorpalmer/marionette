@@ -34,9 +34,12 @@ def get_config(svc: SettingsServices) -> tuple[int, JsonPayload]:
     cfg = svc.cfg
     session = svc.get_session()
     try:
-        from ..edit_engines import agentic_available, select_edit_engine
+        from ..edit_engines import pilot_keys_ready, select_edit_engine
         edit_engine = select_edit_engine(cfg)
-        agentic_ready = agentic_available()
+        # UI keyless-banner signal: any keyed harness pilot (incl. OpenCode Go /
+        # Codex). Distinct from agentic_available(), which only covers
+        # Puppetmaster's agentic worker registry.
+        agentic_ready = pilot_keys_ready()
     except Exception:
         edit_engine, agentic_ready = "native", False
     try:

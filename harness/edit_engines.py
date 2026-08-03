@@ -146,9 +146,14 @@ def _git(cwd: str, *args: str) -> tuple[int, str, str]:
 
 
 def agentic_available() -> bool:
-    """True when the agentic engine can actually run: a provider key is visible
-    to this process. Mirrors Puppetmaster's key-aware adapter availability so the
-    UI and dispatcher agree on whether keys-only edits are possible."""
+    """True when Puppetmaster's agentic edit workers can actually run.
+
+    Mirrors Puppetmaster's key-aware adapter availability. OpenCode Go and
+    Codex OAuth can back the Marionette *pilot* but are not in Puppetmaster's
+    agentic HTTP registry -- they must not flip this true (that would route
+    unsupported agentic workers). Use :func:`pilot_keys_ready` for the UI
+    keyless-banner / readiness signal.
+    """
     try:
         from puppetmaster import providers
 
@@ -163,6 +168,39 @@ def agentic_available() -> bool:
             for k in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY",
                       "GOOGLE_API_KEY", "OPENROUTER_API_KEY",
                       "AWS_BEARER_TOKEN_BEDROCK")
+        ) or (
+            bool(os.environ.get("AWS_ACCESS_KEY_ID", "").strip())
+            and bool(os.environ.get("AWS_SECRET_ACCESS_KEY", "").strip())
+        )
+
+
+def pilot_keys_ready() -> bool:
+    """True when Marionette has at least one usable keyed harness provider.
+
+    Powers ``/api/config`` ``agentic_ready`` (the ProviderKeyBanner gate). Broader
+    than :func:`agentic_available`: a keyed OpenCode Go or Codex OAuth pilot is
+    enough to dismiss the keyless nudge, without claiming Puppetmaster agentic
+    workers can run on those providers.
+    """
+    try:
+        from harness.providers import available_providers
+
+        return bool(available_providers())
+    except Exception as exc:
+        _diag("edit_engines.pilot_keys_ready", exc)
+        if agentic_available():
+            return True
+        return any(
+            os.environ.get(k, "").strip()
+            for k in (
+                "OPENAI_API_KEY",
+                "ANTHROPIC_API_KEY",
+                "GEMINI_API_KEY",
+                "GOOGLE_API_KEY",
+                "OPENROUTER_API_KEY",
+                "OPENCODE_GO_API_KEY",
+                "AWS_BEARER_TOKEN_BEDROCK",
+            )
         ) or (
             bool(os.environ.get("AWS_ACCESS_KEY_ID", "").strip())
             and bool(os.environ.get("AWS_SECRET_ACCESS_KEY", "").strip())

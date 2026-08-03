@@ -15,17 +15,39 @@ const NAV: { id: PageId; label: string; icon: any }[] = [
   { id: "about", label: "About", icon: Info },
 ];
 
+const PAGE_IDS = new Set<string>(NAV.map((n) => n.id));
+
+// Latched when Add key (or similar) asks for a settings page before SettingsShell
+// has mounted. Consumed on mount so a closed right pane still lands correctly.
+let pendingSettingsPage: PageId | null = null;
+
+export function focusSettingsPage(page: PageId): void {
+  if (!PAGE_IDS.has(page)) return;
+  pendingSettingsPage = page;
+  window.dispatchEvent(new CustomEvent("harness-settings-page", { detail: page }));
+}
+
+function takePendingSettingsPage(): PageId | null {
+  const page = pendingSettingsPage;
+  pendingSettingsPage = null;
+  return page;
+}
+
 // Full-screen settings overlay: left sidebar nav + routed content area
 // (Cursor/Hermes pattern). The title bar reserves space on the left so the
 // "Settings" label clears the macOS traffic-light window controls.
 export default function SettingsShell({
   onClose,
   onOpenWizard,
+  initialPage,
 }: {
   onClose: () => void;
   onOpenWizard: () => void;
+  initialPage?: PageId;
 }) {
-  const [page, setPage] = useState<PageId>("models");
+  const [page, setPage] = useState<PageId>(
+    () => initialPage || takePendingSettingsPage() || "models",
+  );
 
   // Escape always closes settings -- a keyboard escape hatch so a missed click
   // on the X (e.g. a busy main thread during a swarm) can never trap the user
@@ -37,6 +59,19 @@ export default function SettingsShell({
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [onClose]);
+
+  // Add key / hotkeys can request Accounts & Keys while Settings is already open.
+  useEffect(() => {
+    const onPage = (e: Event) => {
+      const next = (e as CustomEvent).detail;
+      if (typeof next === "string" && PAGE_IDS.has(next)) {
+        pendingSettingsPage = null;
+        setPage(next as PageId);
+      }
+    };
+    window.addEventListener("harness-settings-page", onPage as EventListener);
+    return () => window.removeEventListener("harness-settings-page", onPage as EventListener);
+  }, []);
 
   return (
     <div className="fixed inset-0 z-50 bg-bg flex flex-col">

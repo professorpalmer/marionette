@@ -485,7 +485,17 @@ def report_failure(
     status_code: Optional[int] = None,
     message: str = "",
 ) -> Optional[str]:
-    """Mark failure and return next token if any."""
+    """Mark failure and return next token if any.
+
+    Upstream-vendor blocks (e.g. OpenCode Go 401 AuthError "Request blocked by
+    upstream provider") leave the credential healthy — the local key is fine.
+    """
+    try:
+        from pmharness.drivers.error_classifier import is_upstream_provider_block
+    except Exception:
+        is_upstream_provider_block = lambda _m: False  # type: ignore[assignment]
+    if is_upstream_provider_block(message):
+        return None
     immediate = False
     if status_code in (402,):
         immediate = True

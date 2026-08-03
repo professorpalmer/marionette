@@ -46,9 +46,23 @@ _RETRYABLE_PATTERNS = [
     "try again", "please retry", "internal server error",
 ]
 
+# OpenCode Go (and similar relays) can return HTTP 401 AuthError when the
+# upstream vendor blocks a request even though GET /models and the local key
+# are fine. Treat as transient — not a dead/revoked key.
+_UPSTREAM_BLOCK_PATTERNS = [
+    "blocked by upstream provider",
+    "request blocked by upstream",
+]
+
 
 def _norm(message: Optional[str]) -> str:
     return (message or "").lower()
+
+
+def is_upstream_provider_block(message: Optional[str] = None) -> bool:
+    """True when the body describes an upstream-vendor block, not a bad key."""
+    msg = _norm(message)
+    return any(p in msg for p in _UPSTREAM_BLOCK_PATTERNS)
 
 
 def classify(http_status: Optional[int] = None, message: Optional[str] = None) -> ErrorClass:
@@ -71,6 +85,9 @@ def classify(http_status: Optional[int] = None, message: Optional[str] = None) -
         if http_status == 429:
             return ErrorClass.RATE_LIMIT
         if http_status in (401, 403):
+            # Relay 401 "blocked by upstream" is not a rejected local key.
+            if is_upstream_provider_block(message):
+                return ErrorClass.RETRYABLE
             return ErrorClass.AUTH
         if http_status == 413:
             return ErrorClass.CONTEXT_OVERFLOW
@@ -87,6 +104,8 @@ def classify(http_status: Optional[int] = None, message: Optional[str] = None) -
             return ErrorClass.FATAL
 
     # No HTTP status (network-level exception) -> classify from message.
+    if is_upstream_provider_block(message):
+        return ErrorClass.RETRYABLE
     if any(p in msg for p in _RETRYABLE_PATTERNS):
         return ErrorClass.RETRYABLE
 

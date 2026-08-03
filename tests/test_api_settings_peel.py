@@ -53,7 +53,7 @@ def test_get_config_and_settings(monkeypatch):
         "harness.edit_engines.select_edit_engine", lambda cfg: "native", raising=False
     )
     monkeypatch.setattr(
-        "harness.edit_engines.agentic_available", lambda: False, raising=False
+        "harness.edit_engines.pilot_keys_ready", lambda: False, raising=False
     )
     monkeypatch.setattr(
         "harness.reasoning_effort.current_reasoning_effort",

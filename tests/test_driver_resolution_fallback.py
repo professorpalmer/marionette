@@ -127,3 +127,47 @@ def test_available_pilots_does_not_inject_stale_default(monkeypatch):
     pilots = srv._available_pilots()
     assert "qwen3-coder-30b" not in pilots
     assert pilots[0] == "openrouter:deepseek/deepseek-v4-pro"
+
+
+def test_opencode_go_driver_survives_openrouter_disconnect(monkeypatch):
+    """Explicit opencode-go:model stays available when OpenRouter is off."""
+    state = os.environ["HARNESS_STATE_DIR"]
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "sk-go-test-key")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    enabled = ["opencode-go:deepseek-v4-flash"]
+    json.dump({"enabled": enabled}, open(os.path.join(state, "models.json"), "w"))
+    monkeypatch.setattr("harness.model_visibility.get_enabled", lambda: list(enabled))
+    monkeypatch.setattr("harness.model_visibility.enabled_pilots", lambda: list(enabled))
+    import importlib
+    from harness import keys as K
+    importlib.reload(K)
+    K.mark_disconnected("openrouter")
+    srv._cfg = HarnessConfig(
+        driver="opencode-go:deepseek-v4-flash", reach="openrouter", state_dir=state,
+    )
+    assert srv._driver_provider_available("opencode-go:deepseek-v4-flash")
+    srv._resolve_available_driver()
+    assert srv._cfg.driver == "opencode-go:deepseek-v4-flash"
+
+
+def test_bare_go_catalog_id_available_when_openrouter_disconnected(monkeypatch):
+    """Bare deepseek-v4-flash resolves via keyed OpenCode Go, not dead reach."""
+    state = os.environ["HARNESS_STATE_DIR"]
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "sk-go-test-key")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    enabled = ["opencode-go:deepseek-v4-flash"]
+    json.dump({"enabled": enabled}, open(os.path.join(state, "models.json"), "w"))
+    monkeypatch.setattr("harness.model_visibility.get_enabled", lambda: list(enabled))
+    monkeypatch.setattr("harness.model_visibility.enabled_pilots", lambda: list(enabled))
+    import importlib
+    from harness import keys as K
+    importlib.reload(K)
+    K.mark_disconnected("openrouter")
+    srv._cfg = HarnessConfig(
+        driver="deepseek-v4-flash", reach="openrouter", state_dir=state,
+    )
+    assert srv._driver_provider_available("deepseek-v4-flash")
+    srv._resolve_available_driver()
+    assert srv._driver_provider_available(srv._cfg.driver)

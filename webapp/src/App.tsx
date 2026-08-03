@@ -7,6 +7,7 @@ import RightDock from "./components/RightDock";
 import StatusBar from "./components/StatusBar";
 import UpdateBanner from "./components/UpdateBanner";
 import ProviderKeyBanner from "./components/ProviderKeyBanner";
+import { focusSettingsPage } from "./components/SettingsShell";
 import Resizer from "./components/Resizer";
 import RegistryWizard from "./components/RegistryWizard";
 import ErrorBoundary from "./components/ErrorBoundary";
@@ -56,8 +57,18 @@ export default function App() {
   const pendingRightTab = useRef<string | null>(null);
 
   const openRightTo = (tab: string) => {
-    pendingRightTab.current = tab || "state";
-    setRightOpen(true);
+    const target = tab || "state";
+    pendingRightTab.current = target;
+    setRightOpen((open) => {
+      if (open) {
+        // Pane already mounted — the rightOpen effect only runs on transitions,
+        // so apply the focus now. Without this, Add key / hotkeys are no-ops
+        // when the right rail is already open.
+        pendingRightTab.current = null;
+        window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: target }));
+      }
+      return true;
+    });
   };
 
   const [showWizard, setShowWizard] = useState(false);
@@ -224,7 +235,10 @@ export default function App() {
           is up (it already covers key setup) to avoid stacking two prompts. */}
       {config?.agentic_ready === false && !showWizard && (
         <ProviderKeyBanner
-          onAddKey={() => openRightTo("settings")}
+          onAddKey={() => {
+            focusSettingsPage("providers");
+            openRightTo("settings");
+          }}
         />
       )}
       <div className="flex-1 min-h-0 flex">

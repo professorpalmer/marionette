@@ -21,6 +21,7 @@ from harness.edit_engines import (
     agentic_events_from_store,
     finalize_worktree_patch,
     managed_worktree,
+    pilot_keys_ready,
     run_agentic_edit,
     run_edit_worker,
     run_native_edit,
@@ -209,6 +210,44 @@ def test_agentic_available_falls_back_to_env_on_import_error(monkeypatch):
     monkeypatch.setattr("puppetmaster.providers.available_providers", _boom)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     assert agentic_available() is True
+
+
+def test_pilot_keys_ready_with_opencode_go_when_openrouter_disconnected(monkeypatch, tmp_path):
+    """Keyed OpenCode Go dismisses the keyless banner even when OpenRouter is off.
+
+    Must NOT pretend OpenCode Go can back Puppetmaster agentic workers
+    (agentic_available stays False when the PM registry is empty).
+    """
+    from harness import keys as hkeys
+
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "sk-go-test-key")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr("puppetmaster.providers.available_providers", lambda: [])
+
+    import importlib
+    importlib.reload(hkeys)
+    hkeys.mark_disconnected("openrouter")
+    try:
+        assert pilot_keys_ready() is True
+        assert agentic_available() is False
+    finally:
+        hkeys.unmark_disconnected("openrouter")
+
+
+def test_pilot_keys_ready_false_when_truly_keyless(monkeypatch, tmp_path):
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    monkeypatch.setattr("puppetmaster.providers.available_providers", lambda: [])
+    for k in (
+        "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
+        "OPENROUTER_API_KEY", "OPENCODE_GO_API_KEY", "AWS_BEARER_TOKEN_BEDROCK",
+        "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+    ):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setattr("harness.providers.available_providers", lambda: [])
+    assert pilot_keys_ready() is False
 
 
 # --- worktree helpers (real git, no network) ---

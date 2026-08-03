@@ -993,8 +993,12 @@ ensure_wiki_backend_async()
 
 def _driver_provider_available(spec: str) -> bool:
     """True if the provider backing a driver spec currently has a usable key.
-    A bare name (e.g. 'qwen3-coder-30b') routes through the reach provider
-    (OpenRouter); a 'provider:model' spec is backed by that provider."""
+
+    A ``provider:model`` spec is backed by that provider. A bare catalog name
+    prefers any keyed harness provider that lists the model (so OpenCode Go
+    ``deepseek-v4-flash`` stays available after OpenRouter is disconnected),
+    then falls back to the reach provider (default OpenRouter).
+    """
     from . import providers as _prov
     if not spec:
         return False
@@ -1007,7 +1011,11 @@ def _driver_provider_available(spec: str) -> bool:
         prov_name = spec.split(":", 1)[0]
         p = _prov.get_provider(prov_name)
         return bool(p and p.available)
-    # Bare catalog name -> uses the reach provider (default openrouter).
+    # Bare catalog name: match build_pilot — a keyed provider that lists the
+    # model wins over reach/OpenRouter (which may be explicitly disconnected).
+    for p in _prov.available_providers():
+        if spec in getattr(p, "pilot_models", ()):
+            return True
     p = _prov.get_provider(_cfg.reach)
     return bool(p and p.available)
 

@@ -36,6 +36,20 @@ def test_auth_error_is_explained():
     assert "provider said" not in out.lower()
 
 
+def test_opencode_go_upstream_block_preserves_detail():
+    """OpenCode Go 401 AuthError 'blocked by upstream' is not a dead local key."""
+    s = _s()
+    raw = (
+        'HTTP 401: {"error":{"message":"Request blocked by upstream provider",'
+        '"type":"AuthError"}}'
+    )
+    out = s._humanize_pilot_error(raw)
+    assert "upstream provider blocked" in out.lower()
+    assert "authentication failed" not in out.lower()
+    assert "blocked by upstream provider" in out.lower()
+    assert "sk-" not in out.lower()
+
+
 def test_rate_limit_is_explained():
     s = _s()
     out = s._humanize_pilot_error("HTTP 429: rate limit exceeded")

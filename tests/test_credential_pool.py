@@ -44,6 +44,25 @@ def test_rotate_on_plan_limit(pool_dir):
     assert nxt == b.access_token
 
 
+def test_upstream_block_does_not_exhaust_opencode_go(pool_dir):
+    """OpenCode Go 401 'blocked by upstream' must not mark the key exhausted."""
+    a = cp.add_api_key("opencode-go", "sk-go-aaaaaaaaaa", label="go-1")
+    cp.add_api_key("opencode-go", "sk-go-bbbbbbbbbb", label="go-2")
+    assert cp.resolve_token("opencode-go") == a.access_token
+    nxt = cp.report_failure(
+        "opencode-go",
+        a.id,
+        status_code=401,
+        message='{"error":{"message":"Request blocked by upstream provider","type":"AuthError"}}',
+    )
+    assert nxt is None
+    # First credential still healthy — not rotated away as dead/exhausted.
+    assert cp.resolve_token("opencode-go") == a.access_token
+    pool = cp.load_pool("opencode-go")
+    entry = next(e for e in pool.entries() if e.id == a.id)
+    assert entry.last_status != cp.STATUS_EXHAUSTED
+
+
 def test_persist_roundtrip(pool_dir):
     cp.add_api_key("openai", "sk-persist-abcdefgh", label="p")
     path = os.path.join(str(pool_dir), "auth_pool.json")
