@@ -26,6 +26,7 @@ from pmharness.bridge import (
     _looks_like_reasoning_fragment,
     _promote_degraded_prose,
     _worker_submitted_structure,
+    looks_like_reasoning_fragment,
 )
 
 
@@ -57,14 +58,32 @@ def create_temp_git_repo():
 
 
 def test_reasoning_fragment_detected():
-    assert _looks_like_reasoning_fragment("Now let me look at the auth module...")
-    assert _looks_like_reasoning_fragment("Let me check harness/worker.py next")
-    assert not _looks_like_reasoning_fragment(
+    assert looks_like_reasoning_fragment("Now let me look at the auth module...")
+    assert looks_like_reasoning_fragment("Let me check harness/worker.py next")
+    assert not looks_like_reasoning_fragment(
         "FINDING: harness/worker.py:680 empty-diff analysis accepts reasoning"
     )
-    assert not _looks_like_reasoning_fragment(
+    assert not looks_like_reasoning_fragment(
         "Audit complete: no issues found in auth."
     )
+    # Private alias stays wired to the public contract.
+    assert _looks_like_reasoning_fragment is looks_like_reasoning_fragment
+
+
+def test_worker_and_bridge_agree_on_reasoning_openers():
+    """Worker structured gate and bridge helper share the full prefix list."""
+    longer_list_only = (
+        "Let me examine the auth module next",
+        "Hmm, this looks like a race in the queue",
+        "Okay, let me dig into the retry path",
+    )
+    for opener in longer_list_only:
+        assert looks_like_reasoning_fragment(opener) is True
+        ok, reason = _analysis_output_is_structured(opener)
+        assert ok is False, opener
+        assert "reasoning" in reason, opener
+        # Soft-rescue must not wrap reasoning openers as FINDING rows.
+        assert coerce_unlabeled_analysis_prose(opener) == opener
 
 
 def test_analysis_output_helper_rejects_reasoning_only():

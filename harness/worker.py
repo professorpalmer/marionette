@@ -471,20 +471,9 @@ def _analysis_output_is_structured(
             return False, "no structured findings (no_tool_calls)"
         if not text:
             return False, "no structured findings"
-        try:
-            from pmharness.bridge import _looks_like_reasoning_fragment
-            if _looks_like_reasoning_fragment(text):
-                return False, "no structured findings (reasoning only)"
-        except Exception:
-            low = text.lower()
-            if (
-                low.startswith("now let me")
-                or low.startswith("let me look")
-                or low.startswith("let me check")
-                or low.startswith("i'll look")
-                or low.startswith("i will look")
-            ):
-                return False, "no structured findings (reasoning only)"
+        from pmharness.bridge import looks_like_reasoning_fragment
+        if looks_like_reasoning_fragment(text):
+            return False, "no structured findings (reasoning only)"
         if not _ANALYSIS_SIGNAL_LINE_RE.search(text):
             return (
                 False,
@@ -511,20 +500,9 @@ def coerce_unlabeled_analysis_prose(text: str) -> str:
         ok, _ = _analysis_output_is_structured(raw, halt_reason="")
         if ok:
             return text
-        try:
-            from pmharness.bridge import _looks_like_reasoning_fragment
-            if _looks_like_reasoning_fragment(raw):
-                return text
-        except Exception:
-            low = raw.lower()
-            if any(
-                low.startswith(p)
-                for p in (
-                    "now let me", "let me look", "let me check",
-                    "i'll look", "i will look",
-                )
-            ):
-                return text
+        from pmharness.bridge import looks_like_reasoning_fragment
+        if looks_like_reasoning_fragment(raw):
+            return text
         substantive = False
         try:
             from harness.pilot_guards import analysis_summary_is_substantive

@@ -827,9 +827,10 @@ _REASONING_FRAGMENT_PREFIXES = (
 )
 
 
-def _looks_like_reasoning_fragment(text: object) -> bool:
+def looks_like_reasoning_fragment(text: object) -> bool:
     """True when ``text`` is free-text planning / mid-thought, not a finding.
 
+    Canonical shared contract for harness workers and the bridge submit gate.
     Analysis workers that stream chain-of-thought and never submit structure
     used to surface truncated openers like 'Now let me look at...' as the
     patch/finding headline. Treat those as non-findings so the job fails
@@ -860,6 +861,10 @@ def _looks_like_reasoning_fragment(text: object) -> bool:
         if len(raw) < 160:
             return True
     return False
+
+
+# Back-compat alias for existing tests and call sites.
+_looks_like_reasoning_fragment = looks_like_reasoning_fragment
 
 
 def _is_meta_degrade_artifact(a: dict) -> bool:

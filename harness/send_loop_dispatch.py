@@ -112,12 +112,12 @@ def _is_substantive_artifact(a: dict) -> bool:
         try:
             from pmharness.bridge import (
                 _is_meta_degrade_artifact,
-                _looks_like_reasoning_fragment,
+                looks_like_reasoning_fragment,
             )
             if _is_meta_degrade_artifact(a):
                 return False
             text = str(a.get('body') or a.get('headline') or '').strip()
-            if _looks_like_reasoning_fragment(text):
+            if looks_like_reasoning_fragment(text):
                 return False
         except Exception:
             text = str(a.get('body') or a.get('headline') or '').strip()
@@ -528,7 +528,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     # Reasoning-only fragments must never appear as finding/risk/decision
     # headlines in the digest (same submit contract as swarm workers).
     try:
-        from pmharness.bridge import _looks_like_reasoning_fragment as _reasoning_frag
+        from pmharness.bridge import looks_like_reasoning_fragment as _reasoning_frag
     except Exception:
         def _reasoning_frag(_t):  # type: ignore[misc]
             return False
