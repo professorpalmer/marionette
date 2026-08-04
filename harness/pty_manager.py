@@ -16,10 +16,16 @@ import ntpath
 import shutil
 import struct
 import threading
+import time
 import uuid
 from typing import Optional
 
 from harness.diag import note as _diag_note
+
+# Concurrent interactive terminals are rare (one dock pane). Cap + idle TTL
+# bound leaks when a client opens sessions without an explicit kill.
+MAX_PTY_SESSIONS = max(1, int(os.environ.get("HARNESS_MAX_PTY_SESSIONS", "8")))
+PTY_IDLE_TTL_S = max(60, int(os.environ.get("HARNESS_PTY_IDLE_TTL_S", "3600")))
 
 # ---------------------------------------------------------------------------
 # Platform availability
@@ -337,6 +343,9 @@ class PtySession:
         self._buffer = bytearray()
         self._lock = threading.Lock()
         self._alive = True
+        now = time.time()
+        self.created_at = now
+        self.last_activity = now
         self._cwd = _resolve_cwd(cwd)
         if os.name == "nt":
             self._init_conpty(cols, rows)
@@ -598,11 +607,15 @@ class PtySession:
             total = len(self._buffer)
             if offset < 0 or offset > total:
                 offset = 0
-            return bytes(self._buffer[offset:]), total
+            data = bytes(self._buffer[offset:])
+            if data:
+                self.last_activity = time.time()
+            return data, total
 
     def write(self, data: str) -> None:
         if not self._alive:
             return
+        self.last_activity = time.time()
         if os.name == "nt":
             self._write_conpty(data)
         else:
@@ -628,8 +641,11 @@ class PtySession:
             self._alive = False
 
     def resize(self, rows: int, cols: int) -> None:
+        # Callers (xterm FitAddon / termios) pass (rows, cols); clamp_pty_dims
+        # takes (cols, rows). Unpack deliberately — not a swapped-args bug.
         cols, rows = clamp_pty_dims(cols, rows)
         self.rows, self.cols = rows, cols
+        self.last_activity = time.time()
         if os.name == "nt":
             if getattr(self, "_hpc", None) and not getattr(self, "_hpc_closed", False):
                 try:
@@ -659,9 +675,52 @@ class PtyManager:
         self._sessions = {}
         self._lock = threading.Lock()
 
+    def _evict_oldest_locked(self) -> None:
+        """Kill and drop the least-recently-active session (lock held)."""
+        if not self._sessions:
+            return
+        oldest = min(
+            self._sessions.values(),
+            key=lambda s: getattr(s, "last_activity", 0.0),
+        )
+        self._sessions.pop(oldest.id, None)
+        try:
+            oldest.kill()
+        except Exception as exc:
+            _diag_note("pty_manager.evict_kill", exc)
+
+    def _reap_locked(self) -> None:
+        """Drop dead and idle-expired sessions (lock held)."""
+        now = time.time()
+        stale = []
+        for sid, s in self._sessions.items():
+            try:
+                dead = not s.alive()
+            except Exception as exc:
+                _diag_note("pty_manager.reap_alive", exc)
+                dead = True
+            idle = (now - getattr(s, "last_activity", now)) >= PTY_IDLE_TTL_S
+            if dead or idle:
+                stale.append(sid)
+        for sid in stale:
+            s = self._sessions.pop(sid, None)
+            if s is None:
+                continue
+            try:
+                s.kill()
+            except Exception as exc:
+                _diag_note("pty_manager.reap_kill", exc)
+
     def create(self, cwd: str = None, cols: int = 80, rows: int = 24) -> PtySession:
+        with self._lock:
+            self._reap_locked()
+            while len(self._sessions) >= MAX_PTY_SESSIONS:
+                self._evict_oldest_locked()
         s = PtySession(cwd=cwd, cols=cols, rows=rows)
         with self._lock:
+            self._reap_locked()
+            while len(self._sessions) >= MAX_PTY_SESSIONS:
+                self._evict_oldest_locked()
             self._sessions[s.id] = s
         return s
 
@@ -677,6 +736,4 @@ class PtyManager:
 
     def reap(self):
         with self._lock:
-            dead = [sid for sid, s in self._sessions.items() if not s.alive()]
-            for sid in dead:
-                self._sessions.pop(sid, None)
+            self._reap_locked()

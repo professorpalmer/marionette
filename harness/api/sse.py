@@ -16,6 +16,8 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any, Callable, Deque, Dict, Optional, Tuple, TypedDict, Union
 
+from harness.diag import note as _diag_note
+
 # Mid-turn SSE reattach: bounded per-session/per-generation event ring. When the
 # UI detaches, _sse_pump keeps draining the turn and RETAINS recent frames here
 # so GET /api/chat/events?since=cursor can replay what was missed. Cap + TTL
@@ -346,8 +348,8 @@ def sse_pump(
                         getattr(ev, "data", None) or {},
                         getattr(ev, "turn", None),
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _diag_note("sse_pump.ring_append", exc)
             if detached:
                 continue
             if not sse_write(wfile, frame_for_event(ev)):
@@ -357,8 +359,8 @@ def sse_pump(
         if write_done and ring is not None:
             try:
                 ring.append("done", {})
-            except Exception:
-                pass
+            except Exception as exc:
+                _diag_note("sse_pump.ring_append_done", exc)
     finally:
         if ring is not None:
             ring.pinned = False
@@ -366,6 +368,6 @@ def sse_pump(
         # runs the generator finally so the session lock cannot leak.
         try:
             gen.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            _diag_note("sse_pump.gen_close", exc)
     return detached

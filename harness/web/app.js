@@ -73,12 +73,45 @@ function fillActionResult(d){
   refreshJobs();
 }
 
-function send(){
+function harnessToken(){
+  const meta = document.querySelector('meta[name="harness-token"]');
+  return (meta && meta.content) || "";
+}
+
+function authHeaders(){
+  const h = {"Content-Type": "application/json"};
+  const t = harnessToken();
+  if(t) h["X-Harness-Token"] = t;
+  return h;
+}
+
+async function send(){
   const msg = promptEl.value.trim(); if(!msg) return;
   addMsg("user", msg); promptEl.value=""; promptEl.style.height="auto";
   setStatus("thinking");
   $("#send").hidden = true; $("#stop").hidden = false;
-  let url = "/api/chat?message=" + encodeURIComponent(msg);
+  // Never put the user message in a query string (server/proxy logs). Stash
+  // via POST, then stream with the opaque mid — same contract as the desktop app.
+  let mid = "";
+  try {
+    const res = await fetch("/api/chat/stash", {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({message: msg}),
+    });
+    if(!res.ok) throw new Error("stash " + res.status);
+    const body = await res.json();
+    mid = body.id || "";
+    if(!mid) throw new Error("stash missing id");
+  } catch (err) {
+    setStatus("error");
+    addMsg("assistant", "[error] could not start turn");
+    $("#send").hidden=false; $("#stop").hidden=true;
+    return;
+  }
+  let url = "/api/chat?mid=" + encodeURIComponent(mid);
+  const t = harnessToken();
+  if(t) url += "&token=" + encodeURIComponent(t);
   es = new EventSource(url);
   es.onmessage = e => {
     let ev; try { ev = JSON.parse(e.data); } catch { return; }

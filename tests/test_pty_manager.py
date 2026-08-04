@@ -76,6 +76,59 @@ def test_clamp_pty_dims_rejects_zero_and_junk():
     assert clamp_pty_dims("nope", None) == (80, 24)  # type: ignore[arg-type]
 
 
+class _FakePtySession:
+    """In-memory stand-in so manager cap/TTL tests need no real PTY."""
+
+    _n = 0
+
+    def __init__(self, cwd=None, cols=80, rows=24):
+        _FakePtySession._n += 1
+        self.id = f"fake{_FakePtySession._n}"
+        self.cols = cols
+        self.rows = rows
+        self._cwd = cwd
+        self._alive = True
+        now = time.time()
+        self.created_at = now
+        self.last_activity = now
+
+    def alive(self):
+        return self._alive
+
+    def kill(self):
+        self._alive = False
+
+
+def test_pty_manager_caps_concurrent_sessions(monkeypatch):
+    monkeypatch.setattr(pty_manager, "PtySession", _FakePtySession)
+    monkeypatch.setattr(pty_manager, "MAX_PTY_SESSIONS", 3)
+    monkeypatch.setattr(pty_manager, "PTY_IDLE_TTL_S", 10_000)
+    _FakePtySession._n = 0
+    m = PtyManager()
+    kept = [m.create() for _ in range(3)]
+    assert len(m._sessions) == 3
+    newest = m.create()
+    assert len(m._sessions) == 3
+    assert newest.id in m._sessions
+    # Oldest by last_activity was evicted
+    assert kept[0].id not in m._sessions
+    assert kept[0].alive() is False
+
+
+def test_pty_manager_reap_expires_idle(monkeypatch):
+    monkeypatch.setattr(pty_manager, "PtySession", _FakePtySession)
+    monkeypatch.setattr(pty_manager, "MAX_PTY_SESSIONS", 8)
+    monkeypatch.setattr(pty_manager, "PTY_IDLE_TTL_S", 30)
+    _FakePtySession._n = 0
+    m = PtyManager()
+    s = m.create()
+    s.last_activity = time.time() - 120
+    assert s.alive() is True
+    m.reap()
+    assert m.get(s.id) is None
+    assert s.alive() is False
+
+
 def test_append_to_buffer_caps_at_256kb():
     buf = bytearray()
     lock = threading.Lock()

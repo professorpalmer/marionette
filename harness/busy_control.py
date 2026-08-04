@@ -18,7 +18,8 @@ Method Resolution Order keeps behavior identical: ``is_turn_busy``,
 """
 
 import os
-import sys
+
+from harness.diag import note as _diag_note
 
 
 class BusyControlMixin:
@@ -268,5 +269,8 @@ class BusyControlMixin:
             self._state = "idle"
         except Exception:
             pass
-        print(f"reaped wedged turn: _busy held {held:.0f}s past {deadline:.0f}s deadline", file=sys.stderr)
+        _diag_note(
+            "busy_control.reap_wedged",
+            msg=f"_busy held {held:.0f}s past {deadline:.0f}s deadline",
+        )
         return True
