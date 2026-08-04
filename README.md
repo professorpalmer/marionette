@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.170, deliberately pre-1.0. Swarm dispatches can target a separate subject checkout for read-only audits, and every completed run carries deterministic current-job evidence with structured acceptance-criterion verification (rides puppetmaster-ai==1.21.10).
+> Status: v0.9.171, deliberately pre-1.0. Store mutators take locks, command auto-guard fails closed on classify errors, and Mac trackpad scroll no longer fights stick-to-bottom while streaming (rides puppetmaster-ai==1.21.10).
 
 ## Documentation
 
