@@ -388,6 +388,7 @@ def run_agentic_edit(
                 _analyze_max_turns,
                 _has_real_structured_findings,
                 _router_supports_max_capability,
+                rescue_analysis_compact,
                 worker_token_budget,
             )
 
@@ -505,6 +506,9 @@ def run_agentic_edit(
                     ), result)
                 if not expects_diff:
                     # Gate on structured findings — never green unlabeled prose.
+                    # Same rescue order as swarm/bridge: promote verification-
+                    # parked empty_or_unstructured prose first, then fall back
+                    # to coerce on unlabeled final_text.
                     # has_structured = typed compact artifacts; structured_ok =
                     # FINDING/RISK/DECISION labels in final_text (tightened gate).
                     compact: list = []
@@ -514,6 +518,7 @@ def run_agentic_edit(
                             _compact_artifact(a)
                             for a in (getattr(result, "artifacts", None) or [])
                         ]
+                        compact = rescue_analysis_compact(compact)
                         has_structured = _has_real_structured_findings(compact)
                     except Exception:
                         has_structured = False

@@ -1106,6 +1106,18 @@ def _promote_degraded_prose(compact: list) -> list:
         return compact
 
 
+def rescue_analysis_compact(compact: list) -> list:
+    """Shared harness-boundary rescue for analysis artifacts.
+
+    Thin public wrapper over ``_promote_degraded_prose`` so agentic edit and
+    swarm/bridge paths share one contract: verification-parked
+    ``empty_or_unstructured_agentic_result`` prose becomes finding rows before
+    the structured-findings gate. Implementation stays in
+    ``_promote_degraded_prose`` (Marionette bridge boundary — see WHY there).
+    """
+    return _promote_degraded_prose(compact)
+
+
 def _auth_failure_note(compact: list) -> str:
     """Return a loud, human one-liner when any artifact is a provider auth
     rejection, else empty. Lets the harness surface a dead/revoked key as the

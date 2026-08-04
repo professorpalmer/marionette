@@ -691,6 +691,52 @@ def test_agentic_analysis_coerces_substantive_unlabeled_prose(monkeypatch):
         shutil.rmtree(repo_dir, ignore_errors=True)
 
 
+def test_agentic_analysis_promotes_verification_parked_prose(monkeypatch):
+    """empty_or_unstructured verification prose that bridge promotes must green.
+
+    Prose lives in claim (not stdout) so final_text is empty and
+    coerce_unlabeled_analysis_prose cannot rescue — only
+    rescue_analysis_compact / _promote_degraded_prose can.
+    """
+    repo_dir = create_temp_git_repo()
+    try:
+        cfg = _cfg(repo_dir)
+        prose = (
+            "harness/edit_engines.py:506 analysis empty-diff path must promote "
+            "verification-parked empty_or_unstructured prose so agentic edit "
+            "agrees with swarm/bridge when the worker never labeled FINDING."
+        )
+        parked = _fake_artifact(
+            claim=prose,
+            tokens_out=3,
+            tokens_in=2,
+            failure="empty_or_unstructured_agentic_result",
+        )
+        parked.type = "verification"
+        _install_agentic_mocks(
+            monkeypatch,
+            orchestrator_result=_fake_pm_result([parked]),
+        )
+        monkeypatch.setattr(
+            "harness.edit_engines.finalize_worktree_patch",
+            lambda _wt: ("", []),
+        )
+        # Prove coerce alone cannot green this fixture (no final_text).
+        from harness.worker import coerce_unlabeled_analysis_prose
+        assert coerce_unlabeled_analysis_prose("") == ""
+
+        result = run_agentic_edit(cfg, "audit promote path", expects_diff=False)
+        assert result.ok is True
+        assert "FINDING:" in (result.summary or "")
+        assert "harness/edit_engines.py:506" in (result.summary or "")
+        assert any(
+            isinstance(r, dict) and r.get("type") == "finding"
+            for r in (result.findings or [])
+        )
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
 def test_agentic_analysis_summary_from_artifacts_is_substantive(monkeypatch):
     """Artifact FINDING must become a parent-gate-passing summary, not a stub."""
     from harness.edit_engines import _agentic_analysis_summary

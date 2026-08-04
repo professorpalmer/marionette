@@ -3,7 +3,11 @@ that analysis. The agentic adapter parks degraded final_text in a VERIFICATION
 artifact's stdout; without promotion the pilot digest hides it as plumbing and
 the swarm reads as 'completed without structured findings' despite real work.
 """
-from pmharness.bridge import _compact_artifact, _promote_degraded_prose
+from pmharness.bridge import (
+    _compact_artifact,
+    _promote_degraded_prose,
+    rescue_analysis_compact,
+)
 
 
 class _Artifact:
@@ -157,6 +161,25 @@ def test_empty_or_unstructured_substantive_prose_is_promoted():
     assert findings[0].get("promoted_from") == "verification"
     assert "harness/server.py:2834" in findings[0]["body"]
     assert findings[0]["body"].startswith("FINDING: ")
+
+
+def test_rescue_analysis_compact_matches_promote_degraded_prose():
+    """Public helper must share the private promote contract byte-for-byte."""
+    prose = (
+        "harness/edit_engines.py:506 analysis must promote verification-parked "
+        "empty_or_unstructured prose the same way swarm/bridge already does."
+    )
+    compact = [{
+        "type": "verification",
+        "headline": prose[:240],
+        "body": prose,
+        "empty_headline": False,
+        "failure": "empty_or_unstructured_agentic_result",
+    }]
+    promoted = _promote_degraded_prose(compact)
+    rescued = rescue_analysis_compact(compact)
+    assert rescued == promoted
+    assert any(a.get("type") == "finding" for a in rescued)
 
 
 def test_empty_or_unstructured_reasoning_still_not_promoted():
