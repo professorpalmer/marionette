@@ -751,19 +751,28 @@ def _is_nonpromotable_failure(failure: object) -> bool:
 def _meta_degrade_only_empty_unstructured(a: dict) -> bool:
     """True when meta-degrade is solely ``empty_or_unstructured_agentic_result``.
 
-    Other meta markers (no_tool_calls, auth/route tags, without-structured-
-    findings headline text) stay non-promotable even if this tag is also set.
+    Plumbing phrases in the *headline* alone do not block promotion when the
+    full body (prefer body over headline) is substantive analysis. Fail closed
+    when the body itself is thin, a reasoning fragment, or plumbing-only.
+    Other meta markers (no_tool_calls, auth/route tags) stay non-promotable.
     """
     try:
         fail = str(a.get("failure") or "").strip().lower()
         if fail != _PROMOTABLE_UNSTRUCTURED_FAILURE:
             return False
-        head = str(a.get("headline") or a.get("body") or "").lower()
-        if "without structured findings" in head:
+        # Prefer body over headline — compact rows often keep a plumbing
+        # summary in headline while parking real analysis in body/stdout.
+        body = str(a.get("body") or a.get("headline") or "").strip()
+        if len(body) < 40:
             return False
-        if "never called any tool" in head:
+        if _looks_like_reasoning_fragment(body):
             return False
-        if "no structured findings" in head:
+        body_l = body.lower()
+        if "without structured findings" in body_l:
+            return False
+        if "never called any tool" in body_l:
+            return False
+        if "no structured findings" in body_l:
             return False
         return True
     except Exception:

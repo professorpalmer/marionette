@@ -210,3 +210,56 @@ def test_auth_and_timeout_still_not_promoted():
         }]
         out = _promote_degraded_prose(compact)
         assert not any(a.get("type") == "finding" for a in out), tag
+
+
+def test_plumbing_headline_substantive_body_promotes():
+    """Plumbing headline must not hide substantive body under empty_or_unstructured."""
+    prose = (
+        "harness/server.py:2834 bills cached tokens at full price; apply the "
+        "cache discount so multi-turn cost accounting stays accurate across "
+        "long agentic analysis sessions that skipped submit_findings."
+    )
+    compact = [{
+        "type": "verification",
+        "headline": "Agentic worker completed without structured findings",
+        "body": prose,
+        "empty_headline": False,
+        "failure": "empty_or_unstructured_agentic_result",
+    }]
+    out = _promote_degraded_prose(compact)
+    findings = [a for a in out if a.get("type") == "finding"]
+    assert findings, "plumbing headline + substantive body must promote"
+    assert "harness/server.py:2834" in findings[0]["body"]
+    assert findings[0].get("promoted_from") == "verification"
+
+
+def test_plumbing_headline_plumbing_body_does_not_promote():
+    """Fail closed when body is also only plumbing, not just the headline."""
+    plumbing = "Agentic worker completed without structured findings"
+    compact = [{
+        "type": "verification",
+        "headline": plumbing,
+        "body": plumbing + " — never called any tool",
+        "empty_headline": False,
+        "failure": "empty_or_unstructured_agentic_result",
+    }]
+    out = _promote_degraded_prose(compact)
+    assert not any(a.get("type") == "finding" for a in out)
+
+
+def test_no_tool_calls_meta_without_empty_unstructured_still_blocked():
+    """never_called / no_tool_calls meta stays blocked without empty_or_unstructured."""
+    prose = (
+        "harness/server.py:2834 bills cached tokens at full price; apply the "
+        "cache discount so multi-turn cost is accurate across sessions."
+    )
+    for tag in ("no_tool_calls", "no_tool_calls:never_called"):
+        compact = [{
+            "type": "verification",
+            "headline": prose[:240],
+            "body": prose,
+            "empty_headline": False,
+            "failure": tag,
+        }]
+        out = _promote_degraded_prose(compact)
+        assert not any(a.get("type") == "finding" for a in out), tag
