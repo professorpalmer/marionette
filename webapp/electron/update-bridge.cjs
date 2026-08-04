@@ -121,6 +121,55 @@ function isUnmergedStatusLine(line) {
   return ["DD", "AU", "UD", "UA", "DU", "AA", "UU"].includes(xy);
 }
 
+const AUTO_UPDATE_STASH_MARK = "marionette-auto-update";
+
+/** Parse `git stash list` lines that belong to a prior Marionette auto-update. */
+function parseOrphanedAutoUpdateStashRefs(stashListOut) {
+  const refs = [];
+  for (const line of String(stashListOut || "").split(/\r?\n/)) {
+    if (!line.includes(AUTO_UPDATE_STASH_MARK)) continue;
+    const m = line.match(/^(stash@\{\d+\})\s*:/);
+    if (m) refs.push(m[1]);
+  }
+  return refs;
+}
+
+/**
+ * Recover stashes left by a crash between `stash push` and `stash pop`.
+ * Tries oldest-first so newer unrelated stashes stay on top of the stack.
+ * Returns { recovered, conflicts, refs }.
+ */
+async function recoverOrphanedAutoUpdateStashes(repoRoot, env) {
+  const listed = await gitCapture(repoRoot, ["stash", "list"], 15000, env);
+  if (!listed.ok || !listed.out) {
+    return { recovered: 0, conflicts: 0, refs: [] };
+  }
+  const refs = parseOrphanedAutoUpdateStashRefs(listed.out);
+  if (!refs.length) return { recovered: 0, conflicts: 0, refs: [] };
+  // Pop from the bottom of the matching set: highest stash@{N} first so
+  // indices remain stable as we apply (git renumbers after each drop/pop).
+  const ordered = refs.slice().sort((a, b) => {
+    const na = parseInt(a.replace(/\D/g, ""), 10);
+    const nb = parseInt(b.replace(/\D/g, ""), 10);
+    return nb - na;
+  });
+  let recovered = 0;
+  let conflicts = 0;
+  for (const ref of ordered) {
+    appendUpdateLog(`[stash] recovering orphaned ${ref} (${AUTO_UPDATE_STASH_MARK})`);
+    const pop = await gitCapture(repoRoot, ["stash", "pop", ref], 60000, env);
+    if (pop.ok) {
+      recovered += 1;
+    } else {
+      conflicts += 1;
+      appendUpdateLog(`[stash] recover conflict on ${ref}: ${pop.err || pop.out || "failed"}`);
+      // Leave remaining orphans for a later attempt / manual resolve.
+      break;
+    }
+  }
+  return { recovered, conflicts, refs: ordered };
+}
+
 function mergeFailureLooksLikeStaleIndex(text) {
   return /could not write index|needs merge|unmerged files|you have not concluded your merge|merge_head/i.test(text || "");
 }
@@ -290,6 +339,11 @@ async function checkForUpdate({ repoRoot, branch = DEFAULT_BRANCH, currentVersio
       try { latest = JSON.parse(pkg.out).version || ""; } catch { /* leave empty */ }
     }
 
+    const stashList = await gitCapture(repoRoot, ["stash", "list"], 15000, env);
+    const orphanedAutoUpdateStashes = parseOrphanedAutoUpdateStashRefs(
+      stashList.ok ? stashList.out : ""
+    );
+
     return {
       available: behind > 0,
       behind,
@@ -300,6 +354,7 @@ async function checkForUpdate({ repoRoot, branch = DEFAULT_BRANCH, currentVersio
       currentVersion,
       dirty,
       ahead,
+      orphanedAutoUpdateStashes: orphanedAutoUpdateStashes.length,
       url: REPO_HTML_URL,
     };
   } catch (e) {
@@ -332,6 +387,27 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff",
     emit && emit({ stage, message, percent: overallPercent(stage, ratio) });
   let stashed = false;
   try {
+    // Crash between a prior stash push and pop leaves `marionette-auto-update`
+    // entries on the stash stack forever. Reapply them before starting a new
+    // update so the next run does not treat the tree as clean and orphan edits.
+    progress("pull", "Checking for interrupted update stash", 0.05);
+    const orphanRecovery = await recoverOrphanedAutoUpdateStashes(repoRoot, childEnv);
+    if (orphanRecovery.conflicts > 0) {
+      return {
+        ok: false,
+        code: "conflict",
+        error:
+          "A previous update left self-edits in the git stash that conflict when " +
+          "reapplied. Resolve `git stash list` / conflicts in " + repoRoot +
+          ", then update again.",
+      };
+    }
+    if (orphanRecovery.recovered > 0) {
+      appendUpdateLog(
+        `[stash] reapplied ${orphanRecovery.recovered} orphaned ${AUTO_UPDATE_STASH_MARK} stash(es)`
+      );
+    }
+
     const beforeSha = (await gitCapture(repoRoot, ["rev-parse", "HEAD"])).out;
 
     // fetch
@@ -772,6 +848,8 @@ module.exports = {
   statusPath,
   isUnmergedStatusLine,
   mergeFailureLooksLikeStaleIndex,
+  parseOrphanedAutoUpdateStashRefs,
+  recoverOrphanedAutoUpdateStashes,
   isElectronMainProcessFile,
   updateChangesElectronMain,
   describeMainProcessUpdate,

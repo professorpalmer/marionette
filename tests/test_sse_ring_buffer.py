@@ -277,6 +277,7 @@ def test_api_chat_events_ring_miss_and_generation_mismatch():
         assert mismatch["available"] is False
         assert mismatch["generation"] == ring.generation
         assert mismatch["events"] == []
+        assert mismatch["cursor"] == ring.since(0)["cursor"]
     finally:
         httpd.shutdown()
 
@@ -440,6 +441,7 @@ def test_sse_ring_eviction_skips_pinned_live_rings(monkeypatch):
 
     server._sse_ring_clear_for_tests()
     monkeypatch.setattr(sse_mod, "_SSE_RING_MAX_SESSIONS", 2)
+    monkeypatch.setattr(sse_mod, "_SSE_RING_HARD_MAX_SESSIONS", 64)
     # Also patch the re-exported name used by begin if server binds the constant.
     monkeypatch.setattr(server, "_SSE_RING_MAX_SESSIONS", 2, raising=False)
 
@@ -453,4 +455,24 @@ def test_sse_ring_eviction_skips_pinned_live_rings(monkeypatch):
     sse_mod._sse_ring_begin("other-2")
     assert sse_mod._sse_ring_lookup("live-sess") is live
     assert live.pinned is True
+    server._sse_ring_clear_for_tests()
+
+
+def test_sse_ring_hard_max_force_evicts_pinned(monkeypatch):
+    """Past the hard ceiling, even pinned rings are force-evicted (oldest first)."""
+    from harness.api import sse as sse_mod
+
+    server._sse_ring_clear_for_tests()
+    monkeypatch.setattr(sse_mod, "_SSE_RING_MAX_SESSIONS", 1)
+    monkeypatch.setattr(sse_mod, "_SSE_RING_HARD_MAX_SESSIONS", 2)
+
+    a = sse_mod._sse_ring_begin("a")
+    a.pinned = True
+    b = sse_mod._sse_ring_begin("b")
+    b.pinned = True
+    assert len(sse_mod._sse_rings) == 2
+    sse_mod._sse_ring_begin("c")
+    assert len(sse_mod._sse_rings) <= 2
+    assert sse_mod._sse_ring_lookup("a") is None
+    assert sse_mod._sse_ring_lookup("c") is not None
     server._sse_ring_clear_for_tests()

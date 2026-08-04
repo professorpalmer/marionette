@@ -32,7 +32,6 @@ def hash_edit_enabled() -> bool:
     benchmark work against hashline-style edit protocols, not the shipped
     default edit path.
     """
-    import os
     return os.environ.get("HARNESS_HASH_EDIT", "").strip().lower() in ("1", "true", "yes")
 
 
@@ -384,8 +383,20 @@ def apply_hash_edits_to_file(path: str, ops: list[HashEditOp]) -> ApplyResult:
     if os.path.isdir(path):
         return ApplyResult(ok=False, message=f"path is a directory: {path}", stale_anchors=[])
 
-    with open(path, "r", encoding="utf-8", errors="replace", newline="") as f:
-        original = f.read()
+    # Strict UTF-8: errors="replace" would turn latin1/binary bytes into U+FFFD
+    # and write them back, silently corrupting the file. Bail instead.
+    try:
+        with open(path, "r", encoding="utf-8", errors="strict", newline="") as f:
+            original = f.read()
+    except UnicodeDecodeError as exc:
+        return ApplyResult(
+            ok=False,
+            message=(
+                f"file is not valid UTF-8 (hash_edit refuses to rewrite binary/"
+                f"legacy encodings): {path}: {exc}"
+            ),
+            stale_anchors=[],
+        )
 
     new_text, result = apply_hash_edits(original, ops)
     if not result.ok:

@@ -15,6 +15,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence, Set
 
+from .diag import note as _diag_note
 from .pilot import _parse_mcp_wire_name, build_tools_schema
 
 _TOKEN_RE = re.compile(r"[a-z0-9_]+")
@@ -43,8 +44,8 @@ def _core_always() -> Set[str]:
         from .hash_edit import hash_edit_enabled
         if hash_edit_enabled():
             core.add("hash_edit")
-    except Exception:
-        pass
+    except Exception as exc:
+        _diag_note("tool_discovery.core_always_hash_edit", exc)
     return core
 
 # Main interactive pilot extras that stay visible without activation.

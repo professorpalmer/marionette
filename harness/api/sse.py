@@ -31,6 +31,9 @@ from harness.diag import note as _diag_note
 _SSE_RING_CAP = 512
 _SSE_RING_TTL = 300.0  # seconds
 _SSE_RING_MAX_SESSIONS = 32
+# Soft cap prefers unpinned rings; hard cap force-evicts oldest (even pinned)
+# so a stuck-pin storm cannot grow the map without bound.
+_SSE_RING_HARD_MAX_SESSIONS = 64
 
 
 # 3.9-safe optional fields via TypedDict inheritance (NotRequired is 3.11+;
@@ -171,13 +174,26 @@ def _sse_ring_begin(session_id: str) -> SseEventRing:
                 _sse_rings.pop(key, None)
         ring = SseEventRing(sid, gen)
         _sse_rings[(sid, gen)] = ring
-        # Bound global ring count (oldest unpinned first). Never evict a ring
-        # whose pump is still live — temporary overshoot beats mid-turn
-        # ring_miss for a detached-busy session.
+        # Bound global ring count (oldest unpinned first). Prefer keeping pinned
+        # rings whose pump is still live — temporary soft overshoot beats a
+        # mid-turn ring_miss for a detached-busy session. Past the hard ceiling,
+        # force-evict the oldest entry regardless of pin.
+        new_key = (sid, gen)
         while len(_sse_rings) > _SSE_RING_MAX_SESSIONS:
             victim = None
             for key, existing in _sse_rings.items():
+                if key == new_key:
+                    continue
                 if not getattr(existing, "pinned", False):
+                    victim = key
+                    break
+            if victim is None:
+                break
+            _sse_rings.pop(victim, None)
+        while len(_sse_rings) > _SSE_RING_HARD_MAX_SESSIONS:
+            victim = None
+            for key in _sse_rings:
+                if key != new_key:
                     victim = key
                     break
             if victim is None:
@@ -259,6 +275,16 @@ def get_chat_events(
             current_gen = int(live_gen)
             if generation is not None and int(generation) != current_gen:
                 miss_code = "generation_mismatch"
+        # On generation_mismatch, surface the live ring's high-water cursor so
+        # the client can see how far ahead the new generation already is.
+        cursor = 0
+        if miss_code == "generation_mismatch" and current_gen:
+            live_ring = svc.ring_lookup(sid, current_gen)
+            if live_ring is not None:
+                try:
+                    cursor = int(live_ring.since(0).get("cursor") or 0)
+                except Exception:
+                    cursor = 0
         return 200, {
             "ok": False,
             "code": miss_code,
@@ -269,7 +295,7 @@ def get_chat_events(
                 current_gen if miss_code == "generation_mismatch"
                 else (generation if generation is not None else 0)
             ),
-            "cursor": 0,
+            "cursor": cursor,
             "events": [],
             "retained": 0,
         }
@@ -343,9 +369,12 @@ def sse_pump(
                 on_event(ev)
             if ring is not None:
                 try:
+                    # Match SseEventRing.append: only None becomes {}. Do not use
+                    # `or {}` — falsy-but-valid payloads (e.g. 0, "", False) must
+                    # round-trip; empty dict is already handled by append.
                     ring.append(
                         getattr(ev, "kind", "event"),
-                        getattr(ev, "data", None) or {},
+                        getattr(ev, "data", None),
                         getattr(ev, "turn", None),
                     )
                 except Exception as exc:

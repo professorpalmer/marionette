@@ -52,6 +52,20 @@ def test_stale_anchor_rejection(tmp_path):
     assert fpath.read_text(encoding="utf-8") == original
 
 
+def test_apply_hash_edits_to_file_rejects_non_utf8(tmp_path):
+    """Strict UTF-8: latin1/binary must not be rewritten via U+FFFD replace."""
+    fpath = tmp_path / "latin1.txt"
+    original = b"caf\xe9\n"  # 'café' in latin-1 — invalid UTF-8
+    fpath.write_bytes(original)
+    ops = [
+        HashEditOp(op="replace", anchor="deadbeef0000", start_line=1, end_line=1, text="x"),
+    ]
+    result = apply_hash_edits_to_file(str(fpath), ops)
+    assert not result.ok
+    assert "UTF-8" in result.message
+    assert fpath.read_bytes() == original
+
+
 def test_crlf_normalization(tmp_path):
     fpath = tmp_path / "crlf.txt"
     fpath.write_bytes(b"line one\r\nline two\r\n")

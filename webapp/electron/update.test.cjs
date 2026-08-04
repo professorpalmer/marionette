@@ -257,6 +257,21 @@ test("mergeFailureLooksLikeStaleIndex: detects recoverable updater merge failure
   assert.equal(bridge.mergeFailureLooksLikeStaleIndex("fatal: Not possible to fast-forward, aborting."), false);
 });
 
+test("parseOrphanedAutoUpdateStashRefs: selects only marionette-auto-update entries", () => {
+  const listed = [
+    "stash@{0}: On main: WIP on main: abc1234 wip",
+    "stash@{1}: On main: marionette-auto-update",
+    "stash@{2}: WIP on feat: marionette-auto-update leftover",
+    "",
+  ].join("\n");
+  assert.deepEqual(
+    bridge.parseOrphanedAutoUpdateStashRefs(listed),
+    ["stash@{1}", "stash@{2}"]
+  );
+  assert.deepEqual(bridge.parseOrphanedAutoUpdateStashRefs(""), []);
+  assert.deepEqual(bridge.parseOrphanedAutoUpdateStashRefs("stash@{0}: On main: other"), []);
+});
+
 test("readLiveUpdateMarker: live pid within age ceiling is reported", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "pmh-marker-"));
   marker.writeMarker(home, 4242, () => 1000_000);

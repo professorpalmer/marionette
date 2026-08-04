@@ -283,3 +283,31 @@ def test_search_state_visible_in_core_pilot():
     catalog.refresh()
     names = {t["function"]["name"] for t in catalog.visible_schema()}
     assert "search_state" in names
+
+
+def test_core_always_includes_hash_edit_when_enabled(monkeypatch):
+    from harness.tool_discovery import _core_always
+
+    monkeypatch.setenv("HARNESS_HASH_EDIT", "1")
+    assert "hash_edit" in _core_always()
+    monkeypatch.setenv("HARNESS_HASH_EDIT", "0")
+    assert "hash_edit" not in _core_always()
+
+
+def test_core_always_survives_hash_edit_import_failure(monkeypatch):
+    """Import failures must not drop the core set; diag note absorbs the error."""
+    import harness.tool_discovery as td
+    import sys
+    from types import ModuleType
+
+    monkeypatch.setenv("HARNESS_HASH_EDIT", "1")
+    boom = ModuleType("harness.hash_edit")
+
+    def _raise():
+        raise RuntimeError("simulated import failure")
+
+    boom.hash_edit_enabled = _raise  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "harness.hash_edit", boom)
+    core = td._core_always()
+    assert "read_file" in core
+    assert "hash_edit" not in core

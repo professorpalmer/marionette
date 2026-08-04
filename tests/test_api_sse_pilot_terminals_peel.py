@@ -80,6 +80,8 @@ def test_get_chat_events_ring_miss_and_generation_mismatch():
     assert mismatch["generation"] == 2
     assert mismatch["missed"] is True
     assert mismatch["available"] is False
+    # Live ring high-water cursor (not always 0) so clients see how far ahead.
+    assert mismatch["cursor"] == 1
 
 
 def test_get_chat_events_cursor_gap():
