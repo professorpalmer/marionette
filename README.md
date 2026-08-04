@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.172, deliberately pre-1.0. PTY session caps, hash_edit UTF-8 guards, SSE ring hard-caps, and orphaned updater-stash recovery (rides puppetmaster-ai==1.21.10).
+> Status: v0.9.173, deliberately pre-1.0. Audit round-5 Mode-Scoped honesty: multi-line finding bodies, shared promote rescue, analysis applied=False, shared reasoning helper (rides puppetmaster-ai==1.21.10).
 
 ## Documentation
 
