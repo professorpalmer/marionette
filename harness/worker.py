@@ -405,8 +405,10 @@ _ANALYSIS_SIGNAL_LINE_RE = re.compile(
     r"^(FINDING|RISK|DECISION)\s*:",
     re.IGNORECASE | re.MULTILINE,
 )
+# Label-start matcher (no content capture). Used so continuation lines after a
+# labelled first line stay attached until the next FINDING/RISK/DECISION label.
 _ANALYSIS_SIGNAL_EXTRACT_RE = re.compile(
-    r"^(?:Last assistant message:\s*)?(FINDING|RISK|DECISION)\s*:\s*(.*)$",
+    r"^(?:Last assistant message:\s*)?(FINDING|RISK|DECISION)\s*:\s*",
     re.IGNORECASE | re.MULTILINE,
 )
 _ANALYSIS_SIGNAL_HEADLINE_CAP = 240
@@ -415,8 +417,12 @@ _ANALYSIS_SIGNAL_HEADLINE_CAP = 240
 def parse_analysis_signal_rows(text: str) -> list:
     """Extract typed FINDING/RISK/DECISION rows from free-text analysis output.
 
-    Returns a list of ``{"type": "finding"|"risk"|"decision", "headline": "..."}``
-    dicts. Headline is the rest of the labelled line, trimmed, length-capped.
+    Returns a list of
+    ``{"type": "finding"|"risk"|"decision", "headline": "...", "body": "..."}``
+    dicts. Headline is the first line of the labelled content, trimmed and
+    length-capped. Body is the full multi-line signal content (first-line
+    remainder plus continuation lines until the next typed label or EOF), so a
+    coerced multi-paragraph ``FINDING:`` keeps paragraphs 2+.
     Accepts both bare ``FINDING:`` lines and the worker summary wrapper
     ``Last assistant message: FINDING: ...``.
     """
@@ -425,14 +431,23 @@ def parse_analysis_signal_rows(text: str) -> list:
         body = text or ""
     except Exception:
         return rows
-    for match in _ANALYSIS_SIGNAL_EXTRACT_RE.finditer(body):
+    matches = list(_ANALYSIS_SIGNAL_EXTRACT_RE.finditer(body))
+    for index, match in enumerate(matches):
         kind = (match.group(1) or "").strip().lower()
         if kind not in ("finding", "risk", "decision"):
             continue
-        headline = (match.group(2) or "").strip()
+        content_start = match.end()
+        content_end = (
+            matches[index + 1].start() if index + 1 < len(matches) else len(body)
+        )
+        content = body[content_start:content_end].strip()
+        if not content:
+            continue
+        first_line = content.split("\n", 1)[0].strip()
+        headline = first_line
         if len(headline) > _ANALYSIS_SIGNAL_HEADLINE_CAP:
             headline = headline[: _ANALYSIS_SIGNAL_HEADLINE_CAP - 1] + "…"
-        rows.append({"type": kind, "headline": headline})
+        rows.append({"type": kind, "headline": headline, "body": content})
     return rows
 
 

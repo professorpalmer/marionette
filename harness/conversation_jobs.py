@@ -70,7 +70,9 @@ def _analysis_signal_rows_for_job(res, summary_text: str) -> list:
     """Typed finding/risk/decision rows for an analysis job result.
 
     Prefers ``WorkerResult.findings`` when present; otherwise parses FINDING/
-    RISK/DECISION labels from the worker summary text.
+    RISK/DECISION labels from the worker summary text. Passes through ``body``
+    (full multi-line signal) when present so coerced findings keep paragraphs
+    beyond the capped headline.
     """
     rows: list = []
     try:
@@ -85,7 +87,12 @@ def _analysis_signal_rows_for_job(res, summary_text: str) -> list:
                 headline = str(item.get("headline") or "").strip()
                 if not headline:
                     continue
-                rows.append({"type": kind, "headline": headline})
+                body = str(item.get("body") or "").strip() or headline
+                rows.append({
+                    "type": kind,
+                    "headline": headline,
+                    "body": body,
+                })
     except Exception:
         rows = []
     if rows:
@@ -592,7 +599,11 @@ class ConversationJobsMixin:
                             "type": row["type"],
                             "payload": {
                                 "claim": row.get("headline") or "",
-                                "report": row.get("headline") or "",
+                                "report": (
+                                    row.get("body")
+                                    or row.get("headline")
+                                    or ""
+                                ),
                             },
                         }
                         for row in signal_rows
@@ -601,6 +612,11 @@ class ConversationJobsMixin:
                         {
                             "type": row["type"],
                             "headline": row.get("headline") or "",
+                            "body": (
+                                row.get("body")
+                                or row.get("headline")
+                                or ""
+                            ),
                         }
                         for row in signal_rows
                     ]

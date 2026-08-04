@@ -120,7 +120,117 @@ def test_parse_analysis_signal_rows_extracts_typed_labels():
     assert "token refresh" in rows[0]["headline"]
     assert "cookie jar" in rows[1]["headline"]
     assert "typed labels" in rows[2]["headline"]
+    # Single-line signals: body matches the uncapped first-line content.
+    assert rows[0]["body"] == rows[0]["headline"]
+    assert rows[1]["body"] == rows[1]["headline"]
+    assert "typed labels" in rows[2]["body"]
     assert parse_analysis_signal_rows("The auth module looks fine overall.") == []
+
+
+def test_parse_analysis_signal_rows_keeps_multiline_coerced_finding_body():
+    """coerce→parse must not drop paragraphs after the FINDING first line."""
+    paragraph_1 = (
+        "harness/worker.py:483 coerce_unlabeled_analysis_prose prefixes "
+        "FINDING onto multi-line prose."
+    )
+    paragraph_2 = (
+        "parse_analysis_signal_rows was line-anchored and kept only the "
+        "first line as the finding headline."
+    )
+    paragraph_3 = (
+        "Job artifacts must retain paragraphs 2 and 3 in the signal body "
+        "and payload.report so the full audit text is not truncated."
+    )
+    prose = f"{paragraph_1}\n\n{paragraph_2}\n\n{paragraph_3}"
+    coerced = coerce_unlabeled_analysis_prose(prose)
+    assert coerced.startswith("FINDING: ")
+    assert paragraph_2 in coerced and paragraph_3 in coerced
+
+    rows = parse_analysis_signal_rows(coerced)
+    assert len(rows) == 1
+    assert rows[0]["type"] == "finding"
+    assert paragraph_1 in rows[0]["headline"]
+    assert "\n" not in rows[0]["headline"]
+    assert paragraph_2 in rows[0]["body"]
+    assert paragraph_3 in rows[0]["body"]
+    assert rows[0]["body"].startswith(paragraph_1)
+
+
+def test_parse_analysis_signal_rows_accepts_last_assistant_message_wrapper():
+    text = (
+        "Last assistant message: FINDING: first paragraph cites "
+        "harness/auth.py:42\n"
+        "\n"
+        "Second paragraph elaborates the expiry race.\n"
+        "\n"
+        "Third paragraph recommends a typed label contract."
+    )
+    rows = parse_analysis_signal_rows(text)
+    assert len(rows) == 1
+    assert rows[0]["type"] == "finding"
+    assert "first paragraph" in rows[0]["headline"]
+    assert "Second paragraph" in rows[0]["body"]
+    assert "Third paragraph" in rows[0]["body"]
+
+
+def test_analysis_signal_rows_for_job_puts_body_in_report():
+    """WorkerResult.findings body must land in job artifact payload.report."""
+    from harness.conversation_jobs import _analysis_signal_rows_for_job
+
+    class _Res:
+        findings = [
+            {
+                "type": "finding",
+                "headline": "paragraph one cites harness/worker.py:483",
+                "body": (
+                    "paragraph one cites harness/worker.py:483\n\n"
+                    "paragraph two explains the truncate bug.\n\n"
+                    "paragraph three is the remediation note."
+                ),
+            }
+        ]
+
+    rows = _analysis_signal_rows_for_job(_Res(), summary_text="")
+    assert len(rows) == 1
+    assert rows[0]["headline"] == "paragraph one cites harness/worker.py:483"
+    assert "paragraph two" in rows[0]["body"]
+    assert "paragraph three" in rows[0]["body"]
+
+    # Mirror the job-artifact mapping used when expects_diff=False succeeds.
+    artifacts = [
+        {
+            "type": row["type"],
+            "payload": {
+                "claim": row.get("headline") or "",
+                "report": row.get("body") or row.get("headline") or "",
+            },
+        }
+        for row in rows
+    ]
+    report = artifacts[0]["payload"]["report"]
+    assert artifacts[0]["payload"]["claim"] == rows[0]["headline"]
+    assert "paragraph two" in report
+    assert "paragraph three" in report
+
+
+def test_analysis_signal_rows_for_job_fallback_parse_preserves_body():
+    from harness.conversation_jobs import _analysis_signal_rows_for_job
+
+    class _Res:
+        findings = []
+
+    summary = (
+        "FINDING: first line of coerced finding at harness/keys.py:12\n"
+        "\n"
+        "Second paragraph remains visible in the job report.\n"
+        "\n"
+        "Third paragraph must not be dropped by the summary fallback path."
+    )
+    rows = _analysis_signal_rows_for_job(_Res(), summary_text=summary)
+    assert len(rows) == 1
+    assert "first line" in rows[0]["headline"]
+    assert "Second paragraph" in rows[0]["body"]
+    assert "Third paragraph" in rows[0]["body"]
 
 
 def test_analysis_mode_gate_crash_does_not_early_halt(monkeypatch):
