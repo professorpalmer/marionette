@@ -625,9 +625,12 @@ class ConversationJobsMixin:
                         for row in signal_rows
                         if row.get("type")
                     })
+                    # applied means patch landed — analysis accepts findings with
+                    # no diff. analysis_ok keeps drain/resume from treating that
+                    # as a failed apply (empty files + applied=False).
                     res_dict = {
                         "job_id": job_id,
-                        "applied": True,
+                        "applied": False if not expects_diff else True,
                         "files": [],
                         "tokens_in": tokens_in,
                         "tokens_out": tokens_out,
@@ -641,6 +644,8 @@ class ConversationJobsMixin:
                         "artifact_types": artifact_types,
                         "ar_list": ar_list,
                     }
+                    if not expects_diff:
+                        res_dict["analysis_ok"] = True
             else:
                 artifacts = []
                 artifacts.append({
@@ -939,9 +944,12 @@ class ConversationJobsMixin:
                     if provenance_text and provenance_text not in summary:
                         summary = f"{provenance_text}\n{summary}".strip()
                     held_for_review = bool(res_job.get("held_for_review"))
+                    # Green analysis: applied=False by design (no patch). Do not
+                    # conflate findings-accepted with failed apply for resume-cap.
+                    analysis_ok = bool(res_job.get("analysis_ok")) and not res_job.get("error")
                     failed = bool(
                         res_job.get("error")
-                        or (not applied and not held_for_review)
+                        or (not applied and not held_for_review and not analysis_ok)
                     )
 
                     if failed:
@@ -1040,9 +1048,16 @@ class ConversationJobsMixin:
 
                     # Track failed/degraded outcomes for keep-alive resume capping.
                     degraded = bool(res_job.get("degraded"))
-                    if not degraded and not failed and not (applied_files or []):
+                    if (
+                        not degraded
+                        and not failed
+                        and not analysis_ok
+                        and not (applied_files or [])
+                    ):
                         # Empty-diff "success" with no substantive summary is
-                        # treated as degraded for resume-cap purposes.
+                        # treated as degraded for resume-cap purposes. Green
+                        # analysis (analysis_ok) already passed the substantive
+                        # gate at produce time — do not re-degrade it here.
                         try:
                             from harness.pilot_guards import analysis_summary_is_substantive
                             if not analysis_summary_is_substantive(summary or ""):

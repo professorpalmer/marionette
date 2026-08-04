@@ -134,7 +134,7 @@ def test_run_parallel_provider_default(monkeypatch):
 
 
 def test_run_parallel_analysis_empty_diff_applied(monkeypatch):
-    """mode=analysis with substantive empty-diff findings -> green applied."""
+    """mode=analysis with substantive empty-diff findings -> green, not applied."""
     import time
 
     repo_dir = create_temp_git_repo()
@@ -194,8 +194,11 @@ def test_run_parallel_analysis_empty_diff_applied(monkeypatch):
         swarm_results = [e for e in drain_events if e.kind == "swarm_result"]
         assert len(swarm_results) == 1
         res = swarm_results[0].data["result"]
-        assert res["applied"] is True
+        # Findings-accepted is not patch-applied.
+        assert res["applied"] is False
+        assert res.get("analysis_ok") is True
         assert res.get("error") in (None, "")
+        assert res.get("degraded") is not True
         assert res.get("has_patch_art") is False
         assert "harness/auth.py" in (res.get("summary") or "")
         ar_list = res.get("ar_list") or []
@@ -206,6 +209,12 @@ def test_run_parallel_analysis_empty_diff_applied(monkeypatch):
             for row in ar_list
         )
         assert "finding" in (res.get("artifact_types") or [])
+        # Drain must not treat analysis success as FAILED apply.
+        assert "FAILED" not in (swarm_results[0].data.get("message") or "")
+        assert not any(
+            m["role"] == "user" and "FAILED" in m["content"]
+            for m in session._history
+        )
 
         with session._local_jobs_lock:
             job = session._local_jobs.get(job_id)
@@ -290,7 +299,9 @@ def test_run_parallel_analysis_discards_seed_patch_persists_findings(monkeypatch
         swarm_results = [e for e in drain_events if e.kind == "swarm_result"]
         assert len(swarm_results) == 1
         res = swarm_results[0].data["result"]
-        assert res["applied"] is True
+        assert res["applied"] is False
+        assert res.get("analysis_ok") is True
+        assert res.get("error") in (None, "")
         assert res.get("files") in ([], None)
         assert res.get("has_patch_art") is False
         assert "patch" not in (res.get("artifact_types") or [])
@@ -301,6 +312,7 @@ def test_run_parallel_analysis_discards_seed_patch_persists_findings(monkeypatch
             and "token refresh" in (row.get("headline") or "")
             for row in ar_list
         ), ar_list
+        assert "FAILED" not in (swarm_results[0].data.get("message") or "")
 
         with session._local_jobs_lock:
             job = session._local_jobs.get(job_id)

@@ -89,7 +89,9 @@ def test_drain_success_keepalive_nudges_redispatch_not_inline_explore():
         "job_id": "analysis-thin",
         "objective": "audit auth",
         "result": {
-            "applied": True,
+            # Analysis success: no patch applied; analysis_ok marks findings-accepted.
+            "applied": False,
+            "analysis_ok": True,
             "files": [],
             "summary": "Successfully completed analysis task",
             "error": None,
@@ -103,6 +105,7 @@ def test_drain_success_keepalive_nudges_redispatch_not_inline_explore():
     ]
     assert resume
     text = resume[0]["content"]
+    assert "FAILED" not in text
     assert "read-only analysis swarm" in text
     assert "re-dispatch a narrowed run_swarm" in text
     assert "list_dir/search_files/grep/read sweeps" in text
@@ -134,3 +137,39 @@ def test_drain_applied_false_without_error_still_failed():
         m["role"] == "user" and "FAILED" in m["content"] and "do not pretend" in m["content"].lower()
         for m in s._history
     )
+
+
+def test_drain_analysis_ok_empty_files_not_failed_apply():
+    """expects_diff=False success: applied=False + analysis_ok is not a failed apply."""
+    s = _session()
+    finding = (
+        "FINDING: race in harness/send_loop.py:412 — busy lock leaked after interrupt"
+    )
+    s._swarm_results.put({
+        "job_id": "analysis-ok",
+        "objective": "audit send loop",
+        "result": {
+            "applied": False,
+            "analysis_ok": True,
+            "files": [],
+            "summary": finding,
+            "error": None,
+            "has_patch_art": False,
+            "ar_list": [{"type": "finding", "headline": finding}],
+            "artifact_types": ["finding"],
+        },
+    })
+    events = list(s.drain_swarm_results())
+    swarm = [e for e in events if e.kind == "swarm_result"]
+    assert len(swarm) == 1
+    assert "FAILED" not in (swarm[0].data.get("message") or "")
+    assert any(
+        m["role"] == "assistant"
+        and "[swarm result for: audit send loop]" in m["content"]
+        for m in s._history
+    )
+    assert not any(
+        m["role"] == "user" and "FAILED" in m["content"]
+        for m in s._history
+    )
+    assert any(e.kind == "pilot_resume" for e in events)
