@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from harness.api.jobs import JobServices, get_artifacts, post_swarm_cancel
+from harness.api.jobs import make_job_services, get_artifacts, post_swarm_cancel
 from harness.api.sessions import handle_session_delete, remove_session_transcript
 from harness.api.workspace import _persistable_recent_path, record_recent_workspace
 from harness.server import _job_status_is_terminal
@@ -18,31 +18,13 @@ def _noop(*_a, **_k):
     return None
 
 
-def _job_services(*, get_pilot, get_session, cfg_repo: str = "/repo") -> JobServices:
-    return JobServices(
+def _job_services(*, get_pilot, get_session, cfg_repo: str = "/repo"):
+    return make_job_services(
         cfg=SimpleNamespace(repo=cfg_repo),
         sessions=SimpleNamespace(),
         get_pilot=get_pilot,
         get_session=get_session,
         diag=_noop,
-        scoped_jobs_snapshot=lambda **_k: [],
-        scoped_jobs_with_stores=lambda **_k: ([], None, None),
-        retry_on_locked=lambda fn: fn(),
-        swarm_registry=lambda: [],
-        job_status_is_terminal=lambda _s: False,
-        slim_swarm_list_artifacts=lambda *_a, **_k: [],
-        job_swarm_accounting=lambda *_a, **_k: (0, 0, 0),
-        task_swarm_accounting=lambda *_a, **_k: {},
-        routing_saved_usd=lambda *_a, **_k: 0.0,
-        cache_saved_usd_swarm=lambda *_a, **_k: 0.0,
-        tokens_cached_swarm=lambda *_a, **_k: 0,
-        job_dead_run_failure=lambda *_a, **_k: None,
-        job_savings_fields=lambda *_a, **_k: {},
-        repo_session_stamped_meters=lambda *_a, **_k: {},
-        session_cost_split=lambda *_a, **_k: 0.0,
-        cache_savings=lambda *_a, **_k: 0.0,
-        tool_output_savings_fields=lambda *_a, **_k: {},
-        cost_source_label=lambda *_a, **_k: "",
     )
 
 

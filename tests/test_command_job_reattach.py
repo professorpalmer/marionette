@@ -135,13 +135,15 @@ def test_finish_is_idempotent_first_terminal_wins(session):
 
 def test_late_worker_result_cannot_reopen_terminal_child(session):
     sess, state_dir, repo = session
+    # Use a long-running command so a fast CI host cannot settle the worker
+    # as "completed" before this test cancels the row (echo raced on Ubuntu).
     sess._register_command_job(
         "local-cmd-late",
-        command="echo late",
+        command="sleep 30",
         action_id="a-late",
         cwd=repo,
     )
-    assert launch_registered_command_job(sess, "local-cmd-late", "echo late", repo) is True
+    assert launch_registered_command_job(sess, "local-cmd-late", "sleep 30", repo) is True
     # Simulate cancel settling the row before the worker returns.
     sess._finish_command_job(
         "local-cmd-late",
@@ -151,7 +153,7 @@ def test_late_worker_result_cannot_reopen_terminal_child(session):
         output="",
     )
     # Late launch / late finish must both refuse.
-    assert launch_registered_command_job(sess, "local-cmd-late", "echo late", repo) is False
+    assert launch_registered_command_job(sess, "local-cmd-late", "sleep 30", repo) is False
     assert sess._finish_command_job(
         "local-cmd-late",
         status="completed",
@@ -163,6 +165,11 @@ def test_late_worker_result_cannot_reopen_terminal_child(session):
     assert job["status"] == "cancelled"
     assert job["terminal_receipt"]["status"] == "cancelled"
     assert command_job_recovery_state(job) == "terminal"
+    # Best-effort: trip the cancel event so the sleep worker exits promptly.
+    cancels = getattr(sess, "_local_job_cancels", None) or {}
+    ev = cancels.get("local-cmd-late")
+    if ev is not None:
+        ev.set()
 
 
 def test_restart_preserves_terminal_and_heals_unfinished(session):

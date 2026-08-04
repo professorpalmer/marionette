@@ -272,6 +272,40 @@ test("parseOrphanedAutoUpdateStashRefs: selects only marionette-auto-update entr
   assert.deepEqual(bridge.parseOrphanedAutoUpdateStashRefs("stash@{0}: On main: other"), []);
 });
 
+test("recoverOrphanedAutoUpdateStashes: reapplies a real git stash from a crash window", async () => {
+  const { execFileSync } = require("node:child_process");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pmh-orphan-stash-"));
+  const git = (args) =>
+    execFileSync("git", ["-C", dir, ...args], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "Marionette Test",
+        GIT_AUTHOR_EMAIL: "test@marionette.local",
+        GIT_COMMITTER_NAME: "Marionette Test",
+        GIT_COMMITTER_EMAIL: "test@marionette.local",
+      },
+    });
+  git(["init"]);
+  git(["config", "user.email", "test@marionette.local"]);
+  git(["config", "user.name", "Marionette Test"]);
+  fs.writeFileSync(path.join(dir, "tracked.txt"), "base\n");
+  git(["add", "tracked.txt"]);
+  git(["commit", "-m", "init"]);
+  fs.writeFileSync(path.join(dir, "tracked.txt"), "self-edit\n");
+  git(["stash", "push", "-u", "-m", "marionette-auto-update"]);
+  // Clean tree + orphaned stash = the crash window after stash push.
+  assert.equal(fs.readFileSync(path.join(dir, "tracked.txt"), "utf8"), "base\n");
+  const listed = git(["stash", "list"]);
+  assert.match(listed, /marionette-auto-update/);
+
+  const result = await bridge.recoverOrphanedAutoUpdateStashes(dir);
+  assert.equal(result.recovered, 1);
+  assert.equal(result.conflicts, 0);
+  assert.equal(fs.readFileSync(path.join(dir, "tracked.txt"), "utf8"), "self-edit\n");
+  assert.equal(git(["stash", "list"]).trim(), "");
+});
+
 test("readLiveUpdateMarker: live pid within age ceiling is reported", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "pmh-marker-"));
   marker.writeMarker(home, 4242, () => 1000_000);

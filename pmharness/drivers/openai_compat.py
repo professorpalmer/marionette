@@ -80,7 +80,36 @@ class OpenAICompatDriver:
             raise RuntimeError(f"missing API key in env var {self.api_key_env}")
         return key
 
-    def _pool_rotate_on_http_error(self, code: int, detail: str) -> str | None:
+    def _pool_rotate_backoff(
+        self,
+        code: int,
+        detail: str,
+        *,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        """Pause after a pool rotate so the next key is not stampeded immediately.
+
+        Rate limits honor Retry-After (capped); other rotate-eligible codes take
+        a short fixed pause. Classification comes from error_classifier so the
+        rotate path does not invent its own retry policy.
+        """
+        from . import error_classifier
+
+        err_class = error_classifier.classify(code, detail)
+        if err_class == error_classifier.ErrorClass.RATE_LIMIT:
+            retry_after = error_classifier.parse_retry_after(detail)
+            delay = float(retry_after) if retry_after is not None else 1.0
+            sleep(min(max(delay, 0.5), 20.0))
+            return
+        sleep(0.25)
+
+    def _pool_rotate_on_http_error(
+        self,
+        code: int,
+        detail: str,
+        *,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> str | None:
         """On 429 plan-limit / 402 / auth fail, rotate pool and return next key."""
         if not self._pool_provider or not self._pool_entry_id:
             return None
@@ -95,6 +124,7 @@ class OpenAICompatDriver:
                 message=detail or "",
             )
             if nxt:
+                self._pool_rotate_backoff(code, detail, sleep=sleep)
                 # Re-select so _pool_entry_id tracks the new entry
                 self._key()
                 return nxt

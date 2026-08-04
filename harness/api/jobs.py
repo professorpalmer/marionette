@@ -14,7 +14,11 @@ from typing import Any, Callable
 
 @dataclass
 class JobServices:
-    """Explicit deps for jobs/swarm HTTP handlers (injected by ``server.py``)."""
+    """Explicit deps for jobs/swarm HTTP handlers (injected by ``server.py``).
+
+    Prefer :func:`make_job_services` in tests — it fills accounting/cost callables
+    with inert defaults so handlers can be exercised without a 20-field stub.
+    """
 
     cfg: Any
     sessions: Any
@@ -43,6 +47,48 @@ class JobServices:
     routing_saved_usd_detail: Callable[..., dict] | None = None
     delegation_saved_usd_detail: Callable[..., dict] | None = None
     cache_saved_usd_swarm_detail: Callable[..., dict] | None = None
+
+
+def make_job_services(**overrides: Any) -> JobServices:
+    """Build a :class:`JobServices` with inert defaults for unit tests.
+
+    Pass only the deps a test cares about (e.g. ``get_pilot``, ``get_session``);
+    accounting and cost callables default to zero/empty no-ops.
+    """
+
+    def _noop(*_a: Any, **_k: Any) -> None:
+        return None
+
+    defaults: dict = {
+        "cfg": None,
+        "sessions": None,
+        "get_pilot": lambda: None,
+        "get_session": lambda: None,
+        "diag": _noop,
+        "scoped_jobs_snapshot": lambda **_k: [],
+        "scoped_jobs_with_stores": lambda **_k: ([], None, None),
+        "retry_on_locked": lambda fn: fn(),
+        "swarm_registry": lambda: [],
+        "job_status_is_terminal": lambda _s: False,
+        "slim_swarm_list_artifacts": lambda *_a, **_k: [],
+        "job_swarm_accounting": lambda *_a, **_k: (0, 0, 0),
+        "task_swarm_accounting": lambda *_a, **_k: {},
+        "routing_saved_usd": lambda *_a, **_k: 0.0,
+        "cache_saved_usd_swarm": lambda *_a, **_k: 0.0,
+        "tokens_cached_swarm": lambda *_a, **_k: 0,
+        "job_dead_run_failure": lambda *_a, **_k: None,
+        "job_savings_fields": lambda *_a, **_k: {},
+        "repo_session_stamped_meters": lambda *_a, **_k: {},
+        "session_cost_split": lambda *_a, **_k: 0.0,
+        "cache_savings": lambda *_a, **_k: 0.0,
+        "tool_output_savings_fields": lambda *_a, **_k: {},
+        "cost_source_label": lambda *_a, **_k: "",
+        "routing_saved_usd_detail": None,
+        "delegation_saved_usd_detail": None,
+        "cache_saved_usd_swarm_detail": None,
+    }
+    defaults.update(overrides)
+    return JobServices(**defaults)
 
 
 def post_swarm_cancel(body: dict, svc: JobServices) -> tuple[int, dict]:

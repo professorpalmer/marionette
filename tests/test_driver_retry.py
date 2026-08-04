@@ -177,3 +177,49 @@ def test_openai_driver_chat_stream_no_retry_after_delta(monkeypatch):
     assert resp.error is not None
     assert "HTTP 503" in resp.error
     assert resp.meta.get("retry_attempts") == 1
+
+
+def test_pool_rotate_backoff_honors_retry_after_and_classifier():
+    driver = OpenAICompatDriver(
+        name="test-driver",
+        model="gpt-4o",
+        base_url="https://api.openai.com/v1",
+        api_key_env="OPENAI_API_KEY",
+    )
+    sleeps = []
+    driver._pool_rotate_backoff(
+        429,
+        "rate limited; retry-after: 3",
+        sleep=sleeps.append,
+    )
+    assert sleeps == [3.0]
+
+    sleeps.clear()
+    driver._pool_rotate_backoff(401, "invalid api key", sleep=sleeps.append)
+    assert sleeps == [0.25]
+
+
+def test_pool_rotate_on_http_error_sleeps_before_returning_next_key(monkeypatch):
+    driver = OpenAICompatDriver(
+        name="test-driver",
+        model="gpt-4o",
+        base_url="https://api.openai.com/v1",
+        api_key_env="OPENAI_API_KEY",
+    )
+    driver._pool_provider = "openrouter"
+    driver._pool_entry_id = "entry-a"
+    sleeps = []
+
+    monkeypatch.setattr(
+        "harness.credential_pool.report_failure",
+        lambda *_a, **_k: "sk-next",
+    )
+    monkeypatch.setattr(driver, "_key", lambda: "sk-next")
+
+    nxt = driver._pool_rotate_on_http_error(
+        429,
+        "retry-after: 2",
+        sleep=sleeps.append,
+    )
+    assert nxt == "sk-next"
+    assert sleeps == [2.0]
