@@ -21,6 +21,7 @@ trusts the model to stop itself; it is enforced by the loop around the model.
 """
 
 import os
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -56,12 +57,16 @@ class AutoBudget:
         default=None, repr=False, compare=False
     )
 
+    def __post_init__(self) -> None:
+        self._lock = threading.Lock()
+
     def start(self) -> "AutoBudget":
-        self.started_at = time.time()
-        self.tokens_used = 0
-        self.swarms_used = 0
-        self.idle_steps = 0
-        self._halted_reason = None
+        with self._lock:
+            self.started_at = time.time()
+            self.tokens_used = 0
+            self.swarms_used = 0
+            self.idle_steps = 0
+            self._halted_reason = None
         return self
 
     @property
@@ -70,16 +75,19 @@ class AutoBudget:
 
     def add_tokens(self, n: int) -> None:
         amount = max(0, int(n or 0))
-        self.tokens_used += amount
-        # Roll spend up the spawn tree so nested sub-agents share ONE ceiling
-        # that never resets. Walk parents defensively (a mis-wired cycle would
-        # otherwise loop forever).
-        node = self.parent
-        seen = {id(self)}
-        while node is not None and id(node) not in seen:
-            node.tokens_used += amount
-            seen.add(id(node))
-            node = node.parent
+        with self._lock:
+            self.tokens_used += amount
+            # Roll spend up the spawn tree so nested sub-agents share ONE ceiling
+            # that never resets. Walk parents defensively (a mis-wired cycle would
+            # otherwise loop forever). Lock each parent before mutating it so a
+            # concurrent sibling cannot lose an update.
+            node = self.parent
+            seen = {id(self)}
+            while node is not None and id(node) not in seen:
+                with node._lock:
+                    node.tokens_used += amount
+                seen.add(id(node))
+                node = node.parent
 
     def add_swarm(self) -> None:
         self.swarms_used += 1

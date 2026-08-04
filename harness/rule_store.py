@@ -133,6 +133,16 @@ class RuleStore:
                         r["text"] = text.strip() or r.get("text", "")
                     if scope is not None:
                         r["scope"] = scope.strip() or r.get("scope", "global")
+                    new_slug = _slug(r["text"])
+                    if new_slug != slug:
+                        # Slug changed due to text update. Remove any other rule
+                        # that already occupies the new slug to prevent collisions.
+                        rules = [
+                            rr for rr in rules
+                            if not (
+                                _slug(rr.get("text", "")) == new_slug and rr is not r
+                            )
+                        ]
                     hit = Rule(**r)
                     break
             if not hit:

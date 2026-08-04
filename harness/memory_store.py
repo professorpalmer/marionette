@@ -83,12 +83,16 @@ class MemoryStore:
             return False
 
     def update(self, entry_id: str, text: str) -> bool:
+        normalized = text.strip()
+        if not normalized:
+            # Whitespace-only text is a no-op: nothing to save, return False.
+            return False
         with self._lock:
             entries = self._load()
             hit = False
             for e in entries:
                 if e.get("id") == entry_id:
-                    e["text"] = text
+                    e["text"] = normalized[:MEMORY_CHAR_LIMIT]
                     hit = True
             if hit:
                 self._save(entries)

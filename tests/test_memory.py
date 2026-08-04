@@ -94,6 +94,43 @@ def test_memory_store_crud(tmp_path):
     assert count == 1
     assert len(store.list()) == 0
 
+def test_memory_store_update_whitespace_only_is_noop(tmp_path):
+    """Whitespace-only update text must not overwrite or create a save."""
+    path = tmp_path / "memory.json"
+    store = MemoryStore(path=str(path))
+    entry = store.add("Keep me", category="preference", source="user")
+
+    ok = store.update(entry.id, "   \n\t   ")
+    assert not ok
+    entries = store.list()
+    assert len(entries) == 1
+    assert entries[0].text == "Keep me"
+
+    # A non-existent id with whitespace-only text is also a no-op.
+    assert not store.update("no_such_id", "   ")
+    assert len(store.list()) == 1
+
+
+def test_memory_store_update_truncates_over_limit(tmp_path):
+    """Over-limit update text is truncated to MEMORY_CHAR_LIMIT."""
+    path = tmp_path / "memory.json"
+    store = MemoryStore(path=str(path))
+    entry = store.add("short", category="preference", source="user")
+
+    long_text = "x" * (MEMORY_CHAR_LIMIT + 500)
+    ok = store.update(entry.id, long_text)
+    assert ok
+    updated = store.list()[0]
+    assert len(updated.text) == MEMORY_CHAR_LIMIT
+    assert updated.text == "x" * MEMORY_CHAR_LIMIT
+
+    # Whitespace around the payload is stripped before truncation applies.
+    entry2 = store.add("second")
+    padded = "  " + "y" * (MEMORY_CHAR_LIMIT + 10) + "  "
+    assert store.update(entry2.id, padded)
+    assert len(store.list()[1].text) == MEMORY_CHAR_LIMIT
+    assert store.list()[1].text == "y" * MEMORY_CHAR_LIMIT
+
 
 def test_render_block(tmp_path):
     path = tmp_path / "memory.json"

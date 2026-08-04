@@ -505,3 +505,49 @@ def test_public_receipt_omits_spill_path(session):
     # Nested terminal_receipt must also stay path-free.
     term = pub.get("terminal_receipt") or {}
     assert "spill_path" not in term
+
+
+def test_auto_guard_classify_error_blocks_job(session):
+    """When classify_command raises in the full-auto danger gate, the job
+    must be marked failed and run_cancellable must NEVER be called (fail-
+    closed, not fail-open)."""
+    from harness.command_jobs import _run_registered_command_job
+
+    sess, state_dir, repo = session
+
+    sess._auto_mode = True
+    sess._auto_command_guard = True
+    sess._register_command_job(
+        "local-cmd-guard-err",
+        command="echo hello",
+        action_id="a-guard-err",
+        cwd=repo,
+    )
+
+    called_run_cancellable = []
+
+    def _track_run(cmd, **kwargs):
+        called_run_cancellable.append(cmd)
+        return ("", 0, "ok")
+
+    with patch(
+        "harness.command_policy.classify_command",
+        side_effect=RuntimeError("simulated classify failure"),
+    ), patch(
+        "harness.command_policy.run_cancellable",
+        side_effect=_track_run,
+    ):
+        _run_registered_command_job(sess, "local-cmd-guard-err", None, repo)
+
+    # Must never have called run_cancellable (fail-closed).
+    assert called_run_cancellable == []
+
+    job = sess.get_local_job("local-cmd-guard-err")
+    assert job is not None
+    assert job["status"] == "failed"
+    # _finish_command_job stores the summary in the terminal_receipt (and as the
+    # artifact headline), not as a top-level job["summary"] key.
+    receipt = job.get("terminal_receipt") or {}
+    assert "BLOCKED: auto guard error:" in receipt.get("summary", "")
+    assert "simulated classify failure" in receipt.get("summary", "")
+    assert job.get("exit_code") == -1

@@ -125,7 +125,7 @@ class SkillStore:
         self.root = Path(root) if root else SKILLS_DIR
         for st in STATES:
             (self.root / st).mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     def _path(self, state: str, slug: str) -> Path:
         # SECURITY: sanitize on the lookup path, not just on create. The server
@@ -203,55 +203,58 @@ class SkillStore:
     def set_state(self, slug: str, state: str) -> Optional[Skill]:
         if state not in STATES:
             raise ValueError(f"bad state: {state}")
-        sk = self.get(slug)
-        if not sk:
-            return None
+        with self._lock:
+            sk = self.get(slug)
+            if not sk:
+                return None
 
-        if state == "active" and getattr(sk, "supersedes", ""):
-            orig_slug = sk.supersedes
-            orig_sk = self.get(orig_slug)
-            if orig_sk:
-                orig_sk.body = sk.body
-                orig_sk.description = sk.description
-                orig_sk.name = sk.name
-                orig_sk.source = sk.source
-                self.save(orig_sk)
-                p_patch = self._find(slug)
-                if p_patch:
-                    p_patch.unlink()
-                return orig_sk
+            if state == "active" and getattr(sk, "supersedes", ""):
+                orig_slug = sk.supersedes
+                orig_sk = self.get(orig_slug)
+                if orig_sk:
+                    orig_sk.body = sk.body
+                    orig_sk.description = sk.description
+                    orig_sk.name = sk.name
+                    orig_sk.source = sk.source
+                    self.save(orig_sk)
+                    p_patch = self._find(slug)
+                    if p_patch:
+                        p_patch.unlink()
+                    return orig_sk
 
-        sk.state = state
-        self.save(sk)
-        return sk
+            sk.state = state
+            self.save(sk)
+            return sk
 
     def propose_update(self, slug: str, new_body: str, new_name: str = "", new_description: str = "", source: str = "") -> Skill:
-        existing = self.get(slug)
-        if not existing:
-            raise ValueError(f"Skill not found: {slug}")
-        # Always supersede the ROOT skill, never chain patch-of-a-patch (which
-        # would grow the slug unboundedly: foo-patch-patch-patch...). If the
-        # target is itself a pending patch, redirect to the skill it supersedes.
-        root_slug = getattr(existing, "supersedes", "") or slug
-        patch_skill = Skill(
-            name=new_name or existing.name,
-            description=new_description or existing.description,
-            body=new_body,
-            state="pending",
-            source=source or existing.source,
-            supersedes=root_slug
-        )
-        # Stable slug ({root}-patch): re-proposing overwrites the same pending
-        # patch rather than creating a new one each time.
-        self.save(patch_skill)
-        return patch_skill
+        with self._lock:
+            existing = self.get(slug)
+            if not existing:
+                raise ValueError(f"Skill not found: {slug}")
+            # Always supersede the ROOT skill, never chain patch-of-a-patch (which
+            # would grow the slug unboundedly: foo-patch-patch-patch...). If the
+            # target is itself a pending patch, redirect to the skill it supersedes.
+            root_slug = getattr(existing, "supersedes", "") or slug
+            patch_skill = Skill(
+                name=new_name or existing.name,
+                description=new_description or existing.description,
+                body=new_body,
+                state="pending",
+                source=source or existing.source,
+                supersedes=root_slug
+            )
+            # Stable slug ({root}-patch): re-proposing overwrites the same pending
+            # patch rather than creating a new one each time.
+            self.save(patch_skill)
+            return patch_skill
 
     def mark_used(self, slug: str) -> None:
-        sk = self.get(slug)
-        if sk:
-            sk.used_count += 1
-            sk.last_used = time.time()
-            self.save(sk)
+        with self._lock:
+            sk = self.get(slug)
+            if sk:
+                sk.used_count += 1
+                sk.last_used = time.time()
+                self.save(sk)
 
     def exists(self, slug: str) -> bool:
         return self._find(slug) is not None
@@ -266,18 +269,19 @@ class SkillStore:
 
     def update(self, slug: str, *, name: Optional[str] = None,
                description: Optional[str] = None, body: Optional[str] = None) -> Optional[Skill]:
-        old_path = self._find(slug)
-        sk = self.get(slug)
-        if not sk:
-            return None
-        old_slug = sk.slug
-        if name is not None:
-            sk.name = name.strip() or sk.name
-        if description is not None:
-            sk.description = description.strip()
-        if body is not None:
-            sk.body = body.strip()
-        self.save(sk)
-        if old_path and sk.slug != old_slug and old_path.exists():
-            old_path.unlink()
-        return sk
+        with self._lock:
+            old_path = self._find(slug)
+            sk = self.get(slug)
+            if not sk:
+                return None
+            old_slug = sk.slug
+            if name is not None:
+                sk.name = name.strip() or sk.name
+            if description is not None:
+                sk.description = description.strip()
+            if body is not None:
+                sk.body = body.strip()
+            self.save(sk)
+            if old_path and sk.slug != old_slug and old_path.exists():
+                old_path.unlink()
+            return sk

@@ -217,6 +217,14 @@ def test_memory_add_remove_list():
     assert code3 == 200 and rem["ok"] is True
 
 
+def test_memory_add_rejects_empty_text():
+    svc = _skills_svc()
+    for body in ({}, {"text": ""}, {"text": "   "}):
+        code, payload = post_memory_add(body, svc)
+        assert code == 400
+        assert payload["error"] == "text is required"
+
+
 def test_memory_propose_accept_missing_id():
     code, payload = post_memory_propose_accept({}, _skills_svc())
     assert code == 400

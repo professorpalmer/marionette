@@ -7,6 +7,7 @@ Specs live as JSON files under ``{repo}/.marionette/checks/`` and optionally
 ``artifact`` kinds.
 """
 import json
+import logging
 import os
 import subprocess
 import time
@@ -14,6 +15,8 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, List, Optional, Union
 
 MAX_OUTPUT = 4000
+
+logger = logging.getLogger("harness.declarative_checks")
 
 _VALID_KINDS = frozenset({"shell", "file", "artifact"})
 _VALID_PHASES = frozenset({"pre", "post"})
@@ -204,12 +207,14 @@ def discover_check_parse_warnings(repo: str) -> List[CheckResult]:
         try:
             load_checks(path)
         except Exception as exc:
+            msg = f"failed to load {name}: {exc}"
+            logger.warning("declarative check parse warning: %s", msg)
             warnings.append(
                 CheckResult(
                     id=f"parse:{name}",
                     phase="pre",
                     passed=False,
-                    output=_truncate(f"failed to load {name}: {exc}"),
+                    output=_truncate(msg),
                     duration_ms=0,
                     on_fail="warn",
                 )

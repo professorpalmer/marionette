@@ -339,8 +339,19 @@ def _run_registered_command_job(
                         output="",
                     )
                 return
-        except Exception:
-            pass
+        except Exception as exc:
+            # Never fail-open: an auto-guard error means we cannot
+            # determine safety, so treat the command as blocked.
+            finish = getattr(session, "_finish_command_job", None)
+            if callable(finish):
+                finish(
+                    job_id,
+                    status="failed",
+                    summary=f"BLOCKED: auto guard error: {exc}",
+                    exit_code=-1,
+                    output="",
+                )
+            return
 
     cancel_event = None
     cancels = getattr(session, "_local_job_cancels", None)

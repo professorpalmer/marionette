@@ -17,6 +17,9 @@ webapp/out/
 webapp/build/*.iconset/
 build/*.iconset/
 
+# setuptools / pep517 local build trees (never commit)
+/build/
+
 # Agent artifacts (plans, local agent state) -- never commit
 artifacts/
 .hermes/

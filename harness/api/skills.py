@@ -161,7 +161,9 @@ def post_rules_reject(body: dict, svc: SkillsServices) -> tuple[int, JsonPayload
 
 def post_memory_add(body: dict, svc: SkillsServices) -> tuple[int, JsonPayload]:
     """POST /api/memory/add."""
-    text = body.get("text", "")
+    text = (body.get("text") or "").strip()
+    if not text:
+        return 400, {"error": "text is required"}
     category = body.get("category", "general")
     entry = svc.memory.add(text, category=category, source="user")
     return 200, {

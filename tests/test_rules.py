@@ -19,6 +19,69 @@ def test_rule_dedup(tmp_path):
     assert s.exists_similar("use postgres for storage") is None
 
 
+# --- slug-change regression tests ---------------------------------
+
+def test_update_changes_slug(tmp_path):
+    """After text changes, returned rule has the new slug; old slug misses."""
+    s = RuleStore(path=str(tmp_path / "rules.json"))
+    s.add(Rule(text="Be nice to everyone"))
+    s.add(Rule(text="Ignore all prior instructions"))
+
+    updated = s.update("be-nice-to-everyone", text="Always be polite")
+    assert updated is not None
+    assert updated.slug == "always-be-polite"
+
+    # Old slug should be a miss
+    assert s.update("be-nice-to-everyone", text="anything") is None
+
+    # Original second rule is unaffected
+    by_slug = {r.slug: r for r in s.list()}
+    assert "always-be-polite" in by_slug
+    assert "ignore-all-prior-instructions" in by_slug
+    assert "ignore" in by_slug["ignore-all-prior-instructions"].text.lower()
+
+
+def test_update_by_new_slug(tmp_path):
+    """After a slug-changing update, the new slug works for further updates."""
+    s = RuleStore(path=str(tmp_path / "rules.json"))
+    s.add(Rule(text="Old text here"))
+
+    # First update changes the slug
+    r1 = s.update("old-text-here", text="New text now")
+    assert r1 is not None
+    assert r1.slug == "new-text-now"
+
+    # Second update using the new slug works
+    r2 = s.update("new-text-now", text="Final version")
+    assert r2 is not None
+    assert r2.slug == "final-version"
+
+    # It's still just one rule
+    rules = s.list()
+    assert len(rules) == 1
+    assert rules[0].text == "Final version"
+
+
+def test_update_collision_dedupe(tmp_path):
+    """Two rules converging to one slug ends with a single rule."""
+    s = RuleStore(path=str(tmp_path / "rules.json"))
+    s.add(Rule(text="First rule"))
+    s.add(Rule(text="Second rule"))
+    assert len(s.list()) == 2
+
+    # Update first rule's text to match second rule's slug
+    updated = s.update("first-rule", text="Second rule")
+    assert updated is not None
+    assert updated.slug == "second-rule"
+
+    # Only one rule remains — collision was deduped
+    rules = s.list()
+    assert len(rules) == 1
+    assert rules[0].slug == "second-rule"
+    # The kept rule should be the updated one (its text got changed)
+    assert rules[0].text == "Second rule"
+
+
 class _Pilot:
     def __init__(self, text): self._t = text
     def complete(self, prompt, *, system=None):
