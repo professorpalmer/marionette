@@ -190,8 +190,7 @@ export default function UpdateBanner() {
     // 90s, the install silently stalled -- return to "Restart now" and point the
     // user at the releases page rather than spinning forever.
     const watchdog = window.setTimeout(() => {
-      recover("Update is taking longer than expected. Try again, or download it from the releases page.");
-      ipc.updates.openRepo?.().catch?.(() => {});
+      recover("Update is taking longer than expected. Try Restart again, or download from GitHub releases if it keeps stalling.");
     }, 90000);
 
     ipc.updates
@@ -215,15 +214,25 @@ export default function UpdateBanner() {
             return;
           }
           if (r.code === "diverged" || r.code === "conflict") {
+            // Toast only — auto-opening GitHub made failures look like
+            // "update = open browser" when the checkout was merely wedged.
             recover(r.error || "Your checkout has diverged from origin.");
-            ipc.updates.openRepo?.("commits").catch?.(() => {});
             return;
           }
           if (r.code === "installer_required") {
             recover(r.error || "Install the latest Marionette release to finish updating the app shell.");
-            ipc.updates.openReleases?.().catch?.(() => {
-              ipc.updates.openRepo?.().catch?.(() => {});
-            });
+            // Only open releases when the user confirms — seamless apply should
+            // have already tried quitAndInstall; do not surprise-navigate.
+            if (
+              window.confirm(
+                (r.error || "Could not finish the app shell update.") +
+                  "\n\nOpen the GitHub releases page to download the installer?"
+              )
+            ) {
+              ipc.updates.openReleases?.().catch?.(() => {
+                ipc.updates.openRepo?.().catch?.(() => {});
+              });
+            }
             return;
           }
           recover(`Update failed: ${r.error || "no update available"}`);

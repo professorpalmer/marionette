@@ -302,8 +302,48 @@ test("recoverOrphanedAutoUpdateStashes: reapplies a real git stash from a crash 
   const result = await bridge.recoverOrphanedAutoUpdateStashes(dir);
   assert.equal(result.recovered, 1);
   assert.equal(result.conflicts, 0);
+  assert.equal(result.dropped, 0);
   assert.equal(fs.readFileSync(path.join(dir, "tracked.txt"), "utf8"), "self-edit\n");
   assert.equal(git(["stash", "list"]).trim(), "");
+});
+
+test("recoverOrphanedAutoUpdateStashes: conflict clears unmerged index and drops orphan", async () => {
+  const { execFileSync } = require("node:child_process");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pmh-orphan-conflict-"));
+  const git = (args) =>
+    execFileSync("git", ["-C", dir, ...args], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "Marionette Test",
+        GIT_AUTHOR_EMAIL: "test@marionette.local",
+        GIT_COMMITTER_NAME: "Marionette Test",
+        GIT_COMMITTER_EMAIL: "test@marionette.local",
+      },
+    });
+  git(["init"]);
+  git(["config", "user.email", "test@marionette.local"]);
+  git(["config", "user.name", "Marionette Test"]);
+  fs.writeFileSync(path.join(dir, "tracked.txt"), "base\n");
+  git(["add", "tracked.txt"]);
+  git(["commit", "-m", "init"]);
+  // Stash an edit, then commit a conflicting change on the same lines so
+  // reapplying the orphan cannot succeed cleanly.
+  fs.writeFileSync(path.join(dir, "tracked.txt"), "stashed-edit\n");
+  git(["stash", "push", "-u", "-m", "marionette-auto-update"]);
+  fs.writeFileSync(path.join(dir, "tracked.txt"), "upstream-edit\n");
+  git(["add", "tracked.txt"]);
+  git(["commit", "-m", "upstream"]);
+
+  const result = await bridge.recoverOrphanedAutoUpdateStashes(dir);
+  assert.equal(result.recovered, 0);
+  assert.equal(result.conflicts, 1);
+  assert.equal(result.dropped, 1);
+  assert.equal(git(["stash", "list"]).trim(), "");
+  // Working tree must not stay mid-merge / unmerged.
+  const status = git(["status", "--porcelain"]);
+  assert.equal(status.trim(), "");
+  assert.equal(fs.readFileSync(path.join(dir, "tracked.txt"), "utf8"), "upstream-edit\n");
 });
 
 test("readLiveUpdateMarker: live pid within age ceiling is reported", () => {

@@ -137,15 +137,19 @@ function parseOrphanedAutoUpdateStashRefs(stashListOut) {
 /**
  * Recover stashes left by a crash between `stash push` and `stash pop`.
  * Tries oldest-first so newer unrelated stashes stay on top of the stack.
- * Returns { recovered, conflicts, refs }.
+ *
+ * A conflicting reapply must NOT leave the checkout mid-merge: that wedges
+ * every later Restart into `conflict` → browser open. Clear unmerged index
+ * state and drop the orphan (it is leftover auto-update noise, not user WIP).
+ * Returns { recovered, conflicts, dropped, refs }.
  */
 async function recoverOrphanedAutoUpdateStashes(repoRoot, env) {
   const listed = await gitCapture(repoRoot, ["stash", "list"], 15000, env);
   if (!listed.ok || !listed.out) {
-    return { recovered: 0, conflicts: 0, refs: [] };
+    return { recovered: 0, conflicts: 0, dropped: 0, refs: [] };
   }
   const refs = parseOrphanedAutoUpdateStashRefs(listed.out);
-  if (!refs.length) return { recovered: 0, conflicts: 0, refs: [] };
+  if (!refs.length) return { recovered: 0, conflicts: 0, dropped: 0, refs: [] };
   // Pop from the bottom of the matching set: highest stash@{N} first so
   // indices remain stable as we apply (git renumbers after each drop/pop).
   const ordered = refs.slice().sort((a, b) => {
@@ -155,19 +159,33 @@ async function recoverOrphanedAutoUpdateStashes(repoRoot, env) {
   });
   let recovered = 0;
   let conflicts = 0;
+  let dropped = 0;
   for (const ref of ordered) {
     appendUpdateLog(`[stash] recovering orphaned ${ref} (${AUTO_UPDATE_STASH_MARK})`);
     const pop = await gitCapture(repoRoot, ["stash", "pop", ref], 60000, env);
     if (pop.ok) {
       recovered += 1;
+      continue;
+    }
+    conflicts += 1;
+    appendUpdateLog(`[stash] recover conflict on ${ref}: ${pop.err || pop.out || "failed"}`);
+    // Failed `stash pop` leaves unmerged paths and keeps the stash entry.
+    // Reset the index, then drop the orphan so the next apply can FF-pull.
+    const cleared = await recoverInterruptedMerge(repoRoot);
+    appendUpdateLog(
+      `[stash] cleared unmerged state after conflict: ${cleared.ok ? "ok" : cleared.error || "failed"}`
+    );
+    const drop = await gitCapture(repoRoot, ["stash", "drop", ref], 15000, env);
+    if (drop.ok) {
+      dropped += 1;
+      appendUpdateLog(`[stash] dropped conflicting orphan ${ref}`);
     } else {
-      conflicts += 1;
-      appendUpdateLog(`[stash] recover conflict on ${ref}: ${pop.err || pop.out || "failed"}`);
-      // Leave remaining orphans for a later attempt / manual resolve.
+      appendUpdateLog(`[stash] could not drop ${ref}: ${drop.err || drop.out || "failed"}`);
+      // Stop so we do not thrash remaining refs against a still-wedged tree.
       break;
     }
   }
-  return { recovered, conflicts, refs: ordered };
+  return { recovered, conflicts, dropped, refs: ordered };
 }
 
 function mergeFailureLooksLikeStaleIndex(text) {
@@ -387,24 +405,38 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff",
     emit && emit({ stage, message, percent: overallPercent(stage, ratio) });
   let stashed = false;
   try {
-    // Crash between a prior stash push and pop leaves `marionette-auto-update`
-    // entries on the stash stack forever. Reapply them before starting a new
-    // update so the next run does not treat the tree as clean and orphan edits.
-    progress("pull", "Checking for interrupted update stash", 0.05);
-    const orphanRecovery = await recoverOrphanedAutoUpdateStashes(repoRoot, childEnv);
-    if (orphanRecovery.conflicts > 0) {
+    // Clear any mid-merge / unmerged index left by a prior failed stash pop
+    // before touching orphan stashes — otherwise recover itself cannot write
+    // the index and every Restart hard-fails into the browser fallback.
+    progress("pull", "Checking checkout state", 0.02);
+    const preRecover = await recoverInterruptedMerge(repoRoot);
+    if (!preRecover.ok) {
       return {
         ok: false,
         code: "conflict",
         error:
-          "A previous update left self-edits in the git stash that conflict when " +
-          "reapplied. Resolve `git stash list` / conflicts in " + repoRoot +
-          ", then update again.",
+          preRecover.error ||
+          "A previous update left the checkout mid-merge. Resolve git status in the Marionette checkout, then update again.",
       };
     }
+    if (preRecover.recovered) {
+      appendUpdateLog("[pull] cleared interrupted merge / unmerged index before update");
+    }
+
+    // Crash between a prior stash push and pop leaves `marionette-auto-update`
+    // entries on the stash stack forever. Reapply them before starting a new
+    // update so the next run does not treat the tree as clean and orphan edits.
+    // Conflicting orphans are dropped after clearing the tree (see recover).
+    progress("pull", "Checking for interrupted update stash", 0.05);
+    const orphanRecovery = await recoverOrphanedAutoUpdateStashes(repoRoot, childEnv);
     if (orphanRecovery.recovered > 0) {
       appendUpdateLog(
         `[stash] reapplied ${orphanRecovery.recovered} orphaned ${AUTO_UPDATE_STASH_MARK} stash(es)`
+      );
+    }
+    if (orphanRecovery.dropped > 0) {
+      appendUpdateLog(
+        `[stash] dropped ${orphanRecovery.dropped} conflicting orphan ${AUTO_UPDATE_STASH_MARK} stash(es); continuing update`
       );
     }
 
@@ -732,12 +764,29 @@ function registerUpdateBridge(ipcMain, app, shell, opts = {}) {
       let sourceResult = { ok: true, skipped: true, mainProcessChanged: false };
       if (plan.runSource) {
         sourceResult = await applyUpdate({ repoRoot, strategy, env: getEnv() }, emit);
-        if (!sourceResult.ok) return sourceResult;
-        checkoutVersion = readCheckoutPackageVersion(repoRoot);
-        skew = isPackaged && shellBehindCheckout({ shellVersion, checkoutVersion });
-        // After pull, main-process or version skew may newly require the installer.
-        if (isPackaged && (skew || sourceResult.mainProcessChanged)) {
-          plan = { ...plan, runShell: true, sequence: [...plan.sequence.filter((s) => s !== "shell"), "shell"] };
+        if (!sourceResult.ok) {
+          // Source plane failed, but a packaged shell update can still finish
+          // the user-visible "update Marionette" path. Prefer that over opening
+          // GitHub when electron-updater already has a newer build ready.
+          const canContinueShell =
+            plan.runShell && packagedUpdater && packagedUpdater.enabled;
+          if (!canContinueShell) return sourceResult;
+          appendUpdateLog(
+            `[apply] source failed (${sourceResult.code || "error"}); continuing with packaged shell install`
+          );
+          sourceResult = {
+            ok: true,
+            skipped: true,
+            mainProcessChanged: false,
+            sourceError: sourceResult.error || sourceResult.code || "source update failed",
+          };
+        } else {
+          checkoutVersion = readCheckoutPackageVersion(repoRoot);
+          skew = isPackaged && shellBehindCheckout({ shellVersion, checkoutVersion });
+          // After pull, main-process or version skew may newly require the installer.
+          if (isPackaged && (skew || sourceResult.mainProcessChanged)) {
+            plan = { ...plan, runShell: true, sequence: [...plan.sequence.filter((s) => s !== "shell"), "shell"] };
+          }
         }
       }
 
