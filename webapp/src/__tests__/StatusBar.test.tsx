@@ -496,7 +496,7 @@ describe("StatusBar panel toggle shortcuts", () => {
 
 describe("StatusBar runtime stale toast", () => {
   const runtimeNote =
-    "Puppetmaster is at 1.20.10 but this Marionette needs 1.21.12 -- offline. Reconnect and update to finish.";
+    "Puppetmaster is at 1.20.10 but this Marionette needs 1.21.13 -- offline. Reconnect and update to finish.";
 
   beforeEach(() => {
     vi.clearAllMocks();
