@@ -38,7 +38,15 @@ def test_poisoned_demo_env_does_not_win(monkeypatch):
     assert HarnessConfig.from_env().swarm_adapter == "agentic"
 
 
-def test_cursor_alias_resolves_to_agentic(monkeypatch):
+def test_cursor_env_keeps_platform_cursor(monkeypatch):
+    """HARNESS_SWARM_ADAPTER=cursor is the CURSOR_API_KEY platform path."""
     monkeypatch.setenv("HARNESS_REPO", "/tmp/somerepo")
     monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "cursor")
+    assert HarnessConfig.from_env().swarm_adapter == "cursor"
+
+
+def test_cursor_cli_env_normalizes_to_agentic(monkeypatch):
+    """Agent-login cursor-cli is never a swarm adapter."""
+    monkeypatch.setenv("HARNESS_REPO", "/tmp/somerepo")
+    monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "cursor-cli")
     assert HarnessConfig.from_env().swarm_adapter == "agentic"
