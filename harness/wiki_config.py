@@ -173,11 +173,14 @@ def set_wiki_config(api_base: str = None, owner_token: str = None) -> dict:
         if not isinstance(cur, dict):
             cur = {}
 
+    prev_base = (cur.get("api_base") or "").rstrip("/")
     url_token = None
+    new_base = prev_base
     if api_base is not None:
         parsed = parse_wiki_connection_string(api_base)
         cur["api_base"] = parsed.get("api_base", "")
         url_token = parsed.get("owner_token")
+        new_base = (cur.get("api_base") or "").rstrip("/")
 
     if owner_token is not None:
         # empty string clears the token
@@ -188,6 +191,11 @@ def set_wiki_config(api_base: str = None, owner_token: str = None) -> dict:
     elif url_token:
         # Personal LLM URL pasted into the base field alone is enough.
         cur["owner_token"] = url_token
+    elif api_base is not None and prev_base and new_base and prev_base != new_base:
+        # Origin/base changed with no new token. Keeping the old secret would
+        # send it to the new host on the next WikiClient fetch (deep-link or
+        # mis-config exfil). Clear unless a replacement token was supplied.
+        cur.pop("owner_token", None)
 
     cur = normalize_wiki_config(cur)
     try:

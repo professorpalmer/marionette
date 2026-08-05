@@ -207,42 +207,16 @@ function registerMarionetteProtocol() {
   }
 }
 
-function parseWikiConnectDeepLink(raw) {
-  if (!raw || typeof raw !== "string") return null;
-  const text = raw.trim();
-  if (!text.toLowerCase().startsWith("marionette://wiki-connect")) return null;
-  try {
-    // URL() needs a parseable host; normalize scheme for WHATWG parser.
-    const normalized = text.replace(/^marionette:\/\//i, "https://marionette/");
-    const u = new URL(normalized);
-    const personalUrl = u.searchParams.get("url") || "";
-    const apiBase = u.searchParams.get("api_base") || "";
-    const token = u.searchParams.get("token") || u.searchParams.get("t") || "";
-    if (personalUrl) return { api_base: personalUrl, owner_token: undefined };
-    if (apiBase) return { api_base: apiBase, owner_token: token || undefined };
-  } catch (err) {
-    logMain(`parseWikiConnectDeepLink failed: ${err && err.message ? err.message : err}`);
-  }
-  return null;
-}
+const {
+  parseWikiConnectDeepLink,
+  isLoopbackWikiConnectUrl,
+  isTrustedWikiConnectApiBase,
+} = require("./wiki-connect.cjs");
 
 let wikiConnectQueue = [];
 // Debounce loopback "wiki linked" notifies: did-navigate + did-finish-load can
 // both fire for one handoff, and we must never target a popout BrowserWindow.
 let _wikiConnectedNotifyAt = 0;
-
-function isLoopbackWikiConnectUrl(url) {
-  if (typeof url !== "string") return false;
-  if (!/\/api\/wiki\/connect(\?|$|#)/i.test(url)) return false;
-  if (!/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])/i.test(url)) return false;
-  try {
-    const u = new URL(url);
-    const nonce = u.searchParams.get("nonce") || "";
-    return !!nonce;
-  } catch {
-    return false;
-  }
-}
 
 /** Always notify the MAIN Marionette window — never the Connect popout. */
 function notifyMainWikiConnected(payload) {
@@ -272,6 +246,18 @@ async function applyWikiConnectDeepLink(raw) {
     logMain(`wiki-connect ignored (unparseable): ${String(raw).slice(0, 120)}`);
     return { ok: false, error: "unparseable" };
   }
+  // Custom protocols can be opened by other apps/pages. Fail closed on hosts
+  // outside loopback + portablellm.wiki (backend still normalizes personal URLs).
+  if (!isTrustedWikiConnectApiBase(parsed.api_base)) {
+    logMain("wiki-connect rejected untrusted api_base host");
+    try {
+      dialog.showErrorBox(
+        "Wiki connect blocked",
+        "That wiki-connect link points at an untrusted host. Use Connect from State → Wiki, or a portablellm.wiki / local handoff link.",
+      );
+    } catch { /* headless / early boot */ }
+    return { ok: false, error: "untrusted_api_base" };
+  }
   // Backend may not be up yet on cold-start protocol launch — queue and flush
   // after waitForBackend.
   if (!backendPort) {
@@ -279,6 +265,21 @@ async function applyWikiConnectDeepLink(raw) {
     return { ok: false, error: "queued" };
   }
   try {
+    // Confirm before writing credentials — deep links have no nonce (unlike
+    // the loopback /api/wiki/connect handoff).
+    const confirm = dialog.showMessageBoxSync({
+      type: "question",
+      buttons: ["Connect", "Cancel"],
+      defaultId: 0,
+      cancelId: 1,
+      title: "Connect wiki?",
+      message: "Link this Marionette install to a portable LLM wiki?",
+      detail: String(parsed.api_base).slice(0, 280),
+    });
+    if (confirm !== 0) {
+      logMain("wiki-connect cancelled by user");
+      return { ok: false, error: "cancelled" };
+    }
     const body = { api_base: parsed.api_base };
     if (parsed.owner_token) body.owner_token = parsed.owner_token;
     const res = await backendRequest("POST", "/api/wiki/config", body);

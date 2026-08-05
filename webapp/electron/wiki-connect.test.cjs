@@ -1,40 +1,13 @@
 /**
- * Unit tests for marionette://wiki-connect URL parsing (mirrors main.cjs).
- * Kept as a pure copy so we do not boot Electron in CI.
+ * Unit tests for marionette://wiki-connect parsing + trust checks.
  */
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-
-function parseWikiConnectDeepLink(raw) {
-  if (!raw || typeof raw !== "string") return null;
-  const text = raw.trim();
-  if (!text.toLowerCase().startsWith("marionette://wiki-connect")) return null;
-  try {
-    const normalized = text.replace(/^marionette:\/\//i, "https://marionette/");
-    const u = new URL(normalized);
-    const personalUrl = u.searchParams.get("url") || "";
-    const apiBase = u.searchParams.get("api_base") || "";
-    const token = u.searchParams.get("token") || u.searchParams.get("t") || "";
-    if (personalUrl) return { api_base: personalUrl, owner_token: undefined };
-    if (apiBase) return { api_base: apiBase, owner_token: token || undefined };
-  } catch {
-    return null;
-  }
-  return null;
-}
-
-function isLoopbackWikiConnectUrl(url) {
-  if (typeof url !== "string") return false;
-  if (!/\/api\/wiki\/connect(\?|$|#)/i.test(url)) return false;
-  if (!/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])/i.test(url)) return false;
-  try {
-    const u = new URL(url);
-    const nonce = u.searchParams.get("nonce") || "";
-    return !!nonce;
-  } catch {
-    return false;
-  }
-}
+const {
+  parseWikiConnectDeepLink,
+  isLoopbackWikiConnectUrl,
+  isTrustedWikiConnectApiBase,
+} = require("./wiki-connect.cjs");
 
 describe("parseWikiConnectDeepLink", () => {
   it("accepts personal LLM url param", () => {
@@ -84,5 +57,27 @@ describe("isLoopbackWikiConnectUrl", () => {
       false,
     );
     assert.equal(isLoopbackWikiConnectUrl(""), false);
+  });
+});
+
+describe("isTrustedWikiConnectApiBase", () => {
+  it("allows portablellm and loopback", () => {
+    assert.equal(
+      isTrustedWikiConnectApiBase("https://api.portablellm.wiki/t/acme"),
+      true,
+    );
+    assert.equal(
+      isTrustedWikiConnectApiBase("https://portablellm.wiki/acme/llm?t=x"),
+      true,
+    );
+    assert.equal(isTrustedWikiConnectApiBase("http://127.0.0.1:8000"), true);
+    assert.equal(isTrustedWikiConnectApiBase("http://localhost:8000/wiki"), true);
+  });
+
+  it("rejects arbitrary remote hosts (deep-link exfil surface)", () => {
+    assert.equal(isTrustedWikiConnectApiBase("https://evil.example/wiki"), false);
+    assert.equal(isTrustedWikiConnectApiBase("https://api.portablellm.wiki.evil.com/t/x"), false);
+    assert.equal(isTrustedWikiConnectApiBase("ftp://portablellm.wiki/x"), false);
+    assert.equal(isTrustedWikiConnectApiBase(""), false);
   });
 });

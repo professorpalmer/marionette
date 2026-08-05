@@ -75,3 +75,62 @@ def test_clear_wiki_config_wipes_env(tmp_path, monkeypatch):
     assert not os.environ.get("WIKI_OWNER_TOKEN")
     on_disk = json.loads((state / "wiki.json").read_text(encoding="utf-8"))
     assert on_disk == {}
+
+
+def test_set_wiki_config_clears_token_when_base_changes_without_new_token(
+    tmp_path, monkeypatch
+):
+    """Deep-link / mis-config must not carry a secret to a new api_base host."""
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(state))
+    wiki_config.set_wiki_config(
+        api_base="https://api.portablellm.wiki/t/acme",
+        owner_token="secret-token",
+    )
+    assert os.environ.get("WIKI_OWNER_TOKEN") == "secret-token"
+
+    res = wiki_config.set_wiki_config(
+        api_base="https://evil.example/wiki",
+        owner_token=None,
+    )
+    assert res["api_base"] == "https://evil.example/wiki"
+    assert res["has_token"] is False
+    on_disk = json.loads((state / "wiki.json").read_text(encoding="utf-8"))
+    assert "owner_token" not in on_disk
+    assert not os.environ.get("WIKI_OWNER_TOKEN")
+
+
+def test_set_wiki_config_keeps_token_when_same_base_reapplied(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(state))
+    wiki_config.set_wiki_config(
+        api_base="https://api.portablellm.wiki/t/acme",
+        owner_token="keep-me",
+    )
+    res = wiki_config.set_wiki_config(
+        api_base="https://api.portablellm.wiki/t/acme",
+        owner_token=None,
+    )
+    assert res["has_token"] is True
+    assert os.environ.get("WIKI_OWNER_TOKEN") == "keep-me"
+
+
+def test_set_wiki_config_personal_url_still_plants_token_on_base_change(
+    tmp_path, monkeypatch
+):
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(state))
+    wiki_config.set_wiki_config(
+        api_base="https://api.portablellm.wiki/t/old",
+        owner_token="old-token",
+    )
+    res = wiki_config.set_wiki_config(
+        api_base="https://portablellm.wiki/acme/llm?t=fresh-token",
+        owner_token=None,
+    )
+    assert res["api_base"] == "https://api.portablellm.wiki/t/acme"
+    assert res["has_token"] is True
+    assert os.environ.get("WIKI_OWNER_TOKEN") == "fresh-token"
