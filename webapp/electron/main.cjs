@@ -1862,8 +1862,18 @@ app.on("web-contents-created", (_e, contents) => {
 // BrowserWindow on the shared browser partition. Used by BOTH the explicit
 // "Pop out" button/IPC and the injected Cmd/Ctrl+click catcher so every pop-out
 // behaves identically (floats on top, survives switching off the Browser tab).
+const { isAllowedBrowserUrl } = require("./browser-url.cjs");
+
 function openPopoutWindow(url) {
-  const target = typeof url === "string" && url.trim() ? url.trim() : "about:blank";
+  const raw = typeof url === "string" && url.trim() ? url.trim() : "about:blank";
+  // Parity with browser:openExternal — never load file:// / custom schemes
+  // into a persistent BrowserWindow from IPC or the click catcher.
+  if (!isAllowedBrowserUrl(raw, { allowBlank: true })) {
+    const err = new Error("only http(s) or about:blank URLs allowed");
+    logMain(`openPopoutWindow blocked: ${raw.slice(0, 120)}`);
+    throw err;
+  }
+  const target = raw;
   const win = new BrowserWindow({
     width: 900,
     height: 700,
@@ -1901,7 +1911,7 @@ ipcMain.handle("browser:popout", (_e, url) => {
 ipcMain.handle("browser:openExternal", async (_e, url) => {
   try {
     const target = typeof url === "string" ? url.trim() : "";
-    if (!/^https?:\/\//i.test(target)) {
+    if (!isAllowedBrowserUrl(target)) {
       return { ok: false, error: "only http(s) URLs allowed" };
     }
     await shell.openExternal(target);

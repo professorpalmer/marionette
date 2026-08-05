@@ -194,7 +194,7 @@ def test_wiki_client_graph_prefers_direct_graph_endpoint(monkeypatch):
             })
         raise AssertionError("unexpected url " + req.full_url)
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("harness.wiki._wiki_safe_urlopen", fake_urlopen)
     client = WikiClient(base_url="https://mywiki.example.com", token="mysecret")
     res = client.graph()
     assert res["error"] is None
@@ -237,7 +237,7 @@ def test_wiki_client_graph_live_mocked(monkeypatch):
             return FakeResp(graph_b)
         raise AssertionError("unexpected url " + url)
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("harness.wiki._wiki_safe_urlopen", fake_urlopen)
     client = WikiClient(base_url="https://mywiki.example.com", token="mysecret")
     res = client.graph()
     assert res["error"] is None
@@ -408,6 +408,60 @@ def test_wiki_connect_rejects_non_loopback_host_even_pre_auth(tmp_path, monkeypa
         try:
             urllib.request.urlopen(req, timeout=10)
             assert False, "expected 403 for non-loopback Host"
+        except urllib.error.HTTPError as e:
+            assert e.code == 403
+    finally:
+        httpd.shutdown()
+
+
+def test_wiki_connect_rejects_untrusted_api_base_after_nonce(tmp_path, monkeypatch):
+    """Pre-auth connect must mirror Electron host allowlist (stolen-nonce plant)."""
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(state))
+    httpd, port, srv = _server()
+    try:
+        nonce = srv._mint_wiki_connect_nonce()
+        evil = "https://evil-exfil.example/llm?t=planted"
+        connect_path = (
+            "/api/wiki/connect?nonce=%s&url=%s"
+            % (nonce, urllib.parse.quote(evil, safe=""))
+        )
+        try:
+            _get(port, connect_path)
+            assert False, "expected 400 for untrusted wiki host"
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+            body = e.read().decode("utf-8", errors="ignore")
+            assert "Untrusted" in body or "untrusted" in body.lower()
+        # Must not plant wiki.json.
+        wiki_path = state / "wiki.json"
+        if wiki_path.is_file():
+            cfg = json.loads(wiki_path.read_text(encoding="utf-8"))
+            assert "evil-exfil.example" not in (cfg.get("api_base") or "")
+        # Nonce consumed — replay also fails.
+        try:
+            _get(port, connect_path)
+            assert False, "expected 403 replay after burned nonce"
+        except urllib.error.HTTPError as e:
+            assert e.code == 403
+    finally:
+        httpd.shutdown()
+
+
+def test_wiki_connect_rejects_missing_nonce(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(state))
+    httpd, port, srv = _server()
+    try:
+        personal = "https://portablellm.wiki/acme/llm?t=fresh-token"
+        connect_path = "/api/wiki/connect?url=%s" % (
+            urllib.parse.quote(personal, safe=""),
+        )
+        try:
+            _get(port, connect_path)
+            assert False, "expected 403 for missing nonce"
         except urllib.error.HTTPError as e:
             assert e.code == 403
     finally:

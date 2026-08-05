@@ -38,6 +38,7 @@ def _get(port, path, token=None):
 _PROTECTED = [
     "/api/memory", "/api/config", "/api/skills", "/api/rules",
     "/api/commands", "/api/settings", "/api/platform", "/api/jobs",
+    "/api/workspace", "/api/mcp",
 ]
 
 

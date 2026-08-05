@@ -194,7 +194,7 @@ def test_wiki_client_search_pages_parses_results(monkeypatch):
         captured["url"] = req.full_url
         return FakeResp()
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("harness.wiki._wiki_safe_urlopen", fake_urlopen)
     client = WikiClient(base_url="https://wiki.example.com", token="secret")
     hits = client.search_pages("auth flow", limit=3)
     assert hits == [{"title": "T", "slug": "t", "snippet": "snippet text"}]

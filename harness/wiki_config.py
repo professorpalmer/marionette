@@ -25,6 +25,17 @@ _DEFAULT_STATE_WIKI = os.path.join(
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 _HOSTED_FRONTEND_HOSTS = {"portablellm.wiki", "www.portablellm.wiki"}
 _HOSTED_API_HOST = "api.portablellm.wiki"
+# Hosts accepted by pre-auth wiki connect (loopback handoff + marionette://).
+# Keep in sync with webapp/electron/wiki-connect.cjs TRUSTED_WIKI_CONNECT_HOSTS.
+_TRUSTED_WIKI_CONNECT_HOSTS = frozenset(
+    {
+        "127.0.0.1",
+        "localhost",
+        "::1",
+        _HOSTED_API_HOST,
+        *_HOSTED_FRONTEND_HOSTS,
+    }
+)
 
 
 def _path() -> str:
@@ -59,6 +70,27 @@ def is_hosted_portablellm_base(base: str) -> bool:
     except Exception:
         return False
     return host == _HOSTED_API_HOST or host in _HOSTED_FRONTEND_HOSTS
+
+
+def is_trusted_wiki_connect_base(raw: str) -> bool:
+    """True when a connect handoff URL targets loopback or portablellm.wiki.
+
+    Used by pre-auth GET /api/wiki/connect so a stolen one-shot nonce cannot
+    plant an arbitrary https api_base (parity with Electron isTrustedWikiConnectApiBase).
+    Authenticated POST /api/wiki/config stays open for self-hosted bases.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return False
+    try:
+        parsed = urlparse(text)
+    except Exception:
+        return False
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        return False
+    host = (parsed.hostname or "").lower()
+    return host in _TRUSTED_WIKI_CONNECT_HOSTS
 
 
 def is_remote_wiki_base(base: str) -> bool:

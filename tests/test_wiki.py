@@ -1,6 +1,6 @@
 """Wiki integration: client config, digest rendering, slug safety, ingest payload."""
 import json
-from harness.wiki import WikiClient, session_digest, _safe_slug
+from harness.wiki import WikiClient, session_digest, _safe_slug, _wiki_base_url_allowed
 
 
 def test_not_configured_without_url_token(monkeypatch):
@@ -19,6 +19,16 @@ def test_rejects_http_non_loopback_base_url(monkeypatch):
     monkeypatch.delenv("HARNESS_WIKI_URL", raising=False)
     monkeypatch.delenv("WIKI_API_BASE", raising=False)
     c = WikiClient(base_url="http://evil.example.com:8000", token="tok")
+    assert c.base_url == ""
+    assert c.configured is False
+
+
+def test_rejects_metadata_https_base_url(monkeypatch):
+    monkeypatch.delenv("HARNESS_WIKI_URL", raising=False)
+    monkeypatch.delenv("WIKI_API_BASE", raising=False)
+    assert _wiki_base_url_allowed("https://169.254.169.254/latest") is False
+    assert _wiki_base_url_allowed("https://metadata.google.internal/") is False
+    c = WikiClient(base_url="https://169.254.169.254/latest", token="tok")
     assert c.base_url == ""
     assert c.configured is False
 
@@ -75,7 +85,7 @@ def test_ingest_posts_correct_payload(monkeypatch):
         captured["body"] = json.loads(req.data.decode())
         captured["auth"] = req.headers.get("Authorization")
         return FakeResp()
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("harness.wiki._wiki_safe_urlopen", fake_urlopen)
     c = WikiClient(base_url="https://wiki.example.com", token="secret")
     r = c.ingest("My Slug", "body text", note="n")
     assert r.ok and r.rel_path.endswith("x.md")
@@ -84,3 +94,43 @@ def test_ingest_posts_correct_payload(monkeypatch):
     assert captured["body"]["content"] == "body text"
     assert captured["body"]["run_orchestrator"] is False
     assert captured["auth"] == "Bearer secret"
+
+
+def test_strip_cross_host_auth_headers():
+    import urllib.request
+    from harness.wiki import _strip_cross_host_auth_headers
+
+    req = urllib.request.Request(
+        "https://sink.example/path",
+        headers={
+            "Authorization": "Bearer secret",
+            "X-Share-Token": "secret",
+            "Accept": "application/json",
+        },
+    )
+    out = _strip_cross_host_auth_headers(
+        "https://wiki.example/start", "https://sink.example/path", req
+    )
+    assert out.get_header("Authorization") is None
+    assert out.get_header("X-share-token") is None
+    assert out.get_header("Accept") == "application/json"
+
+    same = urllib.request.Request(
+        "https://wiki.example/next",
+        headers={"Authorization": "Bearer keep"},
+    )
+    kept = _strip_cross_host_auth_headers(
+        "https://wiki.example/start", "https://wiki.example/next", same
+    )
+    assert kept.get_header("Authorization") == "Bearer keep"
+
+
+def test_wiki_safe_urlopen_blocks_metadata_literal():
+    import pytest
+    import urllib.error
+    import urllib.request
+    from harness.wiki import _wiki_safe_urlopen
+
+    req = urllib.request.Request("https://169.254.169.254/latest/meta-data/")
+    with pytest.raises(urllib.error.URLError):
+        _wiki_safe_urlopen(req, timeout=1)

@@ -60,6 +60,24 @@ def test_is_hosted_and_remote_helpers():
     assert not wiki_config.is_remote_wiki_base("")
 
 
+def test_is_trusted_wiki_connect_base_matches_electron_allowlist():
+    assert wiki_config.is_trusted_wiki_connect_base(
+        "https://portablellm.wiki/acme/llm?t=x"
+    )
+    assert wiki_config.is_trusted_wiki_connect_base(
+        "https://api.portablellm.wiki/t/acme"
+    )
+    assert wiki_config.is_trusted_wiki_connect_base("http://127.0.0.1:8000")
+    assert wiki_config.is_trusted_wiki_connect_base("http://localhost:8000/wiki")
+    assert not wiki_config.is_trusted_wiki_connect_base(
+        "https://evil.example/wiki"
+    )
+    assert not wiki_config.is_trusted_wiki_connect_base(
+        "https://api.portablellm.wiki.evil.com/t/x"
+    )
+    assert not wiki_config.is_trusted_wiki_connect_base("ftp://portablellm.wiki/x")
+
+
 def test_clear_wiki_config_wipes_env(tmp_path, monkeypatch):
     state = tmp_path / "state"
     state.mkdir()

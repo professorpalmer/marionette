@@ -85,7 +85,7 @@ def test_wiki_query_success(monkeypatch):
             captured["auth"] = req.headers.get("Authorization")
         return FakeResp()
         
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("harness.wiki._wiki_safe_urlopen", fake_urlopen)
     
     client = WikiClient(base_url="https://wiki.example.com", token="secret")
     res = client.query("How does Auth work?")
@@ -115,7 +115,7 @@ def test_wiki_query_fallback(monkeypatch):
             raise Exception("Endpoint not found")
         return FakeManifestResp()
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("harness.wiki._wiki_safe_urlopen", fake_urlopen)
     
     client = WikiClient(base_url="https://wiki.example.com", token="secret")
     res = client.query("What pages exist?")
@@ -135,7 +135,7 @@ def _fake_wiki_query_urlopen(answer: str = "Wiki answer text"):
 
 
 def test_wiki_query_public_tier_with_token_warns(monkeypatch):
-    monkeypatch.setattr("urllib.request.urlopen", _fake_wiki_query_urlopen("Public page content"))
+    monkeypatch.setattr("harness.wiki._wiki_safe_urlopen", _fake_wiki_query_urlopen("Public page content"))
     client = WikiClient(base_url="https://wiki.example.com", token="secret")
     monkeypatch.setattr(client, "manifest_meta", lambda: {"viewer_tier": "public", "page_count": 1})
     res = client.query("test question")
@@ -156,7 +156,7 @@ def test_wiki_tier_caveat_public_without_token(monkeypatch):
 
 @pytest.mark.parametrize("tier", ["private", "friend", "owner"])
 def test_wiki_query_elevated_tier_no_warning(monkeypatch, tier):
-    monkeypatch.setattr("urllib.request.urlopen", _fake_wiki_query_urlopen("Elevated content"))
+    monkeypatch.setattr("harness.wiki._wiki_safe_urlopen", _fake_wiki_query_urlopen("Elevated content"))
     client = WikiClient(base_url="https://wiki.example.com", token="secret")
     monkeypatch.setattr(client, "manifest_meta", lambda: {"viewer_tier": tier, "page_count": 10})
     res = client.query("test question")

@@ -431,7 +431,22 @@ def status_from_halt_reason(reason: str) -> str:
         return "failed"
     if any(low.startswith(prefix) for prefix in _OK_HALT_PREFIXES):
         return "ok"
-    if "cancel" in low:
+    # Prefer cancelled/canceled word forms; reject "failure to cancel" style
+    # negatives that merely contain the substring "cancel".
+    if (
+        ("cancelled" in low or "canceled" in low or low.startswith("cancel "))
+        and not any(
+            neg in low
+            for neg in (
+                "failure",
+                "failed to",
+                "could not",
+                "cannot",
+                "can't",
+                "unable",
+            )
+        )
+    ):
         return "cancelled"
     if "killswitch" in low:
         return "killswitch"

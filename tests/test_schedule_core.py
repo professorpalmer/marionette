@@ -255,6 +255,17 @@ def test_status_from_halt_reason_rejects_objective_met_substring(reason):
     assert status_from_halt_reason(reason) == "failed"
 
 
+@pytest.mark.parametrize("reason", [
+    "failure to cancel the run",
+    "could not cancel worker",
+    "unable to cancel in-flight turn",
+    "failed to cancel schedule",
+])
+def test_status_from_halt_reason_rejects_cancel_negatives(reason):
+    assert status_from_halt_reason(reason) != "cancelled"
+    assert status_from_halt_reason(reason) == "failed"
+
+
 def test_display_status_invalid_cron():
     s = Schedule(id="a", name="n", objective="o", cron="not a cron")
     assert s.display_status() == "invalid_cron"

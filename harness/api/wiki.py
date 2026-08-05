@@ -19,6 +19,7 @@ from ..wiki_config import (
     clear_wiki_config,
     get_wiki_config,
     is_hosted_portablellm_base,
+    is_trusted_wiki_connect_base,
     set_wiki_config,
 )
 
@@ -187,6 +188,20 @@ def handle_wiki_connect(qs: dict) -> tuple[int, str, str]:
             "</body></html>"
         )
         return 403, html, "text/html"
+    # Fail closed on destination host (parity with marionette:// allowlist).
+    # Consume-then-reject burns a stolen nonce rather than leaving it reusable.
+    candidate = (raw_url or api_base or "").strip()
+    if candidate and not is_trusted_wiki_connect_base(candidate):
+        html = (
+            "<!doctype html><html><head><meta charset=utf-8>"
+            "<title>Wiki connect blocked</title></head><body style='"
+            "font-family:system-ui;background:#111;color:#eee;padding:2rem'>"
+            "<h1>Untrusted wiki host</h1>"
+            "<p>Connect only accepts portablellm.wiki or a local wiki URL. "
+            "Use State → Wiki for a custom self-hosted base.</p>"
+            "</body></html>"
+        )
+        return 400, html, "text/html"
     try:
         if raw_url:
             res = set_wiki_config(api_base=raw_url, owner_token=None)

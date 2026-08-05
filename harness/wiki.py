@@ -35,8 +35,25 @@ from typing import Optional
 from .diag import note as _diag
 
 
+def wiki_allow_private_urls() -> bool:
+    """Whether WikiClient may target loopback/LAN (local wiki backends).
+
+    Defaults True so http://127.0.0.1:8000 keeps working. Metadata stays
+    blocked in url_safety regardless. Opt out with HARNESS_WIKI_ALLOW_PRIVATE=0;
+    the rig-wide HARNESS_ALLOW_PRIVATE_URLS hatch still opens the path.
+    """
+    from .url_safety import _is_truthy_value, allow_private_urls
+
+    if allow_private_urls():
+        return True
+    raw = os.environ.get("HARNESS_WIKI_ALLOW_PRIVATE")
+    if raw is None or str(raw).strip() == "":
+        return True
+    return _is_truthy_value(raw)
+
+
 def _wiki_base_url_allowed(url: str) -> bool:
-    """Accept https anywhere, or http only to loopback (local wiki backend)."""
+    """Accept https (non-metadata), or http only to loopback (local wiki)."""
     if not url:
         return True
     try:
@@ -44,17 +61,114 @@ def _wiki_base_url_allowed(url: str) -> bool:
     except ValueError:
         return False
     scheme = parsed.scheme.lower()
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not host:
+        return False
+    # Cloud metadata hostnames/IPs must never become a wiki base, even over https.
+    try:
+        from .url_safety import METADATA_HOSTS, METADATA_IPS
+
+        if host in METADATA_HOSTS or host in METADATA_IPS:
+            return False
+        try:
+            if str(ipaddress.ip_address(host)) in METADATA_IPS:
+                return False
+        except ValueError:
+            pass
+    except Exception:
+        if host in {"metadata", "metadata.google.internal", "169.254.169.254"}:
+            return False
     if scheme == "https":
         return True
     if scheme != "http":
         return False
-    host = (parsed.hostname or "").lower().rstrip(".")
     if host in {"localhost", "ip6-localhost", "ip6-loopback"}:
         return True
     try:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return False
+
+
+def _strip_cross_host_auth_headers(
+    old_url: str, new_url: str, req: urllib.request.Request
+) -> urllib.request.Request:
+    """Drop bearer/share tokens when a redirect changes host."""
+    old_host = (urllib.parse.urlsplit(old_url).hostname or "").lower()
+    new_host = (urllib.parse.urlsplit(new_url).hostname or "").lower()
+    if old_host == new_host:
+        return req
+    drop = {"authorization", "x-share-token"}
+    # urllib stores header keys with mixed capitalization; delete by casefold.
+    for mapping_name in ("headers", "unredirected_hdrs"):
+        mapping = getattr(req, mapping_name, None)
+        if not isinstance(mapping, dict):
+            continue
+        for key in list(mapping.keys()):
+            if str(key).lower() in drop:
+                del mapping[key]
+    return req
+
+
+def _wiki_safe_urlopen(req: urllib.request.Request, timeout: float):
+    """urlopen with pinned-IP SSRF gate + auth-stripping cross-host redirects.
+
+    Parity with web_tools/MCP: every hop re-validates via is_safe_url_pinned.
+    Authorization / X-Share-Token are dropped when the redirect host changes
+    so a compromised wiki base cannot 302-forward owner/share tokens.
+    """
+    from .url_safety import is_safe_url_pinned, normalize_url_for_request
+    from .web_tools import (
+        _PinnedIP,
+        _PinnedIPHTTPHandler,
+        _PinnedIPHTTPSHandler,
+        _strip_zone_id,
+    )
+
+    allow_private = wiki_allow_private_urls()
+    ok, reason, pinned_ip = is_safe_url_pinned(
+        req.full_url, allow_private=allow_private
+    )
+    if not ok:
+        raise urllib.error.URLError("unsafe wiki URL: %s" % (reason,))
+
+    class _WikiSafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+        def __init__(self, pin: _PinnedIP) -> None:
+            self._pin = pin
+            super().__init__()
+
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            hop_ok, hop_reason, hop_ip = is_safe_url_pinned(
+                newurl, allow_private=allow_private
+            )
+            if not hop_ok:
+                raise urllib.error.HTTPError(
+                    newurl,
+                    code,
+                    "unsafe wiki redirect (%s)" % (hop_reason,),
+                    headers,
+                    fp,
+                )
+            if hop_ip:
+                self._pin.ip = _strip_zone_id(hop_ip)
+            newurl = normalize_url_for_request(newurl)
+            new_req = super().redirect_request(
+                req, fp, code, msg, headers, newurl
+            )
+            if new_req is None:
+                return None
+            return _strip_cross_host_auth_headers(req.full_url, newurl, new_req)
+
+    pin = _PinnedIP(_strip_zone_id(pinned_ip) if pinned_ip else None)
+    if pinned_ip:
+        opener = urllib.request.build_opener(
+            _PinnedIPHTTPHandler(pin=pin),
+            _PinnedIPHTTPSHandler(pin=pin),
+            _WikiSafeRedirectHandler(pin),
+        )
+    else:
+        opener = urllib.request.build_opener(_WikiSafeRedirectHandler(pin))
+    return opener.open(req, timeout=timeout)
 
 
 @dataclass
@@ -103,7 +217,7 @@ class WikiClient:
             return False
         try:
             req = urllib.request.Request(f"{self.base_url}/healthz")
-            with urllib.request.urlopen(req, timeout=6) as r:
+            with _wiki_safe_urlopen(req, timeout=6) as r:
                 return r.status == 200
         except Exception:
             return False
@@ -126,7 +240,7 @@ class WikiClient:
             url = f"{self.base_url}/wiki/manifest.json"
             headers = self._auth_headers()
             req = urllib.request.Request(url, method="GET", headers=headers)
-            with urllib.request.urlopen(req, timeout=min(self.timeout, 8)) as r:
+            with _wiki_safe_urlopen(req, timeout=min(self.timeout, 8)) as r:
                 data = json.loads(r.read().decode("utf-8", "replace"))
             if not isinstance(data, dict):
                 return out
@@ -186,7 +300,7 @@ class WikiClient:
             headers={"Content-Type": "application/json",
                      "Authorization": f"Bearer {self.token}"})
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            with _wiki_safe_urlopen(req, timeout=self.timeout) as r:
                 data = json.loads(r.read().decode())
             return WikiResult(True, rel_path=data.get("rel_path", ""), status=r.status)
         except urllib.error.HTTPError as e:
@@ -209,7 +323,7 @@ class WikiClient:
             url = f"{self.base_url}/wiki/search?q=" + urllib.parse.quote(q)
             headers = self._auth_headers()
             req = urllib.request.Request(url, method="GET", headers=headers)
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            with _wiki_safe_urlopen(req, timeout=self.timeout) as r:
                 if r.status != 200:
                     return []
                 data = json.loads(r.read().decode("utf-8", "replace"))
@@ -264,7 +378,7 @@ class WikiClient:
             body = json.dumps(payload).encode()
             req = urllib.request.Request(url, data=body, method=method, headers=headers)
             try:
-                with urllib.request.urlopen(req, timeout=query_timeout) as r:
+                with _wiki_safe_urlopen(req, timeout=query_timeout) as r:
                     if r.status == 200:
                         res = r.read().decode("utf-8", "replace")
                         try:
@@ -288,7 +402,7 @@ class WikiClient:
             url = f"{self.base_url}/wiki/search?q=" + urllib.parse.quote(question)
             headers = self._auth_headers()
             req = urllib.request.Request(url, method="GET", headers=headers)
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            with _wiki_safe_urlopen(req, timeout=self.timeout) as r:
                 if r.status == 200:
                     data = json.loads(r.read().decode("utf-8", "replace"))
                     results = data.get("results", []) if isinstance(data, dict) else []
@@ -309,7 +423,7 @@ class WikiClient:
             url = f"{self.base_url}/wiki/manifest.json"
             headers = self._auth_headers()
             req = urllib.request.Request(url, method="GET", headers=headers)
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            with _wiki_safe_urlopen(req, timeout=self.timeout) as r:
                 if r.status == 200:
                     manifest = json.loads(r.read().decode("utf-8", "replace"))
                     pages = manifest.get("pages", []) if isinstance(manifest, dict) else []
@@ -339,7 +453,7 @@ class WikiClient:
             url = f"{self.base_url}{path}"
             headers = self._auth_headers()
             req = urllib.request.Request(url, method="GET", headers=headers)
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            with _wiki_safe_urlopen(req, timeout=self.timeout) as r:
                 if r.status != 200:
                     raise RuntimeError(f"{path} status {r.status}")
                 return json.loads(r.read().decode("utf-8", "replace"))
@@ -404,7 +518,7 @@ class WikiClient:
             url = f"{self.base_url}/wiki/graph/{urllib.parse.quote(slug)}?hops=1"
             headers = self._auth_headers()
             req = urllib.request.Request(url, method="GET", headers=headers)
-            with urllib.request.urlopen(req, timeout=_edge_timeout) as r:
+            with _wiki_safe_urlopen(req, timeout=_edge_timeout) as r:
                 if r.status != 200:
                     return {}
                 return json.loads(r.read().decode("utf-8", "replace"))
