@@ -1526,8 +1526,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
 
       {/* PROJECTS SECTION — tabs already label the pane; no redundant heading. */}
       {railTab === "projects" && (
-      <div ref={projectsSectionRef}>
-      <div className="px-2 pt-3 shrink-0 min-w-0">
+      <div ref={projectsSectionRef} className="pb-1">
+      <div className="px-2 pt-3 pb-2 shrink-0 min-w-0">
         {projects.length === 0 && !panelSwitching && <Empty>No projects</Empty>}
       <div className="space-y-0.5 -mx-2">
           {projects.map((projectPath) => {
@@ -1800,7 +1800,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
 
       {/* ARCHIVED SESSIONS — deeper shelf than Settled; independent of settle. */}
       {railTab === "projects" && archivedSessions.length > 0 && (
-        <Section title="Archived">
+        <Section title="Archived" className="mt-2 border-t border-edge/25 pt-5">
           <button
             type="button"
             onClick={() => setArchivedExpanded(!archivedExpanded)}
@@ -1860,6 +1860,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       {railTab === "projects" && workspaceInfo?.is_git && (
         <Section
           title="Branches"
+          className="mt-2 border-t border-edge/25 pt-5"
           action={
             <div className="flex items-center gap-0.5">
               <IconBtn
@@ -2408,14 +2409,15 @@ function RunnerStatusDot({
   );
 }
 
-function Section({ title, action, headerSpinner, children }: {
+function Section({ title, action, headerSpinner, children, className }: {
   title: string;
   action?: React.ReactNode;
   headerSpinner?: boolean;
   children: React.ReactNode;
+  className?: string;
 }) {
   return (
-    <div className="px-2 pt-3 shrink-0 min-w-0">
+    <div className={`px-2 shrink-0 min-w-0 ${className || "pt-3"}`}>
       <div className="flex items-center justify-between px-1.5 mb-1.5 mt-0.5">
         <span className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.12em] text-faint font-semibold">
           {title}

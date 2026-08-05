@@ -226,8 +226,9 @@ class PilotAction:
     # copy; run_swarm uses it as the read-only audit subject, never as a write
     # surface for the pilot's own tools.
     repo: str = ""
-    # run_swarm: optional registry id or adapter model name pin (fail-closed).
-    # Empty means auto-route. Prompt text alone never pins a model.
+    # run_swarm: optional registry id or adapter model name pin. Empty means
+    # auto-route. Unknown/pilot-session pins demote to auto-route at execute
+    # time against the keyed agentic catalog. Prompt text alone never pins.
     model: str = ""
     # Optional explicit acceptance criteria for swarm/parallel analysis.
     # Never inferred from goal prose — only an explicit list/string field.
@@ -692,6 +693,24 @@ def _coerce_actions(raw_actions) -> list:
     return actions
 
 
+def _run_swarm_model_pin_description() -> str:
+    """Tool-schema text for run_swarm.model, including live agentic catalog."""
+    base = (
+        "Optional worker model pin (agentic registry id or adapter model name). "
+        "Use only when the user names a specific swarm worker model; omit for "
+        "auto-route. Prompt text alone does not pin a model. "
+    )
+    try:
+        from .swarm_model_pin import swarm_model_pin_hint
+
+        return base + swarm_model_pin_hint()
+    except Exception:
+        return base + (
+            "Omit model for auto-route among keyed agentic providers. Session "
+            "pilot ids remap when a matching worker row exists."
+        )
+
+
 def build_tools_schema(
     mcp_tools: Optional[list] = None,
     no_delegation: bool = False,
@@ -1120,12 +1139,7 @@ def build_tools_schema(
                         },
                         "model": {
                             "type": "string",
-                            "description": (
-                                "Optional worker model pin (registry id or adapter model "
-                                "name, e.g. agentic/meta/muse-spark-1.1 or meta/muse-spark-1.1). "
-                                "Use when the user names a specific swarm model; omit for "
-                                "auto-route. Prompt text alone does not pin a model."
-                            ),
+                            "description": _run_swarm_model_pin_description(),
                         },
                         "acceptance_criteria": {
                             "type": "array",
@@ -1948,7 +1962,7 @@ You have direct access to a local CodeGraph-indexed workspace and can explore/ed
 - `write_file`: write/create a file atomically. Requires `path` and `content`. Use ONLY to create brand-new files.
 - `run_command`: run a terminal shell command. Requires `command`.
 - `list_dir`: list the files and folders inside a directory. `path` is optional.
-- `run_swarm`: dispatch a parallel agent swarm for complex/broad investigations. Requires `goal`. One worker runs per role -- for a broad ask (audit, "review the platform", "find ways to improve quality/robustness/scale") pass SEVERAL `roles` (explore, pipeline-mapper, decision-explainer, conflict-auditor, test-coverage-reviewer) so it fans out into real parallel coverage; pass all five for a full audit. Omit roles only for a single narrow question. When the user names a specific swarm model, pass `model` (registry id or adapter name); omit `model` for auto-route. Prompt text alone does not pin a model. To audit a DIFFERENT checkout than the open workspace, pass `repo`=<absolute git path>: the workers read that subject, while your own writes/edits/commands stay in the open session workspace.
+- `run_swarm`: dispatch a parallel agent swarm for complex/broad investigations. Requires `goal`. One worker runs per role -- for a broad ask (audit, "review the platform", "find ways to improve quality/robustness/scale") pass SEVERAL `roles` (explore, pipeline-mapper, decision-explainer, conflict-auditor, test-coverage-reviewer) so it fans out into real parallel coverage; pass all five for a full audit. Omit roles only for a single narrow question. Prefer omitting `model` so the harness auto-routes among currently keyed agentic worker providers (ChatGPT Codex OAuth, OpenCode Go, OpenRouter, …). Pass `model` only when the user names a worker from the live agentic catalog in the tool schema; session pilot ids (openai-codex:…, cursor/…, codex/…) remap to matching worker rows when present. Unknown pins demote to auto-route; they do not fail the swarm. Prompt text alone does not pin a model. To audit a DIFFERENT checkout than the open workspace, pass `repo`=<absolute git path>: the workers read that subject, while your own writes/edits/commands stay in the open session workspace.
 - `run_implement`: dispatch an edit-capable worker that edits the repo in an isolated worktree and produces a reviewable patch. Requires `goal`. Default engine is standalone `agentic` (routes directly through your provider keys, no external CLI); pass `adapter` only to force a specific engine. Optional `mode` (`implement` default, or `analysis`/`review` for read-only reports).
 - `run_parallel`: dispatch multiple Puppetmaster workers concurrently. Requires `goals` as a JSON array of 2-8 independent goal strings (example: ["Add unit tests for auth.py", "Document the API routes in README"]), optional `adapter`, optional `mode`.
 - `route_task`: preview which model the router would pick + estimated cost for a given instruction without executing it. Requires `instruction`.

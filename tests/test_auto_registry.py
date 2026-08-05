@@ -119,6 +119,75 @@ def test_disconnected_provider_is_dropped(monkeypatch, tmp_path):
             assert provider != "openai-api"
 
 
+def test_sync_with_opencode_go_only(monkeypatch, tmp_path):
+    """Go-only auth must seed agentic worker rows (gpt-5.6-luna, …) from curated."""
+    models_path = tmp_path / "models.json"
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
+
+    def mock_get_provider_key(provider):
+        if provider.name == "opencode-go":
+            return "fake-key-opencode-go"
+        return None
+
+    with patch("harness.registry_wizard.get_provider_key", mock_get_provider_key), \
+         patch("harness.keys.get_disconnected", lambda: set()), \
+         patch("harness.model_fetch.fetch_models", lambda *_a, **_k: []), \
+         patch("harness.auto_registry._enabled_picker_models", lambda *_a, **_k: []):
+        from harness.auto_registry import sync_agentic_registry
+
+        result = sync_agentic_registry()
+
+    assert result["synced"] is True
+    assert result["providers"] == ["opencode-go"]
+    assert result["models_count"] > 0
+    with open(models_path, encoding="utf-8") as f:
+        data = json.load(f)
+    ids = {m["id"] for m in data["models"] if m.get("adapter") == "agentic"}
+    assert "agentic/gpt-5.6-luna" in ids
+    assert "agentic/deepseek-v4-flash" in ids
+    for model in data["models"]:
+        if model.get("adapter") == "agentic":
+            assert model.get("payload_defaults", {}).get("provider") == "opencode-go"
+
+
+def test_sync_with_openai_codex_only(monkeypatch, tmp_path):
+    """Codex-only OAuth must seed plan-billed agentic worker rows for swarms."""
+    models_path = tmp_path / "models.json"
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
+
+    def mock_get_provider_key(provider):
+        if provider.name == "openai-codex":
+            return "fake-codex-oauth-token"
+        return None
+
+    with patch("harness.registry_wizard.get_provider_key", mock_get_provider_key), \
+         patch("harness.keys.get_disconnected", lambda: set()), \
+         patch("harness.model_fetch.fetch_models", lambda *_a, **_k: []), \
+         patch("harness.auto_registry._enabled_picker_models", lambda *_a, **_k: []):
+        from harness.auto_registry import sync_agentic_registry
+
+        result = sync_agentic_registry()
+
+    assert result["synced"] is True
+    assert result["providers"] == ["openai-codex"]
+    assert result["models_count"] > 0
+    with open(models_path, encoding="utf-8") as f:
+        data = json.load(f)
+    agentic = [m for m in data["models"] if m.get("adapter") == "agentic"]
+    ids = {m["id"] for m in agentic}
+    assert "agentic/openai-codex/gpt-5.6-luna" in ids
+    assert "agentic/openai-codex/gpt-5.6-sol" in ids
+    for model in agentic:
+        defaults = model.get("payload_defaults") or {}
+        assert defaults.get("provider") == "openai-codex"
+        assert model.get("billing") == "plan"
+        assert defaults.get("model") or model.get("adapter_model_name")
+        # Wire id stays bare (Responses API); registry id is namespaced.
+        assert "/" not in str(model.get("adapter_model_name") or "")
+
+
 def test_preserves_non_agentic_entries(monkeypatch, tmp_path):
     """Pre-existing non-agentic entries should be preserved during sync."""
     models_path = tmp_path / "models.json"
@@ -485,11 +554,10 @@ def test_seed_catalog_filters_marionette_unconfigured(monkeypatch, tmp_path):
     assert "bedrock" not in allowed2
 
 
-def test_sync_skips_oauth_cli_identities(monkeypatch, tmp_path):
-    """ChatGPT Codex / Cursor CLI keys must not stamp agentic HTTP models.
+def test_sync_includes_codex_oauth_but_skips_cursor_cli(monkeypatch, tmp_path):
+    """Codex OAuth is a first-class agentic worker; Cursor CLI stays wave-2.
 
-    Fresh installs with only openai-codex OAuth used to seed agentic/gpt-5.6-*
-    rows that fail credential checks and empty the SESSION COST savings path.
+    OpenRouter + Codex both stamp agentic rows; cursor-cli still does not.
     """
     models_path = tmp_path / "models.json"
     monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
@@ -505,20 +573,26 @@ def test_sync_skips_oauth_cli_identities(monkeypatch, tmp_path):
 
     with patch("harness.registry_wizard.get_provider_key", mock_get_provider_key), \
          patch("harness.keys.get_disconnected", lambda: set()), \
-         patch("harness.model_fetch.fetch_models", mock_fetch_models):
+         patch("harness.model_fetch.fetch_models", mock_fetch_models), \
+         patch("harness.auto_registry._enabled_picker_models", lambda *_a, **_k: []):
         from harness.auto_registry import sync_agentic_registry
         result = sync_agentic_registry()
 
     assert result["synced"] is True
     assert "openrouter" in result["providers"]
-    assert "openai-codex" not in result["providers"]
+    assert "openai-codex" in result["providers"]
     assert "cursor-cli" not in result["providers"]
 
     data = json.loads(models_path.read_text())
+    providers = {
+        (model.get("payload_defaults") or {}).get("provider")
+        for model in data.get("models", [])
+        if model.get("adapter") == "agentic"
+    }
+    assert "openai-codex" in providers
+    assert "cursor-cli" not in providers
     for model in data.get("models", []):
         assert model.get("adapter") == "agentic"
-        prov = (model.get("payload_defaults") or {}).get("provider")
-        assert prov not in ("openai-codex", "cursor-cli")
         assert "tools" in (model.get("tags") or [])
         assert "agentic" in (model.get("tags") or [])
 

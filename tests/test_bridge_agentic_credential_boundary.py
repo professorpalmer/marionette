@@ -134,6 +134,28 @@ def test_pool_key_mirrored_into_env_before_orchestrator(monkeypatch, tmp_path):
     assert _SECRET not in (result.summary or "")
 
 
+def test_openai_codex_oauth_token_mirrored_before_orchestrator(monkeypatch, tmp_path):
+    """Codex OAuth must reach agentic workers via OPENAI_CODEX_TOKEN."""
+    fake = _FakeProvider(name="openai-codex", env_vars=("OPENAI_CODEX_TOKEN",))
+    monkeypatch.delenv("OPENAI_CODEX_TOKEN", raising=False)
+    monkeypatch.setattr("harness.providers.available_providers", lambda: [fake])
+    monkeypatch.setattr("harness.registry_wizard.get_provider_key", lambda _p: _SECRET)
+    monkeypatch.setattr(
+        "harness.credential_pool._mirror_pool_token_to_env",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        "harness.credential_pool.providers_for_env_var",
+        lambda _ev: ["openai-codex"],
+    )
+    monkeypatch.setattr("harness.keys.get_disconnected", lambda: set())
+
+    result = _run_agentic_swarm(monkeypatch, tmp_path)
+    assert result is not None
+    assert _CapturingOrchestrator.env_at_run.get("OPENAI_CODEX_TOKEN") == _SECRET
+    assert _SECRET not in (result.summary or "")
+
+
 def test_disconnected_slugs_exported_to_env(monkeypatch, tmp_path):
     monkeypatch.setattr("harness.providers.available_providers", lambda: [])
     monkeypatch.setattr("harness.keys.get_disconnected", lambda: {"openai", "anthropic"})

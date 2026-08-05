@@ -671,9 +671,10 @@ def clear_api_key(reach: str):
     # exports this provider's key (which the login-shell env capture re-injects).
     mark_disconnected(reach)
 
-# API-key providers the agentic swarm can actually call. OAuth/CLI identities
-# (openai-codex, cursor-cli, …) are intentionally excluded — they authenticate
-# the pilot, not Puppetmaster's standalone HTTP workers.
+# Providers whose shell-exported keys may be persisted into keys.json for the
+# next cold start. openai-codex uses OPENAI_CODEX_TOKEN (OAuth) and is handled
+# by the credential pool / OAuth flow — not this env-key scoop list. cursor-cli
+# is login-state, not an API key file.
 _PERSISTABLE_ENV_PROVIDERS = (
     "openrouter",
     "openai",

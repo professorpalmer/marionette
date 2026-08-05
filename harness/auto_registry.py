@@ -60,6 +60,18 @@ _AGENTIC_TEMPLATES = {
         "balanced": (85, 3.0, 15.0, 200000, ["balanced", "fast", "vision"]),
         "cheap": (70, 0.8, 4.0, 200000, ["cheap", "fast", "vision"]),
     },
+    # OpenCode Go is subscription-billed; keep nominal rates for router rank.
+    "opencode-go": {
+        "frontier": (90, 1.0, 3.0, 200000, ["frontier", "reasoning", "code"]),
+        "balanced": (80, 0.5, 1.5, 200000, ["balanced", "fast", "code"]),
+        "cheap": (70, 0.1, 0.3, 200000, ["cheap", "fast", "code"]),
+    },
+    # ChatGPT Codex OAuth (plan); nominal rates for capability ranking only.
+    "openai-codex": {
+        "frontier": (92, 2.5, 10.0, 200000, ["frontier", "reasoning", "code"]),
+        "balanced": (85, 1.25, 5.0, 200000, ["balanced", "fast", "code"]),
+        "cheap": (72, 0.3, 1.2, 128000, ["cheap", "fast", "code"]),
+    },
 }
 
 # Benchmark-anchored per-model overrides (mid-2026 OpenRouter data). The tier
@@ -130,7 +142,82 @@ _CURATED_MODELS = {
         ("meta.llama3-1-8b-instruct-v1:0", "cheap", "meta.llama3-1-8b-instruct-v1:0"),
         ("mistral.mistral-7b-instruct-v0:2", "cheap", "mistral.mistral-7b-instruct-v0:2"),
     ],
+    # Populated below from harness.opencode_go.CURATED_MODELS so a Go-only
+    # auth setup still has agentic worker rows when live /models is unreachable.
+    "opencode-go": [],
+    # Populated below from Provider.pilot_models for openai-codex.
+    "openai-codex": [],
 }
+
+
+def _opencode_go_curated() -> list[tuple[str, str, str]]:
+    """Curated OpenCode Go rows as (model_name, tier, slug) for agentic sync."""
+    try:
+        from .opencode_go import CURATED_MODELS
+    except Exception as e:
+        _diag("auto_registry.opencode_go_curated", e)
+        return []
+    out: list[tuple[str, str, str]] = []
+    for name in CURATED_MODELS:
+        bare = str(name or "").strip()
+        if not bare:
+            continue
+        n = bare.lower()
+        if any(tok in n for tok in ("kimi-k3", "grok-4.5", "gpt-5.6-sol", "glm-5.2")):
+            tier = "frontier"
+        elif "flash" in n or n.endswith("-plus") or n in ("hy3", "mimo-v2.5"):
+            tier = "cheap"
+        else:
+            tier = "balanced"
+        out.append((bare, tier, bare))
+    return out
+
+
+def _openai_codex_curated() -> list[tuple[str, str, str]]:
+    """Curated ChatGPT Codex OAuth rows from the pilot catalog.
+
+    Slug is namespaced (``openai-codex/<model>``) so registry ids do not collide
+    with OpenCode Go flat ``agentic/gpt-5.6-luna`` rows. Wire model name stays
+    the bare Codex id via ``adapter_model_name``.
+    """
+    try:
+        from .providers import get_provider
+
+        provider = get_provider("openai-codex")
+        models = list(getattr(provider, "pilot_models", ()) or ()) if provider else []
+    except Exception as e:
+        _diag("auto_registry.openai_codex_curated", e)
+        models = []
+    if not models:
+        models = (
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-5.5",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.3-codex",
+        )
+    out: list[tuple[str, str, str]] = []
+    for name in models:
+        bare = str(name or "").strip()
+        if not bare:
+            continue
+        n = bare.lower()
+        if any(tok in n for tok in ("sol", "opus", "o3")):
+            tier = "frontier"
+        elif any(tok in n for tok in ("mini", "nano", "spark")):
+            tier = "cheap"
+        else:
+            tier = "balanced"
+        # (model_name for wire, tier, slug for registry id)
+        out.append((bare, tier, f"openai-codex/{bare}"))
+    return out
+
+
+# Bind at import so sync/discovery see curated without a second lookup path.
+_CURATED_MODELS["opencode-go"] = _opencode_go_curated()
+_CURATED_MODELS["openai-codex"] = _openai_codex_curated()
 
 
 def _enabled_picker_models(provider_name: str) -> list[str]:
@@ -177,7 +264,12 @@ def _get_provider_models_from_discovery(provider_name: str, provider_key: str) -
         # refresh cannot strand an otherwise keyed provider.
         enabled = _enabled_picker_models(provider_name)
         if enabled:
-            selected = [(m, _tier_of_known(m), m) for m in enabled]
+            def _slug_for(name: str) -> str:
+                if provider_name == "openai-codex" and "/" not in name:
+                    return f"openai-codex/{name}"
+                return name
+
+            selected = [(m, _tier_of_known(m), _slug_for(m)) for m in enabled]
             if provider_name == "openrouter":
                 selected_slugs = {item[2] for item in selected}
                 selected.extend(
@@ -272,13 +364,23 @@ def _get_provider_models_from_discovery(provider_name: str, provider_key: str) -
                 if model_id in seen:
                     continue
                 seen.add(model_id)
-                result.append((model_id, _tier_of(model_id), model_id))
+                slug = (
+                    f"openai-codex/{model_id}"
+                    if provider_name == "openai-codex" and "/" not in model_id
+                    else model_id
+                )
+                result.append((model_id, _tier_of(model_id), slug))
                 if len(result) >= 6:  # a handful per provider is plenty
                     break
 
         if provider_name == "openrouter":
             # Discovery is additive.  It may contribute useful current models,
             # but must never evict the deterministic K3/DeepSeek ladder.
+            seen_slugs = {item[2] for item in result}
+            result.extend(item for item in curated if item[2] not in seen_slugs)
+        elif provider_name == "openai-codex":
+            # Keep curated Codex ladder even when live discovery returns a
+            # partial list (or a different naming wave).
             seen_slugs = {item[2] for item in result}
             result.extend(item for item in curated if item[2] not in seen_slugs)
         return result if result else curated
@@ -381,13 +483,17 @@ def _build_agentic_spec(provider_name: str, model_name: str, tier: str, slug: st
         "context_window": context_window,
         "tags": tag_list,
         "payload_defaults": {"provider": provider_name},
-        "billing": "api"
+        # Plan OAuth / subscription providers: $0 marginal; nominal rates above
+        # are for router ranking only. Cash API keys stay billing=api.
+        "billing": (
+            "plan" if provider_name in ("openai-codex", "opencode-go") else "api"
+        ),
     }
 
 
-# harness provider name -> agentic/puppetmaster provider slug. Only these are
-# standalone HTTP targets for the agentic adapter; OAuth/CLI identities
-# (openai-codex, cursor-cli, ...) authenticate a pilot, never a swarm worker.
+# harness provider name -> agentic/puppetmaster provider slug. These are
+# standalone HTTP targets for the agentic adapter (pilots AND workers).
+# cursor-cli stays out for now (Agent CLI wire; wave-2 worker path).
 _AGENTIC_PROVIDER_SLUGS = {
     "anthropic": "anthropic",
     "openai": "openai-api",
@@ -398,6 +504,7 @@ _AGENTIC_PROVIDER_SLUGS = {
     "xai": "xai",
     "bedrock": "bedrock",
     "opencode-go": "opencode-go",
+    "openai-codex": "openai-codex",
 }
 
 
@@ -633,10 +740,9 @@ def sync_agentic_registry(force: bool = False) -> dict:
 
         # Detect live providers with usable keys (get_provider_key rejects
         # disconnects and doctor/test/placeholder tokens).
-        # Only providers in provider_map are standalone HTTP targets for the
-        # agentic adapter — OAuth/CLI identities (openai-codex, cursor-cli)
-        # have keys but are not agentic providers; stamping them as agentic
-        # makes the router reject every model when OpenRouter is absent.
+        # Only providers in provider_map are agentic HTTP targets. cursor-cli
+        # stays out (wave-2 Agent CLI worker path); openai-codex is included
+        # so Codex-only installs can run swarms on the same OAuth token.
         live_providers = []
         for p in PROVIDERS:
             if p.name in disconnected:
@@ -722,10 +828,10 @@ def sync_agentic_registry_safe() -> None:
     via diagnostics but never blocks the calling code.
 
     Ladder + reconcile run *after* sync on every call site so a key paste or
-    cold boot cannot leave openai-codex/cursor-cli stamped as agentic, wipe
-    plan models, or clobber Marionette capability scores (which made every
-    tool-loop role fall through to $0-marginal plan routing and empty
-    SESSION COST savings).
+    cold boot cannot leave cursor-cli stamped as agentic, wipe plan peers, or
+    clobber Marionette capability scores (which made every tool-loop role fall
+    through to $0-marginal plan routing and empty SESSION COST savings).
+    openai-codex is a legitimate agentic provider (plan-billed Responses).
     """
     try:
         result = sync_agentic_registry()

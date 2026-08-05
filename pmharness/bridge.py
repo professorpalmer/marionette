@@ -1478,23 +1478,18 @@ def execute_intent(
             pinned_model = (getattr(intent, "model", None) or "").strip()
             pin_fields: dict = {}
             if pinned_model:
-                from puppetmaster.model_registry import (
-                    AmbiguousModelPinError,
-                    apply_agentic_model_pin,
-                )
+                # Resolve against the *keyed* agentic catalog (alias remap for
+                # cursor/codex pilot ids → OpenCode Go / OpenRouter worker ids).
+                # Unknown pins demote to auto-route instead of failing the swarm
+                # — the harness already knows what is available right now.
+                from harness.swarm_model_pin import resolve_swarm_model_pin
 
-                try:
-                    pin_fields = apply_agentic_model_pin({}, pinned_model)
-                except AmbiguousModelPinError as exc:
-                    raise ValueError(f"run_swarm model pin ambiguous: {exc}") from exc
-                # Fail closed: unknown pin must not silently auto-route elsewhere.
-                if not pin_fields.get("pinned_model"):
-                    raise ValueError(
-                        f"run_swarm model pin {pinned_model!r} is not in the "
-                        "agentic registry. Add it via Models, or omit model "
-                        "for auto-route."
-                    )
-                pin_fields["auto_route"] = False
+                resolved = resolve_swarm_model_pin(pinned_model)
+                pin_fields = dict(resolved.get("pin_fields") or {})
+                if resolved.get("demoted"):
+                    pin_fields = {}
+                elif pin_fields.get("pinned_model"):
+                    pin_fields["auto_route"] = False
             specs = []
             for r in roles:
                 base_payload = {
