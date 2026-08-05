@@ -19,7 +19,8 @@ import os
 from typing import Any, Optional
 
 # Adapters the bridge can actually drive for product analysis.
-REAL_SWARM_ADAPTERS = frozenset({"agentic", "openai"})
+# ``cursor`` is the platform Cursor SDK path (CURSOR_API_KEY), not agent-login.
+REAL_SWARM_ADAPTERS = frozenset({"agentic", "openai", "cursor"})
 
 DEMO_REFUSED_MSG = "demo substrate -- not real codebase analysis"
 
@@ -38,12 +39,14 @@ def normalize_swarm_adapter(raw: str) -> str:
     name = (raw or "").strip().lower()
     if not name:
         return "agentic"
-    # Cursor-named pins from older settings mean the agentic path (cursor-cli /
-    # OpenRouter keys via the agentic registry), not the local demo substrate.
-    if name in ("cursor", "cursor-sdk", "cursor-cli", "demo"):
-        # "demo" normalizes to agentic for product resolution; allow_demo_swarm
-        # is checked separately when a caller truly wants the eval substrate.
-        if name == "demo" and allow_demo_swarm():
+    # cursor-cli (agent login) is never a swarm adapter — map to agentic so
+    # product resolution can still fall through to CURSOR_API_KEY cursor later.
+    if name in ("cursor-cli",):
+        return "agentic"
+    if name in ("cursor", "cursor-sdk"):
+        return "cursor"
+    if name == "demo":
+        if allow_demo_swarm():
             return "demo"
         return "agentic"
     return name
@@ -99,7 +102,9 @@ def resolve_bridge_swarm_adapter(
     name = (str(raw or "")).strip().lower()
     if name in REAL_SWARM_ADAPTERS:
         return name
-    if name in ("cursor", "cursor-sdk", "cursor-cli"):
+    if name in ("cursor", "cursor-sdk"):
+        return "cursor"
+    if name == "cursor-cli":
         return "agentic"
     if name == "demo" and allow_demo_swarm():
         return "demo"

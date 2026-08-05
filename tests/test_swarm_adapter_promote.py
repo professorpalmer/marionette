@@ -36,8 +36,14 @@ def test_allow_demo_opt_in(monkeypatch):
 
 def test_normalize_demo_becomes_agentic_in_product():
     assert normalize_swarm_adapter("demo") == "agentic"
-    assert normalize_swarm_adapter("cursor") == "agentic"
     assert normalize_swarm_adapter("") == "agentic"
+
+
+def test_normalize_keeps_platform_cursor():
+    # Platform CURSOR_API_KEY path — distinct from agent-login cursor-cli.
+    assert normalize_swarm_adapter("cursor") == "cursor"
+    assert normalize_swarm_adapter("cursor-sdk") == "cursor"
+    assert normalize_swarm_adapter("cursor-cli") == "agentic"
 
 
 def test_normalize_demo_kept_when_allowed(monkeypatch):
@@ -49,12 +55,12 @@ def test_resolve_never_returns_demo_in_product():
     assert resolve_bridge_swarm_adapter("demo", repo_cwd="/tmp/repo") == "agentic"
     assert resolve_bridge_swarm_adapter("demo", repo_cwd="") == "agentic"
     assert resolve_bridge_swarm_adapter("", repo_cwd="") == "agentic"
-    assert resolve_bridge_swarm_adapter("cursor", repo_cwd="/tmp/repo") == "agentic"
 
 
 def test_resolve_keeps_real_adapters():
     assert resolve_bridge_swarm_adapter("agentic", repo_cwd="/tmp/repo") == "agentic"
     assert resolve_bridge_swarm_adapter("openai", repo_cwd="/tmp/repo") == "openai"
+    assert resolve_bridge_swarm_adapter("cursor", repo_cwd="/tmp/repo") == "cursor"
 
 
 def test_resolve_allows_explicit_demo_opt_in(monkeypatch):

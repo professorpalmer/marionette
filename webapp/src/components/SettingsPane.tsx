@@ -1409,12 +1409,16 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
           })()}
         >
           <p className="text-[10px] text-muted leading-normal">
-            Log in with the subscription you already pay for. No API key required.
+            Log in with the subscription you already pay for. Labels mark Full stack
+            (pilot + workers) vs Pilot only (chat only until another Full stack auth is connected).
           </p>
           <div className="space-y-1.5">
             <div className="bg-panel2 border border-edge/50 rounded p-2">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-txt font-medium text-[11px]">ChatGPT Codex</span>
+                <span className="text-txt font-medium text-[11px]">
+                  ChatGPT Codex{" "}
+                  <span className="text-good/80 font-normal" title="Powers chat pilot and agentic swarm/implement workers.">Full stack</span>
+                </span>
                 <span className="text-faint text-[10px] font-mono truncate">
                   {planAccountStatusLine("openai-codex")}
                 </span>
@@ -1459,7 +1463,10 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
 
             <div className="bg-panel2 border border-edge/50 rounded p-2">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-txt font-medium text-[11px]">Claude Max</span>
+                <span className="text-txt font-medium text-[11px]">
+                  Claude Max{" "}
+                  <span className="text-good/80 font-normal" title="Subscription auth stamps Anthropic credentials used by agentic workers.">Full stack</span>
+                </span>
                 <span className="text-faint text-[10px] font-mono truncate">
                   {planAccountStatusLine("anthropic")}
                 </span>
@@ -1526,7 +1533,10 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
 
             <div className="bg-panel2 border border-edge/50 rounded p-2">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-txt font-medium text-[11px]">Cursor CLI (plan)</span>
+                <span className="text-txt font-medium text-[11px]">
+                  Cursor CLI (plan){" "}
+                  <span className="text-warn/90 font-normal" title="Agent login powers the chat pilot only. Swarm/implement workers need a Full stack provider or a Cursor API key in Credential pools.">Pilot only</span>
+                </span>
                 <span className="text-faint text-[10px] font-mono truncate">
                   {cursorCliStatus?.installed === false
                     ? (cursorCliStatus.error || "agent binary not found")
@@ -1578,7 +1588,10 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
 
             <div className="bg-panel2 border border-edge/50 rounded p-2">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-txt font-medium text-[11px]">xAI SuperGrok</span>
+                <span className="text-txt font-medium text-[11px]">
+                  xAI SuperGrok{" "}
+                  <span className="text-good/80 font-normal" title="OAuth stamps an xAI key that syncs into agentic workers.">Full stack</span>
+                </span>
                 <span className="text-faint text-[10px] font-mono truncate">
                   {planAccountStatusLine("xai-oauth")}
                 </span>
@@ -1623,7 +1636,10 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
 
             <div className="bg-panel2 border border-edge/50 rounded p-2">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-txt font-medium text-[11px]">Nous</span>
+                <span className="text-txt font-medium text-[11px]">
+                  Nous{" "}
+                  <span className="text-good/80 font-normal" title="Powers chat pilot and agentic swarm/implement workers.">Full stack</span>
+                </span>
                 <span className="text-faint text-[10px] font-mono truncate">
                   {planAccountStatusLine("nous")}
                 </span>
@@ -1709,6 +1725,20 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                   <div className="flex items-center gap-2 min-w-0">
                     <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${connected ? "bg-good" : "bg-faint"}`} />
                     <span className="text-txt font-medium text-[11px]">{p.display_name || p.name}</span>
+                    {p.worker_capability_label ? (
+                      <span
+                        title={p.worker_capability_hint || undefined}
+                        className={`text-[10px] shrink-0 ${
+                          p.worker_capability === "full_stack"
+                            ? "text-good/80"
+                            : p.worker_capability === "platform_worker"
+                              ? "text-accent/80"
+                              : "text-warn/90"
+                        }`}
+                      >
+                        {p.worker_capability_label}
+                      </span>
+                    ) : null}
                     <span
                       title={envBacked ? `Key imported from your environment (${p.env_var || "env var"})` : undefined}
                       className="text-faint text-[10px] font-mono truncate"

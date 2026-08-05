@@ -72,6 +72,21 @@ _AGENTIC_TEMPLATES = {
         "balanced": (85, 1.25, 5.0, 200000, ["balanced", "fast", "code"]),
         "cheap": (72, 0.3, 1.2, 128000, ["cheap", "fast", "code"]),
     },
+    "nous": {
+        "frontier": (88, 1.0, 3.0, 128000, ["frontier", "reasoning", "code"]),
+        "balanced": (80, 0.5, 1.5, 128000, ["balanced", "code"]),
+        "cheap": (70, 0.1, 0.3, 128000, ["cheap", "fast", "code"]),
+    },
+    "minimax": {
+        "frontier": (86, 1.0, 4.0, 200000, ["frontier", "code", "reasoning"]),
+        "balanced": (78, 0.3, 1.2, 200000, ["balanced", "code"]),
+        "cheap": (70, 0.1, 0.4, 200000, ["cheap", "fast", "code"]),
+    },
+    "nvidia": {
+        "frontier": (84, 0.5, 1.5, 128000, ["frontier", "code"]),
+        "balanced": (76, 0.2, 0.6, 128000, ["balanced", "code"]),
+        "cheap": (68, 0.05, 0.2, 128000, ["cheap", "fast", "code"]),
+    },
 }
 
 # Benchmark-anchored per-model overrides (mid-2026 OpenRouter data). The tier
@@ -125,6 +140,18 @@ _CURATED_MODELS = {
     "xai": [
         ("grok-4", "frontier", "grok-4"),
         ("grok-4-fast", "balanced", "grok-4-fast"),
+    ],
+    "nous": [
+        ("Hermes-4-70B", "frontier", "Hermes-4-70B"),
+        ("Hermes-3-Llama-3.1-70B", "balanced", "Hermes-3-Llama-3.1-70B"),
+    ],
+    "minimax": [
+        ("MiniMax-M3", "frontier", "MiniMax-M3"),
+        ("MiniMax-M2.7", "balanced", "MiniMax-M2.7"),
+    ],
+    "nvidia": [
+        ("qwen/qwen3-coder-480b", "frontier", "qwen/qwen3-coder-480b"),
+        ("deepseek-ai/deepseek-v3.1", "balanced", "deepseek-ai/deepseek-v3.1"),
     ],
     "bedrock": [
         ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", "balanced",
@@ -505,6 +532,11 @@ _AGENTIC_PROVIDER_SLUGS = {
     "bedrock": "bedrock",
     "opencode-go": "opencode-go",
     "openai-codex": "openai-codex",
+    "nous": "nous",
+    "minimax": "minimax",
+    "nvidia": "nvidia",
+    # cursor-cli stays out: agent-login pilot is not CURSOR_API_KEY / agentic HTTP.
+    # Platform cursor workers use the separate CURSOR_API_KEY pool (see bridge).
 }
 
 

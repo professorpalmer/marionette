@@ -1450,14 +1450,54 @@ def execute_intent(
         # A live repo NEVER silently falls through to demo -- that produces
         # generic placeholder findings that read as a successful audit.
         try:
-            from harness.swarm_adapter import resolve_bridge_swarm_adapter
-            swarm_adapter = resolve_bridge_swarm_adapter(repo_cwd=repo_cwd)
+            from harness.swarm_worker_route import resolve_product_worker_adapter
+            swarm_adapter = resolve_product_worker_adapter()
         except Exception:
-            swarm_adapter = (_os.environ.get("HARNESS_SWARM_ADAPTER", "demo") or "demo").lower()
-            if repo_cwd and swarm_adapter not in ("agentic", "openai"):
-                swarm_adapter = "agentic"
+            try:
+                from harness.swarm_adapter import resolve_bridge_swarm_adapter
+                swarm_adapter = resolve_bridge_swarm_adapter(repo_cwd=repo_cwd)
+            except Exception:
+                swarm_adapter = (_os.environ.get("HARNESS_SWARM_ADAPTER", "demo") or "demo").lower()
+                if repo_cwd and swarm_adapter not in ("agentic", "openai", "cursor"):
+                    swarm_adapter = "agentic"
 
-        if swarm_adapter == "agentic" and repo_cwd:
+        if swarm_adapter == "cursor" and repo_cwd:
+            # Platform Cursor SDK workers (CURSOR_API_KEY). Used when no agentic
+            # HTTP provider is keyed — not the same as Settings Cursor CLI login.
+            _warn_if_unindexed(repo_cwd)
+            from puppetmaster.workers import WorkerSpec
+            roles = intent.roles or infer_roles(intent.goal)
+            specs = []
+            for r in roles:
+                cursor_payload = _payload_with_acceptance_criteria({
+                    "read_only": True, "no_edit": True, "dry_run": True,
+                    "cwd": repo_cwd, "prompt": intent.goal,
+                    "auto_route": True,
+                    "allowed_adapters": ["cursor"],
+                    "prefer_plan_billed": True,
+                    "max_turns": _analyze_max_turns(),
+                    "token_budget": worker_token_budget(),
+                    "routing_policy": "balanced",
+                }, getattr(intent, "acceptance_criteria", None))
+                specs.append(WorkerSpec(
+                    role=r,
+                    instruction=_analysis_instruction(
+                        intent.goal, repo_cwd, r,
+                        acceptance_criteria=getattr(
+                            intent, "acceptance_criteria", None
+                        ),
+                    ),
+                    adapter="cursor",
+                    payload=stamp_task_payload(
+                        cursor_payload, session_id=session_id or "", cwd=repo_cwd
+                    ),
+                ))
+            result = Orchestrator(store).run(
+                intent.goal, specs=specs, worker_mode=worker_mode or "inline",
+                label=job_label,
+            )
+            adapter = "cursor"
+        elif swarm_adapter == "agentic" and repo_cwd:
             # Standalone path: run READ-ONLY analysis workers on the built-in
             # 'agentic' adapter (provider API on the user's key -- no external
             # agent CLI). Agentic is provider-universal: OpenRouter, OpenCode

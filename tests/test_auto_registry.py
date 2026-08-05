@@ -188,6 +188,39 @@ def test_sync_with_openai_codex_only(monkeypatch, tmp_path):
         assert "/" not in str(model.get("adapter_model_name") or "")
 
 
+def test_sync_with_nous_minimax_nvidia(monkeypatch, tmp_path):
+    """HTTP pilots that were previously catalog-orphans must seed agentic rows."""
+    models_path = tmp_path / "models.json"
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
+
+    def mock_get_provider_key(provider):
+        if provider.name in ("nous", "minimax", "nvidia"):
+            return "fake-key-" + provider.name
+        return None
+
+    with patch("harness.registry_wizard.get_provider_key", mock_get_provider_key), \
+         patch("harness.keys.get_disconnected", lambda: set()), \
+         patch("harness.model_fetch.fetch_models", lambda *_a, **_k: []), \
+         patch("harness.auto_registry._enabled_picker_models", lambda *_a, **_k: []):
+        from harness.auto_registry import sync_agentic_registry
+
+        result = sync_agentic_registry()
+
+    assert result["synced"] is True
+    assert set(result["providers"]) == {"nous", "minimax", "nvidia"}
+    with open(models_path, encoding="utf-8") as f:
+        data = json.load(f)
+    agentic = [m for m in data["models"] if m.get("adapter") == "agentic"]
+    providers = {
+        (m.get("payload_defaults") or {}).get("provider") for m in agentic
+    }
+    assert providers == {"nous", "minimax", "nvidia"}
+    ids = {m["id"] for m in agentic}
+    assert any("Hermes" in i or "hermes" in i.lower() for i in ids)
+    assert any("MiniMax" in i or "minimax" in i.lower() for i in ids)
+
+
 def test_preserves_non_agentic_entries(monkeypatch, tmp_path):
     """Pre-existing non-agentic entries should be preserved during sync."""
     models_path = tmp_path / "models.json"

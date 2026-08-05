@@ -114,6 +114,7 @@ def pin_candidates(pin: str) -> list[str]:
         head, rest = bare.split("/", 1)
         if head.lower() in {
             "cursor",
+            "cursor-cli",
             "codex",
             "openai",
             "openai-codex",
@@ -138,6 +139,8 @@ def pin_candidates(pin: str) -> list[str]:
         # collide with OpenCode Go's flat agentic/gpt-5.6-* rows.
         _add(f"openai-codex/{body}")
         _add(f"agentic/openai-codex/{body}")
+        # Platform cursor registry peers (only useful when bridge allows cursor).
+        _add(f"cursor/{body}")
     return out
 
 

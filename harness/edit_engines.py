@@ -148,11 +148,9 @@ def _git(cwd: str, *args: str) -> tuple[int, str, str]:
 def agentic_available() -> bool:
     """True when Puppetmaster's agentic edit workers can actually run.
 
-    Mirrors Puppetmaster's key-aware adapter availability. OpenCode Go and
-    Codex OAuth can back the Marionette *pilot* but are not in Puppetmaster's
-    agentic HTTP registry -- they must not flip this true (that would route
-    unsupported agentic workers). Use :func:`pilot_keys_ready` for the UI
-    keyless-banner / readiness signal.
+    Mirrors Puppetmaster's key-aware adapter availability (OpenRouter, Codex
+    OAuth, OpenCode Go, Nous, …). Use :func:`pilot_keys_ready` for the broader
+    UI keyless-banner signal (includes pilot-only Cursor CLI login).
     """
     try:
         from puppetmaster import providers
@@ -165,13 +163,29 @@ def agentic_available() -> bool:
         # disables the default engine.
         return any(
             os.environ.get(k, "").strip()
-            for k in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY",
-                      "GOOGLE_API_KEY", "OPENROUTER_API_KEY",
-                      "AWS_BEARER_TOKEN_BEDROCK")
+            for k in (
+                "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY",
+                "GOOGLE_API_KEY", "OPENROUTER_API_KEY", "OPENCODE_GO_API_KEY",
+                "OPENAI_CODEX_TOKEN", "NOUS_API_KEY", "HERMES_API_KEY",
+                "MINIMAX_API_KEY", "NVIDIA_API_KEY", "ZAI_API_KEY", "GLM_API_KEY",
+                "XAI_API_KEY", "DEEPSEEK_API_KEY",
+                "AWS_BEARER_TOKEN_BEDROCK",
+            )
         ) or (
             bool(os.environ.get("AWS_ACCESS_KEY_ID", "").strip())
             and bool(os.environ.get("AWS_SECRET_ACCESS_KEY", "").strip())
         )
+
+
+def cursor_platform_available() -> bool:
+    """True when platform cursor workers can run (CURSOR_API_KEY)."""
+    try:
+        from harness.provider_capabilities import cursor_platform_workers_ready
+
+        return bool(cursor_platform_workers_ready())
+    except Exception as exc:
+        _diag("edit_engines.cursor_platform_available", exc)
+        return bool(os.environ.get("CURSOR_API_KEY", "").strip())
 
 
 def pilot_keys_ready() -> bool:
@@ -221,23 +235,36 @@ def pilot_keys_ready() -> bool:
 
 
 def select_edit_engine(config: "HarnessConfig", requested_adapter: str = "") -> str:
-    """Pick the in-process edit engine: 'agentic' or 'native'.
+    """Pick the in-process edit engine: 'agentic', 'cursor', or 'native'.
 
     Precedence: explicit action adapter > HARNESS_EDIT_ENGINE env > provider-key
-    availability. External CLI adapters (cursor/claude-code/codex) are handled by
-    the caller before this point and never reach here.
+    availability. External CLI adapters (claude-code/codex) are handled by the
+    caller before this point. Platform ``cursor`` (CURSOR_API_KEY) is used when
+    no agentic HTTP provider is keyed.
     """
     requested = (requested_adapter or "").strip().lower()
     if requested in ("native", "provider"):
         return "native"
     if requested == "agentic":
-        return "agentic" if agentic_available() else "native"
+        return "agentic" if agentic_available() else (
+            "cursor" if cursor_platform_available() else "native"
+        )
+    if requested in ("cursor", "cursor-sdk"):
+        return "cursor" if cursor_platform_available() else "native"
 
     env_choice = (os.environ.get("HARNESS_EDIT_ENGINE", "") or "").strip().lower()
-    if env_choice in ("native", "agentic"):
-        return env_choice if (env_choice == "native" or agentic_available()) else "native"
+    if env_choice in ("native", "agentic", "cursor"):
+        if env_choice == "native":
+            return "native"
+        if env_choice == "agentic":
+            return "agentic" if agentic_available() else "native"
+        return "cursor" if cursor_platform_available() else "native"
 
-    return "agentic" if agentic_available() else "native"
+    if agentic_available():
+        return "agentic"
+    if cursor_platform_available():
+        return "cursor"
+    return "native"
 
 
 def run_edit_worker(
@@ -248,16 +275,38 @@ def run_edit_worker(
 ) -> "WorkerResult":
     """Run the selected in-process edit engine and return a normalized result.
 
-    Falls back from agentic to native only when agentic could not run at all.
+    Falls back from agentic/cursor to native only when those could not run.
     """
     engine = select_edit_engine(config, requested_adapter)
     target_cwd = cwd or config.repo
+    if engine == "cursor":
+        result = run_cursor_edit(
+            config, goal, session_id=session_id, cwd=target_cwd,
+            expects_diff=expects_diff,
+        )
+        if result.error in _FALLBACK_REASONS:
+            _diag("edit_engines.run_edit_worker",
+                  msg=f"cursor engine unavailable ({result.error}); falling back to native")
+            return run_native_edit(
+                config, goal, job_id=job_id, session_id=session_id, cwd=target_cwd,
+                expects_diff=expects_diff, on_event=on_event,
+            )
+        return result
     if engine == "agentic":
         result = run_agentic_edit(
             config, goal, session_id=session_id, cwd=target_cwd,
             expects_diff=expects_diff,
         )
         if result.error in _FALLBACK_REASONS:
+            if cursor_platform_available():
+                _diag("edit_engines.run_edit_worker",
+                      msg=f"agentic unavailable ({result.error}); trying cursor")
+                cursor_result = run_cursor_edit(
+                    config, goal, session_id=session_id, cwd=target_cwd,
+                    expects_diff=expects_diff,
+                )
+                if cursor_result.error not in _FALLBACK_REASONS:
+                    return cursor_result
             _diag("edit_engines.run_edit_worker",
                   msg=f"agentic engine unavailable ({result.error}); falling back to native")
             return run_native_edit(
@@ -336,6 +385,130 @@ def run_native_edit(
     result.engine = "native"
     result.model = (getattr(config, "driver", None) or "") or ""
     return result
+
+
+def run_cursor_edit(
+    config: "HarnessConfig", goal: str, *, session_id: str = "", cwd: str = "",
+    expects_diff: bool = True,
+) -> "WorkerResult":
+    """Platform Cursor SDK workers (CURSOR_API_KEY) in a managed worktree.
+
+    Used when no agentic HTTP provider is keyed. Distinct from Settings
+    Cursor CLI agent-login pilot auth.
+    """
+    from harness.worker import WorkerResult
+    from harness.job_scoping import job_label_for_session, stamp_task_payload
+
+    if not cursor_platform_available():
+        return _stamp_agentic(WorkerResult(
+            ok=False, error=AGENTIC_UNAVAILABLE,
+            summary="CURSOR_API_KEY not set for platform cursor workers.",
+        ))
+
+    try:
+        from puppetmaster.orchestrator import Orchestrator
+        from puppetmaster.store_factory import create_store
+        from puppetmaster.workers import WorkerSpec
+    except Exception as exc:
+        _diag("edit_engines.run_cursor_edit.import", exc)
+        return _stamp_agentic(WorkerResult(
+            ok=False, error=AGENTIC_UNAVAILABLE,
+            summary=f"Puppetmaster unavailable: {exc}",
+        ))
+
+    try:
+        repo_root = cwd or config.repo
+        with managed_worktree_for_goal(repo_root, goal) as wt_path:
+            from pmharness.bridge import (
+                _analysis_instruction,
+                _analyze_max_turns,
+                worker_token_budget,
+            )
+
+            if not expects_diff:
+                payload = stamp_task_payload({
+                    "read_only": True,
+                    "no_edit": True,
+                    "dry_run": True,
+                    "cwd": wt_path,
+                    "prompt": goal,
+                    "auto_route": True,
+                    "allowed_adapters": ["cursor"],
+                    "prefer_plan_billed": True,
+                    "max_turns": _analyze_max_turns(),
+                    "token_budget": worker_token_budget(),
+                    "routing_policy": "balanced",
+                }, session_id=session_id, cwd=wt_path)
+                instruction = _analysis_instruction(
+                    goal, wt_path, "explore", via_tool=True,
+                )
+                role = "explore"
+            else:
+                payload = stamp_task_payload({
+                    "mode": "implement",
+                    "cwd": wt_path,
+                    "prompt": goal,
+                    "auto_route": True,
+                    "allowed_adapters": ["cursor"],
+                    "prefer_plan_billed": True,
+                    "token_budget": worker_token_budget(),
+                    "routing_policy": "balanced",
+                }, session_id=session_id, cwd=wt_path)
+                instruction = goal
+                role = "implement"
+
+            spec = WorkerSpec(
+                role=role,
+                instruction=instruction,
+                adapter="cursor",
+                payload=payload,
+            )
+            tmp = tempfile.mkdtemp(prefix="pmh-cursor-edit-")
+            try:
+                store = create_store("sqlite", tmp)
+                result = Orchestrator(store).run(
+                    goal,
+                    specs=[spec],
+                    worker_mode="inline",
+                    label=job_label_for_session(session_id),
+                )
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+
+            patch, files_changed = finalize_worktree_patch(wt_path)
+            if not expects_diff:
+                patch = ""
+                files_changed = []
+            tokens_out, tokens_in, failure, final_text = _summarize_agentic_result(result)
+            routed_model = _routed_model_id(result)
+            if failure in ("no_model", "unknown_provider", "route_failed"):
+                return _stamp_agentic(WorkerResult(
+                    ok=False, error=AGENTIC_ROUTE_FAILED,
+                    summary=final_text or "Cursor engine could not select a model.",
+                    model=routed_model,
+                    worktree=wt_path,
+                    managed_worktree_path=wt_path,
+                    managed_worktree_mode="managed",
+                ), result)
+            return _stamp_agentic(WorkerResult(
+                ok=True,
+                patch=patch,
+                files_changed=files_changed,
+                summary=final_text or ("ok" if expects_diff else "analysis complete"),
+                model=routed_model,
+                tokens_out=tokens_out,
+                tokens_in=tokens_in,
+                worktree=wt_path,
+                managed_worktree_path=wt_path,
+                managed_worktree_mode="managed",
+                worktree_diff_empty=not bool(patch.strip()),
+            ), result)
+    except Exception as exc:
+        _diag("edit_engines.run_cursor_edit", exc)
+        return _stamp_agentic(WorkerResult(
+            ok=False, error=AGENTIC_ERROR,
+            summary=str(exc),
+        ))
 
 
 def run_agentic_edit(

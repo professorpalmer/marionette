@@ -170,3 +170,34 @@ def test_agentic_swarm_unknown_model_pin_demotes_to_auto_route(monkeypatch, tmp_
     assert not payload.get("pinned_model")
     assert not payload.get("model")
     assert payload.get("allowed_adapters") == ["agentic"]
+
+
+def test_swarm_falls_back_to_platform_cursor_when_no_agentic_keys(
+    monkeypatch, tmp_path,
+):
+    """CURSOR_API_KEY alone must still drive real swarms (not agentic-empty fail)."""
+    _CapturingWorkerSpec._last_captured = []
+    monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")
+    monkeypatch.setenv("HARNESS_REPO", str(tmp_path))
+    monkeypatch.setenv("CURSOR_API_KEY", "test-cursor-api-key")
+    monkeypatch.setattr(
+        "harness.auto_registry.keyed_agentic_providers",
+        lambda: set(),
+    )
+    monkeypatch.setattr("puppetmaster.workers.WorkerSpec", _CapturingWorkerSpec)
+    monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _FakeOrchestrator)
+    monkeypatch.setattr(bridge, "_warn_if_unindexed", lambda *_a, **_k: None)
+
+    intent = DriverIntent(
+        action="run_swarm",
+        goal="Audit provider capability honesty in Settings",
+        roles=["explore"],
+    )
+    result = bridge.execute_intent(intent, state_dir=str(tmp_path / "state"))
+    assert result is not None
+    assert result.adapter == "cursor"
+    assert _CapturingWorkerSpec._last_captured
+    spec = _CapturingWorkerSpec._last_captured[0]
+    assert spec.adapter == "cursor"
+    assert spec.payload.get("allowed_adapters") == ["cursor"]
+    assert spec.payload.get("prefer_plan_billed") is True

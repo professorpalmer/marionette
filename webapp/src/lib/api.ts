@@ -544,6 +544,9 @@ export type ProviderInfo = {
   api_mode: string;
   has_env?: boolean;
   disconnected?: boolean;
+  worker_capability?: "full_stack" | "pilot_only" | "platform_worker";
+  worker_capability_label?: string;
+  worker_capability_hint?: string;
 };
 
 export type ProviderKeyResult = {

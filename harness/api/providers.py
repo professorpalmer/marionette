@@ -89,12 +89,13 @@ def get_models_catalog(*, force: bool = False) -> tuple[int, dict]:
 
 def get_providers() -> tuple[int, list]:
     """GET /api/providers — profiles + key/env/disconnect status (no secrets)."""
+    from ..provider_capabilities import annotate_provider_row
     from ..registry_wizard import PROVIDERS, get_provider_key
     disconnected = get_disconnected()
     res = []
     for p in PROVIDERS:
         status = get_api_key_status(p.name)
-        res.append({
+        res.append(annotate_provider_row({
             "name": p.name,
             "display_name": getattr(p, "display_name", "") or p.name,
             "env_var": p.env_vars[0] if p.env_vars else "",
@@ -104,7 +105,7 @@ def get_providers() -> tuple[int, list]:
             "api_mode": p.api_mode,
             "has_env": provider_has_env(p.name),
             "disconnected": p.name in disconnected,
-        })
+        }))
     return 200, res
 
 
