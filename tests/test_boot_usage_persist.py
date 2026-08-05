@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 
 def test_persist_and_restore_boot_usage_same_app_run(tmp_path, monkeypatch):
@@ -82,6 +84,65 @@ def test_persist_noop_without_app_run_id(tmp_path, monkeypatch):
     srv._BOOT_METER_CARRY["_tokens_used"] = 100
     srv._persist_boot_usage(fold_live=False, force=True)
     assert not Path(srv._boot_usage_path()).is_file()
+
+
+def test_persist_fold_live_does_not_self_deadlock(tmp_path, monkeypatch):
+    """Restart path: fold_live=True re-enters persist via fold — must use RLock.
+
+    With a plain Lock(), the owning thread blocks forever on itself and every
+    /api/usage poll queues behind it. This test fails by timeout if that
+    regresses.
+    """
+    import harness.api.usage_meters as meters
+    import harness.server as srv
+
+    assert isinstance(meters._BOOT_USAGE_PERSIST_LOCK, type(threading.RLock()))
+
+    monkeypatch.setenv("HARNESS_APP_RUN_ID", "run-fold-live-reenter")
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    srv._cfg.state_dir = str(tmp_path)
+    srv._BOOT_USAGE_RESTORED = False
+    for attr in srv._BOOT_METER_ATTRS:
+        srv._BOOT_METER_CARRY[attr] = 0.0
+    srv._BOOT_REPOS.clear()
+    srv._BOOT_CARRY_COST_USD = 0.0
+
+    attrs = {attr: 0 for attr in srv._BOOT_METER_ATTRS}
+    attrs["_tokens_used"] = 100
+    attrs["_tokens_in"] = 80
+    attrs["_tokens_out"] = 20
+    runner = SimpleNamespace(_plan_billing=False, **attrs)
+
+    class _FakeRunners:
+        def runners(self):
+            return [runner]
+
+    fake = _FakeRunners()
+    monkeypatch.setattr(meters, "_runners", lambda: fake)
+    monkeypatch.setattr(meters, "_pilot", lambda: None)
+    monkeypatch.setattr(srv, "_runners", lambda: fake)
+    monkeypatch.setattr(srv, "_pilot", lambda: None)
+
+    done = threading.Event()
+    errors: list[BaseException] = []
+
+    def _target() -> None:
+        try:
+            srv._persist_boot_usage(fold_live=True, force=True)
+        except BaseException as exc:  # noqa: BLE001 — surface in assertion
+            errors.append(exc)
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=_target, daemon=True)
+    thread.start()
+    assert done.wait(5.0), (
+        "fold_live=True self-deadlocked on _BOOT_USAGE_PERSIST_LOCK "
+        "(expected reentrant RLock)"
+    )
+    assert not errors, f"persist raised: {errors[0]!r}"
+    assert Path(srv._boot_usage_path()).is_file()
+    assert float(runner._tokens_used or 0) == 0.0  # folded + zeroed
 
 
 def test_restore_legacy_carry_missing_worker_tokens_cached_peels_conservatively(

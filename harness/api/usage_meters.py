@@ -144,7 +144,11 @@ _BOOT_CARRY_COST_USD: float = 0.0
 # Every workspace opened this process -- boot-pill swarm dollars merge
 # epoch-windowed jobs across these repos, not only the active _cfg().repo.
 _BOOT_REPOS: set[str] = set()
-_BOOT_USAGE_PERSIST_LOCK = threading.Lock()
+# Must be reentrant: fold_live=True holds this lock while folding runners,
+# and each fold calls _persist_boot_usage(fold_live=False) which re-acquires.
+# A plain Lock() self-deadlocks the restart path and wedges every /api/usage
+# poll behind the same lock (status-bar spend freezes the HTTP server).
+_BOOT_USAGE_PERSIST_LOCK = threading.RLock()
 _BOOT_USAGE_LAST_PERSIST = 0.0
 _BOOT_USAGE_RESTORED = False
 
