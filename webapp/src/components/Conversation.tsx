@@ -93,7 +93,7 @@ import {
 } from "./conversation/completionNotify";
 import { createApplyStreamEvent } from "./conversation/streamEventHandler";
 import EditorTabStrip from "./conversation/EditorTabStrip";
-import ComposerDock from "./conversation/ComposerDock";
+import ComposerDock, { type MemoryProposal } from "./conversation/ComposerDock";
 import ConversationHeader from "./conversation/ConversationHeader";
 import ImageLightbox from "./conversation/ImageLightbox";
 import { useSessionSwitch } from "./conversation/useSessionSwitch";
@@ -371,9 +371,7 @@ export default function Conversation({
   const [plan, setPlan] = useState(false);
   const [distillNotice, setDistillNotice] = useState<string | null>(null);
   const [wikiPrepared, setWikiPrepared] = useState<{ pages: any[]; autoIngested: boolean } | null>(null);
-  const [memoryProposals, setMemoryProposals] = useState<
-    { id: string; text: string; category: string }[]
-  >([]);
+  const [memoryProposals, setMemoryProposals] = useState<MemoryProposal[]>([]);
   const cancelRef = useRef<null | (() => void)>(null);
   // User hit Stop: suppress runners-poll "thinking" re-arm and keep-alive resume
   // until the next real user send (not an auto pilot_resume).
