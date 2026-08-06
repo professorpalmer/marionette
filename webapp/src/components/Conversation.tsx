@@ -1854,15 +1854,26 @@ export default function Conversation({
       return;
     }
     if (slash.kind === "compact") {
+      // Local slash path: echo the command into the transcript so Send feels
+      // like a normal prompt (compaction itself still bypasses the pilot loop).
+      const thinkingId = newThinkingId();
       setInput("");
       setEditingIndex(null);
       setStatus("thinking");
-      setItems((p) => [...p, { kind: "thinking", text: "Compacting session context on backend...", id: newThinkingId() }]);
+      setItems((p) => [
+        ...p,
+        { kind: "msg", msg: { role: "user", text: msg } },
+        {
+          kind: "thinking",
+          text: "Compacting session context on backend...",
+          id: thinkingId,
+        },
+      ]);
       api.compactSession()
         .then((res) => {
           setStatus("done");
           setItems((p) => [
-            ...p,
+            ...p.filter((it) => !(it.kind === "thinking" && it.id === thinkingId)),
             {
               kind: "msg",
               msg: {
@@ -1875,7 +1886,7 @@ export default function Conversation({
         .catch((err) => {
           setStatus("error");
           setItems((p) => [
-            ...p,
+            ...p.filter((it) => !(it.kind === "thinking" && it.id === thinkingId)),
             {
               kind: "msg",
               msg: {
@@ -1899,6 +1910,7 @@ export default function Conversation({
       const helpText = formatHelpSlashReply(allSlashCommands);
       setItems((p) => [
         ...p,
+        { kind: "msg", msg: { role: "user", text: msg } },
         {
           kind: "msg",
           msg: {

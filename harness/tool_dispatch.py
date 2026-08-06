@@ -740,7 +740,7 @@ class ToolDispatchMixin:
         return store
 
     def _do_store_scratch(self, act: PilotAction) -> tuple[bool, str, str]:
-        from .session_scratch import ScratchStoreError
+        from .session_scratch import ScratchStoreCorrupt, ScratchStoreError
 
         args = act.arguments or {}
         key = (act.path or args.get("key") or "").strip()
@@ -752,12 +752,20 @@ class ToolDispatchMixin:
         try:
             self._get_scratch_store().set(key, str(value))
             return True, "success", f"stored scratch key={key!r} ({len(str(value))} chars)"
+        except ScratchStoreCorrupt as exc:
+            return (
+                False,
+                "corrupt_store",
+                f"{exc}; call clear_scratch (no key) to quarantine and reset",
+            )
         except ScratchStoreError as exc:
             return False, "cap_exceeded", str(exc)
         except Exception as exc:
             return False, "exception", str(exc)
 
     def _do_load_scratch(self, act: PilotAction) -> tuple[bool, str, str]:
+        from .session_scratch import ScratchStoreCorrupt
+
         args = act.arguments or {}
         key = (act.path or args.get("key") or "").strip()
         if not key:
@@ -767,20 +775,36 @@ class ToolDispatchMixin:
             if value is None:
                 return False, "not_found", f"scratch key not found: {key!r}"
             return True, "success", value
+        except ScratchStoreCorrupt as exc:
+            return (
+                False,
+                "corrupt_store",
+                f"{exc}; call clear_scratch (no key) to quarantine and reset",
+            )
         except Exception as exc:
             return False, "exception", str(exc)
 
     def _do_list_scratch(self, act: PilotAction) -> tuple[bool, str, str]:
+        from .session_scratch import ScratchStoreCorrupt
+
         try:
             rows = self._get_scratch_store().list()
             if not rows:
                 return True, "success", "(scratch empty)"
             lines = [f"{key}\t{n} chars" for key, n in rows]
             return True, "success", "\n".join(lines)
+        except ScratchStoreCorrupt as exc:
+            return (
+                False,
+                "corrupt_store",
+                f"{exc}; call clear_scratch (no key) to quarantine and reset",
+            )
         except Exception as exc:
             return False, "exception", str(exc)
 
     def _do_clear_scratch(self, act: PilotAction) -> tuple[bool, str, str]:
+        from .session_scratch import ScratchStoreCorrupt, ScratchStoreError
+
         args = act.arguments or {}
         key = (act.path or args.get("key") or "").strip()
         try:
@@ -791,7 +815,18 @@ class ToolDispatchMixin:
                     return False, "not_found", f"scratch key not found: {key!r}"
                 return True, "success", f"cleared scratch key={key!r}"
             n = store.clear()
+            if store.last_quarantine_path:
+                return (
+                    True,
+                    "success",
+                    f"cleared corrupt scratch store; quarantined "
+                    f"{store.last_quarantine_path}",
+                )
             return True, "success", f"cleared {n} scratch key(s)"
+        except ScratchStoreCorrupt as exc:
+            return False, "corrupt_store", str(exc)
+        except ScratchStoreError as exc:
+            return False, "exception", str(exc)
         except Exception as exc:
             return False, "exception", str(exc)
 

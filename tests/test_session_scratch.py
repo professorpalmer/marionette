@@ -4,10 +4,14 @@ from __future__ import annotations
 import tempfile
 
 from harness.config import HarnessConfig
+import os
+
 from harness.session_scratch import (
     MAX_SCRATCH_KEYS,
     MAX_SCRATCH_TOTAL_CHARS,
     MAX_SCRATCH_VALUE_CHARS,
+    SCRATCH_FILENAME,
+    ScratchStoreCorrupt,
     ScratchStoreError,
     SessionScratchStore,
 )
@@ -126,3 +130,76 @@ def test_scratch_tools_via_dispatch(monkeypatch, tmp_path):
     assert ok and "k1" in listed
     ok, status, cleared = session._do_clear_scratch(PilotAction(kind="clear_scratch"))
     assert ok and "1" in cleared
+
+
+def test_corrupt_scratch_fails_closed_without_clobber():
+    state_dir = tempfile.mkdtemp()
+    path = os.path.join(state_dir, SCRATCH_FILENAME)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("{not-json")
+    before = open(path, "r", encoding="utf-8").read()
+    store = SessionScratchStore(state_dir)
+    try:
+        store.get("focus")
+        assert False, "expected ScratchStoreCorrupt"
+    except ScratchStoreCorrupt:
+        pass
+    try:
+        store.set("focus", "should-not-write")
+        assert False, "expected ScratchStoreCorrupt"
+    except ScratchStoreCorrupt:
+        pass
+    after = open(path, "r", encoding="utf-8").read()
+    assert after == before
+
+
+def test_clear_quarantines_corrupt_scratch_then_allows_writes():
+    state_dir = tempfile.mkdtemp()
+    path = os.path.join(state_dir, SCRATCH_FILENAME)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("[1, 2, 3]")
+    store = SessionScratchStore(state_dir)
+    assert store.clear() == 0
+    assert store.last_quarantine_path
+    assert os.path.isfile(store.last_quarantine_path)
+    assert store.list() == []
+    store.set("recovered", "ok")
+    assert store.get("recovered") == "ok"
+
+
+def test_corrupt_scratch_tools_surface_status(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "harness.conversation.RuleStore",
+        lambda *a, **k: __import__("harness.rule_store", fromlist=["RuleStore"]).RuleStore(
+            path=str(tmp_path / "rules.json")
+        ),
+    )
+    monkeypatch.setattr("harness.memory_store.MEMORY_PATH", tmp_path / "mem.json")
+    state_dir = tempfile.mkdtemp()
+    path = os.path.join(state_dir, SCRATCH_FILENAME)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("{broken")
+    from harness.conversation import ConversationalSession
+    from harness.pilot import PilotAction
+
+    session = ConversationalSession(
+        HarnessConfig(driver="stub-oracle-v2", state_dir=state_dir)
+    )
+    ok, status, msg = session._do_load_scratch(
+        PilotAction(kind="load_scratch", path="focus", arguments={"key": "focus"})
+    )
+    assert ok is False and status == "corrupt_store"
+    assert "clear_scratch" in msg
+    # File must still be intact until explicit clear.
+    assert open(path, "r", encoding="utf-8").read() == "{broken"
+    ok, status, msg = session._do_clear_scratch(PilotAction(kind="clear_scratch"))
+    assert ok and status == "success" and "quarantined" in msg
+    ok, status, msg = session._do_store_scratch(
+        PilotAction(
+            kind="store_scratch",
+            path="focus",
+            content="after-repair",
+            arguments={"key": "focus", "value": "after-repair"},
+        )
+    )
+    assert ok and status == "success"
