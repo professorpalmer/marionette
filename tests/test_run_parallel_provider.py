@@ -130,7 +130,7 @@ def test_run_parallel_provider_default(monkeypatch):
         assert set(goals_seen) == {"Goal A", "Goal B"}
 
     finally:
-        shutil.rmtree(repo_dir)
+        shutil.rmtree(repo_dir, ignore_errors=True)
 
 
 def test_run_parallel_analysis_empty_diff_applied(monkeypatch):
@@ -229,7 +229,7 @@ def test_run_parallel_analysis_empty_diff_applied(monkeypatch):
 
         assert expects_seen == [False]
     finally:
-        shutil.rmtree(repo_dir)
+        shutil.rmtree(repo_dir, ignore_errors=True)
 
 
 def test_run_parallel_analysis_discards_seed_patch_persists_findings(monkeypatch):
@@ -336,7 +336,7 @@ def test_run_parallel_analysis_discards_seed_patch_persists_findings(monkeypatch
                 for row in arts
             )
     finally:
-        shutil.rmtree(repo_dir)
+        shutil.rmtree(repo_dir, ignore_errors=True)
 
 
 def test_run_parallel_analysis_verification_only_degraded(monkeypatch):
@@ -400,7 +400,7 @@ def test_run_parallel_analysis_verification_only_degraded(monkeypatch):
             assert job is not None
             assert job["status"] == "failed"
     finally:
-        shutil.rmtree(repo_dir)
+        shutil.rmtree(repo_dir, ignore_errors=True)
 
 
 def test_run_parallel_implement_empty_diff_not_applied(monkeypatch):
@@ -463,4 +463,4 @@ def test_run_parallel_implement_empty_diff_not_applied(monkeypatch):
             # from apply_msg path -- either failed or completed depending on
             # whether error key is set. applied=False is the badge contract.
     finally:
-        shutil.rmtree(repo_dir)
+        shutil.rmtree(repo_dir, ignore_errors=True)

@@ -118,7 +118,7 @@ def test_run_implement_provider_default(monkeypatch):
         assert run_called == [True]
 
     finally:
-        shutil.rmtree(repo_dir)
+        shutil.rmtree(repo_dir, ignore_errors=True)
 
 
 def test_run_implement_external_fallback(monkeypatch):
@@ -175,7 +175,7 @@ def test_run_implement_external_fallback(monkeypatch):
         assert "cursor" in pm_cmd_called[0]
 
     finally:
-        shutil.rmtree(repo_dir)
+        shutil.rmtree(repo_dir, ignore_errors=True)
 
 
 def test_run_implement_falls_back_to_provider_when_cli_absent(monkeypatch):
@@ -228,7 +228,7 @@ def test_run_implement_falls_back_to_provider_when_cli_absent(monkeypatch):
         swarm_pendings = [e for e in events if e.kind == "swarm_pending"]
         assert len(swarm_pendings) == 1
     finally:
-        shutil.rmtree(repo_dir)
+        shutil.rmtree(repo_dir, ignore_errors=True)
 
 
 def test_run_implement_agentic_engine_default(monkeypatch):
@@ -299,4 +299,4 @@ def test_run_implement_agentic_engine_default(monkeypatch):
         with open(os.path.join(repo_dir, "test.txt"), "r") as f:
             assert f.read() == "hello\nworld\n"
     finally:
-        shutil.rmtree(repo_dir)
+        shutil.rmtree(repo_dir, ignore_errors=True)
