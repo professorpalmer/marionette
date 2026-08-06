@@ -50,7 +50,12 @@ import { shouldRefreshBusyChrome } from "./streamTerminal";
 
 export type StreamEvent = { kind: string; data?: any };
 
-export type MemoryProposal = { id: string; text: string; category: string };
+export type MemoryProposal = {
+  id: string;
+  text: string;
+  category: string;
+  refine?: { kind: string; scope: string };
+};
 
 export type ApplyStreamEventDeps = {
   setCompactingStatus: (v: string | null) => void;
@@ -146,16 +151,24 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
           setWikiPrepared({ pages, autoIngested: false });
         }
       }
-    } else if (ev.kind === "memory_propose") {
+    } else if (ev.kind === "memory_propose" || ev.kind === "refine_propose") {
       // Non-blocking Save/Skip after the final answer. Does not affect
-      // composer busy state; ignore/dismiss is fine.
+      // composer busy state; ignore/dismiss is fine. refine_propose reuses the
+      // same card chrome with accept/dismiss routed to /api/refine/propose/*.
       const id = d.id || "";
       const text = (d.text || "").trim();
       if (id && text) {
+        const refine =
+          ev.kind === "refine_propose"
+            ? {
+                kind: String(d.kind || "memory"),
+                scope: String(d.scope || "global"),
+              }
+            : undefined;
         setMemoryProposals((prev) => (
           prev.some((p) => p.id === id)
             ? prev
-            : [...prev, { id, text, category: d.category || "general" }]
+            : [...prev, { id, text, category: d.category || "general", refine }]
         ));
       }
     } else if (ev.kind === "codegraph_context") {

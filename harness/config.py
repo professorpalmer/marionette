@@ -23,6 +23,14 @@ class HarnessConfig:
     max_context_tokens: int = 96000
     no_delegation: bool = False
     verify_cmd: str = ""
+    # Host quality GATE (interactive turn finish): optional shell command(s)
+    # run after assistant_done before settling idle. Empty = disabled.
+    # Separate from Autopilot verify_cmd; quality_gate_on_auto defaults False
+    # so schedules are not double-gated.
+    quality_gate_cmds: str = ""
+    max_gate_attempts: int = 3
+    max_gate_seconds: float = 120.0
+    quality_gate_on_auto: bool = False
     # AUTO-VERIFY LOOP (interactive pilot): after the agent edits files, run a
     # fast project check (typecheck/syntax of the CHANGED files) and let it
     # self-correct before handing back. verify_command overrides the detected
@@ -166,6 +174,12 @@ class HarnessConfig:
             max_context_tokens=max_ctx,
             no_delegation=str(pick("HARNESS_NO_DELEGATION", "no_delegation", "")).strip() in ("1","true","yes","True"),
             verify_cmd=pick("HARNESS_VERIFY_CMD", "verify_cmd", ""),
+            quality_gate_cmds=pick("HARNESS_QUALITY_GATE_CMDS", "quality_gate_cmds", ""),
+            max_gate_attempts=int(pick("HARNESS_MAX_GATE_ATTEMPTS", "max_gate_attempts", 3) or 3),
+            max_gate_seconds=float(pick("HARNESS_MAX_GATE_SECONDS", "max_gate_seconds", 120) or 120),
+            quality_gate_on_auto=_bool(
+                "HARNESS_QUALITY_GATE_ON_AUTO", "quality_gate_on_auto",
+            ),
             auto_verify=str(pick("HARNESS_AUTO_VERIFY", "auto_verify", "true")).strip() in ("1","true","yes","True"),
             verify_command=pick("HARNESS_VERIFY_COMMAND", "verify_command", ""),
             browser_enabled=str(pick("HARNESS_BROWSER_ENABLED", "browser_enabled", "true")).strip() in ("1","true","yes","True"),

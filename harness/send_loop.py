@@ -566,6 +566,10 @@ class SendLoopMixin:
                     if self._auto_mode:
                         # Full-auto: never propose memory (no human to Save/Skip).
                         self._turn_memory_queue.clear()
+                        try:
+                            self._turn_refine_queue.clear()
+                        except Exception:
+                            pass
                         # Full-auto mode: run synchronously to ensure sequential consistency
                         if self._auto_distill:
                             d = self._maybe_auto_distill()
@@ -578,11 +582,81 @@ class SendLoopMixin:
                                     yield ConvEvent("wiki_prepared", w)
                             except Exception:
                                 pass
+                        # Autopilot keeps verify_cmd; quality gate only if opted in.
+                        try:
+                            from .quality_gate import maybe_run_quality_gates
+
+                            gate_result = maybe_run_quality_gates(
+                                self, auto_mode=True,
+                            )
+                            if gate_result is not None and gate_result.outcome != "disabled":
+                                yield ConvEvent("quality_gate", gate_result.event_data())
+                        except Exception:
+                            pass
                     else:
                         # Interactive: emit non-blocking memory Save/Skip cards
                         # AFTER the final answer (never mid-tool-loop).
                         for prop in self._flush_turn_memory_proposals():
                             yield ConvEvent("memory_propose", prop)
+                        # Continual harness refine cards (supplemental only).
+                        try:
+                            from .harness_refine import get_refine_controller
+
+                            for prop in get_refine_controller(self).flush_queued():
+                                yield ConvEvent("refine_propose", prop)
+                        except Exception:
+                            pass
+                        # Host quality GATE before settle-to-idle (blocks finish on fail).
+                        gate_blocks_idle = False
+                        try:
+                            from .quality_gate import (
+                                gate_retry_prompt,
+                                maybe_run_quality_gates,
+                            )
+
+                            gate_result = maybe_run_quality_gates(
+                                self, auto_mode=False,
+                            )
+                            if gate_result is not None and gate_result.outcome != "disabled":
+                                yield ConvEvent("quality_gate", gate_result.event_data())
+                                if gate_result.block_finish and gate_result.outcome in (
+                                    "failed", "skipped_unchanged",
+                                ):
+                                    gate_blocks_idle = True
+                                    nudge = gate_retry_prompt(gate_result)
+                                    if nudge and hasattr(self, "enqueue_prompt"):
+                                        try:
+                                            self.enqueue_prompt(nudge)
+                                        except Exception:
+                                            pass
+                                elif gate_result.outcome == "budget_halt":
+                                    gate_blocks_idle = True
+                        except Exception:
+                            gate_blocks_idle = False
+                        # Sticky session goal: record turn usage. Optional gentle
+                        # continuation is host-gated (goal_auto_continue) so an
+                        # active goal cannot drain-loop the prompt queue forever.
+                        try:
+                            goal = getattr(self, "_session_goal", None)
+                            if goal is not None and goal.is_active():
+                                tokens = int(
+                                    getattr(self, "_last_turn_tokens", 0)
+                                    or getattr(self, "_turn_output_tokens", 0)
+                                    or 0
+                                )
+                                goal.record_turn_usage(tokens=tokens)
+                                self._persist_session_goal()
+                                auto_continue = bool(
+                                    getattr(self.config, "goal_auto_continue", False)
+                                )
+                                if (
+                                    auto_continue
+                                    and not gate_blocks_idle
+                                    and hasattr(self, "enqueue_goal_continuation")
+                                ):
+                                    self.enqueue_goal_continuation()
+                        except Exception:
+                            pass
                         # Interactive mode: background the work to keep the UI
                         # responsive. Use housekeeping (not _submit_swarm) so
                         # distill/wiki never flip runners=running / Still working

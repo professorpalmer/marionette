@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.177, deliberately pre-1.0. Settings auths that can pilot mark Full stack vs Pilot only; Nous/MiniMax/NVIDIA sync into workers; Cursor API key falls back for swarms when no HTTP agentic key is present (rides puppetmaster-ai==1.21.13).
+> Status: v0.9.178, deliberately pre-1.0. Prime Agent policy lifts: sticky session goals, host quality gates (fingerprint skip), continual harness refine with human gate, shared delivery modes auto/steer/follow_up (rides puppetmaster-ai==1.21.13).
 
 ## Documentation
 

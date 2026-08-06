@@ -37,7 +37,13 @@ import { showStandaloneEditNoticeDismiss } from "./composerSend";
 export type AttachedImage = { path: string; name: string; previewUrl: string };
 export type MsgQueueItem = { text: string; auto: boolean; plan?: boolean };
 export type ServerQueueItem = { id: string; text: string; images?: string[]; model?: string };
-export type MemoryProposal = { id: string; text: string; category: string };
+export type MemoryProposal = {
+  id: string;
+  text: string;
+  category: string;
+  /** When set, Save/Skip routes through /api/refine/propose/* instead of memory. */
+  refine?: { kind: string; scope: string };
+};
 export type SymbolHit = { name: string; kind: string; path: string; line: number };
 export type SlashCommand = { cmd: string; desc: string; scope?: string };
 
@@ -267,7 +273,9 @@ export default function ComposerDock({
                 <Brain size={11} className="text-accent shrink-0 mt-0.5" />
                 <div className="flex-1 min-w-0">
                   <div className="text-faint text-[10px] mb-0.5">
-                    Save to durable memory?
+                    {prop.refine
+                      ? `Save harness refine (${prop.refine.kind}/${prop.refine.scope})?`
+                      : "Save to durable memory?"}
                     <span className="ml-1 text-muted">({prop.category})</span>
                   </div>
                   <div className="truncate italic">&ldquo;{prop.text}&rdquo;</div>
@@ -276,14 +284,16 @@ export default function ComposerDock({
                   onClick={async () => {
                     onSetMemoryProposals((prev) => prev.filter((p) => p.id !== prop.id));
                     try {
-                      const res = await api.memoryProposeAccept(prop.id);
+                      const res = prop.refine
+                        ? await api.refineProposeAccept(prop.id)
+                        : await api.memoryProposeAccept(prop.id);
                       if (res.ok) {
-                        const notice = "Memory saved";
+                        const notice = prop.refine ? "Harness refine saved" : "Memory saved";
                         onSetDistillNotice(notice);
                         setSafeTimeout(() => onSetDistillNotice((cur) => (cur === notice ? null : cur)), 4000);
                       }
                     } catch {
-                      onSetDistillNotice("Memory save failed");
+                      onSetDistillNotice(prop.refine ? "Refine save failed" : "Memory save failed");
                     }
                   }}
                   className="shrink-0 px-2 py-0.5 rounded bg-accent/15 hover:bg-accent/25 text-accent font-medium transition text-[10.5px]"
@@ -294,7 +304,11 @@ export default function ComposerDock({
                   onClick={async () => {
                     onSetMemoryProposals((prev) => prev.filter((p) => p.id !== prop.id));
                     try {
-                      await api.memoryProposeDismiss(prop.id);
+                      if (prop.refine) {
+                        await api.refineProposeDismiss(prop.id);
+                      } else {
+                        await api.memoryProposeDismiss(prop.id);
+                      }
                     } catch {
                       /* ignore -- card already dismissed locally */
                     }

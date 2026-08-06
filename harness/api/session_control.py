@@ -213,6 +213,12 @@ def get_session_state(svc: SessionControlServices) -> tuple[int, JsonPayload]:
     resume_pending = False
     if svc.consume_resume_pending is not None:
         resume_pending = svc.consume_resume_pending(state == "idle")
+    goal = {}
+    try:
+        if pilot is not None and hasattr(pilot, "session_goal_dict"):
+            goal = pilot.session_goal_dict() or {}
+    except Exception:
+        goal = {}
     return 200, {
         "state": state,
         "pending_swarms": pilot.has_pending_swarms(),
@@ -221,7 +227,68 @@ def get_session_state(svc: SessionControlServices) -> tuple[int, JsonPayload]:
         # Active VIEW id so StatusBar can distinguish this session's
         # runner from background sessions still executing under the lease.
         "active_view_id": runners.active_view_id,
+        # Sticky session GOAL (chip-ready); distinct from Schedule.objective.
+        "goal": goal,
     }
+
+
+def _goal_pilot(svc: SessionControlServices) -> tuple[Any, Optional[tuple[int, dict]]]:
+    if not svc.get_pilot():
+        return None, (404, {"ok": False, "error": "no active session"})
+    not_ready = svc.gate_active_pilot_ready()
+    if not_ready is not None:
+        return None, (409, not_ready)
+    pilot = svc.get_pilot()
+    if not pilot:
+        return None, (404, {"ok": False, "error": "no active session"})
+    return pilot, None
+
+
+def get_session_goal(svc: SessionControlServices) -> tuple[int, JsonPayload]:
+    """GET /api/session/goal."""
+    pilot, err = _goal_pilot(svc)
+    if err is not None:
+        return err
+    goal = {}
+    try:
+        goal = pilot.session_goal_dict() if hasattr(pilot, "session_goal_dict") else {}
+    except Exception:
+        goal = {}
+    return 200, {"ok": True, "goal": goal}
+
+
+def post_session_goal(body: dict, svc: SessionControlServices) -> tuple[int, JsonPayload]:
+    """POST /api/session/goal — set / pause / resume / complete / clear."""
+    pilot, err = _goal_pilot(svc)
+    if err is not None:
+        return err
+    action = str(body.get("action") or "set").strip().lower()
+    budget = body.get("token_budget")
+    token_budget = None
+    if budget not in ("", None):
+        try:
+            token_budget = int(budget)
+        except (TypeError, ValueError):
+            return 400, {"ok": False, "error": "token_budget must be an int"}
+    try:
+        if action == "set":
+            text = (body.get("text") or body.get("goal") or "").strip()
+            if not text:
+                return 400, {"ok": False, "error": "missing text"}
+            goal = pilot.set_session_goal(text, token_budget=token_budget)
+        elif action == "pause":
+            goal = pilot.pause_session_goal()
+        elif action == "resume":
+            goal = pilot.resume_session_goal()
+        elif action == "complete":
+            goal = pilot.complete_session_goal()
+        elif action == "clear":
+            goal = pilot.clear_session_goal()
+        else:
+            return 400, {"ok": False, "error": "unknown action"}
+    except Exception as exc:
+        return 500, {"ok": False, "error": str(exc)}
+    return 200, {"ok": True, "goal": goal}
 
 
 def get_session_context_at(
@@ -373,6 +440,23 @@ def post_session_steer(body: dict, svc: SessionControlServices) -> tuple[int, Js
     valid_imgs, err = _validate_upload_images(images, svc.upload_dir)
     if err is not None:
         return err
+    # Optional delivery_mode: when set, route via shared DeliveryMode resolver.
+    delivery_mode = body.get("delivery_mode")
+    if delivery_mode:
+        from ..delivery_mode import apply_delivery, normalize_delivery_mode
+
+        if normalize_delivery_mode(delivery_mode) is None:
+            return 400, {"ok": False, "error": "invalid delivery_mode"}
+        busy = False
+        try:
+            busy = bool(pilot.is_turn_busy()) if hasattr(pilot, "is_turn_busy") else False
+        except Exception:
+            busy = False
+        result = apply_delivery(
+            pilot, text, session_busy=busy, requested=delivery_mode, images=valid_imgs,
+        )
+        code = 200 if result.get("ok") else 400
+        return code, result
     if valid_imgs and hasattr(pilot, "steer_with_images"):
         pilot.steer_with_images(text, valid_imgs)
     else:
@@ -412,6 +496,22 @@ def post_session_queue(body: dict, svc: SessionControlServices) -> tuple[int, Js
     valid_imgs, err = _validate_upload_images(images, svc.upload_dir)
     if err is not None:
         return err
+    delivery_mode = body.get("delivery_mode")
+    if delivery_mode:
+        from ..delivery_mode import apply_delivery, normalize_delivery_mode
+
+        if normalize_delivery_mode(delivery_mode) is None:
+            return 400, {"ok": False, "error": "invalid delivery_mode"}
+        busy = False
+        try:
+            busy = bool(pilot.is_turn_busy()) if hasattr(pilot, "is_turn_busy") else False
+        except Exception:
+            busy = False
+        result = apply_delivery(
+            pilot, text, session_busy=busy, requested=delivery_mode, images=valid_imgs,
+        )
+        code = 200 if result.get("ok") else 400
+        return code, result
     try:
         item = pilot.enqueue_prompt(
             text, images=valid_imgs, model=svc.cfg.driver,

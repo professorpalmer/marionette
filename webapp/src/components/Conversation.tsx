@@ -1464,6 +1464,7 @@ export default function Conversation({
                     id: action.id,
                     text: action.text,
                     category: action.category,
+                    refine: action.refine,
                   }),
                 );
               }

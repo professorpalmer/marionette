@@ -10,7 +10,7 @@ export type SwarmPollChrome =
   | { kind: "distilled"; notice: string }
   | { kind: "wiki_auto"; notice: string }
   | { kind: "wiki_prepare"; pages: any[] }
-  | { kind: "memory_propose"; id: string; text: string; category: string }
+  | { kind: "memory_propose"; id: string; text: string; category: string; refine?: { kind: string; scope: string } }
   | { kind: "ignore" };
 
 /** Classify one swarm poll event into a chrome action (no side effects). */
@@ -37,12 +37,27 @@ export function classifySwarmPollEvent(evt: any): SwarmPollChrome {
     }
     return { kind: "wiki_prepare", pages };
   }
-  if (anyEvt.kind === "memory_propose" && anyEvt.data) {
+  if (
+    (anyEvt.kind === "memory_propose" || anyEvt.kind === "refine_propose")
+    && anyEvt.data
+  ) {
     const d = anyEvt.data;
     const id = d.id || "";
     const text = (d.text || "").trim();
     if (id && text) {
-      return { kind: "memory_propose", id, text, category: d.category || "general" };
+      return {
+        kind: "memory_propose",
+        id,
+        text,
+        category: d.category || "general",
+        refine:
+          anyEvt.kind === "refine_propose"
+            ? {
+                kind: String(d.kind || "memory"),
+                scope: String(d.scope || "global"),
+              }
+            : undefined,
+      };
     }
   }
   return { kind: "ignore" };

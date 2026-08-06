@@ -459,6 +459,70 @@ def _run_one(
         heartbeat.start()
 
         try:
+            # Opt-in busy-session inject via Schedule.delivery_mode. When unset,
+            # keep legacy spawn + run_auto. When set and a target session is
+            # busy, resolve_delivery routes steer/follow_up instead of spawning.
+            inject_session = None
+            getter = getattr(store, "busy_session_getter", None)
+            if getter is None and active_schedule_holder is not None:
+                getter = active_schedule_holder.get("busy_session_getter")
+            if callable(getter) and str(getattr(schedule, "delivery_mode", "") or "").strip():
+                try:
+                    inject_session = getter(schedule)
+                except Exception:
+                    inject_session = None
+            if inject_session is not None:
+                from .delivery_mode import deliver_schedule_to_session
+
+                busy = False
+                try:
+                    busy = bool(
+                        inject_session.is_turn_busy()
+                        if hasattr(inject_session, "is_turn_busy")
+                        else False
+                    )
+                except Exception:
+                    busy = False
+                if busy:
+                    delivered = deliver_schedule_to_session(
+                        schedule, inject_session, session_busy=True,
+                    )
+                    ended = time.time()
+                    status = "ok" if delivered.get("ok") else "failed"
+                    halt_reason = (
+                        "delivered via delivery_mode=%s action=%s"
+                        % (
+                            getattr(schedule, "delivery_mode", ""),
+                            delivered.get("action", ""),
+                        )
+                        if delivered.get("ok")
+                        else str(delivered.get("error") or "delivery failed")
+                    )
+                    run = {
+                        "schedule_id": schedule.id,
+                        "started_at": started_at,
+                        "ended_at": ended,
+                        "status": status,
+                        "halt_reason": halt_reason,
+                        "cycles": 0,
+                        "tokens_used": 0,
+                        "swarms_used": 0,
+                        "fire_at": fire_at,
+                        "run_id": run_id,
+                        "delivery": delivered,
+                    }
+                    store.complete_claim(
+                        schedule.id, run_id,
+                        status=status, halt_reason=halt_reason, fire_at=fire_at,
+                        ended_at=ended,
+                        advance_last_fire=not force_claim,
+                    )
+                    try:
+                        notifier.notify(schedule, run)
+                    except Exception:
+                        pass
+                    return run
+
             session = session_factory(schedule)
             budget = budget_factory(schedule)
             last_snapshot: dict = {}

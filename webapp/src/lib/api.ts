@@ -416,6 +416,19 @@ export type WorkspaceInfo = {
 export type Workspace = { name: string; branch: string; active: boolean; dirty?: boolean };
 export type Session = { id: string; title: string; created: number; active?: boolean; archived?: boolean; settled?: boolean; repo?: string; branch?: string; workspace_root?: string; input_tokens?: number; output_tokens?: number; cache_read_tokens?: number; estimated_cost_usd?: number; preview?: string };
 
+export type SessionGoal = {
+  text: string;
+  status: "active" | "paused" | "complete" | "cleared" | string;
+  created_at?: number;
+  updated_at?: number;
+  token_count?: number;
+  elapsed_seconds?: number;
+  continuation_count?: number;
+  token_budget?: number | null;
+};
+
+export type DeliveryMode = "auto" | "steer" | "follow_up";
+
 export type SessionState = {
   state: "idle" | "thinking" | "awaiting_swarm";
   pending_swarms: boolean;
@@ -428,6 +441,8 @@ export type SessionState = {
   // Active VIEW session id — StatusBar must not treat background runners as
   // the active view thinking.
   active_view_id?: string | null;
+  // Sticky session GOAL (chip-ready); distinct from Schedule.objective / Job.goal.
+  goal?: SessionGoal;
 };
 
 export type SwarmResultData = {
@@ -1007,6 +1022,28 @@ export const api = {
   },
   sessionTranscript: (session: string) => getJSON<{ history: any[]; display?: any[]; job_ids?: string[] }>(withToken(`/api/sessions/transcript?session=${encodeURIComponent(session)}`)),
   getSessionState: () => getJSON<SessionState>(withToken("/api/session/state")),
+  getSessionGoal: () =>
+    getJSON<{ ok: boolean; goal: SessionGoal }>(withToken("/api/session/goal")),
+  setSessionGoal: (text: string, tokenBudget?: number) =>
+    postJSON<{ ok: boolean; goal: SessionGoal }>("/api/session/goal", {
+      action: "set",
+      text,
+      ...(tokenBudget != null ? { token_budget: tokenBudget } : {}),
+    }),
+  pauseSessionGoal: () =>
+    postJSON<{ ok: boolean; goal: SessionGoal }>("/api/session/goal", { action: "pause" }),
+  resumeSessionGoal: () =>
+    postJSON<{ ok: boolean; goal: SessionGoal }>("/api/session/goal", { action: "resume" }),
+  completeSessionGoal: () =>
+    postJSON<{ ok: boolean; goal: SessionGoal }>("/api/session/goal", { action: "complete" }),
+  clearSessionGoal: () =>
+    postJSON<{ ok: boolean; goal: SessionGoal }>("/api/session/goal", { action: "clear" }),
+  refineProposeAccept: (id: string) =>
+    postJSON<{ ok: boolean; error?: string }>("/api/refine/propose/accept", { id }),
+  refineProposeDismiss: (id: string) =>
+    postJSON<{ ok: boolean; error?: string }>("/api/refine/propose/dismiss", { id }),
+  refineProposeRollback: () =>
+    postJSON<{ ok: boolean; error?: string }>("/api/refine/propose/rollback", {}),
   /** Hard-stop a turn. Pass sessionId to target a background runner without view attach. */
   interruptSession: (sessionId?: string) =>
     postJSON<{ ok: boolean }>(
@@ -1312,8 +1349,15 @@ export const api = {
       error?: string;
       reason?: string;
     }>("/api/session/compact", {}),
-  steerSession: (text: string, images?: string[]) =>
-    postJSON<{ ok: boolean }>("/api/session/steer", { text, images: images && images.length ? images : undefined }),
+  steerSession: (text: string, images?: string[], deliveryMode?: DeliveryMode) =>
+    postJSON<{ ok: boolean; action?: string }>(
+      "/api/session/steer",
+      {
+        text,
+        images: images && images.length ? images : undefined,
+        ...(deliveryMode ? { delivery_mode: deliveryMode } : {}),
+      },
+    ),
   // PROMPT QUEUE: a "playlist" of full user prompts that each run as their own
   // complete turn one after the previous fully finishes. Distinct from steer
   // (a mid-turn interrupt on the CURRENT running turn). Items can be edited /

@@ -477,6 +477,8 @@ SCHEDULE_FIELDS = [
     "enabled", "max_tokens", "max_seconds", "max_swarms",
     "created_at", "enabled_at", "last_run_at", "last_fire_at", "last_status",
     "timezone",
+    # Opt-in busy-session inject (auto|steer|follow_up). Empty = legacy spawn.
+    "delivery_mode",
 ]
 
 
@@ -503,6 +505,8 @@ class Schedule:
     last_status: str = ""
     # Unused store column (IANA deferred); always empty on write, ignored for eval.
     timezone: str = ""
+    # Opt-in DeliveryMode for busy target sessions. Empty keeps spawn+run_auto.
+    delivery_mode: str = ""
     # Claim / fencing fields (managed by ScheduleStore; shown by list).
     claim_owner: str = ""
     claim_at: float = 0.0
@@ -540,6 +544,7 @@ class Schedule:
             last_fire_at=float(row.get("last_fire_at") or 0.0),
             last_status=str(row.get("last_status") or ""),
             timezone=str(row.get("timezone") or ""),
+            delivery_mode=str(row.get("delivery_mode") or ""),
             claim_owner=str(row.get("claim_owner") or ""),
             claim_at=float(row.get("claim_at") or 0.0),
             claim_lease_until=float(row.get("claim_lease_until") or 0.0),

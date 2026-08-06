@@ -202,6 +202,42 @@ def post_memory_propose_dismiss(body: dict, svc: SkillsServices) -> tuple[int, J
     return code, result
 
 
+def post_refine_propose_accept(body: dict, svc: SkillsServices) -> tuple[int, JsonPayload]:
+    """POST /api/refine/propose/accept."""
+    proposal_id = (body.get("id") or "").strip()
+    if not proposal_id:
+        return 400, {"ok": False, "error": "missing id"}
+    pilot = svc.get_pilot()
+    if not pilot or not hasattr(pilot, "accept_refine_proposal"):
+        return 404, {"ok": False, "error": "no active session"}
+    result = pilot.accept_refine_proposal(proposal_id)
+    code = 200 if result.get("ok") else 404
+    return code, result
+
+
+def post_refine_propose_dismiss(body: dict, svc: SkillsServices) -> tuple[int, JsonPayload]:
+    """POST /api/refine/propose/dismiss."""
+    proposal_id = (body.get("id") or "").strip()
+    if not proposal_id:
+        return 400, {"ok": False, "error": "missing id"}
+    pilot = svc.get_pilot()
+    if not pilot or not hasattr(pilot, "dismiss_refine_proposal"):
+        return 404, {"ok": False, "error": "no active session"}
+    result = pilot.dismiss_refine_proposal(proposal_id)
+    code = 200 if result.get("ok") else 404
+    return code, result
+
+
+def post_refine_propose_rollback(svc: SkillsServices) -> tuple[int, JsonPayload]:
+    """POST /api/refine/propose/rollback."""
+    pilot = svc.get_pilot()
+    if not pilot or not hasattr(pilot, "rollback_refine"):
+        return 404, {"ok": False, "error": "no active session"}
+    result = pilot.rollback_refine()
+    code = 200 if result.get("ok") else 400
+    return code, result
+
+
 def get_skills(svc: SkillsServices) -> tuple[int, JsonPayload]:
     """GET /api/skills."""
     return 200, redact_api_secrets([

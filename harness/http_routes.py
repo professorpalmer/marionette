@@ -237,6 +237,15 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
         "/api/session/queue/reorder": post_json(
             _sc_api.post_session_queue_reorder,
             services=svc.session_control_services),
+        "/api/session/goal": post_json(
+            _sc_api.post_session_goal, services=svc.session_control_services),
+        "/api/refine/propose/accept": post_json(
+            _skills_api.post_refine_propose_accept, services=svc.skills_services),
+        "/api/refine/propose/dismiss": post_json(
+            _skills_api.post_refine_propose_dismiss, services=svc.skills_services),
+        "/api/refine/propose/rollback": post_json(
+            _skills_api.post_refine_propose_rollback,
+            services=svc.skills_services, needs_body=False),
         "/api/terminal/create": post_json(
             _term_api.post_terminal_create, services=svc.terminal_services),
         "/api/terminal/write": post_json(
@@ -549,6 +558,8 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
         "/api/git/diff": _get_git_diff,
         "/api/session/state": get_json(
             _sc_api.get_session_state, services=svc.session_control_services),
+        "/api/session/goal": get_json(
+            _sc_api.get_session_goal, services=svc.session_control_services),
         "/api/session/context_at": _get_session_context_at,
         "/api/session/swarm-results": get_json(
             _sc_api.get_session_swarm_results,

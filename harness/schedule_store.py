@@ -255,6 +255,7 @@ class ScheduleStore:
             ("claim_run_id", "TEXT NOT NULL DEFAULT ''"),
             ("cancel_requested", "INTEGER NOT NULL DEFAULT 0"),
             ("timezone", "TEXT NOT NULL DEFAULT ''"),
+            ("delivery_mode", "TEXT NOT NULL DEFAULT ''"),
         ):
             if col not in sched_cols:
                 self._conn.execute(

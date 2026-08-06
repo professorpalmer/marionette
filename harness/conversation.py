@@ -752,6 +752,18 @@ class ConversationalSession(
         # assistant_done. Never used under Autopilot (_auto_mode).
         self._pending_memory_proposals: dict = {}
         self._turn_memory_queue: list = []
+        # Continual harness refine queue (kinds memory|rule|skill|role).
+        self._turn_refine_queue: list = []
+        self._harness_refine = None
+        # Sticky session GOAL (JSON under state_dir; not transcript-only).
+        from .session_goal import SessionGoalStore
+
+        self._goal_store = SessionGoalStore(self.state_dir)
+        self._session_goal = self._goal_store.load()
+        # Host quality gate (optional; disabled when quality_gate_cmds empty).
+        from .quality_gate import QualityGateRunner
+
+        self._quality_gate = QualityGateRunner.from_config(config)
         self._pending_command_approvals = {}
         self._command_approval_lock = threading.Lock()
         self._approved_commands = set()  # command hashes the user one-click approved
@@ -865,6 +877,96 @@ class ConversationalSession(
         if self.has_pending_swarms():
             return "awaiting_swarm"
         return self._state
+
+    def session_goal_dict(self) -> dict:
+        """Public goal snapshot for /api/session/state (chip-ready JSON)."""
+        goal = getattr(self, "_session_goal", None)
+        if goal is None:
+            return {"text": "", "status": "cleared"}
+        return goal.to_dict()
+
+    def _persist_session_goal(self) -> None:
+        store = getattr(self, "_goal_store", None)
+        goal = getattr(self, "_session_goal", None)
+        if store is not None and goal is not None:
+            store.save(goal)
+
+    def set_session_goal(self, text: str, token_budget: Optional[int] = None) -> dict:
+        from .session_goal import SessionGoal
+
+        if not hasattr(self, "_session_goal") or self._session_goal is None:
+            self._session_goal = SessionGoal()
+        self._session_goal.set(text, token_budget=token_budget)
+        self._persist_session_goal()
+        return self._session_goal.to_dict()
+
+    def pause_session_goal(self) -> dict:
+        goal = getattr(self, "_session_goal", None)
+        if goal is None:
+            return {"text": "", "status": "cleared"}
+        goal.pause()
+        self._persist_session_goal()
+        return goal.to_dict()
+
+    def resume_session_goal(self) -> dict:
+        goal = getattr(self, "_session_goal", None)
+        if goal is None:
+            return {"text": "", "status": "cleared"}
+        goal.resume()
+        self._persist_session_goal()
+        return goal.to_dict()
+
+    def complete_session_goal(self) -> dict:
+        goal = getattr(self, "_session_goal", None)
+        if goal is None:
+            return {"text": "", "status": "cleared"}
+        goal.complete()
+        self._persist_session_goal()
+        return goal.to_dict()
+
+    def clear_session_goal(self) -> dict:
+        goal = getattr(self, "_session_goal", None)
+        if goal is None:
+            return {"text": "", "status": "cleared"}
+        goal.clear()
+        self._persist_session_goal()
+        return goal.to_dict()
+
+    def enqueue_goal_continuation(self) -> Optional[dict]:
+        """Enqueue a one-sentence sticky-goal reminder (host may call after a turn)."""
+        goal = getattr(self, "_session_goal", None)
+        if goal is None or not goal.is_active():
+            return None
+        reminder = goal.continuation_prompt()
+        if not reminder or not hasattr(self, "enqueue_prompt"):
+            return None
+        # Avoid stacking duplicate goal reminders in the playlist.
+        marker = "Continue working toward the session goal"
+        try:
+            for item in list(getattr(self, "_prompt_queue", None) or []):
+                if isinstance(item, dict) and marker in str(item.get("text") or ""):
+                    return None
+        except Exception:
+            pass
+        item = self.enqueue_prompt(reminder)
+        goal.record_turn_usage(continuation=True)
+        self._persist_session_goal()
+        return item if isinstance(item, dict) else {"ok": True}
+
+    def accept_refine_proposal(self, proposal_id: str) -> dict:
+        from .harness_refine import get_refine_controller
+
+        return get_refine_controller(self).accept(proposal_id)
+
+    def dismiss_refine_proposal(self, proposal_id: str) -> dict:
+        from .harness_refine import get_refine_controller
+
+        return get_refine_controller(self).dismiss(proposal_id)
+
+    def rollback_refine(self) -> dict:
+        from .harness_refine import get_refine_controller
+
+        return get_refine_controller(self).rollback()
 
     def _command_approval_lock_guard(self) -> threading.Lock:
         """Return the approval lock, installing one on legacy/minimal sessions.
@@ -1817,6 +1919,16 @@ class ConversationalSession(
             turn_note = self._turn_budget_system_note()
             if turn_note:
                 parts.append(turn_note)
+            # Sticky session goal is supplemental turn context — never folded
+            # into the frozen system prompt prefix.
+            try:
+                goal = getattr(self, "_session_goal", None)
+                if goal is not None and goal.is_active():
+                    block = goal.context_block()
+                    if block:
+                        parts.append(block)
+            except Exception:
+                pass
             # Pilot identity stays in the frozen system prompt for append-only
             # (not the per-turn trailer) so the rendered prefix stays stable.
             if not parts:
