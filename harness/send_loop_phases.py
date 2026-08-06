@@ -39,6 +39,7 @@ _JOB_ID_RE = re.compile(r"\b(job_[a-fA-F0-9]{12})\b")
 READ_ONLY_KINDS: frozenset[str] = frozenset({
     "read_file", "list_dir", "search_codegraph", "search_files",
     "web_search", "web_fetch", "read_pdf", "view_image", "lsp",
+    "peek_history", "peek_artifact",
 })
 
 # Honest composer wait-hint when the provider stream goes quiet mid-turn.
@@ -51,6 +52,7 @@ LOCAL_ACTION_KINDS: frozenset[str] = frozenset({
     "write_file", "edit_file", "hash_edit", "run_command",
     "run_command_batch",
     "search_tools", "search_state",
+    "store_scratch", "load_scratch", "list_scratch", "clear_scratch",
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
     "browser_get_text", "browser_screenshot",
@@ -236,6 +238,10 @@ def run_prefetch(
             return idx, session._do_view_image(act)
         elif kind == "lsp":
             return idx, session._do_lsp(act)
+        elif kind == "peek_history":
+            return idx, session._do_peek_history(act)
+        elif kind == "peek_artifact":
+            return idx, session._do_peek_artifact(act)
     except Exception as exc:
         return idx, (False, "exception", str(exc))
     return idx, (False, "exception", f"Unknown prefetch kind {kind}")
@@ -1205,6 +1211,39 @@ def dispatch_readonly_action(
             session._append_action_result(act, aid, f"(lsp failed: {val})", is_native)
         return
 
+    if act.kind == "peek_history":
+        if idx in prefetch:
+            ok, status, val = prefetch[idx]
+        else:
+            ok, status, val = session._do_peek_history(act)
+        if ok:
+            yield ConvEvent("action_result", {
+                "id": aid, "num": 1, "types": ["peek_history"], "adapter": "local", "mode": "tool",
+                "artifacts": [{"type": "peek_history", "headline": "peek_history"}],
+            })
+            session._append_action_result(act, aid, f"(peek_history returned)\n{val}", is_native)
+        else:
+            yield ConvEvent("action_result", {"id": aid, "error": val})
+            session._append_action_result(act, aid, f"(peek_history failed: {val})", is_native)
+        return
+
+    if act.kind == "peek_artifact":
+        if idx in prefetch:
+            ok, status, val = prefetch[idx]
+        else:
+            ok, status, val = session._do_peek_artifact(act)
+        if ok:
+            uri = (act.path or act.url or (act.arguments or {}).get("uri") or "artifact")
+            yield ConvEvent("action_result", {
+                "id": aid, "num": 1, "types": ["peek_artifact"], "adapter": "local", "mode": "tool",
+                "artifacts": [{"type": "peek_artifact", "headline": f"peek_artifact {uri}"}],
+            })
+            session._append_action_result(act, aid, f"(peek_artifact returned)\n{val}", is_native)
+        else:
+            yield ConvEvent("action_result", {"id": aid, "error": val})
+            session._append_action_result(act, aid, f"(peek_artifact failed: {val})", is_native)
+        return
+
     # Unknown READ_ONLY_KINDS member — surface so a catalog drift cannot hang.
     err = f"Unhandled read-only action kind: {act.kind}"
     yield ConvEvent("action_result", {"id": aid, "error": err})
@@ -2016,6 +2055,28 @@ def dispatch_local_action(
         else:
             yield ConvEvent("action_result", {"id": aid, "error": val})
             session._append_action_result(act, aid, f"(search_state failed: {val})", is_native)
+        return
+    # ---- session scratch bindings ----------------------------------
+    if act.kind in ("store_scratch", "load_scratch", "list_scratch", "clear_scratch"):
+        handler = {
+            "store_scratch": session._do_store_scratch,
+            "load_scratch": session._do_load_scratch,
+            "list_scratch": session._do_list_scratch,
+            "clear_scratch": session._do_clear_scratch,
+        }[act.kind]
+        try:
+            ok, status, val = handler(act)
+        except Exception as exc:
+            ok, status, val = False, "exception", str(exc)
+        if ok:
+            yield ConvEvent("action_result", {
+                "id": aid, "num": 1, "types": [act.kind], "adapter": "local", "mode": "tool",
+                "artifacts": [{"type": act.kind, "headline": act.kind}],
+            })
+            session._append_action_result(act, aid, f"({act.kind} returned)\n{val}", is_native)
+        else:
+            yield ConvEvent("action_result", {"id": aid, "error": val})
+            session._append_action_result(act, aid, f"({act.kind} failed: {val})", is_native)
         return
     # ---- native browser / computer-use tools ----------------------
     if act.kind in ("browser_navigate", "browser_snapshot", "browser_click",

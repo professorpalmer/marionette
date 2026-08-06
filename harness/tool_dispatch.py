@@ -728,6 +728,287 @@ class ToolDispatchMixin:
         except Exception as e:
             return False, "exception", str(e)
 
+    def _get_scratch_store(self):
+        store = getattr(self, "_scratch_store", None)
+        if store is not None:
+            return store
+        from .session_scratch import SessionScratchStore
+
+        state_dir = getattr(self, "state_dir", None) or getattr(self.config, "state_dir", "") or ""
+        store = SessionScratchStore(state_dir)
+        self._scratch_store = store
+        return store
+
+    def _do_store_scratch(self, act: PilotAction) -> tuple[bool, str, str]:
+        from .session_scratch import ScratchStoreError
+
+        args = act.arguments or {}
+        key = (act.path or args.get("key") or "").strip()
+        value = act.content if act.content not in (None, "") else args.get("value")
+        if not key:
+            return False, "invalid_arguments", "store_scratch requires a non-empty 'key'"
+        if value is None or str(value) == "":
+            return False, "invalid_arguments", "store_scratch requires a non-empty 'value'"
+        try:
+            self._get_scratch_store().set(key, str(value))
+            return True, "success", f"stored scratch key={key!r} ({len(str(value))} chars)"
+        except ScratchStoreError as exc:
+            return False, "cap_exceeded", str(exc)
+        except Exception as exc:
+            return False, "exception", str(exc)
+
+    def _do_load_scratch(self, act: PilotAction) -> tuple[bool, str, str]:
+        args = act.arguments or {}
+        key = (act.path or args.get("key") or "").strip()
+        if not key:
+            return False, "invalid_arguments", "load_scratch requires a non-empty 'key'"
+        try:
+            value = self._get_scratch_store().get(key)
+            if value is None:
+                return False, "not_found", f"scratch key not found: {key!r}"
+            return True, "success", value
+        except Exception as exc:
+            return False, "exception", str(exc)
+
+    def _do_list_scratch(self, act: PilotAction) -> tuple[bool, str, str]:
+        try:
+            rows = self._get_scratch_store().list()
+            if not rows:
+                return True, "success", "(scratch empty)"
+            lines = [f"{key}\t{n} chars" for key, n in rows]
+            return True, "success", "\n".join(lines)
+        except Exception as exc:
+            return False, "exception", str(exc)
+
+    def _do_clear_scratch(self, act: PilotAction) -> tuple[bool, str, str]:
+        args = act.arguments or {}
+        key = (act.path or args.get("key") or "").strip()
+        try:
+            store = self._get_scratch_store()
+            if key:
+                ok = store.delete(key)
+                if not ok:
+                    return False, "not_found", f"scratch key not found: {key!r}"
+                return True, "success", f"cleared scratch key={key!r}"
+            n = store.clear()
+            return True, "success", f"cleared {n} scratch key(s)"
+        except Exception as exc:
+            return False, "exception", str(exc)
+
+    def _compaction_generation(self) -> int:
+        try:
+            fields = {}
+            getter = getattr(self, "_history_compaction_fields", None)
+            if callable(getter):
+                fields = getter() or {}
+            else:
+                from .history_compaction_journal import history_compaction_payload
+                fields = history_compaction_payload(
+                    getattr(self, "state_dir", "") or "",
+                    getattr(self, "harness_session_id", None) or "default",
+                )
+            return int(fields.get("history_compactions") or 0)
+        except Exception:
+            return 0
+
+    def _do_peek_history(self, act: PilotAction) -> tuple[bool, str, str]:
+        from .context_budget import truncate_bytes
+        from .sessions import load_transcript
+
+        args = act.arguments or {}
+        try:
+            offset = int(
+                args.get("offset")
+                if args.get("offset") is not None
+                else (act.start_line if act.start_line is not None else 0)
+            )
+        except (TypeError, ValueError):
+            offset = 0
+        offset = max(0, offset)
+        try:
+            limit = int(
+                args.get("limit")
+                if args.get("limit") is not None
+                else (act.limit if act.limit is not None else 10)
+            )
+        except (TypeError, ValueError):
+            limit = 10
+        limit = max(1, min(20, limit))
+        role_filter = str(args.get("role") or "").strip().lower()
+        expected_raw = args.get("expected_generation")
+        expected_generation = None
+        if expected_raw is not None and expected_raw != "":
+            try:
+                expected_generation = int(expected_raw)
+            except (TypeError, ValueError):
+                return False, "invalid_arguments", "expected_generation must be an integer"
+
+        generation = self._compaction_generation()
+        if expected_generation is not None and expected_generation != generation:
+            return False, "stale_generation", (
+                f"stale: expected_generation={expected_generation} "
+                f"current compaction_generation={generation}"
+            )
+
+        # Prefer durable on-disk transcript; fall back to live export.
+        # Unattached sessions often have an empty harness_session_id; transcripts
+        # are still persisted under "default" in that case.
+        sid = (getattr(self, "harness_session_id", None) or "").strip() or "default"
+        state_dir = getattr(self, "state_dir", None) or getattr(self.config, "state_dir", "") or ""
+        messages: list = []
+        try:
+            data = load_transcript(state_dir, sid)
+            if isinstance(data, dict):
+                messages = list(data.get("history") or [])
+            elif isinstance(data, list):
+                messages = list(data)
+        except Exception:
+            messages = []
+        if not messages:
+            try:
+                export = getattr(self, "export_transcript_data", None)
+                if callable(export):
+                    data = export()
+                    if isinstance(data, dict):
+                        messages = list(data.get("history") or [])
+                if not messages:
+                    history = list(getattr(self, "_history", []) or [])
+                    messages = [
+                        m for m in history
+                        if isinstance(m, dict) and m.get("role") != "system"
+                    ]
+            except Exception:
+                messages = []
+
+        if role_filter:
+            messages = [
+                m for m in messages
+                if isinstance(m, dict) and str(m.get("role") or "").lower() == role_filter
+            ]
+        else:
+            messages = [m for m in messages if isinstance(m, dict)]
+
+        slice_msgs = messages[offset: offset + limit]
+        # Cap returned chars (~8 KiB).
+        max_chars = 8 * 1024
+        lines = [
+            f"compaction_generation={generation}",
+            f"offset={offset} limit={limit} returned={len(slice_msgs)} total={len(messages)}",
+        ]
+        for i, msg in enumerate(slice_msgs):
+            role = str(msg.get("role") or "?")
+            content = msg.get("content")
+            if isinstance(content, list):
+                parts = []
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        parts.append(str(block.get("text") or ""))
+                    elif isinstance(block, str):
+                        parts.append(block)
+                content = " ".join(parts)
+            text = str(content or "")
+            lines.append(f"[{offset + i}] {role}: {text}")
+        body = "\n".join(lines)
+        if len(body) > max_chars:
+            body = truncate_bytes(body, max_chars) + "\n... [truncated to 8KiB]"
+        return True, "success", body
+
+    def _peek_live_local_artifact(self, uri: str) -> str | None:
+        """Resolve artifact://local-* from the live in-memory job table.
+
+        Sidecar visibility filters can hide just-finished terminal locals when
+        session/cwd stamps are empty; the live table is authoritative for this
+        process and matches the URIs handle-first swarm results emit.
+        """
+        import json
+
+        if not uri.startswith("artifact://"):
+            return None
+        path = uri[len("artifact://"):].strip("/")
+        parts = path.split("/")
+        if len(parts) < 2:
+            return None
+        job_id, artifact_id = parts[0], parts[1]
+        if not job_id.startswith("local-"):
+            return None
+        live = getattr(self, "_local_jobs", None) or {}
+        job = live.get(job_id)
+        if not isinstance(job, dict):
+            return None
+        artifacts = job.get("artifacts") or []
+        if not isinstance(artifacts, list):
+            return None
+        for index, artifact in enumerate(artifacts):
+            if not isinstance(artifact, dict):
+                continue
+            aid = str(artifact.get("id") or "").strip()
+            if not aid:
+                from .local_job_artifacts import finding_artifact_id
+                aid = finding_artifact_id(job_id, index)
+            if aid != artifact_id:
+                continue
+            data = dict(artifact)
+            data["id"] = aid
+            data["job_id"] = job_id
+            if len(parts) >= 3:
+                field = parts[2]
+                if field not in data:
+                    return None
+                return str(data[field])
+            return json.dumps(data, indent=2, ensure_ascii=False)
+        return None
+
+    def _do_peek_artifact(self, act: PilotAction) -> tuple[bool, str, str]:
+        from .context_budget import truncate_bytes
+        from .internal_uri import InternalUriError, resolve_internal_uri
+
+        args = act.arguments or {}
+        uri = (act.path or act.url or args.get("uri") or args.get("path") or "").strip()
+        job_id = str(args.get("job_id") or "").strip()
+        artifact_id = str(args.get("artifact_id") or "").strip()
+        if not uri:
+            if job_id and artifact_id:
+                uri = f"artifact://{job_id}/{artifact_id}"
+            else:
+                return False, "invalid_arguments", (
+                    "peek_artifact requires artifact:// uri or job_id+artifact_id"
+                )
+        if not uri.startswith("artifact://"):
+            if "://" not in uri:
+                uri = f"artifact://{uri.lstrip('/')}"
+            else:
+                return False, "invalid_arguments", "peek_artifact only accepts artifact:// URIs"
+
+        try:
+            max_bytes = int(args.get("max_bytes") if args.get("max_bytes") is not None else 8192)
+        except (TypeError, ValueError):
+            max_bytes = 8192
+        # Clamp: 256..64 KiB (default 8 KiB).
+        max_bytes = max(256, min(64 * 1024, max_bytes))
+
+        content = self._peek_live_local_artifact(uri)
+        if content is None:
+            try:
+                resource = resolve_internal_uri(uri, self._internal_uri_context())
+            except InternalUriError as exc:
+                return False, "internal_uri_error", str(exc)
+            except Exception as exc:
+                return False, "exception", str(exc)
+            content = resource.content if resource is not None else ""
+        if content is None:
+            content = ""
+        if not isinstance(content, str):
+            content = str(content)
+        truncated = False
+        encoded_len = len(content.encode("utf-8"))
+        if encoded_len > max_bytes:
+            content = truncate_bytes(content, max_bytes)
+            truncated = True
+        header = f"uri={uri} bytes={encoded_len} max_bytes={max_bytes}"
+        if truncated:
+            header += " truncated=true"
+        return True, "success", f"{header}\n{content}"
+
     def _do_search_tools(self, act: PilotAction) -> tuple[bool, str, str]:
         from .tool_discovery import ToolCatalog
 

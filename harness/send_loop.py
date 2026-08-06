@@ -60,13 +60,17 @@ from .tool_dispatch import _strip_ansi, is_safe_path
 
 POST_SWARM_SYNTHESIS_NUDGE = (
     "(system) The synchronous swarm has completed. "
-    "Summarize its completed findings for the user now. "
+    "Summarize its completed findings for the user now from the handle-first "
+    "swarm result (job_id + headlines + artifact:// URIs). "
+    "If you need full bodies, FETCH via peek_artifact or read_file — do not "
+    "assume digests were inlined. "
     "Do not call tools, make plans, or emit progress updates; "
     "return only a concise user-facing synthesis."
 )
 POST_SWARM_SYNTHESIS_FALLBACK = (
     "The completed swarm did not return a user-facing synthesis. "
-    "Its findings are available in the swarm result above."
+    "Its findings are available via the job_id / artifact:// handles in the "
+    "swarm result above (peek_artifact or read_file to FETCH)."
 )
 
 

@@ -66,6 +66,12 @@ ActionKind = Literal[
     "route_task",
     "view_image",
     "memory",
+    "store_scratch",
+    "load_scratch",
+    "list_scratch",
+    "clear_scratch",
+    "peek_history",
+    "peek_artifact",
     "open_project",
     "relocate_session",
     "session_bank",
@@ -281,6 +287,27 @@ class PilotAction:
                 raise PilotError(f"memory action {self.memory_action} requires 'content'")
             if self.memory_action in ("remove", "update") and not (self.memory_id or "").strip():
                 raise PilotError(f"memory action {self.memory_action} requires 'entry_id'")
+        if self.kind == "store_scratch":
+            key = (self.path or (self.arguments or {}).get("key") or "").strip()
+            value = self.content if self.content is not None else (self.arguments or {}).get("value")
+            if not key:
+                raise PilotError("store_scratch requires a non-empty 'key'")
+            if value is None or str(value) == "":
+                raise PilotError("store_scratch requires a non-empty 'value'")
+        if self.kind == "load_scratch":
+            key = (self.path or (self.arguments or {}).get("key") or "").strip()
+            if not key:
+                raise PilotError("load_scratch requires a non-empty 'key'")
+        if self.kind == "peek_artifact":
+            args = self.arguments if isinstance(self.arguments, dict) else {}
+            uri = (self.path or self.url or args.get("uri") or "").strip()
+            job_id = str(args.get("job_id") or "").strip()
+            artifact_id = str(args.get("artifact_id") or "").strip()
+            if not uri and not (job_id and artifact_id):
+                raise PilotError(
+                    "peek_artifact requires artifact:// uri (or path) "
+                    "or both job_id and artifact_id"
+                )
         if self.kind == "run_swarm" and not (self.goal or "").strip():
             raise PilotError("run_swarm action requires a non-empty goal")
         if self.kind == "run_implement" and not (self.goal or "").strip():
@@ -456,6 +483,20 @@ def from_wire(
         if path and not (arguments.get("workspace_root") or "").strip():
             arguments["workspace_root"] = str(path)
 
+    if kind in ("store_scratch", "load_scratch", "clear_scratch") and not str(path).strip():
+        path = (
+            raw.get("key")
+            or arguments.get("key")
+            or ""
+        )
+    if kind == "peek_artifact" and not str(path).strip():
+        path = (
+            raw.get("uri")
+            or arguments.get("uri")
+            or raw.get("url")
+            or ""
+        )
+
     content = (
         raw.get("content")
         or raw.get("text")
@@ -464,6 +505,8 @@ def from_wire(
         or raw.get("contents")
         or ""
     )
+    if kind == "store_scratch" and not str(content).strip():
+        content = raw.get("value") or arguments.get("value") or ""
     old_str = (
         raw.get("old_str")
         or raw.get("old_string")
@@ -1161,6 +1204,14 @@ def build_tools_schema(
                                 "the open session workspace."
                             ),
                         },
+                        "full_digest": {
+                            "type": "boolean",
+                            "description": (
+                                "When true, inline the verbose per-artifact digest in the "
+                                "action_result. Default is handle-first (job_id + headlines + "
+                                "artifact:// URIs); FETCH bodies with peek_artifact/read_file."
+                            ),
+                        },
                     },
                     "required": ["goal"]
                 }
@@ -1413,6 +1464,139 @@ def build_tools_schema(
                 "required": ["action"]
             }
         }
+    })
+
+    # 14b. session scratch (L1 durable bindings — NOT durable memory)
+    schema.append({
+        "type": "function",
+        "function": {
+            "name": "store_scratch",
+            "description": (
+                "Store a session scratch binding (key/value) under this session's "
+                "state. Survives compaction. NOT durable cross-session memory — "
+                "use memory for user preferences/facts that should persist forever."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string", "description": "Scratch key"},
+                    "value": {"type": "string", "description": "Scratch value (bounded)"},
+                },
+                "required": ["key", "value"],
+            },
+        },
+    })
+    schema.append({
+        "type": "function",
+        "function": {
+            "name": "load_scratch",
+            "description": "Load a session scratch value by key (not durable memory).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string", "description": "Scratch key"},
+                },
+                "required": ["key"],
+            },
+        },
+    })
+    schema.append({
+        "type": "function",
+        "function": {
+            "name": "list_scratch",
+            "description": "List session scratch keys and value sizes (not durable memory).",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    })
+    schema.append({
+        "type": "function",
+        "function": {
+            "name": "clear_scratch",
+            "description": (
+                "Clear one scratch key (when key is set) or all session scratch "
+                "bindings. Not durable memory."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "key": {
+                        "type": "string",
+                        "description": "Optional key to clear; omit to clear all",
+                    },
+                },
+                "required": [],
+            },
+        },
+    })
+
+    # 14c. bounded peek tools (programmatic re-access)
+    schema.append({
+        "type": "function",
+        "function": {
+            "name": "peek_history",
+            "description": (
+                "Read a bounded slice of the durable session transcript "
+                "(not only the live residual after compaction). Returns up to "
+                "a hard message/char cap plus compaction_generation."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "offset": {
+                        "type": "integer",
+                        "description": "0-based message offset into the durable transcript",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max messages to return (hard max 20)",
+                    },
+                    "role": {
+                        "type": "string",
+                        "description": "Optional role filter (user/assistant/tool/system)",
+                    },
+                    "expected_generation": {
+                        "type": "integer",
+                        "description": (
+                            "If set, refuse/stale-note when compaction_generation differs"
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        },
+    })
+    schema.append({
+        "type": "function",
+        "function": {
+            "name": "peek_artifact",
+            "description": (
+                "Load a bounded artifact payload by artifact:// URI or "
+                "job_id+artifact_id (default ~8 KiB)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "uri": {
+                        "type": "string",
+                        "description": "artifact://job_id/artifact_id URI",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Alias for uri",
+                    },
+                    "job_id": {"type": "string", "description": "Job id when uri omitted"},
+                    "artifact_id": {
+                        "type": "string",
+                        "description": "Artifact id when uri omitted",
+                    },
+                    "max_bytes": {
+                        "type": "integer",
+                        "description": "Hard byte cap (default 8192, clamped)",
+                    },
+                },
+                "required": [],
+            },
+        },
     })
 
     # 15. manage_mcp — wire Docker/HTTP/stdio MCP servers without shelling mcp.json
@@ -1978,6 +2162,9 @@ You have direct access to a local CodeGraph-indexed workspace and can explore/ed
 - `open_project`: open a local directory as the active project/workspace. Requires `path`.
 - `relocate_session`: move the current (or named) conversation into a project without starting a blank session. Requires `workspace_root` (or `path`); optional `session_id`, `title`.
 - `session_bank`: list/search prior sessions across workspaces, or read a transcript summary by `session_id`.
+- `store_scratch` / `load_scratch` / `list_scratch` / `clear_scratch`: session-local scratch bindings (survive compaction). Scratch is NOT durable cross-session memory — use `memory` for lasting user preferences/facts.
+- `peek_history`: bounded slice of the durable transcript (after compact) with compaction_generation.
+- `peek_artifact`: bounded FETCH of an artifact:// payload (or job_id+artifact_id). Prefer this over pasting fat swarm digests.
 - `call_mcp`: call a connected MCP tool. Requires `tool` (the qualified server.tool name) and `arguments` (object). Connected MCP tools may be listed in a "Connected MCP tools" section appended below; use them when relevant.
 - `manage_mcp`: wire MCP servers (list/add/start/stop/remove). For Docker HTTP MCP after `docker run`, call manage_mcp add with name + url=http://localhost:PORT/mcp — localhost is supported. Do not shell-edit ~/.pmharness/mcp.json. Keep bot tokens in the container env, not in chat or mcp.json when the image already reads DISCORD_TOKEN.
 

@@ -965,7 +965,17 @@ class ConversationJobsMixin:
                         display_error = res_job.get("error") or err_bit or None
                     else:
                         err_bit = ""
-                        msg_content = f"[swarm result for: {objective}] {summary}"
+                        # Model-visible history is handle-first (job_id + headlines
+                        # + artifact://). Full summary stays on display/UI.
+                        try:
+                            from harness.worker_handles import format_handle_first_result
+                            arts = _background_artifacts(res_job, stamped)
+                            handle = format_handle_first_result(job_id, arts)
+                            msg_content = (
+                                f"[swarm result for: {objective}]\n{handle}"
+                            )
+                        except Exception:
+                            msg_content = f"[swarm result for: {objective}] {summary}"
                         if applied and applied_files:
                             msg_content += f"; applied {len(applied_files)} files"
                         elif held_for_review:

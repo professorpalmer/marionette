@@ -760,6 +760,10 @@ class ConversationalSession(
 
         self._goal_store = SessionGoalStore(self.state_dir)
         self._session_goal = self._goal_store.load()
+        # Session scratch bindings (L1 durable key/value; survives compact).
+        from .session_scratch import SessionScratchStore
+
+        self._scratch_store = SessionScratchStore(self.state_dir)
         # Host quality gate (optional; disabled when quality_gate_cmds empty).
         from .quality_gate import QualityGateRunner
 

@@ -693,11 +693,24 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     yield ConvEvent('swarm_result', {'job_id': _badge['job_id'], 'objective': act.goal, 'result': _badge})
     # Only surfaced artifacts become turn findings; a refused demo contributes none.
     turn_findings.extend((a for a in _all_arts if a.get('type') != 'verification'))
+    full_digest_raw = (getattr(act, 'arguments', None) or {}).get('full_digest')
+    if isinstance(full_digest_raw, bool):
+        want_full_digest = full_digest_raw
+    else:
+        want_full_digest = str(full_digest_raw or '').strip().lower() in (
+            '1', 'true', 'yes', 'on',
+        )
     digest = '\n'.join(
         digest_line(a, _job_id_text) for a in digest_arts
     ) or '  (no artifacts)'
     if auth_failure and not _has_signal and auth_failure not in digest:
         digest = f"  - [auth] {auth_failure}\n{digest}"
+    from .worker_handles import format_handle_first_result
+    handle_body = format_handle_first_result(
+        _job_id_text,
+        digest_arts or _signal or _all_arts,
+    )
+    body = digest if want_full_digest else handle_body
     stall = ''
     if _demo_refused or counters['demo_swarms'] >= 1:
         stall = '\n(NOTE: swarm hit the DEMO substrate and was refused -- Marionette never treats demo findings as real analysis. Do NOT retry or cite those findings. Tell the user analysis needs HARNESS_SWARM_ADAPTER=agentic and a provider key, then stop.)'
@@ -716,7 +729,21 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         artifacts=_all_arts,
         acceptance_criteria=_finish_criteria,
     ))
-    session._append_action_result(act, aid, f"(swarm {aid} '{act.goal}' returned {_ui_num} artifacts {_pilot_via}:{evidence_boundary}\n{digest}\nExplain these findings to the user and either run a narrowed follow-up swarm or finish with no actions.){stall}", is_native)
+    _follow = (
+        'Explain these findings to the user and either run a narrowed follow-up '
+        'swarm or finish with no actions. FETCH full bodies with peek_artifact '
+        'or read_file on artifact:// URIs when needed.'
+        if not want_full_digest
+        else
+        'Explain these findings to the user and either run a narrowed follow-up '
+        'swarm or finish with no actions.'
+    )
+    session._append_action_result(
+        act, aid,
+        f"(swarm {aid} '{act.goal}' returned {_ui_num} artifacts {_pilot_via}:"
+        f"{evidence_boundary}\n{body}\n{_follow}){stall}",
+        is_native,
+    )
     return None
 
 def dispatch_implement_action(session, act, aid, is_native, *, turn_actions, action_idx, action_seq, step, swarms) -> Iterator[Any]:
