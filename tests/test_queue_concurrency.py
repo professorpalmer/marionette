@@ -177,11 +177,15 @@ def test_queue_drains_while_swarm_pending(tmp_path):
         assert len(swarm_results) == 1
         assert swarm_results[0].data["job_id"] == "job_123456789012"
         
-        # Check that history has exactly one follow-up assistant message for the result
+        # Check that history has exactly one follow-up assistant message for the result.
+        # Model-visible drain is handle-first (job_id + FETCH); full summary stays on
+        # display/tracker / ConvEvent, not pasted into _history.
         follow_ups = [m for m in session._history if "[swarm result for:" in m.get("content", "")]
         assert len(follow_ups) == 1
         assert "[swarm result for: Apply fix to hello.txt]" in follow_ups[0]["content"]
-        assert "Completed successfully background task" in follow_ups[0]["content"]
+        assert "job_id=job_123456789012" in follow_ups[0]["content"]
+        assert "FETCH" in follow_ups[0]["content"]
+        assert "Completed successfully background task" not in follow_ups[0]["content"]
         
         # State should be back to "idle" now
         assert session.state() == "idle"
