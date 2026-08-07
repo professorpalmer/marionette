@@ -62,11 +62,16 @@ class AutoBudget:
 
     def start(self) -> "AutoBudget":
         with self._lock:
-            self.started_at = time.time()
-            self.tokens_used = 0
-            self.swarms_used = 0
-            self.idle_steps = 0
-            self._halted_reason = None
+            # Root budgets reset. Child budgets inherit the parent's clock and
+            # cumulative spend via ``child()`` — calling start() on them must
+            # not mint a fresh ceiling (dirty-checkout recovery and nested
+            # ambient workers share one lifecycle).
+            if self.parent is None:
+                self.started_at = time.time()
+                self.tokens_used = 0
+                self.swarms_used = 0
+                self.idle_steps = 0
+                self._halted_reason = None
         return self
 
     @property

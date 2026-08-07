@@ -8,7 +8,7 @@ import threading
 import subprocess
 import contextlib
 from dataclasses import dataclass, field
-from typing import Optional, Iterator, TYPE_CHECKING
+from typing import Any, Optional, Iterator, TYPE_CHECKING
 
 logger = logging.getLogger("pmharness.worker")
 
@@ -111,6 +111,105 @@ class WorkerResult:
     # keeps positional/legacy construction back-compatible; conversation_jobs
     # prefers these over re-parsing the summary when present.
     findings: list = field(default_factory=list)
+    # True when the inner turn stopped because the tool-call / AutoBudget ceiling
+    # tripped (empty-diff recovery must not burn a second full attempt).
+    stopped_by_guard_or_budget: bool = False
+
+
+def scope_goal_paths_to_worktree(
+    goal: str, live_repo: str, wt_path: str = "",
+) -> str:
+    """Rewrite live-checkout absolute paths in ``goal`` to worktree-relative paths.
+
+    Nested workers are confined to ``wt_path``; prompting them with the live
+    repo absolute path causes path-traversal rejections. Relative tokens and
+    paths outside ``live_repo`` are left unchanged. Never weakens containment.
+    """
+    text = goal or ""
+    if not text or not live_repo:
+        return text
+    try:
+        from harness.implement_guards import extract_goal_paths
+    except Exception:
+        return text
+    live_abs = os.path.abspath(live_repo)
+    live_norm = os.path.normcase(live_abs)
+    rewritten = text
+    for token in extract_goal_paths(text):
+        raw = (token or "").strip().strip("'\"`")
+        if not raw or not os.path.isabs(raw):
+            continue
+        try:
+            abs_tok = os.path.abspath(raw)
+            common = os.path.commonpath([live_abs, abs_tok])
+        except (ValueError, OSError, TypeError):
+            continue
+        if os.path.normcase(common) != live_norm:
+            continue
+        try:
+            rel = os.path.relpath(abs_tok, live_abs).replace("\\", "/")
+        except ValueError:
+            continue
+        if not rel or rel.startswith(".."):
+            continue
+        rewritten = rewritten.replace(token, rel)
+    del wt_path  # documented for callers; confinement is enforced at tool layer
+    return rewritten
+
+
+def _worker_stopped_by_guard_or_budget(
+    session: Any,
+    budget: Optional[AutoBudget],
+    events: list,
+) -> bool:
+    """Detect tool-cap / AutoBudget exhaustion that must not trigger recovery."""
+    try:
+        guard = getattr(session, "_turn_guard_state", None)
+        ib = getattr(guard, "iteration_budget", None) if guard is not None else None
+        if ib is not None and bool(getattr(ib, "exhausted", False)):
+            return True
+    except Exception:
+        pass
+    try:
+        if budget is not None and getattr(budget, "_halted_reason", None):
+            return True
+    except Exception:
+        pass
+    markers = (
+        "tool-call budget exhausted",
+        "per-turn tool-call budget exhausted",
+        "post-implement validation allowance exhausted",
+        "token ceiling reached",
+        "time ceiling reached",
+        "edit-first nested implement",
+    )
+    for ev in events or []:
+        try:
+            data = getattr(ev, "data", None) or {}
+            blob = (
+                f"{data.get('error') or ''} {data.get('content') or ''} "
+                f"{data.get('message') or ''} {data.get('reason') or ''}"
+            ).lower()
+        except Exception:
+            continue
+        if any(m in blob for m in markers):
+            return True
+        try:
+            if getattr(ev, "kind", "") == "auto_halt":
+                reason = str((data or {}).get("reason") or "").lower()
+                if any(
+                    m in reason
+                    for m in (
+                        "token ceiling",
+                        "time ceiling",
+                        "stall:",
+                        "swarm ceiling",
+                    )
+                ):
+                    return True
+        except Exception:
+            pass
+    return False
 
 
 # --- Escaped-write detection ------------------------------------------------
@@ -663,6 +762,7 @@ class ProviderWorker:
         # savings include worker/swarm cache reads.
         self._session_tokens_cached = 0
         self._worktree_diff_empty: Optional[bool] = None
+        self._stopped_by_guard_or_budget = False
 
     def run(self) -> WorkerResult:
         """Drive the worker and return a normalized result whose token counts
@@ -672,13 +772,28 @@ class ProviderWorker:
         -- so cost accounting and autobudget attribution work no matter which
         caller invoked the worker (not only run_native_edit). Splitting out the
         prompt tokens keeps implement-worker cost from being undercounted."""
+        budget_before = int(getattr(self.budget, "tokens_used", 0) or 0)
         result = self._run_impl()
-        total = self.budget.tokens_used or self._session_tokens_total
+        budget_after = int(getattr(self.budget, "tokens_used", 0) or 0)
+        budget_delta = budget_after - budget_before
+        # Shared lifecycle budgets inherit cumulative spend from prior attempts;
+        # stamp only this attempt's metered delta onto the result. When the inner
+        # run did not touch the budget (stubbed tests, session-only metering),
+        # fall back carefully: root/supervised budgets may be preloaded before
+        # run() and should still report that total, but a child budget with a
+        # zero delta must use this attempt's session total (or zero) so a no-op
+        # recovery does not inherit an earlier attempt's spend.
+        if budget_delta:
+            total = budget_delta
+        elif getattr(self.budget, "parent", None) is not None:
+            total = int(self._session_tokens_total or 0)
+        else:
+            total = self._session_tokens_total or self.budget.tokens_used
         if not result.tokens_in:
             result.tokens_in = self._session_tokens_in
         if not result.tokens_out:
-            # budget.tokens_used is the cumulative in+out total; the completion
-            # share is the remainder after prompt tokens.
+            # total is this attempt's in+out metered spend; the completion share
+            # is the remainder after prompt tokens.
             result.tokens_out = max(0, total - result.tokens_in)
         # Backfill cached prompt tokens from the inner session onto EVERY return
         # path so the parent session's cache_savings_usd accounts for
@@ -691,6 +806,8 @@ class ProviderWorker:
             result.managed_worktree_mode = "managed"
         if result.worktree_diff_empty is None:
             result.worktree_diff_empty = self._worktree_diff_empty
+        if self._stopped_by_guard_or_budget and not result.stopped_by_guard_or_budget:
+            result.stopped_by_guard_or_budget = True
         return result
 
     def _run_impl(self) -> WorkerResult:
@@ -700,6 +817,7 @@ class ProviderWorker:
         self._session_tokens_total = 0
         self._session_tokens_cached = 0
         self._worktree_diff_empty = None
+        self._stopped_by_guard_or_budget = False
         if not self.repo or not _is_repo(self.repo):
             return WorkerResult(ok=False, error="not a git repo")
 
@@ -784,10 +902,18 @@ class ProviderWorker:
             # same submit contract as swarm briefs (structured findings before
             # the turn budget ends) -- not the implement "edit then stop" brief.
             if self.expects_diff:
+                scoped_goal = scope_goal_paths_to_worktree(
+                    self.goal, self.repo, wt_path,
+                )
                 worker_objective = (
-                    f"IMPLEMENT TASK: {self.goal}\n\n"
-                    "Edit the file(s) directly to complete this task. Read each target file at most once, then write the change. "
-                    "Do not investigate beyond the files you must edit. Finish as soon as the change is complete."
+                    f"IMPLEMENT TASK: {scoped_goal}\n\n"
+                    f"Your tools are confined to the managed worktree cwd "
+                    f"{wt_path}. Address files with worktree-relative paths "
+                    f"(e.g. app.js), never the live checkout absolute path.\n"
+                    "Edit the file(s) directly to complete this task. Read each "
+                    "target file at most once, then write the change. "
+                    "Do not investigate beyond the files you must edit. Finish "
+                    "as soon as the change is complete."
                 )
             else:
                 try:
@@ -815,7 +941,13 @@ class ProviderWorker:
             session = ConversationalSession(worker_cfg)
             if self.job_id:
                 session.savings_job_id = self.job_id
-            
+            # Nested implement workers skip the foreground tiny-workspace thrash
+            # cap and use edit-first pilot guards instead.
+            if self.expects_diff:
+                session._nested_implement_worker = True
+            else:
+                session._nested_implement_worker = False
+
             with patch_subprocess_run(wt_path):
                 for ev in session.run_auto(
                     worker_objective,
@@ -830,6 +962,11 @@ class ProviderWorker:
                             cb(ev)
                         except Exception:
                             pass
+
+            stopped_by_guard = _worker_stopped_by_guard_or_budget(
+                session, self.budget, events,
+            )
+            self._stopped_by_guard_or_budget = bool(stopped_by_guard)
 
             post_failed = False
             if declarative_checks_enabled(self.repo, base_cfg.state_dir):

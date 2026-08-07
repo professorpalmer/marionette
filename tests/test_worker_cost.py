@@ -219,3 +219,36 @@ def test_add_worker_tokens_from_artifacts_simulate_parallel():
     assert sum3_cached == 0
 
     assert session._tokens_used == 660
+
+
+def test_shared_child_budget_noop_attempt_reports_zero_output():
+    """Ambient child with zero delta must not inherit cumulative parent spend.
+
+    First attempt spends 30 (10 in → 20 out); a no-op second attempt reports 0
+    output while the parent cumulative total stays at 30.
+    """
+    from harness.worker import ambient_budget
+
+    parent = AutoBudget(max_tokens=10_000).start()
+
+    def run_attempt(goal: str, tokens_in: int, total_spend: int) -> WorkerResult:
+        worker = ProviderWorker("/tmp/repo", goal)
+
+        def _run_impl() -> WorkerResult:
+            if total_spend:
+                worker.budget.add_tokens(total_spend)
+            worker._session_tokens_in = tokens_in
+            return WorkerResult(ok=True, summary="done")
+
+        worker._run_impl = _run_impl
+        return worker.run()
+
+    with ambient_budget(parent):
+        first = run_attempt("first", tokens_in=10, total_spend=30)
+        second = run_attempt("second", tokens_in=0, total_spend=0)
+
+    assert first.tokens_in == 10
+    assert first.tokens_out == 20
+    assert second.tokens_in == 0
+    assert second.tokens_out == 0
+    assert parent.tokens_used == 30

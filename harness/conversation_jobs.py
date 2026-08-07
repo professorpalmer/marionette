@@ -124,6 +124,57 @@ def _worker_attempt_has_usable_diff(res) -> bool:
         return False
 
 
+def _worker_stopped_by_guard_or_budget(res) -> bool:
+    """True when the first attempt was halted by tool/AutoBudget ceilings."""
+    if res is None:
+        return False
+    try:
+        if bool(getattr(res, "stopped_by_guard_or_budget", False)):
+            return True
+    except Exception:
+        pass
+    try:
+        text = (
+            f"{getattr(res, 'summary', '') or ''} "
+            f"{getattr(res, 'error', '') or ''}"
+        ).lower()
+    except Exception:
+        return False
+    markers = (
+        "tool-call budget exhausted",
+        "per-turn tool-call budget exhausted",
+        "post-implement validation allowance exhausted",
+        "token ceiling reached",
+        "time ceiling reached",
+        "edit-first nested implement",
+        "halt reason: token ceiling",
+        "halt reason: time ceiling",
+        "halt reason: stall:",
+    )
+    return any(m in text for m in markers)
+
+
+def _empty_implement_recovery_eligible(
+    res,
+    *,
+    expects_diff: bool,
+    live_dirty_before: list,
+    cancelled: bool,
+) -> bool:
+    """One-shot recovery only for genuine seeded-worktree/provenance mismatch.
+
+    Guard/budget exhaustion on the first attempt must not launch a second full
+    worker with a fresh ceiling.
+    """
+    if cancelled or not expects_diff or not live_dirty_before:
+        return False
+    if not _is_empty_diff_implement_failure(res, expects_diff=True):
+        return False
+    if _worker_stopped_by_guard_or_budget(res):
+        return False
+    return True
+
+
 def _annotate_empty_managed_implement_exhausted(
     res, *, dirty_paths: list, recovered: bool,
 ) -> None:
@@ -536,6 +587,27 @@ class ConversationJobsMixin:
             # target_repo (optional): abs path to a DIFFERENT git repo than the
             # open workspace; swaps self.config for a shallow-copied per-dispatch
             # HarnessConfig so the engines transparently target that repo.
+            #
+            # One shared AutoBudget covers the primary attempt AND any one-shot
+            # dirty-checkout recovery so we never merge two fresh full ceilings.
+            from harness.autobudget import AutoBudget
+            from pmharness.bridge import worker_token_budget
+
+            try:
+                deadline_s = float(self._worker_deadline_seconds() or 0.0)
+            except Exception:
+                deadline_s = 900.0
+            # Prefer the governing fully-auto budget when present so recovery
+            # cannot escape the tree ceiling; otherwise mint one shared lifecycle.
+            lifecycle_budget = getattr(self, "_auto_budget", None)
+            if lifecycle_budget is None:
+                lifecycle_budget = AutoBudget(
+                    max_tokens=worker_token_budget(),
+                    max_seconds=int(deadline_s) if deadline_s > 0 else 900,
+                    max_swarms=2,
+                    max_idle_steps=2 if expects_diff else 5,
+                ).start()
+
             def _on_worker_event(ev):
                 try:
                     self._upsert_local_job_action(job_id, ev)
@@ -546,6 +618,8 @@ class ConversationJobsMixin:
                 objective, requested_adapter, job_id=job_id,
                 target_repo=target_repo, expects_diff=expects_diff,
                 on_event=_on_worker_event,
+                lifecycle_budget=lifecycle_budget,
+                deadline_seconds=deadline_s if deadline_s > 0 else None,
             )
             try:
                 live_dirty_after = _list_git_status_porcelain_paths(live_repo)
@@ -557,18 +631,20 @@ class ConversationJobsMixin:
                     ok=False,
                     error=f"worker exceeded {deadline}s wall-clock deadline",
                     summary=f"Worker exceeded its {deadline}s deadline and was abandoned to free the pool slot.",
+                    stopped_by_guard_or_budget=True,
                 )
 
             # One automatic recovery when implement left the managed worktree
             # empty while the live checkout was already dirty (seeded files
             # present but unused). Analysis empty-diff is fine — skip.
+            # Do NOT recover after guard/budget exhaustion (would double spend).
             recovered_empty_implement = False
             try:
-                should_recover = (
-                    expects_diff
-                    and bool(live_dirty_before)
-                    and _is_empty_diff_implement_failure(res, expects_diff=True)
-                    and not self._local_job_cancelled(job_id)
+                should_recover = _empty_implement_recovery_eligible(
+                    res,
+                    expects_diff=expects_diff,
+                    live_dirty_before=live_dirty_before,
+                    cancelled=self._local_job_cancelled(job_id),
                 )
             except Exception:
                 should_recover = False
@@ -577,42 +653,71 @@ class ConversationJobsMixin:
                 recovery_objective = _empty_implement_recovery_objective(
                     objective, live_dirty_before,
                 )
+                # Shared lifecycle budget: do not start recovery when the
+                # primary attempt already consumed the total ceiling.
+                lifecycle_halted = False
                 try:
-                    recovery_res = self._run_edit_worker_bounded(
-                        recovery_objective, requested_adapter, job_id=job_id,
-                        target_repo=target_repo, expects_diff=expects_diff,
-                        on_event=_on_worker_event,
+                    lifecycle_halted = bool(lifecycle_budget.check())
+                except Exception:
+                    lifecycle_halted = False
+                try:
+                    remaining = max(
+                        1.0,
+                        float(lifecycle_budget.max_seconds)
+                        - float(lifecycle_budget.elapsed),
                     )
                 except Exception:
-                    recovery_res = None
-                try:
-                    live_dirty_after = _list_git_status_porcelain_paths(live_repo)
-                except Exception:
-                    pass
-                if recovery_res is None:
-                    # Deadline/cancel on recovery: keep the first attempt, but
-                    # still mark exhausted so the pilot does not re-dispatch.
-                    res = first_res
+                    remaining = deadline_s if deadline_s > 0 else None
+                if lifecycle_halted:
+                    # Do not burn a second attempt against a spent ceiling, but
+                    # still mark the empty dirty implement exhausted so the
+                    # pilot soft-refuses an identical re-dispatch.
+                    should_recover = False
                     recovered_empty_implement = True
                     _annotate_empty_managed_implement_exhausted(
                         res,
                         dirty_paths=live_dirty_before,
                         recovered=True,
                     )
-                elif _worker_attempt_has_usable_diff(recovery_res):
-                    _merge_worker_attempt_usage(recovery_res, first_res)
-                    res = recovery_res
                 else:
-                    # Still empty — prefer recovery surface (honest about retry)
-                    # but fold first-attempt spend onto the same job_id.
-                    _merge_worker_attempt_usage(recovery_res, first_res)
-                    res = recovery_res
-                    recovered_empty_implement = True
-                    _annotate_empty_managed_implement_exhausted(
-                        res,
-                        dirty_paths=live_dirty_before,
-                        recovered=True,
-                    )
+                    try:
+                        recovery_res = self._run_edit_worker_bounded(
+                            recovery_objective, requested_adapter, job_id=job_id,
+                            target_repo=target_repo, expects_diff=expects_diff,
+                            on_event=_on_worker_event,
+                            lifecycle_budget=lifecycle_budget,
+                            deadline_seconds=remaining,
+                        )
+                    except Exception:
+                        recovery_res = None
+                    try:
+                        live_dirty_after = _list_git_status_porcelain_paths(live_repo)
+                    except Exception:
+                        pass
+                    if recovery_res is None:
+                        # Deadline/cancel on recovery: keep the first attempt, but
+                        # still mark exhausted so the pilot does not re-dispatch.
+                        res = first_res
+                        recovered_empty_implement = True
+                        _annotate_empty_managed_implement_exhausted(
+                            res,
+                            dirty_paths=live_dirty_before,
+                            recovered=True,
+                        )
+                    elif _worker_attempt_has_usable_diff(recovery_res):
+                        _merge_worker_attempt_usage(recovery_res, first_res)
+                        res = recovery_res
+                    else:
+                        # Still empty — prefer recovery surface (honest about retry)
+                        # but fold first-attempt spend onto the same job_id.
+                        _merge_worker_attempt_usage(recovery_res, first_res)
+                        res = recovery_res
+                        recovered_empty_implement = True
+                        _annotate_empty_managed_implement_exhausted(
+                            res,
+                            dirty_paths=live_dirty_before,
+                            recovered=True,
+                        )
 
             def _worker_attribute(name: str, default=""):
                 try:

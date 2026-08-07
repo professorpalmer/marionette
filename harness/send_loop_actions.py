@@ -84,8 +84,12 @@ def execute_turn_actions(
     # same originating user turn (execution counts, result cache, broad-intent,
     # delegation/swarm progress). Fresh user messages clear the session attr.
     prior_guard = getattr(session, "_turn_guard_state", None)
+    nested_implement = bool(getattr(session, "_nested_implement_worker", False))
     guard_state = reuse_or_new_turn_guard_state(
-        prior_guard, user_message, repo_path=action_cwd,
+        prior_guard,
+        user_message,
+        repo_path=action_cwd,
+        nested_implement=nested_implement,
     )
     session._turn_guard_state = guard_state
     guard_suppressed: dict[int, Any] = {}

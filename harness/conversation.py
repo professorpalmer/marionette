@@ -3030,7 +3030,9 @@ class ConversationalSession(
 
     def _run_edit_worker_bounded(self, objective: str, requested_adapter: str,
                                  job_id: str = "", target_repo: str = "",
-                                 expects_diff: bool = True, on_event=None):
+                                 expects_diff: bool = True, on_event=None,
+                                 lifecycle_budget=None,
+                                 deadline_seconds: Optional[float] = None):
         """Run the edit worker under a hard wall-clock deadline. The work runs in
         a daemon thread; if it blows the deadline we return None so the caller can
         free its _swarm_pool slot immediately. The orphaned worker thread is a
@@ -3043,9 +3045,23 @@ class ConversationalSession(
         on the worker and return None. The daemon thread keeps running to natural
         completion (the provider call cannot be interrupted mid-flight) but is
         detached and dies with the process; the caller treats the job as
-        cancelled immediately for the UI."""
+        cancelled immediately for the UI.
+
+        ``lifecycle_budget`` (optional): shared AutoBudget for primary + recovery
+        attempts so a dirty-checkout retry cannot mint a second full ceiling.
+        ``deadline_seconds`` (optional): override the wait ceiling (remaining
+        wall-clock of a shared lifecycle).
+        """
         from harness.edit_engines import run_edit_worker
-        deadline = self._worker_deadline_seconds()
+        if deadline_seconds is None:
+            deadline = self._worker_deadline_seconds()
+        else:
+            try:
+                deadline = float(deadline_seconds)
+            except (TypeError, ValueError):
+                deadline = self._worker_deadline_seconds()
+            if deadline < 0:
+                deadline = 0.0
         cancel_ev = self._local_job_cancels.get(job_id) if job_id else None
         box: dict = {}
         done = threading.Event()
@@ -3063,12 +3079,14 @@ class ConversationalSession(
             except Exception:
                 _effective_config = self.config
 
-        # Thread the governing budget (fully-auto only) into the worker so its
-        # spend rolls up into the ONE tree-wide ceiling. ProviderWorker binds a
-        # child() of the ambient budget installed on ITS thread; supervised runs
-        # leave it None so the worker keeps its own independent default budget.
+        # Thread the governing budget (fully-auto only, or an explicit lifecycle
+        # budget for dirty-checkout recovery) into the worker so its spend rolls
+        # up into ONE tree-wide ceiling. ProviderWorker binds a child() of the
+        # ambient budget installed on ITS thread; supervised runs without a
+        # lifecycle budget leave it None so the worker keeps its own independent
+        # default budget.
         from harness.worker import ambient_budget as _ambient_budget_ctx
-        _governing = self._auto_budget
+        _governing = lifecycle_budget if lifecycle_budget is not None else self._auto_budget
 
         def _run():
             try:

@@ -41,17 +41,24 @@ _TRUSTED_WIKI_CONNECT_HOSTS = frozenset(
 def _path() -> str:
     state_dir = os.environ.get("HARNESS_STATE_DIR", "")
     if state_dir:
-        p = os.path.join(state_dir, "wiki.json")
-        # MIGRATION: earlier builds (and any run without HARNESS_STATE_DIR) wrote
-        # wiki.json to ~/.pmharness/wiki.json. Once the stable state dir was
-        # anchored to ~/.pmharness/state, _path() pointed into state/ and a
-        # previously-saved config became invisible -- the wiki read as "not
-        # connected" despite valid saved creds. If the state-dir copy is missing
-        # but the legacy parent file exists, adopt the legacy file so the config
-        # keeps working across the state-dir move.
-        if not os.path.exists(p) and os.path.exists(_LEGACY_WIKI_FILE):
+        preferred = os.path.join(state_dir, "wiki.json")
+        # Arbitrary explicit state dirs (tests, alternate app states) are an
+        # isolation boundary — never fall through to the user's legacy Home
+        # file. The production stable anchor (~/.pmharness/state) is the one
+        # exception: if state/wiki.json is missing, adopt the legacy file so
+        # credentials survive the state-dir migration.
+        try:
+            stable_dir = os.path.realpath(os.path.dirname(_DEFAULT_STATE_WIKI))
+            resolved = os.path.realpath(state_dir)
+        except Exception:
+            return preferred
+        if (
+            resolved == stable_dir
+            and not os.path.exists(preferred)
+            and os.path.exists(_LEGACY_WIKI_FILE)
+        ):
             return _LEGACY_WIKI_FILE
-        return p
+        return preferred
     # Prefer the stable state path for new writes; still read legacy if that is
     # the only copy on disk.
     if os.path.exists(_DEFAULT_STATE_WIKI):

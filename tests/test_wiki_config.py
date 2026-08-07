@@ -7,6 +7,38 @@ import os
 from harness import wiki_config
 
 
+def test_path_adopts_legacy_only_for_stable_state_anchor(tmp_path, monkeypatch):
+    """HARNESS_STATE_DIR at the stable anchor may adopt legacy wiki.json;
+    an arbitrary explicit state dir must never leak to the user's legacy file.
+    """
+    home = tmp_path / "home"
+    stable = home / ".pmharness" / "state"
+    stable.mkdir(parents=True)
+    legacy = home / ".pmharness" / "wiki.json"
+    legacy.write_text(
+        json.dumps(
+            {
+                "api_base": "https://api.portablellm.wiki/t/acme",
+                "owner_token": "legacy-tok",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        wiki_config, "_DEFAULT_STATE_WIKI", str(stable / "wiki.json"),
+    )
+    monkeypatch.setattr(wiki_config, "_LEGACY_WIKI_FILE", str(legacy))
+
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(stable))
+    assert wiki_config._path() == str(legacy)
+
+    alt = tmp_path / "alt-state"
+    alt.mkdir()
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(alt))
+    assert wiki_config._path() == str(alt / "wiki.json")
+    assert wiki_config._path() != str(legacy)
+
+
 def test_parse_personal_llm_url_extracts_api_and_token():
     raw = "https://portablellm.wiki/professorpalmer/llm?t=secret-token"
     parsed = wiki_config.parse_wiki_connection_string(raw)

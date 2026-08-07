@@ -26,8 +26,10 @@ HARNESS_ALLOW_MID_TURN_RESTART=1 (opt-in; mid-turn /api/restart is blocked by
 default) (or numeric HARNESS_TURN_BUDGET >= 2 for cap override).
 Tune HARNESS_STAGNATION_STREAK_CAP / HARNESS_FAILED_OBJECTIVE_RESUME_CAP as needed.
 Tiny workspaces tighten the tool cap via HARNESS_TINY_WORKSPACE_TOOL_BUDGET
-(default 12). After a successful implement, remaining tools clamp to
-HARNESS_POST_IMPLEMENT_TOOL_ALLOWANCE (default 4).
+(default 12) for the foreground pilot only. Nested native implement workers
+skip that tiny tighten and instead use an edit-first gate
+(HARNESS_EDIT_FIRST_READ_ALLOWANCE, default 2). After a successful implement,
+remaining tools clamp to HARNESS_POST_IMPLEMENT_TOOL_ALLOWANCE (default 4).
 """
 
 import json
@@ -46,11 +48,29 @@ SWARM_GATE_READ_ALLOWANCE = int(os.environ.get("HARNESS_SWARM_GATE_READ_ALLOWANC
 SWARM_GATE_FULL_REDIRECT_CAP = int(os.environ.get("HARNESS_SWARM_GATE_FULL_REDIRECT_CAP", "1"))
 TURN_TOOL_BUDGET_DEFAULT = int(os.environ.get("HARNESS_PILOT_TOOL_BUDGET", "25"))
 # Tiny-workspace tool budget (scale-aware tighten only; never raises explicit cap).
+# Applies to the *foreground* pilot only — nested implement workers use an
+# edit-first policy instead so a tiny repo cannot burn the whole cap exploring.
 TINY_WORKSPACE_TOOL_BUDGET_DEFAULT = 12
 TINY_WORKSPACE_SOURCE_FILE_CAP = 15
 TINY_WORKSPACE_LOC_CAP = 5000
 # Residual tools allowed after a successful implement lands (never raises cap).
 POST_IMPLEMENT_TOOL_ALLOWANCE_DEFAULT = 4
+# Nested implement workers may read this many target files before an edit is
+# required; broader exploration (list/search/ipython) is blocked until then.
+EDIT_FIRST_READ_ALLOWANCE_DEFAULT = 2
+# Tool kinds that satisfy the nested-implement "required write" gate.
+EDIT_FIRST_WRITE_KINDS = frozenset({
+    "edit_file",
+    "write_file",
+    "hash_edit",
+})
+# Broad exploration that must not consume a nested implement budget before a write.
+EDIT_FIRST_BLOCKED_KINDS = frozenset({
+    "list_dir",
+    "search_files",
+    "run_ipython",
+    "search_codegraph",
+})
 # How many consecutive identical (normalized prose + action fingerprint) steps
 # may run before the send-loop stagnation governor ends the turn calmly.
 STAGNATION_STREAK_CAP = int(os.environ.get("HARNESS_STAGNATION_STREAK_CAP", "3"))
@@ -233,16 +253,34 @@ def post_implement_tool_allowance() -> int:
     return POST_IMPLEMENT_TOOL_ALLOWANCE_DEFAULT
 
 
-def turn_tool_budget_cap(repo_path: Optional[str] = None) -> int:
+def edit_first_read_allowance() -> int:
+    """Target-file reads allowed before a nested implement must write."""
+    raw = os.environ.get("HARNESS_EDIT_FIRST_READ_ALLOWANCE", "").strip()
+    if raw:
+        try:
+            return max(0, int(raw))
+        except (TypeError, ValueError):
+            pass
+    return EDIT_FIRST_READ_ALLOWANCE_DEFAULT
+
+
+def turn_tool_budget_cap(
+    repo_path: Optional[str] = None,
+    *,
+    nested_implement: bool = False,
+) -> int:
     """Effective per-turn tool cap.
 
     Explicit ``HARNESS_PILOT_TOOL_BUDGET`` / ``HARNESS_TURN_BUDGET`` is the
     absolute ceiling. A tiny workspace may only *tighten* that ceiling via
-    ``HARNESS_TINY_WORKSPACE_TOOL_BUDGET`` (default 12). Large workspaces keep
-    the existing default 25.
+    ``HARNESS_TINY_WORKSPACE_TOOL_BUDGET`` (default 12) for the foreground
+    pilot. Nested native implement workers skip the tiny tighten so they keep
+    an edit-first bounded policy instead of burning a 12-call thrash budget.
     """
     base = _explicit_or_default_tool_budget()
     if base <= 0:
+        return base
+    if nested_implement:
         return base
     if repo_path and is_tiny_workspace(repo_path):
         return min(base, tiny_workspace_tool_budget())
@@ -463,6 +501,10 @@ class TurnGuardState:
     implement_success_seen: bool = False
     # Cached at turn start from the effective repo path (scale-aware budget / chrome guard).
     tiny_workspace: bool = False
+    # Nested native implement worker (ProviderWorker expects_diff): edit-first policy.
+    nested_implement: bool = False
+    # True after edit_file / write_file / hash_edit on a nested implement turn.
+    edit_seen: bool = False
 
 
 @dataclass(frozen=True)
@@ -817,6 +859,48 @@ def _delegate_suppress_message(kind: str, exploration_count: int) -> str:
         f"analysis / run_implement for multi-file edits instead of more grep/read/list "
         f"sweeps.)"
     )
+
+
+_EDIT_FIRST_SUPPRESS_MESSAGE = (
+    "(SUPPRESSED: edit-first nested implement) Read only the target file(s) you must "
+    "change, then call edit_file/hash_edit/write_file immediately. Do not burn the "
+    "tool budget on list_dir, search_files, run_ipython, or broad exploration before "
+    "the required write."
+)
+
+
+def check_edit_first(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict:
+    """Keep nested implement workers edit-first until a write lands.
+
+    Broad exploration is blocked outright; target ``read_file`` is allowed up to
+    ``edit_first_read_allowance()`` before a write is required. Foreground pilots
+    and analysis workers are unaffected (``nested_implement`` stays False).
+    """
+    if not state.nested_implement or state.edit_seen:
+        return GuardVerdict(False)
+    if kind in EDIT_FIRST_WRITE_KINDS:
+        return GuardVerdict(False)
+    if kind in EDIT_FIRST_BLOCKED_KINDS:
+        return GuardVerdict(
+            suppress=True,
+            reason="edit_first",
+            message=_EDIT_FIRST_SUPPRESS_MESSAGE,
+        )
+    if kind == "run_command" and is_exploration_command(getattr(act, "command", "") or ""):
+        return GuardVerdict(
+            suppress=True,
+            reason="edit_first",
+            message=_EDIT_FIRST_SUPPRESS_MESSAGE,
+        )
+    if kind == "read_file" and not _is_durable_recall_read(act):
+        allowance = edit_first_read_allowance()
+        if state.read_file_count >= allowance:
+            return GuardVerdict(
+                suppress=True,
+                reason="edit_first",
+                message=_EDIT_FIRST_SUPPRESS_MESSAGE,
+            )
+    return GuardVerdict(False)
 
 
 def _iteration_budget_suppress_message(
@@ -1244,13 +1328,20 @@ def check_pilot_guards(state: TurnGuardState, kind: str, act: Any) -> GuardVerdi
     if loop_verdict.suppress:
         return loop_verdict
 
+    edit_first_verdict = check_edit_first(state, kind, act)
+    if edit_first_verdict.suppress:
+        return edit_first_verdict
+
     swarm_verdict = check_swarm_gate(state, kind, act)
     if swarm_verdict.suppress:
         return swarm_verdict
 
-    delegate_verdict = check_delegate_gate(state, kind, act)
-    if delegate_verdict.suppress:
-        return delegate_verdict
+    # Nested implement workers already have an edit-first gate; skip the
+    # foreground delegate redirect (which tells them to call run_implement).
+    if not state.nested_implement:
+        delegate_verdict = check_delegate_gate(state, kind, act)
+        if delegate_verdict.suppress:
+            return delegate_verdict
 
     return check_iteration_budget(state, kind, act)
 
@@ -1262,6 +1353,9 @@ def record_action_execution(state: TurnGuardState, kind: str, act: Any) -> None:
 
     if kind in SWARM_DISPATCH_KINDS:
         state.swarm_dispatched = True
+
+    if kind in EDIT_FIRST_WRITE_KINDS:
+        state.edit_seen = True
 
     if kind in DELEGATION_EXEMPT_KINDS:
         state.delegation_seen = True
@@ -1281,16 +1375,23 @@ def new_turn_guard_state(
     user_message: str = "",
     *,
     repo_path: Optional[str] = None,
+    nested_implement: bool = False,
 ) -> TurnGuardState:
     tiny = bool(repo_path) and is_tiny_workspace(repo_path or "")
-    cap = turn_tool_budget_cap()
-    if tiny:
-        cap = min(cap, tiny_workspace_tool_budget())
+    # Foreground tiny pilots tighten to 12; nested implement workers keep the
+    # base ceiling and rely on check_edit_first instead.
+    if nested_implement:
+        cap = turn_tool_budget_cap(repo_path, nested_implement=True)
+    else:
+        cap = turn_tool_budget_cap()
+        if tiny:
+            cap = min(cap, tiny_workspace_tool_budget())
     return TurnGuardState(
         user_message=user_message or "",
         broad_intent=is_broad_intent_user_message(user_message or ""),
         iteration_budget=IterationBudget(cap) if cap > 0 else None,
         tiny_workspace=tiny,
+        nested_implement=bool(nested_implement),
     )
 
 
@@ -1299,6 +1400,7 @@ def reuse_or_new_turn_guard_state(
     user_message: str = "",
     *,
     repo_path: Optional[str] = None,
+    nested_implement: bool = False,
 ) -> TurnGuardState:
     """Reuse prior guard state across model steps / keep-alive resume.
 
@@ -1309,7 +1411,11 @@ def reuse_or_new_turn_guard_state(
     """
     if prior is not None:
         return prior
-    return new_turn_guard_state(user_message, repo_path=repo_path)
+    return new_turn_guard_state(
+        user_message,
+        repo_path=repo_path,
+        nested_implement=nested_implement,
+    )
 
 
 _READ_ONLY_ANALYSIS_GOAL_RE = re.compile(

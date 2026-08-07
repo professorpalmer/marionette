@@ -13,12 +13,14 @@ from harness.conversation import ConversationalSession
 from harness.conversation_jobs import (
     EMPTY_MANAGED_IMPLEMENT_EXHAUSTED,
     ConversationJobsMixin,
+    _empty_implement_recovery_eligible,
     _is_empty_diff_implement_failure,
     _worker_provenance_text,
+    _worker_stopped_by_guard_or_budget,
 )
 from harness.edit_engines import run_native_edit
 from harness.local_jobs import LocalJobsMixin
-from harness.worker import ProviderWorker, WorkerResult
+from harness.worker import ProviderWorker, WorkerResult, scope_goal_paths_to_worktree
 from harness.worktree_seed import (
     _list_git_status_porcelain_paths,
     _list_live_dirty_paths,
@@ -457,3 +459,260 @@ def test_analysis_empty_diff_skips_recovery_retry(monkeypatch):
     assert EMPTY_MANAGED_IMPLEMENT_EXHAUSTED not in (result.get("summary") or "")
     finished = session._local_jobs[job_id]
     assert finished["worker_provenance"].get("empty_implement_recovery") is False
+
+
+def test_scope_goal_paths_to_worktree_rewrites_live_absolute(tmp_path):
+    repo = tmp_path / "freeze"
+    repo.mkdir()
+    (repo / "app.js").write_text("x\n", encoding="utf-8")
+    live = str(repo)
+    abs_app = str(repo / "app.js")
+    goal = f"Polish the mockup in {abs_app} and keep styles.css"
+    scoped = scope_goal_paths_to_worktree(goal, live, "/tmp/managed-wt")
+    assert abs_app not in scoped
+    assert "app.js" in scoped
+    assert "styles.css" in scoped
+
+
+def test_empty_implement_recovery_skips_guard_exhausted_first_attempt(monkeypatch):
+    """Guard/budget exhaustion must not launch a second full recovery attempt."""
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    session = ConversationalSession(cfg)
+    job_id = "job_guard_no_recover"
+    session._register_local_job(
+        job_id, goal="polish mockup", role="implement", engine="native",
+    )
+
+    empty = WorkerResult(
+        ok=False,
+        summary="no changes produced",
+        patch="",
+        files_changed=[],
+        tokens_in=40,
+        tokens_out=12,
+        tokens_cached=0,
+        engine="native",
+        model="stub",
+        managed_worktree_path="/tmp/managed-wt",
+        managed_worktree_mode="managed",
+        worktree_diff_empty=True,
+        stopped_by_guard_or_budget=True,
+    )
+    calls: list[str] = []
+
+    def fake_worker(objective, *_args, **_kwargs):
+        calls.append(objective)
+        return empty
+
+    monkeypatch.setattr(
+        "harness.worktree_seed._list_git_status_porcelain_paths",
+        lambda _repo: ["app.js"],
+    )
+
+    with patch.object(session, "_run_edit_worker_bounded", side_effect=fake_worker):
+        session._run_provider_worker_background(
+            job_id, "polish the mockup", expects_diff=True,
+        )
+
+    assert len(calls) == 1
+    assert "[recovery]" not in calls[0]
+    finished = session._local_jobs[job_id]
+    assert finished["worker_provenance"]["empty_implement_recovery"] is False
+    assert _worker_stopped_by_guard_or_budget(empty) is True
+    assert _empty_implement_recovery_eligible(
+        empty,
+        expects_diff=True,
+        live_dirty_before=["app.js"],
+        cancelled=False,
+    ) is False
+
+
+def test_empty_implement_recovery_shares_lifecycle_budget(monkeypatch):
+    """Primary + recovery share one ambient lifecycle budget (no double ceiling)."""
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    session = ConversationalSession(cfg)
+    job_id = "job_shared_budget"
+    session._register_local_job(
+        job_id, goal="polish mockup", role="implement", engine="native",
+    )
+
+    empty = WorkerResult(
+        ok=False,
+        summary="no changes produced",
+        patch="",
+        files_changed=[],
+        tokens_in=10,
+        tokens_out=4,
+        tokens_cached=0,
+        engine="native",
+        model="stub",
+        managed_worktree_path="/tmp/managed-wt",
+        managed_worktree_mode="managed",
+        worktree_diff_empty=True,
+    )
+    recovered = WorkerResult(
+        ok=True,
+        summary="patched app.js",
+        patch=(
+            "diff --git a/app.js b/app.js\n"
+            "--- a/app.js\n"
+            "+++ b/app.js\n"
+            "@@ -1 +1,2 @@\n"
+            " console.log(1);\n"
+            "+console.log(2);\n"
+        ),
+        files_changed=["app.js"],
+        tokens_in=20,
+        tokens_out=8,
+        tokens_cached=0,
+        engine="native",
+        model="stub",
+        managed_worktree_path="/tmp/managed-wt",
+        managed_worktree_mode="managed",
+        worktree_diff_empty=False,
+    )
+    budgets_seen = []
+    calls: list[str] = []
+
+    def fake_worker(objective, *_args, **kwargs):
+        calls.append(objective)
+        budgets_seen.append(kwargs.get("lifecycle_budget"))
+        if len(calls) == 1:
+            # Simulate first-attempt spend on the shared lifecycle budget.
+            budget = kwargs.get("lifecycle_budget")
+            if budget is not None:
+                budget.add_tokens(14)
+            return empty
+        return recovered
+
+    monkeypatch.setattr(
+        "harness.worktree_seed._list_git_status_porcelain_paths",
+        lambda _repo: ["app.js"],
+    )
+    session._apply_worker_patch = lambda *_a, **_k: (True, ["app.js"], "ok")
+
+    with patch.object(session, "_run_edit_worker_bounded", side_effect=fake_worker):
+        session._run_provider_worker_background(
+            job_id, "polish the mockup", expects_diff=True,
+        )
+
+    # One visible implement job, two worker attempts, shared lifecycle object.
+    assert len(calls) == 2
+    assert "[recovery]" in calls[1]
+    assert budgets_seen[0] is not None
+    assert budgets_seen[0] is budgets_seen[1]
+    assert budgets_seen[0].tokens_used == 14
+    item = session._swarm_results.get_nowait()
+    result = item["result"]
+    assert result["applied"] is True
+    # Merged one-visible-step / two-attempt token accounting.
+    assert result["tokens_in"] == 30
+    assert result["tokens_out"] == 12
+    finished = session._local_jobs[job_id]
+    assert finished["worker_provenance"]["empty_implement_recovery"] is True
+    assert finished["worker_provenance"]["empty_managed_implement_exhausted"] is False
+
+
+def test_shared_ambient_budget_stamps_per_attempt_token_delta():
+    """Two workers under one ambient budget each report only their own spend."""
+    from harness.autobudget import AutoBudget
+    from harness.worker import ambient_budget
+
+    parent = AutoBudget(max_tokens=10_000).start()
+
+    def run_attempt(goal: str, tokens_in: int, total_spend: int) -> WorkerResult:
+        worker = ProviderWorker("/tmp/repo", goal)
+
+        def _run_impl() -> WorkerResult:
+            worker.budget.add_tokens(total_spend)
+            worker._session_tokens_in = tokens_in
+            return WorkerResult(ok=True, summary="done")
+
+        worker._run_impl = _run_impl
+        return worker.run()
+
+    with ambient_budget(parent):
+        first = run_attempt("first", tokens_in=10, total_spend=30)
+        second = run_attempt("second", tokens_in=10, total_spend=30)
+
+    assert first.tokens_in == 10
+    assert first.tokens_out == 20
+    assert second.tokens_in == 10
+    assert second.tokens_out == 20
+    assert parent.tokens_used == 60
+
+
+def test_child_budget_start_preserves_shared_ceiling():
+    from harness.autobudget import AutoBudget
+
+    parent = AutoBudget(max_tokens=100).start()
+    parent.add_tokens(40)
+    child = parent.child()
+    assert child.tokens_used == 40
+    child.start()  # must not reset shared position
+    assert child.tokens_used == 40
+    assert parent.tokens_used == 40
+    child.add_tokens(70)
+    assert parent.tokens_used == 110
+    assert child.check() is not None
+    assert parent.check() is not None
+
+
+def test_lifecycle_halted_skips_recovery_but_marks_exhausted(monkeypatch):
+    """Recovery-eligible empty implement with a halted lifecycle must not relaunch,
+    but must still annotate empty_managed_implement_exhausted for soft-refuse."""
+    from harness.autobudget import AutoBudget
+
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    session = ConversationalSession(cfg)
+    job_id = "job_lifecycle_halted_exhausted"
+    session._register_local_job(
+        job_id, goal="polish mockup", role="implement", engine="native",
+    )
+    # Token ceiling already spent: recovery would be eligible on dirty overlap,
+    # but check() is halted so we must not burn a second worker call.
+    lifecycle = AutoBudget(max_tokens=10, max_seconds=900).start()
+    lifecycle.add_tokens(10)
+    assert lifecycle.check() is not None
+    session._auto_budget = lifecycle
+
+    empty = WorkerResult(
+        ok=False,
+        summary="no changes produced",
+        patch="",
+        files_changed=[],
+        tokens_in=10,
+        tokens_out=4,
+        tokens_cached=0,
+        engine="native",
+        model="stub",
+        managed_worktree_path="/tmp/managed-wt",
+        managed_worktree_mode="managed",
+        worktree_diff_empty=True,
+    )
+    calls: list[str] = []
+
+    def fake_worker(objective, *_args, **_kwargs):
+        calls.append(objective)
+        return empty
+
+    monkeypatch.setattr(
+        "harness.worktree_seed._list_git_status_porcelain_paths",
+        lambda _repo: ["app.js", "styles.css"],
+    )
+
+    with patch.object(session, "_run_edit_worker_bounded", side_effect=fake_worker):
+        session._run_provider_worker_background(
+            job_id, "polish the mockup", expects_diff=True,
+        )
+
+    assert len(calls) == 1
+    assert "[recovery]" not in calls[0]
+    item = session._swarm_results.get_nowait()
+    result = item["result"]
+    summary = result.get("summary") or ""
+    assert EMPTY_MANAGED_IMPLEMENT_EXHAUSTED in summary
+    assert "Do NOT call run_implement again" in summary
+    finished = session._local_jobs[job_id]
+    assert finished["worker_provenance"]["empty_implement_recovery"] is False
+    assert finished["worker_provenance"]["empty_managed_implement_exhausted"] is True

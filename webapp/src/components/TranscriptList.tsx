@@ -1186,47 +1186,47 @@ function ActivityGroup({
   // tool-only groups. Inline always-open rows used to burn scroll space and
   // disagreed with Cursor/Hermes (collapsed until the user opens them).
 
+  const quietSummary = (() => {
+    if (actionCount > 0) return stepHeadline;
+    if (swarmResults.length > 0) {
+      return `Swarm · ${swarmResults.length} result${swarmResults.length === 1 ? "" : "s"}`;
+    }
+    if (swarmPendingItems.length > 0) {
+      return swarmPendingRunning ? "Swarm · running" : `Swarm · ${swarmPendingItems.length} pending`;
+    }
+    if (investigating) return stepHeadline || "Investigating…";
+    const preview = normalizeReasoningPreview(narrationPreview, 72);
+    return preview || "Thought";
+  })();
+
   return (
     <div className="my-1 w-full">
       <button
+        type="button"
         onClick={toggleOpen}
-        className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-panel2/20 border border-edge/30 hover:bg-panel2/40 transition text-[11px] text-muted w-fit select-none"
+        aria-expanded={open}
+        className="flex items-center gap-1.5 py-0.5 text-[12px] font-sans font-normal text-faint/75 hover:text-muted transition w-fit max-w-full select-none"
       >
-        {open ? <ChevronDown size={11} className="text-faint/70" /> : <ChevronRight size={11} className="text-faint/70" />}
-        {investigating ? <Loader2 size={11} className="animate-spin text-faint" /> : <Share2 size={10} className="text-faint/70" />}
-        {actionCount > 0 ? (
-          <span
-            className="text-txt/70 font-medium tracking-tight truncate max-w-[52ch] normal-case"
-            title={investigating ? (runningCard?.goal || stepHeadline) : stepHeadline}
-          >
-            {stepHeadline}
-          </span>
-        ) : (
-          <>
-            <span className="text-txt/70 font-medium tracking-tight">
-              {(swarmResults.length > 0 || swarmPendingItems.length > 0) ? "Swarm" : "Thought"}
-            </span>
-            <span className="text-faint truncate max-w-[46ch] normal-case">
-              {swarmResults.length > 0
-                ? `${swarmResults.length} result${swarmResults.length === 1 ? "" : "s"}`
-                : swarmPendingItems.length > 0
-                  ? (swarmPendingRunning ? "running" : `${swarmPendingItems.length} pending`)
-                  : narrationPreview}
-            </span>
-          </>
-        )}
+        {open ? <ChevronDown size={11} className="text-faint/55 shrink-0" /> : <ChevronRight size={11} className="text-faint/55 shrink-0" />}
+        {investigating ? <Loader2 size={11} className="animate-spin text-faint/60 shrink-0" /> : null}
+        <span
+          className="truncate max-w-[52ch] normal-case"
+          title={investigating ? (runningCard?.goal || quietSummary) : quietSummary}
+        >
+          {quietSummary}
+        </span>
         {cgItems.length > 0 && (
-          <span className="ml-0.5 text-faint/70">+ CodeGraph</span>
+          <span className="ml-0.5 text-[10px] text-faint/40">+ CodeGraph</span>
         )}
         {checkpointItems.length > 0 && (
-          <span className="ml-0.5 text-faint/70">+ {checkpointItems.length} restore point{checkpointItems.length === 1 ? "" : "s"}</span>
+          <span className="ml-0.5 text-[10px] text-faint/40">+ {checkpointItems.length} restore point{checkpointItems.length === 1 ? "" : "s"}</span>
         )}
-        {swarmResults.length > 0 && (
-          <span className="ml-0.5 text-good/75">+ swarm done</span>
+        {swarmResults.length > 0 && actionCount > 0 && (
+          <span className="ml-0.5 text-[10px] text-faint/40">+ swarm</span>
         )}
       </button>
       {open && (
-        <div className="flex flex-col gap-0.5 pl-3 mt-1 border-l-2 border-edge/40 w-full">
+        <div className="flex flex-col gap-0.5 pl-3 mt-1 border-l border-edge/30 w-full">
           {items.map(renderInner)}
         </div>
       )}
@@ -1234,6 +1234,31 @@ function ActivityGroup({
   );
 }
 
+
+/**
+ * Quiet collapsed-reasoning preview: first line only, strip markdown emphasis
+ * markers so `**Plan**` / `*italic*` never leak into the Cursor-like row.
+ */
+export function normalizeReasoningPreview(text: string, maxLen = 160): string {
+  const first = String(text || "").trim().split("\n", 1)[0] || "";
+  // Strip Markdown chrome for collapsed previews — keep ordinary * math/globs
+  // (2*3*4, a*b*c) and snake_case identifiers intact.
+  const cleaned = first
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/__([^_]+)__/g, "$1")
+    .replace(/~~([^~]+)~~/g, "$1")
+    // Left-flanking single *emphasis* only (space/start before opener).
+    .replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,!?:;]|$)/g, "$1$2")
+    .replace(/\*\*|__/g, "")
+    .replace(/^#{1,6}\s+/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (cleaned.length <= maxLen) return cleaned;
+  return cleaned.slice(0, maxLen).trimEnd();
+}
 
 function ThinkingBlock({
   text,
@@ -1296,11 +1321,12 @@ function ThinkingBlock({
     return null;
   }
 
-  const preview = text.trim().split("\n", 1)[0].slice(0, 160);
+  const preview = normalizeReasoningPreview(text);
 
   return (
     <div className="flex flex-col w-full py-0.5 min-w-0">
       <button
+        type="button"
         onClick={() => {
           setExpanded((v) => {
             const next = !v;
@@ -1308,15 +1334,15 @@ function ThinkingBlock({
             return next;
           });
         }}
-        className="flex items-center gap-1 text-faint/70 hover:text-muted transition font-mono text-[10px] text-left w-full min-w-0 select-none uppercase tracking-wide"
+        className="flex items-center gap-1.5 text-faint/65 hover:text-muted/90 transition font-sans font-normal text-[12px] text-left w-full min-w-0 select-none"
         aria-expanded={expanded}
         title={expanded ? "Collapse reasoning" : "Expand reasoning"}
       >
-        {expanded ? <ChevronDown size={9} className="text-faint/70 shrink-0" /> : <ChevronRight size={9} className="text-faint/70 shrink-0" />}
-        <span className="shrink-0">{live ? "thinking" : "reasoning"}</span>
-        {!expanded && (
-          <span className="ml-1 truncate normal-case tracking-normal font-sans text-faint/50">{preview}</span>
-        )}
+        {expanded ? <ChevronDown size={11} className="text-faint/55 shrink-0" /> : <ChevronRight size={11} className="text-faint/55 shrink-0" />}
+        <span className="shrink-0">{live ? "Thinking…" : "Thought"}</span>
+        {!expanded && preview ? (
+          <span className="ml-0.5 truncate text-faint/50">{preview}</span>
+        ) : null}
       </button>
       {expanded && (
         <div
@@ -1804,79 +1830,74 @@ function ActionCard({ card, onToggle }: { card: Card; onToggle: () => void }) {
 
   return (
     <div className="flex flex-col w-full select-none">
-      <button
-        onClick={onToggle}
-        className="flex items-center justify-between w-full py-1 px-2 rounded-md hover:bg-panel2/40 text-left text-[11px] font-mono group transition-colors"
-      >
+      <div className="flex items-center justify-between w-full py-0.5 px-1 rounded-sm hover:bg-panel2/20 text-left text-[12px] font-sans font-normal group transition-colors">
         <div className="flex items-center gap-2 min-w-0 flex-1">
-          <div className="flex items-center justify-center w-3.5 h-3.5 shrink-0">
-            {effectivelyRunning ? (
-              <Loader2 size={11} className="animate-spin text-faint/70" />
-            ) : isErr ? (
-              <span className="w-1.5 h-1.5 rounded-full bg-risk/70" />
-            ) : suppressed ? (
-              <span className="w-1.5 h-1.5 rounded-full bg-faint/50" />
+          <button
+            type="button"
+            onClick={onToggle}
+            aria-expanded={card.open}
+            className="flex items-center gap-2 min-w-0 text-left bg-transparent border-0 p-0 cursor-pointer font-sans font-normal text-[12px]"
+          >
+            <div className="flex items-center justify-center w-3.5 h-3.5 shrink-0">
+              {effectivelyRunning ? (
+                <Loader2 size={11} className="animate-spin text-faint/60" />
+              ) : isErr ? (
+                <span className="w-1.5 h-1.5 rounded-full bg-risk/70" />
+              ) : suppressed ? (
+                <span className="w-1.5 h-1.5 rounded-full bg-faint/45" />
+              ) : null}
+            </div>
+            <span className={`shrink-0 font-normal ${isErr ? "text-risk/80" : suppressed ? "text-faint/70" : "text-faint/80"}`}>
+              {toolName}
+            </span>
+            {goalPreview && (linkKind === "none" || !goalValue) ? (
+              <span className="text-faint/65 truncate max-w-[70%] font-normal" title={rawGoal}>
+                {goalPreview}
+              </span>
             ) : null}
-          </div>
-          <span className={`font-medium shrink-0 ${isErr ? "text-risk/85" : suppressed ? "text-faint/80" : "text-txt/70"}`}>
-            {toolName}
-          </span>
-          {goalPreview ? (
-            linkKind !== "none" && goalValue ? (
-              <span
-                role="link"
-                tabIndex={0}
-                onClick={onGoalClick}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") onGoalClick(e as any);
-                }}
-                className="text-accent/80 hover:underline underline-offset-2 truncate max-w-[70%] font-normal cursor-pointer"
-                title={
-                  linkKind === "file"
-                    ? `Open ${goalValue}`
-                    : linkKind === "url"
-                    ? "Open in browser"
-                    : "Focus terminal"
-                }
-              >
-                {goalPreview}
-              </span>
-            ) : (
-              <span className="text-faint/85 truncate max-w-[70%] font-normal" title={rawGoal}>
-                {goalPreview}
-              </span>
-            )
+            <ChevronRight
+              size={11}
+              className={`text-faint/35 group-hover:text-faint/60 transition shrink-0 ${
+                card.open ? "rotate-90" : ""
+              }`}
+            />
+          </button>
+          {goalPreview && linkKind !== "none" && goalValue ? (
+            <button
+              type="button"
+              onClick={onGoalClick}
+              className="text-accent/75 hover:underline underline-offset-2 truncate max-w-[70%] font-normal cursor-pointer bg-transparent border-0 p-0 text-[12px] font-sans"
+              title={
+                linkKind === "file"
+                  ? `Open ${goalValue}`
+                  : linkKind === "url"
+                  ? "Open in browser"
+                  : "Focus terminal"
+              }
+            >
+              {goalPreview}
+            </button>
           ) : null}
         </div>
 
-        <div className="flex items-center gap-2 shrink-0 text-[10px] text-faint/60 select-none tabular-nums">
+        <div className="flex items-center gap-2 shrink-0 text-[10px] text-faint/50 select-none tabular-nums ml-2">
           {linkKind === "command" && goalValue && (
-            <span
-              role="button"
-              tabIndex={0}
+            <button
+              type="button"
               onClick={onRunCommand}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") onRunCommand(e as any);
-              }}
-              className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded border border-edge/50 hover:bg-panel2/60 hover:text-txt cursor-pointer"
+              className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded border border-edge/35 hover:bg-panel2/40 hover:text-txt cursor-pointer bg-transparent text-[10px] font-sans"
               title="Run in terminal"
             >
               <Play size={9} />
               Run
-            </span>
+            </button>
           )}
           {meta && <span>{meta}</span>}
-          <ChevronRight
-            size={11}
-            className={`text-faint/40 group-hover:text-faint/70 transition shrink-0 ${
-              card.open ? "rotate-90" : ""
-            }`}
-          />
         </div>
-      </button>
+      </div>
 
       {showNested && (
-        <div className="mt-0.5 ml-5 pl-2 border-l border-edge/70 space-y-0.5">
+        <div className="mt-0.5 ml-5 pl-2 border-l border-edge/50 space-y-0.5">
           {nested.map((action) => {
             const nestedLabel = toolRowLabel(action.kind || "");
             const nestedGoal = shortenGoal(action.goal || "", 52);
@@ -1884,28 +1905,28 @@ function ActionCard({ card, onToggle }: { card: Card; onToggle: () => void }) {
             return (
               <div
                 key={action.action_id}
-                className="flex items-center gap-2 py-0.5 px-1.5 text-[10px] font-mono text-faint/90"
+                className="flex items-center gap-2 py-0.5 px-1 text-[11px] font-sans font-normal text-faint/80"
                 data-testid="nested-worker-action"
                 data-action-id={action.action_id}
                 data-status={action.status}
               >
                 <div className="flex items-center justify-center w-3 h-3 shrink-0">
                   {action.status === "running" && effectivelyRunning ? (
-                    <Loader2 size={10} className="animate-spin text-faint/70" />
+                    <Loader2 size={10} className="animate-spin text-faint/60" />
                   ) : nestedErr ? (
                     <span className="w-1 h-1 rounded-full bg-risk/70" />
                   ) : null}
                 </div>
-                <span className={`shrink-0 ${nestedErr ? "text-risk/80" : "text-txt/65"}`}>
+                <span className={`shrink-0 ${nestedErr ? "text-risk/80" : "text-faint/75"}`}>
                   {nestedLabel}
                 </span>
                 {nestedGoal ? (
-                  <span className="truncate text-faint/85" title={action.goal}>
+                  <span className="truncate text-faint/65" title={action.goal}>
                     {nestedGoal}
                   </span>
                 ) : null}
                 {typeof action.duration_ms === "number" && action.status !== "running" ? (
-                  <span className="ml-auto tabular-nums text-faint/50 shrink-0">
+                  <span className="ml-auto tabular-nums text-faint/40 shrink-0">
                     {action.duration_ms < 1000
                       ? `${action.duration_ms}ms`
                       : `${(action.duration_ms / 1000).toFixed(1)}s`}
@@ -1918,7 +1939,7 @@ function ActionCard({ card, onToggle }: { card: Card; onToggle: () => void }) {
       )}
 
       {card.open && (
-        <div className="mt-1 ml-5 pl-3 border-l border-edge py-1.5 pr-3 bg-panel2/40 rounded-r-md text-[11px] max-w-full text-txt/90 space-y-1">
+        <div className="mt-1 ml-5 pl-3 border-l border-edge/50 py-1.5 pr-3 bg-panel2/25 rounded-r-sm text-[11px] max-w-full text-txt/85 space-y-1 font-sans">
           {/* Never render an empty key row — that was the "goal" with no value. */}
           {commandKv ? (
             <KV

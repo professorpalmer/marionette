@@ -8,6 +8,7 @@ import pytest
 from harness.pilot_guards import (
     BROAD_SWARM_ROLES,
     DELEGATE_THRESHOLD,
+    EDIT_FIRST_READ_ALLOWANCE_DEFAULT,
     IterationBudget,
     LOOP_REPEAT_CAP,
     POST_IMPLEMENT_TOOL_ALLOWANCE_DEFAULT,
@@ -20,6 +21,7 @@ from harness.pilot_guards import (
     check_chrome_file_smoke,
     check_cli_redirect,
     check_delegate_gate,
+    check_edit_first,
     check_implement_exhausted,
     check_iteration_budget,
     check_loop_guard,
@@ -1023,3 +1025,95 @@ def test_post_implement_allowance_env_override(monkeypatch):
     state = TurnGuardState(iteration_budget=budget)
     clamp_post_implement_iteration_budget(state)
     assert budget.cap == 7
+
+
+def test_tiny_foreground_vs_nested_implement_budget(tmp_path, monkeypatch):
+    """Foreground tiny pilots tighten to 12; nested implement workers do not."""
+    monkeypatch.delenv("HARNESS_PILOT_TOOL_BUDGET", raising=False)
+    monkeypatch.delenv("HARNESS_TURN_BUDGET", raising=False)
+    monkeypatch.delenv("HARNESS_TINY_WORKSPACE_TOOL_BUDGET", raising=False)
+    (tmp_path / "app.js").write_text("console.log(1);\n", encoding="utf-8")
+
+    foreground = new_turn_guard_state("polish the demo", repo_path=str(tmp_path))
+    assert foreground.tiny_workspace is True
+    assert foreground.nested_implement is False
+    assert foreground.iteration_budget is not None
+    assert foreground.iteration_budget.cap == TINY_WORKSPACE_TOOL_BUDGET_DEFAULT
+
+    nested = new_turn_guard_state(
+        "IMPLEMENT TASK: polish app.js",
+        repo_path=str(tmp_path),
+        nested_implement=True,
+    )
+    assert nested.tiny_workspace is True
+    assert nested.nested_implement is True
+    assert nested.iteration_budget is not None
+    assert nested.iteration_budget.cap == TURN_TOOL_BUDGET_DEFAULT
+    assert turn_tool_budget_cap(str(tmp_path), nested_implement=True) == TURN_TOOL_BUDGET_DEFAULT
+
+
+def test_nested_implement_edit_first_blocks_exploration_before_write():
+    state = new_turn_guard_state("IMPLEMENT TASK: fix app.js", nested_implement=True)
+    assert state.nested_implement is True
+
+    # Broad exploration is blocked before any edit.
+    for kind in ("list_dir", "search_files", "run_ipython", "search_codegraph"):
+        verdict = check_edit_first(state, kind, _Act(kind=kind, path="."))
+        assert verdict.suppress is True, kind
+        assert verdict.reason == "edit_first"
+
+    # Target reads are allowed up to the edit-first allowance.
+    for i in range(EDIT_FIRST_READ_ALLOWANCE_DEFAULT):
+        act = _Act(kind="read_file", path=f"app{i}.js")
+        assert check_edit_first(state, "read_file", act).suppress is False
+        record_action_execution(state, "read_file", act)
+
+    blocked = check_edit_first(
+        state, "read_file", _Act(kind="read_file", path="extra.js"),
+    )
+    assert blocked.suppress is True
+    assert blocked.reason == "edit_first"
+
+    # A write clears the gate; further reads are allowed by edit-first.
+    record_action_execution(
+        state, "edit_file", _Act(kind="edit_file", path="app.js"),
+    )
+    assert state.edit_seen is True
+    assert check_edit_first(
+        state, "read_file", _Act(kind="read_file", path="app.js"),
+    ).suppress is False
+
+
+def test_nested_implement_edit_first_wired_into_pilot_guards():
+    state = TurnGuardState(nested_implement=True)
+    verdict = check_pilot_guards(
+        state, "list_dir", _Act(kind="list_dir", path="."),
+    )
+    assert verdict.suppress is True
+    assert verdict.reason == "edit_first"
+
+
+def test_successful_implement_stops_redundant_parent_validation(monkeypatch):
+    """Post-implement clamp + chrome smoke stay honest after a real patch."""
+    monkeypatch.delenv("HARNESS_POST_IMPLEMENT_TOOL_ALLOWANCE", raising=False)
+    budget = IterationBudget(cap=25, used=8)
+    state = TurnGuardState(iteration_budget=budget, tiny_workspace=True)
+    note_implement_success_from_job_result(
+        state,
+        {
+            "applied": True,
+            "files": ["app.js"],
+            "has_patch_art": True,
+            "worker_provenance": {"worktree_diff_empty": False},
+        },
+        {"role": "implement"},
+    )
+    assert state.implement_success_seen is True
+    assert budget.remaining == POST_IMPLEMENT_TOOL_ALLOWANCE_DEFAULT
+    chrome = check_chrome_file_smoke(
+        state,
+        "run_command",
+        _Act(command="chromium --headless --dump-dom file:///tmp/index.html"),
+    )
+    assert chrome.suppress is True
+    assert chrome.reason == "chrome_file_smoke"
