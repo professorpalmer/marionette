@@ -10,10 +10,11 @@ defines no state and no __init__.
 
 Owns the turn orchestration entrypoints ``send`` / ``_send_locked`` /
 ``_send_locked_inner`` plus the small private helpers that exist only to
-support that loop (``_is_correction``, ``_get_codegraph_context``). Background
-thread targets, stream-queue drain, per-step metering, prefetch pool,
-idle steer/queue finalization, read-only/local tool-result assembly, auto-verify,
-and action-goal labeling live in ``send_loop_phases``; the per-step action
+support that loop (``_is_correction``, ``_get_codegraph_context``). Native /
+sidecar image prep lives in ``send_image_prep``. Background thread targets,
+stream-queue drain, per-step metering, prefetch pool, idle steer/queue
+finalization, read-only/local tool-result assembly, auto-verify, and
+action-goal labeling live in ``send_loop_phases``; the per-step action
 spree (guards / prefetch / advisor / fan-out) lives in ``send_loop_actions``;
 swarm/implement/parallel/route_task/memory dispatch lives in
 ``send_loop_dispatch`` so the kernel stays the public orchestration surface.
@@ -44,6 +45,7 @@ from .pilot import (
     PilotError,
     parse_pilot_turn,
 )
+from .send_image_prep import prepare_turn_images
 from .send_loop_actions import execute_turn_actions
 from .send_loop_phases import (
     drain_idle_turn,
@@ -802,73 +804,15 @@ class SendLoopMixin:
             if not (self._history and self._history[-1].get("role") == "user"):
                 return
         else:
-            processed_message = user_message
-            # When the pilot can see pixels, keep OpenAI-shaped multimodal
-            # content (text + image_url). Otherwise transcribe via sidecar.
-            # Either path must fail loudly if images were attached but none
-            # become usable content — never answer as silent text-only.
-            native_image_paths: list = []
-            if images:
-                from .vision import (
-                    pilot_supports_native_images,
-                    resolve_provider_for_spec,
-                    transcribe_images,
-                )
-                provider = resolve_provider_for_spec(
-                    getattr(self.config, "driver", "") or ""
-                )
-                pilot_model = str(getattr(self.pilot, "model", "") or "")
-                if pilot_supports_native_images(
-                    provider, model=pilot_model, pilot=self.pilot,
-                ):
-                    yield ConvEvent("vision", {
-                        "count": len(images), "status": "native",
-                    })
-                    native_image_paths = [p for p in images if p]
-                    if not native_image_paths:
-                        err = (f"All {len(images)} image attachment(s) failed; "
-                               "cannot answer an image request without pixels.")
-                        yield ConvEvent("error", {"error": err})
-                        return
-                    for path in native_image_paths:
-                        yield ConvEvent("vision", {
-                            "path": path, "status": "native",
-                        })
-                else:
-                    yield ConvEvent("vision", {
-                        "count": len(images), "status": "transcribing",
-                    })
-                    results = transcribe_images(images)
-                    blocks = []
-                    for path, r in zip(images, results):
-                        if r.error:
-                            yield ConvEvent("vision", {"path": path, "error": r.error})
-                        else:
-                            blocks.append(f"[Image: {path}]\n{r.text}")
-                            yield ConvEvent("vision", {"path": path,
-                                "chars": len(r.text), "model": r.model,
-                                "preview": r.text[:200]})
-                    if blocks:
-                        processed_message = (
-                            "The user attached image(s). Transcription(s) below "
-                            "(you cannot see the image, only this text):\n\n"
-                            + "\n\n".join(blocks) + "\n\n---\n" + user_message
-                        )
-                    else:
-                        # Every transcription failed. With no blocks the pilot
-                        # would silently answer as if no images were attached.
-                        err = (
-                            f"All {len(images)} image transcription(s) failed; "
-                            "cannot answer an image request as text-only."
-                        )
-                        yield ConvEvent("error", {"error": err})
-                        return
+            # Native multimodal vs sidecar transcription; abort if images unusable.
+            image_prep = yield from prepare_turn_images(self, user_message, images)
+            if image_prep is None:
+                return
+            processed_message, native_image_paths = image_prep
 
             self._turn_output_tokens = 0
             self._turn_budget = None
-            # Fresh user message: clear prior-step guard / stagnation / failed-
-            # objective resume state so caps do not leak across unrelated turns.
-            # Keep-alive resume leaves these intact for the originating turn.
+            # Fresh turn: clear guard / stagnation / failed-objective resume state.
             self._turn_guard_state = None
             self._stagnation_last_prose = None
             self._stagnation_last_actions = None

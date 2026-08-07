@@ -311,6 +311,21 @@ def _unwrap_pilot(pilot):
     return pilot
 
 
+def session_supports_native_images(session) -> bool:
+    """True when the session's active pilot should receive pixels, not a sidecar.
+
+    Sidecar transcription is for text-only pilots only. Vision-capable models
+    (e.g. gpt-5.6-luna on openai-codex) must never be fed a weaker VLM paraphrase.
+    """
+    if session is None:
+        return False
+    config = getattr(session, "config", None)
+    pilot = getattr(session, "pilot", None)
+    provider = resolve_provider_for_spec(getattr(config, "driver", "") or "")
+    model = str(getattr(pilot, "model", "") or "")
+    return pilot_supports_native_images(provider, model=model, pilot=pilot)
+
+
 def pilot_supports_native_images(
     provider=None,
     *,
@@ -323,6 +338,9 @@ def pilot_supports_native_images(
     pilots stay on the sidecar). Uncatalogued closed pilots trust
     ``provider.vision_model`` + a native-capable ``api_mode``. Stub drivers
     never take pixels.
+
+    Callers that handle attachments MUST skip ``transcribe_images`` when this
+    returns True — never substitute a weaker sidecar VLM for a vision pilot.
     """
     real = _unwrap_pilot(pilot)
     if real is not None:
@@ -349,11 +367,13 @@ def pilot_supports_native_images(
         if "gemini" in mod and "Gemini" in cls:
             return True
 
+    # Closed pilots that speak a native multimodal wire format. Do NOT treat
+    # "fallback provider happens to declare a vision_model" as native — that
+    # incorrectly skipped the sidecar for stub/fake pilots when
+    # resolve_provider_for_spec fell through to openrouter.
     if api_mode == "codex_responses":
         return True
-    if provider is not None and getattr(provider, "vision_model", "") and (
-        not api_mode or api_mode in _NATIVE_IMAGE_API_MODES
-    ):
+    if api_mode in ("anthropic_messages", "gemini_generate") and model_id:
         return True
     return False
 

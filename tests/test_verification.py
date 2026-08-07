@@ -52,7 +52,7 @@ def test_run_auto_verification_passing(monkeypatch):
         )
         session = ConversationalSession(config)
         
-        def mock_send(self, message):
+        def mock_send(self, message, images=None, **kwargs):
             yield ConvEvent("assistant_done", {})
             
         monkeypatch.setattr(ConversationalSession, "send", mock_send)
@@ -81,7 +81,7 @@ def test_run_auto_verification_failing_with_retry(monkeypatch):
         session = ConversationalSession(config)
         
         received_messages = []
-        def mock_send(self, message):
+        def mock_send(self, message, images=None, **kwargs):
             received_messages.append(message)
             yield ConvEvent("assistant_done", {})
             
@@ -100,7 +100,7 @@ def test_run_auto_verification_failing_with_retry(monkeypatch):
         monkeypatch.setenv("HARNESS_VERIFY_MAX_RETRIES", "2")
         session2 = ConversationalSession(config)
         received_messages_2 = []
-        def mock_send_2(self, message):
+        def mock_send_2(self, message, images=None, **kwargs):
             received_messages_2.append(message)
             yield ConvEvent("assistant_done", {})
         monkeypatch.setattr(ConversationalSession, "send", mock_send_2)

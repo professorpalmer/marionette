@@ -4,14 +4,14 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const streamMock = vi.fn(() => () => {});
-const postJSONMock = vi.fn(async () => ({ id: "stash1" }));
+const streamMock = vi.fn((..._args: any[]) => () => {});
+const postJSONMock = vi.fn(async (..._args: any[]) => ({ id: "stash1" }));
 
 vi.mock("../lib/transport", () => ({
   getJSON: vi.fn(),
   getJSONSoft: vi.fn(),
-  postJSON: (...args: unknown[]) => postJSONMock(...args),
-  stream: (...args: unknown[]) => streamMock(...args),
+  postJSON: (...args: any[]) => postJSONMock(...args),
+  stream: (...args: any[]) => streamMock(...args),
   withToken: (path: string) => path,
   uploadFile: vi.fn(),
   chatEventsPath: vi.fn(),
@@ -29,7 +29,7 @@ describe("api.auto images", () => {
     const paths = ["/tmp/uploads/a.png", "/tmp/uploads/b.png"];
     api.auto("look at these", () => {}, undefined, undefined, paths);
     expect(streamMock).toHaveBeenCalledTimes(1);
-    const url = String(streamMock.mock.calls[0][0]);
+    const url = String(streamMock.mock.calls[0]?.[0]);
     expect(url).toContain("/api/auto?");
     expect(url).toContain("objective=");
     expect(url).toContain("images=");
@@ -47,6 +47,6 @@ describe("api.auto images", () => {
       images: paths,
     });
     await vi.waitFor(() => expect(streamMock).toHaveBeenCalled());
-    expect(String(streamMock.mock.calls[0][0])).toContain("/api/auto?mid=stash1");
+    expect(String(streamMock.mock.calls[0]?.[0])).toContain("/api/auto?mid=stash1");
   });
 });

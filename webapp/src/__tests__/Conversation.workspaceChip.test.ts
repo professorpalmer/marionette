@@ -5,6 +5,8 @@ import {
 } from "../components/Conversation";
 import {
   isWorkspaceHomeActive,
+  WORKSPACE_CHIP_POPOVER_CLASS,
+  WORKSPACE_CHIP_ROW_CLASS,
   workspaceChipRecents,
 } from "../components/conversation/WorkspaceChip";
 
@@ -36,19 +38,13 @@ describe("WorkspaceChip Home pin + recents", () => {
     expect(isWorkspaceHomeActive("", undefined)).toBe(false);
   });
 
-  it("overflow row classes keep long paths inside the popover", async () => {
+  it("overflow row classes keep long paths inside the popover", () => {
     // Contract for WorkspaceChip popover markup (w-64): clip the panel and
     // give each recent row a bounded flex child so truncate can ellipsize.
-    const { readFileSync } = await import("node:fs");
-    const { resolve } = await import("node:path");
-    const src = readFileSync(
-      resolve(__dirname, "../components/conversation/WorkspaceChip.tsx"),
-      "utf8",
-    );
-    expect(src).toMatch(/w-64[^"]*overflow-hidden/);
-    expect(src).toMatch(/max-w-full min-w-0 overflow-hidden/);
-    expect(src).toMatch(/title=\{r\}/);
-    expect(src).toMatch(/truncate/);
+    // Assert exported class strings — Vitest unit tests must typecheck under
+    // tsc -b without Node fs/path/__dirname.
+    expect(WORKSPACE_CHIP_POPOVER_CLASS).toMatch(/w-64[^"]*overflow-hidden/);
+    expect(WORKSPACE_CHIP_ROW_CLASS).toMatch(/max-w-full min-w-0 overflow-hidden/);
   });
 });
 

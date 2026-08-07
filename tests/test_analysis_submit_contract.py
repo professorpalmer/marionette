@@ -264,7 +264,7 @@ def test_analysis_mode_gate_crash_does_not_early_halt(monkeypatch):
     session = ConversationalSession(cfg)
     cycles: list[str] = []
 
-    def fake_send(self, msg):
+    def fake_send(self, msg, images=None, **kwargs):
         cycles.append(msg)
         if len(cycles) == 1:
             yield ConvEvent("message", {"text": "non-empty mid-thought prose"})
@@ -614,7 +614,7 @@ def test_analysis_mode_skips_no_swarm_early_halt(monkeypatch):
     session = ConversationalSession(cfg)
     cycles: list[str] = []
 
-    def fake_send(self, msg):
+    def fake_send(self, msg, images=None, **kwargs):
         cycles.append(msg)
         if len(cycles) == 1:
             yield ConvEvent(
@@ -661,7 +661,7 @@ def test_implement_mode_still_halts_on_no_swarm(monkeypatch):
     session = ConversationalSession(cfg)
     cycles: list[str] = []
 
-    def fake_send(self, msg):
+    def fake_send(self, msg, images=None, **kwargs):
         cycles.append(msg)
         yield ConvEvent("message", {"text": "done looking"})
         yield ConvEvent("assistant_done", {"turns": 1})
@@ -694,7 +694,7 @@ def test_analysis_mode_leaf_tools_do_not_burn_swarm_ceiling(monkeypatch):
     session = ConversationalSession(cfg)
     cycles: list[str] = []
 
-    def fake_send(self, msg):
+    def fake_send(self, msg, images=None, **kwargs):
         cycles.append(msg)
         if len(cycles) == 1:
             for i in range(3):

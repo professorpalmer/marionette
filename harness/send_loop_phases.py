@@ -1066,7 +1066,31 @@ def dispatch_readonly_action(
         else:
             ok, status, val = session._do_view_image(act)
 
-        if ok:
+        if ok and status == "native_image":
+            # Tool output stays a string (Codex stringifies it). Pixels ride a
+            # follow-on user message so Responses/chat drivers see input_image.
+            from .vision import native_multimodal_user_content
+            note = (
+                f"(view_image {act.path}): native pixels attached for vision pilot."
+            )
+            yield ConvEvent("action_result", {
+                "id": aid, "num": 1, "types": ["image"], "adapter": "local", "mode": "tool",
+                "artifacts": [{"type": "image", "headline": f"Viewed image {act.path}"}],
+            })
+            session._append_action_result(act, aid, note, is_native)
+            try:
+                session._history.append({
+                    "role": "user",
+                    "content": native_multimodal_user_content(
+                        f"[native vision: contents of {act.path}]",
+                        [val],
+                    ),
+                })
+            except Exception as e:
+                yield ConvEvent("action_result", {
+                    "id": aid, "error": f"native image attach failed: {e}",
+                })
+        elif ok:
             text = val
             yield ConvEvent("action_result", {
                 "id": aid, "num": 1, "types": ["image"], "adapter": "local", "mode": "tool",

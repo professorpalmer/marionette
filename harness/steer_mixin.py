@@ -105,29 +105,65 @@ class SteerMixin:
         yield ConvEvent("notice", dict(pending))
 
     def steer_with_images(self, text: str, images: Optional[list] = None) -> None:
-        """Enqueue a steer, transcribing any attached images into the steer text.
+        """Enqueue a steer with attached images.
 
-        A steer injects as TEXT into the active turn's tool-output stream, so it
-        cannot carry raw image blocks mid-run. Previously an image attached to a
-        steer was dropped and only its screenshot id/path survived as opaque
-        text. We now run the same vision transcription used by view_image and
-        append it, so 'look at this + <image>' actually reaches the model.
+        Mid-turn steers inject as TEXT into the tool-output stream, so they
+        cannot carry raw image blocks. Policy:
+
+        - Vision-capable pilots (gpt-5.6-luna, etc.): NEVER run the vision
+          sidecar (weaker VLM paraphrase). Queue a follow-up turn via
+          ``enqueue_prompt`` so the next turn gets native multimodal pixels,
+          plus a short mid-turn nudge that images are queued.
+        - Text-only pilots: transcribe via sidecar into the steer text (same
+          path as view_image for non-vision models).
         """
-        parts = [text.strip()] if text and text.strip() else []
+        cleaned = text.strip() if text and text.strip() else ""
         paths = [p for p in (images or []) if p]
         if paths:
             try:
+                from .vision import session_supports_native_images
+                if session_supports_native_images(self):
+                    # Preserve pixels; do not degrade to a weaker sidecar VLM.
+                    if hasattr(self, "enqueue_prompt"):
+                        if cleaned:
+                            self.enqueue_steer(
+                                "[User attached image(s) for native vision — "
+                                "full message queued for the next turn.]"
+                            )
+                        self.enqueue_prompt(
+                            cleaned or "(see attached image)",
+                            images=paths,
+                        )
+                        return
+                    notice = (
+                        cleaned + "\n\n" if cleaned else ""
+                    ) + (
+                        f"[user attached {len(paths)} image(s); this pilot is "
+                        "vision-capable but mid-turn steers cannot carry "
+                        "pixels — send as a follow-up turn]"
+                    )
+                    self.enqueue_steer(notice)
+                    return
                 from .vision import transcribe_images
+                parts = [cleaned] if cleaned else []
                 for r in transcribe_images(paths):
                     if getattr(r, "error", None):
                         parts.append(f"[attached image could not be read: {r.error}]")
                     elif getattr(r, "text", ""):
                         parts.append(f"[attached image]\n{r.text}")
+                combined = "\n\n".join(p for p in parts if p)
+                if combined:
+                    self.enqueue_steer(combined)
+                return
             except Exception as e:
+                parts = [cleaned] if cleaned else []
                 parts.append(f"[attached image transcription failed: {e}]")
-        combined = "\n\n".join(p for p in parts if p)
-        if combined:
-            self.enqueue_steer(combined)
+                combined = "\n\n".join(p for p in parts if p)
+                if combined:
+                    self.enqueue_steer(combined)
+                return
+        if cleaned:
+            self.enqueue_steer(cleaned)
 
     def _abandoned_turn_blocks_steer_enqueue(self) -> bool:
         """True only while a Stop-abandoned generator may still own the turn.

@@ -1,11 +1,10 @@
-"""Steering with an attached image must transcribe it into the steer text.
+"""Steering with an attached image must reach the model without dropping pixels.
 
-Real report: steering with a screenshot resolved to just a 'screenshot id' --
-the image was dropped. A steer injects as TEXT into the running turn, so it can't
-carry raw image blocks; steer_with_images() runs the same vision transcription as
-view_image and appends it to the steer content.
+Mid-turn steers inject as TEXT, so text-only pilots get sidecar transcription.
+Vision-capable pilots must NEVER use a weaker sidecar VLM — they queue a
+follow-up turn with native multimodal images instead.
 
-Hermetic: monkeypatches the vision transcriber; no real model/vision call.
+Hermetic: monkeypatches vision helpers; no real model/vision call.
 """
 import tempfile
 
@@ -25,6 +24,7 @@ def _session():
 
 def test_steer_with_image_transcribes_into_text(monkeypatch):
     s = _session()
+    monkeypatch.setattr("harness.vision.session_supports_native_images", lambda _s: False)
     monkeypatch.setattr("harness.vision.transcribe_images",
                         lambda paths, sidecar=None: [_FakeResult(text="a red login button")])
     s.steer_with_images("look at this", ["/tmp/shot.png"])
@@ -36,6 +36,7 @@ def test_steer_with_image_transcribes_into_text(monkeypatch):
 
 def test_steer_image_error_is_surfaced_not_dropped(monkeypatch):
     s = _session()
+    monkeypatch.setattr("harness.vision.session_supports_native_images", lambda _s: False)
     monkeypatch.setattr("harness.vision.transcribe_images",
                         lambda paths, sidecar=None: [_FakeResult(error="unreadable")])
     s.steer_with_images("check", ["/tmp/x.png"])
@@ -47,3 +48,29 @@ def test_text_only_steer_still_works(monkeypatch):
     s = _session()
     s.steer_with_images("just text", [])
     assert s.drain_steer() == ["just text"]
+
+
+def test_steer_native_vision_queues_prompt_skips_sidecar(monkeypatch):
+    """gpt-5.6-luna-class pilots must not get a weaker sidecar paraphrase."""
+    s = _session()
+    called = {"transcribe": 0}
+    queued = {}
+
+    def _boom(*_a, **_k):
+        called["transcribe"] += 1
+        raise AssertionError("sidecar must not run for native vision steer")
+
+    def _queue(text, images=None, **_k):
+        queued["text"] = text
+        queued["images"] = list(images or [])
+        return {"id": "q1", "text": text}
+
+    monkeypatch.setattr("harness.vision.session_supports_native_images", lambda _s: True)
+    monkeypatch.setattr("harness.vision.transcribe_images", _boom)
+    s.enqueue_prompt = _queue
+    s.steer_with_images("look at this", ["/tmp/shot.png"])
+    assert called["transcribe"] == 0
+    assert queued.get("text") == "look at this"
+    assert queued.get("images") == ["/tmp/shot.png"]
+    nudge = s.drain_steer()
+    assert nudge and "native vision" in nudge[0].lower()

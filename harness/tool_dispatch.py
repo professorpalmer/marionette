@@ -343,7 +343,11 @@ class ToolDispatchMixin:
             if ext not in (".png", ".jpg", ".jpeg", ".webp"):
                 return False, "error", f"view_image: not an image file or not found: {act.path}"
 
-            from .vision import transcribe_images
+            from .vision import session_supports_native_images, transcribe_images
+            # Vision pilots get pixels on the next generate — never a weaker
+            # sidecar paraphrase (e.g. gpt-5.6-luna must not go through qwen-vl).
+            if session_supports_native_images(self):
+                return True, "native_image", target_path
             results = transcribe_images([target_path])
             if not results:
                 return False, "error", "view_image failed: no transcription returned"

@@ -30,6 +30,14 @@ export function isWorkspaceHomeActive(repo: string | undefined, home?: string): 
   return repoPathsEqual(repo, home);
 }
 
+/** Popover panel: fixed width + clip so long paths cannot expand the menu. */
+export const WORKSPACE_CHIP_POPOVER_CLASS =
+  "absolute bottom-full left-0 mb-1 w-64 overflow-hidden bg-panel border border-edge rounded-lg shadow-xl shadow-black/40 py-1 z-50";
+
+/** Recent/Home rows: bounded flex child so `truncate` can ellipsize. */
+export const WORKSPACE_CHIP_ROW_CLASS =
+  "w-full max-w-full min-w-0 overflow-hidden text-left px-3 py-1.5 hover:bg-panel2 transition";
+
 export default function WorkspaceChip() {
   const [ws, setWs] = useState<{ repo: string; branch: string; recents?: string[]; home?: string } | null>(null);
   const [open, setOpen] = useState(false);
@@ -104,14 +112,14 @@ export default function WorkspaceChip() {
       {openError && <span className="text-risk/90 truncate max-w-[240px]" title={openError}>{openError}</span>}
       {open && (
         <div onClick={(e) => e.stopPropagation()}
-          className="absolute bottom-full left-0 mb-1 w-64 overflow-hidden bg-panel border border-edge rounded-lg shadow-xl shadow-black/40 py-1 z-50">
+          className={WORKSPACE_CHIP_POPOVER_CLASS}>
           {home ? (
             <>
               <button
                 type="button"
                 onClick={() => openPath(home)}
                 title={home}
-                className={`w-full max-w-full min-w-0 overflow-hidden text-left px-3 py-1.5 hover:bg-panel2 transition flex items-center gap-2 text-[11px] ${
+                className={`${WORKSPACE_CHIP_ROW_CLASS} flex items-center gap-2 text-[11px] ${
                   homeActive ? "bg-panel2/70 text-txt font-medium" : "text-txt"
                 }`}
               >
@@ -126,7 +134,7 @@ export default function WorkspaceChip() {
               <div className="text-[9px] uppercase tracking-wider text-faint px-3 py-1">Recents</div>
               {recents.map((r) => (
                 <button key={r} type="button" onClick={() => openPath(r)} title={r}
-                  className="w-full max-w-full min-w-0 overflow-hidden text-left px-3 py-1.5 hover:bg-panel2 transition flex flex-col">
+                  className={`${WORKSPACE_CHIP_ROW_CLASS} flex flex-col`}>
                   <span className="text-txt font-medium text-[11px] truncate">{base(r)}</span>
                   <span className="text-faint text-[9px] font-mono truncate">{r}</span>
                 </button>

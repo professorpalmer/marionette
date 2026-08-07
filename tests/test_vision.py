@@ -284,3 +284,85 @@ def test_anthropic_driver_maps_image_url_parts():
     assert blocks[1]["type"] == "image"
     assert blocks[1]["source"]["media_type"] == "image/jpeg"
     assert blocks[1]["source"]["data"] == "xyz"
+
+
+def test_view_image_native_skips_sidecar(tmp_path, monkeypatch):
+    """Native vision pilots get pixels in history; sidecar must not run."""
+    import harness.vision as v
+    from harness.conversation import ConversationalSession
+    from harness.vision import native_multimodal_user_content
+
+    img = tmp_path / "shot.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    monkeypatch.setattr(v, "session_supports_native_images", lambda _s: True)
+    monkeypatch.setattr(
+        v, "transcribe_images",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("sidecar must not run for native view_image")
+        ),
+    )
+
+    cfg = HarnessConfig(
+        driver="stub-oracle-v2",
+        state_dir=tempfile.mkdtemp(prefix="vh-"),
+        repo=str(tmp_path),
+    )
+    session = ConversationalSession(cfg)
+    session.pilot = type("P", (), {"model": "gpt-5.6-luna"})()
+
+    class _Act:
+        kind = "view_image"
+        path = str(img)
+        tool_call_id = "tc1"
+
+    ok, status, val = session._do_view_image(_Act())
+    assert ok and status == "native_image"
+    assert val == str(img)
+
+    note = f"(view_image {img}): native pixels attached for vision pilot."
+    session._history.append({"role": "tool", "tool_call_id": "tc_native", "content": note})
+    session._history.append({
+        "role": "user",
+        "content": native_multimodal_user_content(
+            f"[native vision: contents of {img}]",
+            [val],
+        ),
+    })
+    user = [m for m in session._history if m.get("role") == "user"][-1]
+    assert isinstance(user["content"], list)
+    assert any(p.get("type") == "image_url" for p in user["content"])
+
+
+def test_session_supports_native_images_luna():
+    from types import SimpleNamespace
+
+    from harness.providers import get_provider
+    from harness.vision import (
+        pilot_supports_native_images,
+        session_supports_native_images,
+    )
+
+    session = SimpleNamespace(
+        config=SimpleNamespace(driver="openai-codex:gpt-5.6-luna"),
+        pilot=SimpleNamespace(model="gpt-5.6-luna"),
+    )
+    assert session_supports_native_images(session) is True
+    codex = get_provider("openai-codex")
+    assert pilot_supports_native_images(codex, model="gpt-5.6-luna") is True
+
+
+def test_pilot_supports_native_images_ignores_unrelated_provider_vision():
+    """A fallback provider's vision_model must not mark stub/fake pilots native."""
+    from types import SimpleNamespace
+
+    from harness.vision import pilot_supports_native_images
+
+    fake_provider = SimpleNamespace(
+        api_mode="chat_completions",
+        vision_model="qwen/qwen3-vl-30b-a3b-instruct",
+    )
+    fake_pilot = SimpleNamespace(model="")
+    assert pilot_supports_native_images(
+        fake_provider, model="", pilot=fake_pilot,
+    ) is False
