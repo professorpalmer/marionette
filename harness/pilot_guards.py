@@ -1050,8 +1050,9 @@ _IMPLEMENT_EXHAUSTED_PROVENANCE_KEY = "empty_managed_implement_exhausted"
 
 _IMPLEMENT_EXHAUSTED_MESSAGE = (
     "[suppressed: empty managed implement exhausted] Recovery already ran "
-    "against dirty live checkout — do not re-dispatch run_implement; use "
-    "hash_edit/edit_file on the live files or ask the user to commit/stash first."
+    "against dirty live checkout — do not re-dispatch run_implement, "
+    "run_parallel, or run_swarm; use hash_edit/edit_file on the live files "
+    "or ask the user to commit/stash first."
 )
 
 
@@ -1139,8 +1140,13 @@ def note_implement_success_from_job_result(
 
 
 def check_implement_exhausted(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict:
-    """Soft-refuse run_implement after empty managed implement recovery exhausted."""
-    if kind != "run_implement":
+    """Soft-refuse implement fan-out after empty managed implement recovery exhausted.
+
+    Covers every SWARM_DISPATCH_KINDS entry (run_implement / run_parallel /
+    run_swarm) so a reformulated parallel or swarm dispatch cannot mint another
+    implement lifecycle after exhaustion.
+    """
+    if kind not in SWARM_DISPATCH_KINDS:
         return GuardVerdict(False)
     try:
         prov = getattr(act, "worker_provenance", None)

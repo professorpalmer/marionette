@@ -196,6 +196,40 @@ def _row_matches_ladder_family(canonical_id: str, row: dict[str, Any]) -> bool:
     return True
 
 
+def _find_registry_rows(
+    models: list[Any],
+    by_id: dict[str, dict[str, Any]],
+    canonical_id: str,
+    aliases: dict[str, tuple[str, ...]],
+) -> list[dict[str, Any]]:
+    """Resolve all ladder/demote sibling rows (canonical + flattened aliases)."""
+    candidates = {canonical_id, *aliases.get(canonical_id, ())}
+    found: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for key in candidates:
+        row = by_id.get(key)
+        if row is None or not _row_matches_ladder_family(canonical_id, row):
+            continue
+        marker = id(row)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        found.append(row)
+    for model in models:
+        if not isinstance(model, dict):
+            continue
+        if not (_row_match_keys(model) & candidates):
+            continue
+        if not _row_matches_ladder_family(canonical_id, model):
+            continue
+        marker = id(model)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        found.append(model)
+    return found
+
+
 def _find_registry_row(
     models: list[Any],
     by_id: dict[str, dict[str, Any]],
@@ -203,19 +237,8 @@ def _find_registry_row(
     aliases: dict[str, tuple[str, ...]],
 ) -> Optional[dict[str, Any]]:
     """Resolve a ladder/demote id against canonical, flattened, or alias keys."""
-    candidates = {canonical_id, *aliases.get(canonical_id, ())}
-    for key in candidates:
-        row = by_id.get(key)
-        if row is not None and _row_matches_ladder_family(canonical_id, row):
-            return row
-    for model in models:
-        if not isinstance(model, dict):
-            continue
-        if not (_row_match_keys(model) & candidates):
-            continue
-        if _row_matches_ladder_family(canonical_id, model):
-            return model
-    return None
+    rows = _find_registry_rows(models, by_id, canonical_id, aliases)
+    return rows[0] if rows else None
 
 
 def _is_text_only_row(canonical_id: str, row: dict[str, Any]) -> bool:
@@ -227,15 +250,24 @@ def _is_text_only_row(canonical_id: str, row: dict[str, Any]) -> bool:
 def apply_marionette_router_ladder(path: Optional[str] = None) -> dict[str, Any]:
     """Apply the Kimi > Grok > DeepSeek > Composer score ladder in-place.
 
-    Idempotent. Never touches ``~/.puppetmaster/models.json`` unless that path
-    is explicitly passed (tests). Returns a small report for diagnostics.
+    Idempotent. Filename-gated like ``reconcile_shared_models``: never writes a
+    non-``marionette-models.json`` catalog (including shared
+    ``~/.puppetmaster/models.json``). Returns a small report for diagnostics.
     """
-    report: dict[str, Any] = {"updated": [], "missing": [], "path": ""}
+    report: dict[str, Any] = {
+        "updated": [], "missing": [], "path": "", "skipped": False,
+    }
     raw = (path or os.environ.get("PUPPETMASTER_MODELS_PATH") or "").strip()
     if not raw:
         raw = str(marionette_models_path())
     report["path"] = raw
     p = Path(raw)
+    # Filename gate (not resolve()==home path): Windows Path.home() ignores
+    # $HOME, and tests / alternate state roots still use marionette-models.json.
+    if p.name != MARIONETTE_MODELS_FILENAME:
+        report["skipped"] = True
+        report["reason"] = "not marionette registry"
+        return report
     if not p.is_file():
         report["error"] = "missing registry file"
         return report
@@ -256,44 +288,48 @@ def apply_marionette_router_ladder(path: Optional[str] = None) -> dict[str, Any]
     }
     changed = False
     for mid, score, tags in _LADDER:
-        row = _find_registry_row(models, by_id, mid, _LADDER_ALIASES)
-        if row is None:
+        rows = _find_registry_rows(models, by_id, mid, _LADDER_ALIASES)
+        if not rows:
             report["missing"].append(mid)
             continue
-        row_id = str(row.get("id") or mid)
-        if int(row.get("capability_score") or 0) != int(score):
-            row["capability_score"] = int(score)
-            changed = True
-            if row_id not in report["updated"]:
-                report["updated"].append(row_id)
-        existing_tags = row.get("tags")
-        tag_list = [str(t) for t in existing_tags] if isinstance(existing_tags, list) else []
-        text_only = _is_text_only_row(mid, row)
-        if text_only:
-            stripped = [t for t in tag_list if t not in _VISION_TAG_NAMES]
-            if stripped != tag_list:
-                tag_list = stripped
+        for row in rows:
+            row_id = str(row.get("id") or mid)
+            if int(row.get("capability_score") or 0) != int(score):
+                row["capability_score"] = int(score)
                 changed = True
                 if row_id not in report["updated"]:
                     report["updated"].append(row_id)
-        else:
-            for tag in tags:
-                if tag not in tag_list:
-                    tag_list.append(tag)
+            existing_tags = row.get("tags")
+            tag_list = (
+                [str(t) for t in existing_tags]
+                if isinstance(existing_tags, list)
+                else []
+            )
+            text_only = _is_text_only_row(mid, row)
+            if text_only:
+                stripped = [t for t in tag_list if t not in _VISION_TAG_NAMES]
+                if stripped != tag_list:
+                    tag_list = stripped
                     changed = True
                     if row_id not in report["updated"]:
                         report["updated"].append(row_id)
-        row["tags"] = tag_list
+            else:
+                for tag in tags:
+                    if tag not in tag_list:
+                        tag_list.append(tag)
+                        changed = True
+                        if row_id not in report["updated"]:
+                            report["updated"].append(row_id)
+            row["tags"] = tag_list
     for mid, score in _DEMOTE.items():
-        row = _find_registry_row(models, by_id, mid, _DEMOTE_ALIASES)
-        if row is None:
-            continue
-        row_id = str(row.get("id") or mid)
-        if int(row.get("capability_score") or 0) != int(score):
-            row["capability_score"] = int(score)
-            changed = True
-            if row_id not in report["updated"]:
-                report["updated"].append(row_id)
+        rows = _find_registry_rows(models, by_id, mid, _DEMOTE_ALIASES)
+        for row in rows:
+            row_id = str(row.get("id") or mid)
+            if int(row.get("capability_score") or 0) != int(score):
+                row["capability_score"] = int(score)
+                changed = True
+                if row_id not in report["updated"]:
+                    report["updated"].append(row_id)
     if changed:
         try:
             p.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")

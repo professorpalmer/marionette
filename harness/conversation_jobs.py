@@ -648,6 +648,26 @@ class ConversationJobsMixin:
                 )
             except Exception:
                 should_recover = False
+            if not should_recover:
+                # Guard/budget exhaustion correctly skips automatic recovery, but
+                # must still annotate exhausted so check_implement_exhausted
+                # soft-refuses a reformulated re-dispatch (same as lifecycle_halted).
+                try:
+                    if (
+                        expects_diff
+                        and live_dirty_before
+                        and not self._local_job_cancelled(job_id)
+                        and _is_empty_diff_implement_failure(res, expects_diff=True)
+                        and _worker_stopped_by_guard_or_budget(res)
+                    ):
+                        recovered_empty_implement = True
+                        _annotate_empty_managed_implement_exhausted(
+                            res,
+                            dirty_paths=live_dirty_before,
+                            recovered=True,
+                        )
+                except Exception:
+                    pass
             if should_recover:
                 first_res = res
                 recovery_objective = _empty_implement_recovery_objective(

@@ -165,6 +165,16 @@ def test_select_edit_engine_explicit_adapter(monkeypatch):
     assert select_edit_engine(cfg, "agentic") == "native"
 
 
+def test_select_edit_engine_explicit_agentic_fails_closed_not_cursor(monkeypatch):
+    """Explicit agentic request must not silently demote to platform cursor."""
+    cfg = HarnessConfig()
+    monkeypatch.delenv("HARNESS_EDIT_ENGINE", raising=False)
+    monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: False)
+    monkeypatch.setattr("harness.edit_engines.cursor_platform_available", lambda: True)
+    monkeypatch.setenv("CURSOR_API_KEY", "cursor-test-key")
+    assert select_edit_engine(cfg, "agentic") == "native"
+
+
 def test_select_edit_engine_env_override(monkeypatch):
     cfg = HarnessConfig()
     monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)

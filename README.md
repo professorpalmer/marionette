@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.186, deliberately pre-1.0. Tiny workspaces now tighten foreground pilot budgets without starving nested implement workers; recovery attempts share one lifecycle ceiling, managed-worker paths stay worktree-relative, and transcript/tool chrome is quieter and Cursor-like (rides puppetmaster-ai==1.21.13).
+> Status: v0.9.187, deliberately pre-1.0. Empty managed-implement exhaustion now soft-refuses all swarm fan-out kinds; the isolated Marionette model catalog refuses to rewrite shared Puppetmaster registries; explicit agentic pins fail closed to native instead of silently demoting to Cursor (rides puppetmaster-ai==1.21.13).
 
 ## Documentation
 

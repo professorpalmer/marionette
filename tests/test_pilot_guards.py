@@ -800,6 +800,32 @@ def test_implement_exhausted_soft_refuses_run_implement():
     assert "hash_edit/edit_file" in verdict.message
 
 
+def test_implement_exhausted_soft_refuses_swarm_dispatch_kinds():
+    """After empty_managed_implement_exhausted, fan-out kinds must soft-refuse too."""
+    state = new_turn_guard_state("fix the mockup styles")
+    state.last_implement_exhausted = True
+    for kind in ("run_implement", "run_parallel", "run_swarm"):
+        act = _Act(kind=kind, goal="retry polish via fan-out")
+        verdict = check_implement_exhausted(state, kind, act)
+        assert verdict.suppress is True, kind
+        assert verdict.reason == "implement_exhausted", kind
+        assert "run_parallel" in verdict.message
+        assert "run_swarm" in verdict.message
+    # Non-dispatch kinds stay open so the pilot can inspect/edit live files.
+    explore = check_implement_exhausted(
+        state, "read_file", _Act(kind="read_file", path="styles.css"),
+    )
+    assert explore.suppress is False
+
+
+def test_check_pilot_guards_blocks_exhausted_run_parallel():
+    state = TurnGuardState(last_implement_exhausted=True)
+    act = _Act(kind="run_parallel", goals=["polish styles.css", "touch app.js"])
+    verdict = check_pilot_guards(state, "run_parallel", act)
+    assert verdict.suppress is True
+    assert verdict.reason == "implement_exhausted"
+
+
 def test_note_implement_exhausted_from_provenance_sets_flag():
     state = new_turn_guard_state("fix styles")
     note_implement_exhausted_from_provenance(state, {})

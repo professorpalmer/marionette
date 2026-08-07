@@ -6,6 +6,7 @@ from pathlib import Path
 
 from harness.marionette_registry import (
     apply_marionette_router_ladder,
+    boot_marionette_registry,
     ensure_marionette_models_env,
 )
 
@@ -240,3 +241,81 @@ def test_marionette_ladder_and_demote_ids_producible(tmp_path, monkeypatch):
     assert by_id["agentic/moonshotai/kimi-k3"]["capability_score"] == 98
     assert by_id["agentic/minimax/minimax-m3"]["capability_score"] == 68
     assert "vision" not in by_id["agentic/deepseek/deepseek-v4-pro"]["tags"]
+
+
+def test_boot_and_ladder_never_mutate_shared_models_json(tmp_path, monkeypatch):
+    """Shared ~/.puppetmaster/models.json must stay byte-identical across boot."""
+    shared = tmp_path / "models.json"
+    payload = {
+        "version": 1,
+        "models": [
+            {
+                "id": "agentic/moonshotai/kimi-k3",
+                "adapter": "agentic",
+                "capability_score": 50,
+                "tags": ["code"],
+            }
+        ],
+    }
+    shared.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    before = shared.read_bytes()
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(shared))
+    monkeypatch.setattr(
+        "harness.marionette_registry.shared_puppetmaster_models_path",
+        lambda: shared,
+    )
+
+    ladder = apply_marionette_router_ladder(str(shared))
+    assert ladder.get("skipped") is True
+    assert ladder.get("reason") == "not marionette registry"
+    boot_marionette_registry()
+    assert shared.read_bytes() == before
+
+    isolated = tmp_path / "marionette-models.json"
+    isolated.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(isolated))
+    report = apply_marionette_router_ladder(str(isolated))
+    assert report.get("skipped") is not True
+    data = json.loads(isolated.read_text(encoding="utf-8"))
+    by_id = {m["id"]: m for m in data["models"]}
+    assert by_id["agentic/moonshotai/kimi-k3"]["capability_score"] == 98
+    assert "vision" in by_id["agentic/moonshotai/kimi-k3"]["tags"]
+
+
+def test_ladder_updates_canonical_and_flattened_sibling_rows(tmp_path, monkeypatch):
+    """Both canonical and flattened alias rows must receive ladder stamps."""
+    dest = tmp_path / "marionette-models.json"
+    dest.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "models": [
+                    {
+                        "id": "agentic/moonshotai/kimi-k3",
+                        "adapter": "agentic",
+                        "capability_score": 50,
+                        "tags": ["code"],
+                    },
+                    {
+                        "id": "agentic/kimi-k3",
+                        "adapter": "agentic",
+                        "adapter_model_name": "kimi-k3",
+                        "capability_score": 40,
+                        "tags": ["code"],
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(dest))
+    report = apply_marionette_router_ladder(str(dest))
+    data = json.loads(dest.read_text(encoding="utf-8"))
+    by_id = {m["id"]: m for m in data["models"]}
+    assert by_id["agentic/moonshotai/kimi-k3"]["capability_score"] == 98
+    assert by_id["agentic/kimi-k3"]["capability_score"] == 98
+    assert "vision" in by_id["agentic/moonshotai/kimi-k3"]["tags"]
+    assert "vision" in by_id["agentic/kimi-k3"]["tags"]
+    assert "detailed-vision" in by_id["agentic/kimi-k3"]["tags"]
+    assert "agentic/moonshotai/kimi-k3" in report["updated"]
+    assert "agentic/kimi-k3" in report["updated"]

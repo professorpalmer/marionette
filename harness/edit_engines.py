@@ -239,16 +239,18 @@ def select_edit_engine(config: "HarnessConfig", requested_adapter: str = "") -> 
 
     Precedence: explicit action adapter > HARNESS_EDIT_ENGINE env > provider-key
     availability. External CLI adapters (claude-code/codex) are handled by the
-    caller before this point. Platform ``cursor`` (CURSOR_API_KEY) is used when
-    no agentic HTTP provider is keyed.
+    caller before this point. An explicit ``agentic`` request (or env pin) fails
+    closed to ``native`` when agentic keys are absent — never silently demotes
+    to platform ``cursor``. Unpinned selection still prefers cursor when no
+    agentic HTTP provider is keyed.
     """
     requested = (requested_adapter or "").strip().lower()
     if requested in ("native", "provider"):
         return "native"
+    # Explicit agentic pin fails closed to native (same as HARNESS_EDIT_ENGINE=
+    # agentic) — never silently demote to platform cursor when keys are absent.
     if requested == "agentic":
-        return "agentic" if agentic_available() else (
-            "cursor" if cursor_platform_available() else "native"
-        )
+        return "agentic" if agentic_available() else "native"
     if requested in ("cursor", "cursor-sdk"):
         return "cursor" if cursor_platform_available() else "native"
 

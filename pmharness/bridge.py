@@ -1428,13 +1428,18 @@ def execute_intent(
     # Prepare the isolated Marionette catalog (env pin + reconcile + ladder)
     # before any auto_route / child-worker spawn. Preserve an explicit
     # PUPPETMASTER_MODELS_PATH override; never rewrite ~/.puppetmaster/models.json.
-    # Failures stay swallowed on the chat hot path.
+    # Failures stay swallowed on the chat hot path, but logged for audit.
     try:
         from harness.marionette_registry import boot_marionette_registry
 
         boot_marionette_registry()
-    except Exception:
-        pass
+    except Exception as exc:
+        try:
+            from harness.diag import note as _diag
+
+            _diag("bridge.execute_intent.boot_marionette_registry", exc)
+        except Exception:
+            pass
 
     _sync_agentic_credential_env()
 

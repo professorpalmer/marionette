@@ -475,7 +475,8 @@ def test_scope_goal_paths_to_worktree_rewrites_live_absolute(tmp_path):
 
 
 def test_empty_implement_recovery_skips_guard_exhausted_first_attempt(monkeypatch):
-    """Guard/budget exhaustion must not launch a second full recovery attempt."""
+    """Guard/budget exhaustion must not launch a second full recovery attempt,
+    but must still annotate empty_managed_implement_exhausted for soft-refuse."""
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
     session = ConversationalSession(cfg)
     job_id = "job_guard_no_recover"
@@ -516,8 +517,14 @@ def test_empty_implement_recovery_skips_guard_exhausted_first_attempt(monkeypatc
 
     assert len(calls) == 1
     assert "[recovery]" not in calls[0]
+    item = session._swarm_results.get_nowait()
+    result = item["result"]
+    summary = result.get("summary") or ""
+    assert EMPTY_MANAGED_IMPLEMENT_EXHAUSTED in summary
+    assert "Do NOT call run_implement again" in summary
     finished = session._local_jobs[job_id]
     assert finished["worker_provenance"]["empty_implement_recovery"] is False
+    assert finished["worker_provenance"]["empty_managed_implement_exhausted"] is True
     assert _worker_stopped_by_guard_or_budget(empty) is True
     assert _empty_implement_recovery_eligible(
         empty,
