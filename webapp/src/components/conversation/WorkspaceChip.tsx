@@ -1,12 +1,34 @@
 import { useEffect, useState } from "react";
-import { ChevronDown, Folder, GitBranch } from "lucide-react";
+import { ChevronDown, Folder, GitBranch, Home } from "lucide-react";
 import { api } from "../../lib/api";
+import { repoPathsEqual } from "../../lib/pathNormalize";
 import { pickFolder } from "../../lib/transport";
 import {
   formatWorkspaceOpenLeaseExhaustedMessage,
   isWorkspaceOpenLeaseExhausted,
 } from "./leaseExhausted";
 import { workspaceLeafName } from "./workspaceDisplay";
+
+/** Recents for the chip menu: drop active repo + durable Home (Home is pinned separately). */
+export function workspaceChipRecents(
+  recents: string[] | undefined,
+  currentRepo: string | undefined,
+  home?: string,
+): string[] {
+  return (recents || []).filter((r) => {
+    if (!r) return false;
+    if (currentRepo && (r === currentRepo || repoPathsEqual(r, currentRepo))) return false;
+    if (home && repoPathsEqual(r, home)) return false;
+    return true;
+  });
+}
+
+/** Home pin is active when the open repo is Home, or when no folder is open but Home exists. */
+export function isWorkspaceHomeActive(repo: string | undefined, home?: string): boolean {
+  if (!home) return false;
+  if (!repo) return true;
+  return repoPathsEqual(repo, home);
+}
 
 export default function WorkspaceChip() {
   const [ws, setWs] = useState<{ repo: string; branch: string; recents?: string[]; home?: string } | null>(null);
@@ -64,7 +86,9 @@ export default function WorkspaceChip() {
     if (picked) await openPath(picked);
   };
   const name = ws?.repo ? base(ws.repo) : (ws?.home ? "Home" : "No folder");
-  const recents = (ws?.recents || []).filter((r) => r !== ws?.repo);
+  const home = ws?.home;
+  const homeActive = isWorkspaceHomeActive(ws?.repo, home);
+  const recents = workspaceChipRecents(ws?.recents, ws?.repo, home);
 
   return (
     <div className="flex items-center gap-1.5 px-1 pb-1.5 text-[11px] relative">
@@ -80,14 +104,30 @@ export default function WorkspaceChip() {
       {openError && <span className="text-risk/90 truncate max-w-[240px]" title={openError}>{openError}</span>}
       {open && (
         <div onClick={(e) => e.stopPropagation()}
-          className="absolute bottom-full left-0 mb-1 w-64 bg-panel border border-edge rounded-lg shadow-xl shadow-black/40 py-1 z-50">
+          className="absolute bottom-full left-0 mb-1 w-64 overflow-hidden bg-panel border border-edge rounded-lg shadow-xl shadow-black/40 py-1 z-50">
+          {home ? (
+            <>
+              <button
+                type="button"
+                onClick={() => openPath(home)}
+                title={home}
+                className={`w-full max-w-full min-w-0 overflow-hidden text-left px-3 py-1.5 hover:bg-panel2 transition flex items-center gap-2 text-[11px] ${
+                  homeActive ? "bg-panel2/70 text-txt font-medium" : "text-txt"
+                }`}
+              >
+                <Home size={12} className={homeActive ? "text-accent shrink-0" : "text-faint shrink-0"} />
+                <span className="truncate">Home</span>
+              </button>
+              <div className="border-t border-edge/50 my-1" />
+            </>
+          ) : null}
           {recents.length > 0 && (
             <>
               <div className="text-[9px] uppercase tracking-wider text-faint px-3 py-1">Recents</div>
               {recents.map((r) => (
-                <button key={r} onClick={() => openPath(r)}
-                  className="w-full text-left px-3 py-1.5 hover:bg-panel2 transition flex flex-col">
-                  <span className="text-txt font-medium text-[11px]">{base(r)}</span>
+                <button key={r} type="button" onClick={() => openPath(r)} title={r}
+                  className="w-full max-w-full min-w-0 overflow-hidden text-left px-3 py-1.5 hover:bg-panel2 transition flex flex-col">
+                  <span className="text-txt font-medium text-[11px] truncate">{base(r)}</span>
                   <span className="text-faint text-[9px] font-mono truncate">{r}</span>
                 </button>
               ))}

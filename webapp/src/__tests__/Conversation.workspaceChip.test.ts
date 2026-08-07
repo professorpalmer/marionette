@@ -3,11 +3,55 @@ import {
   formatWorkspaceOpenLeaseExhaustedMessage,
   isWorkspaceOpenLeaseExhausted,
 } from "../components/Conversation";
+import {
+  isWorkspaceHomeActive,
+  workspaceChipRecents,
+} from "../components/conversation/WorkspaceChip";
 
 /**
  * WorkspaceChip lease-exhausted detector — mirrors LeftRail.isLeaseExhaustedError
  * contracts without mounting the full Conversation UI.
  */
+describe("WorkspaceChip Home pin + recents", () => {
+  const home = "C:\\Users\\me\\.pmharness\\home";
+
+  it("filters Home and the active repo out of Recents", () => {
+    const recents = [
+      home,
+      "C:\\Projects\\alpha",
+      "C:\\Projects\\beta",
+      "c:/Users/me/.pmharness/home",
+    ];
+    expect(workspaceChipRecents(recents, "C:\\Projects\\beta", home)).toEqual([
+      "C:\\Projects\\alpha",
+    ]);
+  });
+
+  it("marks Home active for empty repo or when repo equals home", () => {
+    expect(isWorkspaceHomeActive(undefined, home)).toBe(true);
+    expect(isWorkspaceHomeActive("", home)).toBe(true);
+    expect(isWorkspaceHomeActive(home, home)).toBe(true);
+    expect(isWorkspaceHomeActive("c:/Users/me/.pmharness/home", home)).toBe(true);
+    expect(isWorkspaceHomeActive("C:\\Projects\\alpha", home)).toBe(false);
+    expect(isWorkspaceHomeActive("", undefined)).toBe(false);
+  });
+
+  it("overflow row classes keep long paths inside the popover", async () => {
+    // Contract for WorkspaceChip popover markup (w-64): clip the panel and
+    // give each recent row a bounded flex child so truncate can ellipsize.
+    const { readFileSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
+    const src = readFileSync(
+      resolve(__dirname, "../components/conversation/WorkspaceChip.tsx"),
+      "utf8",
+    );
+    expect(src).toMatch(/w-64[^"]*overflow-hidden/);
+    expect(src).toMatch(/max-w-full min-w-0 overflow-hidden/);
+    expect(src).toMatch(/title=\{r\}/);
+    expect(src).toMatch(/truncate/);
+  });
+});
+
 describe("isWorkspaceOpenLeaseExhausted", () => {
   it("requires lease_exhausted code (not bare 409)", () => {
     expect(isWorkspaceOpenLeaseExhausted(new Error("/api/workspace/open -> 409"))).toBe(false);

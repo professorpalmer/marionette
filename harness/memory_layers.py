@@ -56,7 +56,21 @@ def _dir_file_bytes(directory: str) -> tuple[int, int]:
 
 
 def _message_char_len(message: dict) -> int:
-    chars = len(message.get("content") or "")
+    content = message.get("content") or ""
+    if isinstance(content, list):
+        chars = 0
+        for part in content:
+            if not isinstance(part, dict):
+                chars += len(str(part))
+                continue
+            chars += len(part.get("text") or "")
+            image = part.get("image_url")
+            if isinstance(image, dict):
+                chars += len(str(image.get("url") or ""))
+            elif isinstance(image, str):
+                chars += len(image)
+    else:
+        chars = len(content) if isinstance(content, str) else len(str(content))
     role = message.get("role") or ""
     if message.get("tool_calls"):
         for tc in message["tool_calls"]:

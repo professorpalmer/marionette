@@ -1646,7 +1646,7 @@ export default function Conversation({
     const streamer = resume
       ? (cb: any, done: any, err: any) => api.resume(cb, done, err)
       : useAuto
-      ? (cb: any, done: any, err: any) => api.auto(msg, cb, done, err)
+      ? (cb: any, done: any, err: any) => api.auto(msg, cb, done, err, imgPaths)
       : (cb: any, done: any, err: any) => api.chat(msg, cb, done, err, usePlan, imgPaths);
     clearChatEventsPoll();
     localStreamActiveRef.current = true;

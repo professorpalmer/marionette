@@ -946,25 +946,61 @@ def drain_idle_turn(
         # the normal-turn plumbing above.
         content = q_text
         if q_images:
+            from .vision import (
+                native_multimodal_user_content,
+                pilot_supports_native_images,
+                resolve_provider_for_spec,
+                transcribe_images,
+            )
+            provider = resolve_provider_for_spec(
+                getattr(getattr(session, "config", None), "driver", "") or ""
+            )
+            pilot = getattr(session, "pilot", None)
+            pilot_model = str(getattr(pilot, "model", "") or "")
             try:
-                from .vision import transcribe_images
-                yield ConvEvent("vision", {"count": len(q_images), "status": "transcribing"})
-                results = transcribe_images(q_images)
-                blocks = []
-                for path, r in zip(q_images, results):
-                    if getattr(r, "error", None):
-                        yield ConvEvent("vision", {"path": path, "error": r.error})
-                    elif getattr(r, "text", ""):
-                        blocks.append(f"[Image: {path}]\n{r.text}")
-                        yield ConvEvent("vision", {"path": path,
-                            "chars": len(r.text), "model": r.model,
-                            "preview": r.text[:200]})
-                if blocks:
-                    content = ("The user attached image(s). Transcription(s) below "
-                               "(you cannot see the image, only this text):\n\n"
-                               + "\n\n".join(blocks) + "\n\n---\n" + q_text)
-            except Exception:
-                pass
+                if pilot_supports_native_images(
+                    provider, model=pilot_model, pilot=pilot,
+                ):
+                    yield ConvEvent("vision", {
+                        "count": len(q_images), "status": "native",
+                    })
+                    content = native_multimodal_user_content(q_text, q_images)
+                    for path in q_images:
+                        yield ConvEvent("vision", {
+                            "path": path, "status": "native",
+                        })
+                else:
+                    yield ConvEvent("vision", {
+                        "count": len(q_images), "status": "transcribing",
+                    })
+                    results = transcribe_images(q_images)
+                    blocks = []
+                    for path, r in zip(q_images, results):
+                        if getattr(r, "error", None):
+                            yield ConvEvent("vision", {"path": path, "error": r.error})
+                        elif getattr(r, "text", ""):
+                            blocks.append(f"[Image: {path}]\n{r.text}")
+                            yield ConvEvent("vision", {"path": path,
+                                "chars": len(r.text), "model": r.model,
+                                "preview": r.text[:200]})
+                    if blocks:
+                        content = (
+                            "The user attached image(s). Transcription(s) below "
+                            "(you cannot see the image, only this text):\n\n"
+                            + "\n\n".join(blocks) + "\n\n---\n" + q_text
+                        )
+                    else:
+                        err = (
+                            f"All {len(q_images)} image transcription(s) failed; "
+                            "cannot answer an image request as text-only."
+                        )
+                        yield ConvEvent("error", {"error": err})
+                        return ("return", user_message)
+            except Exception as e:
+                yield ConvEvent("error", {
+                    "error": f"Failed to load attached image(s): {e}",
+                })
+                return ("return", user_message)
         session._history.append({"role": "user", "content": content})
         # Refresh the "current user message" reference so downstream
         # per-turn hooks (compaction, ingest, budget) attribute work

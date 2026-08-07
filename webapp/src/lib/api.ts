@@ -1263,24 +1263,36 @@ export const api = {
     ),
   memoryProposeDismiss: (id: string) =>
     postJSON<{ ok: boolean; error?: string }>("/api/memory/propose/dismiss", { id }),
-  auto: (objective: string, onEvent: (e: StreamEvent) => void, onDone?: () => void, onError?: (e: any) => void) => {
+  auto: (objective: string, onEvent: (e: StreamEvent) => void, onDone?: () => void, onError?: (e: any) => void, images?: string[]) => {
     // Same URL-length hazard as chat() (autopilot objective can be a large
     // pasted brief) -- route big ones through the stash, small ones inline.
-    if (objective.length > CHAT_STASH_THRESHOLD) {
-      let cancelled = false;
-      let cancelStream: (() => void) | null = null;
-      postJSON<{ id: string }>("/api/chat/stash", { message: objective })
+    // Image paths ride alongside the objective (query or stash) so autopilot
+    // turns get the same attachments the chat path already supports.
+    const imagesStr = images && images.length > 0 ? images.join("|") : "";
+    const needsStash = objective.length > CHAT_STASH_THRESHOLD || imagesStr.length > CHAT_STASH_THRESHOLD;
+    let cancelled = false;
+    let cancelStream: (() => void) | null = null;
+    const startStream = (url: string) => {
+      if (cancelled) return;
+      cancelStream = stream(url, onEvent, onDone, onError);
+    };
+    if (needsStash) {
+      postJSON<{ id: string }>("/api/chat/stash", { message: objective, images: images || [] })
         .then((res) => {
-          if (cancelled) return;
-          cancelStream = stream(`/api/auto?mid=${encodeURIComponent(res.id)}`, onEvent, onDone, onError);
+          startStream(`/api/auto?mid=${encodeURIComponent(res.id)}`);
         })
         .catch((e) => onError?.(e));
-      return () => {
-        cancelled = true;
-        cancelStream?.();
-      };
+    } else {
+      let url = `/api/auto?objective=${encodeURIComponent(objective)}`;
+      if (imagesStr) {
+        url += `&images=${encodeURIComponent(imagesStr)}`;
+      }
+      startStream(url);
     }
-    return stream(`/api/auto?objective=${encodeURIComponent(objective)}`, onEvent, onDone, onError);
+    return () => {
+      cancelled = true;
+      cancelStream?.();
+    };
   },
   exportUrl: (sessionId: string, format: "md" | "json") =>
     withToken(`/api/sessions/export?session=${encodeURIComponent(sessionId)}&format=${format}`),

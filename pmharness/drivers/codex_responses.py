@@ -138,8 +138,41 @@ def _codex_client_metadata(prompt_cache_key: Any) -> Dict[str, str]:
     }
 
 
+def _content_parts_to_responses(
+    content: Any, *, role: str,
+) -> List[dict]:
+    """Map OpenAI-shaped multimodal parts to Responses input_text / input_image."""
+    part_type = "output_text" if role == "assistant" else "input_text"
+    if isinstance(content, str):
+        return [{"type": part_type, "text": content}]
+    if not isinstance(content, list):
+        text = json.dumps(content) if content is not None else ""
+        return [{"type": part_type, "text": text}]
+    parts: List[dict] = []
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        ptype = part.get("type")
+        if ptype == "text":
+            parts.append({"type": part_type, "text": part.get("text") or ""})
+        elif ptype == "image_url" and role != "assistant":
+            url = ""
+            image = part.get("image_url")
+            if isinstance(image, dict):
+                url = str(image.get("url") or "")
+            elif isinstance(image, str):
+                url = image
+            if url:
+                parts.append({"type": "input_image", "image_url": url})
+        elif ptype == "input_image" and role != "assistant":
+            url = str(part.get("image_url") or "")
+            if url:
+                parts.append({"type": "input_image", "image_url": url})
+    return parts or [{"type": part_type, "text": ""}]
+
+
 def _messages_to_responses_input(messages: List[dict]) -> List[dict]:
-    """Minimal chat → Responses input conversion (text + tool stubs)."""
+    """Minimal chat → Responses input conversion (text + images + tool stubs)."""
     out: List[dict] = []
     for msg in messages:
         role = str(msg.get("role") or "user")
@@ -170,14 +203,11 @@ def _messages_to_responses_input(messages: List[dict]) -> List[dict]:
                     "arguments": fn.get("arguments") or "{}",
                 })
             continue
-        text = content if isinstance(content, str) else (
-            json.dumps(content) if content is not None else ""
-        )
-        part_type = "output_text" if role == "assistant" else "input_text"
+        wire_role = "user" if role == "user" else role
         out.append({
             "type": "message",
-            "role": "user" if role == "user" else role,
-            "content": [{"type": part_type, "text": text}],
+            "role": wire_role,
+            "content": _content_parts_to_responses(content, role=wire_role),
         })
     return out
 

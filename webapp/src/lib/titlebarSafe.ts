@@ -9,6 +9,6 @@ reduce clearance.
 Any content row that can be the topmost row must start past this. */
 export const MACOS_TRAFFIC_LIGHT_RIGHT_EDGE_PX = 70;
 
-export const TITLEBAR_TRAFFIC_PAD_PX = 78;
-export const TITLEBAR_TRAFFIC_PAD_SM_PX = 72;
+export const TITLEBAR_TRAFFIC_PAD_PX = 120;
+export const TITLEBAR_TRAFFIC_PAD_SM_PX = 112;
 export const TITLEBAR_CHROME_PAD_X_PX = 24;

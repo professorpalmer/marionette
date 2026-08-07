@@ -169,7 +169,7 @@ def stream_run(handler: Any, prompt: str, images, svc: StreamServices) -> Any:
         run_hooks("postRun", ctx)
 
 
-def stream_auto(handler: Any, objective: str, svc: StreamServices) -> Any:
+def stream_auto(handler: Any, objective: str, svc: StreamServices, images=None) -> Any:
     """Stream the fully-auto loop (governor-bounded) over SSE."""
     try:
         svc.ensure_pilot_matches_driver()
@@ -195,7 +195,7 @@ def stream_auto(handler: Any, objective: str, svc: StreamServices) -> Any:
     ctx = {"session_id": turn_sid, "objective": objective, "pilot": turn_pilot}
     run_hooks("preRun", ctx)
     budget = svc.auto_budget_from_env()
-    gen = turn_pilot.run_auto(objective, budget)
+    gen = turn_pilot.run_auto(objective, budget, images=images or None)
     last_ckpt = time.monotonic()
 
     def _maybe_checkpoint(ev):

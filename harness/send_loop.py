@@ -803,23 +803,66 @@ class SendLoopMixin:
                 return
         else:
             processed_message = user_message
+            # When the pilot can see pixels, keep OpenAI-shaped multimodal
+            # content (text + image_url). Otherwise transcribe via sidecar.
+            # Either path must fail loudly if images were attached but none
+            # become usable content — never answer as silent text-only.
+            native_image_paths: list = []
             if images:
-                from .vision import transcribe_images
-                yield ConvEvent("vision", {"count": len(images), "status": "transcribing"})
-                results = transcribe_images(images)
-                blocks = []
-                for path, r in zip(images, results):
-                    if r.error:
-                        yield ConvEvent("vision", {"path": path, "error": r.error})
+                from .vision import (
+                    pilot_supports_native_images,
+                    resolve_provider_for_spec,
+                    transcribe_images,
+                )
+                provider = resolve_provider_for_spec(
+                    getattr(self.config, "driver", "") or ""
+                )
+                pilot_model = str(getattr(self.pilot, "model", "") or "")
+                if pilot_supports_native_images(
+                    provider, model=pilot_model, pilot=self.pilot,
+                ):
+                    yield ConvEvent("vision", {
+                        "count": len(images), "status": "native",
+                    })
+                    native_image_paths = [p for p in images if p]
+                    if not native_image_paths:
+                        err = (f"All {len(images)} image attachment(s) failed; "
+                               "cannot answer an image request without pixels.")
+                        yield ConvEvent("error", {"error": err})
+                        return
+                    for path in native_image_paths:
+                        yield ConvEvent("vision", {
+                            "path": path, "status": "native",
+                        })
+                else:
+                    yield ConvEvent("vision", {
+                        "count": len(images), "status": "transcribing",
+                    })
+                    results = transcribe_images(images)
+                    blocks = []
+                    for path, r in zip(images, results):
+                        if r.error:
+                            yield ConvEvent("vision", {"path": path, "error": r.error})
+                        else:
+                            blocks.append(f"[Image: {path}]\n{r.text}")
+                            yield ConvEvent("vision", {"path": path,
+                                "chars": len(r.text), "model": r.model,
+                                "preview": r.text[:200]})
+                    if blocks:
+                        processed_message = (
+                            "The user attached image(s). Transcription(s) below "
+                            "(you cannot see the image, only this text):\n\n"
+                            + "\n\n".join(blocks) + "\n\n---\n" + user_message
+                        )
                     else:
-                        blocks.append(f"[Image: {path}]\n{r.text}")
-                        yield ConvEvent("vision", {"path": path,
-                            "chars": len(r.text), "model": r.model,
-                            "preview": r.text[:200]})
-                if blocks:
-                    processed_message = ("The user attached image(s). Transcription(s) below "
-                                         "(you cannot see the image, only this text):\n\n"
-                                         + "\n\n".join(blocks) + "\n\n---\n" + user_message)
+                        # Every transcription failed. With no blocks the pilot
+                        # would silently answer as if no images were attached.
+                        err = (
+                            f"All {len(images)} image transcription(s) failed; "
+                            "cannot answer an image request as text-only."
+                        )
+                        yield ConvEvent("error", {"error": err})
+                        return
 
             self._turn_output_tokens = 0
             self._turn_budget = None
@@ -852,17 +895,32 @@ class SendLoopMixin:
                     processed_message.rstrip() + "\n\n" + PLAN_SYSTEM_SUFFIX
                 )
 
+            if native_image_paths:
+                from .vision import native_multimodal_user_content
+                try:
+                    history_content = native_multimodal_user_content(
+                        processed_message, native_image_paths,
+                    )
+                except Exception as e:
+                    yield ConvEvent("error", {
+                        "error": f"Failed to load attached image(s): {e}",
+                    })
+                    return
+            else:
+                history_content = processed_message
+
             # Preserve strict user/assistant alternation in _history: if the last
             # message is already a user turn (e.g. a background job just drained a
             # pilot-resume continuation before the user typed), merge into it rather
             # than appending a second adjacent user message, which some chat APIs
             # (Anthropic) reject and the concurrency stress test forbids.
             if self._history and self._history[-1].get("role") == "user":
-                self._history[-1]["content"] = (
-                    self._history[-1]["content"].rstrip() + "\n\n" + processed_message
+                from .vision import merge_user_contents
+                self._history[-1]["content"] = merge_user_contents(
+                    self._history[-1].get("content"), history_content,
                 )
             else:
-                self._history.append({"role": "user", "content": processed_message})
+                self._history.append({"role": "user", "content": history_content})
             self._display_transcript.append({"type": "message", "role": "user", "text": user_message})
 
             # Inject relevance-ranked CodeGraph context (best-effort, exception-guarded)

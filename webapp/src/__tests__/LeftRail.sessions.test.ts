@@ -337,6 +337,28 @@ describe("LeftRail session list contracts", () => {
     ]);
   });
 
+  it("buildProjectsList pins Home first and dedupes it from recents", () => {
+    const home = "C:\\Users\\me\\.pmharness\\home";
+    const recents = [
+      "C:\\Projects\\alpha",
+      "c:/Users/me/.pmharness/home",
+      "C:\\Projects\\beta",
+    ];
+    const list = buildProjectsList("C:\\Projects\\beta", recents, home);
+    expect(list[0]).toBe(home);
+    expect(list).toEqual([home, "C:\\Projects\\alpha", "C:\\Projects\\beta"]);
+    // Opening Home as current must not duplicate or move it off index 0.
+    expect(buildProjectsList(home, recents, home)).toEqual([
+      home,
+      "C:\\Projects\\alpha",
+      "C:\\Projects\\beta",
+    ]);
+    // Without home, order stays recents-as-is (no synthetic pin).
+    expect(buildProjectsList("", ["C:\\Projects\\alpha"], undefined)[0]).toBe(
+      "C:\\Projects\\alpha",
+    );
+  });
+
   it("workspaces SWR key is per-repo so branch lists stay warm and isolated", () => {
     // Branches must not share one global cache: switching projects would
     // otherwise flash the previous repo's branches, and a blank useState

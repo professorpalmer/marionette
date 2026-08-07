@@ -59,8 +59,8 @@ body {
  * use fixed px so root font changes cannot reduce the inset.
  */
 :root {
-  --titlebar-traffic-pad: 78px;
-  --titlebar-traffic-pad-sm: 72px;
+  --titlebar-traffic-pad: 120px;
+  --titlebar-traffic-pad-sm: 112px;
   --titlebar-chrome-pad-x: 24px;
 }
 .titlebar-traffic-pad {

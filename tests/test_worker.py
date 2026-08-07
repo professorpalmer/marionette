@@ -55,7 +55,7 @@ def test_is_obviously_destructive():
     # Legitimate absolute project/temp cleanups must NOT be flagged -- this is
     # the over-broad `rm -rf /` regex fix (previously any absolute path matched).
     assert is_obviously_destructive("rm -rf /home/user/project/build") is False
-    assert is_obviously_destructive("rm -rf /Users/cary/pm-harness/dist") is False
+    assert is_obviously_destructive("rm -rf /Users/someone/marionette/dist") is False
     assert is_obviously_destructive("rm -rf /var/folders/tmp/xyz") is False
     assert is_obviously_destructive("rm -rf ~/project/node_modules") is False
 

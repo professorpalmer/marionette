@@ -127,8 +127,35 @@ class GeminiDriver:
                 gemini_role = "user"
 
             else:
-                text = msg.get("content") or ""
-                parts.append({"text": text})
+                content = msg.get("content")
+                if isinstance(content, list):
+                    for part in content:
+                        if not isinstance(part, dict):
+                            continue
+                        ptype = part.get("type")
+                        if ptype == "text":
+                            parts.append({"text": part.get("text") or ""})
+                        elif ptype == "image_url":
+                            url = ""
+                            image = part.get("image_url")
+                            if isinstance(image, dict):
+                                url = str(image.get("url") or "")
+                            elif isinstance(image, str):
+                                url = image
+                            if url.startswith("data:") and ";base64," in url:
+                                header, b64 = url.split(";base64,", 1)
+                                media = (
+                                    header[5:] if header.startswith("data:")
+                                    else "image/png"
+                                )
+                                parts.append({
+                                    "inline_data": {
+                                        "mime_type": media or "image/png",
+                                        "data": b64,
+                                    },
+                                })
+                else:
+                    parts.append({"text": content or ""})
                 gemini_role = "user"
 
             if not parts:

@@ -12,9 +12,9 @@ from harness.vision import (default_sidecar, OpenRouterVisionSidecar,
 _ALL_KEY_ENVS = (
     "HARNESS_VLM_REACH", "HARNESS_VLM_MODEL",
     "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
-    "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "DEEPSEEK_API_KEY",
-    "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY", "MINIMAX_API_KEY",
-    "XAI_API_KEY", "NVIDIA_API_KEY",
+    "OPENAI_API_KEY", "OPENAI_CODEX_TOKEN", "GEMINI_API_KEY", "GOOGLE_API_KEY",
+    "DEEPSEEK_API_KEY", "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
+    "MINIMAX_API_KEY", "XAI_API_KEY", "NVIDIA_API_KEY",
 )
 
 
@@ -70,7 +70,7 @@ def test_default_sidecar_uses_openai_key(monkeypatch):
     assert isinstance(sc, OpenAICompatVisionSidecar)
     assert not isinstance(sc, (GeminiVisionSidecar, OpenRouterVisionSidecar))
     assert sc.api_key_env == "OPENAI_API_KEY"
-    assert sc.model == "gpt-5.4-mini"
+    assert sc.model == "gpt-5.6-luna"
 
 
 def test_open_vlm_missing_key_errors(monkeypatch):

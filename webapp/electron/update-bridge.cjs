@@ -643,7 +643,13 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff",
 // `opts.packagedUpdater` (electron-updater) so shell skew is resolved via a
 // signed installer instead of a false-success relaunch of the frozen asar.
 function registerUpdateBridge(ipcMain, app, shell, opts = {}) {
-  const getRepoRoot = opts.getRepoRoot || (() => path.join(os.homedir(), "pm-harness"));
+  // Match main.cjs resolveRepoRoot: env override, then packaged checkout.
+  // Never fall back to the legacy ~/pm-harness path (machine-specific rename).
+  const getRepoRoot = opts.getRepoRoot || (() => {
+    const checkout = process.env.MARIONETTE_CHECKOUT || process.env.HARNESS_CHECKOUT;
+    if (checkout) return checkout;
+    return path.join(os.homedir(), ".marionette", "marionette");
+  });
   const relaunch = opts.relaunch || (() => { app.relaunch(); app.exit(0); });
   // Login-shell-augmented env for the updater's child processes (git/npm/uv), so
   // a Finder/Dock launch with a stripped launchd PATH can still find them. Omit

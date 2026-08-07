@@ -166,6 +166,29 @@ def test_messages_to_input_skips_system():
     assert inp[0]["role"] == "user"
 
 
+def test_messages_to_input_emits_input_image_for_multimodal_list():
+    """Native vision history must become Responses input_image, not JSON text."""
+    data_url = "data:image/png;base64,aaa"
+    inp = _messages_to_responses_input([
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe this"},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ],
+        },
+    ])
+    assert len(inp) == 1
+    parts = inp[0]["content"]
+    assert {"type": "input_text", "text": "describe this"} in parts
+    assert {"type": "input_image", "image_url": data_url} in parts
+    assert not any(
+        isinstance(p.get("text"), str) and "image_url" in p.get("text", "")
+        for p in parts
+        if p.get("type") == "input_text"
+    )
+
+
 def test_consume_sse_assembles_text_and_usage():
     lines = [
         b'data: {"type":"response.output_text.delta","delta":"hel"}\n',

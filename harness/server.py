@@ -2620,10 +2620,10 @@ class Handler(BaseHTTPRequestHandler):
         from .api.streams import stream_run
         return stream_run(self, prompt, images, _stream_services())
 
-    def _stream_auto(self, objective: str):
+    def _stream_auto(self, objective: str, images=None):
         """Stream the fully-auto loop (governor-bounded) over SSE."""
         from .api.streams import stream_auto
-        return stream_auto(self, objective, _stream_services())
+        return stream_auto(self, objective, _stream_services(), images=images)
 
     def _swap_pilot(self, model: str):
         """Hot-swap the pilot model (the whole point: your key -> your pilot).

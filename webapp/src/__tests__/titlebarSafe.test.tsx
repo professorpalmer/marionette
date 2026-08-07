@@ -6,6 +6,7 @@ import {
   MACOS_TRAFFIC_LIGHT_RIGHT_EDGE_PX,
   TITLEBAR_CHROME_PAD_X_PX,
   TITLEBAR_TRAFFIC_PAD_PX,
+  TITLEBAR_TRAFFIC_PAD_SM_PX,
 } from "../lib/titlebarSafe";
 
 function paddingLeftPx(el: Element): number {
@@ -52,7 +53,11 @@ describe("titlebar-safe clearance", () => {
   });
 
   it("the traffic-light pads are wider than the traffic lights themselves", () => {
+    // Generous clearance past the lights (~50px / ~42px), not a tight skim.
+    expect(TITLEBAR_TRAFFIC_PAD_PX).toBe(120);
+    expect(TITLEBAR_TRAFFIC_PAD_SM_PX).toBe(112);
     expect(TITLEBAR_TRAFFIC_PAD_PX).toBeGreaterThan(MACOS_TRAFFIC_LIGHT_RIGHT_EDGE_PX);
+    expect(TITLEBAR_TRAFFIC_PAD_SM_PX).toBeGreaterThan(MACOS_TRAFFIC_LIGHT_RIGHT_EDGE_PX);
     expect(TITLEBAR_CHROME_PAD_X_PX).toBeLessThan(MACOS_TRAFFIC_LIGHT_RIGHT_EDGE_PX);
   });
 });

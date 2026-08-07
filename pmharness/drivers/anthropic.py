@@ -24,6 +24,40 @@ from .retry import with_retry
 from pmharness.reasoning import extract_reasoning, strip_think_blocks
 
 
+def _openai_user_content_to_anthropic(content) -> list:
+    """Map OpenAI-shaped user content (str or multimodal list) to Anthropic blocks."""
+    if isinstance(content, list):
+        blocks = []
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            ptype = part.get("type")
+            if ptype == "text":
+                blocks.append({"type": "text", "text": part.get("text") or ""})
+            elif ptype == "image_url":
+                url = ""
+                image = part.get("image_url")
+                if isinstance(image, dict):
+                    url = str(image.get("url") or "")
+                elif isinstance(image, str):
+                    url = image
+                if url.startswith("data:") and ";base64," in url:
+                    header, b64 = url.split(";base64,", 1)
+                    media = header[5:] if header.startswith("data:") else "image/png"
+                    blocks.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media or "image/png",
+                            "data": b64,
+                        },
+                    })
+            elif ptype == "image" and isinstance(part.get("source"), dict):
+                blocks.append(part)
+        return blocks or [{"type": "text", "text": ""}]
+    return [{"type": "text", "text": content or ""}]
+
+
 def _anthropic_usage_fields(usage: dict | None) -> dict:
     """Normalize Anthropic usage into inclusive prompt totals + TTL write splits.
 
@@ -288,8 +322,7 @@ class AnthropicDriver:
                 anth_role = "user"
 
             else:
-                text = msg.get("content") or ""
-                blocks.append({"type": "text", "text": text})
+                blocks.extend(_openai_user_content_to_anthropic(msg.get("content")))
                 anth_role = "user"
 
             if anthropic_msgs and anthropic_msgs[-1]["role"] == anth_role:

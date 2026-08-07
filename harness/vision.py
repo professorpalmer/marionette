@@ -1,22 +1,21 @@
 from __future__ import annotations
 
-"""Vision sidecar: decouples image input from the driver.
+"""Vision: native multimodal pixels when the pilot can see, sidecar otherwise.
 
-The research found the only vision-capable open DRIVER (Kimi) is also the
-weakest driver -- so the harness must NOT require the driver to have vision.
-Instead a cheap VLM sidecar transcribes an image into a TEXT description once;
-that text is prepended to the driver's context as durable signal. Any text-only
-driver (glm-5.2, deepseek, qwen) then "sees" the image through the transcription.
+When the active pilot/provider accepts images natively (OpenAI-compat,
+Anthropic messages, Codex Responses, Gemini), chat history carries OpenAI-shaped
+multimodal content lists (text + image_url data URLs). Drivers translate that
+shape to their wire format.
 
-This matches the kernel philosophy: the harness owns vision as a preprocessing
-capability (like CodeGraph injection); the driver only ever reasons over text.
-The image is processed ONCE, never re-sent through every driver call.
+Text-only pilots still use a cheap VLM sidecar that transcribes image -> text
+once; that text is prepended so the driver can reason without pixels. Sidecar
+resolution reuses whatever provider key the user already configured (see
+default_sidecar). Codex Responses cannot serve /chat/completions, so it is
+never selected as a transcription sidecar.
 
-The sidecar is resolved dynamically from whatever provider key the user already
-has (see default_sidecar). A user who configured only Anthropic, OpenAI, or xAI
-still gets image input -- vision no longer requires a dedicated Gemini/OpenRouter
-key. If no vision-capable provider is configured, transcription returns a clear,
-actionable error instead of a cryptic missing-key failure.
+If images were attached and neither native delivery nor transcription can
+produce usable content, the turn must fail loudly — never silently answer as
+text-only.
 """
 
 import base64
@@ -236,10 +235,169 @@ class NullVisionSidecar:
                    "image input (or set HARNESS_VLM_REACH=openrouter)"))
 
 
+# Sidecar POSTs /chat/completions or Anthropic /messages — never Responses /
+# CLI / Bedrock shapes that cannot serve those endpoints.
+_SIDECAR_API_MODES = frozenset({"chat_completions", "anthropic_messages"})
+
+# Pilots on these modes can carry OpenAI-shaped multimodal user content when
+# the model itself is vision-capable (catalog / provider.vision_model).
+_NATIVE_IMAGE_API_MODES = frozenset({
+    "chat_completions",
+    "anthropic_messages",
+    "codex_responses",
+    "gemini_native",
+})
+
+
+def resolve_provider_for_spec(spec: str):
+    """Best-effort provider for a driver/pilot spec (mirrors build_pilot routing)."""
+    try:
+        from .providers import available_providers, get_provider
+    except Exception:
+        return None
+    raw = (spec or "").strip()
+    if not raw:
+        return None
+    if ":" in raw:
+        pname, _model = raw.split(":", 1)
+        return get_provider(pname)
+    candidates = [p for p in available_providers() if raw in p.pilot_models]
+    for preferred in ("openai-codex",):
+        for p in candidates:
+            if p.name == preferred:
+                return p
+    if candidates:
+        return candidates[0]
+    return get_provider("openrouter")
+
+
+def _catalog_has_vision(model_id: str) -> Optional[bool]:
+    """True/False when the eval catalog lists the model; None if unknown."""
+    if not model_id:
+        return None
+    try:
+        from pmharness.registry import _entry
+    except Exception:
+        return None
+    candidates = [model_id]
+    if ":" in model_id:
+        bare = model_id.split(":", 1)[1]
+        candidates.append(bare)
+        candidates.append(bare.split("/")[-1])
+    if "/" in model_id:
+        candidates.append(model_id.split("/")[-1])
+    seen = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            return bool(_entry(candidate).get("vision", False))
+        except Exception:
+            continue
+    return None
+
+
+def _unwrap_pilot(pilot):
+    """Follow cassette / wrapper inners to the real transport driver."""
+    seen = set()
+    cur = pilot
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        inner = getattr(cur, "_inner", None)
+        if inner is None:
+            return cur
+        cur = inner
+    return pilot
+
+
+def pilot_supports_native_images(
+    provider=None,
+    *,
+    model: str = "",
+    pilot=None,
+) -> bool:
+    """True when the active pilot can receive image pixels natively.
+
+    Prefer catalog ``vision`` when the model is listed (so OpenRouter text-only
+    pilots stay on the sidecar). Uncatalogued closed pilots trust
+    ``provider.vision_model`` + a native-capable ``api_mode``. Stub drivers
+    never take pixels.
+    """
+    real = _unwrap_pilot(pilot)
+    if real is not None:
+        cls = type(real).__name__
+        if cls in ("StubDriver",) or cls.startswith("Stub"):
+            return False
+
+    model_id = (model or getattr(real, "model", "") or "").strip()
+    api_mode = getattr(provider, "api_mode", "") or ""
+    if api_mode and api_mode not in _NATIVE_IMAGE_API_MODES:
+        return False
+
+    catalog = _catalog_has_vision(model_id)
+    if catalog is not None:
+        return catalog
+
+    if real is not None:
+        mod = getattr(type(real), "__module__", "") or ""
+        cls = type(real).__name__
+        if "codex_responses" in mod or cls == "CodexResponsesDriver":
+            return True
+        if "anthropic" in mod and "Anthropic" in cls:
+            return True
+        if "gemini" in mod and "Gemini" in cls:
+            return True
+
+    if api_mode == "codex_responses":
+        return True
+    if provider is not None and getattr(provider, "vision_model", "") and (
+        not api_mode or api_mode in _NATIVE_IMAGE_API_MODES
+    ):
+        return True
+    return False
+
+
+def native_multimodal_user_content(text: str, image_paths: list) -> list:
+    """OpenAI-shaped multimodal user content (text + image_url data URLs)."""
+    parts: list = []
+    body = text if isinstance(text, str) else ("" if text is None else str(text))
+    if body:
+        parts.append({"type": "text", "text": body})
+    for path in image_paths or []:
+        if not path:
+            continue
+        parts.append({
+            "type": "image_url",
+            "image_url": {"url": _read_data_url(str(path))},
+        })
+    if not parts:
+        parts.append({"type": "text", "text": ""})
+    return parts
+
+
+def merge_user_contents(prev, new):
+    """Merge adjacent user history contents (string and/or multimodal lists)."""
+    if isinstance(prev, str) and isinstance(new, str):
+        return prev.rstrip() + "\n\n" + new
+
+    def _as_parts(content) -> list:
+        if isinstance(content, list):
+            return list(content)
+        return [{"type": "text", "text": content if isinstance(content, str) else str(content or "")}]
+
+    return _as_parts(prev) + [{"type": "text", "text": "\n\n"}] + _as_parts(new)
+
+
 def provider_vision_sidecar():
     """Build a sidecar from the first configured provider that has a vision model.
     Reuses the key the user already set, so image input works with zero extra
-    setup. Returns None if no available provider declares a vision model."""
+    setup. Returns None if no available provider declares a vision model.
+
+    Skips ``api_mode`` values that cannot serve chat/completions or Anthropic
+    messages (notably ``codex_responses``) — those pilots use native multimodal
+    instead of broken sidecar POSTs.
+    """
     try:
         from .providers import available_providers
     except Exception:
@@ -248,10 +406,13 @@ def provider_vision_sidecar():
         model = getattr(p, "vision_model", "") or ""
         if not model:
             continue
+        api_mode = getattr(p, "api_mode", "") or "chat_completions"
+        if api_mode not in _SIDECAR_API_MODES:
+            continue
         key_env = p.key_env()
         if not key_env:
             continue
-        if p.api_mode == "anthropic_messages":
+        if api_mode == "anthropic_messages":
             return AnthropicVisionSidecar(model=model, base_url=p.base_url,
                                           api_key_env=key_env)
         return OpenAICompatVisionSidecar(model=model, base_url=p.base_url,

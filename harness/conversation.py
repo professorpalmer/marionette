@@ -3171,7 +3171,8 @@ class ConversationalSession(
 
     def run_auto(self, objective: str, budget: "AutoBudget" = None,
                  *, require_codegraph: bool = True,
-                 analysis_mode: bool = False):
+                 analysis_mode: bool = False,
+                 images: Optional[list] = None):
         """FULL-AUTO entry point. Thin wrapper that marks unattended mode for the
         duration of the run (so run_command applies the safety guard) and always
         resets it, even on exception or early return, so the next interactive
@@ -3181,6 +3182,9 @@ class ConversationalSession(
         the default "no swarms => objective met" early halt must not fire; they
         continue until a structured FINDING/RISK/DECISION summary or a budget
         ceiling.
+
+        ``images``: optional upload paths for the first user turn (same native /
+        sidecar path as ``send``). Later governor cycles are text-only.
         """
         self._auto_mode = True
         try:
@@ -3188,6 +3192,7 @@ class ConversationalSession(
                 objective, budget,
                 require_codegraph=require_codegraph,
                 analysis_mode=analysis_mode,
+                images=images,
             )
         finally:
             self._auto_mode = False
@@ -3197,7 +3202,8 @@ class ConversationalSession(
 
     def _run_auto_inner(self, objective: str, budget: "AutoBudget" = None,
                  *, require_codegraph: bool = True,
-                 analysis_mode: bool = False):
+                 analysis_mode: bool = False,
+                 images: Optional[list] = None):
         """FULLY-AUTO (unattended) mode: pursue an objective across many pilot
         turns WITHOUT user re-prompting, bounded by an AutoBudget governor. Yields
         the same ConvEvents as send(), plus 'auto_status' (governor snapshots) and
@@ -3236,6 +3242,9 @@ class ConversationalSession(
         loop_msg = message
         failed_verifications = 0
         cycle = 0
+        # Image attachments apply to the first governor cycle only (the user's
+        # opening objective). Later self-continue turns are text-only.
+        pending_images = [p for p in (images or []) if p] or None
         self._cancel.clear()
         self._interrupted_swarms = False
         while True:
@@ -3266,7 +3275,9 @@ class ConversationalSession(
             _swarm_budget_kinds = frozenset({
                 "run_swarm", "run_implement", "run_parallel",
             })
-            for ev in self.send(loop_msg):
+            turn_images = pending_images
+            pending_images = None
+            for ev in self.send(loop_msg, images=turn_images):
                 # meter the governor off the stream
                 if ev.kind == "message":
                     _msg = (ev.data.get("text") or "").strip()

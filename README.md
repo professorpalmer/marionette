@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.180, deliberately pre-1.0. Scratch store fails closed on corruption (quarantine via clear_scratch); `/compact` echoes in the transcript (rides puppetmaster-ai==1.21.13).
+> Status: v0.9.181, deliberately pre-1.0. Native chat images for vision pilots, pinned Home workspace, and roomier macOS titlebar clearance (rides puppetmaster-ai==1.21.13).
 
 ## Documentation
 

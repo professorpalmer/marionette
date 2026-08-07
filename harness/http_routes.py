@@ -538,13 +538,20 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
         return handler._swap_pilot(qs.get("model", [""])[0])
 
     def _get_auto(handler: Any, u: Any, qs: dict) -> Any:
-        objective = qs.get("objective", [""])[0]
-        mid = qs.get("mid", [""])[0]
-        if mid:
-            stashed = svc.stash_pop(mid)
-            if stashed is not None:
-                objective = stashed.get("message", "")
-        return handler._stream_auto(objective)
+        from .api.streams import (
+            resolve_stashed_chat_message,
+            validate_upload_image_paths,
+        )
+        objective, raw_images = resolve_stashed_chat_message(
+            qs.get("mid", [""])[0],
+            qs.get("objective", [""])[0],
+            qs.get("images", [""])[0],
+            svc.stash_pop,
+        )
+        imgs, err = validate_upload_image_paths(raw_images, svc.get_upload_dir())
+        if err is not None:
+            return send_json(handler, err[0], err[1])
+        return handler._stream_auto(objective, imgs)
 
     def _get_sessions_export(handler: Any, u: Any, qs: dict) -> Any:
         return _sessions_api.write_sessions_export(

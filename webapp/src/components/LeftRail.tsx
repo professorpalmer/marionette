@@ -62,13 +62,22 @@ export function formatLeaseExhaustedMessage(err: unknown): string {
 }
 
 /**
- * Stable PROJECTS rail order: keep recents as-is, append currentRepo only when
- * it is not already present (slash/case-insensitive). Never force the active
- * path to index 0.
+ * Stable PROJECTS rail order: pin durable Home first (when provided), keep
+ * remaining recents as-is, append currentRepo only when it is not already
+ * present (slash/case-insensitive). Never force the active path to index 0 —
+ * Home is the only synthetic pin.
  */
-export function buildProjectsList(currentRepo: string, rawRecents: string[]): string[] {
+export function buildProjectsList(
+  currentRepo: string,
+  rawRecents: string[],
+  home?: string,
+): string[] {
   const seen: string[] = [];
   const out: string[] = [];
+  if (home) {
+    seen.push(home);
+    out.push(home);
+  }
   for (const p of rawRecents) {
     if (!p || seen.some((s) => repoPathsEqual(s, p))) continue;
     seen.push(p);
@@ -1149,10 +1158,10 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   }, [railTab]);
 
   const rawRecents = workspaceInfo?.recents || [];
-  // Stable PROJECTS order: recents as-is, append current only if missing.
-  // Do NOT put currentRepo first -- that snapped the opened dir to the top
-  // on every workspace open and blinked the rail.
-  const projects = buildProjectsList(currentRepo, rawRecents);
+  // Stable PROJECTS order: pin Home first, then recents as-is, append current
+  // only if missing. Do NOT put currentRepo first -- that snapped the opened
+  // dir to the top on every workspace open and blinked the rail.
+  const projects = buildProjectsList(currentRepo, rawRecents, workspaceInfo?.home);
   projectsRef.current = projects;
 
   // Refresh EVERY project's sessions:${root} cache (not just the active SWR
@@ -1327,6 +1336,9 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   const hasMoreJobs = visibleJobs.length > SESSION_JOBS_DISPLAY_CAP;
 
   const handleProjectContextMenu = (e: React.MouseEvent, path: string) => {
+    // Home is a UI pin, not a forgettable recent — skip remove chrome.
+    const homePath = workspaceInfo?.home || "";
+    if (homePath && repoPathsEqual(path, homePath)) return;
     e.preventDefault();
     setProjectContextMenu({
       x: e.clientX,
