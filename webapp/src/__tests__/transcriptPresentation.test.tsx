@@ -2,6 +2,9 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   TranscriptList,
+  collapseDuplicateFailedRoutingItems,
+  collectIntermediateAssistantItems,
+  normalizePlainTextNarration,
   normalizeReasoningPreview,
   type Item,
 } from "../components/TranscriptList";
@@ -56,6 +59,17 @@ describe("normalizeReasoningPreview", () => {
     const long = `${"a".repeat(200)}\nsecond line`;
     expect(normalizeReasoningPreview(long, 40)).toBe("a".repeat(40));
     expect(normalizeReasoningPreview("first\n**second**")).toBe("first");
+  });
+});
+
+describe("normalizePlainTextNarration", () => {
+  it("strips markdown presentation while preserving line breaks", () => {
+    expect(normalizePlainTextNarration("**Plan:**\ncheck `auth.ts`")).toBe(
+      "Plan:\ncheck auth.ts",
+    );
+    expect(normalizePlainTextNarration("## Heading\ncompute 2*3*4")).toBe(
+      "Heading\ncompute 2*3*4",
+    );
   });
 });
 
@@ -215,5 +229,235 @@ describe("transcript presentation contract", () => {
     expect(userAt).toBeGreaterThanOrEqual(0);
     expect(exploredAt).toBeGreaterThan(userAt);
     expect(answerAt).toBeGreaterThan(exploredAt);
+  });
+
+  it("expanded Thought with **Plan:** renders as regular text without strong/heading chrome", () => {
+    render(
+      <TranscriptList
+        {...listProps([
+          { kind: "msg", msg: { role: "user", text: "look at auth" } },
+          {
+            kind: "thinking",
+            text: "**Plan:**\nscan auth handlers\n\n## Next\nopen session.ts",
+            id: "th-plain-1",
+          },
+        ])}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Plan:/i }));
+    const thought = screen.getByRole("button", { name: /Thought/i });
+    fireEvent.click(thought);
+
+    expect(screen.queryByRole("strong")).toBeNull();
+    expect(document.querySelector("strong")).toBeNull();
+    expect(document.querySelector("h1, h2, h3, h4, h5, h6")).toBeNull();
+    const body = thought.closest("div")?.querySelector("pre");
+    expect(body?.textContent || "").toContain("Plan:");
+    expect(body?.textContent || "").toContain("scan auth handlers");
+    expect(body?.textContent || "").not.toMatch(/\*\*/);
+    expect(body?.className || "").toMatch(/font-normal/);
+  });
+
+  it("folded isPlan narration is regular text inside the investigation group", () => {
+    const planMsg: Item = {
+      kind: "msg",
+      msg: {
+        role: "assistant",
+        text: "**Plan:** retry routing after vision fix",
+        isPlan: true,
+      },
+    };
+    render(
+      <TranscriptList
+        {...listProps([
+          { kind: "msg", msg: { role: "user", text: "fix swarm" } },
+          planMsg,
+          {
+            kind: "thinking",
+            text: "checking registry aliases",
+            id: "th-plan-fold",
+          },
+          {
+            kind: "card",
+            card: {
+              id: "card-plan-fold",
+              goal: "marionette_registry.py",
+              cwd: null,
+              kind: "read_file",
+              running: false,
+              open: false,
+              result: { status: "ok" },
+            },
+          },
+          { kind: "msg", msg: { role: "assistant", text: "Routing is fixed." } },
+        ])}
+      />,
+    );
+
+    // Sealed isPlan with later tools must fold (not stand alone as Markdown).
+    const intermediate = collectIntermediateAssistantItems(
+      [
+        { kind: "msg", msg: { role: "user", text: "fix swarm" } },
+        planMsg,
+        {
+          kind: "thinking",
+          text: "checking registry aliases",
+          id: "th-plan-fold",
+        },
+        {
+          kind: "card",
+          card: {
+            id: "card-plan-fold",
+            goal: "marionette_registry.py",
+            cwd: null,
+            kind: "read_file",
+            running: false,
+            open: false,
+            result: { status: "ok" },
+          },
+        },
+        { kind: "msg", msg: { role: "assistant", text: "Routing is fixed." } },
+      ],
+      false,
+    );
+    expect(intermediate.has(planMsg)).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: /Explored/i }));
+    expect(document.querySelector("strong")).toBeNull();
+    const folded = screen.getByText(/Plan: retry routing after vision fix/i);
+    expect(folded.tagName.toLowerCase()).toBe("pre");
+    expect(folded.className).toMatch(/font-normal/);
+    expect(folded.textContent || "").not.toMatch(/\*\*/);
+    // Final answer remains Markdown-capable outside the fold.
+    expect(screen.getByText(/Routing is fixed/i)).toBeTruthy();
+  });
+
+  it("standalone isPlan Bubble uses plain-text narration (not Markdown strong)", () => {
+    render(
+      <TranscriptList
+        {...listProps([
+          { kind: "msg", msg: { role: "user", text: "plan the fix" } },
+          {
+            kind: "msg",
+            msg: {
+              role: "assistant",
+              text: "**Plan:**\n1. tag vision\n2. retry swarm",
+              isPlan: true,
+            },
+          },
+        ])}
+      />,
+    );
+
+    expect(document.querySelector("strong")).toBeNull();
+    const planBody = screen.getByText(/Plan:/i);
+    expect(planBody.tagName.toLowerCase()).toBe("pre");
+    expect(planBody.className).toMatch(/font-normal/);
+    expect(planBody.textContent || "").toContain("1. tag vision");
+    expect(planBody.textContent || "").not.toMatch(/\*\*/);
+    // User bubble stays plain whitespace-pre-wrap (unchanged path).
+    expect(screen.getByText("plan the fix")).toBeTruthy();
+  });
+
+  it("collapses paired failed run_swarm card + swarm_result and keeps a distinct failure", () => {
+    const routingError =
+      "auto-route failed: No model in registry has all required tags ['vision']";
+    const objective = "Audit the failure shown in the latest screenshot";
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "audit screenshot" } },
+      {
+        kind: "card",
+        card: {
+          id: "swarm-a",
+          goal: objective,
+          cwd: null,
+          kind: "run_swarm",
+          running: false,
+          open: false,
+          result: { error: routingError },
+        },
+      },
+      {
+        kind: "card",
+        card: {
+          id: "swarm-b",
+          goal: objective,
+          cwd: null,
+          kind: "run_swarm",
+          running: false,
+          open: false,
+          result: { error: routingError },
+        },
+      },
+      {
+        kind: "card",
+        card: {
+          id: "swarm-c",
+          goal: objective,
+          cwd: null,
+          kind: "run_swarm",
+          running: false,
+          open: false,
+          result: { error: routingError },
+        },
+      },
+      {
+        kind: "swarm_result",
+        job_id: "job-dup-1",
+        applied: false,
+        files: [],
+        summary: "",
+        error: routingError,
+        objective,
+      },
+      {
+        kind: "swarm_result",
+        job_id: "job-dup-2",
+        applied: false,
+        files: [],
+        summary: "",
+        error: routingError,
+        objective,
+      },
+      {
+        kind: "swarm_result",
+        job_id: "job-distinct",
+        applied: false,
+        files: [],
+        summary: "",
+        error: "worker timed out after 30s",
+        objective: "Distinct timeout failure",
+      },
+    ];
+
+    const activity = items.filter(
+      (it): it is Extract<Item, { kind: "card" | "swarm_result" }> =>
+        it.kind === "card" || it.kind === "swarm_result",
+    );
+    const collapsed = collapseDuplicateFailedRoutingItems(activity);
+    // Paired ActionCard + terminal swarm_result share one fingerprint.
+    expect(collapsed.items).toHaveLength(2); // 1 routing cluster + 1 distinct
+    expect(collapsed.duplicateCounts[0]).toBe(5);
+    expect(collapsed.duplicateCounts[1]).toBe(1);
+    expect(collapsed.items[0]).toMatchObject({
+      kind: "swarm_result",
+      error: routingError,
+      objective,
+    });
+    expect(collapsed.items[1]).toMatchObject({
+      kind: "swarm_result",
+      error: "worker timed out after 30s",
+    });
+
+    render(<TranscriptList {...listProps(items)} />);
+    fireEvent.click(screen.getByRole("button", { name: /Explored|Swarm/i }));
+
+    expect(screen.getByText(/swarm failed ×5/i)).toBeTruthy();
+    expect(screen.getByText(/worker timed out after 30s/i)).toBeTruthy();
+    // Routing failure once; distinct timeout remains a second failed row.
+    const failedLabels = screen.getAllByText(/swarm failed/i);
+    expect(failedLabels).toHaveLength(2);
+    expect(screen.getAllByText(/No model in registry has all required tags/i)).toHaveLength(1);
   });
 });

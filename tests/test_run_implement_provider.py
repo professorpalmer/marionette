@@ -35,6 +35,7 @@ def test_run_implement_provider_default(monkeypatch):
         # apply pipeline deterministically regardless of which provider keys the
         # test host happens to have (agentic is the default only when a key exists).
         monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: False)
+        monkeypatch.setattr("harness.edit_engines.cursor_platform_available", lambda: False)
 
         # Mock ProviderWorker.run to return a canned patch
         canned_patch = (
@@ -195,6 +196,7 @@ def test_run_implement_falls_back_to_provider_when_cli_absent(monkeypatch):
         monkeypatch.setattr(ConversationalSession, "_external_adapter_available", lambda self, adapter: False)
         # Pin the native engine so the in-process fallback is deterministic here.
         monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: False)
+        monkeypatch.setattr("harness.edit_engines.cursor_platform_available", lambda: False)
 
         # If the external path were taken it would call the pm CLI; assert it does NOT.
         pm_cmd_called = []

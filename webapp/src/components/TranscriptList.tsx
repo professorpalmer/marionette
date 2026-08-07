@@ -181,6 +181,48 @@ type ActivityItem =
  * investigation activity (or while streaming before the first tool).
  * Current turn when closed / any prior turn: trailing final stands alone.
  */
+function isPlanOrProgressAssistant(msg: Msg): boolean {
+  return Boolean(msg.isPlan) || msg.channel === "progress";
+}
+
+function turnHasInvestigationActivity(items: Item[], turnStart: number): boolean {
+  return items.slice(turnStart).some(
+    (row) =>
+      row.kind === "card"
+      || row.kind === "thinking"
+      || row.kind === "swarm_result"
+      || row.kind === "swarm_pending",
+  );
+}
+
+function laterInvestigationActivity(items: Item[], fromIdx: number): {
+  laterCardOrSwarm: boolean;
+  laterThinking: boolean;
+  laterAssistant: boolean;
+} {
+  let laterCardOrSwarm = false;
+  let laterThinking = false;
+  let laterAssistant = false;
+  for (let j = fromIdx + 1; j < items.length; j++) {
+    const later = items[j];
+    if (later.kind === "msg" && later.msg.role === "user") break;
+    if (later.kind === "msg" && later.msg.role === "assistant") {
+      laterAssistant = true;
+    }
+    if (
+      later.kind === "card"
+      || later.kind === "swarm_result"
+      || later.kind === "swarm_pending"
+    ) {
+      laterCardOrSwarm = true;
+    }
+    if (later.kind === "thinking") {
+      laterThinking = true;
+    }
+  }
+  return { laterCardOrSwarm, laterThinking, laterAssistant };
+}
+
 export function collectIntermediateAssistantItems(
   items: Item[],
   agentLoopOpen: boolean,
@@ -205,9 +247,7 @@ export function collectIntermediateAssistantItems(
     const seenCardBefore = items
       .slice(turnStart, i)
       .some((row) => row.kind === "card");
-    const turnHasFoldActivity = items
-      .slice(turnStart)
-      .some((row) => row.kind === "card" || row.kind === "thinking");
+    const foldActivity = turnHasInvestigationActivity(items, turnStart);
 
     // Open-loop absorption is current-turn only (see docstring).
     const openAbsorb = agentLoopOpen && i >= currentTurnStart;
@@ -216,35 +256,32 @@ export function collectIntermediateAssistantItems(
       // first token once the turn is investigative, and while streaming even
       // before the first tool (avoids outside→absorb blink). Pure chat still
       // peels to a standalone finale when the loop closes (no card after).
-      if (turnHasFoldActivity || item.msg.streaming === true) {
+      if (foldActivity || item.msg.streaming === true) {
         intermediateItems.add(item);
       }
       continue;
     }
 
-    if (!seenCardBefore) continue; // sealed pre-tool sticky outside when done
+    const later = laterInvestigationActivity(items, i);
+
+    if (!seenCardBefore) {
+      // Sealed pre-tool sticky outside — except explicit plan/progress
+      // narration, which folds into the investigation when tools/swarm/
+      // thinking follow (Cursor-like chrome; final answers stay standalone).
+      if (
+        isPlanOrProgressAssistant(item.msg)
+        && (later.laterCardOrSwarm || later.laterThinking)
+      ) {
+        intermediateItems.add(item);
+      }
+      continue;
+    }
     // Sealed / prior turns: fold mid-turn narration when investigation still
     // continues after it. A later tool/swarm_result always counts. Later
     // thinking alone is not enough (Cursor late-reasoning after a true finale
     // must not bury the answer inside Explored) — but thinking PLUS a later
     // assistant means planning→Thought→answer, so the planning line folds.
-    let laterCardOrSwarm = false;
-    let laterThinking = false;
-    let laterAssistant = false;
-    for (let j = i + 1; j < items.length; j++) {
-      const later = items[j];
-      if (later.kind === "msg" && later.msg.role === "user") break;
-      if (later.kind === "msg" && later.msg.role === "assistant") {
-        laterAssistant = true;
-      }
-      if (later.kind === "card" || later.kind === "swarm_result") {
-        laterCardOrSwarm = true;
-      }
-      if (later.kind === "thinking") {
-        laterThinking = true;
-      }
-    }
-    if (laterCardOrSwarm || (laterThinking && laterAssistant)) {
+    if (later.laterCardOrSwarm || (later.laterThinking && later.laterAssistant)) {
       intermediateItems.add(item);
     }
   }
@@ -332,6 +369,62 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
 
   flush();
   return grouped;
+}
+
+/** Fingerprint for exact-duplicate failed run_swarm / swarm_result routing chrome.
+ *  Shared across paired ActionCard + terminal swarm_result for the same
+ *  error/objective so one retry lifecycle collapses to a single chrome row. */
+function failedRoutingFingerprint(it: ActivityItem): string | null {
+  if (it.kind === "swarm_result") {
+    if (it.applied) return null;
+    const err = String(it.error || "").trim();
+    if (!err) return null;
+    return `${err}\n${String(it.objective || "").trim()}`;
+  }
+  if (it.kind === "card") {
+    const kind = String(it.card.kind || "").toLowerCase();
+    if (kind !== "run_swarm" && kind !== "run_parallel") return null;
+    const err = String(it.card.result?.error || "").trim();
+    if (!err || it.card.running) return null;
+    return `${err}\n${String(it.card.goal || "").trim()}`;
+  }
+  return null;
+}
+
+/**
+ * Collapse exact-duplicate failed run_swarm routing cards / swarm_result rows
+ * inside one investigation fold. Distinct failures stay visible; successes
+ * are never merged.
+ */
+export function collapseDuplicateFailedRoutingItems(
+  items: ActivityItem[],
+): { items: ActivityItem[]; duplicateCounts: number[] } {
+  const out: ActivityItem[] = [];
+  const duplicateCounts: number[] = [];
+  const indexByFingerprint = new Map<string, number>();
+
+  for (const it of items) {
+    const fp = failedRoutingFingerprint(it);
+    if (!fp) {
+      out.push(it);
+      duplicateCounts.push(1);
+      continue;
+    }
+    const existing = indexByFingerprint.get(fp);
+    if (existing === undefined) {
+      indexByFingerprint.set(fp, out.length);
+      out.push(it);
+      duplicateCounts.push(1);
+    } else {
+      duplicateCounts[existing] += 1;
+      // Prefer terminal swarm_result chrome over the paired ActionCard so the
+      // shared failure body stays visible without expanding a tool row.
+      if (it.kind === "swarm_result" && out[existing].kind === "card") {
+        out[existing] = it;
+      }
+    }
+  }
+  return { items: out, duplicateCounts };
 }
 
 // PERF: Stable per-item keys for the transcript map. Array-index keys forced
@@ -1101,9 +1194,19 @@ function ActivityGroup({
     kindSummary,
   );
 
-  const renderInner = (it: typeof items[number], idx: number) => {
+  const { items: displayItems, duplicateCounts } = collapseDuplicateFailedRoutingItems(items);
+
+  const renderInner = (it: (typeof displayItems)[number], idx: number) => {
+    const dupCount = duplicateCounts[idx] || 1;
     if (it.kind === "card") {
-      return <ActionCard key={it.card.id || `card-${idx}`} card={it.card} onToggle={() => onToggleCard(it.card)} />;
+      return (
+        <ActionCard
+          key={it.card.id || `card-${idx}`}
+          card={it.card}
+          onToggle={() => onToggleCard(it.card)}
+          duplicateCount={dupCount}
+        />
+      );
     }
     if (it.kind === "thinking") {
       const blockId = it.id || `${groupId}-think-${idx}`;
@@ -1117,14 +1220,14 @@ function ActivityGroup({
       );
     }
     if (it.kind === "msg") {
-      // Per-step micro-narration inside the collapsible tool-call breakdown.
-      // Render through <Markdown> (not raw whitespace-pre-wrap) so code blocks,
-      // bold, lists, etc. survive here exactly like they do in the main
-      // transcript -- previously these folded messages lost all formatting.
+      // Folded plan/progress / micro-narration stays ordinary regular text —
+      // Markdown emphasis (`**Plan:**`) must not reappear as bold after expand.
       if (!it.msg.text || !it.msg.text.trim()) return null;
       return (
         <div key={objKey(it.msg)} className="text-[12px] text-muted/90 py-0.5 leading-relaxed">
-          <Markdown text={it.msg.text} />
+          <pre className="whitespace-pre-wrap font-sans font-normal text-[12px] leading-relaxed text-muted/90 m-0">
+            {normalizePlainTextNarration(it.msg.text)}
+          </pre>
         </div>
       );
     }
@@ -1157,6 +1260,7 @@ function ActivityGroup({
           sourceJobId={it.source_job_id}
           reuseReason={it.reuse_reason}
           invalidatedPaths={it.invalidated_paths}
+          duplicateCount={dupCount}
         />
       );
     }
@@ -1227,7 +1331,7 @@ function ActivityGroup({
       </button>
       {open && (
         <div className="flex flex-col gap-0.5 pl-3 mt-1 border-l border-edge/30 w-full">
-          {items.map(renderInner)}
+          {displayItems.map(renderInner)}
         </div>
       )}
     </div>
@@ -1260,6 +1364,33 @@ export function normalizeReasoningPreview(text: string, maxLen = 160): string {
   return cleaned.slice(0, maxLen).trimEnd();
 }
 
+/**
+ * Shared plain-text path for expanded Thought bodies and folded plan/progress
+ * narration. Removes Markdown presentation markers while preserving line breaks
+ * and ordinary text (including math/glob asterisks like 2*3*4).
+ */
+export function normalizePlainTextNarration(text: string): string {
+  const raw = String(text || "").replace(/\r\n/g, "\n");
+  return raw
+    .split("\n")
+    .map((line) => {
+      let s = line;
+      s = s.replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1");
+      s = s.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+      s = s.replace(/`([^`]+)`/g, "$1");
+      s = s.replace(/\*\*([^*]+)\*\*/g, "$1");
+      s = s.replace(/__([^_]+)__/g, "$1");
+      s = s.replace(/~~([^~]+)~~/g, "$1");
+      s = s.replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,!?:;]|$)/g, "$1$2");
+      s = s.replace(/\*\*|__/g, "");
+      s = s.replace(/^#{1,6}\s+/, "");
+      return s.replace(/[ \t]+$/g, "");
+    })
+    .join("\n")
+    .replace(/^\n+/, "")
+    .replace(/\n+$/, "");
+}
+
 function ThinkingBlock({
   text,
   live = false,
@@ -1271,8 +1402,8 @@ function ThinkingBlock({
 }) {
   // Cursor/Hermes-style compression: reasoning stays a single header line
   // by default (faint first-line preview). Expand is user-driven and sticky;
-  // live streaming must not auto-open the body. While live, render plain text
-  // -- full markdown + syntax highlight on every delta was a major CPU sink.
+  // live streaming must not auto-open the body. Expanded bodies always use the
+  // plain-text narration path (no Markdown strong/headings for **Plan:**).
   // Inner scroll stick-to-bottom follows new tokens only while the user stays
   // pinned near the bottom of an expanded box.
   const [expanded, setExpanded] = useState(() => resolveThinkingExpanded(blockId));
@@ -1369,13 +1500,9 @@ function ThinkingBlock({
           }}
           className="mt-0.5 pl-2.5 ml-1 border-l-2 border-edge/40 overflow-y-auto overscroll-contain text-faint/85 text-[11px] leading-[1.65] max-w-[92%] max-h-[34dvh]"
         >
-          {live ? (
-            <pre className="whitespace-pre-wrap font-sans text-[11px] leading-[1.65] text-faint/85 m-0">
-              {text}
-            </pre>
-          ) : (
-            <Markdown text={text} />
-          )}
+          <pre className="whitespace-pre-wrap font-sans font-normal text-[11px] leading-[1.65] text-faint/85 m-0">
+            {normalizePlainTextNarration(text)}
+          </pre>
         </div>
       )}
     </div>
@@ -1735,13 +1862,15 @@ function Bubble({
         <span className="text-[10px] uppercase tracking-wider text-faint px-0.5 select-none font-semibold mt-1">pilot</span>
       )}
       <div className={`text-[0.8125rem] leading-[1.7] break-words max-w-[95%] py-0.5 w-full relative pr-14 ${isIntermediate ? "text-txt/75" : "text-txt/95"}`}>
-        {/* Render Markdown even WHILE streaming so text types out formatted (code
-            stays fenced, bold/lists render) instead of showing raw markdown that
-            then reflows -- the "types out broken, then snaps" look. The <Markdown>
-            component is memoized on its text, so a typewriter frame that adds no
-            new characters does not re-parse; the earlier plain-text-while-streaming
-            optimization traded polish for CPU, which read as unprofessional. */}
-        <Markdown text={displayedText} />
+        {/* Plan/progress stays ordinary text; final answers keep Markdown
+            so code fences / lists render for the user-facing reply. */}
+        {isPlanOrProgressAssistant(msg) ? (
+          <pre className="whitespace-pre-wrap font-sans font-normal text-[0.8125rem] leading-[1.7] m-0">
+            {normalizePlainTextNarration(displayedText)}
+          </pre>
+        ) : (
+          <Markdown text={displayedText} />
+        )}
         
         {/* Assistant copy & regenerate buttons */}
         <div className="absolute right-0 top-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 select-none">
@@ -1782,7 +1911,16 @@ function Bubble({
   );
 }
 
-function ActionCard({ card, onToggle }: { card: Card; onToggle: () => void }) {
+function ActionCard({
+  card,
+  onToggle,
+  duplicateCount = 1,
+}: {
+  card: Card;
+  onToggle: () => void;
+  /** Exact-duplicate failed routing collapses within one investigation. */
+  duplicateCount?: number;
+}) {
   const toolName = toolRowLabel(card.kind || "");
   // Prefer the real CLI input (path/command/query), recovering from nested
   // goals / artifact headlines when the stream left ``goal`` empty.
@@ -1850,6 +1988,11 @@ function ActionCard({ card, onToggle }: { card: Card; onToggle: () => void }) {
             <span className={`shrink-0 font-normal ${isErr ? "text-risk/80" : suppressed ? "text-faint/70" : "text-faint/80"}`}>
               {toolName}
             </span>
+            {duplicateCount > 1 ? (
+              <span className="shrink-0 text-faint/55 tabular-nums" title={`${duplicateCount} identical failures`}>
+                ×{duplicateCount}
+              </span>
+            ) : null}
             {goalPreview && (linkKind === "none" || !goalValue) ? (
               <span className="text-faint/65 truncate max-w-[70%] font-normal" title={rawGoal}>
                 {goalPreview}
@@ -2053,7 +2196,7 @@ function formatInvalidatedPaths(paths?: string[], limit = 6): string {
   return more > 0 ? `${clean.join(", ")} (+${more} more)` : clean.join(", ");
 }
 
-function SwarmResultCard({ applied, files, summary, error, objective, reuseStatus, sourceJobId, reuseReason, invalidatedPaths }: {
+function SwarmResultCard({ applied, files, summary, error, objective, reuseStatus, sourceJobId, reuseReason, invalidatedPaths, duplicateCount = 1 }: {
   applied: boolean;
   files: string[];
   summary: string;
@@ -2063,6 +2206,7 @@ function SwarmResultCard({ applied, files, summary, error, objective, reuseStatu
   sourceJobId?: string;
   reuseReason?: string;
   invalidatedPaths?: string[];
+  duplicateCount?: number;
 }) {
   const [open, setOpen] = useState(false);
   const obj = objective ? (objective.length > 70 ? objective.slice(0, 70) + "..." : objective) : "swarm";
@@ -2084,6 +2228,7 @@ function SwarmResultCard({ applied, files, summary, error, objective, reuseStatu
           : <XCircle size={13} className="text-risk shrink-0" />}
         <span className={`font-medium shrink-0 ${applied ? "text-good" : "text-risk"}`}>
           {applied ? "swarm done" : "swarm failed"}
+          {!applied && duplicateCount > 1 ? ` ×${duplicateCount}` : ""}
         </span>
         {reuseLabel && (
           <span

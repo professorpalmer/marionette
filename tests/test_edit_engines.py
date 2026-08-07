@@ -161,6 +161,7 @@ def test_select_edit_engine_explicit_adapter(monkeypatch):
     assert select_edit_engine(cfg, "agentic") == "agentic"
 
     monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: False)
+    monkeypatch.setattr("harness.edit_engines.cursor_platform_available", lambda: False)
     assert select_edit_engine(cfg, "agentic") == "native"
 
 
@@ -184,6 +185,7 @@ def test_select_edit_engine_defaults_to_agentic_when_key_present(monkeypatch):
     assert select_edit_engine(cfg) == "agentic"
 
     monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: False)
+    monkeypatch.setattr("harness.edit_engines.cursor_platform_available", lambda: False)
     assert select_edit_engine(cfg) == "native"
 
 

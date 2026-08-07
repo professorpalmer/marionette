@@ -20,22 +20,96 @@ MARIONETTE_MODELS_FILENAME = "marionette-models.json"
 
 # Preferred Marionette labor ladder (capability_score). Higher = preferred under
 # balanced/quality auto_route. Vision tags required so analysis peels never
-# reject these for missing vision.
+# reject these for missing vision — except DeepSeek V4 Pro (text-only).
 _LADDER: tuple[tuple[str, int, tuple[str, ...]], ...] = (
     ("agentic/moonshotai/kimi-k3", 98, ("vision", "detailed-vision")),
     ("agentic/cursor-grok-4.5-high-fast", 92, ("vision",)),
     ("cursor/grok-4-5", 91, ("vision",)),
-    ("agentic/deepseek/deepseek-v4-pro", 85, ("vision",)),
+    ("agentic/deepseek/deepseek-v4-pro", 85, ()),
     ("agentic/composer-2.5-fast", 76, ("vision",)),
     ("cursor/composer-2-5", 75, ("vision",)),
     ("agentic/composer-2.5", 74, ("vision",)),
 )
+
+# Live OpenCode Go / legacy catalogs flatten provider namespaces
+# (``agentic/kimi-k3`` vs ``agentic/moonshotai/kimi-k3``). Match those plus
+# ``adapter_model_name`` / ``payload_defaults.model`` aliases.
+_LADDER_ALIASES: dict[str, tuple[str, ...]] = {
+    "agentic/moonshotai/kimi-k3": (
+        "agentic/kimi-k3",
+        "kimi-k3",
+        "moonshotai/kimi-k3",
+        "opencode-go/kimi-k3",
+    ),
+    "agentic/cursor-grok-4.5-high-fast": (
+        "agentic/grok-4.5",
+        "agentic/grok-4-5",
+        "agentic/grok-4.5-high-fast",
+        "grok-4.5",
+        "cursor-grok-4.5-high-fast",
+    ),
+    "cursor/grok-4-5": (
+        "grok-4.5",
+        "grok-4-5",
+    ),
+    "agentic/deepseek/deepseek-v4-pro": (
+        "agentic/deepseek-v4-pro",
+        "deepseek-v4-pro",
+        "deepseek/deepseek-v4-pro",
+        "opencode-go/deepseek-v4-pro",
+    ),
+    "agentic/composer-2.5-fast": (
+        "agentic/composer-2-5-fast",
+        "composer-2.5-fast",
+        "composer-2-5-fast",
+    ),
+    "cursor/composer-2-5": (
+        "composer-2.5",
+        "composer-2-5",
+    ),
+    "agentic/composer-2.5": (
+        "agentic/composer-2-5",
+        "composer-2.5",
+        "composer-2-5",
+    ),
+}
+
+# DeepSeek V4 Pro is text-only: never stamp vision / detailed-vision; strip if
+# a stale catalog row still carries them.
+_TEXT_ONLY_LADDER_IDS = frozenset({
+    "agentic/deepseek/deepseek-v4-pro",
+    "agentic/deepseek-v4-pro",
+    "deepseek-v4-pro",
+    "deepseek/deepseek-v4-pro",
+    "opencode-go/deepseek-v4-pro",
+})
+_VISION_TAG_NAMES = frozenset({"vision", "detailed-vision"})
 
 # Keep strong-but-not-ladder models below DeepSeek so they do not steal Autopilot.
 _DEMOTE: dict[str, int] = {
     "agentic/minimax/minimax-m3": 68,
     "agentic/z-ai/glm-5.2": 80,
     "agentic/deepseek/deepseek-v4-flash": 64,
+}
+
+_DEMOTE_ALIASES: dict[str, tuple[str, ...]] = {
+    "agentic/minimax/minimax-m3": (
+        "agentic/minimax-m3",
+        "minimax-m3",
+        "minimax/minimax-m3",
+    ),
+    "agentic/z-ai/glm-5.2": (
+        "agentic/glm-5-2",
+        "agentic/glm-5.2",
+        "glm-5.2",
+        "glm-5-2",
+        "z-ai/glm-5.2",
+    ),
+    "agentic/deepseek/deepseek-v4-flash": (
+        "agentic/deepseek-v4-flash",
+        "deepseek-v4-flash",
+        "deepseek/deepseek-v4-flash",
+    ),
 }
 
 
@@ -91,6 +165,65 @@ def ensure_marionette_models_env() -> str:
     return str(dest)
 
 
+def _row_match_keys(row: dict[str, Any]) -> set[str]:
+    """Ids + alias keys a registry row can answer to."""
+    keys: set[str] = set()
+    mid = str(row.get("id") or "").strip()
+    if mid:
+        keys.add(mid)
+    amn = str(row.get("adapter_model_name") or "").strip()
+    if amn:
+        keys.add(amn)
+        keys.add(f"agentic/{amn}")
+    payload = row.get("payload_defaults")
+    if isinstance(payload, dict):
+        model = str(payload.get("model") or "").strip()
+        if model:
+            keys.add(model)
+            keys.add(f"agentic/{model}")
+    return {k for k in keys if k}
+
+
+def _row_matches_ladder_family(canonical_id: str, row: dict[str, Any]) -> bool:
+    """Keep agentic ladder entries from rewriting cursor peers (and vice versa)."""
+    family = canonical_id.split("/", 1)[0] if "/" in canonical_id else ""
+    row_id = str(row.get("id") or "")
+    row_adapter = str(row.get("adapter") or "")
+    if family == "agentic":
+        return row_id.startswith("agentic/") or row_adapter == "agentic"
+    if family == "cursor":
+        return row_id.startswith("cursor/") or row_adapter == "cursor"
+    return True
+
+
+def _find_registry_row(
+    models: list[Any],
+    by_id: dict[str, dict[str, Any]],
+    canonical_id: str,
+    aliases: dict[str, tuple[str, ...]],
+) -> Optional[dict[str, Any]]:
+    """Resolve a ladder/demote id against canonical, flattened, or alias keys."""
+    candidates = {canonical_id, *aliases.get(canonical_id, ())}
+    for key in candidates:
+        row = by_id.get(key)
+        if row is not None and _row_matches_ladder_family(canonical_id, row):
+            return row
+    for model in models:
+        if not isinstance(model, dict):
+            continue
+        if not (_row_match_keys(model) & candidates):
+            continue
+        if _row_matches_ladder_family(canonical_id, model):
+            return model
+    return None
+
+
+def _is_text_only_row(canonical_id: str, row: dict[str, Any]) -> bool:
+    if canonical_id in _TEXT_ONLY_LADDER_IDS:
+        return True
+    return bool(_row_match_keys(row) & _TEXT_ONLY_LADDER_IDS)
+
+
 def apply_marionette_router_ladder(path: Optional[str] = None) -> dict[str, Any]:
     """Apply the Kimi > Grok > DeepSeek > Composer score ladder in-place.
 
@@ -123,29 +256,44 @@ def apply_marionette_router_ladder(path: Optional[str] = None) -> dict[str, Any]
     }
     changed = False
     for mid, score, tags in _LADDER:
-        row = by_id.get(mid)
+        row = _find_registry_row(models, by_id, mid, _LADDER_ALIASES)
         if row is None:
             report["missing"].append(mid)
             continue
+        row_id = str(row.get("id") or mid)
         if int(row.get("capability_score") or 0) != int(score):
             row["capability_score"] = int(score)
             changed = True
-            report["updated"].append(mid)
+            if row_id not in report["updated"]:
+                report["updated"].append(row_id)
         existing_tags = row.get("tags")
         tag_list = [str(t) for t in existing_tags] if isinstance(existing_tags, list) else []
-        for tag in tags:
-            if tag not in tag_list:
-                tag_list.append(tag)
+        text_only = _is_text_only_row(mid, row)
+        if text_only:
+            stripped = [t for t in tag_list if t not in _VISION_TAG_NAMES]
+            if stripped != tag_list:
+                tag_list = stripped
                 changed = True
+                if row_id not in report["updated"]:
+                    report["updated"].append(row_id)
+        else:
+            for tag in tags:
+                if tag not in tag_list:
+                    tag_list.append(tag)
+                    changed = True
+                    if row_id not in report["updated"]:
+                        report["updated"].append(row_id)
         row["tags"] = tag_list
     for mid, score in _DEMOTE.items():
-        row = by_id.get(mid)
+        row = _find_registry_row(models, by_id, mid, _DEMOTE_ALIASES)
         if row is None:
             continue
+        row_id = str(row.get("id") or mid)
         if int(row.get("capability_score") or 0) != int(score):
             row["capability_score"] = int(score)
             changed = True
-            report["updated"].append(mid)
+            if row_id not in report["updated"]:
+                report["updated"].append(row_id)
     if changed:
         try:
             p.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")

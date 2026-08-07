@@ -33,6 +33,7 @@ def test_run_parallel_provider_default(monkeypatch):
         # Pin the native engine so the parallel apply pipeline is deterministic
         # regardless of provider keys on the test host.
         monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: False)
+        monkeypatch.setattr("harness.edit_engines.cursor_platform_available", lambda: False)
 
         goals_seen = []
         def mock_worker_run(self):

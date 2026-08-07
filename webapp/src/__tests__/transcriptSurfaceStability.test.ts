@@ -270,6 +270,52 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
     expect(whenDone.has(postTool)).toBe(false);
   });
 
+  it("sealed isPlan / progress pre-tool narration folds when investigation follows", () => {
+    const planMsg: Item = {
+      kind: "msg",
+      msg: { role: "assistant", text: "Planning next steps…", isPlan: true },
+    };
+    const progressMsg: Item = {
+      kind: "msg",
+      msg: {
+        role: "assistant",
+        text: "Retrying after routing error",
+        channel: "progress",
+      },
+    };
+    const finale: Item = {
+      kind: "msg",
+      msg: { role: "assistant", text: "Done." },
+    };
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "go" } },
+      planMsg,
+      progressMsg,
+      {
+        kind: "thinking",
+        text: "inspect",
+        id: "th-plan-progress",
+      },
+      {
+        kind: "card",
+        card: {
+          id: "c-plan",
+          goal: "a.ts",
+          cwd: null,
+          kind: "read_file",
+          running: false,
+          open: false,
+          result: { status: "ok" },
+        },
+      },
+      finale,
+    ];
+    const whenDone = collectIntermediateAssistantItems(items, false);
+    expect(whenDone.has(planMsg)).toBe(true);
+    expect(whenDone.has(progressMsg)).toBe(true);
+    expect(whenDone.has(finale)).toBe(false);
+  });
+
   it("sealed: planning before Thought+finale stays inside the fold (no PILOT split)", () => {
     const card: Item = {
       kind: "card",

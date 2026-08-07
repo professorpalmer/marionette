@@ -65,7 +65,7 @@ def test_ladder_scores_and_vision_tags(tmp_path, monkeypatch):
                     {
                         "id": "agentic/deepseek/deepseek-v4-pro",
                         "capability_score": 50,
-                        "tags": ["code"],
+                        "tags": ["code", "vision", "detailed-vision"],
                     },
                     {
                         "id": "agentic/composer-2.5-fast",
@@ -89,11 +89,109 @@ def test_ladder_scores_and_vision_tags(tmp_path, monkeypatch):
     assert by_id["agentic/moonshotai/kimi-k3"]["capability_score"] == 98
     assert "vision" in by_id["agentic/moonshotai/kimi-k3"]["tags"]
     assert by_id["agentic/cursor-grok-4.5-high-fast"]["capability_score"] == 92
+    assert "vision" in by_id["agentic/cursor-grok-4.5-high-fast"]["tags"]
     assert by_id["agentic/deepseek/deepseek-v4-pro"]["capability_score"] == 85
-    assert "vision" in by_id["agentic/deepseek/deepseek-v4-pro"]["tags"]
+    assert "vision" not in by_id["agentic/deepseek/deepseek-v4-pro"]["tags"]
+    assert "detailed-vision" not in by_id["agentic/deepseek/deepseek-v4-pro"]["tags"]
     assert by_id["agentic/composer-2.5-fast"]["capability_score"] == 76
+    assert "vision" in by_id["agentic/composer-2.5-fast"]["tags"]
     assert by_id["agentic/minimax/minimax-m3"]["capability_score"] == 68
     assert "agentic/moonshotai/kimi-k3" in report["updated"]
+
+
+def test_ladder_matches_flattened_live_ids_and_aliases(tmp_path, monkeypatch):
+    """OpenCode Go catalogs use flattened ids + adapter_model_name aliases."""
+    dest = tmp_path / "marionette-models.json"
+    dest.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "models": [
+                    {
+                        "id": "agentic/kimi-k3",
+                        "adapter": "agentic",
+                        "adapter_model_name": "kimi-k3",
+                        "capability_score": 50,
+                        "tags": ["code", "tools"],
+                        "payload_defaults": {"provider": "opencode-go"},
+                    },
+                    {
+                        "id": "agentic/grok-4.5",
+                        "adapter": "agentic",
+                        "adapter_model_name": "grok-4.5",
+                        "capability_score": 50,
+                        "tags": ["code"],
+                        "payload_defaults": {"provider": "opencode-go"},
+                    },
+                    {
+                        "id": "agentic/deepseek-v4-pro",
+                        "adapter": "agentic",
+                        "adapter_model_name": "deepseek-v4-pro",
+                        "capability_score": 50,
+                        "tags": ["code", "vision", "detailed-vision"],
+                        "payload_defaults": {"provider": "opencode-go"},
+                    },
+                    {
+                        "id": "agentic/composer-2-5-fast",
+                        "adapter": "agentic",
+                        "adapter_model_name": "composer-2.5-fast",
+                        "capability_score": 50,
+                        "tags": ["code"],
+                    },
+                    {
+                        "id": "agentic/minimax-m3",
+                        "adapter": "agentic",
+                        "adapter_model_name": "minimax-m3",
+                        "capability_score": 99,
+                        "tags": ["code"],
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(dest))
+    report = apply_marionette_router_ladder(str(dest))
+    assert "agentic/moonshotai/kimi-k3" not in report.get("missing", [])
+    data = json.loads(dest.read_text(encoding="utf-8"))
+    by_id = {m["id"]: m for m in data["models"]}
+    assert by_id["agentic/kimi-k3"]["capability_score"] == 98
+    assert "vision" in by_id["agentic/kimi-k3"]["tags"]
+    assert "detailed-vision" in by_id["agentic/kimi-k3"]["tags"]
+    assert by_id["agentic/grok-4.5"]["capability_score"] == 92
+    assert "vision" in by_id["agentic/grok-4.5"]["tags"]
+    assert by_id["agentic/deepseek-v4-pro"]["capability_score"] == 85
+    assert "vision" not in by_id["agentic/deepseek-v4-pro"]["tags"]
+    assert "detailed-vision" not in by_id["agentic/deepseek-v4-pro"]["tags"]
+    assert by_id["agentic/composer-2-5-fast"]["capability_score"] == 76
+    assert "vision" in by_id["agentic/composer-2-5-fast"]["tags"]
+    assert by_id["agentic/minimax-m3"]["capability_score"] == 68
+
+
+def test_ladder_never_adds_vision_to_deepseek_v4_pro(tmp_path, monkeypatch):
+    dest = tmp_path / "marionette-models.json"
+    dest.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "models": [
+                    {
+                        "id": "agentic/deepseek-v4-pro",
+                        "adapter_model_name": "deepseek-v4-pro",
+                        "capability_score": 1,
+                        "tags": ["code"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(dest))
+    apply_marionette_router_ladder(str(dest))
+    data = json.loads(dest.read_text(encoding="utf-8"))
+    tags = data["models"][0]["tags"]
+    assert "vision" not in tags
+    assert "detailed-vision" not in tags
 
 
 def test_ensure_respects_existing_env(tmp_path, monkeypatch):
@@ -141,3 +239,4 @@ def test_marionette_ladder_and_demote_ids_producible(tmp_path, monkeypatch):
     by_id = {m["id"]: m for m in data["models"]}
     assert by_id["agentic/moonshotai/kimi-k3"]["capability_score"] == 98
     assert by_id["agentic/minimax/minimax-m3"]["capability_score"] == 68
+    assert "vision" not in by_id["agentic/deepseek/deepseek-v4-pro"]["tags"]

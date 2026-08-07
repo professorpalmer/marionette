@@ -1425,6 +1425,17 @@ def execute_intent(
         env_repo = (_os.environ.get("HARNESS_REPO") or "").strip()
         repo_cwd = resolve_effective_repo(env_repo) if env_repo else ""
 
+    # Prepare the isolated Marionette catalog (env pin + reconcile + ladder)
+    # before any auto_route / child-worker spawn. Preserve an explicit
+    # PUPPETMASTER_MODELS_PATH override; never rewrite ~/.puppetmaster/models.json.
+    # Failures stay swallowed on the chat hot path.
+    try:
+        from harness.marionette_registry import boot_marionette_registry
+
+        boot_marionette_registry()
+    except Exception:
+        pass
+
     _sync_agentic_credential_env()
 
     try:

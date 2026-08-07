@@ -201,3 +201,71 @@ def test_swarm_falls_back_to_platform_cursor_when_no_agentic_keys(
     assert spec.adapter == "cursor"
     assert spec.payload.get("allowed_adapters") == ["cursor"]
     assert spec.payload.get("prefer_plan_billed") is True
+
+
+def test_execute_intent_pins_isolated_marionette_registry_path(tmp_path, monkeypatch):
+    """Direct execute_intent must boot isolated catalog (path + ladder), not ~/.puppetmaster."""
+    import json
+
+    shared = tmp_path / ".puppetmaster" / "models.json"
+    shared.parent.mkdir(parents=True)
+    shared.write_text(
+        json.dumps({"version": 1, "models": [{"id": "shared-only", "tags": []}]}),
+        encoding="utf-8",
+    )
+    marionette = tmp_path / ".pmharness" / "marionette-models.json"
+    marionette.parent.mkdir(parents=True)
+    # Flattened OpenCode-shaped Kimi row — boot ladder must stamp vision.
+    marionette.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "models": [
+                    {
+                        "id": "agentic/kimi-k3",
+                        "adapter": "agentic",
+                        "adapter_model_name": "kimi-k3",
+                        "tags": ["code"],
+                        "capability_score": 50,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("PUPPETMASTER_MODELS_PATH", raising=False)
+    monkeypatch.setattr(
+        "harness.marionette_registry.marionette_models_path",
+        lambda: marionette,
+    )
+    monkeypatch.setattr(
+        "harness.marionette_registry.shared_puppetmaster_models_path",
+        lambda: shared,
+    )
+    _CapturingWorkerSpec._last_captured = []
+    monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")
+    monkeypatch.setenv("HARNESS_REPO", str(tmp_path))
+    monkeypatch.setattr("puppetmaster.workers.WorkerSpec", _CapturingWorkerSpec)
+    monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _FakeOrchestrator)
+    monkeypatch.setattr(bridge, "_warn_if_unindexed", lambda *_a, **_k: None)
+
+    intent = DriverIntent(
+        action="run_swarm",
+        goal="Map auth middleware",
+        roles=["explore"],
+    )
+    result = bridge.execute_intent(intent, state_dir=str(tmp_path / "state"))
+    assert result is not None
+    assert os.environ.get("PUPPETMASTER_MODELS_PATH") == str(marionette)
+    # Shared Cursor catalog must stay untouched.
+    shared_data = json.loads(shared.read_text(encoding="utf-8"))
+    assert shared_data["models"][0]["id"] == "shared-only"
+    # Isolated catalog used for routing: flattened Kimi gets vision after boot.
+    if os.environ.get("PUPPETMASTER_MODELS_PATH") == str(marionette):
+        catalog = json.loads(marionette.read_text(encoding="utf-8"))
+        kimi = next(
+            (m for m in catalog["models"] if m.get("id") == "agentic/kimi-k3"),
+            None,
+        )
+        assert kimi is not None
+        assert "vision" in (kimi.get("tags") or [])
