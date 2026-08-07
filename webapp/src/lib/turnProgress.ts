@@ -491,6 +491,7 @@ export function turnLooksAnswerComplete(items: TurnItem[]): boolean {
  * False when the answer already looks complete despite a lagging busy status.
  */
 export function shouldShowBusyFooter(items: TurnItem[], status: BusyStatus): boolean {
+  if (status === "awaiting_swarm") return true;
   const busy =
     status === "thinking" || status === "executing" || status === "streaming";
   if (!busy) return false;
@@ -520,8 +521,12 @@ export function deriveBusyProgress(
   elapsedMs?: number | null,
   opts?: { modelLabel?: string | null; waitHint?: string | null },
 ): BusyProgress {
+  const awaitingSwarm = status === "awaiting_swarm";
   const busy =
-    status === "thinking" || status === "executing" || status === "streaming";
+    status === "thinking"
+    || status === "executing"
+    || status === "streaming"
+    || awaitingSwarm;
   const cards = cardsInTurn(items);
   const step = cards.length;
   const running = [...cards].reverse().find((c) => cardEffectivelyRunning(c));
@@ -545,6 +550,7 @@ export function deriveBusyProgress(
   let phase = "idle";
   if (status === "streaming") phase = "streaming";
   else if (running || status === "executing") phase = "running";
+  else if (awaitingSwarm) phase = "waiting";
   else if (busy && !hasSignal) phase = "waiting";
   else if (status === "thinking" || busy) phase = "thinking";
 
@@ -554,7 +560,9 @@ export function deriveBusyProgress(
       : "";
 
   // T5: answer already on screen — clear busy labels even if status lags.
-  if (busy && turnLooksAnswerComplete(items)) {
+  // Exception: background swarm await — summary is on screen on purpose while
+  // workers fly; keep "Still working…" chrome (Cursor-style pause point).
+  if (busy && !awaitingSwarm && turnLooksAnswerComplete(items)) {
     return {
       phase: "idle",
       label: "",
@@ -576,10 +584,25 @@ export function deriveBusyProgress(
     };
   }
 
+  // Background job pause: paint the await hint as the primary line (not
+  // "Waiting on <pilot>" — the pilot turn already ended).
+  const hint = (opts?.waitHint || "").trim();
+  if (awaitingSwarm) {
+    const line = hint || "Still working…";
+    const waiting = elapsed ? `${line} · ${elapsed}` : line;
+    return {
+      phase: "waiting",
+      label: waiting,
+      pill: waiting,
+      step,
+      runningGoal,
+      runningKind,
+    };
+  }
+
   // T3: honesty before first token / tool — do not pretend we are "thinking".
   // Provider-idle wait hints are for genuine silent periods only. A live
   // command/tool card means we are executing, not waiting on the provider.
-  const hint = (opts?.waitHint || "").trim();
   if (hint && !running) {
     const model = shortPilotModelLabel(opts?.modelLabel || "");
     const who = model ? `Waiting on ${model}` : "Waiting on provider";

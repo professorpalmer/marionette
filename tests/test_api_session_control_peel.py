@@ -189,6 +189,7 @@ class _NoopPilot:
 
     def __init__(self, reason="no_compactable_history"):
         self.exports = 0
+        self._history = [{"role": "user", "content": "hi"}]
         self._last_compaction_attempt = {"reason": reason}
 
     def _estimate_context_tokens(self):
@@ -218,6 +219,8 @@ def test_compact_and_state():
     assert payload.get("reason") == "ok"
     # Manual compaction must bypass the 75% trigger.
     assert pilot.force_calls == [True]
+    ack = getattr(pilot, "_compaction_advice_ack", None)
+    assert isinstance(ack, dict) and ack.get("reason") == "ok"
 
     code2, state = get_session_state(svc)
     assert code2 == 200
@@ -238,6 +241,11 @@ def test_compact_noop_is_not_success():
     assert "already compact" in payload["error"].lower()
     # A no-op must not persist the transcript.
     assert saved["n"] == 0 and pilot.exports == 0
+    # Latch so /api/usage stops resurfacing Needs attention on menu reopen.
+    ack = getattr(pilot, "_compaction_advice_ack", None)
+    assert isinstance(ack, dict)
+    assert ack.get("reason") == "no_compactable_history"
+    assert ack.get("history_len") == 1
 
 
 def test_compact_summary_rejected_reason():

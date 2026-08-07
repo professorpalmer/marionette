@@ -47,6 +47,7 @@ import {
 } from "./streamBubbles";
 import { turnHasLiveInvestigation } from "../../lib/turnProgress";
 import { shouldRefreshBusyChrome } from "./streamTerminal";
+import { waitHintForAssistantDone } from "./swarmPoll";
 
 export type StreamEvent = { kind: string; data?: any };
 
@@ -67,7 +68,7 @@ export type ApplyStreamEventDeps = {
   setMemoryProposals: Dispatch<SetStateAction<MemoryProposal[]>>;
   setWaitHint: Dispatch<SetStateAction<string | null>>;
   setStatus: Dispatch<
-    SetStateAction<"idle" | "thinking" | "executing" | "done" | "error" | "streaming">
+    SetStateAction<"idle" | "thinking" | "executing" | "done" | "error" | "streaming" | "awaiting_swarm">
   >;
   setTurnOpen: Dispatch<SetStateAction<boolean>>;
   setPendingJobIds: Dispatch<SetStateAction<string[]>>;
@@ -483,11 +484,6 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
     } else if (ev.kind === "assistant_done") {
       turnSettledRef.current = true;
       setTurnOpen(false);
-      setWaitHint(null);
-      setStatus("done");
-      // Drain + seal any remaining live surfaces so a turn cannot close with an
-      // open typewriter / streaming bubble still painted as in-flight.
-      flushTypewriter();
       // Sync local-swarm-* ids finish inside the turn; anything still spinning
       // for those is an orphan. Background job_*/local-* stay live so their
       // pills keep spinning until swarm_result arrives.
@@ -495,6 +491,20 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
         (id) => !id.startsWith("local-swarm-"),
       );
       setPendingJobIds(liveIds);
+      // Cursor-style pause: summary may already be on screen, but hold busy
+      // chrome ("Still working…") while background workers fly. Keep-alive
+      // resume clears this when the next model turn starts.
+      const awaitHint = waitHintForAssistantDone(liveIds);
+      if (awaitHint) {
+        setStatus("awaiting_swarm");
+        setWaitHint(awaitHint);
+      } else {
+        setWaitHint(null);
+        setStatus("done");
+      }
+      // Drain + seal any remaining live surfaces so a turn cannot close with an
+      // open typewriter / streaming bubble still painted as in-flight.
+      flushTypewriter();
       setItems((p) =>
         reconcileOrphanInvestigationCards(
           finalizeOrphanSwarmPills(

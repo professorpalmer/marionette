@@ -278,13 +278,23 @@ describe("CostBreakdown", () => {
         status: 409,
       }),
     );
-    render(<CostBreakdown data={nowAdviceData} />);
-    fireEvent.click(screen.getByRole("button", { name: "Compact now" }));
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Already compact" })).toBeInTheDocument(),
-    );
-    expect(screen.getByText("Recent turn is already compact.")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Retry compact" })).not.toBeInTheDocument();
+    const refreshes: Event[] = [];
+    const onRefresh = (e: Event) => refreshes.push(e);
+    window.addEventListener("harness-usage-refresh", onRefresh);
+    try {
+      render(<CostBreakdown data={nowAdviceData} />);
+      fireEvent.click(screen.getByRole("button", { name: "Compact now" }));
+      await waitFor(() =>
+        expect(screen.getByText("Already compact")).toBeInTheDocument(),
+      );
+      expect(screen.getByText("Recent turn is already compact.")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Compact now" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Retry compact" })).not.toBeInTheDocument();
+      // Refresh pulls the backend ack so reopen does not restore Needs attention.
+      expect(refreshes).toHaveLength(1);
+    } finally {
+      window.removeEventListener("harness-usage-refresh", onRefresh);
+    }
   });
 
   it("shows Retry compact when the request itself fails", async () => {

@@ -1,8 +1,45 @@
 /**
  * Pure helpers for the swarm-results poll tick (pending jobs while idle).
+ *
+ * Background dispatch ends the model turn on purpose (pause point), then the
+ * UI holds Cursor-style "Still working…" chrome until the job lands and
+ * keep-alive resume starts the next model turn.
  */
 
 import { formatDistilledNotice, formatWikiAutoIngestNotice } from "./streamApply";
+
+/** Composer / pill hint while a real background job is still in flight. */
+export const SWARM_AWAIT_HINT = "Still working…";
+
+/**
+ * True for durable background job ids (local-* UUID / job_* / etc.).
+ * Placeholder local-swarm-* pills finish inside the turn and do not hold await chrome.
+ */
+export function hasLiveBackgroundJobIds(jobIds: readonly string[]): boolean {
+  for (const raw of jobIds) {
+    const id = String(raw || "").trim();
+    if (!id) continue;
+    if (id.startsWith("local-swarm-")) continue;
+    return true;
+  }
+  return false;
+}
+
+/** Hold Stop/Steer + busy chrome after assistant_done while workers fly. */
+export function shouldHoldSwarmAwaitChrome(opts: {
+  pendingJobIds: readonly string[];
+  backendPendingSwarms: boolean;
+  userStopped: boolean;
+}): boolean {
+  if (opts.userStopped) return false;
+  if (opts.backendPendingSwarms) return true;
+  return hasLiveBackgroundJobIds(opts.pendingJobIds);
+}
+
+/** Wait hint to paint (or clear) when the turn closes after dispatch. */
+export function waitHintForAssistantDone(liveJobIds: readonly string[]): string | null {
+  return hasLiveBackgroundJobIds(liveJobIds) ? SWARM_AWAIT_HINT : null;
+}
 
 export type SwarmPollChrome =
   | { kind: "swarm_result"; data: any }

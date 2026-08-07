@@ -646,16 +646,15 @@ def _tool_output_savings_fields(price_in: float, *, process_wide: bool = False) 
     except Exception:
         payload.setdefault("memory_layers", {})
     try:
-        from ..compaction_advisor import advice_payload
+        from ..compaction_advisor import advice_payload, apply_manual_compaction_ack
 
         budget = getattr(getattr(_pilot(), "config", None), "max_context_tokens", 96000)
-        payload.update(
-            advice_payload(
-                _pilot().state_dir,
-                getattr(_pilot(), "harness_session_id", "") or "default",
-                budget,
-            )
+        advice = advice_payload(
+            _pilot().state_dir,
+            getattr(_pilot(), "harness_session_id", "") or "default",
+            budget,
         )
+        payload.update(apply_manual_compaction_ack(advice, _pilot()))
     except Exception:
         pass
     # Standing floor/TTL are session-scoped — omit from process-wide boot pill.

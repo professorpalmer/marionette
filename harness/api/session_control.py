@@ -180,6 +180,15 @@ def post_session_compact(svc: SessionControlServices) -> tuple[int, JsonPayload]
         # Map soft floors / below-trigger under force to the user-facing bucket.
         if reason in ("below_trigger", "below_min_compactable"):
             reason = "no_compactable_history"
+        # Refresh L0 snapshot + latch advice so "Needs attention" does not
+        # survive Compact now → Already compact → reopen.
+        _record_post_compaction_snapshot(pilot, svc)
+        try:
+            from ..compaction_advisor import ack_manual_compaction
+
+            ack_manual_compaction(pilot, reason=reason)
+        except Exception:
+            pass
         return 409, {
             "ok": False,
             "compacted": False,
@@ -196,6 +205,12 @@ def post_session_compact(svc: SessionControlServices) -> tuple[int, JsonPayload]
             pilot.export_transcript_data(),
         )
     _record_post_compaction_snapshot(pilot, svc)
+    try:
+        from ..compaction_advisor import ack_manual_compaction
+
+        ack_manual_compaction(pilot, reason="ok")
+    except Exception:
+        pass
     return 200, {
         "ok": True,
         "compacted": True,

@@ -99,6 +99,63 @@ def _none_advice() -> dict[str, Any]:
     }
 
 
+def history_fingerprint(history: Any) -> int:
+    """Stable small fingerprint so advice stays suppressed until history moves."""
+    try:
+        return len(history or [])
+    except Exception:
+        return 0
+
+
+def ack_manual_compaction(pilot: Any, reason: str = "manual") -> None:
+    """Latch: Compact now was attempted; hide Needs attention until history grows.
+
+    Layer-pressure advice can stay at ``now`` even when force-compact correctly
+    returns ``no_compactable_history`` (recent turn already at the floor). Without
+    this latch the SESSION COST menu keeps screaming after reopen.
+    """
+    try:
+        history = getattr(pilot, "_history", None) or []
+        pilot._compaction_advice_ack = {
+            "history_len": history_fingerprint(history),
+            "reason": str(reason or "manual"),
+        }
+    except Exception:
+        pass
+
+
+def apply_manual_compaction_ack(
+    advice: dict[str, Any],
+    pilot: Any,
+) -> dict[str, Any]:
+    """If Compact now already ran on this history length, clear intervention."""
+    if not isinstance(advice, dict) or not advice:
+        return advice
+    try:
+        ack = getattr(pilot, "_compaction_advice_ack", None)
+        if not isinstance(ack, dict):
+            return advice
+        history = getattr(pilot, "_history", None) or []
+        if int(ack.get("history_len") or -1) != history_fingerprint(history):
+            return advice
+        body = advice.get("compaction_advice")
+        if not isinstance(body, dict):
+            return advice
+        if not body.get("needs_intervention") and body.get("level") not in ("soon", "now"):
+            return advice
+        cleared = dict(body)
+        cleared["level"] = "none"
+        cleared["needs_intervention"] = False
+        cleared["warning_reason"] = ""
+        cleared["reasons"] = []
+        cleared["acked_manual_compact"] = True
+        out = dict(advice)
+        out["compaction_advice"] = cleared
+        return out
+    except Exception:
+        return advice
+
+
 def _intervention_fields(level: str, reasons: list[str], l3_reclaimed: int) -> dict[str, Any]:
     """Durable UI badge fields when pressure or reclaim needs attention.
 

@@ -34,7 +34,8 @@ export type SessionStatus =
   | "executing"
   | "done"
   | "error"
-  | "streaming";
+  | "streaming"
+  | "awaiting_swarm";
 
 export type UseSessionSwitchDeps = {
   activeSessionId: string | null;

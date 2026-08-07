@@ -186,7 +186,7 @@ export { default as EditorTabStrip } from "./EditorTabStrip";
 export { default as ComposerDock } from "./ComposerDock";
 export { default as ConversationHeader } from "./ConversationHeader";
 export { default as ImageLightbox } from "./ImageLightbox";
-export { classifySwarmPollEvent, appendMemoryProposal } from "./swarmPoll";
+  export { classifySwarmPollEvent, appendMemoryProposal, SWARM_AWAIT_HINT, hasLiveBackgroundJobIds, shouldHoldSwarmAwaitChrome, waitHintForAssistantDone } from "./swarmPoll";
 export {
   pumpTypewriterFrame,
   startTypewriterLoop,

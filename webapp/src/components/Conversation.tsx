@@ -101,6 +101,7 @@ import { useRunnersBusyPoll } from "./conversation/useRunnersBusyPoll";
 import {
   appendMemoryProposal,
   classifySwarmPollEvent,
+  SWARM_AWAIT_HINT,
 } from "./conversation/swarmPoll";
 import {
   flushTypewriterBuffer,
@@ -300,14 +301,18 @@ export default function Conversation({
   }, [tabContextMenu]);
 
   const [input, setInput] = useState("");
-  const [status, setStatus] = useState<"idle"|"thinking"|"executing"|"done"|"error"|"streaming">("idle");
+  const [status, setStatus] = useState<"idle"|"thinking"|"executing"|"done"|"error"|"streaming"|"awaiting_swarm">("idle");
   // Wall clock for the live busy footer ("running · read_file · step 3 · 2m 14s").
   // Starts when we enter a busy phase; clears on idle/done/error. A 1s tick keeps
   // the elapsed label honest without re-rendering the whole app on a fast interval.
   const [busyStartedAt, setBusyStartedAt] = useState<number | null>(null);
   const [busyNow, setBusyNow] = useState(() => Date.now());
   useEffect(() => {
-    const busy = status === "thinking" || status === "executing" || status === "streaming";
+    const busy =
+      status === "thinking"
+      || status === "executing"
+      || status === "streaming"
+      || status === "awaiting_swarm";
     if (busy) {
       setBusyStartedAt((prev) => prev ?? Date.now());
     } else {
@@ -323,12 +328,15 @@ export default function Conversation({
   const busyElapsedMs = busyStartedAt != null ? Math.max(0, busyNow - busyStartedAt) : null;
   // Sticky until assistant_done / error / Stop — never infer end-of-turn from
   // transcript shape (mid-turn narration after tools looks like a final answer).
+  // awaiting_swarm: model turn closed after background dispatch, but workers
+  // still fly — Cursor-style "Still working…" until keep-alive resume.
   const [turnOpen, setTurnOpen] = useState(false);
   const agentLoopOpen =
     turnOpen
     || status === "thinking"
     || status === "executing"
-    || status === "streaming";
+    || status === "streaming"
+    || status === "awaiting_swarm";
   const liveInvestigation = turnHasLiveInvestigation(items, agentLoopOpen);
   const [waitHint, setWaitHint] = useState<string | null>(null);
   const busyProgress = deriveBusyProgress(items, status, busyElapsedMs, {
@@ -341,8 +349,10 @@ export default function Conversation({
   const transcriptStaleRef = useRef(false);
   useEffect(() => { transcriptStaleRef.current = transcriptStale; }, [transcriptStale]);
   // T5: pure-chat only — tool turns never early-idle (see turnLooksAnswerComplete).
+  // Never early-idle while background jobs still hold await chrome.
   const answerChromeIdle =
-    !liveInvestigation
+    status !== "awaiting_swarm"
+    && !liveInvestigation
     && !turnHasInvestigationActivity(items)
     && !turnOpen
     && turnLooksAnswerComplete(items)
@@ -355,6 +365,7 @@ export default function Conversation({
     liveInvestigation,
     turnOpen,
     status,
+    awaitingSwarm: status === "awaiting_swarm",
   });
   // Same latch as agentLoopOpen — Steer/Stop stay up for the whole turn.
   const composerBusy = agentLoopOpen;
@@ -1441,11 +1452,12 @@ export default function Conversation({
               if (action.kind === "swarm_result") {
                 handleSwarmResult(action.data);
               } else if (action.kind === "pilot_resume") {
-                // Background job finished while the session was idle. The backend
-                // already extended history with the result + continuation; kick
-                // off a keep-alive turn so the pilot continues without a prompt.
+                // Background job finished while the session was idle / awaiting.
+                // Backend already extended history; kick keep-alive so the pilot
+                // continues ("looking…") without a user prompt.
                 if (!pollResumeFired) {
                   pollResumeFired = true;
+                  setWaitHint("Looking…");
                   resumeTriggerRef.current();
                 } else {
                   resumeQueuedRef.current = true;
@@ -1520,7 +1532,18 @@ export default function Conversation({
         })
         .then((stateRes) => {
           if (stateRes) {
-            setBackendPendingSwarms(stateRes.pending_swarms);
+            setBackendPendingSwarms(!!stateRes.pending_swarms);
+            // Jobs drained without a resume frame (cap / stop / orphan) — drop
+            // Still working… chrome so the composer is not stuck busy forever.
+            if (
+              !stateRes.pending_swarms
+              && pendingJobIdsRef.current.length === 0
+              && !userStoppedRef.current
+              && !cancelRef.current
+            ) {
+              setStatus((prev) => (prev === "awaiting_swarm" ? "done" : prev));
+              setWaitHint((prev) => (prev === SWARM_AWAIT_HINT ? null : prev));
+            }
           }
         })
         .catch((err) => {
@@ -1643,6 +1666,8 @@ export default function Conversation({
     }
     setTurnOpen(true);
     setStatus("thinking");
+    // Leaving swarm-await chrome: next model turn owns busy (TTFT / tools).
+    setWaitHint(null);
     const streamer = resume
       ? (cb: any, done: any, err: any) => api.resume(cb, done, err)
       : useAuto
@@ -1687,8 +1712,18 @@ export default function Conversation({
            }]);
          } else {
            setTurnOpen(false);
-           setWaitHint(null);
-           setStatus("done");
+           // Do not clobber awaiting_swarm / Still working… set by assistant_done
+           // when background jobs are still flying (Cursor-style pause point).
+           const liveJobs = pendingJobIdsRef.current.some(
+             (id) => id && !id.startsWith("local-swarm-"),
+           );
+           if (liveJobs && !userStoppedRef.current) {
+             setStatus("awaiting_swarm");
+             setWaitHint(SWARM_AWAIT_HINT);
+           } else {
+             setWaitHint(null);
+             setStatus("done");
+           }
          }
          cancelRef.current = null;
          localStreamActiveRef.current = false;
@@ -1722,8 +1757,16 @@ export default function Conversation({
            // EventSource often fires onerror when the stream closes after a
            // normal assistant_done -- do not paint a false error over success.
            setTurnOpen(false);
-           setWaitHint(null);
-           setStatus((prev) => (prev === "error" ? prev : "done"));
+           const liveJobs = pendingJobIdsRef.current.some(
+             (id) => id && !id.startsWith("local-swarm-"),
+           );
+           if (liveJobs && !userStoppedRef.current) {
+             setStatus("awaiting_swarm");
+             setWaitHint(SWARM_AWAIT_HINT);
+           } else {
+             setWaitHint(null);
+             setStatus((prev) => (prev === "error" ? prev : "done"));
+           }
          }
          cancelRef.current = null;
          localStreamActiveRef.current = false;

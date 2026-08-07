@@ -1094,11 +1094,29 @@ describe("createApplyStreamEvent waitHint lifecycle", () => {
     expect(state.waitHint).toBeNull();
   });
 
-  it("clears waitHint on terminal assistant_done", () => {
+  it("clears waitHint on terminal assistant_done with no live jobs", () => {
     const { state, apply } = makeWaitHintDeps();
     apply({ kind: "notice", data: { kind: "wait", message: "Provider still working — stream idle" } });
     apply({ kind: "assistant_done", data: {} });
     expect(state.waitHint).toBeNull();
+  });
+
+  it("holds Still working waitHint on assistant_done with live background jobs", () => {
+    const items = [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[];
+    const itemsRef = { current: items };
+    const typeBufRef = { current: "" };
+    const hintState = { waitHint: null as string | null, status: "idle" as string };
+    const deps = makeApplyDeps({ items, itemsRef, typeBufRef });
+    deps.pendingJobIdsRef.current = ["local-bf1b30f4"];
+    deps.setWaitHint = (value) => {
+      hintState.waitHint = typeof value === "function" ? value(hintState.waitHint) : value;
+    };
+    deps.setStatus = ((value: any) => {
+      hintState.status = typeof value === "function" ? value(hintState.status) : value;
+    }) as typeof deps.setStatus;
+    createApplyStreamEvent(deps)({ kind: "assistant_done", data: {} });
+    expect(hintState.waitHint).toBe("Still working…");
+    expect(hintState.status).toBe("awaiting_swarm");
   });
 });
 

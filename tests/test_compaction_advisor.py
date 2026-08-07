@@ -2,12 +2,16 @@
 
 import pytest
 
+from types import SimpleNamespace
+
 from harness.compaction_advisor import (
     _HOT_L1_COMBO_RATIO,
     _HOT_NOW_RATIO,
     _HOT_SOON_RATIO,
     _L1_PRESSURE_BYTES,
+    ack_manual_compaction,
     advice_payload,
+    apply_manual_compaction_ack,
     assess_layer_pressure,
 )
 from harness.config import HarnessConfig
@@ -171,6 +175,37 @@ def test_advice_payload_round_trip_from_journal(tmp_path):
 
 def test_advice_payload_empty_when_no_journal(tmp_path):
     assert advice_payload(str(tmp_path), "missing", 96000) == {}
+
+
+def test_manual_ack_clears_intervention_until_history_grows():
+    """Compact now no-op must hide Needs attention until history length moves."""
+    pilot = SimpleNamespace(
+        _history=[{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}]
+        * 3,
+    )
+    advice = {
+        "compaction_advice": {
+            "level": "now",
+            "needs_intervention": True,
+            "warning_reason": "hot",
+            "reasons": ["hot_ratio"],
+            "hot_ratio": 0.92,
+            "l1_bytes": 1,
+            "l3_reclaimed_bytes": 0,
+        }
+    }
+    ack_manual_compaction(pilot, reason="no_compactable_history")
+    cleared = apply_manual_compaction_ack(advice, pilot)
+    body = cleared["compaction_advice"]
+    assert body["needs_intervention"] is False
+    assert body["level"] == "none"
+    assert body["acked_manual_compact"] is True
+    assert body["warning_reason"] == ""
+
+    pilot._history = list(pilot._history) + [{"role": "user", "content": "more"}]
+    again = apply_manual_compaction_ack(advice, pilot)
+    assert again["compaction_advice"]["needs_intervention"] is True
+    assert again["compaction_advice"]["level"] == "now"
 
 
 def test_assess_never_raises_on_bad_input():

@@ -516,6 +516,8 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
         if (!trulyReduced) {
           if (res?.reason === "no_compactable_history") {
             setCompactState("noop");
+            // Refresh meters so Needs attention clears after the manual ack latch.
+            window.dispatchEvent(new Event("harness-usage-refresh"));
             return;
           }
           setCompactState("error");
@@ -527,6 +529,7 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
       .catch((err) => {
         if (compactFailureReason(err) === "no_compactable_history") {
           setCompactState("noop");
+          window.dispatchEvent(new Event("harness-usage-refresh"));
           return;
         }
         setCompactState("error");
@@ -724,23 +727,23 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
           title={compactionAdviceReason || "Context pressure needs attention"}
         >
           <div className="flex items-center justify-between gap-2 mb-1">
-            <span className="font-medium">{adviceCopy.label}</span>
-            {adviceCopy.showCompactAction ? (
+            <span className="font-medium">
+              {compactState === "noop" ? "Already compact" : adviceCopy.label}
+            </span>
+            {adviceCopy.showCompactAction && compactState !== "noop" ? (
               <button
                 type="button"
                 onClick={onCompactNow}
-                disabled={compactState === "working" || compactState === "noop"}
+                disabled={compactState === "working"}
                 className="shrink-0 rounded border border-amber-500/40 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-100 hover:bg-amber-500/25 disabled:opacity-60"
               >
                 {compactState === "working"
                   ? "Compacting..."
                   : compactState === "done"
                     ? "Compacted"
-                    : compactState === "noop"
-                      ? "Already compact"
-                      : compactState === "error"
-                        ? "Retry compact"
-                        : "Compact now"}
+                    : compactState === "error"
+                      ? "Retry compact"
+                      : "Compact now"}
               </button>
             ) : null}
           </div>

@@ -3,6 +3,7 @@ const STATUS_TEXT: Record<string, string> = {
   thinking: "text-accent",
   executing: "text-warn",
   streaming: "text-accent",
+  awaiting_swarm: "text-warn",
   done: "text-good",
   error: "text-risk",
   "switching…": "text-accent",
@@ -13,16 +14,26 @@ const STATUS_DOT: Record<string, string> = {
   thinking: "bg-accent animate-pulse",
   executing: "bg-warn animate-pulse",
   streaming: "bg-accent animate-pulse",
+  awaiting_swarm: "bg-warn animate-pulse",
   done: "bg-good",
   error: "bg-risk",
   "switching…": "bg-accent animate-pulse",
 };
 
-/** Visible label: prefer busy detail while thinking/executing/streaming. */
+/** Visible label: prefer busy detail while thinking/executing/streaming/await. */
 export function statusPillLabel(status: string, detail?: string): string {
-  if (detail && (status === "thinking" || status === "executing" || status === "streaming")) {
+  if (
+    detail
+    && (
+      status === "thinking"
+      || status === "executing"
+      || status === "streaming"
+      || status === "awaiting_swarm"
+    )
+  ) {
     return detail;
   }
+  if (status === "awaiting_swarm") return "Still working…";
   return status;
 }
 

@@ -6,14 +6,19 @@ import { turnHasVisibleBusySurface } from "../../lib/turnProgress";
 import type { Item } from "../TranscriptList";
 import { shouldArmChatEventsFromRunners } from "./chatEvents";
 
-export type BusyStatus = "idle" | "thinking" | "executing" | "done" | "error" | "streaming";
+export type BusyStatus = "idle" | "thinking" | "executing" | "done" | "error" | "streaming" | "awaiting_swarm";
 
 /** Idle polls required before clearing detached busy (resist one false idle). */
 export const RUNNERS_IDLE_CONFIRM_POLLS = 2;
 
 /** Force idle while userStopped sticks through runner unwind. */
 export function userStoppedBusyChrome(status: BusyStatus): BusyStatus {
-  if (status === "thinking" || status === "executing" || status === "streaming") {
+  if (
+    status === "thinking"
+    || status === "executing"
+    || status === "streaming"
+    || status === "awaiting_swarm"
+  ) {
     return "idle";
   }
   return status;
@@ -21,7 +26,12 @@ export function userStoppedBusyChrome(status: BusyStatus): BusyStatus {
 
 /** Preserve busy chrome when runners already report thinking/executing/streaming. */
 export function preserveOrThinking(status: BusyStatus): BusyStatus {
-  if (status === "thinking" || status === "executing" || status === "streaming") {
+  if (
+    status === "thinking"
+    || status === "executing"
+    || status === "streaming"
+    || status === "awaiting_swarm"
+  ) {
     return status;
   }
   return "thinking";
