@@ -26,7 +26,7 @@ function listProps(
   items: Item[],
   opts: {
     turnOpen: boolean;
-    status: "idle" | "thinking" | "executing" | "done" | "error" | "streaming";
+    status: "idle" | "thinking" | "executing" | "done" | "error" | "streaming" | "awaiting_swarm";
   },
 ) {
   return {

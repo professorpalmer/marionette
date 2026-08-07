@@ -508,7 +508,7 @@ const RENDER_WINDOW = 40;
 // comparison holds.
 export type TranscriptListProps = {
   items: Item[];
-  status: "idle" | "thinking" | "executing" | "done" | "error" | "streaming";
+  status: "idle" | "thinking" | "executing" | "done" | "error" | "streaming" | "awaiting_swarm";
   compactingStatus: string | null;
   editingIndex: number | null;
   auto: boolean;

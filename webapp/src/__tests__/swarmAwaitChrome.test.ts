@@ -9,7 +9,7 @@ import { deriveBusyProgress, shouldShowBusyFooter } from "../lib/turnProgress";
 import { derivePillStatus } from "../components/conversation/pillStatus";
 import type { Item } from "../components/TranscriptList";
 
-function msg(role: string, text: string): Item {
+function msg(role: "user" | "assistant", text: string): Item {
   return { kind: "msg", msg: { role, text } };
 }
 

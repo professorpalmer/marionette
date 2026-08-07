@@ -35,7 +35,7 @@ export default function ConversationChatColumn({
   feedRef: RefObject<HTMLDivElement | null>;
   transcriptStale: boolean;
   items: Item[];
-  status: "idle" | "thinking" | "executing" | "done" | "error" | "streaming";
+  status: "idle" | "thinking" | "executing" | "done" | "error" | "streaming" | "awaiting_swarm";
   compactingStatus: string | null;
   editingIndex: number | null;
   auto: boolean;

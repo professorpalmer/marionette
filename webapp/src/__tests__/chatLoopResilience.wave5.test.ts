@@ -50,7 +50,8 @@ function makeApplyDeps(opts?: {
       | "executing"
       | "done"
       | "error"
-      | "streaming",
+      | "streaming"
+      | "awaiting_swarm",
     turnOpen: true,
     turnSettledRef: { current: Boolean(opts?.turnSettled) },
   };
