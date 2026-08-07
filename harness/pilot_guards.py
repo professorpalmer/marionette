@@ -394,6 +394,12 @@ def normalize_action_args(kind: str, act: Any) -> str:
         except Exception:
             payload["command_fingerprints"] = []
         payload["max_concurrency"] = int(getattr(act, "max_concurrency", 0) or 0)
+    elif kind == "run_ipython":
+        import hashlib
+        code = (getattr(act, "content", "") or "").strip()
+        payload["code_fingerprint"] = (
+            hashlib.sha256(code.encode("utf-8")).hexdigest()[:16] if code else ""
+        )
     elif kind in ("search_files", "search_codegraph", "search_state", "search_tools", "web_search"):
         payload["query"] = _norm_whitespace(getattr(act, "query", "") or args.get("query", "") or "")
         if kind == "search_files":

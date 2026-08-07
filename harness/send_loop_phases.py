@@ -50,7 +50,7 @@ STREAM_IDLE_NOTICE_MESSAGE = "Provider still working — stream idle"
 LOCAL_ACTION_KINDS: frozenset[str] = frozenset({
     "open_project", "relocate_session", "session_bank",
     "write_file", "edit_file", "hash_edit", "run_command",
-    "run_command_batch",
+    "run_command_batch", "run_ipython",
     "search_tools", "search_state",
     "store_scratch", "load_scratch", "list_scratch", "clear_scratch",
     "browser_navigate", "browser_snapshot", "browser_click",
@@ -67,7 +67,7 @@ LOCAL_ACTION_KINDS: frozenset[str] = frozenset({
 PLAN_SKIP_KINDS: frozenset[str] = frozenset({
     "run_implement", "run_parallel",
     "write_file", "edit_file", "hash_edit", "run_command",
-    "run_command_batch",
+    "run_command_batch", "run_ipython",
     "call_mcp", "manage_mcp", "memory",
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
@@ -333,6 +333,9 @@ def action_display_goal(act: PilotAction) -> Any:
         act_goal = act.path or "(workspace root)"
     elif act.kind == "run_command":
         act_goal = act.command
+    elif act.kind == "run_ipython":
+        code = (act.content or "").strip()
+        act_goal = code[:80] + ("…" if len(code) > 80 else "")
     elif act.kind == "run_command_batch":
         cmds = list(getattr(act, "commands", None) or [])
         act_goal = f"command batch ({len(cmds)} commands)"
@@ -2081,6 +2084,44 @@ def dispatch_local_action(
             ),
             is_native,
         )
+        return
+    # ---- run_ipython branch (persistent session kernel) ------------
+    if act.kind == "run_ipython":
+        ok, status, val = session._do_run_ipython(act)
+        if ok:
+            output = ""
+            backend = "stdlib"
+            cwd = ""
+            if isinstance(val, dict):
+                output = str(val.get("output") or "")
+                backend = str(val.get("backend") or backend)
+                cwd = str(val.get("cwd") or "")
+            else:
+                output = str(val)
+            headline = f"ipython ({backend})"
+            yield ConvEvent("action_result", {
+                "id": aid, "num": 1, "types": ["ipython"], "adapter": "local",
+                "mode": "tool", "kind": "run_ipython",
+                "artifacts": [{"type": "ipython", "headline": headline}],
+                "output": output[:4096],
+                "backend": backend,
+                "cwd": cwd,
+            })
+            session._append_action_result(
+                act, aid,
+                f"(run_ipython [{backend}] ok)\n{output}",
+                is_native,
+            )
+        else:
+            err = val
+            if isinstance(val, dict):
+                err = val.get("error") or val.get("output") or val
+            yield ConvEvent("action_result", {
+                "id": aid, "error": err, "kind": "run_ipython", "status": status,
+            })
+            session._append_action_result(
+                act, aid, f"(run_ipython {status}: {err})", is_native, ok=False,
+            )
         return
     # ---- search_tools branch ---------------------------------------
     if act.kind == "search_tools":

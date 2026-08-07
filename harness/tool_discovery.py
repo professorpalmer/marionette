@@ -33,6 +33,7 @@ CORE_ALWAYS: Set[str] = {
     "write_file",
     "edit_file",
     "run_command",
+    "run_ipython",
     "list_dir",
     "search_tools",
 }

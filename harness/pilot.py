@@ -52,6 +52,7 @@ ActionKind = Literal[
     "hash_edit",
     "run_command",
     "run_command_batch",
+    "run_ipython",
     "list_dir",
     "web_search",
     "web_fetch",
@@ -354,6 +355,8 @@ class PilotAction:
                 raise PilotError("hash_edit action requires a non-empty 'ops' list")
         if self.kind == "run_command" and not (self.command or "").strip():
             raise PilotError("run_command action requires a 'command'")
+        if self.kind == "run_ipython" and not (self.content or "").strip():
+            raise PilotError("run_ipython action requires 'code' (or content)")
         if self.background and self.kind != "run_command":
             raise PilotError("background=true is only valid on run_command")
         if self.kind == "run_command_batch":
@@ -505,6 +508,13 @@ def from_wire(
         or raw.get("contents")
         or ""
     )
+    if kind == "run_ipython" and not str(content).strip():
+        content = (
+            arguments.get("code")
+            or arguments.get("content")
+            or arguments.get("text")
+            or ""
+        )
     if kind == "store_scratch" and not str(content).strip():
         content = raw.get("value") or arguments.get("value") or ""
     old_str = (
@@ -1052,6 +1062,31 @@ def build_tools_schema(
                     },
                 },
                 "required": ["commands"],
+            },
+        },
+    })
+
+    # 3c. run_ipython — persistent session kernel (NOT a tool monoculture)
+    schema.append({
+        "type": "function",
+        "function": {
+            "name": "run_ipython",
+            "description": (
+                "Execute Python in a session-scoped persistent REPL (variables "
+                "survive across turns). Prefer read_file / hash_edit / "
+                "run_command / swarms for normal coding work — use this for "
+                "stateful probes, calculations, and short experiments. Requires "
+                "`code`."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "description": "Python source to execute in the persistent kernel",
+                    },
+                },
+                "required": ["code"],
             },
         },
     })
@@ -2145,6 +2180,7 @@ You have direct access to a local CodeGraph-indexed workspace and can explore/ed
 - `edit_file`: make a targeted edit to an existing file by replacing an exact substring. Requires `path`, `old_str`, and `new_str`. STRONGLY PREFERRED over write_file for editing existing files.
 - `write_file`: write/create a file atomically. Requires `path` and `content`. Use ONLY to create brand-new files.
 - `run_command`: run a terminal shell command. Requires `command`.
+- `run_ipython`: execute Python in a session-scoped persistent REPL (variables survive across turns). Prefer read_file/hash_edit/run_command/swarms for normal coding; use this for stateful probes. Requires `code`.
 - `list_dir`: list the files and folders inside a directory. `path` is optional.
 - `run_swarm`: dispatch a parallel agent swarm for complex/broad investigations. Requires `goal`. One worker runs per role -- for a broad ask (audit, "review the platform", "find ways to improve quality/robustness/scale") pass SEVERAL `roles` (explore, pipeline-mapper, decision-explainer, conflict-auditor, test-coverage-reviewer) so it fans out into real parallel coverage; pass all five for a full audit. Omit roles only for a single narrow question. Prefer omitting `model` so the harness auto-routes among currently keyed agentic worker providers (ChatGPT Codex OAuth, OpenCode Go, OpenRouter, …). Pass `model` only when the user names a worker from the live agentic catalog in the tool schema; session pilot ids (openai-codex:…, cursor/…, codex/…) remap to matching worker rows when present. Unknown pins demote to auto-route; they do not fail the swarm. Prompt text alone does not pin a model. To audit a DIFFERENT checkout than the open workspace, pass `repo`=<absolute git path>: the workers read that subject, while your own writes/edits/commands stay in the open session workspace.
 - `run_implement`: dispatch an edit-capable worker that edits the repo in an isolated worktree and produces a reviewable patch. Requires `goal`. Default engine is standalone `agentic` (routes directly through your provider keys, no external CLI); pass `adapter` only to force a specific engine. Optional `mode` (`implement` default, or `analysis`/`review` for read-only reports).
@@ -2246,7 +2282,7 @@ Rules:
 """
 
 
-PLAN_SYSTEM_SUFFIX = """PLAN MODE: Do NOT call run_implement, run_parallel, write_file, edit_file, hash_edit, run_command, call_mcp, manage_mcp, memory, or any browser_* tool (navigate/click/type/snapshot/screenshot/…). Investigate read-only if needed (read_file, search_codegraph, query_wiki, list_dir, web_search), then output a clear, actionable, numbered implementation PLAN in markdown: goal restatement, the concrete steps (each with what/where/why), files likely touched, risks, and a suggested verification. End with a one-line summary. The user will review the plan before any execution."""
+PLAN_SYSTEM_SUFFIX = """PLAN MODE: Do NOT call run_implement, run_parallel, write_file, edit_file, hash_edit, run_command, run_ipython, call_mcp, manage_mcp, memory, or any browser_* tool (navigate/click/type/snapshot/screenshot/…). Investigate read-only if needed (read_file, search_codegraph, query_wiki, list_dir, web_search), then output a clear, actionable, numbered implementation PLAN in markdown: goal restatement, the concrete steps (each with what/where/why), files likely touched, risks, and a suggested verification. End with a one-line summary. The user will review the plan before any execution."""
 
 
 WORKER_SYSTEM = """You are an implementation worker. Be FAST and DECISIVE. Your job is to EDIT FILES to complete the task, not to investigate. Read ONLY the specific file(s) you must change (read_file once per file), then make the edit immediately with edit_file, then FINISH. To change an existing file, ALWAYS use edit_file with a small old_str/new_str snippet -- do NOT use write_file to rewrite an existing file (that wastes tokens and can truncate). Use write_file ONLY to create a brand-new file. Do NOT explore the wider codebase. Do NOT call search_codegraph (this workspace has no code index; it returns nothing and wastes time). Do NOT re-read a file you already read. Ideal small change = read target file once, edit the change, done. As soon as all required edits are made, STOP. Do not do extra investigation rounds.

@@ -1331,3 +1331,25 @@ class ToolDispatchMixin:
         if run_status in ("cancelled", "timeout", "error"):
             return False, run_status, payload
         return True, "success", payload
+
+    def _do_run_ipython(self, act: PilotAction) -> tuple[bool, str, Any]:
+        """Execute code in the session-scoped persistent Python kernel."""
+        code = (act.content or "").strip()
+        if not code:
+            return False, "error", "run_ipython requires non-empty code"
+        from .ipython_kernel import get_or_create_kernel
+
+        kernel = get_or_create_kernel(self)
+        result = kernel.execute(code)
+        payload = {
+            "output": result.output,
+            "backend": result.backend,
+            "cwd": kernel.cwd,
+        }
+        if result.error:
+            payload["error"] = result.error
+        if result.timed_out:
+            return False, "timeout", payload
+        if not result.ok:
+            return False, "error", payload
+        return True, "success", payload

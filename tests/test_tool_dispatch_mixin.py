@@ -33,6 +33,7 @@ MOVED_METHODS = (
     "_do_write_file",
     "_do_edit_file",
     "_do_run_command",
+    "_do_run_ipython",
 )
 
 
