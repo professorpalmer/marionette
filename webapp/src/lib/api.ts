@@ -152,6 +152,8 @@ export type Task = {
   instruction: string;
   status: string;
   adapter: string;
+  /** Routed/driver model id when known (never bare agentic/native). */
+  model?: string;
   completed_at?: string | null;
   /** Measured/estimated tokens for this worker (from usage arts). */
   tokens?: number;

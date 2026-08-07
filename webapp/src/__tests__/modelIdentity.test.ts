@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   collapseEnginePrefixes,
   displayModelId,
+  isEngineOnlyModelId,
   modelIdsEqual,
   stripEnginePrefixes,
 } from "../lib/modelIdentity";
@@ -29,6 +30,16 @@ describe("modelIdentity display helpers", () => {
         adapterFallback: "agentic",
       }),
     ).toBe("deepseek/deepseek-v4-pro");
+  });
+
+  it("never treats bare agentic/native as a display model", () => {
+    expect(isEngineOnlyModelId("")).toBe(true);
+    expect(isEngineOnlyModelId("agentic")).toBe(true);
+    expect(isEngineOnlyModelId("native")).toBe(true);
+    expect(isEngineOnlyModelId("agentic/z-ai/glm-5.2")).toBe(false);
+    expect(displayModelId("agentic", { adapterFallback: "agentic" })).toBe("");
+    expect(displayModelId("", { adapterFallback: "agentic" })).toBe("");
+    expect(displayModelId("", { adapterFallback: "openrouter" })).toBe("openrouter");
   });
 
   it("compares identity across prefix shapes", () => {

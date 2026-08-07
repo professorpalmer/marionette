@@ -4,10 +4,18 @@ from __future__ import annotations
 import json
 import queue
 import subprocess
+import tempfile
 import threading
+from unittest.mock import patch
 
 from harness.config import HarnessConfig
-from harness.conversation_jobs import ConversationJobsMixin, _worker_provenance_text
+from harness.conversation import ConversationalSession
+from harness.conversation_jobs import (
+    EMPTY_MANAGED_IMPLEMENT_EXHAUSTED,
+    ConversationJobsMixin,
+    _is_empty_diff_implement_failure,
+    _worker_provenance_text,
+)
 from harness.edit_engines import run_native_edit
 from harness.local_jobs import LocalJobsMixin
 from harness.worker import ProviderWorker, WorkerResult
@@ -241,3 +249,211 @@ def test_cancelled_worker_provenance_collection_failure_is_best_effort(
     job = saved["jobs"][0]
     assert job["status"] == "cancelled"
     assert job["worker_provenance"]["managed_worktree_mode"] == "unknown"
+
+
+def test_empty_diff_implement_failure_detector():
+    empty = WorkerResult(
+        ok=False,
+        summary="no changes produced",
+        worktree_diff_empty=True,
+        patch="",
+    )
+    assert _is_empty_diff_implement_failure(empty, expects_diff=True) is True
+    assert _is_empty_diff_implement_failure(empty, expects_diff=False) is False
+    ok_patch = WorkerResult(
+        ok=True,
+        summary="done",
+        worktree_diff_empty=False,
+        patch="diff --git a/a b/a\n",
+    )
+    assert _is_empty_diff_implement_failure(ok_patch, expects_diff=True) is False
+
+
+def test_empty_managed_implement_triggers_one_recovery_when_live_dirty(monkeypatch):
+    """Empty managed implement + dirty live tree re-invokes the edit engine once."""
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    session = ConversationalSession(cfg)
+    job_id = "job_empty_recover"
+    session._register_local_job(
+        job_id, goal="polish mockup", role="implement", engine="native",
+    )
+
+    empty = WorkerResult(
+        ok=False,
+        summary="no changes produced",
+        patch="",
+        files_changed=[],
+        tokens_in=10,
+        tokens_out=4,
+        tokens_cached=0,
+        engine="native",
+        model="stub",
+        managed_worktree_path="/tmp/managed-wt",
+        managed_worktree_mode="managed",
+        worktree_diff_empty=True,
+    )
+    recovered = WorkerResult(
+        ok=True,
+        summary="patched styles",
+        patch=(
+            "diff --git a/styles.css b/styles.css\n"
+            "--- a/styles.css\n"
+            "+++ b/styles.css\n"
+            "@@ -1 +1,2 @@\n"
+            " body{}\n"
+            "+html{}\n"
+        ),
+        files_changed=["styles.css"],
+        tokens_in=20,
+        tokens_out=8,
+        tokens_cached=0,
+        engine="native",
+        model="stub",
+        managed_worktree_path="/tmp/managed-wt",
+        managed_worktree_mode="managed",
+        worktree_diff_empty=False,
+    )
+    calls: list[str] = []
+
+    def fake_worker(objective, *_args, **_kwargs):
+        calls.append(objective)
+        if len(calls) == 1:
+            return empty
+        return recovered
+
+    monkeypatch.setattr(
+        "harness.worktree_seed._list_git_status_porcelain_paths",
+        lambda _repo: ["app.js", "index.html", "styles.css"],
+    )
+    # Avoid mutating a real checkout when the recovered patch is applied.
+    session._apply_worker_patch = lambda *_a, **_k: (True, ["styles.css"], "ok")
+
+    with patch.object(session, "_run_edit_worker_bounded", side_effect=fake_worker):
+        session._run_provider_worker_background(
+            job_id, "polish the mockup", expects_diff=True,
+        )
+
+    assert len(calls) == 2
+    assert "[recovery]" in calls[1]
+    assert "styles.css" in calls[1]
+    item = session._swarm_results.get_nowait()
+    assert session._swarm_results.empty()
+    result = item["result"]
+    assert result["error"] is None
+    assert result["applied"] is True
+    assert result["files"] == ["styles.css"]
+    # Both attempts' tokens roll up onto the same job_id.
+    assert result["tokens_in"] == 30
+    assert result["tokens_out"] == 12
+    assert EMPTY_MANAGED_IMPLEMENT_EXHAUSTED not in (result.get("summary") or "")
+    finished = session._local_jobs[job_id]
+    assert finished["status"] == "completed"
+    assert finished["worker_provenance"]["empty_implement_recovery"] is True
+    assert finished["worker_provenance"]["empty_managed_implement_exhausted"] is False
+
+
+def test_empty_managed_implement_recovery_exhausted_is_honest(monkeypatch):
+    """Still-empty after one recovery must soft-refuse further identical retries."""
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    session = ConversationalSession(cfg)
+    job_id = "job_empty_exhausted"
+    session._register_local_job(
+        job_id, goal="polish mockup", role="implement", engine="native",
+    )
+
+    def empty_result(tokens_in: int, tokens_out: int) -> WorkerResult:
+        return WorkerResult(
+            ok=False,
+            summary="no changes produced",
+            patch="",
+            files_changed=[],
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            tokens_cached=0,
+            engine="native",
+            model="stub",
+            managed_worktree_path="/tmp/managed-wt",
+            managed_worktree_mode="managed",
+            worktree_diff_empty=True,
+        )
+
+    calls: list[str] = []
+
+    def fake_worker(objective, *_args, **_kwargs):
+        calls.append(objective)
+        return empty_result(11 if len(calls) == 1 else 9, 3)
+
+    monkeypatch.setattr(
+        "harness.worktree_seed._list_git_status_porcelain_paths",
+        lambda _repo: ["app.js", "index.html", "styles.css"],
+    )
+
+    with patch.object(session, "_run_edit_worker_bounded", side_effect=fake_worker):
+        session._run_provider_worker_background(
+            job_id, "polish the mockup", expects_diff=True,
+        )
+
+    assert len(calls) == 2
+    item = session._swarm_results.get_nowait()
+    assert session._swarm_results.empty()
+    result = item["result"]
+    assert result["applied"] is False
+    assert result["error"]
+    summary = result.get("summary") or ""
+    assert EMPTY_MANAGED_IMPLEMENT_EXHAUSTED in summary
+    assert "Do NOT call run_implement again" in summary
+    assert result["tokens_in"] == 20
+    assert result["tokens_out"] == 6
+    finished = session._local_jobs[job_id]
+    assert finished["status"] == "failed"
+    assert finished["worker_provenance"]["empty_managed_implement_exhausted"] is True
+
+
+def test_analysis_empty_diff_skips_recovery_retry(monkeypatch):
+    """expects_diff=False must not burn a recovery attempt on empty worktree."""
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    session = ConversationalSession(cfg)
+    job_id = "job_analysis_no_recover"
+    session._register_local_job(
+        job_id, goal="audit mockup", role="analysis", engine="native",
+    )
+    calls: list[str] = []
+
+    def fake_worker(objective, *_args, **_kwargs):
+        calls.append(objective)
+        return WorkerResult(
+            ok=True,
+            summary=(
+                "FINDING: styles.css:12 uses inline styles that fight the "
+                "shared theme tokens in theme.py"
+            ),
+            patch="",
+            files_changed=[],
+            tokens_in=5,
+            tokens_out=5,
+            managed_worktree_mode="managed",
+            worktree_diff_empty=True,
+            findings=[{
+                "type": "finding",
+                "headline": "styles.css:12 uses inline styles",
+                "body": "styles.css:12 uses inline styles that fight theme.py",
+            }],
+        )
+
+    monkeypatch.setattr(
+        "harness.worktree_seed._list_git_status_porcelain_paths",
+        lambda _repo: ["app.js", "styles.css"],
+    )
+
+    with patch.object(session, "_run_edit_worker_bounded", side_effect=fake_worker):
+        session._run_provider_worker_background(
+            job_id, "audit the mockup", expects_diff=False,
+        )
+
+    assert len(calls) == 1
+    assert "[recovery]" not in calls[0]
+    item = session._swarm_results.get_nowait()
+    result = item["result"]
+    assert EMPTY_MANAGED_IMPLEMENT_EXHAUSTED not in (result.get("summary") or "")
+    finished = session._local_jobs[job_id]
+    assert finished["worker_provenance"].get("empty_implement_recovery") is False

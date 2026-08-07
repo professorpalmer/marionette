@@ -259,6 +259,8 @@ class TurnGuardState:
     # Count of swarm-gate suppressions this turn (full redirect + short replays).
     swarm_gate_suppress_count: int = 0
     iteration_budget: IterationBudget | None = None
+    # Set when empty managed implement recovery already ran against dirty live checkout.
+    last_implement_exhausted: bool = False
 
 
 @dataclass(frozen=True)
@@ -679,6 +681,45 @@ def is_backend_restart_command(command: str) -> bool:
     return bool(_BACKEND_RESTART_RE.search(command or ""))
 
 
+_IMPLEMENT_EXHAUSTED_PROVENANCE_KEY = "empty_managed_implement_exhausted"
+
+_IMPLEMENT_EXHAUSTED_MESSAGE = (
+    "[suppressed: empty managed implement exhausted] Recovery already ran "
+    "against dirty live checkout — do not re-dispatch run_implement; use "
+    "hash_edit/edit_file on the live files or ask the user to commit/stash first."
+)
+
+
+def note_implement_exhausted_from_provenance(
+    state: TurnGuardState, provenance: Any,
+) -> None:
+    """Best-effort: mark turn guard when worker provenance says recovery exhausted."""
+    try:
+        if isinstance(provenance, dict) and provenance.get(_IMPLEMENT_EXHAUSTED_PROVENANCE_KEY):
+            state.last_implement_exhausted = True
+    except Exception:
+        pass
+
+
+def check_implement_exhausted(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict:
+    """Soft-refuse run_implement after empty managed implement recovery exhausted."""
+    if kind != "run_implement":
+        return GuardVerdict(False)
+    try:
+        prov = getattr(act, "worker_provenance", None)
+        if prov is not None:
+            note_implement_exhausted_from_provenance(state, prov)
+    except Exception:
+        pass
+    if not state.last_implement_exhausted:
+        return GuardVerdict(False)
+    return GuardVerdict(
+        suppress=True,
+        reason="implement_exhausted",
+        message=_IMPLEMENT_EXHAUSTED_MESSAGE,
+    )
+
+
 def check_backend_restart(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict:
     """Soft-refuse run_command that would restart the harness mid-turn."""
     del state
@@ -835,6 +876,10 @@ def check_pilot_guards(state: TurnGuardState, kind: str, act: Any) -> GuardVerdi
     cli_verdict = check_cli_redirect(state, kind, act)
     if cli_verdict.suppress:
         return cli_verdict
+
+    implement_exhausted_verdict = check_implement_exhausted(state, kind, act)
+    if implement_exhausted_verdict.suppress:
+        return implement_exhausted_verdict
 
     loop_verdict = check_loop_guard(state, kind, act)
     if loop_verdict.suppress:

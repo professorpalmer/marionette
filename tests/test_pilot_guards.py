@@ -16,6 +16,7 @@ from harness.pilot_guards import (
     check_backend_restart,
     check_cli_redirect,
     check_delegate_gate,
+    check_implement_exhausted,
     check_iteration_budget,
     check_loop_guard,
     check_pilot_guards,
@@ -34,6 +35,7 @@ from harness.pilot_guards import (
     mid_turn_restart_blocked,
     new_turn_guard_state,
     normalize_action_args,
+    note_implement_exhausted_from_provenance,
     puppetmaster_cli_native_mapping,
     record_action_execution,
     swarm_gate_enabled,
@@ -768,3 +770,34 @@ def test_ordinary_commands_not_restart(monkeypatch):
     monkeypatch.delenv("HARNESS_ALLOW_MID_TURN_RESTART", raising=False)
     assert is_backend_restart_command("docker restart discord-mcp") is False
     assert is_backend_restart_command("curl http://127.0.0.1:8085/mcp") is False
+
+
+def test_implement_exhausted_soft_refuses_run_implement():
+    state = new_turn_guard_state("fix the mockup styles")
+    act = _Act(kind="run_implement", goal="polish styles.css")
+    assert check_implement_exhausted(state, "run_implement", act).suppress is False
+
+    state.last_implement_exhausted = True
+    verdict = check_implement_exhausted(state, "run_implement", act)
+    assert verdict.suppress is True
+    assert verdict.reason == "implement_exhausted"
+    assert "do not re-dispatch run_implement" in verdict.message
+    assert "hash_edit/edit_file" in verdict.message
+
+
+def test_note_implement_exhausted_from_provenance_sets_flag():
+    state = new_turn_guard_state("fix styles")
+    note_implement_exhausted_from_provenance(state, {})
+    assert state.last_implement_exhausted is False
+    note_implement_exhausted_from_provenance(
+        state, {"empty_managed_implement_exhausted": True},
+    )
+    assert state.last_implement_exhausted is True
+
+
+def test_check_pilot_guards_blocks_exhausted_run_implement():
+    state = TurnGuardState(last_implement_exhausted=True)
+    act = _Act(kind="run_implement", goal="retry the same polish")
+    verdict = check_pilot_guards(state, "run_implement", act)
+    assert verdict.suppress is True
+    assert verdict.reason == "implement_exhausted"

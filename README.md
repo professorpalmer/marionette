@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.182, deliberately pre-1.0. Session-scoped `run_ipython` persistent REPL alongside conventional tools (rides puppetmaster-ai==1.21.13).
+> Status: v0.9.183, deliberately pre-1.0. Swarm tracker always shows the real worker model (never bare `agentic`); dirty-checkout empty managed implements auto-recover once and soft-refuse retry storms (rides puppetmaster-ai==1.21.13).
 
 ## Documentation
 

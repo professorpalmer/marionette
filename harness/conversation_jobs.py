@@ -28,6 +28,132 @@ from ._exec import _puppetmaster_cmd
 
 _WORKER_PROVENANCE_PATH_CAP = 12
 
+# Soft-refuse cue for pilots/guards: empty managed implement already recovered once.
+EMPTY_MANAGED_IMPLEMENT_EXHAUSTED = "empty_managed_implement_exhausted"
+
+_EMPTY_WORKTREE_MARKERS = (
+    "no changes in disposable managed worktree",
+    "produced no changes in disposable managed worktree",
+    "no changes produced",
+    "worker produced no changes",
+)
+
+
+def _is_empty_diff_implement_failure(res, *, expects_diff: bool) -> bool:
+    """True when an implement worker left the managed worktree unchanged."""
+    if not expects_diff or res is None:
+        return False
+    try:
+        if getattr(res, "worktree_diff_empty", None) is True:
+            return True
+    except Exception:
+        pass
+    try:
+        if (getattr(res, "patch", None) or "").strip():
+            return False
+    except Exception:
+        pass
+    try:
+        text = (
+            f"{getattr(res, 'summary', '') or ''} "
+            f"{getattr(res, 'error', '') or ''}"
+        ).lower()
+    except Exception:
+        return False
+    if not any(marker in text for marker in _EMPTY_WORKTREE_MARKERS):
+        return False
+    try:
+        return not bool(getattr(res, "ok", True))
+    except Exception:
+        return True
+
+
+def _empty_implement_recovery_objective(objective: str, dirty_paths: list) -> str:
+    """Append a one-shot recovery instruction for seeded live dirty files."""
+    shown = [str(p) for p in (dirty_paths or [])[:_WORKER_PROVENANCE_PATH_CAP]]
+    path_hint = ", ".join(shown) if shown else "live dirty files"
+    if len(dirty_paths or []) > len(shown):
+        path_hint = f"{path_hint}, +{len(dirty_paths) - len(shown)} more"
+    suffix = (
+        "\n\n[recovery] Live checkout had pre-existing dirty/untracked files that "
+        f"were seeded into this disposable managed worktree ({path_hint}). "
+        "A non-empty patch against those seeded files is mandatory — do not "
+        "finish with an empty worktree diff."
+    )
+    base = (objective or "").rstrip()
+    return f"{base}{suffix}" if base else suffix.strip()
+
+
+def _merge_worker_attempt_usage(primary, secondary) -> None:
+    """Fold token/cost from ``secondary`` into ``primary`` (same job_id)."""
+    if primary is None or secondary is None or primary is secondary:
+        return
+    try:
+        for attr in ("tokens_in", "tokens_out", "tokens_cached"):
+            a = int(getattr(primary, attr, 0) or 0)
+            b = int(getattr(secondary, attr, 0) or 0)
+            setattr(primary, attr, a + b)
+    except Exception:
+        pass
+    try:
+        a_cost = float(getattr(primary, "est_cost_usd", 0.0) or 0.0)
+        b_cost = float(getattr(secondary, "est_cost_usd", 0.0) or 0.0)
+        primary.est_cost_usd = a_cost + b_cost
+    except Exception:
+        pass
+
+
+def _worker_attempt_has_usable_diff(res) -> bool:
+    if res is None:
+        return False
+    try:
+        if (getattr(res, "patch", None) or "").strip():
+            return True
+    except Exception:
+        pass
+    try:
+        if getattr(res, "worktree_diff_empty", None) is False:
+            return True
+    except Exception:
+        pass
+    try:
+        return bool(getattr(res, "ok", False)) and bool(
+            getattr(res, "files_changed", None)
+        )
+    except Exception:
+        return False
+
+
+def _annotate_empty_managed_implement_exhausted(
+    res, *, dirty_paths: list, recovered: bool,
+) -> None:
+    """Mark a still-empty implement so the pilot must not re-dispatch the same pattern."""
+    if res is None or not recovered:
+        return
+    shown = [str(p) for p in (dirty_paths or [])[:_WORKER_PROVENANCE_PATH_CAP]]
+    path_hint = ", ".join(shown) if shown else "none"
+    honesty = (
+        f"[provenance] {EMPTY_MANAGED_IMPLEMENT_EXHAUSTED}: empty managed "
+        "implement already recovered once while live-tree dirty overlap was "
+        f"present ({path_hint}). Do NOT call run_implement again with the same "
+        "dirty-tree pattern; inspect the seeded paths or change approach."
+    )
+    try:
+        summary = (getattr(res, "summary", None) or "").strip()
+        if EMPTY_MANAGED_IMPLEMENT_EXHAUSTED in summary:
+            return
+        res.summary = f"{honesty}\n{summary}".strip() if summary else honesty
+    except Exception:
+        pass
+    try:
+        err = (getattr(res, "error", None) or "").strip()
+        if err and EMPTY_MANAGED_IMPLEMENT_EXHAUSTED not in err:
+            res.error = f"{err}; {EMPTY_MANAGED_IMPLEMENT_EXHAUSTED}"
+        elif not err:
+            res.error = EMPTY_MANAGED_IMPLEMENT_EXHAUSTED
+    except Exception:
+        pass
+
 
 def _worker_provenance_text(provenance: dict, *, expects_diff: bool = True) -> str:
     """Render measured worker/live-tree facts for pilot-facing text.
@@ -433,6 +559,61 @@ class ConversationJobsMixin:
                     summary=f"Worker exceeded its {deadline}s deadline and was abandoned to free the pool slot.",
                 )
 
+            # One automatic recovery when implement left the managed worktree
+            # empty while the live checkout was already dirty (seeded files
+            # present but unused). Analysis empty-diff is fine — skip.
+            recovered_empty_implement = False
+            try:
+                should_recover = (
+                    expects_diff
+                    and bool(live_dirty_before)
+                    and _is_empty_diff_implement_failure(res, expects_diff=True)
+                    and not self._local_job_cancelled(job_id)
+                )
+            except Exception:
+                should_recover = False
+            if should_recover:
+                first_res = res
+                recovery_objective = _empty_implement_recovery_objective(
+                    objective, live_dirty_before,
+                )
+                try:
+                    recovery_res = self._run_edit_worker_bounded(
+                        recovery_objective, requested_adapter, job_id=job_id,
+                        target_repo=target_repo, expects_diff=expects_diff,
+                        on_event=_on_worker_event,
+                    )
+                except Exception:
+                    recovery_res = None
+                try:
+                    live_dirty_after = _list_git_status_porcelain_paths(live_repo)
+                except Exception:
+                    pass
+                if recovery_res is None:
+                    # Deadline/cancel on recovery: keep the first attempt, but
+                    # still mark exhausted so the pilot does not re-dispatch.
+                    res = first_res
+                    recovered_empty_implement = True
+                    _annotate_empty_managed_implement_exhausted(
+                        res,
+                        dirty_paths=live_dirty_before,
+                        recovered=True,
+                    )
+                elif _worker_attempt_has_usable_diff(recovery_res):
+                    _merge_worker_attempt_usage(recovery_res, first_res)
+                    res = recovery_res
+                else:
+                    # Still empty — prefer recovery surface (honest about retry)
+                    # but fold first-attempt spend onto the same job_id.
+                    _merge_worker_attempt_usage(recovery_res, first_res)
+                    res = recovery_res
+                    recovered_empty_implement = True
+                    _annotate_empty_managed_implement_exhausted(
+                        res,
+                        dirty_paths=live_dirty_before,
+                        recovered=True,
+                    )
+
             def _worker_attribute(name: str, default=""):
                 try:
                     return getattr(res, name, default)
@@ -452,6 +633,11 @@ class ConversationJobsMixin:
                     or ("managed" if _worker_attribute("worktree") else "unknown")
                 ),
                 "worktree_diff_empty": _worker_attribute("worktree_diff_empty", None),
+                "empty_implement_recovery": bool(should_recover),
+                "empty_managed_implement_exhausted": bool(
+                    recovered_empty_implement
+                    and _is_empty_diff_implement_failure(res, expects_diff=expects_diff)
+                ),
             }
             res.live_dirty_paths_before = list(live_dirty_before)
             res.live_dirty_paths_after = list(live_dirty_after)
@@ -1007,6 +1193,16 @@ class ConversationJobsMixin:
                     worker_provenance = res_job.get("worker_provenance") or {}
                     if worker_provenance:
                         display_result["worker_provenance"] = worker_provenance
+                    try:
+                        from harness.pilot_guards import note_implement_exhausted_from_provenance
+
+                        guard_state = getattr(self, "_turn_guard_state", None)
+                        if guard_state is not None:
+                            note_implement_exhausted_from_provenance(
+                                guard_state, worker_provenance,
+                            )
+                    except Exception:
+                        pass
                     # Prefer fields already on the result; fall back to stamped
                     # local job so transcript hydrate keeps reuse provenance.
                     for _rk in (

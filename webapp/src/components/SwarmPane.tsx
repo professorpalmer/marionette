@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Loader2, CheckCircle2, XCircle, Circle, ChevronDown, ChevronRight, Cpu, Activity, Network, X } from "lucide-react";
 import { api, jobArtifactList, type SwarmLive, type Job, type Artifact, type Task } from "../lib/api";
-import { displayModelId } from "../lib/modelIdentity";
+import { displayModelId, isEngineOnlyModelId } from "../lib/modelIdentity";
 import { lastSelectedProjectRoot, panelOpacityClass, useProjectSwitching } from "../lib/panelTransition";
 import { useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
 
@@ -903,10 +903,12 @@ export default function SwarmPane() {
     // so agentic/agentic/... never badges as agentic/<provider>/...
     const displayModel = displayModelId(routerModel || "", {
       policy: attestedPolicy,
-      adapterFallback: adapter,
+      // Adapter chip stays separate; never badge bare agentic/native as model.
+      adapterFallback: isEngineOnlyModelId(adapter) ? "" : adapter,
     });
     const terminal = isTerminal(j);
     const savings = jobSavings(j);
+    const showRoutingPlaceholder = !displayModel && st === "in_progress";
 
     const toggle = () => {
       const next = !isExpanded;
@@ -1016,13 +1018,20 @@ export default function SwarmPane() {
               jobs (Cursor MCP, terminal `puppetmaster`) share the workspace
               store and are merged in on purpose; label them so they don't look
               like Marionette-dispatched swarms. */}
-          {(displayModel || workerCount > 0 || adapter || j.source === "cli" || attestedPolicy === "explicit_pin") && (
+          {(displayModel || showRoutingPlaceholder || workerCount > 0 || adapter || j.source === "cli" || attestedPolicy === "explicit_pin") && (
             <div className="flex items-center gap-1.5 pl-6 pr-1 mt-1 flex-wrap">
-              {displayModel && (
+              {displayModel ? (
                 <span className="flex items-center gap-1 text-[9px] font-mono text-accent/90 bg-accent/10 px-1.5 py-0.5 rounded" title={`Model: ${displayModel}`}>
                   <Cpu size={9} /> {displayModel}
                 </span>
-              )}
+              ) : showRoutingPlaceholder ? (
+                <span
+                  className="flex items-center gap-1 text-[9px] font-mono text-faint bg-panel2/30 px-1.5 py-0.5 rounded"
+                  title="Model routing in progress"
+                >
+                  <Cpu size={9} /> routing…
+                </span>
+              ) : null}
               {attestedPolicy === "explicit_pin" && (
                 <span
                   className="text-[9px] text-faint bg-edge/25 px-1.5 py-0.5 rounded font-mono"
@@ -1251,6 +1260,12 @@ export default function SwarmPane() {
                     const ts = taskState(task);
                     const tExpanded = !!expandedTasks[task.id];
                     const hasInstruction = !!task.instruction;
+                    // Prefer a real routed model over repeating the engine label
+                    // already present in role ("implement (agentic) (agentic)").
+                    const taskModelLabel = displayModelId(task.model || "", {}) || displayModel;
+                    const adapterLabel = (task.adapter || "").trim();
+                    const secondaryLabel = taskModelLabel
+                      || (adapterLabel && !isEngineOnlyModelId(adapterLabel) ? adapterLabel : "");
                     return (
                       <div
                         key={task.id}
@@ -1273,8 +1288,12 @@ export default function SwarmPane() {
                                 ? <ChevronDown size={9} className="text-faint shrink-0" />
                                 : <ChevronRight size={9} className="text-faint shrink-0" />)}
                               <span className="truncate">
-                                {task.role || "Worker"}{" "}
-                                <span className="text-faint font-normal">({task.adapter || "no-adapter"})</span>
+                                {task.role || "Worker"}
+                                {secondaryLabel ? (
+                                  <span className="text-faint font-normal"> ({secondaryLabel})</span>
+                                ) : !task.role ? (
+                                  <span className="text-faint font-normal"> (no-adapter)</span>
+                                ) : null}
                               </span>
                             </span>
                             <span className="flex items-center gap-1.5 shrink-0">

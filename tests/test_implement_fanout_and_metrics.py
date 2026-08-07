@@ -177,9 +177,13 @@ def test_seed_untracked_into_worktree(tmp_path):
 
 
 def test_seed_dynamic_from_dirty_token_match(tmp_path):
-    """Vague goals still seed when live dirty paths match a significant token."""
+    """Vague goals still seed when live dirty paths match a significant token.
+
+    Pad the dirty set past ``_MAX_SEED_ALL_DIRTY`` so the seed-all-dirty
+    safety net does not mask token-gated selection for large dirty trees.
+    """
     import subprocess
-    from harness.worktree_seed import goal_match_tokens
+    from harness.worktree_seed import _MAX_SEED_ALL_DIRTY, goal_match_tokens
 
     repo = tmp_path / "repo"
     wt = tmp_path / "wt"
@@ -200,10 +204,12 @@ def test_seed_dynamic_from_dirty_token_match(tmp_path):
     target = repo / "addons" / "kotoba" / "ad.html"
     target.parent.mkdir(parents=True)
     target.write_text("<html>ad</html>\n", encoding="utf-8")
-    # Unrelated untracked file must not seed on a kotoba-only goal.
-    noise = repo / "other" / "noise.py"
-    noise.parent.mkdir(parents=True)
-    noise.write_text("print(1)\n", encoding="utf-8")
+    # Unrelated untracked files must not seed on a kotoba-only goal when the
+    # dirty set exceeds the seed-all-dirty cap.
+    noise_dir = repo / "other"
+    noise_dir.mkdir(parents=True)
+    for i in range(_MAX_SEED_ALL_DIRTY + 1):
+        (noise_dir / f"noise_{i}.py").write_text(f"print({i})\n", encoding="utf-8")
 
     assert "kotoba" in goal_match_tokens("fix the kotoba thrift ad")
     seeded = seed_worktree_from_goal(
@@ -213,7 +219,7 @@ def test_seed_dynamic_from_dirty_token_match(tmp_path):
     assert (wt / "addons" / "kotoba" / "ad.html").read_text(encoding="utf-8") == (
         "<html>ad</html>\n"
     )
-    assert "other/noise.py" not in seeded.paths
+    assert "other/noise_0.py" not in seeded.paths
 
 
 def test_seed_html_path_token(tmp_path):

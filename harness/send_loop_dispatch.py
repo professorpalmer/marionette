@@ -96,6 +96,49 @@ _PATH_REF_RE = re.compile(
 )
 
 
+def _resolved_swarm_model(result: Any, arts: Optional[list] = None) -> str:
+    """Best-effort model id from a swarm/implement result (never raises).
+
+    Prefers ``result.model``, then ROUTING artifact model via edit_engines
+    helper / dict arts. Returns '' when nothing real is known — callers must
+    not invent bare agentic/native.
+    """
+    try:
+        from harness.model_identity import is_engine_only_model_id
+    except Exception:
+        def is_engine_only_model_id(mid: str) -> bool:  # type: ignore[misc]
+            return not (mid or "").strip() or (mid or "").strip().lower() in (
+                "agentic", "native",
+            )
+
+    try:
+        mid = str(getattr(result, "model", None) or "").strip()
+        if mid and not is_engine_only_model_id(mid):
+            return mid
+    except Exception:
+        pass
+    try:
+        from harness.edit_engines import _routed_model_id
+        routed = str(_routed_model_id(result) or "").strip()
+        if routed and not is_engine_only_model_id(routed):
+            return routed
+    except Exception:
+        pass
+    model_id = ""
+    for a in arts or []:
+        try:
+            if not isinstance(a, dict):
+                continue
+            if str(a.get("type") or "").strip().upper() != "ROUTING":
+                continue
+            cand = str(a.get("model") or a.get("model_id") or "").strip()
+            if cand and not is_engine_only_model_id(cand):
+                model_id = cand
+        except Exception:
+            continue
+    return model_id
+
+
 def _is_substantive_artifact(a: dict) -> bool:
     """True when a FINDING/RISK/DECISION carries real analysis, not a stub.
 
@@ -586,6 +629,9 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     _store_jid = (result.job_id or '').strip() or _sync_local_id
     _badge = {'job_id': _store_jid, 'applied': _swarm_ok, 'files': [], 'summary': _badge_summary, 'error': _badge_error, 'objective': act.goal, 'adapter': _ui_adapter}
     _job_engine = _ui_adapter if _demo_refused else (result.adapter or 'agentic')
+    # Best-effort routed model so finish cannot clobber a preview ROUTING stamp
+    # with bare agentic/native.
+    _job_model = _resolved_swarm_model(result, _all_arts)
     # Substantive surfaced findings only: the sidecar must not carry plumbing or
     # refused-demo rows into artifact:// reads.
     _job_findings = _substantive[:20]
@@ -659,6 +705,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         session._finish_local_job(
             _sync_local_id, ok=_swarm_ok, summary=_badge_summary,
             status='done' if _swarm_ok else 'failed', engine=_job_engine,
+            model=_job_model,
             findings=_job_findings,
             reuse_status=_finish_reuse_status if _swarm_ok else '',
             source_job_id=_finish_source_job,
@@ -674,10 +721,12 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             session._register_local_job(
                 _store_jid, act.goal, role=_sync_register_role,
                 cwd=_swarm_repo, engine=_job_engine,
+                model=_job_model,
             )
             session._finish_local_job(
                 _store_jid, ok=_swarm_ok, summary=_badge_summary,
                 status='done' if _swarm_ok else 'failed', engine=_job_engine,
+                model=_job_model,
                 findings=_job_findings,
                 reuse_status=_finish_reuse_status if _swarm_ok else '',
                 source_job_id=_finish_source_job,

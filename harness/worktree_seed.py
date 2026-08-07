@@ -44,6 +44,12 @@ logger = logging.getLogger("pmharness.worktree_seed")
 # Cap dynamic copies so a vague goal cannot flood the worktree.
 _MAX_DYNAMIC_SEED = 250
 
+# When the live dirty/untracked set is small, seed every remaining dirty path
+# after the goal-token pass. Token match can miss (e.g. "polish the mockup"
+# vs app.js/index.html/styles.css); a small dirty tree almost always belongs
+# in the disposable worktree. Large dirty checkouts stay token-gated.
+_MAX_SEED_ALL_DIRTY = 40
+
 _COPY_STRATEGY_ENV = "HARNESS_WORKTREE_COPY_STRATEGY"
 _VALID_COPY_STRATEGIES = frozenset({"auto", "copy", "reflink"})
 _DEFAULT_COPY_STRATEGY = "auto"
@@ -174,6 +180,22 @@ def seed_worktree_from_goal(
     for rel in _matching_live_paths(repo, goal):
         if _copy_into_worktree(repo, wt_path, rel, strategy, result.copy_stats):
             seeded.append(rel)
+
+    # Small dirty sets: seed every remaining on-disk dirty path so token-miss
+    # goals still see the user's live edits in the disposable worktree.
+    try:
+        live_dirty = _list_live_dirty_paths(repo)
+    except Exception:
+        live_dirty = []
+    if live_dirty and len(live_dirty) <= _MAX_SEED_ALL_DIRTY:
+        already = {str(p).replace("\\", "/") for p in seeded}
+        for rel in live_dirty:
+            norm = str(rel or "").replace("\\", "/")
+            if not norm or norm in already:
+                continue
+            if _copy_into_worktree(repo, wt_path, norm, strategy, result.copy_stats):
+                seeded.append(norm)
+                already.add(norm)
 
     # Dedup while preserving order.
     seen: set[str] = set()

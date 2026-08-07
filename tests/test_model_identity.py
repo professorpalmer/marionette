@@ -6,6 +6,7 @@ from harness.model_identity import (
     envelope_model_id,
     filter_rejected_excluding_selected,
     format_model_ref,
+    is_engine_only_model_id,
     model_ids_equal,
     price_lookup_id,
     strip_engine_prefixes,
@@ -75,3 +76,13 @@ def test_format_model_ref_fields():
     assert ref["display_id"] == "agentic/deepseek/deepseek-v4-pro"
     assert ref["price_id"] == "deepseek/deepseek-v4-pro"
     assert ref["engine"] == "agentic"
+
+
+def test_is_engine_only_model_id():
+    assert is_engine_only_model_id("")
+    assert is_engine_only_model_id("agentic")
+    assert is_engine_only_model_id("native")
+    assert is_engine_only_model_id("  Agentic  ")
+    assert not is_engine_only_model_id("agentic/z-ai/glm-5.2")
+    assert not is_engine_only_model_id("z-ai/glm-5.2")
+    assert not is_engine_only_model_id("native/stub-oracle-v2")

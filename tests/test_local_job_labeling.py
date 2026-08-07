@@ -34,11 +34,13 @@ def test_register_local_job_agentic_never_uses_pilot_slug(monkeypatch):
     )
     job = s._local_jobs["local-abc"]
     assert job["adapter"] == "agentic"
-    assert job["model"] == "agentic"
+    # Empty model stays empty — never stamp bare "agentic" as the chosen model.
+    assert job["model"] == ""
     assert "openrouter" not in job["adapter"]
-    assert "openrouter" not in job["model"]
+    assert "openrouter" not in (job["model"] or "")
     assert job["tasks"][0]["role"] == "implement (agentic)"
     assert job["tasks"][0]["adapter"] == "agentic"
+    assert "model" not in job["tasks"][0]
     assert "provider worker" not in job["tasks"][0]["role"]
 
 
@@ -53,6 +55,7 @@ def test_register_local_job_native_uses_engine_and_driver():
     assert job["model"] == "native/stub-oracle-v2"
     assert job["tasks"][0]["role"] == "implement (native)"
     assert job["tasks"][0]["adapter"] == "native"
+    assert job["tasks"][0]["model"] == "native/stub-oracle-v2"
 
 
 def test_finish_local_job_overwrites_model_from_worker_result(monkeypatch):
@@ -75,8 +78,41 @@ def test_finish_local_job_overwrites_model_from_worker_result(monkeypatch):
     assert job["adapter"] == "agentic"
     assert job["model"] == "agentic/z-ai/glm-5.2"
     assert job["tasks"][0]["role"] == "implement (agentic)"
+    assert job["tasks"][0]["model"] == "agentic/z-ai/glm-5.2"
     assert job["est_cost_usd"] == 0.0042
     assert job["status"] == "completed"
+
+
+def test_finish_does_not_clobber_preview_model_with_engine_only(monkeypatch):
+    """Finish with engine but empty model must keep the preview ROUTING stamp."""
+    monkeypatch.setattr(
+        "harness.local_job_routing.preview_agentic_route",
+        lambda *a, **k: {
+            "model_id": "z-ai/glm-5.2",
+            "est_cost_usd": 0.01,
+            "artifact": {
+                "type": "ROUTING",
+                "headline": "Routed to z-ai/glm-5.2",
+                "created_by": "router",
+                "model": "z-ai/glm-5.2",
+                "policy": "balanced",
+            },
+        },
+    )
+    s = _session(driver="stub-oracle-v2")
+    s._register_local_job(
+        "local-keep", "edit keep", role="implement",
+        engine="agentic", model="",
+    )
+    assert s._local_jobs["local-keep"]["model"] == "agentic/z-ai/glm-5.2"
+    s._finish_local_job(
+        "local-keep", ok=True, summary="done", files=["a.py"],
+        tokens=10, engine="agentic", model="",
+    )
+    job = s._local_jobs["local-keep"]
+    assert job["adapter"] == "agentic"
+    assert job["model"] == "agentic/z-ai/glm-5.2"
+    assert job["model"] != "agentic"
 
 
 def test_worker_result_engine_model_defaults_back_compat():

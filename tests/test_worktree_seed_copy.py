@@ -434,3 +434,40 @@ def test_dynamic_seed_with_git_dirty_paths(tmp_path, monkeypatch):
     result = seed_worktree_from_goal(str(repo), str(wt), "fix the kotoba ad", copy_strategy="copy")
     assert "addons/kotoba/ad.html" in result.paths
     assert result.copy_stats.copied_files >= 1
+
+
+def test_seed_all_dirty_when_small_dirty_set_misses_goal_tokens(tmp_path, monkeypatch):
+    """Small dirty trees seed every on-disk dirty path even without goal tokens."""
+    from harness.worktree_seed import _MAX_SEED_ALL_DIRTY
+
+    repo = tmp_path / "repo"
+    wt = tmp_path / "wt"
+    repo.mkdir()
+    wt.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True, capture_output=True)
+    (repo / "README.md").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
+
+    # Mockup-style dirty set: none of these filenames appear in the goal.
+    for name, body in (
+        ("app.js", "console.log(1)\n"),
+        ("index.html", "<html></html>\n"),
+        ("styles.css", "body{}\n"),
+    ):
+        (repo / name).write_text(body, encoding="utf-8")
+
+    monkeypatch.setattr("harness.worktree_seed.reflink_copy_supported", lambda force_refresh=False: False)
+
+    assert _MAX_SEED_ALL_DIRTY >= 3
+    result = seed_worktree_from_goal(
+        str(repo), str(wt), "polish the mockup landing page", copy_strategy="copy",
+    )
+    assert "app.js" in result.paths
+    assert "index.html" in result.paths
+    assert "styles.css" in result.paths
+    assert (wt / "app.js").read_text(encoding="utf-8") == "console.log(1)\n"
+    assert (wt / "index.html").read_text(encoding="utf-8") == "<html></html>\n"
+    assert (wt / "styles.css").read_text(encoding="utf-8") == "body{}\n"

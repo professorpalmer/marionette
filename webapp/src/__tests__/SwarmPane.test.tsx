@@ -123,6 +123,32 @@ describe("SwarmPane model badge", () => {
       expect(screen.getByTitle("Model: openrouter")).toHaveTextContent("openrouter");
     });
   });
+
+  it("shows routing placeholder instead of bare agentic while running", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        adapter: "agentic",
+        model: "agentic",
+        status: "running",
+        tasks: [
+          {
+            id: "task-1",
+            status: "running",
+            adapter: "agentic",
+            role: "implement (agentic)",
+            instruction: "",
+          },
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+
+    await waitFor(() => {
+      expect(screen.getByTitle("Model routing in progress")).toHaveTextContent("routing…");
+    });
+    expect(screen.queryByTitle("Model: agentic")).not.toBeInTheDocument();
+  });
 });
 
 describe("SwarmPane pin attribution", () => {

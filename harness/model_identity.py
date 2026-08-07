@@ -29,6 +29,22 @@ def strip_engine_prefixes(model_id: str) -> str:
     return mid
 
 
+def is_engine_only_model_id(model_id: str) -> bool:
+    """True when ``model_id`` is empty or only an adapter label (agentic/native).
+
+    Bare ``agentic`` / ``native`` (and collapsed forms with no real body) must
+    never be treated as a chosen model for Swarm Tracker badges.
+    """
+    raw = (model_id or "").strip()
+    if not raw:
+        return True
+    body = strip_engine_prefixes(raw)
+    if not body or body.lower() in ENGINE_LABELS:
+        return True
+    collapsed = collapse_engine_prefixes(raw)
+    return (not collapsed) or collapsed.lower() in ENGINE_LABELS
+
+
 def leading_engine(model_id: str) -> str:
     """First engine label on ``model_id``, or empty when none is present."""
     mid = (model_id or "").strip()

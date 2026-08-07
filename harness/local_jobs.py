@@ -37,6 +37,7 @@ from .model_identity import (
     collapse_engine_prefixes,
     envelope_model_id,
     filter_rejected_excluding_selected,
+    is_engine_only_model_id,
     model_ids_equal,
     price_lookup_id,
 )
@@ -638,8 +639,23 @@ class LocalJobsMixin:
                 # Explicit id at creation: artifact://local-*/<id> must survive
                 # the headline/model rewrite _finish_local_job performs later.
                 routing_arts.append({**art, "id": routing_artifact_id(job_id)})
-        display_model = envelope_model_id(engine_label, model_id) if model_id else engine_label
+        # Never stamp bare agentic/native as job.model — that reads as a chosen
+        # model in the Swarm Tracker. Leave empty until a real id is known.
+        if model_id and not is_engine_only_model_id(model_id):
+            display_model = envelope_model_id(engine_label, model_id)
+        else:
+            display_model = ""
+            model_id = ""
         task_role = f"{role} ({engine_label})" if role else f"implement ({engine_label})"
+        task_row = {
+            "id": f"{job_id}-w0",
+            "role": task_role,
+            "instruction": goal,
+            "status": "running",
+            "adapter": engine_label,
+        }
+        if display_model:
+            task_row["model"] = display_model
         with self._local_jobs_lock:
             self._local_job_cancels[job_id] = threading.Event()
             now = time.time()
@@ -659,13 +675,7 @@ class LocalJobsMixin:
                 "tokens": 0,
                 "est_cost_usd": round(est_cost, 6) if est_cost else 0.0,
                 "artifacts": list(routing_arts),
-                "tasks": [{
-                    "id": f"{job_id}-w0",
-                    "role": task_role,
-                    "instruction": goal,
-                    "status": "running",
-                    "adapter": engine_label,
-                }],
+                "tasks": [task_row],
                 # Bounded nested tool rows (kind/goal/status only). Filled from
                 # ProviderWorker action events; never carries stdout/args/env.
                 "actions": [],
@@ -753,13 +763,39 @@ class LocalJobsMixin:
                     job["tasks"][0]["adapter"] = engine_label
                     base_role = (job.get("role") or "implement").strip() or "implement"
                     job["tasks"][0]["role"] = f"{base_role} ({engine_label})"
-            if engine_label or model_id:
-                eng = engine_label or (job.get("adapter") or "").strip() or "native"
-                mid = model_id
-                if mid:
-                    job["model"] = envelope_model_id(eng, mid)
-                elif eng:
-                    job["model"] = eng
+            # Never downgrade a real ROUTING/preview model to bare agentic/native.
+            # Empty finish-time model promotes from ROUTING artifact or keeps the
+            # existing non-engine-only stamp; prefer empty over eng-only honesty.
+            if is_engine_only_model_id(model_id):
+                promoted = ""
+                for art in (job.get("artifacts") or []):
+                    if not isinstance(art, dict):
+                        continue
+                    if (art.get("type") or "").strip().upper() != "ROUTING":
+                        continue
+                    art_mid = collapse_engine_prefixes(
+                        str(art.get("model") or art.get("model_id") or "").strip()
+                    ) or str(art.get("model") or art.get("model_id") or "").strip()
+                    if art_mid and not is_engine_only_model_id(art_mid):
+                        promoted = art_mid
+                if not promoted:
+                    existing = (job.get("model") or "").strip()
+                    if existing and not is_engine_only_model_id(existing):
+                        promoted = (
+                            collapse_engine_prefixes(existing) or existing
+                        )
+                model_id = promoted
+            if model_id and not is_engine_only_model_id(model_id):
+                eng = engine_label if engine_label in ("agentic", "native") else ""
+                if not eng:
+                    existing_adapter = (job.get("adapter") or "").strip().lower()
+                    if existing_adapter in ("agentic", "native"):
+                        eng = existing_adapter
+                job["model"] = envelope_model_id(eng, model_id)
+                if job.get("tasks"):
+                    job["tasks"][0]["model"] = job["model"]
+            elif is_engine_only_model_id(job.get("model") or ""):
+                job["model"] = ""
             # Zero-work full reuse: force durable economics to zero and drop
             # any register-time preview leftovers (defense in depth when
             # skip_routing_preview was not set). Narrow_verify (partial) that

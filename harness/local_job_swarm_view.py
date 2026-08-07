@@ -65,6 +65,9 @@ def _normalize_tasks(raw: Any, *, terminal: bool) -> list[dict]:
             "status": str(task.get("status") or ""),
             "adapter": str(task.get("adapter") or ""),
         }
+        task_model = str(task.get("model") or "").strip()
+        if task_model:
+            entry["model"] = task_model
         if task.get("completed_at") is not None:
             entry["completed_at"] = task.get("completed_at")
         if task.get("tokens") is not None:

@@ -35,10 +35,21 @@ export function collapseEnginePrefixes(modelId: string): string {
   return body ? `${head}/${body}` : head;
 }
 
+/** True when id is empty or only an adapter label (agentic/native). */
+export function isEngineOnlyModelId(modelId: string): boolean {
+  const raw = (modelId || "").trim();
+  if (!raw) return true;
+  const body = stripEnginePrefixes(raw);
+  if (!body || ENGINE_LABELS.has(body.toLowerCase())) return true;
+  const collapsed = collapseEnginePrefixes(raw);
+  return !collapsed || ENGINE_LABELS.has(collapsed.toLowerCase());
+}
+
 /**
  * Badge text for a routed/job model id.
  * - explicit_pin: keep full collapsed registry id (`agentic/meta/...`)
  * - otherwise: strip engine prefixes for scannability next to the adapter chip
+ * - never surfaces bare agentic/native (adapter chip stays separate)
  */
 export function displayModelId(
   modelId: string,
@@ -46,10 +57,13 @@ export function displayModelId(
 ): string {
   const raw = (modelId || "").trim();
   const adapter = (opts?.adapterFallback || "").trim();
-  if (!raw) return adapter;
+  const safeAdapter = isEngineOnlyModelId(adapter) ? "" : adapter;
+  if (!raw || isEngineOnlyModelId(raw)) return safeAdapter;
   const collapsed = collapseEnginePrefixes(raw);
-  if ((opts?.policy || "").trim() === "explicit_pin") return collapsed || adapter;
-  return stripEnginePrefixes(collapsed).trim() || adapter;
+  if ((opts?.policy || "").trim() === "explicit_pin") {
+    return collapsed || safeAdapter;
+  }
+  return stripEnginePrefixes(collapsed).trim() || safeAdapter;
 }
 
 /** Identity equality after stripping engine prefixes (case-insensitive). */
