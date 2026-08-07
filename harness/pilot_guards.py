@@ -25,13 +25,16 @@ HARNESS_PILOT_TOOL_BUDGET=0 / HARNESS_CLI_REDIRECT=0 /
 HARNESS_ALLOW_MID_TURN_RESTART=1 (opt-in; mid-turn /api/restart is blocked by
 default) (or numeric HARNESS_TURN_BUDGET >= 2 for cap override).
 Tune HARNESS_STAGNATION_STREAK_CAP / HARNESS_FAILED_OBJECTIVE_RESUME_CAP as needed.
+Tiny workspaces tighten the tool cap via HARNESS_TINY_WORKSPACE_TOOL_BUDGET
+(default 12). After a successful implement, remaining tools clamp to
+HARNESS_POST_IMPLEMENT_TOOL_ALLOWANCE (default 4).
 """
 
 import json
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Optional
 
 # Thresholds (override via env for tuning in the field).
 LOOP_REPEAT_CAP = int(os.environ.get("HARNESS_LOOP_REPEAT_CAP", "3"))
@@ -42,6 +45,12 @@ SWARM_GATE_READ_ALLOWANCE = int(os.environ.get("HARNESS_SWARM_GATE_READ_ALLOWANC
 # payloads on list_dir/search_files/grep before the model finally calls run_swarm).
 SWARM_GATE_FULL_REDIRECT_CAP = int(os.environ.get("HARNESS_SWARM_GATE_FULL_REDIRECT_CAP", "1"))
 TURN_TOOL_BUDGET_DEFAULT = int(os.environ.get("HARNESS_PILOT_TOOL_BUDGET", "25"))
+# Tiny-workspace tool budget (scale-aware tighten only; never raises explicit cap).
+TINY_WORKSPACE_TOOL_BUDGET_DEFAULT = 12
+TINY_WORKSPACE_SOURCE_FILE_CAP = 15
+TINY_WORKSPACE_LOC_CAP = 5000
+# Residual tools allowed after a successful implement lands (never raises cap).
+POST_IMPLEMENT_TOOL_ALLOWANCE_DEFAULT = 4
 # How many consecutive identical (normalized prose + action fingerprint) steps
 # may run before the send-loop stagnation governor ends the turn calmly.
 STAGNATION_STREAK_CAP = int(os.environ.get("HARNESS_STAGNATION_STREAK_CAP", "3"))
@@ -186,7 +195,8 @@ def iteration_budget_enabled() -> bool:
     return turn_tool_budget_cap() > 0
 
 
-def turn_tool_budget_cap() -> int:
+def _explicit_or_default_tool_budget() -> int:
+    """Absolute ceiling from env (or default 25). Does not apply tiny tighten."""
     pilot_raw = os.environ.get("HARNESS_PILOT_TOOL_BUDGET", "").strip()
     if pilot_raw:
         try:
@@ -201,6 +211,44 @@ def turn_tool_budget_cap() -> int:
     return TURN_TOOL_BUDGET_DEFAULT
 
 
+def tiny_workspace_tool_budget() -> int:
+    """Max tools for a classified-tiny workspace (default 12)."""
+    raw = os.environ.get("HARNESS_TINY_WORKSPACE_TOOL_BUDGET", "").strip()
+    if raw:
+        try:
+            return max(0, int(raw))
+        except (TypeError, ValueError):
+            pass
+    return TINY_WORKSPACE_TOOL_BUDGET_DEFAULT
+
+
+def post_implement_tool_allowance() -> int:
+    """Residual tool calls after a successful implement (default 4)."""
+    raw = os.environ.get("HARNESS_POST_IMPLEMENT_TOOL_ALLOWANCE", "").strip()
+    if raw:
+        try:
+            return max(0, int(raw))
+        except (TypeError, ValueError):
+            pass
+    return POST_IMPLEMENT_TOOL_ALLOWANCE_DEFAULT
+
+
+def turn_tool_budget_cap(repo_path: Optional[str] = None) -> int:
+    """Effective per-turn tool cap.
+
+    Explicit ``HARNESS_PILOT_TOOL_BUDGET`` / ``HARNESS_TURN_BUDGET`` is the
+    absolute ceiling. A tiny workspace may only *tighten* that ceiling via
+    ``HARNESS_TINY_WORKSPACE_TOOL_BUDGET`` (default 12). Large workspaces keep
+    the existing default 25.
+    """
+    base = _explicit_or_default_tool_budget()
+    if base <= 0:
+        return base
+    if repo_path and is_tiny_workspace(repo_path):
+        return min(base, tiny_workspace_tool_budget())
+    return base
+
+
 def guards_active() -> bool:
     return (
         loop_guard_enabled()
@@ -209,6 +257,156 @@ def guards_active() -> bool:
         or iteration_budget_enabled()
         or cli_redirect_enabled()
     )
+
+
+# Directories skipped while classifying workspace scale (build/cache/vendor).
+_TINY_SKIP_DIR_NAMES = frozenset({
+    ".git",
+    "node_modules",
+    "__pycache__",
+    ".venv",
+    "venv",
+    ".tox",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".cache",
+    "cache",
+    "coverage",
+    "dist",
+    "build",
+    "release",
+    "releases",
+    "target",
+    ".next",
+    ".nuxt",
+    ".turbo",
+    "vendor",
+    ".codegraph",
+    "eggs",
+    ".eggs",
+})
+
+_TINY_BINARY_EXTENSIONS = frozenset({
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".bmp", ".svg",
+    ".pdf", ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar",
+    ".woff", ".woff2", ".ttf", ".otf", ".eot",
+    ".mp3", ".mp4", ".wav", ".webm", ".mov",
+    ".exe", ".dll", ".so", ".dylib", ".o", ".a", ".pyc", ".pyo",
+    ".class", ".jar", ".wasm", ".bin", ".dat", ".db", ".sqlite",
+})
+
+# Text-ish source extensions counted toward tiny-workspace scale.
+_TINY_SOURCE_EXTENSIONS = frozenset({
+    ".py", ".pyi", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
+    ".html", ".htm", ".css", ".scss", ".sass", ".less",
+    ".json", ".jsonc", ".yaml", ".yml", ".toml", ".ini", ".cfg",
+    ".md", ".mdx", ".rst", ".txt",
+    ".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd",
+    ".go", ".rs", ".java", ".kt", ".c", ".h", ".cc", ".cpp", ".hpp",
+    ".rb", ".php", ".swift", ".cs", ".vue", ".svelte",
+    ".sql", ".graphql", ".proto",
+})
+
+
+def _env_int_cap(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return default
+
+
+def workspace_source_stats(repo_path: str) -> tuple[int, int]:
+    """Count source files and LOC under ``repo_path`` (cheap, deterministic).
+
+    Ignores ``.git``, ``node_modules``, build/release/cache dirs, and binary
+    files. Returns ``(source_file_count, loc)``. Missing/unreadable roots
+    yield ``(0, 0)``.
+    """
+    root = (repo_path or "").strip()
+    if not root or not os.path.isdir(root):
+        return 0, 0
+
+    source_files = 0
+    loc = 0
+    try:
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [
+                d for d in dirnames
+                if d not in _TINY_SKIP_DIR_NAMES
+                and not d.endswith(".egg-info")
+                and not d.startswith(".egg")
+            ]
+            for name in filenames:
+                path = os.path.join(dirpath, name)
+                ext = os.path.splitext(name)[1].lower()
+                if ext in _TINY_BINARY_EXTENSIONS:
+                    continue
+                if ext and ext not in _TINY_SOURCE_EXTENSIONS:
+                    # Unknown extension: only count if it looks like text.
+                    if not _file_looks_like_text(path):
+                        continue
+                elif not ext:
+                    if not _file_looks_like_text(path):
+                        continue
+                try:
+                    with open(path, "rb") as fh:
+                        raw = fh.read()
+                except OSError:
+                    continue
+                if b"\x00" in raw[:8192]:
+                    continue
+                try:
+                    text = raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    try:
+                        text = raw.decode("latin-1")
+                    except Exception:
+                        continue
+                source_files += 1
+                loc += text.count("\n") + (1 if text and not text.endswith("\n") else 0)
+    except OSError:
+        return source_files, loc
+    return source_files, loc
+
+
+def _file_looks_like_text(path: str) -> bool:
+    try:
+        with open(path, "rb") as fh:
+            sample = fh.read(8192)
+    except OSError:
+        return False
+    if not sample:
+        return True
+    if b"\x00" in sample:
+        return False
+    try:
+        sample.decode("utf-8")
+        return True
+    except UnicodeDecodeError:
+        return False
+
+
+def is_tiny_workspace(repo_path: str) -> bool:
+    """True when the repo is small enough to warrant a tighter tool budget.
+
+    Defaults: at most 15 source files AND at most 5,000 LOC. Thresholds are
+    overridable via ``HARNESS_TINY_WORKSPACE_SOURCE_FILES`` /
+    ``HARNESS_TINY_WORKSPACE_LOC`` for field tuning.
+    """
+    if not repo_path or not os.path.isdir(repo_path):
+        return False
+    files, loc = workspace_source_stats(repo_path)
+    file_cap = _env_int_cap(
+        "HARNESS_TINY_WORKSPACE_SOURCE_FILES", TINY_WORKSPACE_SOURCE_FILE_CAP,
+    )
+    loc_cap = _env_int_cap("HARNESS_TINY_WORKSPACE_LOC", TINY_WORKSPACE_LOC_CAP)
+    if file_cap <= 0 or loc_cap <= 0:
+        return False
+    return files <= file_cap and loc <= loc_cap
 
 
 @dataclass
@@ -261,6 +459,10 @@ class TurnGuardState:
     iteration_budget: IterationBudget | None = None
     # Set when empty managed implement recovery already ran against dirty live checkout.
     last_implement_exhausted: bool = False
+    # Set when a completed implement/local job returned real success/patch provenance.
+    implement_success_seen: bool = False
+    # Cached at turn start from the effective repo path (scale-aware budget / chrome guard).
+    tiny_workspace: bool = False
 
 
 @dataclass(frozen=True)
@@ -617,11 +819,90 @@ def _delegate_suppress_message(kind: str, exploration_count: int) -> str:
     )
 
 
-def _iteration_budget_suppress_message(cap: int) -> str:
+def _iteration_budget_suppress_message(
+    cap: int, *, implement_success: bool = False,
+) -> str:
+    if implement_success:
+        return (
+            "(SUPPRESSED: post-implement validation allowance exhausted — "
+            "the worker patch already landed. Report the outcome to the user "
+            "and stop; do not launch more verification, browser smoke, or "
+            "re-investigation.)"
+        )
     return (
         f"(SUPPRESSED: per-turn tool-call budget exhausted ({cap}/{cap} calls used). "
         f"Summarize findings for the user and/or dispatch background workers "
         f"(run_swarm/run_implement/run_parallel) instead of more inline tool calls.)"
+    )
+
+
+_CHROME_FILE_SMOKE_BROWSER_RE = re.compile(
+    r"(?:^|[\s;/\\\"'])(?:google-chrome(?:-stable)?|chromium(?:-browser)?|chrome)"
+    r"(?:\.exe)?\b",
+    re.IGNORECASE,
+)
+_CHROME_HEADLESS_OR_DUMP_RE = re.compile(
+    r"(?:--headless(?:=[^\s]*)?|--dump-dom)\b",
+    re.IGNORECASE,
+)
+_CHROME_LOCAL_TARGET_RE = re.compile(
+    r"(?:file://|(?:^|[\s\"'=])(?:\./|../|[A-Za-z]:[\\/])?(?:[\w./\\-]*/)?index\.html\b)",
+    re.IGNORECASE,
+)
+_EXPLICIT_BROWSER_QA_RE = re.compile(
+    r"(?:"
+    r"\bbrowser\s+qa\b|"
+    r"\bvisual\s+(?:qa|check|validation|test|review)\b|"
+    r"\bscreenshot\b|"
+    r"\bopen\s+(?:it\s+)?(?:in\s+)?(?:the\s+)?browser\b|"
+    r"\bbrowser\s+(?:check|test|validation|smoke)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+_CHROME_SMOKE_SUPPRESS_MESSAGE = (
+    "[suppressed: headless Chrome file:// / dump-dom smoke] On a tiny or "
+    "post-implement workspace, do not launch headless Chrome/Chromium against "
+    "local file:// or index.html for smoke checks. Prefer one cheap static "
+    "verify (read the changed file, node --check, or a focused grep), then "
+    "report and stop. Use native browser_* tools only when the user explicitly "
+    "asks for browser QA / visual validation."
+)
+
+
+def user_requests_browser_qa(message: str) -> bool:
+    """True when the user explicitly asked for browser / visual QA."""
+    return bool(_EXPLICIT_BROWSER_QA_RE.search(message or ""))
+
+
+def is_headless_chrome_file_smoke_command(command: str) -> bool:
+    """Detect headless Chrome/Chromium file:// or local index.html dump-dom smoke."""
+    cmd = command or ""
+    if not _CHROME_FILE_SMOKE_BROWSER_RE.search(cmd):
+        return False
+    if not _CHROME_HEADLESS_OR_DUMP_RE.search(cmd):
+        return False
+    return bool(_CHROME_LOCAL_TARGET_RE.search(cmd))
+
+
+def check_chrome_file_smoke(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict:
+    """Suppress headless Chrome local smoke when tiny / post-implement is active.
+
+    Does not touch real ``browser_*`` tools. Honors explicit browser-QA asks.
+    """
+    if kind != "run_command":
+        return GuardVerdict(False)
+    if not (state.tiny_workspace or state.implement_success_seen):
+        return GuardVerdict(False)
+    if user_requests_browser_qa(state.user_message):
+        return GuardVerdict(False)
+    command = getattr(act, "command", "") or ""
+    if not is_headless_chrome_file_smoke_command(command):
+        return GuardVerdict(False)
+    return GuardVerdict(
+        suppress=True,
+        reason="chrome_file_smoke",
+        message=_CHROME_SMOKE_SUPPRESS_MESSAGE,
     )
 
 
@@ -697,6 +978,78 @@ def note_implement_exhausted_from_provenance(
     try:
         if isinstance(provenance, dict) and provenance.get(_IMPLEMENT_EXHAUSTED_PROVENANCE_KEY):
             state.last_implement_exhausted = True
+    except Exception:
+        pass
+
+
+def job_result_shows_implement_success(
+    res_job: Any, stamped: Any = None,
+) -> bool:
+    """True when a completed implement/local job returned real patch/success.
+
+    Empty managed-implement recovery exhaustion is NOT success. Analysis-only
+    green results (no patch) are also excluded.
+    """
+    if not isinstance(res_job, dict):
+        return False
+    try:
+        provenance = res_job.get("worker_provenance") or {}
+        if isinstance(provenance, dict) and provenance.get(_IMPLEMENT_EXHAUSTED_PROVENANCE_KEY):
+            return False
+        if res_job.get("error"):
+            return False
+        role = ""
+        if isinstance(stamped, dict):
+            role = str(stamped.get("role") or "").strip().lower()
+        if role in ("analysis", "review"):
+            return False
+        # Analysis-ok findings with no patch are not implement success.
+        if (
+            res_job.get("analysis_ok")
+            and not res_job.get("applied")
+            and not res_job.get("has_patch_art")
+        ):
+            return False
+        if res_job.get("applied"):
+            return True
+        if res_job.get("has_patch_art") and (
+            res_job.get("held_for_review") or res_job.get("applied")
+        ):
+            return True
+        if isinstance(provenance, dict) and provenance.get("worktree_diff_empty") is False:
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def clamp_post_implement_iteration_budget(state: TurnGuardState) -> None:
+    """Clamp remaining tools to the post-implement allowance (never raise cap)."""
+    budget = state.iteration_budget
+    if budget is None:
+        return
+    allowance = post_implement_tool_allowance()
+    # Preserve already-used calls; never raise the existing ceiling.
+    budget.cap = min(budget.cap, budget.used + allowance)
+
+
+def note_implement_success_from_job_result(
+    state: TurnGuardState,
+    res_job: Any,
+    stamped: Any = None,
+) -> None:
+    """Mark implement success + clamp residual budget when provenance is real.
+
+    Idempotent: subsequent calls after ``implement_success_seen`` are no-ops so
+    the allowance is not re-applied.
+    """
+    try:
+        if state.implement_success_seen:
+            return
+        if not job_result_shows_implement_success(res_job, stamped):
+            return
+        state.implement_success_seen = True
+        clamp_post_implement_iteration_budget(state)
     except Exception:
         pass
 
@@ -863,7 +1216,9 @@ def check_iteration_budget(state: TurnGuardState, kind: str, act: Any) -> GuardV
     return GuardVerdict(
         suppress=True,
         reason="budget",
-        message=_iteration_budget_suppress_message(budget.cap),
+        message=_iteration_budget_suppress_message(
+            budget.cap, implement_success=bool(state.implement_success_seen),
+        ),
     )
 
 
@@ -876,6 +1231,10 @@ def check_pilot_guards(state: TurnGuardState, kind: str, act: Any) -> GuardVerdi
     cli_verdict = check_cli_redirect(state, kind, act)
     if cli_verdict.suppress:
         return cli_verdict
+
+    chrome_verdict = check_chrome_file_smoke(state, kind, act)
+    if chrome_verdict.suppress:
+        return chrome_verdict
 
     implement_exhausted_verdict = check_implement_exhausted(state, kind, act)
     if implement_exhausted_verdict.suppress:
@@ -918,17 +1277,28 @@ def record_action_execution(state: TurnGuardState, kind: str, act: Any) -> None:
         state.iteration_budget.consume()
 
 
-def new_turn_guard_state(user_message: str = "") -> TurnGuardState:
+def new_turn_guard_state(
+    user_message: str = "",
+    *,
+    repo_path: Optional[str] = None,
+) -> TurnGuardState:
+    tiny = bool(repo_path) and is_tiny_workspace(repo_path or "")
     cap = turn_tool_budget_cap()
+    if tiny:
+        cap = min(cap, tiny_workspace_tool_budget())
     return TurnGuardState(
         user_message=user_message or "",
         broad_intent=is_broad_intent_user_message(user_message or ""),
         iteration_budget=IterationBudget(cap) if cap > 0 else None,
+        tiny_workspace=tiny,
     )
 
 
 def reuse_or_new_turn_guard_state(
-    prior: TurnGuardState | None, user_message: str = "",
+    prior: Optional[TurnGuardState],
+    user_message: str = "",
+    *,
+    repo_path: Optional[str] = None,
 ) -> TurnGuardState:
     """Reuse prior guard state across model steps / keep-alive resume.
 
@@ -939,7 +1309,7 @@ def reuse_or_new_turn_guard_state(
     """
     if prior is not None:
         return prior
-    return new_turn_guard_state(user_message)
+    return new_turn_guard_state(user_message, repo_path=repo_path)
 
 
 _READ_ONLY_ANALYSIS_GOAL_RE = re.compile(

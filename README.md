@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.184, deliberately pre-1.0. Background implement keeps Still working / Looking resume chrome after assistant_done; Compact now latches Needs attention until history grows (rides puppetmaster-ai==1.21.13).
+> Status: v0.9.185, deliberately pre-1.0. Tiny workspaces now tighten pilot tool budgets, successful implements cap post-worker validation, and local headless Chrome smoke probes are suppressed by default (rides puppetmaster-ai==1.21.13).
 
 ## Documentation
 

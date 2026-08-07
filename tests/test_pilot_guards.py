@@ -10,10 +10,14 @@ from harness.pilot_guards import (
     DELEGATE_THRESHOLD,
     IterationBudget,
     LOOP_REPEAT_CAP,
+    POST_IMPLEMENT_TOOL_ALLOWANCE_DEFAULT,
     SWARM_GATE_FULL_REDIRECT_CAP,
     SWARM_GATE_READ_ALLOWANCE,
+    TINY_WORKSPACE_TOOL_BUDGET_DEFAULT,
+    TURN_TOOL_BUDGET_DEFAULT,
     TurnGuardState,
     check_backend_restart,
+    check_chrome_file_smoke,
     check_cli_redirect,
     check_delegate_gate,
     check_implement_exhausted,
@@ -21,25 +25,34 @@ from harness.pilot_guards import (
     check_loop_guard,
     check_pilot_guards,
     check_swarm_gate,
+    clamp_post_implement_iteration_budget,
     cli_redirect_enabled,
     delegate_gate_enabled,
     guards_active,
     is_backend_restart_command,
     is_broad_intent_user_message,
     is_exploration_command,
+    is_headless_chrome_file_smoke_command,
     is_native_exploration,
     is_puppetmaster_cli_command,
     is_swarm_gate_blocked_exploration,
+    is_tiny_workspace,
     iteration_budget_enabled,
+    job_result_shows_implement_success,
     loop_guard_enabled,
     mid_turn_restart_blocked,
     new_turn_guard_state,
     normalize_action_args,
     note_implement_exhausted_from_provenance,
+    note_implement_success_from_job_result,
+    post_implement_tool_allowance,
     puppetmaster_cli_native_mapping,
     record_action_execution,
     swarm_gate_enabled,
+    tiny_workspace_tool_budget,
     turn_tool_budget_cap,
+    user_requests_browser_qa,
+    workspace_source_stats,
 )
 
 
@@ -801,3 +814,212 @@ def test_check_pilot_guards_blocks_exhausted_run_implement():
     verdict = check_pilot_guards(state, "run_implement", act)
     assert verdict.suppress is True
     assert verdict.reason == "implement_exhausted"
+
+
+def test_tiny_workspace_classifier_counts_source_ignores_vendor(tmp_path):
+    (tmp_path / "app.js").write_text("console.log(1);\n", encoding="utf-8")
+    (tmp_path / "index.html").write_text("<html></html>\n", encoding="utf-8")
+    (tmp_path / "styles.css").write_text("body{}\n", encoding="utf-8")
+    (tmp_path / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00")
+    vendor = tmp_path / "node_modules" / "pkg"
+    vendor.mkdir(parents=True)
+    (vendor / "index.js").write_text("module.exports=1;\n" * 200, encoding="utf-8")
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir()
+    (git_dir / "config").write_text("x\n" * 50, encoding="utf-8")
+    build = tmp_path / "build"
+    build.mkdir()
+    (build / "out.js").write_text("x\n" * 100, encoding="utf-8")
+
+    files, loc = workspace_source_stats(str(tmp_path))
+    assert files == 3
+    assert loc == 3
+    assert is_tiny_workspace(str(tmp_path)) is True
+
+
+def test_tiny_workspace_budget_tightens_default(tmp_path, monkeypatch):
+    monkeypatch.delenv("HARNESS_PILOT_TOOL_BUDGET", raising=False)
+    monkeypatch.delenv("HARNESS_TURN_BUDGET", raising=False)
+    monkeypatch.delenv("HARNESS_TINY_WORKSPACE_TOOL_BUDGET", raising=False)
+    (tmp_path / "a.js").write_text("a\n", encoding="utf-8")
+    (tmp_path / "b.js").write_text("b\n", encoding="utf-8")
+
+    assert turn_tool_budget_cap() == TURN_TOOL_BUDGET_DEFAULT
+    assert turn_tool_budget_cap(repo_path=str(tmp_path)) == TINY_WORKSPACE_TOOL_BUDGET_DEFAULT
+
+    state = new_turn_guard_state("polish the demo", repo_path=str(tmp_path))
+    assert state.tiny_workspace is True
+    assert state.iteration_budget is not None
+    assert state.iteration_budget.cap == TINY_WORKSPACE_TOOL_BUDGET_DEFAULT
+
+
+def test_tiny_workspace_budget_only_tightens_explicit_ceiling(tmp_path, monkeypatch):
+    (tmp_path / "a.js").write_text("a\n", encoding="utf-8")
+    monkeypatch.setenv("HARNESS_PILOT_TOOL_BUDGET", "8")
+    monkeypatch.delenv("HARNESS_TINY_WORKSPACE_TOOL_BUDGET", raising=False)
+    assert turn_tool_budget_cap(repo_path=str(tmp_path)) == 8
+    assert turn_tool_budget_cap(repo_path=str(tmp_path / "missing")) == 8
+
+    monkeypatch.setenv("HARNESS_PILOT_TOOL_BUDGET", "20")
+    assert turn_tool_budget_cap(repo_path=str(tmp_path)) == TINY_WORKSPACE_TOOL_BUDGET_DEFAULT
+    assert turn_tool_budget_cap(repo_path=str(tmp_path / "missing")) == 20
+
+    monkeypatch.setenv("HARNESS_TINY_WORKSPACE_TOOL_BUDGET", "10")
+    assert tiny_workspace_tool_budget() == 10
+    assert turn_tool_budget_cap(repo_path=str(tmp_path)) == 10
+
+
+def test_large_workspace_keeps_default_budget(tmp_path, monkeypatch):
+    monkeypatch.delenv("HARNESS_PILOT_TOOL_BUDGET", raising=False)
+    monkeypatch.delenv("HARNESS_TURN_BUDGET", raising=False)
+    for i in range(20):
+        (tmp_path / f"f{i}.py").write_text("x = 1\n" * 300, encoding="utf-8")
+    assert is_tiny_workspace(str(tmp_path)) is False
+    assert turn_tool_budget_cap(repo_path=str(tmp_path)) == TURN_TOOL_BUDGET_DEFAULT
+    state = new_turn_guard_state("audit", repo_path=str(tmp_path))
+    assert state.tiny_workspace is False
+    assert state.iteration_budget is not None
+    assert state.iteration_budget.cap == TURN_TOOL_BUDGET_DEFAULT
+
+
+def test_implement_success_provenance_clamps_post_implement_allowance(monkeypatch):
+    monkeypatch.delenv("HARNESS_POST_IMPLEMENT_TOOL_ALLOWANCE", raising=False)
+    budget = IterationBudget(cap=25, used=10)
+    state = TurnGuardState(iteration_budget=budget)
+    assert job_result_shows_implement_success({
+        "applied": True,
+        "files": ["app.js"],
+        "has_patch_art": True,
+        "worker_provenance": {"worktree_diff_empty": False},
+    }) is True
+
+    note_implement_success_from_job_result(
+        state,
+        {
+            "applied": True,
+            "files": ["app.js"],
+            "has_patch_art": True,
+            "worker_provenance": {"worktree_diff_empty": False},
+        },
+        {"role": "implement"},
+    )
+    assert state.implement_success_seen is True
+    assert budget.cap == 10 + POST_IMPLEMENT_TOOL_ALLOWANCE_DEFAULT
+    assert budget.remaining == POST_IMPLEMENT_TOOL_ALLOWANCE_DEFAULT
+
+    # Idempotent — second note must not raise or re-widen.
+    note_implement_success_from_job_result(
+        state,
+        {"applied": True, "files": ["app.js"], "has_patch_art": True},
+        {"role": "implement"},
+    )
+    assert budget.cap == 10 + POST_IMPLEMENT_TOOL_ALLOWANCE_DEFAULT
+
+
+def test_implement_success_never_raises_existing_cap():
+    budget = IterationBudget(cap=12, used=10)
+    state = TurnGuardState(iteration_budget=budget)
+    clamp_post_implement_iteration_budget(state)
+    # used(10)+allowance(4)=14, but existing cap 12 wins.
+    assert budget.cap == 12
+
+
+def test_empty_managed_implement_exhaustion_is_not_success():
+    state = TurnGuardState(iteration_budget=IterationBudget(cap=25, used=3))
+    res = {
+        "applied": False,
+        "error": "empty managed implement exhausted",
+        "has_patch_art": False,
+        "worker_provenance": {"empty_managed_implement_exhausted": True},
+    }
+    assert job_result_shows_implement_success(res, {"role": "implement"}) is False
+    note_implement_success_from_job_result(state, res, {"role": "implement"})
+    assert state.implement_success_seen is False
+    assert state.iteration_budget.cap == 25
+
+
+def test_analysis_ok_is_not_implement_success():
+    res = {
+        "applied": False,
+        "analysis_ok": True,
+        "has_patch_art": False,
+        "worker_provenance": {"worktree_diff_empty": True},
+    }
+    assert job_result_shows_implement_success(res, {"role": "analysis"}) is False
+
+
+def test_post_implement_budget_exhaustion_uses_calm_message():
+    budget = IterationBudget(cap=14, used=14)
+    state = TurnGuardState(
+        iteration_budget=budget,
+        implement_success_seen=True,
+    )
+    verdict = check_iteration_budget(state, "read_file", _Act(path="app.js"))
+    assert verdict.suppress is True
+    assert verdict.reason == "budget"
+    assert "worker patch already landed" in verdict.message
+    assert "Report the outcome" in verdict.message
+
+
+def test_chrome_file_smoke_detection():
+    assert is_headless_chrome_file_smoke_command(
+        "chromium --headless --dump-dom file:///tmp/freeze/index.html"
+    ) is True
+    assert is_headless_chrome_file_smoke_command(
+        "google-chrome --headless --dump-dom ./index.html"
+    ) is True
+    assert is_headless_chrome_file_smoke_command(
+        "chromium --headless --dump-dom https://example.com"
+    ) is False
+    assert is_headless_chrome_file_smoke_command("ls index.html") is False
+
+
+def test_chrome_file_smoke_suppressed_on_tiny_or_post_implement():
+    act = _Act(
+        kind="run_command",
+        command="chromium --headless --dump-dom file:///tmp/site/index.html",
+    )
+    tiny = TurnGuardState(tiny_workspace=True, user_message="polish the demo")
+    verdict = check_chrome_file_smoke(tiny, "run_command", act)
+    assert verdict.suppress is True
+    assert verdict.reason == "chrome_file_smoke"
+    assert "static" in verdict.message.lower() or "cheap" in verdict.message.lower()
+
+    post = TurnGuardState(
+        implement_success_seen=True, user_message="polish the demo",
+    )
+    assert check_chrome_file_smoke(post, "run_command", act).suppress is True
+
+    large = TurnGuardState(user_message="polish the demo")
+    assert check_chrome_file_smoke(large, "run_command", act).suppress is False
+
+
+def test_chrome_file_smoke_not_suppressed_for_explicit_browser_qa():
+    assert user_requests_browser_qa("please do a visual QA in the browser") is True
+    state = TurnGuardState(
+        tiny_workspace=True,
+        implement_success_seen=True,
+        user_message="run a browser QA / visual check on the demo",
+    )
+    act = _Act(
+        kind="run_command",
+        command="chromium --headless --dump-dom file:///tmp/site/index.html",
+    )
+    assert check_chrome_file_smoke(state, "run_command", act).suppress is False
+
+
+def test_browser_star_tools_not_suppressed_by_chrome_smoke_guard():
+    state = TurnGuardState(tiny_workspace=True, implement_success_seen=True)
+    verdict = check_chrome_file_smoke(
+        state, "browser_navigate", _Act(kind="browser_navigate"),
+    )
+    assert verdict.suppress is False
+
+
+def test_post_implement_allowance_env_override(monkeypatch):
+    monkeypatch.setenv("HARNESS_POST_IMPLEMENT_TOOL_ALLOWANCE", "2")
+    assert post_implement_tool_allowance() == 2
+    budget = IterationBudget(cap=25, used=5)
+    state = TurnGuardState(iteration_budget=budget)
+    clamp_post_implement_iteration_budget(state)
+    assert budget.cap == 7

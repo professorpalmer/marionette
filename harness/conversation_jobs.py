@@ -1194,12 +1194,18 @@ class ConversationJobsMixin:
                     if worker_provenance:
                         display_result["worker_provenance"] = worker_provenance
                     try:
-                        from harness.pilot_guards import note_implement_exhausted_from_provenance
+                        from harness.pilot_guards import (
+                            note_implement_exhausted_from_provenance,
+                            note_implement_success_from_job_result,
+                        )
 
                         guard_state = getattr(self, "_turn_guard_state", None)
                         if guard_state is not None:
                             note_implement_exhausted_from_provenance(
                                 guard_state, worker_provenance,
+                            )
+                            note_implement_success_from_job_result(
+                                guard_state, res_job, stamped,
                             )
                     except Exception:
                         pass
