@@ -174,3 +174,23 @@ def test_xai_oauth_mirrors_xai_api_key_env(pool_dir, monkeypatch):
     assert os.environ.get("XAI_API_KEY") == "xai-oauth-mirror-token-99"
     assert cp.credential_satisfied("XAI_API_KEY") is True
     assert cp.peek_token_for_env("XAI_API_KEY") == "xai-oauth-mirror-token-99"
+
+
+def test_oauth_entry_clears_disconnected_flag(pool_dir, monkeypatch):
+    """Device/PKCE login must reconnect a provider the user had toggled off."""
+    from harness.keys import get_disconnected, mark_disconnected
+    from harness.providers import get_provider
+
+    mark_disconnected("openai-codex")
+    assert "openai-codex" in get_disconnected()
+    assert get_provider("openai-codex").available is False
+
+    cp.add_oauth_entry(
+        "openai-codex",
+        access_token="codex-reauth-access-token-aaaaaaaa",
+        refresh_token="codex-reauth-refresh-token-bbbbbbbb",
+        label="chatgpt-codex",
+    )
+    assert "openai-codex" not in get_disconnected()
+    assert get_provider("openai-codex").available is True
+    assert get_provider("openai-codex").key() == "codex-reauth-access-token-aaaaaaaa"

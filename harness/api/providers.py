@@ -379,7 +379,16 @@ def post_auth_oauth_poll(body: dict) -> tuple[int, dict]:
     except Exception as e:
         return 400, {"error": str(e)}
     if res.get("status") == "done":
+        # add_oauth_entry already unmarks disconnected; resync agentic catalog
+        # so the picker/registry see the provider without a backend restart.
+        from ..auto_registry import sync_agentic_registry_safe
         from ..credential_pool import list_pool_public
+        from ..model_fetch import invalidate_models_cache
+        sync_agentic_registry_safe()
+        try:
+            invalidate_models_cache(done_provider)
+        except Exception:
+            pass
         res = {**res, **list_pool_public(done_provider)}
     return 200, res
 
@@ -403,7 +412,14 @@ def post_auth_oauth_complete(body: dict) -> tuple[int, dict]:
     except Exception as e:
         return 400, {"error": str(e)}
     if res.get("status") == "done":
+        from ..auto_registry import sync_agentic_registry_safe
         from ..credential_pool import list_pool_public
+        from ..model_fetch import invalidate_models_cache
+        sync_agentic_registry_safe()
+        try:
+            invalidate_models_cache("anthropic")
+        except Exception:
+            pass
         res = {**res, **list_pool_public("anthropic")}
     return 200, res
 

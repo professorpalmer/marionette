@@ -84,12 +84,25 @@ def _read_cache() -> dict:
 
 
 def _write_cache(data: dict) -> None:
+    """Atomic cache write; tolerate update races that delete ``.tmp`` mid-flight."""
+    import tempfile
+
     try:
         path = _cache_path()
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
-            json.dump(data, f)
-        os.replace(tmp, path)
+        base = os.path.dirname(path) or "."
+        os.makedirs(base, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir=base, prefix="models_cache_")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+                json.dump(data, f)
+            os.replace(tmp_path, path)
+        except Exception:
+            if os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+            raise
     except Exception as e:
         _diag("model_fetch.cache_write", e)
 

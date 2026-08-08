@@ -429,6 +429,15 @@ def add_oauth_entry(
     with _lock:
         pool.add_entry(entry)
         _mirror_pool_token_to_env(provider, pool)
+    # Successful OAuth is an explicit reconnect: paste-key path already clears
+    # disconnected via set_api_key, but device/PKCE login only hits the pool.
+    # Without this, re-auth after a Settings toggle (or a 401 scare) leaves
+    # credentials healthy in auth_pool.json while Provider.key() stays None.
+    try:
+        from .keys import unmark_disconnected
+        unmark_disconnected(provider)
+    except Exception as e:
+        _diag("credential_pool.oauth_unmark", e)
     return entry
 
 
