@@ -161,3 +161,26 @@ def test_create_workspace_duplicate_branch_fails(tmp_path):
     again = create_workspace(str(repo), "dup")
     assert again["ok"] is False
     assert again.get("error")
+
+
+def test_switch_workspace_soft_refuses_branch_locked_in_worktree(tmp_path):
+    """pmedit/pmworker-style branches live in sibling worktrees — don't toast a git fatal."""
+    repo = _init_repo(tmp_path)
+    _git(repo, "branch", "pmedit-deadbeef")
+    wt = tmp_path / "wt-pmedit"
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", str(wt), "pmedit-deadbeef"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    result = switch_workspace(str(repo), "pmedit-deadbeef")
+    assert result["ok"] is False
+    assert result.get("worktree_busy") is True
+    assert result.get("worktree_path")
+    assert "pmedit-deadbeef" in result["error"]
+    assert "worktree" in result["error"].lower()
+    # Still on main — no partial checkout.
+    active = [r for r in list_workspaces(str(repo)) if r["active"]]
+    assert active and active[0]["name"] == "main"

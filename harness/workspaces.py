@@ -11,6 +11,7 @@ the configured repo only. No repo configured -> no workspaces (empty list).
 """
 
 import subprocess
+import os
 from dataclasses import dataclass, asdict
 from typing import Optional
 
@@ -60,6 +61,54 @@ def list_workspaces(repo: str) -> list[dict]:
     return rows
 
 
+def _worktree_holding_branch(repo: str, branch: str) -> Optional[str]:
+    """Path of another worktree that already has ``branch`` checked out, if any.
+
+    Git refuses ``checkout`` of a branch that is locked to a sibling worktree
+    (``fatal: '…' is already used by worktree at '…'``). Detect that up front
+    so the Branches list can soft-refuse with a clear path instead of a raw
+    fatal toast — common for Marionette ``pmedit-*`` / ``pmworker-*`` branches.
+    """
+    if not repo or not branch:
+        return None
+    try:
+        from .worktrees import list_worktrees
+    except Exception:
+        return None
+    try:
+        real_repo = os.path.realpath(repo)
+    except Exception:
+        real_repo = repo
+    for wt in list_worktrees(repo):
+        wt_branch = (wt.get("branch") or "").strip()
+        if wt_branch != branch:
+            continue
+        wt_path = (wt.get("path") or "").strip()
+        if not wt_path:
+            continue
+        try:
+            if os.path.realpath(wt_path) == real_repo:
+                continue
+        except Exception:
+            if wt.get("is_main"):
+                continue
+        return wt_path
+    return None
+
+
+def _friendly_worktree_busy_error(branch: str, wt_path: str) -> dict:
+    return {
+        "ok": False,
+        "error": (
+            f"Branch '{branch}' is already checked out in a worktree at "
+            f"{wt_path}. Open that folder instead of switching here "
+            f"(or prune unused edit/worker branches from the Branches brush)."
+        ),
+        "worktree_busy": True,
+        "worktree_path": wt_path,
+    }
+
+
 def switch_workspace(repo: str, name: str, *, allow_dirty: bool = False) -> dict:
     """Check out the workspace's branch. Refuses over uncommitted changes unless
     allow_dirty (git itself also refuses if the checkout would clobber)."""
@@ -70,9 +119,26 @@ def switch_workspace(repo: str, name: str, *, allow_dirty: bool = False) -> dict
                 f"or allow_dirty", "dirty": True}
     if name.startswith("-"):
         return {"ok": False, "error": "invalid workspace name (cannot start with '-')"}
+    held = _worktree_holding_branch(repo, name)
+    if held:
+        return _friendly_worktree_busy_error(name, held)
     rc, out, err = _git(repo, "checkout", name)
     if rc != 0:
-        return {"ok": False, "error": err or out}
+        msg = err or out
+        # Fallback when porcelain detection missed (stale worktree metadata).
+        if "already used by worktree" in (msg or "").lower():
+            # Prefer a path parsed from git's message when present.
+            wt_path = held or ""
+            marker = "worktree at '"
+            low = msg.lower()
+            if marker in low:
+                start = low.index(marker) + len(marker)
+                end = msg.find("'", start)
+                if end > start:
+                    wt_path = msg[start:end]
+            if wt_path:
+                return _friendly_worktree_busy_error(name, wt_path)
+        return {"ok": False, "error": msg}
     return {"ok": True, "active": name}
 
 

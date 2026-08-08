@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.190, deliberately pre-1.0. OAuth re-login reconnects providers previously toggled off (Codex/Anthropic device/PKCE); Agent Plugins v1 under Settings → Plugins (rides puppetmaster-ai==1.21.13).
+> Status: v0.9.191, deliberately pre-1.0. Branches soft-refuse checkout when a pmedit/pmworker branch is locked to a managed worktree (offer open-that-folder); OAuth reconnect + Agent Plugins v1 (rides puppetmaster-ai==1.21.13).
 
 ## Documentation
 

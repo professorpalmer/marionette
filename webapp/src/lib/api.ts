@@ -1008,7 +1008,14 @@ export const api = {
   artifacts: (jobId: string) => getJSON<Artifact[]>(`/api/artifacts?job_id=${encodeURIComponent(jobId)}`),
   workspaces: () => getJSON<Workspace[]>("/api/workspaces"),
   switchWorkspace: (name: string, opts?: { allow_dirty?: boolean }) =>
-    postJSON<{ ok: boolean; active?: string; error?: string; dirty?: boolean }>(
+    postJSON<{
+      ok: boolean;
+      active?: string;
+      error?: string;
+      dirty?: boolean;
+      worktree_busy?: boolean;
+      worktree_path?: string;
+    }>(
       "/api/workspaces/switch",
       { name, allow_dirty: !!opts?.allow_dirty },
     ),

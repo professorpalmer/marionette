@@ -810,6 +810,19 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
         res = await api.switchWorkspace(name, { allow_dirty: true });
       }
       if (!res.ok) {
+        // Edit/worker branches are often locked to a managed worktree — offer
+        // to open that folder instead of showing a raw `git checkout` fatal.
+        if (res.worktree_busy && res.worktree_path) {
+          const openWt = window.confirm(
+            `${res.error}\n\nOpen that worktree as the project?`,
+          );
+          if (openWt) {
+            await handleOpenProject(res.worktree_path);
+          } else {
+            toast(res.error);
+          }
+          return;
+        }
         toast(res.error || `Could not switch to ${name}`);
         return;
       }
