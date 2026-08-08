@@ -797,8 +797,32 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     return true;
   };
 
+  const openWorktreeBranch = async (name: string, worktreePath: string) => {
+    setSwapping(name);
+    try {
+      const opened = await handleOpenProject(worktreePath);
+      if (opened.ok) {
+        const kind = name.startsWith("pmworker-")
+          ? "worker"
+          : name.startsWith("pmedit-")
+            ? "edit"
+            : "linked";
+        toast(`Opened ${kind} worktree · ${name}`);
+      }
+    } finally {
+      setSwapping(null);
+    }
+  };
+
   const switchWs = async (name: string) => {
-    if (workspaces.some((w) => w.name === name && w.active)) return;
+    const row = workspaces.find((w) => w.name === name);
+    if (row?.active) return;
+    // Linked edit/worker branches live in a sibling worktree — open that folder
+    // directly (no confirm, no scary git fatal).
+    if (row?.worktree_path) {
+      await openWorktreeBranch(name, row.worktree_path);
+      return;
+    }
     setSwapping(name);
     try {
       let res = await api.switchWorkspace(name);
@@ -810,18 +834,9 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
         res = await api.switchWorkspace(name, { allow_dirty: true });
       }
       if (!res.ok) {
-        // Edit/worker branches are often locked to a managed worktree — offer
-        // to open that folder instead of showing a raw `git checkout` fatal.
         const worktreePath = res.worktree_path;
         if (res.worktree_busy && worktreePath) {
-          const openWt = window.confirm(
-            `${res.error}\n\nOpen that worktree as the project?`,
-          );
-          if (openWt) {
-            await handleOpenProject(worktreePath);
-          } else {
-            toast(res.error || `Could not switch to ${name}`);
-          }
+          await openWorktreeBranch(name, worktreePath);
           return;
         }
         toast(res.error || `Could not switch to ${name}`);
@@ -1902,16 +1917,41 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
         >
           {workspaces.length === 0 && <Empty>No branches</Empty>}
           <div className="space-y-0.5 overflow-y-auto" style={{ height: branchesHeight }}>
-            {workspaces.map((w) => (
-              <button key={w.name} onClick={() => switchWs(w.name)}
+            {workspaces.map((w) => {
+              const linked = !!w.worktree_path;
+              const linkKind = w.name.startsWith("pmworker-")
+                ? "worker"
+                : w.name.startsWith("pmedit-")
+                  ? "edit"
+                  : linked
+                    ? "worktree"
+                    : null;
+              return (
+              <button
+                key={w.name}
+                onClick={() => switchWs(w.name)}
+                title={linked
+                  ? `Open ${linkKind || "linked"} worktree (separate folder)`
+                  : undefined}
                 className={`w-full h-7 text-left rounded px-2 mb-0.5 flex items-center gap-2 text-[12px] transition
-                  ${w.active ? "bg-accent2/40 text-txt font-semibold" : "hover:bg-panel2/60 text-muted"}`}>
-                {swapping === w.name ? <Loader2 size={11} className="animate-spin" /> : <GitBranch size={11} />}
+                  ${w.active ? "bg-accent2/40 text-txt font-semibold" : "hover:bg-panel2/60 text-muted"}`}
+              >
+                {swapping === w.name
+                  ? <Loader2 size={11} className="animate-spin" />
+                  : linked
+                    ? <FolderGit2 size={11} className="shrink-0 opacity-80" />
+                    : <GitBranch size={11} />}
                 <span className="flex-1 truncate">{w.name}</span>
+                {linkKind && (
+                  <span className="text-[9px] uppercase tracking-wider text-muted/80 shrink-0">
+                    {linkKind}
+                  </span>
+                )}
                 {w.dirty && <span className="w-1.5 h-1.5 rounded-full bg-warn" title="uncommitted changes" />}
                 {w.active && <Check size={11} className="text-accent" />}
               </button>
-            ))}
+              );
+            })}
           </div>
           <div
             role="separator"

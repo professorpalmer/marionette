@@ -429,7 +429,14 @@ export type WorkspaceInfo = {
   home?: string;
 };
 
-export type Workspace = { name: string; branch: string; active: boolean; dirty?: boolean };
+export type Workspace = {
+  name: string;
+  branch: string;
+  active: boolean;
+  dirty?: boolean;
+  /** Sibling worktree path when this branch is checked out elsewhere. */
+  worktree_path?: string;
+};
 export type Session = { id: string; title: string; created: number; active?: boolean; archived?: boolean; settled?: boolean; repo?: string; branch?: string; workspace_root?: string; input_tokens?: number; output_tokens?: number; cache_read_tokens?: number; estimated_cost_usd?: number; preview?: string };
 
 export type SessionGoal = {

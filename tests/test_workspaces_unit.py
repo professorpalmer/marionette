@@ -184,3 +184,7 @@ def test_switch_workspace_soft_refuses_branch_locked_in_worktree(tmp_path):
     # Still on main — no partial checkout.
     active = [r for r in list_workspaces(str(repo)) if r["active"]]
     assert active and active[0]["name"] == "main"
+
+    listed = {r["name"]: r for r in list_workspaces(str(repo))}
+    assert listed["pmedit-deadbeef"].get("worktree_path")
+    assert "worktree_path" not in listed["main"]

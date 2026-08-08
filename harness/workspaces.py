@@ -22,6 +22,10 @@ class Workspace:
     branch: str
     active: bool
     dirty: bool = False
+    # Sibling worktree path when this branch is checked out elsewhere (e.g.
+    # Marionette pmedit-* / pmworker-*). UI opens that folder instead of
+    # attempting ``git checkout`` in the main tree.
+    worktree_path: Optional[str] = None
 
 
 def _git(repo: str, *args: str, timeout: int = 15) -> tuple[int, str, str]:
@@ -49,6 +53,25 @@ def list_workspaces(repo: str) -> list[dict]:
     if rc != 0:
         return []
     dirty = _dirty(repo)
+    # One worktree list for the whole branch scan (avoid N porcelain calls).
+    held_by_branch: dict[str, str] = {}
+    try:
+        from .worktrees import list_worktrees
+        real_repo = os.path.realpath(repo)
+        for wt in list_worktrees(repo):
+            wt_branch = (wt.get("branch") or "").strip()
+            wt_path = (wt.get("path") or "").strip()
+            if not wt_branch or not wt_path:
+                continue
+            try:
+                if os.path.realpath(wt_path) == real_repo:
+                    continue
+            except Exception:
+                if wt.get("is_main"):
+                    continue
+            held_by_branch[wt_branch] = wt_path
+    except Exception:
+        held_by_branch = {}
     rows = []
     for line in out.splitlines():
         if not line.strip():
@@ -56,8 +79,17 @@ def list_workspaces(repo: str) -> list[dict]:
         parts = line.split("\t")
         name = parts[0].strip()
         active = len(parts) > 1 and parts[1].strip() == "*"
-        rows.append(asdict(Workspace(name=name, branch=name, active=active,
-                                     dirty=dirty and active)))
+        row = asdict(Workspace(
+            name=name,
+            branch=name,
+            active=active,
+            dirty=dirty and active,
+            worktree_path=held_by_branch.get(name),
+        ))
+        # Drop null worktree_path so older clients / tests stay compact.
+        if not row.get("worktree_path"):
+            row.pop("worktree_path", None)
+        rows.append(row)
     return rows
 
 
@@ -66,8 +98,8 @@ def _worktree_holding_branch(repo: str, branch: str) -> Optional[str]:
 
     Git refuses ``checkout`` of a branch that is locked to a sibling worktree
     (``fatal: '…' is already used by worktree at '…'``). Detect that up front
-    so the Branches list can soft-refuse with a clear path instead of a raw
-    fatal toast — common for Marionette ``pmedit-*`` / ``pmworker-*`` branches.
+    so the Branches list can open the worktree folder instead of a raw fatal —
+    common for Marionette ``pmedit-*`` / ``pmworker-*`` branches.
     """
     if not repo or not branch:
         return None
@@ -97,13 +129,14 @@ def _worktree_holding_branch(repo: str, branch: str) -> Optional[str]:
 
 
 def _friendly_worktree_busy_error(branch: str, wt_path: str) -> dict:
+    kind = "edit"
+    if branch.startswith("pmworker-"):
+        kind = "worker"
+    elif branch.startswith("pmedit-"):
+        kind = "edit"
     return {
         "ok": False,
-        "error": (
-            f"Branch '{branch}' is already checked out in a worktree at "
-            f"{wt_path}. Open that folder instead of switching here "
-            f"(or prune unused edit/worker branches from the Branches brush)."
-        ),
+        "error": f"Opening {kind} worktree for {branch}",
         "worktree_busy": True,
         "worktree_path": wt_path,
     }
