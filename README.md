@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.188, deliberately pre-1.0. Agent Plugins v1 portable client (skills + stdio MCP) under Settings → Plugins; packages install default-disabled with PLUGIN_ROOT/PLUGIN_DATA containment (rides puppetmaster-ai==1.21.13).
+> Status: v0.9.189, deliberately pre-1.0. Agent Plugins v1 portable client (skills + stdio MCP) under Settings → Plugins; packages install default-disabled with PLUGIN_ROOT/PLUGIN_DATA containment (rides puppetmaster-ai==1.21.13).
 
 ## Documentation
 

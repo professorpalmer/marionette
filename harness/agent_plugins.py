@@ -351,6 +351,20 @@ def _discover_skills(
 
 
 def _expand(value: str, plugin_root: Path, data_root: Path) -> str:
+    """Expand PLUGIN_ROOT / PLUGIN_DATA placeholders to OS-native paths.
+
+    Path-shaped values (exact root or ``${PLUGIN_*}/rel``) join via ``Path`` so
+    Windows does not keep a mixed ``C:\\plugin/server.py`` separator. Other
+    strings still get literal placeholder substitution.
+    """
+    if value == "${PLUGIN_ROOT}":
+        return str(plugin_root)
+    if value == "${PLUGIN_DATA}":
+        return str(data_root)
+    if value.startswith("${PLUGIN_ROOT}/"):
+        return str(plugin_root / value[len("${PLUGIN_ROOT}/") :])
+    if value.startswith("${PLUGIN_DATA}/"):
+        return str(data_root / value[len("${PLUGIN_DATA}/") :])
     replacements = {
         "PLUGIN_ROOT": str(plugin_root),
         "PLUGIN_DATA": str(data_root),
@@ -365,16 +379,29 @@ def _resolve_scoped_path(
     *,
     expand_placeholders: bool = True,
 ) -> Path:
-    expanded = _expand(value, plugin_root, data_root) if expand_placeholders else value
     if value.startswith("./"):
         base = plugin_root
-        candidate = base / expanded[2:]
+        # Keep package-relative ``./`` paths even when expand is disabled
+        # (stdio command tokens); placeholders are never valid after ``./``.
+        candidate = base / value[2:]
     elif value == "${PLUGIN_ROOT}" or value.startswith("${PLUGIN_ROOT}/"):
         base = plugin_root
-        candidate = Path(expanded)
+        if not expand_placeholders:
+            raise ValueError("path must start with ./, ${PLUGIN_ROOT}, or ${PLUGIN_DATA}")
+        candidate = (
+            base
+            if value == "${PLUGIN_ROOT}"
+            else base / value[len("${PLUGIN_ROOT}/") :]
+        )
     elif value == "${PLUGIN_DATA}" or value.startswith("${PLUGIN_DATA}/"):
         base = data_root
-        candidate = Path(expanded)
+        if not expand_placeholders:
+            raise ValueError("path must start with ./, ${PLUGIN_ROOT}, or ${PLUGIN_DATA}")
+        candidate = (
+            base
+            if value == "${PLUGIN_DATA}"
+            else base / value[len("${PLUGIN_DATA}/") :]
+        )
     else:
         raise ValueError("path must start with ./, ${PLUGIN_ROOT}, or ${PLUGIN_DATA}")
     resolved = candidate.resolve(strict=False)
