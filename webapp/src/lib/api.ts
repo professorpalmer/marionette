@@ -90,6 +90,20 @@ export type EnvironmentReadiness = {
   workspace_root?: string;
 };
 
+export type AgentPlugin = {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  path: string;
+  enabled: boolean;
+  namespace: string;
+  skill_count: number;
+  mcp_count: number;
+  diagnostics?: { scope: string; message: string }[];
+  error?: string;
+};
+
 export type BedrockCredentials = {
   AWS_BEARER_TOKEN_BEDROCK?: string;
   AWS_ACCESS_KEY_ID?: string;
@@ -1212,6 +1226,13 @@ export const api = {
   mcpStop: (name: string) => postJSON<{ ok: boolean }>("/api/mcp/stop", { name }),
   mcpRefresh: (name: string) =>
     postJSON<{ ok: boolean; tools?: number; error?: string }>("/api/mcp/refresh", { name }),
+  plugins: () => getJSON<{ plugins: AgentPlugin[]; error?: string }>("/api/plugins"),
+  pluginInstall: (path: string) =>
+    postJSON<{ ok: boolean; plugin?: AgentPlugin; error?: string }>("/api/plugins/install", { path }),
+  pluginEnable: (id: string) =>
+    postJSON<{ ok: boolean; plugin?: AgentPlugin; error?: string }>("/api/plugins/enable", { id }),
+  pluginDisable: (id: string) =>
+    postJSON<{ ok: boolean; plugin?: AgentPlugin; error?: string }>("/api/plugins/disable", { id }),
   /** Optional browser + analyzer probes (not product failures when missing). */
   environmentReadiness: (opts?: { refresh?: boolean }) =>
     getJSON<EnvironmentReadiness>(

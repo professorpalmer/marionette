@@ -90,6 +90,7 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
     from .api import jobs as _jobs_api
     from .api import mcp as _mcp_api
     from .api import platform as _plat_api
+    from .api import plugins as _plugins_api
     from .api import providers as _prov_api
     from .api import registry as _reg_api
     from .api import reviews as _rev_api
@@ -166,6 +167,12 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
             _mcp_api.post_mcp_refresh, services=svc.mcp_services),
         "/api/mcp/call": post_json(
             _mcp_api.post_mcp_call, services=svc.mcp_services),
+        "/api/plugins/install": post_json(
+            _plugins_api.post_plugins_install, services=svc.plugin_services),
+        "/api/plugins/enable": post_json(
+            _plugins_api.post_plugins_enable, services=svc.plugin_services),
+        "/api/plugins/disable": post_json(
+            _plugins_api.post_plugins_disable, services=svc.plugin_services),
         "/api/skills/distill": post_json(
             _skills_api.post_skills_distill, services=svc.skills_services,
             needs_body=False),
@@ -404,6 +411,7 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
     from .api import jobs as _jobs_api
     from .api import mcp as _mcp_api
     from .api import platform as _plat_api
+    from .api import plugins as _plugins_api
     from .api import providers as _prov_api
     from .api import registry as _reg_api
     from .api import reviews as _rev_api
@@ -580,6 +588,8 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
             qs_arg="id"),
         "/api/mcp": get_json(_mcp_api.get_mcp, services=svc.mcp_services),
         "/api/mcp/catalog": get_json(_mcp_api.get_mcp_catalog),
+        "/api/plugins": get_json(
+            _plugins_api.get_plugins, services=svc.plugin_services),
         "/api/environment/readiness": get_json(
             _env_api.get_environment_readiness,
             services=svc.environment_services,

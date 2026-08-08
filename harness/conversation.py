@@ -531,12 +531,25 @@ class ConversationalSession(
             publish_swarm_adapter(config.swarm_adapter, repo=config.repo or "")
         # self-learning: load ACTIVE skills into the pilot's system context so
         # the loop compounds (procedural memory). Pending skills are NOT loaded.
+        # Enabled Agent Plugins v1 skills are appended alongside (namespaced);
+        # SkillStore files are never mutated by portable plugins.
         self._skills = SkillStore()
         system = WORKER_SYSTEM if getattr(config, "no_delegation", False) else PILOT_SYSTEM
         active = self._skills.list("active")
-        if active:
-            skills_block = "\n\n".join(
-                f"## Skill: {s.name}\n{s.description}\n{s.body}" for s in active)
+        plugin_skills = []
+        try:
+            from .plugin_registry import list_enabled_plugin_skills
+            plugin_skills = list(list_enabled_plugin_skills() or [])
+        except Exception:
+            plugin_skills = []
+        skill_parts = [
+            f"## Skill: {s.name}\n{s.description}\n{s.body}" for s in active
+        ]
+        skill_parts.extend(
+            f"## Skill: {s.name}\n{s.description}\n{s.body}" for s in plugin_skills
+        )
+        if skill_parts:
+            skills_block = "\n\n".join(skill_parts)
             # Skills are distilled from PAST runs. Framed as bare knowledge they
             # get replayed as present-tense findings ("the router still drops
             # alternatives") with no dispatch behind them, so say plainly that
@@ -1584,13 +1597,23 @@ class ConversationalSession(
 
         active_skills = getattr(self, "_skills", None)
         skills_text = ""
+        skill_parts = []
         if active_skills:
             active = active_skills.list("active")
-            if active:
-                skills_block = "\n\n".join(
-                    f"## Skill: {s.name}\n{s.description}\n{s.body}" for s in active
+            skill_parts.extend(
+                f"## Skill: {s.name}\n{s.description}\n{s.body}" for s in active
+            )
+        try:
+            from .plugin_registry import list_enabled_plugin_skills
+            for s in list_enabled_plugin_skills() or []:
+                skill_parts.append(
+                    f"## Skill: {s.name}\n{s.description}\n{s.body}"
                 )
-                skills_text = "\n\n# Learned skills (apply when relevant)\n" + skills_block
+        except Exception:
+            pass
+        if skill_parts:
+            skills_block = "\n\n".join(skill_parts)
+            skills_text = "\n\n# Learned skills (apply when relevant)\n" + skills_block
 
         rules_text_list = []
         active_rules = getattr(self, "_rules", None)

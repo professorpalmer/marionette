@@ -152,6 +152,7 @@ class McpManager:
 
     # ---- config -------------------------------------------------------------
     def load_config(self) -> Dict[str, dict]:
+        """Native ``mcp.json`` servers only (never includes portable plugins)."""
         if not self.config_path.exists():
             return {}
         try:
@@ -159,6 +160,30 @@ class McpManager:
         except Exception:
             return {}
         return data.get("mcpServers", {}) or {}
+
+    def _portable_plugin_servers(self) -> Dict[str, dict]:
+        """Enabled Agent Plugins v1 stdio servers (best-effort; never raises)."""
+        try:
+            from .plugin_registry import list_enabled_mcp_servers
+
+            return dict(list_enabled_mcp_servers() or {})
+        except Exception as exc:
+            _diag("mcp.portable_plugins", exc)
+            return {}
+
+    def effective_config(self) -> Dict[str, dict]:
+        """Native mcp.json plus enabled portable plugin servers.
+
+        Portable ids that collide with a native server name are skipped so
+        user-authored ``mcp.json`` always wins.
+        """
+        native = self.load_config()
+        merged: Dict[str, dict] = dict(native)
+        for name, server in self._portable_plugin_servers().items():
+            if name in merged:
+                continue
+            merged[name] = server
+        return merged
 
     def _write_config(self, data: dict) -> None:
         path = str(self.config_path)
@@ -305,7 +330,7 @@ class McpManager:
                 self._clients.pop(name, None)
                 for q in [q for q, t in self._tools.items() if t.server == name]:
                     del self._tools[q]
-            cfg = _expand(server or self.load_config().get(name, {}))
+            cfg = _expand(server or self.effective_config().get(name, {}))
             gen_at_start = self._lifecycle_gen.get(name, 0)
 
         if cfg.get("url"):
@@ -369,7 +394,7 @@ class McpManager:
         name = (name or "").strip()
         if not name:
             raise McpError("refresh requires a server name")
-        if name not in self.load_config():
+        if name not in self.effective_config():
             raise McpError(f"unknown MCP server '{name}'")
         with self._lock:
             self._lifecycle_gen[name] = self._lifecycle_gen.get(name, 0) + 1
@@ -388,7 +413,7 @@ class McpManager:
     def start_all(self) -> Dict[str, object]:
         """Start every configured server; return {name: tool_count | error_str}."""
         report: Dict[str, object] = {}
-        for name in self.load_config():
+        for name in self.effective_config():
             try:
                 tools = self.start_server(name)
                 report[name] = len(tools)
@@ -507,7 +532,7 @@ class McpManager:
         ``_tools``; reporting those as ``tools: N`` with ``running: false``
         mismatched the alive-only tools list on GET /api/mcp.
         """
-        cfg = self.load_config()
+        cfg = self.effective_config()
         with self._lock:
             clients = dict(self._clients)
             tools = list(self._tools.values())

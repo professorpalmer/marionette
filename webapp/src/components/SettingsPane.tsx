@@ -14,7 +14,7 @@ import SkillsPane from "./SkillsPane";
 import MemoryPane from "./MemoryPane";
 import SchedulesPane from "./SchedulesPane";
 
-export type SettingsSection = "general" | "safety" | "providers" | "notifications" | "advanced";
+export type SettingsSection = "general" | "safety" | "providers" | "notifications" | "plugins" | "advanced";
 
 const SETTINGS_SNAPSHOT_KEY = "pmharness.settings.snapshot";
 let memorySettingsSnapshot: Settings | null = null;

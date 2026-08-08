@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { X, Cpu, SlidersHorizontal, ShieldCheck, Zap, Bell, Wrench, Info } from "lucide-react";
+import { X, Cpu, SlidersHorizontal, ShieldCheck, Zap, Bell, Wrench, Info, Puzzle } from "lucide-react";
 import ModelsSettingsPage from "./ModelsSettingsPage";
 import SettingsPane, { type SettingsSection } from "./SettingsPane";
+import PluginsPane from "./PluginsPane";
 import { TITLEBAR_TRAFFIC_PAD_SM_PX } from "../lib/titlebarSafe";
 
 type PageId = "models" | SettingsSection | "about";
@@ -12,6 +13,7 @@ const NAV: { id: PageId; label: string; icon: any }[] = [
   { id: "safety", label: "Safety", icon: ShieldCheck },
   { id: "providers", label: "Accounts & Keys", icon: Zap },
   { id: "notifications", label: "Notifications", icon: Bell },
+  { id: "plugins", label: "Plugins", icon: Puzzle },
   { id: "advanced", label: "Advanced", icon: Wrench },
   { id: "about", label: "About", icon: Info },
 ];
@@ -115,13 +117,19 @@ export default function SettingsShell({
         {/* content */}
         <div className="flex-1 min-w-0 overflow-y-auto px-8 py-6">
           {page === "models" && <ModelsSettingsPage />}
+          {page === "plugins" && (
+            <div className="max-w-2xl">
+              <h2 className="text-[15px] font-semibold text-txt mb-3">Plugins</h2>
+              <PluginsPane />
+            </div>
+          )}
           {page === "about" && (
             <div className="max-w-2xl text-[12px] text-muted">
               <h2 className="text-[15px] font-semibold text-txt mb-2">About</h2>
               <p>Marionette -- a desktop AI coding harness over Puppetmaster durable state.</p>
             </div>
           )}
-          {page !== "models" && page !== "about" && (
+          {page !== "models" && page !== "about" && page !== "plugins" && (
             <SettingsPane onOpenWizard={onOpenWizard} section={page as SettingsSection} />
           )}
         </div>
