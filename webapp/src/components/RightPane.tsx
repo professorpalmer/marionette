@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, Fragment } from "react";
-import { Database, Globe, FolderTree, GitBranch, GitFork, Settings, SquareTerminal, Columns, Rows, Split, X, History, GitPullRequest, Network, PanelRightClose } from "lucide-react";
+import { Database, Globe, FolderTree, GitBranch, GitFork, Settings, SquareTerminal, Columns, Rows, Split, X, History, GitPullRequest, Network, PanelRightClose, SlidersHorizontal } from "lucide-react";
 import StatePane from "./StatePane";
 import BrowserPane from "./BrowserPane";
 import FileTree from "./FileTree";
@@ -15,6 +15,14 @@ import { api, type PendingReview } from "../lib/api";
 import { lastSelectedProjectRoot } from "../lib/panelTransition";
 import { usePolling } from "../lib/usePolling";
 import { writeSWRCache } from "../lib/useStaleWhileRevalidate";
+import {
+  loadRightPaneTabVisibility,
+  RIGHT_PANE_TAB_VISIBILITY_META,
+  saveRightPaneTabVisibility,
+  toggleRightPaneTabVisibility,
+  type RightPaneOptionalTabId,
+  type RightPaneTabVisibility,
+} from "../lib/rightPaneTabVisibility";
 
 type Tab = "state" | "files" | "git" | "worktrees" | "terminal" | "browser" | "settings" | "checkpoints" | "review" | "swarm";
 
@@ -39,7 +47,7 @@ const TAB_GROUPS: { group: string; tabs: Tab[] }[] = [
   { group: "changes", tabs: ["review", "checkpoints"] },
   { group: "tools", tabs: ["browser"] },
 ];
-// Settings is intentionally separated and rendered last (after a flex spacer).
+// Settings is intentionally separated and rendered last.
 const PINNED_LAST: Tab = "settings";
 const groupOf = (t: Tab): string => {
   for (const g of TAB_GROUPS) if (g.tabs.includes(t)) return g.group;
@@ -67,6 +75,13 @@ export default function RightPane({ artifacts, onOpenWizard, onCollapse, initial
   const asideRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [isResizing, setIsResizing] = useState(false);
+  const [tabVisibility, setTabVisibilityState] = useState<RightPaneTabVisibility>(
+    () => loadRightPaneTabVisibility(),
+  );
+  const tabVisibilityRef = useRef(tabVisibility);
+  tabVisibilityRef.current = tabVisibility;
+  const [customizeOpen, setCustomizeOpen] = useState(false);
+  const customizeMenuRef = useRef<HTMLDivElement | null>(null);
 
   // Tab order state (drag to reorder, persisted in localStorage)
   const [tabOrder, setTabOrder] = useState<Tab[]>(() => {
@@ -107,6 +122,20 @@ export default function RightPane({ artifacts, onOpenWizard, onCollapse, initial
     localStorage.setItem("pmharness.tabOrder", JSON.stringify(newOrder));
   };
 
+  const setTabVisibility = (tabName: RightPaneOptionalTabId) => {
+    setTabVisibilityState((current) => {
+      const next = toggleRightPaneTabVisibility(current, tabName);
+      saveRightPaneTabVisibility(next);
+      return next;
+    });
+    if (!tabVisibilityRef.current[tabName]) return;
+    setSplitState((current) => ({
+      ...current,
+      primaryTab: current.primaryTab === tabName ? "state" : current.primaryTab,
+      secondaryTab: current.secondaryTab === tabName ? "state" : current.secondaryTab,
+    }));
+  };
+
   // Drag and drop state for reordering tabs
   const [draggedTab, setDraggedTab] = useState<Tab | null>(null);
 
@@ -132,6 +161,24 @@ export default function RightPane({ artifacts, onOpenWizard, onCollapse, initial
   const handleDragEnd = () => {
     setDraggedTab(null);
   };
+
+  useEffect(() => {
+    if (!customizeOpen) return;
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (customizeMenuRef.current && !customizeMenuRef.current.contains(event.target as Node)) {
+        setCustomizeOpen(false);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setCustomizeOpen(false);
+    };
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeOnOutsideClick);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [customizeOpen]);
 
   // Split state (persisted in localStorage)
   const [splitState, setSplitState] = useState<SplitState>(() => {
@@ -169,6 +216,15 @@ export default function RightPane({ artifacts, onOpenWizard, onCollapse, initial
       percent: 50,
     };
   });
+
+  useEffect(() => {
+    if (tabVisibility[splitState.primaryTab] && tabVisibility[splitState.secondaryTab]) return;
+    setSplitState((current) => ({
+      ...current,
+      primaryTab: tabVisibility[current.primaryTab] ? current.primaryTab : "state",
+      secondaryTab: tabVisibility[current.secondaryTab] ? current.secondaryTab : "state",
+    }));
+  }, [splitState.primaryTab, splitState.secondaryTab, tabVisibility]);
 
   const [reviews, setReviews] = useState<PendingReview[]>([]);
   // Live swarm activity for the Swarm tab light -- so a running job is visible
@@ -239,6 +295,13 @@ export default function RightPane({ artifacts, onOpenWizard, onCollapse, initial
         const targetTab = e.detail as Tab;
         const validTabs: Tab[] = ["state", "files", "git", "worktrees", "terminal", "browser", "settings", "swarm", "checkpoints", "review"];
         if (validTabs.includes(targetTab)) {
+          if (!tabVisibilityRef.current[targetTab]) {
+            setTabVisibilityState((current) => {
+              const next = { ...current, [targetTab]: true };
+              saveRightPaneTabVisibility(next);
+              return next;
+            });
+          }
           updateSplitState({ primaryTab: targetTab });
         }
       }
@@ -425,74 +488,83 @@ export default function RightPane({ artifacts, onOpenWizard, onCollapse, initial
           className="flex flex-col overflow-hidden min-h-0 min-w-0"
           style={splitState.isSplit ? (splitState.direction === "horizontal" ? { height: `${splitState.percent}%` } : { width: `${splitState.percent}%` }) : { flex: 1 }}
         >
-          {/* Primary Tab Bar */}
-          <div className="flex flex-nowrap border-b border-edge/50 overflow-x-auto scrollbar-none select-none">
-            {tabOrder.filter(t => t !== PINNED_LAST).map((tabName, idx, arr) => {
-              const config = TAB_CONFIG[tabName];
-              const prev = idx > 0 ? arr[idx - 1] : null;
-              const newGroup = prev !== null && groupOf(prev) !== groupOf(tabName);
-              return (
-                <Fragment key={tabName}>
-                  {newGroup && <span className="self-center h-4 w-px bg-edge/60 mx-0.5 shrink-0" aria-hidden />}
-                  <TabBtn
-                    active={splitState.primaryTab === tabName}
-                    onClick={() => updateSplitState({ primaryTab: tabName })}
-                    icon={config.icon}
-                    label={config.label}
-                    showLabel={false}
-                    draggable
-                    onDragStart={(e) => handleDragStart(e, tabName)}
-                    onDragOver={(e) => handleDragOver(e, tabName)}
-                    onDragEnd={handleDragEnd}
-                    className={draggedTab === tabName ? "opacity-30" : ""}
-                    badge={tabName === "review" && reviews.length > 0 ? reviews.length : undefined}
-                    live={tabName === "swarm" && swarmRunning > 0}
-                    liveTitle={swarmRunning > 0 ? `${swarmRunning} swarm job${swarmRunning === 1 ? "" : "s"} running` : undefined}
-                  />
-                </Fragment>
-              );
-            })}
-            {/* Collapse affordance in the intentional flex-1 gutter before Settings */}
-            <div className="flex-1 flex items-center justify-end min-w-[4px] px-0.5">
-              <PanelCollapseBtn onCollapse={onCollapse} />
+          {/* Primary Tab Bar — outer bar stays overflow-visible so the customize menu is not clipped */}
+          <div className="flex flex-nowrap border-b border-edge/50 overflow-visible select-none">
+            <div className="flex flex-1 flex-nowrap min-w-0 overflow-x-auto scrollbar-none">
+              {tabOrder.filter(t => t !== PINNED_LAST && tabVisibility[t]).map((tabName, idx, arr) => {
+                const config = TAB_CONFIG[tabName];
+                const prev = idx > 0 ? arr[idx - 1] : null;
+                const newGroup = prev !== null && groupOf(prev) !== groupOf(tabName);
+                return (
+                  <Fragment key={tabName}>
+                    {newGroup && <span className="self-center h-4 w-px bg-edge/60 mx-0.5 shrink-0" aria-hidden />}
+                    <TabBtn
+                      active={splitState.primaryTab === tabName}
+                      onClick={() => updateSplitState({ primaryTab: tabName })}
+                      icon={config.icon}
+                      label={config.label}
+                      showLabel={false}
+                      draggable
+                      onDragStart={(e) => handleDragStart(e, tabName)}
+                      onDragOver={(e) => handleDragOver(e, tabName)}
+                      onDragEnd={handleDragEnd}
+                      className={draggedTab === tabName ? "opacity-30" : ""}
+                      badge={tabName === "review" && reviews.length > 0 ? reviews.length : undefined}
+                      live={tabName === "swarm" && swarmRunning > 0}
+                      liveTitle={swarmRunning > 0 ? `${swarmRunning} swarm job${swarmRunning === 1 ? "" : "s"} running` : undefined}
+                    />
+                  </Fragment>
+                );
+              })}
             </div>
-            <TabBtn
-              active={splitState.primaryTab === PINNED_LAST}
-              onClick={() => updateSplitState({ primaryTab: PINNED_LAST })}
-              icon={TAB_CONFIG[PINNED_LAST].icon}
-              label={TAB_CONFIG[PINNED_LAST].label}
-              showLabel={false}
-              className={`shrink-0 ${draggedTab === PINNED_LAST ? "opacity-30" : ""}`}
-            />
+            <div data-testid="right-pane-actions" className="flex items-center shrink-0">
+              <PanelCollapseBtn onCollapse={onCollapse} />
+              <TabBtn
+                active={splitState.primaryTab === PINNED_LAST}
+                onClick={() => updateSplitState({ primaryTab: PINNED_LAST })}
+                icon={TAB_CONFIG[PINNED_LAST].icon}
+                label={TAB_CONFIG[PINNED_LAST].label}
+                showLabel={false}
+                className={`shrink-0 ${draggedTab === PINNED_LAST ? "opacity-30" : ""}`}
+              />
 
-            {/* Split controls */}
-            <div className="flex items-center px-1 border-l border-edge bg-panel2/20 gap-0.5 shrink-0 select-none">
-              {!splitState.isSplit ? (
-                <button
-                  onClick={() => updateSplitState({ isSplit: true, secondaryTab: splitState.primaryTab })}
-                  title="Split Pane"
-                  className="p-1.5 text-faint hover:text-muted hover:bg-panel2/60 rounded transition-colors focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
-                >
-                  <Split size={12} />
-                </button>
-              ) : (
-                <>
+              <TabVisibilityMenu
+                open={customizeOpen}
+                onToggleOpen={() => setCustomizeOpen((open) => !open)}
+                visibility={tabVisibility}
+                onToggle={setTabVisibility}
+                menuRef={customizeMenuRef}
+              />
+
+              {/* Split controls */}
+              <div className="flex items-center px-1 border-l border-edge bg-panel2/20 gap-0.5 shrink-0 select-none">
+                {!splitState.isSplit ? (
                   <button
-                    onClick={() => updateSplitState(prev => ({ ...prev, direction: prev.direction === "horizontal" ? "vertical" : "horizontal" }))}
-                    title={splitState.direction === "horizontal" ? "Split Vertically" : "Split Horizontally"}
+                    onClick={() => updateSplitState({ isSplit: true, secondaryTab: splitState.primaryTab })}
+                    title="Split Pane"
                     className="p-1.5 text-faint hover:text-muted hover:bg-panel2/60 rounded transition-colors focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
                   >
-                    {splitState.direction === "horizontal" ? <Columns size={12} /> : <Rows size={12} />}
+                    <Split size={12} />
                   </button>
-                  <button
-                    onClick={() => updateSplitState({ isSplit: false })}
-                    title="Close Split"
-                    className="p-1.5 text-faint hover:text-risk hover:bg-panel2/60 rounded transition-colors focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
-                  >
-                    <X size={12} />
-                  </button>
-                </>
-              )}
+                ) : (
+                  <>
+                    <button
+                      onClick={() => updateSplitState(prev => ({ ...prev, direction: prev.direction === "horizontal" ? "vertical" : "horizontal" }))}
+                      title={splitState.direction === "horizontal" ? "Split Vertically" : "Split Horizontally"}
+                      className="p-1.5 text-faint hover:text-muted hover:bg-panel2/60 rounded transition-colors focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
+                    >
+                      {splitState.direction === "horizontal" ? <Columns size={12} /> : <Rows size={12} />}
+                    </button>
+                    <button
+                      onClick={() => updateSplitState({ isSplit: false })}
+                      title="Close Split"
+                      className="p-1.5 text-faint hover:text-risk hover:bg-panel2/60 rounded transition-colors focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
+                    >
+                      <X size={12} />
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
           </div>
 
@@ -520,61 +592,63 @@ export default function RightPane({ artifacts, onOpenWizard, onCollapse, initial
             className="flex flex-col overflow-hidden min-h-0 min-w-0"
             style={splitState.direction === "horizontal" ? { height: `${100 - splitState.percent}%` } : { width: `${100 - splitState.percent}%` }}
           >
-            {/* Secondary Tab Bar */}
-            <div className="flex flex-nowrap border-b border-edge/50 overflow-x-auto scrollbar-none select-none">
-              {tabOrder.filter(t => t !== PINNED_LAST).map((tabName, idx, arr) => {
-                const config = TAB_CONFIG[tabName];
-                const prev = idx > 0 ? arr[idx - 1] : null;
-                const newGroup = prev !== null && groupOf(prev) !== groupOf(tabName);
-                return (
-                  <Fragment key={tabName}>
-                    {newGroup && <span className="self-center h-4 w-px bg-edge/60 mx-0.5 shrink-0" aria-hidden />}
-                    <TabBtn
-                      active={splitState.secondaryTab === tabName}
-                      onClick={() => updateSplitState({ secondaryTab: tabName })}
-                      icon={config.icon}
-                      label={config.label}
-                      showLabel={false}
-                      draggable
-                      onDragStart={(e) => handleDragStart(e, tabName)}
-                      onDragOver={(e) => handleDragOver(e, tabName)}
-                      onDragEnd={handleDragEnd}
-                      className={draggedTab === tabName ? "opacity-30" : ""}
-                      badge={tabName === "review" && reviews.length > 0 ? reviews.length : undefined}
-                      live={tabName === "swarm" && swarmRunning > 0}
-                      liveTitle={swarmRunning > 0 ? `${swarmRunning} swarm job${swarmRunning === 1 ? "" : "s"} running` : undefined}
-                    />
-                  </Fragment>
-                );
-              })}
-              <div className="flex-1 flex items-center justify-end min-w-[4px] px-0.5">
-                <PanelCollapseBtn onCollapse={onCollapse} />
+            {/* Secondary Tab Bar — same overflow split as primary so pinned controls stay visible */}
+            <div className="flex flex-nowrap border-b border-edge/50 overflow-visible select-none">
+              <div className="flex flex-1 flex-nowrap min-w-0 overflow-x-auto scrollbar-none">
+                {tabOrder.filter(t => t !== PINNED_LAST && tabVisibility[t]).map((tabName, idx, arr) => {
+                  const config = TAB_CONFIG[tabName];
+                  const prev = idx > 0 ? arr[idx - 1] : null;
+                  const newGroup = prev !== null && groupOf(prev) !== groupOf(tabName);
+                  return (
+                    <Fragment key={tabName}>
+                      {newGroup && <span className="self-center h-4 w-px bg-edge/60 mx-0.5 shrink-0" aria-hidden />}
+                      <TabBtn
+                        active={splitState.secondaryTab === tabName}
+                        onClick={() => updateSplitState({ secondaryTab: tabName })}
+                        icon={config.icon}
+                        label={config.label}
+                        showLabel={false}
+                        draggable
+                        onDragStart={(e) => handleDragStart(e, tabName)}
+                        onDragOver={(e) => handleDragOver(e, tabName)}
+                        onDragEnd={handleDragEnd}
+                        className={draggedTab === tabName ? "opacity-30" : ""}
+                        badge={tabName === "review" && reviews.length > 0 ? reviews.length : undefined}
+                        live={tabName === "swarm" && swarmRunning > 0}
+                        liveTitle={swarmRunning > 0 ? `${swarmRunning} swarm job${swarmRunning === 1 ? "" : "s"} running` : undefined}
+                      />
+                    </Fragment>
+                  );
+                })}
               </div>
-              <TabBtn
-                active={splitState.secondaryTab === PINNED_LAST}
-                onClick={() => updateSplitState({ secondaryTab: PINNED_LAST })}
-                icon={TAB_CONFIG[PINNED_LAST].icon}
-                label={TAB_CONFIG[PINNED_LAST].label}
-                showLabel={false}
-                className="shrink-0"
-              />
+              <div data-testid="right-pane-actions" className="flex items-center shrink-0">
+                <PanelCollapseBtn onCollapse={onCollapse} />
+                <TabBtn
+                  active={splitState.secondaryTab === PINNED_LAST}
+                  onClick={() => updateSplitState({ secondaryTab: PINNED_LAST })}
+                  icon={TAB_CONFIG[PINNED_LAST].icon}
+                  label={TAB_CONFIG[PINNED_LAST].label}
+                  showLabel={false}
+                  className="shrink-0"
+                />
 
-              {/* Split controls for Secondary Pane */}
-              <div className="flex items-center px-1 border-l border-edge bg-panel2/20 gap-0.5 shrink-0 select-none">
-                <button
-                  onClick={() => updateSplitState(prev => ({ ...prev, direction: prev.direction === "horizontal" ? "vertical" : "horizontal" }))}
-                  title={splitState.direction === "horizontal" ? "Split Vertically" : "Split Horizontally"}
-                  className="p-1.5 text-faint hover:text-muted hover:bg-panel2/60 rounded transition-colors focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
-                >
-                  {splitState.direction === "horizontal" ? <Columns size={12} /> : <Rows size={12} />}
-                </button>
-                <button
-                  onClick={() => updateSplitState({ isSplit: false })}
-                  title="Close Split"
-                  className="p-1.5 text-faint hover:text-risk hover:bg-panel2/60 rounded transition-colors focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
-                >
-                  <X size={12} />
-                </button>
+                {/* Split controls for Secondary Pane */}
+                <div className="flex items-center px-1 border-l border-edge bg-panel2/20 gap-0.5 shrink-0 select-none">
+                  <button
+                    onClick={() => updateSplitState(prev => ({ ...prev, direction: prev.direction === "horizontal" ? "vertical" : "horizontal" }))}
+                    title={splitState.direction === "horizontal" ? "Split Vertically" : "Split Horizontally"}
+                    className="p-1.5 text-faint hover:text-muted hover:bg-panel2/60 rounded transition-colors focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
+                  >
+                    {splitState.direction === "horizontal" ? <Columns size={12} /> : <Rows size={12} />}
+                  </button>
+                  <button
+                    onClick={() => updateSplitState({ isSplit: false })}
+                    title="Close Split"
+                    className="p-1.5 text-faint hover:text-risk hover:bg-panel2/60 rounded transition-colors focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -601,6 +675,63 @@ function PanelCollapseBtn({ onCollapse }: { onCollapse: () => void }) {
     >
       <PanelRightClose size={12} />
     </button>
+  );
+}
+
+function TabVisibilityMenu({
+  open,
+  onToggleOpen,
+  visibility,
+  onToggle,
+  menuRef,
+}: {
+  open: boolean;
+  onToggleOpen: () => void;
+  visibility: RightPaneTabVisibility;
+  onToggle: (tabName: RightPaneOptionalTabId) => void;
+  menuRef: React.RefObject<HTMLDivElement | null>;
+}) {
+  return (
+    <div ref={menuRef} className="relative flex items-center shrink-0">
+      <button
+        type="button"
+        onClick={onToggleOpen}
+        aria-label="Customize tabs"
+        aria-expanded={open}
+        aria-haspopup="menu"
+        title="Customize tabs"
+        className="p-1.5 text-faint hover:text-muted hover:bg-panel2/60 rounded transition-colors focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
+      >
+        <SlidersHorizontal size={12} />
+      </button>
+      {open && (
+        <div
+          role="menu"
+          aria-label="Customize tabs"
+          className="absolute right-0 top-full z-30 mt-1 w-44 rounded-md border border-edge bg-panel p-1.5 shadow-lg"
+        >
+          <div className="px-2 py-1 text-[9px] uppercase tracking-wider text-faint">
+            Optional tabs
+          </div>
+          {RIGHT_PANE_TAB_VISIBILITY_META.map(({ id, label }) => (
+            <label
+              key={id}
+              role="menuitemcheckbox"
+              aria-checked={visibility[id]}
+              className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[10px] text-muted hover:bg-panel2/60 hover:text-txt"
+            >
+              <input
+                type="checkbox"
+                checked={visibility[id]}
+                onChange={() => onToggle(id)}
+                className="accent-accent"
+              />
+              <span>{label}</span>
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

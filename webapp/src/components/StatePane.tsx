@@ -2,6 +2,15 @@ import { useCallback, useEffect, useState } from "react";
 import { ChevronDown, ChevronRight, Loader2, RefreshCw, ExternalLink } from "lucide-react";
 import { api, type CodegraphStatus, type EnvironmentReadiness, type WikiGraphData, type WikiStatusData } from "../lib/api";
 import { lastSelectedProjectRoot, panelOpacityClass, useProjectSwitching } from "../lib/panelTransition";
+import {
+  loadStatePaneVisibleCards,
+  revealStatePaneCard,
+  saveStatePaneVisibleCards,
+  STATE_PANE_CARD_META,
+  toggleStatePaneCardVisibility,
+  type StatePaneCardId,
+  type StatePaneVisibleCards,
+} from "../lib/statePaneVisibility";
 import { useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
 import McpPane from "./McpPane";
 
@@ -73,6 +82,27 @@ export default function StatePane({ artifacts }: {
     () => api.getWikiStatus(),
     { enabled: true },
   );
+
+  // Which status cards are on-screen (distinct from per-card expand/collapse).
+  const [visibleCards, setVisibleCards] = useState<StatePaneVisibleCards>(
+    () => loadStatePaneVisibleCards(),
+  );
+  const revealCard = useCallback((id: StatePaneCardId) => {
+    setVisibleCards((prev) => {
+      const next = revealStatePaneCard(prev, id);
+      if (next === prev) return prev;
+      saveStatePaneVisibleCards(next);
+      return next;
+    });
+  }, []);
+  const toggleCardVisibility = useCallback((id: StatePaneCardId) => {
+    setVisibleCards((prev) => {
+      const next = toggleStatePaneCardVisibility(prev, id);
+      if (next === prev) return prev;
+      saveStatePaneVisibleCards(next);
+      return next;
+    });
+  }, []);
 
   // Collapse prefs must be declared before graph lazy-fetch (enabled: wikiOpen).
   const [cgOpen, setCgOpen] = useState(() => localStorage.getItem("pmharness.statePane.cgOpen") === "1");
@@ -200,6 +230,7 @@ export default function StatePane({ artifacts }: {
       // Browser and think nothing happened.
       setWikiOpen(true);
       try { localStorage.setItem("pmharness.statePane.wikiOpen", "1"); } catch { /* ignore */ }
+      revealCard("wiki");
       window.dispatchEvent(new CustomEvent("harness-toast", { detail: "Wiki connected" }));
       window.dispatchEvent(new Event("harness-config-changed"));
       // Retry: loopback notify can race the status probe by a few hundred ms.
@@ -218,16 +249,17 @@ export default function StatePane({ artifacts }: {
       cancelled = true;
       try { unsub?.(); } catch { /* ignore */ }
     };
-  }, [revalidateWiki]);
+  }, [revalidateWiki, revealCard]);
 
   useEffect(() => {
     const onExpandMcp = () => {
       setMcpOpen(true);
       localStorage.setItem("pmharness.statePane.mcpOpen", "1");
+      revealCard("mcp");
     };
     window.addEventListener("harness-expand-mcp", onExpandMcp);
     return () => window.removeEventListener("harness-expand-mcp", onExpandMcp);
-  }, []);
+  }, [revealCard]);
 
   useEffect(() => {
     const load = () => {
@@ -491,8 +523,40 @@ export default function StatePane({ artifacts }: {
       {/* Telemetry + MCP: CodeGraph/Wiki stay compact; MCP expands into the
           remaining State pane height so the rail is not mostly blank. */}
       <div className={`px-2 pt-2 pb-1.5 flex-1 min-h-0 flex flex-col gap-1 ${panelOpacityClass(statusDimmed, cgStale || wikiStale)}`}>
+        {/* Compact view selector — which status cards are on-screen. */}
+        <div
+          role="toolbar"
+          aria-label="Status card visibility"
+          className="flex items-center gap-0.5 shrink-0 px-0.5"
+        >
+          <span className="text-[9px] uppercase tracking-wider text-faint/80 mr-0.5 select-none" aria-hidden>
+            View
+          </span>
+          {STATE_PANE_CARD_META.map(({ id, label, short }) => {
+            const on = visibleCards[id];
+            return (
+              <button
+                key={id}
+                type="button"
+                aria-pressed={on}
+                aria-label={`${on ? "Hide" : "Show"} ${label}`}
+                title={`${on ? "Hide" : "Show"} ${label}`}
+                onClick={() => toggleCardVisibility(id)}
+                className={`h-5 min-w-[1.65rem] px-1 rounded text-[9px] font-medium border transition-colors focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent ${
+                  on
+                    ? "bg-panel2/50 text-muted border-edge/50"
+                    : "bg-transparent text-faint/55 border-transparent hover:border-edge/35 hover:text-faint"
+                }`}
+              >
+                {short}
+              </button>
+            );
+          })}
+        </div>
+
         {/* CodeGraph pill */}
-        <div className="rounded-md border border-edge/40 bg-panel/40 overflow-hidden shrink-0">
+        {visibleCards.codegraph && (
+        <div className="rounded-md border border-edge/40 bg-panel/40 overflow-hidden shrink-0" data-testid="state-card-codegraph">
           <button
             onClick={toggleCg}
             className="w-full flex items-center gap-2 px-2.5 py-1.5 text-[10px] hover:bg-panel2/30 transition-colors"
@@ -597,9 +661,11 @@ export default function StatePane({ artifacts }: {
             </div>
           )}
         </div>
+        )}
 
         {/* Wiki pill */}
-        <div className="rounded-md border border-edge/40 bg-panel/40 overflow-hidden shrink-0">
+        {visibleCards.wiki && (
+        <div className="rounded-md border border-edge/40 bg-panel/40 overflow-hidden shrink-0" data-testid="state-card-wiki">
           <button
             onClick={toggleWiki}
             className="w-full flex items-center gap-2 px-2.5 py-1.5 text-[10px] hover:bg-panel2/30 transition-colors"
@@ -791,9 +857,11 @@ export default function StatePane({ artifacts }: {
             </div>
           )}
         </div>
+        )}
 
         {/* Optional env readiness — missing Chrome/analyzers are prerequisites, not failures. */}
-        <div className="rounded-md border border-edge/40 bg-panel/40 overflow-hidden shrink-0">
+        {visibleCards.environment && (
+        <div className="rounded-md border border-edge/40 bg-panel/40 overflow-hidden shrink-0" data-testid="state-card-environment">
           <button
             onClick={toggleEnv}
             aria-expanded={envOpen}
@@ -867,9 +935,14 @@ export default function StatePane({ artifacts }: {
             </div>
           )}
         </div>
+        )}
 
         {/* MCP: fills remaining State pane height (was a separate right-rail tab). */}
-        <div className={`rounded-md border border-edge/40 bg-panel/40 overflow-hidden flex flex-col ${mcpOpen ? "flex-1 min-h-0" : "shrink-0"}`}>
+        {visibleCards.mcp && (
+        <div
+          className={`rounded-md border border-edge/40 bg-panel/40 overflow-hidden flex flex-col ${mcpOpen ? "flex-1 min-h-0" : "shrink-0"}`}
+          data-testid="state-card-mcp"
+        >
           <button
             onClick={toggleMcp}
             className="w-full flex items-center gap-2 px-2.5 py-1.5 text-[10px] hover:bg-panel2/30 transition-colors shrink-0"
@@ -888,6 +961,7 @@ export default function StatePane({ artifacts }: {
             </div>
           )}
         </div>
+        )}
       </div>
 
       {/* Artifacts: gated behind SHOW_ARTIFACTS. Processing above stays live so

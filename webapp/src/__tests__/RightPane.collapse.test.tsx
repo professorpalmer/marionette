@@ -55,7 +55,7 @@ describe("RightPane collapse placement", () => {
     localStorage.setItem("pmharness.tabOrder.mcpMerged", "1");
   });
 
-  it("places collapse in the tab-bar gutter and invokes onCollapse", () => {
+  it("places collapse in the fixed right-side action cluster and invokes onCollapse", () => {
     render(<RightPane {...baseProps} />);
 
     const collapseBtns = screen.getAllByTestId("panel-collapse-btn");
@@ -63,8 +63,10 @@ describe("RightPane collapse placement", () => {
 
     const tabBar = collapseBtns[0].closest(".border-b");
     expect(tabBar).toBeTruthy();
-    const gutter = collapseBtns[0].parentElement;
-    expect(gutter?.className).toMatch(/flex-1/);
+    const actions = screen.getByTestId("right-pane-actions");
+    expect(actions).toContainElement(collapseBtns[0]);
+    expect(actions.className).toMatch(/\bshrink-0\b/);
+    expect(actions.className).not.toMatch(/\bflex-1\b/);
 
     const splitControls = tabBar!.querySelector(".border-l.border-edge");
     expect(splitControls).toBeTruthy();
@@ -94,8 +96,10 @@ describe("RightPane collapse placement", () => {
     for (const btn of collapseBtns) {
       expect(btn).toHaveAttribute("aria-label", "Close side panel");
       expect(btn).toHaveAttribute("title", "Close side panel (Ctrl/Cmd+J)");
-      const gutter = btn.parentElement;
-      expect(gutter?.className).toMatch(/flex-1/);
+      const actions = btn.parentElement;
+      expect(actions).toHaveAttribute("data-testid", "right-pane-actions");
+      expect(actions?.className).toMatch(/\bshrink-0\b/);
+      expect(actions?.className).not.toMatch(/\bflex-1\b/);
     }
 
     fireEvent.click(collapseBtns[1]);
@@ -186,5 +190,46 @@ describe("RightPane swarm activity poll seeds SWR cache", () => {
 
     expect(api.swarmLive).toHaveBeenCalledWith(REPO);
     expect(readSWRCache(`swarm:${REPO}`)).toEqual(payload);
+  });
+});
+
+describe("RightPane optional tab customization", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    Element.prototype.scrollIntoView = vi.fn();
+    localStorage.setItem("pmharness.tabOrder.swarm2nd", "1");
+    localStorage.setItem("pmharness.tabOrder.mcpMerged", "1");
+  });
+
+  it("keeps advanced tabs out of the strip but exposes them in the menu", () => {
+    render(<RightPane {...baseProps} />);
+
+    expect(screen.queryByRole("button", { name: "Worktrees" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Review" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "History" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Customize tabs" }));
+    expect(screen.getByRole("menu", { name: "Customize tabs" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitemcheckbox", { name: "Worktrees" })).toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Worktrees" }));
+    expect(screen.getByRole("button", { name: "Worktrees" })).toBeInTheDocument();
+    expect(localStorage.getItem("pmharness.rightPane.visibleTabs.v1")).toContain('"worktrees":true');
+  });
+
+  it("closes the customization menu with Escape and an outside click", () => {
+    render(<RightPane {...baseProps} />);
+    fireEvent.click(screen.getByRole("button", { name: "Customize tabs" }));
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("menu", { name: "Customize tabs" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Customize tabs" }));
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByRole("menu", { name: "Customize tabs" })).toBeNull();
   });
 });

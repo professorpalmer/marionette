@@ -45,6 +45,16 @@ describe("StatePane environment readiness", () => {
     localStorage.clear();
     clearSWRCache();
     localStorage.setItem("pmharness.statePane.envOpen", "1");
+    // Environment is hidden in the calm default — force it on for these tests.
+    localStorage.setItem(
+      "pmharness.statePane.visibleCards.v1",
+      JSON.stringify({
+        codegraph: true,
+        wiki: true,
+        environment: true,
+        mcp: true,
+      }),
+    );
     mockEnv.mockResolvedValue(readyPayload);
   });
 
