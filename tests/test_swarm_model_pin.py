@@ -43,7 +43,9 @@ def test_resolve_demotes_unknown_pin_to_auto_route(monkeypatch, tmp_path):
         lambda: {"opencode-go"},
     )
 
-    def _fake_pin(payload, model, *, registry=None):
+    def _fake_pin(payload, model, *, adapter, registry=None):
+        if adapter != "agentic":
+            return {**(payload or {}), "model": model}
         if model in ("gpt-5.6-luna", "agentic/gpt-5.6-luna"):
             return {
                 **(payload or {}),
@@ -54,7 +56,15 @@ def test_resolve_demotes_unknown_pin_to_auto_route(monkeypatch, tmp_path):
         return {**(payload or {}), "model": model}
 
     monkeypatch.setattr(
-        "puppetmaster.model_registry.apply_agentic_model_pin", _fake_pin
+        "puppetmaster.model_registry.apply_model_pin", _fake_pin
+    )
+    monkeypatch.setattr(
+        "harness.swarm_worker_allowlist.resolve_swarm_worker_allowlist",
+        lambda **_k: {
+            "allowed_adapters": ["agentic"],
+            "prefer_plan_billed": False,
+            "primary_adapter": "agentic",
+        },
     )
 
     from harness.swarm_model_pin import resolve_swarm_model_pin
@@ -63,6 +73,7 @@ def test_resolve_demotes_unknown_pin_to_auto_route(monkeypatch, tmp_path):
     assert out["demoted"] is False
     assert out["auto_route"] is False
     assert out["resolved"] == "agentic/gpt-5.6-luna"
+    assert out["adapter"] == "agentic"
     assert out["pin_fields"].get("provider") == "opencode-go"
 
 
@@ -79,8 +90,18 @@ def test_resolve_unknown_pin_demotes_instead_of_raising(monkeypatch, tmp_path):
         lambda: set(),
     )
     monkeypatch.setattr(
-        "puppetmaster.model_registry.apply_agentic_model_pin",
-        lambda payload, model, *, registry=None: {**(payload or {}), "model": model},
+        "puppetmaster.model_registry.apply_model_pin",
+        lambda payload, model, *, adapter, registry=None: {
+            **(payload or {}), "model": model,
+        },
+    )
+    monkeypatch.setattr(
+        "harness.swarm_worker_allowlist.resolve_swarm_worker_allowlist",
+        lambda **_k: {
+            "allowed_adapters": ["agentic"],
+            "prefer_plan_billed": False,
+            "primary_adapter": "agentic",
+        },
     )
 
     from harness.swarm_model_pin import resolve_swarm_model_pin
@@ -94,8 +115,18 @@ def test_resolve_unknown_pin_demotes_instead_of_raising(monkeypatch, tmp_path):
 
 def test_run_swarm_model_description_mentions_live_catalog(monkeypatch):
     monkeypatch.setattr(
-        "harness.swarm_model_pin.list_available_agentic_worker_models",
-        lambda limit=16: ["agentic/gpt-5.6-luna", "agentic/deepseek-v4-flash"],
+        "harness.swarm_worker_allowlist.resolve_swarm_worker_allowlist",
+        lambda **_k: {
+            "allowed_adapters": ["agentic"],
+            "prefer_plan_billed": False,
+            "primary_adapter": "agentic",
+        },
+    )
+    monkeypatch.setattr(
+        "harness.swarm_model_pin.list_available_worker_models",
+        lambda limit=16, adapters=None: [
+            "agentic/gpt-5.6-luna", "agentic/deepseek-v4-flash",
+        ],
     )
     from harness.pilot import _run_swarm_model_pin_description
 
@@ -145,7 +176,9 @@ def test_resolve_openai_codex_colon_pin_to_namespaced_row(monkeypatch, tmp_path)
         lambda: {"openai-codex"},
     )
 
-    def _fake_pin(payload, model, *, registry=None):
+    def _fake_pin(payload, model, *, adapter, registry=None):
+        if adapter != "agentic":
+            return {**(payload or {}), "model": model}
         if model in (
             "gpt-5.6-luna",
             "agentic/gpt-5.6-luna",
@@ -161,7 +194,15 @@ def test_resolve_openai_codex_colon_pin_to_namespaced_row(monkeypatch, tmp_path)
         return {**(payload or {}), "model": model}
 
     monkeypatch.setattr(
-        "puppetmaster.model_registry.apply_agentic_model_pin", _fake_pin
+        "puppetmaster.model_registry.apply_model_pin", _fake_pin
+    )
+    monkeypatch.setattr(
+        "harness.swarm_worker_allowlist.resolve_swarm_worker_allowlist",
+        lambda **_k: {
+            "allowed_adapters": ["agentic"],
+            "prefer_plan_billed": False,
+            "primary_adapter": "agentic",
+        },
     )
 
     from harness.swarm_model_pin import resolve_swarm_model_pin
@@ -176,6 +217,40 @@ def test_resolve_openai_codex_colon_pin_to_namespaced_row(monkeypatch, tmp_path)
         assert out["auto_route"] is False, pin
         assert out["resolved"] == "agentic/openai-codex/gpt-5.6-luna", pin
         assert out["pin_fields"].get("provider") == "openai-codex", pin
+
+
+def test_resolve_cursor_pin_across_adapter_union(monkeypatch, tmp_path):
+    """Cursor Grok pins resolve on the cursor adapter when agentic lacks the id."""
+    models_path = tmp_path / "models.json"
+    models_path.write_text(json.dumps({"models": []}), encoding="utf-8")
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setattr(
+        "harness.auto_registry.ensure_keyed_provider_registry_health",
+        lambda: {"ready": True},
+    )
+
+    def _fake_pin(payload, model, *, adapter, registry=None):
+        if adapter == "cursor" and model in ("grok-4-5", "cursor/grok-4-5"):
+            return {
+                **(payload or {}),
+                "model": "grok-4-5",
+                "pinned_model": "cursor/grok-4-5",
+                "pinned_adapter_model_name": "grok-4-5",
+            }
+        return {**(payload or {}), "model": model}
+
+    monkeypatch.setattr(
+        "puppetmaster.model_registry.apply_model_pin", _fake_pin
+    )
+
+    from harness.swarm_model_pin import resolve_swarm_model_pin
+
+    out = resolve_swarm_model_pin(
+        "cursor/grok-4-5", allowed_adapters=["agentic", "cursor"],
+    )
+    assert out["demoted"] is False
+    assert out["adapter"] == "cursor"
+    assert out["resolved"] == "cursor/grok-4-5"
 
 
 def test_opencode_go_curated_bound_into_auto_registry():

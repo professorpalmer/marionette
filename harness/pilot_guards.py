@@ -505,6 +505,9 @@ class TurnGuardState:
     nested_implement: bool = False
     # True after edit_file / write_file / hash_edit on a nested implement turn.
     edit_seen: bool = False
+    # (objective_key, model_key) pairs for plumbing-only / no-FINDING swarms.
+    # Identical redispatch soft-refuses; changing model pin or goal is allowed.
+    plumbing_degraded_swarms: set[tuple[str, str]] = field(default_factory=set)
 
 
 @dataclass(frozen=True)
@@ -597,6 +600,16 @@ def dedupe_dispatch_actions(actions: list) -> list:
     return out
 
 
+def _swarm_model_key(act: Any) -> str:
+    """Normalize optional worker model pin for thrash / loop fingerprinting."""
+    raw = getattr(act, "model", None)
+    if raw is None:
+        args = getattr(act, "arguments", None) or {}
+        if isinstance(args, dict):
+            raw = args.get("model")
+    return _norm_whitespace(str(raw or "")).lower()
+
+
 def normalize_action_args(kind: str, act: Any) -> str:
     """Canonical JSON key for near-duplicate detection."""
     args = getattr(act, "arguments", None) or {}
@@ -660,6 +673,10 @@ def normalize_action_args(kind: str, act: Any) -> str:
         roles = getattr(act, "roles", None) or []
         payload["roles"] = sorted(roles) if isinstance(roles, list) else []
         payload["repo"] = _norm_path(getattr(act, "repo", "") or "")
+        # Model pin is part of identity so changing pin after a plumbing
+        # degrade is a real new dispatch, not a loop-guard collision.
+        if kind == "run_swarm":
+            payload["model"] = _swarm_model_key(act)
     elif kind == "run_parallel":
         goals = getattr(act, "goals", None) or []
         payload["goals"] = (
@@ -1312,6 +1329,47 @@ def check_iteration_budget(state: TurnGuardState, kind: str, act: Any) -> GuardV
     )
 
 
+def plumbing_swarm_fingerprint(goal: str, model: str = "") -> tuple[str, str]:
+    """Fingerprint for plumbing-only swarm thrash soft-refuse."""
+    return (normalize_objective_key(goal or ""), _norm_whitespace(model or "").lower())
+
+
+def record_plumbing_degraded_swarm(
+    state: TurnGuardState, goal: str, model: str = "",
+) -> None:
+    """Remember a plumbing-only / no-FINDING swarm so identical redispatches soft-refuse."""
+    key = plumbing_swarm_fingerprint(goal, model)
+    if key[0]:
+        state.plumbing_degraded_swarms.add(key)
+
+
+def check_plumbing_swarm_thrash(
+    state: TurnGuardState, kind: str, act: Any,
+) -> GuardVerdict:
+    """Soft-refuse identical run_swarm after a plumbing-only / no-FINDING degrade.
+
+    Changing the model pin or the goal is allowed; looping the same audit is not.
+    """
+    if kind != "run_swarm":
+        return GuardVerdict(False)
+    goal = getattr(act, "goal", "") or ""
+    model = _swarm_model_key(act)
+    key = plumbing_swarm_fingerprint(goal, model)
+    if not key[0] or key not in state.plumbing_degraded_swarms:
+        return GuardVerdict(False)
+    return GuardVerdict(
+        suppress=True,
+        reason="plumbing_swarm_thrash",
+        message=(
+            "(SUPPRESSED: identical run_swarm after a plumbing-only / no-FINDING "
+            "degrade for this goal+model. Do NOT loop the same audit. Change the "
+            "worker model pin (Settings-enabled agentic or Cursor worker) or "
+            "reformulate the goal, then re-dispatch; or tell the user the prior "
+            "swarm produced no FINDING/RISK/DECISION.)"
+        ),
+    )
+
+
 def check_pilot_guards(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict:
     """Apply CLI redirect, loop breaker, swarm gate, delegate gate, then budget."""
     restart_verdict = check_backend_restart(state, kind, act)
@@ -1329,6 +1387,10 @@ def check_pilot_guards(state: TurnGuardState, kind: str, act: Any) -> GuardVerdi
     implement_exhausted_verdict = check_implement_exhausted(state, kind, act)
     if implement_exhausted_verdict.suppress:
         return implement_exhausted_verdict
+
+    thrash_verdict = check_plumbing_swarm_thrash(state, kind, act)
+    if thrash_verdict.suppress:
+        return thrash_verdict
 
     loop_verdict = check_loop_guard(state, kind, act)
     if loop_verdict.suppress:

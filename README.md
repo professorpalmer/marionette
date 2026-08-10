@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.193, deliberately pre-1.0. Right-panel views are now customizable without a crowded toolbar; linked edit/worker branches open their worktree seamlessly (no scary confirm); OAuth reconnect + Agent Plugins v1 (rides puppetmaster-ai==1.21.13).
+> Status: v0.9.194, deliberately pre-1.0. Settings-enabled workers (OpenRouter Kimi and Cursor Grok) share one swarm allowlist so Luna can orchestrate either; plumbing-swarm thrash soft-refuse; rides puppetmaster-ai==1.21.13.
 
 ## Documentation
 

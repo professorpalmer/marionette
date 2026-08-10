@@ -1,8 +1,11 @@
-"""Agentic analysis swarms must stay on the agentic adapter.
+"""Product swarm routing: Settings+platform worker allowlist.
 
 Regression: prefer_plan_billed first-picked Cursor GPT ($0 plan), then
 router-fallback landed on openai/gpt-* even when Models toggles only enabled
 OpenRouter pilots -- tracker showed a GPT model the picker never offered.
+
+Product bar: when Models enables Cursor Grok alongside agentic/OR, allowed
+adapters must include cursor (never hard-lock agentic-only).
 """
 from __future__ import annotations
 
@@ -47,10 +50,24 @@ class _FakeOrchestrator:
         return _FakeResult()
 
 
+def _pin_agentic_only_allowlist(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "harness.swarm_worker_allowlist.resolve_swarm_worker_allowlist",
+        lambda **_k: {
+            "allowed_adapters": ["agentic"],
+            "prefer_plan_billed": False,
+            "primary_adapter": "agentic",
+            "visibility_adapters": ["agentic"],
+            "platform_lock": ["agentic"],
+        },
+    )
+
+
 def test_agentic_swarm_pins_allowed_adapters(monkeypatch, tmp_path):
     _CapturingWorkerSpec._last_captured = []
     monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")
     monkeypatch.setenv("HARNESS_REPO", str(tmp_path))
+    _pin_agentic_only_allowlist(monkeypatch)
     monkeypatch.setattr("puppetmaster.workers.WorkerSpec", _CapturingWorkerSpec)
     monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _FakeOrchestrator)
     monkeypatch.setattr(bridge, "_warn_if_unindexed", lambda *_a, **_k: None)
@@ -73,11 +90,46 @@ def test_agentic_swarm_pins_allowed_adapters(monkeypatch, tmp_path):
     assert _CapturingWorkerSpec._last_captured[0].adapter == "agentic"
 
 
+def test_swarm_allowed_adapters_includes_cursor_when_settings_enable_it(
+    monkeypatch, tmp_path,
+):
+    """Models-enabled Cursor Grok must not be rejected by an agentic-only lock."""
+    _CapturingWorkerSpec._last_captured = []
+    monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")
+    monkeypatch.setenv("HARNESS_REPO", str(tmp_path))
+    monkeypatch.setattr(
+        "harness.swarm_worker_allowlist.resolve_swarm_worker_allowlist",
+        lambda **_k: {
+            "allowed_adapters": ["agentic", "cursor"],
+            "prefer_plan_billed": False,
+            "primary_adapter": "agentic",
+            "visibility_adapters": ["agentic", "cursor"],
+            "platform_lock": ["agentic", "cursor"],
+        },
+    )
+    monkeypatch.setattr("puppetmaster.workers.WorkerSpec", _CapturingWorkerSpec)
+    monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _FakeOrchestrator)
+    monkeypatch.setattr(bridge, "_warn_if_unindexed", lambda *_a, **_k: None)
+
+    intent = DriverIntent(
+        action="run_swarm",
+        goal="Audit provider capability honesty in Settings",
+        roles=["explore"],
+    )
+    result = bridge.execute_intent(intent, state_dir=str(tmp_path / "state"))
+    assert result is not None
+    payload = _CapturingWorkerSpec._last_captured[0].payload
+    assert payload.get("allowed_adapters") == ["agentic", "cursor"]
+    assert payload.get("prefer_plan_billed") is False
+    assert _CapturingWorkerSpec._last_captured[0].adapter == "agentic"
+
+
 def test_agentic_swarm_stamps_token_budget_from_env(monkeypatch, tmp_path):
     _CapturingWorkerSpec._last_captured = []
     monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")
     monkeypatch.setenv("HARNESS_WORKER_TOKEN_BUDGET", "12345")
     monkeypatch.setenv("HARNESS_REPO", str(tmp_path))
+    _pin_agentic_only_allowlist(monkeypatch)
     monkeypatch.setattr("puppetmaster.workers.WorkerSpec", _CapturingWorkerSpec)
     monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _FakeOrchestrator)
     monkeypatch.setattr(bridge, "_warn_if_unindexed", lambda *_a, **_k: None)
@@ -97,13 +149,14 @@ def test_agentic_swarm_explicit_model_pin_disables_auto_route(monkeypatch, tmp_p
     _CapturingWorkerSpec._last_captured = []
     monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")
     monkeypatch.setenv("HARNESS_REPO", str(tmp_path))
+    _pin_agentic_only_allowlist(monkeypatch)
     monkeypatch.setattr("puppetmaster.workers.WorkerSpec", _CapturingWorkerSpec)
     monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _FakeOrchestrator)
     monkeypatch.setattr(bridge, "_warn_if_unindexed", lambda *_a, **_k: None)
 
     monkeypatch.setattr(
         "harness.swarm_model_pin.resolve_swarm_model_pin",
-        lambda pin: {
+        lambda pin, allowed_adapters=None: {
             "pin_fields": {
                 "model": "meta/muse-spark-1.1",
                 "provider": "openrouter",
@@ -117,6 +170,7 @@ def test_agentic_swarm_explicit_model_pin_disables_auto_route(monkeypatch, tmp_p
             "resolved": "agentic/meta/muse-spark-1.1",
             "demoted": False,
             "reason": "exact",
+            "adapter": "agentic",
         },
     )
 
@@ -141,18 +195,20 @@ def test_agentic_swarm_unknown_model_pin_demotes_to_auto_route(monkeypatch, tmp_
     _CapturingWorkerSpec._last_captured = []
     monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")
     monkeypatch.setenv("HARNESS_REPO", str(tmp_path))
+    _pin_agentic_only_allowlist(monkeypatch)
     monkeypatch.setattr("puppetmaster.workers.WorkerSpec", _CapturingWorkerSpec)
     monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _FakeOrchestrator)
     monkeypatch.setattr(bridge, "_warn_if_unindexed", lambda *_a, **_k: None)
     monkeypatch.setattr(
         "harness.swarm_model_pin.resolve_swarm_model_pin",
-        lambda pin: {
+        lambda pin, allowed_adapters=None: {
             "pin_fields": {},
             "auto_route": True,
             "requested": pin,
             "resolved": "",
             "demoted": True,
             "reason": "test demote",
+            "adapter": "",
         },
     )
 
@@ -203,6 +259,59 @@ def test_swarm_falls_back_to_platform_cursor_when_no_agentic_keys(
     assert spec.payload.get("prefer_plan_billed") is True
 
 
+def test_swarm_cursor_model_pin_uses_cursor_adapter_in_union(monkeypatch, tmp_path):
+    """intent.model for a Cursor worker resolves across the union, not agentic-only."""
+    _CapturingWorkerSpec._last_captured = []
+    monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")
+    monkeypatch.setenv("HARNESS_REPO", str(tmp_path))
+    monkeypatch.setattr(
+        "harness.swarm_worker_allowlist.resolve_swarm_worker_allowlist",
+        lambda **_k: {
+            "allowed_adapters": ["agentic", "cursor"],
+            "prefer_plan_billed": False,
+            "primary_adapter": "agentic",
+            "visibility_adapters": ["agentic", "cursor"],
+            "platform_lock": ["agentic", "cursor"],
+        },
+    )
+    monkeypatch.setattr(
+        "harness.swarm_model_pin.resolve_swarm_model_pin",
+        lambda pin, allowed_adapters=None: {
+            "pin_fields": {
+                "model": "grok-4-5",
+                "pinned_model": "cursor/grok-4-5",
+                "pinned_adapter_model_name": "grok-4-5",
+                "router_model_id": "cursor/grok-4-5",
+                "auto_route": False,
+                "pinned_adapter": "cursor",
+            },
+            "auto_route": False,
+            "requested": pin,
+            "resolved": "cursor/grok-4-5",
+            "demoted": False,
+            "reason": "exact",
+            "adapter": "cursor",
+        },
+    )
+    monkeypatch.setattr("puppetmaster.workers.WorkerSpec", _CapturingWorkerSpec)
+    monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _FakeOrchestrator)
+    monkeypatch.setattr(bridge, "_warn_if_unindexed", lambda *_a, **_k: None)
+
+    intent = DriverIntent(
+        action="run_swarm",
+        goal="Review auth middleware with Cursor Grok",
+        roles=["explore"],
+        model="cursor/grok-4-5",
+    )
+    result = bridge.execute_intent(intent, state_dir=str(tmp_path / "state"))
+    assert result is not None
+    spec = _CapturingWorkerSpec._last_captured[0]
+    assert spec.adapter == "cursor"
+    assert spec.payload.get("allowed_adapters") == ["agentic", "cursor"]
+    assert spec.payload.get("pinned_model") == "cursor/grok-4-5"
+    assert spec.payload.get("prefer_plan_billed") is False
+
+
 def test_execute_intent_pins_isolated_marionette_registry_path(tmp_path, monkeypatch):
     """Direct execute_intent must boot isolated catalog (path + ladder), not ~/.puppetmaster."""
     import json
@@ -245,6 +354,7 @@ def test_execute_intent_pins_isolated_marionette_registry_path(tmp_path, monkeyp
     _CapturingWorkerSpec._last_captured = []
     monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")
     monkeypatch.setenv("HARNESS_REPO", str(tmp_path))
+    _pin_agentic_only_allowlist(monkeypatch)
     monkeypatch.setattr("puppetmaster.workers.WorkerSpec", _CapturingWorkerSpec)
     monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _FakeOrchestrator)
     monkeypatch.setattr(bridge, "_warn_if_unindexed", lambda *_a, **_k: None)

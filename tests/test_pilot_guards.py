@@ -65,6 +65,7 @@ class _Act:
     command: str = ""
     query: str = ""
     goal: str = ""
+    model: str = ""
     goals: list = field(default_factory=list)
     roles: list = field(default_factory=list)
     arguments: dict = field(default_factory=dict)
@@ -798,6 +799,34 @@ def test_implement_exhausted_soft_refuses_run_implement():
     assert verdict.reason == "implement_exhausted"
     assert "do not re-dispatch run_implement" in verdict.message
     assert "hash_edit/edit_file" in verdict.message
+
+
+def test_plumbing_swarm_thrash_soft_refuses_identical_redispatch():
+    from harness.pilot_guards import (
+        check_plumbing_swarm_thrash,
+        record_plumbing_degraded_swarm,
+    )
+
+    state = new_turn_guard_state("audit auth middleware")
+    act = _Act(kind="run_swarm", goal="Audit auth middleware", model="")
+    assert check_plumbing_swarm_thrash(state, "run_swarm", act).suppress is False
+
+    record_plumbing_degraded_swarm(state, act.goal, act.model)
+    verdict = check_plumbing_swarm_thrash(state, "run_swarm", act)
+    assert verdict.suppress is True
+    assert verdict.reason == "plumbing_swarm_thrash"
+    assert "model pin" in verdict.message.lower()
+
+    # Changing model pin is allowed.
+    pinned = _Act(kind="run_swarm", goal=act.goal, model="cursor/grok-4-5")
+    assert check_plumbing_swarm_thrash(state, "run_swarm", pinned).suppress is False
+
+    # Changing goal is allowed.
+    different = _Act(kind="run_swarm", goal="Audit billing paths only", model="")
+    assert check_plumbing_swarm_thrash(state, "run_swarm", different).suppress is False
+
+    # Wired into check_pilot_guards.
+    assert check_pilot_guards(state, "run_swarm", act).reason == "plumbing_swarm_thrash"
 
 
 def test_implement_exhausted_soft_refuses_swarm_dispatch_kinds():

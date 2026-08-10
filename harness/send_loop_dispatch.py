@@ -740,6 +740,21 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         pass
     session._display_transcript.append({'type': 'swarm_result', **_badge})
     yield ConvEvent('swarm_result', {'job_id': _badge['job_id'], 'objective': act.goal, 'result': _badge})
+    # Soft-refuse identical run_swarm redispatch after plumbing-only / no-FINDING.
+    if (not _swarm_ok) and (not auth_failure) and (not _demo_refused) and (
+        (not _has_signal) or (not _substantive)
+    ):
+        try:
+            from .pilot_guards import record_plumbing_degraded_swarm
+            gs = getattr(session, '_turn_guard_state', None)
+            if gs is not None:
+                record_plumbing_degraded_swarm(
+                    gs,
+                    act.goal or '',
+                    (getattr(act, 'model', None) or ''),
+                )
+        except Exception:
+            pass
     # Only surfaced artifacts become turn findings; a refused demo contributes none.
     turn_findings.extend((a for a in _all_arts if a.get('type') != 'verification'))
     full_digest_raw = (getattr(act, 'arguments', None) or {}).get('full_digest')
@@ -766,7 +781,14 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     if auth_failure:
         stall = f'\n(PROVIDER AUTH FAILURE -- {auth_failure} This is a dead/revoked/wrong API key, NOT a weak model or bad prompt. Do NOT re-run the swarm; tell the user to fix the named key, then stop.)' + stall
     elif not _has_signal:
-        stall = '\n(DEGRADED SWARM — only routing/verification plumbing, no FINDING/RISK/DECISION. Tell the user the audit did not produce real findings. Re-dispatch with fewer roles or a sharper goal; do NOT claim the repo was reviewed.)' + stall
+        stall = (
+            '\n(DEGRADED SWARM — only routing/verification plumbing, no '
+            'FINDING/RISK/DECISION. Tell the user the audit did not produce '
+            'real findings. Do NOT re-dispatch the identical audit. Change '
+            'the worker model pin (Settings-enabled agentic or Cursor) or '
+            'reformulate the goal before any follow-up swarm; do NOT claim '
+            'the repo was reviewed.)'
+        ) + stall
     elif not _substantive:
         stall = '\n(THIN SWARM FINDINGS — the findings above are generic one-liners with no file-backed evidence, a known failure mode when the goal is too long/multi-part for the workers. Do NOT present these as a completed audit. Re-dispatch narrowed workers with tight single-domain objectives.)' + stall
     _pilot_via = 'refused demo substrate' if _demo_refused else f'via {_ui_adapter}'

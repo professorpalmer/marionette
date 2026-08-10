@@ -263,3 +263,26 @@ def test_no_tool_calls_meta_without_empty_unstructured_still_blocked():
         }]
         out = _promote_degraded_prose(compact)
         assert not any(a.get("type") == "finding" for a in out), tag
+
+
+def test_verification_stdout_preferred_over_plumbing_summary_any_adapter():
+    """Any adapter parking analysis in stdout must surface it for promotion."""
+    prose = (
+        "harness/swarm_worker_allowlist.py:1 Settings-driven allowlist must "
+        "include cursor when Models enables Grok so workers are not starved."
+    )
+    compact = [
+        _compact_artifact(_Artifact(
+            "verification",
+            {
+                "summary": "Agentic worker completed without structured findings",
+                "stdout": prose,
+            },
+        )),
+    ]
+    # Compact must prefer stdout body over plumbing summary.
+    assert "swarm_worker_allowlist" in compact[0]["body"]
+    out = _promote_degraded_prose(compact)
+    findings = [a for a in out if a.get("type") == "finding"]
+    assert findings, "stdout prose behind plumbing summary must promote"
+    assert "swarm_worker_allowlist" in findings[0]["body"]

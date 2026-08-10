@@ -447,12 +447,18 @@ def _compact_artifact(a: Any) -> dict:
         # artifact's stdout; read it so that text can be promoted to a finding.
         "stdout",
     )
-    # empty_or_unstructured agentic verification often has a plumbing `summary`
+    # Degraded verification (any adapter) often has a plumbing `summary`
     # ("completed without structured findings") AND the real audit in `stdout`.
     # Prefer stdout first so promote/rescue sees the analysis, not the meta phrase.
-    if (
-        art_type == "verification"
-        and fail_l == "empty_or_unstructured_agentic_result"
+    _summary_l = str(payload.get("summary") or "").strip().lower()
+    _plumbing_summary = (
+        "without structured findings" in _summary_l
+        or "no structured findings" in _summary_l
+        or "never called any tool" in _summary_l
+        or "verification/plumbing" in _summary_l
+    )
+    if art_type == "verification" and (
+        fail_l == "empty_or_unstructured_agentic_result" or _plumbing_summary
     ):
         _headline_keys = (
             "claim", "decision", "risk", "check",
@@ -488,23 +494,35 @@ def _compact_artifact(a: Any) -> dict:
     stdout_text = payload.get("stdout")
     if (
         art_type == "verification"
-        and fail_l == "empty_or_unstructured_agentic_result"
         and isinstance(stdout_text, str)
         and stdout_text.strip()
     ):
-        # Even if a non-plumbing key won the headline, keep stdout as body when
-        # it is the longer parked analysis (promote reads body first).
-        if len(stdout_text.strip()) >= len(body):
-            body = stdout_text.strip()
+        # Any adapter may park real analysis in verification.stdout while a
+        # plumbing summary occupies headline keys. Prefer stdout when the
+        # headline is a known plumbing phrase (or the unstructured-agentic
+        # degrade tag) so promote/rescue sees substantive prose before the
+        # send_loop_dispatch quality gate — never leave capable models as
+        # plumbing-only when real text exists. Do not steal a clean
+        # structured headline just because stdout is longer.
+        stdout_s = stdout_text.strip()
         head_l = str(headline or "").lower()
-        if (
+        plumbing_head = (
             "without structured findings" in head_l
             or "no structured findings" in head_l
             or "never called any tool" in head_l
-        ):
-            headline = stdout_text
-            empty_headline = False
-            body = stdout_text.strip()
+            or "verification/plumbing" in head_l
+            or head_l in ("passed", "ok", "done", "complete", "completed")
+        )
+        prefer_stdout = (
+            fail_l == "empty_or_unstructured_agentic_result" or plumbing_head
+        )
+        if prefer_stdout and len(stdout_s) >= 40:
+            if len(stdout_s) >= len(body) or plumbing_head:
+                body = stdout_s
+            if plumbing_head or fail_l == "empty_or_unstructured_agentic_result":
+                headline = stdout_text
+                empty_headline = False
+                body = stdout_s
     if empty_headline and payload:
         headline = str(getattr(a, "type", "") or "artifact")
     # Never let a truncated reasoning fragment become the digest/patch headline.
@@ -749,16 +767,18 @@ def _is_nonpromotable_failure(failure: object) -> bool:
 
 
 def _meta_degrade_only_empty_unstructured(a: dict) -> bool:
-    """True when meta-degrade is solely ``empty_or_unstructured_agentic_result``.
+    """True when a meta-degrade row still carries promotable analysis prose.
 
-    Plumbing phrases in the *headline* alone do not block promotion when the
-    full body (prefer body over headline) is substantive analysis. Fail closed
-    when the body itself is thin, a reasoning fragment, or plumbing-only.
-    Other meta markers (no_tool_calls, auth/route tags) stay non-promotable.
+    Allows promotion when failure is ``empty_or_unstructured_agentic_result``
+    OR when failure is empty (any adapter parked prose under a plumbing
+    headline). Plumbing phrases in the *headline* alone do not block
+    promotion when the full body is substantive. Fail closed when the body
+    itself is thin, a reasoning fragment, or plumbing-only. Other meta
+    markers (no_tool_calls, auth/route tags) stay non-promotable.
     """
     try:
         fail = str(a.get("failure") or "").strip().lower()
-        if fail != _PROMOTABLE_UNSTRUCTURED_FAILURE:
+        if fail and fail != _PROMOTABLE_UNSTRUCTURED_FAILURE:
             return False
         # Prefer body over headline — compact rows often keep a plumbing
         # summary in headline while parking real analysis in body/stdout.
@@ -1514,59 +1534,70 @@ def execute_intent(
             )
             adapter = "cursor"
         elif swarm_adapter == "agentic" and repo_cwd:
-            # Standalone path: run READ-ONLY analysis workers on the built-in
-            # 'agentic' adapter (provider API on the user's key -- no external
-            # agent CLI). Agentic is provider-universal: OpenRouter, OpenCode
-            # Go, OpenAI-compatible, Anthropic-wire, and other keyed agentic
-            # providers all execute here. auto_route lets Puppetmaster's
-            # agentic router select among usable provider-key-backed agentic
-            # model specs only (allowed_adapters=['agentic'] below). A
-            # missing provider key or empty agentic catalog must fail clearly
-            # -- never fall through to Cursor/Codex/OpenAI platform adapters.
-            # Prefer keyed API billing over plan-billed first picks
-            # (prefer_plan_billed=False below). Agentic analyze mode exposes
-            # no edit tools, so the default path is safe on live repos even
-            # before the triple read-only guard below.
+            # Product swarm path: Settings + platform driven worker allowlist.
+            # Agentic (OpenRouter / OpenCode Go / Codex OAuth / …) stays the
+            # default primary when keyed, but Models-enabled Cursor
+            # Grok/Composer must also be reachable — never hard-lock
+            # allowed_adapters=['agentic'] when the union includes cursor.
+            # prefer_plan_billed=False whenever any API-billed agentic model
+            # is eligible so $0 plan picks do not starve OR cash models.
             _warn_if_unindexed(repo_cwd)
             from puppetmaster.workers import WorkerSpec
+            try:
+                from harness.swarm_worker_allowlist import (
+                    resolve_swarm_worker_allowlist,
+                )
+                _allow = resolve_swarm_worker_allowlist()
+            except Exception:
+                _allow = {
+                    "allowed_adapters": ["agentic"],
+                    "prefer_plan_billed": False,
+                    "primary_adapter": "agentic",
+                }
+            allowed_adapters = list(
+                _allow.get("allowed_adapters") or ["agentic"]
+            )
+            prefer_plan_billed = bool(_allow.get("prefer_plan_billed"))
+            primary_adapter = str(
+                _allow.get("primary_adapter") or "agentic"
+            ).strip().lower() or "agentic"
             roles = intent.roles or infer_roles(intent.goal)
             _browser = _browser_swarm_enabled(intent.goal)
             pinned_model = (getattr(intent, "model", None) or "").strip()
             pin_fields: dict = {}
+            pin_adapter = primary_adapter
             if pinned_model:
-                # Resolve against the *keyed* agentic catalog (alias remap for
-                # cursor/codex pilot ids → OpenCode Go / OpenRouter worker ids).
-                # Unknown pins demote to auto-route instead of failing the swarm
-                # — the harness already knows what is available right now.
+                # Resolve against the Settings/platform worker adapter union
+                # (not agentic-only remap). Unknown pins demote to auto-route.
                 from harness.swarm_model_pin import resolve_swarm_model_pin
 
-                resolved = resolve_swarm_model_pin(pinned_model)
+                resolved = resolve_swarm_model_pin(
+                    pinned_model, allowed_adapters=allowed_adapters,
+                )
                 pin_fields = dict(resolved.get("pin_fields") or {})
                 if resolved.get("demoted"):
                     pin_fields = {}
+                    pin_adapter = primary_adapter
                 elif pin_fields.get("pinned_model"):
                     pin_fields["auto_route"] = False
+                    pin_adapter = (
+                        str(resolved.get("adapter") or primary_adapter)
+                        .strip().lower()
+                        or primary_adapter
+                    )
             specs = []
             for r in roles:
                 base_payload = {
                     "read_only": True, "no_edit": True, "dry_run": True,
                     "cwd": repo_cwd, "prompt": intent.goal,
                     "auto_route": True,
-                    # Stay on the agentic adapter for BOTH the first pick
-                    # and router-fallback. Agentic is provider-universal
-                    # (OpenRouter, OpenCode Go, OpenAI-compatible,
-                    # Anthropic-wire, …); Puppetmaster's agentic router
-                    # selects among usable provider-key-backed agentic
-                    # model specs. Without this pin, an eligible
-                    # Cursor/Codex/OpenAI platform adapter may win and the
-                    # orchestrator may rewrite WorkerSpec.adapter. A
-                    # missing provider key or empty agentic catalog must
-                    # fail clearly rather than silently leaving agentic.
-                    "allowed_adapters": ["agentic"],
-                    # Agentic path is API-billed keyed providers; do not
-                    # prefer plan-billed Cursor/Codex ($0 plan) ahead of
-                    # agentic.
-                    "prefer_plan_billed": False,
+                    # Settings+platform union (agentic / cursor / openai),
+                    # never a hard agentic-only lock that rejects Cursor
+                    # Grok when Models toggles enable it.
+                    "allowed_adapters": list(allowed_adapters),
+                    # False whenever API-billed agentic is eligible so OR
+                    # cash models are not starved by plan-billed Cursor.
+                    "prefer_plan_billed": prefer_plan_billed,
                     # Opt this worker into the CDP browser toolset. The
                     # agentic adapter's _browser_enabled gate reads this flag
                     # and registers/dispatches the browser_* tools; without
@@ -1606,7 +1637,7 @@ def execute_intent(
                             intent, "acceptance_criteria", None
                         ),
                     ),
-                    adapter="agentic",
+                    adapter=pin_adapter,
                     payload=stamp_task_payload(
                         base_payload, session_id=session_id or "", cwd=repo_cwd
                     ),
@@ -1615,7 +1646,7 @@ def execute_intent(
                 intent.goal, specs=specs, worker_mode=worker_mode or "inline",
                 label=job_label,
             )
-            adapter = "agentic"
+            adapter = pin_adapter
         elif swarm_adapter == "openai" and repo_cwd:
             _prepare_analysis_env()
             _warn_if_unindexed(repo_cwd)

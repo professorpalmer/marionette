@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-"""Resolve run_swarm model pins against the *currently keyed* agentic catalog.
+"""Resolve run_swarm model pins against the live worker adapter union.
 
 Pilots often pass their session model (``cursor/gpt-5-6-luna``,
-``openai-codex:gpt-5.6-luna``). Those aliases remap to keyed agentic rows when
-the same model exists for an auth that can drive workers (e.g. Codex OAuth →
-``agentic/openai-codex/gpt-5.6-luna`` with ``provider=openai-codex``). Unresolved
-pins demote to auto-route across the live union catalog instead of failing.
+``openai-codex:gpt-5.6-luna``, ``cursor/grok-4-5``). Those aliases remap to
+keyed agentic rows when a matching worker auth exists, or to platform cursor
+rows when Settings/platform allow Cursor workers. Unresolved pins demote to
+auto-route across the live union catalog instead of failing.
 """
 
 import re
@@ -14,8 +14,11 @@ from typing import Any, Optional
 
 from .diag import note as _diag
 
+# Prefer agentic (API-billed) remaps before platform cursor when both match.
+_PIN_ADAPTER_ORDER = ("agentic", "cursor", "openai")
 
-def _agentic_registry_rows() -> list[dict]:
+
+def _registry_rows(*, adapters: Optional[set[str]] = None) -> list[dict]:
     try:
         from .registry_wizard import get_models_file_path
         import json
@@ -29,14 +32,23 @@ def _agentic_registry_rows() -> list[dict]:
         models = data.get("models") if isinstance(data, dict) else None
         if not isinstance(models, list):
             return []
-        return [
-            row
-            for row in models
-            if isinstance(row, dict) and row.get("adapter") == "agentic"
-        ]
+        allow = adapters
+        out: list[dict] = []
+        for row in models:
+            if not isinstance(row, dict):
+                continue
+            adapter = str(row.get("adapter") or "").strip().lower()
+            if allow is not None and adapter not in allow:
+                continue
+            out.append(row)
+        return out
     except Exception as e:
         _diag("swarm_model_pin.registry_rows", e)
         return []
+
+
+def _agentic_registry_rows() -> list[dict]:
+    return _registry_rows(adapters={"agentic"})
 
 
 def list_available_agentic_worker_models(*, limit: int = 24) -> list[str]:
@@ -67,19 +79,60 @@ def list_available_agentic_worker_models(*, limit: int = 24) -> list[str]:
     return out
 
 
+def list_available_worker_models(
+    *,
+    limit: int = 24,
+    adapters: Optional[set[str]] = None,
+) -> list[str]:
+    """Registry ids across the allowed worker adapter union."""
+    allow = set(adapters) if adapters is not None else None
+    try:
+        from .auto_registry import keyed_agentic_providers
+
+        keyed = keyed_agentic_providers()
+    except Exception as e:
+        _diag("swarm_model_pin.keyed_union", e)
+        keyed = set()
+    out: list[str] = []
+    seen: set[str] = set()
+    for row in _registry_rows(adapters=allow):
+        mid = str(row.get("id") or "").strip()
+        if not mid or mid in seen:
+            continue
+        adapter = str(row.get("adapter") or "").strip().lower()
+        if adapter == "agentic":
+            provider = ""
+            defaults = row.get("payload_defaults")
+            if isinstance(defaults, dict):
+                provider = str(defaults.get("provider") or "").strip()
+            if keyed and provider and provider not in keyed:
+                continue
+        seen.add(mid)
+        out.append(mid)
+        if len(out) >= max(1, int(limit)):
+            break
+    return out
+
+
 def swarm_model_pin_hint(*, limit: int = 16) -> str:
     """Short tool-schema suffix listing live worker models (or auto-route)."""
-    available = list_available_agentic_worker_models(limit=limit)
+    try:
+        from .swarm_worker_allowlist import resolve_swarm_worker_allowlist
+
+        allow = set(resolve_swarm_worker_allowlist().get("allowed_adapters") or [])
+    except Exception:
+        allow = {"agentic"}
+    available = list_available_worker_models(limit=limit, adapters=allow or None)
     if not available:
         return (
-            "Omit model for auto-route among currently keyed agentic providers "
-            "(OpenCode Go, OpenRouter, ChatGPT Codex OAuth, …). Session pilot "
-            "ids are remapped when a matching worker row exists; otherwise the "
-            "harness auto-routes."
+            "Omit model for auto-route among currently keyed worker adapters "
+            "(OpenCode Go, OpenRouter, ChatGPT Codex OAuth, Cursor API, …). "
+            "Session pilot ids are remapped when a matching worker row exists; "
+            "otherwise the harness auto-routes."
         )
     shown = ", ".join(available)
     return (
-        "Omit model for auto-route (preferred). Live agentic worker catalog: "
+        "Omit model for auto-route (preferred). Live worker catalog: "
         f"{shown}. Session pilot ids (openai-codex:…, cursor/…, codex/…) remap "
         "to a matching row when present; unknown pins demote to auto-route."
     )
@@ -144,30 +197,60 @@ def pin_candidates(pin: str) -> list[str]:
     return out
 
 
-def _try_apply_pin(candidate: str) -> Optional[dict]:
+def _try_apply_pin(candidate: str, *, adapter: str) -> Optional[dict]:
     try:
         from puppetmaster.model_registry import (
             AmbiguousModelPinError,
-            apply_agentic_model_pin,
+            apply_model_pin,
         )
     except Exception as e:
         _diag("swarm_model_pin.apply_import", e)
         return None
     try:
-        stamped = apply_agentic_model_pin({}, candidate)
+        stamped = apply_model_pin({}, candidate, adapter=adapter)
     except AmbiguousModelPinError as exc:
         _diag("swarm_model_pin.ambiguous", msg=f"pin={candidate!r} err={exc}")
         return None
     except Exception as e:
-        _diag("swarm_model_pin.apply", e, msg=f"pin={candidate!r}")
+        _diag("swarm_model_pin.apply", e, msg=f"pin={candidate!r} adapter={adapter}")
         return None
     if not isinstance(stamped, dict) or not stamped.get("pinned_model"):
         return None
+    stamped = dict(stamped)
+    stamped["pinned_adapter"] = adapter
     return stamped
 
 
-def resolve_swarm_model_pin(pin: str) -> dict[str, Any]:
+def _allowed_pin_adapters(
+    allowed_adapters: Optional[list[str] | set[str] | tuple[str, ...]],
+) -> list[str]:
+    if allowed_adapters:
+        ordered = [a for a in _PIN_ADAPTER_ORDER if a in set(allowed_adapters)]
+        for a in allowed_adapters:
+            name = str(a or "").strip().lower()
+            if name and name not in ordered:
+                ordered.append(name)
+        return ordered or ["agentic"]
+    try:
+        from .swarm_worker_allowlist import resolve_swarm_worker_allowlist
+
+        return list(
+            resolve_swarm_worker_allowlist().get("allowed_adapters") or ["agentic"]
+        )
+    except Exception:
+        return ["agentic"]
+
+
+def resolve_swarm_model_pin(
+    pin: str,
+    *,
+    allowed_adapters: Optional[list[str] | set[str] | tuple[str, ...]] = None,
+) -> dict[str, Any]:
     """Resolve a swarm model pin or demote to auto-route.
+
+    Tries each adapter in the Settings/platform union (agentic first, then
+    cursor, then openai) so a Cursor Grok pin is not rejected just because the
+    agentic catalog lacks that id.
 
     Returns:
       {
@@ -177,6 +260,7 @@ def resolve_swarm_model_pin(pin: str) -> dict[str, Any]:
         "resolved": str,      # empty when demoted
         "demoted": bool,
         "reason": str,
+        "adapter": str,       # adapter that accepted the pin (or "")
       }
     """
     requested = (pin or "").strip()
@@ -187,6 +271,7 @@ def resolve_swarm_model_pin(pin: str) -> dict[str, Any]:
         "resolved": "",
         "demoted": False,
         "reason": "empty",
+        "adapter": "",
     }
     if not requested:
         return empty
@@ -200,27 +285,31 @@ def resolve_swarm_model_pin(pin: str) -> dict[str, Any]:
     except Exception as e:
         _diag("swarm_model_pin.health", e)
 
+    adapters = _allowed_pin_adapters(allowed_adapters)
     for candidate in pin_candidates(requested):
-        stamped = _try_apply_pin(candidate)
-        if not stamped:
-            continue
-        resolved = str(stamped.get("pinned_model") or "").strip()
-        return {
-            "pin_fields": {**stamped, "auto_route": False},
-            "auto_route": False,
-            "requested": requested,
-            "resolved": resolved,
-            "demoted": False,
-            "reason": (
-                "exact"
-                if candidate == requested
-                else f"alias:{candidate}"
-            ),
-        }
+        for adapter in adapters:
+            stamped = _try_apply_pin(candidate, adapter=adapter)
+            if not stamped:
+                continue
+            resolved = str(stamped.get("pinned_model") or "").strip()
+            return {
+                "pin_fields": {**stamped, "auto_route": False},
+                "auto_route": False,
+                "requested": requested,
+                "resolved": resolved,
+                "demoted": False,
+                "reason": (
+                    "exact"
+                    if candidate == requested
+                    else f"alias:{candidate}"
+                ),
+                "adapter": adapter,
+            }
 
-    available = list_available_agentic_worker_models(limit=8)
+    available = list_available_worker_models(limit=8, adapters=set(adapters))
     reason = (
-        f"pin {requested!r} not in keyed agentic registry; "
+        f"pin {requested!r} not in keyed worker registry "
+        f"(adapters={adapters}); "
         f"auto-routing among {available or ['(none keyed)']}"
     )
     _diag("swarm_model_pin.demote", msg=reason)
@@ -231,4 +320,5 @@ def resolve_swarm_model_pin(pin: str) -> dict[str, Any]:
         "resolved": "",
         "demoted": True,
         "reason": reason,
+        "adapter": "",
     }
