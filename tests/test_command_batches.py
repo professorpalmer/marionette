@@ -462,23 +462,39 @@ def test_projection_is_command_batch_not_provider_swarm(session):
 
 
 def test_dispatch_returns_pending_batch_receipt(session):
+    """First SSE receipt must be pending even on fast hosts.
+
+    Without a gate, macOS CI can finish both child commands before
+    ``dispatch_local_action`` yields, so the first event is already
+    ``completed`` and the pending-receipt assertion races.
+    """
     sess, state_dir, repo = session
     act = PilotAction(
         kind="run_command_batch",
         commands=["echo x", "echo y"],
         max_concurrency=2,
     )
+    release = threading.Event()
+
+    def _gated_run(command, cwd=None, timeout=None, cancel_event=None):
+        assert release.wait(timeout=4.0), "test gate never released"
+        return ("ok\n", 0, "ok")
+
     with patch(
         "harness.command_policy.run_cancellable",
-        return_value=("ok\n", 0, "ok"),
+        side_effect=_gated_run,
     ):
-        events = list(dispatch_local_action(sess, act, "a-dispatch", True, []))
-        data = events[0].data
+        # Consume only the initial receipt while children are blocked.
+        gen = dispatch_local_action(sess, act, "a-dispatch", True, [])
+        first = next(gen)
+        data = first.data
         assert data["status"] == "pending"
         assert data["kind"] == COMMAND_BATCH_KIND
         assert data["adapter"] == COMMAND_BATCH_ADAPTER
         assert data["child_count"] == 2
         assert data["mode"] == "batch"
+        release.set()
+        list(gen)  # drain remaining events
         _wait_batch_terminal(sess, data["batch_id"])
 
     found = find_command_batch_by_action(sess, "a-dispatch")
