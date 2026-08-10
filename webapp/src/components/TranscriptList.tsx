@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, useCallback, memo } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, memo } from "react";
 import { ChevronRight, Loader2, ChevronDown, ChevronUp, Play, Copy, Check, Pencil, RefreshCw, History, Share2, CheckCircle2, XCircle } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -9,11 +9,21 @@ import {
   openAgentFile,
   openAgentUrl,
   openAgentCommand,
+  openAgentImage,
+  openAgentWorkspace,
+  syncAgentCommandOutput,
   isExternalUrl,
   looksLikePathInlineCode,
+  looksLikeShellCommand,
   classifyActionGoal,
   autolinkAgentText,
+  type AgentLinkKind,
 } from "../lib/agentLinks";
+import {
+  pathTokenInCodeLine,
+  tokenizeClickableOutput,
+  isSingleShellCommandFence,
+} from "../lib/clickableOutput";
 import {
   aggregateExplorationSummary,
   cardEffectivelyRunning,
@@ -825,7 +835,20 @@ export const TranscriptList = memo(function TranscriptList({
           <span className="font-medium shrink-0 text-risk/80">{blocked.label}</span>
           <span className="min-w-0">
             <span className="text-faint">{blocked.detail}</span>
-            {it.command ? <code className="block mt-0.5 text-[10px] text-faint/80 font-mono truncate">{it.command}</code> : null}
+            {it.command ? (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  openAgentCommand(it.command, { run: false });
+                }}
+                title="Reveal command"
+                className="block mt-0.5 max-w-full text-left text-[10px] text-accent/80 hover:underline underline-offset-2 font-mono truncate bg-transparent border-0 p-0 cursor-pointer"
+              >
+                {it.command}
+              </button>
+            ) : null}
           </span>
         </div>
       );
@@ -846,9 +869,18 @@ export const TranscriptList = memo(function TranscriptList({
                 Full-auto did not run this command.{" "}
                 {it.reason || it.category || "Safety policy requires an explicit decision."}
               </div>
-              <code className="mt-2 block max-h-28 overflow-auto rounded border border-edge bg-panel/60 p-2 font-mono text-[10.5px] text-muted whitespace-pre-wrap break-all select-text">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  openAgentCommand(it.command, { run: false });
+                }}
+                title="Reveal command"
+                className="mt-2 block w-full max-h-28 overflow-auto rounded border border-edge bg-panel/60 p-2 font-mono text-[10.5px] text-accent/85 hover:underline underline-offset-2 whitespace-pre-wrap break-all select-text text-left cursor-pointer"
+              >
                 {it.command}
-              </code>
+              </button>
               {it.error ? <div className="mt-1.5 text-risk/90">{it.error}</div> : null}
               <div className="mt-2 flex items-center gap-2">
                 {decisionPending ? (
@@ -1402,10 +1434,10 @@ function ThinkingBlock({
 }) {
   // Cursor/Hermes-style compression: reasoning stays a single header line
   // by default (faint first-line preview). Expand is user-driven and sticky;
-  // live streaming must not auto-open the body. Expanded bodies always use the
-  // plain-text narration path (no Markdown strong/headings for **Plan:**).
-  // Inner scroll stick-to-bottom follows new tokens only while the user stays
-  // pinned near the bottom of an expanded box.
+  // live streaming must not auto-open the body. Expanded bodies strip Markdown
+  // chrome (no strong/headings for **Plan:**) then autolink paths/URLs so
+  // clicks open the right surface. Inner scroll stick-to-bottom follows new
+  // tokens only while the user stays pinned near the bottom of an expanded box.
   const [expanded, setExpanded] = useState(() => resolveThinkingExpanded(blockId));
   const bodyRef = useRef<HTMLDivElement>(null);
   const pinnedInnerRef = useRef(true);
@@ -1498,11 +1530,9 @@ function ThinkingBlock({
               }
             }
           }}
-          className="mt-0.5 pl-2.5 ml-1 border-l-2 border-edge/40 overflow-y-auto overscroll-contain text-faint/85 text-[11px] leading-[1.65] max-w-[92%] max-h-[34dvh]"
+          className="mt-0.5 pl-2.5 ml-1 border-l-2 border-edge/40 overflow-y-auto overscroll-contain text-faint/85 text-[11px] leading-[1.65] max-w-[92%] max-h-[34dvh] [&_p]:my-1 [&_p]:text-[11px] [&_p]:leading-[1.65] [&_p]:text-faint/85"
         >
-          <pre className="whitespace-pre-wrap font-sans font-normal text-[11px] leading-[1.65] text-faint/85 m-0">
-            {normalizePlainTextNarration(text)}
-          </pre>
+          <Markdown text={normalizePlainTextNarration(text)} />
         </div>
       )}
     </div>
@@ -1522,20 +1552,6 @@ function nodeToText(node: any): string {
   return "";
 }
 
-/** Pull a file-ish path from a tree / listing line (`├── poll_loop.py:12  # note`). */
-function pathTokenInCodeLine(line: string): { before: string; path: string; after: string } | null {
-  const m = line.match(
-    /^(.*?)((?:[\w.-]+[\\/])*[\w.-]+\.\w{1,8}(?::\d+){0,2})(\s*(?:#.*)?)$/,
-  );
-  if (!m) return null;
-  const path = m[2];
-  const bare = path.replace(/(?::\d+){1,2}$/, "");
-  if (!looksLikePathInlineCode(bare) && !looksLikePathInlineCode(bare.split(/[\\/]/).pop() || "")) {
-    return null;
-  }
-  return { before: m[1], path, after: m[3] || "" };
-}
-
 function FencedCodeBlock({ className, children, ...props }: any) {
   const [copied, setCopied] = useState(false);
   const codeText = nodeToText(children).replace(/\n$/, "");
@@ -1543,6 +1559,7 @@ function FencedCodeBlock({ className, children, ...props }: any) {
   const pathLines = lines.filter((ln) => pathTokenInCodeLine(ln)).length;
   // Directory trees / file lists: make paths open in the editor on click.
   const clickableTree = pathLines >= 2 || (lines.length <= 4 && pathLines >= 1);
+  const shellCommand = !clickableTree && isSingleShellCommandFence(codeText, className);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(codeText);
@@ -1583,6 +1600,20 @@ function FencedCodeBlock({ className, children, ...props }: any) {
             );
           })}
         </pre>
+      ) : shellCommand ? (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            openAgentCommand(codeText.trim(), { run: false });
+          }}
+          title="Reveal command output"
+          className={`${className || ""} block w-full text-left bg-panel/80 border border-accent/20 rounded-md p-3 pr-10 overflow-x-auto font-mono text-[0.719rem] leading-[1.55] text-accent/90 hover:underline underline-offset-2 cursor-pointer m-0 whitespace-pre`}
+          {...props}
+        >
+          {codeText}
+        </button>
       ) : (
         <code className={`${className || ""} block bg-panel/80 border border-accent/20 rounded-md p-3 pr-10 overflow-x-auto font-mono text-[0.719rem] leading-[1.55] text-txt/90`} {...props}>
           {children}
@@ -1645,7 +1676,7 @@ const Markdown = memo(function Markdown({ text }: { text: string }) {
             src={src}
             alt={alt || ""}
             loading="lazy"
-            onClick={() => { if (src && isExternalUrl(src)) openAgentUrl(src); }}
+            onClick={() => { if (src) openAgentImage(src); }}
             className="max-w-full h-auto rounded-md border border-edge/40 my-2 cursor-zoom-in"
           />
         ),
@@ -1674,6 +1705,22 @@ const Markdown = memo(function Markdown({ text }: { text: string }) {
           const isInline = !className;
           if (isInline) {
             const raw = nodeToText(children).trim();
+            if (looksLikeShellCommand(raw)) {
+              return (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    openAgentCommand(raw, { run: false });
+                  }}
+                  title="Reveal command"
+                  className="bg-accent/[0.08] px-1 py-[1px] rounded text-[0.9em] font-mono text-accent/90 hover:underline underline-offset-2 cursor-pointer"
+                >
+                  {children}
+                </button>
+              );
+            }
             if (looksLikePathInlineCode(raw)) {
               return (
                 <button
@@ -1684,6 +1731,22 @@ const Markdown = memo(function Markdown({ text }: { text: string }) {
                     openAgentFile(raw);
                   }}
                   title={`Open ${raw}`}
+                  className="bg-accent/[0.08] px-1 py-[1px] rounded text-[0.9em] font-mono text-accent/90 hover:underline underline-offset-2 cursor-pointer"
+                >
+                  {children}
+                </button>
+              );
+            }
+            if (isExternalUrl(raw)) {
+              return (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    openAgentUrl(raw);
+                  }}
+                  title="Open in browser"
                   className="bg-accent/[0.08] px-1 py-[1px] rounded text-[0.9em] font-mono text-accent/90 hover:underline underline-offset-2 cursor-pointer"
                 >
                   {children}
@@ -1951,13 +2014,33 @@ function ActionCard({
   const suppressed = isGateSuppressed(card);
   const isErr = (!!card.result?.error || nonZeroExit) && !suppressed;
   const { linkKind, value: goalValue } = classifyActionGoal(card.kind || "", rawGoal);
+  const commandRevealId = String(card.id || card.result?.job_id || goalValue || "").trim();
+  const commandRevealOutput = String(card.result?.output || "");
+
+  // Keep an open agent-mirror tab in sync as run_command output grows.
+  useEffect(() => {
+    if (linkKind !== "command" || !commandRevealId || !commandRevealOutput) return;
+    syncAgentCommandOutput(commandRevealId, commandRevealOutput);
+  }, [linkKind, commandRevealId, commandRevealOutput]);
+
+  const openCommandReveal = (command: string) => {
+    const cmd = (command || "").trim();
+    if (!cmd) return;
+    openAgentCommand(cmd, {
+      id: card.id || card.result?.job_id || cmd,
+      output: card.result?.output || "",
+      run: false,
+    });
+  };
 
   const onGoalClick = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
     if (linkKind === "file") openAgentFile(goalValue);
     else if (linkKind === "url") openAgentUrl(goalValue);
-    else if (linkKind === "command") openAgentCommand(goalValue, { run: false });
+    else if (linkKind === "command") openCommandReveal(goalValue);
+    else if (linkKind === "image") openAgentImage(goalValue);
+    else if (linkKind === "workspace") openAgentWorkspace(goalValue);
   };
 
   const onRunCommand = (e: React.MouseEvent) => {
@@ -2015,7 +2098,11 @@ function ActionCard({
                   ? `Open ${goalValue}`
                   : linkKind === "url"
                   ? "Open in browser"
-                  : "Focus terminal"
+                  : linkKind === "image"
+                  ? "View image"
+                  : linkKind === "workspace"
+                  ? "Open workspace"
+                  : "Reveal command output"
               }
             >
               {goalPreview}
@@ -2045,6 +2132,8 @@ function ActionCard({
             const nestedLabel = toolRowLabel(action.kind || "");
             const nestedGoal = shortenGoal(action.goal || "", 52);
             const nestedErr = Boolean(action.error) || action.status === "failed";
+            const nestedLink = classifyActionGoal(action.kind || "", action.goal || "");
+            const nestedClickable = nestedLink.linkKind !== "none" && !!nestedLink.value;
             return (
               <div
                 key={action.action_id}
@@ -2063,7 +2152,25 @@ function ActionCard({
                 <span className={`shrink-0 ${nestedErr ? "text-risk/80" : "text-faint/75"}`}>
                   {nestedLabel}
                 </span>
-                {nestedGoal ? (
+                {nestedGoal && nestedClickable ? (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const v = nestedLink.value;
+                      if (nestedLink.linkKind === "file") openAgentFile(v);
+                      else if (nestedLink.linkKind === "url") openAgentUrl(v);
+                      else if (nestedLink.linkKind === "command") openAgentCommand(v, { run: false });
+                      else if (nestedLink.linkKind === "image") openAgentImage(v);
+                      else if (nestedLink.linkKind === "workspace") openAgentWorkspace(v);
+                    }}
+                    className="truncate text-accent/75 hover:underline underline-offset-2 bg-transparent border-0 p-0 text-left cursor-pointer font-sans text-[11px]"
+                    title={action.goal}
+                  >
+                    {nestedGoal}
+                  </button>
+                ) : nestedGoal ? (
                   <span className="truncate text-faint/65" title={action.goal}>
                     {nestedGoal}
                   </span>
@@ -2089,16 +2196,22 @@ function ActionCard({
               k={inputKey}
               v={commandKv}
               linkKind={classifyActionGoal(card.kind || "", commandKv).linkKind}
+              onCommandClick={() => openCommandReveal(commandKv)}
             />
           ) : null}
           {Array.isArray(card.goals) && card.goals.length > 1 && (
             <div className="space-y-0.5">
               {card.goals.map((g, i) => (
-                <KV key={`goal-${i}`} k={`g${i + 1}`} v={g} />
+                <KV
+                  key={`goal-${i}`}
+                  k={`g${i + 1}`}
+                  v={g}
+                  linkKind={classifyActionGoal(card.kind || "", g).linkKind}
+                />
               ))}
             </div>
           )}
-          {card.cwd && <KV k="cwd" v={card.cwd} linkKind="file" />}
+          {card.cwd && <KV k="cwd" v={card.cwd} linkKind="workspace" />}
           {hasExitCode ? (
             <KV k="exit" v={String(card.result!.exit_code)} />
           ) : null}
@@ -2108,12 +2221,7 @@ function ActionCard({
             </div>
           )}
           {resultOutput.trim() ? (
-            <pre
-              className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-[10px] leading-snug text-txt/85 bg-panel/60 border border-edge/40 rounded px-2 py-1.5"
-              data-testid="run-command-output"
-            >
-              {resultOutput}
-            </pre>
+            <ClickableProcessOutput text={resultOutput} />
           ) : null}
           {card.result && !card.result.error && (
             <>
@@ -2145,8 +2253,71 @@ function ActionCard({
     </div>
   );
 }
-const KV = ({ k, v, linkKind }: { k: string; v: string; linkKind?: "file" | "url" | "command" | "none" }) => {
-  const clickable = linkKind === "file" || linkKind === "url" || linkKind === "command";
+function ClickableProcessOutput({ text }: { text: string }) {
+  const segments = tokenizeClickableOutput(text);
+  return (
+    <pre
+      className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-[10px] leading-snug text-txt/85 bg-panel/60 border border-edge/40 rounded px-2 py-1.5"
+      data-testid="run-command-output"
+    >
+      {segments.map((seg, i) => {
+        if (seg.kind === "url") {
+          return (
+            <button
+              key={i}
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                openAgentUrl(seg.href);
+              }}
+              title="Open in browser"
+              className="text-accent/90 hover:underline underline-offset-2 cursor-pointer bg-transparent border-0 p-0 font-inherit"
+            >
+              {seg.text}
+            </button>
+          );
+        }
+        if (seg.kind === "file") {
+          return (
+            <button
+              key={i}
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                openAgentFile(seg.path);
+              }}
+              title={`Open ${seg.path}`}
+              className="text-accent/90 hover:underline underline-offset-2 cursor-pointer bg-transparent border-0 p-0 font-inherit"
+            >
+              {seg.text}
+            </button>
+          );
+        }
+        return <span key={i}>{seg.text}</span>;
+      })}
+    </pre>
+  );
+}
+
+const KV = ({
+  k,
+  v,
+  linkKind,
+  onCommandClick,
+}: {
+  k: string;
+  v: string;
+  linkKind?: AgentLinkKind;
+  onCommandClick?: () => void;
+}) => {
+  const clickable =
+    linkKind === "file"
+    || linkKind === "url"
+    || linkKind === "command"
+    || linkKind === "image"
+    || linkKind === "workspace";
   return (
     <div className="flex gap-2 mb-0.5">
       <span className="text-muted w-14 shrink-0">{k}</span>
@@ -2158,6 +2329,9 @@ const KV = ({ k, v, linkKind }: { k: string; v: string; linkKind?: "file" | "url
             e.stopPropagation();
             if (linkKind === "file") openAgentFile(v);
             else if (linkKind === "url") openAgentUrl(v);
+            else if (linkKind === "image") openAgentImage(v);
+            else if (linkKind === "workspace") openAgentWorkspace(v);
+            else if (onCommandClick) onCommandClick();
             else openAgentCommand(v, { run: false });
           }}
         >
@@ -2259,9 +2433,30 @@ function SwarmResultCard({ applied, files, summary, error, objective, reuseStatu
               {reuseReason ? ` (${reuseReason})` : ""}
             </div>
           )}
-          {pathSummary && (
-            <div className="text-[10px] text-muted font-mono leading-relaxed break-words">
-              invalidated paths: {pathSummary}
+          {Array.isArray(invalidatedPaths) && invalidatedPaths.length > 0 && (
+            <div className="flex flex-col gap-1">
+              <div className="text-[10px] text-muted font-mono">invalidated paths</div>
+              <div className="flex flex-wrap gap-1">
+                {invalidatedPaths.map((p) => {
+                  const path = String(p || "").trim();
+                  if (!path) return null;
+                  return (
+                    <button
+                      key={path}
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        openAgentFile(path);
+                      }}
+                      className="text-[9px] font-mono text-accent/85 bg-panel2/60 border border-edge/50 rounded px-1 py-0.5 hover:underline underline-offset-2 cursor-pointer"
+                      title={`Open ${path}`}
+                    >
+                      {path.replace(/\\/g, "/")}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           )}
           {applied && files.length > 0 && (

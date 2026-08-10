@@ -473,6 +473,58 @@ export default function Conversation({
   };
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
 
+  // Agent markdown / ActionCard image clicks → lightbox (http(s), data:, or
+  // uploaded/repo paths resolved via api.imageUrl).
+  useEffect(() => {
+    const handleOpenImage = (e: CustomEvent<{ path?: string; url?: string }>) => {
+      const url = String(e.detail?.url || "").trim();
+      const path = String(e.detail?.path || "").trim();
+      if (url) {
+        setLightboxUrl(url);
+        return;
+      }
+      if (!path) return;
+      if (/^https?:\/\//i.test(path) || path.startsWith("data:")) {
+        setLightboxUrl(path);
+        return;
+      }
+      try {
+        setLightboxUrl(api.imageUrl(path));
+      } catch {
+        /* ignore */
+      }
+    };
+    window.addEventListener("harness-open-image", handleOpenImage as EventListener);
+    return () => {
+      window.removeEventListener("harness-open-image", handleOpenImage as EventListener);
+    };
+  }, []);
+
+  // cwd / open_project → same workspace open path as WorkspaceChip.
+  useEffect(() => {
+    const handleOpenWorkspace = (e: CustomEvent<{ path?: string }>) => {
+      const path = String(e.detail?.path || "").trim();
+      if (!path) return;
+      void api.openWorkspace(path)
+        .then((res) => {
+          if ((res as { ok?: boolean }).ok) {
+            window.dispatchEvent(new Event("harness-config-changed"));
+          } else {
+            const err = (res as { error?: string }).error || `Could not open ${path}`;
+            window.dispatchEvent(new CustomEvent("harness-toast", { detail: err }));
+          }
+        })
+        .catch((err) => {
+          const msg = err instanceof Error ? err.message : String(err || `Could not open ${path}`);
+          window.dispatchEvent(new CustomEvent("harness-toast", { detail: msg }));
+        });
+    };
+    window.addEventListener("harness-open-workspace", handleOpenWorkspace as EventListener);
+    return () => {
+      window.removeEventListener("harness-open-workspace", handleOpenWorkspace as EventListener);
+    };
+  }, []);
+
   // Compacting & Context breakdown states
   const [compactingStatus, setCompactingStatus] = useState<string | null>(null);
   const [showContextPanel, setShowContextPanel] = useState(false);

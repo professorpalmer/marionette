@@ -1,7 +1,8 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import {
   isExternalUrl,
   looksLikeFilePath,
+  looksLikeShellCommand,
   parseFileHref,
   looksLikePathInlineCode,
   classifyActionGoal,
@@ -10,7 +11,11 @@ import {
   openAgentFile,
   openAgentUrl,
   openAgentCommand,
+  openAgentImage,
+  openAgentWorkspace,
+  stableCommandId,
 } from "../lib/agentLinks";
+import { _resetAgentTerminalStreamForTests } from "../lib/agentTerminalStream";
 
 describe("agentLinks detection", () => {
   it("classifies urls and paths", () => {
@@ -18,9 +23,22 @@ describe("agentLinks detection", () => {
     expect(isExternalUrl("file:///C:/x.ts")).toBe(false);
     expect(looksLikeFilePath("webapp/src/App.tsx")).toBe(true);
     expect(looksLikeFilePath("C:\\Ashita\\addons\\kotoba\\translator.py")).toBe(true);
+    expect(looksLikeFilePath("C:\\a\\b.py")).toBe(true);
     expect(looksLikeFilePath("./foo/bar.py:12")).toBe(true);
     expect(looksLikeFilePath("https://x.com")).toBe(false);
     expect(looksLikeFilePath("mailto:a@b.c")).toBe(false);
+  });
+
+  it("rejects shell-like tokens as file paths", () => {
+    expect(looksLikeShellCommand("npm.cmd")).toBe(true);
+    expect(looksLikeShellCommand("pytest -q")).toBe(true);
+    expect(looksLikeShellCommand("git status")).toBe(true);
+    expect(looksLikeShellCommand("python setup.py")).toBe(true);
+    expect(looksLikeFilePath("npm.cmd")).toBe(false);
+    expect(looksLikeFilePath("pytest -q")).toBe(false);
+    expect(looksLikeFilePath("git status")).toBe(false);
+    expect(looksLikeFilePath("python setup.py")).toBe(false);
+    expect(looksLikePathInlineCode("npm.cmd")).toBe(false);
   });
 
   it("parses line:col suffixes", () => {
@@ -61,6 +79,14 @@ describe("agentLinks detection", () => {
       linkKind: "command",
       value: "pytest -q",
     });
+    expect(classifyActionGoal("view_image", "uploads/shot.png")).toEqual({
+      linkKind: "image",
+      value: "uploads/shot.png",
+    });
+    expect(classifyActionGoal("open_project", "C:\\Users\\me\\proj")).toEqual({
+      linkKind: "workspace",
+      value: "C:\\Users\\me\\proj",
+    });
     // Worker goals often embed paths — never open the file editor for them.
     expect(classifyActionGoal(
       "run_implement",
@@ -73,6 +99,18 @@ describe("agentLinks detection", () => {
       "run_parallel",
       "audit harness/send_loop_dispatch.py mode=analysis",
     ).linkKind).toBe("command");
+    // Unknown kinds: shell-like never falls through to file.
+    expect(classifyActionGoal("custom_tool", "npm.cmd").linkKind).toBe("command");
+    expect(classifyActionGoal("custom_tool", "git status").linkKind).toBe("command");
+    expect(classifyActionGoal("custom_tool", "webapp/src/App.tsx").linkKind).toBe("file");
+  });
+
+  it("detects shell-like inline code separately from paths", () => {
+    expect(looksLikeShellCommand("pytest -q")).toBe(true);
+    expect(looksLikeShellCommand("npm.cmd")).toBe(true);
+    expect(looksLikePathInlineCode("pytest -q")).toBe(false);
+    expect(looksLikePathInlineCode("harness/foo.py")).toBe(true);
+    expect(isExternalUrl("https://example.com/a")).toBe(true);
   });
 });
 
@@ -96,6 +134,11 @@ describe("autolinkAgentText", () => {
 describe("openAgentLink events", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    _resetAgentTerminalStreamForTests();
+  });
+
+  afterEach(() => {
+    _resetAgentTerminalStreamForTests();
   });
 
   it("dispatches browser events for urls", () => {
@@ -116,22 +159,80 @@ describe("openAgentLink events", () => {
     expect(ev?.detail).toEqual({ path: "src/a.ts", line: 9, col: undefined });
   });
 
-  it("dispatches terminal focus and optional run", () => {
+  it("dispatches terminal focus and run for interactive inject", () => {
     const spy = vi.spyOn(window, "dispatchEvent");
     openAgentCommand("ls", { run: true });
     const kinds = spy.mock.calls.map((c) => (c[0] as CustomEvent).type);
     expect(kinds).toContain("harness-focus-tab");
     expect(kinds).toContain("harness-run-command");
+    expect(kinds).not.toContain("harness-open-agent-terminal");
   });
 
-  it("openAgentLink routes url vs file", () => {
+  it("reveals agent terminal on default command click", () => {
+    const spy = vi.spyOn(window, "dispatchEvent");
+    openAgentCommand("pytest -q", { id: "card-1", output: "ok\n", run: false });
+    const kinds = spy.mock.calls.map((c) => (c[0] as CustomEvent).type);
+    expect(kinds).toContain("harness-focus-tab");
+    expect(kinds).toContain("harness-open-agent-terminal");
+    expect(kinds).not.toContain("harness-run-command");
+    const ev = spy.mock.calls
+      .map((c) => c[0] as CustomEvent)
+      .find((e) => e.type === "harness-open-agent-terminal");
+    expect(ev?.detail).toEqual({
+      id: "card-1",
+      command: "pytest -q",
+      output: "ok\n",
+    });
+  });
+
+  it("hashes command when reveal id is omitted", () => {
+    const spy = vi.spyOn(window, "dispatchEvent");
+    openAgentCommand("echo hi");
+    const ev = spy.mock.calls
+      .map((c) => c[0] as CustomEvent)
+      .find((e) => e.type === "harness-open-agent-terminal");
+    expect(ev?.detail?.id).toBe(stableCommandId("echo hi"));
+    expect(ev?.detail?.command).toBe("echo hi");
+  });
+
+  it("openAgentLink routes url vs file vs shell", () => {
     const spy = vi.spyOn(window, "dispatchEvent");
     const prevent = vi.fn();
     openAgentLink("https://x.com", { preventDefault: prevent });
     expect(prevent).toHaveBeenCalled();
     openAgentLink("foo/bar.ts", { preventDefault: prevent });
+    openAgentLink("npm.cmd", { preventDefault: prevent });
     const types = spy.mock.calls.map((c) => (c[0] as CustomEvent).type);
     expect(types).toContain("harness-open-url");
     expect(types).toContain("harness-open-file");
+    expect(types).toContain("harness-open-agent-terminal");
+    expect(types).not.toContain("harness-run-command");
+  });
+
+  it("dispatches lightbox event for images", () => {
+    const spy = vi.spyOn(window, "dispatchEvent");
+    openAgentImage("https://cdn.example.com/a.png");
+    openAgentImage("uploads/shot.png");
+    const events = spy.mock.calls
+      .map((c) => c[0] as CustomEvent)
+      .filter((e) => e.type === "harness-open-image");
+    expect(events).toHaveLength(2);
+    expect(events[0]?.detail).toEqual({
+      path: "https://cdn.example.com/a.png",
+      url: "https://cdn.example.com/a.png",
+    });
+    expect(events[1]?.detail).toEqual({
+      path: "uploads/shot.png",
+      url: undefined,
+    });
+  });
+
+  it("dispatches workspace open event", () => {
+    const spy = vi.spyOn(window, "dispatchEvent");
+    openAgentWorkspace("C:\\Users\\me\\proj");
+    const ev = spy.mock.calls
+      .map((c) => c[0] as CustomEvent)
+      .find((e) => e.type === "harness-open-workspace");
+    expect(ev?.detail).toEqual({ path: "C:\\Users\\me\\proj" });
   });
 });

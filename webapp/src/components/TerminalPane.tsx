@@ -6,16 +6,29 @@ import "@xterm/xterm/css/xterm.css";
 import { RotateCw } from "lucide-react";
 import { postJSON, stream } from "../lib/transport";
 import { isExternalUrl, looksLikeFilePath, openAgentFile, openAgentUrl } from "../lib/agentLinks";
+import {
+  registerAgentTerminalWriter,
+  seedAgentTerminalCommand,
+  syncAgentTerminalSnapshot,
+} from "../lib/agentTerminalStream";
 import { hostHasLayout, safePtyDims } from "./terminalDims";
 import { terminalBareOnDoneAction } from "./terminalStreamPolicy";
+
+type AgentView = { id: string; command: string };
 
 // Built-in terminal: xterm.js front-end over the harness PTY backend.
 // create -> SSE stream output (base64 frames) -> POST keystrokes -> resize -> kill.
 // A restart counter lets the user relaunch a dead/stuck shell without reloading
 // the app (the previous session is killed cleanly first).
+// Agent-mirror mode overlays a read-only xterm for a captured run_command
+// session without destroying the interactive ConPTY underneath.
 export default function TerminalPane() {
   const hostRef = useRef<HTMLDivElement>(null);
+  const agentHostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
+  const agentTermRef = useRef<Terminal | null>(null);
+  const agentFitRef = useRef<FitAddon | null>(null);
+  const agentUnregisterRef = useRef<null | (() => void)>(null);
   const idRef = useRef<string>("");
   const cancelRef = useRef<null | (() => void)>(null);
   // One automatic recovery when the first SSE closes before any ConPTY bytes
@@ -25,6 +38,7 @@ export default function TerminalPane() {
   // spins up a fresh one. Drives the Restart button and exit auto-recovery.
   const [restartNonce, setRestartNonce] = useState(0);
   const [exited, setExited] = useState(false);
+  const [agentView, setAgentView] = useState<AgentView | null>(null);
 
   const restart = () => {
     setExited(false);
@@ -32,11 +46,17 @@ export default function TerminalPane() {
     setRestartNonce((n) => n + 1);
   };
 
+  const showInteractiveShell = () => {
+    setAgentView(null);
+  };
+
   // ActionCard "Run" injects a command into the live PTY.
   useEffect(() => {
     const onRun = (e: Event) => {
       const cmd = String((e as CustomEvent<{ command?: string }>).detail?.command || "").trim();
       if (!cmd) return;
+      // Running into the user shell implies leaving the agent mirror.
+      setAgentView(null);
       const id = idRef.current;
       if (!id) {
         try {
@@ -51,6 +71,115 @@ export default function TerminalPane() {
     };
     window.addEventListener("harness-run-command", onRun as EventListener);
     return () => window.removeEventListener("harness-run-command", onRun as EventListener);
+  }, []);
+
+  // Reveal a read-only agent command session (Hermes openAgentTerminal pattern).
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      const detail = (e as CustomEvent<{ id?: string; command?: string; output?: string }>).detail || {};
+      const id = String(detail.id || "").trim();
+      const command = String(detail.command || "").trim();
+      const output = String(detail.output || "");
+      if (!id || !command) return;
+      seedAgentTerminalCommand(id, command);
+      if (output) syncAgentTerminalSnapshot(id, output);
+      setAgentView({ id, command });
+    };
+    const onSync = (e: Event) => {
+      const detail = (e as CustomEvent<{ id?: string; output?: string }>).detail || {};
+      const id = String(detail.id || "").trim();
+      const output = String(detail.output || "");
+      if (id && output) syncAgentTerminalSnapshot(id, output);
+    };
+    window.addEventListener("harness-open-agent-terminal", onOpen as EventListener);
+    window.addEventListener("harness-sync-agent-terminal", onSync as EventListener);
+    return () => {
+      window.removeEventListener("harness-open-agent-terminal", onOpen as EventListener);
+      window.removeEventListener("harness-sync-agent-terminal", onSync as EventListener);
+    };
+  }, []);
+
+  // Mount / swap the read-only agent xterm when agentView changes.
+  useEffect(() => {
+    if (!agentView) {
+      agentUnregisterRef.current?.();
+      agentUnregisterRef.current = null;
+      return;
+    }
+    const host = agentHostRef.current;
+    if (!host) return;
+
+    let term = agentTermRef.current;
+    let fit = agentFitRef.current;
+    if (!term) {
+      term = new Terminal({
+        fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+        fontSize: 12,
+        theme: {
+          background: "#0a0a0c",
+          foreground: "#d4d4d8",
+          cursor: "#7c8cff",
+          selectionBackground: "#2a2a3a",
+        },
+        cursorBlink: false,
+        disableStdin: true,
+        scrollback: 5000,
+        cols: 80,
+        rows: 24,
+      });
+      fit = new FitAddon();
+      term.loadAddon(fit);
+      term.loadAddon(
+        new WebLinksAddon((_event, uri) => {
+          if (isExternalUrl(uri)) openAgentUrl(uri);
+          else if (looksLikeFilePath(uri)) openAgentFile(uri);
+        })
+      );
+      term.open(host);
+      agentTermRef.current = term;
+      agentFitRef.current = fit;
+    }
+
+    try {
+      fit?.fit();
+    } catch { /* ignore */ }
+
+    agentUnregisterRef.current?.();
+    try {
+      term.reset();
+    } catch { /* ignore */ }
+    agentUnregisterRef.current = registerAgentTerminalWriter(agentView.id, (chunk) => {
+      try {
+        term!.write(chunk);
+      } catch { /* ignore */ }
+    });
+
+    const ro = new ResizeObserver(() => {
+      try {
+        fit?.fit();
+      } catch { /* ignore */ }
+    });
+    ro.observe(host);
+
+    return () => {
+      ro.disconnect();
+      agentUnregisterRef.current?.();
+      agentUnregisterRef.current = null;
+    };
+  }, [agentView]);
+
+  // Dispose the agent xterm only when the pane unmounts (ConPTY stays warm across
+  // tab swaps; agent backlog survives returning to the interactive shell).
+  useEffect(() => {
+    return () => {
+      agentUnregisterRef.current?.();
+      agentUnregisterRef.current = null;
+      try {
+        agentTermRef.current?.dispose();
+      } catch { /* ignore */ }
+      agentTermRef.current = null;
+      agentFitRef.current = null;
+    };
   }, []);
 
   useEffect(() => {
@@ -231,25 +360,64 @@ export default function TerminalPane() {
     };
   }, [restartNonce]);
 
+  const agentLabel = agentView
+    ? (agentView.command.length > 64
+      ? `${agentView.command.slice(0, 61)}...`
+      : agentView.command)
+    : "";
+
   return (
     <div className="h-full flex flex-col bg-[#0a0a0c]">
-      <div className="px-3 py-2 border-b border-edge flex items-center justify-between shrink-0">
-        <span className="text-[10px] uppercase tracking-wider text-faint font-medium">
-          Terminal{exited ? " -- exited" : ""}
-        </span>
-        <button
-          onClick={restart}
-          title="Restart terminal (kills the current shell and starts a fresh one)"
-          className={`flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border transition-colors ${
-            exited
-              ? "bg-accent/15 text-accent border-accent/30 hover:bg-accent/25"
-              : "text-faint border-edge2 hover:text-muted hover:bg-panel2/60"
-          }`}
-        >
-          <RotateCw size={11} /> Restart
-        </button>
+      <div className="px-3 py-2 border-b border-edge flex items-center justify-between shrink-0 gap-2">
+        {agentView ? (
+          <>
+            <span
+              className="text-[10px] text-faint font-medium truncate min-w-0 font-mono"
+              title={agentView.command}
+            >
+              {agentLabel}
+            </span>
+            <button
+              type="button"
+              onClick={showInteractiveShell}
+              title="Return to the interactive shell (keeps this command history)"
+              className="shrink-0 text-[10px] px-1.5 py-0.5 rounded border text-faint border-edge2 hover:text-muted hover:bg-panel2/60 transition-colors"
+            >
+              Interactive shell
+            </button>
+          </>
+        ) : (
+          <>
+            <span className="text-[10px] uppercase tracking-wider text-faint font-medium">
+              Terminal{exited ? " -- exited" : ""}
+            </span>
+            <button
+              onClick={restart}
+              title="Restart terminal (kills the current shell and starts a fresh one)"
+              className={`flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border transition-colors ${
+                exited
+                  ? "bg-accent/15 text-accent border-accent/30 hover:bg-accent/25"
+                  : "text-faint border-edge2 hover:text-muted hover:bg-panel2/60"
+              }`}
+            >
+              <RotateCw size={11} /> Restart
+            </button>
+          </>
+        )}
       </div>
-      <div ref={hostRef} className="flex-1 min-h-0 p-1.5 overflow-hidden" />
+      <div className="relative flex-1 min-h-0">
+        <div
+          ref={hostRef}
+          className={`absolute inset-0 p-1.5 overflow-hidden ${agentView ? "invisible pointer-events-none" : ""}`}
+          aria-hidden={Boolean(agentView)}
+        />
+        <div
+          ref={agentHostRef}
+          className={`absolute inset-0 p-1.5 overflow-hidden ${agentView ? "" : "invisible pointer-events-none"}`}
+          aria-hidden={!agentView}
+          data-testid="agent-terminal-mirror"
+        />
+      </div>
     </div>
   );
 }

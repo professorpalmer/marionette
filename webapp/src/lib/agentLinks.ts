@@ -5,6 +5,10 @@ instead of a raw OS navigation. Never throws.
 */
 
 import { normalizeRepoPath } from "./pathNormalize";
+import {
+  seedAgentTerminalCommand,
+  syncAgentTerminalSnapshot,
+} from "./agentTerminalStream";
 
 export type OpenFileDetail = {
   path: string;
@@ -20,6 +24,91 @@ export type ParsedFileHref = {
 
 const URL_RE = /^https?:\/\//i;
 
+/** Bare Windows/shell launcher extensions without a directory separator. */
+const BARE_EXEC_EXT = /\.(cmd|exe|bat|ps1|sh)$/i;
+
+const SHELL_LAUNCHERS = new Set([
+  "npm",
+  "npx",
+  "pnpm",
+  "yarn",
+  "pip",
+  "pip3",
+  "pytest",
+  "python",
+  "python3",
+  "node",
+  "git",
+  "curl",
+  "wget",
+  "make",
+  "cargo",
+  "go",
+  "docker",
+  "kubectl",
+  "rg",
+  "find",
+  "ls",
+  "cd",
+  "echo",
+  "cmd",
+  "powershell",
+  "pwsh",
+  "bash",
+  "sh",
+  "zsh",
+  "brew",
+  "poetry",
+  "uv",
+  "ruby",
+  "perl",
+  "php",
+  "java",
+  "mvn",
+  "gradle",
+  "cmake",
+  "terraform",
+  "ssh",
+  "scp",
+  "rsync",
+  "sudo",
+  "env",
+  "cat",
+  "head",
+  "tail",
+  "grep",
+  "sed",
+  "awk",
+  "which",
+  "where",
+  "dir",
+  "type",
+]);
+
+/** Stable short id for an agent-command reveal (Hermes-style hash). */
+export function stableCommandId(value: string): string {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = Math.imul(31, hash) + value.charCodeAt(i);
+  }
+  return Math.abs(hash).toString(36);
+}
+
+/**
+ * Heuristic: does this look like a shell command line rather than a file path?
+ * Whitespace args, flags, shell operators, or known launcher tokens.
+ */
+export function looksLikeShellCommand(text: string): boolean {
+  const t = (text || "").trim();
+  if (!t) return false;
+  if (/&&|\|\||[|<>;&]/.test(t)) return true;
+  if (/^[-+]/.test(t)) return true;
+  if (/\s/.test(t)) return true;
+  const base = t.replace(BARE_EXEC_EXT, "");
+  if (SHELL_LAUNCHERS.has(base.toLowerCase())) return true;
+  return false;
+}
+
 /** True for http(s) URLs (in-app browser). */
 export function isExternalUrl(href: string): boolean {
   return URL_RE.test(href || "");
@@ -28,13 +117,17 @@ export function isExternalUrl(href: string): boolean {
 /**
  * Heuristic: does this look like a filesystem path (not a URL/scheme)?
  * Accepts Windows abs, POSIX abs/rel, and dotted filenames with optional :line[:col].
+ * Rejects shell command lines and bare launcher executables (npm.cmd, etc.).
  */
 export function looksLikeFilePath(href: string): boolean {
   if (!href) return false;
   const h = href.trim();
   if (!h) return false;
   if (/^(https?|mailto|tel|data|javascript):/i.test(h) || h.startsWith("#")) return false;
+  if (looksLikeShellCommand(h)) return false;
   const clean = h.replace(/^file:\/\//i, "");
+  // Bare executables without a directory separator are shell launchers, not files.
+  if (!/[\\/]/.test(clean) && BARE_EXEC_EXT.test(clean)) return false;
   // Drive letter, absolute, relative with slash, or name.ext[:line[:col]]
   if (/^[A-Za-z]:[\\/]/.test(clean)) return true;
   if (/[\\/]/.test(clean)) return true;
@@ -75,10 +168,11 @@ export function looksLikePathInlineCode(text: string): boolean {
   // Reject obvious non-paths (commands, flags, pure identifiers).
   if (/^[-+]/.test(t)) return false;
   if (/\s/.test(t)) return false;
+  if (looksLikeShellCommand(t)) return false;
   return looksLikeFilePath(t);
 }
 
-export type AgentLinkKind = "url" | "file" | "command" | "none";
+export type AgentLinkKind = "url" | "file" | "command" | "image" | "workspace" | "none";
 
 /** Classify an ActionCard goal by tool kind. */
 export function classifyActionGoal(
@@ -88,13 +182,17 @@ export function classifyActionGoal(
   const k = (kind || "").toLowerCase();
   const g = (goal || "").trim();
   if (!g) return { linkKind: "none", value: "" };
+  if (k === "view_image") {
+    return { linkKind: "image", value: g };
+  }
+  if (k === "open_project") {
+    return { linkKind: "workspace", value: g };
+  }
   if (
     k === "read_file" ||
     k === "write_file" ||
     k === "edit_file" ||
-    k === "hash_edit" ||
-    k === "view_image" ||
-    k === "open_project"
+    k === "hash_edit"
   ) {
     return { linkKind: "file", value: g };
   }
@@ -116,6 +214,8 @@ export function classifyActionGoal(
     return { linkKind: "command", value: g };
   }
   if (isExternalUrl(g)) return { linkKind: "url", value: g };
+  // Unknown kinds: never fall through to file when the goal is shell-like.
+  if (looksLikeShellCommand(g)) return { linkKind: "command", value: g };
   if (looksLikeFilePath(g)) return { linkKind: "file", value: g };
   return { linkKind: "none", value: g };
 }
@@ -148,7 +248,51 @@ export function openAgentFile(pathOrHref: string, line?: number, col?: number): 
   }
 }
 
-export function openAgentCommand(command: string, opts?: { run?: boolean }): void {
+/**
+ * Open an image in the transcript lightbox. Accepts http(s), data:, or a
+ * repo/uploaded path (resolved to api.imageUrl by the Conversation listener).
+ */
+export function openAgentImage(pathOrUrl: string): void {
+  const v = (pathOrUrl || "").trim();
+  if (!v) return;
+  try {
+    window.dispatchEvent(
+      new CustomEvent("harness-open-image", {
+        detail: { path: v, url: isExternalUrl(v) || v.startsWith("data:") ? v : undefined },
+      }),
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Open a folder as the active workspace (same path as WorkspaceChip). */
+export function openAgentWorkspace(path: string): void {
+  const p = (path || "").trim();
+  if (!p) return;
+  try {
+    window.dispatchEvent(
+      new CustomEvent("harness-open-workspace", { detail: { path: p } }),
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
+export type OpenAgentCommandOpts = {
+  /** When true, inject into the interactive user PTY. Default reveals the agent mirror. */
+  run?: boolean;
+  /** Stable process/card id for the agent mirror (defaults to hash of command). */
+  id?: string;
+  /** Captured stdout/stderr snapshot to seed/sync into the mirror. */
+  output?: string;
+};
+
+/**
+ * Focus the Terminal tab. Default click reveals a read-only agent command
+ * session (`$ cmd` + output). `run: true` injects into the interactive ConPTY.
+ */
+export function openAgentCommand(command: string, opts?: OpenAgentCommandOpts): void {
   const cmd = (command || "").trim();
   if (!cmd) return;
   try {
@@ -157,7 +301,34 @@ export function openAgentCommand(command: string, opts?: { run?: boolean }): voi
       window.dispatchEvent(
         new CustomEvent("harness-run-command", { detail: { command: cmd } })
       );
+      return;
     }
+    const id = String(opts?.id || stableCommandId(cmd)).trim() || stableCommandId(cmd);
+    const output = String(opts?.output || "");
+    seedAgentTerminalCommand(id, cmd);
+    if (output) syncAgentTerminalSnapshot(id, output);
+    window.dispatchEvent(
+      new CustomEvent("harness-open-agent-terminal", {
+        detail: { id, command: cmd, output },
+      })
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Best-effort live sync for an open agent mirror while a card's output grows. */
+export function syncAgentCommandOutput(id: string, output: string): void {
+  const procId = String(id || "").trim();
+  const snap = String(output || "");
+  if (!procId || !snap) return;
+  try {
+    syncAgentTerminalSnapshot(procId, snap);
+    window.dispatchEvent(
+      new CustomEvent("harness-sync-agent-terminal", {
+        detail: { id: procId, output: snap },
+      })
+    );
   } catch {
     /* ignore */
   }
@@ -169,6 +340,11 @@ export function openAgentLink(href: string, e?: { preventDefault(): void }): voi
   if (isExternalUrl(href)) {
     e?.preventDefault();
     openAgentUrl(href);
+    return;
+  }
+  if (looksLikeShellCommand(href)) {
+    e?.preventDefault();
+    openAgentCommand(href, { run: false });
     return;
   }
   if (looksLikeFilePath(href)) {

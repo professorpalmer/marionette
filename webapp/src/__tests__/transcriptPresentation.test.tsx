@@ -252,11 +252,12 @@ describe("transcript presentation contract", () => {
     expect(screen.queryByRole("strong")).toBeNull();
     expect(document.querySelector("strong")).toBeNull();
     expect(document.querySelector("h1, h2, h3, h4, h5, h6")).toBeNull();
-    const body = thought.closest("div")?.querySelector("pre");
+    // Expanded Thought strips Markdown chrome then renders via the shared
+    // Markdown linker so paths/URLs stay clickable (no inert <pre>).
+    const body = thought.closest("div")?.querySelector(".border-l-2");
     expect(body?.textContent || "").toContain("Plan:");
     expect(body?.textContent || "").toContain("scan auth handlers");
     expect(body?.textContent || "").not.toMatch(/\*\*/);
-    expect(body?.className || "").toMatch(/font-normal/);
   });
 
   it("folded isPlan narration is regular text inside the investigation group", () => {
