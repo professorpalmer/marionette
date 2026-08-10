@@ -701,6 +701,41 @@ export default function SwarmPane() {
       });
   }, [mutate]);
 
+  // Transcript chrome (job_id chips / ActionCard KV) deep-links here: undismiss,
+  // expand, hydrate artifacts, scroll the row into view.
+  useEffect(() => {
+    const onOpenSwarmJob = (e: Event) => {
+      const jobId = String((e as CustomEvent<{ jobId?: string }>).detail?.jobId || "").trim();
+      if (!jobId) return;
+      setDismissed((prev) => {
+        if (!prev.has(jobId)) return prev;
+        const next = new Set(prev);
+        next.delete(jobId);
+        return next;
+      });
+      setExpandedJobs((prev) => ({ ...prev, [jobId]: true }));
+      setFinishedOpen(true);
+      const job = dataRef.current?.jobs?.find((j) => j.id === jobId);
+      if (job) ensureFullArtifacts(job);
+      const scrollToJob = () => {
+        const escape =
+          typeof CSS !== "undefined" && typeof CSS.escape === "function"
+            ? CSS.escape
+            : (s: string) => s.replace(/["\\]/g, "\\$&");
+        const el = document.querySelector(`[data-job-id="${escape(jobId)}"]`);
+        el?.scrollIntoView({ block: "nearest" });
+      };
+      requestAnimationFrame(() => {
+        requestAnimationFrame(scrollToJob);
+      });
+      window.setTimeout(scrollToJob, 80);
+    };
+    window.addEventListener("harness-open-swarm-job", onOpenSwarmJob as EventListener);
+    return () => {
+      window.removeEventListener("harness-open-swarm-job", onOpenSwarmJob as EventListener);
+    };
+  }, [ensureFullArtifacts]);
+
   const lastSigRef = useRef("");
 
   // Drive a 1s clock only while something is running so relative "last activity"
@@ -919,6 +954,7 @@ export default function SwarmPane() {
     return (
       <div
         key={j.id}
+        data-job-id={j.id}
         // shrink-0 is load-bearing: as a flex child of the flex-col scroll list,
         // an overflow-hidden card is allowed to shrink BELOW its content, so it
         // collapsed and clipped its own findings instead of pushing the list into

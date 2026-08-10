@@ -462,3 +462,88 @@ describe("transcript presentation contract", () => {
     expect(screen.getAllByText(/No model in registry has all required tags/i)).toHaveLength(1);
   });
 });
+
+describe("job_id → Swarm Tracker deep-link chrome", () => {
+  it("renders swarm_pending job ids as clickable chips that open the tracker", () => {
+    const spy = vi.spyOn(window, "dispatchEvent");
+    render(
+      <TranscriptList
+        {...listProps([
+          {
+            kind: "swarm_pending",
+            job_ids: ["job_abcdef012345", "local-swarm-a1"],
+            objective: "audit auth",
+            status: "running",
+          },
+        ])}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Swarm|Investigating/i }));
+    const chips = screen.getAllByTestId("swarm-pending-job-chip");
+    expect(chips).toHaveLength(2);
+    fireEvent.click(chips[0]!);
+    const kinds = spy.mock.calls.map((c) => (c[0] as CustomEvent).type);
+    expect(kinds).toContain("harness-focus-tab");
+    expect(kinds).toContain("harness-open-swarm-job");
+    const openEv = spy.mock.calls
+      .map((c) => c[0] as CustomEvent)
+      .find((e) => e.type === "harness-open-swarm-job");
+    expect(openEv?.detail).toEqual({ jobId: "job_abcdef012345" });
+    spy.mockRestore();
+  });
+
+  it("makes ActionCard job KV and SwarmResultCard job ids open the tracker", () => {
+    const spy = vi.spyOn(window, "dispatchEvent");
+    render(
+      <TranscriptList
+        {...listProps([
+          {
+            kind: "card",
+            card: {
+              id: "c1",
+              kind: "run_swarm",
+              goal: "audit",
+              running: false,
+              open: true,
+              result: { job_id: "job_abcdef012345", status: "pending" },
+            },
+          },
+          {
+            kind: "swarm_result",
+            job_id: "job_deadbeef1234",
+            applied: true,
+            files: [],
+            summary: "ok",
+            error: null,
+            objective: "audit",
+            reuse_status: "reused",
+            source_job_id: "local-bf1b30f4",
+          },
+        ])}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Explored|Swarm/i }));
+
+    const kvLink = screen.getByTestId("job-id-link");
+    expect(kvLink).toHaveTextContent("job_abcdef012345");
+    fireEvent.click(kvLink);
+    expect(
+      spy.mock.calls
+        .map((c) => c[0] as CustomEvent)
+        .some((e) => e.type === "harness-open-swarm-job" && e.detail?.jobId === "job_abcdef012345"),
+    ).toBe(true);
+
+    fireEvent.click(screen.getByText(/swarm done/i));
+    const resultLinks = screen.getAllByTestId("swarm-result-job-link");
+    expect(resultLinks.map((el) => el.textContent)).toEqual(
+      expect.arrayContaining(["job_deadbeef1234", "local-bf1b30f4"]),
+    );
+    fireEvent.click(resultLinks.find((el) => el.textContent === "local-bf1b30f4")!);
+    expect(
+      spy.mock.calls
+        .map((c) => c[0] as CustomEvent)
+        .some((e) => e.type === "harness-open-swarm-job" && e.detail?.jobId === "local-bf1b30f4"),
+    ).toBe(true);
+    spy.mockRestore();
+  });
+});

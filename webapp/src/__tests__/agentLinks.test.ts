@@ -3,6 +3,7 @@ import {
   isExternalUrl,
   looksLikeFilePath,
   looksLikeShellCommand,
+  looksLikeJobId,
   parseFileHref,
   looksLikePathInlineCode,
   classifyActionGoal,
@@ -13,6 +14,7 @@ import {
   openAgentCommand,
   openAgentImage,
   openAgentWorkspace,
+  openAgentSwarmJob,
   stableCommandId,
 } from "../lib/agentLinks";
 import { _resetAgentTerminalStreamForTests } from "../lib/agentTerminalStream";
@@ -111,6 +113,28 @@ describe("agentLinks detection", () => {
     expect(looksLikePathInlineCode("pytest -q")).toBe(false);
     expect(looksLikePathInlineCode("harness/foo.py")).toBe(true);
     expect(isExternalUrl("https://example.com/a")).toBe(true);
+  });
+
+  it("recognizes durable and local swarm job ids", () => {
+    expect(looksLikeJobId("job_abcdef012345")).toBe(true);
+    expect(looksLikeJobId("job_DEADBEEF1234")).toBe(true);
+    expect(looksLikeJobId("local-swarm-a1")).toBe(true);
+    expect(looksLikeJobId("local-bf1b30f4")).toBe(true);
+    expect(looksLikeJobId("local-cmd-bg")).toBe(true);
+    expect(looksLikeJobId("local-cmdbatch-xyz")).toBe(true);
+    expect(looksLikeJobId("local-x")).toBe(true);
+    // Reject random hex, UUIDs, paths, and malformed durable ids.
+    expect(looksLikeJobId("abcdef012345")).toBe(false);
+    expect(looksLikeJobId("deadbeef")).toBe(false);
+    expect(looksLikeJobId("550e8400-e29b-41d4-a716-446655440000")).toBe(false);
+    expect(looksLikeJobId("job_short")).toBe(false);
+    expect(looksLikeJobId("job_abcdef01234567")).toBe(false);
+    expect(looksLikeJobId("webapp/src/App.tsx")).toBe(false);
+    expect(looksLikeJobId("C:\\tmp\\job")).toBe(false);
+    expect(classifyActionGoal("job", "job_abcdef012345")).toEqual({
+      linkKind: "job",
+      value: "job_abcdef012345",
+    });
   });
 });
 
@@ -234,5 +258,33 @@ describe("openAgentLink events", () => {
       .map((c) => c[0] as CustomEvent)
       .find((e) => e.type === "harness-open-workspace");
     expect(ev?.detail).toEqual({ path: "C:\\Users\\me\\proj" });
+  });
+
+  it("openAgentSwarmJob focuses swarm tab then opens the job", () => {
+    const spy = vi.spyOn(window, "dispatchEvent");
+    openAgentSwarmJob("job_abcdef012345");
+    const events = spy.mock.calls.map((c) => c[0] as CustomEvent);
+    const kinds = events.map((e) => e.type);
+    expect(kinds).toEqual(["harness-focus-tab", "harness-open-swarm-job"]);
+    expect(events[0]?.detail).toBe("swarm");
+    expect(events[1]?.detail).toEqual({ jobId: "job_abcdef012345" });
+  });
+
+  it("openAgentLink routes job ids to the swarm tracker", () => {
+    const spy = vi.spyOn(window, "dispatchEvent");
+    const prevent = vi.fn();
+    openAgentLink("local-swarm-a1", { preventDefault: prevent });
+    expect(prevent).toHaveBeenCalled();
+    const kinds = spy.mock.calls.map((c) => (c[0] as CustomEvent).type);
+    expect(kinds).toContain("harness-focus-tab");
+    expect(kinds).toContain("harness-open-swarm-job");
+  });
+
+  it("does not autolink bare job tokens in markdown prose", () => {
+    const src = "Dispatched job_abcdef012345 and local-swarm-a1 already.";
+    const out = autolinkAgentText(src);
+    expect(out).toBe(src);
+    expect(out).not.toContain("](job_");
+    expect(out).not.toContain("](local-");
   });
 });

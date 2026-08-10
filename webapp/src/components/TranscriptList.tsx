@@ -11,8 +11,10 @@ import {
   openAgentCommand,
   openAgentImage,
   openAgentWorkspace,
+  openAgentSwarmJob,
   syncAgentCommandOutput,
   isExternalUrl,
+  looksLikeJobId,
   looksLikePathInlineCode,
   looksLikeShellCommand,
   classifyActionGoal,
@@ -760,45 +762,19 @@ export const TranscriptList = memo(function TranscriptList({
         />
       );
     } else if (it.kind === "swarm_pending") {
-      const objText = it.objective || "";
-      const truncatedObj = objText.length > 60 ? objText.slice(0, 60) + "..." : objText;
-      const jobIdsStr = (it.job_ids || []).join(", ");
-      const pillStatus: SwarmPendingStatus =
-        it.status || (it.resolved ? "done" : "running");
-      if (pillStatus === "done") {
-        return (
-          <div key={key} className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/20 border border-edge/30 text-[11px] text-faint w-fit my-1 select-none">
-            <span className="w-1.5 h-1.5 rounded-full bg-good/40" />
-            <span>swarm done: {truncatedObj} ({jobIdsStr})</span>
-          </div>
-        );
-      }
-      if (pillStatus === "failed") {
-        return (
-          <div key={key} className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-risk/10 border border-risk/30 text-[11px] text-risk/80 w-fit my-1 select-none">
-            <span className="w-1.5 h-1.5 rounded-full bg-risk/50" />
-            <span>swarm failed: {truncatedObj} ({jobIdsStr})</span>
-          </div>
-        );
-      }
-      if (pillStatus === "ended") {
-        return (
-          <div key={key} className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/15 border border-edge/20 text-[11px] text-faint w-fit my-1 select-none">
-            <span className="w-1.5 h-1.5 rounded-full bg-faint/40" />
-            <span>swarm ended: {truncatedObj} ({jobIdsStr})</span>
-          </div>
-        );
-      }
       return (
-        <div key={key} className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/60 border border-edge/60 text-[11px] text-muted w-fit my-1 select-none">
-          <Loader2 size={11} className="animate-spin text-accent" />
-          <span>swarm running: {truncatedObj} ({jobIdsStr})</span>
-        </div>
+        <SwarmPendingPill
+          key={key}
+          jobIds={it.job_ids || []}
+          objective={it.objective || ""}
+          status={it.status || (it.resolved ? "done" : "running")}
+        />
       );
     } else if (it.kind === "swarm_result") {
       return (
         <SwarmResultCard
           key={key}
+          jobId={it.job_id}
           applied={it.applied}
           files={it.files}
           summary={it.summary}
@@ -1283,6 +1259,7 @@ function ActivityGroup({
       return (
         <SwarmResultCard
           key={`swres-${it.job_id}`}
+          jobId={it.job_id}
           applied={it.applied}
           files={it.files}
           summary={it.summary}
@@ -1297,22 +1274,13 @@ function ActivityGroup({
       );
     }
     if (it.kind === "swarm_pending") {
-      const objText = it.objective || "";
-      const truncatedObj = objText.length > 60 ? objText.slice(0, 60) + "..." : objText;
-      const jobIdsStr = (it.job_ids || []).join(", ");
-      const pillStatus = it.status || (it.resolved ? "done" : "running");
-      const label = pillStatus === "failed"
-        ? "swarm failed"
-        : pillStatus === "ended"
-          ? "swarm ended"
-          : pillStatus === "done"
-            ? "swarm done"
-            : "swarm running";
       return (
-        <div key={`swarm-pending-${jobIdsStr}-${idx}`} className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/20 border border-edge/30 text-[11px] text-faint w-fit my-1 select-none">
-          {pillStatus === "running" ? <Loader2 size={11} className="animate-spin text-accent" /> : <span className="w-1.5 h-1.5 rounded-full bg-faint/40" />}
-          <span>{label}: {truncatedObj} ({jobIdsStr})</span>
-        </div>
+        <SwarmPendingPill
+          key={`swarm-pending-${(it.job_ids || []).join(",")}-${idx}`}
+          jobIds={it.job_ids || []}
+          objective={it.objective || ""}
+          status={it.status || (it.resolved ? "done" : "running")}
+        />
       );
     }
     return null;
@@ -2041,6 +2009,7 @@ function ActionCard({
     else if (linkKind === "command") openCommandReveal(goalValue);
     else if (linkKind === "image") openAgentImage(goalValue);
     else if (linkKind === "workspace") openAgentWorkspace(goalValue);
+    else if (linkKind === "job") openAgentSwarmJob(goalValue);
   };
 
   const onRunCommand = (e: React.MouseEvent) => {
@@ -2102,6 +2071,8 @@ function ActionCard({
                   ? "View image"
                   : linkKind === "workspace"
                   ? "Open workspace"
+                  : linkKind === "job"
+                  ? "Open in Swarm Tracker"
                   : "Reveal command output"
               }
             >
@@ -2164,6 +2135,7 @@ function ActionCard({
                       else if (nestedLink.linkKind === "command") openAgentCommand(v, { run: false });
                       else if (nestedLink.linkKind === "image") openAgentImage(v);
                       else if (nestedLink.linkKind === "workspace") openAgentWorkspace(v);
+                      else if (nestedLink.linkKind === "job") openAgentSwarmJob(v);
                     }}
                     className="truncate text-accent/75 hover:underline underline-offset-2 bg-transparent border-0 p-0 text-left cursor-pointer font-sans text-[11px]"
                     title={action.goal}
@@ -2225,7 +2197,13 @@ function ActionCard({
           ) : null}
           {card.result && !card.result.error && (
             <>
-              {card.result.job_id && <KV k="job" v={card.result.job_id || ""} />}
+              {card.result.job_id && (
+                <KV
+                  k="job"
+                  v={card.result.job_id || ""}
+                  linkKind={looksLikeJobId(card.result.job_id) ? "job" : undefined}
+                />
+              )}
               {/* Dispatch-only ack (backgrounded run_implement/run_parallel): show
                   its status/message; the rich artifact fields aren't present yet. */}
               {Array.isArray(card.result.types) ? (
@@ -2317,7 +2295,8 @@ const KV = ({
     || linkKind === "url"
     || linkKind === "command"
     || linkKind === "image"
-    || linkKind === "workspace";
+    || linkKind === "workspace"
+    || linkKind === "job";
   return (
     <div className="flex gap-2 mb-0.5">
       <span className="text-muted w-14 shrink-0">{k}</span>
@@ -2325,12 +2304,15 @@ const KV = ({
         <button
           type="button"
           className="break-all text-left text-accent/85 hover:underline underline-offset-2"
+          data-testid={linkKind === "job" ? "job-id-link" : undefined}
+          title={linkKind === "job" ? "Open in Swarm Tracker" : undefined}
           onClick={(e) => {
             e.stopPropagation();
             if (linkKind === "file") openAgentFile(v);
             else if (linkKind === "url") openAgentUrl(v);
             else if (linkKind === "image") openAgentImage(v);
             else if (linkKind === "workspace") openAgentWorkspace(v);
+            else if (linkKind === "job") openAgentSwarmJob(v);
             else if (onCommandClick) onCommandClick();
             else openAgentCommand(v, { run: false });
           }}
@@ -2343,6 +2325,84 @@ const KV = ({
     </div>
   );
 };
+
+/** Clickable job-id chips for swarm_pending pills (tracker deep-link). */
+function SwarmJobIdChips({ jobIds }: { jobIds: string[] }) {
+  const ids = jobIds.map((id) => String(id || "").trim()).filter(Boolean);
+  if (ids.length === 0) return null;
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1">
+      <span>(</span>
+      {ids.map((id, i) => (
+        <span key={id} className="inline-flex items-center gap-1">
+          {i > 0 ? <span>,</span> : null}
+          {looksLikeJobId(id) ? (
+            <button
+              type="button"
+              data-testid="swarm-pending-job-chip"
+              title="Open in Swarm Tracker"
+              className="font-mono text-accent/85 hover:underline underline-offset-2 cursor-pointer bg-transparent border-0 p-0"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                openAgentSwarmJob(id);
+              }}
+            >
+              {id}
+            </button>
+          ) : (
+            <span className="font-mono">{id}</span>
+          )}
+        </span>
+      ))}
+      <span>)</span>
+    </span>
+  );
+}
+
+function SwarmPendingPill({
+  jobIds,
+  objective,
+  status,
+}: {
+  jobIds: string[];
+  objective: string;
+  status: SwarmPendingStatus;
+}) {
+  const truncatedObj = objective.length > 60 ? objective.slice(0, 60) + "..." : objective;
+  const label = status === "failed"
+    ? "swarm failed"
+    : status === "ended"
+      ? "swarm ended"
+      : status === "done"
+        ? "swarm done"
+        : "swarm running";
+  const shell =
+    status === "failed"
+      ? "bg-risk/10 border-risk/30 text-risk/80"
+      : status === "ended"
+        ? "bg-panel2/15 border-edge/20 text-faint"
+        : status === "done"
+          ? "bg-panel2/20 border-edge/30 text-faint"
+          : "bg-panel2/60 border-edge/60 text-muted";
+  const dot =
+    status === "failed"
+      ? "bg-risk/50"
+      : status === "done"
+        ? "bg-good/40"
+        : "bg-faint/40";
+  return (
+    <div className={`flex items-center gap-1.5 py-1 px-3 rounded-full border text-[11px] w-fit my-1 select-none ${shell}`}>
+      {status === "running"
+        ? <Loader2 size={11} className="animate-spin text-accent" />
+        : <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />}
+      <span className="inline-flex items-center gap-1 flex-wrap">
+        <span>{label}: {truncatedObj}</span>
+        <SwarmJobIdChips jobIds={jobIds} />
+      </span>
+    </div>
+  );
+}
 
 // A swarm outcome in the transcript. Previously this dumped the entire worker
 // summary as full-width green/red monospace text -- a "wall" that read as noise
@@ -2370,7 +2430,37 @@ function formatInvalidatedPaths(paths?: string[], limit = 6): string {
   return more > 0 ? `${clean.join(", ")} (+${more} more)` : clean.join(", ");
 }
 
-function SwarmResultCard({ applied, files, summary, error, objective, reuseStatus, sourceJobId, reuseReason, invalidatedPaths, duplicateCount = 1 }: {
+function SwarmJobIdButton({
+  jobId,
+  className,
+}: {
+  jobId: string;
+  className?: string;
+}) {
+  const id = (jobId || "").trim();
+  if (!id) return null;
+  if (!looksLikeJobId(id)) {
+    return <span className={className}>{id}</span>;
+  }
+  return (
+    <button
+      type="button"
+      data-testid="swarm-result-job-link"
+      title="Open in Swarm Tracker"
+      className={`font-mono text-accent/85 hover:underline underline-offset-2 cursor-pointer bg-transparent border-0 p-0 ${className || ""}`}
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        openAgentSwarmJob(id);
+      }}
+    >
+      {id}
+    </button>
+  );
+}
+
+function SwarmResultCard({ jobId, applied, files, summary, error, objective, reuseStatus, sourceJobId, reuseReason, invalidatedPaths, duplicateCount = 1 }: {
+  jobId?: string;
   applied: boolean;
   files: string[];
   summary: string;
@@ -2386,9 +2476,19 @@ function SwarmResultCard({ applied, files, summary, error, objective, reuseStatu
   const obj = objective ? (objective.length > 70 ? objective.slice(0, 70) + "..." : objective) : "swarm";
   const reuseLabel = reuseStatusLabel(reuseStatus);
   const pathSummary = formatInvalidatedPaths(invalidatedPaths);
+  const primaryJobId = (jobId || "").trim();
   // Full-swarm rejection reasons (e.g. environment_changed) must surface even
   // when the status is merely "fresh" — never drop the gate reason in the UI.
-  const hasBody = !!(summary || (!applied && error) || (applied && files.length > 0) || sourceJobId || reuseReason || pathSummary || reuseLabel);
+  const hasBody = !!(
+    summary
+    || (!applied && error)
+    || (applied && files.length > 0)
+    || primaryJobId
+    || sourceJobId
+    || reuseReason
+    || pathSummary
+    || reuseLabel
+  );
 
   return (
     <div className={`rounded-md border w-fit max-w-full my-1 overflow-hidden select-none bg-panel/40 ${applied ? "border-good/30" : "border-risk/30"}`}>
@@ -2426,11 +2526,22 @@ function SwarmResultCard({ applied, files, summary, error, objective, reuseStatu
 
       {open && hasBody && (
         <div className="px-2.5 pb-2 pt-1.5 border-t border-edge/30 flex flex-col gap-1.5">
-          {(reuseLabel || reuseReason) && (
-            <div className="text-[10px] text-muted font-mono leading-relaxed break-words">
-              {reuseLabel ? `validation ${reuseLabel}` : "validation"}
-              {sourceJobId ? ` from ${sourceJobId}` : ""}
-              {reuseReason ? ` (${reuseReason})` : ""}
+          {primaryJobId ? (
+            <div className="text-[10px] text-muted font-mono leading-relaxed break-words inline-flex items-center gap-1.5 flex-wrap">
+              <span>job</span>
+              <SwarmJobIdButton jobId={primaryJobId} />
+            </div>
+          ) : null}
+          {(reuseLabel || reuseReason || sourceJobId) && (
+            <div className="text-[10px] text-muted font-mono leading-relaxed break-words inline-flex items-center gap-1 flex-wrap">
+              <span>{reuseLabel ? `validation ${reuseLabel}` : "validation"}</span>
+              {sourceJobId ? (
+                <>
+                  <span>from</span>
+                  <SwarmJobIdButton jobId={sourceJobId} />
+                </>
+              ) : null}
+              {reuseReason ? <span>({reuseReason})</span> : null}
             </div>
           )}
           {Array.isArray(invalidatedPaths) && invalidatedPaths.length > 0 && (

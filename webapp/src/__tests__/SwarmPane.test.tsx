@@ -1231,3 +1231,56 @@ describe("SwarmPane repo-scoped dismiss", () => {
     expect(screen.queryByText("Old finished A")).not.toBeInTheDocument();
   });
 });
+
+describe("SwarmPane harness-open-swarm-job deep-link", () => {
+  const REPO = "C:\\Users\\pwall\\Projects\\deep-link";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
+    clearSWRCache();
+    mockArtifacts.mockResolvedValue([]);
+    Element.prototype.scrollIntoView = vi.fn();
+    dispatchProjectSelected(REPO);
+  });
+
+  it("undismisses, expands, and scrolls to the target job row", async () => {
+    localStorage.setItem(
+      "swarm.dismissed.v2",
+      JSON.stringify({ [REPO]: ["job_abcdef012345"] }),
+    );
+    mockSwarmLive.mockResolvedValue(
+      finishedJob("job_abcdef012345", "Deep-link target swarm", {
+        artifacts_complete: false,
+        artifacts: [],
+      }),
+    );
+
+    render(<SwarmPane />);
+    await waitFor(() => {
+      expect(screen.getByText("All swarm jobs cleared")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Deep-link target swarm")).not.toBeInTheDocument();
+
+    window.dispatchEvent(
+      new CustomEvent("harness-open-swarm-job", {
+        detail: { jobId: "job_abcdef012345" },
+      }),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Deep-link target swarm")).toBeInTheDocument();
+    });
+    const row = document.querySelector('[data-job-id="job_abcdef012345"]');
+    expect(row).toBeTruthy();
+    await waitFor(() => {
+      expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
+    });
+    const stored = JSON.parse(localStorage.getItem("swarm.dismissed.v2") || "{}");
+    expect(stored[REPO] || []).not.toContain("job_abcdef012345");
+    await waitFor(() => {
+      expect(mockArtifacts).toHaveBeenCalledWith("job_abcdef012345");
+    });
+  });
+});

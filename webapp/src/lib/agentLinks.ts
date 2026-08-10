@@ -172,7 +172,34 @@ export function looksLikePathInlineCode(text: string): boolean {
   return looksLikeFilePath(t);
 }
 
-export type AgentLinkKind = "url" | "file" | "command" | "image" | "workspace" | "none";
+export type AgentLinkKind =
+  | "url"
+  | "file"
+  | "command"
+  | "image"
+  | "workspace"
+  | "job"
+  | "none";
+
+/**
+ * True for durable Puppetmaster job ids (`job_` + 12 hex) and Marionette local
+ * ids used in the tracker (`local-swarm-*`, `local-cmd-*`, `local-{short}`).
+ * Rejects bare UUIDs, random hex, and filesystem paths.
+ */
+export function looksLikeJobId(id: string): boolean {
+  const t = (id || "").trim();
+  if (!t || t.length > 80) return false;
+  if (/[\\/\s]/.test(t)) return false;
+  // Durable substrate id minted by Puppetmaster.
+  if (/^job_[a-fA-F0-9]{12}$/.test(t)) return true;
+  // Marionette local / placeholder ids (swarm pills, cmd batches, short locals).
+  if (/^local-(?:swarm|cmd(?:batch)?)-[A-Za-z0-9][A-Za-z0-9_-]*$/.test(t)) {
+    return true;
+  }
+  // Short local-{token} forms (e.g. local-bf1b30f4) — single segment, no UUID shape.
+  if (/^local-[A-Za-z0-9]{1,32}$/.test(t)) return true;
+  return false;
+}
 
 /** Classify an ActionCard goal by tool kind. */
 export function classifyActionGoal(
@@ -214,6 +241,8 @@ export function classifyActionGoal(
     return { linkKind: "command", value: g };
   }
   if (isExternalUrl(g)) return { linkKind: "url", value: g };
+  // Explicit job-id goals (ActionCard KV / synthetic classify) — not prose autolink.
+  if (k === "job" || looksLikeJobId(g)) return { linkKind: "job", value: g };
   // Unknown kinds: never fall through to file when the goal is shell-like.
   if (looksLikeShellCommand(g)) return { linkKind: "command", value: g };
   if (looksLikeFilePath(g)) return { linkKind: "file", value: g };
@@ -273,6 +302,23 @@ export function openAgentWorkspace(path: string): void {
   try {
     window.dispatchEvent(
       new CustomEvent("harness-open-workspace", { detail: { path: p } }),
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Focus the Swarm Tracker tab and expand/scroll to a job row.
+ * Does not invent a Puppetmaster dashboard URL — tracker focus only.
+ */
+export function openAgentSwarmJob(jobId: string): void {
+  const id = (jobId || "").trim();
+  if (!id || !looksLikeJobId(id)) return;
+  try {
+    window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: "swarm" }));
+    window.dispatchEvent(
+      new CustomEvent("harness-open-swarm-job", { detail: { jobId: id } }),
     );
   } catch {
     /* ignore */
@@ -340,6 +386,11 @@ export function openAgentLink(href: string, e?: { preventDefault(): void }): voi
   if (isExternalUrl(href)) {
     e?.preventDefault();
     openAgentUrl(href);
+    return;
+  }
+  if (looksLikeJobId(href)) {
+    e?.preventDefault();
+    openAgentSwarmJob(href);
     return;
   }
   if (looksLikeShellCommand(href)) {
