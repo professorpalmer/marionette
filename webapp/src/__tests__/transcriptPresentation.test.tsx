@@ -464,6 +464,65 @@ describe("transcript presentation contract", () => {
     expect(failedLabels).toHaveLength(2);
     expect(screen.getAllByText(/No model in registry has all required tags/i)).toHaveLength(1);
   });
+
+  it("paints held_for_review and analysis_ok badges without applied/failed chrome", () => {
+    render(
+      <TranscriptList
+        {...listProps([
+          {
+            kind: "swarm_result",
+            job_id: "job_heldabcdef01",
+            applied: false,
+            files: ["a.ts"],
+            summary: "Patch held for review",
+            error: null,
+            objective: "ship patch",
+            held_for_review: true,
+          },
+          {
+            kind: "swarm_result",
+            job_id: "job_analysisok02",
+            applied: false,
+            files: [],
+            summary: "FINDING: race",
+            error: null,
+            objective: "audit auth",
+            analysis_ok: true,
+          },
+          {
+            kind: "swarm_result",
+            job_id: "job_appliedok003",
+            applied: true,
+            files: ["b.ts"],
+            summary: "ok",
+            error: null,
+            objective: "landed",
+          },
+          {
+            kind: "pending_review",
+            id: "rev-deadbeef",
+            summary: "Held 1 files for review",
+          },
+        ])}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Swarm/i }));
+
+    const cards = screen.getAllByTestId("swarm-result-card");
+    const byOutcome = Object.fromEntries(
+      cards.map((el) => [el.getAttribute("data-outcome"), el]),
+    );
+    expect(byOutcome.held).toBeTruthy();
+    expect(byOutcome.held).toHaveTextContent(/held for review/i);
+    expect(byOutcome.analysis).toBeTruthy();
+    expect(byOutcome.analysis).toHaveTextContent(/analysis done/i);
+    expect(byOutcome.applied).toBeTruthy();
+    expect(byOutcome.applied).toHaveTextContent(/swarm done/i);
+    expect(byOutcome.failed).toBeUndefined();
+
+    expect(screen.getByTestId("pending-review-receipt")).toHaveTextContent(/review ready/i);
+  });
 });
 
 describe("investigation UX residual debts (nested / fold prefs / workerStream)", () => {

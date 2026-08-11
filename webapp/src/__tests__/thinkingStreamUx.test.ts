@@ -274,6 +274,42 @@ describe("swarm terminal rows stay at the end of one investigation", () => {
   });
 });
 
+describe("createApplyStreamEvent pending_review receipt", () => {
+  it("appends a transcript receipt and focuses/refreshes the Review tab", () => {
+    const state = {
+      items: [{ kind: "msg", msg: { role: "user", text: "ship" } }] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    state.itemsRef.current = state.items;
+    const kinds: string[] = [];
+    const details: unknown[] = [];
+    const onEvt = (e: Event) => {
+      kinds.push(e.type);
+      if (e instanceof CustomEvent) details.push(e.detail);
+    };
+    window.addEventListener("harness-focus-tab", onEvt as EventListener);
+    window.addEventListener("harness-reviews-refresh", onEvt);
+    try {
+      const apply = createApplyStreamEvent(makeApplyDeps(state));
+      apply({
+        kind: "pending_review",
+        data: { id: "rev-cafe0123", summary: "Held 2 files for review" },
+      });
+      expect(state.items).toContainEqual({
+        kind: "pending_review",
+        id: "rev-cafe0123",
+        summary: "Held 2 files for review",
+      });
+      expect(kinds).toEqual(["harness-focus-tab", "harness-reviews-refresh"]);
+      expect(details[0]).toBe("review");
+    } finally {
+      window.removeEventListener("harness-focus-tab", onEvt as EventListener);
+      window.removeEventListener("harness-reviews-refresh", onEvt);
+    }
+  });
+});
+
 describe("createApplyStreamEvent Sol reasoning coalescing", () => {
   it("keeps one durable thinking id/text across word-sized delta:true frames", () => {
     const state = {

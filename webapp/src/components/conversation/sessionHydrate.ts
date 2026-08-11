@@ -81,3 +81,38 @@ export function runnerBusySwitchDecision(opts: {
   if (opts.switchedSession) return { kind: "idle" };
   return { kind: "noop" };
 }
+
+/** Short composer notice when session-state refresh fails on switch. */
+export const SESSION_STATE_FAIL_NOTICE =
+  "Couldn't refresh session status - showing idle until the next check.";
+
+/**
+ * On activeSessionId change: default idle/turnOpen=false until runners resolve
+ * for the target session. Prevents busy A's Stop/thinking chrome sticking on B.
+ */
+export function shouldResetBusyChromeOnSwitch(switchedSession: boolean): boolean {
+  return switchedSession;
+}
+
+/**
+ * After getSessionState failures on switch: stay idle (runners poll may re-arm)
+ * and surface a short notice. Never leave prior-session chrome stuck silently.
+ */
+export function sessionStateFailureSwitchDecision(): {
+  kind: "idle_with_notice";
+  notice: string;
+} {
+  return { kind: "idle_with_notice", notice: SESSION_STATE_FAIL_NOTICE };
+}
+
+/**
+ * Mid-turn reattach when getSessionState fails: retry, then optimistic busy so
+ * Ready chrome cannot lie while a turn continues. Runners poll clears idle targets.
+ */
+export function reattachSessionStateFailureDecision(opts: {
+  attempt: number;
+  maxAttempts: number;
+}): "retry" | "optimistic_busy" {
+  if (opts.attempt < opts.maxAttempts) return "retry";
+  return "optimistic_busy";
+}

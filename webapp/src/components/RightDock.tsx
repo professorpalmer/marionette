@@ -94,7 +94,11 @@ export default function RightDock({
     };
     load();
     const t = setInterval(load, 5000);
-    return () => clearInterval(t);
+    window.addEventListener("harness-reviews-refresh", load);
+    return () => {
+      clearInterval(t);
+      window.removeEventListener("harness-reviews-refresh", load);
+    };
   }, [swarmRepo]);
 
   return (

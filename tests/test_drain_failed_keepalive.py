@@ -173,3 +173,51 @@ def test_drain_analysis_ok_empty_files_not_failed_apply():
         for m in s._history
     )
     assert any(e.kind == "pilot_resume" for e in events)
+    # Durable display badge must keep analysis_ok so reload stays honest.
+    display = [
+        row for row in s._display_transcript
+        if isinstance(row, dict) and row.get("type") == "swarm_result"
+    ]
+    assert display
+    assert display[-1].get("analysis_ok") is True
+    assert display[-1].get("held_for_review") is False
+    assert display[-1].get("applied") is False
+    assert display[-1].get("error") in (None, "")
+
+
+def test_drain_held_for_review_display_result_honesty():
+    """held_for_review persists on display_result and yields pending_review."""
+    s = _session()
+    s._swarm_results.put({
+        "job_id": "held-job",
+        "objective": "ship patch",
+        "result": {
+            "applied": False,
+            "held_for_review": True,
+            "files": ["a.ts"],
+            "summary": "Patch held for review (ID: rev-abc)",
+            "error": None,
+            "has_patch_art": True,
+            "pending_review": {
+                "id": "rev-abc123",
+                "summary": "Held 1 files for review",
+            },
+        },
+    })
+    events = list(s.drain_swarm_results())
+    assert any(e.kind == "pending_review" for e in events)
+    pending = [e for e in events if e.kind == "pending_review"][0]
+    assert pending.data.get("id") == "rev-abc123"
+    display = [
+        row for row in s._display_transcript
+        if isinstance(row, dict) and row.get("type") == "swarm_result"
+    ]
+    assert display
+    assert display[-1].get("held_for_review") is True
+    assert display[-1].get("analysis_ok") is False
+    assert display[-1].get("applied") is False
+    assert display[-1].get("error") in (None, "")
+    assert not any(
+        m["role"] == "assistant" and "[swarm FAILED" in m["content"]
+        for m in s._history
+    )

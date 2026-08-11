@@ -274,6 +274,15 @@ export default function RightPane({ artifacts, onOpenWizard, onCollapse, initial
   usePolling(fetchReviews, 4000);
   usePolling(fetchSwarmActivity, 4000);
 
+  // Immediate refresh when a swarm parks a DiffReview (pending_review stream/poll).
+  useEffect(() => {
+    const onRefresh = () => {
+      void fetchReviews();
+    };
+    window.addEventListener("harness-reviews-refresh", onRefresh);
+    return () => window.removeEventListener("harness-reviews-refresh", onRefresh);
+  }, []);
+
   const updateSplitState = (updater: Partial<SplitState> | ((prev: SplitState) => SplitState)) => {
     setSplitState(prev => {
       const next = typeof updater === "function" ? updater(prev) : { ...prev, ...updater };

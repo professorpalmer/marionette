@@ -266,6 +266,18 @@ export default function DiffReviewPane({ reviews, onRefresh }: {
               <span className="text-[10px] text-muted font-mono leading-tight">Job ID: {rev.job_id.slice(0, 12)}...</span>
             </div>
 
+            {rev.error ? (
+              <div
+                data-testid="pending-review-error"
+                className="p-2 rounded text-[11px] flex items-start gap-1.5 bg-risk/10 border border-risk/25 text-risk"
+              >
+                <AlertCircle size={12} className="shrink-0 mt-0.5" />
+                <span className="leading-snug">
+                  Last apply failed — review kept for retry: {rev.error}
+                </span>
+              </div>
+            ) : null}
+
             <div className="space-y-4">
               {rev.files.map((file, fIdx) => (
                 <div key={fIdx} className="space-y-2">

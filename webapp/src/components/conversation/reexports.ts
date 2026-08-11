@@ -108,6 +108,9 @@ export {
   workspaceRootFromActionResult,
   appendSwarmPending,
   appendCheckpoint,
+  appendPendingReview,
+  focusReviewTabAndRefresh,
+  swarmResultOutcome,
   appendQueuedPromptUserBubble,
   appendAutoHalt,
   appendAutoStatus,
@@ -135,7 +138,17 @@ export {
   emptySessionSwitchState,
   shouldPreserveBusyStatus,
   runnerBusySwitchDecision,
+  SESSION_STATE_FAIL_NOTICE,
+  shouldResetBusyChromeOnSwitch,
+  sessionStateFailureSwitchDecision,
+  reattachSessionStateFailureDecision,
 } from "./sessionHydrate";
+export {
+  clearComposerDraftCache,
+  peekComposerDraft,
+  writeComposerDraft,
+  resolveComposerDraftOnSwitch,
+} from "./composerDraftCache";
 export {
   composerEnterAction,
   composerEnterBusy,

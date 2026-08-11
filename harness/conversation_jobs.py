@@ -1355,6 +1355,10 @@ class ConversationJobsMixin:
                         "summary": summary or "",
                         "error": display_error,
                         "objective": objective,
+                        # Durable badge honesty across reload/reattach — FE must
+                        # not paint held_for_review / analysis_ok as applied or failed.
+                        "held_for_review": bool(held_for_review),
+                        "analysis_ok": bool(analysis_ok),
                     }
                     worker_provenance = res_job.get("worker_provenance") or {}
                     if worker_provenance:

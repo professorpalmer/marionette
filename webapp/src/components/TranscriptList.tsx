@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, memo } from "react";
-import { ChevronRight, Loader2, ChevronDown, ChevronUp, Play, Copy, Check, Pencil, RefreshCw, History, Share2, CheckCircle2, XCircle } from "lucide-react";
+import { ChevronRight, Loader2, ChevronDown, ChevronUp, Play, Copy, Check, Pencil, RefreshCw, History, Share2, CheckCircle2, XCircle, Eye } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -156,8 +156,9 @@ export type Item =
   | { kind: "thinking"; text: string; streaming?: boolean; id?: string; stream_id?: string }
   | { kind: "tool_prep"; name: string }
   | SwarmPendingItem
-  | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string; reuse_status?: string; source_job_id?: string; reuse_reason?: string; invalidated_paths?: string[]; validation_fingerprint?: string; environment_fingerprint?: string; acceptance_criteria?: string[] }
+  | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string; held_for_review?: boolean; analysis_ok?: boolean; reuse_status?: string; source_job_id?: string; reuse_reason?: string; invalidated_paths?: string[]; validation_fingerprint?: string; environment_fingerprint?: string; acceptance_criteria?: string[] }
   | { kind: "checkpoint"; id: string; label: string; trigger: string }
+  | { kind: "pending_review"; id: string; summary: string }
   | {
       kind: "compaction";
       before_tokens: number;
@@ -196,8 +197,9 @@ export type GroupedItem =
   | { kind: "msg"; msg: Msg }
   | { kind: "thinking"; text: string; streaming?: boolean; id?: string; stream_id?: string }
   | SwarmPendingItem
-  | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string; reuse_status?: string; source_job_id?: string; reuse_reason?: string; invalidated_paths?: string[]; validation_fingerprint?: string; environment_fingerprint?: string; acceptance_criteria?: string[] }
+  | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string; held_for_review?: boolean; analysis_ok?: boolean; reuse_status?: string; source_job_id?: string; reuse_reason?: string; invalidated_paths?: string[]; validation_fingerprint?: string; environment_fingerprint?: string; acceptance_criteria?: string[] }
   | { kind: "checkpoint"; id: string; label: string; trigger: string }
+  | { kind: "pending_review"; id: string; summary: string }
   | {
       kind: "compaction";
       before_tokens: number;
@@ -239,7 +241,7 @@ type ActivityItem =
   | { kind: "codegraph_context"; symbols: number; query: string }
   | { kind: "checkpoint"; id: string; label: string; trigger: string }
   | SwarmPendingItem
-  | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string; reuse_status?: string; source_job_id?: string; reuse_reason?: string; invalidated_paths?: string[]; validation_fingerprint?: string; environment_fingerprint?: string; acceptance_criteria?: string[] }
+  | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string; held_for_review?: boolean; analysis_ok?: boolean; reuse_status?: string; source_job_id?: string; reuse_reason?: string; invalidated_paths?: string[]; validation_fingerprint?: string; environment_fingerprint?: string; acceptance_criteria?: string[] }
   | { kind: "msg"; msg: Msg };
 
 
@@ -413,6 +415,11 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
       terminalSwarmItems.push(item);
     } else if (item.kind === "checkpoint") {
       currentGroup.push(item);
+    } else if (item.kind === "pending_review") {
+      // Operator receipt for DiffReview hold — keep top-level so it is not
+      // buried inside a collapsed investigation fold.
+      flush();
+      grouped.push(item);
     } else if (item.kind === "swarm_pending") {
       const status = item.status || (item.resolved ? "done" : "running");
       if (status === "running") {
@@ -460,7 +467,7 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
  *  error/objective so one retry lifecycle collapses to a single chrome row. */
 function failedRoutingFingerprint(it: ActivityItem): string | null {
   if (it.kind === "swarm_result") {
-    if (it.applied) return null;
+    if (it.applied || it.held_for_review || it.analysis_ok) return null;
     const err = String(it.error || "").trim();
     if (!err) return null;
     return `${err}\n${String(it.objective || "").trim()}`;
@@ -649,6 +656,8 @@ function stableItemKey(it: GroupedItem, i: number): string {
       return `swpen-${(it.job_ids || []).join("_") || i}`;
     case "checkpoint":
       return `ckpt-${it.id}`;
+    case "pending_review":
+      return `prev-${it.id}`;
     case "compaction":
       return `cmp-${it.aborted ? "abort" : "ok"}-${it.before_tokens}-${it.after_tokens}-${it.reason || it.mode || i}`;
     case "codegraph_context":
@@ -871,6 +880,8 @@ export const TranscriptList = memo(function TranscriptList({
           summary={it.summary}
           error={it.error}
           objective={it.objective}
+          heldForReview={it.held_for_review}
+          analysisOk={it.analysis_ok}
           reuseStatus={it.reuse_status}
           sourceJobId={it.source_job_id}
           reuseReason={it.reuse_reason}
@@ -882,6 +893,17 @@ export const TranscriptList = memo(function TranscriptList({
         <div key={key} className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/15 border border-edge/20 text-[10px] text-faint w-fit my-1 select-none">
           <History size={11} className="text-accent" />
           <span>restore point created: {it.label} ({it.id.slice(0, 8)})</span>
+        </div>
+      );
+    } else if (it.kind === "pending_review") {
+      return (
+        <div
+          key={key}
+          data-testid="pending-review-receipt"
+          className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-accent/10 border border-accent/25 text-[10px] text-accent w-fit my-1 select-none"
+        >
+          <Eye size={11} className="text-accent shrink-0" />
+          <span>review ready: {it.summary} ({it.id.slice(0, 12)})</span>
         </div>
       );
     } else if (it.kind === "codegraph_context") {
@@ -1442,6 +1464,18 @@ function ActivityGroup({
         </div>
       );
     }
+    if (it.kind === "pending_review") {
+      return (
+        <div
+          key={`prev-${it.id}`}
+          data-testid="pending-review-receipt"
+          className="flex items-center gap-1.5 py-0.5 text-[10px] text-accent/90 select-none"
+        >
+          <Eye size={10} className="text-accent/80 shrink-0" />
+          <span>review ready: {it.summary} ({it.id.slice(0, 12)})</span>
+        </div>
+      );
+    }
     if (it.kind === "swarm_result") {
       return (
         <SwarmResultCard
@@ -1452,6 +1486,8 @@ function ActivityGroup({
           summary={it.summary}
           error={it.error}
           objective={it.objective}
+          heldForReview={it.held_for_review}
+          analysisOk={it.analysis_ok}
           reuseStatus={it.reuse_status}
           sourceJobId={it.source_job_id}
           reuseReason={it.reuse_reason}
@@ -2714,13 +2750,15 @@ function SwarmJobIdButton({
   );
 }
 
-function SwarmResultCard({ jobId, applied, files, summary, error, objective, reuseStatus, sourceJobId, reuseReason, invalidatedPaths, duplicateCount = 1 }: {
+function SwarmResultCard({ jobId, applied, files, summary, error, objective, heldForReview, analysisOk, reuseStatus, sourceJobId, reuseReason, invalidatedPaths, duplicateCount = 1 }: {
   jobId?: string;
   applied: boolean;
   files: string[];
   summary: string;
   error: string | null;
   objective?: string;
+  heldForReview?: boolean;
+  analysisOk?: boolean;
   reuseStatus?: string;
   sourceJobId?: string;
   reuseReason?: string;
@@ -2732,12 +2770,49 @@ function SwarmResultCard({ jobId, applied, files, summary, error, objective, reu
   const reuseLabel = reuseStatusLabel(reuseStatus);
   const pathSummary = formatInvalidatedPaths(invalidatedPaths);
   const primaryJobId = (jobId || "").trim();
+  // Operator honesty: held_for_review / analysis_ok are successful non-applies —
+  // never paint them as "swarm done" (applied) or "swarm failed".
+  const tone: "applied" | "held" | "analysis" | "failed" = applied
+    ? "applied"
+    : error
+      ? "failed"
+      : heldForReview
+        ? "held"
+        : analysisOk
+          ? "analysis"
+          : "failed";
+  const label =
+    tone === "applied"
+      ? "swarm done"
+      : tone === "held"
+        ? "held for review"
+        : tone === "analysis"
+          ? "analysis done"
+          : "swarm failed";
+  const borderClass =
+    tone === "applied"
+      ? "border-good/30"
+      : tone === "held"
+        ? "border-accent/30"
+        : tone === "analysis"
+          ? "border-edge/50"
+          : "border-risk/30";
+  const labelClass =
+    tone === "applied"
+      ? "text-good"
+      : tone === "held"
+        ? "text-accent"
+        : tone === "analysis"
+          ? "text-muted"
+          : "text-risk";
   // Full-swarm rejection reasons (e.g. environment_changed) must surface even
   // when the status is merely "fresh" — never drop the gate reason in the UI.
   const hasBody = !!(
     summary
-    || (!applied && error)
+    || (tone === "failed" && error)
     || (applied && files.length > 0)
+    || tone === "held"
+    || tone === "analysis"
     || primaryJobId
     || sourceJobId
     || reuseReason
@@ -2746,18 +2821,26 @@ function SwarmResultCard({ jobId, applied, files, summary, error, objective, reu
   );
 
   return (
-    <div className={`rounded-md border w-fit max-w-full my-1 overflow-hidden select-none bg-panel/40 ${applied ? "border-good/30" : "border-risk/30"}`}>
+    <div
+      className={`rounded-md border w-fit max-w-full my-1 overflow-hidden select-none bg-panel/40 ${borderClass}`}
+      data-testid="swarm-result-card"
+      data-outcome={tone}
+    >
       <button
         onClick={() => hasBody && setOpen((v) => !v)}
         className={`flex items-center gap-2 px-2.5 py-1.5 text-[11px] w-full text-left transition-colors ${hasBody ? "hover:bg-panel2/40 cursor-pointer" : "cursor-default"}`}
         title={objective || undefined}
       >
-        {applied
+        {tone === "applied"
           ? <CheckCircle2 size={13} className="text-good shrink-0" />
-          : <XCircle size={13} className="text-risk shrink-0" />}
-        <span className={`font-medium shrink-0 ${applied ? "text-good" : "text-risk"}`}>
-          {applied ? "swarm done" : "swarm failed"}
-          {!applied && duplicateCount > 1 ? ` ×${duplicateCount}` : ""}
+          : tone === "held"
+            ? <Eye size={13} className="text-accent shrink-0" />
+            : tone === "analysis"
+              ? <CheckCircle2 size={13} className="text-muted shrink-0" />
+              : <XCircle size={13} className="text-risk shrink-0" />}
+        <span className={`font-medium shrink-0 ${labelClass}`}>
+          {label}
+          {tone === "failed" && duplicateCount > 1 ? ` ×${duplicateCount}` : ""}
         </span>
         {reuseLabel && (
           <span
@@ -2769,11 +2852,15 @@ function SwarmResultCard({ jobId, applied, files, summary, error, objective, reu
         )}
         <span className="text-muted truncate">{obj}</span>
         <span className="flex-1 min-w-[8px]" />
-        {applied
+        {tone === "applied"
           ? (files.length > 0
             ? <span className="text-faint shrink-0 tabular-nums">{files.length} file{files.length === 1 ? "" : "s"}</span>
             : <span className="text-faint shrink-0 truncate max-w-[45%]">{summary}</span>)
-          : <span className="text-risk/70 shrink-0 truncate max-w-[45%]">{error || "error"}</span>}
+          : tone === "held"
+            ? <span className="text-accent/70 shrink-0 truncate max-w-[45%]">awaiting review</span>
+            : tone === "analysis"
+              ? <span className="text-faint shrink-0 truncate max-w-[45%]">{summary || "findings"}</span>
+              : <span className="text-risk/70 shrink-0 truncate max-w-[45%]">{error || "error"}</span>}
         {hasBody && (open
           ? <ChevronDown size={12} className="text-faint shrink-0" />
           : <ChevronRight size={12} className="text-faint shrink-0" />)}

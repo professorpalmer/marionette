@@ -39,9 +39,11 @@ import {
 import { derivePillStatus } from "./conversation/pillStatus";
 import { isAgentLoopOpen } from "./conversation/runnersBusy";
 import {
+  appendPendingReview,
   appendStopHonestyNotice,
   applySwarmResultToItems,
   finalizeOrphanSwarmPills,
+  focusReviewTabAndRefresh,
   mergeJobActionsIntoItems,
   noticeIsStopHonesty,
   patchCardInItems,
@@ -330,6 +332,11 @@ export default function Conversation({
   }, [tabContextMenu]);
 
   const [input, setInput] = useState("");
+  // Live composer text for per-session draft cache across useSessionSwitch.
+  const composerInputRef = useRef("");
+  useEffect(() => {
+    composerInputRef.current = input;
+  }, [input]);
   const [status, setStatus] = useState<"idle"|"thinking"|"executing"|"done"|"error"|"streaming"|"awaiting_swarm">("idle");
   // Wall clock for the live busy footer ("running · read_file · step 3 · 2m 14s").
   // Starts when we enter a busy phase; clears on idle/done/error. A 1s tick keeps
@@ -1069,6 +1076,7 @@ export default function Conversation({
     setEditNotice,
     setEditBusy,
     setInput,
+    composerInputRef,
   });
 
 
@@ -1714,6 +1722,9 @@ export default function Conversation({
               const action = classifySwarmPollEvent(evt);
               if (action.kind === "swarm_result") {
                 handleSwarmResult(action.data);
+              } else if (action.kind === "pending_review") {
+                setItems((p) => appendPendingReview(p, action.data));
+                focusReviewTabAndRefresh();
               } else if (action.kind === "pilot_resume") {
                 // Background job finished while the session was idle / awaiting.
                 // Backend already extended history; kick keep-alive so the pilot

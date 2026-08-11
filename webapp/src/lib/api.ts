@@ -477,6 +477,10 @@ export type SwarmResultData = {
   summary: string;
   error: string | null;
   objective?: string;
+  /** Patch parked in DiffReview — not a failed apply. */
+  held_for_review?: boolean;
+  /** Findings-accepted analysis with no patch — not a failed apply. */
+  analysis_ok?: boolean;
   reuse_status?: "fresh" | "reused" | "partial" | "invalidated" | string;
   source_job_id?: string;
   validation_fingerprint?: string;

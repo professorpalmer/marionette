@@ -6,6 +6,13 @@ import {
   writeTranscriptCache,
   composerStatusFromRunner,
   resolveSwitchTranscript,
+  clearComposerDraftCache,
+  peekComposerDraft,
+  resolveComposerDraftOnSwitch,
+  writeComposerDraft,
+  shouldResetBusyChromeOnSwitch,
+  sessionStateFailureSwitchDecision,
+  SESSION_STATE_FAIL_NOTICE,
 } from "../components/Conversation";
 import type { Item } from "../components/TranscriptList";
 
@@ -195,6 +202,84 @@ describe("busy runners keep Stop not Send", () => {
     expect(status).toBe("thinking");
     expect(peekTranscriptCache("sess-busy")).toEqual([makeMsg("user", "in flight")]);
     clearTranscriptCache();
+  });
+});
+
+describe("per-session composer draft cache across session switch", () => {
+  afterEach(() => {
+    clearComposerDraftCache();
+  });
+
+  it("restores mid-type draft when returning to a session", () => {
+    // Mirror useSessionSwitch: cache outgoing draft, restore incoming.
+    let input = "hello from A";
+    const composerInputRef = { current: input };
+
+    const switchTo = (prevId: string, nextId: string) => {
+      const restored = resolveComposerDraftOnSwitch({
+        prevId,
+        nextId,
+        currentDraft: composerInputRef.current,
+      });
+      composerInputRef.current = restored;
+      input = restored;
+    };
+
+    switchTo("sess-a", "sess-b");
+    expect(input).toBe("");
+    expect(peekComposerDraft("sess-a")).toBe("hello from A");
+
+    composerInputRef.current = "typing in B";
+    input = "typing in B";
+    switchTo("sess-b", "sess-a");
+    expect(input).toBe("hello from A");
+    expect(peekComposerDraft("sess-b")).toBe("typing in B");
+  });
+
+  it("seeded drafts survive explicit write/peek without cross-bleed", () => {
+    writeComposerDraft("sess-x", "keep me");
+    writeComposerDraft("sess-y", "other");
+    expect(peekComposerDraft("sess-x")).toBe("keep me");
+    expect(
+      resolveComposerDraftOnSwitch({
+        prevId: "sess-y",
+        nextId: "sess-x",
+        currentDraft: "overwrite y",
+      }),
+    ).toBe("keep me");
+    expect(peekComposerDraft("sess-y")).toBe("overwrite y");
+  });
+
+  it("restores draft after null activeSessionId flicker", () => {
+    writeComposerDraft("sess-a", "still here");
+    expect(
+      resolveComposerDraftOnSwitch({
+        prevId: "sess-a",
+        nextId: null,
+        currentDraft: "still here",
+      }),
+    ).toBe("");
+    expect(
+      resolveComposerDraftOnSwitch({
+        prevId: null,
+        nextId: "sess-a",
+        currentDraft: "",
+      }),
+    ).toBe("still here");
+  });
+});
+
+describe("session-switch busy chrome honesty", () => {
+  it("resets busy chrome on switchedSession until runners resolve", () => {
+    expect(shouldResetBusyChromeOnSwitch(true)).toBe(true);
+    // Same-session effect re-entry must not force idle over local stream.
+    expect(shouldResetBusyChromeOnSwitch(false)).toBe(false);
+  });
+
+  it("getSessionState failure surfaces notice and stays idle", () => {
+    const failure = sessionStateFailureSwitchDecision();
+    expect(failure.kind).toBe("idle_with_notice");
+    expect(failure.notice).toBe(SESSION_STATE_FAIL_NOTICE);
   });
 });
 

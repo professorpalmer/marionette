@@ -24,12 +24,14 @@ import {
   appendCommandBlocked,
   appendCompaction,
   appendNonStreamingThinking,
+  appendPendingReview,
   appendQualityGate,
   appendQueuedPromptUserBubble,
   appendStreamError,
   appendSwarmPending,
   appendVerification,
   appendVerifying,
+  focusReviewTabAndRefresh,
   ensureAssistantStreamingBubble,
   ensureWorkerStreamingBubble,
   failSwarmPendingForActionError,
@@ -524,6 +526,10 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       );
     } else if (ev.kind === "swarm_result") {
       handleSwarmResult(d);
+    } else if (ev.kind === "pending_review") {
+      // DiffReview hold: transcript receipt + pop Review tab (R1 parity).
+      setItems((p) => appendPendingReview(p, d));
+      focusReviewTabAndRefresh();
     } else if (ev.kind === "pilot_resume") {
       // A background job finished and the backend injected a continuation into
       // history. Queue a keep-alive turn; it fires from this turn's onDone.

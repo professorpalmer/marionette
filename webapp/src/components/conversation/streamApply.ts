@@ -87,11 +87,38 @@ export function swarmPendingStatus(item: SwarmPendingItem): SwarmPendingStatus {
   return swarmPendingStatusOf(item);
 }
 
+/** Operator-honest terminal outcome for a swarm/implement result row. */
+export type SwarmResultOutcome =
+  | "applied"
+  | "held_for_review"
+  | "analysis_ok"
+  | "failed";
+
+/**
+ * Classify a swarm_result payload for badges / pending-pill terminalization.
+ * held_for_review and analysis_ok are successful non-applies — never paint them
+ * as "swarm failed" just because applied=false.
+ */
+export function swarmResultOutcome(resObj: {
+  applied?: boolean;
+  error?: string | null;
+  held_for_review?: boolean;
+  analysis_ok?: boolean;
+}): SwarmResultOutcome {
+  if (resObj.error) return "failed";
+  if (resObj.held_for_review) return "held_for_review";
+  if (resObj.analysis_ok) return "analysis_ok";
+  if (resObj.applied === false) return "failed";
+  return "applied";
+}
+
 function swarmResultLooksFailed(resObj: {
   applied?: boolean;
   error?: string | null;
+  held_for_review?: boolean;
+  analysis_ok?: boolean;
 }): boolean {
-  return resObj.applied === false || Boolean(resObj.error);
+  return swarmResultOutcome(resObj) === "failed";
 }
 
 function withPendingTerminal(
@@ -406,6 +433,8 @@ export function reconcileTerminalJobCards(
 export function terminalOutcomeFromSwarmResult(resObj: {
   applied?: boolean;
   error?: string | null;
+  held_for_review?: boolean;
+  analysis_ok?: boolean;
 }): TerminalJobOutcome {
   return swarmResultLooksFailed(resObj) ? "failed" : "complete";
 }
@@ -1501,6 +1530,38 @@ export function appendCheckpoint(
   ];
 }
 
+/** Live DiffReview hold receipt — idempotent by review id. */
+export function appendPendingReview(
+  items: Item[],
+  d: { id?: string; summary?: string },
+): Item[] {
+  const id = String(d.id || "").trim();
+  if (!id) return items;
+  const summary = String(d.summary || "").trim() || "Patch held for review";
+  if (items.some((it) => it.kind === "pending_review" && it.id === id)) {
+    return items.map((it) =>
+      it.kind === "pending_review" && it.id === id
+        ? { ...it, summary: summary || it.summary }
+        : it,
+    );
+  }
+  return [
+    ...items,
+    {
+      kind: "pending_review" as const,
+      id,
+      summary,
+    },
+  ];
+}
+
+/** Focus Review tab and force an immediate reviews poll (R1 pop-on-success). */
+export function focusReviewTabAndRefresh(): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: "review" }));
+  window.dispatchEvent(new Event("harness-reviews-refresh"));
+}
+
 export function appendQueuedPromptUserBubble(
   items: Item[],
   text: string,
@@ -1748,6 +1809,10 @@ function swarmResultItemFromPayload(
   const hasFiles = Array.isArray(resObj?.files);
   const hasError = resObj != null && Object.prototype.hasOwnProperty.call(resObj, "error");
   const hasApplied = resObj != null && Object.prototype.hasOwnProperty.call(resObj, "applied");
+  const hasHeld = resObj != null
+    && Object.prototype.hasOwnProperty.call(resObj, "held_for_review");
+  const hasAnalysisOk = resObj != null
+    && Object.prototype.hasOwnProperty.call(resObj, "analysis_ok");
   return {
     kind: "swarm_result" as const,
     job_id: jobId,
@@ -1756,6 +1821,8 @@ function swarmResultItemFromPayload(
     summary: resObj?.summary || "",
     error: hasError ? (resObj.error ?? null) : (undefined as unknown as null),
     objective,
+    held_for_review: hasHeld ? Boolean(resObj.held_for_review) : undefined,
+    analysis_ok: hasAnalysisOk ? Boolean(resObj.analysis_ok) : undefined,
     // Preserve explicit empty-string / present fields so corrections can clear
     // prior provenance; omit only when the wire field is absent.
     reuse_status: resObj?.reuse_status !== undefined && resObj?.reuse_status !== null
@@ -1826,6 +1893,8 @@ export function applySwarmResultToItems(
         && merged.summary === it.summary
         && merged.applied === it.applied
         && merged.error === it.error
+        && merged.held_for_review === it.held_for_review
+        && merged.analysis_ok === it.analysis_ok
         && JSON.stringify(merged.files || [])
           === JSON.stringify(it.files || [])
         && JSON.stringify(merged.invalidated_paths || [])

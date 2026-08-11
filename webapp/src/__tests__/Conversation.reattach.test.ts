@@ -1091,4 +1091,30 @@ describe("mid-turn live chatEvents watch reattach", () => {
     expect(deps.chatEventsPollTimerRef.current).toBeNull();
     expect(chatEvents).not.toHaveBeenCalled();
   });
+
+  it("on getSessionState failure retries then optimistic-busy arms live watch", async () => {
+    vi.useFakeTimers();
+    const turnOpen = vi.fn();
+    const setStatus = vi.fn();
+    const deps = reattachDeps({
+      setTurnOpen: turnOpen,
+      setStatus,
+    });
+    // Session-switch forces detachedBusy false before reattach probes runners.
+    deps.detachedBusyRef.current = false;
+    const live = vi.spyOn(api, "chatEventsLive").mockImplementation(() => () => {});
+    const getSessionState = vi.spyOn(api, "getSessionState").mockRejectedValue(
+      new Error("network"),
+    );
+
+    const { startChatEventsReattach } = createChatEventsReattach(deps as any);
+    const done = startChatEventsReattach();
+    await vi.runAllTimersAsync();
+    await done;
+
+    expect(getSessionState.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(deps.detachedBusyRef.current).toBe(true);
+    expect(turnOpen).toHaveBeenCalledWith(true);
+    expect(live).toHaveBeenCalledTimes(1);
+  });
 });

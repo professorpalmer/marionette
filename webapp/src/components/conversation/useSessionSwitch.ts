@@ -17,8 +17,11 @@ import {
 import {
   emptySessionSwitchState,
   runnerBusySwitchDecision,
+  sessionStateFailureSwitchDecision,
   shouldPreserveBusyStatus,
+  shouldResetBusyChromeOnSwitch,
 } from "./sessionHydrate";
+import { resolveComposerDraftOnSwitch } from "./composerDraftCache";
 import { createChatEventsReattach } from "./chatEventsReattach";
 import { cancelTypewriterWithoutFlush } from "./streamTypewriter";
 import { gatherSessionArtifacts } from "./sessionArtifacts";
@@ -78,6 +81,8 @@ export type UseSessionSwitchDeps = {
   setEditNotice: Dispatch<SetStateAction<string | null>>;
   setEditBusy: Dispatch<SetStateAction<boolean>>;
   setInput: Dispatch<SetStateAction<string>>;
+  /** Live composer text; kept in sync by Conversation for per-session draft cache. */
+  composerInputRef: MutableRefObject<string>;
 };
 
 /** Warm-cache switch + chatEvents reattach arming for the active session id. */
@@ -121,6 +126,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
     setEditNotice,
     setEditBusy,
     setInput,
+    composerInputRef,
   } = deps;
 
   // Warm-cache session switch: save outgoing transcript, hydrate incoming from
@@ -128,10 +134,12 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
   // alive -- do NOT interrupt/stop), then refresh from sessionTranscript in the
   // background without blanking a cache hit.
   //
-  // Busy chrome: do NOT force idle on switch. If the target session's runner is
-  // still running, keep/show thinking so Stop/Steer stay available (slices B/C/D).
+  // Busy chrome: on switchedSession default idle/turnOpen=false until runners
+  // resolve for the target. applyRunnerBusy / useRunnersBusyPoll re-arm Stop
+  // when the new session is actually running (no cross-session stickiness).
   useEffect(() => {
     const prevId = cachedSessionIdRef.current;
+    const switchedSession = Boolean(prevId && prevId !== activeSessionId);
     if (prevId && prevId !== activeSessionId && !transcriptStaleRef.current) {
       // Only cache when the visible rows belong to prevId. Stale bleed (prior
       // session still painted) must not poison the warm cache.
@@ -143,8 +151,18 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
     setCanRevertEdit(false);
     setEditNotice(null);
     setEditBusy(false);
-    if (prevId && prevId !== activeSessionId) {
-      setInput("");
+    if (prevId !== activeSessionId) {
+      // Per-session composer drafts (Cursor-style): cache outgoing, restore incoming.
+      // Also covers null↔session so a project-switch flicker does not drop drafts.
+      const restored = resolveComposerDraftOnSwitch({
+        prevId,
+        nextId: activeSessionId,
+        currentDraft: composerInputRef.current,
+      });
+      composerInputRef.current = restored;
+      setInput(restored);
+    }
+    if (switchedSession) {
       // Owned sent-image blob previews belong to the outgoing session; durable
       // /api/image paths remain on warm-cache rows for reload recovery.
       releaseAllTranscriptPreviewBlobs();
@@ -178,8 +196,12 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
       { typeBufRef, typeRafRef, typeDoneRef },
       cancelAnimationFrame,
     );
-    // Intentionally do NOT setStatus("idle") here -- runner poll below decides
-    // busy vs idle so a mid-turn session switch keeps Stop/thinking chrome.
+    // Default idle until getSessionState / runners poll resolve the target.
+    if (shouldResetBusyChromeOnSwitch(switchedSession)) {
+      setTurnOpen(false);
+      setStatus("idle");
+      setCompactingStatus(null);
+    }
 
     const loadGen = ++transcriptLoadGenRef.current;
     cachedSessionIdRef.current = activeSessionId;
@@ -239,12 +261,34 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
       }
     };
 
-    api.getSessionState()
+    const loadSessionRunners = async () => {
+      let lastErr: unknown = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          return await api.getSessionState();
+        } catch (err) {
+          lastErr = err;
+          await new Promise((r) => setTimeout(r, 120 * (attempt + 1)));
+        }
+      }
+      throw lastErr ?? new Error("getSessionState failed");
+    };
+
+    loadSessionRunners()
       .then((res) => {
         if (cancelled) return;
         applyRunnerBusy(res?.runners);
       })
-      .catch(() => {});
+      .catch(() => {
+        if (cancelled) return;
+        // Idle until useRunnersBusyPoll re-arms; never leave A's chrome stuck.
+        const failure = sessionStateFailureSwitchDecision();
+        detachedBusyRef.current = false;
+        setTurnOpen(false);
+        setStatus("idle");
+        setCompactingStatus(null);
+        setEditNotice(failure.notice);
+      });
 
     // Long chats / deferred cold attach can return empty or flake once on boot.
     // Retry a few times before accepting a blank feed (switching away and back

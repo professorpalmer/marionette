@@ -42,6 +42,10 @@ export function mergeSwarmResultReuse(
     summary: next.summary || prev.summary,
     error: next.error !== undefined ? next.error : prev.error,
     objective: next.objective || prev.objective,
+    held_for_review: next.held_for_review !== undefined
+      ? next.held_for_review
+      : prev.held_for_review,
+    analysis_ok: next.analysis_ok !== undefined ? next.analysis_ok : prev.analysis_ok,
     reuse_status: next.reuse_status !== undefined ? next.reuse_status : prev.reuse_status,
     source_job_id: next.source_job_id !== undefined ? next.source_job_id : prev.source_job_id,
     reuse_reason: next.reuse_reason !== undefined ? next.reuse_reason : prev.reuse_reason,
@@ -364,6 +368,12 @@ export function transcriptResponseToItems(res: {
           summary: m.summary || "",
           error: m.error || null,
           objective: m.objective || "",
+          held_for_review: m.held_for_review !== undefined && m.held_for_review !== null
+            ? Boolean(m.held_for_review)
+            : undefined,
+          analysis_ok: m.analysis_ok !== undefined && m.analysis_ok !== null
+            ? Boolean(m.analysis_ok)
+            : undefined,
           // Explicit empty string is an authoritative clear; only absent/null
           // means "field not present" (merge may inherit prior provenance).
           reuse_status: m.reuse_status !== undefined && m.reuse_status !== null
@@ -797,7 +807,9 @@ export function transcriptFingerprint(items: Item[]): string {
       const criteria = Array.isArray(it.acceptance_criteria)
         ? it.acceptance_criteria.join("\u001f")
         : "";
-      fp += `|s:${it.job_id}:${it.applied ? 1 : 0}:${it.reuse_status || ""}:${it.source_job_id || ""}:${it.reuse_reason || ""}:${it.validation_fingerprint || ""}:${it.environment_fingerprint || ""}:${it.error || ""}:${files}:${paths}:${criteria}`;
+      fp += `|s:${it.job_id}:${it.applied ? 1 : 0}:${it.held_for_review ? 1 : 0}:${it.analysis_ok ? 1 : 0}:${it.reuse_status || ""}:${it.source_job_id || ""}:${it.reuse_reason || ""}:${it.validation_fingerprint || ""}:${it.environment_fingerprint || ""}:${it.error || ""}:${files}:${paths}:${criteria}`;
+    } else if (it.kind === "pending_review") {
+      fp += `|pr:${it.id}:${(it.summary || "").length}`;
     } else if (it.kind === "swarm_pending") {
       // Remote running→terminal (and terminal_job_ids union) must change the
       // fingerprint so prefer-local merge paints the settled pill.

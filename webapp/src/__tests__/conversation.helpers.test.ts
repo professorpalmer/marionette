@@ -75,9 +75,12 @@ import {
   appendAutoStatus,
   appendCommandApproval,
   appendCommandBlocked,
+  appendPendingReview,
   appendSwarmPending,
   applyActionResultCard,
   applySwarmResultToItems,
+  focusReviewTabAndRefresh,
+  swarmResultOutcome,
   ensureAssistantStreamingBubble,
   ensureWorkerStreamingBubble,
   failSwarmPendingForActionError,
@@ -111,9 +114,19 @@ import {
   collectDisplayArtifacts,
   emptySessionSwitchState,
   mergeUniqueArtifacts,
+  reattachSessionStateFailureDecision,
   runnerBusySwitchDecision,
+  SESSION_STATE_FAIL_NOTICE,
+  sessionStateFailureSwitchDecision,
   shouldPreserveBusyStatus,
+  shouldResetBusyChromeOnSwitch,
 } from "../components/conversation/sessionHydrate";
+import {
+  clearComposerDraftCache,
+  peekComposerDraft,
+  resolveComposerDraftOnSwitch,
+  writeComposerDraft,
+} from "../components/conversation/composerDraftCache";
 import {
   classifyLocalSlashCommand,
   composerEnterAction,
@@ -1133,6 +1146,105 @@ describe("streamApply module", () => {
     });
   });
 
+  it("held_for_review / analysis_ok are not failed applies", () => {
+    expect(swarmResultOutcome({
+      applied: false,
+      error: null,
+      held_for_review: true,
+    })).toBe("held_for_review");
+    expect(swarmResultOutcome({
+      applied: false,
+      error: null,
+      analysis_ok: true,
+    })).toBe("analysis_ok");
+    expect(swarmResultOutcome({
+      applied: false,
+      error: null,
+    })).toBe("failed");
+    expect(swarmResultOutcome({
+      applied: true,
+      error: null,
+    })).toBe("applied");
+
+    let items: Item[] = [
+      {
+        kind: "swarm_pending",
+        job_ids: ["job_held12345678"],
+        objective: "ship patch",
+        status: "running",
+        terminal_job_ids: [],
+      },
+    ];
+    items = applySwarmResultToItems(items, {
+      job_id: "job_held12345678",
+      objective: "ship patch",
+      result: {
+        applied: false,
+        files: ["a.ts"],
+        summary: "Patch held for review",
+        error: null,
+        held_for_review: true,
+      },
+    });
+    expect(items[0]).toMatchObject({
+      kind: "swarm_pending",
+      status: "done",
+      resolved: true,
+    });
+    expect(items[1]).toMatchObject({
+      kind: "swarm_result",
+      applied: false,
+      held_for_review: true,
+      error: null,
+    });
+
+    items = applySwarmResultToItems([], {
+      job_id: "job_analysisok001",
+      objective: "audit auth",
+      result: {
+        applied: false,
+        files: [],
+        summary: "FINDING: race",
+        error: null,
+        analysis_ok: true,
+      },
+    });
+    expect(items[0]).toMatchObject({
+      kind: "swarm_result",
+      applied: false,
+      analysis_ok: true,
+      error: null,
+    });
+  });
+
+  it("pending_review receipt is idempotent and focuses Review tab", () => {
+    const kinds: string[] = [];
+    const onEvt = (e: Event) => kinds.push(e.type);
+    window.addEventListener("harness-focus-tab", onEvt);
+    window.addEventListener("harness-reviews-refresh", onEvt);
+    try {
+      let items = appendPendingReview([], {
+        id: "rev-abc12345",
+        summary: "Held 2 files for review",
+      });
+      expect(items).toEqual([{
+        kind: "pending_review",
+        id: "rev-abc12345",
+        summary: "Held 2 files for review",
+      }]);
+      items = appendPendingReview(items, {
+        id: "rev-abc12345",
+        summary: "Held 2 files for review",
+      });
+      expect(items).toHaveLength(1);
+      focusReviewTabAndRefresh();
+      expect(kinds).toEqual(["harness-focus-tab", "harness-reviews-refresh"]);
+    } finally {
+      window.removeEventListener("harness-focus-tab", onEvt);
+      window.removeEventListener("harness-reviews-refresh", onEvt);
+    }
+  });
+
   it("run_parallel pill waits for all jobs and fails if any failed", () => {
     let items: Item[] = [
       {
@@ -1789,6 +1901,52 @@ describe("sessionHydrate module", () => {
         switchedSession: true,
       }).kind,
     ).toBe("noop");
+  });
+
+  it("session-switch busy honesty defaults idle until runners resolve", () => {
+    expect(shouldResetBusyChromeOnSwitch(true)).toBe(true);
+    expect(shouldResetBusyChromeOnSwitch(false)).toBe(false);
+    expect(sessionStateFailureSwitchDecision()).toEqual({
+      kind: "idle_with_notice",
+      notice: SESSION_STATE_FAIL_NOTICE,
+    });
+    expect(reattachSessionStateFailureDecision({ attempt: 1, maxAttempts: 2 })).toBe("retry");
+    expect(reattachSessionStateFailureDecision({ attempt: 2, maxAttempts: 2 })).toBe(
+      "optimistic_busy",
+    );
+  });
+});
+
+describe("composer draft cache", () => {
+  afterEach(() => {
+    clearComposerDraftCache();
+  });
+
+  it("write/peek round-trip stores per session id", () => {
+    writeComposerDraft("sess-a", "draft A");
+    expect(peekComposerDraft("sess-a")).toBe("draft A");
+    expect(peekComposerDraft("sess-b")).toBeUndefined();
+  });
+
+  it("resolveComposerDraftOnSwitch caches outgoing and restores incoming", () => {
+    writeComposerDraft("sess-b", "cached B");
+    const restored = resolveComposerDraftOnSwitch({
+      prevId: "sess-a",
+      nextId: "sess-b",
+      currentDraft: "mid-type A",
+    });
+    expect(restored).toBe("cached B");
+    expect(peekComposerDraft("sess-a")).toBe("mid-type A");
+  });
+
+  it("resolveComposerDraftOnSwitch blanks on cache miss (no cross-session draft)", () => {
+    const restored = resolveComposerDraftOnSwitch({
+      prevId: "sess-a",
+      nextId: "sess-new",
+      currentDraft: "only for A",
+    });
+    expect(restored).toBe("");
+    expect(peekComposerDraft("sess-a")).toBe("only for A");
   });
 });
 

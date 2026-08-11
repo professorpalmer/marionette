@@ -26,6 +26,7 @@ import {
 } from "./transcriptItems";
 import { writeTranscriptCache } from "./transcriptCache";
 import { preserveOrThinking } from "./runnersBusy";
+import { reattachSessionStateFailureDecision } from "./sessionHydrate";
 
 export type ChatEventsReattachDeps = {
   cancelled: () => boolean;
@@ -335,18 +336,35 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
     if (cancelled() || localStreamActiveRef.current || userStoppedRef.current) return;
     let running = detachedBusyRef.current;
     if (!running) {
-      try {
-        const st = await api.getSessionState();
-        if (cancelled()) return;
-        if (cachedSessionIdRef.current !== reattachSid) return;
-        running = st?.runners?.[reattachSid] === "running";
-        if (running) {
+      const maxAttempts = 2;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          const st = await api.getSessionState();
+          if (cancelled()) return;
+          if (cachedSessionIdRef.current !== reattachSid) return;
+          running = st?.runners?.[reattachSid] === "running";
+          if (running) {
+            detachedBusyRef.current = true;
+            setTurnOpen(true);
+            setStatus((prev: any) => preserveOrThinking(prev));
+          }
+          break;
+        } catch {
+          const decision = reattachSessionStateFailureDecision({
+            attempt,
+            maxAttempts,
+          });
+          if (decision === "retry") {
+            await new Promise((r) => setTimeout(r, 100 * attempt));
+            continue;
+          }
+          // Optimistic busy + poll/watch: Ready must not lie while a turn runs.
+          // useRunnersBusyPoll clears chrome if the target is actually idle.
+          running = true;
           detachedBusyRef.current = true;
           setTurnOpen(true);
           setStatus((prev: any) => preserveOrThinking(prev));
         }
-      } catch {
-        return;
       }
     }
     if (!running) return;
