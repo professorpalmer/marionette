@@ -1535,6 +1535,102 @@ export function appendAutoStatus(
   return [...items, next];
 }
 
+export type QualityGateAppendData = {
+  outcome?: string | null;
+  passed?: boolean;
+  cmd?: string | null;
+  attempts?: number | null;
+  block_finish?: boolean;
+  output?: string | null;
+};
+
+/** Compact quality_gate ConvEvent receipt (fail/skip/budget-halt/pass). */
+export function appendQualityGate(
+  items: Item[],
+  data: QualityGateAppendData = {},
+): Item[] {
+  const outcome = String(data.outcome || "").trim() || (data.passed ? "passed" : "failed");
+  // disabled gates never emit; still guard so UI stays quiet if they do.
+  if (outcome === "disabled") return items;
+  const cmd = String(data.cmd || "").trim() || undefined;
+  const output = String(data.output || "").trim() || undefined;
+  const attemptsRaw = Number(data.attempts);
+  const attempts =
+    Number.isFinite(attemptsRaw) && attemptsRaw > 0 ? Math.round(attemptsRaw) : undefined;
+  return [
+    ...items,
+    {
+      kind: "quality_gate" as const,
+      outcome,
+      passed: Boolean(data.passed),
+      ...(cmd ? { cmd } : {}),
+      ...(attempts != null ? { attempts } : {}),
+      ...(data.block_finish ? { block_finish: true as const } : {}),
+      ...(output ? { output } : {}),
+    },
+  ];
+}
+
+/** In-progress verify chip — replaces a trailing verifying row. */
+export function appendVerifying(
+  items: Item[],
+  data: { cmd?: string | null; auto?: boolean } = {},
+): Item[] {
+  const cmd = String(data.cmd || "").trim() || undefined;
+  const next = {
+    kind: "verifying" as const,
+    ...(cmd ? { cmd } : {}),
+    ...(data.auto ? { auto: true as const } : {}),
+  };
+  const last = items[items.length - 1];
+  if (last?.kind === "verifying") {
+    return [...items.slice(0, -1), next];
+  }
+  return [...items, next];
+}
+
+function replaceTrailingVerifying(items: Item[], next: Item): Item[] {
+  const last = items[items.length - 1];
+  if (last?.kind === "verifying") {
+    return [...items.slice(0, -1), next];
+  }
+  return [...items, next];
+}
+
+/** Terminal autopilot verification receipt — replaces trailing verifying. */
+export function appendVerification(
+  items: Item[],
+  data: { passed?: boolean; output?: string | null; cmd?: string | null } = {},
+): Item[] {
+  const output = String(data.output || "").trim() || undefined;
+  const cmd = String(data.cmd || "").trim() || undefined;
+  return replaceTrailingVerifying(items, {
+    kind: "verification" as const,
+    passed: Boolean(data.passed),
+    ...(output ? { output } : {}),
+    ...(cmd ? { cmd } : {}),
+  });
+}
+
+/** Terminal auto_verify receipt — replaces trailing verifying. */
+export function appendAutoVerify(
+  items: Item[],
+  data: {
+    passed?: boolean;
+    command?: string | null;
+    output_excerpt?: string | null;
+  } = {},
+): Item[] {
+  const command = String(data.command || "").trim() || undefined;
+  const output_excerpt = String(data.output_excerpt || "").trim() || undefined;
+  return replaceTrailingVerifying(items, {
+    kind: "auto_verify" as const,
+    passed: Boolean(data.passed),
+    ...(command ? { command } : {}),
+    ...(output_excerpt ? { output_excerpt } : {}),
+  });
+}
+
 /** Terminal full-auto receipt — not an assistant chat bubble. */
 export function appendAutoHalt(
   items: Item[],

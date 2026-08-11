@@ -5,10 +5,16 @@ import {
   commandApprovalStatusCopy,
   commandBlockedPresentation,
   formatAutoBudgetMeters,
+  qualityGatePresentation,
+  verificationReceiptPresentation,
 } from "../lib/autoReceipts";
 import {
   appendAutoHalt,
   appendAutoStatus,
+  appendAutoVerify,
+  appendQualityGate,
+  appendVerification,
+  appendVerifying,
 } from "../components/conversation/streamApply";
 import { isTerminalStreamKind } from "../components/conversation/chatEvents";
 import type { Item } from "../components/TranscriptList";
@@ -82,5 +88,50 @@ describe("auto stream append + terminal sticky contract", () => {
     expect(isTerminalStreamKind("auto_status")).toBe(false);
     expect(isTerminalStreamKind("command_blocked")).toBe(false);
     expect(isTerminalStreamKind("command_approval_pending")).toBe(false);
+  });
+});
+
+describe("quality_gate + verification compact receipts", () => {
+  it("labels gate outcomes without inventing heavy UI copy", () => {
+    expect(qualityGatePresentation({ outcome: "failed", block_finish: true, cmd: "npm test" })).toMatchObject({
+      label: "Quality gate failed · finish blocked",
+      tone: "risk",
+    });
+    expect(qualityGatePresentation({ outcome: "skipped_unchanged", cmd: "ruff" }).label).toBe(
+      "Quality gate skipped",
+    );
+    expect(qualityGatePresentation({ outcome: "budget_halt" }).tone).toBe("warn");
+    expect(verificationReceiptPresentation({ kind: "verifying", auto: true, cmd: "pytest" })).toMatchObject({
+      label: "Auto-verifying…",
+      tone: "busy",
+    });
+    expect(verificationReceiptPresentation({ kind: "auto_verify", passed: true })).toMatchObject({
+      label: "Auto-verify passed",
+      tone: "good",
+    });
+  });
+
+  it("appends quality_gate and replaces verifying with terminal verify receipts", () => {
+    let items: Item[] = appendQualityGate([], {
+      outcome: "passed",
+      passed: true,
+      cmd: "npm test",
+    });
+    expect(items).toHaveLength(1);
+    expect(appendQualityGate([], { outcome: "disabled", passed: true })).toHaveLength(0);
+
+    items = appendVerifying([], { cmd: "pytest -q", auto: true });
+    items = appendVerifying(items, { cmd: "pytest -q -k smoke", auto: true });
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ kind: "verifying", cmd: "pytest -q -k smoke", auto: true });
+
+    items = appendAutoVerify(items, { passed: false, command: "pytest -q -k smoke" });
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ kind: "auto_verify", passed: false });
+
+    items = appendVerifying(items, { cmd: "make check" });
+    items = appendVerification(items, { passed: true, cmd: "make check" });
+    expect(items.filter((it) => it.kind === "verifying")).toHaveLength(0);
+    expect(items[items.length - 1]).toMatchObject({ kind: "verification", passed: true });
   });
 });

@@ -84,6 +84,8 @@ describe("agentLinks detection", () => {
     expect(looksLikePathInlineCode("foo.py:3")).toBe(true);
     expect(looksLikePathInlineCode("--flag")).toBe(false);
     expect(looksLikePathInlineCode("npm install")).toBe(false);
+    expect(looksLikePathInlineCode("/Users/me/My Projects/app.ts")).toBe(true);
+    expect(looksLikePathInlineCode("/Users/me/My Projects/app.ts:12")).toBe(true);
   });
 
   it("classifies action goals by kind", () => {
@@ -184,6 +186,16 @@ describe("autolinkAgentText", () => {
     const out = autolinkAgentText(src);
     expect(out).toContain("[https://example.com/docs](https://example.com/docs)");
     expect(out).toContain("[`webapp/src/App.tsx`](webapp/src/App.tsx)");
+  });
+
+  it("autolinks unquoted spaced filesystem paths without truncating", () => {
+    const src = "Open /Users/me/My Projects/app.ts next.";
+    const out = autolinkAgentText(src);
+    expect(out).toContain(
+      "[`/Users/me/My Projects/app.ts`](</Users/me/My Projects/app.ts>)",
+    );
+    expect(out).not.toContain("[`Projects/app.ts`]");
+    expect(out).not.toContain("](Projects/app.ts)");
   });
 
   it("wraps bare spill:// URIs outside fences", () => {

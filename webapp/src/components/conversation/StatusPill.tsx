@@ -50,6 +50,9 @@ export function statusPillLabel(status: string, detail?: string): string {
   if (status === "awaiting_swarm") return "Still working…";
   if (status === "investigating" || status === "executing") return "Investigating…";
   if (status === "thinking" || status === "streaming") return "Still working…";
+  if (status === "idle") return "Ready";
+  if (status === "done") return "Done";
+  if (status === "error") return "Error";
   return status;
 }
 

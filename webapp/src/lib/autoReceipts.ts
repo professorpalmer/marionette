@@ -118,3 +118,79 @@ export function commandApprovalStatusCopy(
       return "";
   }
 }
+
+/** Compact quality-gate ConvEvent chip — outcome only, not a heavy gate UI. */
+export function qualityGatePresentation(d: {
+  outcome?: string;
+  passed?: boolean;
+  cmd?: string;
+  attempts?: number;
+  block_finish?: boolean;
+}): { label: string; detail: string; tone: "good" | "risk" | "warn" | "muted" } {
+  const outcome = String(d.outcome || "").trim() || (d.passed ? "passed" : "failed");
+  const cmd = String(d.cmd || "").trim();
+  const attempts =
+    typeof d.attempts === "number" && Number.isFinite(d.attempts) && d.attempts > 0
+      ? Math.round(d.attempts)
+      : 0;
+
+  switch (outcome) {
+    case "passed":
+      return {
+        label: "Quality gate passed",
+        detail: cmd || "",
+        tone: "good",
+      };
+    case "failed":
+      return {
+        label: d.block_finish ? "Quality gate failed · finish blocked" : "Quality gate failed",
+        detail: [cmd, attempts ? `attempt ${attempts}` : ""].filter(Boolean).join(" · "),
+        tone: "risk",
+      };
+    case "skipped_unchanged":
+      return {
+        label: "Quality gate skipped",
+        detail: cmd ? `${cmd} · unchanged` : "unchanged workspace",
+        tone: "muted",
+      };
+    case "budget_halt":
+      return {
+        label: "Quality gate budget halted",
+        detail: [cmd, attempts ? `${attempts} attempts` : ""].filter(Boolean).join(" · "),
+        tone: "warn",
+      };
+    default:
+      return {
+        label: `Quality gate · ${outcome}`,
+        detail: cmd,
+        tone: "muted",
+      };
+  }
+}
+
+/** Compact verifying / verification / auto_verify ConvEvent chip. */
+export function verificationReceiptPresentation(d: {
+  kind: "verifying" | "verification" | "auto_verify";
+  passed?: boolean;
+  cmd?: string;
+  command?: string;
+  auto?: boolean;
+}): { label: string; detail: string; tone: "good" | "risk" | "muted" | "busy" } {
+  const cmd = String(d.cmd || d.command || "").trim();
+  if (d.kind === "verifying") {
+    return {
+      label: d.auto ? "Auto-verifying…" : "Verifying…",
+      detail: cmd,
+      tone: "busy",
+    };
+  }
+  const passed = Boolean(d.passed);
+  const auto = d.kind === "auto_verify";
+  return {
+    label: passed
+      ? (auto ? "Auto-verify passed" : "Verification passed")
+      : (auto ? "Auto-verify failed" : "Verification failed"),
+    detail: cmd,
+    tone: passed ? "good" : "risk",
+  };
+}

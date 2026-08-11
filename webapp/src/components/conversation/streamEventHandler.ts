@@ -17,15 +17,19 @@ import {
   appendAuthFailure,
   appendAutoHalt,
   appendAutoStatus,
+  appendAutoVerify,
   appendCheckpoint,
   appendCodegraphContext,
   appendCommandApproval,
   appendCommandBlocked,
   appendCompaction,
   appendNonStreamingThinking,
+  appendQualityGate,
   appendQueuedPromptUserBubble,
   appendStreamError,
   appendSwarmPending,
+  appendVerification,
+  appendVerifying,
   ensureAssistantStreamingBubble,
   ensureWorkerStreamingBubble,
   failSwarmPendingForActionError,
@@ -473,6 +477,23 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       // Progress receipt only — keep turnOpen sticky until auto_halt / Stop.
       if (refreshBusyChrome()) setStatus("executing");
       setItems((p) => appendAutoStatus(p, d.cycle || 0, d.snapshot));
+    } else if (ev.kind === "quality_gate") {
+      // Host quality GATE receipt (fail/skip/budget-halt/pass) — thin chrome.
+      setItems((p) => appendQualityGate(p, d));
+    } else if (ev.kind === "verifying") {
+      setItems((p) => appendVerifying(p, { cmd: d.cmd, auto: Boolean(d.auto) }));
+    } else if (ev.kind === "auto_verify") {
+      setItems((p) => appendAutoVerify(p, {
+        passed: Boolean(d.passed),
+        command: d.command,
+        output_excerpt: d.output_excerpt,
+      }));
+    } else if (ev.kind === "verification") {
+      setItems((p) => appendVerification(p, {
+        passed: Boolean(d.passed),
+        output: d.output,
+        cmd: d.cmd,
+      }));
     } else if (ev.kind === "distilled") {
       // Only surface self-learning when it produced something WORTH the user's
       // attention -- a newly PROPOSED skill or rule(s). Skips, duplicates, and

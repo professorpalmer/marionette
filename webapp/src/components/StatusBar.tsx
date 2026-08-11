@@ -45,6 +45,13 @@ export function deriveFooterRuntimeStatus(
   return "ready";
 }
 
+/** Visible footer label — never paint raw FooterRuntimeStatus enums. */
+export function footerRuntimeStatusLabel(status: FooterRuntimeStatus): string {
+  if (status === "thinking") return "Thinking…";
+  if (status === "busy") return "Busy";
+  return "Idle";
+}
+
 /** Sticky session GOAL is chip-ready when it has text and is not cleared. */
 export function sessionGoalForChip(goal?: SessionGoal | null): SessionGoal | null {
   if (!goal) return null;
@@ -361,12 +368,13 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
       <span
         className={`flex items-center gap-1 ${runtimeReady ? "text-good" : "text-accent"}`}
         title={runtimeReady ? "Idle" : runtimeStatus === "busy" ? "Swarm or background work in progress" : "Session runner active"}
+        data-runtime-status={runtimeStatus}
       >
         <Circle
           size={7}
           className={runtimeReady ? "fill-good text-good" : "fill-accent text-accent animate-pulse"}
         />
-        {runtimeStatus}
+        {footerRuntimeStatusLabel(runtimeStatus)}
       </span>
       {branch && <span className="flex items-center gap-1"><GitBranch size={10} />{branch}</span>}
       {sessionGoal && (

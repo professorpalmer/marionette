@@ -200,7 +200,9 @@ export function looksLikePathInlineCode(text: string): boolean {
   if (!t || t.includes("\n") || t.length > 260) return false;
   // Reject obvious non-paths (commands, flags, pure identifiers).
   if (/^[-+]/.test(t)) return false;
-  if (/\s/.test(t)) return false;
+  // Whitespace usually means a command — except conservative spaced paths
+  // (`/Users/me/My Projects/app.ts`), matching PATH_IN_TEXT / looksLikeSpacedFilePath.
+  if (/\s/.test(t)) return looksLikeSpacedFilePath(t);
   if (looksLikeShellCommand(t)) return false;
   return looksLikeFilePath(t);
 }
@@ -505,9 +507,31 @@ export function autolinkAgentText(text: string): string {
 
 const BARE_URL = /https?:\/\/[^\s<>"'`)\]]+[^\s<>"'`)\].,;:!?]/g;
 const BARE_SPILL = /spill:\/\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+/g;
-// Windows abs, POSIX abs, ./rel, path/with/slash.ext — optional :line[:col]
-const BARE_PATH =
-  /(?:^|[\s(])((?:[A-Za-z]:[\\/]|\/|\.{1,2}[\\/])[^\s`"'<>\]|]+?\.\w{1,8}(?::\d+){0,2}|(?:[\w.-]+\/)+[\w.-]+\.\w{1,8}(?::\d+){0,2})(?=[\s).,]|$)/g;
+/** Path segment with optional single spaces (`My Projects`) — PATH_IN_TEXT parity. */
+const PATH_SEG = String.raw`[\w.-]+(?: [\w-]+)*`;
+/** Filename body before the final .ext (no dotted intermediate words). */
+const PATH_FILE = String.raw`[\w-]+(?: [\w-]+)*`;
+/**
+ * Windows abs, POSIX abs, ./rel, path/with/slash.ext — optional :line[:col].
+ * Alternation order matches PATH_IN_TEXT: unquoted spaced (dir sep required)
+ * before classic no-space, so `/Users/me/My Projects/app.ts` is not truncated
+ * to a wrong-target suffix like `Projects/app.ts`.
+ */
+const BARE_PATH = new RegExp(
+  [
+    String.raw`(?:^|[\s(])(`,
+    // Unquoted spaced abs/rel: must contain a space; directory separator required.
+    String.raw`(?:[A-Za-z]:[\\/]|\/|\.{1,2}[\\/])(?=[^\n]* )(?:${PATH_SEG}[\\/])+${PATH_FILE}\.\w{1,8}(?::\d+){0,2}`,
+    String.raw`|`,
+    // Classic no-space abs/rel
+    String.raw`(?:[A-Za-z]:[\\/]|\/|\.{1,2}[\\/])[^\s\`"'<>\]|]+?\.\w{1,8}(?::\d+){0,2}`,
+    String.raw`|`,
+    // Relative path/with/slash.ext (no leading ./)
+    String.raw`(?:[\w.-]+\/)+[\w.-]+\.\w{1,8}(?::\d+){0,2}`,
+    String.raw`)(?=[\s).,]|$)`,
+  ].join(""),
+  "g",
+);
 
 function _autolinkLine(line: string): string {
   // Protect existing markdown links and inline code with placeholders.
@@ -533,7 +557,9 @@ function _autolinkLine(line: string): string {
     if (isExternalUrl(pathPart) || !looksLikeFilePath(pathPart)) return full;
     // Preserve the leading delimiter captured by (?:^|[\s(])
     const lead = full.slice(0, full.length - pathPart.length);
-    return `${lead}[\`${pathPart}\`](${pathPart})`;
+    // Angle-bracket destinations keep spaces intact for CommonMark/remark.
+    const dest = /\s/.test(pathPart) ? `<${pathPart}>` : pathPart;
+    return `${lead}[\`${pathPart}\`](${dest})`;
   });
 
   return work.replace(/\u0000(\d+)\u0000/g, (_, i) => slots[Number(i)] || "");

@@ -455,6 +455,7 @@ ConvEventKind = Literal[
     "notice",
     "pending_review",
     "pilot_resume",
+    "quality_gate",
     "queued_prompt",
     "steer",
     "stream_item_done",

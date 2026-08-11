@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import StatusBar, {
   deriveFooterRuntimeStatus,
+  footerRuntimeStatusLabel,
   sessionGoalForChip,
 } from "../components/StatusBar";
 import { api } from "../lib/api";
@@ -97,6 +98,12 @@ describe("deriveFooterRuntimeStatus", () => {
       state: "idle",
       pending_swarms: true,
     })).toBe("busy");
+  });
+
+  it("humanizes footer labels without flashing raw enums", () => {
+    expect(footerRuntimeStatusLabel("ready")).toBe("Idle");
+    expect(footerRuntimeStatusLabel("thinking")).toBe("Thinking…");
+    expect(footerRuntimeStatusLabel("busy")).toBe("Busy");
   });
 });
 
@@ -351,7 +358,7 @@ describe("StatusBar runtime status", () => {
     mockSessions.mockResolvedValue([{ id: "sess-1", title: "Test", created: 0, active: true }]);
   });
 
-  it("shows ready when the active session runner is idle", async () => {
+  it("shows Idle when the active session runner is idle", async () => {
     mockGetSessionState.mockResolvedValue({
       state: "idle",
       pending_swarms: false,
@@ -362,11 +369,13 @@ describe("StatusBar runtime status", () => {
     render(<StatusBar {...statusBarProps} />);
 
     await waitFor(() => {
-      expect(screen.getByText("ready")).toBeInTheDocument();
+      expect(screen.getByText("Idle")).toBeInTheDocument();
+      expect(screen.getByText("Idle").closest("[data-runtime-status]"))
+        .toHaveAttribute("data-runtime-status", "ready");
     });
   });
 
-  it("shows thinking when the active session runner is running", async () => {
+  it("shows Thinking… when the active session runner is running", async () => {
     mockGetSessionState.mockResolvedValue({
       state: "idle",
       pending_swarms: false,
@@ -377,11 +386,13 @@ describe("StatusBar runtime status", () => {
     render(<StatusBar {...statusBarProps} />);
 
     await waitFor(() => {
-      expect(screen.getByText("thinking")).toBeInTheDocument();
+      expect(screen.getByText("Thinking…")).toBeInTheDocument();
+      expect(screen.getByText("Thinking…").closest("[data-runtime-status]"))
+        .toHaveAttribute("data-runtime-status", "thinking");
     });
   });
 
-  it("shows ready when only a background session runner is running", async () => {
+  it("shows Idle when only a background session runner is running", async () => {
     mockGetSessionState.mockResolvedValue({
       state: "idle",
       pending_swarms: false,
@@ -392,11 +403,13 @@ describe("StatusBar runtime status", () => {
     render(<StatusBar {...statusBarProps} />);
 
     await waitFor(() => {
-      expect(screen.getByText("ready")).toBeInTheDocument();
+      expect(screen.getByText("Idle")).toBeInTheDocument();
+      expect(screen.getByText("Idle").closest("[data-runtime-status]"))
+        .toHaveAttribute("data-runtime-status", "ready");
     });
   });
 
-  it("shows busy when swarms are pending", async () => {
+  it("shows Busy when swarms are pending", async () => {
     mockGetSessionState.mockResolvedValue({
       state: "awaiting_swarm",
       pending_swarms: true,
@@ -407,7 +420,9 @@ describe("StatusBar runtime status", () => {
     render(<StatusBar {...statusBarProps} />);
 
     await waitFor(() => {
-      expect(screen.getByText("busy")).toBeInTheDocument();
+      expect(screen.getByText("Busy")).toBeInTheDocument();
+      expect(screen.getByText("Busy").closest("[data-runtime-status]"))
+        .toHaveAttribute("data-runtime-status", "busy");
     });
   });
 });

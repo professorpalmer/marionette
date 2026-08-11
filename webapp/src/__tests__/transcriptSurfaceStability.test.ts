@@ -1058,4 +1058,86 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
     expect(deps.pendingJobIds).toEqual(["local-swarm-a1"]);
     expect(state.items).toHaveLength(2);
   });
+
+  it("quality_gate ConvEvent paints a compact transcript receipt", () => {
+    const state = {
+      items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    state.itemsRef.current = state.items;
+    const apply = createApplyStreamEvent(makeApplyDeps(state));
+
+    apply({
+      kind: "quality_gate",
+      data: {
+        outcome: "failed",
+        passed: false,
+        cmd: "npm test",
+        attempts: 2,
+        block_finish: true,
+        output: "FAIL suite",
+      },
+    });
+    const rows = state.items.filter((it) => it.kind === "quality_gate");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      kind: "quality_gate",
+      outcome: "failed",
+      passed: false,
+      cmd: "npm test",
+      attempts: 2,
+      block_finish: true,
+    });
+    expect(state.items.some((it) => it.kind === "msg" && it.msg.role === "assistant")).toBe(false);
+
+    apply({
+      kind: "quality_gate",
+      data: { outcome: "budget_halt", passed: false, cmd: "npm test", attempts: 3 },
+    });
+    expect(state.items.filter((it) => it.kind === "quality_gate")).toHaveLength(2);
+  });
+
+  it("verifying/auto_verify/verification ConvEvents paint compact receipts", () => {
+    const state = {
+      items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    state.itemsRef.current = state.items;
+    const apply = createApplyStreamEvent(makeApplyDeps(state));
+
+    apply({ kind: "verifying", data: { cmd: "pytest -q", auto: true } });
+    expect(state.items.filter((it) => it.kind === "verifying")).toHaveLength(1);
+
+    apply({
+      kind: "auto_verify",
+      data: {
+        passed: false,
+        command: "pytest -q",
+        output_excerpt: "1 failed",
+      },
+    });
+    // Trailing verifying is replaced by the terminal auto_verify receipt.
+    expect(state.items.filter((it) => it.kind === "verifying")).toHaveLength(0);
+    expect(state.items.filter((it) => it.kind === "auto_verify")).toHaveLength(1);
+    expect(state.items[state.items.length - 1]).toMatchObject({
+      kind: "auto_verify",
+      passed: false,
+      command: "pytest -q",
+    });
+
+    apply({ kind: "verifying", data: { cmd: "make check" } });
+    apply({
+      kind: "verification",
+      data: { passed: true, output: "ok", cmd: "make check" },
+    });
+    expect(state.items.filter((it) => it.kind === "verifying")).toHaveLength(0);
+    expect(state.items.filter((it) => it.kind === "verification")).toHaveLength(1);
+    expect(state.items[state.items.length - 1]).toMatchObject({
+      kind: "verification",
+      passed: true,
+      cmd: "make check",
+    });
+  });
 });

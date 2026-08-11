@@ -48,6 +48,8 @@ import {
   autoStatusPresentation,
   commandApprovalStatusCopy,
   commandBlockedPresentation,
+  qualityGatePresentation,
+  verificationReceiptPresentation,
   type AutoBudgetSnapshot,
 } from "../lib/autoReceipts";
 import { TranscriptImage } from "./conversation/TranscriptImage";
@@ -171,7 +173,24 @@ export type Item =
   | { kind: "auto_status"; cycle: number; snapshot: AutoBudgetSnapshot }
   | { kind: "auto_halt"; reason: string; snapshot: AutoBudgetSnapshot }
   | { kind: "auth_failure"; message: string; id?: string }
-  | { kind: "steer"; text: string };
+  | { kind: "steer"; text: string }
+  | {
+      kind: "quality_gate";
+      outcome: string;
+      passed: boolean;
+      cmd?: string;
+      attempts?: number;
+      block_finish?: boolean;
+      output?: string;
+    }
+  | { kind: "verifying"; cmd?: string; auto?: boolean }
+  | {
+      kind: "auto_verify";
+      passed: boolean;
+      command?: string;
+      output_excerpt?: string;
+    }
+  | { kind: "verification"; passed: boolean; output?: string; cmd?: string };
 
 export type GroupedItem =
   | { kind: "msg"; msg: Msg }
@@ -195,6 +214,23 @@ export type GroupedItem =
   | { kind: "auto_halt"; reason: string; snapshot: AutoBudgetSnapshot }
   | { kind: "auth_failure"; message: string; id?: string }
   | { kind: "steer"; text: string }
+  | {
+      kind: "quality_gate";
+      outcome: string;
+      passed: boolean;
+      cmd?: string;
+      attempts?: number;
+      block_finish?: boolean;
+      output?: string;
+    }
+  | { kind: "verifying"; cmd?: string; auto?: boolean }
+  | {
+      kind: "auto_verify";
+      passed: boolean;
+      command?: string;
+      output_excerpt?: string;
+    }
+  | { kind: "verification"; passed: boolean; output?: string; cmd?: string }
   | { kind: "activity_group"; items: ActivityItem[] };
 
 type ActivityItem =
@@ -402,6 +438,10 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
       || item.kind === "auto_halt"
       || item.kind === "auth_failure"
       || item.kind === "steer"
+      || item.kind === "quality_gate"
+      || item.kind === "verifying"
+      || item.kind === "auto_verify"
+      || item.kind === "verification"
     ) {
       flush();
       grouped.push(item);
@@ -625,6 +665,14 @@ function stableItemKey(it: GroupedItem, i: number): string {
       return `auth-${it.id || i}`;
     case "steer":
       return `steer-${i}`;
+    case "quality_gate":
+      return `qg-${i}-${it.outcome}-${it.passed ? "ok" : "fail"}`;
+    case "verifying":
+      return `verifying-${i}-${it.auto ? "auto" : "manual"}`;
+    case "auto_verify":
+      return `auto-verify-${i}-${it.passed ? "ok" : "fail"}`;
+    case "verification":
+      return `verification-${i}-${it.passed ? "ok" : "fail"}`;
     case "thinking":
       return it.id ? `think-${it.id}` : `think-${i}`;
     default:
@@ -994,6 +1042,74 @@ export const TranscriptList = memo(function TranscriptList({
         <div key={key} className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/15 border border-edge/20 text-[10.5px] text-faint w-fit my-1 select-none font-mono animate-in fade-in duration-200">
           <span className="text-muted">steer:</span>
           <span>{it.text}</span>
+        </div>
+      );
+    } else if (it.kind === "quality_gate") {
+      const gate = qualityGatePresentation(it);
+      const toneClass =
+        gate.tone === "good"
+          ? "bg-panel2/15 border-edge/20 text-muted"
+          : gate.tone === "risk"
+            ? "bg-risk/10 border-risk/30 text-risk/90"
+            : gate.tone === "warn"
+              ? "bg-amber-500/10 border-amber-500/25 text-amber-200/90"
+              : "bg-panel2/10 border-edge/15 text-faint";
+      const labelClass =
+        gate.tone === "good"
+          ? "text-good/80"
+          : gate.tone === "risk"
+            ? "text-risk/90"
+            : gate.tone === "warn"
+              ? "text-amber-200/90"
+              : "text-muted";
+      return (
+        <div
+          key={key}
+          role="status"
+          title={it.output ? it.output.slice(0, 400) : gate.label}
+          className={`flex items-center gap-1.5 py-1 px-3 rounded-full border text-[10.5px] w-fit my-1 select-none font-mono ${toneClass}`}
+        >
+          <span className={labelClass}>{gate.label}</span>
+          {gate.detail ? <span className="text-faint">· {gate.detail}</span> : null}
+        </div>
+      );
+    } else if (it.kind === "verifying" || it.kind === "auto_verify" || it.kind === "verification") {
+      const receipt = verificationReceiptPresentation(
+        it.kind === "verifying"
+          ? { kind: "verifying", cmd: it.cmd, auto: it.auto }
+          : it.kind === "auto_verify"
+            ? { kind: "auto_verify", passed: it.passed, command: it.command }
+            : { kind: "verification", passed: it.passed, cmd: it.cmd },
+      );
+      const toneClass =
+        receipt.tone === "good"
+          ? "bg-panel2/15 border-edge/20 text-muted"
+          : receipt.tone === "risk"
+            ? "bg-risk/10 border-risk/30 text-risk/90"
+            : receipt.tone === "busy"
+              ? "bg-panel2/15 border-edge/20 text-faint animate-pulse"
+              : "bg-panel2/10 border-edge/15 text-faint";
+      const labelClass =
+        receipt.tone === "good"
+          ? "text-good/80"
+          : receipt.tone === "risk"
+            ? "text-risk/90"
+            : "text-muted";
+      const excerpt =
+        it.kind === "auto_verify"
+          ? it.output_excerpt
+          : it.kind === "verification"
+            ? it.output
+            : undefined;
+      return (
+        <div
+          key={key}
+          role="status"
+          title={excerpt ? excerpt.slice(0, 400) : receipt.label}
+          className={`flex items-center gap-1.5 py-1 px-3 rounded-full border text-[10.5px] w-fit my-1 select-none font-mono ${toneClass}`}
+        >
+          <span className={labelClass}>{receipt.label}</span>
+          {receipt.detail ? <span className="text-faint">· {receipt.detail}</span> : null}
         </div>
       );
     } else if (it.kind === "thinking") {

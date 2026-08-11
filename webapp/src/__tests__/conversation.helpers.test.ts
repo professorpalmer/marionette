@@ -1015,7 +1015,10 @@ describe("pillStatus + workspaceDisplay + StatusPill chrome", () => {
     expect(statusPillLabel("thinking")).toBe("Still working…");
     expect(statusPillLabel("streaming")).toBe("Still working…");
     expect(statusPillLabel("awaiting_swarm")).toBe("Still working…");
-    expect(statusPillLabel("idle", "x")).toBe("idle");
+    expect(statusPillLabel("idle", "x")).toBe("Ready");
+    expect(statusPillLabel("idle")).toBe("Ready");
+    expect(statusPillLabel("done")).toBe("Done");
+    expect(statusPillLabel("error")).toBe("Error");
     expect(statusPillTextClass("error")).toContain("risk");
     expect(statusPillDotClass("streaming")).toContain("animate-pulse");
     expect(statusPillDotClass("investigating")).toContain("animate-pulse");
