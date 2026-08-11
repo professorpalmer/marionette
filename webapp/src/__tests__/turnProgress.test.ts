@@ -753,16 +753,27 @@ describe("formatBusyElapsed", () => {
 });
 
 describe("quietWorkingCueVisible / turnHasVisibleBusySurface (no idle flicker)", () => {
-  it("shows immediately between tool batches (finished cards, loop busy)", () => {
-    // Card just finished, next tool not started — the exact gap that used to
-    // blink idle for up to 2s.
+  it("shows when busy with no investigation fold yet (pre-tool waiting)", () => {
+    // User message only — Investigating fold has not appeared; quiet cue is
+    // the sole under-transcript busy signal until tools/activity start.
+    const items: Item[] = [msg("user", "audit")];
+    expect(turnHasLiveInvestigation(items, true)).toBe(false);
+    expect(turnHasVisibleBusySurface(items)).toBe(false);
+    expect(quietWorkingCueVisible(items, "thinking", false, false, true)).toBe(true);
+    expect(quietWorkingCueVisible(items, "executing", false, false, true)).toBe(true);
+  });
+
+  it("hides across tool gaps when Investigating fold is already live", () => {
+    // Card finished, next tool not started, loop still open — Investigating
+    // header stays sticky; under-fold "Still working…" must not blink in.
     const items: Item[] = [
       msg("user", "audit"),
       card("1", "server.py", "read_file", false),
     ];
+    expect(turnHasLiveInvestigation(items, true)).toBe(true);
     expect(turnHasVisibleBusySurface(items)).toBe(false);
-    expect(quietWorkingCueVisible(items, "thinking", false, false)).toBe(true);
-    expect(quietWorkingCueVisible(items, "executing", false, false)).toBe(true);
+    expect(quietWorkingCueVisible(items, "thinking", false, false, true)).toBe(false);
+    expect(quietWorkingCueVisible(items, "executing", false, false, true)).toBe(false);
   });
 
   it("hides while a running card owns the busy surface", () => {
@@ -771,7 +782,8 @@ describe("quietWorkingCueVisible / turnHasVisibleBusySurface (no idle flicker)",
       card("1", "server.py", "read_file", true),
     ];
     expect(turnHasVisibleBusySurface(items)).toBe(true);
-    expect(quietWorkingCueVisible(items, "executing", false, false)).toBe(false);
+    expect(turnHasLiveInvestigation(items, true)).toBe(true);
+    expect(quietWorkingCueVisible(items, "executing", false, false, true)).toBe(false);
   });
 
   it("hides while thinking or assistant text streams", () => {
@@ -803,7 +815,9 @@ describe("quietWorkingCueVisible / turnHasVisibleBusySurface (no idle flicker)",
     expect(quietWorkingCueVisible(items, "idle", false, false)).toBe(false);
     expect(quietWorkingCueVisible(items, "done", false, false)).toBe(false);
     expect(quietWorkingCueVisible(items, "thinking", true, false)).toBe(false);
-    expect(quietWorkingCueVisible(items, "thinking", false, true)).toBe(false);
+    // Busy footer shown — cue stays off even with no live investigation /
+    // visible surface (loop closed, finished cards only).
+    expect(quietWorkingCueVisible(items, "thinking", false, true, false)).toBe(false);
   });
 
   it("only inspects the current turn (prior-turn cards do not suppress)", () => {
@@ -814,7 +828,8 @@ describe("quietWorkingCueVisible / turnHasVisibleBusySurface (no idle flicker)",
       msg("user", "second"),
     ];
     expect(turnHasVisibleBusySurface(items)).toBe(false);
-    expect(quietWorkingCueVisible(items, "thinking", false, false)).toBe(true);
+    expect(turnHasLiveInvestigation(items, true)).toBe(false);
+    expect(quietWorkingCueVisible(items, "thinking", false, false, true)).toBe(true);
   });
 });
 

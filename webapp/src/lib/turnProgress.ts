@@ -770,16 +770,25 @@ export function turnHasVisibleBusySurface(items: TurnItem[]): boolean {
  * over. No arming timer — the old 2s stall debounce left an idle-looking gap
  * between tool calls (card finishes → footer hidden → cue not armed yet),
  * which read as an idle→working flicker at every tool boundary.
+ *
+ * When the Investigating fold is already live (including tool-gap stickiness
+ * via ``agentLoopOpen``), that collapsed header is the sticky busy signal —
+ * do not paint a second under-fold "Still working…" that blinks on/off as
+ * tools enter and leave ``turnHasVisibleBusySurface``.
  */
 export function quietWorkingCueVisible(
   items: TurnItem[],
   status: BusyStatus,
   compacting: boolean,
   busyFooterShown: boolean,
+  agentLoopOpen: boolean = false,
 ): boolean {
   if (compacting || busyFooterShown) return false;
   const busy =
     status === "thinking" || status === "executing" || status === "streaming";
   if (!busy) return false;
+  // Investigating chrome already owns the live signal (header stays sticky
+  // across tool gaps when the loop is open). Suppress the under-fold cue.
+  if (turnHasLiveInvestigation(items, agentLoopOpen)) return false;
   return !turnHasVisibleBusySurface(items);
 }

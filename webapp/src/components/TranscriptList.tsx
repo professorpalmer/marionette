@@ -1167,16 +1167,16 @@ export const TranscriptList = memo(function TranscriptList({
   // or when the assistant answer already looks complete despite SSE lag (T5).
   const hideBusyFooter = turnHasLiveInvestigation(items, agentLoopOpen);
   const showBusyFooter = shouldShowBusyFooter(items, status) && !hideBusyFooter;
-  // Quiet "Still working…" cue: whenever the turn is busy but no other chrome
-  // visibly signals work (no running card, no streaming thinking/answer, busy
-  // footer hidden by the investigation fold), show it IMMEDIATELY. The old 2s
-  // arming timer left a dead gap at every tool boundary that read as an
-  // idle→working flicker.
+  // Quiet "Still working…" cue: only when the turn is busy and nothing else
+  // already signals work — including a live Investigating fold (sticky across
+  // tool gaps via agentLoopOpen). The under-fold cue must not blink on/off
+  // while collapsed investigation chrome already owns the busy signal.
   const showStall = quietWorkingCueVisible(
     items,
     status,
     Boolean(compactingStatus),
     showBusyFooter,
+    agentLoopOpen,
   );
 
   return (
