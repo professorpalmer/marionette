@@ -64,6 +64,7 @@ export default function ComposerDock({
   dragIndex,
   dragOverIndex,
   queueItems,
+  queueLoadError,
   queueDragIndex,
   queueDragOverIndex,
   editingIndex,
@@ -148,6 +149,7 @@ export default function ComposerDock({
   dragIndex: number | null;
   dragOverIndex: number | null;
   queueItems: ServerQueueItem[];
+  queueLoadError?: string | null;
   queueDragIndex: number | null;
   queueDragOverIndex: number | null;
   editingIndex: number | null;
@@ -466,6 +468,11 @@ export default function ComposerDock({
         {/* Server-side PROMPT QUEUE, stacked ABOVE the composer (Cursor-style)
             so the "runs next" items are always visible right over the input.
             These prompts are drained by the backend one full turn at a time. */}
+        {queueLoadError && (
+          <div className="mb-2 px-1 text-[10px] text-danger/90">
+            {queueLoadError}
+          </div>
+        )}
         {queueItems.length > 0 && (
           <div className="mb-2 space-y-1">
             <div className="flex items-center justify-between px-1">

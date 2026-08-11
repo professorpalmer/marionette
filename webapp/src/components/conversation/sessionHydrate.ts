@@ -53,12 +53,16 @@ export function emptySessionSwitchState(priorItemCount: number): {
   return { clearItems: false, stale: true };
 }
 
-/** Keep thinking/executing/streaming chrome when runner is already busy. */
+/**
+ * Keep thinking/executing/streaming/awaiting_swarm chrome when runner is busy.
+ * Matches preserveOrThinking / isAgentLoopOpen so Investigating stays armed.
+ */
 export function shouldPreserveBusyStatus(status: string): boolean {
   return (
     status === "thinking"
     || status === "executing"
     || status === "streaming"
+    || status === "awaiting_swarm"
   );
 }
 
@@ -111,6 +115,22 @@ export function sessionStateFailureSwitchDecision(): {
  */
 export const SESSION_TRANSCRIPT_FAIL_NOTICE =
   "Couldn't refresh this session's messages — showing what we have until the next check.";
+
+/**
+ * Drop sticky SESSION_* fail banners after successful transcript hydrate or
+ * getSessionState / runners recovery. Leaves unrelated edit/rewind notices alone.
+ */
+export function clearRecoveredSessionFailNotice(
+  notice: string | null,
+): string | null {
+  if (
+    notice === SESSION_STATE_FAIL_NOTICE
+    || notice === SESSION_TRANSCRIPT_FAIL_NOTICE
+  ) {
+    return null;
+  }
+  return notice;
+}
 
 /**
  * Empty transcript on a cold boot OR non-empty cache-hit can be a disk/attach

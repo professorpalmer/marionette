@@ -86,6 +86,20 @@ export function resetTurnSettledOnSessionSwitch(
   turnSettledRef.current = false;
 }
 
+/**
+ * Cleared on switchedSession so Stop / pilot_resume / approved-command retry
+ * latched on A cannot force idle, skip reattach, or fire into mid-turn B.
+ */
+export function resetCrossSessionLatchesOnSwitch(opts: {
+  userStoppedRef: { current: boolean };
+  resumeQueuedRef: { current: boolean };
+  approvedCommandRetryRef: { current: string | null };
+}): void {
+  opts.userStoppedRef.current = false;
+  opts.resumeQueuedRef.current = false;
+  opts.approvedCommandRetryRef.current = null;
+}
+
 /** Live SSE onError after flush — ignore false errors after assistant_done. */
 export function streamOnErrorDecision(opts: {
   turnSettled: boolean;

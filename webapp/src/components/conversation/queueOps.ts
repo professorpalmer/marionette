@@ -27,3 +27,31 @@ export function reorderByDrag<T>(items: T[], from: number, to: number): T[] {
   next.splice(to, 0, dragged);
   return next;
 }
+
+/** Drop stale playlist rows immediately on session switch (before refresh). */
+export function blankQueueItemsOnSessionSwitch(): [] {
+  return [];
+}
+
+/**
+ * Apply a queueList result only when it still matches the active session and
+ * the latest fetch generation (soft-fail: never paint A onto B).
+ */
+export function shouldApplyQueueRefresh(opts: {
+  requestSessionId: string | null;
+  activeSessionId: string | null;
+  requestGen: number;
+  currentGen: number;
+}): boolean {
+  return (
+    opts.requestGen === opts.currentGen
+    && opts.requestSessionId === opts.activeSessionId
+  );
+}
+
+export const QUEUE_LOAD_FAIL_NOTICE = "Couldn’t refresh prompt queue";
+
+/** Soft client msgQueue is session-local; clear on switch. */
+export function blankMsgQueueOnSessionSwitch(): [] {
+  return [];
+}

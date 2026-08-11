@@ -8,6 +8,7 @@
 import { describe, expect, it } from "vitest";
 import {
   STREAM_ABORT_MESSAGE,
+  resetCrossSessionLatchesOnSwitch,
   resetTurnSettledOnSessionSwitch,
   shouldRefreshBusyChrome,
   streamErrorText,
@@ -98,5 +99,19 @@ describe("Wave 5 stream terminal chrome gates", () => {
     const ref = { current: true };
     resetTurnSettledOnSessionSwitch(ref);
     expect(ref.current).toBe(false);
+  });
+
+  it("clears userStopped / resume / approved-retry latches on session switch", () => {
+    const userStoppedRef = { current: true };
+    const resumeQueuedRef = { current: true };
+    const approvedCommandRetryRef = { current: "ls -la" as string | null };
+    resetCrossSessionLatchesOnSwitch({
+      userStoppedRef,
+      resumeQueuedRef,
+      approvedCommandRetryRef,
+    });
+    expect(userStoppedRef.current).toBe(false);
+    expect(resumeQueuedRef.current).toBe(false);
+    expect(approvedCommandRetryRef.current).toBeNull();
   });
 });

@@ -16,6 +16,7 @@ import {
 } from "../components/conversation/streamApply";
 import {
   STREAM_ABORT_MESSAGE,
+  resetCrossSessionLatchesOnSwitch,
   resetTurnSettledOnSessionSwitch,
   shouldRefreshBusyChrome,
   streamOnDoneDecision,
@@ -268,6 +269,24 @@ describe("Wave 5: interrupted / done framing settle turn chrome", () => {
     resetTurnSettledOnSessionSwitch(turnSettledRef);
     expect(turnSettledRef.current).toBe(false);
     expect(shouldRefreshBusyChrome({ turnSettled: turnSettledRef.current })).toBe(true);
+  });
+
+  it("clears userStopped on session switch so Stop on A cannot skip reattach on B", () => {
+    const userStoppedRef = { current: true };
+    const resumeQueuedRef = { current: true };
+    const approvedCommandRetryRef = { current: "npm test" as string | null };
+    resetCrossSessionLatchesOnSwitch({
+      userStoppedRef,
+      resumeQueuedRef,
+      approvedCommandRetryRef,
+    });
+    expect(userStoppedRef.current).toBe(false);
+    expect(resumeQueuedRef.current).toBe(false);
+    expect(approvedCommandRetryRef.current).toBeNull();
+    expect(shouldRefreshBusyChrome({
+      turnSettled: false,
+      userStopped: userStoppedRef.current,
+    })).toBe(true);
   });
 });
 

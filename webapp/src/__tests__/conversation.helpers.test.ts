@@ -117,6 +117,7 @@ import {
   emptyTranscriptAfterRetryDecision,
   mergeUniqueArtifacts,
   reattachSessionStateFailureDecision,
+  clearRecoveredSessionFailNotice,
   runnerBusySwitchDecision,
   SESSION_STATE_FAIL_NOTICE,
   SESSION_TRANSCRIPT_FAIL_NOTICE,
@@ -132,6 +133,13 @@ import {
   resolveComposerDraftOnSwitch,
   writeComposerDraft,
 } from "../components/conversation/composerDraftCache";
+import {
+  clearComposerAttachmentCache,
+  peekComposerAttachments,
+  releaseDroppedComposerAttachmentPreviews,
+  resolveComposerAttachmentsOnSwitch,
+  writeComposerAttachments,
+} from "../components/conversation/composerAttachmentCache";
 import {
   classifyLocalSlashCommand,
   composerEnterAction,
@@ -168,7 +176,14 @@ import {
   filterSlashCommands,
   mentionTokenForDroppedPath,
 } from "../components/conversation/composerInput";
-import { moveItem, reorderByDrag } from "../components/conversation/queueOps";
+import {
+  blankMsgQueueOnSessionSwitch,
+  blankQueueItemsOnSessionSwitch,
+  moveItem,
+  QUEUE_LOAD_FAIL_NOTICE,
+  reorderByDrag,
+  shouldApplyQueueRefresh,
+} from "../components/conversation/queueOps";
 import {
   notifyPrefEnabled,
   queueMessagesPrefEnabled,
@@ -1884,6 +1899,7 @@ describe("sessionHydrate module", () => {
 
   it("runner busy switch decisions preserve chrome rules", () => {
     expect(shouldPreserveBusyStatus("executing")).toBe(true);
+    expect(shouldPreserveBusyStatus("awaiting_swarm")).toBe(true);
     expect(shouldPreserveBusyStatus("idle")).toBe(false);
     expect(
       runnerBusySwitchDecision({
@@ -1906,6 +1922,13 @@ describe("sessionHydrate module", () => {
         switchedSession: true,
       }).kind,
     ).toBe("noop");
+  });
+
+  it("clears sticky SESSION_* editNotice after successful hydrate recovery", () => {
+    expect(clearRecoveredSessionFailNotice(SESSION_TRANSCRIPT_FAIL_NOTICE)).toBeNull();
+    expect(clearRecoveredSessionFailNotice(SESSION_STATE_FAIL_NOTICE)).toBeNull();
+    expect(clearRecoveredSessionFailNotice("Rewind failed.")).toBe("Rewind failed.");
+    expect(clearRecoveredSessionFailNotice(null)).toBeNull();
   });
 
   it("session-switch busy honesty defaults idle until runners resolve", () => {
@@ -1981,6 +2004,116 @@ describe("composer draft cache", () => {
     });
     expect(restored).toBe("");
     expect(peekComposerDraft("sess-a")).toBe("only for A");
+  });
+});
+
+describe("composer attachment cache", () => {
+  afterEach(() => {
+    clearComposerAttachmentCache();
+  });
+
+  it("resolveComposerAttachmentsOnSwitch blanks A on B and restores B cache", () => {
+    const imgA = {
+      path: "uploads/a.png",
+      name: "a.png",
+      previewUrl: "blob:http://localhost/a",
+    };
+    const imgB = {
+      path: "uploads/b.png",
+      name: "b.png",
+      previewUrl: "blob:http://localhost/b",
+    };
+    writeComposerAttachments("sess-b", [imgB]);
+
+    const onB = resolveComposerAttachmentsOnSwitch({
+      prevId: "sess-a",
+      nextId: "sess-b",
+      currentAttachments: [imgA],
+    });
+    expect(onB).toEqual([imgB]);
+    expect(peekComposerAttachments("sess-a")).toEqual([imgA]);
+
+    const backToA = resolveComposerAttachmentsOnSwitch({
+      prevId: "sess-b",
+      nextId: "sess-a",
+      currentAttachments: onB,
+    });
+    expect(backToA).toEqual([imgA]);
+    expect(peekComposerAttachments("sess-b")).toEqual([imgB]);
+  });
+
+  it("blanks on cache miss (no cross-session attachment bleed)", () => {
+    const imgA = {
+      path: "uploads/a.png",
+      name: "a.png",
+      previewUrl: "blob:http://localhost/a",
+    };
+    const restored = resolveComposerAttachmentsOnSwitch({
+      prevId: "sess-a",
+      nextId: "sess-new",
+      currentAttachments: [imgA],
+    });
+    expect(restored).toEqual([]);
+    expect(peekComposerAttachments("sess-a")).toEqual([imgA]);
+  });
+
+  it("releaseDroppedComposerAttachmentPreviews revokes only unretained blobs", () => {
+    const revoked: string[] = [];
+    const original = URL.revokeObjectURL;
+    URL.revokeObjectURL = (url: string) => {
+      revoked.push(url);
+    };
+    try {
+      const keep = {
+        path: "uploads/keep.png",
+        name: "keep.png",
+        previewUrl: "blob:http://localhost/keep",
+      };
+      const drop = {
+        path: "uploads/drop.png",
+        name: "drop.png",
+        previewUrl: "blob:http://localhost/drop",
+      };
+      releaseDroppedComposerAttachmentPreviews([keep, drop], [keep]);
+      expect(revoked).toEqual(["blob:http://localhost/drop"]);
+    } finally {
+      URL.revokeObjectURL = original;
+    }
+  });
+});
+
+describe("prompt queue session-switch honesty", () => {
+  it("blanks visible queue rows and soft msgQueue on switch", () => {
+    expect(blankQueueItemsOnSessionSwitch()).toEqual([]);
+    expect(blankMsgQueueOnSessionSwitch()).toEqual([]);
+  });
+
+  it("shouldApplyQueueRefresh fences stale session / gen", () => {
+    expect(
+      shouldApplyQueueRefresh({
+        requestSessionId: "sess-a",
+        activeSessionId: "sess-a",
+        requestGen: 2,
+        currentGen: 2,
+      }),
+    ).toBe(true);
+    expect(
+      shouldApplyQueueRefresh({
+        requestSessionId: "sess-a",
+        activeSessionId: "sess-b",
+        requestGen: 2,
+        currentGen: 2,
+      }),
+    ).toBe(false);
+    expect(
+      shouldApplyQueueRefresh({
+        requestSessionId: "sess-b",
+        activeSessionId: "sess-b",
+        requestGen: 1,
+        currentGen: 2,
+      }),
+    ).toBe(false);
+    expect(QUEUE_LOAD_FAIL_NOTICE.length).toBeGreaterThan(0);
   });
 });
 

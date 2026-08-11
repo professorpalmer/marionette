@@ -10,13 +10,19 @@ import {
   peekComposerDraft,
   resolveComposerDraftOnSwitch,
   writeComposerDraft,
+  clearComposerAttachmentCache,
+  peekComposerAttachments,
+  resolveComposerAttachmentsOnSwitch,
+  writeComposerAttachments,
   shouldResetBusyChromeOnSwitch,
   sessionStateFailureSwitchDecision,
   SESSION_STATE_FAIL_NOTICE,
   SESSION_TRANSCRIPT_FAIL_NOTICE,
+  clearRecoveredSessionFailNotice,
   shouldRetryEmptyTranscript,
   emptyTranscriptAfterRetryDecision,
   transcriptRefreshFailureDecision,
+  resetCrossSessionLatchesOnSwitch,
 } from "../components/Conversation";
 import type { Item } from "../components/TranscriptList";
 
@@ -346,6 +352,71 @@ describe("per-session composer draft cache across session switch", () => {
   });
 });
 
+describe("per-session composer attachment cache across session switch", () => {
+  afterEach(() => {
+    clearComposerAttachmentCache();
+  });
+
+  it("A attachments must not remain after switch to B; restoring B restores B", () => {
+    // Mirror useSessionSwitch: cache outgoing attachments, restore incoming.
+    const imgA = {
+      path: "uploads/a.png",
+      name: "a.png",
+      previewUrl: "blob:http://localhost/a",
+    };
+    const imgB = {
+      path: "uploads/b.png",
+      name: "b.png",
+      previewUrl: "blob:http://localhost/b",
+    };
+    let attached = [imgA];
+    const attachedImagesRef = { current: attached };
+
+    const switchTo = (prevId: string, nextId: string) => {
+      const restored = resolveComposerAttachmentsOnSwitch({
+        prevId,
+        nextId,
+        currentAttachments: attachedImagesRef.current,
+      });
+      attachedImagesRef.current = restored;
+      attached = restored;
+    };
+
+    switchTo("sess-a", "sess-b");
+    expect(attached).toEqual([]);
+    expect(peekComposerAttachments("sess-a")).toEqual([imgA]);
+
+    attachedImagesRef.current = [imgB];
+    attached = [imgB];
+    switchTo("sess-b", "sess-a");
+    expect(attached).toEqual([imgA]);
+    expect(peekComposerAttachments("sess-b")).toEqual([imgB]);
+
+    switchTo("sess-a", "sess-b");
+    expect(attached).toEqual([imgB]);
+  });
+
+  it("seeded attachments survive write/peek without cross-bleed", () => {
+    writeComposerAttachments("sess-x", [
+      { path: "x.png", name: "x.png", previewUrl: "blob:x" },
+    ]);
+    writeComposerAttachments("sess-y", [
+      { path: "y.png", name: "y.png", previewUrl: "blob:y" },
+    ]);
+    expect(peekComposerAttachments("sess-x")?.[0]?.path).toBe("x.png");
+    expect(
+      resolveComposerAttachmentsOnSwitch({
+        prevId: "sess-y",
+        nextId: "sess-x",
+        currentAttachments: [
+          { path: "y2.png", name: "y2.png", previewUrl: "blob:y2" },
+        ],
+      })?.[0]?.path,
+    ).toBe("x.png");
+    expect(peekComposerAttachments("sess-y")?.[0]?.path).toBe("y2.png");
+  });
+});
+
 describe("session-switch busy chrome honesty", () => {
   it("resets busy chrome on switchedSession until runners resolve", () => {
     expect(shouldResetBusyChromeOnSwitch(true)).toBe(true);
@@ -357,6 +428,27 @@ describe("session-switch busy chrome honesty", () => {
     const failure = sessionStateFailureSwitchDecision();
     expect(failure.kind).toBe("idle_with_notice");
     expect(failure.notice).toBe(SESSION_STATE_FAIL_NOTICE);
+  });
+
+  it("clears userStopped latch on switchedSession so Stop on A cannot idle B", () => {
+    const userStoppedRef = { current: true };
+    const resumeQueuedRef = { current: true };
+    const approvedCommandRetryRef = { current: "echo retry" as string | null };
+    // Mirror useSessionSwitch when switchedSession: cross-session latches reset.
+    resetCrossSessionLatchesOnSwitch({
+      userStoppedRef,
+      resumeQueuedRef,
+      approvedCommandRetryRef,
+    });
+    expect(userStoppedRef.current).toBe(false);
+    expect(resumeQueuedRef.current).toBe(false);
+    expect(approvedCommandRetryRef.current).toBeNull();
+  });
+
+  it("clears sticky SESSION_* editNotice after successful hydrate", () => {
+    expect(clearRecoveredSessionFailNotice(SESSION_TRANSCRIPT_FAIL_NOTICE)).toBeNull();
+    expect(clearRecoveredSessionFailNotice(SESSION_STATE_FAIL_NOTICE)).toBeNull();
+    expect(clearRecoveredSessionFailNotice("Keep this")).toBe("Keep this");
   });
 });
 

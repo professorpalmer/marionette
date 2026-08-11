@@ -105,7 +105,15 @@ import {
   filterSlashCommands,
   mentionTokenForDroppedPath,
 } from "./conversation/composerInput";
-import { moveItem, reorderByDrag } from "./conversation/queueOps";
+import {
+  blankMsgQueueOnSessionSwitch,
+  blankQueueItemsOnSessionSwitch,
+  moveItem,
+  QUEUE_LOAD_FAIL_NOTICE,
+  reorderByDrag,
+  shouldApplyQueueRefresh,
+} from "./conversation/queueOps";
+import type { ComposerAttachedImage } from "./conversation/composerAttachmentCache";
 import {
   notifyPrefEnabled,
   queueMessagesPrefEnabled,
@@ -337,6 +345,11 @@ export default function Conversation({
   useEffect(() => {
     composerInputRef.current = input;
   }, [input]);
+  // Live session id for async queue fences (Clear All / late refresh).
+  const activeSessionIdRef = useRef<string | null>(activeSessionId);
+  useEffect(() => {
+    activeSessionIdRef.current = activeSessionId;
+  }, [activeSessionId]);
   const [status, setStatus] = useState<"idle"|"thinking"|"executing"|"done"|"error"|"streaming"|"awaiting_swarm">("idle");
   // Wall clock for the live busy footer ("running · read_file · step 3 · 2m 14s").
   // Starts when we enter a busy phase; clears on idle/done/error. A 1s tick keeps
@@ -459,6 +472,8 @@ export default function Conversation({
   // queue when a turn ends, not a stale snapshot, without re-running on poll.
   const queueItemsRef = useRef<{ id: string; text: string; images?: string[]; model?: string }[]>([]);
   useEffect(() => { queueItemsRef.current = queueItems; }, [queueItems]);
+  const [queueLoadError, setQueueLoadError] = useState<string | null>(null);
+  const queueFetchGenRef = useRef(0);
   const [queueDragIndex, setQueueDragIndex] = useState<number | null>(null);
   const [queueDragOverIndex, setQueueDragOverIndex] = useState<number | null>(null);
 
@@ -468,7 +483,12 @@ export default function Conversation({
   const processedSwarmJobIdsRef = useRef<string[]>([]);
   const [backendPendingSwarms, setBackendPendingSwarms] = useState(false);
 
-  const [attachedImages, setAttachedImages] = useState<{ path: string; name: string; previewUrl: string }[]>([]);
+  const [attachedImages, setAttachedImages] = useState<ComposerAttachedImage[]>([]);
+  // Live composer attachments for per-session cache across useSessionSwitch.
+  const attachedImagesRef = useRef<ComposerAttachedImage[]>([]);
+  useEffect(() => {
+    attachedImagesRef.current = attachedImages;
+  }, [attachedImages]);
   const [isDragOver, setIsDragOver] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   // Refs to track every outstanding setTimeout so we can clear them on unmount
@@ -646,26 +666,54 @@ export default function Conversation({
     }
   }, [slashSearch]);
 
-  // PROMPT QUEUE: light refresh -- on mount, on a small poll interval, and
-  // after any local mutation (add/remove/reorder/clear). Never throws; a
-  // failed fetch just leaves the last-known list on screen.
-  const refreshQueue = () => {
+  // PROMPT QUEUE: light refresh -- on session change, on a small poll interval,
+  // and after any local mutation (add/remove/reorder/clear). Soft-fail: never
+  // treat an errored fetch as authoritative empty; fence by session + gen.
+  const refreshQueue = (forSessionId: string | null = activeSessionIdRef.current) => {
+    const requestSessionId = forSessionId;
+    const requestGen = ++queueFetchGenRef.current;
     api.queueList()
       .then((res) => {
+        if (!shouldApplyQueueRefresh({
+          requestSessionId,
+          activeSessionId: activeSessionIdRef.current,
+          requestGen,
+          currentGen: queueFetchGenRef.current,
+        })) {
+          return;
+        }
         if (res && Array.isArray(res.items)) {
           setQueueItems(res.items);
+          setQueueLoadError(null);
         }
       })
       .catch((err) => {
+        if (!shouldApplyQueueRefresh({
+          requestSessionId,
+          activeSessionId: activeSessionIdRef.current,
+          requestGen,
+          currentGen: queueFetchGenRef.current,
+        })) {
+          return;
+        }
         console.error("Failed to load prompt queue:", err);
+        setQueueLoadError(QUEUE_LOAD_FAIL_NOTICE);
       });
   };
 
   useEffect(() => {
-    refreshQueue();
-    const t = window.setInterval(refreshQueue, 3000);
+    // Immediate honesty: blank A's playlist (and soft client msgQueue) before
+    // the new session's refresh returns — Clear All must not wipe B by accident.
+    setQueueItems(blankQueueItemsOnSessionSwitch());
+    setMsgQueue(blankMsgQueueOnSessionSwitch());
+    setQueueLoadError(null);
+    setQueueDragIndex(null);
+    setQueueDragOverIndex(null);
+    refreshQueue(activeSessionId);
+    const t = window.setInterval(() => refreshQueue(activeSessionIdRef.current), 3000);
     return () => window.clearInterval(t);
-  }, []);
+    // refreshQueue closes over refs; re-arm only when the active pilot changes.
+  }, [activeSessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const moveQueueItem = (index: number, direction: "up" | "down") => {
     setMsgQueue((prev) => moveItem(prev, index, direction));
@@ -728,12 +776,14 @@ export default function Conversation({
     setQueueDragIndex(null);
     setQueueDragOverIndex(null);
     if (fromIdx === null || fromIdx === targetIdx) return;
+    const sid = activeSessionIdRef.current;
     setQueueItems((prev) => {
       const next = reorderByDrag(prev, fromIdx, targetIdx);
       api.queueReorder(next.map((it) => it.id))
         .catch((err) => {
           console.error("Failed to reorder prompt queue:", err);
-          refreshQueue();
+          if (activeSessionIdRef.current !== sid) return;
+          refreshQueue(sid);
         });
       return next;
     });
@@ -748,33 +798,45 @@ export default function Conversation({
     // Load the prompt back into the composer for editing, and pull it out of
     // the queue -- sending again will re-add it (as a normal turn, not a
     // requeue), matching the existing msgQueue "click to edit" ergonomics.
+    const sid = activeSessionIdRef.current;
     setInput(item.text);
     setEditingIndex(null);
     setQueueItems((prev) => prev.filter((it) => it.id !== item.id));
     api.queueRemove(item.id).catch((err) => {
       console.error("Failed to remove queued prompt for edit:", err);
-      refreshQueue();
+      if (activeSessionIdRef.current !== sid) return;
+      refreshQueue(sid);
     });
     taRef.current?.focus();
   };
 
   const handleQueueRemove = (id: string) => {
+    const sid = activeSessionIdRef.current;
     setQueueItems((prev) => prev.filter((it) => it.id !== id));
     api.queueRemove(id)
-      .then(() => refreshQueue())
+      .then(() => {
+        if (activeSessionIdRef.current !== sid) return;
+        refreshQueue(sid);
+      })
       .catch((err) => {
         console.error("Failed to remove queued prompt:", err);
-        refreshQueue();
+        if (activeSessionIdRef.current !== sid) return;
+        refreshQueue(sid);
       });
   };
 
   const handleQueueClearAll = () => {
+    const sid = activeSessionIdRef.current;
     setQueueItems([]);
     api.queueClear()
-      .then(() => refreshQueue())
+      .then(() => {
+        if (activeSessionIdRef.current !== sid) return;
+        refreshQueue(sid);
+      })
       .catch((err) => {
         console.error("Failed to clear prompt queue:", err);
-        refreshQueue();
+        if (activeSessionIdRef.current !== sid) return;
+        refreshQueue(sid);
       });
   };
 
@@ -784,11 +846,15 @@ export default function Conversation({
     // Snapshot the attached image paths BEFORE clearing input/attachments, so a
     // queued prompt carries its images just like a normal turn. The backend
     // delivers them as real image content when the prompt drains.
+    const sid = activeSessionIdRef.current;
     const queueImages = attachedImages.map((img) => img.path).filter(Boolean);
     setInput("");
     setAttachedImages([]);
     api.queueAdd(text, queueImages)
-      .then(() => refreshQueue())
+      .then(() => {
+        if (activeSessionIdRef.current !== sid) return;
+        refreshQueue(sid);
+      })
       .catch((err) => {
         console.error("Failed to add prompt to queue:", err);
       });
@@ -1012,10 +1078,15 @@ export default function Conversation({
     };
   }, [activeSessionId]);
 
+  const contextUsageFetchGenRef = useRef(0);
   const fetchContextUsage = () => {
     if (!activeSessionId) return;
+    const fetchSid = activeSessionId;
+    const fetchGen = contextUsageFetchGenRef.current;
     return api.getContextUsage()
       .then((res) => {
+        if (fetchGen !== contextUsageFetchGenRef.current) return;
+        if (activeSessionIdRef.current !== fetchSid) return;
         // Fresh sessions can return partial/non-finite payloads; keep the
         // panel in its loading state rather than rendering NaN or crashing.
         const usage = normalizeContextUsage(res);
@@ -1028,8 +1099,12 @@ export default function Conversation({
   };
 
   useEffect(() => {
+    // Blank prior session meters immediately (StatusBar tok/$ already clears
+    // on harness-session-changed); fence ignores late responses for A under B.
+    contextUsageFetchGenRef.current += 1;
+    setContextUsage(null);
     fetchContextUsage();
-    
+
     const h = () => fetchContextUsage();
     window.addEventListener("harness-context-changed", h);
     return () => window.removeEventListener("harness-context-changed", h);
@@ -1062,6 +1137,8 @@ export default function Conversation({
     detachedBusyRef,
     userStoppedRef,
     turnSettledRef,
+    resumeQueuedRef,
+    approvedCommandRetryRef,
     runnerBusyPollGenRef,
     typeRafRef,
     typeBufRef,
@@ -1077,6 +1154,8 @@ export default function Conversation({
     setEditBusy,
     setInput,
     composerInputRef,
+    setAttachedImages,
+    attachedImagesRef,
   });
 
 
@@ -2075,7 +2154,11 @@ export default function Conversation({
       if (cancelRef.current || resumeQueuedRef.current) return;
       setQueueItems((prev) => prev.filter((it) => it.id !== next.id));
       queueItemsRef.current = queueItemsRef.current.filter((it) => it.id !== next.id);
-      api.queueRemove(next.id).catch(() => {}).finally(() => refreshQueue());
+      const sid = activeSessionIdRef.current;
+      api.queueRemove(next.id).catch(() => {}).finally(() => {
+        if (activeSessionIdRef.current !== sid) return;
+        refreshQueue(sid);
+      });
       const nextImgs = (next.images || []).map((p: string) => ({
         path: p,
         name: (p.split(/[\\/]/).pop() || p),
@@ -2565,6 +2648,7 @@ export default function Conversation({
         dragIndex={dragIndex}
         dragOverIndex={dragOverIndex}
         queueItems={queueItems}
+        queueLoadError={queueLoadError}
         queueDragIndex={queueDragIndex}
         queueDragOverIndex={queueDragOverIndex}
         editingIndex={editingIndex}

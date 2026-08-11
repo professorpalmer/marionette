@@ -15,6 +15,7 @@ import {
   transcriptResponseToItems,
 } from "./transcriptItems";
 import {
+  clearRecoveredSessionFailNotice,
   emptySessionSwitchState,
   emptyTranscriptAfterRetryDecision,
   runnerBusySwitchDecision,
@@ -25,6 +26,11 @@ import {
   transcriptRefreshFailureDecision,
 } from "./sessionHydrate";
 import { resolveComposerDraftOnSwitch } from "./composerDraftCache";
+import {
+  releaseDroppedComposerAttachmentPreviews,
+  resolveComposerAttachmentsOnSwitch,
+  type ComposerAttachedImage,
+} from "./composerAttachmentCache";
 import { createChatEventsReattach } from "./chatEventsReattach";
 import { cancelTypewriterWithoutFlush } from "./streamTypewriter";
 import { gatherSessionArtifacts } from "./sessionArtifacts";
@@ -33,7 +39,10 @@ import {
   foldSwarmLiveJobsAfterReload,
   shouldApplySwarmLiveMerge,
 } from "./streamApply";
-import { resetTurnSettledOnSessionSwitch } from "./streamTerminal";
+import {
+  resetCrossSessionLatchesOnSwitch,
+  resetTurnSettledOnSessionSwitch,
+} from "./streamTerminal";
 
 export type SessionStatus =
   | "idle"
@@ -70,6 +79,10 @@ export type UseSessionSwitchDeps = {
   userStoppedRef: MutableRefObject<boolean>;
   /** Session-global; must reset on switch so settled A cannot suppress B chrome. */
   turnSettledRef: MutableRefObject<boolean>;
+  /** Keep-alive resume queued on A must not fire into B after switch. */
+  resumeQueuedRef: MutableRefObject<boolean>;
+  /** Approved-command retry queued on A must not execute into B after switch. */
+  approvedCommandRetryRef: MutableRefObject<string | null>;
   runnerBusyPollGenRef: MutableRefObject<number>;
   typeRafRef: MutableRefObject<number | null>;
   typeBufRef: MutableRefObject<string>;
@@ -86,6 +99,9 @@ export type UseSessionSwitchDeps = {
   setInput: Dispatch<SetStateAction<string>>;
   /** Live composer text; kept in sync by Conversation for per-session draft cache. */
   composerInputRef: MutableRefObject<string>;
+  setAttachedImages: Dispatch<SetStateAction<ComposerAttachedImage[]>>;
+  /** Live composer attachments; kept in sync by Conversation for per-session cache. */
+  attachedImagesRef: MutableRefObject<ComposerAttachedImage[]>;
 };
 
 /** Warm-cache switch + chatEvents reattach arming for the active session id. */
@@ -115,6 +131,8 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
     detachedBusyRef,
     userStoppedRef,
     turnSettledRef,
+    resumeQueuedRef,
+    approvedCommandRetryRef,
     runnerBusyPollGenRef,
     typeRafRef,
     typeBufRef,
@@ -130,6 +148,8 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
     setEditBusy,
     setInput,
     composerInputRef,
+    setAttachedImages,
+    attachedImagesRef,
   } = deps;
 
   // Warm-cache session switch: save outgoing transcript, hydrate incoming from
@@ -164,6 +184,25 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
       });
       composerInputRef.current = restored;
       setInput(restored);
+
+      // Per-session composer attachments: same cache/restore contract as drafts.
+      // Keep outgoing blob URLs alive in the cache; only revoke uncached drops.
+      const currentAttachments = attachedImagesRef.current;
+      const restoredAttachments = resolveComposerAttachmentsOnSwitch({
+        prevId,
+        nextId: activeSessionId,
+        currentAttachments,
+      });
+      const retainedForPreview = [
+        ...(prevId ? currentAttachments : []),
+        ...restoredAttachments,
+      ];
+      releaseDroppedComposerAttachmentPreviews(
+        currentAttachments,
+        retainedForPreview,
+      );
+      attachedImagesRef.current = restoredAttachments;
+      setAttachedImages(restoredAttachments);
     }
     if (switchedSession) {
       // Owned sent-image blob previews belong to the outgoing session; durable
@@ -189,6 +228,15 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
     detachedBusyRef.current = false;
     // Settled session A must not suppress busy-chrome refresh for mid-turn B.
     resetTurnSettledOnSessionSwitch(turnSettledRef);
+    if (switchedSession) {
+      // Stop / resume / approved-retry latched on A must not force idle, skip
+      // reattach, or execute into mid-turn B.
+      resetCrossSessionLatchesOnSwitch({
+        userStoppedRef,
+        resumeQueuedRef,
+        approvedCommandRetryRef,
+      });
+    }
     // Reset mid-turn reattach cursor/poll so the next session starts clean.
     clearChatEventsPoll();
     lastAppliedCursorRef.current = 0;
@@ -281,6 +329,8 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
       .then((res) => {
         if (cancelled) return;
         applyRunnerBusy(res?.runners);
+        // Definitive runners map recovered — drop sticky SESSION_* fail banner.
+        setEditNotice((prev) => clearRecoveredSessionFailNotice(prev));
       })
       .catch(() => {
         if (cancelled) return;
@@ -350,6 +400,8 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
         transcriptFpRef.current = transcriptFingerprint(loadedItems);
         writeTranscriptCache(activeSessionId, loadedItems);
         setTranscriptStale(false);
+        // Successful hydrate — drop sticky SESSION_* fail banner from a prior flake.
+        setEditNotice((prev) => clearRecoveredSessionFailNotice(prev));
 
         // Nested worker actions survive restart on local jobs; fold onto cards
         // after display hydrate so investigation rows stay complete on reload.

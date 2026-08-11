@@ -140,6 +140,7 @@ export {
   runnerBusySwitchDecision,
   SESSION_STATE_FAIL_NOTICE,
   SESSION_TRANSCRIPT_FAIL_NOTICE,
+  clearRecoveredSessionFailNotice,
   shouldResetBusyChromeOnSwitch,
   sessionStateFailureSwitchDecision,
   shouldRetryEmptyTranscript,
@@ -154,6 +155,14 @@ export {
   writeComposerDraft,
   resolveComposerDraftOnSwitch,
 } from "./composerDraftCache";
+export {
+  clearComposerAttachmentCache,
+  peekComposerAttachments,
+  writeComposerAttachments,
+  resolveComposerAttachmentsOnSwitch,
+  releaseDroppedComposerAttachmentPreviews,
+  type ComposerAttachedImage,
+} from "./composerAttachmentCache";
 export {
   composerEnterAction,
   composerEnterBusy,
@@ -193,7 +202,14 @@ export {
   appendMentionsToInput,
   clampSelectIndex,
 } from "./composerInput";
-export { moveItem, reorderByDrag } from "./queueOps";
+export {
+  moveItem,
+  reorderByDrag,
+  blankQueueItemsOnSessionSwitch,
+  blankMsgQueueOnSessionSwitch,
+  shouldApplyQueueRefresh,
+  QUEUE_LOAD_FAIL_NOTICE,
+} from "./queueOps";
 export {
   notifyPrefEnabled,
   soundPrefEnabled,
@@ -256,6 +272,7 @@ export {
   streamOnErrorDecision,
   shouldRefreshBusyChrome,
   resetTurnSettledOnSessionSwitch,
+  resetCrossSessionLatchesOnSwitch,
 } from "./streamTerminal";
 export { default as TranscriptEmptyState } from "./TranscriptEmptyState";
 export { createChatEventsReattach } from "./chatEventsReattach";
