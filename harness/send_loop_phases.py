@@ -1648,6 +1648,7 @@ def dispatch_local_action(
                     label=f"Before writing {act.path}",
                     trigger="write_file",
                     session_id=session.harness_session_id or None,
+                    user_ordinal=session._current_user_ordinal(),
                 )
                 if cp_id:
                     yield ConvEvent("checkpoint", {
@@ -1668,6 +1669,9 @@ def dispatch_local_action(
             bytes_written = msg
             yield ConvEvent("action_result", {
                 "id": aid, "num": 1, "types": ["file"], "adapter": "local", "mode": "tool",
+                # Path lets the UI refresh open editors / Files / SCM even when
+                # the pre-write checkpoint SSE was skipped or failed.
+                "path": act.path,
                 "artifacts": [{"type": "file", "headline": f"Wrote {bytes_written} bytes to {act.path}"}],
             })
             session._append_action_result(act, aid, f"(write_file {act.path} successfully wrote {bytes_written} bytes)", is_native)
@@ -1703,6 +1707,7 @@ def dispatch_local_action(
                     label=f"Before editing {act.path}",
                     trigger="edit_file",
                     session_id=session.harness_session_id or None,
+                    user_ordinal=session._current_user_ordinal(),
                 )
                 if cp_id:
                     yield ConvEvent("checkpoint", {
@@ -1723,6 +1728,7 @@ def dispatch_local_action(
             headline = msg
             yield ConvEvent("action_result", {
                 "id": aid, "num": 1, "types": ["file"], "adapter": "local", "mode": "tool",
+                "path": act.path,
                 "artifacts": [{"type": "file", "headline": headline}],
             })
             session._append_action_result(act, aid, f"(edit_file {act.path} successfully edited: {headline})", is_native)
@@ -1758,6 +1764,7 @@ def dispatch_local_action(
                     label=f"Before hash_edit {act.path}",
                     trigger="hash_edit",
                     session_id=session.harness_session_id or None,
+                    user_ordinal=session._current_user_ordinal(),
                 )
                 if cp_id:
                     yield ConvEvent("checkpoint", {
@@ -1778,11 +1785,12 @@ def dispatch_local_action(
             headline = f"hash_edit {act.path}: {msg}"
             hash_edit_result = {
                 "id": aid, "num": 1, "types": ["file"], "adapter": "local", "mode": "tool",
+                "path": act.path,
                 "artifacts": [{"type": "file", "headline": headline}],
             }
             # AST preview (round 6, opt-in): structural diff
             # computed by _do_hash_edit on the write pass.
-            ast_preview = getattr(self, "_last_ast_preview", None)
+            ast_preview = getattr(session, "_last_ast_preview", None)
             if ast_preview and ast_preview.get("available"):
                 hash_edit_result["ast_preview"] = ast_preview
             session._last_ast_preview = None

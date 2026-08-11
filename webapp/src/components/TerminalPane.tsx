@@ -11,8 +11,21 @@ import {
   seedAgentTerminalCommand,
   syncAgentTerminalSnapshot,
 } from "../lib/agentTerminalStream";
+import { registerTerminalPathLinks } from "../lib/terminalPathLinks";
 import { hostHasLayout, safePtyDims } from "./terminalDims";
 import { terminalBareOnDoneAction } from "./terminalStreamPolicy";
+
+/** https via WebLinksAddon + workspace/file:// paths via our ILinkProvider. */
+function attachTerminalLinkHandlers(term: Terminal): void {
+  term.loadAddon(
+    new WebLinksAddon((_event, uri) => {
+      if (isExternalUrl(uri)) openAgentUrl(uri);
+      else if (looksLikeFilePath(uri)) openAgentFile(uri);
+    }),
+  );
+  // WebLinksAddon cannot surface bare paths (hard URL filter); own provider.
+  registerTerminalPathLinks(term);
+}
 
 type AgentView = { id: string; command: string };
 
@@ -129,12 +142,7 @@ export default function TerminalPane() {
       });
       fit = new FitAddon();
       term.loadAddon(fit);
-      term.loadAddon(
-        new WebLinksAddon((_event, uri) => {
-          if (isExternalUrl(uri)) openAgentUrl(uri);
-          else if (looksLikeFilePath(uri)) openAgentFile(uri);
-        })
-      );
+      attachTerminalLinkHandlers(term);
       term.open(host);
       agentTermRef.current = term;
       agentFitRef.current = fit;
@@ -202,13 +210,8 @@ export default function TerminalPane() {
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
-    // Clickable URLs + path-looking tokens in terminal output.
-    term.loadAddon(
-      new WebLinksAddon((_event, uri) => {
-        if (isExternalUrl(uri)) openAgentUrl(uri);
-        else if (looksLikeFilePath(uri)) openAgentFile(uri);
-      })
-    );
+    // Clickable https URLs (WebLinksAddon) + workspace path tokens (own provider).
+    attachTerminalLinkHandlers(term);
     term.open(host);
     termRef.current = term;
 

@@ -632,20 +632,24 @@ export function deriveBusyProgress(
     };
   }
 
+  // Footer keeps a quiet step line; header pill uses Investigating / Still
+  // working… — never raw phase enums (running/thinking/streaming).
   const parts: string[] = [];
-  if (status === "streaming") parts.push("streaming");
-  else if (running || status === "executing") parts.push("running");
-  else parts.push("thinking");
-
   if (runningKind) parts.push(runningKind);
   else if (runningGoal) parts.push(runningGoal);
   else if (toolPrep) parts.push(toolPrep);
+  else if (running || status === "executing") parts.push("Investigating…");
+  else parts.push("Still working…");
   if (step > 0) parts.push(`step ${step}`);
   if (elapsed) parts.push(elapsed);
 
   const label = parts.join(" · ");
 
-  const pillParts: string[] = [phase];
+  const pillChrome =
+    running || status === "executing" || phase === "running"
+      ? "Investigating…"
+      : "Still working…";
+  const pillParts: string[] = [pillChrome];
   if (runningKind) pillParts.push(runningKind);
   else if (toolPrep) pillParts.push(toolPrep);
   if (step > 0) pillParts.push(`${step}`);

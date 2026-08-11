@@ -10,6 +10,7 @@ import {
   shouldHydrateTranscriptOnReplayMiss,
   shouldArmChatEventsFromRunners,
   shouldPollChatEvents,
+  isChatEventsReattachArmed,
   shouldRetryRingAfterReplayMiss,
   shouldApplyReattachFrame,
   createChatEventsReattach,
@@ -21,6 +22,7 @@ import {
 } from "../components/Conversation";
 import { api } from "../lib/api";
 import type { Item } from "../components/TranscriptList";
+import { chatEventsPath } from "../lib/transport";
 
 /**
  * Mid-turn chatEvents reattach contracts (cursor + poll gating).
@@ -162,6 +164,7 @@ describe("chatEvents reattach poll gate", () => {
     expect(isTerminalStreamKind("done")).toBe(true);
     expect(isTerminalStreamKind("error")).toBe(true);
     expect(isTerminalStreamKind("auto_halt")).toBe(true);
+    expect(isTerminalStreamKind("interrupted")).toBe(true);
     expect(isTerminalStreamKind("message_delta")).toBe(false);
   });
 
@@ -200,6 +203,34 @@ describe("chatEvents reattach poll gate", () => {
       userStopped: false,
       sawTerminal: false,
     })).toBe(false);
+  });
+
+  it("treats live watch cancel as reattach-armed (same as poll timer)", () => {
+    expect(isChatEventsReattachArmed({
+      pollTimer: null,
+      liveCancel: null,
+    })).toBe(false);
+    expect(isChatEventsReattachArmed({
+      pollTimer: 1,
+      liveCancel: null,
+    })).toBe(true);
+    expect(isChatEventsReattachArmed({
+      pollTimer: null,
+      liveCancel: () => {},
+    })).toBe(true);
+  });
+
+  it("builds watch=1 chatEvents path for live reattach", () => {
+    expect(chatEventsPath({
+      session: "sess-a",
+      since: 3,
+      generation: 2,
+      watch: true,
+    })).toContain("watch=1");
+    expect(chatEventsPath({
+      session: "sess-a",
+      since: 3,
+    })).not.toContain("watch=");
   });
 
   it("arms chatEvents from runners when a bridge/queue turn starts on an open session", () => {
@@ -375,6 +406,7 @@ describe("detached-busy mid-tool-batch reattach", () => {
       itemsRef,
       transcriptFpRef,
       chatEventsPollTimerRef,
+      chatEventsLiveCancelRef: { current: null },
       applyStreamEventRef: {
         current: (ev) => {
           applied.push(ev.kind);
@@ -465,6 +497,7 @@ describe("detached-busy mid-tool-batch reattach", () => {
       itemsRef,
       transcriptFpRef: { current: "" },
       chatEventsPollTimerRef: { current: null },
+      chatEventsLiveCancelRef: { current: null },
       applyStreamEventRef: { current: (ev) => { applied.push(ev.kind); } },
       flushTypewriterRef: { current: () => {} },
       maybeRunQueuedResumeRef: { current: () => {} },
@@ -564,6 +597,7 @@ describe("detached-busy mid-tool-batch reattach", () => {
       itemsRef,
       transcriptFpRef: { current: "" },
       chatEventsPollTimerRef: { current: null },
+      chatEventsLiveCancelRef: { current: null },
       applyStreamEventRef: { current: () => {} },
       flushTypewriterRef: { current: () => {} },
       maybeRunQueuedResumeRef: { current: () => {} },
@@ -753,6 +787,7 @@ describe("Wave 4 command-job reattach fences", () => {
       itemsRef: { current: [] },
       transcriptFpRef: { current: "" },
       chatEventsPollTimerRef: { current: null },
+      chatEventsLiveCancelRef: { current: null },
       applyStreamEventRef: {
         current: (ev) => {
           applied.push({ kind: ev.kind, id: ev.data?.id });
@@ -826,6 +861,7 @@ describe("Wave 4 command-job reattach fences", () => {
       itemsRef,
       transcriptFpRef: { current: "" },
       chatEventsPollTimerRef: { current: null },
+      chatEventsLiveCancelRef: { current: null },
       applyStreamEventRef: {
         current: (ev) => {
           if (ev.kind === "action_result") {
@@ -852,5 +888,207 @@ describe("Wave 4 command-job reattach fences", () => {
     expect(cards).toHaveLength(1);
     expect(cards[0].kind === "card" && cards[0].card.result?.status).toBe("completed");
     expect(cards[0].kind === "card" && cards[0].card.result?.message).toBe("ok");
+  });
+});
+
+describe("mid-turn live chatEvents watch reattach", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  function reattachDeps(overrides: Record<string, unknown> = {}) {
+    const chatEventsLiveCancelRef = { current: null as null | (() => void) };
+    const chatEventsPollTimerRef = { current: null as number | null };
+    const detachedBusyRef = { current: true };
+    const streamGenRef = { current: 1 };
+    const cachedSessionIdRef = { current: "sess-live" as string | null };
+    const lastAppliedCursorRef = { current: 0 };
+    const applied: string[] = [];
+    const base = {
+      cancelled: () => false,
+      loadGen: 1,
+      transcriptLoadGenRef: { current: 1 },
+      streamGenRef,
+      reattachGen: 1,
+      reattachSid: "sess-live",
+      cachedSessionIdRef,
+      localStreamActiveRef: { current: false },
+      userStoppedRef: { current: false },
+      lastAppliedCursorRef,
+      ringGenerationRef: { current: 1 as number | undefined },
+      detachedBusyRef,
+      runnerBusyPollGenRef: { current: 0 },
+      itemsRef: { current: [] as Item[] },
+      transcriptFpRef: { current: "" },
+      chatEventsPollTimerRef,
+      chatEventsLiveCancelRef,
+      applyStreamEventRef: {
+        current: (ev: { kind: string }) => { applied.push(ev.kind); },
+      },
+      flushTypewriterRef: { current: () => {} },
+      maybeRunQueuedResumeRef: { current: () => {} },
+      maybeDrainQueueRef: { current: () => {} },
+      clearChatEventsPoll: () => {
+        if (chatEventsPollTimerRef.current != null) {
+          window.clearInterval(chatEventsPollTimerRef.current);
+          chatEventsPollTimerRef.current = null;
+        }
+        if (chatEventsLiveCancelRef.current) {
+          const c = chatEventsLiveCancelRef.current;
+          chatEventsLiveCancelRef.current = null;
+          c();
+        }
+      },
+      setItems: () => {},
+      setTranscriptStale: () => {},
+      setTurnOpen: () => {},
+      setStatus: () => {},
+      ...overrides,
+    };
+    return {
+      ...base,
+      applied,
+      chatEventsLiveCancelRef,
+      chatEventsPollTimerRef,
+      detachedBusyRef,
+      streamGenRef,
+      cachedSessionIdRef,
+      lastAppliedCursorRef,
+    };
+  }
+
+  it("opens live watch path on busy reattach (not 1Hz poll first)", async () => {
+    const deps = reattachDeps();
+    let liveHandlers: {
+      onEvent: (e: any) => void;
+      onDone?: () => void;
+      onError?: (e: any) => void;
+    } | null = null;
+    const live = vi.spyOn(api, "chatEventsLive").mockImplementation(
+      (_opts, onEvent, onDone, onError) => {
+        liveHandlers = { onEvent, onDone, onError };
+        return () => {};
+      },
+    );
+    const chatEvents = vi.spyOn(api, "chatEvents");
+    vi.spyOn(api, "getSessionState").mockResolvedValue({
+      runners: { "sess-live": "running" },
+    } as any);
+
+    const { startChatEventsReattach } = createChatEventsReattach(deps as any);
+    await startChatEventsReattach();
+
+    expect(live).toHaveBeenCalledTimes(1);
+    expect(live.mock.calls[0][0]).toMatchObject({
+      session: "sess-live",
+      since: 0,
+      generation: 1,
+    });
+    expect(deps.chatEventsLiveCancelRef.current).not.toBeNull();
+    expect(deps.chatEventsPollTimerRef.current).toBeNull();
+    expect(chatEvents).not.toHaveBeenCalled();
+
+    liveHandlers!.onEvent({
+      kind: "message_delta",
+      data: { text: "hi" },
+      cursor: 4,
+    });
+    expect(deps.applied).toEqual(["message_delta"]);
+    expect(deps.lastAppliedCursorRef.current).toBe(4);
+  });
+
+  it("falls back to 1Hz poll when live watch open fails", async () => {
+    vi.useFakeTimers();
+    const deps = reattachDeps();
+    vi.spyOn(api, "chatEventsLive").mockImplementation(
+      (_opts, _onEvent, _onDone, onError) => {
+        queueMicrotask(() => onError?.(new Error("stream /api/chat/events -> 409")));
+        return () => {};
+      },
+    );
+    const chatEvents = vi.spyOn(api, "chatEvents").mockResolvedValue({
+      ok: true,
+      missed: false,
+      available: true,
+      generation: 1,
+      cursor: 2,
+      events: [{
+        cursor: 2,
+        kind: "message_delta",
+        data: { text: "fallback" },
+      }],
+    } as any);
+    vi.spyOn(api, "getSessionState").mockResolvedValue({
+      runners: { "sess-live": "running" },
+    } as any);
+
+    const { startChatEventsReattach } = createChatEventsReattach(deps as any);
+    await startChatEventsReattach();
+    // Drain live onError microtask + the first poll pull; do not run the
+    // interval forever (detached-busy keeps shouldPollChatEvents true).
+    await Promise.resolve();
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(chatEvents).toHaveBeenCalled();
+    expect(deps.applied).toContain("message_delta");
+    expect(deps.chatEventsLiveCancelRef.current).toBeNull();
+    expect(deps.chatEventsPollTimerRef.current).not.toBeNull();
+  });
+
+  it("drops live frames after session switch (no cross-session bleed)", async () => {
+    const deps = reattachDeps();
+    let onEvent: ((e: any) => void) | null = null;
+    vi.spyOn(api, "chatEventsLive").mockImplementation((_opts, handler) => {
+      onEvent = handler;
+      return () => {};
+    });
+    vi.spyOn(api, "getSessionState").mockResolvedValue({
+      runners: { "sess-live": "running" },
+    } as any);
+
+    const { startChatEventsReattach } = createChatEventsReattach(deps as any);
+    await startChatEventsReattach();
+
+    // Session switch bumps gen + sid fence before late live frames arrive.
+    deps.cachedSessionIdRef.current = "sess-other";
+    deps.streamGenRef.current = 2;
+    onEvent!({
+      kind: "action_result",
+      data: { id: "stale", status: "completed" },
+      cursor: 9,
+    });
+    expect(deps.applied).toEqual([]);
+    expect(deps.lastAppliedCursorRef.current).toBe(0);
+  });
+
+  it("settles detached-busy on live terminal without arming poll", async () => {
+    const deps = reattachDeps();
+    let handlers: {
+      onEvent: (e: any) => void;
+      onDone?: () => void;
+    } | null = null;
+    vi.spyOn(api, "chatEventsLive").mockImplementation(
+      (_opts, onEvent, onDone) => {
+        handlers = { onEvent, onDone };
+        return () => {};
+      },
+    );
+    const chatEvents = vi.spyOn(api, "chatEvents");
+    vi.spyOn(api, "getSessionState").mockResolvedValue({
+      runners: { "sess-live": "running" },
+    } as any);
+
+    const { startChatEventsReattach } = createChatEventsReattach(deps as any);
+    await startChatEventsReattach();
+    handlers!.onEvent({ kind: "assistant_done", data: {}, cursor: 5 });
+    handlers!.onDone?.();
+
+    expect(deps.applied).toEqual(["assistant_done"]);
+    expect(deps.detachedBusyRef.current).toBe(false);
+    expect(deps.chatEventsLiveCancelRef.current).toBeNull();
+    expect(deps.chatEventsPollTimerRef.current).toBeNull();
+    expect(chatEvents).not.toHaveBeenCalled();
   });
 });

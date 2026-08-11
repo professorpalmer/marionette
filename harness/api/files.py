@@ -622,19 +622,26 @@ def get_image(req_path: str, upload_dir: str) -> tuple[int, bytes | dict, str]:
 
 
 def get_workspace_files(svc: FileServices) -> tuple[int, dict]:
-    """GET /api/workspace/files — sorted, capped workspace file tree listing."""
+    """GET /api/workspace/files — sorted, capped workspace file + folder listing."""
     repo = svc.cfg.repo
     if not repo or not os.path.isdir(repo):
         return 200, {
-            "files": [], "truncated": False, "total": 0, "capped": 0,
+            "files": [], "folders": [], "truncated": False, "total": 0, "capped": 0,
         }
     files_list = []
+    folders_set: set[str] = set()
     try:
         path_cap = int(os.environ.get("HARNESS_WORKSPACE_FILES_CAP", "2000") or "2000")
     except ValueError:
         path_cap = 2000
     if path_cap < 1:
         path_cap = 2000
+    try:
+        folder_cap = int(os.environ.get("HARNESS_WORKSPACE_FOLDERS_CAP", "1000") or "1000")
+    except ValueError:
+        folder_cap = 1000
+    if folder_cap < 1:
+        folder_cap = 1000
     skip_dirs = {
         ".git", "node_modules", ".venv", ".codegraph", "dist", "build",
         ".pytest_cache", "__pycache__", ".mypy_cache", ".ruff_cache", ".idea",
@@ -644,6 +651,12 @@ def get_workspace_files(svc: FileServices) -> tuple[int, dict]:
     repo_abs = os.path.abspath(repo)
     for root, dirs, files in os.walk(repo_abs):
         dirs[:] = [d for d in dirs if d not in skip_dirs]
+        for d in dirs:
+            full_dir = os.path.join(root, d)
+            rel_dir = os.path.relpath(full_dir, repo_abs)
+            if rel_dir == "." or rel_dir.startswith(".."):
+                continue
+            folders_set.add(rel_dir.replace(os.sep, "/"))
         for f in files:
             full_path = os.path.join(root, f)
             rel_path = os.path.relpath(full_path, repo_abs)
@@ -655,13 +668,21 @@ def get_workspace_files(svc: FileServices) -> tuple[int, dict]:
     # Collect fully, then sort, then cap — so the kept set is the
     # alphabetical head, not an os.walk-order biased sample.
     files_list.sort()
+    folders_list = sorted(folders_set)
     total = len(files_list)
     truncated = total > path_cap
     if truncated:
         files_list = files_list[:path_cap]
+    folders_truncated = len(folders_list) > folder_cap
+    if folders_truncated:
+        folders_list = folders_list[:folder_cap]
     return 200, {
         "files": files_list,
+        "folders": folders_list,
         "truncated": truncated,
         "total": total,
         "capped": path_cap if truncated else total,
+        "folders_truncated": folders_truncated,
+        "folders_total": len(folders_set),
+        "folders_capped": folder_cap if folders_truncated else len(folders_list),
     }

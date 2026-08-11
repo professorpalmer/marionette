@@ -11,6 +11,7 @@ from harness.api.sse import (
     SseEventRing,
     SseServices,
     get_chat_events,
+    stream_chat_events,
 )
 from harness.api.streams import (
     resolve_stashed_chat_message,
@@ -110,6 +111,68 @@ def test_get_chat_events_uses_default_session():
     assert code == 200
     assert payload["ok"] is True
     assert payload["session_id"] == "active"
+
+
+def test_stream_chat_events_miss_returns_409_json():
+    """Live watch open miss → 409 so the client falls back to JSON poll."""
+    sent = {}
+
+    class _Handler:
+        def _send(self, status, body):
+            sent["status"] = status
+            sent["body"] = body
+
+    svc = _sse_svc(rings={}, gens={})
+    stream_chat_events(_Handler(), svc, "absent", 0, None)
+    assert sent["status"] == 409
+    import json
+    payload = json.loads(sent["body"])
+    assert payload["ok"] is False
+    assert payload["code"] == "ring_miss"
+
+
+def test_stream_chat_events_replays_then_terminals():
+    """Watch emits retained frames as SSE and closes after a terminal kind."""
+    ring = SseEventRing("s1", 1)
+    ring.pinned = True
+    ring.append("message_delta", {"text": "a"})
+    ring.append("assistant_done", {})
+    svc = _sse_svc(rings={("s1", 1): ring}, gens={"s1": 1})
+    chunks: list[bytes] = []
+
+    class _WFile:
+        def write(self, data):
+            chunks.append(data)
+
+        def flush(self):
+            pass
+
+    class _Handler:
+        def __init__(self):
+            self.wfile = _WFile()
+            self.headers = []
+
+        def send_response(self, code):
+            self.code = code
+
+        def send_header(self, k, v):
+            self.headers.append((k, v))
+
+        def _cors(self):
+            pass
+
+        def end_headers(self):
+            pass
+
+        def _send(self, status, body):
+            raise AssertionError(f"unexpected JSON send {status}")
+
+    stream_chat_events(_Handler(), svc, "s1", 0, 1)
+    blob = b"".join(chunks).decode()
+    assert "message_delta" in blob
+    assert "assistant_done" in blob
+    # Framing done after non-done terminal (Wave 3 transport settle).
+    assert '"kind": "done"' in blob or '"kind":"done"' in blob
 
 
 # ---------------------------------------------------------------------------

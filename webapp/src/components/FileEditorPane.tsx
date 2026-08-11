@@ -13,6 +13,11 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api } from "../lib/api";
 import { revealInFolderLabel, revealWorkspacePath } from "../lib/transport";
+import {
+  mutationEventPath,
+  pathsReferToSameFile,
+  subscribeWorkspaceMutations,
+} from "../lib/workspaceMutationEvents";
 
 interface FileEditorPaneProps {
   path: string;
@@ -170,6 +175,14 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
   const pendingJumpRef = useRef<{ line?: number; col?: number } | null>(
     line != null ? { line, col } : null
   );
+  /** Bump to re-read disk after an agent write to this path. */
+  const [reloadEpoch, setReloadEpoch] = useState(0);
+  const pathRef = useRef(path);
+  pathRef.current = path;
+  const isDirtyRef = useRef(isDirty);
+  isDirtyRef.current = isDirty;
+  const preserveScrollTopRef = useRef<number | null>(null);
+  const softReloadRef = useRef(false);
 
   const rawUrl = useMemo(() => api.fileRawUrl(path), [path]);
   const canPreview = kind === "markdown" || kind === "html";
@@ -283,27 +296,41 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
 
   useEffect(() => {
     let active = true;
+    const softReload = softReloadRef.current;
+    softReloadRef.current = false;
     async function loadFile() {
-      setLoading(true);
+      // Soft reload (agent mutated open buffer): keep scroll, skip full loading flash.
+      if (!softReload) {
+        setLoading(true);
+        setTextMode("code");
+      }
       setError(null);
       setBinaryMeta(null);
       setContentTruncated(false);
-      setTextMode("code");
       try {
         const res = await api.readFile(path);
         if (!active) return;
         if (res.ok) {
           const detected = detectEditorKind(path, false);
           setKind(detected);
-          // HTML defaults to preview; markdown stays in code until toggled.
-          setTextMode(detected === "html" ? "preview" : "code");
+          if (!softReload) {
+            // HTML defaults to preview; markdown stays in code until toggled.
+            setTextMode(detected === "html" ? "preview" : "code");
+          }
           setContent(res.content || "");
           setOriginalContent(res.content || "");
           setReadOnly(!!res.truncated);
           setContentTruncated(!!res.truncated);
           setIsDirty(false);
           onDirtyChangeRef.current(false);
-          if (pendingJumpRef.current?.line != null) {
+          const restoreScroll = preserveScrollTopRef.current;
+          preserveScrollTopRef.current = null;
+          if (restoreScroll != null) {
+            requestAnimationFrame(() => {
+              const view = editorViewRef.current;
+              if (view) view.scrollDOM.scrollTop = restoreScroll;
+            });
+          } else if (pendingJumpRef.current?.line != null) {
             requestAnimationFrame(() => {
               const view = editorViewRef.current;
               const jump = pendingJumpRef.current;
@@ -329,14 +356,17 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
           setIsDirty(false);
           onDirtyChangeRef.current(false);
           setError(null);
+          preserveScrollTopRef.current = null;
         } else {
           setKind(detectEditorKind(path, false));
           setError(res.error || "Failed to read file");
+          preserveScrollTopRef.current = null;
         }
       } catch (err: any) {
         if (active) {
           setError(err.message || "Error reading file contents");
         }
+        preserveScrollTopRef.current = null;
       } finally {
         if (active) {
           setLoading(false);
@@ -347,7 +377,23 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
     return () => {
       active = false;
     };
-  }, [path]);
+  }, [path, reloadEpoch]);
+
+  // Agent write/edit/hash (and other path-bearing mutation events): refresh the
+  // open buffer from disk when the mutated path matches this tab.
+  useEffect(() => {
+    return subscribeWorkspaceMutations((event) => {
+      const mutated = mutationEventPath(event);
+      if (!mutated) return;
+      if (!pathsReferToSameFile(mutated, pathRef.current)) return;
+      // Preserve unsaved local edits; user can reload via re-open if needed.
+      if (isDirtyRef.current) return;
+      const view = editorViewRef.current;
+      softReloadRef.current = true;
+      preserveScrollTopRef.current = view?.scrollDOM.scrollTop ?? 0;
+      setReloadEpoch((n) => n + 1);
+    });
+  }, []);
 
   const handleSave = async (currentContent: string = content) => {
     if (saving || !isDirty || !isTextEditable) return;

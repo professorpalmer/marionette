@@ -1,6 +1,6 @@
 /**
- * Mid-turn chatEvents reattach (pull + light poll) for session-switch / bridge.
- * Conversation supplies refs / API / chrome setters.
+ * Mid-turn chatEvents reattach for session-switch / bridge.
+ * Prefers a live SSE ring watch; falls back to JSON pull + 1Hz poll.
  */
 
 import { api } from "../../lib/api";
@@ -44,6 +44,8 @@ export type ChatEventsReattachDeps = {
   itemsRef: { current: Item[] };
   transcriptFpRef: { current: string };
   chatEventsPollTimerRef: { current: number | null };
+  /** Cancel for live ``?watch=1`` SSE; cleared with poll on session switch/Stop. */
+  chatEventsLiveCancelRef: { current: null | (() => void) };
   applyStreamEventRef: { current: (ev: { kind: string; data?: any }) => void };
   flushTypewriterRef: { current: () => void };
   maybeRunQueuedResumeRef: { current: () => void };
@@ -73,6 +75,7 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
     itemsRef,
     transcriptFpRef,
     chatEventsPollTimerRef,
+    chatEventsLiveCancelRef,
     applyStreamEventRef,
     flushTypewriterRef,
     maybeRunQueuedResumeRef,
@@ -83,6 +86,13 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
     setTurnOpen,
     setStatus,
   } = deps;
+
+  const fenceOk = () => shouldApplyReattachFrame({
+    streamGen: streamGenRef.current,
+    reattachGen,
+    cachedSessionId: cachedSessionIdRef.current,
+    reattachSid,
+  });
 
   const hydrateDurableTranscript = async (): Promise<void> => {
     // Busy-poll skips disk refresh while chatEvents poll is armed — await a
@@ -116,15 +126,10 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
   const pullChatEvents = async (missRetried = false): Promise<boolean> => {
     if (cancelled()) return false;
     if (loadGen !== transcriptLoadGenRef.current) return false;
-    if (!shouldApplyReattachFrame({
-      streamGen: streamGenRef.current,
-      reattachGen,
-      cachedSessionId: cachedSessionIdRef.current,
-      reattachSid,
-    })) {
-      return false;
-    }
+    if (!fenceOk()) return false;
     if (localStreamActiveRef.current || userStoppedRef.current) return false;
+    // Live watch owns the turn — do not double-apply via poll.
+    if (chatEventsLiveCancelRef.current != null) return false;
     try {
       const replay = await api.chatEvents({
         session: reattachSid,
@@ -135,15 +140,9 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
       });
       if (cancelled()) return false;
       if (loadGen !== transcriptLoadGenRef.current) return false;
-      if (!shouldApplyReattachFrame({
-        streamGen: streamGenRef.current,
-        reattachGen,
-        cachedSessionId: cachedSessionIdRef.current,
-        reattachSid,
-      })) {
-        return false;
-      }
+      if (!fenceOk()) return false;
       if (localStreamActiveRef.current || userStoppedRef.current) return false;
+      if (chatEventsLiveCancelRef.current != null) return false;
 
       if (isChatEventReplayMiss(replay)) {
         const prevGen = ringGenerationRef.current;
@@ -183,14 +182,7 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
       let sawTerminal = false;
       const frames = Array.isArray(replay.events) ? replay.events : [];
       for (const frame of frames) {
-        if (!shouldApplyReattachFrame({
-          streamGen: streamGenRef.current,
-          reattachGen,
-          cachedSessionId: cachedSessionIdRef.current,
-          reattachSid,
-        })) {
-          return false;
-        }
+        if (!fenceOk()) return false;
         applyStreamEventRef.current(chatFrameToStreamEvent(frame));
         if (isTerminalStreamKind(frame.kind)) sawTerminal = true;
       }
@@ -226,6 +218,119 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
     }
   };
 
+  const startChatEventsPoll = () => {
+    if (cancelled() || localStreamActiveRef.current || userStoppedRef.current) return;
+    if (chatEventsLiveCancelRef.current != null) return;
+    if (chatEventsPollTimerRef.current != null) return;
+    void pullChatEvents().then((keepPolling) => {
+      if (!keepPolling || cancelled()) return;
+      if (streamGenRef.current !== reattachGen) return;
+      if (chatEventsLiveCancelRef.current != null) return;
+      if (chatEventsPollTimerRef.current != null) return;
+      chatEventsPollTimerRef.current = window.setInterval(() => {
+        void pullChatEvents().then((cont) => {
+          if (!cont) clearChatEventsPoll();
+        });
+      }, CHAT_EVENTS_POLL_MS);
+    });
+  };
+
+  const settleLiveTerminal = () => {
+    flushTypewriterRef.current();
+    detachedBusyRef.current = false;
+    clearChatEventsPoll();
+    maybeRunQueuedResumeRef.current();
+    maybeDrainQueueRef.current();
+  };
+
+  /**
+   * Prefer live ``?watch=1`` SSE while the turn is open.
+   * Returns true when a live cancel was installed (poll must wait for
+   * onError/onDone). Open miss / transport error falls back to 1Hz poll.
+   */
+  const startLiveChatEventsWatch = (): boolean => {
+    if (cancelled() || localStreamActiveRef.current || userStoppedRef.current) {
+      return false;
+    }
+    if (!fenceOk()) return false;
+    if (chatEventsLiveCancelRef.current != null) return true;
+    // Already on poll fallback — do not open a racing live stream.
+    if (chatEventsPollTimerRef.current != null) return false;
+
+    let sawTerminal = false;
+    let appliedAny = false;
+    let settled = false;
+    // Install cancel before stream callbacks can fire (sync onError/onDone).
+    let streamCancel: (() => void) | null = null;
+    const cancel = () => { streamCancel?.(); };
+    chatEventsLiveCancelRef.current = cancel;
+    const finishLiveCancel = () => {
+      if (chatEventsLiveCancelRef.current === cancel) {
+        chatEventsLiveCancelRef.current = null;
+      }
+    };
+    const fallBackToPoll = () => {
+      if (settled || cancelled()) return;
+      if (!fenceOk()) return;
+      if (localStreamActiveRef.current || userStoppedRef.current) return;
+      if (sawTerminal) return;
+      finishLiveCancel();
+      startChatEventsPoll();
+    };
+
+    streamCancel = api.chatEventsLive(
+      {
+        session: reattachSid,
+        since: lastAppliedCursorRef.current,
+        ...(ringGenerationRef.current != null
+          ? { generation: ringGenerationRef.current }
+          : {}),
+      },
+      (ev) => {
+        if (cancelled() || settled) return;
+        if (!fenceOk()) return;
+        if (localStreamActiveRef.current || userStoppedRef.current) return;
+        // Framing done is handled by transport onDone (not delivered here).
+        const kind = String(ev?.kind || "");
+        if (kind === "done") return;
+        appliedAny = true;
+        if (typeof (ev as { cursor?: number }).cursor === "number") {
+          const c = (ev as { cursor: number }).cursor;
+          if (c > lastAppliedCursorRef.current) {
+            lastAppliedCursorRef.current = c;
+          }
+        }
+        applyStreamEventRef.current(chatFrameToStreamEvent(ev));
+        if (isTerminalStreamKind(kind)) sawTerminal = true;
+      },
+      () => {
+        // Wave 3: framing done / body EOF — settle only when we saw a terminal.
+        // Early drop without terminal → poll fallback.
+        finishLiveCancel();
+        if (settled || cancelled()) return;
+        if (!fenceOk()) return;
+        if (sawTerminal) {
+          settled = true;
+          settleLiveTerminal();
+          return;
+        }
+        // Open miss / mid-watch disconnect: keep catching up via poll.
+        fallBackToPoll();
+      },
+      () => {
+        finishLiveCancel();
+        if (settled || cancelled()) return;
+        if (sawTerminal) {
+          settled = true;
+          settleLiveTerminal();
+          return;
+        }
+        fallBackToPoll();
+      },
+    );
+    return true;
+  };
+
   const startChatEventsReattach = async () => {
     if (cancelled() || localStreamActiveRef.current || userStoppedRef.current) return;
     let running = detachedBusyRef.current;
@@ -245,17 +350,12 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
       }
     }
     if (!running) return;
-
-    const keepPolling = await pullChatEvents();
-    if (!keepPolling || cancelled()) return;
     if (streamGenRef.current !== reattachGen) return;
-    if (chatEventsPollTimerRef.current != null) return;
-    chatEventsPollTimerRef.current = window.setInterval(() => {
-      void pullChatEvents().then((cont) => {
-        if (!cont) clearChatEventsPoll();
-      });
-    }, CHAT_EVENTS_POLL_MS);
+
+    // Prefer live SSE while the turn is open; poll only if live attach fails.
+    if (startLiveChatEventsWatch()) return;
+    startChatEventsPoll();
   };
 
-  return { pullChatEvents, startChatEventsReattach };
+  return { pullChatEvents, startChatEventsReattach, startLiveChatEventsWatch };
 }

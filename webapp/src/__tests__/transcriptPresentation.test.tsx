@@ -2,10 +2,13 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   TranscriptList,
+  activityGroupStableId,
+  clearActivityFoldPrefs,
   collapseDuplicateFailedRoutingItems,
   collectIntermediateAssistantItems,
   normalizePlainTextNarration,
   normalizeReasoningPreview,
+  resolveActivityGroupOpen,
   type Item,
 } from "../components/TranscriptList";
 
@@ -460,6 +463,140 @@ describe("transcript presentation contract", () => {
     const failedLabels = screen.getAllByText(/swarm failed/i);
     expect(failedLabels).toHaveLength(2);
     expect(screen.getAllByText(/No model in registry has all required tags/i)).toHaveLength(1);
+  });
+});
+
+describe("investigation UX residual debts (nested / fold prefs / workerStream)", () => {
+  afterEach(() => {
+    clearActivityFoldPrefs();
+  });
+
+  it("shows nested worker actions when ActivityGroup is open without expanding the parent card", () => {
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "implement the fix" } },
+      {
+        kind: "card",
+        card: {
+          id: "run-impl-1",
+          goal: "ship nested tools",
+          cwd: null,
+          kind: "run_implement",
+          running: false,
+          open: false,
+          actions: [
+            {
+              action_id: "nested-read-1",
+              kind: "read_file",
+              goal: "webapp/src/App.tsx",
+              status: "complete",
+            },
+            {
+              action_id: "nested-edit-1",
+              kind: "edit_file",
+              goal: "webapp/src/App.tsx",
+              status: "complete",
+            },
+          ],
+          result: { status: "ok" },
+        },
+      },
+      { kind: "msg", msg: { role: "assistant", text: "Done." } },
+    ];
+
+    render(<TranscriptList {...listProps(items)} />);
+    // Kind buckets count nested rows (file + command + edit) while the fold
+    // is closed — the lying-count bug was that those rows stayed invisible.
+    const foldBtn = screen.getByRole("button", { name: /Explored/i });
+    expect(foldBtn.textContent || "").toMatch(/1 file.*1 command.*1 edit/);
+    // Nested rows must stay unmounted until the investigation fold opens.
+    expect(screen.queryAllByTestId("nested-worker-action")).toHaveLength(0);
+
+    fireEvent.click(foldBtn);
+    // One expand level: opening Investigating reveals nested tools even though
+    // the parent run_implement card stays open:false.
+    const nested = screen.getAllByTestId("nested-worker-action");
+    expect(nested).toHaveLength(2);
+    expect(nested[0]).toHaveAttribute("data-action-id", "nested-read-1");
+    expect(nested[1]).toHaveAttribute("data-action-id", "nested-edit-1");
+  });
+
+  it("clearActivityFoldPrefs drops sticky open state after a user toggle", () => {
+    const card: Extract<Item, { kind: "card" }> = {
+      kind: "card",
+      card: {
+        id: "fold-pref-card",
+        goal: "auth.ts",
+        cwd: null,
+        kind: "read_file",
+        running: false,
+        open: false,
+        result: { status: "ok" },
+      },
+    };
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "check auth" } },
+      card,
+    ];
+    const groupId = activityGroupStableId([card], 0);
+
+    render(<TranscriptList {...listProps(items)} />);
+    fireEvent.click(screen.getByRole("button", { name: /Explored/i }));
+    expect(resolveActivityGroupOpen(groupId)).toBe(true);
+
+    clearActivityFoldPrefs();
+    expect(resolveActivityGroupOpen(groupId)).toBe(false);
+  });
+
+  it("open fold renders absorbed workerStream via Bubble ticker, not muted pre", () => {
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "implement" } },
+      {
+        kind: "card",
+        card: {
+          id: "c-worker-preview",
+          goal: "run implement",
+          cwd: null,
+          kind: "run_implement",
+          running: true,
+          open: false,
+        },
+      },
+      {
+        kind: "msg",
+        msg: {
+          role: "assistant",
+          text: "worker live tokens line one\nworker live tokens line two",
+          streaming: true,
+          workerStream: true,
+        },
+      },
+    ];
+
+    const absorbed = collectIntermediateAssistantItems(items, true);
+    expect(
+      [...absorbed].some(
+        (it) => it.kind === "msg" && it.msg.workerStream === true,
+      ),
+    ).toBe(true);
+
+    render(
+      <TranscriptList
+        {...listProps(items)}
+        status="awaiting_swarm"
+        turnOpen
+      />,
+    );
+    // Fold stays default-closed — do not force-open for workerStream.
+    expect(screen.queryByText(/worker streaming/i)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /Investigating/i }));
+    // Bubble capped ticker chrome (label + tokens), not a muted narration <pre>.
+    expect(screen.getByText(/worker streaming/i)).toBeTruthy();
+    expect(screen.getByText(/worker live tokens line one/i)).toBeTruthy();
+    const mutedPres = document.querySelectorAll("pre.text-muted\\/90");
+    for (const pre of mutedPres) {
+      expect(pre.textContent || "").not.toMatch(/worker live tokens/);
+    }
   });
 });
 

@@ -1235,11 +1235,13 @@ describe("SwarmPane repo-scoped dismiss", () => {
 describe("SwarmPane harness-open-swarm-job deep-link", () => {
   const REPO = "C:\\Users\\pwall\\Projects\\deep-link";
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
     localStorage.clear();
     sessionStorage.clear();
     clearSWRCache();
+    const { clearPendingSwarmOpenJob } = await import("../lib/pendingSwarmOpenJob");
+    clearPendingSwarmOpenJob();
     mockArtifacts.mockResolvedValue([]);
     Element.prototype.scrollIntoView = vi.fn();
     dispatchProjectSelected(REPO);
@@ -1281,6 +1283,38 @@ describe("SwarmPane harness-open-swarm-job deep-link", () => {
     expect(stored[REPO] || []).not.toContain("job_abcdef012345");
     await waitFor(() => {
       expect(mockArtifacts).toHaveBeenCalledWith("job_abcdef012345");
+    });
+  });
+
+  it("consumes a pending open-job queued before mount", async () => {
+    const { queuePendingSwarmOpenJob, peekPendingSwarmOpenJob } = await import(
+      "../lib/pendingSwarmOpenJob"
+    );
+    localStorage.setItem(
+      "swarm.dismissed.v2",
+      JSON.stringify({ [REPO]: ["job_abcdef012345"] }),
+    );
+    mockSwarmLive.mockResolvedValue(
+      finishedJob("job_abcdef012345", "Late-mount deep-link target", {
+        artifacts_complete: false,
+        artifacts: [],
+      }),
+    );
+
+    // openAgentSwarmJob raced ahead of SwarmPane mount — only the queue remains.
+    queuePendingSwarmOpenJob("job_abcdef012345");
+    expect(peekPendingSwarmOpenJob()).toBe("job_abcdef012345");
+
+    render(<SwarmPane />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Late-mount deep-link target")).toBeInTheDocument();
+    });
+    expect(peekPendingSwarmOpenJob()).toBeNull();
+    const row = document.querySelector('[data-job-id="job_abcdef012345"]');
+    expect(row).toBeTruthy();
+    await waitFor(() => {
+      expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
     });
   });
 });

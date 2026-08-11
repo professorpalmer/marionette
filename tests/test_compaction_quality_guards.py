@@ -163,6 +163,65 @@ def test_min_compactable_floor_skips_llm(monkeypatch):
     assert pilot.chat_calls == []
     assert session._history == original
     assert MIN_COMPACTABLE_TOKENS == 5000
+    assert session._last_compaction_attempt.get("reason") == "below_min_compactable"
+
+
+def test_min_floor_check_exception_fails_closed(monkeypatch):
+    """Exception in the min-compactable path must refuse, not call the LLM."""
+    session = _session(budget=2000)
+    pilot = _RecordingPilot(return_text=_GOOD_SUMMARY)
+    session.pilot = pilot  # type: ignore[assignment]
+    _fat_history(session, pairs=12, pad=200)
+    original = list(session._history)
+
+    def _boom():
+        raise RuntimeError("floor check failed")
+
+    monkeypatch.setattr("harness.compaction_mixin._min_compactable_tokens", _boom)
+    events = list(session._maybe_compact_history(force=True))
+
+    assert events == []
+    assert pilot.chat_calls == []
+    assert session._history == original
+    attempt = getattr(session, "_last_compaction_attempt", {}) or {}
+    assert attempt.get("reason") == "below_min_compactable"
+    assert attempt.get("detail") == "min_floor_check_failed"
+
+
+def test_insufficient_reduction_check_exception_fails_closed(monkeypatch):
+    """Exception estimating summary tokens must abort, not inject the summary."""
+    monkeypatch.setattr("harness.compaction_mixin.MIN_COMPACTABLE_TOKENS", 1)
+    session = _session(budget=2000)
+    pilot = _RecordingPilot(return_text=_GOOD_SUMMARY)
+    session.pilot = pilot  # type: ignore[assignment]
+    _fat_history(session, pairs=12, pad=200)
+    original = list(session._history)
+
+    real_estimate = session._estimate_context_tokens_for_list
+    calls = {"n": 0}
+
+    def _flaky(history_list):
+        calls["n"] += 1
+        # After the summarizer returns, reduction guard estimates [summary_msg].
+        if (
+            isinstance(history_list, list)
+            and len(history_list) == 1
+            and history_list[0].get("_compressed_summary")
+        ):
+            raise RuntimeError("reduction check failed")
+        return real_estimate(history_list)
+
+    monkeypatch.setattr(session, "_estimate_context_tokens_for_list", _flaky)
+    events = list(session._maybe_compact_history(force=True))
+
+    assert pilot.chat_calls  # summarizer ran
+    aborted = [e for e in events if e.kind == "compaction"]
+    assert len(aborted) == 1
+    assert aborted[0].data.get("aborted") is True
+    assert aborted[0].data.get("reason") == "insufficient_reduction"
+    assert session._history == original
+    attempt = getattr(session, "_last_compaction_attempt", {}) or {}
+    assert attempt.get("detail") == "insufficient_reduction_check_failed"
 
 
 def test_emergency_compaction_bypasses_min_floor(monkeypatch):

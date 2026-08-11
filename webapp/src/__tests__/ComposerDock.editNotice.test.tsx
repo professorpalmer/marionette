@@ -48,6 +48,7 @@ function renderDockWithNotice(
       contextUsage={null}
       mentionSearch={null}
       filteredFiles={[]}
+      filteredFolders={[]}
       symbolResults={[]}
       mentionListingCap={null}
       selectedFileIndex={0}
@@ -98,6 +99,7 @@ function renderDockWithNotice(
       handleKeyDown={noop}
       handlePaste={noop}
       insertMention={noop}
+      insertFolder={noop}
       insertSymbol={noop}
       insertSlashCommand={noop}
       handleQueueAdd={noop}

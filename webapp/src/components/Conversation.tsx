@@ -9,11 +9,11 @@ import {
 } from "./TranscriptList";
 import {
   deriveBusyProgress,
-  turnHasInvestigationActivity,
   turnHasLiveInvestigation,
   turnLooksAnswerComplete,
 } from "../lib/turnProgress";
 import { renameDefaultSessionIfNeeded } from "../lib/sessionTitle";
+import { notifyWorkspaceMutated } from "../lib/workspaceMutationEvents";
 
 import { writeTranscriptCache } from "./conversation/transcriptCache";
 import { transcriptResponseToItems } from "./conversation/transcriptItems";
@@ -33,6 +33,7 @@ import {
   appendStreamingTextToItems,
 } from "./conversation/streamBubbles";
 import { derivePillStatus } from "./conversation/pillStatus";
+import { isAgentLoopOpen } from "./conversation/runnersBusy";
 import {
   applySwarmResultToItems,
   finalizeOrphanSwarmPills,
@@ -46,6 +47,7 @@ import {
 import {
   classifyLocalSlashCommand,
   composerEnterAction,
+  composerEnterBusy,
   editNoticeAfterSend,
   EDIT_BUSY_PROGRESS_NOTICE,
   executeSendGate,
@@ -54,10 +56,14 @@ import {
   formatHelpSlashReply,
   formatRenderCommandErrorMessage,
   formatSteerErrorMessage,
+  localSlashChromeAction,
+  localSlashPaletteAction,
   runEditMessageFlow,
   shouldBlockEmptySend,
   userOrdinalBeforeIndex,
 } from "./conversation/composerSend";
+import { runCommandPaletteAction } from "../lib/commandPalette";
+import { focusSettingsPage } from "./SettingsShell";
 import {
   FEED_REPIN_THRESHOLD_PX,
   nextFeedPinState,
@@ -76,11 +82,13 @@ import {
 import ConversationChatColumn from "./conversation/ConversationChatColumn";
 import {
   appendMentionsToInput,
+  buildFolderInsert,
   buildMentionInsert,
   buildSymbolInsert,
   clampSelectIndex,
   cycleSelectIndex,
   detectComposerTrigger,
+  filterMentionPaths,
   filterSlashCommands,
   mentionTokenForDroppedPath,
 } from "./conversation/composerInput";
@@ -150,6 +158,8 @@ export default function Conversation({
   const ringGenerationRef = useRef<number | undefined>(undefined);
   // setInterval handle for light chatEvents poll while detached-busy (no EventSource).
   const chatEventsPollTimerRef = useRef<number | null>(null);
+  // Cancel for live ``/api/chat/events?watch=1`` reattach (preferred over 1Hz poll).
+  const chatEventsLiveCancelRef = useRef<null | (() => void)>(null);
   // Shared live-SSE + reattach event applicator (assigned where handlers live).
   const applyStreamEventRef = useRef<(ev: { kind: string; data?: any }) => void>(() => {});
   const flushTypewriterRef = useRef<() => void>(() => {});
@@ -165,6 +175,11 @@ export default function Conversation({
     if (chatEventsPollTimerRef.current != null) {
       window.clearInterval(chatEventsPollTimerRef.current);
       chatEventsPollTimerRef.current = null;
+    }
+    if (chatEventsLiveCancelRef.current) {
+      const cancelLive = chatEventsLiveCancelRef.current;
+      chatEventsLiveCancelRef.current = null;
+      cancelLive();
     }
   };
 
@@ -331,12 +346,7 @@ export default function Conversation({
   // awaiting_swarm: model turn closed after background dispatch, but workers
   // still fly — Cursor-style "Still working…" until keep-alive resume.
   const [turnOpen, setTurnOpen] = useState(false);
-  const agentLoopOpen =
-    turnOpen
-    || status === "thinking"
-    || status === "executing"
-    || status === "streaming"
-    || status === "awaiting_swarm";
+  const agentLoopOpen = isAgentLoopOpen(turnOpen, status);
   const liveInvestigation = turnHasLiveInvestigation(items, agentLoopOpen);
   const [waitHint, setWaitHint] = useState<string | null>(null);
   const busyProgress = deriveBusyProgress(items, status, busyElapsedMs, {
@@ -348,24 +358,18 @@ export default function Conversation({
   const [transcriptStale, setTranscriptStale] = useState(false);
   const transcriptStaleRef = useRef(false);
   useEffect(() => { transcriptStaleRef.current = transcriptStale; }, [transcriptStale]);
-  // T5: pure-chat only — tool turns never early-idle (see turnLooksAnswerComplete).
-  // Never early-idle while background jobs still hold await chrome.
-  const answerChromeIdle =
-    status !== "awaiting_swarm"
-    && !liveInvestigation
-    && !turnHasInvestigationActivity(items)
-    && !turnOpen
-    && turnLooksAnswerComplete(items)
-    && (status === "thinking" || status === "streaming");
   // Runner/SSE can briefly report idle while a card is still running (or the
-  // reverse). Prefer the investigation / open-turn truth for the header pill.
+  // reverse). Prefer investigation / open-turn truth for the header pill.
+  // Idle/busy shares composerBusy / agentLoopOpen — do not early-idle the
+  // StatusPill on answer-complete SSE lag while Steer/Stop remain.
   const pillStatus: string = derivePillStatus({
     transcriptStale,
-    answerChromeIdle,
+    answerChromeIdle: false,
     liveInvestigation,
     turnOpen,
     status,
     awaitingSwarm: status === "awaiting_swarm",
+    agentLoopOpen,
   });
   // Same latch as agentLoopOpen — Steer/Stop stay up for the whole turn.
   const composerBusy = agentLoopOpen;
@@ -532,10 +536,12 @@ export default function Conversation({
 
   // Ergonomics states
   const [allFiles, setAllFiles] = useState<string[]>([]);
+  const [allFolders, setAllFolders] = useState<string[]>([]);
   const [mentionListingCap, setMentionListingCap] = useState<MentionListingCap | null>(null);
   const [mentionSearch, setMentionSearch] = useState<string | null>(null);
   const [mentionIndex, setMentionIndex] = useState<number>(-1);
   const [filteredFiles, setFilteredFiles] = useState<string[]>([]);
+  const [filteredFolders, setFilteredFolders] = useState<string[]>([]);
   const [selectedFileIndex, setSelectedFileIndex] = useState<number>(0);
   const [symbolResults, setSymbolResults] = useState<{ name: string; kind: string; path: string; line: number }[]>([]);
   const [codegraphStatus, setCodegraphStatus] = useState<string | null>(null);
@@ -979,6 +985,7 @@ export default function Conversation({
     lastAppliedCursorRef,
     ringGenerationRef,
     chatEventsPollTimerRef,
+    chatEventsLiveCancelRef,
     applyStreamEventRef,
     flushTypewriterRef,
     maybeRunQueuedResumeRef,
@@ -988,6 +995,7 @@ export default function Conversation({
     localStreamActiveRef,
     detachedBusyRef,
     userStoppedRef,
+    turnSettledRef,
     runnerBusyPollGenRef,
     typeRafRef,
     typeBufRef,
@@ -1016,6 +1024,7 @@ export default function Conversation({
     userStoppedRef,
     runnerBusyPollGenRef,
     chatEventsPollTimerRef,
+    chatEventsLiveCancelRef,
     ensureChatEventsReattachRef,
     setItems,
     setTranscriptStale,
@@ -1057,6 +1066,68 @@ export default function Conversation({
     return () => window.removeEventListener("harness-focus-input", onFocus);
   }, []);
 
+  // Command palette (and other chrome) can clear/compact without going through
+  // the composer slash path. Clear must stay distinct from harness-new-session.
+  useEffect(() => {
+    const onClearTranscript = () => {
+      setEditingIndex(null);
+      setItems([]);
+      itemsRef.current = [];
+      transcriptFpRef.current = "";
+      if (activeSessionId) writeTranscriptCache(activeSessionId, []);
+      setTurnOpen(false);
+      setWaitHint(null);
+      setStatus("idle");
+      setCompactingStatus(null);
+    };
+    const onCompactSession = () => {
+      const thinkingId = newThinkingId();
+      setEditingIndex(null);
+      setStatus("thinking");
+      setItems((p) => [
+        ...p,
+        {
+          kind: "thinking",
+          text: "Compacting session context on backend...",
+          id: thinkingId,
+        },
+      ]);
+      api.compactSession()
+        .then((res) => {
+          setStatus("done");
+          setItems((p) => [
+            ...p.filter((it) => !(it.kind === "thinking" && it.id === thinkingId)),
+            {
+              kind: "msg",
+              msg: {
+                role: "assistant",
+                text: formatCompactCompleteMessage(res.before_tokens, res.after_tokens),
+              },
+            },
+          ]);
+        })
+        .catch((err) => {
+          setStatus("error");
+          setItems((p) => [
+            ...p.filter((it) => !(it.kind === "thinking" && it.id === thinkingId)),
+            {
+              kind: "msg",
+              msg: {
+                role: "assistant",
+                text: formatCompactErrorMessage(err),
+              },
+            },
+          ]);
+        });
+    };
+    window.addEventListener("harness-clear-transcript", onClearTranscript);
+    window.addEventListener("harness-compact-session", onCompactSession);
+    return () => {
+      window.removeEventListener("harness-clear-transcript", onClearTranscript);
+      window.removeEventListener("harness-compact-session", onCompactSession);
+    };
+  }, [activeSessionId]);
+
   // Auto-grow textarea (Cursor-like). Keep overflow hidden until we hit the
   // max height -- overflow-y-auto on an empty/short field paints a useless
   // Windows classic scrollbar gutter inside the rounded composer.
@@ -1070,12 +1141,13 @@ export default function Conversation({
     ta.style.overflowY = contentH > maxH ? "auto" : "hidden";
   }, [input]);
 
-  // Load workspace files for @-mention dropdown
+  // Load workspace files + folders for @-mention dropdown
   useEffect(() => {
     api.getWorkspaceFiles()
       .then((res) => {
         if (res && res.files) {
           setAllFiles(res.files);
+          setAllFolders(Array.isArray(res.folders) ? res.folders : []);
           setMentionListingCap(
             res.truncated
               ? { total: res.total, capped: res.capped }
@@ -1088,17 +1160,17 @@ export default function Conversation({
       });
   }, [activeSessionId]);
 
-  // Filter files based on @-mention search text
+  // Filter files + folders based on @-mention search text (capped; no full tree dump)
   useEffect(() => {
     if (mentionSearch !== null) {
-      const query = mentionSearch.toLowerCase();
-      const filtered = allFiles.filter(f => f.toLowerCase().includes(query)).slice(0, 10);
-      setFilteredFiles(filtered);
+      setFilteredFiles(filterMentionPaths(allFiles, mentionSearch, 10));
+      setFilteredFolders(filterMentionPaths(allFolders, mentionSearch, 8));
       setSelectedFileIndex(0);
     } else {
       setFilteredFiles([]);
+      setFilteredFolders([]);
     }
-  }, [mentionSearch, allFiles]);
+  }, [mentionSearch, allFiles, allFolders]);
 
   // Fetch symbol suggestions with debounce to avoid hammering
   useEffect(() => {
@@ -1127,11 +1199,11 @@ export default function Conversation({
 
   // Keep selectedFileIndex bounded within combined total mentions count
   useEffect(() => {
-    const total = filteredFiles.length + symbolResults.length;
+    const total = filteredFiles.length + filteredFolders.length + symbolResults.length;
     if (selectedFileIndex >= total && total > 0) {
       setSelectedFileIndex(clampSelectIndex(selectedFileIndex, total));
     }
-  }, [filteredFiles, symbolResults, selectedFileIndex]);
+  }, [filteredFiles, filteredFolders, symbolResults, selectedFileIndex]);
 
   const insertMention = (fileName: string) => {
     if (mentionIndex === -1) return;
@@ -1140,6 +1212,26 @@ export default function Conversation({
       mentionIndex,
       taRef.current?.selectionStart || mentionIndex,
       fileName,
+    );
+    setInput(next);
+    setMentionSearch(null);
+    setMentionIndex(-1);
+
+    setTimeout(() => {
+      if (taRef.current) {
+        taRef.current.focus();
+        taRef.current.setSelectionRange(cursor, cursor);
+      }
+    }, 10);
+  };
+
+  const insertFolder = (folderPath: string) => {
+    if (mentionIndex === -1) return;
+    const { next, cursor } = buildFolderInsert(
+      input,
+      mentionIndex,
+      taRef.current?.selectionStart || mentionIndex,
+      folderPath,
     );
     setInput(next);
     setMentionSearch(null);
@@ -1302,7 +1394,7 @@ export default function Conversation({
         mentions.push(insideToken);
         continue;
       }
-      // Outside repo, or inside-repo path with spaces: upload then @-mention.
+      // Outside repo: upload then @-mention (quoted when the path has spaces).
       try {
         const uploaded = await api.uploadImage(file); // generic file upload endpoint
         const token = mentionTokenForDroppedPath({
@@ -1311,7 +1403,7 @@ export default function Conversation({
           uploadedPath: uploaded.path,
         });
         if (token) mentions.push(token);
-        else flashUploadError("Dropped file path has spaces -- rename and retry");
+        else flashUploadError("Dropped file could not be attached");
       } catch (err) {
         console.error("Failed to upload dropped file:", err);
         flashUploadError("File upload failed");
@@ -1351,6 +1443,10 @@ export default function Conversation({
         setInput(result.prefill);
         setCanRevertEdit(true);
         setEditNotice(result.notice);
+        // Checkpoint restore mutates the worktree; refresh Files / SCM / editors.
+        if (result.workspace_restored) {
+          notifyWorkspaceMutated();
+        }
         setTimeout(() => taRef.current?.focus(), 10);
       })
       .finally(() => setEditBusy(false));
@@ -1375,6 +1471,9 @@ export default function Conversation({
         setInput("");
         setCanRevertEdit(false);
         setEditNotice(null);
+        if (res.workspace_restored) {
+          notifyWorkspaceMutated();
+        }
       })
       .catch((err) => {
         setEditNotice((err as Error)?.message || "Revert failed.");
@@ -1410,7 +1509,8 @@ export default function Conversation({
       }
     }
 
-    const totalMentions = filteredFiles.length + symbolResults.length;
+    const totalMentions =
+      filteredFiles.length + filteredFolders.length + symbolResults.length;
     if (mentionSearch !== null && totalMentions > 0) {
       if (e.key === "ArrowDown") {
         setSelectedFileIndex((prev) => cycleSelectIndex(prev, 1, totalMentions));
@@ -1425,8 +1525,14 @@ export default function Conversation({
       if (e.key === "Enter") {
         if (selectedFileIndex < filteredFiles.length) {
           insertMention(filteredFiles[selectedFileIndex]);
+        } else if (
+          selectedFileIndex < filteredFiles.length + filteredFolders.length
+        ) {
+          const folderIdx = selectedFileIndex - filteredFiles.length;
+          insertFolder(filteredFolders[folderIdx]);
         } else {
-          const symIdx = selectedFileIndex - filteredFiles.length;
+          const symIdx =
+            selectedFileIndex - filteredFiles.length - filteredFolders.length;
           if (symbolResults[symIdx]) {
             insertSymbol(symbolResults[symIdx].name);
           }
@@ -1459,7 +1565,10 @@ export default function Conversation({
 
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      const busy = status === "thinking" || status === "executing" || status === "streaming";
+      // Match composerBusy / agentLoopOpen (awaiting_swarm + turnOpen) so plain
+      // Enter steers during a background swarm wait instead of starting a new send.
+      // Cmd/Ctrl+Enter still queues while that latch is armed.
+      const busy = composerEnterBusy({ turnOpen, status });
       // While a turn is running, plain Enter STEERS (redirects the current turn);
       // Cmd/Ctrl+Enter QUEUES (runs after the current turn finishes). When idle,
       // Enter always sends a normal turn.
@@ -1660,6 +1769,7 @@ export default function Conversation({
     itemsRef,
     planTurnRef,
     turnSettledRef,
+    userStoppedRef,
     resumeQueuedRef,
     typeBufRef,
     flushTypewriter,
@@ -1749,6 +1859,7 @@ export default function Conversation({
          const doneDec = streamOnDoneDecision({
            turnSettled: turnSettledRef.current,
            userStopped: userStoppedRef.current,
+           answerComplete: turnLooksAnswerComplete(itemsRef.current),
          });
          if (doneDec.kind === "abort_error") {
            turnSettledRef.current = true;
@@ -1763,6 +1874,8 @@ export default function Conversation({
              },
            }]);
          } else {
+           // Silent settle when assistant_done / Stop / sealed answer already won.
+           turnSettledRef.current = true;
            setTurnOpen(false);
            // Do not clobber awaiting_swarm / Still working… set by assistant_done
            // when background jobs are still flying (Cursor-style pause point).
@@ -1942,7 +2055,23 @@ export default function Conversation({
       isBuiltIn: isBuiltInSlashCommand,
       customNames: customCommands.map((c) => c.name),
     });
-    if (slash.kind === "clear_or_new") {
+    const chrome = localSlashChromeAction(slash);
+    if (chrome === "clear_visible") {
+      // /clear: reset the visible transcript for the current session — do not
+      // abandon to createSession() (that is /new).
+      setInput("");
+      setEditingIndex(null);
+      setItems([]);
+      itemsRef.current = [];
+      transcriptFpRef.current = "";
+      if (activeSessionId) writeTranscriptCache(activeSessionId, []);
+      setTurnOpen(false);
+      setWaitHint(null);
+      setStatus("idle");
+      setCompactingStatus(null);
+      return;
+    }
+    if (chrome === "new_session") {
       setInput("");
       setEditingIndex(null);
       window.dispatchEvent(new Event("harness-new-session"));
@@ -2014,6 +2143,18 @@ export default function Conversation({
           }
         }
       ]);
+      return;
+    }
+    const paletteId = localSlashPaletteAction(slash);
+    if (paletteId) {
+      // Same event path as Cmd-K (open-swarm / open-memory / open-mcp / …).
+      setInput("");
+      setEditingIndex(null);
+      runCommandPaletteAction(paletteId, {
+        toggleLeft: () => {},
+        toggleRight: () => {},
+        focusSettingsPage: (page) => focusSettingsPage(page as "advanced"),
+      });
       return;
     }
     if (slash.kind === "custom") {
@@ -2208,8 +2349,18 @@ export default function Conversation({
       <ConversationHeader
         pillStatus={pillStatus}
         detail={
-          !transcriptStale && !answerChromeIdle && pillStatus !== "idle" && busyProgress.label
-            ? busyProgress.pill
+          !transcriptStale && pillStatus !== "idle" && composerBusy
+            ? (
+              busyProgress.label
+                ? busyProgress.pill
+                // Sticky busy without a footer line (idle flaps between tools,
+                // or sealed-answer SSE lag): calm Investigating / Still working…
+                : (liveInvestigation || pillStatus === "investigating")
+                  ? "Investigating…"
+                  : (agentLoopOpen || pillStatus === "awaiting_swarm")
+                    ? "Still working…"
+                    : undefined
+            )
             : undefined
         }
         onBusyDetailClick={() => {
@@ -2281,6 +2432,7 @@ export default function Conversation({
         contextUsage={contextUsage}
         mentionSearch={mentionSearch}
         filteredFiles={filteredFiles}
+        filteredFolders={filteredFolders}
         symbolResults={symbolResults}
         mentionListingCap={mentionListingCap}
         selectedFileIndex={selectedFileIndex}
@@ -2331,6 +2483,7 @@ export default function Conversation({
         handleKeyDown={handleKeyDown}
         handlePaste={handlePaste}
         insertMention={insertMention}
+        insertFolder={insertFolder}
         insertSymbol={insertSymbol}
         insertSlashCommand={insertSlashCommand}
         handleQueueAdd={handleQueueAdd}

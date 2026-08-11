@@ -564,10 +564,11 @@ def test_read_file_large_guard_names_the_next_offset(repo):
     act = PilotAction(kind="read_file", path="big.txt")
     ok, _status, val = session._do_read_file(act)
     assert ok
-    # Existing large-file message is preserved verbatim.
+    # Large-file message + honest continuation past the ~2000-line window.
     assert "[file is large (2100 lines); re-read with start_line and limit to see specific sections]" in val
-    assert "continue with start_line=101" in val
-    assert "This is line 101\n" not in val
+    assert "continue with start_line=2001" in val
+    assert "This is line 2000\n" in val
+    assert "This is line 2001\n" not in val
 
 
 def test_read_file_whole_small_file_is_unannotated(repo):

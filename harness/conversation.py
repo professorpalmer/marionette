@@ -1436,12 +1436,116 @@ class ConversationalSession(
         # attach/restart — rebuild decision state from validated display rows.
         self._restore_pending_command_approvals_from_display()
 
+    def _count_user_turn_ordinals(self) -> int:
+        """How many user message turns are present in the display transcript."""
+        count = 0
+        for row in self._display_transcript or []:
+            if not isinstance(row, dict):
+                continue
+            rtype = row.get("type") or "message"
+            if rtype not in ("message", ""):
+                continue
+            if (row.get("role") or "") == "user":
+                count += 1
+        return count
+
+    def _current_user_ordinal(self) -> Optional[int]:
+        """0-based ordinal of the in-progress user turn, or None if none yet."""
+        count = self._count_user_turn_ordinals()
+        return count - 1 if count > 0 else None
+
+    def _checkpoint_store_for_repo(self) -> Optional[CheckpointStore]:
+        """Return a CheckpointStore bound to the active workspace, or None."""
+        repo = getattr(getattr(self, "config", None), "repo", None) or None
+        if not repo or not os.path.exists(repo):
+            return None
+        store = getattr(self, "_checkpoints", None)
+        try:
+            bound = getattr(store, "repo", None) if store is not None else None
+            enabled = bool(getattr(store, "_enabled", False)) if store is not None else False
+            same = (
+                bound
+                and os.path.realpath(bound) == os.path.realpath(repo)
+            )
+        except Exception:
+            enabled, same = False, False
+        if not (enabled and same):
+            store = CheckpointStore(
+                repo,
+                session_id=self.harness_session_id or None,
+            )
+            self._checkpoints = store
+        return store if getattr(store, "_enabled", False) else None
+
+    def _restore_workspace_for_rewind(self, user_ordinal: int) -> dict:
+        """Restore workspace files for edit-prior rewind, or report honesty.
+
+        Returns keys: workspace_restored, checkpoint_id, auto_snapshot_id,
+        restored_files, workspace_notice (optional honesty string).
+        """
+        empty = {
+            "workspace_restored": False,
+            "checkpoint_id": None,
+            "auto_snapshot_id": None,
+            "restored_files": [],
+            "workspace_notice": (
+                "Transcript rewound, but workspace files were not restored "
+                "(no checkpoint for that turn)."
+            ),
+        }
+        store = self._checkpoint_store_for_repo()
+        if store is None:
+            return empty
+        sid = self.harness_session_id or None
+        try:
+            target = store.find_rewind_checkpoint(user_ordinal, session_id=sid)
+        except Exception:
+            target = None
+        if not target or not target.get("id"):
+            return empty
+        checkpoint_id = str(target["id"])
+        try:
+            result = store.restore(
+                checkpoint_id,
+                session_id=sid,
+                expected_repo=store.repo,
+            )
+        except Exception as exc:
+            return {
+                **empty,
+                "workspace_notice": (
+                    "Transcript rewound, but workspace restore failed "
+                    f"({exc}). Disk left unchanged."
+                ),
+            }
+        if not result.get("ok"):
+            err = result.get("error") or "restore failed"
+            return {
+                **empty,
+                "workspace_notice": (
+                    "Transcript rewound, but workspace restore failed "
+                    f"({err}). Disk left unchanged."
+                ),
+            }
+        return {
+            "workspace_restored": True,
+            "checkpoint_id": checkpoint_id,
+            "auto_snapshot_id": result.get("auto_snapshot_id"),
+            "restored_files": list(result.get("restored_files") or []),
+            "workspace_notice": None,
+        }
+
     def rewind_to_user_ordinal(self, user_ordinal: int) -> dict:
         """Hermes-style undo for message edit: truncate at the Nth user turn (0-based).
 
         Soft-stashes the discarded tail on ``_rewind_stash`` so the UI can offer
         Revert. Prefill is that user message's text (composer edit/resubmit).
         Does not auto-send.
+
+        When a checkpoint is associated with the cut ordinal (or the earliest
+        later-turn pre-mutation checkpoint), also restores workspace files to
+        that snapshot. If none exists, transcript rewind still succeeds with an
+        honest notice that disk was not restored.
         """
         if self.is_turn_busy():
             return {
@@ -1486,6 +1590,8 @@ class ConversationalSession(
                     break
                 seen_h += 1
 
+        workspace = self._restore_workspace_for_rewind(user_ordinal)
+
         self._rewind_stash = {
             "history": self.export_history(),
             "display": list(display),
@@ -1493,6 +1599,8 @@ class ConversationalSession(
             "display_index": display_index,
             "user_ordinal": user_ordinal,
             "prefill": prefill,
+            "workspace_auto_snapshot_id": workspace.get("auto_snapshot_id"),
+            "workspace_restored": bool(workspace.get("workspace_restored")),
         }
 
         self._display_transcript = display[:display_index]
@@ -1502,10 +1610,22 @@ class ConversationalSession(
         self._sanitize_tool_pairs()
 
         removed = len(display) - display_index
-        notice = (
-            f"Editing from that message ({removed} turn item(s) set aside). "
-            "Resubmit the edited text to start a new turn, or Cancel to restore."
-        )
+        if workspace.get("workspace_restored"):
+            notice = (
+                f"Editing from that message ({removed} turn item(s) set aside; "
+                "workspace restored to that turn's checkpoint). "
+                "Resubmit the edited text to start a new turn, or Cancel to restore."
+            )
+        else:
+            honesty = workspace.get("workspace_notice") or (
+                "Transcript rewound, but workspace files were not restored "
+                "(no checkpoint for that turn)."
+            )
+            notice = (
+                f"Editing from that message ({removed} turn item(s) set aside). "
+                f"{honesty} "
+                "Resubmit the edited text to start a new turn, or Cancel to restore the transcript."
+            )
         return {
             "ok": True,
             "prefill": prefill,
@@ -1513,6 +1633,9 @@ class ConversationalSession(
             "removed_count": removed,
             "kept_display": len(self._display_transcript),
             "display_index": display_index,
+            "workspace_restored": bool(workspace.get("workspace_restored")),
+            "checkpoint_id": workspace.get("checkpoint_id"),
+            "restored_files": list(workspace.get("restored_files") or []),
         }
 
     def rewind_to_display_index(self, display_index: int) -> dict:
@@ -1534,7 +1657,11 @@ class ConversationalSession(
         return {"ok": False, "error": "can only rewind from a user message"}
 
     def restore_rewind_stash(self) -> dict:
-        """Restore the transcript tail saved by the last successful rewind."""
+        """Restore the transcript tail saved by the last successful rewind.
+
+        When rewind restored workspace files, also restores the auto-snapshot
+        taken immediately before that restore so Cancel/Revert puts disk back.
+        """
         if self.is_turn_busy():
             return {
                 "ok": False,
@@ -1549,10 +1676,25 @@ class ConversationalSession(
             "display": stash.get("display") or [],
             "job_ids": stash.get("job_ids") or [],
         })
+        workspace_restored = False
+        auto_id = stash.get("workspace_auto_snapshot_id")
+        if auto_id and stash.get("workspace_restored"):
+            store = self._checkpoint_store_for_repo()
+            if store is not None:
+                try:
+                    wr = store.restore(
+                        str(auto_id),
+                        session_id=self.harness_session_id or None,
+                        expected_repo=store.repo,
+                    )
+                    workspace_restored = bool(wr.get("ok"))
+                except Exception:
+                    workspace_restored = False
         self._rewind_stash = None
         return {
             "ok": True,
             "display_count": len(self._display_transcript),
+            "workspace_restored": workspace_restored,
         }
 
     def clear_rewind_stash(self) -> None:
@@ -2798,6 +2940,7 @@ class ConversationalSession(
                     label=f"Before swarm patch{label_suffix}".strip(),
                     trigger="swarm_patch",
                     session_id=self.harness_session_id or None,
+                    user_ordinal=self._current_user_ordinal(),
                 )
             except Exception as cp_err:
                 import sys

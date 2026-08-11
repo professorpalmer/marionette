@@ -34,6 +34,7 @@ import {
   MAX_ACTION_ID_CHARS,
   MAX_ACTION_KIND_CHARS,
   MAX_JOB_ACTIONS,
+  monotonicNestedActionStatus,
   normalizeNestedActionStatus,
 } from "./nestedActionBounds";
 import { normalizeToolKind } from "../../lib/turnProgress";
@@ -46,6 +47,7 @@ export {
   MAX_ACTION_ID_CHARS,
   MAX_ACTION_KIND_CHARS,
   MAX_JOB_ACTIONS,
+  monotonicNestedActionStatus,
   normalizeNestedActionStatus,
 } from "./nestedActionBounds";
 
@@ -609,6 +611,67 @@ function prevRowsForWorker(
   );
 }
 
+type NestedActionRow = NonNullable<Card["actions"]>[number];
+
+/** Merge one live row onto a known row with harness-aligned status fencing. */
+function mergeNestedActionRow(
+  prev: NestedActionRow,
+  incoming: NestedActionRow,
+): NestedActionRow {
+  const status = monotonicNestedActionStatus(prev.status, incoming.status);
+  // Refused terminal→running (or failed→complete): keep the settled row intact.
+  if (status === prev.status && status !== incoming.status) {
+    return {
+      ...prev,
+      // Allow non-status enrichment that does not reopen the row.
+      kind: incoming.kind || prev.kind,
+      goal: incoming.goal || prev.goal,
+      worker_id: incoming.worker_id || prev.worker_id,
+      duration_ms: prev.duration_ms ?? incoming.duration_ms ?? null,
+      error: prev.error || incoming.error || "",
+    };
+  }
+  return {
+    ...prev,
+    ...incoming,
+    status,
+    kind: incoming.kind || prev.kind,
+    goal: incoming.goal || prev.goal,
+    worker_id: incoming.worker_id || prev.worker_id,
+    duration_ms: incoming.duration_ms ?? prev.duration_ms ?? null,
+    error: incoming.error || prev.error || "",
+  };
+}
+
+/**
+ * Per-action_id live merge: update known ids monotonically, append new ids,
+ * and retain prev ids missing from a shorter/partial snapshot.
+ */
+function mergeNestedActionRows(
+  prev: NonNullable<Card["actions"]>,
+  incoming: NonNullable<Card["actions"]>,
+): NonNullable<Card["actions"]> {
+  if (!prev.length) return incoming.slice();
+  if (!incoming.length) return prev.slice();
+  const incomingById = new Map(incoming.map((row) => [row.action_id, row]));
+  const seen = new Set<string>();
+  const out: NonNullable<Card["actions"]> = [];
+  for (const old of prev) {
+    const neu = incomingById.get(old.action_id);
+    if (neu) {
+      seen.add(old.action_id);
+      out.push(mergeNestedActionRow(old, neu));
+    } else {
+      out.push(old);
+    }
+  }
+  for (const neu of incoming) {
+    if (seen.has(neu.action_id)) continue;
+    out.push(neu);
+  }
+  return out;
+}
+
 /** Merge sanitized local-job actions[] onto investigation cards by job_id. */
 export function mergeJobActionsIntoItems(
   items: Item[],
@@ -657,7 +720,7 @@ export function mergeJobActionsIntoItems(
       const rows = byJob.get(jobId);
       if (rows) {
         sawSnapshot = true;
-        merged = rows;
+        merged = mergeNestedActionRows(prev, rows);
       } else if (!statusByJob.has(jobId)) {
         return it;
       } else {
@@ -668,14 +731,15 @@ export function mergeJobActionsIntoItems(
         const rows = byJob.get(part);
         if (rows) {
           sawSnapshot = true;
-          for (const row of rows) {
-            merged.push({
-              ...row,
-              action_id: row.action_id.startsWith(`${part}:`)
-                ? row.action_id
-                : `${part}:${row.action_id}`,
-              worker_id: part,
-            });
+          const prefixed = rows.map((row) => ({
+            ...row,
+            action_id: row.action_id.startsWith(`${part}:`)
+              ? row.action_id
+              : `${part}:${row.action_id}`,
+            worker_id: part,
+          }));
+          for (const row of mergeNestedActionRows(prevRowsForWorker(prev, part), prefixed)) {
+            merged.push(row);
           }
         } else {
           // Partial live snapshot omitted this sibling — keep already-known rows.
@@ -924,24 +988,49 @@ export function ensureAssistantStreamingBubble(
   ];
 }
 
+/** Drop trailing ephemeral workerStream previews (one or many parallel workers). */
+function dropTrailingWorkerStreamBubbles(items: Item[]): Item[] {
+  let end = items.length;
+  while (end > 0) {
+    const it = items[end - 1];
+    if (
+      it.kind === "msg"
+      && it.msg.role === "assistant"
+      && it.msg.workerStream
+    ) {
+      end -= 1;
+      continue;
+    }
+    break;
+  }
+  return end === items.length ? items : items.slice(0, end);
+}
+
 /**
- * Ensure a workerStream preview bubble exists. Never merges into the pilot
- * bubble; reuses only a trailing workerStream streaming msg.
+ * Ensure a workerStream preview bubble exists for this worker. Never merges
+ * into the pilot bubble; reuses only an open workerStream msg with matching
+ * worker_id affinity (untagged legacy bubbles match until stamped).
  */
 export function ensureWorkerStreamingBubble(
   items: Item[],
-  opts?: { isPlan?: boolean },
+  opts?: { isPlan?: boolean; workerId?: string },
 ): Item[] {
-  const lastIdx = items.length - 1;
-  if (lastIdx >= 0 && items[lastIdx].kind === "msg") {
-    const lastMsg = items[lastIdx] as { kind: "msg"; msg: Msg };
-    if (
-      lastMsg.msg.role === "assistant"
-      && lastMsg.msg.streaming
-      && lastMsg.msg.workerStream
-    ) {
-      return items;
+  const workerId = (opts?.workerId || "").trim();
+  const idx = findStreamingBubbleIdx(items, {
+    workerStreamOnly: true,
+    workerId: workerId || undefined,
+  });
+  if (idx >= 0) {
+    const bubble = items[idx] as { kind: "msg"; msg: Msg };
+    if (workerId && !(bubble.msg.worker_id || "").trim()) {
+      const updated = [...items];
+      updated[idx] = {
+        kind: "msg",
+        msg: { ...bubble.msg, worker_id: workerId },
+      };
+      return updated;
     }
+    return items;
   }
   return [
     ...items,
@@ -953,6 +1042,7 @@ export function ensureWorkerStreamingBubble(
         streaming: true,
         workerStream: true,
         isPlan: opts?.isPlan,
+        ...(workerId ? { worker_id: workerId } : {}),
       },
     },
   ];
@@ -964,14 +1054,8 @@ export function finalizePilotMessage(
   text: string | undefined,
   opts?: { isPlan?: boolean; streamed?: boolean },
 ): Item[] {
-  // Drop trailing worker-stream preview before finalizing the pilot's own text.
-  const p = finalizeStreamingThinking(
-    items.length > 0
-      && items[items.length - 1].kind === "msg"
-      && (items[items.length - 1] as { kind: "msg"; msg: Msg }).msg.workerStream
-      ? items.slice(0, -1)
-      : items,
-  );
+  // Drop trailing worker-stream previews before finalizing the pilot's own text.
+  const p = finalizeStreamingThinking(dropTrailingWorkerStreamBubbles(items));
   const streamIdx = findStreamingBubbleIdx(p, { excludeWorkerStream: true });
   if (streamIdx >= 0) {
     const lastMsg = p[streamIdx] as Extract<Item, { kind: "msg" }>;
@@ -1184,24 +1268,23 @@ export function appendActionStartCard(
 }
 
 /**
- * On action_result: drop ephemeral worker preview, or finalize a non-empty
- * pilot streaming bubble in place. Empty / markdown-punctuation crumbs are
- * dropped — same as finalizeOpenPilotBubble / sealOpenStreamSurfaces /
- * finalizePilotMessage — so they cannot fence later Sol word deltas.
+ * On action_result: drop ephemeral worker previews (all trailing parallel
+ * workerStream bubbles), or finalize a non-empty pilot streaming bubble in
+ * place. Empty / markdown-punctuation crumbs are dropped — same as
+ * finalizeOpenPilotBubble / sealOpenStreamSurfaces / finalizePilotMessage —
+ * so they cannot fence later Sol word deltas.
  */
 export function finalizeStreamingBubbleOnActionResult(items: Item[]): Item[] {
-  const lastIdx = items.length - 1;
-  if (lastIdx >= 0 && items[lastIdx].kind === "msg") {
-    const lastMsg = items[lastIdx] as { kind: "msg"; msg: Msg };
+  const trimmed = dropTrailingWorkerStreamBubbles(items);
+  const lastIdx = trimmed.length - 1;
+  if (lastIdx >= 0 && trimmed[lastIdx].kind === "msg") {
+    const lastMsg = trimmed[lastIdx] as { kind: "msg"; msg: Msg };
     if (lastMsg.msg.role === "assistant" && lastMsg.msg.streaming) {
-      if (lastMsg.msg.workerStream) {
-        return items.slice(0, lastIdx);
-      }
       // Drop empty / markdown-marker crumbs; seal only substantive narration.
       if (isTrivialAssistantCrumb(lastMsg.msg.text || "")) {
-        return items.slice(0, lastIdx);
+        return trimmed.slice(0, lastIdx);
       }
-      const updated = [...items];
+      const updated = [...trimmed];
       updated[lastIdx] = {
         kind: "msg",
         msg: { ...lastMsg.msg, streaming: false },
@@ -1209,7 +1292,7 @@ export function finalizeStreamingBubbleOnActionResult(items: Item[]): Item[] {
       return updated;
     }
   }
-  return items;
+  return trimmed;
 }
 
 /** Prefer resolved path from action_result over card.goal for relocate events. */

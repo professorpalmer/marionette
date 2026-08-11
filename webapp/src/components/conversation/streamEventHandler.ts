@@ -46,6 +46,7 @@ import {
   sealedAssistantCoversDelta,
 } from "./streamBubbles";
 import { turnHasLiveInvestigation } from "../../lib/turnProgress";
+import { notifyWorkspaceMutated } from "../../lib/workspaceMutationEvents";
 import { shouldRefreshBusyChrome } from "./streamTerminal";
 import { waitHintForAssistantDone } from "./swarmPoll";
 
@@ -78,6 +79,8 @@ export type ApplyStreamEventDeps = {
   itemsRef: { current: Item[] };
   planTurnRef: { current: boolean };
   turnSettledRef: { current: boolean };
+  /** Stop hold — blocks busy-chrome refresh after user interrupt. */
+  userStoppedRef?: { current: boolean };
   resumeQueuedRef: { current: boolean };
   typeBufRef: { current: string };
   flushTypewriter: () => void;
@@ -107,6 +110,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
     itemsRef,
     planTurnRef,
     turnSettledRef,
+    userStoppedRef,
     resumeQueuedRef,
     typeBufRef,
     flushTypewriter,
@@ -124,6 +128,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
   const refreshBusyChrome = () =>
     shouldRefreshBusyChrome({
       turnSettled: turnSettledRef.current,
+      userStopped: userStoppedRef?.current,
     });
 
   return (ev: StreamEvent) => {
@@ -333,9 +338,9 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       // This is an EPHEMERAL preview: it renders in a height-capped, auto-
       // scrolling window (see Bubble) and is dropped when the action finalizes,
       // because the worker's real output arrives as swarm artifacts/summary.
-      // Reuse only a prior workerStream bubble -- never merge worker tokens into
-      // the pilot's own message bubble, and never let several workers pile into
-      // one unbounded permanent bubble.
+      // Key each preview by worker_id so parallel implement/swarm workers keep
+      // separate capped bubbles — never merge worker tokens into the pilot's
+      // own message bubble, and never let several workers pile into one.
       // Commit any pending pilot typewriter buffer first, then append worker
       // text directly (never via the shared typeBuf) so channels cannot merge.
       if (d.kind === "text" && d.text) {
@@ -344,11 +349,16 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
         if (refreshBusyChrome()) setStatus("streaming");
         flushTypewriter();
         const chunk = d.text || "";
+        const workerId = String(d.worker_id || "").trim();
         setItems((p) => {
-          let next = ensureWorkerStreamingBubble(p, { isPlan: planTurnRef.current });
+          let next = ensureWorkerStreamingBubble(p, {
+            isPlan: planTurnRef.current,
+            workerId: workerId || undefined,
+          });
           next = appendStreamingTextToItems(next, chunk, {
             workerStream: true,
             isPlan: planTurnRef.current,
+            workerId: workerId || undefined,
           });
           itemsRef.current = next;
           return next;
@@ -411,6 +421,18 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       // Host-tool turns meter per step — refresh StatusBar without waiting
       // for the 10s idle poll (Cursor CLI still lands meters at stream end).
       window.dispatchEvent(new Event("harness-usage-refresh"));
+      // Path-bearing file mutations (write_file / edit_file / hash_edit): fan out
+      // even when the pre-write checkpoint was skipped or failed, so Files / SCM
+      // / open editors stay fresh without waiting for a later checkpoint SSE.
+      const resultTypes = Array.isArray(d.types) ? d.types.map(String) : [];
+      if (
+        !d.error
+        && resultTypes.includes("file")
+        && typeof d.path === "string"
+        && d.path.trim()
+      ) {
+        notifyWorkspaceMutated(d.path.trim());
+      }
       setItems((prev) => {
         const cardItem = prev.find((it) => it.kind === "card" && it.card.id === d.id);
         if (
@@ -461,7 +483,10 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       setItems((p) => appendSwarmPending(p, job_ids, d.objective || ""));
     } else if (ev.kind === "checkpoint") {
       setItems((p) => appendCheckpoint(p, d));
-      window.dispatchEvent(new Event("harness-repo-mutated"));
+      // Checkpoint proves the workspace changed; fan out to Files + SCM too.
+      notifyWorkspaceMutated(
+        typeof d.path === "string" && d.path.trim() ? d.path.trim() : undefined,
+      );
     } else if (ev.kind === "swarm_result") {
       handleSwarmResult(d);
     } else if (ev.kind === "pilot_resume") {
@@ -537,6 +562,57 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
         reconcileOrphanInvestigationCards(
           finalizeOrphanSwarmPills(
             hoistCardsBeforeTrailingFinals(appendStreamError(p, d.error || "")),
+            liveIds,
+          ),
+          liveIds,
+        ),
+      );
+    } else if (ev.kind === "interrupted") {
+      // Harness cancel/steer interrupt — settle like Stop (no false abort bubble).
+      turnSettledRef.current = true;
+      setTurnOpen(false);
+      setCompactingStatus(null);
+      setWaitHint(null);
+      setStatus("idle");
+      const liveIds = pendingJobIdsRef.current.filter(
+        (id) => !id.startsWith("local-swarm-"),
+      );
+      setPendingJobIds(liveIds);
+      flushTypewriter();
+      setItems((p) =>
+        reconcileOrphanInvestigationCards(
+          finalizeOrphanSwarmPills(
+            hoistCardsBeforeTrailingFinals(sealOpenStreamSurfaces(p)),
+            liveIds,
+          ),
+          liveIds,
+        ),
+      );
+    } else if (ev.kind === "done") {
+      // Framing-only sentinel (live transport settles via onDone; reattach
+      // applies retained frames). Must settle turn chrome when assistant_done
+      // was dropped so isTerminalStreamKind stop is not dishonest.
+      if (turnSettledRef.current) return;
+      turnSettledRef.current = true;
+      setTurnOpen(false);
+      setCompactingStatus(null);
+      const liveIds = pendingJobIdsRef.current.filter(
+        (id) => !id.startsWith("local-swarm-"),
+      );
+      setPendingJobIds(liveIds);
+      const awaitHint = waitHintForAssistantDone(liveIds);
+      if (awaitHint) {
+        setStatus("awaiting_swarm");
+        setWaitHint(awaitHint);
+      } else {
+        setWaitHint(null);
+        setStatus("done");
+      }
+      flushTypewriter();
+      setItems((p) =>
+        reconcileOrphanInvestigationCards(
+          finalizeOrphanSwarmPills(
+            hoistCardsBeforeTrailingFinals(sealOpenStreamSurfaces(p)),
             liveIds,
           ),
           liveIds,

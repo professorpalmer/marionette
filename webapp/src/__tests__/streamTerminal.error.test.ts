@@ -8,6 +8,7 @@
 import { describe, expect, it } from "vitest";
 import {
   STREAM_ABORT_MESSAGE,
+  resetTurnSettledOnSessionSwitch,
   shouldRefreshBusyChrome,
   streamErrorText,
   streamOnDoneDecision,
@@ -77,9 +78,25 @@ describe("Wave 5 stream terminal chrome gates", () => {
     expect(streamOnDoneDecision({ turnSettled: true, userStopped: false }).kind).toBe("done");
   });
 
+  it("does not paint abort when the answer is already complete", () => {
+    expect(
+      streamOnDoneDecision({
+        turnSettled: false,
+        userStopped: false,
+        answerComplete: true,
+      }).kind,
+    ).toBe("done");
+  });
+
   it("blocks busy-chrome refresh after settle or Stop", () => {
     expect(shouldRefreshBusyChrome({ turnSettled: false })).toBe(true);
     expect(shouldRefreshBusyChrome({ turnSettled: true })).toBe(false);
     expect(shouldRefreshBusyChrome({ turnSettled: false, userStopped: true })).toBe(false);
+  });
+
+  it("resets turnSettled on session switch", () => {
+    const ref = { current: true };
+    resetTurnSettledOnSessionSwitch(ref);
+    expect(ref.current).toBe(false);
   });
 });

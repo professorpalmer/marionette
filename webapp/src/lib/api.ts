@@ -159,6 +159,8 @@ export type PendingReview = {
   objective: string;
   files: PendingReviewFile[];
   created_at: number;
+  /** Set when the last apply attempt failed; review stays pending for retry. */
+  error?: string;
 };
 export type Task = {
   id: string;
@@ -1088,6 +1090,9 @@ export const api = {
       removed_count?: number;
       error?: string;
       code?: string;
+      workspace_restored?: boolean;
+      checkpoint_id?: string | null;
+      restored_files?: string[];
     }>("/api/session/rewind", { user_ordinal: userOrdinal }),
   restoreRewind: () =>
     postJSON<{
@@ -1096,6 +1101,7 @@ export const api = {
       history?: any[];
       error?: string;
       code?: string;
+      workspace_restored?: boolean;
     }>("/api/session/rewind/restore", {}),
   getSwarmResults: () => getJSON<SwarmResultsResponse>(withToken("/api/session/swarm-results")),
   createSession: (title?: string) => postJSON<Session>("/api/sessions/create", { title }),
@@ -1229,6 +1235,17 @@ export const api = {
   /** Mid-turn SSE reattach: replay retained frames since ``since`` cursor. */
   chatEvents: (opts?: { session?: string; since?: number; generation?: number }) =>
     getJSON<ChatEventReplay>(chatEventsPath(opts || {})),
+  /**
+   * Live ring watch for mid-turn reattach (``?watch=1``).
+   * Returns cancel(); on open miss the transport errors so callers fall back
+   * to ``chatEvents`` JSON poll.
+   */
+  chatEventsLive: (
+    opts: { session?: string; since?: number; generation?: number },
+    onEvent: (e: StreamEvent) => void,
+    onDone?: () => void,
+    onError?: (e: any) => void,
+  ) => stream(chatEventsPath({ ...opts, watch: true }), onEvent, onDone, onError),
   mcp: () => getJSON<{ servers: any[]; tools: any[] }>("/api/mcp"),
   mcpCatalog: () => getJSON<{ catalog: Record<string, any> }>("/api/mcp/catalog"),
   mcpAdd: (name: string, command?: string, args?: string[], env?: Record<string, string>, url?: string) => {
@@ -1346,9 +1363,16 @@ export const api = {
   forgetWorkspace: (path: string) => postJSON<{ ok: boolean; recents: string[]; cleared_active?: boolean; repo?: string }>("/api/workspace/forget", { path }),
   getWorkspace: () => getJSON<WorkspaceInfo>("/api/workspace"),
   getWorkspaceFiles: () =>
-    getJSON<{ files: string[]; truncated?: boolean; total?: number; capped?: number }>(
-      withToken("/api/workspace/files"),
-    ),
+    getJSON<{
+      files: string[];
+      folders?: string[];
+      truncated?: boolean;
+      total?: number;
+      capped?: number;
+      folders_truncated?: boolean;
+      folders_total?: number;
+      folders_capped?: number;
+    }>(withToken("/api/workspace/files")),
   searchSymbols: (q: string) => getJSON<{ symbols: { name: string; kind: string; path: string; line: number }[]; status?: string }>(withToken("/api/workspace/symbols?q=" + encodeURIComponent(q))),
   resolveFile: (path: string) =>
     getJSONSoft<{

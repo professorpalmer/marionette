@@ -16,6 +16,7 @@ from harness.offload_policy import (
 from harness.tool_output_savings import (
     CHARS_PER_TOKEN,
     ToolOutputSavingsLedger,
+    estimate_tokens,
     make_compaction_callback,
     tokens_avoided,
 )
@@ -116,3 +117,25 @@ def test_maybe_persist_large_result_passes_gate(tmp_path):
     assert "<persisted-output>" in result
     file_path = tmp_path / "pmharness-results" / "tc-big.txt"
     assert file_path.exists()
+
+
+def test_offload_floor_aligned_with_max_result_chars(tmp_path, monkeypatch):
+    """Content over max_result_chars must be eligible to spill (no dead band).
+
+    Regression: MIN_TOOL_RESULT_TOKENS=3000 (~12k chars) fought the default
+    max_result_chars=8000, so 8k–12k results stayed full in context.
+    """
+    monkeypatch.delenv("HARNESS_OFFLOAD_MIN_TOKENS", raising=False)
+    monkeypatch.delenv("HARNESS_MAX_TOOL_RESULT_CHARS", raising=False)
+
+    assert MIN_TOOL_RESULT_TOKENS * CHARS_PER_TOKEN <= 8000
+
+    config = BudgetConfig(max_result_chars=8000, turn_budget_chars=48000)
+    # Just over the char threshold, previously below the old 3000-token floor.
+    mid_band = "m" * 9000
+    assert len(mid_band) > config.max_result_chars
+    assert estimate_tokens(len(mid_band)) < 3000
+
+    result = maybe_persist_result(mid_band, "tc-mid", str(tmp_path), config)
+    assert "<persisted-output>" in result
+    assert (tmp_path / "pmharness-results" / "tc-mid.txt").exists()

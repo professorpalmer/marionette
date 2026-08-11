@@ -150,6 +150,47 @@ describe("RightPane keeps TerminalPane mounted across tab switches", () => {
   });
 });
 
+describe("RightPane keeps SwarmPane mounted across tab switches", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    Element.prototype.scrollIntoView = vi.fn();
+    localStorage.setItem(
+      "pmharness.tabOrder",
+      JSON.stringify([
+        "state", "swarm", "files", "git", "worktrees", "terminal",
+        "review", "checkpoints", "browser", "settings",
+      ]),
+    );
+    localStorage.setItem("pmharness.tabOrder.swarm2nd", "1");
+    localStorage.setItem("pmharness.tabOrder.mcpMerged", "1");
+    localStorage.setItem(
+      "pmharness.splitState",
+      JSON.stringify({
+        isSplit: false,
+        primaryTab: "swarm",
+        secondaryTab: "files",
+        direction: "horizontal",
+        percent: 50,
+      }),
+    );
+  });
+
+  it("CSS-hides SwarmPane instead of unmounting when leaving the tab", () => {
+    render(<RightPane {...baseProps} />);
+
+    const slot = screen.getByTestId("swarm-pane-slot");
+    expect(slot.className).toMatch(/\bh-full\b/);
+    expect(slot.className).not.toMatch(/\bhidden\b/);
+
+    fireEvent.click(screen.getByTitle("Files"));
+
+    const stillMounted = screen.getByTestId("swarm-pane-slot");
+    expect(stillMounted.className).toMatch(/\bhidden\b/);
+    expect(stillMounted).toHaveAttribute("aria-hidden", "true");
+  });
+});
+
 describe("RightPane swarm activity poll seeds SWR cache", () => {
   const REPO = "C:\\Users\\pwall\\Projects\\warm-swarm";
 

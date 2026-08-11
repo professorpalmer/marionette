@@ -22,8 +22,8 @@ import time
 from typing import Iterator
 
 # grok-build-style quality floors (see xai-grok-compaction summary.rs /
-# intra_compaction/config.rs). Guards are best-effort: exceptions fall through
-# to prior behavior rather than raising on the hot path.
+# intra_compaction/config.rs). Floor / reduction guards fail closed: an
+# exception in those paths refuses compaction rather than applying a bad rewrite.
 MIN_SUMMARY_SEED_CHARS = 200
 MIN_COMPACTABLE_TOKENS = 5000
 MAX_REDUCTION_RATIO = 0.8
@@ -570,19 +570,36 @@ class CompactionContextMixin:
         # elapses. force=True (manual Compact) bypasses the thrash gate and
         # (below) the summarizer-fail cooldown so the pilot is actually called.
         if self._anti_thrash_blocked(force=force):
+            strikes = int(getattr(self, "_compaction_ineffective_count", 0) or 0)
+            fail_until = float(getattr(self, "_compaction_fail_until", 0.0) or 0.0)
             self._set_compaction_attempt(
                 REASON_THRASH_COOLDOWN,
-                strikes=int(getattr(self, "_compaction_ineffective_count", 0) or 0),
-                fail_until=float(getattr(self, "_compaction_fail_until", 0.0) or 0.0),
+                strikes=strikes,
+                fail_until=fail_until,
             )
+            # Honest ConvEvent so transcript/busy chrome can show the cooldown
+            # instead of a silent no-op (force=True never reaches this branch).
+            try:
+                before_tokens = int(self._estimate_context_tokens() or 0)
+            except Exception:
+                before_tokens = 0
+            yield ConvEvent("compaction", {
+                "before_tokens": before_tokens,
+                "after_tokens": before_tokens,
+                "summarized_messages": 0,
+                "aborted": True,
+                "reason": REASON_THRASH_COOLDOWN,
+                "thrash_strikes": strikes,
+                "fail_until": fail_until,
+                "message": "Automatic compaction paused (anti-thrash cooldown)",
+            })
             return
 
         budget = getattr(self.config, "max_context_tokens", 96000)
         trigger = int(budget * 0.75)
-        # When the layer-pressure advisor says "soon" or "now", compact at the
-        # next safe turn boundary instead of waiting for the model-window
-        # percentage. Large-window models can otherwise remain above the
-        # advisor's absolute pressure threshold indefinitely.
+        # Advisor-driven auto compaction fires only at level "now". "soon" is a
+        # warning / Needs-attention signal and must not bypass the 75% trigger
+        # the same way "now" does (contract: soon != now for auto compact).
         advised = False
 
         if not force:
@@ -599,7 +616,7 @@ class CompactionContextMixin:
                         advice = self._turn_economy.advise_compaction(
                             budget, snapshot=snapshot
                         )
-                        if advice.get("level") in ("soon", "now"):
+                        if advice.get("level") == "now":
                             advised = True
             except Exception:
                 pass
@@ -658,11 +675,18 @@ class CompactionContextMixin:
                     )
                     return
             except Exception:
-                pass
+                # Fail closed: do not call the summarizer when the floor check
+                # itself cannot run — better a visible no-op than a bad rewrite.
+                self._set_compaction_attempt(
+                    REASON_BELOW_MIN_FLOOR,
+                    before_tokens=before_tokens,
+                    detail="min_floor_check_failed",
+                )
+                return
 
         # Experiment-gated cache-hot deferral: skip automatic compaction while
         # the provider prompt cache is explicitly warm. Never defers force,
-        # emergency, or advisor-driven (soon/now) compaction.
+        # emergency, or advisor-driven (level now) compaction.
         _compact_policy = "off"
         try:
             from pmharness.drivers.prompt_cache import (
@@ -701,6 +725,25 @@ class CompactionContextMixin:
                         before_tokens=before_tokens,
                         **warm_detail,
                     )
+                    # Honest ConvEvent so UI can explain cache-warm deferral
+                    # (force / emergency / advisor-now never reach this branch).
+                    _defer_payload = {}
+                    try:
+                        _defer_payload.update(warm_detail)
+                    except Exception:
+                        pass
+                    _defer_payload.update({
+                        "before_tokens": before_tokens,
+                        "after_tokens": before_tokens,
+                        "summarized_messages": 0,
+                        "aborted": True,
+                        "reason": REASON_CACHE_DEFERRED,
+                        "policy": _compact_policy,
+                        "message": (
+                            "Automatic compaction deferred (prompt cache warm)"
+                        ),
+                    })
+                    yield ConvEvent("compaction", _defer_payload)
                     return
         except Exception:
             pass
@@ -874,7 +917,27 @@ class CompactionContextMixin:
                     })
                     return
         except Exception:
-            pass
+            # Fail closed: already yielded ``compacting`` — abort rather than
+            # injecting an unchecked summary into history.
+            _pct, _strikes = self._note_compaction_effectiveness(
+                before_tokens=before_tokens,
+                after_tokens=before_tokens,
+            )
+            self._set_compaction_attempt(
+                REASON_SUMMARY_REJECTED,
+                before_tokens=before_tokens,
+                detail="degenerate_summary_check_failed",
+                thrash_strikes=_strikes,
+            )
+            yield ConvEvent("compaction", {
+                "before_tokens": before_tokens,
+                "after_tokens": before_tokens,
+                "summarized_messages": 0,
+                "aborted": True,
+                "reason": "degenerate_summary",
+                "thrash_strikes": _strikes,
+            })
+            return
 
         # Control-token neutralization before injection into history.
         try:
@@ -930,7 +993,27 @@ class CompactionContextMixin:
                 summary = fallback_summary
                 summary_msg = fallback_msg
         except Exception:
-            pass
+            # Fail closed: refuse the rewrite when the reduction check cannot run.
+            _pct, _strikes = self._note_compaction_effectiveness(
+                before_tokens=before_tokens,
+                after_tokens=before_tokens,
+            )
+            self._set_compaction_attempt(
+                REASON_SUMMARY_REJECTED,
+                before_tokens=before_tokens,
+                detail="insufficient_reduction_check_failed",
+                middle_tokens=middle_tokens,
+                thrash_strikes=_strikes,
+            )
+            yield ConvEvent("compaction", {
+                "before_tokens": before_tokens,
+                "after_tokens": before_tokens,
+                "summarized_messages": 0,
+                "aborted": True,
+                "reason": "insufficient_reduction",
+                "thrash_strikes": _strikes,
+            })
+            return
 
         chars_before = sum(len(str(m.get("content") or "")) for m in middle_block)
         chars_after = len(summary_msg["content"])

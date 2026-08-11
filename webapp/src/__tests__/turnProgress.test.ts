@@ -48,11 +48,13 @@ describe("deriveBusyProgress", () => {
       card("2", "translator_config.txt", "read_file", true),
     ];
     const p = deriveBusyProgress(items, "executing", 75_000);
-    expect(p.label).toContain("running");
     expect(p.label).toContain("read file");
     expect(p.label).toContain("step 2");
     expect(p.label).toContain("1m 15s");
-    expect(p.pill).toContain("running");
+    expect(p.label.toLowerCase()).not.toContain("running");
+    expect(p.pill).toContain("Investigating");
+    expect(p.pill).toContain("read file");
+    expect(p.pill.toLowerCase()).not.toMatch(/\b(running|thinking|streaming)\b/);
     expect(p.step).toBe(2);
   });
 
@@ -67,10 +69,12 @@ describe("deriveBusyProgress", () => {
       { kind: "tool_prep", name: "read_file" },
     ];
     const p = deriveBusyProgress(items, "thinking", 12_000);
-    expect(p.label).toContain("thinking");
     expect(p.label).toContain("read file");
     expect(p.label).toContain("12s");
+    expect(p.label.toLowerCase()).not.toContain("thinking");
+    expect(p.pill).toContain("Still working");
     expect(p.pill).toContain("read file");
+    expect(p.pill.toLowerCase()).not.toMatch(/\b(running|thinking|streaming)\b/);
   });
 
   it("says Waiting on provider before first token or tool (T3)", () => {
@@ -103,15 +107,17 @@ describe("deriveBusyProgress", () => {
     expect(p.label).toBe("Waiting on provider…");
   });
 
-  it("uses thinking once reasoning tokens arrive", () => {
+  it("uses Still working chrome once reasoning tokens arrive", () => {
     const items: Item[] = [
       msg("user", "go"),
       { kind: "thinking", text: "Let me check", streaming: true },
     ];
     const p = deriveBusyProgress(items, "thinking", 3_000);
     expect(p.phase).toBe("thinking");
-    expect(p.label).toContain("thinking");
+    expect(p.label).toContain("Still working");
+    expect(p.pill).toContain("Still working");
     expect(p.label).not.toContain("Waiting on provider");
+    expect(p.label.toLowerCase()).not.toMatch(/\b(running|thinking|streaming)\b/);
   });
 
   it("waitHint overrides thinking after partial reasoning paints", () => {

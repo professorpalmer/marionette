@@ -19,7 +19,7 @@ export type ClickableSegment =
 const URL_IN_TEXT = /https?:\/\/[^\s<>"'`)\]]+[^\s<>"'`)\].,;:!?]/g;
 
 /** Path-ish token with optional :line[:col], including stack-frame forms. */
-const PATH_IN_TEXT =
+export const PATH_IN_TEXT =
   /(?:[A-Za-z]:[\\/]|\/|\.{1,2}[\\/]|(?:[\w.-]+[\\/])+)?[\w.-]+\.\w{1,8}(?::\d+){0,2}/g;
 
 /** Pull a file-ish path from a tree / listing line (`├── poll_loop.py:12  # note`). */

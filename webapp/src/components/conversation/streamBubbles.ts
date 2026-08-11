@@ -72,19 +72,30 @@ export function sealedAssistantCoversDelta(items: Item[], chunk: string): boolea
  * When excludeWorkerStream is set, skip ephemeral swarm worker preview bubbles
  * so the pilot's open bubble is finalized instead.
  * When workerStreamOnly is set, only match assistant streaming msgs tagged
- * workerStream (never the pilot bubble).
+ * workerStream (never the pilot bubble). Optional workerId further keys the
+ * match so parallel implement/swarm workers each keep their own preview.
  */
 export function findStreamingBubbleIdx(
   items: Item[],
   opts?: {
     excludeWorkerStream?: boolean;
     workerStreamOnly?: boolean;
+    workerId?: string;
     streamId?: string;
   },
 ): number {
   const streamId = (opts?.streamId || "").trim();
+  const wantWorkerId = (opts?.workerId || "").trim();
   const matchesStreamAffinity = (m: Msg): boolean => {
-    if (opts?.workerStreamOnly) return Boolean(m.workerStream);
+    if (opts?.workerStreamOnly) {
+      if (!m.workerStream) return false;
+      if (!wantWorkerId) return true;
+      const have = (m.worker_id || "").trim();
+      // Legacy untagged preview can absorb the first tagged worker; once stamped
+      // (ensureWorkerStreamingBubble / append), peers must not collide.
+      if (!have) return true;
+      return have === wantWorkerId;
+    }
     if (opts?.excludeWorkerStream && m.workerStream) return false;
     return true;
   };
@@ -149,23 +160,31 @@ export function appendStreamingTextToItems(
     streamId?: string;
     channel?: string;
     workerStream?: boolean;
+    workerId?: string;
   },
 ): Item[] {
   if (!chunk) return items;
   const streamId = (opts?.streamId || "").trim();
   const workerStream = Boolean(opts?.workerStream);
+  const workerId = (opts?.workerId || "").trim();
   const idx = findStreamingBubbleIdx(items, {
     streamId: streamId || undefined,
     ...(workerStream
-      ? { workerStreamOnly: true }
+      ? { workerStreamOnly: true, workerId: workerId || undefined }
       : { excludeWorkerStream: true }),
   });
   if (idx >= 0) {
     const bubble = items[idx] as { kind: "msg"; msg: Msg };
     const updated = [...items];
+    const stampWorkerId =
+      workerStream && workerId && !(bubble.msg.worker_id || "").trim();
     updated[idx] = {
       kind: "msg",
-      msg: { ...bubble.msg, text: bubble.msg.text + chunk },
+      msg: {
+        ...bubble.msg,
+        text: bubble.msg.text + chunk,
+        ...(stampWorkerId ? { worker_id: workerId } : {}),
+      },
     };
     return updated;
   }
@@ -185,6 +204,7 @@ export function appendStreamingTextToItems(
         streaming: true,
         isPlan: opts?.isPlan,
         ...(workerStream ? { workerStream: true } : {}),
+        ...(workerStream && workerId ? { worker_id: workerId } : {}),
         ...(streamId ? { stream_id: streamId } : {}),
         ...(opts?.channel ? { channel: opts.channel } : {}),
       },

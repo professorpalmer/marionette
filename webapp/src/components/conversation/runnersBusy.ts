@@ -8,6 +8,23 @@ import { shouldArmChatEventsFromRunners } from "./chatEvents";
 
 export type BusyStatus = "idle" | "thinking" | "executing" | "done" | "error" | "streaming" | "awaiting_swarm";
 
+/**
+ * Sticky agent-loop latch shared by Conversation + TranscriptList.
+ * Includes awaiting_swarm so Investigating / absorption stay armed while workers fly.
+ */
+export function isAgentLoopOpen(
+  turnOpen: boolean,
+  status: BusyStatus | string,
+): boolean {
+  return (
+    turnOpen
+    || status === "thinking"
+    || status === "executing"
+    || status === "streaming"
+    || status === "awaiting_swarm"
+  );
+}
+
 /** Idle polls required before clearing detached busy (resist one false idle). */
 export const RUNNERS_IDLE_CONFIRM_POLLS = 2;
 

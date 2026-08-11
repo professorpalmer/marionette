@@ -7,6 +7,8 @@ import {
 } from "../components/conversation/swarmPoll";
 import { deriveBusyProgress, shouldShowBusyFooter } from "../lib/turnProgress";
 import { derivePillStatus } from "../components/conversation/pillStatus";
+import { isAgentLoopOpen } from "../components/conversation/runnersBusy";
+import { statusPillClickable, statusPillLabel } from "../components/conversation/StatusPill";
 import type { Item } from "../components/TranscriptList";
 
 function msg(role: "user" | "assistant", text: string): Item {
@@ -78,5 +80,11 @@ describe("swarm await chrome", () => {
         awaitingSwarm: true,
       }),
     ).toBe("awaiting_swarm");
+  });
+
+  it("agentLoopOpen latch and StatusPill stay clickable Still working… while awaiting", () => {
+    expect(isAgentLoopOpen(false, "awaiting_swarm")).toBe(true);
+    expect(statusPillLabel("awaiting_swarm")).toBe("Still working…");
+    expect(statusPillClickable("awaiting_swarm", undefined, () => {})).toBe(true);
   });
 });

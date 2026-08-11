@@ -63,13 +63,27 @@ export type StreamTerminalDecision =
   | { kind: "preserve_error_or_done" }
   | { kind: "noop" };
 
-/** Live SSE onDone after flush — abort if the turn never settled. */
+/**
+ * Live SSE onDone after flush — abort if the turn never settled.
+ * When the transcript already shows a sealed answer (SSE lag / missing
+ * assistant_done), settle silently instead of painting a false abort bubble.
+ */
 export function streamOnDoneDecision(opts: {
   turnSettled: boolean;
   userStopped: boolean;
+  /** Pure-chat answer already sealed on screen (see turnLooksAnswerComplete). */
+  answerComplete?: boolean;
 }): StreamTerminalDecision {
-  if (!opts.turnSettled && !opts.userStopped) return { kind: "abort_error" };
-  return { kind: "done" };
+  if (opts.turnSettled || opts.userStopped) return { kind: "done" };
+  if (opts.answerComplete) return { kind: "done" };
+  return { kind: "abort_error" };
+}
+
+/** Cleared on session switch so settled A cannot suppress busy chrome for B. */
+export function resetTurnSettledOnSessionSwitch(
+  turnSettledRef: { current: boolean },
+): void {
+  turnSettledRef.current = false;
 }
 
 /** Live SSE onError after flush — ignore false errors after assistant_done. */

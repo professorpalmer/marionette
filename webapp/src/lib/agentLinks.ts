@@ -9,6 +9,7 @@ import {
   seedAgentTerminalCommand,
   syncAgentTerminalSnapshot,
 } from "./agentTerminalStream";
+import { queuePendingSwarmOpenJob } from "./pendingSwarmOpenJob";
 
 export type OpenFileDetail = {
   path: string;
@@ -230,6 +231,7 @@ export function classifyActionGoal(
   // text embeds a path (looksLikeFilePath would otherwise open the editor).
   if (
     k === "run_command"
+    || k === "run_ipython"
     || k === "run_implement"
     || k === "run_parallel"
     || k === "run_swarm"
@@ -311,11 +313,16 @@ export function openAgentWorkspace(path: string): void {
 /**
  * Focus the Swarm Tracker tab and expand/scroll to a job row.
  * Does not invent a Puppetmaster dashboard URL — tracker focus only.
+ *
+ * Queues the job id before dispatch so a late-mounted SwarmPane still
+ * expands/scrolls (harness-open-swarm-job is easy to miss when the pane
+ * mounts only after harness-focus-tab opens the right rail).
  */
 export function openAgentSwarmJob(jobId: string): void {
   const id = (jobId || "").trim();
   if (!id || !looksLikeJobId(id)) return;
   try {
+    queuePendingSwarmOpenJob(id);
     window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: "swarm" }));
     window.dispatchEvent(
       new CustomEvent("harness-open-swarm-job", { detail: { jobId: id } }),

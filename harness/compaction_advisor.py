@@ -99,26 +99,67 @@ def _none_advice() -> dict[str, Any]:
     }
 
 
-def history_fingerprint(history: Any) -> int:
-    """Stable small fingerprint so advice stays suppressed until history moves."""
+# Only a successful Compact Now (history shrank) may latch calm.
+_ACK_CALM_REASONS = frozenset({"ok", "manual"})
+
+
+def history_fingerprint(
+    history: Any, *, token_estimate: int | None = None
+) -> int:
+    """Fingerprint history length + content size (+ optional token estimate).
+
+    Length alone is dishonest when a dense keepRecent tail stays at the same
+    message count after a failed Compact Now (pressure still soon/now).
+    Content chars are always mixed in so in-place tool-result growth re-arms
+    Needs attention even when a stale provider token count is unchanged.
+    """
     try:
-        return len(history or [])
+        length = len(history or [])
     except Exception:
-        return 0
+        length = 0
+    try:
+        content_weight = sum(
+            len(str(m.get("content") or ""))
+            for m in (history or [])
+            if isinstance(m, dict)
+        )
+    except Exception:
+        content_weight = 0
+    token_weight = 0
+    if token_estimate is not None:
+        try:
+            token_weight = max(0, int(token_estimate))
+        except Exception:
+            token_weight = 0
+    return (length * 1_000_003) ^ (content_weight * 1009) ^ token_weight
+
+
+def _pilot_token_estimate(pilot: Any) -> int | None:
+    try:
+        if hasattr(pilot, "_estimate_context_tokens"):
+            return int(pilot._estimate_context_tokens())
+    except Exception:
+        return None
+    return None
 
 
 def ack_manual_compaction(pilot: Any, reason: str = "manual") -> None:
-    """Latch: Compact now was attempted; hide Needs attention until history grows.
+    """Latch calm only after Compact Now actually succeeded.
 
-    Layer-pressure advice can stay at ``now`` even when force-compact correctly
-    returns ``no_compactable_history`` (recent turn already at the floor). Without
-    this latch the SESSION COST menu keeps screaming after reopen.
+    Failed / no-op attempts (below_min_compactable, no_compactable_history,
+    summary_rejected / aborted) must NOT clear Needs attention while layer
+    pressure remains soon/now.
     """
     try:
+        reason_s = str(reason or "manual").strip() or "manual"
+        if reason_s not in _ACK_CALM_REASONS:
+            return
         history = getattr(pilot, "_history", None) or []
         pilot._compaction_advice_ack = {
-            "history_len": history_fingerprint(history),
-            "reason": str(reason or "manual"),
+            "history_len": history_fingerprint(
+                history, token_estimate=_pilot_token_estimate(pilot)
+            ),
+            "reason": reason_s,
         }
     except Exception:
         pass
@@ -128,15 +169,21 @@ def apply_manual_compaction_ack(
     advice: dict[str, Any],
     pilot: Any,
 ) -> dict[str, Any]:
-    """If Compact now already ran on this history length, clear intervention."""
+    """Clear intervention only after a successful Compact Now latch."""
     if not isinstance(advice, dict) or not advice:
         return advice
     try:
         ack = getattr(pilot, "_compaction_advice_ack", None)
         if not isinstance(ack, dict):
             return advice
+        ack_reason = str(ack.get("reason") or "").strip()
+        if ack_reason not in _ACK_CALM_REASONS:
+            return advice
         history = getattr(pilot, "_history", None) or []
-        if int(ack.get("history_len") or -1) != history_fingerprint(history):
+        fingerprint = history_fingerprint(
+            history, token_estimate=_pilot_token_estimate(pilot)
+        )
+        if int(ack.get("history_len") or -1) != fingerprint:
             return advice
         body = advice.get("compaction_advice")
         if not isinstance(body, dict):

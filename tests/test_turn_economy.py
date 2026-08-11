@@ -25,7 +25,7 @@ from harness.wiki_grounding_savings import (
     try_record_grounding,
 )
 
-# Offload gate floor: 3000 tokens ~= 12000 chars (same as test_context_budget).
+# Content above the shared offload floor (same margin as test_context_budget).
 _GATE_FLOOR_CHARS = 12_500
 
 

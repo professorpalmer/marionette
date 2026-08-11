@@ -390,13 +390,15 @@ export default function RightPane({ artifacts, onOpenWizard, onCollapse, initial
   // Compute label visibility based on sub-pane widths
 
 
-  // StatePane + TerminalPane stay mounted in the primary pane (CSS-hidden when
-  // inactive). State keeps Codegraph/Wiki SWR warm; Terminal keeps the ConPTY
-  // alive — unmount cleanup previously POSTed /api/terminal/kill on every
-  // right-rail tab swap. Secondary split still mounts on demand (rare).
-  const renderPaneBody = (activeTab: Tab, keepStateWarm: boolean) => (
+  // StatePane + TerminalPane + SwarmPane stay mounted in the primary pane
+  // (CSS-hidden when inactive). State keeps Codegraph/Wiki SWR warm; Terminal
+  // keeps the ConPTY alive — unmount cleanup previously POSTed
+  // /api/terminal/kill on every right-rail tab swap. Swarm stays warm so
+  // transcript job deep-links (harness-open-swarm-job) are not missed when
+  // another tab is active. Secondary split still mounts on demand (rare).
+  const renderPaneBody = (activeTab: Tab, keepWarm: boolean) => (
     <div className="relative h-full min-h-0">
-      {keepStateWarm ? (
+      {keepWarm ? (
         <>
           <div
             className={activeTab === "state" ? "h-full" : "hidden"}
@@ -415,6 +417,15 @@ export default function RightPane({ artifacts, onOpenWizard, onCollapse, initial
               <TerminalPane />
             </ErrorBoundary>
           </div>
+          <div
+            className={activeTab === "swarm" ? "h-full" : "hidden"}
+            aria-hidden={activeTab !== "swarm"}
+            data-testid="swarm-pane-slot"
+          >
+            <ErrorBoundary label="Swarm" inline>
+              <SwarmPane />
+            </ErrorBoundary>
+          </div>
         </>
       ) : (
         <>
@@ -428,9 +439,14 @@ export default function RightPane({ artifacts, onOpenWizard, onCollapse, initial
               <TerminalPane />
             </ErrorBoundary>
           )}
+          {activeTab === "swarm" && (
+            <ErrorBoundary label="Swarm" inline>
+              <SwarmPane />
+            </ErrorBoundary>
+          )}
         </>
       )}
-      {activeTab !== "state" && activeTab !== "terminal" && (
+      {activeTab !== "state" && activeTab !== "terminal" && activeTab !== "swarm" && (
         <ErrorBoundary key={activeTab} label={TAB_CONFIG[activeTab]?.label || activeTab} inline>
           {renderTabInner(activeTab)}
         </ErrorBoundary>

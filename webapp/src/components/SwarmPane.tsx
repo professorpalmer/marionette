@@ -4,6 +4,10 @@ import { Loader2, CheckCircle2, XCircle, Circle, ChevronDown, ChevronRight, Cpu,
 import { api, jobArtifactList, type SwarmLive, type Job, type Artifact, type Task } from "../lib/api";
 import { displayModelId, isEngineOnlyModelId } from "../lib/modelIdentity";
 import { lastSelectedProjectRoot, panelOpacityClass, useProjectSwitching } from "../lib/panelTransition";
+import {
+  peekPendingSwarmOpenJob,
+  takePendingSwarmOpenJob,
+} from "../lib/pendingSwarmOpenJob";
 import { useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
 
 // A clean, self-contained hover tooltip. The native `title=` tooltip renders as a
@@ -702,39 +706,52 @@ export default function SwarmPane() {
   }, [mutate]);
 
   // Transcript chrome (job_id chips / ActionCard KV) deep-links here: undismiss,
-  // expand, hydrate artifacts, scroll the row into view.
+  // expand, hydrate artifacts, scroll the row into view. Also drains any job id
+  // queued before this pane mounted (openAgentSwarmJob races focus-tab mount).
+  const openSwarmJobById = useCallback((jobId: string) => {
+    const id = (jobId || "").trim();
+    if (!id) return;
+    setDismissed((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+    setExpandedJobs((prev) => ({ ...prev, [id]: true }));
+    setFinishedOpen(true);
+    const job = dataRef.current?.jobs?.find((j) => j.id === id);
+    if (job) ensureFullArtifacts(job);
+    const scrollToJob = () => {
+      const escape =
+        typeof CSS !== "undefined" && typeof CSS.escape === "function"
+          ? CSS.escape
+          : (s: string) => s.replace(/["\\]/g, "\\$&");
+      const el = document.querySelector(`[data-job-id="${escape(id)}"]`);
+      el?.scrollIntoView({ block: "nearest" });
+    };
+    requestAnimationFrame(() => {
+      requestAnimationFrame(scrollToJob);
+    });
+    window.setTimeout(scrollToJob, 80);
+  }, [ensureFullArtifacts]);
+
   useEffect(() => {
+    const pending = takePendingSwarmOpenJob();
+    if (pending) openSwarmJobById(pending);
+
     const onOpenSwarmJob = (e: Event) => {
       const jobId = String((e as CustomEvent<{ jobId?: string }>).detail?.jobId || "").trim();
       if (!jobId) return;
-      setDismissed((prev) => {
-        if (!prev.has(jobId)) return prev;
-        const next = new Set(prev);
-        next.delete(jobId);
-        return next;
-      });
-      setExpandedJobs((prev) => ({ ...prev, [jobId]: true }));
-      setFinishedOpen(true);
-      const job = dataRef.current?.jobs?.find((j) => j.id === jobId);
-      if (job) ensureFullArtifacts(job);
-      const scrollToJob = () => {
-        const escape =
-          typeof CSS !== "undefined" && typeof CSS.escape === "function"
-            ? CSS.escape
-            : (s: string) => s.replace(/["\\]/g, "\\$&");
-        const el = document.querySelector(`[data-job-id="${escape(jobId)}"]`);
-        el?.scrollIntoView({ block: "nearest" });
-      };
-      requestAnimationFrame(() => {
-        requestAnimationFrame(scrollToJob);
-      });
-      window.setTimeout(scrollToJob, 80);
+      // Live listener won the race — drop the matching queued id so a later
+      // remount does not expand/scroll twice.
+      if (peekPendingSwarmOpenJob() === jobId) takePendingSwarmOpenJob();
+      openSwarmJobById(jobId);
     };
     window.addEventListener("harness-open-swarm-job", onOpenSwarmJob as EventListener);
     return () => {
       window.removeEventListener("harness-open-swarm-job", onOpenSwarmJob as EventListener);
     };
-  }, [ensureFullArtifacts]);
+  }, [openSwarmJobById]);
 
   const lastSigRef = useRef("");
 

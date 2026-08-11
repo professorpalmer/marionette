@@ -10,6 +10,7 @@ import {
 } from "../components/Conversation";
 import {
   activityGroupStableId,
+  clearActivityFoldPrefs,
   groupAgentActivity,
   liveActivityGroupIndex,
   resolveActivityGroupOpen,
@@ -860,6 +861,17 @@ describe("investigation folds default collapsed", () => {
     prefs.set("th1", true);
     expect(resolveThinkingExpanded("th1", prefs)).toBe(true);
   });
+
+  it("clearActivityFoldPrefs is exported for session-switch cleanup", () => {
+    // Behavioral coverage (toggle → clear → closed) lives in
+    // transcriptPresentation; here we only assert the public API exists
+    // and is safe to call repeatedly on a cold map.
+    expect(typeof clearActivityFoldPrefs).toBe("function");
+    clearActivityFoldPrefs();
+    clearActivityFoldPrefs();
+    expect(resolveActivityGroupOpen("never-toggled")).toBe(false);
+    expect(resolveThinkingExpanded("never-toggled")).toBe(false);
+  });
 });
 
 /** Stable identity keys for append-only order assertions (ignore mutating text). */
@@ -1449,5 +1461,58 @@ describe("worker_delta / message_delta stream isolation", () => {
     expect(after[0].msg.workerStream).toBe(true);
     expect(after[1].msg.text).toBe("Pilot answer");
     expect(after[1].msg.workerStream).toBeFalsy();
+  });
+
+  it("concurrent worker_delta worker_ids keep separate capped preview bubbles", () => {
+    const state = {
+      items: [
+        { kind: "msg", msg: { role: "user", text: "swarm" } },
+        {
+          kind: "card",
+          card: {
+            id: "run-par-1",
+            goal: "parallel",
+            cwd: null,
+            kind: "run_parallel",
+            running: true,
+            open: false,
+          },
+        },
+      ] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    state.itemsRef.current = state.items;
+    const harness = makeDeferredIsolationDeps(state);
+
+    harness.apply({
+      kind: "worker_delta",
+      data: { kind: "text", text: "alpha-1", worker_id: "local-aa" },
+    });
+    harness.flushPending();
+    harness.apply({
+      kind: "worker_delta",
+      data: { kind: "text", text: "beta-1", worker_id: "local-bb" },
+    });
+    harness.flushPending();
+    // Interleaved resume must land on the matching worker_id bubble, not the
+    // trailing peer that previously absorbed every worker_delta.
+    harness.apply({
+      kind: "worker_delta",
+      data: { kind: "text", text: "alpha-2", worker_id: "local-aa" },
+    });
+    harness.flushPending();
+
+    const workers = state.items.filter(
+      (i): i is Extract<Item, { kind: "msg" }> =>
+        i.kind === "msg" && i.msg.workerStream === true,
+    );
+    expect(workers).toHaveLength(2);
+    expect(workers[0].msg.worker_id).toBe("local-aa");
+    expect(workers[0].msg.text).toBe("alpha-1alpha-2");
+    expect(workers[0].msg.streaming).toBe(true);
+    expect(workers[1].msg.worker_id).toBe("local-bb");
+    expect(workers[1].msg.text).toBe("beta-1");
+    expect(workers[1].msg.streaming).toBe(true);
   });
 });

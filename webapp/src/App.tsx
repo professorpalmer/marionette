@@ -11,6 +11,7 @@ import { focusSettingsPage } from "./components/SettingsShell";
 import Resizer from "./components/Resizer";
 import RegistryWizard from "./components/RegistryWizard";
 import ErrorBoundary from "./components/ErrorBoundary";
+import CommandPalette from "./components/CommandPalette";
 
 const LS = {
   left: "pmharness.leftW", right: "pmharness.rightW",
@@ -298,6 +299,11 @@ export default function App() {
         onToggleLeft={() => setLeftOpen((v) => !v)} onToggleRight={() => setRightOpen((v) => !v)} />
 
       {showWizard && <RegistryWizard onClose={() => { localStorage.setItem("pmharness.wizardSeen", "1"); setShowWizard(false); }} />}
+
+      <CommandPalette
+        onToggleLeft={() => setLeftOpen((v) => !v)}
+        onToggleRight={() => setRightOpen((v) => !v)}
+      />
     </div>
   );
 }

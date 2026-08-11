@@ -60,8 +60,10 @@ import {
   typewriterCharsPerFrame,
 } from "../components/conversation/streamBubbles";
 import { derivePillStatus } from "../components/conversation/pillStatus";
+import { isAgentLoopOpen } from "../components/conversation/runnersBusy";
 import { workspaceLeafName } from "../components/conversation/workspaceDisplay";
 import {
+  statusPillClickable,
   statusPillDotClass,
   statusPillLabel,
   statusPillTextClass,
@@ -77,6 +79,7 @@ import {
   applyActionResultCard,
   applySwarmResultToItems,
   ensureAssistantStreamingBubble,
+  ensureWorkerStreamingBubble,
   failSwarmPendingForActionError,
   finalizeOrphanSwarmPills,
   finalizePilotMessage,
@@ -110,24 +113,30 @@ import {
 import {
   classifyLocalSlashCommand,
   composerEnterAction,
+  composerEnterBusy,
   editNoticeAfterSend,
   EDIT_BUSY_PROGRESS_NOTICE,
   executeSendGate,
   formatCompactCompleteMessage,
   formatCompactErrorMessage,
   formatHelpSlashReply,
+  localSlashChromeAction,
+  localSlashPaletteAction,
   runEditMessageFlow,
   shouldBlockEmptySend,
   showStandaloneEditNoticeDismiss,
   userOrdinalBeforeIndex,
 } from "../components/conversation/composerSend";
+import { runCommandPaletteAction } from "../lib/commandPalette";
 import {
   appendMentionsToInput,
+  buildFolderInsert,
   buildMentionInsert,
   buildSymbolInsert,
   clampSelectIndex,
   cycleSelectIndex,
   detectComposerTrigger,
+  filterMentionPaths,
   filterSlashCommands,
   mentionTokenForDroppedPath,
 } from "../components/conversation/composerInput";
@@ -592,6 +601,8 @@ describe("chatEvents module", () => {
       data: { ok: 1 },
     });
     expect(isTerminalStreamKind("error")).toBe(true);
+    expect(isTerminalStreamKind("interrupted")).toBe(true);
+    expect(isTerminalStreamKind("done")).toBe(true);
   });
 
   it("treats degraded job status as terminal", () => {
@@ -768,6 +779,56 @@ describe("streamBubbles module", () => {
     expect((next[2] as Extract<Item, { kind: "msg" }>).msg.text).toBe("pilot");
   });
 
+  it("keys workerStream bubbles by worker_id so parallel workers do not collide", () => {
+    let items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "swarm" } },
+    ];
+    items = ensureWorkerStreamingBubble(items, { workerId: "local-aa" });
+    items = appendStreamingTextToItems(items, "a1", {
+      workerStream: true,
+      workerId: "local-aa",
+    });
+    items = ensureWorkerStreamingBubble(items, { workerId: "local-bb" });
+    items = appendStreamingTextToItems(items, "b1", {
+      workerStream: true,
+      workerId: "local-bb",
+    });
+    items = appendStreamingTextToItems(items, "a2", {
+      workerStream: true,
+      workerId: "local-aa",
+    });
+
+    const workers = items.filter(
+      (i): i is Extract<Item, { kind: "msg" }> =>
+        i.kind === "msg" && i.msg.workerStream === true,
+    );
+    expect(workers).toHaveLength(2);
+    expect(workers[0].msg.worker_id).toBe("local-aa");
+    expect(workers[0].msg.text).toBe("a1a2");
+    expect(workers[1].msg.worker_id).toBe("local-bb");
+    expect(workers[1].msg.text).toBe("b1");
+
+    expect(
+      findStreamingBubbleIdx(items, {
+        workerStreamOnly: true,
+        workerId: "local-aa",
+      }),
+    ).toBe(1);
+    expect(
+      findStreamingBubbleIdx(items, {
+        workerStreamOnly: true,
+        workerId: "local-bb",
+      }),
+    ).toBe(2);
+
+    const dropped = finalizeStreamingBubbleOnActionResult(items);
+    expect(
+      dropped.some(
+        (i) => i.kind === "msg" && i.msg.workerStream === true,
+      ),
+    ).toBe(false);
+  });
+
   it("does not resume under a sealed pilot when only a worker preview is open", () => {
     // Sealed assistant ends the scan — excludeWorkerStream must not fall
     // through to invent a resume slot under a finished pilot.
@@ -806,7 +867,7 @@ describe("streamBubbles module", () => {
 });
 
 describe("pillStatus + workspaceDisplay + StatusPill chrome", () => {
-  it("derivePillStatus prefers investigation and open-turn over idle flaps", () => {
+  it("derivePillStatus prefers Investigating chrome over idle/machine flaps", () => {
     expect(
       derivePillStatus({
         transcriptStale: true,
@@ -816,6 +877,7 @@ describe("pillStatus + workspaceDisplay + StatusPill chrome", () => {
         status: "idle",
       }),
     ).toBe("switching…");
+    // answerChromeIdle alone must not idle the pill while composerBusy holds.
     expect(
       derivePillStatus({
         transcriptStale: false,
@@ -823,8 +885,9 @@ describe("pillStatus + workspaceDisplay + StatusPill chrome", () => {
         liveInvestigation: false,
         turnOpen: false,
         status: "thinking",
+        agentLoopOpen: true,
       }),
-    ).toBe("idle");
+    ).toBe("thinking");
     expect(
       derivePillStatus({
         transcriptStale: false,
@@ -833,7 +896,26 @@ describe("pillStatus + workspaceDisplay + StatusPill chrome", () => {
         turnOpen: true,
         status: "idle",
       }),
-    ).toBe("executing");
+    ).toBe("investigating");
+    // Between tools: raw executing/thinking must not flash in the header.
+    expect(
+      derivePillStatus({
+        transcriptStale: false,
+        answerChromeIdle: false,
+        liveInvestigation: true,
+        turnOpen: true,
+        status: "executing",
+      }),
+    ).toBe("investigating");
+    expect(
+      derivePillStatus({
+        transcriptStale: false,
+        answerChromeIdle: false,
+        liveInvestigation: true,
+        turnOpen: true,
+        status: "thinking",
+      }),
+    ).toBe("investigating");
     expect(
       derivePillStatus({
         transcriptStale: false,
@@ -845,13 +927,92 @@ describe("pillStatus + workspaceDisplay + StatusPill chrome", () => {
     ).toBe("thinking");
   });
 
-  it("workspaceLeafName and StatusPill helpers stay stable", () => {
+  it("StatusPill stays Still working / Investigating while composerBusy", () => {
+    // Sealed answer + lagging thinking: composerBusy true via agentLoopOpen.
+    expect(isAgentLoopOpen(false, "thinking")).toBe(true);
+    expect(isAgentLoopOpen(false, "streaming")).toBe(true);
+    const sealedLag = derivePillStatus({
+      transcriptStale: false,
+      answerChromeIdle: true,
+      liveInvestigation: false,
+      turnOpen: false,
+      status: "thinking",
+      agentLoopOpen: true,
+    });
+    expect(sealedLag).toBe("thinking");
+    expect(statusPillLabel(sealedLag)).toBe("Still working…");
+    expect(
+      statusPillLabel(
+        derivePillStatus({
+          transcriptStale: false,
+          answerChromeIdle: true,
+          liveInvestigation: false,
+          turnOpen: false,
+          status: "streaming",
+          agentLoopOpen: true,
+        }),
+      ),
+    ).toBe("Still working…");
+    // Between tools with turnOpen: no idle flash.
+    expect(
+      derivePillStatus({
+        transcriptStale: false,
+        answerChromeIdle: false,
+        liveInvestigation: false,
+        turnOpen: true,
+        status: "idle",
+        agentLoopOpen: true,
+      }),
+    ).toBe("thinking");
+    expect(
+      statusPillLabel(
+        derivePillStatus({
+          transcriptStale: false,
+          answerChromeIdle: false,
+          liveInvestigation: true,
+          turnOpen: true,
+          status: "executing",
+          agentLoopOpen: true,
+        }),
+      ),
+    ).toBe("Investigating…");
+    // Truly closed loop may still early-idle via answerChromeIdle.
+    expect(
+      derivePillStatus({
+        transcriptStale: false,
+        answerChromeIdle: true,
+        liveInvestigation: false,
+        turnOpen: false,
+        status: "idle",
+        agentLoopOpen: false,
+      }),
+    ).toBe("idle");
+  });
+
+  it("isAgentLoopOpen includes awaiting_swarm (Conversation + TranscriptList latch)", () => {
+    expect(isAgentLoopOpen(false, "awaiting_swarm")).toBe(true);
+    expect(isAgentLoopOpen(false, "idle")).toBe(false);
+    expect(isAgentLoopOpen(true, "idle")).toBe(true);
+    expect(isAgentLoopOpen(false, "streaming")).toBe(true);
+  });
+
+  it("workspaceLeafName and StatusPill helpers stay calm Cursor chrome", () => {
     expect(workspaceLeafName("C:\\Users\\me\\proj", undefined)).toBe("proj");
     expect(workspaceLeafName("C:\\Users\\me\\.pmharness\\home", "C:\\Users\\me\\.pmharness\\home")).toBe("Home");
-    expect(statusPillLabel("thinking", "read_file")).toBe("read_file");
+    expect(statusPillLabel("thinking", "Investigating · read_file")).toBe("Investigating · read_file");
+    expect(statusPillLabel("investigating")).toBe("Investigating…");
+    expect(statusPillLabel("executing")).toBe("Investigating…");
+    expect(statusPillLabel("thinking")).toBe("Still working…");
+    expect(statusPillLabel("streaming")).toBe("Still working…");
+    expect(statusPillLabel("awaiting_swarm")).toBe("Still working…");
     expect(statusPillLabel("idle", "x")).toBe("idle");
     expect(statusPillTextClass("error")).toContain("risk");
     expect(statusPillDotClass("streaming")).toContain("animate-pulse");
+    expect(statusPillDotClass("investigating")).toContain("animate-pulse");
+    expect(statusPillClickable("awaiting_swarm", undefined, () => {})).toBe(true);
+    expect(statusPillClickable("investigating", "Investigating…", () => {})).toBe(true);
+    expect(statusPillClickable("thinking", undefined, () => {})).toBe(false);
+    expect(statusPillClickable("idle", "x", () => {})).toBe(false);
   });
 });
 
@@ -1572,6 +1733,40 @@ describe("sessionHydrate module", () => {
 });
 
 describe("composerSend module", () => {
+  it("Enter busy latch matches composerBusy / agentLoopOpen (awaiting_swarm + turnOpen)", () => {
+    expect(composerEnterBusy({ turnOpen: false, status: "awaiting_swarm" })).toBe(true);
+    expect(composerEnterBusy({ turnOpen: true, status: "idle" })).toBe(true);
+    expect(composerEnterBusy({ turnOpen: false, status: "idle" })).toBe(false);
+    expect(composerEnterBusy({ turnOpen: false, status: "done" })).toBe(false);
+    // During awaiting_swarm, Cmd/Ctrl+Enter must queue (not start a new send).
+    expect(
+      composerEnterAction({
+        busy: composerEnterBusy({ turnOpen: false, status: "awaiting_swarm" }),
+        metaOrCtrl: true,
+      }),
+    ).toBe("queue");
+    // Plain Enter stays "send" so send() can steer while composerBusy.
+    expect(
+      composerEnterAction({
+        busy: composerEnterBusy({ turnOpen: false, status: "awaiting_swarm" }),
+        metaOrCtrl: false,
+      }),
+    ).toBe("send");
+    expect(
+      composerEnterAction({
+        busy: composerEnterBusy({ turnOpen: true, status: "idle" }),
+        metaOrCtrl: true,
+      }),
+    ).toBe("queue");
+    // Idle: Cmd/Ctrl+Enter is a normal send (no queue latch).
+    expect(
+      composerEnterAction({
+        busy: composerEnterBusy({ turnOpen: false, status: "idle" }),
+        metaOrCtrl: true,
+      }),
+    ).toBe("send");
+  });
+
   it("gates enter/send and formats slash replies", () => {
     expect(composerEnterAction({ busy: true, metaOrCtrl: true })).toBe("queue");
     expect(composerEnterAction({ busy: true, metaOrCtrl: false })).toBe("send");
@@ -1631,6 +1826,7 @@ describe("composerSend module", () => {
       truncateToIndex: 2,
       prefill: "hello",
       notice: "Editing — resubmit, or Revert to restore.",
+      workspace_restored: false,
     });
   });
 
@@ -1653,6 +1849,33 @@ describe("composerSend module", () => {
     expect(interruptSession).not.toHaveBeenCalled();
     expect(rewindSession).toHaveBeenCalledWith(2);
     expect(result.kind).toBe("success");
+    if (result.kind === "success") {
+      expect(result.workspace_restored).toBe(false);
+    }
+  });
+
+  it("runEditMessageFlow surfaces workspace_restored from rewind", async () => {
+    const result = await runEditMessageFlow({
+      composerBusy: false,
+      idx: 1,
+      userOrdinal: 0,
+      originalText: "hi",
+      stopLocal: vi.fn(),
+      interruptSession: vi.fn(),
+      rewindSession: async () => ({
+        ok: true,
+        prefill: "hi",
+        notice: "workspace restored",
+        workspace_restored: true,
+      }),
+    });
+    expect(result).toEqual({
+      kind: "success",
+      truncateToIndex: 1,
+      prefill: "hi",
+      notice: "workspace restored",
+      workspace_restored: true,
+    });
   });
 
   it("EDIT_BUSY_PROGRESS_NOTICE begins with the auto-stop wording", () => {
@@ -1687,10 +1910,13 @@ describe("composerSend module", () => {
   });
 
   it("classifies local slash commands", () => {
-    const builtIn = (cmd: string) => ["/clear", "/help", "/compact", "/model", "/new"].includes(cmd);
+    const builtIn = isBuiltInSlashCommand;
     expect(
       classifyLocalSlashCommand({ message: "/clear", isBuiltIn: builtIn, customNames: [] }).kind,
-    ).toBe("clear_or_new");
+    ).toBe("clear");
+    expect(
+      classifyLocalSlashCommand({ message: "/new", isBuiltIn: builtIn, customNames: [] }).kind,
+    ).toBe("new");
     expect(
       classifyLocalSlashCommand({ message: "/help", isBuiltIn: builtIn, customNames: [] }).kind,
     ).toBe("help");
@@ -1704,6 +1930,135 @@ describe("composerSend module", () => {
     expect(
       classifyLocalSlashCommand({ message: "hello", isBuiltIn: builtIn, customNames: [] }).kind,
     ).toBe("none");
+  });
+
+  it("classifies navigation slash commands as local (not sent to the model)", () => {
+    const nav = [
+      ["/swarm", "swarm", "open-swarm"],
+      ["/terminal", "terminal", "open-terminal"],
+      ["/settings", "settings", "open-settings"],
+      ["/memory", "memory", "open-memory"],
+      ["/mcp", "mcp", "open-mcp"],
+      ["/files", "files", "open-files"],
+      ["/state", "state", "open-state"],
+    ] as const;
+    for (const [cmd, kind, paletteId] of nav) {
+      expect(isBuiltInSlashCommand(cmd)).toBe(true);
+      const action = classifyLocalSlashCommand({
+        message: cmd,
+        isBuiltIn: isBuiltInSlashCommand,
+        customNames: [],
+      });
+      expect(action.kind).toBe(kind);
+      expect(localSlashPaletteAction(action)).toBe(paletteId);
+    }
+  });
+
+  it("navigation slashes do not createSession or send; /memory and /mcp fire expected events", () => {
+    const createSession = vi.fn();
+    const send = vi.fn();
+    const focusSettingsPage = vi.fn();
+    const tabs: string[] = [];
+    const onFocusTab = (e: Event) => {
+      tabs.push(String((e as CustomEvent).detail));
+    };
+    const onNew = () => {
+      createSession();
+    };
+    window.addEventListener("harness-focus-tab", onFocusTab as EventListener);
+    window.addEventListener("harness-new-session", onNew);
+    try {
+      const cmds = [
+        "/swarm",
+        "/terminal",
+        "/settings",
+        "/memory",
+        "/mcp",
+        "/files",
+        "/state",
+      ];
+      for (const cmd of cmds) {
+        const action = classifyLocalSlashCommand({
+          message: cmd,
+          isBuiltIn: isBuiltInSlashCommand,
+          customNames: [],
+        });
+        expect(action.kind).not.toBe("none");
+        const paletteId = localSlashPaletteAction(action);
+        expect(paletteId).not.toBeNull();
+        // Hermetic Conversation handler: palette path only — never createSession/send.
+        runCommandPaletteAction(paletteId!, {
+          toggleLeft: () => {},
+          toggleRight: () => {},
+          focusSettingsPage,
+        });
+      }
+      expect(createSession).not.toHaveBeenCalled();
+      expect(send).not.toHaveBeenCalled();
+      expect(tabs).toEqual([
+        "swarm",
+        "terminal",
+        "settings",
+        "settings", // /memory opens Settings advanced
+        "mcp",
+        "files",
+        "state",
+      ]);
+      expect(focusSettingsPage).toHaveBeenCalledWith("advanced");
+      expect(focusSettingsPage).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener("harness-focus-tab", onFocusTab as EventListener);
+      window.removeEventListener("harness-new-session", onNew);
+    }
+  });
+
+  it("help note lists local chrome slash commands", () => {
+    const help = formatHelpSlashReply(SLASH_COMMANDS);
+    expect(help).toMatch(/\/swarm/);
+    expect(help).toMatch(/\/memory/);
+    expect(help).toMatch(/\/mcp/);
+    expect(help).toMatch(/Local chrome/);
+  });
+
+  it("separates /clear (visible transcript) from /new (new session)", () => {
+    const builtIn = (cmd: string) => ["/clear", "/new"].includes(cmd);
+    const clear = classifyLocalSlashCommand({
+      message: "/clear",
+      isBuiltIn: builtIn,
+      customNames: [],
+    });
+    const neu = classifyLocalSlashCommand({
+      message: "/new",
+      isBuiltIn: builtIn,
+      customNames: [],
+    });
+    expect(localSlashChromeAction(clear)).toBe("clear_visible");
+    expect(localSlashChromeAction(neu)).toBe("new_session");
+
+    // Hermetic Conversation handler: /clear must not dispatch harness-new-session
+    // (LeftRail maps that to api.createSession).
+    const seen: string[] = [];
+    const onNew = () => {
+      seen.push("harness-new-session");
+    };
+    window.addEventListener("harness-new-session", onNew);
+    try {
+      const applyChrome = (action: typeof clear) => {
+        const chrome = localSlashChromeAction(action);
+        if (chrome === "clear_visible") return "cleared_items";
+        if (chrome === "new_session") {
+          window.dispatchEvent(new Event("harness-new-session"));
+          return "new_session";
+        }
+        return null;
+      };
+      expect(applyChrome(clear)).toBe("cleared_items");
+      expect(seen).toEqual([]);
+      expect(applyChrome(neu)).toBe("new_session");
+      expect(seen).toEqual(["harness-new-session"]);
+    } finally {
+      window.removeEventListener("harness-new-session", onNew);
+    }
   });
 });
 
@@ -1723,7 +2078,24 @@ describe("composerInput module", () => {
       next: "hi @a.ts ",
       cursor: 9,
     });
+    expect(buildMentionInsert("hi @", 3, 4, "a b.ts")).toEqual({
+      next: 'hi @"a b.ts" ',
+      cursor: 13,
+    });
     expect(buildSymbolInsert("@", 0, 1, "Foo").next).toContain("@symbol:Foo");
+    expect(buildFolderInsert("see @", 4, 5, "src/lib")).toEqual({
+      next: "see @folder:src/lib ",
+      cursor: 20,
+    });
+    expect(buildFolderInsert("see @", 4, 5, "my docs")).toEqual({
+      next: 'see @folder:"my docs" ',
+      cursor: 22,
+    });
+    expect(filterMentionPaths(["src/a.ts", "src/b.ts", "web/c.ts"], "src/", 10)).toEqual([
+      "src/a.ts",
+      "src/b.ts",
+    ]);
+    expect(filterMentionPaths(["aaa", "bbb", "ccc"], "", 2)).toEqual(["aaa", "bbb"]);
     expect(filterSlashCommands([{ cmd: "/help" }, { cmd: "/clear" }], "he")).toEqual([
       { cmd: "/help" },
     ]);
@@ -1734,8 +2106,22 @@ describe("composerInput module", () => {
       mentionTokenForDroppedPath({ osPath: "/repo/a.ts", repo: "/repo" }),
     ).toBe("@a.ts");
     expect(
+      mentionTokenForDroppedPath({
+        osPath: "/repo/src",
+        repo: "/repo",
+        isDirectory: true,
+      }),
+    ).toBe("@folder:src");
+    expect(
       mentionTokenForDroppedPath({ osPath: "/repo/a b.ts", repo: "/repo" }),
-    ).toBeNull();
+    ).toBe('@"a b.ts"');
+    expect(
+      mentionTokenForDroppedPath({
+        osPath: "/repo/my docs",
+        repo: "/repo",
+        isDirectory: true,
+      }),
+    ).toBe('@folder:"my docs"');
     expect(
       mentionTokenForDroppedPath({
         osPath: "",
@@ -1743,6 +2129,13 @@ describe("composerInput module", () => {
         uploadedPath: "/repo/uploads/x.ts",
       }),
     ).toBe("@uploads/x.ts");
+    expect(
+      mentionTokenForDroppedPath({
+        osPath: "",
+        repo: "/repo",
+        uploadedPath: "/tmp/cool file.txt",
+      }),
+    ).toBe('@"/tmp/cool file.txt"');
     expect(appendMentionsToInput("hi", ["@a", "@b"])).toBe("hi @a @b ");
   });
 });
@@ -2493,6 +2886,106 @@ describe("investigation terminal reconciliation + live ordering", () => {
       "local-aa:t1",
       "local-bb:t2",
     ]);
+  });
+
+  it("mergeJobActionsIntoItems retains action_ids missing from a later partial poll", () => {
+    const items: Item[] = [{
+      kind: "card",
+      card: {
+        id: "a1",
+        goal: "implement",
+        kind: "run_implement",
+        running: true,
+        open: false,
+        result: { job_id: "local-xyz" },
+        actions: [
+          { action_id: "n1", kind: "read_file", goal: "a.py", status: "complete", worker_id: "local-xyz" },
+          { action_id: "n2", kind: "edit_file", goal: "a.py", status: "running", worker_id: "local-xyz" },
+        ],
+      },
+    }];
+    // Shorter poll drops n1 — must retain, not wipe the timeline.
+    const next = mergeJobActionsIntoItems(items, [{
+      id: "local-xyz",
+      status: "running",
+      actions: [
+        { action_id: "n2", kind: "edit_file", goal: "a.py", status: "complete", duration_ms: 4 },
+      ],
+    }]);
+    const card = (next[0] as Extract<Item, { kind: "card" }>).card;
+    expect(card.actions?.map((a) => a.action_id)).toEqual(["n1", "n2"]);
+    expect(card.actions?.find((a) => a.action_id === "n1")?.status).toBe("complete");
+    expect(card.actions?.find((a) => a.action_id === "n2")?.status).toBe("complete");
+  });
+
+  it("mergeJobActionsIntoItems refuses terminal→running and failed→complete regressions", () => {
+    const items: Item[] = [{
+      kind: "card",
+      card: {
+        id: "a1",
+        goal: "implement",
+        kind: "run_implement",
+        running: true,
+        open: false,
+        result: { job_id: "local-xyz" },
+        actions: [
+          {
+            action_id: "n1",
+            kind: "read_file",
+            goal: "a.py",
+            status: "complete",
+            duration_ms: 3,
+            worker_id: "local-xyz",
+          },
+          {
+            action_id: "n2",
+            kind: "edit_file",
+            goal: "a.py",
+            status: "failed",
+            error: "boom",
+            worker_id: "local-xyz",
+          },
+        ],
+      },
+    }];
+    const next = mergeJobActionsIntoItems(items, [{
+      id: "local-xyz",
+      status: "running",
+      actions: [
+        { action_id: "n1", kind: "read_file", goal: "a.py", status: "running" },
+        { action_id: "n2", kind: "edit_file", goal: "a.py", status: "complete" },
+      ],
+    }]);
+    const card = (next[0] as Extract<Item, { kind: "card" }>).card;
+    expect(card.actions?.find((a) => a.action_id === "n1")?.status).toBe("complete");
+    expect(card.actions?.find((a) => a.action_id === "n1")?.duration_ms).toBe(3);
+    expect(card.actions?.find((a) => a.action_id === "n2")?.status).toBe("failed");
+    expect(card.actions?.find((a) => a.action_id === "n2")?.error).toBe("boom");
+  });
+
+  it("mergeJobActionsIntoItems empty actions[] poll retains known nested rows", () => {
+    const items: Item[] = [{
+      kind: "card",
+      card: {
+        id: "a1",
+        goal: "implement",
+        kind: "run_implement",
+        running: true,
+        open: false,
+        result: { job_id: "local-xyz" },
+        actions: [
+          { action_id: "n1", kind: "read_file", goal: "a.py", status: "complete", worker_id: "local-xyz" },
+        ],
+      },
+    }];
+    const next = mergeJobActionsIntoItems(items, [{
+      id: "local-xyz",
+      status: "running",
+      actions: [],
+    }]);
+    const card = (next[0] as Extract<Item, { kind: "card" }>).card;
+    expect(card.actions?.map((a) => a.action_id)).toEqual(["n1"]);
+    expect(card.actions?.[0].status).toBe("complete");
   });
 
   it("mergeJobActionsIntoItems caps combined multi-job list at MAX_JOB_ACTIONS", () => {

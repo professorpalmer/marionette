@@ -111,11 +111,15 @@ class CheckpointStore:
         label: str,
         trigger: str,
         session_id: Optional[str] = None,
+        user_ordinal: Optional[int] = None,
     ) -> Optional[str]:
         """
         Creates a snapshot of the workspace (tracked + untracked files)
         as a dangling commit object in Git without affecting HEAD, current branch,
         or the active index.
+
+        ``user_ordinal`` (when set) stamps the active user turn so edit-prior-message
+        rewind can restore the workspace to the cut turn.
         """
         if not self._enabled:
             return None
@@ -199,6 +203,7 @@ class CheckpointStore:
                 trigger,
                 head_sha,
                 session_id=self._resolve_session_id(session_id),
+                user_ordinal=user_ordinal,
             )
 
             return commit_sha
@@ -207,6 +212,49 @@ class CheckpointStore:
             import sys
             print(f"Checkpoint error during snapshot: {e}", file=sys.stderr)
             return None
+
+    def find_rewind_checkpoint(
+        self,
+        user_ordinal: int,
+        session_id: Optional[str] = None,
+    ) -> Optional[dict[str, Any]]:
+        """Pick a checkpoint that restores disk to the cut user turn.
+
+        Pre-mutation snapshots are stamped with the in-progress ``user_ordinal``.
+        Restoring the earliest checkpoint with ``user_ordinal >= cut`` undoes
+        file edits from that turn onward (Cursor/Hermes edit-prior parity).
+
+        Preference order:
+        1. Earliest checkpoint stamped with the exact cut ordinal
+        2. Earliest checkpoint stamped with a greater ordinal (later-turn
+           mutation — its pre-write tree is still correct at the cut when the
+           cut turn itself never mutated files)
+        3. Else ``None`` (caller must keep transcript rewind and be honest that
+           disk was not restored — never pretend)
+        """
+        if not self._enabled or user_ordinal < 0:
+            return None
+
+        at_or_after: list[dict[str, Any]] = []
+        for cp in self.list(session_id=session_id):
+            raw = cp.get("user_ordinal")
+            if isinstance(raw, bool) or not isinstance(raw, int):
+                continue
+            if raw >= user_ordinal:
+                at_or_after.append(cp)
+
+        if not at_or_after:
+            return None
+
+        exact = [cp for cp in at_or_after if cp.get("user_ordinal") == user_ordinal]
+        pool = exact or at_or_after
+        pool.sort(
+            key=lambda cp: (
+                int(cp.get("timestamp") or 0),
+                str(cp.get("id") or ""),
+            )
+        )
+        return pool[0]
 
     def list(self, session_id: Optional[str] = None) -> list[dict[str, Any]]:
         """
@@ -504,6 +552,7 @@ class CheckpointStore:
         trigger: str,
         head_sha: Optional[str],
         session_id: Optional[str] = None,
+        user_ordinal: Optional[int] = None,
     ) -> None:
         if not self._meta_dir or not self._meta_file:
             return
@@ -522,6 +571,8 @@ class CheckpointStore:
             sid = self._resolve_session_id(session_id)
             if sid:
                 entry["session_id"] = sid
+            if isinstance(user_ordinal, int) and not isinstance(user_ordinal, bool) and user_ordinal >= 0:
+                entry["user_ordinal"] = user_ordinal
             checkpoints.append(entry)
 
             if len(checkpoints) > 50:

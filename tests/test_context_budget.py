@@ -16,7 +16,8 @@ from harness.context_budget import (
 )
 from harness.conversation import ConversationalSession
 
-# Offload gate floor: 3000 tokens ~= 12000 chars.
+# Content above the shared offload floor (aligned with max_result_chars).
+# 2000 tokens ~= 8000 chars; keep a margin so spill stubs clearly pass the gate.
 _GATE_FLOOR_CHARS = 12_500
 
 
@@ -193,10 +194,12 @@ def test_read_file_large_file_guard(tmp_path):
     assert ok is True
     assert status == "success"
     assert "[file is large (2100 lines); re-read with start_line and limit to see specific sections]" in val
-    # Check that it returns a head slice
+    # Hermes-competitive default window: first ~2000 lines, not a 100-line head.
     assert "This is line 1\n" in val
-    assert "This is line 100\n" in val
-    assert "This is line 101\n" not in val
+    assert "This is line 2000\n" in val
+    assert "This is line 2001\n" not in val
+    assert "truncated after line 2000" in val
+    assert "continue with start_line=2001" in val
 
     # Read large file WITH range specified -> guard does NOT trigger
     act_ranged = DummyAction(kind="read_file", path="large.txt", start_line=105, limit=5)

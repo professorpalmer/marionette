@@ -38,11 +38,13 @@ export function boundActionField(value: unknown, limit: number): string {
   return `${text.slice(0, Math.max(0, limit - 1))}…`;
 }
 
+export type NestedActionStatus = "running" | "complete" | "failed";
+
 /** Normalize live/hydrate nested status (aligned across poll + reload). */
 export function normalizeNestedActionStatus(
   raw: unknown,
   error?: unknown,
-): "running" | "complete" | "failed" {
+): NestedActionStatus {
   const statusRaw = String(raw || "").toLowerCase().trim();
   if (statusRaw === "complete" || statusRaw === "failed" || statusRaw === "running") {
     return statusRaw;
@@ -74,4 +76,21 @@ export function normalizeNestedActionStatus(
   }
   // Unknown: match transcript hydrate — error → failed, else complete (not running).
   return error ? "failed" : "complete";
+}
+
+/**
+ * Never regress terminal → running; never silently upgrade failed → complete.
+ * Mirrors harness.job_actions._monotonic_status — same action_id is one action.
+ */
+export function monotonicNestedActionStatus(
+  existing: NestedActionStatus,
+  incoming: NestedActionStatus,
+): NestedActionStatus {
+  if ((existing === "complete" || existing === "failed") && incoming === "running") {
+    return existing;
+  }
+  if (existing === "failed" && incoming === "complete") {
+    return existing;
+  }
+  return incoming;
 }

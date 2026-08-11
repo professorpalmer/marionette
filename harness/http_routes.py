@@ -531,9 +531,20 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
             except (TypeError, ValueError):
                 return send_json(
                     handler, 400, {"error": "generation must be an integer"})
+        session = (qs.get("session", [""])[0] or "").strip()
+        watch = qs.get("watch", ["0"])[0].lower() in ("1", "true", "yes")
+        if watch:
+            # Live ring tail for mid-turn reattach; miss → 409 JSON for poll fallback.
+            return _sse_api.stream_chat_events(
+                handler,
+                svc.sse_services(),
+                session,
+                since_c,
+                generation,
+            )
         status, payload = _sse_api.get_chat_events(
             svc.sse_services(),
-            (qs.get("session", [""])[0] or "").strip(),
+            session,
             since_c,
             generation,
         )

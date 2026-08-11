@@ -81,6 +81,10 @@ describe("agentLinks detection", () => {
       linkKind: "command",
       value: "pytest -q",
     });
+    expect(classifyActionGoal("run_ipython", "df.head()")).toEqual({
+      linkKind: "command",
+      value: "df.head()",
+    });
     expect(classifyActionGoal("view_image", "uploads/shot.png")).toEqual({
       linkKind: "image",
       value: "uploads/shot.png",
@@ -268,6 +272,16 @@ describe("openAgentLink events", () => {
     expect(kinds).toEqual(["harness-focus-tab", "harness-open-swarm-job"]);
     expect(events[0]?.detail).toBe("swarm");
     expect(events[1]?.detail).toEqual({ jobId: "job_abcdef012345" });
+  });
+
+  it("openAgentSwarmJob queues the job id before dispatch for late SwarmPane mount", async () => {
+    const { peekPendingSwarmOpenJob, clearPendingSwarmOpenJob } = await import(
+      "../lib/pendingSwarmOpenJob"
+    );
+    clearPendingSwarmOpenJob();
+    openAgentSwarmJob("local-swarm-a1");
+    expect(peekPendingSwarmOpenJob()).toBe("local-swarm-a1");
+    clearPendingSwarmOpenJob();
   });
 
   it("openAgentLink routes job ids to the swarm tracker", () => {

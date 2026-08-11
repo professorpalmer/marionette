@@ -213,6 +213,57 @@ def test_apply_review(temp_git_repo):
         assert review_id not in session._pending_reviews
 
 
+def test_apply_review_keeps_pending_on_failure(temp_git_repo):
+    """Failed apply must leave the review queued so the user can retry/reject."""
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    cfg.repo = temp_git_repo
+    session = ConversationalSession(cfg)
+
+    diff_text = (
+        "diff --git a/file1.txt b/file1.txt\n"
+        "--- a/file1.txt\n"
+        "+++ b/file1.txt\n"
+        "@@ -1,3 +1,4 @@\n"
+        " Line A\n"
+        "+Line A.5\n"
+        " Line B\n"
+        " Line C\n"
+    )
+    parsed = parse_unified_diff(diff_text)
+    review_id = "rev-fail-keep"
+    session._pending_reviews[review_id] = {
+        "id": review_id,
+        "job_id": "job-fail",
+        "objective": "keep on fail",
+        "files": parsed,
+        "created_at": 0,
+    }
+
+    hunk_id = parsed[0]["hunks"][0]["id"]
+    with patch.object(
+        session,
+        "_apply_worker_patch",
+        return_value=(False, [], "patch did not apply cleanly"),
+    ):
+        res = session.apply_review(review_id, {hunk_id: "accept"})
+
+    assert res["ok"] is False
+    assert "Failed to apply" in res["message"]
+    assert review_id in session._pending_reviews
+    assert "Failed to apply" in session._pending_reviews[review_id].get("error", "")
+
+    # A later successful apply still clears the review.
+    with patch.object(
+        session,
+        "_apply_worker_patch",
+        return_value=(True, ["file1.txt"], "ok"),
+    ):
+        session._last_checkpoint_id = "cp-retry"
+        ok = session.apply_review(review_id, {hunk_id: "accept"})
+    assert ok["ok"] is True
+    assert review_id not in session._pending_reviews
+
+
 def test_review_edits_before_apply_off_by_default(temp_git_repo):
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
     cfg.repo = temp_git_repo

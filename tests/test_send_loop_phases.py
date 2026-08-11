@@ -1336,8 +1336,52 @@ def test_dispatch_local_action_write_file_success_tracks_changed(tmp_path):
     events = list(dispatch_local_action(session, act, "a9", True, changed))
     assert events[0].kind == "action_result"
     assert events[0].data["types"] == ["file"]
+    assert events[0].data["path"] == "a.py"
     assert changed == [str(target)]
     assert session._do_write_file.call_count == 2
+
+
+def test_dispatch_local_action_edit_file_success_includes_path(tmp_path):
+    act = PilotAction(
+        kind="edit_file", path="b.py", old_str="x", new_str="y",
+    )
+    session = SimpleNamespace(
+        config=SimpleNamespace(repo=str(tmp_path)),
+        harness_session_id="sess",
+        _checkpoints=SimpleNamespace(snapshot=MagicMock(return_value=None)),
+        _do_edit_file=MagicMock(
+            side_effect=[(True, "ok", None), (True, "ok", "1 replacement")]
+        ),
+        _append_action_result=MagicMock(),
+    )
+    changed: list = []
+    events = list(dispatch_local_action(session, act, "e1", True, changed))
+    assert events[0].kind == "action_result"
+    assert events[0].data["path"] == "b.py"
+    assert events[0].data["types"] == ["file"]
+
+
+def test_dispatch_local_action_hash_edit_success_includes_path(tmp_path):
+    act = PilotAction(
+        kind="hash_edit",
+        path="c.py",
+        arguments={"ops": [{"op": "replace", "old": "x", "new": "z"}]},
+    )
+    session = SimpleNamespace(
+        config=SimpleNamespace(repo=str(tmp_path)),
+        harness_session_id="sess",
+        _checkpoints=SimpleNamespace(snapshot=MagicMock(return_value=None)),
+        _do_hash_edit=MagicMock(
+            side_effect=[(True, "ok", None), (True, "ok", "applied 1 hunk")]
+        ),
+        _append_action_result=MagicMock(),
+        _last_ast_preview=None,
+    )
+    changed: list = []
+    events = list(dispatch_local_action(session, act, "h1", True, changed))
+    assert events[0].kind == "action_result"
+    assert events[0].data["path"] == "c.py"
+    assert events[0].data["types"] == ["file"]
 
 
 def test_dispatch_local_action_run_command_blocked():

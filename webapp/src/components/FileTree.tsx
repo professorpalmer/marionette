@@ -7,6 +7,10 @@ import {
   revealWorkspacePath,
   toAbsoluteWorkspacePath,
 } from "../lib/transport";
+import {
+  notifyWorkspaceMutated,
+  subscribeWorkspaceMutations,
+} from "../lib/workspaceMutationEvents";
 
 interface FileNode {
   name: string;
@@ -173,7 +177,8 @@ function formatListingCapMessage(meta: WorkspaceListingCap): string {
 }
 
 function notifyTreeMutated(paths?: { deleted?: string; renamed?: { from: string; to: string } }) {
-  window.dispatchEvent(new Event("harness-file-edited"));
+  // Fan out to both mutation names so SCM / editors refresh too.
+  notifyWorkspaceMutated(paths?.deleted || paths?.renamed?.to);
   window.dispatchEvent(new Event("harness-file-saved"));
   if (paths?.deleted) {
     window.dispatchEvent(
@@ -281,7 +286,10 @@ export default function FileTree() {
     window.addEventListener("harness-config-changed", handleRefresh);
     window.addEventListener("harness-session-relocated", handleRefresh);
     window.addEventListener("harness-file-saved", handleRefresh);
-    window.addEventListener("harness-file-edited", handleRefresh);
+    // Agent writes may only emit harness-repo-mutated (checkpoint); UI edits
+    // emit harness-file-edited. Subscribe to both so the tree stays fresh.
+    // handleRefresh already debounces — do not nest another timer here.
+    const unsubMutations = subscribeWorkspaceMutations(handleRefresh);
     // Electron: main fires this after backend respawn / port refresh so a
     // transient ECONNREFUSED does not stick in the Files panel.
     const ipc: any = (typeof window !== "undefined" && (window as any).harnessIPC) || null;
@@ -295,7 +303,7 @@ export default function FileTree() {
       window.removeEventListener("harness-config-changed", handleRefresh);
       window.removeEventListener("harness-session-relocated", handleRefresh);
       window.removeEventListener("harness-file-saved", handleRefresh);
-      window.removeEventListener("harness-file-edited", handleRefresh);
+      unsubMutations();
       try { unsubRespawn?.(); } catch { /* ignore */ }
     };
   }, []);

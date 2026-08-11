@@ -32,6 +32,7 @@ export {
   nextAppliedCursor,
   isTerminalStreamKind,
   shouldPollChatEvents,
+  isChatEventsReattachArmed,
   shouldArmChatEventsFromRunners,
   type ChatEventReplayMissFields,
   isChatEventReplayMiss,
@@ -75,6 +76,7 @@ export { derivePillStatus } from "./pillStatus";
 export { workspaceLeafName } from "./workspaceDisplay";
 export {
   statusPillLabel,
+  statusPillClickable,
   statusPillTextClass,
   statusPillDotClass,
 } from "./StatusPill";
@@ -131,6 +133,7 @@ export {
 } from "./sessionHydrate";
 export {
   composerEnterAction,
+  composerEnterBusy,
   executeSendGate,
   shouldBlockEmptySend,
   formatHelpSlashReply,
@@ -144,11 +147,17 @@ export {
   showStandaloneEditNoticeDismiss,
   runEditMessageFlow,
   classifyLocalSlashCommand,
+  localSlashChromeAction,
+  localSlashPaletteAction,
 } from "./composerSend";
 export {
   detectComposerTrigger,
+  quoteMentionPathIfNeeded,
+  formatMentionToken,
   buildMentionInsert,
   buildSymbolInsert,
+  buildFolderInsert,
+  filterMentionPaths,
   filterSlashCommands,
   cycleSelectIndex,
   mentionTokenForDroppedPath,
@@ -175,6 +184,7 @@ export {
   preserveOrThinking,
   runnersBusyTickDecision,
   RUNNERS_IDLE_CONFIRM_POLLS,
+  isAgentLoopOpen,
 } from "./runnersBusy";
 export {
   CONTEXT_USAGE_COLORS,
@@ -216,6 +226,7 @@ export {
   streamOnDoneDecision,
   streamOnErrorDecision,
   shouldRefreshBusyChrome,
+  resetTurnSettledOnSessionSwitch,
 } from "./streamTerminal";
 export { default as TranscriptEmptyState } from "./TranscriptEmptyState";
 export { createChatEventsReattach } from "./chatEventsReattach";

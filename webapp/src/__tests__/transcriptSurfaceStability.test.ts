@@ -438,6 +438,42 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
     expect(whenDone.has(liveStream)).toBe(false);
   });
 
+  it("absorbs workerStream msgs into Investigating (Bubble ticker when fold open)", () => {
+    const worker: Item = {
+      kind: "msg",
+      msg: {
+        role: "assistant",
+        text: "worker tokens…",
+        streaming: true,
+        workerStream: true,
+      },
+    };
+    const narration: Item = {
+      kind: "msg",
+      msg: { role: "assistant", text: "Checking handlers…", streaming: true },
+    };
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "implement" } },
+      {
+        kind: "card",
+        card: {
+          id: "c-w",
+          goal: "run implement",
+          cwd: null,
+          kind: "run_implement",
+          running: true,
+          open: false,
+        },
+      },
+      narration,
+      worker,
+    ];
+    const absorbed = collectIntermediateAssistantItems(items, true);
+    expect(absorbed.has(narration)).toBe(true);
+    // Absorbed into the fold; ActivityGroup renders via Bubble, not muted <pre>.
+    expect(absorbed.has(worker)).toBe(true);
+  });
+
   it("short shared prefix / substring must not cover distinct post-tool narration", () => {
     const sealed = "I will inspect the handler carefully before editing.";
     expect(assistantProseCovers(sealed, "I will")).toBe(false);

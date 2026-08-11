@@ -39,11 +39,14 @@ export function chatEventsPath(opts: {
   session?: string;
   since?: number;
   generation?: number;
+  /** Live SSE ring watch (mid-turn reattach); omit for JSON pull replay. */
+  watch?: boolean;
 } = {}): string {
   const params = new URLSearchParams();
   if (opts.session) params.set("session", opts.session);
   if (opts.since != null) params.set("since", String(opts.since));
   if (opts.generation != null) params.set("generation", String(opts.generation));
+  if (opts.watch) params.set("watch", "1");
   const q = params.toString();
   return withToken(`/api/chat/events${q ? `?${q}` : ""}`);
 }
@@ -151,9 +154,23 @@ export function stream(
 
   // Browser: SSE via fetch so we can attach the auth header (EventSource
   // cannot set custom headers).
+  // Mirror electron/stream-bridge.cjs: exactly one terminal callback. Body end
+  // without a framing {kind:"done"} must still invoke onDone so Conversation
+  // can abort/settle chrome instead of sticking busy forever.
   const controller = new AbortController();
   (async () => {
     let resp: Response | null = null;
+    let settled = false;
+    const finishDone = () => {
+      if (settled) return;
+      settled = true;
+      onDone?.();
+    };
+    const finishError = (e: unknown) => {
+      if (settled) return;
+      settled = true;
+      onError?.(e);
+    };
     try {
       resp = await fetch(path, {
         method: "GET",
@@ -184,17 +201,20 @@ export function stream(
           let ev: StreamEvent;
           try { ev = JSON.parse(payload); } catch { continue; }
           if (ev.kind === "done") {
+            finishDone();
             controller.abort();
-            onDone?.();
             return;
           }
-          onEvent(ev);
+          if (!settled) onEvent(ev);
         }
       }
+      // Natural body EOF (no framing done): settle via onDone, not silent hang.
+      if (!controller.signal.aborted) finishDone();
     } catch (e: any) {
-      if (!controller.signal.aborted) onError?.(e);
+      if (!controller.signal.aborted) finishError(e);
     } finally {
-      try { resp?.body?.cancel(); } catch {}
+      // Reader may still lock the body; cancel() rejects async — swallow it.
+      void Promise.resolve(resp?.body?.cancel()).catch(() => {});
     }
   })();
 

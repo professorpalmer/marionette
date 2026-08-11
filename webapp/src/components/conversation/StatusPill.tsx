@@ -2,6 +2,7 @@ const STATUS_TEXT: Record<string, string> = {
   idle: "text-faint",
   thinking: "text-accent",
   executing: "text-warn",
+  investigating: "text-warn",
   streaming: "text-accent",
   awaiting_swarm: "text-warn",
   done: "text-good",
@@ -13,6 +14,7 @@ const STATUS_DOT: Record<string, string> = {
   idle: "bg-faint",
   thinking: "bg-accent animate-pulse",
   executing: "bg-warn animate-pulse",
+  investigating: "bg-warn animate-pulse",
   streaming: "bg-accent animate-pulse",
   awaiting_swarm: "bg-warn animate-pulse",
   done: "bg-good",
@@ -20,20 +22,34 @@ const STATUS_DOT: Record<string, string> = {
   "switching…": "bg-accent animate-pulse",
 };
 
-/** Visible label: prefer busy detail while thinking/executing/streaming/await. */
+const BUSY_PILL_STATUSES = new Set([
+  "thinking",
+  "executing",
+  "investigating",
+  "streaming",
+  "awaiting_swarm",
+]);
+
+/** True when the pill may focus the live terminal via onDetailClick. */
+export function statusPillClickable(
+  status: string,
+  detail: string | undefined,
+  onDetailClick: (() => void) | undefined,
+): boolean {
+  if (!onDetailClick || !BUSY_PILL_STATUSES.has(status)) return false;
+  // awaiting_swarm: clickable even without detail (Still working… is enough).
+  if (status === "awaiting_swarm") return true;
+  return Boolean(detail);
+}
+
+/** Visible label: prefer busy detail; never flash raw machine enums. */
 export function statusPillLabel(status: string, detail?: string): string {
-  if (
-    detail
-    && (
-      status === "thinking"
-      || status === "executing"
-      || status === "streaming"
-      || status === "awaiting_swarm"
-    )
-  ) {
+  if (detail && BUSY_PILL_STATUSES.has(status)) {
     return detail;
   }
   if (status === "awaiting_swarm") return "Still working…";
+  if (status === "investigating" || status === "executing") return "Investigating…";
+  if (status === "thinking" || status === "streaming") return "Still working…";
   return status;
 }
 
@@ -52,14 +68,11 @@ export default function StatusPill({
 }: {
   status: string;
   detail?: string;
-  /** When set, the busy detail (e.g. "run implement") focuses the live surface. */
+  /** When set, the busy detail (e.g. "Investigating…") focuses the live surface. */
   onDetailClick?: () => void;
 }) {
   const label = statusPillLabel(status, detail);
-  const clickable =
-    Boolean(onDetailClick)
-    && Boolean(detail)
-    && (status === "thinking" || status === "executing" || status === "streaming");
+  const clickable = statusPillClickable(status, detail, onDetailClick);
   const className =
     `text-[10.5px] flex items-center gap-1.5 min-w-0 max-w-[42ch] ${statusPillTextClass(status)}`
     + (clickable ? " cursor-pointer hover:underline underline-offset-2" : "");

@@ -3,6 +3,7 @@ import { GitBranch, FileCode, RefreshCw, X, Plus, Minus } from "lucide-react";
 import { nativeGit, gitWritesAvailable } from "../lib/transport";
 import { api } from "../lib/api";
 import { lastSelectedProjectRoot } from "../lib/panelTransition";
+import { subscribeWorkspaceMutations } from "../lib/workspaceMutationEvents";
 
 interface ChangedFile {
   status: string;
@@ -22,6 +23,8 @@ export default function SourceControl() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const loadGenRef = useRef(0);
+  const repoPathRef = useRef(repoPath);
+  repoPathRef.current = repoPath;
 
   // Diff states
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
@@ -112,12 +115,18 @@ export default function SourceControl() {
       }, 180);
     };
 
+    // Agent edits / checkpoints / tree saves — refresh SCM like Cursor/Hermes.
+    const unsubMutations = subscribeWorkspaceMutations(() => {
+      void loadGitStatus(repoPathRef.current);
+    }, { debounceMs: 180 });
+
     window.addEventListener("harness-project-selected", onProject);
     window.addEventListener("harness-config-changed", onConfig);
     return () => {
       if (debounceTimer != null) window.clearTimeout(debounceTimer);
       window.removeEventListener("harness-project-selected", onProject);
       window.removeEventListener("harness-config-changed", onConfig);
+      unsubMutations();
     };
   }, [clearGitUiState, loadGitStatus, reloadFromConfig]);
 

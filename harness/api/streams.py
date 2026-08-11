@@ -263,22 +263,47 @@ def stream_chat(
     if svc.cfg.repo and os.path.isdir(svc.cfg.repo):
         svc.maybe_refresh_codegraph(svc.cfg.repo)
 
-    # Resolve @-file and @symbol mentions in message
+    # Resolve @-file, @folder, and @symbol mentions in message
     resolved_files = []
+    resolved_folders = []
     resolved_symbols = []
     total_size = 0
     repo = svc.cfg.repo
     if repo and os.path.isdir(repo) and message:
-        import re
-        tokens = re.findall(r'@([a-zA-Z0-9_\-\.\/:]+)', message)
+        from ..mention_context import (
+            MENTION_TOTAL_BUDGET,
+            SYMBOL_SNIPPET_CAP,
+            expand_folder_mention,
+            extract_mention_tokens,
+            format_symbol_mention_block,
+            format_symbol_mention_failure,
+            format_symbol_mention_skip,
+            read_file_mention,
+            resolve_repo_dir,
+        )
+
+        tokens = extract_mention_tokens(message)
         seen_tokens = set()
         for token in tokens:
             if token in seen_tokens:
                 continue
             seen_tokens.add(token)
 
+            is_folder_prefix = token.startswith("folder:")
             is_symbol_prefix = token.startswith("symbol:")
             symbol_name = token[7:] if is_symbol_prefix else token
+
+            # Honest @folder:path — or a bare path that is a workspace directory.
+            if is_folder_prefix or (
+                not is_symbol_prefix and resolve_repo_dir(repo, token) is not None
+            ):
+                block = expand_folder_mention(repo, token)
+                if block:
+                    read_size = len(block.encode("utf-8"))
+                    if total_size + read_size <= MENTION_TOTAL_BUDGET:
+                        resolved_folders.append(block)
+                        total_size += read_size
+                continue
 
             is_file = False
             file_to_read = None
@@ -309,16 +334,11 @@ def stream_chat(
                         pass
 
             if is_file and file_to_read:
-                try:
-                    size = os.path.getsize(file_to_read)
-                    read_size = min(size, 50 * 1024)
-                    if total_size + read_size <= 150 * 1024:
-                        with open(file_to_read, 'r', encoding='utf-8', errors='replace') as f:
-                            content = f.read(read_size)
-                        resolved_files.append(f"--- File: {token} ---\n{content}\n")
-                        total_size += len(content.encode('utf-8'))
-                except Exception:
-                    pass
+                block, added = read_file_mention(
+                    file_to_read, token, total_size=total_size,
+                )
+                resolved_files.append(block)
+                total_size += added
             else:
                 try:
                     import puppetmaster.codegraph as cg
@@ -332,40 +352,84 @@ def stream_chat(
                                     file_path = node.get("filePath")
                                     start_line = node.get("startLine")
                                     end_line = node.get("endLine")
-                                    name = node.get("name")
+                                    name = node.get("name") or symbol_name
 
                                     if file_path and start_line is not None:
+                                        if total_size >= MENTION_TOTAL_BUDGET:
+                                            resolved_symbols.append(
+                                                format_symbol_mention_skip(
+                                                    name,
+                                                    reason=(
+                                                        "mention context budget exhausted "
+                                                        "(150KB total across @-mentions)"
+                                                    ),
+                                                )
+                                            )
+                                            continue
                                         sym_full_path = os.path.abspath(os.path.join(repo, file_path))
                                         repo_real = os.path.realpath(repo)
                                         sym_full_real = os.path.realpath(sym_full_path)
                                         common = os.path.commonpath([repo_real, sym_full_real])
                                         if common == repo_real and os.path.isfile(sym_full_real):
-                                            with open(sym_full_real, 'r', encoding='utf-8', errors='replace') as f:
-                                                lines = f.readlines()
+                                            try:
+                                                with open(sym_full_real, 'r', encoding='utf-8', errors='replace') as f:
+                                                    lines = f.readlines()
 
-                                            start_idx = max(0, int(start_line) - 1)
-                                            if end_line is not None:
-                                                end_idx = min(len(lines), int(end_line))
-                                            else:
-                                                end_idx = min(len(lines), start_idx + 60)
+                                                start_idx = max(0, int(start_line) - 1)
+                                                if end_line is not None:
+                                                    end_idx = min(len(lines), int(end_line))
+                                                else:
+                                                    end_idx = min(len(lines), start_idx + 60)
 
-                                            snippet_lines = lines[start_idx:end_idx]
-                                            snippet = "".join(snippet_lines)
-                                            if len(snippet.encode('utf-8')) > 8 * 1024:
-                                                snippet = snippet.encode('utf-8')[:8 * 1024].decode('utf-8', errors='ignore')
+                                                snippet_lines = lines[start_idx:end_idx]
+                                                snippet = "".join(snippet_lines)
+                                                original_bytes = len(snippet.encode('utf-8'))
+                                                truncated = original_bytes > SYMBOL_SNIPPET_CAP
+                                                if truncated:
+                                                    snippet = snippet.encode('utf-8')[:SYMBOL_SNIPPET_CAP].decode(
+                                                        'utf-8', errors='ignore'
+                                                    )
 
-                                            read_size = len(snippet.encode('utf-8'))
-                                            if total_size + read_size <= 150 * 1024:
+                                                read_size = len(snippet.encode('utf-8'))
+                                                if total_size + read_size > MENTION_TOTAL_BUDGET:
+                                                    resolved_symbols.append(
+                                                        format_symbol_mention_skip(
+                                                            name,
+                                                            reason=(
+                                                                "mention context budget exhausted "
+                                                                "(150KB total across @-mentions)"
+                                                            ),
+                                                        )
+                                                    )
+                                                else:
+                                                    resolved_symbols.append(
+                                                        format_symbol_mention_block(
+                                                            name,
+                                                            file_path,
+                                                            int(start_line),
+                                                            snippet,
+                                                            truncated=truncated,
+                                                            original_bytes=original_bytes,
+                                                        )
+                                                    )
+                                                    total_size += read_size
+                                            except OSError as exc:
                                                 resolved_symbols.append(
-                                                    f"--- Symbol: {name} ({file_path}:{start_line}) ---\n{snippet}\n"
+                                                    format_symbol_mention_failure(
+                                                        name,
+                                                        error=str(exc) or type(exc).__name__,
+                                                    )
                                                 )
-                                                total_size += read_size
                 except Exception:
+                    # CodeGraph unavailable / query failed — leave bare @token
+                    # in the user message (same fail-closed as before).
                     pass
 
         context_blocks = []
         if resolved_files:
             context_blocks.append("Referenced files:\n" + "\n".join(resolved_files))
+        if resolved_folders:
+            context_blocks.append("Referenced folders:\n" + "\n".join(resolved_folders))
         if resolved_symbols:
             context_blocks.append("Referenced symbols:\n" + "\n".join(resolved_symbols))
 

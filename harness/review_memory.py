@@ -94,16 +94,21 @@ class ReviewMemoryMixin:
                 "checkpoint_id": cp_id,
                 "message": f"Successfully applied: {apply_msg}"
             }
-        else:
-            with self._pending_reviews_lock:
-                self._pending_reviews.pop(review_id, None)
-            return {
-                "ok": False,
-                "applied_files": [],
-                "rejected_hunks": rejected_hunks,
-                "checkpoint_id": cp_id,
-                "message": f"Failed to apply: {apply_msg}"
-            }
+
+        # Keep the pending review on apply failure so the user can retry or
+        # reject remaining hunks. Surface the error on the review payload.
+        err_msg = f"Failed to apply: {apply_msg}"
+        with self._pending_reviews_lock:
+            still = self._pending_reviews.get(review_id)
+            if still is not None:
+                still["error"] = err_msg
+        return {
+            "ok": False,
+            "applied_files": [],
+            "rejected_hunks": rejected_hunks,
+            "checkpoint_id": cp_id,
+            "message": err_msg,
+        }
 
     def dismiss_review(self, review_id: str) -> bool:
         with self._pending_reviews_lock:

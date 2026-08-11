@@ -24,7 +24,9 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import threading
 from dataclasses import dataclass
+from typing import Any, Iterable
 
 DEFAULT_TIMEOUT = 120
 # When the operator sets HARNESS_COMMAND_TIMEOUT=0/off, commands are "unbounded"
@@ -32,6 +34,215 @@ DEFAULT_TIMEOUT = 120
 # Set HARNESS_COMMAND_HARD_CEILING=0/off to opt out of the ceiling entirely.
 DEFAULT_HARD_CEILING = 900
 MAX_CAPTURED_OUTPUT = 2 * 1024 * 1024  # 2 MiB
+
+# Explicit ownership registry for Marionette-spawned run_cancellable trees.
+# Keyed by id(cancel_event) (or another owner token) — NEVER by cwd scan.
+# Stop/interrupt reaps only these handles so user terminals and foreign
+# Puppetmaster dashboard processes stay untouched.
+_owned_command_lock = threading.Lock()
+_owned_command_procs: dict[int, dict[int, Any]] = {}
+
+
+def _owner_token(owner: Any) -> int | None:
+    if owner is None:
+        return None
+    try:
+        return id(owner)
+    except Exception:
+        return None
+
+
+def register_owned_command_proc(owner: Any, proc: Any) -> None:
+    """Record a Marionette-owned tool process for Stop hard-cancel."""
+    token = _owner_token(owner)
+    pid = getattr(proc, "pid", None)
+    if token is None or pid is None:
+        return
+    try:
+        pid_i = int(pid)
+    except Exception:
+        return
+    if pid_i <= 1:
+        return
+    with _owned_command_lock:
+        bucket = _owned_command_procs.setdefault(token, {})
+        bucket[pid_i] = proc
+
+
+def unregister_owned_command_proc(owner: Any, proc: Any) -> None:
+    """Drop a finished/reaped owned tool process (PID-reuse safe)."""
+    token = _owner_token(owner)
+    pid = getattr(proc, "pid", None)
+    if token is None or pid is None:
+        return
+    try:
+        pid_i = int(pid)
+    except Exception:
+        return
+    with _owned_command_lock:
+        bucket = _owned_command_procs.get(token)
+        if not bucket:
+            return
+        bucket.pop(pid_i, None)
+        if not bucket:
+            _owned_command_procs.pop(token, None)
+
+
+def clear_owned_command_registry_for_tests() -> None:
+    """Test helper: drop all owned command-process provenance."""
+    with _owned_command_lock:
+        _owned_command_procs.clear()
+
+
+def owned_command_pids_for_tests(owner: Any = None) -> list[int]:
+    """Test helper: list registered owned PIDs (optionally for one owner)."""
+    with _owned_command_lock:
+        if owner is None:
+            out: list[int] = []
+            for bucket in _owned_command_procs.values():
+                out.extend(bucket.keys())
+            return out
+        token = _owner_token(owner)
+        if token is None:
+            return []
+        return list(_owned_command_procs.get(token, {}).keys())
+
+
+def kill_process_group(proc: Any) -> bool:
+    """Kill a process group spawned by run_cancellable. Best-effort; never raises.
+
+    Mirrors the Windows CREATE_NEW_PROCESS_GROUP + taskkill /T pattern and the
+    POSIX start_new_session + killpg pattern already used inside run_cancellable.
+    Returns True when a kill was attempted.
+    """
+    if proc is None:
+        return False
+    pid = getattr(proc, "pid", None)
+    if pid is None:
+        return False
+    try:
+        pid_i = int(pid)
+    except Exception:
+        return False
+    if pid_i <= 1:
+        return False
+    me = os.getpid()
+    parent = os.getppid()
+    if pid_i in (me, parent):
+        return False
+
+    import signal
+
+    if os.name != "posix":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(pid_i), "/T", "/F"],
+                capture_output=True,
+                timeout=5,
+            )
+        except Exception:
+            pass
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        return True
+
+    try:
+        pgid = os.getpgid(pid_i)
+    except Exception:
+        pgid = None
+
+    if pgid is not None and pgid > 1:
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except Exception:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+    else:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+
+    try:
+        proc.wait(timeout=3)
+    except Exception:
+        pass
+
+    if pgid is not None and pgid > 1:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except Exception:
+            pass
+    try:
+        proc.kill()
+    except Exception:
+        pass
+    return True
+
+
+def kill_owned_command_procs(owners: Iterable[Any]) -> dict[str, Any]:
+    """Synchronously kill Marionette-owned command trees for the given owners.
+
+    Ownership is registry-only (register_owned_command_proc). Foreign processes
+    whose cwd happens to match the workspace are never targeted.
+    """
+    tokens: list[int] = []
+    for owner in owners or ():
+        token = _owner_token(owner)
+        if token is not None and token not in tokens:
+            tokens.append(token)
+    if not tokens:
+        return {"killed": 0, "signaled": [], "orphaned": []}
+
+    targets: list[tuple[int, int, Any]] = []  # token, pid, proc
+    with _owned_command_lock:
+        for token in tokens:
+            bucket = _owned_command_procs.get(token) or {}
+            for pid, proc in list(bucket.items()):
+                targets.append((token, int(pid), proc))
+
+    signaled: list[int] = []
+    orphaned: list[int] = []
+    me = os.getpid()
+    parent = os.getppid()
+    for token, pid, proc in targets:
+        if pid <= 1 or pid in (me, parent):
+            with _owned_command_lock:
+                bucket = _owned_command_procs.get(token)
+                if bucket is not None:
+                    bucket.pop(pid, None)
+                    if not bucket:
+                        _owned_command_procs.pop(token, None)
+            continue
+        try:
+            alive_before = proc.poll() is None
+        except Exception:
+            alive_before = True
+        if alive_before:
+            kill_process_group(proc)
+            signaled.append(pid)
+        try:
+            still_alive = proc.poll() is None
+        except Exception:
+            still_alive = False
+        if still_alive:
+            orphaned.append(pid)
+        with _owned_command_lock:
+            bucket = _owned_command_procs.get(token)
+            if bucket is not None:
+                bucket.pop(pid, None)
+                if not bucket:
+                    _owned_command_procs.pop(token, None)
+
+    return {
+        "killed": len(signaled),
+        "signaled": signaled,
+        "orphaned": orphaned,
+    }
 
 
 def resolve_timeout(env: dict | None = None) -> int | None:
@@ -212,7 +423,9 @@ def run_cancellable(
     Stop could not kill a long/infinite command. This runner instead launches the
     process in its OWN process group and polls cancel_event (and the deadline)
     while waiting, killing the whole group (so shell=True children die too, not
-    just the parent shell) the moment either fires.
+    just the parent shell) the moment either fires. Spawned handles are also
+    registered under ``cancel_event`` so ``BusyControlMixin.interrupt`` can
+    hard-cancel owned trees immediately (registry-only; never cwd scan).
 
     Cancellation is EDGE-triggered, not level-triggered. cancel_event is a
     process-global flag on a shared session: a sibling stream disconnect or a
@@ -233,7 +446,6 @@ def run_cancellable(
     Returns (output: str, exit_code: int, status: str) where status is one of
     "ok" | "cancelled" | "timeout" | "truncated" | "error". Never raises.
     """
-    import signal
     import time as _time
     try:
         import fcntl
@@ -265,7 +477,7 @@ def run_cancellable(
         # Put the child in its own process group so we can signal the entire
         # tree (shell + everything it spawned). start_new_session is POSIX-only;
         # on Windows the equivalent is the CREATE_NEW_PROCESS_GROUP flag, and
-        # tree-kill goes through taskkill in _kill_group. harness.win_console
+        # tree-kill goes through taskkill in kill_process_group. harness.win_console
         # then ORs CREATE_NO_WINDOW onto this flag (CREATE_NEW_PROCESS_GROUP is
         # not an explicit console choice), so run_command retains
         # CREATE_NEW_PROCESS_GROUP|CREATE_NO_WINDOW on Windows.
@@ -290,6 +502,39 @@ def run_cancellable(
         if sandbox_cleanup is not None:
             sandbox_cleanup()
         return (f"Failed to execute command: {e}", -1, "error")
+
+    # Ownership key is the cancel Event (session._cancel or per-job Event).
+    # Interrupt looks up the same tokens — never invents ownership by cwd.
+    register_owned_command_proc(cancel_event, proc)
+
+    try:
+        return _run_cancellable_wait(
+            proc,
+            cancel_event=cancel_event,
+            stale_cancel=stale_cancel,
+            timeout=timeout,
+            poll_interval=poll_interval,
+            start=start,
+            fcntl=fcntl,
+        )
+    finally:
+        unregister_owned_command_proc(cancel_event, proc)
+        if sandbox_cleanup is not None:
+            sandbox_cleanup()
+
+
+def _run_cancellable_wait(
+    proc,
+    *,
+    cancel_event,
+    stale_cancel: bool,
+    timeout: int | None,
+    poll_interval: float,
+    start: float,
+    fcntl,
+):
+    """Poll/capture loop for an already-spawned owned command process."""
+    import time as _time
 
     # Set the pipe to non-blocking so we can read from it without stalling.
     nonblocking = False
@@ -325,67 +570,7 @@ def run_cancellable(
         _drain_thread.start()
 
     def _kill_group():
-        if os.name != "posix":
-            # Windows: taskkill /T kills the whole tree (children included),
-            # which os.killpg would do on POSIX. /F because the console shells
-            # spawned with shell=True have no graceful-TERM equivalent here.
-            try:
-                subprocess.run(
-                    ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                    capture_output=True,
-                    timeout=5,
-                )
-            except Exception:
-                pass
-            try:
-                proc.kill()
-            except Exception:
-                pass
-            return
-
-        # Capture the group id BEFORE the parent exits -- once proc is reaped,
-        # os.getpgid(proc.pid) raises and we lose the ability to sweep survivors.
-        try:
-            pgid = os.getpgid(proc.pid)
-        except Exception:
-            pgid = None
-
-        if pgid is not None:
-            try:
-                os.killpg(pgid, signal.SIGTERM)
-            except Exception:
-                try:
-                    proc.terminate()
-                except Exception:
-                    pass
-        else:
-            try:
-                proc.terminate()
-            except Exception:
-                pass
-
-        # Wait for the PARENT shell to exit on SIGTERM.
-        try:
-            proc.wait(timeout=3)
-        except Exception:
-            pass
-
-        # ALWAYS SIGKILL the whole group afterward -- do NOT make this conditional
-        # on the parent surviving. On Linux a backgrounded child ("cmd & cmd &
-        # wait") can outlive the shell: the shell exits on SIGTERM (so proc.wait
-        # succeeds) while a child ignored/escaped SIGTERM and lingers. The old code
-        # skipped SIGKILL whenever the parent exited, orphaning that child. A final
-        # unconditional group SIGKILL reaps any survivor; signalling an
-        # already-dead group is a harmless no-op (ProcessLookupError, swallowed).
-        if pgid is not None:
-            try:
-                os.killpg(pgid, signal.SIGKILL)
-            except Exception:
-                pass
-        try:
-            proc.kill()
-        except Exception:
-            pass
+        kill_process_group(proc)
 
     output_chunks = []
     total_read = 0
@@ -439,6 +624,17 @@ def run_cancellable(
         except (IOError, TypeError):
             pass
 
+    # External Stop may have group-killed us while we slept in poll_interval.
+    # Honor a clear->set cancel that outlived the child even if the loop
+    # exited via poll() rather than the cancel branch.
+    if (
+        status == "ok"
+        and cancel_event is not None
+        and cancel_event.is_set()
+        and not stale_cancel
+    ):
+        status = "cancelled"
+
     output = "".join(output_chunks)
     if status != "truncated" and total_read > MAX_CAPTURED_OUTPUT:
         status = "truncated"
@@ -455,8 +651,5 @@ def run_cancellable(
         elif status == "timeout":
             output = (output or "") + f"\n\n[TimeoutExpired after {timeout} seconds]"
             exit_code = -1
-
-    if sandbox_cleanup is not None:
-        sandbox_cleanup()
 
     return (output, exit_code, status)

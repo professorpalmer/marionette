@@ -40,6 +40,7 @@ import {
   toolRowLabel,
   turnHasLiveInvestigation,
 } from "../lib/turnProgress";
+import { isAgentLoopOpen } from "./conversation/runnersBusy";
 import {
   autoHaltPresentation,
   autoStatusPresentation,
@@ -67,6 +68,8 @@ export type Msg = {
   // (the worker's real output is carried by the swarm artifacts/summary), so a
   // multi-worker swarm can't concatenate into one unbounded permanent bubble.
   workerStream?: boolean;
+  /** Owning swarm/local worker id — keys parallel workerStream previews apart. */
+  worker_id?: string;
   /** Provider output-item identity (Codex/Sol dual-channel streams). */
   stream_id?: string;
   /** Visible channel: progress (commentary) vs answer (final_answer). */
@@ -255,6 +258,9 @@ export function collectIntermediateAssistantItems(
       continue;
     }
     if (item.kind !== "msg" || item.msg.role !== "assistant") continue;
+    // workerStream assistants fold into Investigating with other mid-turn
+    // narration. ActivityGroup renders them via Bubble's capped ticker (not
+    // muted <pre>) when the fold is open — never force-open for them.
 
     const seenCardBefore = items
       .slice(turnStart, i)
@@ -458,9 +464,27 @@ function objKey(obj: object): string {
 // Persist Investigated-toggle open state across remounts. Card patches used to
 // replace the lead item's object identity, which changed the React key, remounted
 // ActivityGroup, and reset useState(false) -- the "blinks itself closed" bug.
+// Session-scoped only — clearActivityFoldPrefs() on session switch so stable
+// ids cannot leak open/closed prefs across conversations.
 const __activityOpen = new Map<string, boolean>();
 // Reasoning expand preference (user click) survives remounts / live→idle flips.
 const __thinkingExpanded = new Map<string, boolean>();
+// Alias every durable member of an investigation onto one canon key so a
+// thinking-only group does not remount when the first tool card arrives (and
+// the reverse). Streaming used to key off objKey(thinking) which changed every
+// token and remounted the fold -- expand clicked shut, inner scroll stuck at top.
+const __activityGroupCanon = new Map<string, string>();
+
+/**
+ * Drop module-global fold prefs when the active session changes. Stable card /
+ * thinking ids can collide across sessions; leaking prefs made session B open
+ * with session A's expand state.
+ */
+export function clearActivityFoldPrefs(): void {
+  __activityOpen.clear();
+  __thinkingExpanded.clear();
+  __activityGroupCanon.clear();
+}
 
 /**
  * Investigation folds default CLOSED (Cursor/Hermes). Only an explicit user
@@ -485,11 +509,6 @@ export function resolveThinkingExpanded(
   if (prefs.has(blockId)) return Boolean(prefs.get(blockId));
   return false;
 }
-// Alias every durable member of an investigation onto one canon key so a
-// thinking-only group does not remount when the first tool card arrives (and
-// the reverse). Streaming used to key off objKey(thinking) which changed every
-// token and remounted the fold -- expand clicked shut, inner scroll stuck at top.
-const __activityGroupCanon = new Map<string, string>();
 
 /**
  * Index of the current-turn investigation fold in a grouped transcript, or -1
@@ -651,11 +670,9 @@ export const TranscriptList = memo(function TranscriptList({
   onExecutePlan,
   onCommandApproval,
 }: TranscriptListProps) {
-  const agentLoopOpen =
-    turnOpen
-    || status === "thinking"
-    || status === "executing"
-    || status === "streaming";
+  // Match Conversation's latch — include awaiting_swarm so Investigating /
+  // mid-turn absorption / hideBusyFooter stay armed while workers fly.
+  const agentLoopOpen = isAgentLoopOpen(turnOpen, status);
 
   const intermediateItems = collectIntermediateAssistantItems(items, agentLoopOpen);
   const grouped = groupAgentActivity(items, intermediateItems);
@@ -1002,7 +1019,7 @@ export const TranscriptList = memo(function TranscriptList({
         >
           <Loader2 size={12} className="animate-spin text-muted shrink-0" />
           <span className="truncate font-mono text-[11.5px] tracking-tight">
-            {busyProgress.label || (status === "thinking" ? "Waiting on provider…" : status === "streaming" ? "streaming..." : "running...")}
+            {busyProgress.label || "Still working…"}
           </span>
         </div>
       )}
@@ -1213,6 +1230,7 @@ function ActivityGroup({
           card={it.card}
           onToggle={() => onToggleCard(it.card)}
           duplicateCount={dupCount}
+          activityGroupOpen={open}
         />
       );
     }
@@ -1230,7 +1248,17 @@ function ActivityGroup({
     if (it.kind === "msg") {
       // Folded plan/progress / micro-narration stays ordinary regular text —
       // Markdown emphasis (`**Plan:**`) must not reappear as bold after expand.
+      // workerStream keeps Bubble's capped live ticker (not muted <pre>).
       if (!it.msg.text || !it.msg.text.trim()) return null;
+      if (it.msg.workerStream) {
+        return (
+          <Bubble
+            key={objKey(it.msg)}
+            msg={it.msg}
+            isIntermediate
+          />
+        );
+      }
       return (
         <div key={objKey(it.msg)} className="text-[12px] text-muted/90 py-0.5 leading-relaxed">
           <pre className="whitespace-pre-wrap font-sans font-normal text-[12px] leading-relaxed text-muted/90 m-0">
@@ -1946,11 +1974,18 @@ function ActionCard({
   card,
   onToggle,
   duplicateCount = 1,
+  activityGroupOpen = false,
 }: {
   card: Card;
   onToggle: () => void;
   /** Exact-duplicate failed routing collapses within one investigation. */
   duplicateCount?: number;
+  /**
+   * True when this card is painted inside an open Investigating / Explored
+   * fold. Nested worker rows must be visible then — counts already include
+   * them, so a second forced-closed layer would lie about the timeline.
+   */
+  activityGroupOpen?: boolean;
 }) {
   const toolName = toolRowLabel(card.kind || "");
   // Prefer the real CLI input (path/command/query), recovering from nested
@@ -1968,9 +2003,9 @@ function ActionCard({
   const meta = getCardMeta(card);
   const nested = Array.isArray(card.actions) ? card.actions : [];
   const effectivelyRunning = cardEffectivelyRunning(card);
-  // Nested worker tools follow the parent card: collapsed until the user opens
-  // the row (same default as Investigating / REASONING).
-  const showNested = nested.length > 0 && card.open;
+  // One expand level: open ActivityGroup OR expanded parent card reveals
+  // nested worker tools as a flat chronological list (not double-collapsed).
+  const showNested = nested.length > 0 && (card.open || activityGroupOpen);
   const resultOutput = String(card.result?.output || "");
   const hasExitCode = typeof card.result?.exit_code === "number";
   const nonZeroExit = hasExitCode && card.result!.exit_code !== 0;

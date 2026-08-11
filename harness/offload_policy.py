@@ -3,6 +3,11 @@
 One pure function decides every spill/compaction of a tool result. Results below
 the token floor are never touched; replacements must save at least the configured
 margin. Never raises.
+
+The default floor is aligned with ``BudgetConfig.max_result_chars`` (8000 chars
+at 4 chars/token ⇒ 2000 tokens). A higher floor would leave the
+``max_result_chars < size < floor`` band unsaved in context — opposite of
+Hermes/OMP savings-gated offload.
 """
 from __future__ import annotations
 
@@ -10,7 +15,8 @@ import os
 
 from harness.tool_output_savings import estimate_tokens, tokens_avoided
 
-MIN_TOOL_RESULT_TOKENS = 3000
+# Keep coherent with harness.context_budget._default_max_result() / 4.
+MIN_TOOL_RESULT_TOKENS = 2000
 SAVINGS_MARGIN = 0.9
 
 

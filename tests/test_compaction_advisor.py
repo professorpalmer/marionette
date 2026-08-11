@@ -178,10 +178,11 @@ def test_advice_payload_empty_when_no_journal(tmp_path):
 
 
 def test_manual_ack_clears_intervention_until_history_grows():
-    """Compact now no-op must hide Needs attention until history length moves."""
+    """Successful Compact Now hides Needs attention until history fingerprint moves."""
     pilot = SimpleNamespace(
         _history=[{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}]
         * 3,
+        _estimate_context_tokens=lambda: 100,
     )
     advice = {
         "compaction_advice": {
@@ -194,7 +195,7 @@ def test_manual_ack_clears_intervention_until_history_grows():
             "l3_reclaimed_bytes": 0,
         }
     }
-    ack_manual_compaction(pilot, reason="no_compactable_history")
+    ack_manual_compaction(pilot, reason="ok")
     cleared = apply_manual_compaction_ack(advice, pilot)
     body = cleared["compaction_advice"]
     assert body["needs_intervention"] is False
@@ -203,9 +204,80 @@ def test_manual_ack_clears_intervention_until_history_grows():
     assert body["warning_reason"] == ""
 
     pilot._history = list(pilot._history) + [{"role": "user", "content": "more"}]
+    pilot._estimate_context_tokens = lambda: 140
     again = apply_manual_compaction_ack(advice, pilot)
     assert again["compaction_advice"]["needs_intervention"] is True
     assert again["compaction_advice"]["level"] == "now"
+
+
+def test_manual_ack_rearms_on_inplace_tool_result_growth():
+    """Same message count + stale token estimate must still re-arm after growth."""
+    from harness.compaction_advisor import history_fingerprint
+
+    history = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "a"},
+        {"role": "tool", "content": "x" * 100, "tool_call_id": "tc1"},
+    ]
+    # Stale provider count that does not move when the tool row grows in place.
+    pilot = SimpleNamespace(
+        _history=history,
+        _estimate_context_tokens=lambda: 50,
+    )
+    advice = {
+        "compaction_advice": {
+            "level": "now",
+            "needs_intervention": True,
+            "warning_reason": "hot",
+            "reasons": ["hot_ratio"],
+            "hot_ratio": 0.9,
+            "l1_bytes": 1,
+            "l3_reclaimed_bytes": 0,
+        }
+    }
+    ack_manual_compaction(pilot, reason="ok")
+    cleared = apply_manual_compaction_ack(advice, pilot)
+    assert cleared["compaction_advice"]["acked_manual_compact"] is True
+
+    before_fp = history_fingerprint(history, token_estimate=50)
+    history[2]["content"] = "x" * 5000  # in-place growth, same len(history)
+    after_fp = history_fingerprint(history, token_estimate=50)
+    assert before_fp != after_fp
+    again = apply_manual_compaction_ack(advice, pilot)
+    assert again["compaction_advice"]["needs_intervention"] is True
+    assert again["compaction_advice"]["level"] == "now"
+    assert not again["compaction_advice"].get("acked_manual_compact")
+
+
+def test_failed_compact_ack_keeps_needs_attention():
+    """409 / no-op Compact Now must not clear Needs attention under pressure."""
+    pilot = SimpleNamespace(
+        _history=[{"role": "user", "content": "x" * 4000}] * 8,
+        _estimate_context_tokens=lambda: 20_000,
+    )
+    advice = {
+        "compaction_advice": {
+            "level": "now",
+            "needs_intervention": True,
+            "warning_reason": "hot",
+            "reasons": ["hot_ratio"],
+            "hot_ratio": 0.85,
+            "l1_bytes": 1,
+            "l3_reclaimed_bytes": 0,
+        }
+    }
+    for reason in (
+        "no_compactable_history",
+        "below_min_compactable",
+        "summary_rejected",
+    ):
+        ack_manual_compaction(pilot, reason=reason)
+        assert getattr(pilot, "_compaction_advice_ack", None) is None
+        kept = apply_manual_compaction_ack(advice, pilot)
+        body = kept["compaction_advice"]
+        assert body["needs_intervention"] is True
+        assert body["level"] == "now"
+        assert not body.get("acked_manual_compact")
 
 
 def test_assess_never_raises_on_bad_input():

@@ -588,7 +588,8 @@ def test_degenerate_model_summary_uses_deterministic_fallback():
     assert "Historical Task Snapshot" in summary
 
 
-def test_advisor_soon_triggers_safe_boundary_compaction(monkeypatch):
+def test_advisor_soon_does_not_bypass_hard_trigger(monkeypatch):
+    """``soon`` warns; only ``now`` may auto-compact below the 75% trigger."""
     monkeypatch.setenv("HARNESS_ADVISOR_COMPACTION", "1")
     monkeypatch.setattr(
         "harness.memory_layers.latest_layer_snapshot",
@@ -600,6 +601,32 @@ def test_advisor_soon_triggers_safe_boundary_compaction(monkeypatch):
     monkeypatch.setattr(
         "harness.turn_economy.TurnEconomy.advise_compaction",
         lambda *_args, **_kwargs: {"level": "soon"},
+    )
+    session._history[0]["content"] = "system"
+    for i in range(80):
+        session._history.append({
+            "role": "user" if i % 2 == 0 else "assistant",
+            "content": f"turn {i}: " + ("q" * 500),
+        })
+    assert session._estimate_context_tokens() < 15_000
+
+    events = list(session._maybe_compact_history())
+
+    assert events == []
+
+
+def test_advisor_now_triggers_safe_boundary_compaction(monkeypatch):
+    monkeypatch.setenv("HARNESS_ADVISOR_COMPACTION", "1")
+    monkeypatch.setattr(
+        "harness.memory_layers.latest_layer_snapshot",
+        lambda *_args, **_kwargs: {"L0": {"tokens": 2000}},
+    )
+    cfg = HarnessConfig(max_context_tokens=20_000)
+    session = ConversationalSession(cfg)
+    session.pilot = MockPilot(_GOOD_SUMMARY)  # type: ignore
+    monkeypatch.setattr(
+        "harness.turn_economy.TurnEconomy.advise_compaction",
+        lambda *_args, **_kwargs: {"level": "now"},
     )
     session._history[0]["content"] = "system"
     for i in range(80):

@@ -121,7 +121,12 @@ def test_anti_thrash_blocks_automatic_compaction_after_ineffective_strikes(monke
         assert session._compaction_fail_until > time.time()
 
         events = list(session._maybe_compact_history(force=False))
-        assert events == []
+        skipped = [e for e in events if e.kind == "compaction"]
+        assert len(skipped) == 1
+        assert skipped[0].data.get("aborted") is True
+        assert skipped[0].data.get("reason") == REASON_THRASH_COOLDOWN
+        assert int(skipped[0].data.get("thrash_strikes") or 0) >= ANTI_THRASH_STRIKES
+        assert "anti-thrash" in str(skipped[0].data.get("message") or "").lower()
         assert session._last_compaction_attempt.get("reason") == REASON_THRASH_COOLDOWN
         assert pilot.calls == 0
     finally:

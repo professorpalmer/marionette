@@ -1,8 +1,15 @@
 export const SLASH_COMMANDS = [
   { cmd: "/clear", desc: "Clear visible transcript" },
-  { cmd: "/new", desc: "Clear visible transcript (new session)" },
+  { cmd: "/new", desc: "Start a new session" },
   { cmd: "/compact", desc: "Trigger manual context compaction" },
   { cmd: "/model", desc: "Focus model picker to switch models" },
+  { cmd: "/swarm", desc: "Focus Swarm tab" },
+  { cmd: "/terminal", desc: "Focus Terminal" },
+  { cmd: "/settings", desc: "Focus Settings" },
+  { cmd: "/memory", desc: "Open Memory (Settings → Advanced)" },
+  { cmd: "/mcp", desc: "Focus MCP (State + expand MCP)" },
+  { cmd: "/files", desc: "Focus Files" },
+  { cmd: "/state", desc: "Focus State" },
   { cmd: "/help", desc: "Render a small help note" },
 ];
 

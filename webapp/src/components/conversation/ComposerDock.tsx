@@ -9,6 +9,7 @@ import {
   ChevronUp,
   Code,
   FileText,
+  Folder,
   GripVertical,
   Image as ImageIcon,
   ListChecks,
@@ -72,6 +73,7 @@ export default function ComposerDock({
   contextUsage,
   mentionSearch,
   filteredFiles,
+  filteredFolders,
   symbolResults,
   mentionListingCap,
   selectedFileIndex,
@@ -122,6 +124,7 @@ export default function ComposerDock({
   handleKeyDown,
   handlePaste,
   insertMention,
+  insertFolder,
   insertSymbol,
   insertSlashCommand,
   handleQueueAdd,
@@ -152,6 +155,7 @@ export default function ComposerDock({
   contextUsage: ContextUsageResponse | null;
   mentionSearch: string | null;
   filteredFiles: string[];
+  filteredFolders: string[];
   symbolResults: SymbolHit[];
   mentionListingCap: MentionListingCap | null;
   selectedFileIndex: number;
@@ -210,6 +214,7 @@ export default function ComposerDock({
   handleKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   handlePaste: (e: React.ClipboardEvent<HTMLTextAreaElement>) => void;
   insertMention: (fileName: string) => void;
+  insertFolder: (folderPath: string) => void;
   insertSymbol: (symbolName: string) => void;
   insertSlashCommand: (cmd: string) => void;
   handleQueueAdd: () => void;
@@ -649,7 +654,7 @@ export default function ComposerDock({
             </div>
           )}
 
-          {mentionSearch !== null && (filteredFiles.length > 0 || symbolResults.length > 0 || mentionListingCap) && (
+          {mentionSearch !== null && (filteredFiles.length > 0 || filteredFolders.length > 0 || symbolResults.length > 0 || mentionListingCap) && (
             <div className="absolute left-2 bottom-full mb-1.5 z-50 max-h-[250px] w-[340px] overflow-y-auto bg-panel border border-edge rounded-xl shadow-2xl py-1">
               {filteredFiles.length > 0 && (
                 <>
@@ -675,6 +680,34 @@ export default function ComposerDock({
                 </>
               )}
 
+              {filteredFolders.length > 0 && (
+                <>
+                  <div className="px-2.5 py-1 text-[10px] uppercase font-bold tracking-wider text-faint border-b border-edge/30 mt-1 select-none">
+                    Folders
+                  </div>
+                  {filteredFolders.map((folder, idx) => {
+                    const globalIdx = filteredFiles.length + idx;
+                    const isSelected = globalIdx === selectedFileIndex;
+                    return (
+                      <div
+                        key={`folder:${folder}`}
+                        onClick={() => insertFolder(folder)}
+                        onMouseEnter={() => onSetSelectedFileIndex(globalIdx)}
+                        className={`flex items-center gap-2 px-3 py-1.5 text-[11.5px] cursor-pointer transition select-none ${
+                          isSelected ? "bg-panel2 text-accent font-medium" : "text-txt/90 hover:bg-panel2/50"
+                        }`}
+                      >
+                        <Folder size={11.5} className="shrink-0 opacity-60" />
+                        <span className="truncate flex-1 font-mono">{folder}</span>
+                        <span className="text-[9px] font-mono px-1 py-0.2 bg-edge/30 rounded text-muted shrink-0 lowercase">
+                          folder
+                        </span>
+                      </div>
+                    );
+                  })}
+                </>
+              )}
+
               {symbolResults.length > 0 && (
                 <>
                   <div className="px-2.5 py-1 text-[10px] uppercase font-bold tracking-wider text-faint border-b border-edge/30 mt-1 select-none flex items-center justify-between">
@@ -684,7 +717,7 @@ export default function ComposerDock({
                     )}
                   </div>
                   {symbolResults.map((sym, idx) => {
-                    const globalIdx = filteredFiles.length + idx;
+                    const globalIdx = filteredFiles.length + filteredFolders.length + idx;
                     const isSelected = globalIdx === selectedFileIndex;
                     return (
                       <div
@@ -711,7 +744,7 @@ export default function ComposerDock({
                 </>
               )}
 
-              {filteredFiles.length > 0 && symbolResults.length === 0 && codegraphStatus === "indexing" && (
+              {(filteredFiles.length > 0 || filteredFolders.length > 0) && symbolResults.length === 0 && codegraphStatus === "indexing" && (
                 <div className="px-3 py-1 text-[10px] text-muted/60 select-none italic text-right">
                   symbols indexing...
                 </div>

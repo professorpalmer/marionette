@@ -241,11 +241,8 @@ def test_compact_noop_is_not_success():
     assert "already compact" in payload["error"].lower()
     # A no-op must not persist the transcript.
     assert saved["n"] == 0 and pilot.exports == 0
-    # Latch so /api/usage stops resurfacing Needs attention on menu reopen.
-    ack = getattr(pilot, "_compaction_advice_ack", None)
-    assert isinstance(ack, dict)
-    assert ack.get("reason") == "no_compactable_history"
-    assert ack.get("history_len") == 1
+    # Failed Compact Now must not latch calm — pressure stays visible.
+    assert getattr(pilot, "_compaction_advice_ack", None) is None
 
 
 def test_compact_summary_rejected_reason():
@@ -255,6 +252,52 @@ def test_compact_summary_rejected_reason():
     assert code == 409
     assert payload["reason"] == "summary_rejected"
     assert "rejected" in payload["error"].lower()
+    assert getattr(pilot, "_compaction_advice_ack", None) is None
+
+
+def test_compact_aborted_event_is_not_success():
+    """Aborted compaction events must not report Compacted / latch calm."""
+
+    class _AbortedPilot(_NoopPilot):
+        def __init__(self):
+            super().__init__(reason="summary_rejected")
+            self._tokens = 8000
+
+        def _estimate_context_tokens(self):
+            return self._tokens
+
+        def _maybe_compact_history(self, force=False):
+            yield {"kind": "compacting", "data": {}}
+            yield {
+                "kind": "compaction",
+                "data": {
+                    "before_tokens": 8000,
+                    "after_tokens": 8000,
+                    "summarized_messages": 0,
+                    "aborted": True,
+                    "reason": "insufficient_reduction",
+                },
+            }
+
+    pilot = _AbortedPilot()
+    svc = _svc(pilot=pilot, sessions=SimpleNamespace(active=None))
+    code, payload = post_session_compact(svc)
+    assert code == 409
+    assert payload["ok"] is False and payload["compacted"] is False
+    assert payload["reason"] == "summary_rejected"
+    assert payload["before_tokens"] == payload["after_tokens"] == 8000
+    assert getattr(pilot, "_compaction_advice_ack", None) is None
+
+
+def test_compact_below_min_keeps_distinct_reason():
+    pilot = _NoopPilot(reason="below_min_compactable")
+    svc = _svc(pilot=pilot, sessions=SimpleNamespace(active=None))
+    code, payload = post_session_compact(svc)
+    assert code == 409
+    assert payload["ok"] is False and payload["compacted"] is False
+    assert payload["reason"] == "below_min_compactable"
+    assert "not enough history" in payload["error"].lower()
+    assert getattr(pilot, "_compaction_advice_ack", None) is None
 
 
 def test_compact_success_persists_and_refreshes_snapshot(tmp_path):

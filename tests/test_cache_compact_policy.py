@@ -141,7 +141,11 @@ def test_defer_skips_automatic_compaction_when_warm(monkeypatch):
         _mark_warm(session)
         before = list(session._history)
         events = list(session._maybe_compact_history())
-        assert events == []
+        skipped = [e for e in events if e.kind == "compaction"]
+        assert len(skipped) == 1
+        assert skipped[0].data.get("aborted") is True
+        assert skipped[0].data.get("reason") == "cache_deferred"
+        assert "cache" in str(skipped[0].data.get("message") or "").lower()
         assert session._history == before
         assert session._last_compaction_attempt["reason"] == "cache_deferred"
 

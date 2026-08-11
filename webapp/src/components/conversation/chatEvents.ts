@@ -23,6 +23,7 @@ export function isTerminalStreamKind(kind: string): boolean {
     || kind === "done"
     || kind === "error"
     || kind === "auto_halt"
+    || kind === "interrupted"
   );
 }
 
@@ -35,6 +36,14 @@ export function shouldPollChatEvents(opts: {
 }): boolean {
   if (opts.sawTerminal || opts.userStopped || opts.localStreamActive) return false;
   return opts.detachedBusy;
+}
+
+/** True when mid-turn reattach owns the turn via live watch and/or 1Hz poll. */
+export function isChatEventsReattachArmed(opts: {
+  pollTimer: number | null | undefined;
+  liveCancel: (() => void) | null | undefined;
+}): boolean {
+  return opts.pollTimer != null || opts.liveCancel != null;
 }
 
 /**

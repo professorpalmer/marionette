@@ -12,6 +12,9 @@ from harness.conversation import ConversationalSession
 MOVED_METHODS = (
     "is_turn_busy",
     "interrupt",
+    "_kill_owned_command_procs_on_interrupt",
+    "_interrupt_owner_tokens",
+    "_record_owned_command_orphan_notice",
     "_drain_session_jobs_dual_store",
     "_mark_busy_acquired",
     "_release_busy",

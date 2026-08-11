@@ -98,6 +98,41 @@ def _event_kind(event: Any) -> str:
     return str(kind or "")
 
 
+def _event_data(event: Any) -> dict:
+    """Payload of a compaction-stream event (ConvEvent or plain dict)."""
+    data = getattr(event, "data", None)
+    if data is None and isinstance(event, dict):
+        data = event.get("data")
+    return data if isinstance(data, dict) else {}
+
+
+def _successful_compaction(
+    events: list, *, before_tokens: int, after_tokens: int
+) -> bool:
+    """True only when a non-aborted compaction actually shrank history.
+
+    ``_maybe_compact_history`` can still emit ``kind=compaction`` with
+    ``aborted=True`` (degenerate_summary / insufficient_reduction) while
+    leaving history unchanged — those must not count as Compact Now success.
+    """
+    for ev in events:
+        if _event_kind(ev) != "compaction":
+            continue
+        data = _event_data(ev)
+        if data.get("aborted"):
+            continue
+        try:
+            ev_before = int(data.get("before_tokens", before_tokens))
+            ev_after = int(data.get("after_tokens", after_tokens))
+        except (TypeError, ValueError):
+            ev_before, ev_after = before_tokens, after_tokens
+        if ev_after < ev_before:
+            return True
+        if after_tokens < before_tokens:
+            return True
+    return False
+
+
 def _record_post_compaction_snapshot(pilot: Any, svc: SessionControlServices) -> None:
     """Best-effort: journal a fresh L0-L3 layer snapshot after manual compaction.
 
@@ -162,10 +197,10 @@ def post_session_compact(svc: SessionControlServices) -> tuple[int, JsonPayload]
     """POST /api/session/compact.
 
     Manual "Compact now": force a compaction attempt and report success ONLY
-    when a real ``compaction`` event was emitted (history actually shrank).
-    No-ops -- history too small to split, degenerate summary, insufficient
-    reduction -- return 409 with ``ok: false`` and a structured ``reason`` so
-    the UI can show calm specific copy instead of a false "Compacted".
+    when a non-aborted ``compaction`` event shrank history. No-ops -- history
+    too small to split, below min floor, degenerate summary, insufficient
+    reduction -- return 409 with ``ok: false`` and a structured ``reason``.
+    Failed / no-op attempts do not latch the Needs-attention ack.
     """
     not_ready = svc.gate_active_pilot_ready()
     if not_ready is not None:
@@ -173,22 +208,19 @@ def post_session_compact(svc: SessionControlServices) -> tuple[int, JsonPayload]
     pilot = svc.get_pilot()
     before = pilot._estimate_context_tokens()
     events = list(pilot._maybe_compact_history(force=True))
-    compacted = any(_event_kind(ev) == "compaction" for ev in events)
     after = pilot._estimate_context_tokens()
+    compacted = _successful_compaction(
+        events, before_tokens=before, after_tokens=after
+    )
     if not compacted:
         reason = _compaction_attempt_reason(pilot)
-        # Map soft floors / below-trigger under force to the user-facing bucket.
-        if reason in ("below_trigger", "below_min_compactable"):
+        # Keep below_min_compactable distinct — do not remap to the
+        # "already compact" bucket while pressure may still be high.
+        if reason == "below_trigger":
             reason = "no_compactable_history"
-        # Refresh L0 snapshot + latch advice so "Needs attention" does not
-        # survive Compact now → Already compact → reopen.
+        # Refresh L0 snapshot for honest /api/usage advice; do NOT latch
+        # calm on failed Compact Now (pressure must stay visible).
         _record_post_compaction_snapshot(pilot, svc)
-        try:
-            from ..compaction_advisor import ack_manual_compaction
-
-            ack_manual_compaction(pilot, reason=reason)
-        except Exception:
-            pass
         return 409, {
             "ok": False,
             "compacted": False,

@@ -2,14 +2,16 @@
 
 Bounded per-session/per-generation frame buffer for mid-turn reattach, plus
 Hermes-style ``sse_write`` / ``sse_pump`` that take a handler-like ``wfile``.
-``GET /api/chat/events`` replay lives here as ``get_chat_events``. Stream
-route bodies live in ``harness.api.streams``. ``server.py`` re-exports
-historical names and keeps thin ``Handler`` wrappers so tests keep binding
+``GET /api/chat/events`` JSON replay lives here as ``get_chat_events``;
+``?watch=1`` live ring tail is ``stream_chat_events``. Stream route bodies
+live in ``harness.api.streams``. ``server.py`` re-exports historical names
+and keeps thin ``Handler`` wrappers so tests keep binding
 ``Handler._sse_write`` / ``Handler._sse_pump``.
 """
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from collections import deque
@@ -17,6 +19,17 @@ from dataclasses import dataclass
 from typing import Any, Callable, Deque, Dict, Optional, Tuple, TypedDict, Union
 
 from harness.diag import note as _diag_note
+
+# Terminal kinds that end a live ring watch (match webapp isTerminalStreamKind).
+_CHAT_EVENTS_WATCH_TERMINAL_KINDS = frozenset({
+    "assistant_done",
+    "done",
+    "error",
+    "auto_halt",
+    "interrupted",
+})
+# Poll interval while waiting for new ring frames (same cadence as terminal SSE).
+_CHAT_EVENTS_WATCH_POLL_S = 0.05
 
 # Mid-turn SSE reattach: bounded per-session/per-generation event ring. When the
 # UI detaches, _sse_pump keeps draining the turn and RETAINS recent frames here
@@ -318,6 +331,125 @@ def get_chat_events(
     payload["missed"] = False
     payload["available"] = True
     return 200, payload
+
+
+def _encode_chat_events_watch_frame(ev: dict) -> bytes:
+    """SSE frame for a retained ring event (kind/data + cursor for reattach)."""
+    frame: Dict[str, Any] = {
+        "kind": ev.get("kind") or "event",
+        "data": ev.get("data") if ev.get("data") is not None else {},
+    }
+    cursor = ev.get("cursor")
+    if isinstance(cursor, int):
+        frame["cursor"] = cursor
+    turn = ev.get("turn")
+    if turn is not None:
+        frame["turn"] = turn
+    return f"data: {json.dumps(frame)}\n\n".encode()
+
+
+def stream_chat_events(
+    handler: Any,
+    svc: SseServices,
+    session_id: str,
+    since: int,
+    generation: Optional[int],
+) -> None:
+    """Live SSE watch over the chat-events ring (``GET /api/chat/events?watch=1``).
+
+    Replays retained frames since ``since``, then tails new appends until a
+    terminal kind (or the ring ends). On miss/gap, returns JSON 409 so the
+    client can fall back to the 1Hz pull poll without inventing a second
+    transcript protocol.
+    """
+    _status, payload = get_chat_events(svc, session_id, since, generation)
+    if not isinstance(payload, dict) or not payload.get("ok"):
+        # Non-OK watch open → client transport onError → JSON poll fallback.
+        body = json.dumps(payload if isinstance(payload, dict) else {"ok": False})
+        handler._send(409, body)
+        return
+
+    sid = str(payload.get("session_id") or session_id or "")
+    try:
+        cursor = int(since or 0)
+    except (TypeError, ValueError):
+        cursor = 0
+    gen_pin = generation
+    if gen_pin is None:
+        try:
+            gen_pin = int(payload.get("generation") or 0) or None
+        except (TypeError, ValueError):
+            gen_pin = None
+
+    handler.send_response(200)
+    handler.send_header("Content-Type", "text/event-stream")
+    handler.send_header("Cache-Control", "no-cache")
+    handler._cors()
+    handler.end_headers()
+
+    def _emit_batch(events: list) -> bool:
+        """Write frames; return False if client detached or terminal written."""
+        nonlocal cursor
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+            if not sse_write(handler.wfile, _encode_chat_events_watch_frame(ev)):
+                return False
+            try:
+                c = int(ev.get("cursor") or 0)
+            except (TypeError, ValueError):
+                c = 0
+            if c > cursor:
+                cursor = c
+            kind = str(ev.get("kind") or "")
+            if kind in _CHAT_EVENTS_WATCH_TERMINAL_KINDS:
+                # Framing done closes the web transport; skip duplicate when
+                # the ring frame itself was already kind=done.
+                if kind != "done":
+                    sse_write(handler.wfile, b"data: {\"kind\": \"done\"}\n\n")
+                return False
+        return True
+
+    # Initial catch-up from the same payload get_chat_events already built.
+    initial = payload.get("events") if isinstance(payload.get("events"), list) else []
+    if not _emit_batch(initial):
+        return
+    try:
+        hw = int(payload.get("cursor") or cursor)
+    except (TypeError, ValueError):
+        hw = cursor
+    if hw > cursor:
+        cursor = hw
+
+    # Tail new ring appends until terminal / ring gone / client detach.
+    idle_unpinned = 0
+    while True:
+        ring = svc.ring_lookup(sid, gen_pin)
+        if ring is None:
+            sse_write(handler.wfile, b"data: {\"kind\": \"done\"}\n\n")
+            return
+        batch = ring.since(cursor)
+        if batch.pop("gap", False):
+            # Mid-watch hole: close without framing done so the client falls
+            # back to JSON poll + disk hydrate (same miss contract).
+            return
+        events = batch.get("events") if isinstance(batch.get("events"), list) else []
+        if events:
+            idle_unpinned = 0
+            if not _emit_batch(events):
+                return
+            continue
+        pinned = bool(getattr(ring, "pinned", False))
+        if not pinned:
+            idle_unpinned += 1
+            # Pump finished and nothing new — settle (done may already have
+            # been pruned by TTL).
+            if idle_unpinned >= 2:
+                sse_write(handler.wfile, b"data: {\"kind\": \"done\"}\n\n")
+                return
+        else:
+            idle_unpinned = 0
+        time.sleep(_CHAT_EVENTS_WATCH_POLL_S)
 
 
 def sse_write(wfile: Any, payload: bytes) -> bool:

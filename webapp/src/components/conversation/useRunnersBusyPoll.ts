@@ -18,6 +18,7 @@ import {
   runnersBusyTickDecision,
   userStoppedBusyChrome,
 } from "./runnersBusy";
+import { isChatEventsReattachArmed } from "./chatEvents";
 import { shouldApplySwarmLiveMerge } from "./streamApply";
 import type { SessionStatus } from "./useSessionSwitch";
 
@@ -32,6 +33,7 @@ export type UseRunnersBusyPollDeps = {
   userStoppedRef: MutableRefObject<boolean>;
   runnerBusyPollGenRef: MutableRefObject<number>;
   chatEventsPollTimerRef: MutableRefObject<number | null>;
+  chatEventsLiveCancelRef: MutableRefObject<null | (() => void)>;
   ensureChatEventsReattachRef: MutableRefObject<() => void>;
   setItems: Dispatch<SetStateAction<Item[]>>;
   setTranscriptStale: Dispatch<SetStateAction<boolean>>;
@@ -52,6 +54,7 @@ export function useRunnersBusyPoll(deps: UseRunnersBusyPollDeps) {
     userStoppedRef,
     runnerBusyPollGenRef,
     chatEventsPollTimerRef,
+    chatEventsLiveCancelRef,
     ensureChatEventsReattachRef,
     setItems,
     setTranscriptStale,
@@ -59,6 +62,11 @@ export function useRunnersBusyPoll(deps: UseRunnersBusyPollDeps) {
     setStatus,
     setCompactingStatus,
   } = deps;
+
+  const chatEventsReattachArmed = () => isChatEventsReattachArmed({
+    pollTimer: chatEventsPollTimerRef.current,
+    liveCancel: chatEventsLiveCancelRef.current,
+  });
 
   // Consecutive idle sightings while detachedBusy; reset whenever runners busy.
   const consecutiveIdlePollsRef = useRef(0);
@@ -93,17 +101,17 @@ export function useRunnersBusyPoll(deps: UseRunnersBusyPollDeps) {
           localStreamActive: localStreamActiveRef.current,
           runnerBusy: true,
           detachedBusy: true,
-          chatEventsPollArmed: chatEventsPollTimerRef.current != null,
+          chatEventsPollArmed: chatEventsReattachArmed(),
           items: itemsRef.current,
           consecutiveIdlePolls: 0,
         });
         // Queue/bridge turns start without this tab's EventSource. Arm the
-        // chatEvents ring poll so tokens paint live (not only after restart).
+        // chatEvents ring watch/poll so tokens paint live (not only after restart).
         if (tick.kind === "arm_reattach") {
           ensureChatEventsReattachRef.current();
           return;
         }
-        // While chatEvents reattach poll owns mid-turn UI, skip disk replace
+        // While chatEvents reattach owns mid-turn UI, skip disk replace
         // that would wipe in-flight deltas not yet persisted.
         if (tick.kind === "skip_disk_while_reattach") return;
         // Slice C: while detached-but-busy, refresh transcript so eventual
@@ -160,7 +168,7 @@ export function useRunnersBusyPoll(deps: UseRunnersBusyPollDeps) {
           localStreamActive: localStreamActiveRef.current,
           runnerBusy: false,
           detachedBusy: true,
-          chatEventsPollArmed: chatEventsPollTimerRef.current != null,
+          chatEventsPollArmed: chatEventsReattachArmed(),
           items: itemsRef.current,
           consecutiveIdlePolls: consecutiveIdlePollsRef.current,
         });

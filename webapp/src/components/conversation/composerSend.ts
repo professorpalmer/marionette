@@ -2,6 +2,21 @@
  * Pure composer / send-path helpers. Conversation.tsx keeps the React wiring.
  */
 
+import type { CommandPaletteActionId } from "../../lib/commandPalette";
+import { isAgentLoopOpen } from "./runnersBusy";
+
+/**
+ * Enter busy latch — same truth as composerBusy / agentLoopOpen.
+ * Includes awaiting_swarm and turnOpen so plain Enter steers (and
+ * Cmd/Ctrl+Enter queues) while a background swarm wait is still open.
+ */
+export function composerEnterBusy(opts: {
+  turnOpen: boolean;
+  status: string;
+}): boolean {
+  return isAgentLoopOpen(opts.turnOpen, opts.status);
+}
+
 /** Enter while busy: Cmd/Ctrl+Enter queues; plain Enter steers/sends. */
 export function composerEnterAction(opts: {
   busy: boolean;
@@ -42,6 +57,7 @@ export function formatHelpSlashReply(
   return (
     "Available Slash Commands:\n\n"
     + commands.map((s) => `* \`${s.cmd}\` - ${s.desc}`).join("\n")
+    + "\n\nLocal chrome (not sent to the model): `/swarm` `/terminal` `/settings` `/memory` `/mcp` `/files` `/state`."
     + "\n\nType @ to list and mention files in your message context."
   );
 }
@@ -140,6 +156,10 @@ export type RewindSessionResponse = {
   prefill?: string;
   notice?: string;
   error?: string;
+  /** True when harness restored workspace files from a turn checkpoint. */
+  workspace_restored?: boolean;
+  checkpoint_id?: string | null;
+  restored_files?: string[];
 };
 
 export type EditMessageFlowResult =
@@ -150,6 +170,7 @@ export type EditMessageFlowResult =
       truncateToIndex: number;
       prefill: string;
       notice: string;
+      workspace_restored: boolean;
     };
 
 function editFlowErrorMessage(err: unknown, fallback: string): string {
@@ -204,6 +225,7 @@ export async function runEditMessageFlow(opts: {
       truncateToIndex: opts.idx,
       prefill: res.prefill || opts.originalText,
       notice: res.notice || "Editing — resubmit, or Revert to restore.",
+      workspace_restored: Boolean(res.workspace_restored),
     };
   } catch (err) {
     return {
@@ -215,11 +237,58 @@ export async function runEditMessageFlow(opts: {
 
 export type LocalSlashAction =
   | { kind: "none" }
-  | { kind: "clear_or_new" }
+  | { kind: "clear" }
+  | { kind: "new" }
   | { kind: "compact" }
   | { kind: "model" }
   | { kind: "help" }
+  | { kind: "swarm" }
+  | { kind: "terminal" }
+  | { kind: "settings" }
+  | { kind: "memory" }
+  | { kind: "mcp" }
+  | { kind: "files" }
+  | { kind: "state" }
   | { kind: "custom"; name: string; args: string };
+
+/**
+ * Session-chrome intent for /clear vs /new.
+ * /clear resets the visible transcript in place; /new abandons to a new session.
+ */
+export function localSlashChromeAction(
+  action: LocalSlashAction,
+): "clear_visible" | "new_session" | null {
+  if (action.kind === "clear") return "clear_visible";
+  if (action.kind === "new") return "new_session";
+  return null;
+}
+
+/**
+ * Map navigation slash kinds onto Cmd-K palette action ids so Conversation
+ * can reuse runCommandPaletteAction (same events as the palette).
+ */
+export function localSlashPaletteAction(
+  action: LocalSlashAction,
+): CommandPaletteActionId | null {
+  switch (action.kind) {
+    case "swarm":
+      return "open-swarm";
+    case "terminal":
+      return "open-terminal";
+    case "settings":
+      return "open-settings";
+    case "memory":
+      return "open-memory";
+    case "mcp":
+      return "open-mcp";
+    case "files":
+      return "open-files";
+    case "state":
+      return "open-state";
+    default:
+      return null;
+  }
+}
 
 /**
  * Classify a composer message that starts with `/` into a local slash action.
@@ -234,10 +303,18 @@ export function classifyLocalSlashCommand(opts: {
   if (!msg.startsWith("/")) return { kind: "none" };
   const parts = msg.split(/\s+/);
   const cmd = parts[0] || "";
-  if (cmd === "/clear" || cmd === "/new") return { kind: "clear_or_new" };
+  if (cmd === "/clear") return { kind: "clear" };
+  if (cmd === "/new") return { kind: "new" };
   if (cmd === "/compact") return { kind: "compact" };
   if (cmd === "/model") return { kind: "model" };
   if (cmd === "/help") return { kind: "help" };
+  if (cmd === "/swarm") return { kind: "swarm" };
+  if (cmd === "/terminal") return { kind: "terminal" };
+  if (cmd === "/settings") return { kind: "settings" };
+  if (cmd === "/memory") return { kind: "memory" };
+  if (cmd === "/mcp") return { kind: "mcp" };
+  if (cmd === "/files") return { kind: "files" };
+  if (cmd === "/state") return { kind: "state" };
   if (!opts.isBuiltIn(cmd)) {
     const customCmdName = cmd.startsWith("/") ? cmd.slice(1) : cmd;
     if (opts.customNames.includes(customCmdName)) {

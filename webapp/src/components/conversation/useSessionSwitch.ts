@@ -4,7 +4,7 @@
 
 import { useEffect, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { api } from "../../lib/api";
-import type { Item } from "../TranscriptList";
+import { clearActivityFoldPrefs, type Item } from "../TranscriptList";
 import {
   peekTranscriptCache,
   resolveSwitchTranscript,
@@ -27,6 +27,7 @@ import {
   foldSwarmLiveJobsAfterReload,
   shouldApplySwarmLiveMerge,
 } from "./streamApply";
+import { resetTurnSettledOnSessionSwitch } from "./streamTerminal";
 
 export type SessionStatus =
   | "idle"
@@ -51,6 +52,7 @@ export type UseSessionSwitchDeps = {
   lastAppliedCursorRef: MutableRefObject<number>;
   ringGenerationRef: MutableRefObject<number | undefined>;
   chatEventsPollTimerRef: MutableRefObject<number | null>;
+  chatEventsLiveCancelRef: MutableRefObject<null | (() => void)>;
   applyStreamEventRef: MutableRefObject<(ev: { kind: string; data?: any }) => void>;
   flushTypewriterRef: MutableRefObject<() => void>;
   maybeRunQueuedResumeRef: MutableRefObject<() => void>;
@@ -60,6 +62,8 @@ export type UseSessionSwitchDeps = {
   localStreamActiveRef: MutableRefObject<boolean>;
   detachedBusyRef: MutableRefObject<boolean>;
   userStoppedRef: MutableRefObject<boolean>;
+  /** Session-global; must reset on switch so settled A cannot suppress B chrome. */
+  turnSettledRef: MutableRefObject<boolean>;
   runnerBusyPollGenRef: MutableRefObject<number>;
   typeRafRef: MutableRefObject<number | null>;
   typeBufRef: MutableRefObject<string>;
@@ -92,6 +96,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
     lastAppliedCursorRef,
     ringGenerationRef,
     chatEventsPollTimerRef,
+    chatEventsLiveCancelRef,
     applyStreamEventRef,
     flushTypewriterRef,
     maybeRunQueuedResumeRef,
@@ -101,6 +106,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
     localStreamActiveRef,
     detachedBusyRef,
     userStoppedRef,
+    turnSettledRef,
     runnerBusyPollGenRef,
     typeRafRef,
     typeBufRef,
@@ -142,6 +148,9 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
       // Owned sent-image blob previews belong to the outgoing session; durable
       // /api/image paths remain on warm-cache rows for reload recovery.
       releaseAllTranscriptPreviewBlobs();
+      // Investigation / reasoning fold prefs are session-scoped — stable ids
+      // must not reopen folds from the previous conversation.
+      clearActivityFoldPrefs();
     }
 
     // Detach SSE only -- closing EventSource is OK; interrupt would kill the turn.
@@ -157,6 +166,8 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
     }
     localStreamActiveRef.current = false;
     detachedBusyRef.current = false;
+    // Settled session A must not suppress busy-chrome refresh for mid-turn B.
+    resetTurnSettledOnSessionSwitch(turnSettledRef);
     // Reset mid-turn reattach cursor/poll so the next session starts clean.
     clearChatEventsPoll();
     lastAppliedCursorRef.current = 0;
@@ -329,8 +340,8 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
         }
 
         // Mid-turn reattach: if the runner is still busy and we have no local
-        // EventSource, replay retained SSE frames through the same handler path
-        // as live streaming, then lightly poll until the turn settles.
+        // EventSource, prefer a live ring watch (same SSE framing as /api/chat),
+        // falling back to retained-frame pull + light poll if live attach fails.
         const reattachSid = activeSessionId;
         const reattachGen = streamGenRef.current;
         const { startChatEventsReattach } = createChatEventsReattach({
@@ -350,6 +361,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
           itemsRef,
           transcriptFpRef,
           chatEventsPollTimerRef,
+          chatEventsLiveCancelRef,
           applyStreamEventRef,
           flushTypewriterRef,
           maybeRunQueuedResumeRef,

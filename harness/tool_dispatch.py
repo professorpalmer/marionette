@@ -39,6 +39,14 @@ _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 # results registry rather than being discarded.
 _FOREGROUND_OUTPUT_CAP = 50 * 1024
 
+# Default read_file window for oversized files (Hermes/Cursor daily-driver parity).
+# Files above these triggers return the head window with an explicit truncation
+# notice when content remains — never a silent truncate.
+_READ_FILE_LARGE_BYTE_TRIGGER = 100_000
+_READ_FILE_LARGE_LINE_TRIGGER = 2000
+_READ_FILE_DEFAULT_WINDOW_LINES = 2000
+_READ_FILE_BYTE_CEILING = 200 * 1024
+
 
 def _strip_ansi(text: str) -> str:
     """Remove ANSI SGR color codes so CLI output reads cleanly as tool results."""
@@ -230,8 +238,11 @@ class ToolDispatchMixin:
                     + listing
                 )
             content = resource.content
-            if len(content) > 200 * 1024:
-                content = content[:200 * 1024] + "\n\n... (internal URI content truncated to 200KB) ..."
+            if len(content) > _READ_FILE_BYTE_CEILING:
+                content = (
+                    content[:_READ_FILE_BYTE_CEILING]
+                    + "\n\n... (internal URI content truncated to 200KB) ..."
+                )
             return True, "success", content
 
         if not self.config.repo:
@@ -279,11 +290,23 @@ class ToolDispatchMixin:
                 except ValueError:
                     pass
             
-            if (len(raw_text) > 100000 or total_lines > 2000) and start_line is None and limit is None:
-                head_lines = lines[:100]
+            oversized = (
+                len(raw_text) > _READ_FILE_LARGE_BYTE_TRIGGER
+                or total_lines > _READ_FILE_LARGE_LINE_TRIGGER
+            )
+            if oversized and start_line is None and limit is None:
+                head_lines = lines[:_READ_FILE_DEFAULT_WINDOW_LINES]
+                shown = len(head_lines)
                 content = "".join(head_lines)
-                content += f"\n\n[file is large ({total_lines} lines); re-read with start_line and limit to see specific sections]"
-                content += f"\n[truncated after line 100; continue with start_line={len(head_lines) + 1}]"
+                content += (
+                    f"\n\n[file is large ({total_lines} lines); "
+                    "re-read with start_line and limit to see specific sections]"
+                )
+                if shown < total_lines:
+                    content += (
+                        f"\n[truncated after line {shown}; "
+                        f"continue with start_line={shown + 1}]"
+                    )
             else:
                 if start_line is not None or limit is not None:
                     s_line = start_line if start_line is not None else 1
@@ -298,8 +321,11 @@ class ToolDispatchMixin:
                 else:
                     content = raw_text
 
-            if len(content) > 200 * 1024:
-                content = content[:200 * 1024] + "\n\n... (file truncated to 200KB) ..."
+            if len(content) > _READ_FILE_BYTE_CEILING:
+                content = (
+                    content[:_READ_FILE_BYTE_CEILING]
+                    + "\n\n... (file truncated to 200KB) ..."
+                )
 
             from .hash_edit import annotate_read_content
             slice_start = None

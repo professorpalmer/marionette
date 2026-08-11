@@ -16,9 +16,11 @@ import {
 } from "../components/conversation/streamApply";
 import {
   STREAM_ABORT_MESSAGE,
+  resetTurnSettledOnSessionSwitch,
   shouldRefreshBusyChrome,
   streamOnDoneDecision,
 } from "../components/conversation/streamTerminal";
+import { isTerminalStreamKind } from "../components/conversation/chatEvents";
 import { runnersBusyTickDecision } from "../components/conversation/runnersBusy";
 import { derivePillStatus } from "../components/conversation/pillStatus";
 import { flushTypewriterBuffer } from "../components/conversation/streamTypewriter";
@@ -140,7 +142,8 @@ describe("Wave 5: long reasoning stays busy without idle blink", () => {
     expect(state.waitHint).toBeNull();
     const progress = deriveBusyProgress(state.items, state.status, 45_000);
     expect(progress.phase).toBe("thinking");
-    expect(progress.label.toLowerCase()).toContain("thinking");
+    expect(progress.label.toLowerCase()).toContain("still working");
+    expect(progress.pill.toLowerCase()).toContain("still working");
     expect(progress.pill).not.toBe("idle");
     expect(shouldShowBusyFooter(state.items, state.status)).toBe(true);
   });
@@ -191,8 +194,10 @@ describe("Wave 5: provider idle then progress", () => {
       waitHint: "Provider still working — stream idle",
     });
     expect(p.phase).toBe("running");
-    expect(p.label.toLowerCase()).toContain("running");
+    expect(p.pill.toLowerCase()).toContain("investigating");
+    expect(p.label.toLowerCase()).toContain("run command");
     expect(p.label.toLowerCase()).not.toContain("waiting on provider");
+    expect(p.label.toLowerCase()).not.toMatch(/\b(running|thinking|streaming)\b/);
   });
 });
 
@@ -211,6 +216,58 @@ describe("Wave 5: stream EOF without assistant_done stays honest", () => {
     const decision = streamOnDoneDecision({ turnSettled, userStopped });
     expect(decision.kind).toBe("abort_error");
     expect(shouldRefreshBusyChrome({ turnSettled: true })).toBe(false);
+  });
+
+  it("silently settles when the answer is already complete (no false abort)", () => {
+    expect(
+      streamOnDoneDecision({
+        turnSettled: false,
+        userStopped: false,
+        answerComplete: true,
+      }).kind,
+    ).toBe("done");
+  });
+});
+
+describe("Wave 5: interrupted / done framing settle turn chrome", () => {
+  it("treats interrupted as a terminal stream kind", () => {
+    expect(isTerminalStreamKind("interrupted")).toBe(true);
+    expect(isTerminalStreamKind("message_delta")).toBe(false);
+  });
+
+  it("applies interrupted by settling turnOpen/status/turnSettled", () => {
+    const { state, apply } = makeApplyDeps();
+    apply({
+      kind: "thinking",
+      data: { text: "working…", delta: true, stream_id: "t1" },
+    });
+    expect(state.turnOpen).toBe(true);
+    apply({ kind: "interrupted", data: { reason: "session interrupted" } });
+    expect(state.turnSettledRef.current).toBe(true);
+    expect(state.turnOpen).toBe(false);
+    expect(state.status).toBe("idle");
+    expect(shouldRefreshBusyChrome({
+      turnSettled: state.turnSettledRef.current,
+    })).toBe(false);
+  });
+
+  it("applies framing-only done by settling chrome when not already settled", () => {
+    const { state, apply } = makeApplyDeps();
+    apply({
+      kind: "message_delta",
+      data: { text: "Here is the answer.", delta: true },
+    });
+    apply({ kind: "done", data: {} });
+    expect(state.turnSettledRef.current).toBe(true);
+    expect(state.turnOpen).toBe(false);
+    expect(state.status).toBe("done");
+  });
+
+  it("clears turnSettled on session switch so mid-turn B can refresh busy chrome", () => {
+    const turnSettledRef = { current: true };
+    resetTurnSettledOnSessionSwitch(turnSettledRef);
+    expect(turnSettledRef.current).toBe(false);
+    expect(shouldRefreshBusyChrome({ turnSettled: turnSettledRef.current })).toBe(true);
   });
 });
 

@@ -50,24 +50,27 @@ class BusyControlMixin:
             return False
 
     def interrupt(self) -> None:
-        """Hard Stop: cooperatively cancel the turn + jobs, report idle to the UI.
+        """Hard Stop: cancel the turn + owned tool procs, then report idle.
 
-        Cooperative only — Python threads are never force-killed. A turn blocked
-        in run_command or a local implement thread keeps ``_busy`` locked, so
-        /api/session/state would still report runners=running and the UI would
-        re-arm "thinking" after Stop. We:
+        Python threads are never force-killed. Owned ``run_cancellable`` process
+        trees ARE process-group killed (registry-only — never cwd scan) so Stop
+        matches Cursor-style hard-cancel for Marionette-spawned tool commands.
+        A turn blocked in run_command or a local implement thread may keep
+        ``_busy`` locked, so /api/session/state would still report
+        runners=running and the UI would re-arm "thinking" after Stop. We:
         1. set the cancel flag,
-        2. cancel every in-process local job,
-        3. trip PM cancel flags + dual-store mark for session-dispatched jobs
+        2. cancel every in-process local job (cooperative Event + terminal mark),
+        3. hard-cancel Marionette-owned foreground/command process groups,
+        4. trip PM cancel flags + dual-store mark for session-dispatched jobs
            (harness and CLI durable stores — same seam as /api/swarm/cancel),
-        4. hold an idle status surface until the next user send,
-        5. mark interrupt_requested so a follow-up send can force-recover the lock,
-        6. drop any queued steers with a durable/streamed notice (S2 boundary —
+        5. hold an idle status surface until the next user send (only after
+           owned work is cancelled, or with an orphan notice if a kill stalls),
+        6. mark interrupt_requested so a follow-up send can force-recover the lock,
+        7. drop any queued steers with a durable/streamed notice (S2 boundary —
            never inject into the abandoned generator or a later unrelated send).
         """
         self.cancel()
         self._interrupt_requested = True
-        self._stop_holds_idle = True
         # Only an actually abandoned generation (busy still held) should force
         # acquire-time steer drops. Idle-session Stop must not wipe later
         # ready-session steers on the next legitimate send.
@@ -75,12 +78,6 @@ class BusyControlMixin:
             self._steer_boundary_drop_on_acquire = bool(self._busy.locked())
         except Exception:
             self._steer_boundary_drop_on_acquire = False
-        # Surface idle immediately so the runners poll stops flipping the
-        # composer back to thinking while the abandoned generator unwinds.
-        try:
-            self._state = "idle"
-        except Exception:
-            pass
         try:
             with self._local_jobs_lock:
                 running_ids = [
@@ -92,6 +89,18 @@ class BusyControlMixin:
                     self.cancel_local_job(jid)
                 except Exception:
                     pass
+        except Exception:
+            pass
+        # Hard-cancel owned tool/command process trees before claiming idle.
+        # Prefer the existing process-group teardown; never scan by cwd.
+        try:
+            self._kill_owned_command_procs_on_interrupt()
+        except Exception:
+            pass
+        # Honest idle: owned work cancelled (or orphan notice recorded above).
+        self._stop_holds_idle = True
+        try:
+            self._state = "idle"
         except Exception:
             pass
         # Best-effort: trip Puppetmaster cancel flags for session-dispatched jobs
@@ -118,7 +127,7 @@ class BusyControlMixin:
             pass
         # S2 Stop↔steer boundary: drop any queued steers so they cannot inject
         # into the abandoned generator or contaminate a later unrelated send.
-        # Cooperative only — never force-kills threads.
+        # Cooperative only for Python threads — never force-kills threads.
         try:
             drop = getattr(self, "drop_queued_steers", None)
             dropped = drop() if callable(drop) else []
@@ -136,6 +145,62 @@ class BusyControlMixin:
                 release(reason="interrupt")
         except Exception:
             pass
+
+    def _interrupt_owner_tokens(self) -> list:
+        """Cancel Events that own in-flight run_cancellable trees for this session."""
+        owners = []
+        cancel = getattr(self, "_cancel", None)
+        if cancel is not None:
+            owners.append(cancel)
+        try:
+            cancels = getattr(self, "_local_job_cancels", None) or {}
+            for ev in list(cancels.values()):
+                if ev is not None and ev not in owners:
+                    owners.append(ev)
+        except Exception:
+            pass
+        return owners
+
+    def _kill_owned_command_procs_on_interrupt(self) -> dict:
+        """Process-group kill Marionette-owned tool procs; notice if orphaned."""
+        from harness.command_policy import kill_owned_command_procs
+
+        result = kill_owned_command_procs(self._interrupt_owner_tokens())
+        orphaned = list(result.get("orphaned") or [])
+        if orphaned:
+            try:
+                self._record_owned_command_orphan_notice(orphaned)
+            except Exception:
+                pass
+        return result
+
+    def _record_owned_command_orphan_notice(self, orphaned_pids: list) -> None:
+        """Durable notice when Stop could not confirm owned proc teardown."""
+        n = len(orphaned_pids or [])
+        if n <= 0:
+            return
+        text = (
+            f"Stop cancelled owned tool work, but {n} Marionette-owned "
+            "command process(es) may still be running outside confirmed "
+            "teardown. Workspace edits already written were left intact; "
+            "unrelated user terminals were not signaled."
+        )
+        try:
+            display = getattr(self, "_display_transcript", None)
+            if display is not None:
+                display.append({
+                    "type": "message",
+                    "role": "assistant",
+                    "text": text,
+                })
+        except Exception:
+            pass
+        self._pending_owned_command_orphan_notice = {
+            "message": text,
+            "reason": "owned_command_orphan",
+            "count": n,
+            "pids": [int(p) for p in orphaned_pids],
+        }
 
     def _drain_session_jobs_dual_store(self, job_ids: list | None = None) -> list:
         """Mark session-tracked jobs cancelled in harness + CLI stores.
