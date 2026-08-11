@@ -6,6 +6,29 @@ import pytest
 from harness import providers as prov
 
 
+# Extra env vars not listed on Provider.env_vars but still gate detection.
+_EXTRA_PROVIDER_ENV = (
+    "XAI_OAUTH_TOKEN",
+    "AWS_SECRET_ACCESS_KEY",
+    "CURSOR_CLI_LOGIN",
+)
+
+
+def _clear_provider_env(monkeypatch) -> None:
+    """Strip every provider-detection env key (including OpenCode Go).
+
+    Hand-maintained delenv lists go stale when a new Provider.env_vars entry
+    lands (e.g. OPENCODE_GO_API_KEY) and make these tests non-hermetic under
+    a developer shell that has that key set.
+    """
+    for provider in prov.PROVIDERS:
+        for ev in provider.env_vars:
+            monkeypatch.delenv(ev, raising=False)
+    for ev in _EXTRA_PROVIDER_ENV:
+        monkeypatch.delenv(ev, raising=False)
+    monkeypatch.setattr("harness.cursor_cli_auth.is_authenticated", lambda: False)
+
+
 @pytest.fixture(autouse=True)
 def _isolate_disconnected(monkeypatch):
     """Point provider-disconnect state at an empty temp dir so these tests do not
@@ -38,15 +61,7 @@ def test_attribution_present():
 
 
 def test_detection_from_env(monkeypatch):
-    for ev in ("OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
-               "GEMINI_API_KEY", "DEEPSEEK_API_KEY", "GLM_API_KEY",
-               "OPENAI_CODEX_TOKEN", "NOUS_API_KEY", "XAI_API_KEY",
-               "XAI_OAUTH_TOKEN", "MINIMAX_API_KEY", "NVIDIA_API_KEY",
-               "GOOGLE_API_KEY", "ANTHROPIC_TOKEN", "ZAI_API_KEY", "Z_AI_API_KEY",
-               "AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID",
-               "AWS_SECRET_ACCESS_KEY", "CURSOR_CLI_LOGIN"):
-        monkeypatch.delenv(ev, raising=False)
-    monkeypatch.setattr("harness.cursor_cli_auth.is_authenticated", lambda: False)
+    _clear_provider_env(monkeypatch)
     assert prov.available_providers() == []
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-xxx")
     names = [p.name for p in prov.available_providers()]
@@ -54,7 +69,6 @@ def test_detection_from_env(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-xxx")
     names = [p.name for p in prov.available_providers()]
     assert "openrouter" in names and "anthropic" in names
-
 
 def test_provider_aliases():
     assert prov.get_provider("claude").name == "anthropic"
@@ -83,14 +97,7 @@ def test_build_pilot_selects_cursor_cli_driver(monkeypatch):
 
 
 def test_available_pilots_include_cursor_cli_when_authed(monkeypatch):
-    for ev in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY",
-               "DEEPSEEK_API_KEY", "GLM_API_KEY", "MINIMAX_API_KEY",
-               "XAI_API_KEY", "XAI_OAUTH_TOKEN", "NVIDIA_API_KEY",
-               "ZAI_API_KEY", "Z_AI_API_KEY", "GOOGLE_API_KEY",
-               "ANTHROPIC_TOKEN", "OPENAI_CODEX_TOKEN", "NOUS_API_KEY",
-               "OPENROUTER_API_KEY", "AWS_BEARER_TOKEN_BEDROCK",
-               "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "CURSOR_CLI_LOGIN"):
-        monkeypatch.delenv(ev, raising=False)
+    _clear_provider_env(monkeypatch)
     monkeypatch.setattr("harness.cursor_cli_auth.is_authenticated", lambda: True)
     monkeypatch.setenv("CURSOR_CLI_LOGIN", "1")
     # Avoid live `agent models` spawn during unit test.
@@ -126,15 +133,7 @@ def test_build_pilot_selects_openai_compat(monkeypatch):
 
 
 def test_build_pilot_no_key_raises(monkeypatch):
-    for ev in ("OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
-               "GEMINI_API_KEY", "DEEPSEEK_API_KEY", "GLM_API_KEY",
-               "ZAI_API_KEY", "Z_AI_API_KEY", "MINIMAX_API_KEY", "XAI_API_KEY",
-               "NVIDIA_API_KEY", "GOOGLE_API_KEY", "ANTHROPIC_TOKEN",
-               "AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID",
-               "AWS_SECRET_ACCESS_KEY", "CURSOR_CLI_LOGIN", "OPENAI_CODEX_TOKEN",
-               "NOUS_API_KEY"):
-        monkeypatch.delenv(ev, raising=False)
-    monkeypatch.setattr("harness.cursor_cli_auth.is_authenticated", lambda: False)
+    _clear_provider_env(monkeypatch)
     try:
         prov.build_pilot("anthropic:claude-opus-4-8")
         assert False, "should raise ProviderError"
@@ -143,19 +142,12 @@ def test_build_pilot_no_key_raises(monkeypatch):
 
 
 def test_available_pilots_are_provider_scoped(monkeypatch):
-    for ev in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY",
-               "DEEPSEEK_API_KEY", "GLM_API_KEY", "MINIMAX_API_KEY",
-               "XAI_API_KEY", "XAI_OAUTH_TOKEN", "NVIDIA_API_KEY",
-               "ZAI_API_KEY", "Z_AI_API_KEY", "GOOGLE_API_KEY",
-               "ANTHROPIC_TOKEN", "OPENAI_CODEX_TOKEN", "NOUS_API_KEY",
-               "AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID",
-               "AWS_SECRET_ACCESS_KEY", "CURSOR_CLI_LOGIN"):
-        monkeypatch.delenv(ev, raising=False)
-    monkeypatch.setattr("harness.cursor_cli_auth.is_authenticated", lambda: False)
+    _clear_provider_env(monkeypatch)
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-xxx")
     pilots = prov.available_pilots()
     assert all(p.startswith("openrouter:") or p == "moa-planner" or p.startswith("moa:") for p in pilots)
     assert len(pilots) >= 3
+    assert not any(p.startswith("opencode-go:") for p in pilots)
 
 
 def test_build_pilot_bare_gpt55_prefers_openai_codex(monkeypatch):

@@ -6,7 +6,7 @@ import { useEffect, type Dispatch, type MutableRefObject, type SetStateAction } 
 import { api } from "../../lib/api";
 import { clearActivityFoldPrefs, type Item } from "../TranscriptList";
 import {
-  peekTranscriptCache,
+  peekTranscriptCacheEntry,
   resolveSwitchTranscript,
   writeTranscriptCache,
 } from "./transcriptCache";
@@ -295,8 +295,10 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
       return;
     }
 
-    const cachedItems = peekTranscriptCache(activeSessionId);
-    const hadCache = cachedItems !== undefined;
+    const cacheEntry = peekTranscriptCacheEntry(activeSessionId);
+    const cachedItems = cacheEntry?.items;
+    const hadCache = cacheEntry !== undefined;
+    const seededEmpty = cacheEntry?.seededEmpty === true;
     const resolved = resolveSwitchTranscript({
       nextId: activeSessionId,
       cached: cachedItems,
@@ -385,6 +387,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
             attempt,
             maxAttempts,
             cachedCount: hadCache ? (cachedItems?.length ?? 0) : undefined,
+            seededEmpty: hadCache ? seededEmpty : undefined,
           })) {
             await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
             continue;
@@ -411,6 +414,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
         if (loadedItems.length === 0 && hadCache) {
           const emptyHit = emptyTranscriptAfterRetryDecision({
             cachedCount: cachedItems?.length ?? 0,
+            seededEmpty,
           });
           if (emptyHit.kind === "keep_warm_with_notice") {
             setTranscriptStale(emptyHit.stale);

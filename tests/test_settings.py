@@ -33,7 +33,10 @@ def _post(port, path, body, headers):
     return urllib.request.urlopen(req, timeout=10)
 
 
-def test_settings_get_returns_expected_shape():
+def test_settings_get_returns_expected_shape(monkeypatch):
+    # Live developer shells often pin HARNESS_CODEX_REASONING_EFFORT=max;
+    # this shape test asserts the factory default, not the host preference.
+    monkeypatch.delenv("HARNESS_CODEX_REASONING_EFFORT", raising=False)
     httpd, port, srv = _server()
     try:
         resp = _get(port, "/api/settings")

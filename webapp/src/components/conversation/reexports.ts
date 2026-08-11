@@ -2,6 +2,7 @@ export {
   resolveSwitchTranscript,
   clearTranscriptCache,
   peekTranscriptCache,
+  peekTranscriptCacheEntry,
   writeTranscriptCache,
 } from "./transcriptCache";
 export {

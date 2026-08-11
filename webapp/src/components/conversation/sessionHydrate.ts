@@ -137,18 +137,21 @@ export function clearRecoveredSessionFailNotice(
  * race. Retry before accepting blank — a warm cache with rows must not be
  * hard-replaced with [] on the first empty response.
  *
- * Seeded empty warm cache (New Session writes `[]` before switch) is already
- * authoritative: do not retry or treat as refresh failure.
+ * Only an explicit New Session seed (`seededEmpty`) skips retry. A plain
+ * zero-row cache entry (e.g. after /clear, or ambiguous eviction) still
+ * retries so a flaky empty response cannot silently blank a real session.
  */
 export function shouldRetryEmptyTranscript(opts: {
   loadedCount: number;
   attempt: number;
   maxAttempts: number;
-  /** Warm-cache length when present; omit on cache miss. `0` = seeded empty. */
+  /** Warm-cache length when present; omit on cache miss. */
   cachedCount?: number;
+  /** True only for New Session's intentional `[]` seed. */
+  seededEmpty?: boolean;
 }): boolean {
   if (opts.loadedCount !== 0) return false;
-  if (opts.cachedCount === 0) return false;
+  if (opts.seededEmpty) return false;
   return opts.attempt < opts.maxAttempts - 1;
 }
 
@@ -170,10 +173,12 @@ export function cacheHitEmptyTranscriptDecision(): {
 
 /**
  * After retries, empty remote transcript + warm cache.
- * Non-empty warm rows: keep + notice. Empty seed (new session): accept blank.
+ * Non-empty warm rows: keep + notice. Explicit New Session seed or cleared
+ * empty cache after retries: accept blank.
  */
 export function emptyTranscriptAfterRetryDecision(opts: {
   cachedCount: number;
+  seededEmpty?: boolean;
 }): { kind: "accept_empty" } | ReturnType<typeof cacheHitEmptyTranscriptDecision> {
   if (opts.cachedCount > 0) {
     return cacheHitEmptyTranscriptDecision();

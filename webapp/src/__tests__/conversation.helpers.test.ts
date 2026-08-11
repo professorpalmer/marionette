@@ -1940,8 +1940,11 @@ describe("sessionHydrate module", () => {
     });
     expect(shouldRetryEmptyTranscript({ loadedCount: 0, attempt: 0, maxAttempts: 4 })).toBe(true);
     expect(shouldRetryEmptyTranscript({
-      loadedCount: 0, attempt: 0, maxAttempts: 4, cachedCount: 0,
+      loadedCount: 0, attempt: 0, maxAttempts: 4, cachedCount: 0, seededEmpty: true,
     })).toBe(false);
+    expect(shouldRetryEmptyTranscript({
+      loadedCount: 0, attempt: 0, maxAttempts: 4, cachedCount: 0, seededEmpty: false,
+    })).toBe(true);
     expect(cacheHitEmptyTranscriptDecision()).toEqual({
       kind: "keep_warm_with_notice",
       stale: true,
@@ -1952,7 +1955,10 @@ describe("sessionHydrate module", () => {
       stale: true,
       notice: SESSION_TRANSCRIPT_FAIL_NOTICE,
     });
-    expect(emptyTranscriptAfterRetryDecision({ cachedCount: 0 })).toEqual({
+    expect(emptyTranscriptAfterRetryDecision({
+      cachedCount: 0,
+      seededEmpty: true,
+    })).toEqual({
       kind: "accept_empty",
     });
     expect(transcriptRefreshFailureDecision(true)).toEqual({

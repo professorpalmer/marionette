@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearTranscriptCache,
   peekTranscriptCache,
+  peekTranscriptCacheEntry,
   transcriptResponseToItems,
   writeTranscriptCache,
   composerStatusFromRunner,
@@ -144,10 +145,14 @@ describe("transcript warm cache", () => {
     expect(shouldRetryEmptyTranscript({ loadedCount: 2, attempt: 0, maxAttempts: 4 })).toBe(false);
   });
 
-  it("does not retry empty when warm cache is the new-session seed", () => {
+  it("does not retry empty only for explicit New Session seed", () => {
     expect(shouldRetryEmptyTranscript({
-      loadedCount: 0, attempt: 0, maxAttempts: 4, cachedCount: 0,
+      loadedCount: 0, attempt: 0, maxAttempts: 4, cachedCount: 0, seededEmpty: true,
     })).toBe(false);
+    // Ambiguous zero-row cache (e.g. /clear) still retries disk hydrate.
+    expect(shouldRetryEmptyTranscript({
+      loadedCount: 0, attempt: 0, maxAttempts: 4, cachedCount: 0, seededEmpty: false,
+    })).toBe(true);
   });
 
   it("cache-hit empty after retries keeps warm rows + notice (no hard wipe)", () => {
@@ -176,7 +181,10 @@ describe("transcript warm cache", () => {
 
   it("seeded empty warm cache accepts blank new session (no fail banner)", () => {
     const loadedItems: Item[] = [];
-    const emptyHit = emptyTranscriptAfterRetryDecision({ cachedCount: 0 });
+    const emptyHit = emptyTranscriptAfterRetryDecision({
+      cachedCount: 0,
+      seededEmpty: true,
+    });
     expect(emptyHit.kind).toBe("accept_empty");
     let visible: Item[] = [];
     let stale = true;
@@ -192,6 +200,30 @@ describe("transcript warm cache", () => {
     expect(visible).toEqual([]);
     expect(stale).toBe(false);
     expect(notice).toBeNull();
+  });
+
+  it("New Session seed → empty hydrate → accept blank + clear seed on write", () => {
+    clearTranscriptCache();
+    const sid = "sess-new";
+    writeTranscriptCache(sid, [], { seededEmpty: true });
+    expect(peekTranscriptCacheEntry(sid)).toEqual({ items: [], seededEmpty: true });
+
+    const loadedItems: Item[] = [];
+    expect(shouldRetryEmptyTranscript({
+      loadedCount: 0, attempt: 0, maxAttempts: 4, cachedCount: 0, seededEmpty: true,
+    })).toBe(false);
+    const decision = emptyTranscriptAfterRetryDecision({
+      cachedCount: 0,
+      seededEmpty: true,
+    });
+    expect(decision.kind).toBe("accept_empty");
+
+    // Successful hydrate writes without seededEmpty so later empties can retry.
+    writeTranscriptCache(sid, loadedItems);
+    expect(peekTranscriptCacheEntry(sid)).toEqual({ items: [], seededEmpty: false });
+    expect(shouldRetryEmptyTranscript({
+      loadedCount: 0, attempt: 0, maxAttempts: 4, cachedCount: 0, seededEmpty: false,
+    })).toBe(true);
   });
 
   it("cache-miss refresh failure clears relics but marks stale (not first-run)", () => {

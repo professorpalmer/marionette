@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.198, deliberately pre-1.0. New Session no longer false-alarms empty-transcript refresh; rides puppetmaster-ai==1.21.13.
+> Status: v0.9.199, deliberately pre-1.0. Session-switch honesty haul (R8–R10) plus hermetic provider tests and seeded-empty New Session cache; rides puppetmaster-ai==1.21.13.
 
 ## Documentation
 

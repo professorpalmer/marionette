@@ -32,7 +32,15 @@ export function resolveSwitchTranscript(args: {
 // Survives activeSessionId switches so the UI hydrates instantly and a background
 // sessionTranscript refresh can land without blanking a cache hit. Module-level
 // so the map outlives a single Conversation mount within the SPA lifetime.
-type CachedTranscript = { items: Item[] };
+export type CachedTranscript = {
+  items: Item[];
+  /**
+   * True only for New Session's pre-switch `[]` seed. Distinguishes intentional
+   * blank from an empty/evicted cache that should still retry disk hydrate.
+   */
+  seededEmpty?: boolean;
+};
+
 const transcriptCacheBySessionId = new Map<string, CachedTranscript>();
 
 /** Test helper: drop all warm-cache entries. */
@@ -45,7 +53,32 @@ export function peekTranscriptCache(sessionId: string): Item[] | undefined {
   return transcriptCacheBySessionId.get(sessionId)?.items;
 }
 
+/** Full cache entry (items + seededEmpty), undefined on miss. */
+export function peekTranscriptCacheEntry(
+  sessionId: string,
+): CachedTranscript | undefined {
+  const entry = transcriptCacheBySessionId.get(sessionId);
+  if (!entry) return undefined;
+  return {
+    items: entry.items,
+    seededEmpty: entry.seededEmpty === true,
+  };
+}
+
+export type WriteTranscriptCacheOpts = {
+  /** Mark New Session seed — skip empty-transcript retry / fail banner. */
+  seededEmpty?: boolean;
+};
+
 /** Seed or overwrite the warm cache for a session. */
-export function writeTranscriptCache(sessionId: string, items: Item[]) {
-  transcriptCacheBySessionId.set(sessionId, { items: [...items] });
+export function writeTranscriptCache(
+  sessionId: string,
+  items: Item[],
+  opts?: WriteTranscriptCacheOpts,
+) {
+  const seededEmpty = opts?.seededEmpty === true && items.length === 0;
+  transcriptCacheBySessionId.set(sessionId, {
+    items: [...items],
+    ...(seededEmpty ? { seededEmpty: true } : {}),
+  });
 }

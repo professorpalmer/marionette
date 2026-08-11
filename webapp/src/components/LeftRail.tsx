@@ -1046,8 +1046,9 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
         const created = await api.createSession();
         // Seed an empty warm-cache entry before Conversation's switch effect runs
         // so it never paints the previous session's transcript under this id.
+        // seededEmpty marks this as New Session (not an ambiguous zero-row cache).
         if (created?.id) {
-          writeTranscriptCache(created.id, []);
+          writeTranscriptCache(created.id, [], { seededEmpty: true });
         }
       }
       await refreshSessionsRef.current();
