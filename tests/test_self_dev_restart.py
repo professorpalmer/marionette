@@ -199,6 +199,62 @@ def test_session_state_reports_resume_pending_after_explicit_latch():
         srv._clear_resume_latch()
 
 
+def test_resume_latch_survives_same_app_run_reload(monkeypatch, tmp_path):
+    """Self-edit backend respawn: same HARNESS_APP_RUN_ID still adopts the latch."""
+    import harness.server as srv
+
+    monkeypatch.setenv("HARNESS_APP_RUN_ID", "run-same")
+    monkeypatch.setattr(srv._cfg, "state_dir", str(tmp_path), raising=False)
+    srv._clear_resume_latch()
+    try:
+        srv._set_resume_latch()
+        assert srv._resume_latch is True
+        srv._resume_latch = False
+        srv._load_resume_latch()
+        assert srv._resume_latch is True
+        assert (tmp_path / ".resume_latch").is_file()
+    finally:
+        srv._clear_resume_latch()
+
+
+def test_resume_latch_rejected_after_app_relaunch(monkeypatch, tmp_path):
+    """Update / full quit: new HARNESS_APP_RUN_ID must clear a leftover latch."""
+    import harness.server as srv
+
+    monkeypatch.setenv("HARNESS_APP_RUN_ID", "run-old")
+    monkeypatch.setattr(srv._cfg, "state_dir", str(tmp_path), raising=False)
+    srv._clear_resume_latch()
+    try:
+        srv._set_resume_latch()
+        assert (tmp_path / ".resume_latch").is_file()
+        monkeypatch.setenv("HARNESS_APP_RUN_ID", "run-new")
+        srv._resume_latch = False
+        srv._load_resume_latch()
+        assert srv._resume_latch is False
+        assert not (tmp_path / ".resume_latch").exists()
+    finally:
+        srv._clear_resume_latch()
+
+
+def test_legacy_plain_resume_latch_rejected_when_app_run_id_set(
+    monkeypatch, tmp_path
+):
+    """Pre-fence ``1`` files cannot ghost-resume after an Electron relaunch."""
+    import harness.server as srv
+
+    monkeypatch.setenv("HARNESS_APP_RUN_ID", "run-electron")
+    monkeypatch.setattr(srv._cfg, "state_dir", str(tmp_path), raising=False)
+    latch = tmp_path / ".resume_latch"
+    latch.write_text("1\n", encoding="utf-8")
+    try:
+        srv._resume_latch = False
+        srv._load_resume_latch()
+        assert srv._resume_latch is False
+        assert not latch.exists()
+    finally:
+        srv._clear_resume_latch()
+
+
 def test_session_persist_endpoint_writes_transcript(tmp_path):
     from harness.sessions import load_transcript
     import harness.server as srv

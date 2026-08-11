@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.203, deliberately pre-1.0. Ride puppetmaster-ai==1.21.14 (Codex Responses reasoning map + unstructured FINDING promote) so agentic openai-codex swarms stop HTTP 400ing.
+> Status: v0.9.204, deliberately pre-1.0. Fence self-edit resume latch with HARNESS_APP_RUN_ID so update relaunch cannot ghost-resume the last turn; still rides puppetmaster-ai==1.21.14.
 
 ## Documentation
 

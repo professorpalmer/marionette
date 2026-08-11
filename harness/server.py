@@ -1138,8 +1138,10 @@ _mcp = McpManager()
 _pilot_swap_lock = threading.Lock()
 # One-shot resume latch for self-edit backend restarts. Set ONLY by
 # /api/session/persist or /api/restart (the explicit restart path); never by a
-# trailing user turn alone. Survives process respawn via a state-dir flag file
-# so the fresh process can report resume_pending exactly once.
+# trailing user turn alone. Survives *same Electron app-run* backend respawn via
+# a state-dir flag stamped with HARNESS_APP_RUN_ID (mirrors boot_usage). Full
+# quit / update relaunch mints a new app-run id so a leftover latch cannot
+# ghost-resume the last turn on reopen.
 _resume_latch = False
 from .pty_manager import PtyManager
 _pty = PtyManager()
@@ -1156,14 +1158,24 @@ def _resume_latch_path() -> str:
     return os.path.join(_cfg.state_dir or _tf.gettempdir(), ".resume_latch")
 
 
+def _resume_latch_app_run_id() -> str:
+    return (os.environ.get("HARNESS_APP_RUN_ID") or "").strip()
+
+
 def _set_resume_latch() -> None:
     """Arm the one-shot auto-resume signal for the next process / state poll."""
     global _resume_latch
     _resume_latch = True
     try:
         p = _resume_latch_path()
+        payload = {
+            "v": 1,
+            "armed": True,
+            "app_run_id": _resume_latch_app_run_id(),
+        }
         with open(p, "w", encoding="utf-8", newline="\n") as f:
-            f.write("1\n")
+            json.dump(payload, f, separators=(",", ":"))
+            f.write("\n")
         restrict_to_owner(p)
     except Exception as e:
         _diag("server.resume_latch_set", e)
@@ -1181,16 +1193,48 @@ def _clear_resume_latch() -> None:
         _diag("server.resume_latch_clear", e)
 
 
+def _parse_resume_latch_file(raw: str) -> tuple[bool, str]:
+    """Return ``(armed, stored_app_run_id)`` from on-disk latch contents."""
+    text = (raw or "").strip()
+    if not text:
+        return False, ""
+    # Legacy plain flag from pre-fence builds.
+    if text == "1":
+        return True, ""
+    try:
+        data = json.loads(text)
+    except Exception:
+        return False, ""
+    if not isinstance(data, dict) or not data.get("armed"):
+        return False, ""
+    return True, str(data.get("app_run_id") or "").strip()
+
+
 def _load_resume_latch() -> None:
-    """Adopt a latch left by a prior process (self-edit restart continuity)."""
+    """Adopt a same-app-run latch left by an intentional backend restart."""
     global _resume_latch
     try:
         p = _resume_latch_path()
-        if os.path.exists(p):
-            with open(p, encoding="utf-8", errors="replace") as f:
-                _resume_latch = f.read().strip() == "1"
-            if not _resume_latch:
-                _clear_resume_latch()
+        if not os.path.exists(p):
+            _resume_latch = False
+            return
+        with open(p, encoding="utf-8", errors="replace") as f:
+            armed, stored_run_id = _parse_resume_latch_file(f.read())
+        current_run_id = _resume_latch_app_run_id()
+        # Electron stamps HARNESS_APP_RUN_ID once per shell process. Same-process
+        # backend respawn (self-edit restart) keeps the id; update relaunch /
+        # full quit mints a new one — reject those leftover latches.
+        if armed and current_run_id:
+            adopt = stored_run_id == current_run_id
+        elif armed and not current_run_id:
+            # Bare CLI / hermetic tests: no app-run fence available; honor the
+            # latch only when the file itself has no foreign run id.
+            adopt = not stored_run_id
+        else:
+            adopt = False
+        _resume_latch = bool(adopt)
+        if not _resume_latch:
+            _clear_resume_latch()
     except Exception as e:
         _diag("server.resume_latch_load", e)
         _resume_latch = False
