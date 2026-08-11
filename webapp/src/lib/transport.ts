@@ -10,7 +10,13 @@
  * Chat/auto omit `turn` (ConvEvent); classic /run includes it (SessionEvent).
  * Keep both shapes — do not require `turn` for chat consumers.
  */
-export type StreamEvent = { kind: string; data?: any; turn?: number };
+export type StreamEvent = {
+  kind: string;
+  data?: any;
+  turn?: number;
+  /** Present on live chatEvents ``?watch=1`` ring frames (not classic /api/chat). */
+  cursor?: number;
+};
 
 /** One retained SSE frame from GET /api/chat/events (mid-turn reattach). */
 export type ChatEventFrame = {

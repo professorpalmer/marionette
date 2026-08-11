@@ -1468,21 +1468,7 @@ function ActivityGroup({
         </div>
       );
     }
-    if (it.kind === "pending_review") {
-      return (
-        <button
-          type="button"
-          key={`prev-${it.id}`}
-          data-testid="pending-review-receipt"
-          onClick={() => focusReviewTabAndRefresh()}
-          title="Open Review tab"
-          className="flex items-center gap-1.5 py-0.5 text-[10px] text-accent/90 select-none cursor-pointer hover:text-accent transition-colors bg-transparent border-0 p-0"
-        >
-          <Eye size={10} className="text-accent/80 shrink-0" />
-          <span>review ready: {it.summary} ({it.id.slice(0, 12)})</span>
-        </button>
-      );
-    }
+    // pending_review stays top-level in groupAgentActivity (not folded here).
     if (it.kind === "swarm_result") {
       return (
         <SwarmResultCard

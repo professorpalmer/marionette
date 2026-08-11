@@ -58,7 +58,7 @@ import { notifyWorkspaceMutated } from "../../lib/workspaceMutationEvents";
 import { shouldRefreshBusyChrome } from "./streamTerminal";
 import { waitHintForAssistantDone } from "./swarmPoll";
 
-export type StreamEvent = { kind: string; data?: any };
+export type StreamEvent = { kind: string; data?: any; turn?: number; cursor?: number };
 
 export type MemoryProposal = {
   id: string;

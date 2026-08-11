@@ -259,7 +259,6 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
     if (chatEventsPollTimerRef.current != null) return false;
 
     let sawTerminal = false;
-    let appliedAny = false;
     let settled = false;
     // Install cancel before stream callbacks can fire (sync onError/onDone).
     let streamCancel: (() => void) | null = null;
@@ -294,12 +293,10 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
         // Framing done is handled by transport onDone (not delivered here).
         const kind = String(ev?.kind || "");
         if (kind === "done") return;
-        appliedAny = true;
-        if (typeof (ev as { cursor?: number }).cursor === "number") {
-          const c = (ev as { cursor: number }).cursor;
-          if (c > lastAppliedCursorRef.current) {
-            lastAppliedCursorRef.current = c;
-          }
+        // Live watch frames may carry a ring cursor; StreamEvent types it optional.
+        const liveCursor = (ev as { cursor?: unknown }).cursor;
+        if (typeof liveCursor === "number" && liveCursor > lastAppliedCursorRef.current) {
+          lastAppliedCursorRef.current = liveCursor;
         }
         applyStreamEventRef.current(chatFrameToStreamEvent(ev));
         if (isTerminalStreamKind(kind)) sawTerminal = true;
