@@ -42,6 +42,7 @@ import {
 } from "./streamApply";
 import {
   seedPendingJobIdsFromHydrate,
+  sessionStateShowsAwaitingSwarm,
   SWARM_AWAIT_HINT,
 } from "./swarmPoll";
 import {
@@ -115,6 +116,12 @@ export type UseSessionSwitchDeps = {
   setWaitHint: Dispatch<SetStateAction<string | null>>;
   /** Rehydrate local pending job tracker after transcript hydrate on switch. */
   setPendingJobIds: Dispatch<SetStateAction<string[]>>;
+  /**
+   * Re-arm swarm-results poll enablement when switch restores awaiting chrome.
+   * Cleared on activeSessionId change in Conversation; must not stay sticky
+   * after idle finalize with no pending swarms.
+   */
+  setBackendPendingSwarms: Dispatch<SetStateAction<boolean>>;
   /** Clear pending setSafeTimeout kicks so A→B cannot executeSend into B. */
   clearSafeTimeouts: () => void;
 };
@@ -171,6 +178,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
     setUploadError,
     setWaitHint,
     setPendingJobIds,
+    setBackendPendingSwarms,
     clearSafeTimeouts,
   } = deps;
 
@@ -343,16 +351,28 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
         setTurnOpen(false);
         setStatus("awaiting_swarm");
         setWaitHint(SWARM_AWAIT_HINT);
+        // Switch clear drops backendPendingSwarms; re-arm so swarmResultsPending
+        // enables the drain/pilot_resume poller (not only chrome + lucky peek).
+        setBackendPendingSwarms(
+          sessionStateShowsAwaitingSwarm({
+            state: sessionState,
+            pendingSwarms,
+            userStopped: userStoppedRef.current,
+          }),
+        );
       } else if (decision.kind === "busy") {
         detachedBusyRef.current = true;
         setTurnOpen(true);
         setStatus((prev) => (shouldPreserveBusyStatus(prev) ? prev : "thinking"));
+        // Running without pause-point: do not leave a prior session's true sticky.
+        setBackendPendingSwarms(!!pendingSwarms);
       } else if (decision.kind === "idle") {
         // Idle or cold-attaching: never flash turn-thinking on New Session.
         detachedBusyRef.current = false;
         setTurnOpen(false);
         setStatus("idle");
         setCompactingStatus(null);
+        setBackendPendingSwarms(false);
       }
     };
 

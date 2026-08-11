@@ -45,6 +45,8 @@ export type UseRunnersBusyPollDeps = {
   setStatus: Dispatch<SetStateAction<SessionStatus>>;
   setCompactingStatus: Dispatch<SetStateAction<string | null>>;
   setWaitHint: Dispatch<SetStateAction<string | null>>;
+  /** Re-arm / clear swarm-results poll gate with awaiting chrome (see useSessionSwitch). */
+  setBackendPendingSwarms: Dispatch<SetStateAction<boolean>>;
 };
 
 export function useRunnersBusyPoll(deps: UseRunnersBusyPollDeps) {
@@ -67,6 +69,7 @@ export function useRunnersBusyPoll(deps: UseRunnersBusyPollDeps) {
     setStatus,
     setCompactingStatus,
     setWaitHint,
+    setBackendPendingSwarms,
   } = deps;
 
   const chatEventsReattachArmed = () => isChatEventsReattachArmed({
@@ -100,6 +103,7 @@ export function useRunnersBusyPoll(deps: UseRunnersBusyPollDeps) {
       consecutiveIdlePollsRef.current = 0;
       detachedBusyRef.current = false;
       clearChatEventsPoll();
+      setBackendPendingSwarms(false);
       setStatus((prev) => userStoppedBusyChrome(prev));
       return;
     }
@@ -123,6 +127,9 @@ export function useRunnersBusyPoll(deps: UseRunnersBusyPollDeps) {
           setTurnOpen(false);
           setStatus("awaiting_swarm");
           setWaitHint(SWARM_AWAIT_HINT);
+          // Match useSessionSwitch: chrome restore must also enable the results
+          // poller (pendingJobIds may still be empty until hydrate seeds).
+          setBackendPendingSwarms(true);
         } else {
           detachedBusyRef.current = true;
           setTurnOpen(true);
@@ -221,6 +228,9 @@ export function useRunnersBusyPoll(deps: UseRunnersBusyPollDeps) {
         setTurnOpen(false);
         setStatus("idle");
         setCompactingStatus(null);
+        // Idle finalize with no pending_swarms/await — drop poller gate so it
+        // cannot stick true across sessions after switch restore.
+        setBackendPendingSwarms(false);
         const pollGen = ++runnerBusyPollGenRef.current;
         return api.sessionTranscript(sid)
           .then((tres) => {

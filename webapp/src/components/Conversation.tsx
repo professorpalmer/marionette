@@ -1189,6 +1189,7 @@ export default function Conversation({
     setUploadError,
     setWaitHint,
     setPendingJobIds,
+    setBackendPendingSwarms,
     clearSafeTimeouts,
   });
 
@@ -1212,6 +1213,7 @@ export default function Conversation({
     setStatus,
     setCompactingStatus,
     setWaitHint,
+    setBackendPendingSwarms,
   });
 
 

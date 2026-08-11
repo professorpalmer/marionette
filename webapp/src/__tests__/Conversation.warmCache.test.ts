@@ -687,6 +687,16 @@ describe("session-switch kick + composer chrome honesty (R9)", () => {
       status: "awaiting_swarm",
       waitHint: "Still working…",
     });
+    // Switch clear drops backendPendingSwarms + pendingJobIds; awaiting restore
+    // must re-arm the results-poller gate (not only Still working… chrome).
+    const pendingJobIdsAfterClear: string[] = [];
+    const backendPendingSwarms = sessionStateShowsAwaitingSwarm({
+      state: sessionState.state,
+      pendingSwarms: sessionState.pending_swarms,
+      userStopped: false,
+    });
+    expect(backendPendingSwarms).toBe(true);
+    expect(pendingJobIdsAfterClear.length > 0 || backendPendingSwarms).toBe(true);
     // Happy path: no pending → busy (thinking), not awaiting.
     expect(
       runnerBusySwitchDecision({

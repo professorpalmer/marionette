@@ -135,6 +135,54 @@ describe("swarm await chrome", () => {
     ).toBe("busy");
   });
 
+  it("awaiting restore rearms backendPendingSwarms so swarmResultsPending enables", () => {
+    // Mirror Conversation activeSessionId clear + useSessionSwitch applyRunnerBusy /
+    // useRunnersBusyPoll: chrome restore must not leave the results poller dark
+    // while pendingJobIds are still empty (pre-hydrate seed).
+    const pendingJobIdsAfterSwitchClear: string[] = [];
+    const sessionState = {
+      state: "awaiting_swarm" as const,
+      pending_swarms: true,
+    };
+    const userStopped = false;
+    const awaiting = sessionStateShowsAwaitingSwarm({
+      state: sessionState.state,
+      pendingSwarms: sessionState.pending_swarms,
+      userStopped,
+    });
+    expect(awaiting).toBe(true);
+    expect(
+      runnerBusySwitchDecision({
+        runnerState: "idle",
+        localStreamActive: false,
+        switchedSession: true,
+        sessionState: sessionState.state,
+        pendingSwarms: sessionState.pending_swarms,
+      }).kind,
+    ).toBe("awaiting");
+    // applyRunnerBusy / busy-poll set this when awaiting (not only the peek).
+    const backendPendingSwarms = awaiting;
+    const swarmResultsPending =
+      pendingJobIdsAfterSwitchClear.length > 0 || backendPendingSwarms;
+    expect(swarmResultsPending).toBe(true);
+    // Idle finalize / busy-without-pending must clear (no sticky-true).
+    expect(
+      sessionStateShowsAwaitingSwarm({
+        state: "idle",
+        pendingSwarms: false,
+        userStopped: false,
+      }),
+    ).toBe(false);
+    // Stop suppresses rearm.
+    expect(
+      sessionStateShowsAwaitingSwarm({
+        state: "awaiting_swarm",
+        pendingSwarms: true,
+        userStopped: true,
+      }),
+    ).toBe(false);
+  });
+
   it("seeds pendingJobIds from hydrate swarm_pending / job_ids (skips placeholders)", () => {
     const items: Item[] = [
       {
