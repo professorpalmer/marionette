@@ -4,11 +4,15 @@ import {
   hasLiveBackgroundJobIds,
   PILOT_LOOKING_HINT,
   pilotResumePollAction,
+  seedPendingJobIdsFromHydrate,
+  sessionStateShowsAwaitingSwarm,
   shouldHoldSwarmAwaitChrome,
   SWARM_AWAIT_HINT,
   swarmResultsAwaitChromeClear,
+  triggerResumeGate,
   waitHintForAssistantDone,
 } from "../components/conversation/swarmPoll";
+import { runnerBusySwitchDecision } from "../components/conversation/sessionHydrate";
 import { shouldApplySwarmLiveMerge } from "../components/conversation/streamApply";
 import { deriveBusyProgress, shouldShowBusyFooter } from "../lib/turnProgress";
 import { derivePillStatus } from "../components/conversation/pillStatus";
@@ -50,6 +54,118 @@ describe("swarm await chrome", () => {
         userStopped: false,
       }),
     ).toBe(true);
+  });
+
+  it("busy latch ORs shouldHoldSwarmAwaitChrome with agentLoopOpen", () => {
+    const hold = shouldHoldSwarmAwaitChrome({
+      pendingJobIds: ["job_alive"],
+      backendPendingSwarms: false,
+      userStopped: false,
+    });
+    expect(hold).toBe(true);
+    // Idle status after switch flap still keeps Stop/Steer via the hold.
+    expect(isAgentLoopOpen(false, "idle") || hold).toBe(true);
+    expect(
+      isAgentLoopOpen(false, "idle")
+        || shouldHoldSwarmAwaitChrome({
+          pendingJobIds: ["job_alive"],
+          backendPendingSwarms: false,
+          userStopped: true,
+        }),
+    ).toBe(false);
+  });
+
+  it("sessionStateShowsAwaitingSwarm restores chrome unless Stop stuck", () => {
+    expect(
+      sessionStateShowsAwaitingSwarm({
+        state: "awaiting_swarm",
+        pendingSwarms: false,
+        userStopped: false,
+      }),
+    ).toBe(true);
+    expect(
+      sessionStateShowsAwaitingSwarm({
+        state: "idle",
+        pendingSwarms: true,
+        userStopped: false,
+      }),
+    ).toBe(true);
+    expect(
+      sessionStateShowsAwaitingSwarm({
+        state: "awaiting_swarm",
+        pendingSwarms: true,
+        userStopped: true,
+      }),
+    ).toBe(false);
+    expect(
+      sessionStateShowsAwaitingSwarm({
+        state: "idle",
+        pendingSwarms: false,
+        userStopped: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("runnerBusySwitchDecision prefers awaiting over thinking when pending", () => {
+    expect(
+      runnerBusySwitchDecision({
+        runnerState: "running",
+        localStreamActive: false,
+        switchedSession: true,
+        pendingSwarms: true,
+        sessionState: "idle",
+      }).kind,
+    ).toBe("awaiting");
+    expect(
+      runnerBusySwitchDecision({
+        runnerState: "idle",
+        localStreamActive: false,
+        switchedSession: true,
+        sessionState: "awaiting_swarm",
+      }).kind,
+    ).toBe("awaiting");
+    expect(
+      runnerBusySwitchDecision({
+        runnerState: "running",
+        localStreamActive: false,
+        switchedSession: true,
+        pendingSwarms: false,
+        sessionState: "thinking",
+      }).kind,
+    ).toBe("busy");
+  });
+
+  it("seeds pendingJobIds from hydrate swarm_pending / job_ids (skips placeholders)", () => {
+    const items: Item[] = [
+      {
+        kind: "swarm_pending",
+        job_ids: ["local-swarm-a", "local-bf1b30f4"],
+        objective: "fix",
+        status: "running",
+        resolved: false,
+        terminal_job_ids: [],
+      },
+      {
+        kind: "swarm_pending",
+        job_ids: ["job_done_already"],
+        objective: "done",
+        status: "done",
+        resolved: true,
+        terminal_job_ids: ["job_done_already"],
+      },
+    ];
+    expect(
+      seedPendingJobIdsFromHydrate({
+        items,
+        transcriptJobIds: ["job_from_transcript", "local-swarm-skip"],
+      }),
+    ).toEqual(["local-bf1b30f4", "job_from_transcript"]);
+    expect(
+      seedPendingJobIdsFromHydrate({
+        items: [msg("user", "hi")],
+        transcriptJobIds: [],
+      }),
+    ).toEqual([]);
   });
 
   it("paints Still working hint after assistant_done with live jobs", () => {
@@ -104,6 +220,21 @@ describe("swarm await chrome", () => {
     expect(clearSwarmAwaitWaitHint(PILOT_LOOKING_HINT)).toBeNull();
     expect(clearSwarmAwaitWaitHint(SWARM_AWAIT_HINT)).toBeNull();
     expect(clearSwarmAwaitWaitHint("Compacting…")).toBe("Compacting…");
+  });
+
+  it("triggerResume cancelRef queue clears await hints like Stop", () => {
+    expect(
+      triggerResumeGate({ userStopped: true, cancelArmed: false }),
+    ).toBe("suppress_clear_hint");
+    expect(
+      triggerResumeGate({ userStopped: false, cancelArmed: true }),
+    ).toBe("queue_clear_hint");
+    expect(
+      triggerResumeGate({ userStopped: false, cancelArmed: false }),
+    ).toBe("execute");
+    // queue_clear_hint must drop Looking… / Still working… (not leave stuck chrome).
+    expect(clearSwarmAwaitWaitHint(PILOT_LOOKING_HINT)).toBeNull();
+    expect(clearSwarmAwaitWaitHint(SWARM_AWAIT_HINT)).toBeNull();
   });
 
   it("clears await wait hints when swarm-results session state drains or Stop sticks", () => {

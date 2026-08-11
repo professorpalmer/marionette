@@ -68,19 +68,33 @@ export function shouldPreserveBusyStatus(status: string): boolean {
 
 export type RunnerBusySwitchDecision =
   | { kind: "noop" }
+  | { kind: "awaiting" }
   | { kind: "busy" }
   | { kind: "idle" };
 
 /**
  * Immediate runner chrome for the session we switched TO (warm cache + Stop),
  * before background transcript refresh. Mirrors Conversation applyRunnerBusy.
+ *
+ * Prefer awaiting_swarm over thinking when getSessionState reports pending
+ * swarms / state===awaiting_swarm (even while runners=running).
  */
 export function runnerBusySwitchDecision(opts: {
   runnerState: "running" | "idle" | "attaching" | "missing" | undefined;
   localStreamActive: boolean;
   switchedSession: boolean;
+  /** Backend still has background jobs / pause-point latch. */
+  pendingSwarms?: boolean;
+  /** Session machine state from getSessionState. */
+  sessionState?: string | null;
 }): RunnerBusySwitchDecision {
   if (opts.localStreamActive) return { kind: "noop" };
+  if (
+    opts.sessionState === "awaiting_swarm"
+    || opts.pendingSwarms
+  ) {
+    return { kind: "awaiting" };
+  }
   if (opts.runnerState === "running") return { kind: "busy" };
   if (opts.switchedSession) return { kind: "idle" };
   return { kind: "noop" };

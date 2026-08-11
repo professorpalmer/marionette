@@ -249,11 +249,14 @@ export {
   PILOT_LOOKING_HINT,
   hasLiveBackgroundJobIds,
   shouldHoldSwarmAwaitChrome,
+  sessionStateShowsAwaitingSwarm,
+  seedPendingJobIdsFromHydrate,
   waitHintForAssistantDone,
   clearSwarmAwaitWaitHint,
   isSwarmAwaitWaitHint,
   swarmResultsAwaitChromeClear,
   pilotResumePollAction,
+  triggerResumeGate,
 } from "./swarmPoll";
 export { armResumeKick, scheduleResumeIfPending } from "./sessionResumeLatch";
 export {

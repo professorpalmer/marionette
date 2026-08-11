@@ -186,4 +186,31 @@ describe("Conversation ghost-resume gate", () => {
     expect(resume).not.toHaveBeenCalled();
     expect(getSessionState).not.toHaveBeenCalled();
   });
+
+  it("triggerResume cancelRef queue clears Looking… / Still working… hints", async () => {
+    const {
+      clearSwarmAwaitWaitHint,
+      PILOT_LOOKING_HINT,
+      SWARM_AWAIT_HINT,
+      triggerResumeGate,
+    } = await import("../components/conversation/swarmPoll");
+
+    expect(
+      triggerResumeGate({ userStopped: false, cancelArmed: true }),
+    ).toBe("queue_clear_hint");
+    // Mirror Conversation triggerResume queue_clear_hint branch.
+    let waitHint: string | null = PILOT_LOOKING_HINT;
+    const resumeQueued = { current: false };
+    const gate = triggerResumeGate({ userStopped: false, cancelArmed: true });
+    if (gate === "queue_clear_hint") {
+      resumeQueued.current = true;
+      waitHint = clearSwarmAwaitWaitHint(waitHint);
+    }
+    expect(resumeQueued.current).toBe(true);
+    expect(waitHint).toBeNull();
+    expect(clearSwarmAwaitWaitHint(SWARM_AWAIT_HINT)).toBeNull();
+    expect(
+      triggerResumeGate({ userStopped: false, cancelArmed: false }),
+    ).toBe("execute");
+  });
 });

@@ -41,6 +41,10 @@ import {
   shouldApplySwarmLiveMerge,
 } from "./streamApply";
 import {
+  seedPendingJobIdsFromHydrate,
+  SWARM_AWAIT_HINT,
+} from "./swarmPoll";
+import {
   resetCrossSessionLatchesOnSwitch,
   resetTurnSettledOnSessionSwitch,
 } from "./streamTerminal";
@@ -109,6 +113,8 @@ export type UseSessionSwitchDeps = {
   setDistillNotice: Dispatch<SetStateAction<string | null>>;
   setUploadError: Dispatch<SetStateAction<string | null>>;
   setWaitHint: Dispatch<SetStateAction<string | null>>;
+  /** Rehydrate local pending job tracker after transcript hydrate on switch. */
+  setPendingJobIds: Dispatch<SetStateAction<string[]>>;
   /** Clear pending setSafeTimeout kicks so A→B cannot executeSend into B. */
   clearSafeTimeouts: () => void;
 };
@@ -164,6 +170,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
     setDistillNotice,
     setUploadError,
     setWaitHint,
+    setPendingJobIds,
     clearSafeTimeouts,
   } = deps;
 
@@ -316,15 +323,27 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
     let cancelled = false;
     const applyRunnerBusy = (
       runners: Record<string, "running" | "idle" | "attaching" | "missing"> | undefined,
+      sessionState?: string | null,
+      pendingSwarms?: boolean,
     ) => {
       if (cancelled || localStreamActiveRef.current) return;
       if (!activeSessionId) return;
+      if (userStoppedRef.current) return;
       const decision = runnerBusySwitchDecision({
         runnerState: runners?.[activeSessionId],
         localStreamActive: false,
         switchedSession: prevId !== activeSessionId,
+        sessionState,
+        pendingSwarms,
       });
-      if (decision.kind === "busy") {
+      if (decision.kind === "awaiting") {
+        // Pause-point: Still working… with Steer/Stop via awaiting_swarm latch
+        // (turnOpen stays false; isAgentLoopOpen covers awaiting_swarm).
+        detachedBusyRef.current = runners?.[activeSessionId] === "running";
+        setTurnOpen(false);
+        setStatus("awaiting_swarm");
+        setWaitHint(SWARM_AWAIT_HINT);
+      } else if (decision.kind === "busy") {
         detachedBusyRef.current = true;
         setTurnOpen(true);
         setStatus((prev) => (shouldPreserveBusyStatus(prev) ? prev : "thinking"));
@@ -353,7 +372,11 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
     loadSessionRunners()
       .then((res) => {
         if (cancelled) return;
-        applyRunnerBusy(res?.runners);
+        applyRunnerBusy(
+          res?.runners,
+          res?.state,
+          !!res?.pending_swarms,
+        );
         // Definitive runners map recovered — drop sticky SESSION_* fail banner.
         setEditNotice((prev) => clearRecoveredSessionFailNotice(prev));
       })
@@ -429,6 +452,14 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
         setTranscriptStale(false);
         // Successful hydrate — drop sticky SESSION_* fail banner from a prior flake.
         setEditNotice((prev) => clearRecoveredSessionFailNotice(prev));
+        // Re-seed local pending tracker so shouldHoldSwarmAwaitChrome can hold
+        // from hydrated swarm_pending / job_ids after the switch clear.
+        setPendingJobIds(
+          seedPendingJobIdsFromHydrate({
+            items: loadedItems,
+            transcriptJobIds: res.job_ids,
+          }),
+        );
 
         // Nested worker actions survive restart on local jobs; fold onto cards
         // after display hydrate so investigation rows stay complete on reload.

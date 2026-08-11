@@ -648,4 +648,54 @@ describe("session-switch kick + composer chrome honesty (R9)", () => {
     onPollTick();
     expect(consecutiveIdlePollsRef.current).toBe(0);
   });
+
+  it("restores awaiting_swarm chrome from getSessionState on switch (not thinking)", async () => {
+    const { runnerBusySwitchDecision } = await import(
+      "../components/conversation/sessionHydrate"
+    );
+    const { sessionStateShowsAwaitingSwarm, SWARM_AWAIT_HINT } = await import(
+      "../components/conversation/swarmPoll"
+    );
+    const sessionState = {
+      state: "awaiting_swarm" as const,
+      pending_swarms: true,
+      runners: { "sess-b": "running" as const },
+    };
+    const decision = runnerBusySwitchDecision({
+      runnerState: sessionState.runners["sess-b"],
+      localStreamActive: false,
+      switchedSession: true,
+      sessionState: sessionState.state,
+      pendingSwarms: sessionState.pending_swarms,
+    });
+    expect(decision.kind).toBe("awaiting");
+    expect(
+      sessionStateShowsAwaitingSwarm({
+        state: sessionState.state,
+        pendingSwarms: sessionState.pending_swarms,
+        userStopped: false,
+      }),
+    ).toBe(true);
+    // applyRunnerBusy / peek paint contract
+    const chrome = {
+      turnOpen: false,
+      status: "awaiting_swarm" as const,
+      waitHint: SWARM_AWAIT_HINT,
+    };
+    expect(chrome).toEqual({
+      turnOpen: false,
+      status: "awaiting_swarm",
+      waitHint: "Still working…",
+    });
+    // Happy path: no pending → busy (thinking), not awaiting.
+    expect(
+      runnerBusySwitchDecision({
+        runnerState: "running",
+        localStreamActive: false,
+        switchedSession: true,
+        pendingSwarms: false,
+        sessionState: "thinking",
+      }).kind,
+    ).toBe("busy");
+  });
 });

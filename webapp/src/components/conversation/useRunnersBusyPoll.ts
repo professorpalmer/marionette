@@ -20,6 +20,10 @@ import {
 } from "./runnersBusy";
 import { isChatEventsReattachArmed } from "./chatEvents";
 import { shouldApplySwarmLiveMerge } from "./streamApply";
+import {
+  sessionStateShowsAwaitingSwarm,
+  SWARM_AWAIT_HINT,
+} from "./swarmPoll";
 import type { SessionStatus } from "./useSessionSwitch";
 
 export type UseRunnersBusyPollDeps = {
@@ -40,6 +44,7 @@ export type UseRunnersBusyPollDeps = {
   setTurnOpen: Dispatch<SetStateAction<boolean>>;
   setStatus: Dispatch<SetStateAction<SessionStatus>>;
   setCompactingStatus: Dispatch<SetStateAction<string | null>>;
+  setWaitHint: Dispatch<SetStateAction<string | null>>;
 };
 
 export function useRunnersBusyPoll(deps: UseRunnersBusyPollDeps) {
@@ -61,6 +66,7 @@ export function useRunnersBusyPoll(deps: UseRunnersBusyPollDeps) {
     setTurnOpen,
     setStatus,
     setCompactingStatus,
+    setWaitHint,
   } = deps;
 
   const chatEventsReattachArmed = () => isChatEventsReattachArmed({
@@ -103,11 +109,30 @@ export function useRunnersBusyPoll(deps: UseRunnersBusyPollDeps) {
       if (userStoppedRef.current) return;
       const runners = res?.runners || {};
       const running = runners[sid] === "running";
-      if (running) {
+      const awaitingSwarm = sessionStateShowsAwaitingSwarm({
+        state: res?.state,
+        pendingSwarms: !!res?.pending_swarms,
+        userStopped: userStoppedRef.current,
+      });
+      if (running || awaitingSwarm) {
         consecutiveIdlePollsRef.current = 0;
-        detachedBusyRef.current = true;
-        setTurnOpen(true);
-        setStatus((prev) => preserveOrThinking(prev));
+        // Pause-point: prefer awaiting_swarm over thinking even while runners
+        // report running (do not collapse Still working… on the busy poll).
+        if (awaitingSwarm) {
+          detachedBusyRef.current = running;
+          setTurnOpen(false);
+          setStatus("awaiting_swarm");
+          setWaitHint(SWARM_AWAIT_HINT);
+        } else {
+          detachedBusyRef.current = true;
+          setTurnOpen(true);
+          setStatus((prev) => preserveOrThinking(prev));
+        }
+        if (!running) {
+          // Runner idle at pause-point — swarm-results poll owns job drain;
+          // do not fall through to detached-busy finalize → idle.
+          return;
+        }
         const tick = runnersBusyTickDecision({
           userStopped: userStoppedRef.current,
           localStreamActive: localStreamActiveRef.current,

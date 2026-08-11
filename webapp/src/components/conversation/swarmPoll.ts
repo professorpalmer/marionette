@@ -6,6 +6,8 @@
  * keep-alive resume starts the next model turn.
  */
 
+import type { Item } from "../TranscriptList";
+import { isSwarmPendingTerminal } from "./swarmPendingIdentity";
 import { formatDistilledNotice, formatWikiAutoIngestNotice } from "./streamApply";
 
 /** Composer / pill hint while a real background job is still in flight. */
@@ -37,6 +39,51 @@ export function shouldHoldSwarmAwaitChrome(opts: {
   if (opts.userStopped) return false;
   if (opts.backendPendingSwarms) return true;
   return hasLiveBackgroundJobIds(opts.pendingJobIds);
+}
+
+/**
+ * True when getSessionState reports a background pause-point (await chrome).
+ * Stop must suppress restore so we never re-paint Still working… after abandon.
+ */
+export function sessionStateShowsAwaitingSwarm(opts: {
+  state?: string | null;
+  pendingSwarms?: boolean;
+  userStopped?: boolean;
+}): boolean {
+  if (opts.userStopped) return false;
+  return opts.state === "awaiting_swarm" || !!opts.pendingSwarms;
+}
+
+/**
+ * Rehydrate local pendingJobIds after session-switch transcript hydrate so
+ * shouldHoldSwarmAwaitChrome can hold from local ids (not only backend peek).
+ * Excludes local-swarm-* placeholders and terminal swarm_pending rows.
+ */
+export function seedPendingJobIdsFromHydrate(opts: {
+  items: readonly Item[];
+  transcriptJobIds?: readonly string[] | null;
+}): string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  const push = (raw: unknown) => {
+    const id = String(raw || "").trim();
+    if (!id || id.startsWith("local-swarm-") || seen.has(id)) return;
+    seen.add(id);
+    ids.push(id);
+  };
+  for (const it of opts.items) {
+    if (it.kind !== "swarm_pending") continue;
+    if (isSwarmPendingTerminal(it)) continue;
+    const terminals = new Set(it.terminal_job_ids || []);
+    for (const jobId of it.job_ids || []) {
+      if (terminals.has(jobId)) continue;
+      push(jobId);
+    }
+  }
+  for (const jobId of opts.transcriptJobIds || []) {
+    push(jobId);
+  }
+  return ids;
 }
 
 /** Wait hint to paint (or clear) when the turn closes after dispatch. */
@@ -89,6 +136,20 @@ export function pilotResumePollAction(opts: {
   if (opts.userStopped) return "suppress_clear_hint";
   if (opts.alreadyFired) return "queue";
   return "fire_looking";
+}
+
+/**
+ * triggerResume entry: Stop clears hints; cancelRef (stream armed) queues
+ * keep-alive and must also clear Looking… / Still working… so poll-path
+ * pilot_resume cannot leave a stuck hint while executeSend is deferred.
+ */
+export function triggerResumeGate(opts: {
+  userStopped: boolean;
+  cancelArmed: boolean;
+}): "suppress_clear_hint" | "queue_clear_hint" | "execute" {
+  if (opts.userStopped) return "suppress_clear_hint";
+  if (opts.cancelArmed) return "queue_clear_hint";
+  return "execute";
 }
 
 export type SwarmPollChrome =

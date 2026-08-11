@@ -55,7 +55,6 @@ import {
 import {
   classifyLocalSlashCommand,
   composerEnterAction,
-  composerEnterBusy,
   editNoticeAfterSend,
   EDIT_BUSY_PROGRESS_NOTICE,
   executeSendGate,
@@ -136,8 +135,11 @@ import {
   clearSwarmAwaitWaitHint,
   PILOT_LOOKING_HINT,
   pilotResumePollAction,
+  sessionStateShowsAwaitingSwarm,
+  shouldHoldSwarmAwaitChrome,
   SWARM_AWAIT_HINT,
   swarmResultsAwaitChromeClear,
+  triggerResumeGate,
 } from "./conversation/swarmPoll";
 import { armResumeKick } from "./conversation/sessionResumeLatch";
 import {
@@ -361,6 +363,8 @@ export default function Conversation({
   // the elapsed label honest without re-rendering the whole app on a fast interval.
   const [busyStartedAt, setBusyStartedAt] = useState<number | null>(null);
   const [busyNow, setBusyNow] = useState(() => Date.now());
+  // busyStartedAt tracks status phases; holdSwarmAwait is folded into
+  // agentLoopOpen below once pendingJobIds/backendPendingSwarms exist.
   useEffect(() => {
     const busy =
       status === "thinking"
@@ -385,33 +389,12 @@ export default function Conversation({
   // awaiting_swarm: model turn closed after background dispatch, but workers
   // still fly — Cursor-style "Still working…" until keep-alive resume.
   const [turnOpen, setTurnOpen] = useState(false);
-  const agentLoopOpen = isAgentLoopOpen(turnOpen, status);
-  const liveInvestigation = turnHasLiveInvestigation(items, agentLoopOpen);
   const [waitHint, setWaitHint] = useState<string | null>(null);
-  const busyProgress = deriveBusyProgress(items, status, busyElapsedMs, {
-    modelLabel: config?.driver || "",
-    waitHint,
-  });
   // True while visible items belong to a prior session (or are awaiting hydrate).
   // Dims the feed and blocks send so stale A is never treated as B.
   const [transcriptStale, setTranscriptStale] = useState(false);
   const transcriptStaleRef = useRef(false);
   useEffect(() => { transcriptStaleRef.current = transcriptStale; }, [transcriptStale]);
-  // Runner/SSE can briefly report idle while a card is still running (or the
-  // reverse). Prefer investigation / open-turn truth for the header pill.
-  // Idle/busy shares composerBusy / agentLoopOpen — do not early-idle the
-  // StatusPill on answer-complete SSE lag while Steer/Stop remain.
-  const pillStatus: string = derivePillStatus({
-    transcriptStale,
-    answerChromeIdle: false,
-    liveInvestigation,
-    turnOpen,
-    status,
-    awaitingSwarm: status === "awaiting_swarm",
-    agentLoopOpen,
-  });
-  // Same latch as agentLoopOpen — Steer/Stop stay up for the whole turn.
-  const composerBusy = agentLoopOpen;
   // True while this Conversation owns a live SSE stream for the active session.
   // Runner-poll busy chrome must not clobber local streaming status, and must
   // not force idle while SSE is still attached.
@@ -487,6 +470,42 @@ export default function Conversation({
   useEffect(() => { pendingJobIdsRef.current = pendingJobIds; }, [pendingJobIds]);
   const processedSwarmJobIdsRef = useRef<string[]>([]);
   const [backendPendingSwarms, setBackendPendingSwarms] = useState(false);
+
+  // Hold Stop/Steer after switch/hydrate while background jobs fly, even if
+  // status briefly flaps idle before awaiting_swarm paints.
+  const holdSwarmAwait = shouldHoldSwarmAwaitChrome({
+    pendingJobIds,
+    backendPendingSwarms,
+    userStopped: userStoppedRef.current,
+  });
+  const agentLoopOpen =
+    isAgentLoopOpen(turnOpen, status) || holdSwarmAwait;
+  const liveInvestigation = turnHasLiveInvestigation(items, agentLoopOpen);
+  const busyProgress = deriveBusyProgress(items, status, busyElapsedMs, {
+    modelLabel: config?.driver || "",
+    waitHint,
+  });
+  // Runner/SSE can briefly report idle while a card is still running (or the
+  // reverse). Prefer investigation / open-turn truth for the header pill.
+  // Idle/busy shares composerBusy / agentLoopOpen — do not early-idle the
+  // StatusPill on answer-complete SSE lag while Steer/Stop remain.
+  const pillStatus: string = derivePillStatus({
+    transcriptStale,
+    answerChromeIdle: false,
+    liveInvestigation,
+    turnOpen,
+    status,
+    awaitingSwarm: status === "awaiting_swarm" || holdSwarmAwait,
+    agentLoopOpen,
+  });
+  // Same latch as agentLoopOpen — Steer/Stop stay up for the whole turn.
+  const composerBusy = agentLoopOpen;
+  // Keep the busy footer clock alive while holdSwarmAwait outlives status flaps.
+  useEffect(() => {
+    if (holdSwarmAwait) {
+      setBusyStartedAt((prev) => prev ?? Date.now());
+    }
+  }, [holdSwarmAwait]);
 
   const [attachedImages, setAttachedImages] = useState<ComposerAttachedImage[]>([]);
   // Live composer attachments for per-session cache across useSessionSwitch.
@@ -1169,6 +1188,7 @@ export default function Conversation({
     setDistillNotice,
     setUploadError,
     setWaitHint,
+    setPendingJobIds,
     clearSafeTimeouts,
   });
 
@@ -1191,6 +1211,7 @@ export default function Conversation({
     setTurnOpen,
     setStatus,
     setCompactingStatus,
+    setWaitHint,
   });
 
 
@@ -1210,7 +1231,20 @@ export default function Conversation({
       api.getSessionState()
         .then((res) => {
           if (!stillCurrent() || !res) return;
-          setBackendPendingSwarms(res.pending_swarms);
+          setBackendPendingSwarms(!!res.pending_swarms);
+          // Restore Still working… when switching into a pause-point session
+          // (pending_swarms / state===awaiting_swarm). Stop suppresses restore.
+          if (
+            sessionStateShowsAwaitingSwarm({
+              state: res.state,
+              pendingSwarms: !!res.pending_swarms,
+              userStopped: userStoppedRef.current,
+            })
+          ) {
+            setTurnOpen(false);
+            setStatus("awaiting_swarm");
+            setWaitHint(SWARM_AWAIT_HINT);
+          }
           // resume_pending is an EXPLICIT one-shot latch from the self-edit
           // restart path (backend /api/session/persist or /api/restart) -- NOT
           // "transcript ends on a user turn". Peek only here; consume happens
@@ -1778,10 +1812,10 @@ export default function Conversation({
 
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      // Match composerBusy / agentLoopOpen (awaiting_swarm + turnOpen) so plain
-      // Enter steers during a background swarm wait instead of starting a new send.
+      // Match composerBusy / agentLoopOpen (awaiting_swarm + holdSwarmAwait)
+      // so plain Enter steers during a background swarm wait instead of a new send.
       // Cmd/Ctrl+Enter still queues while that latch is armed.
-      const busy = composerEnterBusy({ turnOpen, status });
+      const busy = composerBusy;
       // While a turn is running, plain Enter STEERS (redirects the current turn);
       // Cmd/Ctrl+Enter QUEUES (runs after the current turn finishes). When idle,
       // Enter always sends a normal turn.
@@ -2301,13 +2335,24 @@ export default function Conversation({
   // A pilot_resume can also arrive via the swarm-results poll while the session is
   // idle (the common background-job case). Trigger a continuation immediately.
   const triggerResume = () => {
-    if (userStoppedRef.current) {
+    const gate = triggerResumeGate({
+      userStopped: userStoppedRef.current,
+      cancelArmed: !!cancelRef.current,
+    });
+    if (gate === "suppress_clear_hint") {
       resumeQueuedRef.current = false;
       // Stop suppressed keep-alive — drop Looking… / Still working… if painted.
       setWaitHint((prev) => clearSwarmAwaitWaitHint(prev));
       return;
     }
-    if (cancelRef.current) { resumeQueuedRef.current = true; return; }
+    if (gate === "queue_clear_hint") {
+      // Stream already armed: queue keep-alive only. Clear Looking… /
+      // Still working… so poll-path pilot_resume cannot leave a stuck hint
+      // (match Stop-branch honesty; SSE mid-turn queue never paints Looking…).
+      resumeQueuedRef.current = true;
+      setWaitHint((prev) => clearSwarmAwaitWaitHint(prev));
+      return;
+    }
     executeSendRef.current("", false, false, true);
   };
   resumeTriggerRef.current = triggerResume;

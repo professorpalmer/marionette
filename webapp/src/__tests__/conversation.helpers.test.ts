@@ -1922,6 +1922,23 @@ describe("sessionHydrate module", () => {
         switchedSession: true,
       }).kind,
     ).toBe("noop");
+    // Pending swarms / awaiting_swarm prefer awaiting over thinking.
+    expect(
+      runnerBusySwitchDecision({
+        runnerState: "running",
+        localStreamActive: false,
+        switchedSession: true,
+        pendingSwarms: true,
+      }).kind,
+    ).toBe("awaiting");
+    expect(
+      runnerBusySwitchDecision({
+        runnerState: "idle",
+        localStreamActive: false,
+        switchedSession: true,
+        sessionState: "awaiting_swarm",
+      }).kind,
+    ).toBe("awaiting");
   });
 
   it("clears sticky SESSION_* editNotice after successful hydrate recovery", () => {
