@@ -33,6 +33,8 @@ import {
   finalizePilotMessage,
   formatDistilledNotice,
   formatWikiAutoIngestNotice,
+  appendStopHonestyNotice,
+  noticeIsStopHonesty,
   noticeShowsWaitHint,
   reconcileOrphanInvestigationCards,
   sealOpenStreamSurfaces,
@@ -195,6 +197,11 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       if (!d.aborted) {
         window.dispatchEvent(new Event("harness-context-changed"));
       }
+    } else if (ev.kind === "notice" && noticeIsStopHonesty(d.reason)) {
+      // Stop-boundary honesty (owned-command orphan / steer drop): durable
+      // transcript row. Omit wait-hint — interrupted/stopLocal clears it and
+      // the operator must still see the notice after idle settle.
+      setItems((p) => appendStopHonestyNotice(p, d.message));
     } else if (ev.kind === "notice" && noticeShowsWaitHint(d.kind)) {
       // wait / stagnation / resume_cap notices are user-visible chrome; other
       // notice kinds stay silent unless they omit kind (legacy wait path).

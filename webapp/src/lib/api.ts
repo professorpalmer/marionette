@@ -1078,7 +1078,10 @@ export const api = {
     postJSON<{ ok: boolean; error?: string }>("/api/refine/propose/rollback", {}),
   /** Hard-stop a turn. Pass sessionId to target a background runner without view attach. */
   interruptSession: (sessionId?: string) =>
-    postJSON<{ ok: boolean }>(
+    postJSON<{
+      ok: boolean;
+      notices?: Array<{ message?: string; reason?: string; count?: number }>;
+    }>(
       "/api/session/interrupt",
       sessionId ? { session_id: sessionId } : {},
     ),

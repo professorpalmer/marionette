@@ -62,10 +62,38 @@ def test_interrupt_active_and_missing_runner():
 
     p = _P()
     svc = _svc(pilot=p)
-    assert post_session_interrupt({}, "", svc)[0] == 200
+    code, payload = post_session_interrupt({}, "", svc)
+    assert code == 200
+    assert payload == {"ok": True}
     assert p.n == 1
     code, payload = post_session_interrupt({}, "gone", svc)
     assert code == 404
+
+
+def test_interrupt_returns_pending_honesty_notices():
+    class _P:
+        def __init__(self):
+            self.n = 0
+            self._pending = [
+                {"message": "orphan procs", "reason": "owned_command_orphan", "count": 1},
+                {"message": "dropped steers", "reason": "steer_dropped", "count": 2},
+            ]
+
+        def interrupt(self):
+            self.n += 1
+
+        def peek_post_interrupt_notices(self):
+            return list(self._pending)
+
+    p = _P()
+    svc = _svc(pilot=p)
+    code, payload = post_session_interrupt({}, "", svc)
+    assert code == 200
+    assert payload["ok"] is True
+    assert payload["notices"] == p._pending
+    assert p.n == 1
+    # Interrupt API must not drain — stream flush still owns pending.
+    assert len(p.peek_post_interrupt_notices()) == 2
 
 
 def test_steer_and_queue(tmp_path):

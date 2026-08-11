@@ -18,6 +18,7 @@ Method Resolution Order keeps behavior identical: ``is_turn_busy``,
 """
 
 import os
+from typing import Iterator
 
 from harness.diag import note as _diag_note
 
@@ -49,6 +50,44 @@ class BusyControlMixin:
         except Exception:
             return False
 
+    def _cooperative_disk_mutations_quarantined(self) -> bool:
+        """True after Stop until the next turn acquires the busy lock.
+
+        Fail-closed gate for in-process write/edit/patch apply so an abandoned
+        generator or local implement thread cannot mutate the live worktree
+        while StatusPill/composer already show idle. Uses the existing cancel
+        Event + interrupt / stop-idle flags — not a second control plane.
+        ``interrupt`` arms cancel + local-job Events before claiming idle.
+        """
+        try:
+            if getattr(self, "_stop_holds_idle", False):
+                return True
+        except Exception:
+            pass
+        try:
+            if getattr(self, "_interrupt_requested", False):
+                return True
+        except Exception:
+            pass
+        try:
+            cancel = getattr(self, "_cancel", None)
+            if cancel is not None and cancel.is_set():
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _refuse_quarantined_disk_mutation(self) -> tuple[bool, str, str] | None:
+        """Return a cancelled refusal tuple when Stop quarantine is armed."""
+        if not self._cooperative_disk_mutations_quarantined():
+            return None
+        return (
+            False,
+            "cancelled",
+            "Stopped: refusing workspace mutation after cancel "
+            "(cooperative quarantine)",
+        )
+
     def interrupt(self) -> None:
         """Hard Stop: cancel the turn + owned tool procs, then report idle.
 
@@ -68,6 +107,9 @@ class BusyControlMixin:
         6. mark interrupt_requested so a follow-up send can force-recover the lock,
         7. drop any queued steers with a durable/streamed notice (S2 boundary —
            never inject into the abandoned generator or a later unrelated send).
+
+        Cooperative quarantine: steps 1–2 arm cancel Events checked by
+        write/edit/hash_edit and late patch-apply before further disk writes.
         """
         self.cancel()
         self._interrupt_requested = True
@@ -201,6 +243,45 @@ class BusyControlMixin:
             "count": n,
             "pids": [int(p) for p in orphaned_pids],
         }
+
+    def _flush_owned_command_orphan_notice(self) -> Iterator["ConvEvent"]:
+        """Yield a streamed notice for a prior owned-command orphan, if pending.
+
+        Mirrors ``_flush_steer_drop_notice``: display transcript already holds
+        the durable row; this live-flushes so Stop honesty is not stuck until
+        the next send. Omit ``data.kind`` so the wait-hint path can surface it;
+        ``reason`` carries the machine-readable cause for the UI transcript row.
+        """
+        pending = getattr(self, "_pending_owned_command_orphan_notice", None)
+        if not pending:
+            return
+        self._pending_owned_command_orphan_notice = None
+        from .conversation import ConvEvent
+        yield ConvEvent("notice", dict(pending))
+
+    def _flush_stop_boundary_notices(self) -> Iterator["ConvEvent"]:
+        """Stream Stop-boundary honesty notices (steer drop + owned-command orphan)."""
+        flush_steer = getattr(self, "_flush_steer_drop_notice", None)
+        if callable(flush_steer):
+            yield from flush_steer()
+        yield from self._flush_owned_command_orphan_notice()
+
+    def peek_post_interrupt_notices(self) -> list[dict]:
+        """Snapshot pending Stop honesty notices without draining them.
+
+        Used by ``POST /api/session/interrupt`` so the UI can surface orphan /
+        steer-drop rows when the abandoned stream never flushes. Stream flush
+        sites still drain the pending fields for live SSE.
+        """
+        out: list[dict] = []
+        for attr in (
+            "_pending_steer_drop_notice",
+            "_pending_owned_command_orphan_notice",
+        ):
+            pending = getattr(self, attr, None)
+            if pending:
+                out.append(dict(pending))
+        return out
 
     def _drain_session_jobs_dual_store(self, job_ids: list | None = None) -> list:
         """Mark session-tracked jobs cancelled in harness + CLI stores.

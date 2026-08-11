@@ -93,7 +93,9 @@ import {
   sealOpenStreamSurfaces,
   shouldApplySwarmLiveMerge,
   appendCompaction,
+  appendStopHonestyNotice,
   compactionAbortLabel,
+  noticeIsStopHonesty,
   noticeShowsWaitHint,
   patchCardInItems,
   shouldPaintThinking,
@@ -118,6 +120,7 @@ import {
   composerEnterBusy,
   editNoticeAfterSend,
   EDIT_BUSY_PROGRESS_NOTICE,
+  STOP_INTERRUPT_FAILED_NOTICE,
   executeSendGate,
   formatCompactCompleteMessage,
   formatCompactErrorMessage,
@@ -125,7 +128,9 @@ import {
   localSlashChromeAction,
   localSlashPaletteAction,
   runEditMessageFlow,
+  runStopFlow,
   shouldBlockEmptySend,
+  shouldClearSteerDraftOnResult,
   showStandaloneEditNoticeDismiss,
   userOrdinalBeforeIndex,
 } from "../components/conversation/composerSend";
@@ -1610,6 +1615,30 @@ describe("streamApply module", () => {
     expect(noticeShowsWaitHint("stagnation")).toBe(true);
     expect(noticeShowsWaitHint("resume_cap")).toBe(true);
     expect(noticeShowsWaitHint("memory")).toBe(false);
+    expect(noticeIsStopHonesty("owned_command_orphan")).toBe(true);
+    expect(noticeIsStopHonesty("steer_dropped")).toBe(true);
+    expect(noticeIsStopHonesty("wait")).toBe(false);
+    expect(noticeIsStopHonesty(undefined)).toBe(false);
+    expect(
+      appendStopHonestyNotice([], "Stop cancelled owned tool work"),
+    ).toEqual([
+      {
+        kind: "msg",
+        msg: { role: "assistant", text: "Stop cancelled owned tool work" },
+      },
+    ]);
+    // Dedupes identical honesty rows.
+    expect(
+      appendStopHonestyNotice(
+        [
+          {
+            kind: "msg",
+            msg: { role: "assistant", text: "Stop cancelled owned tool work" },
+          },
+        ],
+        "Stop cancelled owned tool work",
+      ),
+    ).toHaveLength(1);
     expect(shouldPaintThinking({ text: "  ", delta: false }).painting).toBe(false);
     expect(shouldPaintThinking({ text: "a", delta: true }).painting).toBe(true);
     expect(workspaceRootFromActionResult({ path: "/repo" }, "(workspace root)")).toBe("/repo");
@@ -1824,6 +1853,72 @@ describe("composerSend module", () => {
     // a leftover Revert? banner sitting on an idle composer.
     expect(editNoticeAfterSend(true)).toBeNull();
     expect(editNoticeAfterSend(false)).toBeNull();
+  });
+
+  it("runStopFlow settles local UI then awaits interrupt", async () => {
+    const order: string[] = [];
+    const stopLocal = vi.fn(() => { order.push("stopLocal"); });
+    const interruptSession = vi.fn(async () => {
+      order.push("interrupt");
+      return { ok: true };
+    });
+
+    const result = await runStopFlow({ stopLocal, interruptSession });
+    expect(order).toEqual(["stopLocal", "interrupt"]);
+    expect(result).toEqual({ kind: "ok", notices: [] });
+  });
+
+  it("runStopFlow refreshes transcript and returns interrupt notices", async () => {
+    const order: string[] = [];
+    const result = await runStopFlow({
+      stopLocal: () => { order.push("stopLocal"); },
+      interruptSession: async () => {
+        order.push("interrupt");
+        return {
+          ok: true,
+          notices: [
+            { message: "orphan procs", reason: "owned_command_orphan", count: 1 },
+          ],
+        };
+      },
+      refreshTranscript: async () => { order.push("refresh"); },
+    });
+    expect(order).toEqual(["stopLocal", "interrupt", "refresh"]);
+    expect(result).toEqual({
+      kind: "ok",
+      notices: [
+        { message: "orphan procs", reason: "owned_command_orphan", count: 1 },
+      ],
+    });
+  });
+
+  it("runStopFlow surfaces interrupt failure notice", async () => {
+    const result = await runStopFlow({
+      stopLocal: vi.fn(),
+      interruptSession: async () => ({ ok: false }),
+    });
+    expect(result).toEqual({
+      kind: "interrupt_failed",
+      notice: STOP_INTERRUPT_FAILED_NOTICE,
+    });
+  });
+
+  it("runStopFlow surfaces interrupt throw as failure notice", async () => {
+    const result = await runStopFlow({
+      stopLocal: vi.fn(),
+      interruptSession: async () => {
+        throw new Error("network down");
+      },
+    });
+    expect(result).toEqual({
+      kind: "interrupt_failed",
+      notice: "network down",
+    });
+  });
+
+  it("shouldClearSteerDraftOnResult clears only on success", () => {
+    expect(shouldClearSteerDraftOnResult(true)).toBe(true);
+    expect(shouldClearSteerDraftOnResult(false)).toBe(false);
   });
 
   it("runEditMessageFlow stops locally, awaits interrupt, then rewinds when busy", async () => {

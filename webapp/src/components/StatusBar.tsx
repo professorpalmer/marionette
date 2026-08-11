@@ -1,6 +1,21 @@
 import { useEffect, useRef, useState } from "react";
-import { Circle, GitBranch, Cpu, PanelLeft, PanelRight, Coins, ArrowUpCircle, RefreshCw, Zap } from "lucide-react";
-import { api, type Config, type SessionState, type UsageData } from "../lib/api";
+import {
+  Circle,
+  GitBranch,
+  Cpu,
+  PanelLeft,
+  PanelRight,
+  Coins,
+  ArrowUpCircle,
+  RefreshCw,
+  Zap,
+  Target,
+  Pause,
+  Play,
+  Check,
+  X,
+} from "lucide-react";
+import { api, type Config, type SessionGoal, type SessionState, type UsageData } from "../lib/api";
 import { isDesktop } from "../lib/transport";
 import { usePolling } from "../lib/usePolling";
 import CostBreakdown, {
@@ -30,6 +45,21 @@ export function deriveFooterRuntimeStatus(
   return "ready";
 }
 
+/** Sticky session GOAL is chip-ready when it has text and is not cleared. */
+export function sessionGoalForChip(goal?: SessionGoal | null): SessionGoal | null {
+  if (!goal) return null;
+  const text = (goal.text || "").trim();
+  if (!text) return null;
+  const status = String(goal.status || "cleared").toLowerCase();
+  if (status === "cleared") return null;
+  return { ...goal, text, status };
+}
+
+function truncateGoalText(text: string, max = 36): string {
+  if (text.length <= max) return text;
+  return `${text.slice(0, max - 1)}…`;
+}
+
 // Bottom status strip (Hermes shell/statusbar pattern): runtime health, active
 // workspace branch, pilot model, spend, and panel toggles. Job inventory lives
 // in LeftRail SESSION JOBS -- a footer total was stale across dir swaps and
@@ -51,8 +81,35 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
     actionEvent?: string;
   } | null>(null);
   const [sessionState, setSessionState] = useState<SessionState | null>(null);
+  const [goalBusy, setGoalBusy] = useState(false);
   // Dedup runtime-stale notes across the 5-minute focus throttle and 30-minute polls.
   const lastRuntimeNoteRef = useRef<string | null>(null);
+
+  const refreshSessionState = () =>
+    api.getSessionState()
+      .then((stateRes) => { if (stateRes) setSessionState(stateRes); })
+      .catch(() => {});
+
+  const applyGoalMutation = (
+    action: () => Promise<{ ok: boolean; goal: SessionGoal }>,
+  ) => {
+    if (goalBusy) return;
+    setGoalBusy(true);
+    action()
+      .then((res) => {
+        if (!res?.goal) {
+          void refreshSessionState();
+          return;
+        }
+        setSessionState((prev) =>
+          prev
+            ? { ...prev, goal: res.goal }
+            : { state: "idle", pending_swarms: false, goal: res.goal },
+        );
+      })
+      .catch((err) => console.error("Session GOAL action failed", err))
+      .finally(() => setGoalBusy(false));
+  };
 
   // Transient toast (e.g. a refused model switch). Auto-dismisses; never blocks.
   // detail may be a string or { message, actionLabel?, actionEvent? } for Undo.
@@ -216,14 +273,13 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
     }).catch(() => {});
   }, [config]);
 
-  // Poll runner/pilot liveness so the footer reflects real busy state (LeftRail
-  // uses the same endpoint on the same cadence for per-session dots).
-  usePolling(() => api.getSessionState()
-    .then((stateRes) => { if (stateRes) setSessionState(stateRes); })
-    .catch(() => {}), 4000);
+  // Poll runner/pilot liveness (and sticky GOAL) so the footer reflects real
+  // busy state. LeftRail uses the same endpoint on the same cadence for dots.
+  usePolling(() => refreshSessionState(), 4000);
 
   const runtimeStatus = deriveFooterRuntimeStatus(sessionState);
   const runtimeReady = runtimeStatus === "ready";
+  const sessionGoal = sessionGoalForChip(sessionState?.goal);
   // While a runner is busy, poll tok/$ every 2s so multi-step host-tool turns
   // (and the jump when a long Cursor CLI stream finally meters) show up live.
   // Idle stays on the 10s cadence to avoid request pileup.
@@ -237,17 +293,20 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
       acceptZeroUsageRef.current = true;
       setUsage(null);
       fetchUsage();
+      // Session/view swaps carry a different sticky GOAL — refresh immediately
+      // rather than waiting for the next 4s poll tick.
+      void refreshSessionState();
     };
     window.addEventListener("harness-config-changed", onRefresh);
     window.addEventListener("harness-project-selected", onRefresh);
-    window.addEventListener("harness-new-session", onRefresh);
+    window.addEventListener("harness-new-session", onSessionChanged);
     window.addEventListener("harness-usage-refresh", onRefresh);
     window.addEventListener("harness-session-changed", onSessionChanged);
     return () => {
       clearInterval(interval);
       window.removeEventListener("harness-config-changed", onRefresh);
       window.removeEventListener("harness-project-selected", onRefresh);
-      window.removeEventListener("harness-new-session", onRefresh);
+      window.removeEventListener("harness-new-session", onSessionChanged);
       window.removeEventListener("harness-usage-refresh", onRefresh);
       window.removeEventListener("harness-session-changed", onSessionChanged);
     };
@@ -310,6 +369,69 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
         {runtimeStatus}
       </span>
       {branch && <span className="flex items-center gap-1"><GitBranch size={10} />{branch}</span>}
+      {sessionGoal && (
+        <span
+          data-testid="session-goal-chip"
+          className="inline-flex items-center gap-1 max-w-[240px] px-1.5 py-px rounded-full bg-panel2 border border-edge text-txt/90"
+          title={`Session GOAL (${sessionGoal.status}): ${sessionGoal.text}`}
+        >
+          <Target size={10} className="shrink-0 text-accent" aria-hidden="true" />
+          <span className="uppercase tracking-wide text-faint shrink-0">GOAL</span>
+          <span className="truncate">{truncateGoalText(sessionGoal.text)}</span>
+          {sessionGoal.status === "paused" ? (
+            <span className="text-amber-300/80 shrink-0">paused</span>
+          ) : null}
+          {sessionGoal.status === "complete" ? (
+            <span className="text-good/80 shrink-0">done</span>
+          ) : null}
+          {sessionGoal.status === "active" ? (
+            <button
+              type="button"
+              disabled={goalBusy}
+              title="Pause session GOAL"
+              aria-label="Pause session GOAL"
+              className="p-0.5 rounded hover:bg-panel hover:text-txt disabled:opacity-50"
+              onClick={() => applyGoalMutation(() => api.pauseSessionGoal())}
+            >
+              <Pause size={9} />
+            </button>
+          ) : null}
+          {sessionGoal.status === "paused" ? (
+            <button
+              type="button"
+              disabled={goalBusy}
+              title="Resume session GOAL"
+              aria-label="Resume session GOAL"
+              className="p-0.5 rounded hover:bg-panel hover:text-txt disabled:opacity-50"
+              onClick={() => applyGoalMutation(() => api.resumeSessionGoal())}
+            >
+              <Play size={9} />
+            </button>
+          ) : null}
+          {sessionGoal.status === "active" || sessionGoal.status === "paused" ? (
+            <button
+              type="button"
+              disabled={goalBusy}
+              title="Complete session GOAL"
+              aria-label="Complete session GOAL"
+              className="p-0.5 rounded hover:bg-panel hover:text-good disabled:opacity-50"
+              onClick={() => applyGoalMutation(() => api.completeSessionGoal())}
+            >
+              <Check size={9} />
+            </button>
+          ) : null}
+          <button
+            type="button"
+            disabled={goalBusy}
+            title="Clear session GOAL"
+            aria-label="Clear session GOAL"
+            className="p-0.5 rounded hover:bg-panel hover:text-risk disabled:opacity-50"
+            onClick={() => applyGoalMutation(() => api.clearSessionGoal())}
+          >
+            <X size={9} />
+          </button>
+        </span>
+      )}
       {showUsage && (
         <>
           <span className="w-px h-3 bg-edge/40" />

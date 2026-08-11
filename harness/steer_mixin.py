@@ -254,7 +254,11 @@ class SteerMixin:
             dropped = self.drop_queued_steers()
             if dropped:
                 self._record_steer_drop_notice(dropped)
-            yield from self._flush_steer_drop_notice()
+            flush_all = getattr(self, "_flush_stop_boundary_notices", None)
+            if callable(flush_all):
+                yield from flush_all()
+            else:
+                yield from self._flush_steer_drop_notice()
             return
         steers = self.drain_steer()
         if not steers:

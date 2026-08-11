@@ -377,6 +377,33 @@ class ConversationJobsMixin:
     instance state of its own.
     """
 
+    def _automatic_patch_apply_refused(self, job_id: str) -> Optional[str]:
+        """Refuse automatic live-checkout patch apply after Stop quarantine.
+
+        Checks the per-job cancel Event and the session cooperative quarantine
+        (existing cancel / interrupt / stop-idle flags). Intentional
+        ``apply_review`` bypasses this helper and only sees the per-job gate
+        inside ``_apply_worker_patch``.
+        """
+        msg = (
+            "cancelled: refusing patch apply after Stop "
+            "(cooperative quarantine)"
+        )
+        try:
+            if self._local_job_cancelled(job_id):
+                return msg
+        except Exception:
+            pass
+        try:
+            quarantined = getattr(
+                self, "_cooperative_disk_mutations_quarantined", None,
+            )
+            if callable(quarantined) and quarantined():
+                return msg
+        except Exception:
+            pass
+        return None
+
     def _await_and_apply_job(self, job_id: str, state_dir: Optional[str] = None, objective: str = "") -> dict:
         import json
         import subprocess
@@ -505,9 +532,16 @@ class ConversationJobsMixin:
 
             apply_summary = f"Patch held for review (ID: {review_id})"
         else:
-            with self._apply_lock:
-                applied, applied_files, apply_msg = self._apply_worker_patch(artifacts, job_id)
-                cp_id = getattr(self, "_last_checkpoint_id", None)
+            refused = self._automatic_patch_apply_refused(job_id)
+            if refused:
+                applied, applied_files, apply_msg = False, [], refused
+                cp_id = None
+            else:
+                with self._apply_lock:
+                    applied, applied_files, apply_msg = self._apply_worker_patch(
+                        artifacts, job_id,
+                    )
+                    cp_id = getattr(self, "_last_checkpoint_id", None)
 
             apply_summary = ""
             if has_patch_art:
@@ -1041,9 +1075,16 @@ class ConversationJobsMixin:
                     cp_id = None
                     apply_summary = f"Patch held for review (ID: {review_id})"
                 else:
-                    with self._apply_lock:
-                        applied, applied_files, apply_msg = self._apply_worker_patch(artifacts, job_id)
-                        cp_id = getattr(self, "_last_checkpoint_id", None)
+                    refused = self._automatic_patch_apply_refused(job_id)
+                    if refused:
+                        applied, applied_files, apply_msg = False, [], refused
+                        cp_id = None
+                    else:
+                        with self._apply_lock:
+                            applied, applied_files, apply_msg = (
+                                self._apply_worker_patch(artifacts, job_id)
+                            )
+                            cp_id = getattr(self, "_last_checkpoint_id", None)
 
                     apply_summary = ""
                     if applied:

@@ -152,9 +152,13 @@ def execute_turn_actions(
             # queued steers into an abandoned generator (S2 boundary).
             if session._cancel.is_set():
                 session._sanitize_tool_pairs()
-                flush = getattr(session, "_flush_steer_drop_notice", None)
+                flush = getattr(session, "_flush_stop_boundary_notices", None)
                 if callable(flush):
                     yield from flush()
+                else:
+                    flush_steer = getattr(session, "_flush_steer_drop_notice", None)
+                    if callable(flush_steer):
+                        yield from flush_steer()
                 yield ConvEvent("interrupted", {"reason": "session interrupted"})
                 counters["action_seq"] = action_seq
                 counters["swarms"] = swarms
@@ -174,9 +178,13 @@ def execute_turn_actions(
         if session._cancel.is_set():
             # Heal unanswered sibling tool_calls before abandoning the spree.
             session._sanitize_tool_pairs()
-            flush = getattr(session, "_flush_steer_drop_notice", None)
+            flush = getattr(session, "_flush_stop_boundary_notices", None)
             if callable(flush):
                 yield from flush()
+            else:
+                flush_steer = getattr(session, "_flush_steer_drop_notice", None)
+                if callable(flush_steer):
+                    yield from flush_steer()
             yield ConvEvent("interrupted", {"reason": "session interrupted"})
             counters["action_seq"] = action_seq
             counters["swarms"] = swarms

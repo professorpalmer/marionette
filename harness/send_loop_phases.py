@@ -911,9 +911,13 @@ def drain_idle_turn(
             record = getattr(session, "_record_steer_drop_notice", None)
             if callable(record):
                 record(dropped)
-        flush = getattr(session, "_flush_steer_drop_notice", None)
+        flush = getattr(session, "_flush_stop_boundary_notices", None)
         if callable(flush):
             yield from flush()
+        else:
+            flush_steer = getattr(session, "_flush_steer_drop_notice", None)
+            if callable(flush_steer):
+                yield from flush_steer()
         return ("return", user_message)
 
     pending_steers = session.drain_steer()

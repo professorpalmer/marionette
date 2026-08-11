@@ -1106,6 +1106,11 @@ class ToolDispatchMixin:
             return False, "disabled", "hash_edit is disabled (set HARNESS_HASH_EDIT=1 to enable)"
         if not self.config.repo:
             return False, "repo_not_open", "No workspace directory (config.repo) is open."
+        # Fail-closed after Stop: dry-run may still validate; never write.
+        if write:
+            refused = getattr(self, "_refuse_quarantined_disk_mutation", lambda: None)()
+            if refused is not None:
+                return refused
         target_path = act.path
         if not os.path.isabs(target_path):
             target_path = os.path.join(self.config.repo, target_path)
@@ -1134,6 +1139,10 @@ class ToolDispatchMixin:
                 status = "stale_anchor" if result.stale_anchors else "validation_error"
                 return False, status, f"hash_edit failed: {result.message}"
             if write:
+                # Re-check immediately before the atomic write (TOCTOU with Stop).
+                refused = getattr(self, "_refuse_quarantined_disk_mutation", lambda: None)()
+                if refused is not None:
+                    return refused
                 atomic_write_text(target_path, new_text)
                 # AST preview (round 6, opt-in): stash a structural diff for
                 # the conversation layer to merge into the action_result.
@@ -1158,6 +1167,10 @@ class ToolDispatchMixin:
         """
         if not self.config.repo:
             return False, "repo_not_open", "No workspace directory (config.repo) is open."
+        if write:
+            refused = getattr(self, "_refuse_quarantined_disk_mutation", lambda: None)()
+            if refused is not None:
+                return refused
         target_path = act.path
         if not os.path.isabs(target_path):
             target_path = os.path.join(self.config.repo, target_path)
@@ -1165,6 +1178,10 @@ class ToolDispatchMixin:
             return False, "path_traversal", f"Path traversal attempt rejected: {act.path}"
         if not write:
             return True, "success", 0
+        # Re-check immediately before the atomic write (TOCTOU with Stop).
+        refused = getattr(self, "_refuse_quarantined_disk_mutation", lambda: None)()
+        if refused is not None:
+            return refused
         try:
             target_dir = os.path.dirname(target_path)
             os.makedirs(target_dir, exist_ok=True)
@@ -1191,6 +1208,10 @@ class ToolDispatchMixin:
         """Validate (and optionally apply) a unique-substring edit_file action."""
         if not self.config.repo:
             return False, "repo_not_open", "No workspace directory (config.repo) is open."
+        if write:
+            refused = getattr(self, "_refuse_quarantined_disk_mutation", lambda: None)()
+            if refused is not None:
+                return refused
         target_path = act.path
         if not os.path.isabs(target_path):
             target_path = os.path.join(self.config.repo, target_path)
@@ -1250,6 +1271,11 @@ class ToolDispatchMixin:
             )
             if not write:
                 return True, "success", headline
+
+            # Re-check immediately before the atomic write (TOCTOU with Stop).
+            refused = getattr(self, "_refuse_quarantined_disk_mutation", lambda: None)()
+            if refused is not None:
+                return refused
 
             target_dir = os.path.dirname(target_path)
             os.makedirs(target_dir, exist_ok=True)

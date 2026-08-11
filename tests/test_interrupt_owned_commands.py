@@ -226,6 +226,17 @@ def test_interrupt_orphan_notice_when_kill_cannot_reap(monkeypatch):
         and "may still be running" in (row.get("text") or "")
         for row in host._display_transcript
     )
+    peeked = host.peek_post_interrupt_notices()
+    assert any(n.get("reason") == "owned_command_orphan" for n in peeked)
+    # Peek must not drain — stream flush still owns the pending field.
+    assert host._pending_owned_command_orphan_notice is not None
+
+    events = list(host._flush_stop_boundary_notices())
+    assert any(
+        e.kind == "notice" and e.data.get("reason") == "owned_command_orphan"
+        for e in events
+    )
+    assert host._pending_owned_command_orphan_notice is None
 
 
 def test_interrupt_source_has_no_unsafe_thread_kill_primitives():

@@ -345,11 +345,15 @@ class SendLoopMixin:
                 yield ConvEvent("error", {"error": "session busy: another request is in flight"})
                 return
         busy_gen = self._mark_busy_acquired()
-        # Stream any Stop↔steer drop notice recorded by interrupt or the
-        # post-Stop late-steer cleanup in _mark_busy_acquired.
-        flush = getattr(self, "_flush_steer_drop_notice", None)
+        # Stream any Stop-boundary honesty notices (steer drop + owned-command
+        # orphan) recorded by interrupt or post-Stop late-steer cleanup.
+        flush = getattr(self, "_flush_stop_boundary_notices", None)
         if callable(flush):
             yield from flush()
+        else:
+            flush_steer = getattr(self, "_flush_steer_drop_notice", None)
+            if callable(flush_steer):
+                yield from flush_steer()
         # Time-travel journal (round 6): snapshot the active check specs and
         # behavior toggles for this turn. Observability only; never raises.
         try:
@@ -928,9 +932,13 @@ class SendLoopMixin:
             # invalid history into the next request / export.
             self._sanitize_tool_pairs()
             if self._cancel.is_set():
-                flush = getattr(self, "_flush_steer_drop_notice", None)
+                flush = getattr(self, "_flush_stop_boundary_notices", None)
                 if callable(flush):
                     yield from flush()
+                else:
+                    flush_steer = getattr(self, "_flush_steer_drop_notice", None)
+                    if callable(flush_steer):
+                        yield from flush_steer()
                 yield ConvEvent("interrupted", {"reason": "session interrupted"})
                 return
 

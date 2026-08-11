@@ -101,6 +101,25 @@ export function formatSteerErrorMessage(err: unknown): string {
   return "[error] Steer failed: " + message;
 }
 
+/**
+ * Cursor parity: clear the steer composer draft only after a successful
+ * submit. Failed steers (4xx / network) keep the operator's text.
+ */
+export function shouldClearSteerDraftOnResult(ok: boolean): boolean {
+  return ok;
+}
+
+export type StopHonestyNotice = {
+  message?: string;
+  reason?: string;
+  count?: number;
+};
+
+export type InterruptSessionResponse = {
+  ok: boolean;
+  notices?: StopHonestyNotice[];
+};
+
 export function formatRenderCommandErrorMessage(err: unknown): string {
   const message =
     err && typeof err === "object" && "message" in err
@@ -122,6 +141,10 @@ export function editNoticeAfterSend(_canRevertEdit: boolean): string | null {
 /** Shown while auto stop+rewind runs after edit during an active turn. */
 export const EDIT_BUSY_PROGRESS_NOTICE =
   "Sending will stop and revert to this message…";
+
+/** Visible when Stop's backend interrupt fails (parity with edit-rewind honesty). */
+export const STOP_INTERRUPT_FAILED_NOTICE =
+  "Could not stop the current turn.";
 
 export type EditOrdinalItem = {
   kind: string;
@@ -180,6 +203,46 @@ function editFlowErrorMessage(err: unknown, fallback: string): string {
   return fallback;
 }
 
+export type StopFlowResult =
+  | { kind: "ok"; notices: StopHonestyNotice[] }
+  | { kind: "interrupt_failed"; notice: string };
+
+/**
+ * Stop: settle local UI chrome, then await backend interrupt.
+ * Surfaces a visible notice on interrupt failure (parity with edit-rewind).
+ * After a successful interrupt, optionally refresh the live transcript so
+ * Stop honesty rows (owned-command orphan / steer drop) appear immediately.
+ */
+export async function runStopFlow(opts: {
+  stopLocal: () => void;
+  interruptSession: () => Promise<InterruptSessionResponse>;
+  refreshTranscript?: () => Promise<void>;
+}): Promise<StopFlowResult> {
+  opts.stopLocal();
+  try {
+    const interruptRes = await opts.interruptSession();
+    if (!interruptRes?.ok) {
+      return {
+        kind: "interrupt_failed",
+        notice: STOP_INTERRUPT_FAILED_NOTICE,
+      };
+    }
+    if (opts.refreshTranscript) {
+      try {
+        await opts.refreshTranscript();
+      } catch {
+        /* best-effort — notices may still arrive via SSE flush / interrupt body */
+      }
+    }
+    return { kind: "ok", notices: interruptRes.notices || [] };
+  } catch (err) {
+    return {
+      kind: "interrupt_failed",
+      notice: editFlowErrorMessage(err, STOP_INTERRUPT_FAILED_NOTICE),
+    };
+  }
+}
+
 /**
  * Idle edit: rewind only. Busy edit: stop local UI, await interrupt, then rewind.
  * Caller must guard duplicate clicks with editBusy and set EDIT_BUSY_PROGRESS_NOTICE
@@ -191,24 +254,16 @@ export async function runEditMessageFlow(opts: {
   userOrdinal: number;
   originalText: string;
   stopLocal: () => void;
-  interruptSession: () => Promise<{ ok: boolean }>;
+  interruptSession: () => Promise<InterruptSessionResponse>;
   rewindSession: (userOrdinal: number) => Promise<RewindSessionResponse>;
 }): Promise<EditMessageFlowResult> {
   if (opts.composerBusy) {
-    opts.stopLocal();
-    try {
-      const interruptRes = await opts.interruptSession();
-      if (!interruptRes?.ok) {
-        return {
-          kind: "interrupt_failed",
-          notice: "Could not stop the current turn.",
-        };
-      }
-    } catch (err) {
-      return {
-        kind: "interrupt_failed",
-        notice: editFlowErrorMessage(err, "Could not stop the current turn."),
-      };
+    const stopResult = await runStopFlow({
+      stopLocal: opts.stopLocal,
+      interruptSession: opts.interruptSession,
+    });
+    if (stopResult.kind === "interrupt_failed") {
+      return stopResult;
     }
   }
 

@@ -1,6 +1,9 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import StatusBar, { deriveFooterRuntimeStatus } from "../components/StatusBar";
+import StatusBar, {
+  deriveFooterRuntimeStatus,
+  sessionGoalForChip,
+} from "../components/StatusBar";
 import { api } from "../lib/api";
 
 vi.mock("../lib/api", () => ({
@@ -9,6 +12,11 @@ vi.mock("../lib/api", () => ({
     workspaces: vi.fn(),
     getSessionState: vi.fn(),
     sessions: vi.fn(),
+    pauseSessionGoal: vi.fn(),
+    resumeSessionGoal: vi.fn(),
+    completeSessionGoal: vi.fn(),
+    clearSessionGoal: vi.fn(),
+    setSessionGoal: vi.fn(),
   },
 }));
 
@@ -20,6 +28,10 @@ const mockGetUsage = vi.mocked(api.getUsage);
 const mockWorkspaces = vi.mocked(api.workspaces);
 const mockGetSessionState = vi.mocked(api.getSessionState);
 const mockSessions = vi.mocked(api.sessions);
+const mockPauseSessionGoal = vi.mocked(api.pauseSessionGoal);
+const mockResumeSessionGoal = vi.mocked(api.resumeSessionGoal);
+const mockCompleteSessionGoal = vi.mocked(api.completeSessionGoal);
+const mockClearSessionGoal = vi.mocked(api.clearSessionGoal);
 
 const statusBarProps = {
   config: null,
@@ -28,6 +40,22 @@ const statusBarProps = {
   onToggleLeft: vi.fn(),
   onToggleRight: vi.fn(),
 };
+
+describe("sessionGoalForChip", () => {
+  it("returns null when goal is absent, cleared, or empty", () => {
+    expect(sessionGoalForChip(undefined)).toBeNull();
+    expect(sessionGoalForChip(null)).toBeNull();
+    expect(sessionGoalForChip({ text: "", status: "active" })).toBeNull();
+    expect(sessionGoalForChip({ text: "Ship it", status: "cleared" })).toBeNull();
+  });
+
+  it("returns a normalized goal when text is present and not cleared", () => {
+    expect(sessionGoalForChip({ text: "  Ship it  ", status: "Active" })).toEqual({
+      text: "Ship it",
+      status: "active",
+    });
+  });
+});
 
 describe("deriveFooterRuntimeStatus", () => {
   it("returns ready when idle with no running runner", () => {
@@ -491,6 +519,118 @@ describe("StatusBar panel toggle shortcuts", () => {
 
     expect(screen.getByTitle("Toggle sessions panel (Ctrl/Cmd+B)")).toBeInTheDocument();
     expect(screen.getByTitle("Toggle right panel (Ctrl/Cmd+J)")).toBeInTheDocument();
+  });
+});
+
+describe("StatusBar session GOAL chip", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockWorkspaces.mockResolvedValue([]);
+    mockGetUsage.mockResolvedValue({ session: emptyUsageSession, jobs: [] });
+    mockSessions.mockResolvedValue([]);
+    mockPauseSessionGoal.mockResolvedValue({
+      ok: true,
+      goal: { text: "Ship StatusBar GOAL chip", status: "paused" },
+    });
+    mockResumeSessionGoal.mockResolvedValue({
+      ok: true,
+      goal: { text: "Ship StatusBar GOAL chip", status: "active" },
+    });
+    mockCompleteSessionGoal.mockResolvedValue({
+      ok: true,
+      goal: { text: "Ship StatusBar GOAL chip", status: "complete" },
+    });
+    mockClearSessionGoal.mockResolvedValue({
+      ok: true,
+      goal: { text: "", status: "cleared" },
+    });
+  });
+
+  it("hides the GOAL chip when session state has no goal", async () => {
+    mockGetSessionState.mockResolvedValue({
+      state: "idle",
+      pending_swarms: false,
+      runners: {},
+    });
+
+    render(<StatusBar {...statusBarProps} />);
+
+    await waitFor(() => {
+      expect(mockGetSessionState).toHaveBeenCalled();
+    });
+    expect(screen.queryByTestId("session-goal-chip")).not.toBeInTheDocument();
+    expect(screen.queryByText("GOAL")).not.toBeInTheDocument();
+  });
+
+  it("hides the GOAL chip when goal status is cleared", async () => {
+    mockGetSessionState.mockResolvedValue({
+      state: "idle",
+      pending_swarms: false,
+      runners: {},
+      goal: { text: "Old objective", status: "cleared" },
+    });
+
+    render(<StatusBar {...statusBarProps} />);
+
+    await waitFor(() => {
+      expect(mockGetSessionState).toHaveBeenCalled();
+    });
+    expect(screen.queryByTestId("session-goal-chip")).not.toBeInTheDocument();
+  });
+
+  it("shows the GOAL chip when an active goal is present", async () => {
+    mockGetSessionState.mockResolvedValue({
+      state: "idle",
+      pending_swarms: false,
+      runners: {},
+      goal: { text: "Ship StatusBar GOAL chip", status: "active" },
+    });
+
+    render(<StatusBar {...statusBarProps} />);
+
+    const chip = await screen.findByTestId("session-goal-chip");
+    expect(chip).toHaveTextContent("GOAL");
+    expect(chip).toHaveTextContent("Ship StatusBar GOAL chip");
+    expect(screen.getByLabelText("Pause session GOAL")).toBeInTheDocument();
+    expect(screen.getByLabelText("Complete session GOAL")).toBeInTheDocument();
+    expect(screen.getByLabelText("Clear session GOAL")).toBeInTheDocument();
+  });
+
+  it("calls pause / complete / clear via api.*SessionGoal", async () => {
+    mockGetSessionState.mockResolvedValue({
+      state: "idle",
+      pending_swarms: false,
+      runners: {},
+      goal: { text: "Ship StatusBar GOAL chip", status: "active" },
+    });
+
+    render(<StatusBar {...statusBarProps} />);
+    await screen.findByTestId("session-goal-chip");
+
+    fireEvent.click(screen.getByLabelText("Pause session GOAL"));
+    await waitFor(() => {
+      expect(mockPauseSessionGoal).toHaveBeenCalledTimes(1);
+    });
+    expect(await screen.findByText("paused")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("Resume session GOAL"));
+    await waitFor(() => {
+      expect(mockResumeSessionGoal).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.click(screen.getByLabelText("Complete session GOAL"));
+    await waitFor(() => {
+      expect(mockCompleteSessionGoal).toHaveBeenCalledTimes(1);
+    });
+    expect(await screen.findByText("done")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("Clear session GOAL"));
+    await waitFor(() => {
+      expect(mockClearSessionGoal).toHaveBeenCalledTimes(1);
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId("session-goal-chip")).not.toBeInTheDocument();
+    });
   });
 });
 

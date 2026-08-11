@@ -626,6 +626,9 @@ class ConversationalSession(
         # Set by drop_queued_steers / interrupt; flushed as ConvEvent("notice")
         # by the abandoned stream or the next inject/drain boundary check.
         self._pending_steer_drop_notice = None
+        # Set by interrupt when owned tool procs cannot be confirmed dead;
+        # flushed as ConvEvent("notice") alongside steer-drop (Stop honesty).
+        self._pending_owned_command_orphan_notice = None
         # PROMPT QUEUE: distinct from and complementary to the steer queue.
         # steer = an OUT-OF-BAND interrupt that redirects the CURRENT running turn
         # (injected into the last tool result or delivered at finalization).
@@ -2847,12 +2850,27 @@ class ConversationalSession(
         Returns (applied_bool, files_changed, message). Checkpoint id (if any) is stashed on self._last_checkpoint_id.
 
         Resolution is per-operation only — never mutates ``config.repo``.
+        Cooperative cancel: a Stop'd local job must not land further disk
+        writes. Session-level Stop quarantine is enforced by callers of the
+        automatic apply path; this method only checks the per-job Event so
+        intentional ``apply_review`` after Stop still works for held patches.
         """
         import os
         import tempfile
         import subprocess
 
         from .repo_resolve import resolve_effective_repo
+
+        if job_id:
+            try:
+                if self._local_job_cancelled(job_id):
+                    self._last_checkpoint_id = None
+                    return False, [], (
+                        "cancelled: refusing patch apply after Stop "
+                        "(cooperative quarantine)"
+                    )
+            except Exception:
+                pass
 
         if not self.config.repo or not os.path.exists(self.config.repo):
             self._last_checkpoint_id = None
@@ -2945,6 +2963,18 @@ class ConversationalSession(
             except Exception as cp_err:
                 import sys
                 print(f"Checkpoint error during swarm patch: {cp_err}", file=sys.stderr)
+
+            # Fail-closed if Stop cancelled this job while we checkpointed.
+            if job_id:
+                try:
+                    if self._local_job_cancelled(job_id):
+                        self._last_checkpoint_id = None
+                        return False, [], (
+                            "cancelled: refusing patch apply after Stop "
+                            "(cooperative quarantine)"
+                        )
+                except Exception:
+                    pass
 
             # b. Else git apply --check to verify it applies cleanly
             check_p = subprocess.run(

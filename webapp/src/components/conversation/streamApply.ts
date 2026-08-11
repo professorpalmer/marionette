@@ -976,6 +976,28 @@ export function noticeShowsWaitHint(kind?: string | null): boolean {
   return !kind || kind === "wait" || kind === "stagnation" || kind === "resume_cap";
 }
 
+/** Stop-boundary honesty notices that must land as durable transcript rows. */
+export function noticeIsStopHonesty(reason?: string | null): boolean {
+  return reason === "owned_command_orphan" || reason === "steer_dropped";
+}
+
+/** Append a Stop honesty assistant row when the message text is non-empty. */
+export function appendStopHonestyNotice(
+  items: Item[],
+  message?: string | null,
+): Item[] {
+  const text = String(message || "").trim();
+  if (!text) return items;
+  if (
+    items.some(
+      (it) => it.kind === "msg" && it.msg?.role === "assistant" && it.msg?.text === text,
+    )
+  ) {
+    return items;
+  }
+  return [...items, { kind: "msg", msg: { role: "assistant", text } }];
+}
+
 /** Whether a thinking SSE frame should paint (live delta vs post-answer dump). */
 export function shouldPaintThinking(d: {
   text?: unknown;

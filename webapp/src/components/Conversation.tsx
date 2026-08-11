@@ -16,7 +16,11 @@ import { renameDefaultSessionIfNeeded } from "../lib/sessionTitle";
 import { notifyWorkspaceMutated } from "../lib/workspaceMutationEvents";
 
 import { writeTranscriptCache } from "./conversation/transcriptCache";
-import { transcriptResponseToItems } from "./conversation/transcriptItems";
+import {
+  mergeTranscriptItems,
+  transcriptFingerprint,
+  transcriptResponseToItems,
+} from "./conversation/transcriptItems";
 import { hoistCardsBeforeTrailingFinals, newThinkingId } from "./conversation/thinkingToolPrep";
 import {
   type MentionListingCap,
@@ -35,9 +39,11 @@ import {
 import { derivePillStatus } from "./conversation/pillStatus";
 import { isAgentLoopOpen } from "./conversation/runnersBusy";
 import {
+  appendStopHonestyNotice,
   applySwarmResultToItems,
   finalizeOrphanSwarmPills,
   mergeJobActionsIntoItems,
+  noticeIsStopHonesty,
   patchCardInItems,
   reconcileOrphanInvestigationCards,
   sealOpenStreamSurfaces,
@@ -59,7 +65,9 @@ import {
   localSlashChromeAction,
   localSlashPaletteAction,
   runEditMessageFlow,
+  runStopFlow,
   shouldBlockEmptySend,
+  shouldClearSteerDraftOnResult,
   userOrdinalBeforeIndex,
 } from "./conversation/composerSend";
 import { runCommandPaletteAction } from "../lib/commandPalette";
@@ -2288,15 +2296,17 @@ export default function Conversation({
     setEditNotice(editNoticeAfterSend(false));
 
     if (composerBusy && !resubmitEdit) {
-      // Snapshot the attached image paths BEFORE clearing input/attachments or
-      // making the async call, so we never read a stale/cleared closure value
-      // and images are never silently dropped from the steer request. The
-      // backend transcribes them into the steer text.
+      // Snapshot the attached image paths BEFORE the async call so we never
+      // read a stale/cleared closure value and images are never silently
+      // dropped from the steer request. Clear the draft only on success
+      // (Cursor parity — keep operator text when steer 4xx/network fails).
       const steerImages = attachedImages.map((img) => img.path).filter(Boolean);
-      setInput("");
-      setAttachedImages([]);
       api.steerSession(msg, steerImages)
         .then(() => {
+          if (shouldClearSteerDraftOnResult(true)) {
+            setInput("");
+            setAttachedImages([]);
+          }
           setItems((prev) => [...prev, { kind: "steer", text: msg }]);
         })
         .catch((err) => {
@@ -2364,8 +2374,36 @@ export default function Conversation({
   };
 
   const stop = () => {
-    stopLocal();
-    api.interruptSession().catch((e) => console.error("Failed to interrupt session on backend:", e));
+    const sid = activeSessionId;
+    void runStopFlow({
+      stopLocal,
+      interruptSession: () => api.interruptSession(),
+      refreshTranscript: sid
+        ? async () => {
+            const tres = await api.sessionTranscript(sid);
+            const loadedItems = transcriptResponseToItems(tres);
+            setItems((prev) => {
+              const next = mergeTranscriptItems(prev, loadedItems);
+              const fp = transcriptFingerprint(next);
+              if (fp === transcriptFpRef.current) return prev;
+              transcriptFpRef.current = fp;
+              itemsRef.current = next;
+              writeTranscriptCache(sid, next);
+              return next;
+            });
+          }
+        : undefined,
+    }).then((result) => {
+      if (result.kind === "interrupt_failed") {
+        setEditNotice(result.notice);
+        return;
+      }
+      // Belt-and-suspenders: interrupt body notices if refresh missed them.
+      for (const notice of result.notices) {
+        if (!noticeIsStopHonesty(notice.reason)) continue;
+        setItems((prev) => appendStopHonestyNotice(prev, notice.message));
+      }
+    });
   };
 
   // PERF: Stabilize the callbacks handed to the memoized TranscriptList. The

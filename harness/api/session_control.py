@@ -393,6 +393,7 @@ def post_session_interrupt(
 ) -> tuple[int, JsonPayload]:
     """POST /api/session/interrupt."""
     sid = (session_id or body.get("session_id") or "").strip()
+    target = None
     if sid:
         target = svc.get_runners().get(sid)
         if target is None:
@@ -402,7 +403,22 @@ def post_session_interrupt(
         pilot = svc.get_pilot()
         if pilot is not None:
             pilot.interrupt()
-    return 200, {"ok": True}
+        target = pilot
+    # Snapshot Stop honesty notices (owned-command orphan / steer drop) so the
+    # UI can paint them when the abandoned stream never live-flushes. Do not
+    # drain — stream flush sites still own pending → ConvEvent("notice").
+    notices: list[dict] = []
+    if target is not None:
+        peek = getattr(target, "peek_post_interrupt_notices", None)
+        if callable(peek):
+            try:
+                notices = list(peek() or [])
+            except Exception:
+                notices = []
+    payload: dict = {"ok": True}
+    if notices:
+        payload["notices"] = notices
+    return 200, payload
 
 
 def post_session_rewind(body: dict, svc: SessionControlServices) -> tuple[int, JsonPayload]:
