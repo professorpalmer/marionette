@@ -11,6 +11,9 @@ import { formatDistilledNotice, formatWikiAutoIngestNotice } from "./streamApply
 /** Composer / pill hint while a real background job is still in flight. */
 export const SWARM_AWAIT_HINT = "Still working…";
 
+/** Keep-alive hint painted when pilot_resume kicks the next model turn. */
+export const PILOT_LOOKING_HINT = "Looking…";
+
 /**
  * True for durable background job ids (local-* UUID / job_* / etc.).
  * Placeholder local-swarm-* pills finish inside the turn and do not hold await chrome.
@@ -39,6 +42,53 @@ export function shouldHoldSwarmAwaitChrome(opts: {
 /** Wait hint to paint (or clear) when the turn closes after dispatch. */
 export function waitHintForAssistantDone(liveJobIds: readonly string[]): string | null {
   return hasLiveBackgroundJobIds(liveJobIds) ? SWARM_AWAIT_HINT : null;
+}
+
+/** True for Still working… / Looking… await chrome. */
+export function isSwarmAwaitWaitHint(hint: string | null | undefined): boolean {
+  return hint === SWARM_AWAIT_HINT || hint === PILOT_LOOKING_HINT;
+}
+
+/** Drop await wait hints; leave unrelated composer footnotes alone. */
+export function clearSwarmAwaitWaitHint(prev: string | null): string | null {
+  return isSwarmAwaitWaitHint(prev) ? null : prev;
+}
+
+/**
+ * Trailing getSessionState apply on the swarm-results poll: whether to clear
+ * awaiting_swarm / Looking… / Still working… after jobs drain or Stop.
+ */
+export function swarmResultsAwaitChromeClear(opts: {
+  pendingSwarms: boolean;
+  localPendingJobCount: number;
+  userStopped: boolean;
+  cancelArmed: boolean;
+}): { clearAwaitStatus: boolean; clearWaitHint: boolean } {
+  // Stop suppressed keep-alive — never leave Looking… painted.
+  if (opts.userStopped) {
+    return { clearAwaitStatus: true, clearWaitHint: true };
+  }
+  if (
+    !opts.pendingSwarms
+    && opts.localPendingJobCount === 0
+    && !opts.cancelArmed
+  ) {
+    return { clearAwaitStatus: true, clearWaitHint: true };
+  }
+  return { clearAwaitStatus: false, clearWaitHint: false };
+}
+
+/**
+ * Idle-session pilot_resume from swarm-results poll.
+ * Stop must suppress the kick and clear Looking… rather than paint it.
+ */
+export function pilotResumePollAction(opts: {
+  userStopped: boolean;
+  alreadyFired: boolean;
+}): "suppress_clear_hint" | "fire_looking" | "queue" {
+  if (opts.userStopped) return "suppress_clear_hint";
+  if (opts.alreadyFired) return "queue";
+  return "fire_looking";
 }
 
 export type SwarmPollChrome =

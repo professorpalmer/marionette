@@ -21,4 +21,10 @@ describe("api.getSessionState consume_resume query", () => {
     await api.getSessionState({ consumeResume: true });
     expect(getJSON).toHaveBeenCalledWith(withToken("/api/session/state?consume_resume=1"));
   });
+
+  it("rearms latch via rearm_resume query", async () => {
+    const { api } = await import("../lib/api");
+    await api.getSessionState({ rearmResume: true });
+    expect(getJSON).toHaveBeenCalledWith(withToken("/api/session/state?rearm_resume=1"));
+  });
 });

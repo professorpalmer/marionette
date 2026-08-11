@@ -1058,11 +1058,14 @@ export const api = {
   },
   sessionTranscript: (session: string) => getJSON<{ history: any[]; display?: any[]; job_ids?: string[] }>(withToken(`/api/sessions/transcript?session=${encodeURIComponent(session)}`)),
   /** Session runners/state. Pass ``consumeResume`` only from the Conversation
-   * resume-schedule path — plain polls must peek so they cannot steal the latch. */
-  getSessionState: (opts?: { consumeResume?: boolean }) => {
-    const path = opts?.consumeResume
-      ? "/api/session/state?consume_resume=1"
-      : "/api/session/state";
+   * resume-kick path — plain polls must peek so they cannot steal the latch.
+   * ``rearmResume`` restores the latch after a consume abandoned by switch. */
+  getSessionState: (opts?: { consumeResume?: boolean; rearmResume?: boolean }) => {
+    const path = opts?.rearmResume
+      ? "/api/session/state?rearm_resume=1"
+      : opts?.consumeResume
+        ? "/api/session/state?consume_resume=1"
+        : "/api/session/state";
     return getJSON<SessionState>(withToken(path));
   },
   getSessionGoal: () =>

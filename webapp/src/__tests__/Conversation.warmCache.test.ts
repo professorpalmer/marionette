@@ -470,16 +470,16 @@ describe("warm-cache switch preserves ghost-resume gate", () => {
       resume_pending: false,
       runners: { "sess-a": "idle", "sess-b": "running" },
     });
+    const { scheduleResumeIfPending } = await import(
+      "../components/conversation/sessionResumeLatch"
+    );
 
-    // Same contract as Conversation.resume.test.ts + runners on SessionState.
-    const onSessionSwitch = async () => {
-      const res = await getSessionState();
-      if (!res?.resume_pending) return;
-      const consumed = await getSessionState({ consumeResume: true });
-      if (consumed?.resume_pending) setTimeout(() => resume(), 300);
-    };
-
-    await onSessionSwitch();
+    await scheduleResumeIfPending({
+      getSessionState,
+      resume,
+      stillCurrent: () => true,
+      schedule: setTimeout,
+    });
     await vi.advanceTimersByTimeAsync(500);
     expect(resume).not.toHaveBeenCalled();
     expect(getSessionState).toHaveBeenCalledTimes(1);
@@ -487,21 +487,30 @@ describe("warm-cache switch preserves ghost-resume gate", () => {
 
   it("schedules resume only when resume_pending latch is true after switch", async () => {
     const resume = vi.fn();
-    const getSessionState = vi.fn().mockResolvedValue({
-      state: "idle",
-      pending_swarms: false,
-      resume_pending: true,
-      runners: { "sess-a": "running" },
+    const getSessionState = vi.fn()
+      .mockResolvedValueOnce({
+        state: "idle",
+        pending_swarms: false,
+        resume_pending: true,
+        runners: { "sess-a": "running" },
+      })
+      .mockResolvedValueOnce({
+        state: "idle",
+        pending_swarms: false,
+        resume_pending: true,
+        runners: { "sess-a": "running" },
+      });
+    const { scheduleResumeIfPending } = await import(
+      "../components/conversation/sessionResumeLatch"
+    );
+
+    await scheduleResumeIfPending({
+      getSessionState,
+      resume,
+      stillCurrent: () => true,
+      schedule: setTimeout,
     });
-
-    const onSessionSwitch = async () => {
-      const res = await getSessionState();
-      if (!res?.resume_pending) return;
-      const consumed = await getSessionState({ consumeResume: true });
-      if (consumed?.resume_pending) setTimeout(() => resume(), 300);
-    };
-
-    await onSessionSwitch();
+    expect(getSessionState).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(300);
     expect(resume).toHaveBeenCalledTimes(1);
     expect(getSessionState).toHaveBeenNthCalledWith(2, { consumeResume: true });

@@ -265,14 +265,24 @@ def get_session_state(qs: dict, svc: SessionControlServices) -> tuple[int, JsonP
 
     ``resume_pending`` peeks by default so incidental polls cannot clear the
     self-edit restart latch. Pass ``?consume_resume=1`` to consume once (the
-    Conversation resume-schedule path).
+    Conversation resume-schedule path). Pass ``?rearm_resume=1`` to restore the
+    latch after a consume that was abandoned by a session switch / cancelled
+    kick (Conversation stillCurrent fence).
     """
     pilot = svc.get_pilot()
     runners = svc.get_runners()
     state = pilot.state()
     idle = state == "idle"
     resume_pending = False
-    if _truthy_qs_flag(qs or {}, "consume_resume"):
+    qs = qs or {}
+    if _truthy_qs_flag(qs, "rearm_resume"):
+        if svc.set_resume_latch is not None:
+            svc.set_resume_latch()
+        if svc.peek_resume_pending is not None:
+            resume_pending = svc.peek_resume_pending(idle)
+        else:
+            resume_pending = bool(idle)
+    elif _truthy_qs_flag(qs, "consume_resume"):
         if svc.consume_resume_pending is not None:
             resume_pending = svc.consume_resume_pending(idle)
     elif svc.peek_resume_pending is not None:

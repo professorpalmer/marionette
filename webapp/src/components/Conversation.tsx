@@ -133,8 +133,13 @@ import { useRunnersBusyPoll } from "./conversation/useRunnersBusyPoll";
 import {
   appendMemoryProposal,
   classifySwarmPollEvent,
+  clearSwarmAwaitWaitHint,
+  PILOT_LOOKING_HINT,
+  pilotResumePollAction,
   SWARM_AWAIT_HINT,
+  swarmResultsAwaitChromeClear,
 } from "./conversation/swarmPoll";
+import { armResumeKick } from "./conversation/sessionResumeLatch";
 import {
   flushTypewriterBuffer,
   startTypewriterLoop,
@@ -1208,16 +1213,14 @@ export default function Conversation({
           setBackendPendingSwarms(res.pending_swarms);
           // resume_pending is an EXPLICIT one-shot latch from the self-edit
           // restart path (backend /api/session/persist or /api/restart) -- NOT
-          // "transcript ends on a user turn". Only schedule auto-resume when
-          // the freshly-fetched state says so; mere session open/switch must
-          // never ghost-continue a past unanswered message.
+          // "transcript ends on a user turn". Peek only here; consume happens
+          // inside the delayed kick so clearSafeTimeouts / switch cannot steal it.
           if (!res.resume_pending) return;
-          return api.getSessionState({ consumeResume: true }).then((consumed) => {
-            if (!stillCurrent() || !consumed?.resume_pending) return;
-            setSafeTimeout(() => {
-              if (!stillCurrent()) return;
-              resumeTriggerRef.current();
-            }, 300);
+          armResumeKick({
+            getSessionState: api.getSessionState,
+            resume: () => resumeTriggerRef.current(),
+            stillCurrent,
+            schedule: setSafeTimeout,
           });
         })
         .catch(() => {});
@@ -1850,10 +1853,17 @@ export default function Conversation({
               } else if (action.kind === "pilot_resume") {
                 // Background job finished while the session was idle / awaiting.
                 // Backend already extended history; kick keep-alive so the pilot
-                // continues ("looking…") without a user prompt.
-                if (!pollResumeFired) {
+                // continues ("looking…") without a user prompt. Stop must not
+                // leave Looking… painted when the kick is suppressed.
+                const resumeAct = pilotResumePollAction({
+                  userStopped: userStoppedRef.current,
+                  alreadyFired: pollResumeFired,
+                });
+                if (resumeAct === "suppress_clear_hint") {
+                  setWaitHint((prev) => clearSwarmAwaitWaitHint(prev));
+                } else if (resumeAct === "fire_looking") {
                   pollResumeFired = true;
-                  setWaitHint("Looking…");
+                  setWaitHint(PILOT_LOOKING_HINT);
                   resumeTriggerRef.current();
                 } else {
                   resumeQueuedRef.current = true;
@@ -1925,19 +1935,32 @@ export default function Conversation({
           });
         })
         .then((stateRes) => {
-          if (stateRes) {
-            setBackendPendingSwarms(!!stateRes.pending_swarms);
-            // Jobs drained without a resume frame (cap / stop / orphan) — drop
-            // Still working… chrome so the composer is not stuck busy forever.
-            if (
-              !stateRes.pending_swarms
-              && pendingJobIdsRef.current.length === 0
-              && !userStoppedRef.current
-              && !cancelRef.current
-            ) {
-              setStatus((prev) => (prev === "awaiting_swarm" ? "done" : prev));
-              setWaitHint((prev) => (prev === SWARM_AWAIT_HINT ? null : prev));
-            }
+          // Same fence as result merges: a late session-A state must not mutate
+          // session-B busy chrome (pending_swarms / awaiting_swarm / Looking…).
+          if (
+            !stateRes
+            || !shouldApplySwarmLiveMerge({
+              pollGen,
+              currentGen: transcriptLoadGenRef.current,
+              pollSessionId: pollSid,
+              cachedSessionId: cachedSessionIdRef.current,
+              activeSessionId: cachedSessionIdRef.current,
+            })
+          ) {
+            return;
+          }
+          setBackendPendingSwarms(!!stateRes.pending_swarms);
+          const chrome = swarmResultsAwaitChromeClear({
+            pendingSwarms: !!stateRes.pending_swarms,
+            localPendingJobCount: pendingJobIdsRef.current.length,
+            userStopped: userStoppedRef.current,
+            cancelArmed: !!cancelRef.current,
+          });
+          if (chrome.clearAwaitStatus) {
+            setStatus((prev) => (prev === "awaiting_swarm" ? "done" : prev));
+          }
+          if (chrome.clearWaitHint) {
+            setWaitHint((prev) => clearSwarmAwaitWaitHint(prev));
           }
         })
         .catch((err) => {
@@ -2280,6 +2303,8 @@ export default function Conversation({
   const triggerResume = () => {
     if (userStoppedRef.current) {
       resumeQueuedRef.current = false;
+      // Stop suppressed keep-alive — drop Looking… / Still working… if painted.
+      setWaitHint((prev) => clearSwarmAwaitWaitHint(prev));
       return;
     }
     if (cancelRef.current) { resumeQueuedRef.current = true; return; }

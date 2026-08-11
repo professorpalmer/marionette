@@ -241,7 +241,20 @@ export { default as EditorTabStrip } from "./EditorTabStrip";
 export { default as ComposerDock } from "./ComposerDock";
 export { default as ConversationHeader } from "./ConversationHeader";
 export { default as ImageLightbox } from "./ImageLightbox";
-  export { classifySwarmPollEvent, appendMemoryProposal, SWARM_AWAIT_HINT, hasLiveBackgroundJobIds, shouldHoldSwarmAwaitChrome, waitHintForAssistantDone } from "./swarmPoll";
+export {
+  classifySwarmPollEvent,
+  appendMemoryProposal,
+  SWARM_AWAIT_HINT,
+  PILOT_LOOKING_HINT,
+  hasLiveBackgroundJobIds,
+  shouldHoldSwarmAwaitChrome,
+  waitHintForAssistantDone,
+  clearSwarmAwaitWaitHint,
+  isSwarmAwaitWaitHint,
+  swarmResultsAwaitChromeClear,
+  pilotResumePollAction,
+} from "./swarmPoll";
+export { armResumeKick, scheduleResumeIfPending } from "./sessionResumeLatch";
 export {
   pumpTypewriterFrame,
   startTypewriterLoop,

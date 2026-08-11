@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
+  clearSwarmAwaitWaitHint,
   hasLiveBackgroundJobIds,
+  PILOT_LOOKING_HINT,
+  pilotResumePollAction,
   shouldHoldSwarmAwaitChrome,
   SWARM_AWAIT_HINT,
+  swarmResultsAwaitChromeClear,
   waitHintForAssistantDone,
 } from "../components/conversation/swarmPoll";
+import { shouldApplySwarmLiveMerge } from "../components/conversation/streamApply";
 import { deriveBusyProgress, shouldShowBusyFooter } from "../lib/turnProgress";
 import { derivePillStatus } from "../components/conversation/pillStatus";
 import { isAgentLoopOpen } from "../components/conversation/runnersBusy";
@@ -86,5 +91,65 @@ describe("swarm await chrome", () => {
     expect(isAgentLoopOpen(false, "awaiting_swarm")).toBe(true);
     expect(statusPillLabel("awaiting_swarm")).toBe("Still working…");
     expect(statusPillClickable("awaiting_swarm", undefined, () => {})).toBe(true);
+  });
+
+  it("clears Looking… / Still working… when Stop suppresses pilot_resume", () => {
+    expect(pilotResumePollAction({ userStopped: true, alreadyFired: false })).toBe(
+      "suppress_clear_hint",
+    );
+    expect(pilotResumePollAction({ userStopped: false, alreadyFired: false })).toBe(
+      "fire_looking",
+    );
+    expect(pilotResumePollAction({ userStopped: false, alreadyFired: true })).toBe("queue");
+    expect(clearSwarmAwaitWaitHint(PILOT_LOOKING_HINT)).toBeNull();
+    expect(clearSwarmAwaitWaitHint(SWARM_AWAIT_HINT)).toBeNull();
+    expect(clearSwarmAwaitWaitHint("Compacting…")).toBe("Compacting…");
+  });
+
+  it("clears await wait hints when swarm-results session state drains or Stop sticks", () => {
+    expect(
+      swarmResultsAwaitChromeClear({
+        pendingSwarms: false,
+        localPendingJobCount: 0,
+        userStopped: false,
+        cancelArmed: false,
+      }),
+    ).toEqual({ clearAwaitStatus: true, clearWaitHint: true });
+    expect(
+      swarmResultsAwaitChromeClear({
+        pendingSwarms: true,
+        localPendingJobCount: 1,
+        userStopped: true,
+        cancelArmed: false,
+      }),
+    ).toEqual({ clearAwaitStatus: true, clearWaitHint: true });
+    expect(
+      swarmResultsAwaitChromeClear({
+        pendingSwarms: true,
+        localPendingJobCount: 0,
+        userStopped: false,
+        cancelArmed: false,
+      }),
+    ).toEqual({ clearAwaitStatus: false, clearWaitHint: false });
+  });
+
+  it("fences trailing getSessionState apply so late session-A poll cannot mutate B", () => {
+    const pollFromA = {
+      pollGen: 1,
+      currentGen: 2,
+      pollSessionId: "session-a",
+      cachedSessionId: "session-b",
+      activeSessionId: "session-b",
+    };
+    expect(shouldApplySwarmLiveMerge(pollFromA)).toBe(false);
+    // When the fence rejects, Conversation must skip setBackendPendingSwarms /
+    // awaiting_swarm→done / Looking… clear for the stale poll.
+    expect(shouldApplySwarmLiveMerge({
+      pollGen: 2,
+      currentGen: 2,
+      pollSessionId: "session-b",
+      cachedSessionId: "session-b",
+      activeSessionId: "session-b",
+    })).toBe(true);
   });
 });

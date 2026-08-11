@@ -298,6 +298,44 @@ def test_session_state_resume_pending_peek_vs_consume():
     assert calls["consume"] == 2
 
 
+def test_session_state_rearm_resume_restores_latch():
+    """?rearm_resume=1 restores latch after a consume abandoned by switch."""
+    latch = {"armed": False}
+    rearm_calls = {"n": 0}
+
+    def peek(idle: bool) -> bool:
+        return bool(latch["armed"] and idle)
+
+    def consume(idle: bool) -> bool:
+        if not (latch["armed"] and idle):
+            return False
+        latch["armed"] = False
+        return True
+
+    def set_latch() -> None:
+        rearm_calls["n"] += 1
+        latch["armed"] = True
+
+    pilot = _CompactingPilot()
+    svc = _svc(pilot=pilot)
+    svc.peek_resume_pending = peek
+    svc.consume_resume_pending = consume
+    svc.set_resume_latch = set_latch
+
+    code, state = get_session_state({"rearm_resume": ["1"]}, svc)
+    assert code == 200 and state["resume_pending"] is True
+    assert rearm_calls["n"] == 1
+    assert latch["armed"] is True
+
+    code, state = get_session_state({"consume_resume": ["1"]}, svc)
+    assert code == 200 and state["resume_pending"] is True
+    assert latch["armed"] is False
+
+    code, state = get_session_state({"rearm_resume": ["1"]}, svc)
+    assert code == 200 and state["resume_pending"] is True
+    assert latch["armed"] is True
+
+
 def test_compact_noop_is_not_success():
     pilot = _NoopPilot()
     saved = {"n": 0}
