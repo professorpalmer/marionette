@@ -8,6 +8,48 @@ export type ComposerTrigger =
   | { kind: "mention"; query: string; atIndex: number }
   | { kind: "none" };
 
+/**
+ * True while the caret is still inside an open @-mention query.
+ * Allows spaces for type-filtering spaced folder/file names (Cursor-style),
+ * but closes once a picker-inserted token looks complete so the next word
+ * is not swallowed back into the mention.
+ */
+function isActiveMentionQuery(textAfterAt: string): boolean {
+  if (textAfterAt.includes("\n")) return false;
+
+  const kindMatch = /^(folder:|symbol:|codebase:)/i.exec(textAfterAt);
+  const kind = kindMatch ? kindMatch[1].toLowerCase() : "";
+  const body = kindMatch ? textAfterAt.slice(kindMatch[0].length) : textAfterAt;
+
+  // Quoted path/filter: stay open only until the closing quote appears.
+  if (body.startsWith('"')) {
+    return body.length === 1 || body.indexOf('"', 1) === -1;
+  }
+
+  // Picker inserts `@folder:…` / `@symbol:…` with a trailing space — do not
+  // reopen. Users filter spaced names via bare `@my docs`, not these prefixes.
+  if ((kind === "folder:" || kind === "symbol:") && /\s/.test(body)) {
+    return false;
+  }
+
+  // Bare `@codebase` insert ends with a trailing space (no colon filter).
+  if (!kind && /^codebase\s/i.test(textAfterAt)) {
+    return false;
+  }
+
+  // Unquoted: allow spaces in the filter (`@my file`), but a first token that
+  // already looks like `file.ext` means the mention was completed.
+  const spaceIdx = body.search(/\s/);
+  if (spaceIdx !== -1) {
+    const firstToken = body.slice(0, spaceIdx);
+    if (/\.\w{1,8}(?::\d+){0,2}$/.test(firstToken)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 /** Detect slash-command or @-mention trigger at the caret. */
 export function detectComposerTrigger(
   val: string,
@@ -25,7 +67,7 @@ export function detectComposerTrigger(
     const prefix = lastAt === 0 ? "" : val[lastAt - 1];
     if (prefix === "" || /\s/.test(prefix)) {
       const textAfterAt = val.slice(lastAt + 1, cursorPosition);
-      if (!/\s/.test(textAfterAt)) {
+      if (isActiveMentionQuery(textAfterAt)) {
         return { kind: "mention", query: textAfterAt, atIndex: lastAt };
       }
     }
@@ -94,6 +136,42 @@ export function buildFolderInsert(
   const tokenPath = quoteMentionPathIfNeeded(folderPath);
   const next = before + "@folder:" + tokenPath + " " + after;
   return { next, cursor: mentionIndex + tokenPath.length + 9 };
+}
+
+/**
+ * Offer the Codebase picker row when the user is typing `@code…` / `@codebase`
+ * (or `@codebase:filter`). Empty `@` also offers it as a pinned scope.
+ */
+export function codebaseMentionMatches(query: string): boolean {
+  const q = String(query || "").toLowerCase();
+  if (!q) return true;
+  return "codebase".startsWith(q) || q.startsWith("codebase");
+}
+
+/** Optional filter after `@codebase:` in the live mention search text. */
+export function codebaseQueryFromMentionSearch(search: string): string | undefined {
+  const raw = String(search || "");
+  const lower = raw.toLowerCase();
+  if (!lower.startsWith("codebase:")) return undefined;
+  const filter = raw.slice("codebase:".length);
+  return filter || undefined;
+}
+
+/** Insert `@codebase` or `@codebase:query` for the send-path resolver. */
+export function buildCodebaseInsert(
+  input: string,
+  mentionIndex: number,
+  selectionStart: number,
+  queryFilter?: string,
+): { next: string; cursor: number } {
+  const before = input.slice(0, mentionIndex);
+  const after = input.slice(selectionStart || mentionIndex);
+  const filter = String(queryFilter || "").trim();
+  const token = filter
+    ? `@codebase:${quoteMentionPathIfNeeded(filter)}`
+    : "@codebase";
+  const next = before + token + " " + after;
+  return { next, cursor: mentionIndex + token.length + 1 };
 }
 
 /** Cap mention picker hits (files or folders) without dumping the whole tree. */

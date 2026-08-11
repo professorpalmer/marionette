@@ -130,10 +130,13 @@ import {
 import { runCommandPaletteAction } from "../lib/commandPalette";
 import {
   appendMentionsToInput,
+  buildCodebaseInsert,
   buildFolderInsert,
   buildMentionInsert,
   buildSymbolInsert,
   clampSelectIndex,
+  codebaseMentionMatches,
+  codebaseQueryFromMentionSearch,
   cycleSelectIndex,
   detectComposerTrigger,
   filterMentionPaths,
@@ -1959,13 +1962,16 @@ describe("composerSend module", () => {
     const send = vi.fn();
     const focusSettingsPage = vi.fn();
     const tabs: string[] = [];
+    const expandEvents: string[] = [];
     const onFocusTab = (e: Event) => {
       tabs.push(String((e as CustomEvent).detail));
     };
+    const onExpandMemory = () => expandEvents.push("harness-expand-memory");
     const onNew = () => {
       createSession();
     };
     window.addEventListener("harness-focus-tab", onFocusTab as EventListener);
+    window.addEventListener("harness-expand-memory", onExpandMemory);
     window.addEventListener("harness-new-session", onNew);
     try {
       const cmds = [
@@ -2006,8 +2012,11 @@ describe("composerSend module", () => {
       ]);
       expect(focusSettingsPage).toHaveBeenCalledWith("advanced");
       expect(focusSettingsPage).toHaveBeenCalledTimes(1);
+      // /memory must expand Agent Memory (not leave the accordion collapsed).
+      expect(expandEvents).toEqual(["harness-expand-memory"]);
     } finally {
       window.removeEventListener("harness-focus-tab", onFocusTab as EventListener);
+      window.removeEventListener("harness-expand-memory", onExpandMemory);
       window.removeEventListener("harness-new-session", onNew);
     }
   });
@@ -2073,6 +2082,38 @@ describe("composerInput module", () => {
     expect(detectComposerTrigger("plain", 5).kind).toBe("none");
   });
 
+  it("keeps @-mention picker alive while typing spaced filter queries", () => {
+    // Mid-type spaced folder/file filter (Cursor keeps picker open).
+    expect(detectComposerTrigger("@my file", 8)).toEqual({
+      kind: "mention",
+      query: "my file",
+      atIndex: 0,
+    });
+    expect(detectComposerTrigger("see @my docs/util", 17)).toEqual({
+      kind: "mention",
+      query: "my docs/util",
+      atIndex: 4,
+    });
+    expect(detectComposerTrigger('@folder:"my docs', 16)).toEqual({
+      kind: "mention",
+      query: 'folder:"my docs',
+      atIndex: 0,
+    });
+    expect(detectComposerTrigger("@codebase:auth flow", 19)).toEqual({
+      kind: "mention",
+      query: "codebase:auth flow",
+      atIndex: 0,
+    });
+    // Slash commands still close after the first space.
+    expect(detectComposerTrigger("/help me", 8).kind).toBe("none");
+    // Completed picker inserts must not reopen on the trailing space.
+    expect(detectComposerTrigger("@a.ts ", 6).kind).toBe("none");
+    expect(detectComposerTrigger('@"a b.ts" ', 10).kind).toBe("none");
+    expect(detectComposerTrigger("@folder:src/lib ", 16).kind).toBe("none");
+    expect(detectComposerTrigger('@folder:"my docs" ', 18).kind).toBe("none");
+    expect(detectComposerTrigger("@codebase ", 10).kind).toBe("none");
+  });
+
   it("builds inserts, cycles selection, and resolves drop mentions", () => {
     expect(buildMentionInsert("hi @", 3, 4, "a.ts")).toEqual({
       next: "hi @a.ts ",
@@ -2091,6 +2132,25 @@ describe("composerInput module", () => {
       next: 'see @folder:"my docs" ',
       cursor: 22,
     });
+    expect(buildCodebaseInsert("hi @", 3, 4)).toEqual({
+      next: "hi @codebase ",
+      cursor: 13,
+    });
+    expect(buildCodebaseInsert("hi @", 3, 4, "Auth")).toEqual({
+      next: "hi @codebase:Auth ",
+      cursor: 18,
+    });
+    expect(buildCodebaseInsert("hi @", 3, 4, "my query")).toEqual({
+      next: 'hi @codebase:"my query" ',
+      cursor: 24,
+    });
+    expect(codebaseMentionMatches("")).toBe(true);
+    expect(codebaseMentionMatches("code")).toBe(true);
+    expect(codebaseMentionMatches("codebase")).toBe(true);
+    expect(codebaseMentionMatches("codebase:Auth")).toBe(true);
+    expect(codebaseMentionMatches("file")).toBe(false);
+    expect(codebaseQueryFromMentionSearch("codebase:Auth")).toBe("Auth");
+    expect(codebaseQueryFromMentionSearch("code")).toBeUndefined();
     expect(filterMentionPaths(["src/a.ts", "src/b.ts", "web/c.ts"], "src/", 10)).toEqual([
       "src/a.ts",
       "src/b.ts",

@@ -15,7 +15,7 @@ import {
   openAgentFile,
   openAgentUrl,
 } from "./agentLinks";
-import { PATH_IN_TEXT } from "./clickableOutput";
+import { PATH_IN_TEXT, unwrapPathToken } from "./clickableOutput";
 
 export type TerminalPathMatch = {
   text: string;
@@ -26,7 +26,7 @@ export type TerminalPathMatch = {
 };
 
 function pathCandidateValid(raw: string): boolean {
-  const bare = raw.replace(/(?::\d+){1,2}$/, "");
+  const bare = unwrapPathToken(raw).replace(/(?::\d+){1,2}$/, "");
   if (!bare || looksLikeShellCommand(bare)) return false;
   if (looksLikePathInlineCode(bare) || looksLikeFilePath(bare)) return true;
   return looksLikePathInlineCode(bare.split(/[\\/]/).pop() || "");
@@ -46,15 +46,23 @@ export function findTerminalPathMatches(line: string): TerminalPathMatch[] {
     // PATH_IN_TEXT often drops a leading '/' on multi-segment abs paths and
     // the 'file:' scheme — widen left so activate/parseFileHref see them.
     let start = m.index;
+    let end = m.index + token.length;
+    // Quoted matches: underline the inner path (skip wrapping quotes).
+    if (
+      (token.startsWith('"') && token.endsWith('"')) ||
+      (token.startsWith("'") && token.endsWith("'"))
+    ) {
+      start += 1;
+      end -= 1;
+    }
     while (start > 0 && text[start - 1] === "/") {
       start -= 1;
     }
     if (start >= 5 && text.slice(start - 5, start).toLowerCase() === "file:") {
       start -= 5;
     }
-    const matched = text.slice(start, m.index + token.length);
+    const matched = unwrapPathToken(text.slice(start, end));
     if (!looksLikeFilePath(matched)) continue;
-    const end = start + matched.length;
     if (out.some((k) => start < k.end && end > k.start)) continue;
     out.push({ text: matched, start, end });
   }

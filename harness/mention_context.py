@@ -1,4 +1,4 @@
-"""Bounded @-mention expansion for chat send (files / folders / symbols).
+"""Bounded @-mention expansion for chat send (files / folders / symbols / codebase).
 
 Folder mentions must fail closed outside the workspace and never dump an
 unbounded recursive tree into the model context.
@@ -6,8 +6,11 @@ unbounded recursive tree into the model context.
 File mentions use the same honesty seam: truncation, budget skips, and IO
 failures are surfaced in the resolved block (never silent-dropped).
 
+``@codebase`` (optional ``@codebase:query``) pins repo-wide CodeGraph context
+and uses the same skip/failure honesty seam — never silent bare-token fallthrough.
+
 Spaced paths use a quoted token convention shared with the composer:
-``@"path with spaces.ts"`` / ``@folder:"my folder"``.
+    ``@"path with spaces.ts"`` / ``@folder:"my folder"``.
 """
 
 from __future__ import annotations
@@ -29,14 +32,22 @@ FILE_PER_MENTION_CAP = 50 * 1024
 MENTION_TOTAL_BUDGET = 150 * 1024
 SYMBOL_SNIPPET_CAP = 8 * 1024
 
-# @"quoted path" | @folder:"…" | @symbol:"…" | @bare/path:token
+# @codebase | @codebase:query | @"quoted path" | @folder:"…" | @symbol:"…" | @bare/path
 _MENTION_TOKEN_RE = re.compile(
     r"@"
+    r"(?:"
+    r"(?P<codebase>codebase)(?::(?:"
+    r'"(?P<codebase_quoted>[^"]+)"'
+    r"|"
+    r"(?P<codebase_bare>[a-zA-Z0-9_\-\.\/]+)"
+    r"))?(?![a-zA-Z0-9_\-\.\/:])"
+    r"|"
     r"(?P<prefix>(?:folder|symbol):)?"
     r"(?:"
     r'"(?P<quoted>[^"]+)"'
     r"|"
     r"(?P<bare>[a-zA-Z0-9_\-\.\/:]+)"
+    r")"
     r")"
 )
 
@@ -45,12 +56,19 @@ def extract_mention_tokens(message: str) -> list[str]:
     """Parse @-mention tokens, supporting quoted paths that contain spaces.
 
     Returns tokens in the same shape the resolver already expects:
-    ``path/to/file``, ``folder:rel``, ``symbol:Name`` (quotes stripped).
+    ``path/to/file``, ``folder:rel``, ``symbol:Name``, ``codebase``,
+    ``codebase:query`` (quotes stripped).
     """
     if not message:
         return []
     out: list[str] = []
     for match in _MENTION_TOKEN_RE.finditer(message):
+        if match.group("codebase") is not None:
+            query = match.group("codebase_quoted")
+            if query is None:
+                query = match.group("codebase_bare") or ""
+            out.append(f"codebase:{query}" if query else "codebase")
+            continue
         prefix = match.group("prefix") or ""
         body = match.group("quoted")
         if body is None:
@@ -59,6 +77,24 @@ def extract_mention_tokens(message: str) -> list[str]:
             continue
         out.append(f"{prefix}{body}")
     return out
+
+
+def is_codebase_mention(token: str) -> bool:
+    """True when token is ``codebase`` or ``codebase:<query>``."""
+    return token == "codebase" or token.startswith("codebase:")
+
+
+def codebase_mention_query(token: str) -> str:
+    """Optional filter from a codebase mention token (empty when bare)."""
+    if token.startswith("codebase:"):
+        return token[len("codebase:"):]
+    return ""
+
+
+def codebase_mention_label(token: str) -> str:
+    """Display label for honesty blocks (``@codebase`` / ``@codebase:query``)."""
+    query = codebase_mention_query(token)
+    return f"@codebase:{query}" if query else "@codebase"
 
 
 def folder_entry_cap(env: Optional[dict] = None) -> int:
@@ -274,3 +310,77 @@ def format_symbol_mention_skip(symbol_name: str, *, reason: str) -> str:
 
 def format_symbol_mention_failure(symbol_name: str, *, error: str) -> str:
     return f"--- Symbol: {symbol_name} ---\n... failed to read: {error}\n"
+
+
+def format_codebase_mention_block(token: str, content: str) -> str:
+    """Honest CodeGraph context block for an @codebase mention."""
+    label = codebase_mention_label(token)
+    body = (content or "").rstrip("\n")
+    return f"--- Codebase: {label} ---\n{body}\n"
+
+
+def format_codebase_mention_skip(token: str, *, reason: str) -> str:
+    """Honesty note when @codebase context is not attached."""
+    label = codebase_mention_label(token)
+    return f"--- Codebase: {label} ---\n... skipped: {reason}\n"
+
+
+def format_codebase_mention_failure(token: str, *, error: str) -> str:
+    """Honesty note when @codebase CodeGraph resolution fails."""
+    label = codebase_mention_label(token)
+    return f"--- Codebase: {label} ---\n... failed to resolve: {error}\n"
+
+
+def expand_codebase_mention(
+    repo: str,
+    token: str,
+    *,
+    task_fallback: str = "",
+) -> str:
+    """Resolve @codebase via CodeGraph context with skip/failure honesty.
+
+    Never returns empty: operators always see success, skip, or failure.
+    """
+    if not is_codebase_mention(token):
+        return format_codebase_mention_failure(
+            token or "codebase",
+            error="not a codebase mention token",
+        )
+    if not repo or not os.path.isdir(repo):
+        return format_codebase_mention_skip(
+            token,
+            reason="no workspace repository configured",
+        )
+    query = codebase_mention_query(token)
+    task = query or (task_fallback or "").strip() or "repository structure"
+    try:
+        import puppetmaster.codegraph as cg
+
+        if not cg.codegraph_available():
+            return format_codebase_mention_skip(
+                token,
+                reason="CodeGraph unavailable",
+            )
+        if not cg.codegraph_ready(repo):
+            return format_codebase_mention_skip(
+                token,
+                reason="CodeGraph index not ready (run codegraph init / wait for indexing)",
+            )
+        cg_slice = cg.codegraph_context(task=task, cwd=repo)
+        if not cg_slice:
+            return format_codebase_mention_skip(
+                token,
+                reason="CodeGraph returned no context for this query",
+            )
+        section = cg.codegraph_prompt_section(cg_slice).strip()
+        if not section:
+            return format_codebase_mention_skip(
+                token,
+                reason="CodeGraph returned no context for this query",
+            )
+        return format_codebase_mention_block(token, section)
+    except Exception as exc:
+        return format_codebase_mention_failure(
+            token,
+            error=str(exc) or type(exc).__name__,
+        )

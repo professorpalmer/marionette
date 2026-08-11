@@ -20,6 +20,29 @@ describe("commandPalette filter", () => {
   });
 });
 
+describe("runCommandPaletteAction open-memory", () => {
+  it("focuses Advanced and dispatches harness-expand-memory", () => {
+    const focusSettingsPage = vi.fn();
+    const seen: string[] = [];
+    const onExpand = () => seen.push("harness-expand-memory");
+    const onTab = (e: Event) => seen.push(`tab:${String((e as CustomEvent).detail)}`);
+    window.addEventListener("harness-expand-memory", onExpand);
+    window.addEventListener("harness-focus-tab", onTab as EventListener);
+    try {
+      runCommandPaletteAction("open-memory", {
+        toggleLeft: () => {},
+        toggleRight: () => {},
+        focusSettingsPage,
+      });
+      expect(focusSettingsPage).toHaveBeenCalledWith("advanced");
+      expect(seen).toEqual(["tab:settings", "harness-expand-memory"]);
+    } finally {
+      window.removeEventListener("harness-expand-memory", onExpand);
+      window.removeEventListener("harness-focus-tab", onTab as EventListener);
+    }
+  });
+});
+
 describe("runCommandPaletteAction clear vs new", () => {
   it("Clear transcript does not createSession or start a new session", () => {
     const createSession = vi.fn();

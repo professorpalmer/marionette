@@ -17,9 +17,10 @@ ConvEvent kinds via inheritance.
 """
 
 import os
+import re
 import threading
 import time
-from typing import Iterator
+from typing import Iterator, Optional
 
 # grok-build-style quality floors (see xai-grok-compaction summary.rs /
 # intra_compaction/config.rs). Floor / reduction guards fail closed: an
@@ -40,6 +41,10 @@ DEFAULT_TAIL_OF_TRIGGER_RATIO = 0.20
 # Absolute ceiling on the injected summary. Large middles used to keep 20% of
 # themselves (~18k tokens on a 90k middle); cap + tiered ratio densifies.
 DEFAULT_MAX_SUMMARY_TOKENS = 8000
+# Aggregate hard-cap on summarizer *input* after per-tool prune. Per-tool
+# tool_keep alone still lets N large tools flood the LLM (timeout → cooldown).
+DEFAULT_MAX_SUMMARIZER_INPUT_CHARS = 32_000
+_SPILL_URI_RE = re.compile(r"spill://[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 # Hermes anti-thrash: two consecutive passes that each reclaim <10% trip the
 # breaker. Recovery reuses HARNESS_COMPACTION_COOLDOWN_S / _compaction_fail_until
 # (no second cooldown plane).
@@ -121,6 +126,37 @@ def _max_summary_tokens() -> int:
         return max(500, int(raw))
     except Exception:
         return DEFAULT_MAX_SUMMARY_TOKENS
+
+
+def _max_summarizer_input_chars() -> int:
+    """Aggregate char ceiling for content fed to the compaction summarizer."""
+    try:
+        raw = os.environ.get("HARNESS_COMPACTION_MAX_SUMMARIZER_INPUT_CHARS")
+        if raw is None or str(raw).strip() == "":
+            return DEFAULT_MAX_SUMMARIZER_INPUT_CHARS
+        return max(4_000, int(raw))
+    except Exception:
+        return DEFAULT_MAX_SUMMARIZER_INPUT_CHARS
+
+
+def _head_tail_clip(text: str, max_chars: int, *, label: str = "tool result") -> str:
+    """Keep head+tail (live-turn clamp style) so error/result tails survive."""
+    if max_chars <= 0:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    if max_chars <= 80:
+        return text[:max_chars]
+    head_len = max_chars // 2
+    tail_len = max_chars - head_len
+    head = text[:head_len]
+    tail = text[-tail_len:]
+    omitted = len(text) - max_chars
+    marker = (
+        f"\n... [truncated {omitted} chars of {len(text)}-char {label}"
+        f" -- middle elided] ...\n"
+    )
+    return head + marker + tail
 
 
 def summary_ratio_for_middle(middle_tokens: int) -> float:
@@ -474,6 +510,124 @@ class CompactionContextMixin:
             return text[:limit]
         return text[: max(0, limit - 40)].rstrip() + "\n... [truncated to fit budget]"
 
+    def _existing_spill_uri(self, content: str) -> Optional[str]:
+        match = _SPILL_URI_RE.search(content or "")
+        return match.group(0) if match else None
+
+    def _register_summary_spill(
+        self,
+        content: str,
+        tool_call_id: str,
+        *,
+        preview_chars: int,
+    ) -> Optional[str]:
+        """Persist a tool body truncated for summary; return spill:// when possible.
+
+        Retains an existing spill:// pointer. Never re-spills already-persisted
+        preview stubs (those already lost the full body). Honors offload_policy.
+        """
+        existing = self._existing_spill_uri(content)
+        if existing:
+            return existing
+        try:
+            from harness.context_budget import PERSISTED_OUTPUT_TAG
+        except Exception:
+            PERSISTED_OUTPUT_TAG = "<persisted-output>"
+        if PERSISTED_OUTPUT_TAG in (content or ""):
+            return None
+        state_dir = getattr(self, "state_dir", None) or ""
+        session_id = (getattr(self, "harness_session_id", None) or "default").strip() or "default"
+        result_id = (tool_call_id or "").strip()
+        if not state_dir or not result_id:
+            return None
+        try:
+            from harness.offload_policy import should_offload
+
+            # Replacement is the head+tail preview the summarizer will see.
+            if not should_offload(len(content), max(1, int(preview_chars))):
+                return None
+        except Exception:
+            return None
+        try:
+            from harness.context_budget import content_hash, spill_to_disk
+            from harness.spill_registry import register_spill, spill_uri
+
+            path = spill_to_disk(content, result_id, state_dir, dedupe=True)
+            uri = spill_uri(session_id, result_id)
+            if uri is None:
+                return None
+            registered = register_spill(
+                state_dir=state_dir,
+                session_id=session_id,
+                tool_call_id=result_id,
+                path=path,
+                chars=len(content),
+                content_hash=content_hash(content),
+            )
+            return uri if registered else None
+        except Exception:
+            return None
+
+    def _prune_tool_body_for_summary(
+        self,
+        content: str,
+        tool_keep: int,
+        *,
+        tool_call_id: str = "",
+    ) -> str:
+        """Head+tail prune a tool body for the summarizer, retaining spill://."""
+        if len(content) <= tool_keep:
+            return content
+        spill = self._register_summary_spill(
+            content, tool_call_id, preview_chars=tool_keep
+        )
+        head_len = tool_keep // 2
+        tail_len = tool_keep - head_len
+        head = content[:head_len]
+        tail = content[-tail_len:]
+        omitted = len(content) - tool_keep
+        if spill:
+            marker = (
+                f"\n... [truncated {omitted} chars of {len(content)}-char tool "
+                f"result for summary; full: {spill}] ...\n"
+            )
+        else:
+            marker = (
+                f"\n... [truncated {omitted} chars of {len(content)}-char tool "
+                f"result for summary -- middle elided] ...\n"
+            )
+        return head + marker + tail
+
+    def _prune_middle_for_summary(
+        self,
+        middle_block: list[dict],
+        *,
+        tool_keep: int,
+        args_keep: int,
+    ) -> list[dict]:
+        """Deep-copy middle messages with tool bodies/args pruned for summary."""
+        import copy
+
+        pruned: list[dict] = []
+        for idx, m in enumerate(middle_block):
+            m_copy = copy.deepcopy(m)
+            role = m_copy.get("role")
+            content = m_copy.get("content") or ""
+            if role == "tool" and isinstance(content, str):
+                tc_id = str(m_copy.get("tool_call_id") or f"compact_prune_{idx}")
+                m_copy["content"] = self._prune_tool_body_for_summary(
+                    content, tool_keep, tool_call_id=tc_id
+                )
+            if m_copy.get("tool_calls"):
+                for tc in m_copy["tool_calls"]:
+                    func = tc.get("function") or {}
+                    args = func.get("arguments") or ""
+                    if isinstance(args, str) and len(args) > args_keep:
+                        # Keep the tail: JSON/error detail usually lands last.
+                        func["arguments"] = "[truncated arguments] " + args[-args_keep:]
+            pruned.append(m_copy)
+        return pruned
+
     def _make_fallback_summary(
         self,
         middle_block: list[dict],
@@ -752,27 +906,14 @@ class CompactionContextMixin:
 
         # Pre-prune the middle block (cheap, pre-LLM). Large middles get a
         # tighter prune so the summarizer call itself is faster and denser.
+        # Head+tail (not head-only) so error/result tails survive; spill:// is
+        # registered/retained when truncating so Compact Now stays recoverable.
         middle_tokens_raw = self._estimate_context_tokens_for_list(middle_block)
         tool_keep = 400 if middle_tokens_raw >= 40_000 else 1000
         args_keep = 240 if middle_tokens_raw >= 40_000 else 500
-        pruned_middle = []
-        import copy
-        for m in middle_block:
-            m_copy = copy.deepcopy(m)
-            role = m_copy.get("role")
-            content = m_copy.get("content") or ""
-            if role == "tool":
-                if len(content) > tool_keep:
-                    m_copy["content"] = (
-                        content[:tool_keep] + "\n... [tool output truncated for summary]"
-                    )
-            if m_copy.get("tool_calls"):
-                for tc in m_copy["tool_calls"]:
-                    func = tc.get("function") or {}
-                    args = func.get("arguments") or ""
-                    if len(args) > args_keep:
-                        func["arguments"] = "[truncated arguments] " + args[-args_keep:]
-            pruned_middle.append(m_copy)
+        pruned_middle = self._prune_middle_for_summary(
+            middle_block, tool_keep=tool_keep, args_keep=args_keep
+        )
 
         middle_tokens = self._estimate_context_tokens_for_list(pruned_middle)
         summary_token_budget = summary_token_budget_for_middle(middle_tokens)
@@ -795,6 +936,14 @@ class CompactionContextMixin:
         )
 
         content_to_summarize = self._format_block_for_summary(pruned_middle)
+        # Aggregate hard-cap: N pruned tools must not still flood the summarizer.
+        _input_cap = _max_summarizer_input_chars()
+        if len(content_to_summarize) > _input_cap:
+            content_to_summarize = _head_tail_clip(
+                content_to_summarize,
+                _input_cap,
+                label="summarizer input",
+            )
 
         # Hermes-style: bound the summarizer call and cool down after hangs so a
         # stuck pilot cannot stall the turn forever on every compaction.
@@ -810,8 +959,9 @@ class CompactionContextMixin:
         _compaction_model = compaction_model_override()
 
         def _fallback() -> str:
+            # Same prune discipline as the LLM path — raw middle_block can flood.
             return self._make_fallback_summary(
-                middle_block, char_budget=summary_char_budget
+                pruned_middle, char_budget=summary_char_budget
             )
 
         summary = ""

@@ -96,15 +96,37 @@ export function stableCommandId(value: string): string {
 }
 
 /**
+ * Conservative spaced filesystem path (macOS "My Projects/app.ts", etc.).
+ * Requires a directory separator and a dotted filename so prose / shell
+ * lines with spaces stay non-paths.
+ */
+function looksLikeSpacedFilePath(text: string): boolean {
+  const clean = text
+    .replace(/^file:\/\//i, "")
+    .replace(/^["']|["']$/g, "")
+    .replace(/(?::\d+){0,2}$/, "");
+  if (!clean || !/\s/.test(clean)) return false;
+  if (/&&|\|\||[|<>;&]/.test(clean)) return false;
+  if (!/[\\/]/.test(clean)) return false;
+  const base = clean.split(/[\\/]/).pop() || "";
+  return /\.\w{1,8}$/.test(base);
+}
+
+/**
  * Heuristic: does this look like a shell command line rather than a file path?
  * Whitespace args, flags, shell operators, or known launcher tokens.
+ * Spaced paths that still look like files (dir sep + extension) are excluded.
  */
 export function looksLikeShellCommand(text: string): boolean {
   const t = (text || "").trim();
   if (!t) return false;
   if (/&&|\|\||[|<>;&]/.test(t)) return true;
   if (/^[-+]/.test(t)) return true;
-  if (/\s/.test(t)) return true;
+  if (/\s/.test(t)) {
+    // `/Users/me/My Projects/app.ts` is a path, not `pytest -q`.
+    if (looksLikeSpacedFilePath(t)) return false;
+    return true;
+  }
   const base = t.replace(BARE_EXEC_EXT, "");
   if (SHELL_LAUNCHERS.has(base.toLowerCase())) return true;
   return false;
@@ -126,7 +148,9 @@ export function looksLikeFilePath(href: string): boolean {
   if (!h) return false;
   if (/^(https?|mailto|tel|data|javascript):/i.test(h) || h.startsWith("#")) return false;
   if (looksLikeShellCommand(h)) return false;
-  const clean = h.replace(/^file:\/\//i, "");
+  const clean = h
+    .replace(/^file:\/\//i, "")
+    .replace(/^["']|["']$/g, "");
   // Bare executables without a directory separator are shell launchers, not files.
   if (!/[\\/]/.test(clean) && BARE_EXEC_EXT.test(clean)) return false;
   // Drive letter, absolute, relative with slash, or name.ext[:line[:col]]
@@ -140,7 +164,10 @@ export function looksLikeFilePath(href: string): boolean {
 /** Strip file:// and optional :line[:col] suffix. */
 export function parseFileHref(href: string): ParsedFileHref | null {
   if (!href || !looksLikeFilePath(href)) return null;
-  let raw = href.trim().replace(/^file:\/\//i, "");
+  let raw = href
+    .trim()
+    .replace(/^file:\/\//i, "")
+    .replace(/^["']|["']$/g, "");
   // file:///C:/foo → C:/foo on Windows; file:///home → /home
   if (/^\/[A-Za-z]:[\\/]/.test(raw)) {
     raw = raw.slice(1);

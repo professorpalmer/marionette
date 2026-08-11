@@ -13,6 +13,7 @@ import {
 import SkillsPane from "./SkillsPane";
 import MemoryPane from "./MemoryPane";
 import SchedulesPane from "./SchedulesPane";
+import { takePendingExpandMemory } from "../lib/memoryDeepLink";
 
 export type SettingsSection = "general" | "safety" | "providers" | "notifications" | "plugins" | "advanced";
 
@@ -278,7 +279,8 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
   const [hooksOpen, setHooksOpen] = useState(false);
   const [schedulesOpen, setSchedulesOpen] = useState(false);
   const [skillsOpen, setSkillsOpen] = useState(false);
-  const [memoryOpen, setMemoryOpen] = useState(false);
+  // Cmd-K / /memory may fire harness-expand-memory before this mounts — consume latch.
+  const [memoryOpen, setMemoryOpen] = useState(() => takePendingExpandMemory());
 
   // Form states for hooks
   const [newHookEvent, setNewHookEvent] = useState("");
@@ -381,6 +383,18 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         }
         console.error(err);
       });
+  }, []);
+
+  // Deep-link: Cmd-K Open Memory / /memory expand Agent Memory (mirror harness-expand-mcp).
+  useEffect(() => {
+    const onExpandMemory = () => {
+      takePendingExpandMemory(); // drop latch — live listener already applied it
+      setMemoryOpen(true);
+      // Land on Advanced if Settings is open on another page.
+      window.dispatchEvent(new CustomEvent("harness-settings-page", { detail: "advanced" }));
+    };
+    window.addEventListener("harness-expand-memory", onExpandMemory);
+    return () => window.removeEventListener("harness-expand-memory", onExpandMemory);
   }, []);
 
   // Section-scoped loads. API keys summary ("N/M connected") is visible while

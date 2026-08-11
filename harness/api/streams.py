@@ -263,21 +263,25 @@ def stream_chat(
     if svc.cfg.repo and os.path.isdir(svc.cfg.repo):
         svc.maybe_refresh_codegraph(svc.cfg.repo)
 
-    # Resolve @-file, @folder, and @symbol mentions in message
+    # Resolve @-file, @folder, @symbol, and @codebase mentions in message
     resolved_files = []
     resolved_folders = []
     resolved_symbols = []
+    resolved_codebases = []
     total_size = 0
     repo = svc.cfg.repo
     if repo and os.path.isdir(repo) and message:
         from ..mention_context import (
             MENTION_TOTAL_BUDGET,
             SYMBOL_SNIPPET_CAP,
+            expand_codebase_mention,
             expand_folder_mention,
             extract_mention_tokens,
+            format_codebase_mention_skip,
             format_symbol_mention_block,
             format_symbol_mention_failure,
             format_symbol_mention_skip,
+            is_codebase_mention,
             read_file_mention,
             resolve_repo_dir,
         )
@@ -288,6 +292,49 @@ def stream_chat(
             if token in seen_tokens:
                 continue
             seen_tokens.add(token)
+
+            # Honest @codebase / @codebase:query — never fall through to
+            # bare-token symbol search (Cursor migrants expect pinned CG).
+            if is_codebase_mention(token):
+                if total_size >= MENTION_TOTAL_BUDGET:
+                    resolved_codebases.append(
+                        format_codebase_mention_skip(
+                            token,
+                            reason=(
+                                "mention context budget exhausted "
+                                "(150KB total across @-mentions)"
+                            ),
+                        )
+                    )
+                    continue
+                block = expand_codebase_mention(
+                    repo, token, task_fallback=message,
+                )
+                read_size = len(block.encode("utf-8"))
+                if (
+                    "--- Codebase:" in block
+                    and "... skipped:" not in block
+                    and "... failed to resolve:" not in block
+                    and total_size + read_size > MENTION_TOTAL_BUDGET
+                ):
+                    resolved_codebases.append(
+                        format_codebase_mention_skip(
+                            token,
+                            reason=(
+                                "mention context budget exhausted "
+                                "(150KB total across @-mentions)"
+                            ),
+                        )
+                    )
+                else:
+                    resolved_codebases.append(block)
+                    # Skip/failure notes do not consume the shared budget.
+                    if (
+                        "... skipped:" not in block
+                        and "... failed to resolve:" not in block
+                    ):
+                        total_size += read_size
+                continue
 
             is_folder_prefix = token.startswith("folder:")
             is_symbol_prefix = token.startswith("symbol:")
@@ -432,6 +479,8 @@ def stream_chat(
             context_blocks.append("Referenced folders:\n" + "\n".join(resolved_folders))
         if resolved_symbols:
             context_blocks.append("Referenced symbols:\n" + "\n".join(resolved_symbols))
+        if resolved_codebases:
+            context_blocks.append("Referenced codebase:\n" + "\n".join(resolved_codebases))
 
         if context_blocks:
             message = "\n\n".join(context_blocks) + "\n\n" + message

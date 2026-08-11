@@ -1,6 +1,5 @@
 /**
- * @folder mention picker: folders render with a folder label and insert
- * via the dedicated insertFolder callback (honest @folder: token).
+ * @codebase mention picker: Scope row inserts via insertCodebase.
  */
 import { createRef } from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
@@ -19,14 +18,14 @@ vi.mock("../components/conversation/WorkspaceChip", () => ({
 
 const noop = () => {};
 
-describe("ComposerDock folder mentions", () => {
-  it("surfaces folder hits and inserts via insertFolder", () => {
-    const insertFolder = vi.fn();
+describe("ComposerDock codebase mentions", () => {
+  it("surfaces Codebase scope and inserts via insertCodebase", () => {
+    const insertCodebase = vi.fn();
     render(
       <ComposerDock
         config={null}
         taRef={createRef<HTMLTextAreaElement>()}
-        input="@src"
+        input="@code"
         auto={false}
         plan={false}
         composerBusy={false}
@@ -46,9 +45,9 @@ describe("ComposerDock folder mentions", () => {
         editBusy={false}
         showContextPanel={false}
         contextUsage={null}
-        mentionSearch="src"
-        filteredFiles={["src/a.ts"]}
-        filteredFolders={["src", "src/lib"]}
+        mentionSearch="code"
+        filteredFiles={[]}
+        filteredFolders={[]}
         symbolResults={[]}
         mentionListingCap={null}
         selectedFileIndex={0}
@@ -99,10 +98,10 @@ describe("ComposerDock folder mentions", () => {
         handleKeyDown={noop}
         handlePaste={noop}
         insertMention={noop}
-        insertFolder={insertFolder}
+        insertFolder={noop}
         insertSymbol={noop}
-        insertCodebase={noop}
-        showCodebaseMention={false}
+        insertCodebase={insertCodebase}
+        showCodebaseMention={true}
         insertSlashCommand={noop}
         handleQueueAdd={noop}
         stop={noop}
@@ -110,9 +109,9 @@ describe("ComposerDock folder mentions", () => {
       />,
     );
 
-    expect(screen.getByText("Folders")).toBeInTheDocument();
-    expect(screen.getAllByText("folder").length).toBeGreaterThanOrEqual(1);
-    fireEvent.click(screen.getByText("src/lib"));
-    expect(insertFolder).toHaveBeenCalledWith("src/lib");
+    expect(screen.getByText("Scope")).toBeInTheDocument();
+    expect(screen.getByText("Codebase")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Codebase"));
+    expect(insertCodebase).toHaveBeenCalledTimes(1);
   });
 });

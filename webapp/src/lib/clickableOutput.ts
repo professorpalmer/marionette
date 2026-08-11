@@ -18,9 +18,47 @@ export type ClickableSegment =
 
 const URL_IN_TEXT = /https?:\/\/[^\s<>"'`)\]]+[^\s<>"'`)\].,;:!?]/g;
 
-/** Path-ish token with optional :line[:col], including stack-frame forms. */
-export const PATH_IN_TEXT =
-  /(?:[A-Za-z]:[\\/]|\/|\.{1,2}[\\/]|(?:[\w.-]+[\\/])+)?[\w.-]+\.\w{1,8}(?::\d+){0,2}/g;
+/**
+ * Path-ish token with optional :line[:col], including stack-frame forms.
+ * Alternation order: quoted → unquoted spaced (dir sep required) → classic
+ * no-space tokens. Spaced matches stay conservative to avoid prose link spam.
+ */
+/**
+ * Path segment with optional single spaces (`My Projects`).
+ * Continuation words after a space omit `.` so `app.ts and more.txt` cannot
+ * glue into one token.
+ */
+const PATH_SEG = String.raw`[\w.-]+(?: [\w-]+)*`;
+/** Filename body before the final .ext (no dotted intermediate words). */
+const PATH_FILE = String.raw`[\w-]+(?: [\w-]+)*`;
+
+export const PATH_IN_TEXT = new RegExp(
+  [
+    // Quoted abs/rel paths: "/Users/me/My Projects/app.ts" or ".../my file.ts"
+    String.raw`["'](?:[A-Za-z]:[\\/]|\/|\.{1,2}[\\/])(?:${PATH_SEG}[\\/])*${PATH_FILE}\.\w{1,8}(?::\d+){0,2}["']`,
+    // Unquoted spaced abs/rel: must start at a boundary (not inside https://…)
+    // and contain a space; directory separator required.
+    String.raw`(?:^|(?<=[\s(\[{]))(?:[A-Za-z]:[\\/]|\/|\.{1,2}[\\/])(?=[^\n]* )(?:${PATH_SEG}[\\/])+${PATH_FILE}\.\w{1,8}(?::\d+){0,2}`,
+    // Classic no-space paths / bare basename.ext
+    String.raw`(?:[A-Za-z]:[\\/]|\/|\.{1,2}[\\/]|(?:[\w.-]+[\\/])+)?[\w.-]+\.\w{1,8}(?::\d+){0,2}`,
+  ].join("|"),
+  "g",
+);
+
+/** Strip wrapping quotes from a matched path token (keeps :line[:col]). */
+export function unwrapPathToken(raw: string): string {
+  const t = String(raw || "");
+  if (
+    (t.startsWith('"') && t.endsWith('"') && t.length >= 2) ||
+    (t.startsWith("'") && t.endsWith("'") && t.length >= 2)
+  ) {
+    return t.slice(1, -1);
+  }
+  // Quotes with :line[:col] after the closing quote — rare but defend.
+  const m = t.match(/^["'](.+)["']((?::\d+){0,2})$/);
+  if (m) return m[1] + m[2];
+  return t;
+}
 
 /** Pull a file-ish path from a tree / listing line (`├── poll_loop.py:12  # note`). */
 export function pathTokenInCodeLine(
@@ -39,14 +77,22 @@ export function pathTokenInCodeLine(
 }
 
 function pathCandidateValid(raw: string): boolean {
-  const bare = raw.replace(/(?::\d+){1,2}$/, "");
+  const unwrapped = unwrapPathToken(raw);
+  const bare = unwrapped.replace(/(?::\d+){1,2}$/, "");
   if (!bare || looksLikeShellCommand(bare)) return false;
   if (looksLikePathInlineCode(bare) || looksLikeFilePath(bare)) return true;
   // Bare basename.ext[:line] from stack frames.
   return looksLikePathInlineCode(bare.split(/[\\/]/).pop() || "");
 }
 
-type Span = { start: number; end: number; kind: "url" | "file"; text: string };
+type Span = {
+  start: number;
+  end: number;
+  kind: "url" | "file";
+  text: string;
+  /** Open target for file spans (quotes stripped). */
+  path?: string;
+};
 
 function collectSpans(line: string): Span[] {
   const spans: Span[] = [];
@@ -65,7 +111,13 @@ function collectSpans(line: string): Span[] {
     const start = m.index;
     const end = start + text.length;
     if (spans.some((s) => s.kind === "url" && start < s.end && end > s.start)) continue;
-    spans.push({ start, end, kind: "file", text });
+    spans.push({
+      start,
+      end,
+      kind: "file",
+      text,
+      path: unwrapPathToken(text),
+    });
   }
   spans.sort((a, b) => a.start - b.start || b.end - a.end);
   const kept: Span[] = [];
@@ -89,7 +141,7 @@ function tokenizeLine(line: string): ClickableSegment[] {
     if (s.kind === "url") {
       out.push({ kind: "url", text: s.text, href: s.text });
     } else {
-      out.push({ kind: "file", text: s.text, path: s.text });
+      out.push({ kind: "file", text: s.text, path: s.path || unwrapPathToken(s.text) });
     }
     cursor = s.end;
   }

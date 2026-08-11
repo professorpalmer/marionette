@@ -3,6 +3,8 @@
  * Discovers existing event-bus / settings hooks — not a plugin marketplace.
  */
 
+import { expandAgentMemory } from "./memoryDeepLink";
+
 export type CommandPaletteActionId =
   | "new-session"
   | "clear-transcript"
@@ -134,6 +136,8 @@ export function runCommandPaletteAction(
     case "open-memory":
       hooks.focusSettingsPage("advanced");
       window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: "settings" }));
+      // Mirror /mcp → harness-expand-mcp: Advanced alone leaves Agent Memory collapsed.
+      expandAgentMemory();
       return;
     case "open-mcp":
       window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: "mcp" }));

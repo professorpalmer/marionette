@@ -31,6 +31,27 @@ describe("findTerminalPathMatches", () => {
     expect(findTerminalPathMatches("running npm.cmd")).toEqual([]);
     expect(findTerminalPathMatches("ok exit 0")).toEqual([]);
   });
+
+  it("matches quoted and unquoted spaced macOS paths", () => {
+    const spaced = findTerminalPathMatches(
+      "error in /Users/me/My Projects/app.ts:12 next",
+    );
+    expect(spaced.map((m) => m.text)).toContain("/Users/me/My Projects/app.ts:12");
+
+    const quoted = findTerminalPathMatches(
+      'trace "/Users/me/My Projects/app.ts" please',
+    );
+    expect(quoted.map((m) => m.text)).toContain("/Users/me/My Projects/app.ts");
+    // Underline skips wrapping quotes.
+    expect(quoted[0].start).toBeGreaterThan(
+      'trace "'.length - 1,
+    );
+  });
+
+  it("does not link-spam ordinary prose with spaces", () => {
+    expect(findTerminalPathMatches("see my file please")).toEqual([]);
+    expect(findTerminalPathMatches("running pytest -q")).toEqual([]);
+  });
 });
 
 describe("activateTerminalLink", () => {

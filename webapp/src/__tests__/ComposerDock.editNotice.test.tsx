@@ -101,6 +101,8 @@ function renderDockWithNotice(
       insertMention={noop}
       insertFolder={noop}
       insertSymbol={noop}
+      insertCodebase={noop}
+      showCodebaseMention={false}
       insertSlashCommand={noop}
       handleQueueAdd={noop}
       stop={noop}

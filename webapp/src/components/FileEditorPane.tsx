@@ -177,6 +177,8 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
   );
   /** Bump to re-read disk after an agent write to this path. */
   const [reloadEpoch, setReloadEpoch] = useState(0);
+  /** Disk changed under a dirty buffer — offer reload vs keep local edits. */
+  const [diskConflict, setDiskConflict] = useState(false);
   const pathRef = useRef(path);
   pathRef.current = path;
   const isDirtyRef = useRef(isDirty);
@@ -303,6 +305,7 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
       if (!softReload) {
         setLoading(true);
         setTextMode("code");
+        setDiskConflict(false);
       }
       setError(null);
       setBinaryMeta(null);
@@ -322,6 +325,7 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
           setReadOnly(!!res.truncated);
           setContentTruncated(!!res.truncated);
           setIsDirty(false);
+          setDiskConflict(false);
           onDirtyChangeRef.current(false);
           const restoreScroll = preserveScrollTopRef.current;
           preserveScrollTopRef.current = null;
@@ -354,6 +358,7 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
           setOriginalContent("");
           setReadOnly(true);
           setIsDirty(false);
+          setDiskConflict(false);
           onDirtyChangeRef.current(false);
           setError(null);
           preserveScrollTopRef.current = null;
@@ -379,19 +384,29 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
     };
   }, [path, reloadEpoch]);
 
+  const softReloadFromDisk = () => {
+    const view = editorViewRef.current;
+    softReloadRef.current = true;
+    preserveScrollTopRef.current = view?.scrollDOM.scrollTop ?? 0;
+    setDiskConflict(false);
+    setReloadEpoch((n) => n + 1);
+  };
+  const softReloadFromDiskRef = useRef(softReloadFromDisk);
+  softReloadFromDiskRef.current = softReloadFromDisk;
+
   // Agent write/edit/hash (and other path-bearing mutation events): refresh the
-  // open buffer from disk when the mutated path matches this tab.
+  // open buffer from disk when the mutated path matches this tab. Dirty buffers
+  // get a conflict notice instead of a silent ignore (Cursor-style affordance).
   useEffect(() => {
     return subscribeWorkspaceMutations((event) => {
       const mutated = mutationEventPath(event);
       if (!mutated) return;
       if (!pathsReferToSameFile(mutated, pathRef.current)) return;
-      // Preserve unsaved local edits; user can reload via re-open if needed.
-      if (isDirtyRef.current) return;
-      const view = editorViewRef.current;
-      softReloadRef.current = true;
-      preserveScrollTopRef.current = view?.scrollDOM.scrollTop ?? 0;
-      setReloadEpoch((n) => n + 1);
+      if (isDirtyRef.current) {
+        setDiskConflict(true);
+        return;
+      }
+      softReloadFromDiskRef.current();
     });
   }, []);
 
@@ -680,6 +695,36 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
           )}
         </div>
       </div>
+
+      {diskConflict && (
+        <div
+          data-testid="disk-conflict-banner"
+          className="flex items-center justify-between gap-3 px-4 py-2 border-b border-warn/40 bg-warn/10 shrink-0"
+          role="status"
+        >
+          <span className="text-[11px] text-txt min-w-0">
+            This file changed on disk while you have unsaved edits.
+          </span>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              data-testid="disk-conflict-reload"
+              onClick={softReloadFromDisk}
+              className="px-2 py-1 rounded text-[11px] border border-warn/40 text-txt hover:bg-warn/20 transition-colors"
+            >
+              Reload from disk
+            </button>
+            <button
+              type="button"
+              data-testid="disk-conflict-keep"
+              onClick={() => setDiskConflict(false)}
+              className="px-2 py-1 rounded text-[11px] border border-edge text-muted hover:text-txt hover:bg-panel2 transition-colors"
+            >
+              Keep mine
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="flex-1 overflow-hidden relative min-h-0">
         {showCodeMirror && (

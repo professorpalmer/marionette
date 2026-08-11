@@ -639,3 +639,227 @@ def test_advisor_now_triggers_safe_boundary_compaction(monkeypatch):
     events = list(session._maybe_compact_history())
 
     assert [event.kind for event in events] == ["compacting", "compaction"]
+
+
+def test_pre_summarizer_tool_prune_keeps_head_and_tail(monkeypatch, tmp_path):
+    """Tool-body prune for the summarizer must be head+tail (not head-only)."""
+    monkeypatch.setattr("harness.compaction_mixin.MIN_COMPACTABLE_TOKENS", 0)
+    cfg = HarnessConfig(max_context_tokens=4000, state_dir=str(tmp_path))
+    session = ConversationalSession(cfg)
+    session.harness_session_id = "sess-compact"
+    session.pilot = MockPilot(_GOOD_SUMMARY)  # type: ignore
+
+    # Unique tail marker past a head-only 1000-char cut.
+    tool_body = ("HEADMARKER-" + ("A" * 900) + "-MID-" + ("B" * 900) + "-TAIL_ERROR_XYZ")
+    assert "TAIL_ERROR_XYZ" not in tool_body[:1000]
+
+    session._history = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "please run " + ("u" * 800)},
+        {
+            "role": "assistant",
+            "content": "calling",
+            "tool_calls": [{
+                "id": "call_tail",
+                "type": "function",
+                "function": {"name": "run_command", "arguments": "{}"},
+            }],
+        },
+        {"role": "tool", "tool_call_id": "call_tail", "content": tool_body},
+        {"role": "assistant", "content": "saw the error " + ("a" * 800)},
+        {"role": "user", "content": "keep recent " + ("r" * 200)},
+        {"role": "assistant", "content": "kept " + ("k" * 200)},
+    ]
+
+    events = list(session._maybe_compact_history(force=True))
+    assert any(e.kind == "compaction" for e in events)
+    assert session.pilot.chat_calls
+    summarizer_input = session.pilot.chat_calls[0][0][0]["content"]
+    assert "HEADMARKER-" in summarizer_input
+    assert "TAIL_ERROR_XYZ" in summarizer_input
+    assert "truncated" in summarizer_input.lower()
+    assert "middle elided" in summarizer_input or "spill://" in summarizer_input
+
+
+def test_pre_summarizer_registers_spill_pointer(monkeypatch, tmp_path):
+    """Truncating for summary must register/retain a spill:// handle."""
+    monkeypatch.setattr("harness.compaction_mixin.MIN_COMPACTABLE_TOKENS", 0)
+    # Below-floor bodies would skip offload; force the gate open for this unit.
+    monkeypatch.setattr("harness.offload_policy.should_offload", lambda *_a, **_k: True)
+    cfg = HarnessConfig(max_context_tokens=4000, state_dir=str(tmp_path))
+    session = ConversationalSession(cfg)
+    session.harness_session_id = "sess-spill"
+    session.pilot = MockPilot(_GOOD_SUMMARY)  # type: ignore
+
+    tool_body = "START-" + ("X" * 5000) + "-END_UNIQUE_42"
+    session._history = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "run tool " + ("u" * 800)},
+        {
+            "role": "assistant",
+            "content": "calling",
+            "tool_calls": [{
+                "id": "call_spill",
+                "type": "function",
+                "function": {"name": "run_command", "arguments": "{}"},
+            }],
+        },
+        {"role": "tool", "tool_call_id": "call_spill", "content": tool_body},
+        {"role": "assistant", "content": "done " + ("a" * 800)},
+        {"role": "user", "content": "recent " + ("r" * 200)},
+        {"role": "assistant", "content": "ok " + ("k" * 200)},
+    ]
+
+    list(session._maybe_compact_history(force=True))
+    summarizer_input = session.pilot.chat_calls[0][0][0]["content"]
+    assert "spill://sess-spill/call_spill" in summarizer_input
+    assert "END_UNIQUE_42" in summarizer_input  # tail retained
+
+
+def test_pre_summarizer_retains_existing_spill_uri(monkeypatch, tmp_path):
+    """Already-persisted tool bodies keep their spill:// through summary prune."""
+    monkeypatch.setattr("harness.compaction_mixin.MIN_COMPACTABLE_TOKENS", 0)
+    cfg = HarnessConfig(max_context_tokens=4000, state_dir=str(tmp_path))
+    session = ConversationalSession(cfg)
+    session.harness_session_id = "sess-keep"
+    session.pilot = MockPilot(_GOOD_SUMMARY)  # type: ignore
+
+    persisted = (
+        "<persisted-output>\n"
+        "This tool result was too large.\n"
+        "Also addressable as: spill://sess-keep/call_keep "
+        "(read_file works on this URI)\n"
+        "Preview (head and tail):\n"
+        + ("P" * 2000)
+        + "\n</persisted-output>"
+    )
+    session._history = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "run " + ("u" * 800)},
+        {
+            "role": "assistant",
+            "content": "calling",
+            "tool_calls": [{
+                "id": "call_keep",
+                "type": "function",
+                "function": {"name": "run_command", "arguments": "{}"},
+            }],
+        },
+        {"role": "tool", "tool_call_id": "call_keep", "content": persisted},
+        {"role": "assistant", "content": "done " + ("a" * 800)},
+        {"role": "user", "content": "recent " + ("r" * 200)},
+        {"role": "assistant", "content": "ok " + ("k" * 200)},
+    ]
+
+    list(session._maybe_compact_history(force=True))
+    summarizer_input = session.pilot.chat_calls[0][0][0]["content"]
+    assert "spill://sess-keep/call_keep" in summarizer_input
+
+
+def test_fallback_uses_pruned_middle_not_raw_tool_flood(monkeypatch, tmp_path):
+    """Fallback summarizer must not format unpruned tool bodies."""
+    monkeypatch.setattr("harness.compaction_mixin.MIN_COMPACTABLE_TOKENS", 0)
+    cfg = HarnessConfig(max_context_tokens=12_000, state_dir=str(tmp_path))
+    session = ConversationalSession(cfg)
+    session.harness_session_id = "sess-fb"
+
+    class ErrorPilot:
+        name = "mock"
+        def chat(self, messages, tools=None, system=None):
+            return MockDriverResponse(error="boom")
+
+    session.pilot = ErrorPilot()  # type: ignore
+    unique = "FALLBACK_RAW_FLOOD_MARKER_99"
+    tool_body = ("H" * 2500) + unique + ("T" * 2500)
+    # Pad with non-tool turns so pruned middle stays large enough for the
+    # reduction guard even after the tool body is head+tail clipped.
+    session._history = [{"role": "system", "content": "sys"}]
+    for i in range(8):
+        session._history.append({
+            "role": "user",
+            "content": f"pad-{i} " + ("P" * 700),
+        })
+        session._history.append({
+            "role": "assistant",
+            "content": f"pad-a-{i} " + ("Q" * 700),
+        })
+    session._history.extend([
+        {"role": "user", "content": "one " + ("u" * 400)},
+        {
+            "role": "assistant",
+            "content": "calling",
+            "tool_calls": [{
+                "id": "call_fb",
+                "type": "function",
+                "function": {"name": "run_command", "arguments": "{}"},
+            }],
+        },
+        {"role": "tool", "tool_call_id": "call_fb", "content": tool_body},
+        {"role": "assistant", "content": "two " + ("a" * 400)},
+        {"role": "user", "content": "keep recent"},
+        {"role": "assistant", "content": "kept"},
+    ])
+
+    events = list(session._maybe_compact_history(force=True))
+    done = [e for e in events if e.kind == "compaction"]
+    assert done and not done[0].data.get("aborted")
+    injected = session._history[1]["content"]
+    assert session._history[1].get("_compressed_summary") is True
+    # Middle-of-tool marker must not survive head+tail prune into the fallback.
+    assert unique not in injected
+    assert len(injected) < len(tool_body)
+    assert "## Historical Task Snapshot" in injected
+
+    # Unit seam: _fallback path formats pruned_middle, not raw middle_block.
+    pruned = session._prune_middle_for_summary(
+        [
+            {"role": "tool", "tool_call_id": "call_fb", "content": tool_body},
+        ],
+        tool_keep=1000,
+        args_keep=500,
+    )
+    assert unique not in (pruned[0].get("content") or "")
+    assert "truncated" in (pruned[0].get("content") or "").lower()
+
+
+def test_summarizer_input_aggregate_hard_cap(monkeypatch, tmp_path):
+    """N large tools must not flood content_to_summarize past the aggregate cap."""
+    monkeypatch.setattr("harness.compaction_mixin.MIN_COMPACTABLE_TOKENS", 0)
+    monkeypatch.setattr(
+        "harness.compaction_mixin.DEFAULT_MAX_SUMMARIZER_INPUT_CHARS",
+        4_000,
+    )
+    monkeypatch.setenv("HARNESS_COMPACTION_MAX_SUMMARIZER_INPUT_CHARS", "4000")
+    cfg = HarnessConfig(max_context_tokens=20_000, state_dir=str(tmp_path))
+    session = ConversationalSession(cfg)
+    session.harness_session_id = "sess-cap"
+    session.pilot = MockPilot(_GOOD_SUMMARY)  # type: ignore
+
+    session._history = [{"role": "system", "content": "sys"}]
+    for i in range(20):
+        session._history.append({"role": "user", "content": f"ask {i} " + ("u" * 100)})
+        session._history.append({
+            "role": "assistant",
+            "content": f"call {i}",
+            "tool_calls": [{
+                "id": f"call_{i}",
+                "type": "function",
+                "function": {"name": "run_command", "arguments": "{}"},
+            }],
+        })
+        session._history.append({
+            "role": "tool",
+            "tool_call_id": f"call_{i}",
+            "content": f"TOOL{i}-" + ("Z" * 900) + f"-END{i}",
+        })
+        session._history.append({"role": "assistant", "content": f"done {i} " + ("a" * 100)})
+    # Keep a small recent tail outside the middle.
+    session._history.append({"role": "user", "content": "recent ask"})
+    session._history.append({"role": "assistant", "content": "recent ans"})
+
+    list(session._maybe_compact_history(force=True))
+    assert session.pilot.chat_calls
+    summarizer_input = session.pilot.chat_calls[0][0][0]["content"]
+    # Cap is 4000; marker may add a little overhead beyond the clip target.
+    assert len(summarizer_input) < 6_000
+    assert "summarizer input" in summarizer_input or "middle elided" in summarizer_input

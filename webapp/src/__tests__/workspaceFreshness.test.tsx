@@ -28,8 +28,23 @@ vi.mock("../lib/api", () => ({
 }));
 
 vi.mock("@uiw/react-codemirror", () => ({
-  default: ({ value }: { value?: string }) => (
-    <pre data-testid="cm-value">{value || ""}</pre>
+  default: ({
+    value,
+    onChange,
+  }: {
+    value?: string;
+    onChange?: (val: string) => void;
+  }) => (
+    <div>
+      <pre data-testid="cm-value">{value || ""}</pre>
+      <button
+        type="button"
+        data-testid="cm-dirty"
+        onClick={() => onChange?.(`${value || ""}local-edit`)}
+      >
+        dirty
+      </button>
+    </div>
   ),
 }));
 
@@ -166,6 +181,106 @@ describe("workspace freshness fan-out", () => {
 
     // No second read — path did not match the open tab.
     expect(api.readFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("FileEditorPane dirty buffer shows conflict notice on matching mutation", async () => {
+    const onDirtyChange = vi.fn();
+    const { getByTestId, queryByTestId } = render(
+      <FileEditorPane
+        path="src/a.ts"
+        onClose={() => {}}
+        onDirtyChange={onDirtyChange}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(getByTestId("cm-value").textContent).toContain("v1");
+    });
+
+    await act(async () => {
+      getByTestId("cm-dirty").click();
+    });
+    expect(onDirtyChange).toHaveBeenCalledWith(true);
+    expect(queryByTestId("disk-conflict-banner")).toBeNull();
+
+    await act(async () => {
+      notifyWorkspaceMutated("src/a.ts");
+    });
+
+    expect(getByTestId("disk-conflict-banner")).toBeTruthy();
+    // Dirty path must not silently reload.
+    expect(api.readFile).toHaveBeenCalledTimes(1);
+    expect(getByTestId("cm-value").textContent).toContain("local-edit");
+  });
+
+  it("FileEditorPane conflict Reload from disk replaces buffer and clears dirty", async () => {
+    const onDirtyChange = vi.fn();
+    vi.mocked(api.readFile)
+      .mockResolvedValueOnce({ ok: true, content: "v1\n" } as any)
+      .mockResolvedValueOnce({ ok: true, content: "v2-from-agent\n" } as any);
+
+    const { getByTestId, queryByTestId } = render(
+      <FileEditorPane
+        path="src/a.ts"
+        onClose={() => {}}
+        onDirtyChange={onDirtyChange}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(getByTestId("cm-value").textContent).toContain("v1");
+    });
+
+    await act(async () => {
+      getByTestId("cm-dirty").click();
+    });
+    await act(async () => {
+      notifyWorkspaceMutated("src/a.ts");
+    });
+    expect(getByTestId("disk-conflict-banner")).toBeTruthy();
+
+    await act(async () => {
+      getByTestId("disk-conflict-reload").click();
+    });
+
+    await waitFor(() => {
+      expect(api.readFile).toHaveBeenCalledTimes(2);
+      expect(getByTestId("cm-value").textContent).toContain("v2-from-agent");
+    });
+    expect(queryByTestId("disk-conflict-banner")).toBeNull();
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it("FileEditorPane conflict Keep mine dismisses notice and preserves edits", async () => {
+    const onDirtyChange = vi.fn();
+    const { getByTestId, queryByTestId } = render(
+      <FileEditorPane
+        path="src/a.ts"
+        onClose={() => {}}
+        onDirtyChange={onDirtyChange}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(getByTestId("cm-value").textContent).toContain("v1");
+    });
+
+    await act(async () => {
+      getByTestId("cm-dirty").click();
+    });
+    await act(async () => {
+      notifyWorkspaceMutated("src/a.ts");
+    });
+    expect(getByTestId("disk-conflict-banner")).toBeTruthy();
+
+    await act(async () => {
+      getByTestId("disk-conflict-keep").click();
+    });
+
+    expect(queryByTestId("disk-conflict-banner")).toBeNull();
+    expect(getByTestId("cm-value").textContent).toContain("local-edit");
+    expect(api.readFile).toHaveBeenCalledTimes(1);
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
   });
 
   it("action_result with types=file + path notifies workspace mutation bus", () => {

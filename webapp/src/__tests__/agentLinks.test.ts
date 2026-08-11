@@ -43,6 +43,22 @@ describe("agentLinks detection", () => {
     expect(looksLikePathInlineCode("npm.cmd")).toBe(false);
   });
 
+  it("treats spaced filesystem paths as files, not shell commands", () => {
+    expect(looksLikeShellCommand("/Users/me/My Projects/app.ts")).toBe(false);
+    expect(looksLikeFilePath("/Users/me/My Projects/app.ts")).toBe(true);
+    expect(looksLikeFilePath('"/Users/me/My Projects/app.ts"')).toBe(true);
+    expect(parseFileHref("/Users/me/My Projects/app.ts:12")).toEqual({
+      path: "/Users/me/My Projects/app.ts",
+      line: 12,
+      col: undefined,
+    });
+    expect(parseFileHref('"/Users/me/My Projects/app.ts"')).toEqual({
+      path: "/Users/me/My Projects/app.ts",
+      line: undefined,
+      col: undefined,
+    });
+  });
+
   it("parses line:col suffixes", () => {
     expect(parseFileHref("src/main.py:10")).toEqual({
       path: "src/main.py",

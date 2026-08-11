@@ -30,6 +30,27 @@ describe("tokenizeClickableOutput", () => {
     const segs = tokenizeClickableOutput("running npm.cmd\n");
     expect(segs.every((s) => s.kind === "text")).toBe(true);
   });
+
+  it("tokenizes quoted and unquoted spaced paths without prose spam", () => {
+    const spaced = tokenizeClickableOutput(
+      "boom /Users/me/My Projects/app.ts:3\n",
+    );
+    const spacedFile = spaced.find((s) => s.kind === "file");
+    expect(spacedFile && spacedFile.kind === "file" ? spacedFile.path : null).toBe(
+      "/Users/me/My Projects/app.ts:3",
+    );
+
+    const quoted = tokenizeClickableOutput(
+      'open "/Users/me/My Projects/app.ts" ok\n',
+    );
+    const quotedFile = quoted.find((s) => s.kind === "file");
+    expect(quotedFile && quotedFile.kind === "file" ? quotedFile.path : null).toBe(
+      "/Users/me/My Projects/app.ts",
+    );
+
+    const prose = tokenizeClickableOutput("see my file please\n");
+    expect(prose.every((s) => s.kind === "text")).toBe(true);
+  });
 });
 
 describe("pathTokenInCodeLine", () => {

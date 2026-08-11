@@ -12,6 +12,7 @@ import {
   Folder,
   GripVertical,
   Image as ImageIcon,
+  Library,
   ListChecks,
   Loader2,
   Pencil,
@@ -126,6 +127,8 @@ export default function ComposerDock({
   insertMention,
   insertFolder,
   insertSymbol,
+  insertCodebase,
+  showCodebaseMention,
   insertSlashCommand,
   handleQueueAdd,
   stop,
@@ -216,6 +219,8 @@ export default function ComposerDock({
   insertMention: (fileName: string) => void;
   insertFolder: (folderPath: string) => void;
   insertSymbol: (symbolName: string) => void;
+  insertCodebase: () => void;
+  showCodebaseMention: boolean;
   insertSlashCommand: (cmd: string) => void;
   handleQueueAdd: () => void;
   stop: () => void;
@@ -654,20 +659,42 @@ export default function ComposerDock({
             </div>
           )}
 
-          {mentionSearch !== null && (filteredFiles.length > 0 || filteredFolders.length > 0 || symbolResults.length > 0 || mentionListingCap) && (
+          {mentionSearch !== null && (showCodebaseMention || filteredFiles.length > 0 || filteredFolders.length > 0 || symbolResults.length > 0 || mentionListingCap) && (
             <div className="absolute left-2 bottom-full mb-1.5 z-50 max-h-[250px] w-[340px] overflow-y-auto bg-panel border border-edge rounded-xl shadow-2xl py-1">
-              {filteredFiles.length > 0 && (
+              {showCodebaseMention && (
                 <>
                   <div className="px-2.5 py-1 text-[10px] uppercase font-bold tracking-wider text-faint border-b border-edge/30 select-none">
+                    Scope
+                  </div>
+                  <div
+                    onClick={() => insertCodebase()}
+                    onMouseEnter={() => onSetSelectedFileIndex(0)}
+                    className={`flex items-center gap-2 px-3 py-1.5 text-[11.5px] cursor-pointer transition select-none ${
+                      selectedFileIndex === 0 ? "bg-panel2 text-accent font-medium" : "text-txt/90 hover:bg-panel2/50"
+                    }`}
+                  >
+                    <Library size={11.5} className="shrink-0 opacity-60" />
+                    <span className="truncate flex-1 font-mono">Codebase</span>
+                    <span className="text-[9px] font-mono px-1 py-0.2 bg-edge/30 rounded text-muted shrink-0 lowercase">
+                      codebase
+                    </span>
+                  </div>
+                </>
+              )}
+
+              {filteredFiles.length > 0 && (
+                <>
+                  <div className={`px-2.5 py-1 text-[10px] uppercase font-bold tracking-wider text-faint border-b border-edge/30 select-none ${showCodebaseMention ? "mt-1" : ""}`}>
                     Files
                   </div>
                   {filteredFiles.map((file, idx) => {
-                    const isSelected = idx === selectedFileIndex;
+                    const globalIdx = (showCodebaseMention ? 1 : 0) + idx;
+                    const isSelected = globalIdx === selectedFileIndex;
                     return (
                       <div
                         key={file}
                         onClick={() => insertMention(file)}
-                        onMouseEnter={() => onSetSelectedFileIndex(idx)}
+                        onMouseEnter={() => onSetSelectedFileIndex(globalIdx)}
                         className={`flex items-center gap-2 px-3 py-1.5 text-[11.5px] cursor-pointer transition select-none ${
                           isSelected ? "bg-panel2 text-accent font-medium" : "text-txt/90 hover:bg-panel2/50"
                         }`}
@@ -686,7 +713,8 @@ export default function ComposerDock({
                     Folders
                   </div>
                   {filteredFolders.map((folder, idx) => {
-                    const globalIdx = filteredFiles.length + idx;
+                    const globalIdx =
+                      (showCodebaseMention ? 1 : 0) + filteredFiles.length + idx;
                     const isSelected = globalIdx === selectedFileIndex;
                     return (
                       <div
@@ -717,7 +745,11 @@ export default function ComposerDock({
                     )}
                   </div>
                   {symbolResults.map((sym, idx) => {
-                    const globalIdx = filteredFiles.length + filteredFolders.length + idx;
+                    const globalIdx =
+                      (showCodebaseMention ? 1 : 0) +
+                      filteredFiles.length +
+                      filteredFolders.length +
+                      idx;
                     const isSelected = globalIdx === selectedFileIndex;
                     return (
                       <div

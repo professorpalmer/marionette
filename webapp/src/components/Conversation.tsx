@@ -82,10 +82,13 @@ import {
 import ConversationChatColumn from "./conversation/ConversationChatColumn";
 import {
   appendMentionsToInput,
+  buildCodebaseInsert,
   buildFolderInsert,
   buildMentionInsert,
   buildSymbolInsert,
   clampSelectIndex,
+  codebaseMentionMatches,
+  codebaseQueryFromMentionSearch,
   cycleSelectIndex,
   detectComposerTrigger,
   filterMentionPaths,
@@ -1197,13 +1200,27 @@ export default function Conversation({
     }
   }, [mentionSearch]);
 
+  const showCodebaseMention =
+    mentionSearch !== null && codebaseMentionMatches(mentionSearch);
+  const codebaseMentionOffset = showCodebaseMention ? 1 : 0;
+
   // Keep selectedFileIndex bounded within combined total mentions count
   useEffect(() => {
-    const total = filteredFiles.length + filteredFolders.length + symbolResults.length;
+    const total =
+      codebaseMentionOffset +
+      filteredFiles.length +
+      filteredFolders.length +
+      symbolResults.length;
     if (selectedFileIndex >= total && total > 0) {
       setSelectedFileIndex(clampSelectIndex(selectedFileIndex, total));
     }
-  }, [filteredFiles, filteredFolders, symbolResults, selectedFileIndex]);
+  }, [
+    codebaseMentionOffset,
+    filteredFiles,
+    filteredFolders,
+    symbolResults,
+    selectedFileIndex,
+  ]);
 
   const insertMention = (fileName: string) => {
     if (mentionIndex === -1) return;
@@ -1252,6 +1269,30 @@ export default function Conversation({
       mentionIndex,
       taRef.current?.selectionStart || mentionIndex,
       symbolName,
+    );
+    setInput(next);
+    setMentionSearch(null);
+    setMentionIndex(-1);
+
+    setTimeout(() => {
+      if (taRef.current) {
+        taRef.current.focus();
+        taRef.current.setSelectionRange(cursor, cursor);
+      }
+    }, 10);
+  };
+
+  const insertCodebase = () => {
+    if (mentionIndex === -1) return;
+    const filter =
+      mentionSearch !== null
+        ? codebaseQueryFromMentionSearch(mentionSearch)
+        : undefined;
+    const { next, cursor } = buildCodebaseInsert(
+      input,
+      mentionIndex,
+      taRef.current?.selectionStart || mentionIndex,
+      filter,
     );
     setInput(next);
     setMentionSearch(null);
@@ -1510,7 +1551,10 @@ export default function Conversation({
     }
 
     const totalMentions =
-      filteredFiles.length + filteredFolders.length + symbolResults.length;
+      codebaseMentionOffset +
+      filteredFiles.length +
+      filteredFolders.length +
+      symbolResults.length;
     if (mentionSearch !== null && totalMentions > 0) {
       if (e.key === "ArrowDown") {
         setSelectedFileIndex((prev) => cycleSelectIndex(prev, 1, totalMentions));
@@ -1523,18 +1567,20 @@ export default function Conversation({
         return;
       }
       if (e.key === "Enter") {
-        if (selectedFileIndex < filteredFiles.length) {
-          insertMention(filteredFiles[selectedFileIndex]);
-        } else if (
-          selectedFileIndex < filteredFiles.length + filteredFolders.length
-        ) {
-          const folderIdx = selectedFileIndex - filteredFiles.length;
-          insertFolder(filteredFolders[folderIdx]);
+        if (showCodebaseMention && selectedFileIndex === 0) {
+          insertCodebase();
         } else {
-          const symIdx =
-            selectedFileIndex - filteredFiles.length - filteredFolders.length;
-          if (symbolResults[symIdx]) {
-            insertSymbol(symbolResults[symIdx].name);
+          const idx = selectedFileIndex - codebaseMentionOffset;
+          if (idx < filteredFiles.length) {
+            insertMention(filteredFiles[idx]);
+          } else if (idx < filteredFiles.length + filteredFolders.length) {
+            const folderIdx = idx - filteredFiles.length;
+            insertFolder(filteredFolders[folderIdx]);
+          } else {
+            const symIdx = idx - filteredFiles.length - filteredFolders.length;
+            if (symbolResults[symIdx]) {
+              insertSymbol(symbolResults[symIdx].name);
+            }
           }
         }
         e.preventDefault();
@@ -2485,6 +2531,8 @@ export default function Conversation({
         insertMention={insertMention}
         insertFolder={insertFolder}
         insertSymbol={insertSymbol}
+        insertCodebase={insertCodebase}
+        showCodebaseMention={showCodebaseMention}
         insertSlashCommand={insertSlashCommand}
         handleQueueAdd={handleQueueAdd}
         stop={stop}
