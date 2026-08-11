@@ -2856,9 +2856,15 @@ function SwarmResultCard({ jobId, applied, files, summary, error, objective, hel
       data-outcome={tone}
     >
       <button
-        onClick={() => hasBody && setOpen((v) => !v)}
+        type="button"
+        onClick={() => {
+          // Post-hydrate, pending_review receipts are gone; held cards are the
+          // durable Review re-entry (same focus+refresh as the SSE receipt).
+          if (tone === "held") focusReviewTabAndRefresh();
+          if (hasBody) setOpen((v) => !v);
+        }}
         className={`flex items-center gap-2 px-2.5 py-1.5 text-[11px] w-full text-left transition-colors ${hasBody ? "hover:bg-panel2/40 cursor-pointer" : "cursor-default"}`}
-        title={objective || undefined}
+        title={tone === "held" ? "Open Review tab" : (objective || undefined)}
       >
         {tone === "applied"
           ? <CheckCircle2 size={13} className="text-good shrink-0" />

@@ -550,6 +550,42 @@ describe("transcript presentation contract", () => {
     window.removeEventListener("harness-focus-tab", focusSpy as EventListener);
     window.removeEventListener("harness-reviews-refresh", refreshSpy);
   });
+
+  it("held_for_review SwarmResultCard click focuses Review tab and refreshes", () => {
+    const focusSpy = vi.fn();
+    const refreshSpy = vi.fn();
+    window.addEventListener("harness-focus-tab", focusSpy as EventListener);
+    window.addEventListener("harness-reviews-refresh", refreshSpy);
+
+    render(
+      <TranscriptList
+        {...listProps([
+          {
+            kind: "swarm_result",
+            job_id: "job_heldreentry01",
+            applied: false,
+            files: ["a.ts"],
+            summary: "Patch held for review",
+            error: null,
+            objective: "ship patch",
+            held_for_review: true,
+          },
+        ])}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Swarm/i }));
+    const heldCard = screen.getByTestId("swarm-result-card");
+    expect(heldCard).toHaveAttribute("data-outcome", "held");
+    fireEvent.click(within(heldCard).getByRole("button", { name: /held for review/i }));
+
+    expect(focusSpy).toHaveBeenCalled();
+    expect((focusSpy.mock.calls[0][0] as CustomEvent).detail).toBe("review");
+    expect(refreshSpy).toHaveBeenCalled();
+
+    window.removeEventListener("harness-focus-tab", focusSpy as EventListener);
+    window.removeEventListener("harness-reviews-refresh", refreshSpy);
+  });
 });
 
 describe("investigation UX residual debts (nested / fold prefs / workerStream)", () => {
