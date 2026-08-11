@@ -172,6 +172,7 @@ export {
   formatHelpSlashReply,
   formatCompactCompleteMessage,
   formatCompactErrorMessage,
+  shouldApplyCompactSettle,
   formatSteerErrorMessage,
   shouldClearSteerDraftOnResult,
   formatRenderCommandErrorMessage,

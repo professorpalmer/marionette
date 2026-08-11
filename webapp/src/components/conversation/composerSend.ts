@@ -75,6 +75,18 @@ export function formatCompactCompleteMessage(
   );
 }
 
+/**
+ * Apply /compact (or harness-compact-session) settle paints only while still
+ * on the session that started the request — soft-fail so a mid-flight A→B
+ * switch never paints A's thinking/receipt into B's transcript.
+ */
+export function shouldApplyCompactSettle(opts: {
+  requestSessionId: string | null;
+  activeSessionId: string | null;
+}): boolean {
+  return opts.requestSessionId === opts.activeSessionId;
+}
+
 export function formatCompactErrorMessage(err: unknown): string {
   const reason =
     err && typeof err === "object" && "reason" in err

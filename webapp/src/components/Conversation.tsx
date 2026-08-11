@@ -64,6 +64,7 @@ import {
   executeSendGate,
   formatCompactCompleteMessage,
   formatCompactErrorMessage,
+  shouldApplyCompactSettle,
   formatHelpSlashReply,
   formatRenderCommandErrorMessage,
   formatSteerErrorMessage,
@@ -1298,6 +1299,7 @@ export default function Conversation({
       setCompactingStatus(null);
     };
     const onCompactSession = () => {
+      const compactSid = activeSessionIdRef.current;
       const thinkingId = newThinkingId();
       setEditingIndex(null);
       setStatus("thinking");
@@ -1311,6 +1313,10 @@ export default function Conversation({
       ]);
       api.compactSession()
         .then((res) => {
+          if (!shouldApplyCompactSettle({
+            requestSessionId: compactSid,
+            activeSessionId: activeSessionIdRef.current,
+          })) return;
           setStatus("done");
           setItems((p) => [
             ...p.filter((it) => !(it.kind === "thinking" && it.id === thinkingId)),
@@ -1324,6 +1330,10 @@ export default function Conversation({
           ]);
         })
         .catch((err) => {
+          if (!shouldApplyCompactSettle({
+            requestSessionId: compactSid,
+            activeSessionId: activeSessionIdRef.current,
+          })) return;
           setStatus("error");
           setItems((p) => [
             ...p.filter((it) => !(it.kind === "thinking" && it.id === thinkingId)),
@@ -2412,6 +2422,7 @@ export default function Conversation({
     if (slash.kind === "compact") {
       // Local slash path: echo the command into the transcript so Send feels
       // like a normal prompt (compaction itself still bypasses the pilot loop).
+      const compactSid = activeSessionIdRef.current;
       const thinkingId = newThinkingId();
       setInput("");
       setEditingIndex(null);
@@ -2427,6 +2438,10 @@ export default function Conversation({
       ]);
       api.compactSession()
         .then((res) => {
+          if (!shouldApplyCompactSettle({
+            requestSessionId: compactSid,
+            activeSessionId: activeSessionIdRef.current,
+          })) return;
           setStatus("done");
           setItems((p) => [
             ...p.filter((it) => !(it.kind === "thinking" && it.id === thinkingId)),
@@ -2440,6 +2455,10 @@ export default function Conversation({
           ]);
         })
         .catch((err) => {
+          if (!shouldApplyCompactSettle({
+            requestSessionId: compactSid,
+            activeSessionId: activeSessionIdRef.current,
+          })) return;
           setStatus("error");
           setItems((p) => [
             ...p.filter((it) => !(it.kind === "thinking" && it.id === thinkingId)),

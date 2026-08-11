@@ -150,6 +150,7 @@ import {
   executeSendGate,
   formatCompactCompleteMessage,
   formatCompactErrorMessage,
+  shouldApplyCompactSettle,
   formatHelpSlashReply,
   localSlashChromeAction,
   localSlashPaletteAction,
@@ -2204,6 +2205,35 @@ describe("composerSend module", () => {
     // a leftover Revert? banner sitting on an idle composer.
     expect(editNoticeAfterSend(true)).toBeNull();
     expect(editNoticeAfterSend(false)).toBeNull();
+  });
+
+  it("shouldApplyCompactSettle fences mid-flight A→B session switch", () => {
+    // Manual /compact and harness-compact-session settle must drop when the
+    // active session changed — otherwise A's receipt paints into B's transcript.
+    expect(
+      shouldApplyCompactSettle({
+        requestSessionId: "session-a",
+        activeSessionId: "session-a",
+      }),
+    ).toBe(true);
+    expect(
+      shouldApplyCompactSettle({
+        requestSessionId: "session-a",
+        activeSessionId: "session-b",
+      }),
+    ).toBe(false);
+    expect(
+      shouldApplyCompactSettle({
+        requestSessionId: "session-a",
+        activeSessionId: null,
+      }),
+    ).toBe(false);
+    expect(
+      shouldApplyCompactSettle({
+        requestSessionId: null,
+        activeSessionId: null,
+      }),
+    ).toBe(true);
   });
 
   it("runStopFlow settles local UI then awaits interrupt", async () => {
