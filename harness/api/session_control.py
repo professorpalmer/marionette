@@ -31,6 +31,9 @@ class SessionControlServices:
     save_transcript: Optional[Callable[..., None]] = None
     set_resume_latch: Optional[Callable[[], None]] = None
     persist_boot_usage: Optional[Callable[..., None]] = None
+    # Peek leaves the latch armed so StatusBar / LeftRail / runners polls cannot
+    # steal the one-shot; consume is opt-in via ?consume_resume=1 (Conversation).
+    peek_resume_pending: Optional[Callable[[bool], bool]] = None
     consume_resume_pending: Optional[Callable[[bool], bool]] = None
     checkpoint_transcript: Optional[Callable[[], None]] = None
     context_at: Optional[Callable[..., Any]] = None
@@ -252,14 +255,31 @@ def post_session_compact(svc: SessionControlServices) -> tuple[int, JsonPayload]
     }
 
 
-def get_session_state(svc: SessionControlServices) -> tuple[int, JsonPayload]:
-    """GET /api/session/state."""
+def _truthy_qs_flag(qs: dict, key: str) -> bool:
+    raw = (qs.get(key, [""])[0] or "").strip().lower()
+    return raw in ("1", "true", "yes")
+
+
+def get_session_state(qs: dict, svc: SessionControlServices) -> tuple[int, JsonPayload]:
+    """GET /api/session/state.
+
+    ``resume_pending`` peeks by default so incidental polls cannot clear the
+    self-edit restart latch. Pass ``?consume_resume=1`` to consume once (the
+    Conversation resume-schedule path).
+    """
     pilot = svc.get_pilot()
     runners = svc.get_runners()
     state = pilot.state()
+    idle = state == "idle"
     resume_pending = False
-    if svc.consume_resume_pending is not None:
-        resume_pending = svc.consume_resume_pending(state == "idle")
+    if _truthy_qs_flag(qs or {}, "consume_resume"):
+        if svc.consume_resume_pending is not None:
+            resume_pending = svc.consume_resume_pending(idle)
+    elif svc.peek_resume_pending is not None:
+        resume_pending = svc.peek_resume_pending(idle)
+    elif svc.consume_resume_pending is not None:
+        # Legacy services without peek: never consume on a plain state read.
+        resume_pending = False
     goal = {}
     try:
         if pilot is not None and hasattr(pilot, "session_goal_dict"):

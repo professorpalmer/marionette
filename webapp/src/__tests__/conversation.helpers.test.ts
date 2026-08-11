@@ -3213,6 +3213,25 @@ describe("pilot tool-action visibility (prep promotion + result upsert)", () => 
     })).toBe(true);
   });
 
+  it("shouldApplySwarmLiveMerge also fences getSwarmResults apply (R9)", () => {
+    // Conversation swarm-results poll captures pollSid/pollGen before await;
+    // after switch, pilot_resume / wiki / memory must not apply into B.
+    expect(shouldApplySwarmLiveMerge({
+      pollGen: 1,
+      currentGen: 2,
+      pollSessionId: "sess-a",
+      cachedSessionId: "sess-b",
+      activeSessionId: "sess-b",
+    })).toBe(false);
+    expect(shouldApplySwarmLiveMerge({
+      pollGen: 2,
+      currentGen: 2,
+      pollSessionId: "sess-b",
+      cachedSessionId: "sess-b",
+      activeSessionId: "sess-b",
+    })).toBe(true);
+  });
+
   it("foldSwarmLiveJobsAfterReload leaves running tool-prep alone when live jobs empty", () => {
     // Mid-turn / reconnecting reload: empty swarmLive is not an authoritative
     // turn terminal — must not false-complete non-job tool-prep cards.

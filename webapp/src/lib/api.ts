@@ -457,8 +457,8 @@ export type DeliveryMode = "auto" | "steer" | "follow_up";
 export type SessionState = {
   state: "idle" | "thinking" | "awaiting_swarm";
   pending_swarms: boolean;
-  // Set when the transcript ends on an unanswered user turn while idle -- the
-  // signal to auto-continue after a backend restart (self-edit apply).
+  // Explicit self-edit restart latch (armed by persist/restart). Plain GETs
+  // peek; only ?consume_resume=1 clears it (Conversation resume schedule).
   resume_pending?: boolean;
   // Per-session runner liveness from SessionRunnerRegistry (multi-session Phase B).
   // "attaching" = deferred cold pilot build (not a user turn — no thinking chrome).
@@ -1057,7 +1057,14 @@ export const api = {
     return normalizeSessionSearchHits(raw);
   },
   sessionTranscript: (session: string) => getJSON<{ history: any[]; display?: any[]; job_ids?: string[] }>(withToken(`/api/sessions/transcript?session=${encodeURIComponent(session)}`)),
-  getSessionState: () => getJSON<SessionState>(withToken("/api/session/state")),
+  /** Session runners/state. Pass ``consumeResume`` only from the Conversation
+   * resume-schedule path — plain polls must peek so they cannot steal the latch. */
+  getSessionState: (opts?: { consumeResume?: boolean }) => {
+    const path = opts?.consumeResume
+      ? "/api/session/state?consume_resume=1"
+      : "/api/session/state";
+    return getJSON<SessionState>(withToken(path));
+  },
   getSessionGoal: () =>
     getJSON<{ ok: boolean; goal: SessionGoal }>(withToken("/api/session/goal")),
   setSessionGoal: (text: string, tokenBudget?: number) =>

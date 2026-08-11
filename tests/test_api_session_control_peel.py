@@ -39,6 +39,7 @@ def _svc(pilot=None, runners=None, upload_dir="/uploads", sessions=None):
         save_transcript=lambda *a, **k: None,
         set_resume_latch=lambda: None,
         persist_boot_usage=lambda **k: None,
+        peek_resume_pending=lambda idle: False,
         consume_resume_pending=lambda idle: False,
         checkpoint_transcript=lambda: None,
         context_at=lambda *a: None,
@@ -250,10 +251,51 @@ def test_compact_and_state():
     ack = getattr(pilot, "_compaction_advice_ack", None)
     assert isinstance(ack, dict) and ack.get("reason") == "ok"
 
-    code2, state = get_session_state(svc)
+    code2, state = get_session_state({}, svc)
     assert code2 == 200
     assert state["state"] == "idle"
     assert state["active_view_id"] == "v1"
+
+
+def test_session_state_resume_pending_peek_vs_consume():
+    """Plain GET peeks; only ?consume_resume=1 clears the latch."""
+    calls = {"peek": 0, "consume": 0}
+    latch = {"armed": True}
+
+    def peek(idle: bool) -> bool:
+        calls["peek"] += 1
+        return bool(latch["armed"] and idle)
+
+    def consume(idle: bool) -> bool:
+        calls["consume"] += 1
+        if not (latch["armed"] and idle):
+            return False
+        latch["armed"] = False
+        return True
+
+    pilot = _CompactingPilot()
+    svc = _svc(pilot=pilot)
+    svc.peek_resume_pending = peek
+    svc.consume_resume_pending = consume
+
+    code, state = get_session_state({}, svc)
+    assert code == 200 and state["resume_pending"] is True
+    assert calls == {"peek": 1, "consume": 0}
+    assert latch["armed"] is True
+
+    code, state = get_session_state({"consume_resume": ["0"]}, svc)
+    assert code == 200 and state["resume_pending"] is True
+    assert calls == {"peek": 2, "consume": 0}
+    assert latch["armed"] is True
+
+    code, state = get_session_state({"consume_resume": ["1"]}, svc)
+    assert code == 200 and state["resume_pending"] is True
+    assert calls == {"peek": 2, "consume": 1}
+    assert latch["armed"] is False
+
+    code, state = get_session_state({"consume_resume": ["1"]}, svc)
+    assert code == 200 and state["resume_pending"] is False
+    assert calls["consume"] == 2
 
 
 def test_compact_noop_is_not_success():

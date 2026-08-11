@@ -583,7 +583,9 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
             _git_api.get_git_branches, services=svc.git_services, qs_arg="repo"),
         "/api/git/diff": _get_git_diff,
         "/api/session/state": get_json(
-            _sc_api.get_session_state, services=svc.session_control_services),
+            _sc_api.get_session_state,
+            services=svc.session_control_services,
+            pass_qs=True),
         "/api/session/goal": get_json(
             _sc_api.get_session_goal, services=svc.session_control_services),
         "/api/session/context_at": _get_session_context_at,

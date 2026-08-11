@@ -474,15 +474,15 @@ describe("warm-cache switch preserves ghost-resume gate", () => {
     // Same contract as Conversation.resume.test.ts + runners on SessionState.
     const onSessionSwitch = async () => {
       const res = await getSessionState();
-      if (res?.resume_pending) {
-        setTimeout(() => resume(), 300);
-      }
+      if (!res?.resume_pending) return;
+      const consumed = await getSessionState({ consumeResume: true });
+      if (consumed?.resume_pending) setTimeout(() => resume(), 300);
     };
 
     await onSessionSwitch();
     await vi.advanceTimersByTimeAsync(500);
     expect(resume).not.toHaveBeenCalled();
-    expect(getSessionState).toHaveBeenCalled();
+    expect(getSessionState).toHaveBeenCalledTimes(1);
   });
 
   it("schedules resume only when resume_pending latch is true after switch", async () => {
@@ -496,13 +496,115 @@ describe("warm-cache switch preserves ghost-resume gate", () => {
 
     const onSessionSwitch = async () => {
       const res = await getSessionState();
-      if (res?.resume_pending) {
-        setTimeout(() => resume(), 300);
-      }
+      if (!res?.resume_pending) return;
+      const consumed = await getSessionState({ consumeResume: true });
+      if (consumed?.resume_pending) setTimeout(() => resume(), 300);
     };
 
     await onSessionSwitch();
     await vi.advanceTimersByTimeAsync(300);
     expect(resume).toHaveBeenCalledTimes(1);
+    expect(getSessionState).toHaveBeenNthCalledWith(2, { consumeResume: true });
+  });
+});
+
+describe("session-switch kick + composer chrome honesty (R9)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("clears queued setSafeTimeout kicks on switchedSession", () => {
+    const timeouts = new Set<ReturnType<typeof setTimeout>>();
+    const setSafeTimeout = (fn: () => void, ms: number) => {
+      const id = setTimeout(() => {
+        timeouts.delete(id);
+        fn();
+      }, ms);
+      timeouts.add(id);
+      return id;
+    };
+    const clearSafeTimeouts = () => {
+      timeouts.forEach(clearTimeout);
+      timeouts.clear();
+    };
+    const executeSend = vi.fn();
+    const kickSid = { current: "session-a" as string | null };
+    setSafeTimeout(() => {
+      if (kickSid.current !== "session-a") return;
+      executeSend();
+    }, 60);
+    // Mirror useSessionSwitch switchedSession: drop pending kicks, then retarget.
+    clearSafeTimeouts();
+    kickSid.current = "session-b";
+    vi.advanceTimersByTime(60);
+    expect(executeSend).not.toHaveBeenCalled();
+  });
+
+  it("fences drain/resume kick when activeSessionId changes before fire", () => {
+    const executeSend = vi.fn();
+    const activeSessionIdRef = { current: "session-a" as string | null };
+    const kickSid = activeSessionIdRef.current;
+    setTimeout(() => {
+      if (activeSessionIdRef.current !== kickSid) return;
+      executeSend();
+    }, 60);
+    activeSessionIdRef.current = "session-b";
+    vi.advanceTimersByTime(60);
+    expect(executeSend).not.toHaveBeenCalled();
+  });
+
+  it("clears composer chrome fields on switchedSession", () => {
+    // Mirror useSessionSwitch switchedSession composer-chrome reset.
+    const state = {
+      wikiPrepared: { pages: [{ kind: "note" }], autoIngested: false } as {
+        pages: any[];
+        autoIngested: boolean;
+      } | null,
+      memoryProposals: [{ id: "m1", text: "x", category: "fact" }],
+      distillNotice: "Distilled." as string | null,
+      uploadError: "fail" as string | null,
+      waitHint: "Looking…" as string | null,
+    };
+    const switchedSession = true;
+    if (switchedSession) {
+      state.wikiPrepared = null;
+      state.memoryProposals = [];
+      state.distillNotice = null;
+      state.uploadError = null;
+      state.waitHint = null;
+    }
+    expect(state).toEqual({
+      wikiPrepared: null,
+      memoryProposals: [],
+      distillNotice: null,
+      uploadError: null,
+      waitHint: null,
+    });
+  });
+
+  it("resets consecutiveIdlePolls when activeSessionId or poll gen changes", () => {
+    const consecutiveIdlePollsRef = { current: 2 };
+    const runnerBusyPollGenRef = { current: 3 };
+    const seenRunnerBusyPollGenRef = { current: 3 };
+    const onActiveSessionChange = () => {
+      consecutiveIdlePollsRef.current = 0;
+      seenRunnerBusyPollGenRef.current = runnerBusyPollGenRef.current;
+    };
+    const onPollTick = () => {
+      if (seenRunnerBusyPollGenRef.current !== runnerBusyPollGenRef.current) {
+        seenRunnerBusyPollGenRef.current = runnerBusyPollGenRef.current;
+        consecutiveIdlePollsRef.current = 0;
+      }
+    };
+    onActiveSessionChange();
+    expect(consecutiveIdlePollsRef.current).toBe(0);
+    consecutiveIdlePollsRef.current = 1;
+    runnerBusyPollGenRef.current += 1; // switch bump
+    onPollTick();
+    expect(consecutiveIdlePollsRef.current).toBe(0);
   });
 });

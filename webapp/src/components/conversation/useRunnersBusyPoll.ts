@@ -3,7 +3,7 @@
  * backend runner is busy -- even after SSE detach on session switch.
  */
 
-import { useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { api } from "../../lib/api";
 import { usePolling } from "../../lib/usePolling";
 import type { Item } from "../TranscriptList";
@@ -70,12 +70,24 @@ export function useRunnersBusyPoll(deps: UseRunnersBusyPollDeps) {
 
   // Consecutive idle sightings while detachedBusy; reset whenever runners busy.
   const consecutiveIdlePollsRef = useRef(0);
+  // Track gen so a bump from useSessionSwitch (or a late A poll) drops A's
+  // idle-confirm credit before B can finalize early.
+  const seenRunnerBusyPollGenRef = useRef(runnerBusyPollGenRef.current);
+
+  useEffect(() => {
+    consecutiveIdlePollsRef.current = 0;
+    seenRunnerBusyPollGenRef.current = runnerBusyPollGenRef.current;
+  }, [activeSessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Poll runners so composer shows Stop/Steer while the active session's
   // backend runner is busy -- even after SSE detach on session switch.
   usePolling(() => {
     if (!activeSessionId) return;
     if (localStreamActiveRef.current) return;
+    if (seenRunnerBusyPollGenRef.current !== runnerBusyPollGenRef.current) {
+      seenRunnerBusyPollGenRef.current = runnerBusyPollGenRef.current;
+      consecutiveIdlePollsRef.current = 0;
+    }
     if (userStoppedRef.current) {
       // Stop must stick: ignore runners=running while the abandoned generator
       // unwinds; keep chrome idle until the user sends again.

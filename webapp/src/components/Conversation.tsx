@@ -499,11 +499,14 @@ export default function Conversation({
     timeoutsRef.current.add(id);
     return id;
   };
+  const clearSafeTimeouts = () => {
+    timeoutsRef.current.forEach(clearTimeout);
+    timeoutsRef.current.clear();
+  };
 
   useEffect(() => {
     return () => {
-      timeoutsRef.current.forEach(clearTimeout);
-      timeoutsRef.current.clear();
+      clearSafeTimeouts();
     };
   }, []);
 
@@ -1156,6 +1159,12 @@ export default function Conversation({
     composerInputRef,
     setAttachedImages,
     attachedImagesRef,
+    setWikiPrepared,
+    setMemoryProposals,
+    setDistillNotice,
+    setUploadError,
+    setWaitHint,
+    clearSafeTimeouts,
   });
 
 
@@ -1185,19 +1194,31 @@ export default function Conversation({
     processedSwarmJobIdsRef.current = [];
     setBackendPendingSwarms(false);
     if (activeSessionId) {
+      // Peek first for pending_swarms / latch visibility. Consume only once we
+      // commit to scheduling resume so a mid-flight switch cannot steal it.
+      const requestSid = activeSessionId;
+      const requestGen = transcriptLoadGenRef.current;
+      const stillCurrent = () => (
+        activeSessionIdRef.current === requestSid
+        && transcriptLoadGenRef.current === requestGen
+      );
       api.getSessionState()
         .then((res) => {
-          if (res) {
-            setBackendPendingSwarms(res.pending_swarms);
-            // resume_pending is an EXPLICIT one-shot latch from the self-edit
-            // restart path (backend /api/session/persist or /api/restart) -- NOT
-            // "transcript ends on a user turn". Only schedule auto-resume when
-            // the freshly-fetched state says so; mere session open/switch must
-            // never ghost-continue a past unanswered message.
-            if (res.resume_pending) {
-              setSafeTimeout(() => resumeTriggerRef.current(), 300);
-            }
-          }
+          if (!stillCurrent() || !res) return;
+          setBackendPendingSwarms(res.pending_swarms);
+          // resume_pending is an EXPLICIT one-shot latch from the self-edit
+          // restart path (backend /api/session/persist or /api/restart) -- NOT
+          // "transcript ends on a user turn". Only schedule auto-resume when
+          // the freshly-fetched state says so; mere session open/switch must
+          // never ghost-continue a past unanswered message.
+          if (!res.resume_pending) return;
+          return api.getSessionState({ consumeResume: true }).then((consumed) => {
+            if (!stillCurrent() || !consumed?.resume_pending) return;
+            setSafeTimeout(() => {
+              if (!stillCurrent()) return;
+              resumeTriggerRef.current();
+            }, 300);
+          });
         })
         .catch(() => {});
     }
@@ -1790,14 +1811,36 @@ export default function Conversation({
   // always-on poller. The in-flight guard keeps at most one round-trip pair
   // outstanding instead of stacking them onto an already-busy backend.
   usePolling(
-    () =>
-      api.getSwarmResults()
+    () => {
+      const pollSid = activeSessionId;
+      const pollGen = transcriptLoadGenRef.current;
+      return api.getSwarmResults()
         .then((res) => {
+          // Same session+gen fence as swarmLive: do not apply pilot_resume /
+          // swarm_result / wiki / memory into a session we already left.
+          if (!shouldApplySwarmLiveMerge({
+            pollGen,
+            currentGen: transcriptLoadGenRef.current,
+            pollSessionId: pollSid,
+            cachedSessionId: cachedSessionIdRef.current,
+            activeSessionId: cachedSessionIdRef.current,
+          })) {
+            return null;
+          }
           if (res && res.results && res.results.length > 0) {
             // At most one triggerResume per poll tick (first pilot_resume wins;
             // extras only set resumeQueuedRef). Mid-stream path already coalesces.
             let pollResumeFired = false;
             res.results.forEach((evt) => {
+              if (!shouldApplySwarmLiveMerge({
+                pollGen,
+                currentGen: transcriptLoadGenRef.current,
+                pollSessionId: pollSid,
+                cachedSessionId: cachedSessionIdRef.current,
+                activeSessionId: cachedSessionIdRef.current,
+              })) {
+                return;
+              }
               const action = classifySwarmPollEvent(evt);
               if (action.kind === "swarm_result") {
                 handleSwarmResult(action.data);
@@ -1838,17 +1881,15 @@ export default function Conversation({
           // Fence with the same generation + active-session guards as
           // useSessionSwitch so a late poll from a prior session cannot mutate
           // the current transcript.
-          const pollSid = activeSessionId;
-          const pollGen = transcriptLoadGenRef.current;
           return api.swarmLive().then((live) => {
             if (!shouldApplySwarmLiveMerge({
               pollGen,
               currentGen: transcriptLoadGenRef.current,
               pollSessionId: pollSid,
               cachedSessionId: cachedSessionIdRef.current,
-              activeSessionId,
+              activeSessionId: cachedSessionIdRef.current,
             })) {
-              return api.getSessionState();
+              return null;
             }
             const jobs = Array.isArray(live?.jobs) ? live.jobs : [];
             const hasActions = jobs.some(
@@ -1901,7 +1942,8 @@ export default function Conversation({
         })
         .catch((err) => {
           console.error("Failed to poll swarm results:", err);
-        }),
+        });
+    },
     2500,
     { enabled: swarmResultsPending },
   );
@@ -2150,7 +2192,9 @@ export default function Conversation({
     if (resumeQueuedRef.current) return;      // keep-alive continuation wins
     const next = queueItemsRef.current[0];
     if (!next || !next.text) return;
+    const kickSid = activeSessionIdRef.current;
     setSafeTimeout(() => {
+      if (activeSessionIdRef.current !== kickSid) return;
       if (cancelRef.current || resumeQueuedRef.current) return;
       setQueueItems((prev) => prev.filter((it) => it.id !== next.id));
       queueItemsRef.current = queueItemsRef.current.filter((it) => it.id !== next.id);
@@ -2167,6 +2211,7 @@ export default function Conversation({
       // Per-item model stamp (Hermes-style): apply before kicking the turn so a
       // playlist queued under deepseek does not run under a later kimi pick.
       const kick = async () => {
+        if (activeSessionIdRef.current !== kickSid) return;
         const stamped = next.model;
         if (stamped) {
           try {
@@ -2176,6 +2221,7 @@ export default function Conversation({
             /* best-effort; stream start also reconciles _cfg vs live pilot */
           }
         }
+        if (activeSessionIdRef.current !== kickSid) return;
         executeSendRef.current(next.text, auto, plan, false, nextImgs);
       };
       void kick();
@@ -2198,7 +2244,9 @@ export default function Conversation({
     // pick it up. Only clear it once we've actually committed to running.
     if (cancelRef.current) return;
     resumeQueuedRef.current = false;
+    const kickSid = activeSessionIdRef.current;
     setSafeTimeout(() => {
+      if (activeSessionIdRef.current !== kickSid) return;
       if (userStoppedRef.current || cancelRef.current) {
         if (!userStoppedRef.current) resumeQueuedRef.current = true;
         return;
@@ -2211,14 +2259,19 @@ export default function Conversation({
   const maybeRunApprovedCommandRetry = () => {
     const command = approvedCommandRetryRef.current;
     if (!command || cancelRef.current || userStoppedRef.current) return;
+    const kickSid = activeSessionIdRef.current;
     approvedCommandRetryRef.current = null;
-    executeSendRef.current(
-      "The operator approved one execution of this exact command. Retry it "
-        + "without changing any character, then continue the objective:\n\n"
-        + command,
-      true,
-      false,
-    );
+    setSafeTimeout(() => {
+      if (activeSessionIdRef.current !== kickSid) return;
+      if (cancelRef.current || userStoppedRef.current) return;
+      executeSendRef.current(
+        "The operator approved one execution of this exact command. Retry it "
+          + "without changing any character, then continue the objective:\n\n"
+          + command,
+        true,
+        false,
+      );
+    }, 60);
   };
   maybeRunApprovedCommandRetryRef.current = maybeRunApprovedCommandRetry;
 

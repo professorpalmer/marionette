@@ -1196,6 +1196,11 @@ def _load_resume_latch() -> None:
         _resume_latch = False
 
 
+def _peek_resume_pending(idle: bool) -> bool:
+    """True when the latch is armed and the pilot is idle (does not clear)."""
+    return bool(_resume_latch and idle)
+
+
 def _consume_resume_pending(idle: bool) -> bool:
     """True once when the latch is armed and the pilot is idle; then clear it."""
     global _resume_latch
@@ -1739,6 +1744,7 @@ def _session_control_services():
         save_transcript=save_transcript,
         set_resume_latch=_set_resume_latch,
         persist_boot_usage=_persist_boot_usage,
+        peek_resume_pending=_peek_resume_pending,
         consume_resume_pending=_consume_resume_pending,
         checkpoint_transcript=_checkpoint_transcript,
         context_at=_context_at,

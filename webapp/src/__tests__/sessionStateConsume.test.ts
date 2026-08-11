@@ -1,0 +1,24 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { getJSON, withToken } from "../lib/transport";
+
+vi.mock("../lib/transport", async () => {
+  const actual = await vi.importActual<typeof import("../lib/transport")>("../lib/transport");
+  return {
+    ...actual,
+    getJSON: vi.fn().mockResolvedValue({ state: "idle", pending_swarms: false }),
+  };
+});
+
+describe("api.getSessionState consume_resume query", () => {
+  afterEach(() => {
+    vi.mocked(getJSON).mockClear();
+  });
+
+  it("peeks by default and consumes only when consumeResume is set", async () => {
+    const { api } = await import("../lib/api");
+    await api.getSessionState();
+    expect(getJSON).toHaveBeenCalledWith(withToken("/api/session/state"));
+    await api.getSessionState({ consumeResume: true });
+    expect(getJSON).toHaveBeenCalledWith(withToken("/api/session/state?consume_resume=1"));
+  });
+});

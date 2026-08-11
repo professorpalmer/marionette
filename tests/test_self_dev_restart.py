@@ -92,9 +92,10 @@ def _harness_http_server():
             thread.join(timeout=_JOIN_TIMEOUT)
 
 
-def _session_state(port: int, token: str) -> dict:
+def _session_state(port: int, token: str, *, consume_resume: bool = False) -> dict:
+    qs = "?consume_resume=1" if consume_resume else ""
     req = urllib.request.Request(
-        f"http://127.0.0.1:{port}/api/session/state",
+        f"http://127.0.0.1:{port}/api/session/state{qs}",
         headers={"X-Harness-Token": token},
         method="GET",
     )
@@ -164,7 +165,7 @@ def test_trailing_user_turn_alone_does_not_report_resume_pending():
 
 
 def test_session_state_reports_resume_pending_after_explicit_latch():
-    """Self-dev restart flow: persist arms the latch; idle state reports true once."""
+    """Self-dev restart: persist arms latch; peek is sticky; consume is one-shot."""
     import harness.server as srv
 
     saved = list(srv._pilot._history)
@@ -180,12 +181,19 @@ def test_session_state_reports_resume_pending_after_explicit_latch():
             assert status == 200
             assert payload["ok"] is True
 
+            # Plain state polls (StatusBar / runners / switch) must peek only.
             data = _session_state(port, srv._TOKEN)
             assert data["resume_pending"] is True
+            data_peek2 = _session_state(port, srv._TOKEN)
+            assert data_peek2["resume_pending"] is True
 
-            # One-shot: consumed on report so a later view cannot re-fire.
-            data2 = _session_state(port, srv._TOKEN)
+            # Conversation resume path consumes once.
+            data_consume = _session_state(port, srv._TOKEN, consume_resume=True)
+            assert data_consume["resume_pending"] is True
+            data2 = _session_state(port, srv._TOKEN, consume_resume=True)
             assert data2["resume_pending"] is False
+            data_peek_after = _session_state(port, srv._TOKEN)
+            assert data_peek_after["resume_pending"] is False
     finally:
         srv._pilot._history = saved
         srv._clear_resume_latch()

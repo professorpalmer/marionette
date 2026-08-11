@@ -31,6 +31,7 @@ import {
   resolveComposerAttachmentsOnSwitch,
   type ComposerAttachedImage,
 } from "./composerAttachmentCache";
+import type { MemoryProposal } from "./streamEventHandler";
 import { createChatEventsReattach } from "./chatEventsReattach";
 import { cancelTypewriterWithoutFlush } from "./streamTypewriter";
 import { gatherSessionArtifacts } from "./sessionArtifacts";
@@ -102,6 +103,14 @@ export type UseSessionSwitchDeps = {
   setAttachedImages: Dispatch<SetStateAction<ComposerAttachedImage[]>>;
   /** Live composer attachments; kept in sync by Conversation for per-session cache. */
   attachedImagesRef: MutableRefObject<ComposerAttachedImage[]>;
+  /** Composer chrome that must not bleed across sessions (wiki/memory/notices). */
+  setWikiPrepared: Dispatch<SetStateAction<{ pages: any[]; autoIngested: boolean } | null>>;
+  setMemoryProposals: Dispatch<SetStateAction<MemoryProposal[]>>;
+  setDistillNotice: Dispatch<SetStateAction<string | null>>;
+  setUploadError: Dispatch<SetStateAction<string | null>>;
+  setWaitHint: Dispatch<SetStateAction<string | null>>;
+  /** Clear pending setSafeTimeout kicks so A→B cannot executeSend into B. */
+  clearSafeTimeouts: () => void;
 };
 
 /** Warm-cache switch + chatEvents reattach arming for the active session id. */
@@ -150,6 +159,12 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
     composerInputRef,
     setAttachedImages,
     attachedImagesRef,
+    setWikiPrepared,
+    setMemoryProposals,
+    setDistillNotice,
+    setUploadError,
+    setWaitHint,
+    clearSafeTimeouts,
   } = deps;
 
   // Warm-cache session switch: save outgoing transcript, hydrate incoming from
@@ -211,6 +226,14 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
       // Investigation / reasoning fold prefs are session-scoped — stable ids
       // must not reopen folds from the previous conversation.
       clearActivityFoldPrefs();
+      // Composer chrome is session-local (match R8 edit/queue clear style).
+      setWikiPrepared(null);
+      setMemoryProposals([]);
+      setDistillNotice(null);
+      setUploadError(null);
+      setWaitHint(null);
+      // Drop already-queued drain/resume/retry kicks before they fire into B.
+      clearSafeTimeouts();
     }
 
     // Detach SSE only -- closing EventSource is OK; interrupt would kill the turn.
