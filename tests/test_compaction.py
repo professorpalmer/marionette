@@ -149,6 +149,7 @@ def test_compaction_clears_stale_prompt_token_telemetry():
     payload = events[-1].data
     assert payload["before_tokens"] == 5000
     assert payload["after_tokens"] < payload["before_tokens"]
+    assert payload.get("mode") == "llm"
     # The live estimate now reflects the compacted history, not the stale real.
     assert s._estimate_context_tokens() == payload["after_tokens"]
 
@@ -176,6 +177,7 @@ def test_fallback_truncation_on_pilot_failure():
     assert len(events) == 2
     assert events[0].kind == "compacting"
     assert events[1].kind == "compaction"
+    assert events[1].data.get("mode") == "extractive"
     
     # Verify we compacted and didn't crash
     assert s._history[1]["role"] == "user"

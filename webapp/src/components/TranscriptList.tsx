@@ -12,9 +12,11 @@ import {
   openAgentImage,
   openAgentWorkspace,
   openAgentSwarmJob,
+  openAgentSpill,
   syncAgentCommandOutput,
   isExternalUrl,
   looksLikeJobId,
+  looksLikeSpillUri,
   looksLikePathInlineCode,
   looksLikeShellCommand,
   classifyActionGoal,
@@ -108,7 +110,15 @@ export type Card = {
              /** Truncated shell stdout/stderr excerpt for run_command cards. */
              output?: string;
              exit_code?: number | string;
-             command?: string };
+             command?: string;
+             /** spill:// when stdout exceeded the inline capture budget. */
+             spill_uri?: string;
+             /** True when full output was spilled off the wire. */
+             output_spilled?: boolean;
+             /** Full spilled output length in characters (when known). */
+             output_chars?: number;
+             /** Bounded preview when spilled or truncated. */
+             output_preview?: string };
 };
 /** Inline swarm status pill lifecycle (running spinner vs terminal chips). */
 export type SwarmPendingStatus = "running" | "done" | "failed" | "ended";
@@ -146,7 +156,15 @@ export type Item =
   | SwarmPendingItem
   | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string; reuse_status?: string; source_job_id?: string; reuse_reason?: string; invalidated_paths?: string[]; validation_fingerprint?: string; environment_fingerprint?: string; acceptance_criteria?: string[] }
   | { kind: "checkpoint"; id: string; label: string; trigger: string }
-  | { kind: "compaction"; before_tokens: number; after_tokens: number }
+  | {
+      kind: "compaction";
+      before_tokens: number;
+      after_tokens: number;
+      aborted?: boolean;
+      reason?: string;
+      message?: string;
+      mode?: "extractive" | "llm";
+    }
   | { kind: "codegraph_context"; symbols: number; query: string }
   | { kind: "command_blocked"; command: string; category: string; reason: string; matched: string }
   | CommandApprovalItem
@@ -161,7 +179,15 @@ export type GroupedItem =
   | SwarmPendingItem
   | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string; reuse_status?: string; source_job_id?: string; reuse_reason?: string; invalidated_paths?: string[]; validation_fingerprint?: string; environment_fingerprint?: string; acceptance_criteria?: string[] }
   | { kind: "checkpoint"; id: string; label: string; trigger: string }
-  | { kind: "compaction"; before_tokens: number; after_tokens: number }
+  | {
+      kind: "compaction";
+      before_tokens: number;
+      after_tokens: number;
+      aborted?: boolean;
+      reason?: string;
+      message?: string;
+      mode?: "extractive" | "llm";
+    }
   | { kind: "codegraph_context"; symbols: number; query: string }
   | { kind: "command_blocked"; command: string; category: string; reason: string; matched: string }
   | CommandApprovalItem
@@ -584,7 +610,7 @@ function stableItemKey(it: GroupedItem, i: number): string {
     case "checkpoint":
       return `ckpt-${it.id}`;
     case "compaction":
-      return `cmp-${it.before_tokens}-${it.after_tokens}-${i}`;
+      return `cmp-${it.aborted ? "abort" : "ok"}-${it.before_tokens}-${it.after_tokens}-${it.reason || it.mode || i}`;
     case "codegraph_context":
       return `cg-${i}-${it.symbols}`;
     case "command_blocked":
@@ -941,9 +967,26 @@ export const TranscriptList = memo(function TranscriptList({
         </div>
       );
     } else if (it.kind === "compaction") {
+      if (it.aborted) {
+        const abortText = it.message
+          || (it.reason ? `Context compaction aborted (${it.reason})` : "Context compaction aborted");
+        return (
+          <div
+            key={key}
+            role="status"
+            title={it.reason ? `compaction aborted: ${it.reason}` : "compaction aborted"}
+            className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-amber-500/10 border border-amber-500/25 text-[10.5px] text-amber-200/90 w-fit my-1 select-none font-mono"
+          >
+            <span>{abortText}</span>
+          </div>
+        );
+      }
       return (
         <div key={key} className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/10 border border-edge/10 text-[10.5px] text-faint w-fit my-1 select-none font-mono">
-          <span>Context summarized: {it.before_tokens} → {it.after_tokens} tokens</span>
+          <span>
+            Context summarized: {it.before_tokens} → {it.after_tokens} tokens
+            {it.mode ? ` · ${it.mode}` : ""}
+          </span>
         </div>
       );
     } else if (it.kind === "steer") {
@@ -2006,7 +2049,13 @@ function ActionCard({
   // One expand level: open ActivityGroup OR expanded parent card reveals
   // nested worker tools as a flat chronological list (not double-collapsed).
   const showNested = nested.length > 0 && (card.open || activityGroupOpen);
-  const resultOutput = String(card.result?.output || "");
+  const resultOutput = String(card.result?.output || card.result?.output_preview || "");
+  const spillUri = String(card.result?.spill_uri || "").trim();
+  const outputSpilled = Boolean(card.result?.output_spilled || spillUri);
+  const spillChars =
+    typeof card.result?.output_chars === "number" && card.result.output_chars > 0
+      ? card.result.output_chars
+      : null;
   const hasExitCode = typeof card.result?.exit_code === "number";
   const nonZeroExit = hasExitCode && card.result!.exit_code !== 0;
 
@@ -2045,6 +2094,7 @@ function ActionCard({
     else if (linkKind === "image") openAgentImage(goalValue);
     else if (linkKind === "workspace") openAgentWorkspace(goalValue);
     else if (linkKind === "job") openAgentSwarmJob(goalValue);
+    else if (linkKind === "spill") openAgentSpill(goalValue);
   };
 
   const onRunCommand = (e: React.MouseEvent) => {
@@ -2108,6 +2158,8 @@ function ActionCard({
                   ? "Open workspace"
                   : linkKind === "job"
                   ? "Open in Swarm Tracker"
+                  : linkKind === "spill"
+                  ? "Open spilled output"
                   : "Reveal command output"
               }
             >
@@ -2171,6 +2223,7 @@ function ActionCard({
                       else if (nestedLink.linkKind === "image") openAgentImage(v);
                       else if (nestedLink.linkKind === "workspace") openAgentWorkspace(v);
                       else if (nestedLink.linkKind === "job") openAgentSwarmJob(v);
+                      else if (nestedLink.linkKind === "spill") openAgentSpill(v);
                     }}
                     className="truncate text-accent/75 hover:underline underline-offset-2 bg-transparent border-0 p-0 text-left cursor-pointer font-sans text-[11px]"
                     title={action.goal}
@@ -2230,6 +2283,23 @@ function ActionCard({
           {resultOutput.trim() ? (
             <ClickableProcessOutput text={resultOutput} />
           ) : null}
+          {outputSpilled && spillUri ? (
+            <button
+              type="button"
+              data-testid="spill-output-peek"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                openAgentSpill(spillUri);
+              }}
+              className="mt-1 inline-flex items-center gap-1 text-accent/85 hover:underline underline-offset-2 cursor-pointer bg-transparent border-0 p-0 font-sans text-[11px]"
+              title={`Open full spilled output (${spillUri})`}
+            >
+              {spillChars != null
+                ? `Full output (${spillChars.toLocaleString()} chars)`
+                : "Full output"}
+            </button>
+          ) : null}
           {card.result && !card.result.error && (
             <>
               {card.result.job_id && (
@@ -2239,6 +2309,9 @@ function ActionCard({
                   linkKind={looksLikeJobId(card.result.job_id) ? "job" : undefined}
                 />
               )}
+              {spillUri && looksLikeSpillUri(spillUri) ? (
+                <KV k="spill" v={spillUri} linkKind="spill" />
+              ) : null}
               {/* Dispatch-only ack (backgrounded run_implement/run_parallel): show
                   its status/message; the rich artifact fields aren't present yet. */}
               {Array.isArray(card.result.types) ? (
@@ -2291,6 +2364,23 @@ function ClickableProcessOutput({ text }: { text: string }) {
             </button>
           );
         }
+        if (seg.kind === "spill") {
+          return (
+            <button
+              key={i}
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                openAgentSpill(seg.uri);
+              }}
+              title="Open spilled output"
+              className="text-accent/90 hover:underline underline-offset-2 cursor-pointer bg-transparent border-0 p-0 font-inherit"
+            >
+              {seg.text}
+            </button>
+          );
+        }
         if (seg.kind === "file") {
           return (
             <button
@@ -2331,7 +2421,8 @@ const KV = ({
     || linkKind === "command"
     || linkKind === "image"
     || linkKind === "workspace"
-    || linkKind === "job";
+    || linkKind === "job"
+    || linkKind === "spill";
   return (
     <div className="flex gap-2 mb-0.5">
       <span className="text-muted w-14 shrink-0">{k}</span>
@@ -2339,8 +2430,20 @@ const KV = ({
         <button
           type="button"
           className="break-all text-left text-accent/85 hover:underline underline-offset-2"
-          data-testid={linkKind === "job" ? "job-id-link" : undefined}
-          title={linkKind === "job" ? "Open in Swarm Tracker" : undefined}
+          data-testid={
+            linkKind === "job"
+              ? "job-id-link"
+              : linkKind === "spill"
+                ? "spill-uri-link"
+                : undefined
+          }
+          title={
+            linkKind === "job"
+              ? "Open in Swarm Tracker"
+              : linkKind === "spill"
+                ? "Open spilled output"
+                : undefined
+          }
           onClick={(e) => {
             e.stopPropagation();
             if (linkKind === "file") openAgentFile(v);
@@ -2348,6 +2451,7 @@ const KV = ({
             else if (linkKind === "image") openAgentImage(v);
             else if (linkKind === "workspace") openAgentWorkspace(v);
             else if (linkKind === "job") openAgentSwarmJob(v);
+            else if (linkKind === "spill") openAgentSpill(v);
             else if (onCommandClick) onCommandClick();
             else openAgentCommand(v, { run: false });
           }}

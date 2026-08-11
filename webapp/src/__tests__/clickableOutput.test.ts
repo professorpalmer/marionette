@@ -20,6 +20,14 @@ describe("tokenizeClickableOutput", () => {
     expect(file && file.kind === "file" ? file.path : null).toBe("harness/foo.py:12");
   });
 
+  it("tokenizes spill:// URIs", () => {
+    const segs = tokenizeClickableOutput(
+      "saved to spill://sess1/call_a — read_file works\n",
+    );
+    const spill = segs.find((s) => s.kind === "spill");
+    expect(spill && spill.kind === "spill" ? spill.uri : null).toBe("spill://sess1/call_a");
+  });
+
   it("leaves non-path text alone", () => {
     const segs = tokenizeClickableOutput("ok\nexit 0\n");
     expect(segs.every((s) => s.kind === "text")).toBe(true);

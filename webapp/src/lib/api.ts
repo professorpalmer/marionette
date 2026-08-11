@@ -1396,6 +1396,16 @@ export const api = {
       ext?: string;
       sqlite_tables?: string[];
     }>("/api/file/read?path=" + encodeURIComponent(path)),
+  /** Read-only peek of spilled tool stdout (``spill://session/tool_call``). */
+  readSpill: (uri: string) =>
+    getJSONSoft<{
+      ok: boolean;
+      uri?: string;
+      content?: string;
+      chars?: number;
+      truncated?: boolean;
+      error?: string;
+    }>("/api/spill/read?uri=" + encodeURIComponent(uri)),
   /** Absolute URL for PDF/image/HTML iframe or <img> preview (header auth in Electron). */
   fileRawUrl: (path: string): string => {
     const rel = withToken("/api/file/raw?path=" + encodeURIComponent(path));

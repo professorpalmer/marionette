@@ -973,7 +973,7 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
     expect(assistantTexts(state.items)).toEqual(["almost done"]);
   });
 
-  it("aborted compaction clears summarizing chrome without a fake summary row", () => {
+  it("aborted compaction clears summarizing chrome and appends an abort notice", () => {
     const state = {
       items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],
       itemsRef: { current: [] as Item[] },
@@ -998,7 +998,43 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
       },
     });
     expect(compacting).toBeNull();
-    expect(state.items.filter((it) => it.kind === "compaction")).toHaveLength(0);
+    const rows = state.items.filter((it) => it.kind === "compaction");
+    expect(rows).toHaveLength(1);
+    const row = rows[0];
+    expect(row.kind).toBe("compaction");
+    if (row.kind !== "compaction") throw new Error("expected compaction");
+    expect(row.aborted).toBe(true);
+    expect(row.reason).toBe("insufficient_reduction");
+    expect(row.message).toMatch(/insufficient_reduction/);
+    expect(row.message).not.toMatch(/Context summarized/i);
+  });
+
+  it("successful compaction with mode surfaces extractive|llm on the receipt", () => {
+    const state = {
+      items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    state.itemsRef.current = state.items;
+    const apply = createApplyStreamEvent(makeApplyDeps(state));
+
+    apply({
+      kind: "compaction",
+      data: {
+        before_tokens: 12000,
+        after_tokens: 4000,
+        summarized_messages: 8,
+        mode: "extractive",
+      },
+    });
+    const rows = state.items.filter((it) => it.kind === "compaction");
+    expect(rows).toHaveLength(1);
+    const row = rows[0];
+    if (row.kind !== "compaction") throw new Error("expected compaction");
+    expect(row.aborted).toBeUndefined();
+    expect(row.mode).toBe("extractive");
+    expect(row.before_tokens).toBe(12000);
+    expect(row.after_tokens).toBe(4000);
   });
 
   it("replayed swarm_pending stays one pill and set-unions pendingJobIds", () => {

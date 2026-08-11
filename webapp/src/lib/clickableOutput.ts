@@ -9,14 +9,17 @@ import {
   looksLikeFilePath,
   looksLikePathInlineCode,
   looksLikeShellCommand,
+  looksLikeSpillUri,
 } from "./agentLinks";
 
 export type ClickableSegment =
   | { kind: "text"; text: string }
   | { kind: "url"; text: string; href: string }
+  | { kind: "spill"; text: string; uri: string }
   | { kind: "file"; text: string; path: string };
 
 const URL_IN_TEXT = /https?:\/\/[^\s<>"'`)\]]+[^\s<>"'`)\].,;:!?]/g;
+const SPILL_IN_TEXT = /spill:\/\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+/g;
 
 /**
  * Path-ish token with optional :line[:col], including stack-frame forms.
@@ -88,10 +91,12 @@ function pathCandidateValid(raw: string): boolean {
 type Span = {
   start: number;
   end: number;
-  kind: "url" | "file";
+  kind: "url" | "spill" | "file";
   text: string;
   /** Open target for file spans (quotes stripped). */
   path?: string;
+  /** Open target for spill spans. */
+  uri?: string;
 };
 
 function collectSpans(line: string): Span[] {
@@ -103,14 +108,28 @@ function collectSpans(line: string): Span[] {
     if (!isExternalUrl(text)) continue;
     spans.push({ start: m.index, end: m.index + text.length, kind: "url", text });
   }
+  SPILL_IN_TEXT.lastIndex = 0;
+  while ((m = SPILL_IN_TEXT.exec(line)) !== null) {
+    const text = m[0];
+    if (!looksLikeSpillUri(text)) continue;
+    spans.push({
+      start: m.index,
+      end: m.index + text.length,
+      kind: "spill",
+      text,
+      uri: text,
+    });
+  }
   PATH_IN_TEXT.lastIndex = 0;
   while ((m = PATH_IN_TEXT.exec(line)) !== null) {
     const text = m[0];
     if (!pathCandidateValid(text)) continue;
-    // Skip overlaps with URLs (e.g. example.com/foo.py inside a URL).
+    // Skip overlaps with URLs / spills (e.g. example.com/foo.py inside a URL).
     const start = m.index;
     const end = start + text.length;
-    if (spans.some((s) => s.kind === "url" && start < s.end && end > s.start)) continue;
+    if (spans.some((s) => (s.kind === "url" || s.kind === "spill") && start < s.end && end > s.start)) {
+      continue;
+    }
     spans.push({
       start,
       end,
@@ -140,6 +159,8 @@ function tokenizeLine(line: string): ClickableSegment[] {
     }
     if (s.kind === "url") {
       out.push({ kind: "url", text: s.text, href: s.text });
+    } else if (s.kind === "spill") {
+      out.push({ kind: "spill", text: s.text, uri: s.uri || s.text });
     } else {
       out.push({ kind: "file", text: s.text, path: s.path || unwrapPathToken(s.text) });
     }

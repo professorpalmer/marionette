@@ -237,6 +237,30 @@ export default function ComposerDock({
     ? contextUsage.categories
     : [];
 
+  // Offload honesty (mirror CostBreakdown wording). Only paint when counts > 0
+  // so a fresh session stays a clean category meter.
+  const positiveFinite = (value: unknown): number =>
+    typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+  const spillCount = positiveFinite(contextUsage?.spill_count);
+  const spillChars = positiveFinite(contextUsage?.spill_chars);
+  const historyCompactions = positiveFinite(contextUsage?.history_compactions);
+  const historyTokensSaved = positiveFinite(contextUsage?.history_tokens_saved);
+  const toolOutputTokensSaved = positiveFinite(contextUsage?.tool_output_tokens_saved);
+  const toolOutputSavingsUsd = positiveFinite(contextUsage?.tool_output_savings_usd);
+  const showContextHonesty =
+    spillCount > 0 || historyCompactions > 0 || toolOutputTokensSaved > 0 || toolOutputSavingsUsd > 0;
+  const formatHonestyCount = (num: number): string => {
+    if (!Number.isFinite(num) || num <= 0) return "0";
+    if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+    if (num >= 1000) return `${(num / 1000).toFixed(1).replace(/\.0$/, "")}k`;
+    return String(num);
+  };
+  const formatHonestyUsd = (usd: number): string => {
+    if (usd < 0.001) return `~$${usd.toFixed(4)}`;
+    if (usd < 0.01) return `~$${usd.toFixed(3)}`;
+    return `~$${usd.toFixed(2)}`;
+  };
+
   return (
     <div className="px-6 pb-3 pt-0.5">
       <div className="max-w-3xl mx-auto">
@@ -656,11 +680,58 @@ export default function ComposerDock({
                   );
                 })}
               </div>
+
+              {showContextHonesty && (
+                <div className="mt-2.5 pt-2 border-t border-edge/30 space-y-1 text-[10.5px] text-faint font-mono">
+                  {toolOutputSavingsUsd > 0 && (
+                    <div className="flex items-center justify-between gap-3">
+                      <span>Compact tool outputs saved</span>
+                      <span className="tabular-nums text-accent shrink-0">{formatHonestyUsd(toolOutputSavingsUsd)}</span>
+                    </div>
+                  )}
+                  {toolOutputTokensSaved > 0 && (
+                    <div className="flex items-center justify-between gap-3">
+                      <span>Tool-output tokens avoided</span>
+                      <span className="tabular-nums shrink-0">{formatHonestyCount(toolOutputTokensSaved)}</span>
+                    </div>
+                  )}
+                  {historyCompactions > 0 && (
+                    <div className="flex items-center justify-between gap-3">
+                      <span>History compaction</span>
+                      <span className="tabular-nums text-right shrink-0">
+                        {formatHonestyCount(historyTokensSaved)} saved ({historyCompactions} event
+                        {historyCompactions === 1 ? "" : "s"})
+                      </span>
+                    </div>
+                  )}
+                  {spillCount > 0 && (
+                    <div className="flex items-center justify-between gap-3">
+                      <span>Offloaded outputs</span>
+                      <span className="tabular-nums shrink-0">
+                        {formatHonestyCount(spillChars)} chars ({spillCount} spill
+                        {spillCount === 1 ? "" : "s"})
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
-          {mentionSearch !== null && (showCodebaseMention || filteredFiles.length > 0 || filteredFolders.length > 0 || symbolResults.length > 0 || mentionListingCap) && (
+          {mentionSearch !== null && (
             <div className="absolute left-2 bottom-full mb-1.5 z-50 max-h-[250px] w-[340px] overflow-y-auto bg-panel border border-edge rounded-xl shadow-2xl py-1">
+              {!showCodebaseMention
+                && filteredFiles.length === 0
+                && filteredFolders.length === 0
+                && symbolResults.length === 0
+                && !mentionListingCap && (
+                <div
+                  className="px-3 py-2 text-[11px] text-muted select-none"
+                  data-testid="mention-no-matches"
+                >
+                  No matches
+                </div>
+              )}
               {showCodebaseMention && (
                 <>
                   <div className="px-2.5 py-1 text-[10px] uppercase font-bold tracking-wider text-faint border-b border-edge/30 select-none">

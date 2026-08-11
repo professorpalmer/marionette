@@ -12,6 +12,8 @@ from unittest.mock import MagicMock, patch
 from harness.mention_context import (
     expand_folder_mention,
     folder_entry_cap,
+    format_folder_mention_failure,
+    format_folder_mention_skip,
     resolve_repo_dir,
 )
 
@@ -86,6 +88,18 @@ def test_expand_folder_mention_outside_returns_none():
         repo = os.path.realpath(tmpdir)
         assert expand_folder_mention(repo, "folder:../etc") is None
         assert expand_folder_mention(repo, "folder:/etc") is None
+
+
+def test_format_folder_mention_skip_and_failure():
+    skip = format_folder_mention_skip("folder:pkg", reason="not found in workspace")
+    assert "--- Folder: pkg ---" in skip
+    assert "... skipped: not found in workspace" in skip
+    assert format_folder_mention_skip("src/lib", reason="budget") == (
+        "--- Folder: src/lib ---\n... skipped: budget\n"
+    )
+    fail = format_folder_mention_failure("folder:pkg", error="boom")
+    assert "--- Folder: pkg ---" in fail
+    assert "... failed to list: boom" in fail
 
 
 def test_workspace_files_includes_folders():
@@ -193,7 +207,60 @@ def test_at_folder_resolution_confinement():
                         break
 
                 sent_msg = mock_pilot.send.call_args[0][0]
-                assert "Referenced folders:" not in sent_msg
+                assert "Referenced folders:" in sent_msg
+                assert "--- Folder: ../outside ---" in sent_msg
+                assert "... skipped: not found in workspace" in sent_msg
                 assert "@folder:../outside" in sent_msg or "outside" in sent_msg
+            finally:
+                httpd.shutdown()
+
+
+def test_at_folder_budget_skip_honesty(monkeypatch):
+    """Over-budget @folder must emit a skip note, never silent-drop."""
+    monkeypatch.setattr(
+        "harness.mention_context.MENTION_TOTAL_BUDGET",
+        40,
+    )
+    with tempfile.TemporaryDirectory() as tmpdir:
+        real_tmp = os.path.realpath(tmpdir)
+        pkg = os.path.join(real_tmp, "pkg")
+        os.makedirs(pkg)
+        # Listing alone exceeds the tiny budget once the honesty header is included.
+        for name in ("a.py", "b.py", "c.py", "d.py", "e.py"):
+            open(os.path.join(pkg, name), "w").write("x")
+
+        mock_pilot = MagicMock()
+        mock_pilot.send.return_value = []
+        mock_pilot.drain_swarm_results.return_value = []
+
+        with patch("harness.server._pilot", mock_pilot), patch(
+            "harness.server._pilot_preflight", return_value=None
+        ), patch(
+            "puppetmaster.codegraph.codegraph_available", return_value=False
+        ):
+            httpd, port, srv_inst = _server()
+            try:
+                srv_inst._cfg.repo = real_tmp
+                headers = {
+                    "Content-Type": "application/json",
+                    "X-Harness-Token": srv_inst._TOKEN,
+                }
+                sess = srv_inst._sessions.create()
+                srv_inst._sessions._active = sess["id"]
+
+                res = _get(
+                    port,
+                    "/api/chat?message=@folder:pkg",
+                    headers,
+                )
+                while True:
+                    line = res.readline().decode()
+                    if not line or '{"kind": "done"}' in line or '{"kind": "error"' in line:
+                        break
+
+                sent_msg = mock_pilot.send.call_args[0][0]
+                assert "Referenced folders:" in sent_msg
+                assert "... skipped:" in sent_msg
+                assert "budget exhausted" in sent_msg
             finally:
                 httpd.shutdown()

@@ -174,7 +174,12 @@ def test_at_file_confinement_rejects_outside():
                         break
 
                 sent_msg = mock_pilot.send.call_args[0][0]
-                assert "Referenced files:" not in sent_msg
+                # Path-like outside tokens get an honest File skip — never silent,
+                # and never treated as a CodeGraph symbol name.
+                assert "Referenced files:" in sent_msg
+                assert "--- File: ../outside ---" in sent_msg
+                assert "... skipped: not found in workspace" in sent_msg
+                assert "Referenced symbols:" not in sent_msg
             finally:
                 httpd.shutdown()
 

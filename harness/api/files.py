@@ -490,6 +490,64 @@ def get_file_resolve(rel_path: str, svc: FileServices) -> tuple[int, dict]:
     return 404, {"error": "File not found", "path": normalized}
 
 
+# Operator peek cap for spilled tool stdout (2 MiB of characters).
+_SPILL_PEEK_CHAR_CAP = 2 * 1024 * 1024
+
+
+def get_spill_read(uri: str, svc: FileServices) -> tuple[int, dict]:
+    """GET /api/spill/read — resolve ``spill://`` via spill_registry (read-only).
+
+    Thin operator peel so ActionCard / agentLinks can preview full spilled
+    tool output without inventing a second persistence path. Rejects non-spill
+    schemes and directory listings.
+    """
+    from ..internal_uri import (
+        InternalUriContext,
+        InternalUriError,
+        is_internal_uri,
+        resolve_internal_uri,
+    )
+
+    uri = (uri or "").strip()
+    if not uri:
+        return 400, {"error": "Missing uri parameter"}
+    if not uri.startswith("spill://") or not is_internal_uri(uri):
+        return 400, {"error": "uri must be a spill:// URI"}
+
+    cfg = svc.cfg
+    state_dir = ""
+    repo = None
+    if cfg is not None:
+        state_dir = getattr(cfg, "state_dir", None) or ""
+        repo = getattr(cfg, "repo", None) or None
+    if not state_dir:
+        return 503, {"error": "spill:// requires a configured state_dir"}
+
+    try:
+        resource = resolve_internal_uri(
+            uri,
+            InternalUriContext(state_dir=state_dir, repo=repo),
+        )
+    except InternalUriError as exc:
+        msg = str(exc)
+        status = 404 if "not found" in msg.lower() or "no longer exists" in msg.lower() else 400
+        return status, {"error": msg}
+
+    if resource.is_directory:
+        return 400, {"error": "spill:// directory listing is not supported via this endpoint"}
+
+    full = resource.content or ""
+    truncated = len(full) > _SPILL_PEEK_CHAR_CAP
+    content = full[:_SPILL_PEEK_CHAR_CAP] if truncated else full
+    return 200, {
+        "ok": True,
+        "uri": uri,
+        "content": content,
+        "chars": len(full),
+        "truncated": truncated,
+    }
+
+
 def get_file_read(rel_path: str, svc: FileServices) -> tuple[int, dict]:
     """GET /api/file/read — UTF-8 text (or binary metadata) under workspace."""
     repo, err = _repo_or_error(svc)

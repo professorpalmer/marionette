@@ -629,6 +629,46 @@ describe("job_id → Swarm Tracker deep-link chrome", () => {
     spy.mockRestore();
   });
 
+  it("surfaces ActionCard spill peek CTA and opens harness-open-spill", () => {
+    const spy = vi.spyOn(window, "dispatchEvent");
+    render(
+      <TranscriptList
+        {...listProps([
+          {
+            kind: "card",
+            card: {
+              id: "spill-card",
+              kind: "run_command",
+              goal: "pytest -q",
+              running: false,
+              open: true,
+              result: {
+                command: "pytest -q",
+                exit_code: 0,
+                output: "…truncated…",
+                spill_uri: "spill://sess1/call_a",
+                output_spilled: true,
+                output_chars: 9000,
+              },
+            },
+          },
+        ])}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Explored|Command|pytest/i }));
+    const cta = screen.getByTestId("spill-output-peek");
+    expect(cta).toHaveTextContent(/Full output \(9,?000 chars\)/);
+    fireEvent.click(cta);
+    expect(
+      spy.mock.calls
+        .map((c) => c[0] as CustomEvent)
+        .some((e) => e.type === "harness-open-spill" && e.detail?.uri === "spill://sess1/call_a"),
+    ).toBe(true);
+    const spillKv = screen.getByTestId("spill-uri-link");
+    expect(spillKv).toHaveTextContent("spill://sess1/call_a");
+    spy.mockRestore();
+  });
+
   it("makes ActionCard job KV and SwarmResultCard job ids open the tracker", () => {
     const spy = vi.spyOn(window, "dispatchEvent");
     render(

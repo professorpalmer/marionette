@@ -1273,6 +1273,9 @@ class CompactionContextMixin:
             "savings_pct": savings_pct,
             "thrash_strikes": thrash_strikes,
             "cache_bust_tokens": busted,
+            # Honest receipt: extractive fallback still shrinks history but is
+            # not an LLM summary — chrome should not imply pilot summarizer.
+            "mode": "llm" if summarizer_ok else "extractive",
         }
         if _compact_policy == "refreeze":
             _compaction_payload["refreeze"] = True

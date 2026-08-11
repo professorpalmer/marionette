@@ -107,6 +107,9 @@ import EditorTabStrip from "./conversation/EditorTabStrip";
 import ComposerDock, { type MemoryProposal } from "./conversation/ComposerDock";
 import ConversationHeader from "./conversation/ConversationHeader";
 import ImageLightbox from "./conversation/ImageLightbox";
+import SpillPreviewModal, {
+  type SpillPreviewState,
+} from "./conversation/SpillPreviewModal";
 import { useSessionSwitch } from "./conversation/useSessionSwitch";
 import { useRunnersBusyPoll } from "./conversation/useRunnersBusyPoll";
 import {
@@ -479,6 +482,51 @@ export default function Conversation({
     }
   };
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  const [spillPreview, setSpillPreview] = useState<SpillPreviewState | null>(null);
+
+  // Spilled tool stdout (spill://) → read-only peek modal via /api/spill/read.
+  useEffect(() => {
+    const handleOpenSpill = (e: Event) => {
+      const uri = String((e as CustomEvent<{ uri?: string }>).detail?.uri || "").trim();
+      if (!uri) return;
+      setSpillPreview({
+        uri,
+        content: "Loading…",
+        chars: 0,
+        truncated: false,
+      });
+      void api.readSpill(uri).then((res) => {
+        if (!res?.ok) {
+          setSpillPreview({
+            uri,
+            content: "",
+            chars: 0,
+            truncated: false,
+            error: res?.error || "Failed to read spill",
+          });
+          return;
+        }
+        setSpillPreview({
+          uri: res.uri || uri,
+          content: res.content || "",
+          chars: typeof res.chars === "number" ? res.chars : (res.content || "").length,
+          truncated: !!res.truncated,
+        });
+      }).catch((err: unknown) => {
+        setSpillPreview({
+          uri,
+          content: "",
+          chars: 0,
+          truncated: false,
+          error: err instanceof Error ? err.message : "Failed to read spill",
+        });
+      });
+    };
+    window.addEventListener("harness-open-spill", handleOpenSpill as EventListener);
+    return () => {
+      window.removeEventListener("harness-open-spill", handleOpenSpill as EventListener);
+    };
+  }, []);
 
   // Agent markdown / ActionCard image clicks → lightbox (http(s), data:, or
   // uploaded/repo paths resolved via api.imageUrl).
@@ -2553,6 +2601,11 @@ export default function Conversation({
       {lightboxUrl && (
         <ImageLightbox url={lightboxUrl} onClose={() => setLightboxUrl(null)} />
       )}
+
+      <SpillPreviewModal
+        preview={spillPreview}
+        onClose={() => setSpillPreview(null)}
+      />
 
     </main>
   );

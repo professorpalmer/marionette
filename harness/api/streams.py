@@ -278,6 +278,8 @@ def stream_chat(
             expand_folder_mention,
             extract_mention_tokens,
             format_codebase_mention_skip,
+            format_file_mention_skip,
+            format_folder_mention_skip,
             format_symbol_mention_block,
             format_symbol_mention_failure,
             format_symbol_mention_skip,
@@ -344,12 +346,40 @@ def stream_chat(
             if is_folder_prefix or (
                 not is_symbol_prefix and resolve_repo_dir(repo, token) is not None
             ):
+                if total_size >= MENTION_TOTAL_BUDGET:
+                    resolved_folders.append(
+                        format_folder_mention_skip(
+                            token,
+                            reason=(
+                                "mention context budget exhausted "
+                                "(150KB total across @-mentions)"
+                            ),
+                        )
+                    )
+                    continue
                 block = expand_folder_mention(repo, token)
-                if block:
-                    read_size = len(block.encode("utf-8"))
-                    if total_size + read_size <= MENTION_TOTAL_BUDGET:
-                        resolved_folders.append(block)
-                        total_size += read_size
+                if not block:
+                    resolved_folders.append(
+                        format_folder_mention_skip(
+                            token,
+                            reason="not found in workspace",
+                        )
+                    )
+                    continue
+                read_size = len(block.encode("utf-8"))
+                if total_size + read_size > MENTION_TOTAL_BUDGET:
+                    resolved_folders.append(
+                        format_folder_mention_skip(
+                            token,
+                            reason=(
+                                "mention context budget exhausted "
+                                "(150KB total across @-mentions)"
+                            ),
+                        )
+                    )
+                else:
+                    resolved_folders.append(block)
+                    total_size += read_size
                 continue
 
             is_file = False
@@ -386,91 +416,157 @@ def stream_chat(
                 )
                 resolved_files.append(block)
                 total_size += added
+            elif not is_symbol_prefix and ("/" in token or "\\" in token):
+                # Path-like bare token that is not an existing workspace file —
+                # do not fall through into symbol search as if it were a name.
+                resolved_files.append(
+                    format_file_mention_skip(
+                        token,
+                        reason="not found in workspace",
+                    )
+                )
             else:
+                # @symbol / bare unknown — always emit skip/failure honesty;
+                # never leave the token silent on CodeGraph miss/unavailable.
                 try:
                     import puppetmaster.codegraph as cg
-                    if cg.codegraph_available() and cg.codegraph_ready(repo):
-                        res = cg.codegraph_query(search=symbol_name, cwd=repo, limit=1)
-                        if res.get("ok") and res.get("stdout"):
-                            data = json.loads(res["stdout"])
-                            if isinstance(data, list) and len(data) > 0:
-                                node = data[0].get("node")
-                                if node:
-                                    file_path = node.get("filePath")
-                                    start_line = node.get("startLine")
-                                    end_line = node.get("endLine")
-                                    name = node.get("name") or symbol_name
+                    if not cg.codegraph_available():
+                        resolved_symbols.append(
+                            format_symbol_mention_skip(
+                                symbol_name,
+                                reason="CodeGraph unavailable",
+                            )
+                        )
+                        continue
+                    if not cg.codegraph_ready(repo):
+                        resolved_symbols.append(
+                            format_symbol_mention_skip(
+                                symbol_name,
+                                reason=(
+                                    "CodeGraph index not ready "
+                                    "(run codegraph init / wait for indexing)"
+                                ),
+                            )
+                        )
+                        continue
+                    res = cg.codegraph_query(search=symbol_name, cwd=repo, limit=1)
+                    if not (res.get("ok") and res.get("stdout")):
+                        resolved_symbols.append(
+                            format_symbol_mention_skip(
+                                symbol_name,
+                                reason="no matching symbol in CodeGraph",
+                            )
+                        )
+                        continue
+                    data = json.loads(res["stdout"])
+                    if not (isinstance(data, list) and data):
+                        resolved_symbols.append(
+                            format_symbol_mention_skip(
+                                symbol_name,
+                                reason="no matching symbol in CodeGraph",
+                            )
+                        )
+                        continue
+                    node = data[0].get("node")
+                    if not node:
+                        resolved_symbols.append(
+                            format_symbol_mention_skip(
+                                symbol_name,
+                                reason="no matching symbol in CodeGraph",
+                            )
+                        )
+                        continue
+                    file_path = node.get("filePath")
+                    start_line = node.get("startLine")
+                    end_line = node.get("endLine")
+                    name = node.get("name") or symbol_name
+                    if not file_path or start_line is None:
+                        resolved_symbols.append(
+                            format_symbol_mention_skip(
+                                name,
+                                reason="no matching symbol in CodeGraph",
+                            )
+                        )
+                        continue
+                    if total_size >= MENTION_TOTAL_BUDGET:
+                        resolved_symbols.append(
+                            format_symbol_mention_skip(
+                                name,
+                                reason=(
+                                    "mention context budget exhausted "
+                                    "(150KB total across @-mentions)"
+                                ),
+                            )
+                        )
+                        continue
+                    sym_full_path = os.path.abspath(os.path.join(repo, file_path))
+                    repo_real = os.path.realpath(repo)
+                    sym_full_real = os.path.realpath(sym_full_path)
+                    common = os.path.commonpath([repo_real, sym_full_real])
+                    if common != repo_real or not os.path.isfile(sym_full_real):
+                        resolved_symbols.append(
+                            format_symbol_mention_skip(
+                                name,
+                                reason="symbol file not found in workspace",
+                            )
+                        )
+                        continue
+                    try:
+                        with open(sym_full_real, "r", encoding="utf-8", errors="replace") as f:
+                            lines = f.readlines()
 
-                                    if file_path and start_line is not None:
-                                        if total_size >= MENTION_TOTAL_BUDGET:
-                                            resolved_symbols.append(
-                                                format_symbol_mention_skip(
-                                                    name,
-                                                    reason=(
-                                                        "mention context budget exhausted "
-                                                        "(150KB total across @-mentions)"
-                                                    ),
-                                                )
-                                            )
-                                            continue
-                                        sym_full_path = os.path.abspath(os.path.join(repo, file_path))
-                                        repo_real = os.path.realpath(repo)
-                                        sym_full_real = os.path.realpath(sym_full_path)
-                                        common = os.path.commonpath([repo_real, sym_full_real])
-                                        if common == repo_real and os.path.isfile(sym_full_real):
-                                            try:
-                                                with open(sym_full_real, 'r', encoding='utf-8', errors='replace') as f:
-                                                    lines = f.readlines()
+                        start_idx = max(0, int(start_line) - 1)
+                        if end_line is not None:
+                            end_idx = min(len(lines), int(end_line))
+                        else:
+                            end_idx = min(len(lines), start_idx + 60)
 
-                                                start_idx = max(0, int(start_line) - 1)
-                                                if end_line is not None:
-                                                    end_idx = min(len(lines), int(end_line))
-                                                else:
-                                                    end_idx = min(len(lines), start_idx + 60)
+                        snippet_lines = lines[start_idx:end_idx]
+                        snippet = "".join(snippet_lines)
+                        original_bytes = len(snippet.encode("utf-8"))
+                        truncated = original_bytes > SYMBOL_SNIPPET_CAP
+                        if truncated:
+                            snippet = snippet.encode("utf-8")[:SYMBOL_SNIPPET_CAP].decode(
+                                "utf-8", errors="ignore"
+                            )
 
-                                                snippet_lines = lines[start_idx:end_idx]
-                                                snippet = "".join(snippet_lines)
-                                                original_bytes = len(snippet.encode('utf-8'))
-                                                truncated = original_bytes > SYMBOL_SNIPPET_CAP
-                                                if truncated:
-                                                    snippet = snippet.encode('utf-8')[:SYMBOL_SNIPPET_CAP].decode(
-                                                        'utf-8', errors='ignore'
-                                                    )
-
-                                                read_size = len(snippet.encode('utf-8'))
-                                                if total_size + read_size > MENTION_TOTAL_BUDGET:
-                                                    resolved_symbols.append(
-                                                        format_symbol_mention_skip(
-                                                            name,
-                                                            reason=(
-                                                                "mention context budget exhausted "
-                                                                "(150KB total across @-mentions)"
-                                                            ),
-                                                        )
-                                                    )
-                                                else:
-                                                    resolved_symbols.append(
-                                                        format_symbol_mention_block(
-                                                            name,
-                                                            file_path,
-                                                            int(start_line),
-                                                            snippet,
-                                                            truncated=truncated,
-                                                            original_bytes=original_bytes,
-                                                        )
-                                                    )
-                                                    total_size += read_size
-                                            except OSError as exc:
-                                                resolved_symbols.append(
-                                                    format_symbol_mention_failure(
-                                                        name,
-                                                        error=str(exc) or type(exc).__name__,
-                                                    )
-                                                )
-                except Exception:
-                    # CodeGraph unavailable / query failed — leave bare @token
-                    # in the user message (same fail-closed as before).
-                    pass
+                        read_size = len(snippet.encode("utf-8"))
+                        if total_size + read_size > MENTION_TOTAL_BUDGET:
+                            resolved_symbols.append(
+                                format_symbol_mention_skip(
+                                    name,
+                                    reason=(
+                                        "mention context budget exhausted "
+                                        "(150KB total across @-mentions)"
+                                    ),
+                                )
+                            )
+                        else:
+                            resolved_symbols.append(
+                                format_symbol_mention_block(
+                                    name,
+                                    file_path,
+                                    int(start_line),
+                                    snippet,
+                                    truncated=truncated,
+                                    original_bytes=original_bytes,
+                                )
+                            )
+                            total_size += read_size
+                    except OSError as exc:
+                        resolved_symbols.append(
+                            format_symbol_mention_failure(
+                                name,
+                                error=str(exc) or type(exc).__name__,
+                            )
+                        )
+                except Exception as exc:
+                    resolved_symbols.append(
+                        format_symbol_mention_failure(
+                            symbol_name,
+                            error=str(exc) or type(exc).__name__,
+                        )
+                    )
 
         context_blocks = []
         if resolved_files:

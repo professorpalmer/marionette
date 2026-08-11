@@ -160,6 +160,11 @@ def list_folder_entries(
     return found[:cap], total, truncated
 
 
+def _folder_mention_display(folder_token: str) -> str:
+    """Display path for folder honesty blocks (strip optional ``folder:``)."""
+    return folder_token[7:] if folder_token.startswith("folder:") else folder_token
+
+
 def format_folder_mention_block(
     folder_token: str,
     entries: list[str],
@@ -168,7 +173,7 @@ def format_folder_mention_block(
     truncated: bool,
 ) -> str:
     """Honest listing block: paths plus an explicit truncation note when capped."""
-    display = folder_token[7:] if folder_token.startswith("folder:") else folder_token
+    display = _folder_mention_display(folder_token)
     lines = [f"--- Folder: {display} ---"]
     if not entries and total == 0:
         lines.append("(empty directory)")
@@ -182,6 +187,18 @@ def format_folder_mention_block(
         else:
             lines.append(f"({total} file{'s' if total != 1 else ''})")
     return "\n".join(lines) + "\n"
+
+
+def format_folder_mention_skip(folder_token: str, *, reason: str) -> str:
+    """Honesty note when a folder mention is not attached to context."""
+    display = _folder_mention_display(folder_token)
+    return f"--- Folder: {display} ---\n... skipped: {reason}\n"
+
+
+def format_folder_mention_failure(folder_token: str, *, error: str) -> str:
+    """Honesty note when listing a mentioned folder fails."""
+    display = _folder_mention_display(folder_token)
+    return f"--- Folder: {display} ---\n... failed to list: {error}\n"
 
 
 def expand_folder_mention(

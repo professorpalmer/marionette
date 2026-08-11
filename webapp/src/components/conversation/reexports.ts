@@ -88,6 +88,7 @@ export {
   appendCommandBlocked,
   appendCodegraphContext,
   appendCompaction,
+  compactionAbortLabel,
   truncateWaitHint,
   shouldPaintThinking,
   sealOpenStreamSurfaces,

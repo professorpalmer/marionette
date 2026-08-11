@@ -242,6 +242,10 @@ export function applyActionResultCard(
     exit_code?: number | string;
     output?: string;
     command?: string;
+    spill_uri?: string;
+    output_spilled?: boolean;
+    output_chars?: number;
+    output_preview?: string;
     [key: string]: unknown;
   },
 ): Item[] {
@@ -917,17 +921,45 @@ export function appendCodegraphContext(
   return [...items, { kind: "codegraph_context" as const, symbols, query }];
 }
 
+/** Operator-facing label for an aborted compaction SSE (never a success row). */
+export function compactionAbortLabel(message?: string | null, reason?: string | null): string {
+  const msg = String(message || "").trim();
+  if (msg) return msg;
+  const r = String(reason || "").trim();
+  if (r) return `Context compaction aborted (${r})`;
+  return "Context compaction aborted";
+}
+
+export type CompactionAppendOpts = {
+  aborted?: boolean;
+  reason?: string | null;
+  message?: string | null;
+  mode?: "extractive" | "llm" | string | null;
+};
+
 export function appendCompaction(
   items: Item[],
   beforeTokens: number,
   afterTokens: number,
+  opts?: CompactionAppendOpts,
 ): Item[] {
+  const aborted = Boolean(opts?.aborted);
+  const modeRaw = String(opts?.mode || "").trim();
+  const mode = modeRaw === "extractive" || modeRaw === "llm" ? modeRaw : undefined;
+  const reason = String(opts?.reason || "").trim() || undefined;
+  const message = aborted
+    ? compactionAbortLabel(opts?.message, opts?.reason)
+    : (String(opts?.message || "").trim() || undefined);
   return [
     ...items,
     {
       kind: "compaction" as const,
       before_tokens: beforeTokens,
       after_tokens: afterTokens,
+      ...(aborted ? { aborted: true as const } : {}),
+      ...(reason ? { reason } : {}),
+      ...(message ? { message } : {}),
+      ...(mode ? { mode } : {}),
     },
   ];
 }

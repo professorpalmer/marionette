@@ -4,6 +4,7 @@ import {
   looksLikeFilePath,
   looksLikeShellCommand,
   looksLikeJobId,
+  looksLikeSpillUri,
   parseFileHref,
   looksLikePathInlineCode,
   classifyActionGoal,
@@ -15,6 +16,7 @@ import {
   openAgentImage,
   openAgentWorkspace,
   openAgentSwarmJob,
+  openAgentSpill,
   stableCommandId,
 } from "../lib/agentLinks";
 import { _resetAgentTerminalStreamForTests } from "../lib/agentTerminalStream";
@@ -156,6 +158,24 @@ describe("agentLinks detection", () => {
       value: "job_abcdef012345",
     });
   });
+
+  it("recognizes spill:// URIs and rejects file-path treatment", () => {
+    expect(looksLikeSpillUri("spill://sess1/call_a")).toBe(true);
+    expect(looksLikeSpillUri("spill://sess_1.call/tool-call_2")).toBe(true);
+    expect(looksLikeSpillUri("spill://")).toBe(false);
+    expect(looksLikeSpillUri("spill://sess1")).toBe(false);
+    expect(looksLikeSpillUri("spill://sess1/evil/extra")).toBe(false);
+    expect(looksLikeSpillUri("artifact://x/y")).toBe(false);
+    expect(looksLikeFilePath("spill://sess1/call_a")).toBe(false);
+    expect(classifyActionGoal("spill", "spill://sess1/call_a")).toEqual({
+      linkKind: "spill",
+      value: "spill://sess1/call_a",
+    });
+    expect(classifyActionGoal("", "spill://sess1/call_a")).toEqual({
+      linkKind: "spill",
+      value: "spill://sess1/call_a",
+    });
+  });
 });
 
 describe("autolinkAgentText", () => {
@@ -164,6 +184,11 @@ describe("autolinkAgentText", () => {
     const out = autolinkAgentText(src);
     expect(out).toContain("[https://example.com/docs](https://example.com/docs)");
     expect(out).toContain("[`webapp/src/App.tsx`](webapp/src/App.tsx)");
+  });
+
+  it("wraps bare spill:// URIs outside fences", () => {
+    const out = autolinkAgentText("Full output at spill://sess1/call_a for recall.");
+    expect(out).toContain("[spill://sess1/call_a](spill://sess1/call_a)");
   });
 
   it("skips fenced code and existing links", () => {
@@ -278,6 +303,25 @@ describe("openAgentLink events", () => {
       .map((c) => c[0] as CustomEvent)
       .find((e) => e.type === "harness-open-workspace");
     expect(ev?.detail).toEqual({ path: "C:\\Users\\me\\proj" });
+  });
+
+  it("openAgentSpill dispatches harness-open-spill", () => {
+    const spy = vi.spyOn(window, "dispatchEvent");
+    openAgentSpill("spill://sess1/call_a");
+    const ev = spy.mock.calls
+      .map((c) => c[0] as CustomEvent)
+      .find((e) => e.type === "harness-open-spill");
+    expect(ev?.detail).toEqual({ uri: "spill://sess1/call_a" });
+  });
+
+  it("openAgentLink routes spill:// before file heuristics", () => {
+    const spy = vi.spyOn(window, "dispatchEvent");
+    const preventDefault = vi.fn();
+    openAgentLink("spill://sess1/call_a", { preventDefault });
+    expect(preventDefault).toHaveBeenCalled();
+    const kinds = spy.mock.calls.map((c) => (c[0] as CustomEvent).type);
+    expect(kinds).toContain("harness-open-spill");
+    expect(kinds).not.toContain("harness-open-file");
   });
 
   it("openAgentSwarmJob focuses swarm tab then opens the job", () => {

@@ -155,5 +155,59 @@ describe("ComposerDock context-usage resilience", () => {
     expect(screen.getByText("System prompt")).toBeInTheDocument();
     expect(screen.getByText("Conversation")).toBeInTheDocument();
     expect(container.textContent).not.toContain("NaN");
+    // Fresh sessions with zero offload receipts stay chrome-light.
+    expect(screen.queryByText("Offloaded outputs")).not.toBeInTheDocument();
+    expect(screen.queryByText("History compaction")).not.toBeInTheDocument();
+    expect(screen.queryByText("Tool-output tokens avoided")).not.toBeInTheDocument();
+    expect(screen.queryByText("Compact tool outputs saved")).not.toBeInTheDocument();
+  });
+
+  it("shows spill / history / tool-output honesty footer when counts are present", () => {
+    const usageWithOffload: ContextUsageResponse = {
+      total: 50000,
+      limit: 100000,
+      categories: [
+        { name: "System prompt", tokens: 20000 },
+        { name: "Conversation", tokens: 30000 },
+      ],
+      spill_count: 2,
+      spill_chars: 3200,
+      history_compactions: 1,
+      history_tokens_saved: 1500,
+      tool_output_tokens_saved: 900,
+      tool_output_savings_usd: 0.006,
+    };
+
+    renderDock(usageWithOffload);
+
+    expect(screen.getByText("Offloaded outputs")).toBeInTheDocument();
+    expect(screen.getByText(/3\.2k chars \(2 spills\)/)).toBeInTheDocument();
+    expect(screen.getByText("History compaction")).toBeInTheDocument();
+    expect(screen.getByText(/1\.5k saved \(1 event\)/)).toBeInTheDocument();
+    expect(screen.getByText("Tool-output tokens avoided")).toBeInTheDocument();
+    expect(screen.getByText("900")).toBeInTheDocument();
+    expect(screen.getByText("Compact tool outputs saved")).toBeInTheDocument();
+    expect(screen.getByText("~$0.006")).toBeInTheDocument();
+  });
+
+  it("hides honesty footer lines when offload counts are zero or non-finite", () => {
+    const usageZeroOffload: ContextUsageResponse = {
+      total: 1000,
+      limit: 100000,
+      categories: [{ name: "Conversation", tokens: 1000 }],
+      spill_count: 0,
+      spill_chars: 0,
+      history_compactions: 0,
+      history_tokens_saved: 0,
+      tool_output_tokens_saved: NaN as unknown as number,
+      tool_output_savings_usd: -1,
+    };
+
+    renderDock(usageZeroOffload);
+
+    expect(screen.queryByText("Offloaded outputs")).not.toBeInTheDocument();
+    expect(screen.queryByText("History compaction")).not.toBeInTheDocument();
+    expect(screen.queryByText("Tool-output tokens avoided")).not.toBeInTheDocument();
+    expect(screen.queryByText("Compact tool outputs saved")).not.toBeInTheDocument();
   });
 });

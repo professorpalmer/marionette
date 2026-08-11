@@ -146,7 +146,12 @@ export function looksLikeFilePath(href: string): boolean {
   if (!href) return false;
   const h = href.trim();
   if (!h) return false;
-  if (/^(https?|mailto|tel|data|javascript):/i.test(h) || h.startsWith("#")) return false;
+  if (
+    /^(https?|mailto|tel|data|javascript|spill|artifact|job|agent|conflict):/i.test(h)
+    || h.startsWith("#")
+  ) {
+    return false;
+  }
   if (looksLikeShellCommand(h)) return false;
   const clean = h
     .replace(/^file:\/\//i, "")
@@ -207,7 +212,18 @@ export type AgentLinkKind =
   | "image"
   | "workspace"
   | "job"
+  | "spill"
   | "none";
+
+/**
+ * True for a concrete spilled-output URI ``spill://{session}/{tool_call}``.
+ * Rejects directory forms (``spill://`` / ``spill://session``) and unsafe ids.
+ */
+export function looksLikeSpillUri(href: string): boolean {
+  const t = (href || "").trim();
+  if (!t || t.length > 200) return false;
+  return /^spill:\/\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(t);
+}
 
 /**
  * True for durable Puppetmaster job ids (`job_` + 12 hex) and Marionette local
@@ -270,6 +286,7 @@ export function classifyActionGoal(
     return { linkKind: "command", value: g };
   }
   if (isExternalUrl(g)) return { linkKind: "url", value: g };
+  if (k === "spill" || looksLikeSpillUri(g)) return { linkKind: "spill", value: g };
   // Explicit job-id goals (ActionCard KV / synthetic classify) — not prose autolink.
   if (k === "job" || looksLikeJobId(g)) return { linkKind: "job", value: g };
   // Unknown kinds: never fall through to file when the goal is shell-like.
@@ -359,6 +376,22 @@ export function openAgentSwarmJob(jobId: string): void {
   }
 }
 
+/**
+ * Open a spilled tool-output URI in the operator peek surface.
+ * Conversation fetches ``/api/spill/read`` and paints a read-only modal.
+ */
+export function openAgentSpill(uri: string): void {
+  const u = (uri || "").trim();
+  if (!u || !looksLikeSpillUri(u)) return;
+  try {
+    window.dispatchEvent(
+      new CustomEvent("harness-open-spill", { detail: { uri: u } }),
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
 export type OpenAgentCommandOpts = {
   /** When true, inject into the interactive user PTY. Default reveals the agent mirror. */
   run?: boolean;
@@ -422,6 +455,11 @@ export function openAgentLink(href: string, e?: { preventDefault(): void }): voi
     openAgentUrl(href);
     return;
   }
+  if (looksLikeSpillUri(href)) {
+    e?.preventDefault();
+    openAgentSpill(href);
+    return;
+  }
   if (looksLikeJobId(href)) {
     e?.preventDefault();
     openAgentSwarmJob(href);
@@ -466,6 +504,7 @@ export function autolinkAgentText(text: string): string {
 }
 
 const BARE_URL = /https?:\/\/[^\s<>"'`)\]]+[^\s<>"'`)\].,;:!?]/g;
+const BARE_SPILL = /spill:\/\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+/g;
 // Windows abs, POSIX abs, ./rel, path/with/slash.ext — optional :line[:col]
 const BARE_PATH =
   /(?:^|[\s(])((?:[A-Za-z]:[\\/]|\/|\.{1,2}[\\/])[^\s`"'<>\]|]+?\.\w{1,8}(?::\d+){0,2}|(?:[\w.-]+\/)+[\w.-]+\.\w{1,8}(?::\d+){0,2})(?=[\s).,]|$)/g;
@@ -484,6 +523,10 @@ function _autolinkLine(line: string): string {
 
   work = work.replace(BARE_URL, (m) => {
     if (m.startsWith("<")) return m;
+    return `[${m}](${m})`;
+  });
+  work = work.replace(BARE_SPILL, (m) => {
+    if (!looksLikeSpillUri(m)) return m;
     return `[${m}](${m})`;
   });
   work = work.replace(BARE_PATH, (full, pathPart: string) => {

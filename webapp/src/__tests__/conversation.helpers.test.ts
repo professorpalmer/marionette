@@ -92,6 +92,8 @@ import {
   reconcileTerminalJobCards,
   sealOpenStreamSurfaces,
   shouldApplySwarmLiveMerge,
+  appendCompaction,
+  compactionAbortLabel,
   noticeShowsWaitHint,
   patchCardInItems,
   shouldPaintThinking,
@@ -1612,6 +1614,29 @@ describe("streamApply module", () => {
     expect(shouldPaintThinking({ text: "a", delta: true }).painting).toBe(true);
     expect(workspaceRootFromActionResult({ path: "/repo" }, "(workspace root)")).toBe("/repo");
     expect(appendCommandBlocked([], { command: "rm" })[0].kind).toBe("command_blocked");
+    expect(compactionAbortLabel("Automatic compaction paused", "anti_thrash_cooldown"))
+      .toBe("Automatic compaction paused");
+    expect(compactionAbortLabel("", "insufficient_reduction"))
+      .toBe("Context compaction aborted (insufficient_reduction)");
+    expect(compactionAbortLabel(null, null)).toBe("Context compaction aborted");
+    const abortedRow = appendCompaction([], 12000, 12000, {
+      aborted: true,
+      reason: "degenerate_summary",
+    })[0];
+    expect(abortedRow).toMatchObject({
+      kind: "compaction",
+      aborted: true,
+      reason: "degenerate_summary",
+      message: "Context compaction aborted (degenerate_summary)",
+    });
+    expect(String((abortedRow as { message?: string }).message || ""))
+      .not.toMatch(/Context summarized/i);
+    expect(appendCompaction([], 9000, 3000, { mode: "llm" })[0]).toMatchObject({
+      kind: "compaction",
+      before_tokens: 9000,
+      after_tokens: 3000,
+      mode: "llm",
+    });
     const approvals = appendCommandApproval([], {
       id: "call-1",
       command: "ssh prod reboot",
@@ -2575,6 +2600,36 @@ describe("pilot tool-action visibility (prep promotion + result upsert)", () => 
       artifacts: [{ type: "command", headline: "Command exited with 0" }],
     });
     expect((quietOk[0] as Extract<Item, { kind: "card" }>).card.open).toBe(false);
+  });
+
+  it("applyActionResultCard hydrates spill_uri / output_spilled / output_chars", () => {
+    const running: Item[] = [{
+      kind: "card",
+      card: {
+        id: "spill-1",
+        goal: "pytest -q",
+        kind: "run_command",
+        running: true,
+        open: true,
+      },
+    }];
+    const next = applyActionResultCard(running, {
+      id: "spill-1",
+      kind: "run_command",
+      command: "pytest -q",
+      exit_code: 0,
+      output: "…truncated…",
+      spill_uri: "spill://sess1/call_spill",
+      output_spilled: true,
+      output_chars: 12000,
+      output_preview: "head…tail",
+    });
+    const card = (next[0] as Extract<Item, { kind: "card" }>).card;
+    expect(card.result?.spill_uri).toBe("spill://sess1/call_spill");
+    expect(card.result?.output_spilled).toBe(true);
+    expect(card.result?.output_chars).toBe(12000);
+    expect(card.result?.output_preview).toBe("head…tail");
+    expect(card.result?.output).toBe("…truncated…");
   });
 
   it("applyActionResultCard opens on numeric-string exit_code and ignores non-numeric", () => {
