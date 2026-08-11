@@ -2751,6 +2751,7 @@ export default function Conversation({
           plan={plan}
           busyElapsedMs={busyElapsedMs}
           turnOpen={turnOpen}
+          holdSwarmAwait={holdSwarmAwait}
           onEditMessage={stableEditMessage}
           onExecuteSend={stableExecuteSend}
           onImageClick={handleTranscriptImageClick}

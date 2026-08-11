@@ -728,6 +728,11 @@ export type TranscriptListProps = {
    * Keeps mid-turn narration folded into Investigating between tool batches.
    */
   turnOpen?: boolean;
+  /**
+   * Conversation's pending-job hold — OR'd into agentLoopOpen so fold /
+   * absorption / footer match StatusPill through idle flaps / switch rearm.
+   */
+  holdSwarmAwait?: boolean;
   scrollContainerRef: React.RefObject<HTMLDivElement | null>;
   onEditMessage: (idx: number, originalText: string) => void;
   onExecuteSend: (msg: string, useAuto: boolean, usePlan?: boolean) => void;
@@ -746,6 +751,7 @@ export const TranscriptList = memo(function TranscriptList({
   plan,
   busyElapsedMs = null,
   turnOpen = false,
+  holdSwarmAwait = false,
   scrollContainerRef,
   onEditMessage,
   onExecuteSend,
@@ -754,9 +760,19 @@ export const TranscriptList = memo(function TranscriptList({
   onExecutePlan,
   onCommandApproval,
 }: TranscriptListProps) {
-  // Match Conversation's latch — include awaiting_swarm so Investigating /
-  // mid-turn absorption / hideBusyFooter stay armed while workers fly.
-  const agentLoopOpen = isAgentLoopOpen(turnOpen, status);
+  // Match Conversation's latch — awaiting_swarm plus holdSwarmAwait so
+  // Investigating / mid-turn absorption / footer stay armed through idle flaps.
+  const agentLoopOpen = isAgentLoopOpen(turnOpen, status) || holdSwarmAwait;
+  // Pause-point: StatusPill prefers Still working… — seal sticky Investigating
+  // and keep the busy footer visible instead of hiding under fold chrome.
+  // holdSwarmAwait alone must not seal mid-turn: only when the pilot is idle.
+  const pilotBusy =
+    turnOpen
+    || status === "thinking"
+    || status === "executing"
+    || status === "streaming";
+  const pausePoint =
+    status === "awaiting_swarm" || (holdSwarmAwait && !pilotBusy);
 
   const intermediateItems = collectIntermediateAssistantItems(items, agentLoopOpen);
   const grouped = groupAgentActivity(items, intermediateItems);
@@ -1155,6 +1171,7 @@ export const TranscriptList = memo(function TranscriptList({
           groupId={openId}
           items={it.items}
           loopOpen={agentLoopOpen && i === lastActivityGroupIdx}
+          pausePoint={pausePoint && i === lastActivityGroupIdx}
           onToggleCard={(card) => onSetCard(card.id, { open: !card.open })}
         />
       );
@@ -1165,8 +1182,14 @@ export const TranscriptList = memo(function TranscriptList({
   const busyProgress = deriveBusyProgress(items, status, busyElapsedMs);
   // Hide flat busy footer while investigation rows own the status surface (T1),
   // or when the assistant answer already looks complete despite SSE lag (T5).
-  const hideBusyFooter = turnHasLiveInvestigation(items, agentLoopOpen);
-  const showBusyFooter = shouldShowBusyFooter(items, status) && !hideBusyFooter;
+  // Pause-point: do not hide Still working… under sticky loopOpen investigation —
+  // only real running tools / streaming thought suppress the footer.
+  const hideBusyFooter = turnHasLiveInvestigation(
+    items,
+    pausePoint ? false : agentLoopOpen,
+  );
+  const showBusyFooter =
+    (shouldShowBusyFooter(items, status) || pausePoint) && !hideBusyFooter;
   // Quiet "Still working…" cue: only when the turn is busy and nothing else
   // already signals work — including a live Investigating fold (sticky across
   // tool gaps via agentLoopOpen). The under-fold cue must not blink on/off
@@ -1311,12 +1334,18 @@ function ActivityGroup({
   onToggleCard,
   groupId,
   loopOpen = false,
+  pausePoint = false,
 }: {
   items: ActivityItem[];
   onToggleCard: (card: Card) => void;
   groupId: string;
   /** True while this is the current turn's fold and the agent loop is still open. */
   loopOpen?: boolean;
+  /**
+   * awaiting_swarm / holdSwarmAwait pause — StatusPill says Still working…;
+   * do not keep a sticky Investigating spinner over settled tools.
+   */
+  pausePoint?: boolean;
 }) {
   // Investigation chrome stays collapsed by default (Cursor/Hermes). The
   // headline still tracks Investigating / Explored while closed; the user
@@ -1370,11 +1399,18 @@ function ActivityGroup({
   // live thinking + open loop as Investigating so the fold is not blank until
   // tools flush at the end of the agent subprocess.
   // A running swarm_pending is itself live investigation chrome.
+  // Pause-point (awaiting_swarm / hold): seal sticky Investigating so the fold
+  // shows Explored while StatusPill / busy footer own Still working….
   const investigating =
     anyRunning
     || liveThinking
-    || swarmPendingRunning
-    || (loopOpen && (actionCount > 0 || thinkingItems.length > 0 || swarmPendingItems.length > 0));
+    || (
+      !pausePoint
+      && (
+        swarmPendingRunning
+        || (loopOpen && (actionCount > 0 || thinkingItems.length > 0 || swarmPendingItems.length > 0))
+      )
+    );
 
   // A group with NO tool actions, no narration AND no reasoning (just a lone
   // CodeGraph chip from the per-step auto-injection) would render a misleading

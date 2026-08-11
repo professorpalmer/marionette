@@ -24,6 +24,7 @@ export default function ConversationChatColumn({
   plan,
   busyElapsedMs,
   turnOpen,
+  holdSwarmAwait = false,
   onEditMessage,
   onExecuteSend,
   onImageClick,
@@ -42,6 +43,8 @@ export default function ConversationChatColumn({
   plan: boolean;
   busyElapsedMs: number | null;
   turnOpen: boolean;
+  /** Same hold as Conversation — pending jobs keep transcript latch through idle flaps. */
+  holdSwarmAwait?: boolean;
   onEditMessage: (idx: number, text: string) => void;
   onExecuteSend: (msg: string, useAuto: boolean, usePlan?: boolean) => void;
   onImageClick: (url: string) => void;
@@ -73,6 +76,7 @@ export default function ConversationChatColumn({
             plan={plan}
             busyElapsedMs={busyElapsedMs}
             turnOpen={turnOpen}
+            holdSwarmAwait={holdSwarmAwait}
             scrollContainerRef={feedRef}
             onEditMessage={onEditMessage}
             onExecuteSend={onExecuteSend}

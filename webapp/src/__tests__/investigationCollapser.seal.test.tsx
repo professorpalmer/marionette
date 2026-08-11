@@ -27,6 +27,7 @@ function listProps(
   opts: {
     turnOpen: boolean;
     status: "idle" | "thinking" | "executing" | "done" | "error" | "streaming" | "awaiting_swarm";
+    holdSwarmAwait?: boolean;
   },
 ) {
   return {
@@ -37,6 +38,7 @@ function listProps(
     auto: false,
     plan: false,
     turnOpen: opts.turnOpen,
+    holdSwarmAwait: opts.holdSwarmAwait ?? false,
     scrollContainerRef: { current: null },
     onEditMessage: vi.fn(),
     onExecuteSend: vi.fn(),
@@ -107,5 +109,148 @@ describe("prior investigation fold stays sealed on new prompt", () => {
     expect(screen.getByText(/Explored/i)).toBeTruthy();
     // Prior fold still sealed (collapsed); only the live fold is active.
     expect(screen.queryByText(/looking at auth handlers/i)).toBeNull();
+  });
+});
+
+describe("holdSwarmAwait transcript latch + awaiting_swarm pause-point", () => {
+  const pauseItems: Item[] = [
+    { kind: "msg", msg: { role: "user", text: "dispatch workers" } },
+    { kind: "thinking", text: "spawning swarm", id: "th-pause" },
+    sealedCard("card-pause-a", "auth.ts"),
+    sealedCard("card-pause-b", "billing.ts"),
+    {
+      kind: "msg",
+      msg: { role: "assistant", text: "Workers flying — validating when they land." },
+    },
+    {
+      kind: "swarm_pending",
+      job_ids: ["job_abcdef012345"],
+      objective: "audit auth",
+      status: "running",
+    },
+  ];
+
+  it("holdSwarmAwait keeps absorption latch through idle/thinking status flaps", () => {
+    const { rerender } = render(
+      <TranscriptList
+        {...listProps(pauseItems, {
+          turnOpen: false,
+          status: "awaiting_swarm",
+          holdSwarmAwait: true,
+        })}
+      />,
+    );
+
+    // Pause-point: Explored fold + Still working footer (not Investigating spinner).
+    expect(screen.getByText(/Explored/i)).toBeTruthy();
+    expect(screen.queryByText(/Investigating/i)).toBeNull();
+    expect(screen.getByText(/Still working/i)).toBeTruthy();
+
+    // Idle flap: without hold, agentLoopOpen would drop; with hold, latch + footer stay.
+    rerender(
+      <TranscriptList
+        {...listProps(pauseItems, {
+          turnOpen: false,
+          status: "idle",
+          holdSwarmAwait: true,
+        })}
+      />,
+    );
+    expect(screen.getByText(/Explored/i)).toBeTruthy();
+    expect(screen.queryByText(/Investigating/i)).toBeNull();
+    expect(screen.getByText(/Still working/i)).toBeTruthy();
+
+    // Pilot busy (thinking): holdSwarmAwait must not seal — live swarm keeps Investigating.
+    rerender(
+      <TranscriptList
+        {...listProps(pauseItems, {
+          turnOpen: false,
+          status: "thinking",
+          holdSwarmAwait: true,
+        })}
+      />,
+    );
+    expect(screen.getByText(/Investigating/i)).toBeTruthy();
+    // Investigating fold owns the status surface — no flat Still working footer.
+    expect(screen.queryByText(/Still working/i)).toBeNull();
+  });
+
+  it("holdSwarmAwait with active pilot turn keeps mid-turn Investigating, not sealed Explored", () => {
+    const midTurnItems: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "check auth while workers run" } },
+      { kind: "thinking", text: "reading auth handlers", id: "th-mid" },
+      sealedCard("card-mid-a", "auth.ts"),
+      {
+        kind: "card",
+        card: {
+          id: "card-mid-live",
+          goal: "session.ts",
+          cwd: null,
+          kind: "read_file",
+          running: true,
+          open: false,
+        },
+      },
+    ];
+
+    const { rerender } = render(
+      <TranscriptList
+        {...listProps(midTurnItems, {
+          turnOpen: true,
+          status: "executing",
+          holdSwarmAwait: true,
+        })}
+      />,
+    );
+
+    expect(screen.getByText(/Investigating/i)).toBeTruthy();
+    expect(screen.queryByText(/Explored/i)).toBeNull();
+
+    rerender(
+      <TranscriptList
+        {...listProps(midTurnItems, {
+          turnOpen: true,
+          status: "thinking",
+          holdSwarmAwait: true,
+        })}
+      />,
+    );
+
+    expect(screen.getByText(/Investigating/i)).toBeTruthy();
+    expect(screen.queryByText(/Explored/i)).toBeNull();
+
+    // Settled tools but pilot still busy — must not seal via hold alone.
+    const settledMidTurn: Item[] = [
+      ...midTurnItems.slice(0, -1),
+      sealedCard("card-mid-live", "session.ts"),
+    ];
+    rerender(
+      <TranscriptList
+        {...listProps(settledMidTurn, {
+          turnOpen: true,
+          status: "thinking",
+          holdSwarmAwait: true,
+        })}
+      />,
+    );
+    expect(screen.getByText(/Investigating/i)).toBeTruthy();
+    expect(screen.queryByText(/Explored/i)).toBeNull();
+  });
+
+  it("awaiting_swarm pause-point does not keep Investigating spinner over settled tools", () => {
+    render(
+      <TranscriptList
+        {...listProps(pauseItems, {
+          turnOpen: false,
+          status: "awaiting_swarm",
+          holdSwarmAwait: false,
+        })}
+      />,
+    );
+
+    expect(screen.getByText(/Explored/i)).toBeTruthy();
+    expect(screen.queryByText(/Investigating/i)).toBeNull();
+    // Busy footer owns Still working… (matches StatusPill), not sticky Investigating.
+    expect(screen.getByText(/Still working/i)).toBeTruthy();
   });
 });
