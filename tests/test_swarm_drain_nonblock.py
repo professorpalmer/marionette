@@ -122,14 +122,14 @@ def test_drain_persists_swarm_badge_to_display_transcript():
     })
     list(s.drain_swarm_results())
     badges = [d for d in s.export_display_transcript() if d.get("type") == "swarm_result"]
-        assert badges == [{
-            "type": "swarm_result",
-            "job_id": "abc123",
-            "applied": True,
-            "files": ["parser.py"],
-            "summary": "patched the tokenizer",
-            "error": None,
-            "objective": "fix the parser",
-            "held_for_review": False,
-            "analysis_ok": False,
-        }]
+    assert badges == [{
+        "type": "swarm_result",
+        "job_id": "abc123",
+        "applied": True,
+        "files": ["parser.py"],
+        "summary": "patched the tokenizer",
+        "error": None,
+        "objective": "fix the parser",
+        "held_for_review": False,
+        "analysis_ok": False,
+    }]
