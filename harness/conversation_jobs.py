@@ -1239,6 +1239,72 @@ class ConversationJobsMixin:
             # how this worker settled (applied, failed, or crashed).
             self._release_objective(objective)
 
+    def _try_recover_busy_for_swarm_drain(self) -> bool:
+        """Force-release a stale/abandoned ``_busy`` so queued swarm results can drain.
+
+        Mirrors ``send()`` stale-lock recovery: a healthy in-flight turn must keep
+        the lock (end-of-stream drain will surface results). Abandoned holders that
+        already report idle / Stop / interrupt must not strand ``swarm_result`` +
+        ``pilot_resume`` after ``has_pending_swarms`` clears. Returns True when the
+        lock was released (caller should acquire again).
+        """
+        import time as _t
+
+        try:
+            if self._swarm_results.empty():
+                return False
+        except Exception:
+            return False
+
+        held_for = _t.monotonic() - self._busy_since if self._busy_since else 0.0
+        stop_idle = bool(getattr(self, "_stop_holds_idle", False))
+        interrupt = bool(getattr(self, "_interrupt_requested", False))
+        state = getattr(self, "_state", "") or ""
+
+        # Stop reports idle while the abandoned generator may still hold the lock.
+        stale = bool(stop_idle and self._busy.locked())
+        # Explicit interrupt: same shorter grace as send() force-recover.
+        if not stale and interrupt and self._busy_since and held_for > 0.5:
+            stale = True
+        # Leaked lock with idle state (send() uses the same 1.5s heuristic).
+        if not stale and self._busy_since and held_for > 1.5 and state == "idle":
+            stale = True
+        # Pause-point / masked busy: no inflight futures, session reports not-busy,
+        # but the lock is still held — results would strand forever once FE prunes
+        # pending ids after has_pending_swarms clears.
+        if not stale and self._busy_since and held_for > 1.5:
+            pending = True
+            try:
+                pending = bool(self.has_pending_swarms())
+            except Exception:
+                pending = True
+            try:
+                reports_busy = bool(self.is_turn_busy())
+            except Exception:
+                reports_busy = True
+            if not pending and not reports_busy:
+                stale = True
+
+        if not stale:
+            return False
+
+        with self._busy_meta:
+            self._busy_gen += 1
+            self._busy_since = 0.0
+            try:
+                self._busy.release()
+            except RuntimeError:
+                pass
+        try:
+            from harness.diag import note as _diag_note
+            _diag_note(
+                "conversation_jobs.drain_busy_recover",
+                msg=f"released stale _busy after {held_for:.1f}s for queued swarm drain",
+            )
+        except Exception:
+            pass
+        return True
+
     def drain_swarm_results(self) -> Iterator[ConvEvent]:
         # Drain finished background-swarm results, appending follow-up messages to
         # history under the single-writer _busy lock. CRITICAL: acquire NON-blocking.
@@ -1253,11 +1319,18 @@ class ConversationJobsMixin:
         # check can't interrupt) would hold _busy forever and starve this drain --
         # completed worker patches would never surface. The reaper force-recovers
         # such a turn past the hard deadline so the app self-heals (audit #6).
+        # Additionally, when results are already queued and the holder is stale /
+        # Stop-abandoned / reports not-busy, recover the lock immediately so idle
+        # FE keep-alive can receive swarm_result + pilot_resume without waiting
+        # for the 600s reaper (busy-held starve after has_pending_swarms clears).
         from .conversation import ConvEvent
 
         self._reap_stuck_turn()
         if not self._busy.acquire(blocking=False):
-            return
+            if not self._try_recover_busy_for_swarm_drain():
+                return
+            if not self._busy.acquire(blocking=False):
+                return
         try:
             import queue
             # (job_id, objective, failed, error, degraded)

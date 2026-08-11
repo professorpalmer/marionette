@@ -46,7 +46,10 @@ SWARM_GATE_READ_ALLOWANCE = int(os.environ.get("HARNESS_SWARM_GATE_READ_ALLOWANC
 # to a short cached replay (stops broad-intent turns burning N unique SUPPRESSED
 # payloads on list_dir/search_files/grep before the model finally calls run_swarm).
 SWARM_GATE_FULL_REDIRECT_CAP = int(os.environ.get("HARNESS_SWARM_GATE_FULL_REDIRECT_CAP", "1"))
-TURN_TOOL_BUDGET_DEFAULT = int(os.environ.get("HARNESS_PILOT_TOOL_BUDGET", "25"))
+# Literal default — never bake HARNESS_PILOT_TOOL_BUDGET at import time.
+# Ambient Marionette Settings (budget=0) would otherwise poison pytest hermeticity
+# after conftest delenv; read the env only inside _explicit_or_default_tool_budget.
+TURN_TOOL_BUDGET_DEFAULT = 25
 # Tiny-workspace tool budget (scale-aware tighten only; never raises explicit cap).
 # Applies to the *foreground* pilot only — nested implement workers use an
 # edit-first policy instead so a tiny repo cannot burn the whole cap exploring.

@@ -45,6 +45,9 @@ def test_runners_registry_idle_after_interrupt():
 
 def test_drain_after_interrupt_emits_result_without_pilot_resume():
     s = _session()
+    # Abandoned turn still holds _busy after Stop; drain must recover it.
+    s._busy.acquire(blocking=False)
+    s._busy_since = time.monotonic() - 1.0
     s.interrupt()
     s._swarm_results.put({
         "job_id": "stop1",
@@ -55,15 +58,6 @@ def test_drain_after_interrupt_emits_result_without_pilot_resume():
             "summary": "done",
         },
     })
-    # Drain needs the busy lock; after interrupt the abandoned turn may still
-    # hold it. Release so the poll path can drain (mirrors force-recovery /
-    # turn finally).
-    if s._busy.locked():
-        try:
-            s._busy.release()
-        except RuntimeError:
-            pass
-        s._busy_since = 0.0
     events = list(s.drain_swarm_results())
     kinds = [e.kind for e in events]
     assert "swarm_result" in kinds

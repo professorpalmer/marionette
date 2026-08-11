@@ -2,9 +2,15 @@
 handler (the frontend swarm-results poll); a blocking acquire there hangs the
 server thread whenever a turn holds the lock -- the 'swarm running forever / app
 hung' symptom. It must return immediately (draining nothing) when busy, and the
-queued results survive for the next poll."""
+queued results survive for the next poll.
+
+When results are already queued and the holder is stale / Stop-abandoned /
+reports not-busy, drain must recover the lock so idle FE keep-alive can receive
+swarm_result + pilot_resume (busy-held starve after has_pending_swarms clears).
+"""
 import tempfile
 import threading
+import time
 
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession
@@ -15,10 +21,24 @@ def _session():
     return ConversationalSession(cfg)
 
 
+def _queued_result(job_id: str = "abc123", objective: str = "fix the parser"):
+    return {
+        "job_id": job_id,
+        "objective": objective,
+        "result": {
+            "applied": True,
+            "files": ["parser.py"],
+            "summary": "patched the tokenizer",
+        },
+    }
+
+
 def test_drain_does_not_block_when_busy():
     s = _session()
     # Simulate an in-flight turn holding the lock.
     s._busy.acquire(blocking=False)
+    s._busy_since = time.monotonic()
+    s._state = "thinking"
     try:
         done = threading.Event()
 
@@ -31,7 +51,56 @@ def test_drain_does_not_block_when_busy():
         # If drain blocks on the held lock, this times out (the bug).
         assert done.wait(timeout=2.0), "drain_swarm_results blocked while _busy was held"
     finally:
-        s._busy.release()
+        if s._busy.locked():
+            s._busy.release()
+        s._busy_since = 0.0
+
+
+def test_drain_does_not_steal_from_healthy_inflight_turn():
+    """Fresh thinking hold must keep the lock; queued results survive for end-drain."""
+    s = _session()
+    s._busy.acquire(blocking=False)
+    s._busy_since = time.monotonic()
+    s._state = "thinking"
+    s._swarm_results.put(_queued_result("alive1"))
+    try:
+        events = list(s.drain_swarm_results())
+        assert events == []
+        assert not s._swarm_results.empty()
+        assert s._busy.locked()
+    finally:
+        if s._busy.locked():
+            s._busy.release()
+        s._busy_since = 0.0
+
+
+def test_drain_recovers_stale_idle_busy_and_emits_pilot_resume():
+    """Idle leaked lock + queued results must surface swarm_result + pilot_resume."""
+    s = _session()
+    s._busy.acquire(blocking=False)
+    s._busy_since = time.monotonic() - 2.0
+    s._state = "idle"
+    s._swarm_results.put(_queued_result("stale1"))
+    events = list(s.drain_swarm_results())
+    kinds = [e.kind for e in events]
+    assert "swarm_result" in kinds
+    assert "pilot_resume" in kinds
+    assert s._swarm_results.empty()
+
+
+def test_drain_recovers_stop_held_busy_without_manual_release():
+    """Stop-abandoned lock must not strand results after has_pending_swarms clears."""
+    s = _session()
+    s._busy.acquire(blocking=False)
+    s._busy_since = time.monotonic() - 1.0
+    s.interrupt()
+    s._swarm_results.put(_queued_result("stop1", "do a thing"))
+    events = list(s.drain_swarm_results())
+    kinds = [e.kind for e in events]
+    assert "swarm_result" in kinds
+    # Stop suppresses keep-alive resume (history lands; no pilot_resume kick).
+    assert "pilot_resume" not in kinds
+    assert s._swarm_results.empty()
 
 
 def test_drain_works_when_free():
@@ -47,15 +116,7 @@ def test_drain_injects_pilot_resume_continuation():
     finding and takes the next step without a new user message, and a
     pilot_resume event is emitted for the UI."""
     s = _session()
-    s._swarm_results.put({
-        "job_id": "abc123",
-        "objective": "fix the parser",
-        "result": {
-            "applied": True,
-            "files": ["parser.py"],
-            "summary": "patched the tokenizer",
-        },
-    })
+    s._swarm_results.put(_queued_result())
     events = list(s.drain_swarm_results())
     kinds = [e.kind for e in events]
     assert "swarm_result" in kinds

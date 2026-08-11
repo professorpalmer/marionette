@@ -4,11 +4,13 @@ import {
   hasLiveBackgroundJobIds,
   PILOT_LOOKING_HINT,
   pilotResumePollAction,
+  pruneTerminalJobIds,
   seedPendingJobIdsFromHydrate,
   sessionStateShowsAwaitingSwarm,
   shouldHoldSwarmAwaitChrome,
   SWARM_AWAIT_HINT,
   swarmResultsAwaitChromeClear,
+  terminalJobIdsFromSwarmLive,
   triggerResumeGate,
   waitHintForAssistantDone,
 } from "../components/conversation/swarmPoll";
@@ -414,6 +416,34 @@ describe("swarm await chrome", () => {
         cancelArmed: false,
       }),
     ).toEqual({ clearAwaitStatus: false, clearWaitHint: false });
+    // Drained + cancelArmed must still clear — cancelArmed only queues resume.
+    expect(
+      swarmResultsAwaitChromeClear({
+        pendingSwarms: false,
+        localPendingJobCount: 0,
+        userStopped: false,
+        cancelArmed: true,
+      }),
+    ).toEqual({ clearAwaitStatus: true, clearWaitHint: true });
+  });
+
+  it("prunes terminal swarm/live job ids from pendingJobIds", () => {
+    expect(
+      terminalJobIdsFromSwarmLive([
+        { job_id: "job_done", status: "completed" },
+        { job_id: "job_alive", status: "running" },
+        { id: "local-x", status: "failed" },
+        { job_id: "job_cancel", status: "cancelled" },
+      ]),
+    ).toEqual(["job_done", "local-x", "job_cancel"]);
+    expect(
+      pruneTerminalJobIds(
+        ["job_done", "job_alive", "local-x"],
+        ["job_done", "local-x"],
+      ),
+    ).toEqual(["job_alive"]);
+    expect(pruneTerminalJobIds(["job_alive"], [])).toEqual(["job_alive"]);
+    expect(pruneTerminalJobIds([], ["job_done"])).toEqual([]);
   });
 
   it("fences trailing getSessionState apply so late session-A poll cannot mutate B", () => {

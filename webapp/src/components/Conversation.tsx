@@ -142,10 +142,12 @@ import {
   clearSwarmAwaitWaitHint,
   PILOT_LOOKING_HINT,
   pilotResumePollAction,
+  pruneTerminalJobIds,
   sessionStateShowsAwaitingSwarm,
   shouldHoldSwarmAwaitChrome,
   SWARM_AWAIT_HINT,
   swarmResultsAwaitChromeClear,
+  terminalJobIdsFromSwarmLive,
   triggerResumeGate,
 } from "./conversation/swarmPoll";
 import { armResumeKick } from "./conversation/sessionResumeLatch";
@@ -1981,16 +1983,19 @@ export default function Conversation({
             const hasActions = jobs.some(
               (j) => Array.isArray(j.actions) && j.actions.length > 0,
             );
-            const hasTerminal = jobs.some((j) => {
-              const s = String(j?.status || "").toLowerCase();
-              return (
-                s === "completed"
-                || s === "failed"
-                || s === "cancelled"
-                || s === "canceled"
-                || s === "done"
-              );
-            });
+            const terminalIds = terminalJobIdsFromSwarmLive(jobs);
+            const hasTerminal = terminalIds.length > 0;
+            // Live terminal status must prune await trackers even when drain
+            // never delivered swarm_result (busy-held starve / missed poll).
+            if (hasTerminal) {
+              setPendingJobIds((prev) => {
+                const next = pruneTerminalJobIds(prev, terminalIds);
+                // Sync ref so same-tick getSessionState chrome clear sees the
+                // pruned count (useEffect would lag one paint).
+                pendingJobIdsRef.current = next;
+                return next;
+              });
+            }
             if (hasActions || hasTerminal) {
               setItems((prev) => {
                 // Re-fence inside the updater: a session switch between the

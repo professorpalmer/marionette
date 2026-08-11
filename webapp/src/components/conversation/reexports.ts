@@ -255,6 +255,8 @@ export {
   waitHintForAssistantDone,
   clearSwarmAwaitWaitHint,
   isSwarmAwaitWaitHint,
+  pruneTerminalJobIds,
+  terminalJobIdsFromSwarmLive,
   swarmResultsAwaitChromeClear,
   pilotResumePollAction,
   triggerResumeGate,

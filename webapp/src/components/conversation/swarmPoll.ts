@@ -102,8 +102,52 @@ export function clearSwarmAwaitWaitHint(prev: string | null): string | null {
 }
 
 /**
+ * Drop job ids that swarm/live already reports as terminal.
+ * pendingJobIds are normally cleared in handleSwarmResult; when drain misses
+ * swarm_result, live terminal status must still release await chrome.
+ */
+export function pruneTerminalJobIds(
+  pending: readonly string[],
+  terminalIds: readonly string[],
+): string[] {
+  if (!pending.length) return [];
+  if (!terminalIds.length) return pending.slice();
+  const terminal = new Set<string>();
+  for (const raw of terminalIds) {
+    const id = String(raw || "").trim();
+    if (id) terminal.add(id);
+  }
+  if (!terminal.size) return pending.slice();
+  return pending.filter((id) => !terminal.has(id));
+}
+
+/** Job ids from swarm/live rows whose status is already terminal. */
+export function terminalJobIdsFromSwarmLive(
+  jobs: readonly { job_id?: string; id?: string; status?: string }[],
+): string[] {
+  const out: string[] = [];
+  for (const job of jobs) {
+    const status = String(job?.status || "").toLowerCase();
+    if (
+      status !== "completed"
+      && status !== "failed"
+      && status !== "cancelled"
+      && status !== "canceled"
+      && status !== "done"
+    ) {
+      continue;
+    }
+    const id = String(job?.job_id || job?.id || "").trim();
+    if (id) out.push(id);
+  }
+  return out;
+}
+
+/**
  * Trailing getSessionState apply on the swarm-results poll: whether to clear
  * awaiting_swarm / Looking… / Still working… after jobs drain or Stop.
+ * cancelArmed only gates resume queueing (triggerResumeGate); drained jobs
+ * must clear await chrome even while a stream cancel token is armed.
  */
 export function swarmResultsAwaitChromeClear(opts: {
   pendingSwarms: boolean;
@@ -111,15 +155,15 @@ export function swarmResultsAwaitChromeClear(opts: {
   userStopped: boolean;
   cancelArmed: boolean;
 }): { clearAwaitStatus: boolean; clearWaitHint: boolean } {
+  // cancelArmed is reserved for triggerResumeGate; ignore here so drained
+  // jobs cannot leave awaiting_swarm stuck while an armed resume stream owns
+  // thinking chrome via executeSend.
+  void opts.cancelArmed;
   // Stop suppressed keep-alive — never leave Looking… painted.
   if (opts.userStopped) {
     return { clearAwaitStatus: true, clearWaitHint: true };
   }
-  if (
-    !opts.pendingSwarms
-    && opts.localPendingJobCount === 0
-    && !opts.cancelArmed
-  ) {
+  if (!opts.pendingSwarms && opts.localPendingJobCount === 0) {
     return { clearAwaitStatus: true, clearWaitHint: true };
   }
   return { clearAwaitStatus: false, clearWaitHint: false };

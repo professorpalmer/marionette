@@ -160,6 +160,33 @@ def test_iteration_budget_cap_from_env(monkeypatch):
     assert iteration_budget_enabled() is False
 
 
+def test_turn_tool_budget_default_hermetic_after_import_time_zero(monkeypatch):
+    """Ambient HARNESS_PILOT_TOOL_BUDGET=0 must not bake into TURN_TOOL_BUDGET_DEFAULT.
+
+    Reload with env=0 (simulating Settings at import), then delenv — default 25
+    and an enabled iteration budget must return, matching conftest isolation.
+    """
+    import importlib
+
+    import harness.pilot_guards as pilot_guards
+
+    monkeypatch.setenv("HARNESS_PILOT_TOOL_BUDGET", "0")
+    importlib.reload(pilot_guards)
+    try:
+        assert pilot_guards.TURN_TOOL_BUDGET_DEFAULT == 25
+        monkeypatch.delenv("HARNESS_PILOT_TOOL_BUDGET", raising=False)
+        monkeypatch.delenv("HARNESS_TURN_BUDGET", raising=False)
+        assert pilot_guards.turn_tool_budget_cap() == 25
+        assert pilot_guards.iteration_budget_enabled() is True
+        state = pilot_guards.new_turn_guard_state("do a thing")
+        assert state.iteration_budget is not None
+        assert state.iteration_budget.cap == 25
+    finally:
+        monkeypatch.delenv("HARNESS_PILOT_TOOL_BUDGET", raising=False)
+        monkeypatch.delenv("HARNESS_TURN_BUDGET", raising=False)
+        importlib.reload(pilot_guards)
+
+
 def test_swarm_gate_suppresses_list_dir_before_dispatch():
     state = new_turn_guard_state("Give me an audit of this directory")
     act = _Act(kind="list_dir", path=".")
