@@ -14,6 +14,28 @@ export type SpillPreviewState = {
   error?: string;
 };
 
+/**
+ * Conversation-local spill/lightbox overlays are not session-scoped state.
+ * On activeSessionId change, drop both so session A's peek cannot paint over B.
+ */
+export function clearedSessionOverlays(): {
+  spillPreview: null;
+  lightboxUrl: null;
+} {
+  return { spillPreview: null, lightboxUrl: null };
+}
+
+/**
+ * Fence readSpill completion to the session that opened the peek — soft-fail
+ * so a mid-flight A→B switch never late-fills A's spill:// body into B.
+ */
+export function shouldApplySpillPreview(opts: {
+  requestSessionId: string | null;
+  activeSessionId: string | null;
+}): boolean {
+  return opts.requestSessionId === opts.activeSessionId;
+}
+
 export default function SpillPreviewModal({
   preview,
   onClose,

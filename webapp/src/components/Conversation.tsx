@@ -130,6 +130,8 @@ import ComposerDock, { type MemoryProposal } from "./conversation/ComposerDock";
 import ConversationHeader from "./conversation/ConversationHeader";
 import ImageLightbox from "./conversation/ImageLightbox";
 import SpillPreviewModal, {
+  clearedSessionOverlays,
+  shouldApplySpillPreview,
   type SpillPreviewState,
 } from "./conversation/SpillPreviewModal";
 import { useSessionSwitch } from "./conversation/useSessionSwitch";
@@ -558,11 +560,20 @@ export default function Conversation({
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
   const [spillPreview, setSpillPreview] = useState<SpillPreviewState | null>(null);
 
+  // Spill peek + image lightbox are Conversation-local overlays — never carry
+  // session A's body/URL into B (or leave them painted after a project switch).
+  useEffect(() => {
+    const cleared = clearedSessionOverlays();
+    setSpillPreview(cleared.spillPreview);
+    setLightboxUrl(cleared.lightboxUrl);
+  }, [activeSessionId]);
+
   // Spilled tool stdout (spill://) → read-only peek modal via /api/spill/read.
   useEffect(() => {
     const handleOpenSpill = (e: Event) => {
       const uri = String((e as CustomEvent<{ uri?: string }>).detail?.uri || "").trim();
       if (!uri) return;
+      const requestSessionId = activeSessionIdRef.current;
       setSpillPreview({
         uri,
         content: "Loading…",
@@ -570,6 +581,10 @@ export default function Conversation({
         truncated: false,
       });
       void api.readSpill(uri).then((res) => {
+        if (!shouldApplySpillPreview({
+          requestSessionId,
+          activeSessionId: activeSessionIdRef.current,
+        })) return;
         if (!res?.ok) {
           setSpillPreview({
             uri,
@@ -587,6 +602,10 @@ export default function Conversation({
           truncated: !!res.truncated,
         });
       }).catch((err: unknown) => {
+        if (!shouldApplySpillPreview({
+          requestSessionId,
+          activeSessionId: activeSessionIdRef.current,
+        })) return;
         setSpillPreview({
           uri,
           content: "",

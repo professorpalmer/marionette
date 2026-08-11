@@ -161,6 +161,10 @@ import {
   showStandaloneEditNoticeDismiss,
   userOrdinalBeforeIndex,
 } from "../components/conversation/composerSend";
+import {
+  clearedSessionOverlays,
+  shouldApplySpillPreview,
+} from "../components/conversation/SpillPreviewModal";
 import { runCommandPaletteAction } from "../lib/commandPalette";
 import {
   appendMentionsToInput,
@@ -2230,6 +2234,39 @@ describe("composerSend module", () => {
     ).toBe(false);
     expect(
       shouldApplyCompactSettle({
+        requestSessionId: null,
+        activeSessionId: null,
+      }),
+    ).toBe(true);
+  });
+
+  it("clearedSessionOverlays + shouldApplySpillPreview drop spill/lightbox on A→B", () => {
+    // SpillPreviewModal / ImageLightbox are Conversation-local; switch must
+    // clear both, and late readSpill must not re-fill A's body into B.
+    expect(clearedSessionOverlays()).toEqual({
+      spillPreview: null,
+      lightboxUrl: null,
+    });
+    expect(
+      shouldApplySpillPreview({
+        requestSessionId: "session-a",
+        activeSessionId: "session-a",
+      }),
+    ).toBe(true);
+    expect(
+      shouldApplySpillPreview({
+        requestSessionId: "session-a",
+        activeSessionId: "session-b",
+      }),
+    ).toBe(false);
+    expect(
+      shouldApplySpillPreview({
+        requestSessionId: "session-a",
+        activeSessionId: null,
+      }),
+    ).toBe(false);
+    expect(
+      shouldApplySpillPreview({
         requestSessionId: null,
         activeSessionId: null,
       }),
