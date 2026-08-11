@@ -345,15 +345,9 @@ class SendLoopMixin:
                 yield ConvEvent("error", {"error": "session busy: another request is in flight"})
                 return
         busy_gen = self._mark_busy_acquired()
-        # Stream any Stop-boundary honesty notices (steer drop + owned-command
-        # orphan) recorded by interrupt or post-Stop late-steer cleanup.
-        flush = getattr(self, "_flush_stop_boundary_notices", None)
-        if callable(flush):
-            yield from flush()
-        else:
-            flush_steer = getattr(self, "_flush_steer_drop_notice", None)
-            if callable(flush_steer):
-                yield from flush_steer()
+        # Stream any Stop-boundary honesty notices recorded by interrupt or
+        # post-Stop late-steer cleanup.
+        yield from self._yield_stop_boundary_notices()
         # Time-travel journal (round 6): snapshot the active check specs and
         # behavior toggles for this turn. Observability only; never raises.
         try:
@@ -792,6 +786,20 @@ class SendLoopMixin:
         body = truncate_bytes(body, MAX_BYTES)
         return f"<codegraph-context>\n{body}\n</codegraph-context>"
 
+    def _yield_stop_boundary_notices(self) -> Iterator[ConvEvent]:
+        """Stream Stop-boundary honesty notices (steer drop + owned-command orphan).
+
+        Prefers ``_flush_stop_boundary_notices`` when BusyControl is mixed in;
+        falls back to steer-only flush for partial mixin compositions in tests.
+        """
+        flush = getattr(self, "_flush_stop_boundary_notices", None)
+        if callable(flush):
+            yield from flush()
+            return
+        flush_steer = getattr(self, "_flush_steer_drop_notice", None)
+        if callable(flush_steer):
+            yield from flush_steer()
+
     def _send_locked_inner(self, user_message: str, images: Optional[list] = None, plan: bool = False, resume: bool = False) -> Iterator[ConvEvent]:
         from .conversation import (
             ConvEvent,
@@ -932,13 +940,7 @@ class SendLoopMixin:
             # invalid history into the next request / export.
             self._sanitize_tool_pairs()
             if self._cancel.is_set():
-                flush = getattr(self, "_flush_stop_boundary_notices", None)
-                if callable(flush):
-                    yield from flush()
-                else:
-                    flush_steer = getattr(self, "_flush_steer_drop_notice", None)
-                    if callable(flush_steer):
-                        yield from flush_steer()
+                yield from self._yield_stop_boundary_notices()
                 yield ConvEvent("interrupted", {"reason": "session interrupted"})
                 return
 
