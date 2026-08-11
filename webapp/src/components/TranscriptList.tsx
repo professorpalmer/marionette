@@ -60,6 +60,7 @@ import {
   shouldUnpinInnerOnWheel,
   THINKING_INNER_PIN_THRESHOLD_PX,
 } from "./conversation/feedScroll";
+import { focusReviewTabAndRefresh } from "./conversation/streamApply";
 
 export type Msg = {
   role: "user" | "assistant";
@@ -897,14 +898,17 @@ export const TranscriptList = memo(function TranscriptList({
       );
     } else if (it.kind === "pending_review") {
       return (
-        <div
+        <button
+          type="button"
           key={key}
           data-testid="pending-review-receipt"
-          className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-accent/10 border border-accent/25 text-[10px] text-accent w-fit my-1 select-none"
+          onClick={() => focusReviewTabAndRefresh()}
+          title="Open Review tab"
+          className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-accent/10 border border-accent/25 text-[10px] text-accent w-fit my-1 select-none cursor-pointer hover:bg-accent/15 transition-colors"
         >
           <Eye size={11} className="text-accent shrink-0" />
           <span>review ready: {it.summary} ({it.id.slice(0, 12)})</span>
-        </div>
+        </button>
       );
     } else if (it.kind === "codegraph_context") {
       return (
@@ -1466,14 +1470,17 @@ function ActivityGroup({
     }
     if (it.kind === "pending_review") {
       return (
-        <div
+        <button
+          type="button"
           key={`prev-${it.id}`}
           data-testid="pending-review-receipt"
-          className="flex items-center gap-1.5 py-0.5 text-[10px] text-accent/90 select-none"
+          onClick={() => focusReviewTabAndRefresh()}
+          title="Open Review tab"
+          className="flex items-center gap-1.5 py-0.5 text-[10px] text-accent/90 select-none cursor-pointer hover:text-accent transition-colors bg-transparent border-0 p-0"
         >
           <Eye size={10} className="text-accent/80 shrink-0" />
           <span>review ready: {it.summary} ({it.id.slice(0, 12)})</span>
-        </div>
+        </button>
       );
     }
     if (it.kind === "swarm_result") {

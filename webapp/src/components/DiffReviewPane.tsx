@@ -2,9 +2,35 @@ import { useState, useEffect } from "react";
 import { api, type PendingReview, type PendingReviewFile } from "../lib/api";
 import { Check, X, Eye, AlertCircle, RefreshCw } from "lucide-react";
 
-export default function DiffReviewPane({ reviews, onRefresh }: {
+/** Namespace hunk decisions per review so concurrent pending reviews cannot collide. */
+export function reviewHunkDecisionKey(reviewId: string, hunkId: string): string {
+  return `${reviewId}::${hunkId}`;
+}
+
+/**
+ * Build the apply_review payload: every hunk id is seeded to match the painted
+ * UI default (accept). Harness defaults missing keys to reject — omitting keys
+ * would silently drop hunks the pane still shows as accepted.
+ */
+export function seedApplyDecisions(
+  review: PendingReview,
+  decisions: Record<string, "accept" | "reject">,
+): Record<string, "accept" | "reject"> {
+  const out: Record<string, "accept" | "reject"> = {};
+  for (const file of review.files) {
+    for (const hunk of file.hunks) {
+      const key = reviewHunkDecisionKey(review.id, hunk.id);
+      out[hunk.id] = decisions[key] ?? "accept";
+    }
+  }
+  return out;
+}
+
+export default function DiffReviewPane({ reviews, onRefresh, loadError = null }: {
   reviews: PendingReview[];
   onRefresh: () => void;
+  /** Sticky honesty when RightPane getReviews fails (do not claim empty queue). */
+  loadError?: string | null;
 }) {
   const [decisions, setDecisions] = useState<Record<string, "accept" | "reject">>({});
   const [loading, setLoading] = useState<string | null>(null);
@@ -18,8 +44,9 @@ export default function DiffReviewPane({ reviews, onRefresh }: {
     reviews.forEach(rev => {
       rev.files.forEach(file => {
         file.hunks.forEach(hunk => {
-          if (!initial[hunk.id]) {
-            initial[hunk.id] = "accept";
+          const key = reviewHunkDecisionKey(rev.id, hunk.id);
+          if (!initial[key]) {
+            initial[key] = "accept";
           }
         });
       });
@@ -27,14 +54,15 @@ export default function DiffReviewPane({ reviews, onRefresh }: {
     setDecisions(initial);
   }, [reviews]);
 
-  const handleSetHunkDecision = (hunkId: string, value: "accept" | "reject") => {
-    setDecisions(prev => ({ ...prev, [hunkId]: value }));
+  const handleSetHunkDecision = (reviewId: string, hunkId: string, value: "accept" | "reject") => {
+    const key = reviewHunkDecisionKey(reviewId, hunkId);
+    setDecisions(prev => ({ ...prev, [key]: value }));
   };
 
-  const handleSetFileDecisions = (file: PendingReviewFile, value: "accept" | "reject") => {
+  const handleSetFileDecisions = (reviewId: string, file: PendingReviewFile, value: "accept" | "reject") => {
     const updated = { ...decisions };
     file.hunks.forEach(h => {
-      updated[h.id] = value;
+      updated[reviewHunkDecisionKey(reviewId, h.id)] = value;
     });
     setDecisions(updated);
   };
@@ -46,11 +74,18 @@ export default function DiffReviewPane({ reviews, onRefresh }: {
     setLoading(reviewId);
     setMsg(null);
 
+    // Seed every hunk so Apply matches the pane (accept default) — never omit keys.
+    const applyPayload = seedApplyDecisions(review, decisions);
+
     // Identify all hunks in this review and their decisions
-    const allHunks: { id: string; decision: "accept" | "reject" }[] = [];
+    const allHunks: { id: string; stateKey: string; decision: "accept" | "reject" }[] = [];
     review.files.forEach(f => {
       f.hunks.forEach(h => {
-        allHunks.push({ id: h.id, decision: decisions[h.id] || "accept" });
+        allHunks.push({
+          id: h.id,
+          stateKey: reviewHunkDecisionKey(reviewId, h.id),
+          decision: applyPayload[h.id] || "accept",
+        });
       });
     });
 
@@ -62,18 +97,18 @@ export default function DiffReviewPane({ reviews, onRefresh }: {
     if (prefersReduced) {
       // With reduced motion, immediately mark accepted as applied, rejected as fading-out
       accepted.forEach(h => {
-        initialStates[h.id] = "applied";
+        initialStates[h.stateKey] = "applied";
       });
       rejected.forEach(h => {
-        initialStates[h.id] = "fading-out";
+        initialStates[h.stateKey] = "fading-out";
       });
     } else {
       // Staggered/normal motion:
       rejected.forEach(h => {
-        initialStates[h.id] = "fading-out";
+        initialStates[h.stateKey] = "fading-out";
       });
       accepted.forEach(h => {
-        initialStates[h.id] = "idle";
+        initialStates[h.stateKey] = "idle";
       });
     }
     setHunkStates(prev => ({ ...prev, ...initialStates }));
@@ -81,7 +116,7 @@ export default function DiffReviewPane({ reviews, onRefresh }: {
     let isFailed = false;
 
     // Fire the POST immediately
-    const apiPromise = api.applyReview(reviewId, decisions).then(res => {
+    const apiPromise = api.applyReview(reviewId, applyPayload).then(res => {
       if (!res.ok) {
         throw new Error(res.message || "Failed to apply");
       }
@@ -92,7 +127,7 @@ export default function DiffReviewPane({ reviews, onRefresh }: {
       setHunkStates(prev => {
         const restored = { ...prev };
         allHunks.forEach(h => {
-          delete restored[h.id];
+          delete restored[h.stateKey];
         });
         return restored;
       });
@@ -136,12 +171,12 @@ export default function DiffReviewPane({ reviews, onRefresh }: {
         const startDelay = index * staggerDelay;
         setTimeout(() => {
           if (isFailed) return;
-          setHunkStates(prev => ({ ...prev, [h.id]: "applying" }));
+          setHunkStates(prev => ({ ...prev, [h.stateKey]: "applying" }));
 
           // After sweep duration, we mark as applied (ready for green check)
           setTimeout(() => {
             if (isFailed) return;
-            setHunkStates(prev => ({ ...prev, [h.id]: "applied" }));
+            setHunkStates(prev => ({ ...prev, [h.stateKey]: "applied" }));
             completedCount++;
             if (completedCount === accepted.length) {
               // Give the green checkmark 250ms before resolve (then it collapses)
@@ -175,7 +210,7 @@ export default function DiffReviewPane({ reviews, onRefresh }: {
       setHunkStates(prev => {
         const cleaned = { ...prev };
         allHunks.forEach(h => {
-          delete cleaned[h.id];
+          delete cleaned[h.stateKey];
         });
         return cleaned;
       });
@@ -201,6 +236,24 @@ export default function DiffReviewPane({ reviews, onRefresh }: {
   };
 
   if (reviews.length === 0) {
+    if (loadError) {
+      return (
+        <div
+          data-testid="reviews-load-error"
+          className="flex flex-col items-center justify-center h-full p-6 text-center text-muted"
+        >
+          <AlertCircle size={24} className="mb-2 text-risk" />
+          <span className="text-xs font-medium text-risk">{loadError}</span>
+          <button
+            type="button"
+            onClick={onRefresh}
+            className="mt-3 text-[10px] px-2 py-1 rounded border border-edge text-muted hover:text-txt hover:bg-panel2/40 transition"
+          >
+            Retry
+          </button>
+        </div>
+      );
+    }
     return (
       <div className="flex flex-col items-center justify-center h-full p-6 text-center text-muted">
         <Eye size={24} className="mb-2 text-faint" />
@@ -229,6 +282,22 @@ export default function DiffReviewPane({ reviews, onRefresh }: {
           animation: scale-up 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
         }
       `}</style>
+      {loadError && (
+        <div
+          data-testid="reviews-load-error"
+          className="p-2 rounded text-[11px] flex items-start gap-1.5 bg-risk/10 border border-risk/20 text-risk"
+        >
+          <AlertCircle size={12} className="shrink-0 mt-0.5" />
+          <span className="flex-1">{loadError}</span>
+          <button
+            type="button"
+            onClick={onRefresh}
+            className="shrink-0 text-[10px] underline underline-offset-2 hover:text-txt"
+          >
+            Retry
+          </button>
+        </div>
+      )}
       {msg && (
         <div className={`p-2 rounded text-[11px] flex items-start gap-1.5 ${
           msg.type === "success" ? "bg-accent/10 border border-accent/20 text-accent" : "bg-risk/10 border border-risk/20 text-risk"
@@ -245,7 +314,7 @@ export default function DiffReviewPane({ reviews, onRefresh }: {
         rev.files.forEach(f => {
           f.hunks.forEach(h => {
             totalHunks++;
-            if (decisions[h.id] === "accept") {
+            if (decisions[reviewHunkDecisionKey(rev.id, h.id)] === "accept") {
               acceptedHunks++;
             }
           });
@@ -287,13 +356,13 @@ export default function DiffReviewPane({ reviews, onRefresh }: {
                     </span>
                     <div className="flex gap-1.5">
                       <button
-                        onClick={() => handleSetFileDecisions(file, "accept")}
+                        onClick={() => handleSetFileDecisions(rev.id, file, "accept")}
                         className="text-[9px] px-1.5 py-0.5 rounded bg-panel border border-edge text-accent hover:bg-accent/10 hover:border-accent/30 transition font-medium"
                       >
                         Accept All
                       </button>
                       <button
-                        onClick={() => handleSetFileDecisions(file, "reject")}
+                        onClick={() => handleSetFileDecisions(rev.id, file, "reject")}
                         className="text-[9px] px-1.5 py-0.5 rounded bg-panel border border-edge text-faint hover:text-risk hover:bg-risk/10 hover:border-risk/30 transition font-medium"
                       >
                         Reject All
@@ -303,8 +372,9 @@ export default function DiffReviewPane({ reviews, onRefresh }: {
 
                   <div className="space-y-2">
                     {file.hunks.map(hunk => {
-                      const isAccepted = decisions[hunk.id] === "accept";
-                      const hState = hunkStates[hunk.id];
+                      const decisionKey = reviewHunkDecisionKey(rev.id, hunk.id);
+                      const isAccepted = decisions[decisionKey] === "accept";
+                      const hState = hunkStates[decisionKey];
                       const isApplying = hState === "applying";
                       const isApplied = hState === "applied";
                       const isFadingOut = hState === "fading-out";
@@ -335,7 +405,7 @@ export default function DiffReviewPane({ reviews, onRefresh }: {
 
                       return (
                         <div
-                          key={hunk.id}
+                          key={decisionKey}
                           className={containerClass}
                           style={containerStyle}
                         >
@@ -364,7 +434,7 @@ export default function DiffReviewPane({ reviews, onRefresh }: {
                             <span className="text-[9px] font-mono text-faint">{hunk.header.trim()}</span>
                             <div className="flex gap-1">
                               <button
-                                onClick={() => handleSetHunkDecision(hunk.id, "accept")}
+                                onClick={() => handleSetHunkDecision(rev.id, hunk.id, "accept")}
                                 disabled={loading !== null}
                                 className={`p-1 rounded transition-colors ${
                                   isAccepted ? "bg-accent/20 text-accent" : "hover:bg-panel2 text-faint"
@@ -374,7 +444,7 @@ export default function DiffReviewPane({ reviews, onRefresh }: {
                                 <Check size={10} />
                               </button>
                               <button
-                                onClick={() => handleSetHunkDecision(hunk.id, "reject")}
+                                onClick={() => handleSetHunkDecision(rev.id, hunk.id, "reject")}
                                 disabled={loading !== null}
                                 className={`p-1 rounded transition-colors ${
                                   !isAccepted ? "bg-risk/20 text-risk" : "hover:bg-panel2 text-faint"

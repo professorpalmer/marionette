@@ -111,15 +111,19 @@ import {
   isTerminalJobStatus,
 } from "../components/conversation/streamApply";
 import {
+  cacheHitEmptyTranscriptDecision,
   collectDisplayArtifacts,
   emptySessionSwitchState,
   mergeUniqueArtifacts,
   reattachSessionStateFailureDecision,
   runnerBusySwitchDecision,
   SESSION_STATE_FAIL_NOTICE,
+  SESSION_TRANSCRIPT_FAIL_NOTICE,
   sessionStateFailureSwitchDecision,
   shouldPreserveBusyStatus,
   shouldResetBusyChromeOnSwitch,
+  shouldRetryEmptyTranscript,
+  transcriptRefreshFailureDecision,
 } from "../components/conversation/sessionHydrate";
 import {
   clearComposerDraftCache,
@@ -1909,6 +1913,24 @@ describe("sessionHydrate module", () => {
     expect(sessionStateFailureSwitchDecision()).toEqual({
       kind: "idle_with_notice",
       notice: SESSION_STATE_FAIL_NOTICE,
+    });
+    expect(shouldRetryEmptyTranscript({ loadedCount: 0, attempt: 0, maxAttempts: 4 })).toBe(true);
+    expect(cacheHitEmptyTranscriptDecision()).toEqual({
+      kind: "keep_warm_with_notice",
+      stale: true,
+      notice: SESSION_TRANSCRIPT_FAIL_NOTICE,
+    });
+    expect(transcriptRefreshFailureDecision(true)).toEqual({
+      kind: "keep_warm_with_notice",
+      clearItems: false,
+      stale: true,
+      notice: SESSION_TRANSCRIPT_FAIL_NOTICE,
+    });
+    expect(transcriptRefreshFailureDecision(false)).toEqual({
+      kind: "clear_stale_with_notice",
+      clearItems: true,
+      stale: true,
+      notice: SESSION_TRANSCRIPT_FAIL_NOTICE,
     });
     expect(reattachSessionStateFailureDecision({ attempt: 1, maxAttempts: 2 })).toBe("retry");
     expect(reattachSessionStateFailureDecision({ attempt: 2, maxAttempts: 2 })).toBe(

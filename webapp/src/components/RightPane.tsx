@@ -227,6 +227,8 @@ export default function RightPane({ artifacts, onOpenWizard, onCollapse, initial
   }, [splitState.primaryTab, splitState.secondaryTab, tabVisibility]);
 
   const [reviews, setReviews] = useState<PendingReview[]>([]);
+  /** Sticky when getReviews fails — DiffReviewPane must not claim an empty queue. */
+  const [reviewsLoadError, setReviewsLoadError] = useState<string | null>(null);
   // Live swarm activity for the Swarm tab light -- so a running job is visible
   // even when the tracker tab itself is not open.
   const [swarmRunning, setSwarmRunning] = useState(0);
@@ -248,9 +250,15 @@ export default function RightPane({ artifacts, onOpenWizard, onCollapse, initial
       .then((data) => {
         if (Array.isArray(data)) {
           setReviews(data);
+          setReviewsLoadError(null);
         }
       })
-      .catch((err) => console.error("Failed to load reviews:", err));
+      .catch((err) => {
+        console.error("Failed to load reviews:", err);
+        // Keep last-known reviews; surface sticky load failure so the pane
+        // never lies with "No pending edits…" after a failed fetch.
+        setReviewsLoadError("Couldn't load pending reviews.");
+      });
   };
 
   const fetchSwarmActivity = () => {
@@ -499,7 +507,13 @@ export default function RightPane({ artifacts, onOpenWizard, onCollapse, initial
       case "swarm":
         return <SwarmPane />;
       case "review":
-        return <DiffReviewPane reviews={reviews} onRefresh={fetchReviews} />;
+        return (
+          <DiffReviewPane
+            reviews={reviews}
+            onRefresh={fetchReviews}
+            loadError={reviewsLoadError}
+          />
+        );
       default:
         return null;
     }

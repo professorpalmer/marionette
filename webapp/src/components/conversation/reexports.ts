@@ -139,8 +139,12 @@ export {
   shouldPreserveBusyStatus,
   runnerBusySwitchDecision,
   SESSION_STATE_FAIL_NOTICE,
+  SESSION_TRANSCRIPT_FAIL_NOTICE,
   shouldResetBusyChromeOnSwitch,
   sessionStateFailureSwitchDecision,
+  shouldRetryEmptyTranscript,
+  cacheHitEmptyTranscriptDecision,
+  transcriptRefreshFailureDecision,
   reattachSessionStateFailureDecision,
 } from "./sessionHydrate";
 export {

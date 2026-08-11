@@ -15,11 +15,14 @@ import {
   transcriptResponseToItems,
 } from "./transcriptItems";
 import {
+  cacheHitEmptyTranscriptDecision,
   emptySessionSwitchState,
   runnerBusySwitchDecision,
   sessionStateFailureSwitchDecision,
   shouldPreserveBusyStatus,
   shouldResetBusyChromeOnSwitch,
+  shouldRetryEmptyTranscript,
+  transcriptRefreshFailureDecision,
 } from "./sessionHydrate";
 import { resolveComposerDraftOnSwitch } from "./composerDraftCache";
 import { createChatEventsReattach } from "./chatEventsReattach";
@@ -292,18 +295,23 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
 
     // Long chats / deferred cold attach can return empty or flake once on boot.
     // Retry a few times before accepting a blank feed (switching away and back
-    // was the user workaround — do that automatically).
+    // was the user workaround — do that automatically). Cache-hit empty gets
+    // the same retry budget so a disk/attach flake cannot wipe warm rows.
     const loadTranscriptWithRetry = async (sid: string, gen: number) => {
       let lastErr: unknown = null;
-      for (let attempt = 0; attempt < 4; attempt++) {
+      const maxAttempts = 4;
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
         if (gen !== transcriptLoadGenRef.current) return null;
         if (cachedSessionIdRef.current !== sid) return null;
         try {
           const res = await api.sessionTranscript(sid);
           if (gen !== transcriptLoadGenRef.current) return null;
           const loadedItems = transcriptResponseToItems(res);
-          // Empty on a cache-miss cold boot: brief wait + retry (disk/attach race).
-          if (loadedItems.length === 0 && attempt < 3 && !hadCache) {
+          if (shouldRetryEmptyTranscript({
+            loadedCount: loadedItems.length,
+            attempt,
+            maxAttempts,
+          })) {
             await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
             continue;
           }
@@ -324,6 +332,13 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
         if (cachedSessionIdRef.current !== activeSessionId) return;
 
         const { res, loadedItems } = loaded;
+        // Cache-hit + empty after retries: keep warm rows; never hard-replace [].
+        if (loadedItems.length === 0 && hadCache) {
+          const emptyHit = cacheHitEmptyTranscriptDecision();
+          setTranscriptStale(emptyHit.stale);
+          setEditNotice(emptyHit.notice);
+          return;
+        }
         setItems(loadedItems);
         itemsRef.current = loadedItems;
         transcriptFpRef.current = transcriptFingerprint(loadedItems);
@@ -424,13 +439,15 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
       .catch(() => {
         if (loadGen !== transcriptLoadGenRef.current) return;
         if (cachedSessionIdRef.current !== activeSessionId) return;
-        // Cache hit: keep showing that session's cached rows on refresh failure.
-        // Cache miss: clear — never leave another session's relics on screen.
-        if (!hadCache) {
+        // Cache hit: keep warm rows. Cache miss: clear relics but mark stale
+        // (+ notice) so we never look like a silent first-run empty session.
+        const failure = transcriptRefreshFailureDecision(hadCache);
+        if (failure.clearItems) {
           setItems([]);
           itemsRef.current = [];
-          setTranscriptStale(false);
         }
+        setTranscriptStale(failure.stale);
+        setEditNotice(failure.notice);
       });
 
     return () => {

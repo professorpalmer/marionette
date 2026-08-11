@@ -13,6 +13,10 @@ import {
   shouldResetBusyChromeOnSwitch,
   sessionStateFailureSwitchDecision,
   SESSION_STATE_FAIL_NOTICE,
+  SESSION_TRANSCRIPT_FAIL_NOTICE,
+  shouldRetryEmptyTranscript,
+  cacheHitEmptyTranscriptDecision,
+  transcriptRefreshFailureDecision,
 } from "../components/Conversation";
 import type { Item } from "../components/TranscriptList";
 
@@ -113,9 +117,47 @@ describe("transcript warm cache", () => {
       throw new Error("network");
     } catch {
       // Cache hit: keep showing cached rows on refresh failure.
-      if (!hit) visible = [];
+      const failure = transcriptRefreshFailureDecision(!!hit);
+      if (failure.clearItems) visible = [];
+      expect(failure.stale).toBe(true);
+      expect(failure.notice).toBe(SESSION_TRANSCRIPT_FAIL_NOTICE);
     }
     expect(visible).toEqual(cached);
+  });
+
+  it("retries empty transcript on cache-hit (same budget as cold boot)", () => {
+    expect(shouldRetryEmptyTranscript({ loadedCount: 0, attempt: 0, maxAttempts: 4 })).toBe(true);
+    expect(shouldRetryEmptyTranscript({ loadedCount: 0, attempt: 2, maxAttempts: 4 })).toBe(true);
+    expect(shouldRetryEmptyTranscript({ loadedCount: 0, attempt: 3, maxAttempts: 4 })).toBe(false);
+    expect(shouldRetryEmptyTranscript({ loadedCount: 2, attempt: 0, maxAttempts: 4 })).toBe(false);
+  });
+
+  it("cache-hit empty after retries keeps warm rows + notice (no hard wipe)", () => {
+    const cached = [makeMsg("user", "warm")];
+    let visible = [...cached];
+    let stale = false;
+    let notice: string | null = null;
+    const loadedItems: Item[] = [];
+    const hadCache = true;
+
+    if (loadedItems.length === 0 && hadCache) {
+      const emptyHit = cacheHitEmptyTranscriptDecision();
+      stale = emptyHit.stale;
+      notice = emptyHit.notice;
+      // Do not assign visible = loadedItems
+    } else {
+      visible = loadedItems;
+    }
+    expect(visible).toEqual(cached);
+    expect(stale).toBe(true);
+    expect(notice).toBe(SESSION_TRANSCRIPT_FAIL_NOTICE);
+  });
+
+  it("cache-miss refresh failure clears relics but marks stale (not first-run)", () => {
+    const failure = transcriptRefreshFailureDecision(false);
+    expect(failure.clearItems).toBe(true);
+    expect(failure.stale).toBe(true);
+    expect(failure.notice).toBe(SESSION_TRANSCRIPT_FAIL_NOTICE);
   });
 });
 

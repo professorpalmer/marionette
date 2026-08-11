@@ -106,6 +106,69 @@ export function sessionStateFailureSwitchDecision(): {
 }
 
 /**
+ * Composer notice when sessionTranscript refresh fails or returns an empty
+ * feed that would wipe warm cache rows (disk/attach flake honesty).
+ */
+export const SESSION_TRANSCRIPT_FAIL_NOTICE =
+  "Couldn't refresh this session's messages — showing what we have until the next check.";
+
+/**
+ * Empty transcript on a cold boot OR cache-hit can be a disk/attach race.
+ * Retry before accepting blank (same budget for both — cache-hit must not
+ * hard-replace warm rows with [] on the first empty response).
+ */
+export function shouldRetryEmptyTranscript(opts: {
+  loadedCount: number;
+  attempt: number;
+  maxAttempts: number;
+}): boolean {
+  return opts.loadedCount === 0 && opts.attempt < opts.maxAttempts - 1;
+}
+
+/**
+ * Cache-hit received an empty transcript after retries: keep warm rows,
+ * mark stale, and surface a notice. Never hard-replace with [].
+ */
+export function cacheHitEmptyTranscriptDecision(): {
+  kind: "keep_warm_with_notice";
+  stale: true;
+  notice: string;
+} {
+  return {
+    kind: "keep_warm_with_notice",
+    stale: true,
+    notice: SESSION_TRANSCRIPT_FAIL_NOTICE,
+  };
+}
+
+/**
+ * Transcript refresh exception path. Cache hit: keep rows + stale + notice.
+ * Cache miss: clear relics but mark stale (Loading…) + notice — never look
+ * like a legitimate first-run empty session with no honesty signal.
+ */
+export function transcriptRefreshFailureDecision(hadCache: boolean): {
+  kind: "keep_warm_with_notice" | "clear_stale_with_notice";
+  clearItems: boolean;
+  stale: true;
+  notice: string;
+} {
+  if (hadCache) {
+    return {
+      kind: "keep_warm_with_notice",
+      clearItems: false,
+      stale: true,
+      notice: SESSION_TRANSCRIPT_FAIL_NOTICE,
+    };
+  }
+  return {
+    kind: "clear_stale_with_notice",
+    clearItems: true,
+    stale: true,
+    notice: SESSION_TRANSCRIPT_FAIL_NOTICE,
+  };
+}
+
+/**
  * Mid-turn reattach when getSessionState fails: retry, then optimistic busy so
  * Ready chrome cannot lie while a turn continues. Runners poll clears idle targets.
  */

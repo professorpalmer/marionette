@@ -523,6 +523,33 @@ describe("transcript presentation contract", () => {
 
     expect(screen.getByTestId("pending-review-receipt")).toHaveTextContent(/review ready/i);
   });
+
+  it("pending_review receipt click focuses Review tab and refreshes", () => {
+    const focusSpy = vi.fn();
+    const refreshSpy = vi.fn();
+    window.addEventListener("harness-focus-tab", focusSpy as EventListener);
+    window.addEventListener("harness-reviews-refresh", refreshSpy);
+
+    render(
+      <TranscriptList
+        {...listProps([
+          {
+            kind: "pending_review",
+            id: "rev-clickme01",
+            summary: "Held 2 files for review",
+          },
+        ])}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("pending-review-receipt"));
+    expect(focusSpy).toHaveBeenCalled();
+    expect((focusSpy.mock.calls[0][0] as CustomEvent).detail).toBe("review");
+    expect(refreshSpy).toHaveBeenCalled();
+
+    window.removeEventListener("harness-focus-tab", focusSpy as EventListener);
+    window.removeEventListener("harness-reviews-refresh", refreshSpy);
+  });
 });
 
 describe("investigation UX residual debts (nested / fold prefs / workerStream)", () => {
