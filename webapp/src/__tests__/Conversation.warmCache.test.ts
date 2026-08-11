@@ -15,7 +15,7 @@ import {
   SESSION_STATE_FAIL_NOTICE,
   SESSION_TRANSCRIPT_FAIL_NOTICE,
   shouldRetryEmptyTranscript,
-  cacheHitEmptyTranscriptDecision,
+  emptyTranscriptAfterRetryDecision,
   transcriptRefreshFailureDecision,
 } from "../components/Conversation";
 import type { Item } from "../components/TranscriptList";
@@ -126,10 +126,22 @@ describe("transcript warm cache", () => {
   });
 
   it("retries empty transcript on cache-hit (same budget as cold boot)", () => {
-    expect(shouldRetryEmptyTranscript({ loadedCount: 0, attempt: 0, maxAttempts: 4 })).toBe(true);
-    expect(shouldRetryEmptyTranscript({ loadedCount: 0, attempt: 2, maxAttempts: 4 })).toBe(true);
-    expect(shouldRetryEmptyTranscript({ loadedCount: 0, attempt: 3, maxAttempts: 4 })).toBe(false);
+    expect(shouldRetryEmptyTranscript({
+      loadedCount: 0, attempt: 0, maxAttempts: 4, cachedCount: 2,
+    })).toBe(true);
+    expect(shouldRetryEmptyTranscript({
+      loadedCount: 0, attempt: 2, maxAttempts: 4, cachedCount: 2,
+    })).toBe(true);
+    expect(shouldRetryEmptyTranscript({
+      loadedCount: 0, attempt: 3, maxAttempts: 4, cachedCount: 2,
+    })).toBe(false);
     expect(shouldRetryEmptyTranscript({ loadedCount: 2, attempt: 0, maxAttempts: 4 })).toBe(false);
+  });
+
+  it("does not retry empty when warm cache is the new-session seed", () => {
+    expect(shouldRetryEmptyTranscript({
+      loadedCount: 0, attempt: 0, maxAttempts: 4, cachedCount: 0,
+    })).toBe(false);
   });
 
   it("cache-hit empty after retries keeps warm rows + notice (no hard wipe)", () => {
@@ -141,16 +153,39 @@ describe("transcript warm cache", () => {
     const hadCache = true;
 
     if (loadedItems.length === 0 && hadCache) {
-      const emptyHit = cacheHitEmptyTranscriptDecision();
-      stale = emptyHit.stale;
-      notice = emptyHit.notice;
-      // Do not assign visible = loadedItems
+      const emptyHit = emptyTranscriptAfterRetryDecision({ cachedCount: cached.length });
+      if (emptyHit.kind === "keep_warm_with_notice") {
+        stale = emptyHit.stale;
+        notice = emptyHit.notice;
+      } else {
+        visible = loadedItems;
+      }
     } else {
       visible = loadedItems;
     }
     expect(visible).toEqual(cached);
     expect(stale).toBe(true);
     expect(notice).toBe(SESSION_TRANSCRIPT_FAIL_NOTICE);
+  });
+
+  it("seeded empty warm cache accepts blank new session (no fail banner)", () => {
+    const loadedItems: Item[] = [];
+    const emptyHit = emptyTranscriptAfterRetryDecision({ cachedCount: 0 });
+    expect(emptyHit.kind).toBe("accept_empty");
+    let visible: Item[] = [];
+    let stale = true;
+    let notice: string | null = null;
+    if (loadedItems.length === 0) {
+      if (emptyHit.kind === "accept_empty") {
+        visible = loadedItems;
+        stale = false;
+      } else {
+        notice = emptyHit.notice;
+      }
+    }
+    expect(visible).toEqual([]);
+    expect(stale).toBe(false);
+    expect(notice).toBeNull();
   });
 
   it("cache-miss refresh failure clears relics but marks stale (not first-run)", () => {

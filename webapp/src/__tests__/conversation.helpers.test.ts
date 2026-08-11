@@ -114,6 +114,7 @@ import {
   cacheHitEmptyTranscriptDecision,
   collectDisplayArtifacts,
   emptySessionSwitchState,
+  emptyTranscriptAfterRetryDecision,
   mergeUniqueArtifacts,
   reattachSessionStateFailureDecision,
   runnerBusySwitchDecision,
@@ -1915,10 +1916,21 @@ describe("sessionHydrate module", () => {
       notice: SESSION_STATE_FAIL_NOTICE,
     });
     expect(shouldRetryEmptyTranscript({ loadedCount: 0, attempt: 0, maxAttempts: 4 })).toBe(true);
+    expect(shouldRetryEmptyTranscript({
+      loadedCount: 0, attempt: 0, maxAttempts: 4, cachedCount: 0,
+    })).toBe(false);
     expect(cacheHitEmptyTranscriptDecision()).toEqual({
       kind: "keep_warm_with_notice",
       stale: true,
       notice: SESSION_TRANSCRIPT_FAIL_NOTICE,
+    });
+    expect(emptyTranscriptAfterRetryDecision({ cachedCount: 3 })).toEqual({
+      kind: "keep_warm_with_notice",
+      stale: true,
+      notice: SESSION_TRANSCRIPT_FAIL_NOTICE,
+    });
+    expect(emptyTranscriptAfterRetryDecision({ cachedCount: 0 })).toEqual({
+      kind: "accept_empty",
     });
     expect(transcriptRefreshFailureDecision(true)).toEqual({
       kind: "keep_warm_with_notice",

@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.197, deliberately pre-1.0. Cursor/Hermes daily-driver parity haul (mentions, compaction spill, Stop quarantine, review honesty) plus Windows update tsc-b fix; rides puppetmaster-ai==1.21.13.
+> Status: v0.9.198, deliberately pre-1.0. New Session no longer false-alarms empty-transcript refresh; rides puppetmaster-ai==1.21.13.
 
 ## Documentation
 

@@ -113,21 +113,28 @@ export const SESSION_TRANSCRIPT_FAIL_NOTICE =
   "Couldn't refresh this session's messages — showing what we have until the next check.";
 
 /**
- * Empty transcript on a cold boot OR cache-hit can be a disk/attach race.
- * Retry before accepting blank (same budget for both — cache-hit must not
- * hard-replace warm rows with [] on the first empty response).
+ * Empty transcript on a cold boot OR non-empty cache-hit can be a disk/attach
+ * race. Retry before accepting blank — a warm cache with rows must not be
+ * hard-replaced with [] on the first empty response.
+ *
+ * Seeded empty warm cache (New Session writes `[]` before switch) is already
+ * authoritative: do not retry or treat as refresh failure.
  */
 export function shouldRetryEmptyTranscript(opts: {
   loadedCount: number;
   attempt: number;
   maxAttempts: number;
+  /** Warm-cache length when present; omit on cache miss. `0` = seeded empty. */
+  cachedCount?: number;
 }): boolean {
-  return opts.loadedCount === 0 && opts.attempt < opts.maxAttempts - 1;
+  if (opts.loadedCount !== 0) return false;
+  if (opts.cachedCount === 0) return false;
+  return opts.attempt < opts.maxAttempts - 1;
 }
 
 /**
- * Cache-hit received an empty transcript after retries: keep warm rows,
- * mark stale, and surface a notice. Never hard-replace with [].
+ * Cache-hit with warm rows received an empty transcript after retries: keep
+ * those rows, mark stale, and surface a notice. Never hard-replace with [].
  */
 export function cacheHitEmptyTranscriptDecision(): {
   kind: "keep_warm_with_notice";
@@ -139,6 +146,19 @@ export function cacheHitEmptyTranscriptDecision(): {
     stale: true,
     notice: SESSION_TRANSCRIPT_FAIL_NOTICE,
   };
+}
+
+/**
+ * After retries, empty remote transcript + warm cache.
+ * Non-empty warm rows: keep + notice. Empty seed (new session): accept blank.
+ */
+export function emptyTranscriptAfterRetryDecision(opts: {
+  cachedCount: number;
+}): { kind: "accept_empty" } | ReturnType<typeof cacheHitEmptyTranscriptDecision> {
+  if (opts.cachedCount > 0) {
+    return cacheHitEmptyTranscriptDecision();
+  }
+  return { kind: "accept_empty" };
 }
 
 /**

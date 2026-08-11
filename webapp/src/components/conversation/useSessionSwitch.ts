@@ -15,8 +15,8 @@ import {
   transcriptResponseToItems,
 } from "./transcriptItems";
 import {
-  cacheHitEmptyTranscriptDecision,
   emptySessionSwitchState,
+  emptyTranscriptAfterRetryDecision,
   runnerBusySwitchDecision,
   sessionStateFailureSwitchDecision,
   shouldPreserveBusyStatus,
@@ -311,6 +311,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
             loadedCount: loadedItems.length,
             attempt,
             maxAttempts,
+            cachedCount: hadCache ? (cachedItems?.length ?? 0) : undefined,
           })) {
             await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
             continue;
@@ -332,12 +333,17 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
         if (cachedSessionIdRef.current !== activeSessionId) return;
 
         const { res, loadedItems } = loaded;
-        // Cache-hit + empty after retries: keep warm rows; never hard-replace [].
+        // Non-empty warm cache + empty after retries: keep rows (flake honesty).
+        // Seeded empty cache (New Session) must accept blank — not the fail banner.
         if (loadedItems.length === 0 && hadCache) {
-          const emptyHit = cacheHitEmptyTranscriptDecision();
-          setTranscriptStale(emptyHit.stale);
-          setEditNotice(emptyHit.notice);
-          return;
+          const emptyHit = emptyTranscriptAfterRetryDecision({
+            cachedCount: cachedItems?.length ?? 0,
+          });
+          if (emptyHit.kind === "keep_warm_with_notice") {
+            setTranscriptStale(emptyHit.stale);
+            setEditNotice(emptyHit.notice);
+            return;
+          }
         }
         setItems(loadedItems);
         itemsRef.current = loadedItems;

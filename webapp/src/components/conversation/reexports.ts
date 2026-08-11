@@ -144,6 +144,7 @@ export {
   sessionStateFailureSwitchDecision,
   shouldRetryEmptyTranscript,
   cacheHitEmptyTranscriptDecision,
+  emptyTranscriptAfterRetryDecision,
   transcriptRefreshFailureDecision,
   reattachSessionStateFailureDecision,
 } from "./sessionHydrate";
