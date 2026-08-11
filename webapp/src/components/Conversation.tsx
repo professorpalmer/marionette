@@ -36,7 +36,11 @@ import {
 import {
   appendStreamingTextToItems,
 } from "./conversation/streamBubbles";
-import { derivePillStatus } from "./conversation/pillStatus";
+import {
+  derivePillBusyDetail,
+  derivePillStatus,
+  isSwarmPausePoint,
+} from "./conversation/pillStatus";
 import { isAgentLoopOpen } from "./conversation/runnersBusy";
 import {
   appendPendingReview,
@@ -478,6 +482,8 @@ export default function Conversation({
     backendPendingSwarms,
     userStopped: userStoppedRef.current,
   });
+  // Bare holdSwarmAwait keeps agentLoopOpen / composerBusy / Stop-Steer.
+  // StatusPill pause chrome matches TranscriptList.pausePoint (gate on pilotBusy).
   const agentLoopOpen =
     isAgentLoopOpen(turnOpen, status) || holdSwarmAwait;
   const liveInvestigation = turnHasLiveInvestigation(items, agentLoopOpen);
@@ -489,13 +495,18 @@ export default function Conversation({
   // reverse). Prefer investigation / open-turn truth for the header pill.
   // Idle/busy shares composerBusy / agentLoopOpen — do not early-idle the
   // StatusPill on answer-complete SSE lag while Steer/Stop remain.
+  const swarmPausePoint = isSwarmPausePoint({
+    status,
+    holdSwarmAwait,
+    turnOpen,
+  });
   const pillStatus: string = derivePillStatus({
     transcriptStale,
     answerChromeIdle: false,
     liveInvestigation,
     turnOpen,
     status,
-    awaitingSwarm: status === "awaiting_swarm" || holdSwarmAwait,
+    awaitingSwarm: swarmPausePoint,
     agentLoopOpen,
   });
   // Same latch as agentLoopOpen — Steer/Stop stay up for the whole turn.
@@ -2704,13 +2715,13 @@ export default function Conversation({
             ? (
               busyProgress.label
                 ? busyProgress.pill
-                // Sticky busy without a footer line (idle flaps between tools,
-                // or sealed-answer SSE lag): calm Investigating / Still working…
-                : (liveInvestigation || pillStatus === "investigating")
-                  ? "Investigating…"
-                  : (agentLoopOpen || pillStatus === "awaiting_swarm")
-                    ? "Still working…"
-                    : undefined
+                // Sticky busy without a footer line: pause-point Still working…
+                // wins over hold-sticky liveInvestigation (matches Explored fold).
+                : derivePillBusyDetail({
+                  liveInvestigation,
+                  pillStatus,
+                  agentLoopOpen,
+                })
             )
             : undefined
         }

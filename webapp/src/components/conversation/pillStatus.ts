@@ -10,6 +10,52 @@ import { isAgentLoopOpen } from "./runnersBusy";
  * Steer/Stop remain (answer-complete SSE lag must not split chrome).
  */
 
+/** Pilot mid-turn — holdSwarmAwait must not seal Investigating chrome. */
+export function isPilotBusy(turnOpen: boolean, status: string): boolean {
+  return (
+    turnOpen
+    || status === "thinking"
+    || status === "executing"
+    || status === "streaming"
+  );
+}
+
+/**
+ * Pause-point chrome (matches TranscriptList.pausePoint):
+ * awaiting_swarm, or holdSwarmAwait while the pilot is idle.
+ * Bare holdSwarmAwait alone must NOT pause mid-turn — keep it for
+ * agentLoopOpen / composerBusy / Stop-Steer only.
+ */
+export function isSwarmPausePoint(opts: {
+  status: string;
+  holdSwarmAwait: boolean;
+  turnOpen: boolean;
+}): boolean {
+  return (
+    opts.status === "awaiting_swarm"
+    || (opts.holdSwarmAwait && !isPilotBusy(opts.turnOpen, opts.status))
+  );
+}
+
+/**
+ * Sticky busy detail when busyProgress has no label.
+ * Pause-point / awaiting_swarm wins over sticky liveInvestigation so
+ * hold+idle paints Still working… (not Investigating…) while the fold
+ * shows Explored.
+ */
+export function derivePillBusyDetail(opts: {
+  liveInvestigation: boolean;
+  pillStatus: string;
+  agentLoopOpen: boolean;
+}): string | undefined {
+  if (opts.pillStatus === "awaiting_swarm") return "Still working…";
+  if (opts.liveInvestigation || opts.pillStatus === "investigating") {
+    return "Investigating…";
+  }
+  if (opts.agentLoopOpen) return "Still working…";
+  return undefined;
+}
+
 export function derivePillStatus(opts: {
   transcriptStale: boolean;
   /**
@@ -20,7 +66,10 @@ export function derivePillStatus(opts: {
   liveInvestigation: boolean;
   turnOpen: boolean;
   status: string;
-  /** Background jobs still flying after the model turn closed. */
+  /**
+   * Background pause-point (awaiting_swarm, or holdSwarmAwait && !pilotBusy).
+   * Wins over liveInvestigation so StatusPill paints Still working….
+   */
   awaitingSwarm?: boolean;
   /** Same latch as composerBusy; defaults from turnOpen + status. */
   agentLoopOpen?: boolean;
@@ -35,6 +84,7 @@ export function derivePillStatus(opts: {
     agentLoopOpen,
   } = opts;
   if (transcriptStale) return "switching…";
+  // Pause-point wins over sticky liveInvestigation (hold-extended agentLoopOpen).
   if (awaitingSwarm) return "awaiting_swarm";
   const loopOpen = agentLoopOpen ?? isAgentLoopOpen(turnOpen, status);
   // Only early-idle when composerBusy would also be false.

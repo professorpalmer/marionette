@@ -15,7 +15,12 @@ import {
 import { runnerBusySwitchDecision } from "../components/conversation/sessionHydrate";
 import { shouldApplySwarmLiveMerge } from "../components/conversation/streamApply";
 import { deriveBusyProgress, shouldShowBusyFooter } from "../lib/turnProgress";
-import { derivePillStatus } from "../components/conversation/pillStatus";
+import {
+  derivePillBusyDetail,
+  derivePillStatus,
+  isPilotBusy,
+  isSwarmPausePoint,
+} from "../components/conversation/pillStatus";
 import { isAgentLoopOpen } from "../components/conversation/runnersBusy";
 import { statusPillClickable, statusPillLabel } from "../components/conversation/StatusPill";
 import type { Item } from "../components/TranscriptList";
@@ -249,6 +254,105 @@ describe("swarm await chrome", () => {
         awaitingSwarm: true,
       }),
     ).toBe("awaiting_swarm");
+  });
+
+  it("derivePillStatus prefers awaiting_swarm over sticky liveInvestigation", () => {
+    // R15: hold-extended agentLoopOpen can leave liveInvestigation sticky at
+    // pause-point — awaiting_swarm must still win (Still working…, not Investigating…).
+    const pill = derivePillStatus({
+      transcriptStale: false,
+      answerChromeIdle: false,
+      liveInvestigation: true,
+      turnOpen: false,
+      status: "idle",
+      awaitingSwarm: true,
+      agentLoopOpen: true,
+    });
+    expect(pill).toBe("awaiting_swarm");
+    expect(statusPillLabel(pill)).toBe("Still working…");
+    expect(
+      derivePillBusyDetail({
+        liveInvestigation: true,
+        pillStatus: pill,
+        agentLoopOpen: true,
+      }),
+    ).toBe("Still working…");
+  });
+
+  it("hold+idle pause matches Explored + Still working (pilotBusy gate)", () => {
+    // Matches TranscriptList.pausePoint: hold while idle → pause chrome.
+    expect(
+      isSwarmPausePoint({
+        status: "idle",
+        holdSwarmAwait: true,
+        turnOpen: false,
+      }),
+    ).toBe(true);
+    expect(isPilotBusy(false, "idle")).toBe(false);
+
+    const pill = derivePillStatus({
+      transcriptStale: false,
+      answerChromeIdle: false,
+      liveInvestigation: true, // sticky via hold-extended agentLoopOpen
+      turnOpen: false,
+      status: "idle",
+      awaitingSwarm: isSwarmPausePoint({
+        status: "idle",
+        holdSwarmAwait: true,
+        turnOpen: false,
+      }),
+      agentLoopOpen: true, // bare holdSwarmAwait still latches Stop/Steer
+    });
+    expect(pill).toBe("awaiting_swarm");
+    expect(
+      derivePillBusyDetail({
+        liveInvestigation: true,
+        pillStatus: pill,
+        agentLoopOpen: true,
+      }),
+    ).toBe("Still working…");
+  });
+
+  it("hold+thinking mid-turn keeps Investigating on pill when pilotBusy", () => {
+    // Bare hold must not short-circuit StatusPill to Still working… mid-turn.
+    expect(isPilotBusy(false, "thinking")).toBe(true);
+    expect(
+      isSwarmPausePoint({
+        status: "thinking",
+        holdSwarmAwait: true,
+        turnOpen: false,
+      }),
+    ).toBe(false);
+    expect(
+      isSwarmPausePoint({
+        status: "thinking",
+        holdSwarmAwait: true,
+        turnOpen: true,
+      }),
+    ).toBe(false);
+
+    const pill = derivePillStatus({
+      transcriptStale: false,
+      answerChromeIdle: false,
+      liveInvestigation: true,
+      turnOpen: true,
+      status: "thinking",
+      awaitingSwarm: isSwarmPausePoint({
+        status: "thinking",
+        holdSwarmAwait: true,
+        turnOpen: true,
+      }),
+      agentLoopOpen: true,
+    });
+    expect(pill).toBe("investigating");
+    expect(statusPillLabel(pill)).toBe("Investigating…");
+    expect(
+      derivePillBusyDetail({
+        liveInvestigation: true,
+        pillStatus: pill,
+        agentLoopOpen: true,
+      }),
+    ).toBe("Investigating…");
   });
 
   it("agentLoopOpen latch and StatusPill stay clickable Still working… while awaiting", () => {
