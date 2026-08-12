@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import RightPane from "../components/RightPane";
+import RightDock from "../components/RightDock";
 import { api } from "../lib/api";
 import { dispatchProjectSelected } from "../lib/panelTransition";
 import { usePolling } from "../lib/usePolling";
@@ -39,76 +40,233 @@ vi.mock("../components/ErrorBoundary", () => ({
 }));
 
 const baseProps = {
+  visible: true,
   artifacts: [],
   onOpenWizard: vi.fn(),
   onCollapse: vi.fn(),
 };
+
+function seedBoardTabOrder(openCards: string[] = ["state", "terminal"]) {
+  localStorage.setItem(
+    "pmharness.tabOrder",
+    JSON.stringify([
+      "state", "swarm", "files", "git", "worktrees", "terminal",
+      "review", "checkpoints", "browser", "settings",
+    ]),
+  );
+  localStorage.setItem("pmharness.tabOrder.swarm2nd", "1");
+  localStorage.setItem("pmharness.tabOrder.mcpMerged", "1");
+  localStorage.setItem("pmharness.board.openCards", JSON.stringify(openCards));
+}
+
+function expectCardGridPlacement(label: string, gridColumn: string, gridRow: string) {
+  const card = screen.getByRole("region", { name: `${label} panel` });
+  expect(card.style.gridColumn).toBe(gridColumn);
+  expect(card.style.gridRow).toBe(gridRow);
+}
 
 describe("RightPane collapse placement", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
     Element.prototype.scrollIntoView = vi.fn();
-    localStorage.setItem(
-      "pmharness.tabOrder",
-      JSON.stringify([
-        "state", "swarm", "files", "git", "worktrees", "terminal",
-        "review", "checkpoints", "browser", "settings",
-      ]),
-    );
-    localStorage.setItem("pmharness.tabOrder.swarm2nd", "1");
-    localStorage.setItem("pmharness.tabOrder.mcpMerged", "1");
+    seedBoardTabOrder();
   });
 
-  it("places collapse in the fixed right-side action cluster and invokes onCollapse", () => {
-    render(<RightPane {...baseProps} />);
+  it("places collapse in the dock action cluster and invokes onCollapse", () => {
+    render(<RightDock onOpenTab={vi.fn()} onExpand={vi.fn()} onCollapse={baseProps.onCollapse} />);
 
     const collapseBtns = screen.getAllByTestId("panel-collapse-btn");
     expect(collapseBtns).toHaveLength(1);
-
-    const tabBar = collapseBtns[0].closest(".border-b");
-    expect(tabBar).toBeTruthy();
-    const actions = screen.getByTestId("right-pane-actions");
-    expect(actions).toContainElement(collapseBtns[0]);
-    expect(actions.className).toMatch(/\bshrink-0\b/);
-    expect(actions.className).not.toMatch(/\bflex-1\b/);
-
-    const splitControls = tabBar!.querySelector(".border-l.border-edge");
-    expect(splitControls).toBeTruthy();
-    expect(within(splitControls as HTMLElement).queryByTestId("panel-collapse-btn")).toBeNull();
 
     fireEvent.click(collapseBtns[0]);
     expect(baseProps.onCollapse).toHaveBeenCalledTimes(1);
   });
 
-  it("adds an equivalent collapse affordance on the secondary split tab bar", () => {
+  it("keeps Add panel items clickable after an inside mousedown", () => {
+    const onOpenTab = vi.fn();
+    render(<RightDock onOpenTab={onOpenTab} onExpand={vi.fn()} onCollapse={baseProps.onCollapse} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Add panel" }));
+    const swarmItem = screen.getByRole("menuitem", { name: "Swarm" });
+
+    fireEvent.mouseDown(swarmItem);
+    expect(screen.getByRole("menu", { name: "Add panel" })).toBeInTheDocument();
+    fireEvent.click(swarmItem);
+
+    expect(onOpenTab).toHaveBeenCalledWith("swarm");
+    expect(screen.queryByRole("menu", { name: "Add panel" })).toBeNull();
+  });
+
+  it("renders anchored grid cards that can be reordered and closed independently", () => {
+    render(<><RightDock onOpenTab={vi.fn()} onExpand={vi.fn()} onCollapse={baseProps.onCollapse} /><RightPane {...baseProps} /></>);
+
+    const stateCard = screen.getByRole("region", { name: "State panel" });
+    expect(stateCard).toHaveClass("right-pane-card");
+    expect(stateCard).not.toHaveClass("right-pane-floating-card");
+    expect(stateCard.style.position).toBe("");
+    expect(stateCard.style.gridColumn).toBe("1 / span 12");
+    const board = stateCard.closest(".right-pane-board");
+    expect(board).toHaveClass("h-full", "w-full");
+    expect(board?.querySelector(".right-pane-board-grid")).toContainElement(stateCard);
+    const terminalCard = screen.getByRole("region", { name: "Terminal panel" });
+    const stateDragHandle = screen.getByRole("button", { name: "Drag State panel" });
+
+    fireEvent.dragStart(stateDragHandle, {
+      dataTransfer: { effectAllowed: "", setData: vi.fn() },
+    });
+    fireEvent.drop(terminalCard, {
+      dataTransfer: { getData: () => "state" },
+    });
+
+    expect(JSON.parse(localStorage.getItem("pmharness.board.openCards") || "[]")).toEqual([
+      "terminal",
+      "state",
+    ]);
+    expect(screen.getAllByRole("region").map((card) => card.getAttribute("aria-label"))).toEqual([
+      "Terminal panel",
+      "State panel",
+    ]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Close State panel" }));
+    expect(screen.queryByRole("region", { name: "State panel" })).toBeNull();
+  });
+
+  it("provides independent width resize handles without height resize handles", () => {
+    render(<><RightDock onOpenTab={vi.fn()} onExpand={vi.fn()} onCollapse={baseProps.onCollapse} /><RightPane {...baseProps} /></>);
+
+    expect(screen.getByRole("separator", { name: "Resize State panel width" })).toBeInTheDocument();
+    expect(screen.getByRole("separator", { name: "Resize Terminal panel width" })).toBeInTheDocument();
+    expect(screen.queryByRole("separator", { name: "Resize State panel height" })).toBeNull();
+    expect(screen.queryByRole("separator", { name: "Resize Terminal panel height" })).toBeNull();
+    expect(screen.getByRole("region", { name: "State panel" })).not.toHaveStyle({ height: "160px" });
+    expect(screen.getByRole("region", { name: "Terminal panel" })).not.toHaveStyle({ height: "160px" });
+  });
+
+  it("does not render an empty board and asks the shell to close it", () => {
+    localStorage.setItem("pmharness.board.openCards", JSON.stringify([]));
+    const onEmpty = vi.fn();
+
+    render(<RightPane {...baseProps} onEmpty={onEmpty} />);
+
+    expect(document.querySelector(".right-pane-board")).toBeNull();
+    expect(onEmpty).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the shell open while the requested first card mounts", async () => {
+    localStorage.setItem("pmharness.board.openCards", JSON.stringify([]));
+    const onEmpty = vi.fn();
+
+    render(<RightPane {...baseProps} onEmpty={onEmpty} initialTab="state" />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("region", { name: "State panel" })).toBeInTheDocument();
+    });
+    expect(onEmpty).not.toHaveBeenCalled();
+  });
+
+  it("keeps mounted panes alive when the overlay is hidden", () => {
+    const { rerender } = render(<RightPane {...baseProps} />);
+    fireEvent.click(screen.getByRole("button", { name: "Close Terminal panel" }));
+
+    rerender(<RightPane {...baseProps} visible={false} />);
+    const slot = screen.getByTestId("terminal-pane-slot");
+    expect(within(slot).getByTestId("terminal-pane")).toBeTruthy();
+    expect(slot.closest("[aria-hidden='true']")).toBeTruthy();
+  });
+});
+
+describe("RightPane Claude-style card packing", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    Element.prototype.scrollIntoView = vi.fn();
+    seedBoardTabOrder();
+  });
+
+  it("stacks the first two cards in column 2 and spans the third card across rows in column 1", () => {
     localStorage.setItem(
-      "pmharness.splitState",
+      "pmharness.board.openCards",
+      JSON.stringify(["state", "terminal", "swarm"]),
+    );
+
+    render(
+      <>
+        <RightDock onOpenTab={vi.fn()} onExpand={vi.fn()} onCollapse={baseProps.onCollapse} />
+        <RightPane {...baseProps} />
+      </>,
+    );
+
+    expectCardGridPlacement("State", "7 / span 6", "1");
+    expectCardGridPlacement("Terminal", "7 / span 6", "2");
+    expectCardGridPlacement("Swarm", "1 / span 6", "1 / span 2");
+    expect(screen.queryByTestId("right-pane-toolbar")).toBeNull();
+  });
+
+  it("keeps cards 1/2 stacked in column 2 and cards 3/4 stacked in column 1", () => {
+    localStorage.setItem(
+      "pmharness.board.openCards",
+      JSON.stringify(["state", "terminal", "swarm", "files"]),
+    );
+
+    render(
+      <>
+        <RightDock onOpenTab={vi.fn()} onExpand={vi.fn()} onCollapse={baseProps.onCollapse} />
+        <RightPane {...baseProps} />
+      </>,
+    );
+
+    expectCardGridPlacement("State", "7 / span 6", "1");
+    expectCardGridPlacement("Terminal", "7 / span 6", "2");
+    expectCardGridPlacement("Swarm", "1 / span 6", "1");
+    expectCardGridPlacement("Files", "1 / span 6", "2");
+    expect(screen.queryByTestId("right-pane-toolbar")).toBeNull();
+  });
+
+  it.each([
+    { count: 1, cards: ["state"] },
+    { count: 2, cards: ["state", "terminal"] },
+    { count: 3, cards: ["state", "terminal", "swarm"] },
+    { count: 4, cards: ["state", "terminal", "swarm", "files"] },
+  ])("uses a bounded 12-column grid for $count cards", ({ cards }) => {
+    localStorage.setItem("pmharness.board.openCards", JSON.stringify(cards));
+    render(<RightPane {...baseProps} />);
+
+    const grid = document.querySelector(".right-pane-board-grid");
+    expect(grid).toHaveStyle({
+      gridTemplateColumns: "repeat(12, minmax(0, 1fr))",
+      gridTemplateRows: "repeat(2, minmax(0, 1fr))",
+    });
+    expect(screen.getAllByRole("region")).toHaveLength(cards.length);
+    expect(screen.queryAllByRole("separator")).toHaveLength(cards.length);
+    expect(screen.getAllByRole("region").every(card => !card.getAttribute("style")?.includes("height"))).toBe(true);
+  });
+
+  it("widens one card without widening its neighboring stack", () => {
+    localStorage.setItem(
+      "pmharness.board.openCards",
+      JSON.stringify(["state", "terminal", "browser"]),
+    );
+    localStorage.setItem(
+      "pmharness.board.cardLayouts.v1",
       JSON.stringify({
-        isSplit: true,
-        primaryTab: "state",
-        secondaryTab: "terminal",
-        direction: "horizontal",
-        percent: 50,
+        state: { columnSpan: 6, customized: true },
+        terminal: { columnSpan: 6, customized: true },
+        browser: { columnSpan: 6, customized: true },
       }),
     );
 
     render(<RightPane {...baseProps} />);
 
-    const collapseBtns = screen.getAllByTestId("panel-collapse-btn");
-    expect(collapseBtns).toHaveLength(2);
+    const browserResizeHandle = screen.getByRole("separator", { name: "Resize Browser panel width" });
+    fireEvent.keyDown(browserResizeHandle, { key: "ArrowRight" });
 
-    for (const btn of collapseBtns) {
-      expect(btn).toHaveAttribute("aria-label", "Close side panel");
-      expect(btn).toHaveAttribute("title", "Close side panel (Ctrl/Cmd+J)");
-      const actions = btn.parentElement;
-      expect(actions).toHaveAttribute("data-testid", "right-pane-actions");
-      expect(actions?.className).toMatch(/\bshrink-0\b/);
-      expect(actions?.className).not.toMatch(/\bflex-1\b/);
-    }
-
-    fireEvent.click(collapseBtns[1]);
-    expect(baseProps.onCollapse).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(localStorage.getItem("pmharness.board.cardLayouts.v1") || "{}")).toMatchObject({
+      browser: { columnSpan: 7, customized: true },
+    });
+    expectCardGridPlacement("Browser", "1 / span 7", "1 / span 2");
+    expectCardGridPlacement("State", "8 / span 5", "1");
+    expectCardGridPlacement("Terminal", "8 / span 5", "2");
   });
 });
 
@@ -138,20 +296,15 @@ describe("RightPane keeps TerminalPane mounted across tab switches", () => {
     );
   });
 
-  it("CSS-hides TerminalPane instead of unmounting when leaving the tab", () => {
-    render(<RightPane {...baseProps} />);
+  it("keeps TerminalPane mounted when its card is closed", () => {
+    render(<><RightDock onOpenTab={vi.fn()} onExpand={vi.fn()} onCollapse={baseProps.onCollapse} /><RightPane {...baseProps} /></>);
+
+    expect(screen.getByRole("region", { name: "Terminal panel" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close Terminal panel" }));
 
     const slot = screen.getByTestId("terminal-pane-slot");
     expect(within(slot).getByTestId("terminal-pane")).toBeTruthy();
-    expect(slot.className).toMatch(/\bh-full\b/);
-    expect(slot.className).not.toMatch(/\bhidden\b/);
-
-    fireEvent.click(screen.getByTitle("Files"));
-
-    const stillMounted = screen.getByTestId("terminal-pane-slot");
-    expect(within(stillMounted).getByTestId("terminal-pane")).toBeTruthy();
-    expect(stillMounted.className).toMatch(/\bhidden\b/);
-    expect(stillMounted).toHaveAttribute("aria-hidden", "true");
+    expect(slot.closest("[aria-hidden='true']")).toBeTruthy();
   });
 });
 
@@ -181,18 +334,15 @@ describe("RightPane keeps SwarmPane mounted across tab switches", () => {
     );
   });
 
-  it("CSS-hides SwarmPane instead of unmounting when leaving the tab", () => {
-    render(<RightPane {...baseProps} />);
+  it("keeps SwarmPane mounted when its card is closed", () => {
+    render(<><RightDock onOpenTab={vi.fn()} onExpand={vi.fn()} onCollapse={baseProps.onCollapse} /><RightPane {...baseProps} /></>);
+
+    expect(screen.getByRole("region", { name: "Swarm panel" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close Swarm panel" }));
 
     const slot = screen.getByTestId("swarm-pane-slot");
-    expect(slot.className).toMatch(/\bh-full\b/);
-    expect(slot.className).not.toMatch(/\bhidden\b/);
-
-    fireEvent.click(screen.getByTitle("Files"));
-
-    const stillMounted = screen.getByTestId("swarm-pane-slot");
-    expect(stillMounted.className).toMatch(/\bhidden\b/);
-    expect(stillMounted).toHaveAttribute("aria-hidden", "true");
+    expect(slot).toBeInTheDocument();
+    expect(slot.closest("[aria-hidden='true']")).toBeTruthy();
   });
 });
 
@@ -234,9 +384,7 @@ describe("RightPane reviews-load failure honesty", () => {
 
     render(<RightPane {...baseProps} />);
 
-    // Ensure Review is the active primary tab (visibility + click).
-    expect(screen.getByRole("button", { name: "Review" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    expect(screen.getByRole("region", { name: "Review panel" })).toBeInTheDocument();
 
     const pollCalls = vi.mocked(usePolling).mock.calls;
     expect(pollCalls.length).toBeGreaterThanOrEqual(1);
@@ -304,34 +452,31 @@ describe("RightPane optional tab customization", () => {
     localStorage.setItem("pmharness.tabOrder.mcpMerged", "1");
   });
 
-  it("keeps advanced tabs out of the strip but exposes them in the menu", () => {
-    render(<RightPane {...baseProps} />);
+  it("keeps optional panels out of the board until enabled and added", () => {
+    const onOpenTab = (tab: string) => {
+      window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: tab }));
+    };
+    render(<><RightDock onOpenTab={onOpenTab} onExpand={vi.fn()} onCollapse={baseProps.onCollapse} /><RightPane {...baseProps} /></>);
 
-    expect(screen.queryByRole("button", { name: "Worktrees" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Review" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "History" })).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: "Customize tabs" }));
-    expect(screen.getByRole("menu", { name: "Customize tabs" })).toBeInTheDocument();
-    expect(screen.getByRole("menuitemcheckbox", { name: "Worktrees" })).toHaveAttribute(
-      "aria-checked",
-      "false",
-    );
+    expect(screen.queryByRole("region", { name: "Worktrees panel" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Add panel" }));
+    expect(screen.getByRole("menu", { name: "Add panel" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("checkbox", { name: "Worktrees" }));
-    expect(screen.getByRole("button", { name: "Worktrees" })).toBeInTheDocument();
     expect(localStorage.getItem("pmharness.rightPane.visibleTabs.v1")).toContain('"worktrees":true');
+    fireEvent.click(screen.getByRole("menuitem", { name: "Worktrees" }));
+    expect(screen.getByRole("region", { name: "Worktrees panel" })).toBeInTheDocument();
   });
 
   it("closes the customization menu with Escape and an outside click", () => {
-    render(<RightPane {...baseProps} />);
-    fireEvent.click(screen.getByRole("button", { name: "Customize tabs" }));
+    render(<><RightDock onOpenTab={vi.fn()} onExpand={vi.fn()} onCollapse={baseProps.onCollapse} /><RightPane {...baseProps} /></>);
+    fireEvent.click(screen.getByRole("button", { name: "Add panel" }));
 
     fireEvent.keyDown(document, { key: "Escape" });
-    expect(screen.queryByRole("menu", { name: "Customize tabs" })).toBeNull();
+    expect(screen.queryByRole("menu", { name: "Add panel" })).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Customize tabs" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add panel" }));
     fireEvent.mouseDown(document.body);
-    expect(screen.queryByRole("menu", { name: "Customize tabs" })).toBeNull();
+    expect(screen.queryByRole("menu", { name: "Add panel" })).toBeNull();
   });
 });

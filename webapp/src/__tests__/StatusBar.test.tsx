@@ -533,7 +533,7 @@ describe("StatusBar panel toggle shortcuts", () => {
     render(<StatusBar {...statusBarProps} />);
 
     expect(screen.getByTitle("Toggle sessions panel (Ctrl/Cmd+B)")).toBeInTheDocument();
-    expect(screen.getByTitle("Toggle right panel (Ctrl/Cmd+J)")).toBeInTheDocument();
+    expect(screen.getByTitle("Toggle floating panels (Ctrl/Cmd+J)")).toBeInTheDocument();
   });
 });
 

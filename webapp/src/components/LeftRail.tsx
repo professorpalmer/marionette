@@ -1387,7 +1387,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   };
 
   return (
-    <aside ref={railRef} className="bg-[#13161a] border-r border-edge/50 flex flex-col h-full overflow-hidden text-[0.8125rem]">
+    <aside ref={railRef} className="bg-transparent flex flex-col h-full overflow-hidden text-[0.8125rem]">
       <div ref={topChromeRef}>
       {/* Keep the native traffic-light/titlebar area separate from the actions.
           The same draggable region also preserves window movement on other

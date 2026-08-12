@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type Config } from "./lib/api";
 import LeftRail from "./components/LeftRail";
 import Conversation from "./components/Conversation";
@@ -14,12 +14,79 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import CommandPalette from "./components/CommandPalette";
 
 const LS = {
-  left: "pmharness.leftW", right: "pmharness.rightW",
-  leftOpen: "pmharness.leftOpen", rightOpen: "pmharness.rightOpen",
+  left: "pmharness.leftW",
+  leftOpen: "pmharness.leftOpen", rightOpen: "pmharness.rightOpen", rightW: "pmharness.rightW",
 };
 const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
 const num = (k: string, d: number) => { const v = Number(localStorage.getItem(k)); return Number.isFinite(v) && v > 0 ? v : d; };
 const bool = (k: string, d: boolean) => { const v = localStorage.getItem(k); return v === null ? d : v === "1"; };
+
+const MIN_CENTER_W = 360;
+const LEFT_MIN_W = 180;
+const LEFT_MAX_W = 420;
+const RIGHT_MIN_W = 420;
+const RIGHT_COMPACT_MIN_W = 220;
+
+/** Flex chrome around the center column: shell padding and 1px resizers. */
+function layoutChrome(leftOpen: boolean, rightOpen: boolean): number {
+  let resizers = 0;
+  if (leftOpen) resizers += 1;
+  if (rightOpen) resizers += 1;
+  return 2 + resizers;
+}
+
+/** Keep open rails within min/window budget while preserving MIN_CENTER_W for the chat column. */
+function reclampRailWidths(
+  leftW: number,
+  rightW: number,
+  leftOpen: boolean,
+  rightOpen: boolean,
+  innerWidth: number,
+): { leftW: number; rightW: number } {
+  const chrome = layoutChrome(leftOpen, rightOpen);
+  const availableWidth = Math.max(0, innerWidth - chrome);
+  const preferredLeft = leftOpen ? clamp(leftW, LEFT_MIN_W, LEFT_MAX_W) : 0;
+  const preferredRight = rightOpen ? Math.max(RIGHT_MIN_W, rightW) : 0;
+  const requiredRails = (leftOpen ? LEFT_MIN_W : 0) + (rightOpen ? RIGHT_MIN_W : 0);
+  const centerWidth = Math.min(MIN_CENTER_W, Math.max(0, availableWidth - requiredRails));
+  const railBudget = Math.max(0, availableWidth - centerWidth);
+
+  if (!leftOpen && !rightOpen) return { leftW, rightW };
+
+  if (leftOpen && rightOpen) {
+    // At normal widths both rails keep their full minimums. If the window
+    // cannot hold those minimums plus the chat column, compact the right board
+    // first so the left rail remains useful and the cards stay inside the shell.
+    const compactRightMin = Math.min(RIGHT_MIN_W, RIGHT_COMPACT_MIN_W, railBudget);
+    const compactLeftMin = Math.min(LEFT_MIN_W, Math.max(0, railBudget - compactRightMin));
+    const leftMax = Math.max(compactLeftMin, railBudget - compactRightMin);
+    const left = clamp(
+      Math.min(preferredLeft, Math.max(compactLeftMin, railBudget - preferredRight)),
+      compactLeftMin,
+      Math.min(LEFT_MAX_W, leftMax),
+    );
+    const right = clamp(
+      Math.min(preferredRight, Math.max(0, railBudget - left)),
+      compactRightMin,
+      Math.max(compactRightMin, railBudget - left),
+    );
+    return { leftW: left, rightW: right };
+  }
+
+  if (leftOpen) {
+    const leftMin = Math.min(LEFT_MIN_W, railBudget);
+    return {
+      leftW: clamp(preferredLeft, leftMin, Math.min(LEFT_MAX_W, railBudget)),
+      rightW,
+    };
+  }
+
+  const rightMin = Math.min(RIGHT_MIN_W, railBudget);
+  return {
+    leftW,
+    rightW: clamp(preferredRight, rightMin, railBudget),
+  };
+}
 
 function lastRightTab(): string {
   try {
@@ -30,6 +97,21 @@ function lastRightTab(): string {
     if (typeof t === "string" && t && t !== "settings" && t !== "mcp") return t;
   } catch { /* ignore */ }
   return "state";
+}
+
+function hasStoredRightPaneCards(): boolean {
+  try {
+    const savedCards = JSON.parse(localStorage.getItem("pmharness.board.openCards") || "null");
+    if (Array.isArray(savedCards)) {
+      return savedCards.some((tab) => typeof tab === "string" && tab !== "settings");
+    }
+
+    const legacySplit = JSON.parse(localStorage.getItem("pmharness.splitState") || "null");
+    return typeof legacySplit?.primaryTab === "string"
+      && legacySplit.primaryTab !== "settings";
+  } catch {
+    return false;
+  }
 }
 
 export default function App() {
@@ -50,12 +132,17 @@ export default function App() {
   }, [activeSessionId]);
 
   const [leftW, setLeftW] = useState(() => num(LS.left, 248));
-  // Default / floor narrower than the old 340 so small windows keep chat usable.
-  const [rightW, setRightW] = useState(() => Math.max(280, num(LS.right, 300)));
   const [leftOpen, setLeftOpen] = useState(() => bool(LS.leftOpen, true));
-  // Default closed: chat-first layout; RightDock surfaces Swarm/Changes/Browser/…
-  const [rightOpen, setRightOpen] = useState(() => bool(LS.rightOpen, false));
+  // Default hidden: chat-first layout; RightDock surfaces floating tools.
+  const [rightOpen, setRightOpen] = useState(
+    () => bool(LS.rightOpen, false) && hasStoredRightPaneCards(),
+  );
+  const [rightW, setRightW] = useState(() => num(LS.rightW, 520));
   const pendingRightTab = useRef<string | null>(null);
+  const leftWRef = useRef(leftW);
+  const rightWRef = useRef(rightW);
+  leftWRef.current = leftW;
+  rightWRef.current = rightW;
 
   const openRightTo = (tab: string) => {
     const target = tab || "state";
@@ -71,6 +158,7 @@ export default function App() {
       return true;
     });
   };
+  const closeEmptyRightPane = useCallback(() => setRightOpen(false), []);
 
   const [showWizard, setShowWizard] = useState(false);
 
@@ -157,28 +245,32 @@ export default function App() {
 
   // persist layout
   useEffect(() => { localStorage.setItem(LS.left, String(leftW)); }, [leftW]);
-  useEffect(() => { localStorage.setItem(LS.right, String(rightW)); }, [rightW]);
 
-  // Re-clamp persisted rail widths against the real window width on mount and
-  // whenever the window shrinks. The Resizer clamps only during a drag, so a
-  // wide saved layout restored into a small window (or a live shrink) could
-  // leave the two rails consuming nearly everything and crush the chat column
-  // until the user manually re-dragged both handles.
+  // Re-clamp persisted rail widths against the real window width on mount,
+  // when either rail opens/closes, and whenever the window shrinks. Resizers
+  // clamp only during a drag, so a wide saved layout restored into a small
+  // window could otherwise crush the chat column below MIN_CENTER_W.
   useEffect(() => {
-    const MIN_CENTER = 360;
     const reclampRails = () => {
-      const avail = window.innerWidth - MIN_CENTER;
-      setLeftW((w) => clamp(Math.min(w, Math.max(180, avail - rightW)), 180, 420));
-      setRightW((w) => clamp(Math.min(w, Math.max(280, avail - leftW)), 280, 640));
+      const next = reclampRailWidths(
+        leftWRef.current,
+        rightWRef.current,
+        leftOpen,
+        rightOpen,
+        window.innerWidth,
+      );
+      setLeftW(next.leftW);
+      setRightW(next.rightW);
     };
     reclampRails();
     window.addEventListener("resize", reclampRails);
     return () => window.removeEventListener("resize", reclampRails);
-  }, [leftW, rightW]);
+  }, [leftOpen, rightOpen]);
   useEffect(() => { localStorage.setItem(LS.leftOpen, leftOpen ? "1" : "0"); }, [leftOpen]);
   useEffect(() => { localStorage.setItem(LS.rightOpen, rightOpen ? "1" : "0"); }, [rightOpen]);
+  useEffect(() => { localStorage.setItem(LS.rightW, String(rightW)); }, [rightW]);
 
-  // After the right pane mounts, apply any pending tab focus from the dock / hotkeys.
+  // After the floating tools become visible, apply pending focus from the dock / hotkeys.
   useEffect(() => {
     if (!rightOpen || !pendingRightTab.current) return;
     const tab = pendingRightTab.current;
@@ -186,7 +278,7 @@ export default function App() {
     window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: tab }));
   }, [rightOpen]);
 
-  // If something asks for a tab while the pane is closed, open it first then focus.
+  // If something asks for a tab while floating tools are hidden, show them first.
   useEffect(() => {
     const onFocusTab = (e: Event) => {
       const tab = (e as CustomEvent).detail;
@@ -229,7 +321,7 @@ export default function App() {
   }, []);
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full flex flex-col bg-[var(--shell-chrome)]">
       <UpdateBanner />
       {/* Keyless nudge: agentic is the shipped default, so instead of a demo run
           we tell the user to plug in a key. Suppressed while the first-run wizard
@@ -242,26 +334,39 @@ export default function App() {
           }}
         />
       )}
-      <div className="flex-1 min-h-0 flex">
+      {/* The conversation and tool board are siblings; the dock remains attached
+          to the conversation edge while the board is closed. */}
+      <div className="flex-1 min-h-0 min-w-0 flex px-px pt-px">
         {leftOpen && (
           <>
-            <div style={{ width: leftW }} className="shrink-0 h-full overflow-hidden">
+            <div style={{ width: leftW }} className="shell-inset-panel shrink-0 h-full">
               <LeftRail jobsRefresh={jobsRefresh} onSessionChange={setActiveSessionId} />
             </div>
-            <Resizer side="left" onResize={(dx) => setLeftW((w) => clamp(w + dx, 180, 420))} />
+            <Resizer
+              side="left"
+              onResize={(dx) => {
+                const next = reclampRailWidths(
+                  leftWRef.current + dx,
+                  rightWRef.current,
+                  true,
+                  rightOpen,
+                  window.innerWidth,
+                );
+                setLeftW(next.leftW);
+                setRightW(next.rightW);
+              }}
+            />
           </>
         )}
-        {/* Chat column owns the radial wash so it continues under the floating
-            right dock (Cursor-style transparent toolbar) instead of cutting off. */}
         <div
-          className="relative flex-1 min-w-0 h-full flex flex-col"
+          className="relative flex-1 min-w-0 h-full flex flex-col rounded-[var(--shell-panel-radius)] overflow-hidden border border-[var(--shell-panel-border)]"
           style={{
             backgroundColor: "#0f1113",
             backgroundImage:
               "radial-gradient(120% 80% at 50% -10%, rgba(139,150,196,0.06), rgba(139,150,196,0) 60%)",
           }}
         >
-          <div className="flex-1 min-h-0">
+          <div className="flex-1 min-h-0 min-w-0">
             <ErrorBoundary label="Chat">
               <Conversation
                 config={config}
@@ -271,32 +376,49 @@ export default function App() {
               />
             </ErrorBoundary>
           </div>
-          {!rightOpen && (
-            <RightDock
-              onOpenTab={openRightTo}
-              onExpand={() => openRightTo(lastRightTab())}
-            />
-          )}
+          <RightDock
+            panelsOpen={rightOpen}
+            onOpenTab={openRightTo}
+            onExpand={() => openRightTo(lastRightTab())}
+            onCollapse={() => setRightOpen(false)}
+          />
         </div>
-        {rightOpen ? (
-          <>
-            <Resizer side="right" onResize={(dx) => setRightW((w) => clamp(w + dx, 280, 640))} />
-            <div style={{ width: rightW }} className="shrink-0 h-full overflow-hidden">
-              <ErrorBoundary label="Side panel">
-                <RightPane
-                  artifacts={artifacts}
-                  onOpenWizard={() => setShowWizard(true)}
-                  onCollapse={() => setRightOpen(false)}
-                  initialTab={pendingRightTab.current}
-                />
-              </ErrorBoundary>
-            </div>
-          </>
-        ) : null}
+        {rightOpen && (
+          <Resizer
+            side="right"
+            onResize={(dx) => {
+              const next = reclampRailWidths(
+                leftWRef.current,
+                rightWRef.current + dx,
+                leftOpen,
+                true,
+                window.innerWidth,
+              );
+              setLeftW(next.leftW);
+              setRightW(next.rightW);
+            }}
+          />
+        )}
+        <div
+          className={`shrink-0 h-full min-w-0 overflow-hidden border-l border-[var(--shell-panel-border)] ${rightOpen ? "" : "hidden"}`}
+          style={{ width: rightW }}
+        >
+          <ErrorBoundary label="Tool board">
+            <RightPane
+              visible={rightOpen}
+              artifacts={artifacts}
+              onOpenWizard={() => setShowWizard(true)}
+              initialTab={pendingRightTab.current}
+              onEmpty={closeEmptyRightPane}
+            />
+          </ErrorBoundary>
+        </div>
       </div>
-      <StatusBar config={config}
-        leftOpen={leftOpen} rightOpen={rightOpen}
-        onToggleLeft={() => setLeftOpen((v) => !v)} onToggleRight={() => setRightOpen((v) => !v)} />
+      <div className="shrink-0 px-px py-px">
+        <StatusBar config={config}
+          leftOpen={leftOpen} rightOpen={rightOpen}
+          onToggleLeft={() => setLeftOpen((v) => !v)} onToggleRight={() => setRightOpen((v) => !v)} />
+      </div>
 
       {showWizard && <RegistryWizard onClose={() => { localStorage.setItem("pmharness.wizardSeen", "1"); setShowWizard(false); }} />}
 

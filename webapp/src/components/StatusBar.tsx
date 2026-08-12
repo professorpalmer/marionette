@@ -68,7 +68,7 @@ function truncateGoalText(text: string, max = 36): string {
 }
 
 // Bottom status strip (Hermes shell/statusbar pattern): runtime health, active
-// workspace branch, pilot model, spend, and panel toggles. Job inventory lives
+// workspace branch, pilot model, spend, and shell toggles. Job inventory lives
 // in LeftRail SESSION JOBS -- a footer total was stale across dir swaps and
 // disagreed with the scoped list, so it was removed.
 export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, onToggleRight }: {
@@ -359,10 +359,10 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
   const showUsage = usage && (usage.tokens_used > 0 || usage.est_cost_usd > 0);
 
   return (
-    <div className="flex items-center gap-3 px-3 h-6 border-t border-edge bg-panel text-[10px] text-muted select-none">
+    <div className="shell-inset-footer flex items-center gap-3 px-3 h-7 text-[10px] text-muted select-none">
       <button onClick={onToggleLeft} title="Toggle sessions panel (Ctrl/Cmd+B)"
         className={`p-0.5 rounded hover:bg-panel2 ${leftOpen ? "text-txt" : "text-muted"}`}><PanelLeft size={12} /></button>
-      <button onClick={onToggleRight} title="Toggle right panel (Ctrl/Cmd+J)"
+      <button onClick={onToggleRight} title="Toggle floating panels (Ctrl/Cmd+J)"
         className={`p-0.5 rounded hover:bg-panel2 ${rightOpen ? "text-txt" : "text-muted"}`}><PanelRight size={12} /></button>
       <span className="w-px h-3 bg-edge" />
       <span
