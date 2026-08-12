@@ -52,7 +52,7 @@ def test_deepseek_entry_is_v4_flash_not_a_stale_alias():
 
 def test_curated_catalog_covers_the_published_endpoint_table():
     for model in (
-        "grok-4.5", "gpt-5.6-luna", "glm-5.2", "glm-5.1", "kimi-k3",
+        "grok-4.6", "grok-4.5", "gpt-5.6-luna", "glm-5.2", "glm-5.1", "kimi-k3",
         "kimi-k2.7-code", "kimi-k2.6", "mimo-v2.5", "mimo-v2.5-pro",
         "minimax-m3", "minimax-m2.7", "qwen3.7-max", "qwen3.7-plus",
         "qwen3.6-plus", "deepseek-v4-pro", "deepseek-v4-flash", "hy3",
@@ -86,6 +86,7 @@ def test_normalize_model_id_preserves_dots():
     ("kimi-k3", go.CHAT_COMPLETIONS),
     ("deepseek-v4-flash", go.CHAT_COMPLETIONS),
     ("mimo-v2.5-pro", go.CHAT_COMPLETIONS),
+    ("grok-4.6", go.CHAT_COMPLETIONS),
     ("grok-4.5", go.CHAT_COMPLETIONS),
     ("hy3", go.CHAT_COMPLETIONS),
     ("minimax-m3", go.ANTHROPIC_MESSAGES),
@@ -179,7 +180,7 @@ def test_reasoning_extras_never_send_thinking_and_effort_together():
 
 
 def test_models_without_a_reasoning_knob_send_nothing_extra():
-    for model in ("mimo-v2.5-pro", "grok-4.5", "hy3", "minimax-m3"):
+    for model in ("mimo-v2.5-pro", "grok-4.6", "grok-4.5", "hy3", "minimax-m3"):
         assert go.reasoning_body_extras(model, "high") == {}
 
 

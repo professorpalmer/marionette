@@ -203,6 +203,10 @@ PROVIDERS = (
         pilot_models=(
             "composer-2.5",
             "composer-2.5-fast",
+            "cursor-grok-4.6-high",
+            "cursor-grok-4.6-high-fast",
+            "cursor-grok-4.6-medium",
+            "cursor-grok-4.6-low",
             "cursor-grok-4.5-high",
             "cursor-grok-4.5-high-fast",
             "cursor-grok-4.5-medium",
@@ -267,8 +271,8 @@ PROVIDERS = (
         env_vars=("XAI_API_KEY",),
         base_url="https://api.x.ai/v1",
         api_mode="chat_completions", display_name="xAI Grok",
-        pilot_models=("grok-4", "grok-4-fast"),
-        vision_model="grok-4-fast",
+        pilot_models=("grok-4.6", "grok-4.6-fast", "grok-4", "grok-4-fast"),
+        vision_model="grok-4.6",
     ),
     Provider(
         name="nvidia", aliases=("nvidia-nim",),

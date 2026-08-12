@@ -190,7 +190,7 @@ def _opencode_go_curated() -> list[tuple[str, str, str]]:
         if not bare:
             continue
         n = bare.lower()
-        if any(tok in n for tok in ("kimi-k3", "grok-4.5", "gpt-5.6-sol", "glm-5.2")):
+        if any(tok in n for tok in ("kimi-k3", "grok-4.6", "grok-4.5", "gpt-5.6-sol", "glm-5.2")):
             tier = "frontier"
         elif "flash" in n or n.endswith("-plus") or n in ("hy3", "mimo-v2.5"):
             tier = "cheap"

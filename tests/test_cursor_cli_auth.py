@@ -213,6 +213,7 @@ def test_list_models_fallback(monkeypatch):
     assert "auto" not in models  # Cursor router — Marionette picks the pilot
     assert "sonnet-4" in models
     assert "composer-2.5" in models
+    assert "cursor-grok-4.6-high" in models
     assert "cursor-grok-4.5-high" in models
 
 

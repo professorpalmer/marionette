@@ -31,12 +31,16 @@ _VERSION_DIR_RE = re.compile(
 )
 
 # Default curated ids when `agent models` is unavailable. Prefer current plan
-# slugs (Composer 2.5 / Grok 4.5 / …); keep a few legacy aliases for tests.
+# slugs (Composer 2.5 / Grok 4.6 / …); keep a few legacy aliases for tests.
 # Omit Cursor's ``auto`` router — Marionette already picks the pilot; nesting
 # another router fights that and hides which model actually ran.
 DEFAULT_CURSOR_CLI_MODELS = (
     "composer-2.5",
     "composer-2.5-fast",
+    "cursor-grok-4.6-high",
+    "cursor-grok-4.6-high-fast",
+    "cursor-grok-4.6-medium",
+    "cursor-grok-4.6-low",
     "cursor-grok-4.5-high",
     "cursor-grok-4.5-high-fast",
     "cursor-grok-4.5-medium",

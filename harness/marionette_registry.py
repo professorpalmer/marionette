@@ -23,6 +23,8 @@ MARIONETTE_MODELS_FILENAME = "marionette-models.json"
 # reject these for missing vision — except DeepSeek V4 Pro (text-only).
 _LADDER: tuple[tuple[str, int, tuple[str, ...]], ...] = (
     ("agentic/moonshotai/kimi-k3", 98, ("vision", "detailed-vision")),
+    ("agentic/cursor-grok-4.6-high-fast", 94, ("vision",)),
+    ("cursor/grok-4-6", 93, ("vision",)),
     ("agentic/cursor-grok-4.5-high-fast", 92, ("vision",)),
     ("cursor/grok-4-5", 91, ("vision",)),
     ("agentic/deepseek/deepseek-v4-pro", 85, ()),
@@ -40,6 +42,19 @@ _LADDER_ALIASES: dict[str, tuple[str, ...]] = {
         "kimi-k3",
         "moonshotai/kimi-k3",
         "opencode-go/kimi-k3",
+    ),
+    "agentic/cursor-grok-4.6-high-fast": (
+        "agentic/grok-4.6",
+        "agentic/grok-4-6",
+        "agentic/grok-4.6-high-fast",
+        "agentic/x-ai/grok-4.6",
+        "grok-4.6",
+        "x-ai/grok-4.6",
+        "cursor-grok-4.6-high-fast",
+    ),
+    "cursor/grok-4-6": (
+        "grok-4.6",
+        "grok-4-6",
     ),
     "agentic/cursor-grok-4.5-high-fast": (
         "agentic/grok-4.5",
@@ -248,7 +263,7 @@ def _is_text_only_row(canonical_id: str, row: dict[str, Any]) -> bool:
 
 
 def apply_marionette_router_ladder(path: Optional[str] = None) -> dict[str, Any]:
-    """Apply the Kimi > Grok > DeepSeek > Composer score ladder in-place.
+    """Apply the Kimi > Grok 4.6 > Grok 4.5 > DeepSeek > Composer score ladder in-place.
 
     Idempotent. Filename-gated like ``reconcile_shared_models``: never writes a
     non-``marionette-models.json`` catalog (including shared

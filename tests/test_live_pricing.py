@@ -89,7 +89,15 @@ def test_resolve_price_live_for_picker_spec(monkeypatch):
 
 
 def test_resolve_price_cursor_cli_via_plan_alias(monkeypatch):
-    monkeypatch.setattr(reg, "_PRICE_MEM", {"x-ai/grok-4": (0.2, 0.5)})
+    monkeypatch.setattr(reg, "_PRICE_MEM", {"x-ai/grok-4.6": (2.0, 6.0)})
+    monkeypatch.setattr(reg, "_live_windows", lambda: {})
+    pin, pout, src = reg.resolve_price_with_source("cursor-cli:cursor-grok-4.6-high")
+    assert (pin, pout) == (2.0, 6.0)
+    assert src == "live_alias"
+
+
+def test_resolve_price_cursor_cli_grok_45_alias_still_resolves(monkeypatch):
+    monkeypatch.setattr(reg, "_PRICE_MEM", {"x-ai/grok-4.5": (0.2, 0.5)})
     monkeypatch.setattr(reg, "_live_windows", lambda: {})
     pin, pout, src = reg.resolve_price_with_source("cursor-cli:cursor-grok-4.5-high")
     assert (pin, pout) == (0.2, 0.5)

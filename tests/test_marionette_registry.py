@@ -59,6 +59,11 @@ def test_ladder_scores_and_vision_tags(tmp_path, monkeypatch):
                         "tags": ["code"],
                     },
                     {
+                        "id": "agentic/cursor-grok-4.6-high-fast",
+                        "capability_score": 50,
+                        "tags": ["code"],
+                    },
+                    {
                         "id": "agentic/cursor-grok-4.5-high-fast",
                         "capability_score": 50,
                         "tags": ["code"],
@@ -89,6 +94,8 @@ def test_ladder_scores_and_vision_tags(tmp_path, monkeypatch):
     by_id = {m["id"]: m for m in data["models"]}
     assert by_id["agentic/moonshotai/kimi-k3"]["capability_score"] == 98
     assert "vision" in by_id["agentic/moonshotai/kimi-k3"]["tags"]
+    assert by_id["agentic/cursor-grok-4.6-high-fast"]["capability_score"] == 94
+    assert "vision" in by_id["agentic/cursor-grok-4.6-high-fast"]["tags"]
     assert by_id["agentic/cursor-grok-4.5-high-fast"]["capability_score"] == 92
     assert "vision" in by_id["agentic/cursor-grok-4.5-high-fast"]["tags"]
     assert by_id["agentic/deepseek/deepseek-v4-pro"]["capability_score"] == 85
@@ -114,6 +121,14 @@ def test_ladder_matches_flattened_live_ids_and_aliases(tmp_path, monkeypatch):
                         "adapter_model_name": "kimi-k3",
                         "capability_score": 50,
                         "tags": ["code", "tools"],
+                        "payload_defaults": {"provider": "opencode-go"},
+                    },
+                    {
+                        "id": "agentic/grok-4.6",
+                        "adapter": "agentic",
+                        "adapter_model_name": "grok-4.6",
+                        "capability_score": 50,
+                        "tags": ["code"],
                         "payload_defaults": {"provider": "opencode-go"},
                     },
                     {
@@ -159,6 +174,8 @@ def test_ladder_matches_flattened_live_ids_and_aliases(tmp_path, monkeypatch):
     assert by_id["agentic/kimi-k3"]["capability_score"] == 98
     assert "vision" in by_id["agentic/kimi-k3"]["tags"]
     assert "detailed-vision" in by_id["agentic/kimi-k3"]["tags"]
+    assert by_id["agentic/grok-4.6"]["capability_score"] == 94
+    assert "vision" in by_id["agentic/grok-4.6"]["tags"]
     assert by_id["agentic/grok-4.5"]["capability_score"] == 92
     assert "vision" in by_id["agentic/grok-4.5"]["tags"]
     assert by_id["agentic/deepseek-v4-pro"]["capability_score"] == 85
@@ -239,6 +256,7 @@ def test_marionette_ladder_and_demote_ids_producible(tmp_path, monkeypatch):
     data = json.loads(dest.read_text(encoding="utf-8"))
     by_id = {m["id"]: m for m in data["models"]}
     assert by_id["agentic/moonshotai/kimi-k3"]["capability_score"] == 98
+    assert by_id["agentic/cursor-grok-4.6-high-fast"]["capability_score"] == 94
     assert by_id["agentic/minimax/minimax-m3"]["capability_score"] == 68
     assert "vision" not in by_id["agentic/deepseek/deepseek-v4-pro"]["tags"]
 
