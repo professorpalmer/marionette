@@ -90,7 +90,7 @@ test("runtime parity: an unreachable index reports stale instead of claiming cur
   assert.equal(res.want, "1.22.2");
   assert.match(res.reason, /pypi\.org/);
   assert.equal(runtime.isRuntimeStale(res), true);
-  assert.match(runtime.describeRuntimeParity(res), /1\.21\.14/);
+  assert.match(runtime.describeRuntimeParity(res), /1\.22\.2/);
 });
 
 test("runtime parity: an editable dev checkout is never clobbered", async () => {
@@ -145,7 +145,7 @@ test("runtimeParityFields: only a stale runtime annotates the update-check paylo
   assert.equal(fields.runtimeStale, true);
   assert.equal(fields.runtimeHave, "1.20.10");
   assert.equal(fields.runtimeWant, "1.22.2");
-  assert.match(fields.runtimeNote, /1\.21\.14/);
+  assert.match(fields.runtimeNote, /1\.22\.2/);
 
   const ok = fakeRun({ show: showOutput("Version: 1.22.2") });
   const current = await ensure({ run: ok.run, resolvePin: pinAt("1.22.2") });
