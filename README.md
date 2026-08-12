@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.206, deliberately pre-1.0. Rides puppetmaster-ai==1.22.2 (shared verified context / admitted gists / dashboard Frontier).
+> Status: v0.9.207, deliberately pre-1.0. Smaller minimum right rail keeps the conversation center usable while the tool board is open; rides puppetmaster-ai==1.22.2.
 
 ## Documentation
 

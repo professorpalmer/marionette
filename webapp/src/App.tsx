@@ -24,7 +24,7 @@ const bool = (k: string, d: boolean) => { const v = localStorage.getItem(k); ret
 const MIN_CENTER_W = 360;
 const LEFT_MIN_W = 180;
 const LEFT_MAX_W = 420;
-const RIGHT_MIN_W = 420;
+const RIGHT_MIN_W = 320;
 const RIGHT_COMPACT_MIN_W = 220;
 
 /** Flex chrome around the center column: shell padding and 1px resizers. */
