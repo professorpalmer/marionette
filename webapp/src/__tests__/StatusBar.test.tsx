@@ -651,7 +651,7 @@ describe("StatusBar session GOAL chip", () => {
 
 describe("StatusBar runtime stale toast", () => {
   const runtimeNote =
-    "Puppetmaster is at 1.20.10 but this Marionette needs 1.21.14 -- offline. Reconnect and update to finish.";
+    "Puppetmaster is at 1.20.10 but this Marionette needs 1.22.2 -- offline. Reconnect and update to finish.";
 
   beforeEach(() => {
     vi.clearAllMocks();
