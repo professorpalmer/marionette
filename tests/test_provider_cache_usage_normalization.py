@@ -155,6 +155,198 @@ def _fake_json_response(payload: dict):
     return FakeResponse()
 
 
+def _capturing_openai_response(monkeypatch, captured):
+    def mock_urlopen(req, timeout=None):
+        captured.update(json.loads(req.data.decode("utf-8")))
+        return _fake_json_response({
+            "choices": [{
+                "message": {"role": "assistant", "content": "ok"},
+                "finish_reason": "stop",
+            }],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+        })
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+
+def _capturing_openai_stream(monkeypatch, captured):
+    sse = (
+        'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}\n\n'
+        'data: {"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}\n\n'
+        "data: [DONE]\n\n"
+    )
+
+    class FakeStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def __iter__(self):
+            for line in sse.splitlines(keepends=True):
+                yield line.encode("utf-8")
+
+    def mock_urlopen(req, timeout=None):
+        captured.update(json.loads(req.data.decode("utf-8")))
+        return FakeStream()
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+
+def test_openai_compat_gpt_5_uses_max_completion_tokens(monkeypatch):
+    driver = OpenAICompatDriver(
+        name="openai:gpt-5.6-luna",
+        model="gpt-5.6-luna",
+        base_url="https://api.openai.com/v1",
+        api_key_env="OPENAI_API_KEY",
+        max_tokens=8000,
+    )
+    driver._key = lambda: "fake-key"
+    captured = {}
+    _capturing_openai_response(monkeypatch, captured)
+
+    response = driver.complete("hi", system="sys")
+
+    assert response.error is None
+    assert captured["max_completion_tokens"] == 8000
+    assert "max_tokens" not in captured
+    assert "temperature" not in captured
+
+
+def test_openai_compat_gpt_5_tools_disable_reasoning_effort(monkeypatch):
+    driver = OpenAICompatDriver(
+        name="openai:gpt-5.6-luna",
+        model="gpt-5.6-luna",
+        base_url="https://api.openai.com/v1",
+        api_key_env="OPENAI_API_KEY",
+        enable_reasoning=True,
+    )
+    driver._key = lambda: "fake-key"
+    captured = {}
+    _capturing_openai_response(monkeypatch, captured)
+
+    response = driver.chat(
+        [{"role": "user", "content": "hi"}],
+        tools=[{"type": "function", "function": {"name": "noop", "parameters": {}}}],
+    )
+
+    assert response.error is None
+    assert captured["reasoning_effort"] == "none"
+    assert "reasoning" not in captured
+
+
+def test_openai_compat_gpt_5_streaming_tools_disable_reasoning_effort(monkeypatch):
+    driver = OpenAICompatDriver(
+        name="openai:gpt-5.6-luna",
+        model="gpt-5.6-luna",
+        base_url="https://api.openai.com/v1",
+        api_key_env="OPENAI_API_KEY",
+        enable_reasoning=True,
+    )
+    driver._key = lambda: "fake-key"
+    captured = {}
+    _capturing_openai_stream(monkeypatch, captured)
+
+    response = driver.chat_stream(
+        [{"role": "user", "content": "hi"}],
+        tools=[{"type": "function", "function": {"name": "noop", "parameters": {}}}],
+        on_delta=lambda _text: None,
+    )
+
+    assert response.error is None
+    assert captured["reasoning_effort"] == "none"
+    assert "reasoning" not in captured
+
+
+def test_openai_compat_gpt_5_extra_body_cannot_reintroduce_rejected_fields(monkeypatch):
+    driver = OpenAICompatDriver(
+        name="openai:gpt-5.6-luna",
+        model="gpt-5.6-luna",
+        base_url="https://api.openai.com/v1",
+        api_key_env="OPENAI_API_KEY",
+        max_tokens=8000,
+        extra_body={
+            "temperature": 0.2,
+            "max_tokens": 99,
+            "reasoning": {"max_tokens": 1024},
+        },
+    )
+    driver._key = lambda: "fake-key"
+    captured = {}
+    _capturing_openai_response(monkeypatch, captured)
+
+    response = driver.complete("hi", system="sys")
+
+    assert response.error is None
+    assert captured["max_completion_tokens"] == 8000
+    assert "max_tokens" not in captured
+    assert "temperature" not in captured
+    assert "reasoning" not in captured
+
+
+def test_openai_compat_gpt_5_omits_openrouter_reasoning_without_tools(monkeypatch):
+    driver = OpenAICompatDriver(
+        name="openai:gpt-5.6-luna",
+        model="gpt-5.6-luna",
+        base_url="https://api.openai.com/v1",
+        api_key_env="OPENAI_API_KEY",
+        enable_reasoning=True,
+    )
+    driver._key = lambda: "fake-key"
+    captured = {}
+    _capturing_openai_response(monkeypatch, captured)
+
+    response = driver.chat([{"role": "user", "content": "hi"}])
+
+    assert response.error is None
+    assert "reasoning" not in captured
+    assert "reasoning_effort" not in captured
+
+
+def test_openai_compat_gpt_5_tools_keep_reasoning_effort_none_after_extra_body(monkeypatch):
+    driver = OpenAICompatDriver(
+        name="openai:gpt-5.6-luna",
+        model="gpt-5.6-luna",
+        base_url="https://api.openai.com/v1",
+        api_key_env="OPENAI_API_KEY",
+        extra_body={"reasoning_effort": "high", "temperature": 0.2},
+    )
+    driver._key = lambda: "fake-key"
+    captured = {}
+    _capturing_openai_response(monkeypatch, captured)
+
+    response = driver.chat(
+        [{"role": "user", "content": "hi"}],
+        tools=[{"type": "function", "function": {"name": "noop", "parameters": {}}}],
+    )
+
+    assert response.error is None
+    assert captured["reasoning_effort"] == "none"
+    assert "temperature" not in captured
+    assert "reasoning" not in captured
+
+
+def test_openai_compat_legacy_provider_keeps_max_tokens(monkeypatch):
+    driver = OpenAICompatDriver(
+        name="legacy:model",
+        model="legacy-model",
+        base_url="https://api.example.com/v1",
+        api_key_env="LEGACY_API_KEY",
+        max_tokens=1500,
+    )
+    driver._key = lambda: "fake-key"
+    captured = {}
+    _capturing_openai_response(monkeypatch, captured)
+
+    response = driver.complete("hi", system="sys")
+
+    assert response.error is None
+    assert captured["max_tokens"] == 1500
+    assert "max_completion_tokens" not in captured
+    assert captured["temperature"] == 0.0
+
+
 def test_openai_compat_usage_meta_reads_alias_shapes(monkeypatch):
     driver = OpenAICompatDriver(
         name="openai-test",

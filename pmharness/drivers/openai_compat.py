@@ -80,6 +80,41 @@ class OpenAICompatDriver:
             raise RuntimeError(f"missing API key in env var {self.api_key_env}")
         return key
 
+    def _uses_openai_gpt5_chat_parameters(self) -> bool:
+        return (
+            self.base_url == "https://api.openai.com/v1"
+            and self.model.lower().startswith("gpt-5")
+        )
+
+    def _output_token_limit_field(self) -> str:
+        """Return the Chat Completions output-limit field for this endpoint/model."""
+        return (
+            "max_completion_tokens"
+            if self._uses_openai_gpt5_chat_parameters()
+            else "max_tokens"
+        )
+
+    def _apply_temperature(self, body: dict) -> None:
+        if not self._uses_openai_gpt5_chat_parameters():
+            body["temperature"] = self.temperature
+
+    def _apply_openai_gpt5_chat_constraints(self, body: dict) -> None:
+        """Keep direct OpenAI GPT-5 Chat Completions on fields the API accepts.
+
+        extra_body is applied first and can reintroduce legacy OpenAI /
+        OpenRouter knobs (temperature, max_tokens, reasoning). Strip those
+        after the merge so a GPT-5 request cannot 400 on rejected fields.
+        """
+        if not self._uses_openai_gpt5_chat_parameters() or not isinstance(body, dict):
+            return
+        body.pop("temperature", None)
+        limit = body.pop("max_tokens", None)
+        if limit is not None:
+            body.setdefault("max_completion_tokens", limit)
+        body.pop("reasoning", None)
+        if body.get("tools"):
+            body["reasoning_effort"] = "none"
+
     def _pool_rotate_backoff(
         self,
         code: int,
@@ -180,6 +215,7 @@ class OpenAICompatDriver:
             )
         except Exception:
             pass
+        self._apply_openai_gpt5_chat_constraints(body)
         return body
 
     @staticmethod
@@ -317,9 +353,9 @@ class OpenAICompatDriver:
                 {"role": "system", "content": system},
                 {"role": "user", "content": task_prompt},
             ],
-            "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
+            self._output_token_limit_field(): self.max_tokens,
         }
+        self._apply_temperature(body)
         self._prepare_body(
             body,
             messages=body["messages"],
@@ -418,14 +454,18 @@ class OpenAICompatDriver:
         body = {
             "model": self.model,
             "messages": full_messages,
-            "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
+            self._output_token_limit_field(): self.max_tokens,
         }
-        if self.enable_reasoning:
+        self._apply_temperature(body)
+        if self.enable_reasoning and not (
+            tools and self._uses_openai_gpt5_chat_parameters()
+        ):
             body["reasoning"] = {"max_tokens": 1024}
         if tools:
             body["tools"] = tools
             body["tool_choice"] = "auto"
+            if self._uses_openai_gpt5_chat_parameters():
+                body["reasoning_effort"] = "none"
         self._prepare_body(
             body,
             messages=full_messages,
@@ -585,16 +625,20 @@ class OpenAICompatDriver:
         body = {
             "model": self.model,
             "messages": full_messages,
-            "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
+            self._output_token_limit_field(): self.max_tokens,
             "stream": True,
             "stream_options": {"include_usage": True},
         }
-        if self.enable_reasoning:
+        self._apply_temperature(body)
+        if self.enable_reasoning and not (
+            tools and self._uses_openai_gpt5_chat_parameters()
+        ):
             body["reasoning"] = {"max_tokens": 1024}
         if tools:
             body["tools"] = tools
             body["tool_choice"] = "auto"
+            if self._uses_openai_gpt5_chat_parameters():
+                body["reasoning_effort"] = "none"
         self._prepare_body(
             body,
             messages=full_messages,

@@ -260,6 +260,7 @@ describe("swarm await chrome", () => {
       pendingJobIdsFromSwarmLive([
         { job_id: "job_alive", status: "running" },
         { job_id: "job_done", status: "completed" },
+        { job_id: "job_complete", status: "complete" },
         { id: "local-swarm-skip", status: "pending" },
         { job_id: "job_queued", status: "queued" },
       ]),
@@ -474,12 +475,13 @@ describe("swarm await chrome", () => {
     expect(
       terminalJobIdsFromSwarmLive([
         { job_id: "job_done", status: "completed" },
+        { job_id: "job_complete", status: "complete" },
         { job_id: "job_alive", status: "running" },
         { id: "local-x", status: "failed" },
         { job_id: "job_cancel", status: "cancelled" },
         { job_id: "job_interrupted", status: "interrupted" },
       ]),
-    ).toEqual(["job_done", "local-x", "job_cancel", "job_interrupted"]);
+    ).toEqual(["job_done", "job_complete", "local-x", "job_cancel", "job_interrupted"]);
     expect(
       pruneTerminalJobIds(
         ["job_done", "job_alive", "local-x"],
