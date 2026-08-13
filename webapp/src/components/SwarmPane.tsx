@@ -102,6 +102,10 @@ function looksLikePromptEcho(headline: string): boolean {
   return /^(Role\s*:|Goal\s*:|Return\s+only\b)/i.test(text);
 }
 
+function isTimeoutStatus(status: string): boolean {
+  return /time(?:d)?[-_ ]?out/.test(status);
+}
+
 function jobStatus(j: Job): Status {
   const s = (j.status || "").toLowerCase();
   if (s.includes("complete") || s.includes("done")) return "completed";
@@ -118,6 +122,7 @@ function jobStatus(j: Job): Status {
     || s.includes("error")
     || s.includes("stall")
     || s.includes("dead")
+    || isTimeoutStatus(s)
   ) {
     return "failed";
   }
@@ -137,7 +142,12 @@ function taskState(t: Task): "running" | "done" | "fail" | "idle" {
   const s = (t.status || "").toLowerCase();
   if (s.includes("run") || s.includes("progress") || s.includes("active")) return "running";
   if (s.includes("complete") || s.includes("done")) return "done";
-  if (s.includes("fail") || s.includes("cancel") || s.includes("error")) return "fail";
+  if (
+    s.includes("fail")
+    || s.includes("cancel")
+    || s.includes("error")
+    || isTimeoutStatus(s)
+  ) return "fail";
   return "idle";
 }
 
