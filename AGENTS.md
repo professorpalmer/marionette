@@ -36,6 +36,10 @@ Ownership rule: new pilot tools -> `pilot.py` schema + `tool_dispatch` /
   installers, but do not rely on it -- check first, tag second. Local tests
   pass on the dev interpreter only; CI is what proves the 3.9 floor.
 - Never commit keys or `results/*.sqlite`.
+- Git flow: day-to-day work is on `dev`. Feature PRs target `dev`. Ship by
+  merging `dev` into `main`, waiting for `tests` CI green on that SHA, then
+  tagging `main`. Never push product work or `pmedit-*` worker branches to
+  `main` / origin scratch.
 
 <!-- puppetmaster:rules:begin -->
 <!-- managed by `puppetmaster install-rules`; delete this whole block to disable -->
