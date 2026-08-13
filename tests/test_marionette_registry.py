@@ -337,3 +337,31 @@ def test_ladder_updates_canonical_and_flattened_sibling_rows(tmp_path, monkeypat
     assert "detailed-vision" in by_id["agentic/kimi-k3"]["tags"]
     assert "agentic/moonshotai/kimi-k3" in report["updated"]
     assert "agentic/kimi-k3" in report["updated"]
+
+
+def test_ladder_stamps_deepseek_v4_pro_0813_snapshot(tmp_path, monkeypatch):
+    dest = tmp_path / "marionette-models.json"
+    dest.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "models": [
+                    {
+                        "id": "agentic/deepseek/deepseek-v4-pro-0813",
+                        "adapter": "agentic",
+                        "adapter_model_name": "deepseek/deepseek-v4-pro-0813",
+                        "capability_score": 1,
+                        "tags": ["vision", "code"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(dest))
+    apply_marionette_router_ladder(str(dest))
+    data = json.loads(dest.read_text(encoding="utf-8"))
+    row = data["models"][0]
+    assert row["capability_score"] == 85
+    assert "vision" not in row["tags"]
+    assert "detailed-vision" not in row["tags"]

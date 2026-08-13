@@ -519,7 +519,7 @@ export default function FileTree() {
   const revealLabel = revealInFolderLabel();
 
   return (
-    <div className="flex flex-col h-full overflow-hidden bg-panel">
+    <div className="flex flex-col h-full overflow-hidden bg-transparent">
       <div className="text-[10px] text-muted px-3 py-2 uppercase tracking-wider flex items-center justify-between shrink-0 border-b border-edge/30">
         <span>Files ({repoName || "unknown"})</span>
         <button

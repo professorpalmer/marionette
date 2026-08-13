@@ -1488,10 +1488,10 @@ export default function SwarmPane() {
   const panelDimmed = projectSwitching || isTransitioning;
 
   return (
-    <div className={`flex flex-col h-full overflow-hidden bg-[#13161a] ${panelOpacityClass(panelDimmed, isShowingStale)}`}>
+    <div className={`flex flex-col h-full overflow-hidden bg-transparent ${panelOpacityClass(panelDimmed, isShowingStale)}`}>
       {/* Persistent header: the tracker always announces itself, with live
           aggregate counts, so it reads as a dashboard even at rest. */}
-      <div className="shrink-0 flex items-center justify-between px-3 py-2 border-b border-edge/50 bg-panel2/20 select-none">
+      <div className="shrink-0 flex items-center justify-between px-3 py-2 border-b border-[var(--shell-panel-border)] select-none">
         <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-faint font-semibold">
           <span className="relative inline-flex">
             <Network size={11} className={anyRunning ? "text-accent" : "text-faint/70"} />

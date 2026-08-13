@@ -377,7 +377,7 @@ export default function SourceControl() {
   }
 
   return (
-    <div className="flex flex-col h-full overflow-hidden bg-panel">
+    <div className="flex flex-col h-full overflow-hidden bg-transparent">
       {readOnly && (
         <div className="text-[10px] text-muted px-3 py-1.5 border-b border-edge/30 bg-panel2/40 uppercase tracking-wider">
           Read-only — stage and commit require the desktop app

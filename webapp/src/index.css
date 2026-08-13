@@ -98,7 +98,7 @@ body {
   grid-template-rows: repeat(2, minmax(0, 1fr));
   grid-auto-flow: row;
   align-content: stretch;
-  gap: 0;
+  gap: 4px;
   height: 100%;
   padding: 0;
 }
@@ -111,9 +111,9 @@ body {
   min-height: 0;
   overflow: hidden;
   border: 1px solid var(--shell-panel-border);
-  border-radius: 0;
-  background: rgba(19, 22, 26, 0.94);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
+  border-radius: var(--shell-panel-radius);
+  background: var(--shell-panel);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
 }
 
 .right-pane-card-header {

@@ -756,3 +756,125 @@ def test_sync_with_no_keys_writes_no_agentic_models(monkeypatch, tmp_path):
     assert result["models_count"] == 0
     data = json.loads(models_path.read_text())
     assert data["models"] == [{"id": "cursor/composer-2-5", "adapter": "cursor"}]
+
+
+def test_newest_dated_snapshot_prefers_0813():
+    from harness.auto_registry import _newest_dated_snapshot
+
+    live = [
+        "anthropic/claude-opus-4.8",
+        *[f"filler/{i}" for i in range(20)],
+        "deepseek/deepseek-v4-pro",
+        "deepseek/deepseek-v4-pro-0805",
+        "deepseek/deepseek-v4-pro-0813",
+        "deepseek/deepseek-v4-pro-free",
+    ]
+    assert _newest_dated_snapshot(
+        "deepseek/deepseek-v4-pro", live,
+    ) == "deepseek/deepseek-v4-pro-0813"
+    assert _newest_dated_snapshot("moonshotai/kimi-k3", live) == "moonshotai/kimi-k3"
+
+
+def test_openrouter_discovery_promotes_buried_dated_snapshot(monkeypatch, tmp_path):
+    """Dated DeepSeek 0813 must win even when it is not in the first 6 live ids."""
+    models_path = tmp_path / "models.json"
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
+
+    live = (
+        [f"other/filler-{i}" for i in range(12)]
+        + [
+            "deepseek/deepseek-v4-pro",
+            "deepseek/deepseek-v4-pro-0813",
+            "moonshotai/kimi-k3",
+        ]
+    )
+
+    def mock_get_provider_key(provider):
+        return "fake-openrouter" if provider.name == "openrouter" else None
+
+    def mock_fetch_models(provider, key, force=False):
+        return list(live)
+
+    with patch("harness.registry_wizard.get_provider_key", mock_get_provider_key), \
+         patch("harness.keys.get_disconnected", lambda: set()), \
+         patch("harness.model_fetch.fetch_models", mock_fetch_models), \
+         patch("harness.auto_registry._enabled_picker_models", lambda _name: []):
+        from harness.auto_registry import sync_agentic_registry
+        result = sync_agentic_registry()
+
+    assert result["synced"] is True
+    data = json.loads(models_path.read_text())
+    by_id = {m["id"]: m for m in data["models"]}
+    pro = by_id["agentic/deepseek/deepseek-v4-pro"]
+    assert pro["adapter_model_name"] == "deepseek/deepseek-v4-pro-0813"
+    assert "agentic/deepseek/deepseek-v4-pro-0813" not in by_id
+    kimi = by_id["agentic/moonshotai/kimi-k3"]
+    assert kimi["adapter_model_name"] == "moonshotai/kimi-k3"
+
+
+def test_openrouter_picker_promotes_dated_snapshot(monkeypatch, tmp_path):
+    models_path = tmp_path / "models.json"
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
+
+    def mock_get_provider_key(provider):
+        return "fake-openrouter" if provider.name == "openrouter" else None
+
+    def mock_fetch_models(provider, key, force=False):
+        return ["deepseek/deepseek-v4-pro-0813", "anthropic/claude-opus-4.8"]
+
+    with patch("harness.registry_wizard.get_provider_key", mock_get_provider_key), \
+         patch("harness.keys.get_disconnected", lambda: set()), \
+         patch("harness.model_fetch.fetch_models", mock_fetch_models), \
+         patch(
+             "harness.auto_registry._enabled_picker_models",
+             lambda name: ["anthropic/claude-opus-4.8"] if name == "openrouter" else [],
+         ):
+        from harness.auto_registry import sync_agentic_registry
+        sync_agentic_registry()
+
+    data = json.loads(models_path.read_text())
+    by_id = {m["id"]: m for m in data["models"]}
+    pro = by_id["agentic/deepseek/deepseek-v4-pro"]
+    assert pro["adapter_model_name"] == "deepseek/deepseek-v4-pro-0813"
+
+
+def test_sync_force_is_passed_to_fetch_models(monkeypatch, tmp_path):
+    models_path = tmp_path / "models.json"
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
+    seen = {}
+
+    def mock_get_provider_key(provider):
+        return "fake-openrouter" if provider.name == "openrouter" else None
+
+    def mock_fetch_models(provider, key, force=False):
+        seen["force"] = force
+        return []
+
+    with patch("harness.registry_wizard.get_provider_key", mock_get_provider_key), \
+         patch("harness.keys.get_disconnected", lambda: set()), \
+         patch("harness.model_fetch.fetch_models", mock_fetch_models), \
+         patch("harness.auto_registry._enabled_picker_models", lambda _name: []):
+        from harness.auto_registry import sync_agentic_registry
+        sync_agentic_registry(force=True)
+
+    assert seen.get("force") is True
+
+
+def test_registry_auto_refresh_kill_switch(monkeypatch):
+    import harness.auto_registry as ar
+
+    monkeypatch.setenv("HARNESS_REGISTRY_AUTO_REFRESH", "0")
+    monkeypatch.setattr(ar, "_refresh_thread", None)
+    assert ar.start_registry_auto_refresh() is False
+
+
+def test_known_spec_follows_dated_family():
+    from harness.auto_registry import _known_spec_for, _KNOWN_MODEL_SPECS
+
+    rolling = _KNOWN_MODEL_SPECS["deepseek/deepseek-v4-pro"]
+    assert _known_spec_for(
+        "deepseek/deepseek-v4-pro-0813", "deepseek/deepseek-v4-pro",
+    ) == rolling

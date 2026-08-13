@@ -400,7 +400,7 @@ export default function App() {
           />
         )}
         <div
-          className={`shrink-0 h-full min-w-0 overflow-hidden border-l border-[var(--shell-panel-border)] ${rightOpen ? "" : "hidden"}`}
+          className={`shrink-0 h-full min-w-0 overflow-hidden ${rightOpen ? "" : "hidden"}`}
           style={{ width: rightW }}
         >
           <ErrorBoundary label="Tool board">

@@ -3151,8 +3151,12 @@ def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False) -> Non
         # syncs the agentic catalog from live keys, reconciles shared non-agentic
         # rows, prunes rows for providers without a credential, and re-applies
         # the Marionette ladder so boot scores are not clobbered.
-        from .auto_registry import ensure_keyed_provider_registry_health
+        from .auto_registry import (
+            ensure_keyed_provider_registry_health,
+            start_registry_auto_refresh,
+        )
         ensure_keyed_provider_registry_health()
+        start_registry_auto_refresh()
 
         _maybe_auto_index_codegraph()
         # Connect configured MCP servers (incl. local Docker HTTP) without

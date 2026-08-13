@@ -217,10 +217,10 @@ export default function CheckpointsPane() {
   };
 
   return (
-    <div className="flex flex-col h-full min-h-0 bg-[#13161a] text-txt text-xs">
+    <div className="flex flex-col h-full min-h-0 bg-transparent text-txt text-xs">
       {/* Header + inline manual-snapshot: one compact row to save vertical space
           in a split pane (was a separate header + form section). */}
-      <div className="px-2 py-1.5 border-b border-edge/50 flex items-center gap-1.5 bg-panel2/20 shrink-0">
+      <div className="px-2 py-1.5 border-b border-[var(--shell-panel-border)] flex items-center gap-1.5 shrink-0">
         <History size={12} className="text-accent shrink-0" />
         <form onSubmit={handleCreateSnapshot} className="flex items-center gap-1 flex-1 min-w-0">
           <input

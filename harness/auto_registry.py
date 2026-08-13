@@ -8,12 +8,17 @@ This module automatically syncs those entries from whatever provider API keys
 the user has, without requiring any hand-editing of models.json.
 
 Users never have to remember/reset/curate models.json -- it stays fresh based
-on their connected provider keys.
+on their connected provider keys. A background refresh force-fetches the live
+catalog shortly after boot and every six hours so dated OpenRouter snapshots
+(e.g. ``deepseek/deepseek-v4-pro-0813``) land without a restart. Set
+``HARNESS_REGISTRY_AUTO_REFRESH=0`` to disable.
 """
 
 import json
 import os
 import re
+import threading
+import time
 from typing import Optional
 
 from .diag import note as _diag
@@ -261,11 +266,108 @@ def _enabled_picker_models(provider_name: str) -> list[str]:
         return []
 
 
-def _get_provider_models_from_discovery(provider_name: str, provider_key: str) -> list[tuple[str, str, str]]:
+_DATED_SNAPSHOT_SUFFIX = re.compile(r"-\d{4,8}$")
+
+
+def _strip_dated_suffix(name: str) -> str:
+    """``deepseek/deepseek-v4-pro-0813`` -> ``deepseek/deepseek-v4-pro``."""
+    n = (name or "").strip()
+    match = _DATED_SNAPSHOT_SUFFIX.search(n)
+    return n[: match.start()] if match else ""
+
+
+def _newest_dated_snapshot(base: str, live_models: list[str]) -> str:
+    """Prefer the newest dated sibling of *base* from a live catalog.
+
+    Rolling ``deepseek/deepseek-v4-pro`` plus live ``…-0813`` returns the
+    dated wire id. Exact match is the fallback when no dated sibling exists.
+    """
+    base_l = (base or "").strip().lower()
+    if not base_l:
+        return base
+    best = ""
+    best_key = (-1, "")
+    for mid in live_models:
+        n = (mid or "").strip()
+        if not n:
+            continue
+        nl = n.lower()
+        if nl == base_l:
+            if best_key < (0, ""):
+                best = n
+                best_key = (0, "")
+            continue
+        prefix = base_l + "-"
+        if not nl.startswith(prefix):
+            continue
+        suffix = nl[len(prefix):]
+        if not re.fullmatch(r"\d{4,8}", suffix):
+            continue
+        key = (1, suffix)
+        if key > best_key:
+            best = n
+            best_key = key
+    return best or base
+
+
+def _is_dated_or_exact_sibling(candidate: str, bases: list[str]) -> bool:
+    cl = (candidate or "").strip().lower()
+    if not cl:
+        return False
+    for base in bases:
+        bl = (base or "").strip().lower()
+        if not bl:
+            continue
+        if cl == bl:
+            return True
+        prefix = bl + "-"
+        if cl.startswith(prefix) and re.fullmatch(r"\d{4,8}", cl[len(prefix):]):
+            return True
+    return False
+
+
+def _promote_openrouter_snapshots(
+    selected: list[tuple[str, str, str]],
+    live_models: list[str],
+) -> list[tuple[str, str, str]]:
+    """Rewrite wire names to the newest dated sibling; keep stable slugs."""
+    if not live_models:
+        return selected
+    promoted: list[tuple[str, str, str]] = []
+    for model_name, tier, slug in selected:
+        wire = _newest_dated_snapshot(model_name, live_models)
+        if wire == model_name and slug != model_name:
+            wire = _newest_dated_snapshot(slug, live_models)
+        promoted.append((wire, tier, slug))
+    return promoted
+
+
+def _known_spec_for(model_name: str, slug: str):
+    """Static economics for a wire id, rolling slug, or dated family sibling."""
+    for key in (model_name, slug):
+        spec = _KNOWN_MODEL_SPECS.get(key)
+        if spec:
+            return spec
+    for key in (model_name, slug):
+        family = _strip_dated_suffix(key)
+        if family:
+            spec = _KNOWN_MODEL_SPECS.get(family)
+            if spec:
+                return spec
+    return None
+
+
+def _get_provider_models_from_discovery(
+    provider_name: str,
+    provider_key: str,
+    force: bool = False,
+) -> list[tuple[str, str, str]]:
     """Model set for a provider, in priority order: the user's enabled picker
     models, then live discovery, then the curated fallback.
 
-    Returns: list of (model_name, tier, slug) tuples.
+    Returns: list of (model_name, tier, slug) tuples. For OpenRouter, *slug*
+    stays the rolling family id so the Marionette ladder is stable; *model_name*
+    is the newest dated live snapshot when one exists.
     """
     try:
         from .providers import get_provider
@@ -302,10 +404,13 @@ def _get_provider_models_from_discovery(provider_name: str, provider_key: str) -
                 selected.extend(
                     item for item in curated if item[2] not in selected_slugs
                 )
+                live_models = fetch_models(provider, provider_key, force=force)
+                if live_models:
+                    selected = _promote_openrouter_snapshots(selected, live_models)
             return selected
 
         # Try live discovery
-        live_models = fetch_models(provider, provider_key, force=False)
+        live_models = fetch_models(provider, provider_key, force=force)
         if not live_models:
             # No live models, use curated
             return _CURATED_MODELS.get(provider_name, [])
@@ -325,8 +430,9 @@ def _get_provider_models_from_discovery(provider_name: str, provider_key: str) -
                 return "cheap"
             return "balanced"
 
-        # Curate rather than dump: skip clearly-superseded/dated snapshots and
-        # older generations so a daily-driver registry stays small and current.
+        # Curate rather than dump: skip clearly-superseded/older generations
+        # so a daily-driver registry stays small. Dated family snapshots
+        # (...-0813) are promoted onto curated OpenRouter rows, not dumped.
         def _keep(name: str) -> bool:
             n = name.lower()
             if any(x in n for x in ["gemini-2.0", "gemini-1", "gemma-3", "-preview",
@@ -401,10 +507,31 @@ def _get_provider_models_from_discovery(provider_name: str, provider_key: str) -
                     break
 
         if provider_name == "openrouter":
-            # Discovery is additive.  It may contribute useful current models,
-            # but must never evict the deterministic K3/DeepSeek ladder.
-            seen_slugs = {item[2] for item in result}
-            result.extend(item for item in curated if item[2] not in seen_slugs)
+            # Scan the full live list for dated siblings of the curated
+            # ladder (DeepSeek 0813, ...). Keep rolling slugs so Autopilot
+            # ids stay stable; extras stay capped so we do not dump OR.
+            curated_promoted = _promote_openrouter_snapshots(
+                list(curated), live_models,
+            )
+            curated_slugs = {item[2] for item in curated_promoted}
+            curated_wires = {item[0].lower() for item in curated_promoted}
+            curated_bases = [slug for _n, _t, slug in curated]
+            extras: list[tuple[str, str, str]] = []
+            extra_seen: set[str] = set()
+            for model_id in live_models:
+                if not _keep(model_id):
+                    continue
+                if model_id in extra_seen:
+                    continue
+                if model_id in curated_slugs or model_id.lower() in curated_wires:
+                    continue
+                if _is_dated_or_exact_sibling(model_id, curated_bases):
+                    continue
+                extra_seen.add(model_id)
+                extras.append((model_id, _tier_of(model_id), model_id))
+                if len(extras) >= 6:
+                    break
+            result = list(curated_promoted) + extras
         elif provider_name == "openai-codex":
             # Keep curated Codex ladder even when live discovery returns a
             # partial list (or a different naming wave).
@@ -472,7 +599,7 @@ def _build_agentic_spec(provider_name: str, model_name: str, tier: str, slug: st
     context window, and tags stay static. HARNESS_LIVE_PRICES=0 skips overlay.
     """
     global _LIVE_PRICE_APPLIED, _LIVE_PRICE_FALLBACK
-    known = _KNOWN_MODEL_SPECS.get(slug)
+    known = _known_spec_for(model_name, slug)
     if known:
         capability_score, input_price, output_price, context_window, tags = known
     else:
@@ -484,8 +611,12 @@ def _build_agentic_spec(provider_name: str, model_name: str, tier: str, slug: st
         capability_score, input_price, output_price, context_window, tags = template
 
     input_price, output_price, applied = _overlay_live_prices(
-        slug, input_price, output_price
+        model_name, input_price, output_price
     )
+    if not applied and model_name != slug:
+        input_price, output_price, applied = _overlay_live_prices(
+            slug, input_price, output_price
+        )
     if applied:
         _LIVE_PRICE_APPLIED += 1
     else:
@@ -792,7 +923,9 @@ def sync_agentic_registry(force: bool = False) -> dict:
         synced_providers = []
         _reset_live_price_stats()
         for provider_name, agentic_name, key in live_providers:
-            models = _get_provider_models_from_discovery(provider_name, key)
+            models = _get_provider_models_from_discovery(
+                provider_name, key, force=force,
+            )
             if not models:
                 # Even with no discovery, use curated fallback
                 models = _CURATED_MODELS.get(agentic_name, [])
@@ -853,7 +986,7 @@ def sync_agentic_registry(force: bool = False) -> dict:
         }
 
 
-def sync_agentic_registry_safe() -> None:
+def sync_agentic_registry_safe(force: bool = False) -> None:
     """Sync agentic rows, restore shared non-agentic peers, re-apply ladder.
 
     Safe to call at startup or in key-change hooks -- any error is logged
@@ -866,7 +999,7 @@ def sync_agentic_registry_safe() -> None:
     openai-codex is a legitimate agentic provider (plan-billed Responses).
     """
     try:
-        result = sync_agentic_registry()
+        result = sync_agentic_registry(force=force)
         if result.get("synced"):
             _diag("auto_registry.sync_ok",
                   msg=f"synced {result['models_count']} models from {', '.join(result['providers']) or 'none'}")
@@ -885,3 +1018,81 @@ def sync_agentic_registry_safe() -> None:
         apply_marionette_router_ladder()
     except Exception as e:
         _diag("auto_registry.post_sync_ladder", e)
+
+
+_REFRESH_BOOT_DELAY_DEFAULT = 8
+_REFRESH_INTERVAL_DEFAULT = 6 * 3600
+_refresh_thread: Optional[threading.Thread] = None
+_refresh_lock = threading.Lock()
+
+
+def _refresh_env_disabled() -> bool:
+    return os.environ.get("HARNESS_REGISTRY_AUTO_REFRESH", "1").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def _refresh_boot_delay_seconds() -> float:
+    raw = os.environ.get("HARNESS_REGISTRY_REFRESH_BOOT_DELAY", "").strip()
+    if not raw:
+        return float(_REFRESH_BOOT_DELAY_DEFAULT)
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return float(_REFRESH_BOOT_DELAY_DEFAULT)
+
+
+def _refresh_interval_seconds() -> float:
+    raw = os.environ.get("HARNESS_REGISTRY_REFRESH_SECONDS", "").strip()
+    if not raw:
+        return float(_REFRESH_INTERVAL_DEFAULT)
+    try:
+        return max(60.0, float(raw))
+    except ValueError:
+        return float(_REFRESH_INTERVAL_DEFAULT)
+
+
+def _refresh_registry_once() -> None:
+    """Force-fetch live catalogs and restamp the Marionette ladder."""
+    try:
+        sync_agentic_registry_safe(force=True)
+    except Exception as e:
+        _diag("auto_registry.auto_refresh", e)
+
+
+def _registry_auto_refresh_loop() -> None:
+    delay = _refresh_boot_delay_seconds()
+    if delay > 0:
+        time.sleep(delay)
+    while True:
+        _refresh_registry_once()
+        time.sleep(_refresh_interval_seconds())
+
+
+def start_registry_auto_refresh() -> bool:
+    """Start the background catalog refresh daemon. Returns True if started.
+
+    Boot health stays on the cached catalog so GUI bind is not blocked by a
+    6s OpenRouter fetch. This thread force-refreshes shortly after bind, then
+    every six hours, so dated snapshots appear without a restart.
+    """
+    if _refresh_env_disabled():
+        return False
+    global _refresh_thread
+    with _refresh_lock:
+        if _refresh_thread is not None and _refresh_thread.is_alive():
+            return False
+        thread = threading.Thread(
+            target=_registry_auto_refresh_loop,
+            name="registry-refresh",
+            daemon=True,
+        )
+        _refresh_thread = thread
+        thread.start()
+        _diag("auto_registry.auto_refresh_started",
+              msg=f"delay={_refresh_boot_delay_seconds()}s "
+                  f"interval={_refresh_interval_seconds()}s")
+        return True

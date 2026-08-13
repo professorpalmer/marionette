@@ -370,7 +370,7 @@ export default function TerminalPane() {
     : "";
 
   return (
-    <div className="h-full flex flex-col bg-[#0a0a0c]">
+    <div className="h-full flex flex-col bg-transparent">
       <div className="px-3 py-2 border-b border-edge flex items-center justify-between shrink-0 gap-2">
         {agentView ? (
           <>

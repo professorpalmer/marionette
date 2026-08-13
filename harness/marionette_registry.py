@@ -72,6 +72,9 @@ _LADDER_ALIASES: dict[str, tuple[str, ...]] = {
         "deepseek-v4-pro",
         "deepseek/deepseek-v4-pro",
         "opencode-go/deepseek-v4-pro",
+        "agentic/deepseek/deepseek-v4-pro-0813",
+        "deepseek/deepseek-v4-pro-0813",
+        "deepseek-v4-pro-0813",
     ),
     "agentic/composer-2.5-fast": (
         "agentic/composer-2-5-fast",
@@ -97,6 +100,9 @@ _TEXT_ONLY_LADDER_IDS = frozenset({
     "deepseek-v4-pro",
     "deepseek/deepseek-v4-pro",
     "opencode-go/deepseek-v4-pro",
+    "agentic/deepseek/deepseek-v4-pro-0813",
+    "deepseek/deepseek-v4-pro-0813",
+    "deepseek-v4-pro-0813",
 })
 _VISION_TAG_NAMES = frozenset({"vision", "detailed-vision"})
 

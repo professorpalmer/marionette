@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.208, deliberately pre-1.0. First-class Grok 4.6 on the Marionette ladder (above 4.5); rides puppetmaster-ai==1.22.2.
+> Status: v0.9.209, deliberately pre-1.0. OpenRouter catalog auto-refreshes so dated snapshots like DeepSeek V4 Pro 0813 land without a manual registry edit; rides puppetmaster-ai==1.22.2.
 
 ## Documentation
 

@@ -247,9 +247,9 @@ export default function BrowserPane() {
   };
 
   return (
-    <div className="flex flex-col h-full bg-panel">
+    <div className="flex flex-col h-full bg-transparent">
       {/* Tab strip */}
-      <div className="flex items-center gap-1 px-2 pt-1.5 bg-panel border-b border-edge select-none overflow-x-auto scrollbar-none">
+      <div className="flex items-center gap-1 px-2 pt-1.5 bg-transparent border-b border-[var(--shell-panel-border)] select-none overflow-x-auto scrollbar-none">
         {tabs.map((tab) => {
           const isActive = tab.id === activeTabId;
           
