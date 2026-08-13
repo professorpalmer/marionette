@@ -80,6 +80,24 @@ class OpenAICompatDriver:
             raise RuntimeError(f"missing API key in env var {self.api_key_env}")
         return key
 
+    def _uses_openai_gpt5_chat_parameters(self) -> bool:
+        return (
+            self.base_url == "https://api.openai.com/v1"
+            and self.model.lower().startswith("gpt-5")
+        )
+
+    def _output_token_limit_field(self) -> str:
+        """Return the Chat Completions output-limit field for this endpoint/model."""
+        return (
+            "max_completion_tokens"
+            if self._uses_openai_gpt5_chat_parameters()
+            else "max_tokens"
+        )
+
+    def _apply_temperature(self, body: dict) -> None:
+        if not self._uses_openai_gpt5_chat_parameters():
+            body["temperature"] = self.temperature
+
     def _pool_rotate_backoff(
         self,
         code: int,
@@ -317,9 +335,9 @@ class OpenAICompatDriver:
                 {"role": "system", "content": system},
                 {"role": "user", "content": task_prompt},
             ],
-            "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
+            self._output_token_limit_field(): self.max_tokens,
         }
+        self._apply_temperature(body)
         self._prepare_body(
             body,
             messages=body["messages"],
@@ -418,14 +436,18 @@ class OpenAICompatDriver:
         body = {
             "model": self.model,
             "messages": full_messages,
-            "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
+            self._output_token_limit_field(): self.max_tokens,
         }
-        if self.enable_reasoning:
+        self._apply_temperature(body)
+        if self.enable_reasoning and not (
+            tools and self._uses_openai_gpt5_chat_parameters()
+        ):
             body["reasoning"] = {"max_tokens": 1024}
         if tools:
             body["tools"] = tools
             body["tool_choice"] = "auto"
+            if self._uses_openai_gpt5_chat_parameters():
+                body["reasoning_effort"] = "none"
         self._prepare_body(
             body,
             messages=full_messages,
@@ -585,16 +607,20 @@ class OpenAICompatDriver:
         body = {
             "model": self.model,
             "messages": full_messages,
-            "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
+            self._output_token_limit_field(): self.max_tokens,
             "stream": True,
             "stream_options": {"include_usage": True},
         }
-        if self.enable_reasoning:
+        self._apply_temperature(body)
+        if self.enable_reasoning and not (
+            tools and self._uses_openai_gpt5_chat_parameters()
+        ):
             body["reasoning"] = {"max_tokens": 1024}
         if tools:
             body["tools"] = tools
             body["tool_choice"] = "auto"
+            if self._uses_openai_gpt5_chat_parameters():
+                body["reasoning_effort"] = "none"
         self._prepare_body(
             body,
             messages=full_messages,
