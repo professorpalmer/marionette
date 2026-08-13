@@ -236,12 +236,19 @@ def merge_local_jobs_into_swarm_live(
     store_jobs: Iterable[dict],
     local_jobs: Iterable[dict],
 ) -> list[dict]:
-    """Append projected local rows without duplicating store job ids."""
+    """Merge local rows while durable store identities remain authoritative."""
     out = list(store_jobs or [])
     existing_ids = {j.get("id") for j in out if j.get("id")}
+    replaced_local_ids = {
+        f"local-swarm-{str(job.get('dispatch_id') or '').strip()}"
+        for job in out
+        if isinstance(job, dict)
+        and str(job.get("id") or "").startswith("job_")
+        and str(job.get("dispatch_id") or "").strip()
+    }
     for job in local_jobs or []:
         jid = job.get("id") if isinstance(job, dict) else None
-        if not jid or jid in existing_ids:
+        if not jid or jid in existing_ids or jid in replaced_local_ids:
             continue
         out.append(project_local_job_for_swarm_live(job))
         existing_ids.add(jid)

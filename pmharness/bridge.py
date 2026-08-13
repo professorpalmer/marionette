@@ -1394,6 +1394,7 @@ def execute_intent(
     worker_mode: Optional[str] = None,
     on_delta: Optional[Callable[[str, str, str], None]] = None,
     session_id: Optional[str] = None,
+    dispatch_id: Optional[str] = None,
     cwd: Optional[str] = None,
     repo: Optional[str] = None,
 ) -> Optional[BridgeResult]:
@@ -1432,7 +1433,9 @@ def execute_intent(
     _clear_delta_sink = _install_delta_sink(on_delta)
     tmp = state_dir or tempfile.mkdtemp(prefix="pmh-exec-")
     store = create_store("sqlite", tmp)
-    job_label = job_label_for_session(session_id or "")
+    job_label = job_label_for_session(
+        session_id or "", dispatch_id=dispatch_id or "",
+    )
 
     # Explicit per-runner cwd wins over the process-wide HARNESS_REPO view pointer.
     # Resolve at this seam so callers that forget resolve_effective_repo still

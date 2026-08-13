@@ -506,7 +506,11 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     import queue as _queue
     import threading as _threading
     _delta_q: '_queue.Queue' = _queue.Queue()
-    _swarm_thread = _threading.Thread(target=stream_swarm, args=(session, intent, _delta_q), daemon=True)
+    _swarm_thread = _threading.Thread(
+        target=stream_swarm,
+        args=(session, intent, _delta_q, aid),
+        daemon=True,
+    )
     _swarm_thread.start()
     result = None
     swarm_error = None
@@ -718,24 +722,6 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         if _store_jid != _sync_local_id:
             if _store_jid not in session._session_job_ids:
                 session._session_job_ids.append(_store_jid)
-            session._register_local_job(
-                _store_jid, act.goal, role=_sync_register_role,
-                cwd=_swarm_repo, engine=_job_engine,
-                model=_job_model,
-            )
-            session._finish_local_job(
-                _store_jid, ok=_swarm_ok, summary=_badge_summary,
-                status='done' if _swarm_ok else 'failed', engine=_job_engine,
-                model=_job_model,
-                findings=_job_findings,
-                reuse_status=_finish_reuse_status if _swarm_ok else '',
-                source_job_id=_finish_source_job,
-                invalidated_paths=_finish_invalidated,
-                reuse_reason=_finish_reuse_reason,
-                validation_fingerprint=_finish_fingerprint,
-                environment_fingerprint=_finish_env_fingerprint,
-                acceptance_criteria=list(_finish_criteria),
-            )
     except Exception:
         pass
     session._display_transcript.append({'type': 'swarm_result', **_badge})

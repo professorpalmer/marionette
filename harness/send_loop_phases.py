@@ -273,6 +273,7 @@ def stream_swarm(
     session: Any,
     intent: Any,
     delta_q: Any,
+    dispatch_id: str = "",
 ) -> None:
     """Background target: execute_intent with on_delta → delta_q (delta/done/error).
 
@@ -291,6 +292,7 @@ def stream_swarm(
             intent,
             state_dir=session.state_dir,
             session_id=session.harness_session_id or "",
+            dispatch_id=dispatch_id,
             cwd=_cwd,
             repo=_cwd,
             on_delta=lambda wid, kind, text: delta_q.put(

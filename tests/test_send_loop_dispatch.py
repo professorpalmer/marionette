@@ -239,7 +239,7 @@ def test_dispatch_swarm_registers_and_surfaces_error(monkeypatch):
 
     monkeypatch.setattr(dispatch, "_non_git_workspace_error", lambda *_a, **_k: None)
 
-    def boom(session, intent, q):
+    def boom(session, intent, q, _dispatch_id):
         q.put(("error", RuntimeError("stream failed")))
 
     original = dispatch.stream_swarm
@@ -302,7 +302,7 @@ def test_dispatch_swarm_registers_resolved_git_child(tmp_path):
     )
     import harness.send_loop_dispatch as dispatch
 
-    def boom(session, intent, q):
+    def boom(session, intent, q, _dispatch_id):
         q.put(("error", RuntimeError("stream failed")))
 
     original = dispatch.stream_swarm
@@ -532,7 +532,7 @@ def test_dispatch_swarm_demo_never_shown(monkeypatch):
         summary="demo",
     )
 
-    def fake_stream(session, intent, q):
+    def fake_stream(session, intent, q, _dispatch_id):
         q.put(("done", demo_result))
 
     monkeypatch.setattr(dispatch, "stream_swarm", fake_stream)
@@ -557,6 +557,7 @@ def test_dispatch_swarm_demo_never_shown(monkeypatch):
     assert badge["applied"] is False
     assert badge.get("adapter") == "refused-demo"
     assert "demo substrate" in (badge.get("error") or "")
+    assert session._register_local_job.call_count == 1
     session._finish_local_job.assert_called()
     finish_kwargs = session._finish_local_job.call_args.kwargs
     assert finish_kwargs.get("ok") is False or finish_kwargs.get("status") == "failed"
