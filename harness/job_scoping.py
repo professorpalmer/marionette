@@ -51,12 +51,15 @@ def job_label_for_session(
     *,
     app_run_id: str = "",
     origin: str = "marionette",
+    dispatch_id: str = "",
 ) -> Optional[str]:
     """JSON job label carrying session + Marionette provenance for dispatch."""
     sid = (session_id or "").strip()
     if not sid:
         return None
     data: dict[str, str] = {"session_id": sid}
+    if dispatch_id:
+        data["dispatch_id"] = str(dispatch_id).strip()
     if origin:
         data["origin"] = str(origin)
     run_id = (app_run_id or current_app_run_id()).strip()
@@ -152,6 +155,11 @@ def parse_job_session_id(label: Any, tasks: list) -> str:
         if sid:
             return str(sid)
     return ""
+
+
+def parse_job_dispatch_id(label: Any) -> str:
+    """Extract the host dispatch identity stamped before PM starts workers."""
+    return str(_parse_label_dict(label).get("dispatch_id") or "").strip()
 
 
 def _norm_path(path: str) -> str:

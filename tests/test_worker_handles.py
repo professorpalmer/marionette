@@ -60,7 +60,7 @@ def test_sync_swarm_default_is_handle_first(monkeypatch):
         summary="fat summary " + ("x" * 4000),
     )
     monkeypatch.setattr(
-        dispatch, "stream_swarm", lambda session, intent, q: q.put(("done", result)),
+        dispatch, "stream_swarm", lambda session, intent, q, *_a: q.put(("done", result)),
     )
     session = SimpleNamespace(
         config=SimpleNamespace(repo="/repo"),

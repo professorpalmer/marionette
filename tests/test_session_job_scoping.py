@@ -75,6 +75,15 @@ def test_job_label_roundtrip():
     assert parse_job_session_id(label, []) == "sess-a"
 
 
+def test_job_label_roundtrips_dispatch_identity():
+    from harness.job_scoping import parse_job_dispatch_id
+
+    label = job_label_for_session("sess-a", dispatch_id="call_abc")
+
+    assert json.loads(label)["dispatch_id"] == "call_abc"
+    assert parse_job_dispatch_id(label) == "call_abc"
+
+
 def test_legacy_job_visible_only_in_matching_repo():
     tasks = [SimpleNamespace(payload={"cwd": "/work/a/project"})]
     assert job_visible_for_view(

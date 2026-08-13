@@ -239,7 +239,7 @@ def test_dispatch_swarm_registers_and_surfaces_error(monkeypatch):
 
     monkeypatch.setattr(dispatch, "_non_git_workspace_error", lambda *_a, **_k: None)
 
-    def boom(session, intent, q):
+    def boom(session, intent, q, _dispatch_id):
         q.put(("error", RuntimeError("stream failed")))
 
     original = dispatch.stream_swarm
@@ -302,7 +302,7 @@ def test_dispatch_swarm_registers_resolved_git_child(tmp_path):
     )
     import harness.send_loop_dispatch as dispatch
 
-    def boom(session, intent, q):
+    def boom(session, intent, q, _dispatch_id):
         q.put(("error", RuntimeError("stream failed")))
 
     original = dispatch.stream_swarm
@@ -532,7 +532,7 @@ def test_dispatch_swarm_demo_never_shown(monkeypatch):
         summary="demo",
     )
 
-    def fake_stream(session, intent, q):
+    def fake_stream(session, intent, q, _dispatch_id):
         q.put(("done", demo_result))
 
     monkeypatch.setattr(dispatch, "stream_swarm", fake_stream)
@@ -557,9 +557,67 @@ def test_dispatch_swarm_demo_never_shown(monkeypatch):
     assert badge["applied"] is False
     assert badge.get("adapter") == "refused-demo"
     assert "demo substrate" in (badge.get("error") or "")
+    assert session._register_local_job.call_count == 1
     session._finish_local_job.assert_called()
     finish_kwargs = session._finish_local_job.call_args.kwargs
     assert finish_kwargs.get("ok") is False or finish_kwargs.get("status") == "failed"
+
+
+def test_dispatch_swarm_does_not_register_durable_job_in_sidecar(monkeypatch):
+    """Placeholder local-swarm-<aid> is the only sidecar row; job_* lives in PM."""
+    act = PilotAction(kind="run_swarm", goal="audit routing", roles=["explore"])
+    session = SimpleNamespace(
+        config=SimpleNamespace(repo="/repo"),
+        _session_job_ids=[],
+        _register_local_job=MagicMock(),
+        _finish_local_job=MagicMock(),
+        _append_action_result=MagicMock(),
+        _display_transcript=[],
+    )
+    import harness.send_loop_dispatch as dispatch
+
+    monkeypatch.delenv("HARNESS_ALLOW_DEMO_SWARM", raising=False)
+    monkeypatch.setattr(dispatch, "_non_git_workspace_error", lambda *_a, **_k: None)
+
+    result = SimpleNamespace(
+        job_id="job_durable1",
+        adapter="agentic",
+        mode="swarm",
+        artifacts=[{
+            "type": "finding",
+            "headline": "CSRF missing in harness/auth.py:42",
+            "body": "Auth middleware does not check CSRF on POST /api/session.",
+        }],
+        artifact_types=["finding"],
+        num_artifacts=1,
+        auth_failure="",
+        summary="one finding",
+        applied=True,
+        files=[],
+        error=None,
+    )
+
+    def fake_stream(session, intent, q, dispatch_id):
+        assert dispatch_id == "call_abc"
+        q.put(("done", result))
+
+    monkeypatch.setattr(dispatch, "stream_swarm", fake_stream)
+    events = list(
+        dispatch_swarm_action(
+            session,
+            act,
+            "call_abc",
+            True,
+            counters={"swarms": 0, "demo_swarms": 0},
+            turn_findings=[],
+        )
+    )
+    assert any(e.kind == "swarm_result" for e in events)
+    registered = [c.args[0] for c in session._register_local_job.call_args_list]
+    assert registered == ["local-swarm-call_abc"]
+    assert "job_durable1" in session._session_job_ids
+    finished = [c.args[0] for c in session._finish_local_job.call_args_list]
+    assert finished == ["local-swarm-call_abc"]
 
 
 def test_is_untracked_pm_start_tool():

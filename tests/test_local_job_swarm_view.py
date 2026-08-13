@@ -184,6 +184,64 @@ def test_merge_skips_duplicate_store_ids():
     assert merged[0]["goal"] == "store wins"
 
 
+def test_merge_replaces_placeholder_by_exact_dispatch_identity():
+    store = [{
+        "id": "job_durable",
+        "goal": "Durable PM goal may be normalized",
+        "status": "running",
+        "dispatch_id": "call_abc",
+        "created_at": "2030-01-01T00:00:00+00:00",
+    }]
+    local = [_sample_local_job(
+        id="local-swarm-call_abc",
+        goal="Original pilot goal",
+        created_at=1_700_000_000.0,
+    )]
+
+    merged = merge_local_jobs_into_swarm_live(store, local)
+
+    assert [job["id"] for job in merged] == ["job_durable"]
+
+
+def test_merge_keeps_identical_goal_with_different_dispatch_identity():
+    store = [{
+        "id": "job_first",
+        "goal": "Run one PM smoke test",
+        "status": "running",
+        "dispatch_id": "call_first",
+    }]
+    local = [_sample_local_job(
+        id="local-swarm-call_second",
+        goal="Run one PM smoke test",
+    )]
+
+    merged = merge_local_jobs_into_swarm_live(store, local)
+
+    assert [job["id"] for job in merged] == [
+        "job_first",
+        "local-swarm-call_second",
+    ]
+
+
+def test_merge_keeps_placeholder_when_durable_dispatch_identity_is_missing():
+    store = [{
+        "id": "job_legacy",
+        "goal": "Run one PM smoke test",
+        "status": "running",
+    }]
+    local = [_sample_local_job(
+        id="local-swarm-call_legacy",
+        goal="Run one PM smoke test",
+    )]
+
+    merged = merge_local_jobs_into_swarm_live(store, local)
+
+    assert [job["id"] for job in merged] == [
+        "job_legacy",
+        "local-swarm-call_legacy",
+    ]
+
+
 def test_merge_appends_unique_local_rows():
     store = [{"id": "job-store", "goal": "store", "status": "complete"}]
     local = [

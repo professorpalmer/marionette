@@ -250,8 +250,10 @@ def test_run_prefetch_handler_exception_surfaces_as_tuple():
 def test_stream_swarm_puts_done_and_forwards_deltas(monkeypatch):
     q: queue.Queue = queue.Queue()
     result = SimpleNamespace(job_id="job_abc123def456")
+    seen: dict = {}
 
     def fake_execute(intent, **kwargs):
+        seen.update(kwargs)
         kwargs["on_delta"]("w1", "text", "hi")
         return result
 
@@ -263,9 +265,12 @@ def test_stream_swarm_puts_done_and_forwards_deltas(monkeypatch):
         harness_session_id="sess",
         config=SimpleNamespace(repo="/repo"),
     )
-    stream_swarm(session, intent=SimpleNamespace(), delta_q=q)
+    stream_swarm(
+        session, intent=SimpleNamespace(), delta_q=q, dispatch_id="call_abc",
+    )
     assert q.get_nowait() == ("delta", ("w1", "text", "hi"))
     assert q.get_nowait() == ("done", result)
+    assert seen["dispatch_id"] == "call_abc"
 
 
 def test_stream_swarm_passes_resolved_git_child_cwd(monkeypatch, tmp_path):

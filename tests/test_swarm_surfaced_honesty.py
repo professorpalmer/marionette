@@ -195,7 +195,7 @@ def _run_dispatch(monkeypatch, result, *, turn_findings=None):
     monkeypatch.delenv("HARNESS_ALLOW_DEMO_SWARM", raising=False)
     monkeypatch.setattr(dispatch, "_non_git_workspace_error", lambda *_a, **_k: None)
     monkeypatch.setattr(
-        dispatch, "stream_swarm", lambda session, intent, q: q.put(("done", result)),
+        dispatch, "stream_swarm", lambda session, intent, q, *_a: q.put(("done", result)),
     )
     session = _session()
     events = list(dispatch_swarm_action(

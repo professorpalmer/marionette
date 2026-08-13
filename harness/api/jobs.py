@@ -195,6 +195,7 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
         apply_job_economics_policy,
         annotate_job_accounting,
         filter_local_jobs,
+        parse_job_dispatch_id,
         parse_job_session_id,
         resolve_job_model,
     )
@@ -525,6 +526,7 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
                 "tasks": tasks_list,
                 "source": j.get("source", "harness"),
                 "label": j.get("label"),
+                "dispatch_id": parse_job_dispatch_id(j.get("label")),
                 "session_id": j.get("session_id") or parse_job_session_id(j.get("label"), []),
                 "accounting_scope": j.get("accounting_scope", "visibility_only"),
                 "accounting_owned": bool(j.get("accounting_owned")),
