@@ -47,7 +47,7 @@ runs from source.
 
 ## Workflow
 
-1. Branch off `main`: `git checkout -b fix/<short-name>`.
+1. Branch off `dev`: `git checkout -b fix/<short-name>`.
 2. Make the change. Add/adjust tests -- behavioral changes need a test.
 3. Run `.venv/bin/python -m pytest -q` and `cd webapp && npm run build` locally.
    When touching full-auto / command policy / SSE reattach / tool-pair repair,
@@ -55,8 +55,7 @@ runs from source.
    `.venv/bin/python -m pytest -q -m full_auto_safety`
    (AutoBudget, command policy/approvals, tool-pair sanitizer, SSE ring-miss,
    stub deterministic eval — no live keys).
-4. Open a PR against `main`. CI runs the same pytest matrix + frontend build +
-   the `full-auto-safety` marker job and must pass before merge.
+4. Open a PR against `dev`. Day-to-day work does not land on `main`.
 5. Keep commits scoped: don't fold unrelated work into one commit. A release
    commit is its own commit.
 
@@ -64,14 +63,15 @@ runs from source.
 
 Marionette self-updates from git, Hermes-style: every source checkout tracks
 `main` and shows an `update (N)` pill when it's behind, then pulls + rebuilds +
-relaunches in place. So **merging a green PR to `main` ships your change to every
-source install** on their next relaunch. Tagged releases also rebuild the thin
-Electron installers (macOS, Windows, Linux) via CI; those users pick up changes
-after bootstrap + update or by installing a newer Release.
+relaunches in place. So **merging `dev` into `main` (green `tests` CI on that
+SHA) ships your change to every source install** on their next relaunch. Tagged
+releases also rebuild the thin Electron installers (macOS, Windows, Linux) via
+CI; those users pick up changes after bootstrap + update or by installing a
+newer Release.
 
 Keep `main` releasable: it must build (`npm run build`) and pass CI, because a
 red `main` is what everyone's checkout tries to pull. The updater fast-forwards
-only, so never force-push `main`.
+only, so never force-push `main`. Never push `pmedit-*` worker branches to origin.
 
 ## Releases
 
