@@ -98,6 +98,23 @@ class OpenAICompatDriver:
         if not self._uses_openai_gpt5_chat_parameters():
             body["temperature"] = self.temperature
 
+    def _apply_openai_gpt5_chat_constraints(self, body: dict) -> None:
+        """Keep direct OpenAI GPT-5 Chat Completions on fields the API accepts.
+
+        extra_body is applied first and can reintroduce legacy OpenAI /
+        OpenRouter knobs (temperature, max_tokens, reasoning). Strip those
+        after the merge so a GPT-5 request cannot 400 on rejected fields.
+        """
+        if not self._uses_openai_gpt5_chat_parameters() or not isinstance(body, dict):
+            return
+        body.pop("temperature", None)
+        limit = body.pop("max_tokens", None)
+        if limit is not None:
+            body.setdefault("max_completion_tokens", limit)
+        body.pop("reasoning", None)
+        if body.get("tools"):
+            body["reasoning_effort"] = "none"
+
     def _pool_rotate_backoff(
         self,
         code: int,
@@ -198,6 +215,7 @@ class OpenAICompatDriver:
             )
         except Exception:
             pass
+        self._apply_openai_gpt5_chat_constraints(body)
         return body
 
     @staticmethod

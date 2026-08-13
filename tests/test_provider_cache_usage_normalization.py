@@ -259,6 +259,74 @@ def test_openai_compat_gpt_5_streaming_tools_disable_reasoning_effort(monkeypatc
     assert "reasoning" not in captured
 
 
+def test_openai_compat_gpt_5_extra_body_cannot_reintroduce_rejected_fields(monkeypatch):
+    driver = OpenAICompatDriver(
+        name="openai:gpt-5.6-luna",
+        model="gpt-5.6-luna",
+        base_url="https://api.openai.com/v1",
+        api_key_env="OPENAI_API_KEY",
+        max_tokens=8000,
+        extra_body={
+            "temperature": 0.2,
+            "max_tokens": 99,
+            "reasoning": {"max_tokens": 1024},
+        },
+    )
+    driver._key = lambda: "fake-key"
+    captured = {}
+    _capturing_openai_response(monkeypatch, captured)
+
+    response = driver.complete("hi", system="sys")
+
+    assert response.error is None
+    assert captured["max_completion_tokens"] == 8000
+    assert "max_tokens" not in captured
+    assert "temperature" not in captured
+    assert "reasoning" not in captured
+
+
+def test_openai_compat_gpt_5_omits_openrouter_reasoning_without_tools(monkeypatch):
+    driver = OpenAICompatDriver(
+        name="openai:gpt-5.6-luna",
+        model="gpt-5.6-luna",
+        base_url="https://api.openai.com/v1",
+        api_key_env="OPENAI_API_KEY",
+        enable_reasoning=True,
+    )
+    driver._key = lambda: "fake-key"
+    captured = {}
+    _capturing_openai_response(monkeypatch, captured)
+
+    response = driver.chat([{"role": "user", "content": "hi"}])
+
+    assert response.error is None
+    assert "reasoning" not in captured
+    assert "reasoning_effort" not in captured
+
+
+def test_openai_compat_gpt_5_tools_keep_reasoning_effort_none_after_extra_body(monkeypatch):
+    driver = OpenAICompatDriver(
+        name="openai:gpt-5.6-luna",
+        model="gpt-5.6-luna",
+        base_url="https://api.openai.com/v1",
+        api_key_env="OPENAI_API_KEY",
+        extra_body={"reasoning_effort": "high", "temperature": 0.2},
+    )
+    driver._key = lambda: "fake-key"
+    captured = {}
+    _capturing_openai_response(monkeypatch, captured)
+
+    response = driver.chat(
+        [{"role": "user", "content": "hi"}],
+        tools=[{"type": "function", "function": {"name": "noop", "parameters": {}}}],
+    )
+
+    assert response.error is None
+    assert captured["reasoning_effort"] == "none"
+    assert "temperature" not in captured
+    assert "reasoning" not in captured
+
+
 def test_openai_compat_legacy_provider_keeps_max_tokens(monkeypatch):
     driver = OpenAICompatDriver(
         name="legacy:model",
