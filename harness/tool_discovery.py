@@ -81,7 +81,35 @@ _PILOT_EXTRAS: Set[str] = {
 _WORKER_EXTRAS: Set[str] = {"route_task"}
 
 
-def core_visible_names(no_delegation: bool = False) -> Set[str]:
+def core_visible_names(
+    no_delegation: bool = False,
+    profile: Optional[str] = None,
+) -> Set[str]:
+    """Core always-visible tool names for the current pilot mode / task profile.
+
+    MICRO returns the compact micro set (plus hash_edit when enabled) so prompts
+    stay small; STANDARD/DEEP keep CORE_PILOT / CORE_WORKER behavior.
+    """
+    try:
+        from .task_profile import MICRO, micro_visible_tool_names, normalize_profile
+
+        resolved = normalize_profile(profile)
+        if resolved == MICRO and not no_delegation:
+            names = set(micro_visible_tool_names())
+            try:
+                from .hash_edit import hash_edit_enabled
+
+                if hash_edit_enabled():
+                    names.add("hash_edit")
+                else:
+                    names.discard("hash_edit")
+            except Exception as exc:
+                _diag_note("tool_discovery.core_visible_hash_edit", exc)
+                names.discard("hash_edit")
+            return names
+    except Exception as exc:
+        _diag_note("tool_discovery.core_visible_profile", exc)
+
     base = _core_always()
     return base | (_WORKER_EXTRAS if no_delegation else _PILOT_EXTRAS)
 
@@ -176,6 +204,7 @@ class ToolCatalog:
         self._last_mcp_tools: Optional[Sequence] = None
         self._last_no_delegation = False
         self._last_browser_enabled = True
+        self._last_profile: Optional[str] = None
 
     @property
     def activated(self) -> Set[str]:
@@ -187,6 +216,7 @@ class ToolCatalog:
         mcp_tools: Optional[Sequence] = None,
         no_delegation: bool = False,
         browser_enabled: bool = True,
+        profile: Optional[str] = None,
     ) -> None:
         """Rebuild the search index from the current built-in + MCP tool set."""
         if mcp_tools is not None:
@@ -194,7 +224,9 @@ class ToolCatalog:
         mcp_tools = self._last_mcp_tools
         self._last_no_delegation = no_delegation
         self._last_browser_enabled = browser_enabled
-        core = core_visible_names(no_delegation)
+        if profile is not None:
+            self._last_profile = profile
+        core = core_visible_names(no_delegation, profile=self._last_profile)
         schema = build_tools_schema(
             mcp_tools,
             no_delegation=no_delegation,
@@ -336,12 +368,14 @@ class ToolCatalog:
         mcp_tools: Optional[Sequence] = None,
         no_delegation: Optional[bool] = None,
         browser_enabled: Optional[bool] = None,
+        profile: Optional[str] = None,
     ) -> List[dict]:
         """Build the tool schema exposed to the pilot for this turn."""
         self.refresh(
             mcp_tools=mcp_tools,
             no_delegation=self._last_no_delegation if no_delegation is None else no_delegation,
             browser_enabled=self._last_browser_enabled if browser_enabled is None else browser_enabled,
+            profile=self._last_profile if profile is None else profile,
         )
         if not discovery_enabled():
             return [e.schema_entry for e in sorted(self._entries.values(), key=lambda x: x.name)]

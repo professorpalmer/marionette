@@ -52,6 +52,15 @@ class WikiDistillMixin:
         return " ".join(parts).strip()
 
     def _build_turn_wiki_section(self, user_message: str) -> str:
+        # MICRO skips wiki auto-inject (orchestration only; never raises).
+        try:
+            from .task_profile import profile_skips_wiki
+
+            profile = getattr(self, "_task_profile", "") or ""
+            if profile_skips_wiki(profile):
+                return ""
+        except Exception:
+            pass
         wiki_section = ""
         if not self._wiki.configured:
             return wiki_section

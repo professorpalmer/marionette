@@ -79,6 +79,19 @@ PLAN_SKIP_KINDS: frozenset[str] = frozenset({
 _RUN_COMMAND_UI_OUTPUT_CAP = 4 * 1024
 
 
+def _yield_task_profile_escalation(session: Any, turn_changed_files: list) -> Iterator[Any]:
+    """Best-effort MICRO/STANDARD escalate after a successful write/edit."""
+    from .conversation import ConvEvent
+
+    try:
+        uniq = len(dict.fromkeys(turn_changed_files))
+        payload = session._maybe_escalate_task_profile(files_touched=uniq)
+        if payload:
+            yield ConvEvent("task_profile", payload)
+    except Exception:
+        pass
+
+
 def _truncate_run_command_ui_output(
     output: str, cap: int = _RUN_COMMAND_UI_OUTPUT_CAP,
 ) -> str:
@@ -1682,6 +1695,7 @@ def dispatch_local_action(
             })
             session._append_action_result(act, aid, f"(write_file {act.path} successfully wrote {bytes_written} bytes)", is_native)
             turn_changed_files.append(target_path)
+            yield from _yield_task_profile_escalation(session, turn_changed_files)
         except Exception as e:
             yield ConvEvent("action_result", {"id": aid, "error": str(e)})
             session._append_action_result(act, aid, f"(write_file {act.path} failed: {e})", is_native)
@@ -1739,6 +1753,7 @@ def dispatch_local_action(
             })
             session._append_action_result(act, aid, f"(edit_file {act.path} successfully edited: {headline})", is_native)
             turn_changed_files.append(target_path)
+            yield from _yield_task_profile_escalation(session, turn_changed_files)
         except Exception as e:
             yield ConvEvent("action_result", {"id": aid, "error": str(e)})
             session._append_action_result(act, aid, f"(edit_file {act.path} failed: {e})", is_native)
@@ -1803,6 +1818,7 @@ def dispatch_local_action(
             yield ConvEvent("action_result", hash_edit_result)
             session._append_action_result(act, aid, f"(hash_edit {act.path} successfully applied: {headline})", is_native)
             turn_changed_files.append(target_path)
+            yield from _yield_task_profile_escalation(session, turn_changed_files)
         except Exception as e:
             yield ConvEvent("action_result", {"id": aid, "error": str(e)})
             session._append_action_result(act, aid, f"(hash_edit {act.path} failed: {e})", is_native)

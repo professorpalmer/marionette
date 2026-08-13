@@ -150,3 +150,19 @@ class TurnEconomy:
     def wiki_grounding_fields(self, price_in: float) -> dict[str, Any]:
         """Delegate to ``session_grounding_payload`` for this session."""
         return session_grounding_payload(self.state_dir, self.session_id, price_in)
+
+    @staticmethod
+    def task_profile_fields(
+        profile: str = "",
+        *,
+        source: str = "",
+        escalated_from: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Compact adaptive-depth receipt fields for usage merge."""
+        from .task_profile import task_profile_usage_fields
+
+        return task_profile_usage_fields(
+            profile,
+            source=source,
+            escalated_from=escalated_from,
+        )

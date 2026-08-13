@@ -103,6 +103,34 @@ def _build_step_tools(synthesis_nudge_active: bool, build_tools: Any) -> list:
     return [] if synthesis_nudge_active else build_tools()
 
 
+def emit_turn_task_profile(session: Any, user_message: str) -> Iterator[Any]:
+    """Classify adaptive depth for a fresh user turn and emit a ConvEvent."""
+    from .conversation import ConvEvent
+
+    try:
+        profile = session._resolve_task_profile_for_turn(user_message)
+        yield ConvEvent("task_profile", {
+            "profile": profile,
+            "source": getattr(session, "_task_profile_source", "") or "",
+            "escalated_from": getattr(session, "_task_profile_escalated_from", None),
+        })
+    except Exception:
+        session._task_profile = "STANDARD"
+        session._task_profile_source = "heuristic"
+        session._task_profile_escalated_from = None
+
+
+def profile_skips_auto_inject(session: Any) -> tuple[bool, bool]:
+    """MICRO skips wiki/CodeGraph auto-inject. Best-effort; never raises."""
+    try:
+        from .task_profile import profile_skips_codegraph, profile_skips_wiki
+
+        profile = getattr(session, "_task_profile", "") or ""
+        return profile_skips_codegraph(profile), profile_skips_wiki(profile)
+    except Exception:
+        return False, False
+
+
 class SendLoopMixin:
     """Mixin holding send-loop orchestration for ConversationalSession.
 
@@ -830,6 +858,7 @@ class SendLoopMixin:
             self._stagnation_last_actions = None
             self._stagnation_streak = 0
             self._failed_objective_resume_counts = {}
+            yield from emit_turn_task_profile(self, user_message)
             try:
                 from .turn_budget import turn_budget_enabled
 
@@ -883,9 +912,11 @@ class SendLoopMixin:
             # so the driver sees the most relevant code BEFORE it starts calling tools.
             # Skip for no_delegation worker sessions (they run in a fresh worktree with
             # no CodeGraph index). Degrades to a no-op when codegraph is unavailable.
+            _skip_cg, _ = profile_skips_auto_inject(self)
             if (
                 not getattr(self.config, "no_delegation", False)
                 and not self._resolve_append_only()
+                and not _skip_cg
             ):
                 cg_context = self._get_codegraph_context(user_message)
                 if cg_context:
@@ -965,7 +996,8 @@ class SendLoopMixin:
             _no_deleg = getattr(self.config, "no_delegation", False)
             cg_symbol_count = 0
             append_only = self._resolve_append_only()
-            if self.config.repo and not _no_deleg and not append_only:
+            _skip_cg, _skip_wiki = profile_skips_auto_inject(self)
+            if self.config.repo and not _no_deleg and not append_only and not _skip_cg:
                 # Cache the CodeGraph slice per user message: the underlying
                 # codegraph_context() is a blocking Node subprocess (~270-500ms).
                 # Recomputing it on every step of a multi-step turn (identical
@@ -1011,7 +1043,7 @@ class SendLoopMixin:
                         pass
 
             wiki_section = ""
-            if self._wiki.configured and not append_only:
+            if self._wiki.configured and not append_only and not _skip_wiki:
                 if self._wiki_cache_key == user_message:
                     wiki_section = self._wiki_cache_section
                 else:

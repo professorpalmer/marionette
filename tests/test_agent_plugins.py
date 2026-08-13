@@ -243,3 +243,30 @@ def test_remote_only_plugin_enable_contributes_no_mcp(
         Path(record.path), plugins_home / "plugin-data" / record.namespace
     )
     assert any("not supported" in d.message for d in package.diagnostics)
+
+
+def test_extensions_marionette_capabilities_survives_load(tmp_path: Path) -> None:
+    root = tmp_path / "plugin"
+    root.mkdir()
+    _write_json(
+        root / "plugin.json",
+        _manifest(
+            name="portable.depth",
+            version="0.1.0",
+            description="depth plugin",
+            extensions={
+                "marionette": {
+                    "capabilities": ["adaptive-depth"],
+                    "task_types": ["micro", "standard"],
+                }
+            },
+            # Unknown top-level field must still be stripped.
+            capabilities=["should-be-stripped"],
+        ),
+    )
+    _write_skill(root)
+    package = load_agent_plugin(root, tmp_path / "data")
+    assert "capabilities" not in package.manifest
+    marionette = package.manifest["extensions"]["marionette"]
+    assert marionette["capabilities"] == ["adaptive-depth"]
+    assert marionette["task_types"] == ["micro", "standard"]

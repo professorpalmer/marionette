@@ -260,6 +260,23 @@ def _validate_manifest(root: Path) -> Tuple[dict, List[AgentPluginDiagnostic]]:
             manifest.pop("extensions")
         elif any(not isinstance(value, dict) for value in extensions.values()):
             raise AgentPluginError("plugin.json extension namespace values must be objects")
+        else:
+            # Optional Marionette extension: capabilities / task_types lists.
+            # Unknown top-level fields are still stripped above; this object is
+            # namespaced under extensions and must survive load when present.
+            marionette = extensions.get("marionette")
+            if isinstance(marionette, dict):
+                for list_key in ("capabilities", "task_types"):
+                    if list_key not in marionette:
+                        continue
+                    value = marionette[list_key]
+                    if not isinstance(value, list) or any(
+                        not isinstance(item, str) for item in value
+                    ):
+                        raise AgentPluginError(
+                            f"plugin.json extensions.marionette.{list_key} "
+                            "must be an array of strings"
+                        )
 
     return manifest, diagnostics
 

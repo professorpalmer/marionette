@@ -72,9 +72,10 @@ jobs:
           cache: npm
           cache-dependency-path: webapp/package-lock.json
 
-      - name: Install + typecheck + Electron unit tests + build
+      - name: Install + vitest + Electron unit tests + build
         working-directory: webapp
         run: |
           npm ci
+          npm test
           npm run test:electron
           npm run build

@@ -462,6 +462,7 @@ ConvEventKind = Literal[
     "swarm_auth_failure",
     "swarm_pending",
     "swarm_result",
+    "task_profile",
     "thinking",
     "tool_prep",
     "verification",
@@ -851,6 +852,10 @@ class ConversationalSession(
         self._stagnation_last_actions = None
         self._stagnation_streak = 0
         self._failed_objective_resume_counts: dict[str, int] = {}
+        # Adaptive task depth for the current originating user turn.
+        self._task_profile: str = ""
+        self._task_profile_source: str = ""
+        self._task_profile_escalated_from: Optional[str] = None
         # Per-message CodeGraph slice cache. The codegraph_context() call is a
         # blocking Node subprocess (~270-500ms) -- recomputing it on every step
         # of a multi-step turn (same query) is pure dead time stacked in front of
@@ -1731,6 +1736,7 @@ class ConversationalSession(
             mcp_tools=mcp_tools,
             no_delegation=getattr(self.config, "no_delegation", False),
             browser_enabled=getattr(self.config, "browser_enabled", True),
+            profile=getattr(self, "_task_profile", None) or None,
         )
 
     def _context_usage_prefix_tokens(self) -> dict:
@@ -1947,7 +1953,98 @@ class ConversationalSession(
             **self._spill_usage_fields(),
             **self._turn_budget_usage_fields(),
             **self._append_only_usage_fields(),
+            **self._task_profile_usage_fields(),
         }
+
+    def _task_profile_usage_fields(self) -> dict:
+        """Compact task-depth receipt fields for usage / context APIs."""
+        try:
+            from harness.turn_economy import TurnEconomy
+
+            return TurnEconomy.task_profile_fields(
+                getattr(self, "_task_profile", "") or "",
+                source=getattr(self, "_task_profile_source", "") or "",
+                escalated_from=getattr(self, "_task_profile_escalated_from", None),
+            )
+        except Exception:
+            return {}
+
+    def _resolve_task_profile_for_turn(self, user_message: str) -> str:
+        """Classify adaptive depth for a fresh user turn; store on session."""
+        from harness.task_profile import classify_task_profile, normalize_profile
+
+        override = getattr(self.config, "task_profile", "auto") or "auto"
+        profile = classify_task_profile(user_message, override=override)
+        self._task_profile = profile
+        norm_override = normalize_profile(override)
+        if norm_override in ("MICRO", "STANDARD", "DEEP"):
+            self._task_profile_source = "override"
+        else:
+            self._task_profile_source = "heuristic"
+        self._task_profile_escalated_from = None
+        try:
+            self._tool_catalog.refresh(
+                mcp_tools=self._mcp.discovered_tools() if self._mcp else None,
+                no_delegation=getattr(self.config, "no_delegation", False),
+                browser_enabled=getattr(self.config, "browser_enabled", True),
+                profile=profile,
+            )
+        except Exception:
+            pass
+        return profile
+
+    def _maybe_escalate_task_profile(
+        self,
+        *,
+        files_touched: int = 0,
+        tests_failed: bool = False,
+        broad_search: bool = False,
+        user_wants_deep: bool = False,
+    ) -> Optional[dict]:
+        """Promote MICRO/STANDARD when the turn outgrows its lane. Best-effort.
+
+        Returns event payload when escalated (caller yields ConvEvent), else None.
+        Never raises.
+        """
+        try:
+            from harness.task_profile import maybe_escalate
+
+            current = getattr(self, "_task_profile", "") or "STANDARD"
+            nxt = maybe_escalate(
+                current,
+                files_touched=int(files_touched or 0),
+                tests_failed=bool(tests_failed),
+                broad_search=bool(broad_search),
+                user_wants_deep=bool(user_wants_deep),
+            )
+            if nxt == current:
+                return None
+            escalated_from = current
+            self._task_profile = nxt
+            self._task_profile_source = "escalate"
+            self._task_profile_escalated_from = escalated_from
+            gs = getattr(self, "_turn_guard_state", None)
+            if gs is not None:
+                try:
+                    gs.task_profile = nxt
+                except Exception:
+                    pass
+            try:
+                self._tool_catalog.refresh(
+                    mcp_tools=self._mcp.discovered_tools() if self._mcp else None,
+                    no_delegation=getattr(self.config, "no_delegation", False),
+                    browser_enabled=getattr(self.config, "browser_enabled", True),
+                    profile=nxt,
+                )
+            except Exception:
+                pass
+            return {
+                "profile": nxt,
+                "source": "escalate",
+                "escalated_from": escalated_from,
+            }
+        except Exception:
+            return None
 
     def _append_only_usage_fields(self) -> dict:
         try:
@@ -2059,6 +2156,13 @@ class ConversationalSession(
         if not self.config.repo or _no_deleg:
             return cg_section
         try:
+            from .task_profile import profile_skips_codegraph
+
+            if profile_skips_codegraph(getattr(self, "_task_profile", "") or ""):
+                return cg_section
+        except Exception:
+            pass
+        try:
             from puppetmaster.codegraph import codegraph_context, codegraph_prompt_section
 
             cg_slice = codegraph_context(task=user_message, cwd=self.config.repo)
@@ -2083,12 +2187,23 @@ class ConversationalSession(
     def _append_turn_context_trailer(self, message: str, user_message: str) -> str:
         try:
             parts = []
-            cg_section = self._build_turn_cg_section(user_message)
-            if cg_section:
-                parts.append(cg_section)
-            wiki_section = self._build_turn_wiki_section(user_message)
-            if wiki_section:
-                parts.append(wiki_section)
+            try:
+                from .task_profile import profile_skips_codegraph, profile_skips_wiki
+
+                profile = getattr(self, "_task_profile", "") or ""
+                skip_cg = profile_skips_codegraph(profile)
+                skip_wiki = profile_skips_wiki(profile)
+            except Exception:
+                skip_cg = False
+                skip_wiki = False
+            if not skip_cg:
+                cg_section = self._build_turn_cg_section(user_message)
+                if cg_section:
+                    parts.append(cg_section)
+            if not skip_wiki:
+                wiki_section = self._build_turn_wiki_section(user_message)
+                if wiki_section:
+                    parts.append(wiki_section)
             turn_note = self._turn_budget_system_note()
             if turn_note:
                 parts.append(turn_note)
