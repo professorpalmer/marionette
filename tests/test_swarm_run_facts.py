@@ -727,7 +727,7 @@ class TestSynchronousBoundary:
         monkeypatch.setattr(dispatch, "_non_git_workspace_error", lambda *_a, **_k: None)
         monkeypatch.setattr(
             dispatch, "stream_swarm",
-            lambda session, intent, q: q.put(("done", result)),
+            lambda session, intent, q, *_a: q.put(("done", result)),
         )
         session = SimpleNamespace(
             config=SimpleNamespace(repo=_EXPLICIT_SUBJECT_REPO),

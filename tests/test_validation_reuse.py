@@ -1772,7 +1772,7 @@ def test_dispatch_swarm_narrow_verify_registers_verifier_and_fingerprint(monkeyp
     )
     captured = {}
 
-    def fake_stream(_session, intent, q):
+    def fake_stream(_session, intent, q, _dispatch_id=""):
         captured["roles"] = list(intent.roles or [])
         captured["goal"] = intent.goal or ""
         result = SimpleNamespace(
@@ -2632,7 +2632,7 @@ def test_full_swarm_reason_persists_on_sync_badge(monkeypatch):
         ),
     )
 
-    def fake_stream(_session, intent, q):
+    def fake_stream(_session, intent, q, _dispatch_id=""):
         # Criteria must reach the full-swarm worker intent.
         assert getattr(intent, "acceptance_criteria", None) == ["keep criteria"]
         result = SimpleNamespace(

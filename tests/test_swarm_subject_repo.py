@@ -95,7 +95,7 @@ def _run(monkeypatch, session, act, *, result=None, capture=None):
         summary="one finding",
     )
 
-    def fake_stream(session_arg, intent, queue):
+    def fake_stream(session_arg, intent, queue, _dispatch_id=""):
         if capture is not None:
             capture.append(intent)
         queue.put(("done", bridge_result))
