@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.210, deliberately pre-1.0. Stacked tool cards fill their column, the chat/board splitter owns one-column width, browser cannot steal a resize drag, and the dead Optional panels checkboxes are gone; rides puppetmaster-ai==1.22.2.
+> Status: v0.9.211, deliberately pre-1.0. Tracker timeout/truncated/interrupted jobs finish instead of pinning above the fold, reload no longer ghosts Still working, stacked right-pane cards split vertically, and Investigating clears after an idle runner; rides puppetmaster-ai==1.22.2.
 
 ## Documentation
 
