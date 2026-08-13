@@ -559,6 +559,35 @@ describe("SwarmPane truthful failed vs cancelled chrome", () => {
     expect(screen.queryByText("cancelled")).not.toBeInTheDocument();
   });
 
+  it("moves timed-out jobs into Finished with failed worker chrome", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        id: "job-timeout",
+        goal: "Timed-out command",
+        status: "timeout",
+        adapter: "command",
+        tasks: [
+          {
+            id: "job-timeout-w0",
+            status: "timeout",
+            role: "command",
+            instruction: "pytest",
+            adapter: "command",
+          },
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+
+    await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
+    expect(screen.getByText(/1 failed/)).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Finished"));
+    fireEvent.click(await screen.findByText("Timed-out command"));
+    expect(screen.getByText("1/1 · 1 failed")).toBeInTheDocument();
+    expect(screen.getByTitle("Dismiss from tracker (stays in Puppetmaster history)")).toBeInTheDocument();
+  });
+
   it("keeps dead_run_failure authoritative as failed chrome", async () => {
     mockSwarmLive.mockResolvedValue(
       liveJob({
