@@ -41,7 +41,7 @@ import {
   shouldApplySwarmLiveMerge,
 } from "./streamApply";
 import {
-  seedPendingJobIdsFromHydrate,
+  hydratePendingJobIdsAfterReload,
   sessionStateShowsAwaitingSwarm,
   SWARM_AWAIT_HINT,
 } from "./swarmPoll";
@@ -472,14 +472,10 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
         setTranscriptStale(false);
         // Successful hydrate — drop sticky SESSION_* fail banner from a prior flake.
         setEditNotice((prev) => clearRecoveredSessionFailNotice(prev));
-        // Re-seed local pending tracker so shouldHoldSwarmAwaitChrome can hold
-        // from hydrated swarm_pending / job_ids after the switch clear.
-        setPendingJobIds(
-          seedPendingJobIdsFromHydrate({
-            items: loadedItems,
-            transcriptJobIds: res.job_ids,
-          }),
-        );
+        // Pending ids come from the live snapshot after reload — session
+        // job_ids are historical and must not re-arm Still working… on a
+        // completed turn. Unresolved swarm_pending cards are fallback only
+        // when swarmLive itself fails.
 
         // Nested worker actions survive restart on local jobs; fold onto cards
         // after display hydrate so investigation rows stay complete on reload.
@@ -496,6 +492,9 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
             return;
           }
           const jobs = Array.isArray(live?.jobs) ? live.jobs : [];
+          setPendingJobIds(
+            hydratePendingJobIdsAfterReload({ liveJobs: jobs, items: loadedItems }),
+          );
           setItems((prev) => {
             if (!shouldApplySwarmLiveMerge({
               pollGen: loadGen,
@@ -516,7 +515,21 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
             writeTranscriptCache(activeSessionId, next);
             return next;
           });
-        }).catch(() => {});
+        }).catch(() => {
+          const pollSid = activeSessionId;
+          if (!shouldApplySwarmLiveMerge({
+            pollGen: loadGen,
+            currentGen: transcriptLoadGenRef.current,
+            pollSessionId: pollSid,
+            cachedSessionId: cachedSessionIdRef.current,
+            activeSessionId: cachedSessionIdRef.current,
+          })) {
+            return;
+          }
+          setPendingJobIds(
+            hydratePendingJobIdsAfterReload({ liveJobs: null, items: loadedItems }),
+          );
+        });
 
         // Gather all artifacts from (a) card entries in res.display + job fetches.
         const artsOrPromise = gatherSessionArtifacts({

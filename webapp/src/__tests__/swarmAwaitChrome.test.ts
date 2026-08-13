@@ -6,6 +6,8 @@ import {
   pilotResumePollAction,
   pruneTerminalJobIds,
   seedPendingJobIdsFromHydrate,
+  hydratePendingJobIdsAfterReload,
+  pendingJobIdsFromSwarmLive,
   sessionStateShowsAwaitingSwarm,
   shouldHoldSwarmAwaitChrome,
   SWARM_AWAIT_HINT,
@@ -190,7 +192,7 @@ describe("swarm await chrome", () => {
     ).toBe(false);
   });
 
-  it("seeds pendingJobIds from hydrate swarm_pending / job_ids (skips placeholders)", () => {
+  it("seeds pendingJobIds from unresolved swarm_pending cards only", () => {
     const items: Item[] = [
       {
         kind: "swarm_pending",
@@ -209,18 +211,59 @@ describe("swarm await chrome", () => {
         terminal_job_ids: ["job_done_already"],
       },
     ];
-    expect(
-      seedPendingJobIdsFromHydrate({
-        items,
-        transcriptJobIds: ["job_from_transcript", "local-swarm-skip"],
-      }),
-    ).toEqual(["local-bf1b30f4", "job_from_transcript"]);
+    expect(seedPendingJobIdsFromHydrate({ items })).toEqual(["local-bf1b30f4"]);
     expect(
       seedPendingJobIdsFromHydrate({
         items: [msg("user", "hi")],
-        transcriptJobIds: [],
       }),
     ).toEqual([]);
+  });
+
+  it("does not re-arm Still working from historical session job_ids after reload", () => {
+    const items: Item[] = [
+      msg("user", "compare the three"),
+      msg("assistant", "Practical comparison"),
+      {
+        kind: "swarm_pending",
+        job_ids: ["job_old"],
+        objective: "search",
+        status: "running",
+        resolved: false,
+        terminal_job_ids: [],
+      },
+    ];
+    const liveDone = [
+      { job_id: "job_old", status: "cancelled" },
+      { id: "job_from_transcript", status: "completed" },
+      { job_id: "job_interrupted", status: "interrupted" },
+    ];
+    expect(
+      hydratePendingJobIdsAfterReload({ liveJobs: liveDone, items }),
+    ).toEqual([]);
+    expect(
+      hydratePendingJobIdsAfterReload({ liveJobs: [], items }),
+    ).toEqual([]);
+    expect(
+      shouldHoldSwarmAwaitChrome({
+        pendingJobIds: hydratePendingJobIdsAfterReload({ liveJobs: [], items }),
+        backendPendingSwarms: false,
+        userStopped: false,
+      }),
+    ).toBe(false);
+    expect(
+      hydratePendingJobIdsAfterReload({ liveJobs: null, items }),
+    ).toEqual(["job_old"]);
+  });
+
+  it("keeps only live non-terminal jobs after reload", () => {
+    expect(
+      pendingJobIdsFromSwarmLive([
+        { job_id: "job_alive", status: "running" },
+        { job_id: "job_done", status: "completed" },
+        { id: "local-swarm-skip", status: "pending" },
+        { job_id: "job_queued", status: "queued" },
+      ]),
+    ).toEqual(["job_alive", "job_queued"]);
   });
 
   it("paints Still working hint after assistant_done with live jobs", () => {
@@ -434,8 +477,9 @@ describe("swarm await chrome", () => {
         { job_id: "job_alive", status: "running" },
         { id: "local-x", status: "failed" },
         { job_id: "job_cancel", status: "cancelled" },
+        { job_id: "job_interrupted", status: "interrupted" },
       ]),
-    ).toEqual(["job_done", "local-x", "job_cancel"]);
+    ).toEqual(["job_done", "local-x", "job_cancel", "job_interrupted"]);
     expect(
       pruneTerminalJobIds(
         ["job_done", "job_alive", "local-x"],

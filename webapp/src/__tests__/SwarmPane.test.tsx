@@ -588,6 +588,39 @@ describe("SwarmPane truthful failed vs cancelled chrome", () => {
     expect(screen.getByTitle("Dismiss from tracker (stays in Puppetmaster history)")).toBeInTheDocument();
   });
 
+  it("moves truncated and interrupted jobs into Finished with failed chrome", async () => {
+    const truncated = liveJob({
+      id: "job-truncated",
+      goal: "Truncated command",
+      status: "truncated",
+      adapter: "command",
+      tasks: [
+        { id: "job-truncated-w0", status: "truncated", role: "command", instruction: "cat", adapter: "command" },
+      ],
+    });
+    const interrupted = liveJob({
+      id: "job-interrupted",
+      goal: "Interrupted command",
+      status: "interrupted",
+      adapter: "command",
+      tasks: [
+        { id: "job-interrupted-w0", status: "interrupted", role: "command", instruction: "sleep", adapter: "command" },
+      ],
+    });
+    mockSwarmLive.mockResolvedValue({
+      session: truncated.session,
+      jobs: [...truncated.jobs, ...interrupted.jobs],
+    });
+
+    render(<SwarmPane />);
+
+    await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
+    expect(screen.getByText(/2 failed/)).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Finished"));
+    expect(await screen.findByText("Truncated command")).toBeInTheDocument();
+    expect(screen.getByText("Interrupted command")).toBeInTheDocument();
+  });
+
   it("keeps dead_run_failure authoritative as failed chrome", async () => {
     mockSwarmLive.mockResolvedValue(
       liveJob({

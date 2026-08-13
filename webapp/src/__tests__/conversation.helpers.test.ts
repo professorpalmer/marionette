@@ -205,6 +205,7 @@ import {
 import {
   preserveOrThinking,
   runnersBusyTickDecision,
+  staleLocalStreamTickDecision,
   userStoppedBusyChrome,
 } from "../components/conversation/runnersBusy";
 import {
@@ -2764,6 +2765,72 @@ describe("queueOps / openFileTabs / runnersBusy", () => {
         items: [],
       }).kind,
     ).toBe("arm_reattach");
+    expect(
+      staleLocalStreamTickDecision({
+        localStreamActive: true,
+        userStopped: false,
+        runnerBusy: false,
+        awaitingSwarm: false,
+        turnSettled: false,
+        sawRunnerBusyThisStream: false,
+        consecutiveIdlePolls: 5,
+      }).kind,
+    ).toBe("noop");
+    expect(
+      staleLocalStreamTickDecision({
+        localStreamActive: true,
+        userStopped: false,
+        runnerBusy: false,
+        awaitingSwarm: false,
+        turnSettled: false,
+        sawRunnerBusyThisStream: true,
+        consecutiveIdlePolls: 1,
+      }).kind,
+    ).toBe("hold_unconfirmed");
+    expect(
+      staleLocalStreamTickDecision({
+        localStreamActive: true,
+        userStopped: false,
+        runnerBusy: false,
+        awaitingSwarm: false,
+        turnSettled: false,
+        sawRunnerBusyThisStream: true,
+        consecutiveIdlePolls: 2,
+      }).kind,
+    ).toBe("abandon");
+    expect(
+      staleLocalStreamTickDecision({
+        localStreamActive: true,
+        userStopped: false,
+        runnerBusy: true,
+        awaitingSwarm: false,
+        turnSettled: false,
+        sawRunnerBusyThisStream: true,
+        consecutiveIdlePolls: 2,
+      }).kind,
+    ).toBe("noop");
+    expect(
+      staleLocalStreamTickDecision({
+        localStreamActive: true,
+        userStopped: false,
+        runnerBusy: false,
+        awaitingSwarm: true,
+        turnSettled: false,
+        sawRunnerBusyThisStream: true,
+        consecutiveIdlePolls: 2,
+      }).kind,
+    ).toBe("noop");
+    expect(
+      staleLocalStreamTickDecision({
+        localStreamActive: true,
+        userStopped: false,
+        runnerBusy: false,
+        awaitingSwarm: false,
+        turnSettled: true,
+        sawRunnerBusyThisStream: true,
+        consecutiveIdlePolls: 2,
+      }).kind,
+    ).toBe("noop");
   });
 });
 

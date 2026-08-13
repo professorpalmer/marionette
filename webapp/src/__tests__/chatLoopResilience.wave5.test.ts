@@ -22,7 +22,7 @@ import {
   streamOnDoneDecision,
 } from "../components/conversation/streamTerminal";
 import { isTerminalStreamKind } from "../components/conversation/chatEvents";
-import { runnersBusyTickDecision } from "../components/conversation/runnersBusy";
+import { runnersBusyTickDecision, staleLocalStreamTickDecision } from "../components/conversation/runnersBusy";
 import { derivePillStatus } from "../components/conversation/pillStatus";
 import { flushTypewriterBuffer } from "../components/conversation/streamTypewriter";
 import { appendStreamingTextToItems } from "../components/conversation/streamBubbles";
@@ -392,6 +392,44 @@ describe("Wave 5: Stop during command clears Stop/Steer without false success", 
         items,
       }).kind,
     ).toBe("force_idle");
+  });
+});
+
+describe("Wave 5: stale local stream after idle runner", () => {
+  it("abandons a zombie EventSource and settles interrupted peek_artifact", () => {
+    let items: Item[] = [
+      msg("user", "peek that file"),
+      {
+        kind: "card",
+        card: {
+          id: "peek-1",
+          goal: "artifact.json",
+          cwd: null,
+          kind: "peek_artifact",
+          running: true,
+          open: false,
+        },
+      },
+    ];
+    expect(
+      staleLocalStreamTickDecision({
+        localStreamActive: true,
+        userStopped: false,
+        runnerBusy: false,
+        awaitingSwarm: false,
+        turnSettled: false,
+        sawRunnerBusyThisStream: true,
+        consecutiveIdlePolls: 2,
+      }).kind,
+    ).toBe("abandon");
+    items = reconcileOrphanInvestigationCards(
+      finalizeOrphanSwarmPills(sealOpenStreamSurfaces(items), []),
+      [],
+    );
+    const cardItem = items.find((i) => i.kind === "card") as Extract<Item, { kind: "card" }>;
+    expect(cardItem.card.running).toBe(false);
+    expect(cardItem.card.result?.status).toBe("interrupted");
+    expect(cardEffectivelyRunning(cardItem.card)).toBe(false);
   });
 });
 

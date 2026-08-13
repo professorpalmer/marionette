@@ -116,3 +116,35 @@ export function runnersBusyTickDecision(opts: {
 
   return { kind: "noop" };
 }
+
+/**
+ * A live EventSource can stay "active" after the backend runner is already
+ * idle (missed interrupted/assistant_done, zombie SSE). Runner polling used
+ * to skip entirely while localStreamActive, so Investigating never cleared
+ * without a restart. Confirm idle, then abandon that stream.
+ */
+export type StaleLocalStreamDecision =
+  | { kind: "noop" }
+  | { kind: "hold_unconfirmed" }
+  | { kind: "abandon" };
+
+export function staleLocalStreamTickDecision(opts: {
+  localStreamActive: boolean;
+  userStopped: boolean;
+  runnerBusy: boolean;
+  awaitingSwarm: boolean;
+  turnSettled: boolean;
+  /** True after this EventSource has seen runners=running or awaiting_swarm. */
+  sawRunnerBusyThisStream: boolean;
+  consecutiveIdlePolls: number;
+  idleConfirmPolls?: number;
+}): StaleLocalStreamDecision {
+  if (!opts.localStreamActive || opts.userStopped) return { kind: "noop" };
+  if (opts.turnSettled) return { kind: "noop" };
+  if (opts.runnerBusy || opts.awaitingSwarm) return { kind: "noop" };
+  // Do not abandon a just-opened stream before the runner latch appears.
+  if (!opts.sawRunnerBusyThisStream) return { kind: "noop" };
+  const needed = opts.idleConfirmPolls ?? RUNNERS_IDLE_CONFIRM_POLLS;
+  if (opts.consecutiveIdlePolls < needed) return { kind: "hold_unconfirmed" };
+  return { kind: "abandon" };
+}

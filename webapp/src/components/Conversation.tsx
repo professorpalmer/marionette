@@ -210,6 +210,7 @@ export default function Conversation({
   // Session-load effect installs the reattach starter; runners-poll calls it when
   // a turn begins without a local EventSource (e.g. Discord Bridge queue drain).
   const ensureChatEventsReattachRef = useRef<() => void>(() => {});
+  const abandonStaleLocalStreamRef = useRef<() => void>(() => {});
 
   const clearChatEventsPoll = () => {
     if (chatEventsPollTimerRef.current != null) {
@@ -1240,6 +1241,8 @@ export default function Conversation({
     chatEventsPollTimerRef,
     chatEventsLiveCancelRef,
     ensureChatEventsReattachRef,
+    turnSettledRef,
+    abandonStaleLocalStreamRef,
     setItems,
     setTranscriptStale,
     setTurnOpen,
@@ -2087,6 +2090,56 @@ export default function Conversation({
   };
   flushTypewriterRef.current = flushTypewriter;
 
+  const liveNonLocalSwarmJobIds = () =>
+    pendingJobIdsRef.current.filter((id) => !id.startsWith("local-swarm-"));
+
+  const sealTurnItems = (items: Item[], liveIds: string[]) =>
+    reconcileOrphanInvestigationCards(
+      finalizeOrphanSwarmPills(
+        hoistCardsBeforeTrailingFinals(sealOpenStreamSurfaces(items)),
+        liveIds,
+      ),
+      liveIds,
+    );
+
+  abandonStaleLocalStreamRef.current = () => {
+    if (userStoppedRef.current) return;
+    turnSettledRef.current = true;
+    resumeQueuedRef.current = false;
+    detachedBusyRef.current = false;
+    clearChatEventsPoll();
+    streamGenRef.current += 1;
+    cancelRef.current?.();
+    cancelRef.current = null;
+    localStreamActiveRef.current = false;
+    flushTypewriter();
+    setTurnOpen(false);
+    setWaitHint(null);
+    setStatus("done");
+    setCompactingStatus(null);
+    const liveIds = liveNonLocalSwarmJobIds();
+    setPendingJobIds(liveIds);
+    setItems((p) => sealTurnItems(p, liveIds));
+    const sid = cachedSessionIdRef.current;
+    if (!sid) return;
+    void api.sessionTranscript(sid).then((tres) => {
+      if (cachedSessionIdRef.current !== sid) return;
+      const loadedItems = transcriptResponseToItems(tres);
+      setItems((prev) => {
+        if (cachedSessionIdRef.current !== sid) return prev;
+        const next = sealTurnItems(mergeTranscriptItems(prev, loadedItems), liveIds);
+        const fp = transcriptFingerprint(next);
+        if (fp === transcriptFpRef.current) return prev;
+        transcriptFpRef.current = fp;
+        itemsRef.current = next;
+        writeTranscriptCache(sid, next);
+        return next;
+      });
+      setTranscriptStale(false);
+    }).catch(() => {});
+  };
+
+
 
   // Shared path for live SSE and mid-turn chatEvents reattach. Callers must
   // enforce session/generation guards before invoking.
@@ -2204,7 +2257,9 @@ export default function Conversation({
            setTurnOpen(false);
            setWaitHint(null);
            setStatus("error");
-           setItems((p) => [...p, {
+           const liveIds = liveNonLocalSwarmJobIds();
+           setPendingJobIds(liveIds);
+           setItems((p) => [...sealTurnItems(p, liveIds), {
              kind: "msg",
              msg: {
                role: "assistant",
@@ -2217,9 +2272,9 @@ export default function Conversation({
            setTurnOpen(false);
            // Do not clobber awaiting_swarm / Still working… set by assistant_done
            // when background jobs are still flying (Cursor-style pause point).
-           const liveJobs = pendingJobIdsRef.current.some(
-             (id) => id && !id.startsWith("local-swarm-"),
-           );
+           const liveIds = liveNonLocalSwarmJobIds();
+           const liveJobs = liveIds.some((id) => Boolean(id));
+           setPendingJobIds(liveIds);
            if (liveJobs && !userStoppedRef.current) {
              setStatus("awaiting_swarm");
              setWaitHint(SWARM_AWAIT_HINT);
@@ -2227,6 +2282,7 @@ export default function Conversation({
              setWaitHint(null);
              setStatus("done");
            }
+           setItems((p) => sealTurnItems(p, liveIds));
          }
          cancelRef.current = null;
          localStreamActiveRef.current = false;
@@ -2246,7 +2302,9 @@ export default function Conversation({
            turnSettledRef.current = true;
            setTurnOpen(false);
            setWaitHint(null);
-           setItems((p) => [...p, {
+           const liveIds = liveNonLocalSwarmJobIds();
+           setPendingJobIds(liveIds);
+           setItems((p) => [...sealTurnItems(p, liveIds), {
              kind: "msg",
              msg: {
                role: "assistant",
@@ -2629,21 +2687,11 @@ export default function Conversation({
     setWaitHint(null);
     setStatus("idle");
     setCompactingStatus(null);
-    const liveIds = pendingJobIdsRef.current.filter(
-      (id) => !id.startsWith("local-swarm-"),
-    );
+    const liveIds = liveNonLocalSwarmJobIds();
     setPendingJobIds(liveIds);
     // Same seal → orphan settle order as assistant_done: close any open
     // pilot/reasoning surface before folding orphan swarm/investigation cards.
-    setItems((p) =>
-      reconcileOrphanInvestigationCards(
-        finalizeOrphanSwarmPills(
-          hoistCardsBeforeTrailingFinals(sealOpenStreamSurfaces(p)),
-          liveIds,
-        ),
-        liveIds,
-      ),
-    );
+    setItems((p) => sealTurnItems(p, liveIds));
   };
 
   const stop = () => {

@@ -95,12 +95,20 @@ body {
 .right-pane-board-grid {
   display: grid;
   grid-template-columns: repeat(1, minmax(0, 1fr));
-  grid-template-rows: repeat(2, minmax(0, 1fr));
+  grid-template-rows: minmax(0, 1fr);
   grid-auto-flow: row;
   align-content: stretch;
   gap: 4px;
   height: 100%;
   padding: 0;
+}
+
+.right-pane-card-stack {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  gap: 4px;
 }
 
 .right-pane-card {
@@ -150,10 +158,28 @@ body {
 }
 
 .right-pane-card-resize-handle:hover,
-.right-pane-card-resize-handle:focus-visible {
+.right-pane-card-resize-handle:focus-visible,
+.right-pane-card-row-resize-handle:hover,
+.right-pane-card-row-resize-handle:focus-visible {
   opacity: 1;
   outline: none;
   background: rgba(154, 168, 255, 0.28);
+}
+
+.right-pane-card-row-resize-handle {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 3;
+  height: 7px;
+  cursor: row-resize;
+  opacity: 0;
+  transition: opacity 120ms ease, background 120ms ease;
+}
+
+.right-pane-card:hover .right-pane-card-row-resize-handle {
+  opacity: 0.28;
 }
 
 body.is-col-resizing,
@@ -161,8 +187,15 @@ body.is-col-resizing * {
   cursor: col-resize !important;
 }
 
+body.is-row-resizing,
+body.is-row-resizing * {
+  cursor: row-resize !important;
+}
+
 body.is-col-resizing webview,
-body.is-col-resizing iframe {
+body.is-col-resizing iframe,
+body.is-row-resizing webview,
+body.is-row-resizing iframe {
   pointer-events: none !important;
 }
 
@@ -247,14 +280,18 @@ body.is-col-resizing iframe {
 
 @container (max-width: 399px) {
   .right-pane-board-grid {
-    grid-template-columns: repeat(1, minmax(0, 1fr)) !important;
+    grid-template-columns: minmax(0, 1fr) !important;
     grid-template-rows: none !important;
     grid-auto-rows: minmax(0, 1fr);
   }
 
-  .right-pane-card {
+  .right-pane-card-stack {
     grid-column: 1 !important;
     grid-row: auto !important;
+  }
+
+  .right-pane-card {
+    grid-column: 1 !important;
     width: 100% !important;
     justify-self: stretch !important;
   }

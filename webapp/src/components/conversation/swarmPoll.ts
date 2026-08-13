@@ -7,8 +7,16 @@
  */
 
 import type { Item } from "../TranscriptList";
+import { isTerminalJobStatus } from "./nestedActionBounds";
 import { isSwarmPendingTerminal } from "./swarmPendingIdentity";
 import { formatDistilledNotice, formatWikiAutoIngestNotice } from "./streamApply";
+
+/** One row from `/api/swarm/live` (id field names vary by store). */
+export type SwarmLiveJobRow = { job_id?: string; id?: string; status?: string };
+
+function liveJobId(job: SwarmLiveJobRow): string {
+  return String(job?.job_id || job?.id || "").trim();
+}
 
 /** Composer / pill hint while a real background job is still in flight. */
 export const SWARM_AWAIT_HINT = "Still working…";
@@ -55,13 +63,15 @@ export function sessionStateShowsAwaitingSwarm(opts: {
 }
 
 /**
- * Rehydrate local pendingJobIds after session-switch transcript hydrate so
- * shouldHoldSwarmAwaitChrome can hold from local ids (not only backend peek).
- * Excludes local-swarm-* placeholders and terminal swarm_pending rows.
+ * Rehydrate local pendingJobIds from unresolved swarm_pending cards only.
+ *
+ * Session transcript `job_ids` are historical (every job ever in the session)
+ * and must not re-arm Still working… after reload of a completed turn.
+ * Prefer {@link hydratePendingJobIdsAfterReload} so a live snapshot can
+ * drop cards that were never marked terminal.
  */
 export function seedPendingJobIdsFromHydrate(opts: {
   items: readonly Item[];
-  transcriptJobIds?: readonly string[] | null;
 }): string[] {
   const ids: string[] = [];
   const seen = new Set<string>();
@@ -79,9 +89,6 @@ export function seedPendingJobIdsFromHydrate(opts: {
       if (terminals.has(jobId)) continue;
       push(jobId);
     }
-  }
-  for (const jobId of opts.transcriptJobIds || []) {
-    push(jobId);
   }
   return ids;
 }
@@ -123,24 +130,47 @@ export function pruneTerminalJobIds(
 
 /** Job ids from swarm/live rows whose status is already terminal. */
 export function terminalJobIdsFromSwarmLive(
-  jobs: readonly { job_id?: string; id?: string; status?: string }[],
+  jobs: readonly SwarmLiveJobRow[],
 ): string[] {
   const out: string[] = [];
   for (const job of jobs) {
-    const status = String(job?.status || "").toLowerCase();
-    if (
-      status !== "completed"
-      && status !== "failed"
-      && status !== "cancelled"
-      && status !== "canceled"
-      && status !== "done"
-    ) {
-      continue;
-    }
-    const id = String(job?.job_id || job?.id || "").trim();
+    if (!isTerminalJobStatus(job?.status)) continue;
+    const id = liveJobId(job);
     if (id) out.push(id);
   }
   return out;
+}
+
+/**
+ * Job ids that should still hold await chrome given a live snapshot.
+ * Missing / terminal / local-swarm-* rows do not count.
+ */
+export function pendingJobIdsFromSwarmLive(
+  jobs: readonly SwarmLiveJobRow[],
+): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const job of jobs) {
+    if (isTerminalJobStatus(job?.status)) continue;
+    const id = liveJobId(job);
+    if (!id || id.startsWith("local-swarm-") || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
+/**
+ * Authoritative pending ids after reload / session hydrate.
+ * Live snapshot wins (empty live = nothing in flight). Card seed is only
+ * the fallback when swarmLive itself failed.
+ */
+export function hydratePendingJobIdsAfterReload(opts: {
+  liveJobs: readonly SwarmLiveJobRow[] | null;
+  items: readonly Item[];
+}): string[] {
+  if (opts.liveJobs) return pendingJobIdsFromSwarmLive(opts.liveJobs);
+  return seedPendingJobIdsFromHydrate({ items: opts.items });
 }
 
 /**

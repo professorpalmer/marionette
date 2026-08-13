@@ -16,6 +16,7 @@ import { writeTranscriptCache } from "./transcriptCache";
 import {
   preserveOrThinking,
   runnersBusyTickDecision,
+  staleLocalStreamTickDecision,
   userStoppedBusyChrome,
 } from "./runnersBusy";
 import { isChatEventsReattachArmed } from "./chatEvents";
@@ -39,6 +40,8 @@ export type UseRunnersBusyPollDeps = {
   chatEventsPollTimerRef: MutableRefObject<number | null>;
   chatEventsLiveCancelRef: MutableRefObject<null | (() => void)>;
   ensureChatEventsReattachRef: MutableRefObject<() => void>;
+  turnSettledRef: MutableRefObject<boolean>;
+  abandonStaleLocalStreamRef: MutableRefObject<() => void>;
   setItems: Dispatch<SetStateAction<Item[]>>;
   setTranscriptStale: Dispatch<SetStateAction<boolean>>;
   setTurnOpen: Dispatch<SetStateAction<boolean>>;
@@ -63,6 +66,8 @@ export function useRunnersBusyPoll(deps: UseRunnersBusyPollDeps) {
     chatEventsPollTimerRef,
     chatEventsLiveCancelRef,
     ensureChatEventsReattachRef,
+    turnSettledRef,
+    abandonStaleLocalStreamRef,
     setItems,
     setTranscriptStale,
     setTurnOpen,
@@ -79,12 +84,17 @@ export function useRunnersBusyPoll(deps: UseRunnersBusyPollDeps) {
 
   // Consecutive idle sightings while detachedBusy; reset whenever runners busy.
   const consecutiveIdlePollsRef = useRef(0);
+  // Separate counter: zombie EventSource while runner already idle.
+  const staleStreamIdlePollsRef = useRef(0);
+  const sawRunnerBusyThisStreamRef = useRef(false);
   // Track gen so a bump from useSessionSwitch (or a late A poll) drops A's
   // idle-confirm credit before B can finalize early.
   const seenRunnerBusyPollGenRef = useRef(runnerBusyPollGenRef.current);
 
   useEffect(() => {
     consecutiveIdlePollsRef.current = 0;
+    staleStreamIdlePollsRef.current = 0;
+    sawRunnerBusyThisStreamRef.current = false;
     seenRunnerBusyPollGenRef.current = runnerBusyPollGenRef.current;
   }, [activeSessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -92,15 +102,21 @@ export function useRunnersBusyPoll(deps: UseRunnersBusyPollDeps) {
   // backend runner is busy -- even after SSE detach on session switch.
   usePolling(() => {
     if (!activeSessionId) return;
-    if (localStreamActiveRef.current) return;
+    if (!localStreamActiveRef.current) {
+      staleStreamIdlePollsRef.current = 0;
+      sawRunnerBusyThisStreamRef.current = false;
+    }
     if (seenRunnerBusyPollGenRef.current !== runnerBusyPollGenRef.current) {
       seenRunnerBusyPollGenRef.current = runnerBusyPollGenRef.current;
       consecutiveIdlePollsRef.current = 0;
+      staleStreamIdlePollsRef.current = 0;
     }
     if (userStoppedRef.current) {
       // Stop must stick: ignore runners=running while the abandoned generator
       // unwinds; keep chrome idle until the user sends again.
       consecutiveIdlePollsRef.current = 0;
+      staleStreamIdlePollsRef.current = 0;
+      sawRunnerBusyThisStreamRef.current = false;
       detachedBusyRef.current = false;
       clearChatEventsPoll();
       setBackendPendingSwarms(false);
@@ -109,7 +125,7 @@ export function useRunnersBusyPoll(deps: UseRunnersBusyPollDeps) {
     }
     const sid = activeSessionId;
     return api.getSessionState().then((res) => {
-      if (cachedSessionIdRef.current !== sid || localStreamActiveRef.current) return;
+      if (cachedSessionIdRef.current !== sid) return;
       if (userStoppedRef.current) return;
       const runners = res?.runners || {};
       const running = runners[sid] === "running";
@@ -118,6 +134,33 @@ export function useRunnersBusyPoll(deps: UseRunnersBusyPollDeps) {
         pendingSwarms: !!res?.pending_swarms,
         userStopped: userStoppedRef.current,
       });
+      if (localStreamActiveRef.current) {
+        if (running || awaitingSwarm) {
+          sawRunnerBusyThisStreamRef.current = true;
+          staleStreamIdlePollsRef.current = 0;
+          return;
+        }
+        const nextIdlePolls = staleStreamIdlePollsRef.current + 1;
+        const staleTick = staleLocalStreamTickDecision({
+          localStreamActive: true,
+          userStopped: userStoppedRef.current,
+          runnerBusy: running,
+          awaitingSwarm,
+          turnSettled: turnSettledRef.current,
+          sawRunnerBusyThisStream: sawRunnerBusyThisStreamRef.current,
+          consecutiveIdlePolls: nextIdlePolls,
+        });
+        if (staleTick.kind === "hold_unconfirmed") {
+          staleStreamIdlePollsRef.current = nextIdlePolls;
+          return;
+        }
+        if (staleTick.kind === "abandon") {
+          staleStreamIdlePollsRef.current = 0;
+          sawRunnerBusyThisStreamRef.current = false;
+          abandonStaleLocalStreamRef.current();
+        }
+        return;
+      }
       if (running || awaitingSwarm) {
         consecutiveIdlePollsRef.current = 0;
         // Pause-point: prefer awaiting_swarm over thinking even while runners

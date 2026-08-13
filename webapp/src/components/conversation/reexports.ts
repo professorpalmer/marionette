@@ -230,6 +230,7 @@ export {
   userStoppedBusyChrome,
   preserveOrThinking,
   runnersBusyTickDecision,
+  staleLocalStreamTickDecision,
   RUNNERS_IDLE_CONFIRM_POLLS,
   isAgentLoopOpen,
 } from "./runnersBusy";
@@ -252,6 +253,8 @@ export {
   shouldHoldSwarmAwaitChrome,
   sessionStateShowsAwaitingSwarm,
   seedPendingJobIdsFromHydrate,
+  hydratePendingJobIdsAfterReload,
+  pendingJobIdsFromSwarmLive,
   waitHintForAssistantDone,
   clearSwarmAwaitWaitHint,
   isSwarmAwaitWaitHint,

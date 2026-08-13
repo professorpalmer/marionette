@@ -61,7 +61,9 @@ function seedBoardTabOrder(openCards: string[] = ["state", "terminal"]) {
 
 function expectCardGridPlacement(label: string, gridColumn: string, gridRow: string) {
   const card = screen.getByRole("region", { name: `${label} panel` });
-  expect(card.style.gridColumn).toBe(gridColumn);
+  const stack = card.closest(".right-pane-card-stack") as HTMLElement | null;
+  expect(stack).not.toBeNull();
+  expect(stack!.style.gridColumn).toBe(gridColumn);
   expect(card.style.gridRow).toBe(gridRow);
 }
 
@@ -105,7 +107,7 @@ describe("RightPane collapse placement", () => {
     expect(stateCard).toHaveClass("right-pane-card");
     expect(stateCard).not.toHaveClass("right-pane-floating-card");
     expect(stateCard.style.position).toBe("");
-    expect(stateCard.style.gridColumn).toBe("1 / span 12");
+    expectCardGridPlacement("State", "1 / span 12", "1");
     const board = stateCard.closest(".right-pane-board");
     expect(board).toHaveClass("h-full", "w-full");
     expect(board?.querySelector(".right-pane-board-grid")).toContainElement(stateCard);
@@ -132,7 +134,7 @@ describe("RightPane collapse placement", () => {
     expect(screen.queryByRole("region", { name: "State panel" })).toBeNull();
   });
 
-  it("fills a two-card stack with no inner width handles", () => {
+  it("fills a two-card stack with a height split and no inner width handles", () => {
     render(<><RightDock onOpenTab={vi.fn()} onExpand={vi.fn()} onCollapse={baseProps.onCollapse} /><RightPane {...baseProps} /></>);
 
     expectCardGridPlacement("State", "1 / span 12", "1");
@@ -140,8 +142,9 @@ describe("RightPane collapse placement", () => {
     expect(screen.getByRole("region", { name: "State panel" }).style.width).toBe("");
     expect(screen.getByRole("region", { name: "Terminal panel" }).style.width).toBe("");
     expect(screen.queryByRole("separator", { name: "Resize tool columns" })).toBeNull();
-    expect(screen.queryByRole("separator", { name: "Resize State panel width" })).toBeNull();
-    expect(screen.queryByRole("separator", { name: "Resize State panel height" })).toBeNull();
+    expect(screen.getByRole("separator", { name: "Resize stacked panel height" })).toBeInTheDocument();
+    const stack = screen.getByRole("region", { name: "State panel" }).closest(".right-pane-card-stack") as HTMLElement;
+    expect(stack.style.gridTemplateRows).toBe("minmax(0, 50fr) minmax(0, 50fr)");
   });
 
   it("does not render an empty board and asks the shell to close it", () => {
@@ -200,7 +203,7 @@ describe("RightPane Claude-style card packing", () => {
 
     expectCardGridPlacement("State", "7 / span 6", "1");
     expectCardGridPlacement("Terminal", "7 / span 6", "2");
-    expectCardGridPlacement("Swarm", "1 / span 6", "1 / span 2");
+    expectCardGridPlacement("Swarm", "1 / span 6", "1");
     expect(screen.queryByTestId("right-pane-toolbar")).toBeNull();
   });
 
@@ -236,11 +239,14 @@ describe("RightPane Claude-style card packing", () => {
     const grid = document.querySelector(".right-pane-board-grid");
     expect(grid).toHaveStyle({
       gridTemplateColumns: "repeat(12, minmax(0, 1fr))",
-      gridTemplateRows: "repeat(2, minmax(0, 1fr))",
+      gridTemplateRows: "minmax(0, 1fr)",
     });
     expect(screen.getAllByRole("region")).toHaveLength(cards.length);
     expect(screen.queryAllByRole("separator", { name: "Resize tool columns" })).toHaveLength(
       cards.length > 2 ? 2 : 0,
+    );
+    expect(screen.queryAllByRole("separator", { name: "Resize stacked panel height" })).toHaveLength(
+      Math.floor(cards.length / 2),
     );
     expect(screen.getAllByRole("region").every(card => !card.getAttribute("style")?.includes("height"))).toBe(true);
     expect(screen.getAllByRole("region").every(card => !card.style.width)).toBe(true);
@@ -272,7 +278,43 @@ describe("RightPane Claude-style card packing", () => {
     });
     expectCardGridPlacement("State", "6 / span 7", "1");
     expectCardGridPlacement("Terminal", "6 / span 7", "2");
-    expectCardGridPlacement("Browser", "1 / span 5", "1 / span 2");
+    expectCardGridPlacement("Browser", "1 / span 5", "1");
+  });
+
+  it("shrinks the top stacked card so the bottom card can fill the rest", () => {
+    render(<RightPane {...baseProps} />);
+
+    const handle = screen.getByRole("separator", { name: "Resize stacked panel height" });
+    fireEvent.keyDown(handle, { key: "ArrowUp" });
+    fireEvent.keyDown(handle, { key: "ArrowUp" });
+
+    const stack = screen.getByRole("region", { name: "State panel" }).closest(".right-pane-card-stack") as HTMLElement;
+    expect(stack.style.gridTemplateRows).toBe("minmax(0, 40fr) minmax(0, 60fr)");
+    expect(JSON.parse(localStorage.getItem("pmharness.board.stackSplits.v1") || "{}")).toMatchObject({
+      "state|terminal": 0.4,
+    });
+  });
+
+  it("keeps stacked column pairs on independent height splits", () => {
+    localStorage.setItem(
+      "pmharness.board.openCards",
+      JSON.stringify(["terminal", "swarm", "state", "review"]),
+    );
+    localStorage.setItem(
+      "pmharness.board.stackSplits.v1",
+      JSON.stringify({ "terminal|swarm": 0.2, "state|review": 0.5 }),
+    );
+
+    render(<RightPane {...baseProps} />);
+
+    const handles = screen.getAllByRole("separator", { name: "Resize stacked panel height" });
+    expect(handles).toHaveLength(2);
+    fireEvent.keyDown(handles[0], { key: "ArrowUp" });
+
+    const terminalStack = screen.getByRole("region", { name: "Terminal panel" }).closest(".right-pane-card-stack") as HTMLElement;
+    const stateStack = screen.getByRole("region", { name: "State panel" }).closest(".right-pane-card-stack") as HTMLElement;
+    expect(terminalStack.style.gridTemplateRows).toBe("minmax(0, 15fr) minmax(0, 85fr)");
+    expect(stateStack.style.gridTemplateRows).toBe("minmax(0, 50fr) minmax(0, 50fr)");
   });
 });
 

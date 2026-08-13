@@ -20,7 +20,17 @@ import {
   saveRightPaneTabVisibility,
   type RightPaneTabVisibility,
 } from "../lib/rightPaneTabVisibility";
-import { beginColumnResize, endColumnResize } from "../lib/columnResize";
+import { beginColumnResize, beginRowResize, endColumnResize, endRowResize } from "../lib/columnResize";
+import {
+  clampStackSplit,
+  DEFAULT_STACK_SPLIT,
+  STACK_ROW_RESIZE_LABEL,
+  STACK_SPLIT_STORAGE_KEY,
+  stackPairKey,
+  stackRowTemplate,
+  stackSplitFromDrag,
+  stackSplitFromKey,
+} from "../lib/stackSplit";
 
 type Tab = "state" | "files" | "git" | "worktrees" | "terminal" | "browser" | "settings" | "checkpoints" | "review" | "swarm";
 
@@ -63,6 +73,7 @@ type CardPlacement = {
   gridColumn: string;
   gridRow: string;
   showResizeHandle: boolean;
+  showRowResizeHandle: boolean;
   columnSpan: number;
   groupIndex: number;
 };
@@ -170,11 +181,12 @@ function buildCardPlacements(
     group.forEach((tab, cardIndex) => {
       placements.set(tab, {
         gridColumn: `${groupStart} / span ${groupWidth}`,
-        gridRow: group.length === 1 ? "1 / span 2" : String(cardIndex + 1),
+        gridRow: group.length === 1 ? "1" : String(cardIndex + 1),
         // Left-edge splitter on every card in the rightmost column so the
         // grab target covers the full stack. A single column always fills
         // the board; the shell Resizer owns that width.
         showResizeHandle: groupCount > 1 && isRightmostGroup,
+        showRowResizeHandle: group.length === 2 && cardIndex === 0,
         columnSpan: groupWidth,
         groupIndex,
       });
@@ -189,6 +201,21 @@ function readTabList(key: string): string[] | null {
     return Array.isArray(value) ? value.filter((tab): tab is string => typeof tab === "string") : null;
   } catch {
     return null;
+  }
+}
+
+function readStackSplits(): Record<string, number> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(STACK_SPLIT_STORAGE_KEY) || "null");
+    if (!raw || typeof raw !== "object") return {};
+    const splits: Record<string, number> = {};
+    for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+      if (typeof key !== "string" || !key.includes("|")) continue;
+      splits[key] = clampStackSplit(Number(value));
+    }
+    return splits;
+  } catch {
+    return {};
   }
 }
 
@@ -216,6 +243,9 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
   const [cardLayouts, setCardLayouts] = useState<CardLayouts>(() => readCardLayouts());
   const cardLayoutsRef = useRef(cardLayouts);
   cardLayoutsRef.current = cardLayouts;
+  const [stackSplits, setStackSplits] = useState<Record<string, number>>(() => readStackSplits());
+  const stackSplitsRef = useRef(stackSplits);
+  stackSplitsRef.current = stackSplits;
   const boardRef = useRef<HTMLDivElement | null>(null);
   const preferredResizeGroupRef = useRef(-1);
   const [draggedTab, setDraggedTab] = useState<Tab | null>(null);
@@ -280,6 +310,19 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
     setCardLayouts(nextLayouts);
     localStorage.setItem(CARD_LAYOUT_STORAGE_KEY, JSON.stringify(nextLayouts));
   }, []);
+
+  const persistStackSplits = useCallback((nextSplits: Record<string, number>) => {
+    stackSplitsRef.current = nextSplits;
+    setStackSplits(nextSplits);
+    localStorage.setItem(STACK_SPLIT_STORAGE_KEY, JSON.stringify(nextSplits));
+  }, []);
+
+  const setStackSplit = useCallback((pairKey: string, nextSplit: number) => {
+    persistStackSplits({
+      ...stackSplitsRef.current,
+      [pairKey]: clampStackSplit(nextSplit),
+    });
+  }, [persistStackSplits]);
 
   const setGroupColumnSpan = useCallback((groupIndex: number, nextSpan: number) => {
     const groupCount = Math.ceil(openCards.length / 2);
@@ -347,6 +390,45 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
     handle.addEventListener("pointerup", onUp);
     handle.addEventListener("pointercancel", onUp);
   }, [setGroupColumnSpan]);
+
+  const resizeStackFromPointer = useCallback((
+    event: React.PointerEvent<HTMLSpanElement>,
+    pairKey: string,
+  ) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const stack = event.currentTarget.closest(".right-pane-card-stack");
+    const stackHeight = stack?.getBoundingClientRect().height || 0;
+    if (!stackHeight) return;
+    const handle = event.currentTarget;
+    handle.setPointerCapture(event.pointerId);
+    const startY = event.clientY;
+    const startSplit = stackSplitsRef.current[pairKey] ?? DEFAULT_STACK_SPLIT;
+    beginRowResize();
+
+    const onMove = (moveEvent: PointerEvent) => {
+      if (!handle.hasPointerCapture(moveEvent.pointerId)) return;
+      setStackSplit(pairKey, stackSplitFromDrag({
+        startSplit,
+        startClientY: startY,
+        clientY: moveEvent.clientY,
+        stackHeight,
+      }));
+    };
+    const onUp = (upEvent: PointerEvent) => {
+      if (handle.hasPointerCapture(upEvent.pointerId)) {
+        handle.releasePointerCapture(upEvent.pointerId);
+      }
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+      handle.removeEventListener("pointercancel", onUp);
+      endRowResize();
+    };
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+    handle.addEventListener("pointercancel", onUp);
+  }, [setStackSplit]);
 
   const handleDragStart = (event: React.DragEvent, tabId: Tab) => {
     setDraggedTab(tabId);
@@ -513,6 +595,10 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
     cardLayouts,
     preferredResizeGroupRef.current,
   );
+  const cardStacks = Array.from(
+    { length: Math.ceil(openCards.length / 2) },
+    (_, index) => openCards.slice(index * 2, index * 2 + 2),
+  );
 
   return (
     <>
@@ -522,10 +608,27 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
               className="right-pane-board-grid"
               style={{
                 gridTemplateColumns: `repeat(${GRID_COLUMN_COUNT}, minmax(0, 1fr))`,
-                gridTemplateRows: "repeat(2, minmax(0, 1fr))",
+                gridTemplateRows: "minmax(0, 1fr)",
               }}
             >
-              {openCards.map((tabName) => {
+              {cardStacks.map((stackTabs) => {
+                const stackPlacement = cardPlacements.get(stackTabs[0]);
+                if (!stackPlacement) return null;
+                const pairKey = stackPairKey(stackTabs);
+                const stackSplit = stackSplits[pairKey] ?? DEFAULT_STACK_SPLIT;
+                return (
+            <div
+              key={pairKey}
+              className="right-pane-card-stack"
+              style={{
+                gridColumn: stackPlacement.gridColumn,
+                gridRow: "1",
+                gridTemplateRows: stackTabs.length === 1
+                  ? "minmax(0, 1fr)"
+                  : stackRowTemplate(stackSplit),
+              }}
+            >
+              {stackTabs.map((tabName) => {
                 const config = TAB_CONFIG[tabName];
                 const placement = cardPlacements.get(tabName);
                 if (!placement) return null;
@@ -538,7 +641,7 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
               aria-label={`${config.label} panel`}
               className={`right-pane-card pointer-events-auto flex flex-col ${draggedTab === tabName ? "opacity-40" : ""}`}
               style={{
-                gridColumn: placement.gridColumn,
+                gridColumn: "1",
                 gridRow: placement.gridRow,
               }}
               onDragOver={event => event.preventDefault()}
@@ -559,6 +662,21 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
                     placement.groupIndex,
                     placement.columnSpan + (event.key === "ArrowLeft" ? 1 : -1),
                   );
+                }}
+              />
+              )}
+              {placement.showRowResizeHandle && (
+              <span
+                role="separator"
+                aria-orientation="horizontal"
+                aria-label={STACK_ROW_RESIZE_LABEL}
+                tabIndex={0}
+                className="right-pane-card-row-resize-handle"
+                onPointerDown={event => resizeStackFromPointer(event, pairKey)}
+                onKeyDown={event => {
+                  if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+                  event.preventDefault();
+                  setStackSplit(pairKey, stackSplitFromKey(stackSplit, event.key));
                 }}
               />
               )}
@@ -597,6 +715,9 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
               </header>
               <div className="right-pane-card-body">{renderCardBody(tabName)}</div>
             </section>
+                );
+              })}
+            </div>
                 );
               })}
             </div>
