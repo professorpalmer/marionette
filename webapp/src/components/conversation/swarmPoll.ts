@@ -129,7 +129,8 @@ export function terminalJobIdsFromSwarmLive(
   for (const job of jobs) {
     const status = String(job?.status || "").toLowerCase();
     if (
-      status !== "completed"
+      status !== "complete"
+      && status !== "completed"
       && status !== "failed"
       && status !== "cancelled"
       && status !== "canceled"
