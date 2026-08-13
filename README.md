@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.212, deliberately pre-1.0. Direct OpenAI GPT-5 Chat Completions uses `max_completion_tokens`, omits custom temperature, and keeps tool calls free of competing reasoning fields; rides puppetmaster-ai==1.22.2.
+> Status: v0.9.213, deliberately pre-1.0. A single `run_swarm` dispatch is one Swarm Tracker card: the durable Puppetmaster `job_*` replaces the provisional `local-swarm-<action-id>` placeholder by explicit `dispatch_id`; rides puppetmaster-ai==1.22.2.
 
 ## Documentation
 
