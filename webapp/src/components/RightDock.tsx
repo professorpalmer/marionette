@@ -16,11 +16,6 @@ import {
 } from "lucide-react";
 import { api } from "../lib/api";
 import { lastSelectedProjectRoot } from "../lib/panelTransition";
-import {
-  DEFAULT_RIGHT_PANE_TAB_VISIBILITY,
-  normalizeRightPaneTabVisibility,
-  RIGHT_PANE_TAB_VISIBILITY_KEY,
-} from "../lib/rightPaneTabVisibility";
 import { writeSWRCache } from "../lib/useStaleWhileRevalidate";
 
 /** Curated destinations for the floating tool windows — Cursor-style icon strip.
@@ -69,11 +64,6 @@ const PANEL_OPTIONS = [
   { tab: "checkpoints", label: "History", icon: <History size={12} /> },
   { tab: "browser", label: "Browser", icon: <Globe size={12} /> },
 ];
-const OPTIONAL_PANELS = [
-  { id: "worktrees", label: "Worktrees" },
-  { id: "review", label: "Review" },
-  { id: "checkpoints", label: "History" },
-] as const;
 
 function readStoredList(key: string): string[] {
   try {
@@ -81,17 +71,6 @@ function readStoredList(key: string): string[] {
     return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
   } catch {
     return [];
-  }
-}
-
-function readOptionalVisibility(): Record<string, boolean> {
-  try {
-    const raw = localStorage.getItem(RIGHT_PANE_TAB_VISIBILITY_KEY);
-    return raw
-      ? normalizeRightPaneTabVisibility(JSON.parse(raw))
-      : { ...DEFAULT_RIGHT_PANE_TAB_VISIBILITY };
-  } catch {
-    return { ...DEFAULT_RIGHT_PANE_TAB_VISIBILITY };
   }
 }
 
@@ -235,22 +214,6 @@ export default function RightDock({
                   >
                     {option.icon}<span>{option.label}</span>
                   </button>
-                );
-              })}
-              <div className="my-1 border-t border-edge/40" />
-              <div className="px-2 py-1 text-[9px] uppercase tracking-wider text-faint">Optional panels</div>
-              {OPTIONAL_PANELS.map(({ id, label }) => {
-                const visibility = readOptionalVisibility()[id] !== false;
-                return (
-                  <label key={id} role="menuitemcheckbox" aria-checked={visibility} className="right-pane-add-item cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={visibility}
-                      onChange={() => window.dispatchEvent(new CustomEvent("harness-board-toggle-optional", { detail: id }))}
-                      className="accent-accent"
-                    />
-                    <span>{label}</span>
-                  </label>
                 );
               })}
               <button

@@ -1,4 +1,5 @@
 import { useCallback, useRef } from "react";
+import { beginColumnResize, endColumnResize } from "../lib/columnResize";
 
 // A visually narrow divider keeps a wider pointer target for precise resizing.
 // side="left" means it resizes the pane to its LEFT
@@ -8,41 +9,46 @@ export default function Resizer({ onResize, side = "left" }: {
   side?: "left" | "right";
 }) {
   const startX = useRef(0);
-  const onDown = useCallback((e: React.MouseEvent) => {
+  const onDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
     e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
     startX.current = e.clientX;
-    const move = (ev: MouseEvent) => {
-      const dx = ev.clientX - startX.current;
-      startX.current = ev.clientX;
-      onResize(side === "left" ? dx : -dx);
-    };
-    const up = () => {
-      document.removeEventListener("mousemove", move);
-      document.removeEventListener("mouseup", up);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    };
-    document.addEventListener("mousemove", move);
-    document.addEventListener("mouseup", up);
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
+    beginColumnResize();
+  }, []);
+
+  const onMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+    const dx = e.clientX - startX.current;
+    startX.current = e.clientX;
+    onResize(side === "left" ? dx : -dx);
   }, [onResize, side]);
+
+  const onUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+    endColumnResize();
+  }, []);
 
   return (
     <div
-      onMouseDown={onDown}
+      onPointerDown={onDown}
+      onPointerMove={onMove}
+      onPointerUp={onUp}
+      onPointerCancel={onUp}
       role="separator"
       aria-orientation="vertical"
       aria-label={`Resize ${side === "left" ? "left" : "right"} panel`}
       className="group relative w-px shrink-0 self-stretch cursor-col-resize"
-      style={{ zIndex: 10 }}
+      style={{ zIndex: 10, touchAction: "none" }}
       title="Drag to resize"
     >
       <span
         className="pointer-events-none absolute inset-y-px left-1/2 w-px -translate-x-1/2 rounded-full bg-edge/30 transition-colors group-hover:bg-accent2/50"
         aria-hidden="true"
       />
-      <span className="absolute -inset-x-1.5 inset-y-0 cursor-col-resize" aria-hidden="true" />
+      <span className="absolute -inset-x-2 inset-y-0 cursor-col-resize" aria-hidden="true" />
     </div>
   );
 }

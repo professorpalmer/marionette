@@ -17,12 +17,10 @@ import { usePolling } from "../lib/usePolling";
 import { writeSWRCache } from "../lib/useStaleWhileRevalidate";
 import {
   loadRightPaneTabVisibility,
-  RIGHT_PANE_TAB_VISIBILITY_META,
   saveRightPaneTabVisibility,
-  toggleRightPaneTabVisibility,
-  type RightPaneOptionalTabId,
   type RightPaneTabVisibility,
 } from "../lib/rightPaneTabVisibility";
+import { beginColumnResize, endColumnResize } from "../lib/columnResize";
 
 type Tab = "state" | "files" | "git" | "worktrees" | "terminal" | "browser" | "settings" | "checkpoints" | "review" | "swarm";
 
@@ -64,9 +62,7 @@ type CardLayouts = Partial<Record<Tab, CardLayout>>;
 type CardPlacement = {
   gridColumn: string;
   gridRow: string;
-  widthPercent: number;
-  justifySelf: "start" | "end";
-  resizeEdge: "left" | "right";
+  showResizeHandle: boolean;
   columnSpan: number;
   groupIndex: number;
 };
@@ -172,15 +168,14 @@ function buildCardPlacements(
     const isRightmostGroup = groupIndex === 0;
 
     group.forEach((tab, cardIndex) => {
-      const columnSpan = cardColumnSpan(tab, layouts, groupCount);
-      const visibleSpan = Math.min(columnSpan, groupWidth);
       placements.set(tab, {
         gridColumn: `${groupStart} / span ${groupWidth}`,
         gridRow: group.length === 1 ? "1 / span 2" : String(cardIndex + 1),
-        widthPercent: (visibleSpan / groupWidth) * 100,
-        justifySelf: isRightmostGroup ? "end" : "start",
-        resizeEdge: groupCount === 1 || !isRightmostGroup ? "right" : "left",
-        columnSpan,
+        // Left-edge splitter on every card in the rightmost column so the
+        // grab target covers the full stack. A single column always fills
+        // the board; the shell Resizer owns that width.
+        showResizeHandle: groupCount > 1 && isRightmostGroup,
+        columnSpan: groupWidth,
         groupIndex,
       });
     });
@@ -217,11 +212,7 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
   initialTab?: string | null;
   onEmpty?: () => void;
 }) {
-  const [tabVisibility, setTabVisibilityState] = useState<RightPaneTabVisibility>(
-    () => loadRightPaneTabVisibility(),
-  );
-  const tabVisibilityRef = useRef(tabVisibility);
-  tabVisibilityRef.current = tabVisibility;
+  const tabVisibilityRef = useRef<RightPaneTabVisibility>(loadRightPaneTabVisibility());
   const [cardLayouts, setCardLayouts] = useState<CardLayouts>(() => readCardLayouts());
   const cardLayoutsRef = useRef(cardLayouts);
   cardLayoutsRef.current = cardLayouts;
@@ -265,21 +256,6 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
     if (nextOpenCards.length === 0) onEmpty?.();
   }, [onEmpty]);
 
-  const toggleOptionalTab = useCallback((tabName: RightPaneOptionalTabId) => {
-    setTabVisibilityState(current => {
-      const next = toggleRightPaneTabVisibility(current, tabName);
-      saveRightPaneTabVisibility(next);
-      if (!next[tabName]) {
-        setOpenCards(currentCards => {
-          const nextCards = currentCards.filter(card => card !== tabName);
-          localStorage.setItem("pmharness.board.openCards", JSON.stringify(nextCards));
-          return nextCards;
-        });
-      }
-      return next;
-    });
-  }, []);
-
   const addCard = useCallback((tabName: Tab) => {
     if (tabName === PINNED_LAST) {
       setSettingsOpen(true);
@@ -288,7 +264,6 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
     if (!tabVisibilityRef.current[tabName]) {
       const nextVisibility = { ...tabVisibilityRef.current, [tabName]: true };
       tabVisibilityRef.current = nextVisibility;
-      setTabVisibilityState(nextVisibility);
       saveRightPaneTabVisibility(nextVisibility);
     }
     persistBoard(tabOrder, openCards.includes(tabName) ? openCards : [...openCards, tabName]);
@@ -306,47 +281,72 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
     localStorage.setItem(CARD_LAYOUT_STORAGE_KEY, JSON.stringify(nextLayouts));
   }, []);
 
-  const setCardColumnSpan = useCallback((tabName: Tab, nextSpan: number, groupIndex: number) => {
-    preferredResizeGroupRef.current = groupIndex;
+  const setGroupColumnSpan = useCallback((groupIndex: number, nextSpan: number) => {
     const groupCount = Math.ceil(openCards.length / 2);
-    const currentSpan = cardColumnSpan(tabName, cardLayoutsRef.current, groupCount);
-    const normalizedSpan = clampCardColumnSpan(nextSpan, currentSpan);
-    persistCardLayouts({
-      ...cardLayoutsRef.current,
-      [tabName]: { columnSpan: normalizedSpan, customized: true },
+    if (groupCount <= 1) return;
+    preferredResizeGroupRef.current = groupIndex;
+    const groups = Array.from({ length: groupCount }, (_, index) =>
+      openCards.slice(index * 2, index * 2 + 2),
+    );
+    const minWidth = groupCount <= 4 ? 2 : 1;
+    const requested = groups.map((group, index) => {
+      if (index === groupIndex) return clampCardColumnSpan(nextSpan, minWidth);
+      return Math.max(
+        ...group.map(tab => cardColumnSpan(tab, cardLayoutsRef.current, groupCount)),
+      );
     });
-  }, [openCards.length, persistCardLayouts]);
+    if (groupCount === 2) {
+      const primary = Math.max(
+        minWidth,
+        Math.min(GRID_COLUMN_COUNT - minWidth, requested[groupIndex]),
+      );
+      requested[groupIndex] = primary;
+      requested[1 - groupIndex] = GRID_COLUMN_COUNT - primary;
+    }
+    const normalized = normalizeGroupWidths(requested, groupIndex);
+    const nextLayouts: CardLayouts = { ...cardLayoutsRef.current };
+    groups.forEach((group, index) => {
+      for (const tab of group) {
+        nextLayouts[tab] = { columnSpan: normalized[index], customized: true };
+      }
+    });
+    persistCardLayouts(nextLayouts);
+  }, [openCards, persistCardLayouts]);
 
-  const resizeCardFromPointer = useCallback((
-    event: React.MouseEvent<HTMLSpanElement>,
-    tabName: Tab,
+  const resizeGroupFromPointer = useCallback((
+    event: React.PointerEvent<HTMLSpanElement>,
     placement: CardPlacement,
   ) => {
+    if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
     const boardWidth = boardRef.current?.getBoundingClientRect().width || 0;
     if (!boardWidth) return;
+    const handle = event.currentTarget;
+    handle.setPointerCapture(event.pointerId);
     const startX = event.clientX;
     const startSpan = placement.columnSpan;
-    const direction = placement.resizeEdge === "right" ? 1 : -1;
     const pixelsPerColumn = boardWidth / GRID_COLUMN_COUNT;
+    beginColumnResize();
 
-    const onMove = (moveEvent: MouseEvent) => {
-      const deltaColumns = Math.round((moveEvent.clientX - startX) / pixelsPerColumn) * direction;
-      setCardColumnSpan(tabName, startSpan + deltaColumns, placement.groupIndex);
+    const onMove = (moveEvent: PointerEvent) => {
+      if (!handle.hasPointerCapture(moveEvent.pointerId)) return;
+      const deltaColumns = Math.round((startX - moveEvent.clientX) / pixelsPerColumn);
+      setGroupColumnSpan(placement.groupIndex, startSpan + deltaColumns);
     };
-    const onUp = () => {
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
+    const onUp = (upEvent: PointerEvent) => {
+      if (handle.hasPointerCapture(upEvent.pointerId)) {
+        handle.releasePointerCapture(upEvent.pointerId);
+      }
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+      handle.removeEventListener("pointercancel", onUp);
+      endColumnResize();
     };
-
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-  }, [setCardColumnSpan]);
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+    handle.addEventListener("pointercancel", onUp);
+  }, [setGroupColumnSpan]);
 
   const handleDragStart = (event: React.DragEvent, tabId: Tab) => {
     setDraggedTab(tabId);
@@ -367,17 +367,6 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
     persistBoard(tabOrder, next);
     setDraggedTab(null);
   };
-
-  useEffect(() => {
-    const toggleFromDock = (event: Event) => {
-      const tab = (event as CustomEvent<RightPaneOptionalTabId>).detail;
-      if (RIGHT_PANE_TAB_VISIBILITY_META.some(item => item.id === tab)) toggleOptionalTab(tab);
-    };
-    window.addEventListener("harness-board-toggle-optional", toggleFromDock);
-    return () => {
-      window.removeEventListener("harness-board-toggle-optional", toggleFromDock);
-    };
-  }, [toggleOptionalTab]);
 
   useEffect(() => {
     if (!initialTab || initialTab === PINNED_LAST) {
@@ -551,29 +540,28 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
               style={{
                 gridColumn: placement.gridColumn,
                 gridRow: placement.gridRow,
-                width: `${placement.widthPercent}%`,
-                justifySelf: placement.justifySelf,
               }}
               onDragOver={event => event.preventDefault()}
               onDrop={event => handleDrop(event, tabName)}
             >
+              {placement.showResizeHandle && (
               <span
                 role="separator"
                 aria-orientation="vertical"
-                aria-label={`Resize ${config.label} panel width`}
+                aria-label="Resize tool columns"
                 tabIndex={0}
-                className={`right-pane-card-resize-handle ${placement.resizeEdge === "left" ? "left-0" : "right-0"}`}
-                onMouseDown={event => resizeCardFromPointer(event, tabName, placement)}
+                className="right-pane-card-resize-handle left-0"
+                onPointerDown={event => resizeGroupFromPointer(event, placement)}
                 onKeyDown={event => {
                   if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
                   event.preventDefault();
-                  setCardColumnSpan(
-                    tabName,
-                    placement.columnSpan + (event.key === "ArrowRight" ? 1 : -1),
+                  setGroupColumnSpan(
                     placement.groupIndex,
+                    placement.columnSpan + (event.key === "ArrowLeft" ? 1 : -1),
                   );
                 }}
               />
+              )}
               <header
                 className="right-pane-card-header"
               >

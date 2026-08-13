@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.209, deliberately pre-1.0. OpenRouter catalog auto-refreshes so dated snapshots like DeepSeek V4 Pro 0813 land without a manual registry edit; rides puppetmaster-ai==1.22.2.
+> Status: v0.9.210, deliberately pre-1.0. Stacked tool cards fill their column, the chat/board splitter owns one-column width, browser cannot steal a resize drag, and the dead Optional panels checkboxes are gone; rides puppetmaster-ai==1.22.2.
 
 ## Documentation
 

@@ -132,15 +132,16 @@ describe("RightPane collapse placement", () => {
     expect(screen.queryByRole("region", { name: "State panel" })).toBeNull();
   });
 
-  it("provides independent width resize handles without height resize handles", () => {
+  it("fills a two-card stack with no inner width handles", () => {
     render(<><RightDock onOpenTab={vi.fn()} onExpand={vi.fn()} onCollapse={baseProps.onCollapse} /><RightPane {...baseProps} /></>);
 
-    expect(screen.getByRole("separator", { name: "Resize State panel width" })).toBeInTheDocument();
-    expect(screen.getByRole("separator", { name: "Resize Terminal panel width" })).toBeInTheDocument();
+    expectCardGridPlacement("State", "1 / span 12", "1");
+    expectCardGridPlacement("Terminal", "1 / span 12", "2");
+    expect(screen.getByRole("region", { name: "State panel" }).style.width).toBe("");
+    expect(screen.getByRole("region", { name: "Terminal panel" }).style.width).toBe("");
+    expect(screen.queryByRole("separator", { name: "Resize tool columns" })).toBeNull();
+    expect(screen.queryByRole("separator", { name: "Resize State panel width" })).toBeNull();
     expect(screen.queryByRole("separator", { name: "Resize State panel height" })).toBeNull();
-    expect(screen.queryByRole("separator", { name: "Resize Terminal panel height" })).toBeNull();
-    expect(screen.getByRole("region", { name: "State panel" })).not.toHaveStyle({ height: "160px" });
-    expect(screen.getByRole("region", { name: "Terminal panel" })).not.toHaveStyle({ height: "160px" });
   });
 
   it("does not render an empty board and asks the shell to close it", () => {
@@ -238,11 +239,14 @@ describe("RightPane Claude-style card packing", () => {
       gridTemplateRows: "repeat(2, minmax(0, 1fr))",
     });
     expect(screen.getAllByRole("region")).toHaveLength(cards.length);
-    expect(screen.queryAllByRole("separator")).toHaveLength(cards.length);
+    expect(screen.queryAllByRole("separator", { name: "Resize tool columns" })).toHaveLength(
+      cards.length > 2 ? 2 : 0,
+    );
     expect(screen.getAllByRole("region").every(card => !card.getAttribute("style")?.includes("height"))).toBe(true);
+    expect(screen.getAllByRole("region").every(card => !card.style.width)).toBe(true);
   });
 
-  it("widens one card without widening its neighboring stack", () => {
+  it("moves the column split and keeps stacked cards flush", () => {
     localStorage.setItem(
       "pmharness.board.openCards",
       JSON.stringify(["state", "terminal", "browser"]),
@@ -258,15 +262,17 @@ describe("RightPane Claude-style card packing", () => {
 
     render(<RightPane {...baseProps} />);
 
-    const browserResizeHandle = screen.getByRole("separator", { name: "Resize Browser panel width" });
-    fireEvent.keyDown(browserResizeHandle, { key: "ArrowRight" });
+    const columnResizeHandle = screen.getAllByRole("separator", { name: "Resize tool columns" })[0];
+    fireEvent.keyDown(columnResizeHandle, { key: "ArrowLeft" });
 
     expect(JSON.parse(localStorage.getItem("pmharness.board.cardLayouts.v1") || "{}")).toMatchObject({
-      browser: { columnSpan: 7, customized: true },
+      state: { columnSpan: 7, customized: true },
+      terminal: { columnSpan: 7, customized: true },
+      browser: { columnSpan: 5, customized: true },
     });
-    expectCardGridPlacement("Browser", "1 / span 7", "1 / span 2");
-    expectCardGridPlacement("State", "8 / span 5", "1");
-    expectCardGridPlacement("Terminal", "8 / span 5", "2");
+    expectCardGridPlacement("State", "6 / span 7", "1");
+    expectCardGridPlacement("Terminal", "6 / span 7", "2");
+    expectCardGridPlacement("Browser", "1 / span 5", "1 / span 2");
   });
 });
 
@@ -443,7 +449,7 @@ describe("RightPane swarm activity poll seeds SWR cache", () => {
   });
 });
 
-describe("RightPane optional tab customization", () => {
+describe("RightPane add-panel menu", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
@@ -452,7 +458,7 @@ describe("RightPane optional tab customization", () => {
     localStorage.setItem("pmharness.tabOrder.mcpMerged", "1");
   });
 
-  it("keeps optional panels out of the board until enabled and added", () => {
+  it("adds a closed panel from the menu without an optional-panels gate", () => {
     const onOpenTab = (tab: string) => {
       window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: tab }));
     };
@@ -461,9 +467,9 @@ describe("RightPane optional tab customization", () => {
     expect(screen.queryByRole("region", { name: "Worktrees panel" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Add panel" }));
     expect(screen.getByRole("menu", { name: "Add panel" })).toBeInTheDocument();
+    expect(screen.queryByText("Optional panels")).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: "Worktrees" })).toBeNull();
 
-    fireEvent.click(screen.getByRole("checkbox", { name: "Worktrees" }));
-    expect(localStorage.getItem("pmharness.rightPane.visibleTabs.v1")).toContain('"worktrees":true');
     fireEvent.click(screen.getByRole("menuitem", { name: "Worktrees" }));
     expect(screen.getByRole("region", { name: "Worktrees panel" })).toBeInTheDocument();
   });

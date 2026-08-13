@@ -156,6 +156,16 @@ body {
   background: rgba(154, 168, 255, 0.28);
 }
 
+body.is-col-resizing,
+body.is-col-resizing * {
+  cursor: col-resize !important;
+}
+
+body.is-col-resizing webview,
+body.is-col-resizing iframe {
+  pointer-events: none !important;
+}
+
 .right-pane-icon-btn,
 .right-pane-drag-handle {
   display: inline-flex;
