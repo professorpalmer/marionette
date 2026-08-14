@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.2` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.221, deliberately pre-1.0. Mid-turn steers are first-class user messages at a safe tool-pair boundary; the muted feed virtualizes with measureElement; session switch/reattach share one store cursor; pending review hunks Accept/Reject in the open file. Rides puppetmaster-ai==1.22.2. Cursor CLI / `CURSOR_API_KEY` remain optional upgrades (Pilot only / platform workers).
+> Status: v0.9.222, deliberately pre-1.0. First-run is a Hermes-style provider connect: pick a Full stack tile, paste a key, start chatting. Rides puppetmaster-ai==1.22.2. Cursor CLI / `CURSOR_API_KEY` remain optional upgrades (Pilot only / platform workers).
 
 ## Documentation
 

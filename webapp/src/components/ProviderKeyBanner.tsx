@@ -7,10 +7,11 @@ import { TITLEBAR_TRAFFIC_PAD_PX } from "../lib/titlebarSafe";
 // picking the model live from its registry. Until a key is visible, agentic
 // can't route, so this thin, dismissible strip points the user at Settings.
 //
-// Distinct from the one-time first-run RegistryWizard: this is the persistent
-// "you're still keyless" reminder that reappears each launch until a key is added
-// (adding one fires harness-config-changed -> App refetches -> agentic_ready flips
-// true -> this unmounts on its own).
+// Distinct from the one-time first-run provider connect screen: this is the
+// persistent "you're still keyless" reminder that reappears each launch until a
+// key is added (Add key reopens that screen; saving a key fires
+// harness-config-changed -> App refetches -> workers_ready flips true -> this
+// unmounts on its own).
 export default function ProviderKeyBanner({
   onAddKey,
   variant = "keyless",

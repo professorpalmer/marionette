@@ -7,7 +7,6 @@ import RightDock from "./components/RightDock";
 import StatusBar from "./components/StatusBar";
 import UpdateBanner from "./components/UpdateBanner";
 import ProviderKeyBanner from "./components/ProviderKeyBanner";
-import { focusSettingsPage } from "./components/SettingsShell";
 import Resizer from "./components/Resizer";
 import RegistryWizard from "./components/RegistryWizard";
 import ErrorBoundary from "./components/ErrorBoundary";
@@ -346,10 +345,7 @@ export default function App() {
               ? "workers"
               : "keyless"
           }
-          onAddKey={() => {
-            focusSettingsPage("providers");
-            openRightTo("settings");
-          }}
+          onAddKey={() => setShowWizard(true)}
         />
       )}
       {/* Left rail and tool cards sit on the conversation surface. */}
