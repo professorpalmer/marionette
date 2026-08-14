@@ -4,6 +4,7 @@
  */
 
 import type { Dispatch, SetStateAction } from "react";
+import { publishTaskProfile } from "../../lib/taskProfileChrome";
 import type { Card, Item } from "../TranscriptList";
 import {
   hoistCardsBeforeTrailingFinals,
@@ -141,7 +142,13 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
 
   return (ev: StreamEvent) => {
     const d = ev.data || {};
-    if (ev.kind === "compacting") {
+    if (ev.kind === "task_profile") {
+      publishTaskProfile({
+        profile: d.profile,
+        source: d.source,
+        escalated_from: d.escalated_from,
+      });
+    } else if (ev.kind === "compacting") {
       setCompactingStatus(d.message || "Summarizing chat context");
     } else if (ev.kind === "command_blocked") {
       setItems((p) => appendCommandBlocked(p, d));

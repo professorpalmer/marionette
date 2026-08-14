@@ -6,6 +6,7 @@ import StatusBar, {
   sessionGoalForChip,
 } from "../components/StatusBar";
 import { api } from "../lib/api";
+import { publishTaskProfile } from "../lib/taskProfileChrome";
 
 vi.mock("../lib/api", () => ({
   api: {
@@ -745,6 +746,55 @@ describe("StatusBar update progress mirror", () => {
 
     await waitFor(() => {
       expect(screen.queryByText("Preparing update")).not.toBeInTheDocument();
+    });
+  });
+});
+
+describe("StatusBar task profile chip", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockWorkspaces.mockResolvedValue([]);
+    mockGetUsage.mockResolvedValue({ session: emptyUsageSession, jobs: [] });
+    mockGetSessionState.mockResolvedValue({
+      state: "idle",
+      pending_swarms: false,
+      runners: {},
+    });
+    mockSessions.mockResolvedValue([]);
+  });
+
+  it("stays hidden until a task_profile event arrives", async () => {
+    render(<StatusBar {...statusBarProps} />);
+    await waitFor(() => {
+      expect(mockGetSessionState).toHaveBeenCalled();
+    });
+    expect(screen.queryByTestId("task-profile-chip")).not.toBeInTheDocument();
+
+    act(() => {
+      publishTaskProfile({ profile: "micro", source: "heuristic" });
+    });
+
+    const chip = await screen.findByTestId("task-profile-chip");
+    expect(chip).toHaveTextContent("DEPTH");
+    expect(chip).toHaveTextContent("MICRO");
+    expect(chip).toHaveAttribute(
+      "title",
+      expect.stringContaining("skipped wiki and CodeGraph auto-inject"),
+    );
+  });
+
+  it("clears the chip on session change", async () => {
+    render(<StatusBar {...statusBarProps} />);
+    act(() => {
+      publishTaskProfile({ profile: "standard" });
+    });
+    expect(await screen.findByTestId("task-profile-chip")).toBeInTheDocument();
+
+    act(() => {
+      window.dispatchEvent(new Event("harness-session-changed"));
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId("task-profile-chip")).not.toBeInTheDocument();
     });
   });
 });
