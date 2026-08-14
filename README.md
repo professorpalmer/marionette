@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.214, deliberately pre-1.0. Turns classify MICRO / STANDARD / DEEP so small edits skip wiki, CodeGraph, and swarm-gate orchestration without bypassing the safety kernel; frontend CI now runs vitest. Rides puppetmaster-ai==1.22.2.
+> Status: v0.9.215, deliberately pre-1.0. MICRO/STANDARD/DEEP depth now records compact JSONL receipts, defers MCP connect until first use, tightens STANDARD wiki inject, and reminds unverified file edits. Rides puppetmaster-ai==1.22.2.
 
 ## Documentation
 
