@@ -15,7 +15,13 @@ function electronBin() {
 function runScreenshotScript() {
   const script = path.join(__dirname, "board-columns-screenshot.cjs");
   const bin = electronBin();
-  const args = [script];
+  const args = [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-gpu",
+    "--disable-dev-shm-usage",
+    script,
+  ];
   const env = {
     ...process.env,
     ELECTRON_NO_ATTACH_CONSOLE: "1",
@@ -44,7 +50,7 @@ describe("three-column board resize screenshots", () => {
         result.stderr,
         result.stdout,
       ].filter(Boolean).join("\n");
-      if (process.platform === "linux" && /DISPLAY|xvfb|GPU|ozone/i.test(detail)) {
+      if (process.platform === "linux" && /DISPLAY|xvfb|GPU|ozone|sandbox|SUID/i.test(detail)) {
         assert.ok(true, "skipped headless electron screenshot: " + detail.slice(0, 200));
         return;
       }
