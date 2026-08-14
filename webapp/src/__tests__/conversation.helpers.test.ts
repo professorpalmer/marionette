@@ -2372,7 +2372,7 @@ describe("composerSend module", () => {
     // Mirrors Conversation.send busy branch + stop(): empty draft returns
     // before api.steerSession; Stop goes stopLocal → interrupt only.
     const order: string[] = [];
-    const steerSession = vi.fn(async () => {
+    const steerSession = vi.fn(async (_text?: string) => {
       order.push("steer");
       return { ok: true };
     });
