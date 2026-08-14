@@ -285,11 +285,11 @@ describe("session switch detach (non-destructive)", () => {
   });
 });
 
-describe("busy runners keep Stop not Send", () => {
-  it("sets thinking when active session runner is running after SSE detach", () => {
+describe("busy runners do not replace Send", () => {
+  it("keeps Send when the active session runner is running after SSE detach", () => {
     const runners = { "sess-a": "idle" as const, "sess-b": "running" as const };
-    // Switch TO sess-b which is still running -- composer must show Stop.
-    expect(composerStatusFromRunner("sess-b", runners, false)).toBe("thinking");
+    // running ≠ busy: a flying PM job must not look like Stop.
+    expect(composerStatusFromRunner("sess-b", runners, false)).toBe("idle");
     expect(composerStatusFromRunner("sess-a", runners, false)).toBe("idle");
   });
 
@@ -298,9 +298,9 @@ describe("busy runners keep Stop not Send", () => {
     expect(composerStatusFromRunner("sess-a", runners, true)).toBeNull();
   });
 
-  it("returns to idle/Send when runner flips idle", () => {
+  it("stays idle/Send when the runner flips idle", () => {
     let runners: Record<string, "running" | "idle"> = { "sess-b": "running" };
-    expect(composerStatusFromRunner("sess-b", runners, false)).toBe("thinking");
+    expect(composerStatusFromRunner("sess-b", runners, false)).toBe("idle");
     runners = { "sess-b": "idle" };
     expect(composerStatusFromRunner("sess-b", runners, false)).toBe("idle");
   });
@@ -310,11 +310,11 @@ describe("busy runners keep Stop not Send", () => {
     expect(composerStatusFromRunner("sess-new", runners, false)).toBe("idle");
   });
 
-  it("on switch to running session: hydrate warm cache and keep busy chrome", () => {
+  it("on switch to a running session: hydrate warm cache without Stop chrome", () => {
     writeTranscriptCache("sess-busy", [makeMsg("user", "in flight")]);
     const runners = { "sess-busy": "running" as const };
     const status = composerStatusFromRunner("sess-busy", runners, false);
-    expect(status).toBe("thinking");
+    expect(status).toBe("idle");
     expect(peekTranscriptCache("sess-busy")).toEqual([makeMsg("user", "in flight")]);
     clearTranscriptCache();
   });

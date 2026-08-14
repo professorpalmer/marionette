@@ -11,6 +11,7 @@ export type BusyStatus = "idle" | "thinking" | "executing" | "done" | "error" | 
 /**
  * Sticky agent-loop latch shared by Conversation + TranscriptList.
  * Includes awaiting_swarm so Investigating / absorption stay armed while workers fly.
+ * This is NOT the composer mouth — see isPilotMouthBusy.
  */
 export function isAgentLoopOpen(
   turnOpen: boolean,
@@ -22,6 +23,22 @@ export function isAgentLoopOpen(
     || status === "executing"
     || status === "streaming"
     || status === "awaiting_swarm"
+  );
+}
+
+/**
+ * Composer mouth: Stop/Steer only while the pilot's short turn is open.
+ * A flying PM job (awaiting_swarm) is running, not busy — Send stays Send.
+ */
+export function isPilotMouthBusy(
+  turnOpen: boolean,
+  status: BusyStatus | string,
+): boolean {
+  return (
+    turnOpen
+    || status === "thinking"
+    || status === "executing"
+    || status === "streaming"
   );
 }
 

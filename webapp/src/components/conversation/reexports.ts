@@ -235,6 +235,7 @@ export {
   staleLocalStreamTickDecision,
   RUNNERS_IDLE_CONFIRM_POLLS,
   isAgentLoopOpen,
+  isPilotMouthBusy,
 } from "./runnersBusy";
 export {
   CONTEXT_USAGE_COLORS,

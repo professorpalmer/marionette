@@ -41,7 +41,7 @@ import {
   derivePillStatus,
   isSwarmPausePoint,
 } from "./conversation/pillStatus";
-import { isAgentLoopOpen } from "./conversation/runnersBusy";
+import { isAgentLoopOpen, isPilotMouthBusy } from "./conversation/runnersBusy";
 import {
   appendPendingReview,
   appendStopHonestyNotice,
@@ -483,15 +483,15 @@ export default function Conversation({
   const processedSwarmJobIdsRef = useRef<string[]>([]);
   const [backendPendingSwarms, setBackendPendingSwarms] = useState(false);
 
-  // Hold Stop/Steer after switch/hydrate while background jobs fly, even if
-  // status briefly flaps idle before awaiting_swarm paints.
+  // Hold investigation / Still working… after switch/hydrate while background
+  // jobs fly, even if status briefly flaps idle before awaiting_swarm paints.
   const holdSwarmAwait = shouldHoldSwarmAwaitChrome({
     pendingJobIds,
     backendPendingSwarms,
     userStopped: userStoppedRef.current,
   });
-  // Bare holdSwarmAwait keeps agentLoopOpen / composerBusy / Stop-Steer.
-  // StatusPill pause chrome matches TranscriptList.pausePoint (gate on pilotBusy).
+  // Bare holdSwarmAwait keeps agentLoopOpen (investigation / Still working…).
+  // The mouth is a second bit: Stop/Steer only while the pilot turn is open.
   const agentLoopOpen =
     isAgentLoopOpen(turnOpen, status) || holdSwarmAwait;
   const liveInvestigation = turnHasLiveInvestigation(items, agentLoopOpen);
@@ -501,8 +501,8 @@ export default function Conversation({
   });
   // Runner/SSE can briefly report idle while a card is still running (or the
   // reverse). Prefer investigation / open-turn truth for the header pill.
-  // Idle/busy shares composerBusy / agentLoopOpen — do not early-idle the
-  // StatusPill on answer-complete SSE lag while Steer/Stop remain.
+  // StatusPill follows agentLoopOpen (workers still visible). The mouth is
+  // a second bit and may already be Send.
   const swarmPausePoint = isSwarmPausePoint({
     status,
     holdSwarmAwait,
@@ -517,8 +517,8 @@ export default function Conversation({
     awaitingSwarm: swarmPausePoint,
     agentLoopOpen,
   });
-  // Same latch as agentLoopOpen — Steer/Stop stay up for the whole turn.
-  const composerBusy = agentLoopOpen;
+  // Mouth ≠ runner. awaiting_swarm / holdSwarmAwait keep the fold, not Stop.
+  const composerBusy = isPilotMouthBusy(turnOpen, status);
   // Keep the busy footer clock alive while holdSwarmAwait outlives status flaps.
   useEffect(() => {
     if (holdSwarmAwait) {
@@ -1863,9 +1863,7 @@ export default function Conversation({
 
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      // Match composerBusy / agentLoopOpen (awaiting_swarm + holdSwarmAwait)
-      // so plain Enter steers during a background swarm wait instead of a new send.
-      // Cmd/Ctrl+Enter still queues while that latch is armed; Alt+Enter interrupts.
+      // Mouth is isPilotMouthBusy — awaiting_swarm stays Send, not Steer.
       const busy = composerBusy;
       // While a turn is running, plain Enter STEERS (redirects the current turn);
       // Cmd/Ctrl+Enter QUEUES (runs after the current turn finishes); Alt+Enter
