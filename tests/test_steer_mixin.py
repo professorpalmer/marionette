@@ -17,7 +17,9 @@ MOVED_METHODS = (
     "_steer_boundary_blocks_inject",
     "_record_steer_drop_notice",
     "_flush_steer_drop_notice",
+    "_format_steer_user_content",
     "_steer_marker",
+    "_steer_inject_boundary_is_safe",
     "_check_and_inject_steer",
     "_tool_result_is_adjacent",
 )

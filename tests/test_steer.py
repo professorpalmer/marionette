@@ -68,19 +68,21 @@ def test_drive_turn_with_mid_turn_steer():
     assert "steer" in kinds
     assert kinds[-1] == "assistant_done"
     
-    # Check that the OUT-OF-BAND user message was injected into history
-    found_marker = False
+    # Steer is a first-class user message (not piggybacked into tool output).
+    found_steer = False
     for msg in s._history:
-        if msg["role"] == "user" and "[OUT-OF-BAND USER MESSAGE" in msg["content"]:
-            assert "Pay attention to the formatting rules please." in msg["content"]
-            found_marker = True
-            
-    assert found_marker, "Out of band steer message was not found in history"
-    
-    # Assert strict role alternation holds in history (excluding system prompt at index 0)
-    history_roles = [msg["role"] for msg in s._history if msg["role"] != "system"]
-    for idx in range(1, len(history_roles)):
-        assert history_roles[idx] != history_roles[idx - 1], f"Strict alternation broken: consecutive {history_roles[idx]} at index {idx}"
+        if msg["role"] == "user" and "Pay attention to the formatting rules please." in (msg.get("content") or ""):
+            assert "[OUT-OF-BAND USER MESSAGE" not in msg["content"]
+            found_steer = True
+            break
+    assert found_steer, "first-class steer user message was not found in history"
+
+    # Compatibility: legacy OUT-OF-BAND markers in old history remain readable
+    # but are not written on the happy path.
+    assert not any(
+        "[OUT-OF-BAND USER MESSAGE" in str(m.get("content") or "")
+        for m in s._history
+    )
 
 
 class _FinalizingPilot:
@@ -120,15 +122,77 @@ def test_steer_during_finalization_reasks_model():
     assert kinds[-1] == "assistant_done", "the run must still end cleanly after delivery"
 
     # The steer must be delivered as a genuine next-turn user message.
-    found_marker = False
+    found_steer = False
     for msg in s._history:
-        if msg["role"] == "user" and "[OUT-OF-BAND USER MESSAGE" in msg.get("content", ""):
-            assert "Actually, also check the README." in msg["content"]
-            found_marker = True
-    assert found_marker, "the finalization-time steer was not delivered as a user message"
+        if msg["role"] == "user" and "Actually, also check the README." in msg.get("content", ""):
+            assert "[OUT-OF-BAND USER MESSAGE" not in msg["content"]
+            found_steer = True
+    assert found_steer, "the finalization-time steer was not delivered as a user message"
 
     # No steer may be left stranded as pending.
     assert s.drain_steer() == [], "the steer must not remain pending"
+
+
+def test_steer_injects_as_user_at_safe_boundary():
+    """After a completed tool pair, steer becomes a plain role=user message."""
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    s = ConversationalSession(cfg)
+    s._history = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "go"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "t1", "type": "function",
+                 "function": {"name": "list_dir", "arguments": "{}"}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "t1", "content": "ok"},
+    ]
+    s.enqueue_steer("pivot to auth")
+    events = list(s._check_and_inject_steer())
+    assert any(e.kind == "steer" and e.data.get("text") == "pivot to auth" for e in events)
+    assert s._steer_pending is True
+    assert s.drain_steer() == []
+    last = s._history[-1]
+    assert last["role"] == "user"
+    assert last["content"] == "pivot to auth"
+    assert "[OUT-OF-BAND" not in last["content"]
+    assert any(
+        row.get("role") == "user" and row.get("text") == "pivot to auth"
+        for row in s._display_transcript
+    )
+
+
+def test_steer_defers_when_tool_pair_unanswered():
+    """Mid-tool / unpaired calls must keep the steer pending — no user wedge."""
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    s = ConversationalSession(cfg)
+    s._history = [
+        {"role": "system", "content": "sys"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "t1", "type": "function",
+                 "function": {"name": "list_dir", "arguments": "{}"}},
+                {"id": "t2", "type": "function",
+                 "function": {"name": "list_dir", "arguments": "{}"}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "t1", "content": "partial"},
+    ]
+    before = list(s._history)
+    s.enqueue_steer("do not wedge me")
+    events = list(s._check_and_inject_steer())
+    assert events == []
+    assert s._steer_pending is True
+    assert s.drain_steer() == ["do not wedge me"]
+    assert s._history == before
+    assert not any(
+        "do not wedge me" in str(m.get("content") or "") for m in s._history
+    )
 
 
 def test_api_session_steer_auth(tmp_path):

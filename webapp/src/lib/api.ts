@@ -7,8 +7,10 @@ import {
   withToken,
   uploadFile,
   chatEventsPath,
+  sessionEventsPath,
   type StreamEvent,
   type ChatEventReplay as TransportChatEventReplay,
+  type StoreEventsSince as TransportStoreEventsSince,
 } from "./transport";
 import {
   buildSessionSearchQuery,
@@ -16,7 +18,7 @@ import {
   type SessionSearchHit,
 } from "./sessionSearch";
 
-export type { ChatEventFrame } from "./transport";
+export type { ChatEventFrame, StoreEvent } from "./transport";
 export type { SessionSearchHit } from "./sessionSearch";
 
 /** Mid-turn SSE ring replay payload (miss fields from GET /api/chat/events). */
@@ -25,6 +27,9 @@ export type ChatEventReplay = TransportChatEventReplay & {
   available?: boolean;
   code?: "ring_miss" | "generation_mismatch" | string;
 };
+
+/** Unified store cursor payload (GET /api/session/events). */
+export type StoreEventsSince = TransportStoreEventsSince;
 
 export type Config = {
   driver: string; reach: string; budget: number;
@@ -1263,6 +1268,12 @@ export const api = {
   /** Mid-turn SSE reattach: replay retained frames since ``since`` cursor. */
   chatEvents: (opts?: { session?: string; since?: number; generation?: number }) =>
     getJSON<ChatEventReplay>(chatEventsPath(opts || {})),
+  /**
+   * Unified session store cursor (``read_events_since``).
+   * Returns stream + runners (+ ring_miss) events after ``since`` and the new cursor.
+   */
+  readEventsSince: (opts?: { session?: string; since?: number; generation?: number }) =>
+    getJSON<StoreEventsSince>(sessionEventsPath(opts || {})),
   /**
    * Live ring watch for mid-turn reattach (``?watch=1``).
    * Returns cancel(); on open miss the transport errors so callers fall back

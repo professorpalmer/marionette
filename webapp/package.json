@@ -1,7 +1,7 @@
 {
   "name": "pm-harness",
   "private": true,
-  "version": "0.9.220",
+  "version": "0.9.221",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -23,6 +23,7 @@
     "@codemirror/lang-json": "^6.0.2",
     "@codemirror/lang-markdown": "^6.5.0",
     "@codemirror/lang-python": "^6.2.1",
+    "@tanstack/react-virtual": "^3.14.9",
     "@uiw/codemirror-theme-okaidia": "^4.25.10",
     "@uiw/react-codemirror": "^4.25.10",
     "@xterm/addon-fit": "^0.11.0",

@@ -345,9 +345,13 @@ def test_stop_then_late_inject_does_not_contaminate_history(monkeypatch):
 
     assert list(host._steer_queue) == []
     assert host._steer_pending is False
-    tool_content = host._history[-1].get("content") or ""
-    assert "OUT-OF-BAND" not in tool_content
-    assert "raced late steer" not in tool_content
+    history_blob = " ".join(str(m.get("content") or "") for m in host._history)
+    assert "OUT-OF-BAND" not in history_blob
+    assert "raced late steer" not in history_blob
+    assert not any(
+        m.get("role") == "user" and "raced late steer" in str(m.get("content") or "")
+        for m in host._history
+    )
     assert any(
         e.kind == "notice" and e.data.get("reason") == "steer_dropped"
         for e in events

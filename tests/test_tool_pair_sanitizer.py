@@ -213,9 +213,9 @@ def test_load_history_heals_dangling_tool_use():
     assert s._history[idx + 1].get("role") == "tool"
 
 
-def test_steer_marker_hardwraps_long_unbroken_token():
+def test_steer_format_hardwraps_long_unbroken_token():
     long_token = "a" * 500
-    out = ConversationalSession._steer_marker(long_token)
+    out = ConversationalSession._format_steer_user_content(long_token)
     # The wrapped token lines are the lines made up solely of the run char.
     token_lines = [ln for ln in out.splitlines() if ln and set(ln) == {"a"}]
     assert token_lines, "the token must survive the wrap"
@@ -225,6 +225,10 @@ def test_steer_marker_hardwraps_long_unbroken_token():
     assert sum(len(ln) for ln in token_lines) == 500
     # The 500-char unbroken run was actually broken into multiple lines.
     assert len(token_lines) >= 3
+    # Legacy marker helper still wraps for old-history compatibility.
+    legacy = ConversationalSession._steer_marker(long_token)
+    assert "[OUT-OF-BAND USER MESSAGE" in legacy
+    assert sum(1 for ln in legacy.splitlines() if ln and set(ln) == {"a"}) >= 3
 
 
 def test_max_pilot_steps_env_unlimited(monkeypatch):
@@ -380,7 +384,10 @@ class _SteerMidSpreePilot:
     def chat(self, hist, tools=None, system=""):
         self.calls += 1
         for m in hist:
-            if "OUT-OF-BAND" in str(m.get("content", "")):
+            content = str(m.get("content", ""))
+            if m.get("role") == "user" and (
+                "change direction" in content or "OUT-OF-BAND" in content
+            ):
                 self.saw_steer = True
         if self.saw_steer:
             return _Resp('{"say":"Steered.","actions":[]}')
@@ -421,8 +428,14 @@ def test_steer_mid_tool_spree_heals_dangling_pairs(tmp_path):
     assert "toolu_B" in by_id and "toolu_C" in by_id
     assert "interrupted" in by_id["toolu_B"]["content"]
     assert "interrupted" in by_id["toolu_C"]["content"]
-    # Steer piggybacked on an adjacent tool result (not a synthetic user turn).
-    assert any("OUT-OF-BAND" in str(m.get("content", "")) for m in s._history)
+    # First-class steer is a user-role message after the healed tool pair.
+    assert any(
+        m.get("role") == "user" and "change direction" in str(m.get("content") or "")
+        for m in s._history
+    )
+    assert not any(
+        "OUT-OF-BAND" in str(m.get("content") or "") for m in s._history
+    )
 
 
 class _CallSitePilot:

@@ -1,32 +1,48 @@
 /**
- * Mid-turn chatEvents reattach for session-switch / bridge.
- * Prefers a live SSE ring watch; falls back to JSON pull + 1Hz poll.
+ * Unified store-event subscription for session-switch / reattach / busy.
+ * One cursor via ``api.readEventsSince`` — not a third poller beside runners.
  */
 
 import { api } from "../../lib/api";
 import type { Item } from "../TranscriptList";
 import {
-  CHAT_EVENTS_POLL_MS,
-  chatFrameToStreamEvent,
   cursorAfterReplayMiss,
-  isChatEventReplayMiss,
+  isChatEventsReattachArmed,
   isTerminalStreamKind,
-  nextAppliedCursor,
   ringGenerationAfterReplayMiss,
-  shouldAdvanceReplayCursor,
-  shouldApplyReattachFrame,
   shouldHydrateTranscriptOnReplayMiss,
   shouldPollChatEvents,
   shouldRetryRingAfterReplayMiss,
 } from "./chatEvents";
+import {
+  STORE_EVENTS_POLL_MS,
+  isStoreRingMissEvent,
+  nextStoreCursor,
+  shouldApplyStoreEvent,
+  storeBatchSawTerminal,
+  storeRingMissFields,
+  storeStreamToStreamEvent,
+} from "./storeEvents";
 import {
   mergeTranscriptItems,
   transcriptFingerprint,
   transcriptResponseToItems,
 } from "./transcriptItems";
 import { writeTranscriptCache } from "./transcriptCache";
-import { preserveOrThinking } from "./runnersBusy";
+import {
+  preserveOrThinking,
+  runnersBusyTickDecision,
+  staleLocalStreamTickDecision,
+  userStoppedBusyChrome,
+  RUNNERS_IDLE_CONFIRM_POLLS,
+} from "./runnersBusy";
 import { reattachSessionStateFailureDecision } from "./sessionHydrate";
+import { shouldApplySwarmLiveMerge } from "./streamApply";
+import {
+  sessionStateShowsAwaitingSwarm,
+  SWARM_AWAIT_HINT,
+} from "./swarmPoll";
+import type { SessionStatus } from "./useSessionSwitch";
 
 export type ChatEventsReattachDeps = {
   cancelled: () => boolean;
@@ -38,6 +54,7 @@ export type ChatEventsReattachDeps = {
   cachedSessionIdRef: { current: string | null };
   localStreamActiveRef: { current: boolean };
   userStoppedRef: { current: boolean };
+  /** Unified store cursor (read_events_since), not the SSE ring cursor. */
   lastAppliedCursorRef: { current: number };
   ringGenerationRef: { current: number | undefined };
   detachedBusyRef: { current: boolean };
@@ -45,7 +62,7 @@ export type ChatEventsReattachDeps = {
   itemsRef: { current: Item[] };
   transcriptFpRef: { current: string };
   chatEventsPollTimerRef: { current: number | null };
-  /** Cancel for live ``?watch=1`` SSE; cleared with poll on session switch/Stop. */
+  /** Legacy live-watch cancel slot; store cursor owns the turn (kept for armed()). */
   chatEventsLiveCancelRef: { current: null | (() => void) };
   applyStreamEventRef: { current: (ev: { kind: string; data?: any }) => void };
   flushTypewriterRef: { current: () => void };
@@ -56,6 +73,11 @@ export type ChatEventsReattachDeps = {
   setTranscriptStale: (v: boolean) => void;
   setTurnOpen: (v: boolean) => void;
   setStatus: (updater: any) => void;
+  setCompactingStatus?: (v: string | null) => void;
+  setWaitHint?: (v: string | null) => void;
+  setBackendPendingSwarms?: (v: boolean | ((prev: boolean) => boolean)) => void;
+  turnSettledRef?: { current: boolean };
+  abandonStaleLocalStreamRef?: { current: () => void };
 };
 
 export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
@@ -86,19 +108,30 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
     setTranscriptStale,
     setTurnOpen,
     setStatus,
+    setCompactingStatus,
+    setWaitHint,
+    setBackendPendingSwarms,
+    turnSettledRef,
+    abandonStaleLocalStreamRef,
   } = deps;
 
-  const fenceOk = () => shouldApplyReattachFrame({
+  let consecutiveIdlePolls = 0;
+  let staleStreamIdlePolls = 0;
+  let sawRunnerBusyThisStream = false;
+
+  const fenceOk = () => shouldApplyStoreEvent({
     streamGen: streamGenRef.current,
-    reattachGen,
+    subscriptionGen: reattachGen,
     cachedSessionId: cachedSessionIdRef.current,
-    reattachSid,
+    subscriptionSid: reattachSid,
+  });
+
+  const chatEventsReattachArmed = () => isChatEventsReattachArmed({
+    pollTimer: chatEventsPollTimerRef.current,
+    liveCancel: chatEventsLiveCancelRef.current,
   });
 
   const hydrateDurableTranscript = async (): Promise<void> => {
-    // Busy-poll skips disk refresh while chatEvents poll is armed — await a
-    // durable baseline before any ring retry so tool/activity tails merge
-    // coherently (transcript first, then retained frames).
     const missHydrateGen = ++runnerBusyPollGenRef.current;
     const missSid = reattachSid;
     try {
@@ -118,21 +151,202 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
       itemsRef.current = next;
       writeTranscriptCache(missSid, next);
       setTranscriptStale(false);
-      // Keep detached-busy chrome; do not clear status / poll.
     } catch {
-      // Disk hydrate is best-effort; ring retry / poll may still catch up.
+      // Disk hydrate is best-effort.
     }
+  };
+
+  const refreshTranscriptFromDisk = async (sid: string): Promise<void> => {
+    const pollGen = ++runnerBusyPollGenRef.current;
+    try {
+      const tres = await api.sessionTranscript(sid);
+      if (!shouldApplySwarmLiveMerge({
+        pollGen,
+        currentGen: runnerBusyPollGenRef.current,
+        pollSessionId: sid,
+        cachedSessionId: cachedSessionIdRef.current,
+        activeSessionId: cachedSessionIdRef.current,
+      })) {
+        return;
+      }
+      if (localStreamActiveRef.current) return;
+      const loadedItems = transcriptResponseToItems(tres);
+      let applied = false;
+      setItems((prev) => {
+        if (!shouldApplySwarmLiveMerge({
+          pollGen,
+          currentGen: runnerBusyPollGenRef.current,
+          pollSessionId: sid,
+          cachedSessionId: cachedSessionIdRef.current,
+          activeSessionId: cachedSessionIdRef.current,
+        })) {
+          return prev;
+        }
+        if (localStreamActiveRef.current) return prev;
+        const next = mergeTranscriptItems(prev, loadedItems);
+        const fp = transcriptFingerprint(next);
+        if (fp === transcriptFpRef.current) return prev;
+        transcriptFpRef.current = fp;
+        itemsRef.current = next;
+        writeTranscriptCache(sid, next);
+        applied = true;
+        return next;
+      });
+      if (applied) setTranscriptStale(false);
+    } catch {
+      // best-effort
+    }
+  };
+
+  const applyRunnersEvent = async (data: {
+    state?: string | null;
+    pending_swarms?: boolean;
+    runners?: Record<string, string>;
+  }): Promise<boolean> => {
+    if (!fenceOk()) return false;
+    if (userStoppedRef.current) {
+      consecutiveIdlePolls = 0;
+      staleStreamIdlePolls = 0;
+      sawRunnerBusyThisStream = false;
+      detachedBusyRef.current = false;
+      clearChatEventsPoll();
+      setBackendPendingSwarms?.(false);
+      setStatus((prev: SessionStatus) => userStoppedBusyChrome(prev));
+      return false;
+    }
+
+    const sid = reattachSid;
+    const runners = data?.runners || {};
+    const running = runners[sid] === "running";
+    const awaitingSwarm = sessionStateShowsAwaitingSwarm({
+      state: data?.state,
+      pendingSwarms: !!data?.pending_swarms,
+      userStopped: userStoppedRef.current,
+    });
+
+    if (localStreamActiveRef.current) {
+      if (running || awaitingSwarm) {
+        sawRunnerBusyThisStream = true;
+        staleStreamIdlePolls = 0;
+        return true;
+      }
+      const nextIdlePolls = staleStreamIdlePolls + 1;
+      const staleTick = staleLocalStreamTickDecision({
+        localStreamActive: true,
+        userStopped: userStoppedRef.current,
+        runnerBusy: running,
+        awaitingSwarm,
+        turnSettled: turnSettledRef?.current ?? false,
+        sawRunnerBusyThisStream,
+        consecutiveIdlePolls: nextIdlePolls,
+      });
+      if (staleTick.kind === "hold_unconfirmed") {
+        staleStreamIdlePolls = nextIdlePolls;
+        return true;
+      }
+      if (staleTick.kind === "abandon") {
+        staleStreamIdlePolls = 0;
+        sawRunnerBusyThisStream = false;
+        abandonStaleLocalStreamRef?.current();
+      }
+      return true;
+    }
+
+    if (running || awaitingSwarm) {
+      consecutiveIdlePolls = 0;
+      if (awaitingSwarm) {
+        detachedBusyRef.current = running;
+        setTurnOpen(false);
+        setStatus("awaiting_swarm");
+        setWaitHint?.(SWARM_AWAIT_HINT);
+        setBackendPendingSwarms?.(true);
+      } else {
+        detachedBusyRef.current = true;
+        setTurnOpen(true);
+        setStatus((prev: SessionStatus) => preserveOrThinking(prev));
+      }
+      if (!running) {
+        return true;
+      }
+      const tick = runnersBusyTickDecision({
+        userStopped: userStoppedRef.current,
+        localStreamActive: localStreamActiveRef.current,
+        runnerBusy: true,
+        detachedBusy: true,
+        chatEventsPollArmed: chatEventsReattachArmed(),
+        items: itemsRef.current,
+        consecutiveIdlePolls: 0,
+      });
+      if (tick.kind === "arm_reattach") {
+        return true;
+      }
+      if (tick.kind === "skip_disk_while_reattach") return true;
+      await refreshTranscriptFromDisk(sid);
+      return true;
+    }
+
+    if (detachedBusyRef.current) {
+      consecutiveIdlePolls += 1;
+      const tick = runnersBusyTickDecision({
+        userStopped: userStoppedRef.current,
+        localStreamActive: localStreamActiveRef.current,
+        runnerBusy: false,
+        detachedBusy: true,
+        chatEventsPollArmed: chatEventsReattachArmed(),
+        items: itemsRef.current,
+        consecutiveIdlePolls,
+        idleConfirmPolls: RUNNERS_IDLE_CONFIRM_POLLS,
+      });
+      if (
+        tick.kind === "hold_live_investigation"
+        || tick.kind === "hold_idle_unconfirmed"
+      ) {
+        return true;
+      }
+      consecutiveIdlePolls = 0;
+      detachedBusyRef.current = false;
+      // Do not clearChatEventsPoll here — store cursor stays armed for the session.
+      setTurnOpen(false);
+      setStatus("idle");
+      setCompactingStatus?.(null);
+      setBackendPendingSwarms?.(false);
+      await refreshTranscriptFromDisk(sid);
+      return true;
+    }
+
+    return true;
+  };
+
+  const handleRingMiss = async (ev: {
+    kind: string;
+    data?: any;
+  }, missRetried: boolean): Promise<"retry" | "continue" | "stop"> => {
+    const replay = storeRingMissFields(ev as any);
+    const prevGen = ringGenerationRef.current;
+    ringGenerationRef.current = ringGenerationAfterReplayMiss(replay, prevGen);
+    void cursorAfterReplayMiss(replay, 0);
+    if (shouldHydrateTranscriptOnReplayMiss(replay)) {
+      await hydrateDurableTranscript();
+    }
+    if (
+      shouldRetryRingAfterReplayMiss(replay, {
+        alreadyRetried: missRetried,
+        prevGeneration: prevGen,
+        nextGeneration: ringGenerationRef.current,
+      })
+    ) {
+      return "retry";
+    }
+    return "continue";
   };
 
   const pullChatEvents = async (missRetried = false): Promise<boolean> => {
     if (cancelled()) return false;
     if (loadGen !== transcriptLoadGenRef.current) return false;
     if (!fenceOk()) return false;
-    if (localStreamActiveRef.current || userStoppedRef.current) return false;
-    // Live watch owns the turn — do not double-apply via poll.
-    if (chatEventsLiveCancelRef.current != null) return false;
+    if (userStoppedRef.current) return false;
     try {
-      const replay = await api.chatEvents({
+      const batch = await api.readEventsSince({
         session: reattachSid,
         since: lastAppliedCursorRef.current,
         ...(ringGenerationRef.current != null
@@ -142,208 +356,117 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
       if (cancelled()) return false;
       if (loadGen !== transcriptLoadGenRef.current) return false;
       if (!fenceOk()) return false;
-      if (localStreamActiveRef.current || userStoppedRef.current) return false;
-      if (chatEventsLiveCancelRef.current != null) return false;
+      if (userStoppedRef.current) return false;
 
-      if (isChatEventReplayMiss(replay)) {
-        const prevGen = ringGenerationRef.current;
-        ringGenerationRef.current = ringGenerationAfterReplayMiss(replay, prevGen);
-        // Evicted / wrong-generation frames: do not treat as catch-up.
-        lastAppliedCursorRef.current = cursorAfterReplayMiss(
-          replay,
-          lastAppliedCursorRef.current,
-        );
-        if (shouldHydrateTranscriptOnReplayMiss(replay)) {
-          await hydrateDurableTranscript();
-        }
-        // cursor_gap / refreshed generation_mismatch: retry once with the
-        // recovered cursor/gen so the retained tool/activity tail applies now.
-        // ring_miss stays hydrate-only — never synthesize missing frames.
-        if (
-          shouldRetryRingAfterReplayMiss(replay, {
-            alreadyRetried: missRetried,
-            prevGeneration: prevGen,
-            nextGeneration: ringGenerationRef.current,
-          })
-        ) {
-          return pullChatEvents(true);
-        }
-        return shouldPollChatEvents({
-          detachedBusy: detachedBusyRef.current,
-          localStreamActive: localStreamActiveRef.current,
-          userStopped: userStoppedRef.current,
-          sawTerminal: false,
-        });
-      }
-
-      if (typeof replay.generation === "number" && replay.generation > 0) {
-        ringGenerationRef.current = replay.generation;
-      }
-
+      const events = Array.isArray(batch.events) ? batch.events : [];
       let sawTerminal = false;
-      const frames = Array.isArray(replay.events) ? replay.events : [];
-      for (const frame of frames) {
+      let wantRetry = false;
+
+      for (const ev of events) {
         if (!fenceOk()) return false;
-        applyStreamEventRef.current(chatFrameToStreamEvent(frame));
-        if (isTerminalStreamKind(frame.kind)) sawTerminal = true;
-      }
-      if (shouldAdvanceReplayCursor(replay)) {
-        lastAppliedCursorRef.current = nextAppliedCursor(
-          lastAppliedCursorRef.current,
-          frames,
-          replay.cursor,
-        );
+        if (ev.kind === "ring_miss" && isStoreRingMissEvent(ev)) {
+          const decision = await handleRingMiss(ev, missRetried);
+          if (decision === "retry") wantRetry = true;
+          continue;
+        }
+        if (ev.kind === "runners") {
+          const keep = await applyRunnersEvent(ev.data || {});
+          if (!keep) {
+            lastAppliedCursorRef.current = nextStoreCursor(
+              lastAppliedCursorRef.current,
+              events,
+              batch.cursor,
+            );
+            return false;
+          }
+          continue;
+        }
+        if (ev.kind === "stream") {
+          if (localStreamActiveRef.current) continue;
+          const frame = ev.data || {};
+          if (typeof frame.generation === "number" && frame.generation > 0) {
+            ringGenerationRef.current = frame.generation;
+          }
+          applyStreamEventRef.current(storeStreamToStreamEvent(frame));
+          if (isTerminalStreamKind(String(frame.kind || ""))) sawTerminal = true;
+        }
       }
 
-      if (sawTerminal) {
+      lastAppliedCursorRef.current = nextStoreCursor(
+        lastAppliedCursorRef.current,
+        events,
+        batch.cursor,
+      );
+
+      if (wantRetry && !missRetried) {
+        return pullChatEvents(true);
+      }
+
+      if (sawTerminal || storeBatchSawTerminal(events)) {
         flushTypewriterRef.current();
         detachedBusyRef.current = false;
-        clearChatEventsPoll();
         maybeRunQueuedResumeRef.current();
         maybeDrainQueueRef.current();
-        return false;
+        return true;
       }
+
       return shouldPollChatEvents({
-        detachedBusy: detachedBusyRef.current,
-        localStreamActive: localStreamActiveRef.current,
+        detachedBusy: true,
+        localStreamActive: false,
         userStopped: userStoppedRef.current,
         sawTerminal: false,
       });
     } catch {
-      return shouldPollChatEvents({
-        detachedBusy: detachedBusyRef.current,
-        localStreamActive: localStreamActiveRef.current,
-        userStopped: userStoppedRef.current,
-        sawTerminal: false,
-      });
+      return !userStoppedRef.current;
     }
   };
 
   const startChatEventsPoll = () => {
-    if (cancelled() || localStreamActiveRef.current || userStoppedRef.current) return;
-    if (chatEventsLiveCancelRef.current != null) return;
+    if (cancelled() || userStoppedRef.current) return;
     if (chatEventsPollTimerRef.current != null) return;
     void pullChatEvents().then((keepPolling) => {
       if (!keepPolling || cancelled()) return;
       if (streamGenRef.current !== reattachGen) return;
-      if (chatEventsLiveCancelRef.current != null) return;
       if (chatEventsPollTimerRef.current != null) return;
       chatEventsPollTimerRef.current = window.setInterval(() => {
         void pullChatEvents().then((cont) => {
           if (!cont) clearChatEventsPoll();
         });
-      }, CHAT_EVENTS_POLL_MS);
+      }, STORE_EVENTS_POLL_MS);
     });
   };
 
-  const settleLiveTerminal = () => {
-    flushTypewriterRef.current();
-    detachedBusyRef.current = false;
-    clearChatEventsPoll();
-    maybeRunQueuedResumeRef.current();
-    maybeDrainQueueRef.current();
-  };
-
-  /**
-   * Prefer live ``?watch=1`` SSE while the turn is open.
-   * Returns true when a live cancel was installed (poll must wait for
-   * onError/onDone). Open miss / transport error falls back to 1Hz poll.
-   */
-  const startLiveChatEventsWatch = (): boolean => {
-    if (cancelled() || localStreamActiveRef.current || userStoppedRef.current) {
-      return false;
-    }
-    if (!fenceOk()) return false;
-    if (chatEventsLiveCancelRef.current != null) return true;
-    // Already on poll fallback — do not open a racing live stream.
-    if (chatEventsPollTimerRef.current != null) return false;
-
-    let sawTerminal = false;
-    let settled = false;
-    // Install cancel before stream callbacks can fire (sync onError/onDone).
-    let streamCancel: (() => void) | null = null;
-    const cancel = () => { streamCancel?.(); };
-    chatEventsLiveCancelRef.current = cancel;
-    const finishLiveCancel = () => {
-      if (chatEventsLiveCancelRef.current === cancel) {
-        chatEventsLiveCancelRef.current = null;
-      }
-    };
-    const fallBackToPoll = () => {
-      if (settled || cancelled()) return;
-      if (!fenceOk()) return;
-      if (localStreamActiveRef.current || userStoppedRef.current) return;
-      if (sawTerminal) return;
-      finishLiveCancel();
-      startChatEventsPoll();
-    };
-
-    streamCancel = api.chatEventsLive(
-      {
-        session: reattachSid,
-        since: lastAppliedCursorRef.current,
-        ...(ringGenerationRef.current != null
-          ? { generation: ringGenerationRef.current }
-          : {}),
-      },
-      (ev) => {
-        if (cancelled() || settled) return;
-        if (!fenceOk()) return;
-        if (localStreamActiveRef.current || userStoppedRef.current) return;
-        // Framing done is handled by transport onDone (not delivered here).
-        const kind = String(ev?.kind || "");
-        if (kind === "done") return;
-        // Live watch frames may carry a ring cursor; StreamEvent types it optional.
-        const liveCursor = (ev as { cursor?: unknown }).cursor;
-        if (typeof liveCursor === "number" && liveCursor > lastAppliedCursorRef.current) {
-          lastAppliedCursorRef.current = liveCursor;
-        }
-        applyStreamEventRef.current(chatFrameToStreamEvent(ev));
-        if (isTerminalStreamKind(kind)) sawTerminal = true;
-      },
-      () => {
-        // Wave 3: framing done / body EOF — settle only when we saw a terminal.
-        // Early drop without terminal → poll fallback.
-        finishLiveCancel();
-        if (settled || cancelled()) return;
-        if (!fenceOk()) return;
-        if (sawTerminal) {
-          settled = true;
-          settleLiveTerminal();
-          return;
-        }
-        // Open miss / mid-watch disconnect: keep catching up via poll.
-        fallBackToPoll();
-      },
-      () => {
-        finishLiveCancel();
-        if (settled || cancelled()) return;
-        if (sawTerminal) {
-          settled = true;
-          settleLiveTerminal();
-          return;
-        }
-        fallBackToPoll();
-      },
-    );
-    return true;
-  };
+  /** Live watch collapsed — store cursor owns reattach. */
+  const startLiveChatEventsWatch = (): boolean => false;
 
   const startChatEventsReattach = async () => {
-    if (cancelled() || localStreamActiveRef.current || userStoppedRef.current) return;
-    let running = detachedBusyRef.current;
-    if (!running) {
+    if (cancelled() || userStoppedRef.current) return;
+    if (streamGenRef.current !== reattachGen) return;
+    if (!detachedBusyRef.current && !localStreamActiveRef.current) {
       const maxAttempts = 2;
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
           const st = await api.getSessionState();
           if (cancelled()) return;
           if (cachedSessionIdRef.current !== reattachSid) return;
-          running = st?.runners?.[reattachSid] === "running";
-          if (running) {
-            detachedBusyRef.current = true;
-            setTurnOpen(true);
-            setStatus((prev: any) => preserveOrThinking(prev));
+          const running = st?.runners?.[reattachSid] === "running";
+          const awaiting = sessionStateShowsAwaitingSwarm({
+            state: st?.state,
+            pendingSwarms: !!st?.pending_swarms,
+            userStopped: userStoppedRef.current,
+          });
+          if (running || awaiting) {
+            if (awaiting) {
+              detachedBusyRef.current = running;
+              setTurnOpen(false);
+              setStatus("awaiting_swarm");
+              setWaitHint?.(SWARM_AWAIT_HINT);
+              setBackendPendingSwarms?.(true);
+            } else {
+              detachedBusyRef.current = true;
+              setTurnOpen(true);
+              setStatus((prev: any) => preserveOrThinking(prev));
+            }
           }
           break;
         } catch {
@@ -355,20 +478,14 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
             await new Promise((r) => setTimeout(r, 100 * attempt));
             continue;
           }
-          // Optimistic busy + poll/watch: Ready must not lie while a turn runs.
-          // useRunnersBusyPoll clears chrome if the target is actually idle.
-          running = true;
+          // Optimistic busy; store poll clears if idle.
           detachedBusyRef.current = true;
           setTurnOpen(true);
           setStatus((prev: any) => preserveOrThinking(prev));
         }
       }
     }
-    if (!running) return;
     if (streamGenRef.current !== reattachGen) return;
-
-    // Prefer live SSE while the turn is open; poll only if live attach fails.
-    if (startLiveChatEventsWatch()) return;
     startChatEventsPoll();
   };
 
