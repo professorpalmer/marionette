@@ -237,6 +237,105 @@ def test_chat_preserves_reasoning_only_response_for_terminal_synthesis(pool_dir,
     assert response.meta["reasoning"] == "The audit found one issue."
 
 
+def test_consume_sse_answer_start_seals_reasoning():
+    """A final_answer item must seal an open reasoning stream (not just commentary)."""
+    item_done = []
+    lines = [
+        b'data: {"type":"response.output_item.added","item":{"type":"reasoning","id":"rs_1"}}\n',
+        b'data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_1","delta":"planning"}\n',
+        b'data: {"type":"response.output_item.added","item":{"type":"message","phase":"final_answer","id":"msg_f"}}\n',
+        b'data: {"type":"response.output_text.delta","item_id":"msg_f","delta":"Test received."}\n',
+        b'data: {"type":"response.completed","response":{"status":"completed","usage":{}}}\n',
+    ]
+    raw = _consume_codex_sse(
+        lines,
+        on_stream_item_done=item_done.append,
+    )
+    assert raw["output_text"] == "Test received."
+    assert any(
+        isinstance(d, dict) and d.get("stream_id") == "rs_1" for d in item_done
+    )
+
+
+def test_consume_sse_answer_done_timeout_completes():
+    """Idle timeout after a tool-free answer must not hang the Electron turn."""
+
+    def lines():
+        yield b'data: {"type":"response.output_item.added","item":{"type":"message","phase":"final_answer","id":"msg_f"}}\n'
+        yield b'data: {"type":"response.output_text.delta","item_id":"msg_f","delta":"Test received."}\n'
+        yield b'data: {"type":"response.output_item.done","item":{"type":"message","phase":"final_answer","id":"msg_f"}}\n'
+        raise TimeoutError("timed out")
+
+    raw = _consume_codex_sse(lines())
+    assert raw["status"] == "completed"
+    assert raw["output_text"] == "Test received."
+    assert not raw.get("error")
+
+
+def test_consume_sse_keepalives_after_answer_complete():
+    """Codex SSE comments after a tool-free answer must not hold Still working."""
+    item_done = []
+
+    def lines():
+        yield b'data: {"type":"response.output_item.added","item":{"type":"message","phase":"final_answer","id":"msg_f"}}\n'
+        yield b'data: {"type":"response.output_text.delta","item_id":"msg_f","delta":"Test received."}\n'
+        yield b'data: {"type":"response.output_item.done","item":{"type":"message","phase":"final_answer","id":"msg_f"}}\n'
+        yield b": keepalive\n"
+        yield b": keepalive\n"
+        yield b": keepalive\n"
+        yield b'data: {"type":"response.completed","response":{"status":"completed","usage":{}}}\n'
+
+    raw = _consume_codex_sse(lines(), on_stream_item_done=item_done.append)
+    assert raw["status"] == "completed"
+    assert raw["output_text"] == "Test received."
+    assert not raw.get("error")
+    # Must finish on keepalives — never reach the late completed event.
+    assert any(
+        isinstance(d, dict) and d.get("stream_id") == "msg_f" for d in item_done
+    )
+
+
+def test_consume_sse_in_progress_after_answer_text_completes(monkeypatch):
+    """Luna keeps the SSE open with JSON in_progress after the answer paints."""
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(
+        "pmharness.drivers.codex_responses.time.monotonic",
+        lambda: clock["now"],
+    )
+
+    def lines():
+        yield b'data: {"type":"response.output_item.added","item":{"type":"message","phase":"final_answer","id":"msg_f"}}\n'
+        yield b'data: {"type":"response.output_text.delta","item_id":"msg_f","delta":"Test received."}\n'
+        yield b'data: {"type":"response.in_progress"}\n'
+        clock["now"] += 2.5
+        yield b'data: {"type":"response.in_progress"}\n'
+        yield b'data: {"type":"response.completed","response":{"status":"completed","usage":{}}}\n'
+        raise AssertionError("must settle on in_progress, not wait for completed")
+
+    raw = _consume_codex_sse(lines())
+    assert raw["status"] == "completed"
+    assert raw["output_text"] == "Test received."
+    assert not raw.get("error")
+
+
+def test_consume_sse_trailing_summary_then_timeout():
+    """In-flight reasoning after the answer is kept; then the turn settles."""
+    reasoning = []
+
+    def lines():
+        yield b'data: {"type":"response.output_item.added","item":{"type":"message","phase":"final_answer","id":"msg_f"}}\n'
+        yield b'data: {"type":"response.output_text.delta","item_id":"msg_f","delta":"Test received."}\n'
+        yield b'data: {"type":"response.output_item.done","item":{"type":"message","phase":"final_answer","id":"msg_f"}}\n'
+        yield b'data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_1","delta":"Short ping, no tools."}\n'
+        raise TimeoutError("timed out")
+
+    raw = _consume_codex_sse(lines(), on_reasoning_delta=reasoning.append)
+    assert raw["status"] == "completed"
+    assert raw["output_text"] == "Test received."
+    assert raw["reasoning"] == "Short ping, no tools."
+    assert reasoning and reasoning[0]["text"] == "Short ping, no tools."
+
+
 def test_consume_sse_routes_commentary_to_progress():
     """Commentary is visible progress — never the reasoning/thinking stream."""
     reasoning = []

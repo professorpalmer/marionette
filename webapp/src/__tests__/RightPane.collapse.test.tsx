@@ -188,7 +188,7 @@ describe("RightPane Claude-style card packing", () => {
     seedBoardTabOrder();
   });
 
-  it("stacks the first two cards in column 2 and spans the third card across rows in column 1", () => {
+  it("keeps three cards in one full-width stack instead of auto-opening a column", () => {
     localStorage.setItem(
       "pmharness.board.openCards",
       JSON.stringify(["state", "terminal", "swarm"]),
@@ -201,13 +201,14 @@ describe("RightPane Claude-style card packing", () => {
       </>,
     );
 
-    expectCardGridPlacement("State", "7 / span 6", "1");
-    expectCardGridPlacement("Terminal", "7 / span 6", "2");
-    expectCardGridPlacement("Swarm", "1 / span 6", "1");
+    expectCardGridPlacement("State", "1 / span 12", "1");
+    expectCardGridPlacement("Terminal", "1 / span 12", "2");
+    expectCardGridPlacement("Swarm", "1 / span 12", "3");
+    expect(screen.queryAllByRole("separator", { name: "Resize stacked panel height" })).toHaveLength(2);
     expect(screen.queryByTestId("right-pane-toolbar")).toBeNull();
   });
 
-  it("keeps cards 1/2 stacked in column 2 and cards 3/4 stacked in column 1", () => {
+  it("keeps four cards in one full-width stack until a column is opened", () => {
     localStorage.setItem(
       "pmharness.board.openCards",
       JSON.stringify(["state", "terminal", "swarm", "files"]),
@@ -220,10 +221,11 @@ describe("RightPane Claude-style card packing", () => {
       </>,
     );
 
-    expectCardGridPlacement("State", "7 / span 6", "1");
-    expectCardGridPlacement("Terminal", "7 / span 6", "2");
-    expectCardGridPlacement("Swarm", "1 / span 6", "1");
-    expectCardGridPlacement("Files", "1 / span 6", "2");
+    expectCardGridPlacement("State", "1 / span 12", "1");
+    expectCardGridPlacement("Terminal", "1 / span 12", "2");
+    expectCardGridPlacement("Swarm", "1 / span 12", "3");
+    expectCardGridPlacement("Files", "1 / span 12", "4");
+    expect(screen.queryAllByRole("separator", { name: "Resize stacked panel height" })).toHaveLength(3);
     expect(screen.queryByTestId("right-pane-toolbar")).toBeNull();
   });
 
@@ -242,11 +244,9 @@ describe("RightPane Claude-style card packing", () => {
       gridTemplateRows: "minmax(0, 1fr)",
     });
     expect(screen.getAllByRole("region")).toHaveLength(cards.length);
-    expect(screen.queryAllByRole("separator", { name: "Resize tool columns" })).toHaveLength(
-      cards.length > 2 ? 2 : 0,
-    );
+    expect(screen.queryAllByRole("separator", { name: "Resize tool columns" })).toHaveLength(0);
     expect(screen.queryAllByRole("separator", { name: "Resize stacked panel height" })).toHaveLength(
-      Math.floor(cards.length / 2),
+      Math.max(0, cards.length - 1),
     );
     expect(screen.getAllByRole("region").every(card => !card.getAttribute("style")?.includes("height"))).toBe(true);
     expect(screen.getAllByRole("region").every(card => !card.style.width)).toBe(true);
@@ -256,6 +256,10 @@ describe("RightPane Claude-style card packing", () => {
     localStorage.setItem(
       "pmharness.board.openCards",
       JSON.stringify(["state", "terminal", "browser"]),
+    );
+    localStorage.setItem(
+      "pmharness.board.columns.v1",
+      JSON.stringify([["state", "terminal"], ["browser"]]),
     );
     localStorage.setItem(
       "pmharness.board.cardLayouts.v1",
@@ -290,15 +294,77 @@ describe("RightPane Claude-style card packing", () => {
 
     const stack = screen.getByRole("region", { name: "State panel" }).closest(".right-pane-card-stack") as HTMLElement;
     expect(stack.style.gridTemplateRows).toBe("minmax(0, 40fr) minmax(0, 60fr)");
-    expect(JSON.parse(localStorage.getItem("pmharness.board.stackSplits.v1") || "{}")).toMatchObject({
-      "state|terminal": 0.4,
+    expect(JSON.parse(localStorage.getItem("pmharness.board.stackFractions.v2") || "{}")).toMatchObject({
+      "state|terminal": [0.4, 0.6],
     });
+  });
+
+  it("resizes the third stacked card from the second row handle", () => {
+    localStorage.setItem(
+      "pmharness.board.openCards",
+      JSON.stringify(["state", "terminal", "swarm"]),
+    );
+    render(<RightPane {...baseProps} />);
+
+    const handles = screen.getAllByRole("separator", { name: "Resize stacked panel height" });
+    expect(handles).toHaveLength(2);
+    fireEvent.keyDown(handles[1], { key: "ArrowUp" });
+
+    const stack = screen.getByRole("region", { name: "State panel" }).closest(".right-pane-card-stack") as HTMLElement;
+    expect(stack.style.gridTemplateRows.match(/minmax/g)).toHaveLength(3);
+    expect(stack.style.gridTemplateRows).not.toBe("minmax(0, 33fr) minmax(0, 33fr) minmax(0, 33fr)");
+    expect(JSON.parse(localStorage.getItem("pmharness.board.stackFractions.v2") || "{}")["state|terminal|swarm"]).toHaveLength(3);
+  });
+
+  it("opens a left column when a stacked card is dropped on the new-column zone", () => {
+    localStorage.setItem(
+      "pmharness.board.openCards",
+      JSON.stringify(["review", "swarm", "browser"]),
+    );
+    const onRequestMinWidth = vi.fn();
+    render(<RightPane {...baseProps} onRequestMinWidth={onRequestMinWidth} />);
+
+    const dataTransfer = { effectAllowed: "", setData: vi.fn(), getData: vi.fn(() => "browser") };
+    fireEvent.dragStart(screen.getByRole("button", { name: "Drag Browser panel" }), { dataTransfer });
+    fireEvent.drop(screen.getByRole("region", { name: "Drop to open a column" }), { dataTransfer });
+
+    expectCardGridPlacement("Review", "7 / span 6", "1");
+    expectCardGridPlacement("Swarm", "7 / span 6", "2");
+    expectCardGridPlacement("Browser", "1 / span 6", "1");
+    expect(onRequestMinWidth).toHaveBeenCalledWith(420);
+    expect(JSON.parse(localStorage.getItem("pmharness.board.columns.v1") || "[]")).toEqual([
+      ["review", "swarm"],
+      ["browser"],
+    ]);
+  });
+
+  it("keeps a drop on another card in the same stack", () => {
+    localStorage.setItem(
+      "pmharness.board.openCards",
+      JSON.stringify(["review", "swarm", "browser"]),
+    );
+    render(<RightPane {...baseProps} />);
+
+    const dataTransfer = { effectAllowed: "", setData: vi.fn(), getData: vi.fn(() => "browser") };
+    fireEvent.dragStart(screen.getByRole("button", { name: "Drag Browser panel" }), { dataTransfer });
+    fireEvent.drop(screen.getByRole("region", { name: "Review panel" }), { dataTransfer });
+
+    expectCardGridPlacement("Browser", "1 / span 12", "1");
+    expectCardGridPlacement("Review", "1 / span 12", "2");
+    expectCardGridPlacement("Swarm", "1 / span 12", "3");
+    expect(JSON.parse(localStorage.getItem("pmharness.board.columns.v1") || "[]")).toEqual([
+      ["browser", "review", "swarm"],
+    ]);
   });
 
   it("keeps stacked column pairs on independent height splits", () => {
     localStorage.setItem(
       "pmharness.board.openCards",
       JSON.stringify(["terminal", "swarm", "state", "review"]),
+    );
+    localStorage.setItem(
+      "pmharness.board.columns.v1",
+      JSON.stringify([["terminal", "swarm"], ["state", "review"]]),
     );
     localStorage.setItem(
       "pmharness.board.stackSplits.v1",

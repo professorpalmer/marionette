@@ -19,6 +19,7 @@ import {
 import type { GroupedItem, Item } from "../components/TranscriptList";
 import { createApplyStreamEvent } from "../components/conversation/streamEventHandler";
 import { flushTypewriterBuffer } from "../components/conversation/streamTypewriter";
+import { subscribeTaskProfile } from "../lib/taskProfileChrome";
 
 function makeApplyDeps(opts: {
   items: Item[];
@@ -271,6 +272,28 @@ describe("swarm terminal rows stay at the end of one investigation", () => {
       "swarm_pending",
       "thinking",
     ]);
+  });
+});
+
+describe("createApplyStreamEvent task_profile", () => {
+  it("publishes DEPTH chip from a live SSE task_profile frame", () => {
+    const state = {
+      items: [] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    const seen: string[] = [];
+    const unsub = subscribeTaskProfile((chip) => seen.push(chip.profile));
+    try {
+      const apply = createApplyStreamEvent(makeApplyDeps(state));
+      apply({
+        kind: "task_profile",
+        data: { profile: "micro", source: "heuristic" },
+      });
+      expect(seen).toEqual(["MICRO"]);
+    } finally {
+      unsub();
+    }
   });
 });
 

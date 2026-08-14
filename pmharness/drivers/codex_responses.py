@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import socket
 import time
 import uuid
 import urllib.error
@@ -47,6 +48,14 @@ _CODEX_LENGTH_CONTINUE = (
     "prior text. Finish the answer directly.]"
 )
 _CODEX_MAX_INCOMPLETE_RETRIES = 3
+# After a visible final_answer with no tools, do not wait forever for
+# response.completed. Codex keepalives reset a long socket timeout, which
+# left Electron on Still working until Stop sealed the already-buffered
+# summary. Drain a short idle for in-flight summary tokens, then finish.
+_POST_ANSWER_SLICE_SECONDS = 0.25
+_POST_ANSWER_IDLE_SECONDS = 0.5
+_POST_ANSWER_MAX_SECONDS = 2.0
+_POST_ANSWER_KEEPALIVE_LIMIT = 3
 _CONTENT_FILTER_MSG = (
     "Model declined to respond (content filter). Try rephrasing the request "
     "or narrowing the context."
@@ -440,6 +449,41 @@ def _delta_payload(
     return payload
 
 
+def _arm_post_answer_idle_timeout(resp_fp, seconds=_POST_ANSWER_SLICE_SECONDS):
+    """Arm a short read timeout so keepalives cannot hold the runner open.
+
+    Walks urllib / http.client wrappers to the socket. Returns True when a
+    timeout was set. Lists and test iterators have no socket (returns False).
+    """
+    candidates = [resp_fp]
+    seen = set()
+    while candidates:
+        obj = candidates.pop()
+        ident = id(obj)
+        if ident in seen or obj is None:
+            continue
+        seen.add(ident)
+        setter = getattr(obj, "settimeout", None)
+        if callable(setter):
+            try:
+                setter(seconds)
+                return True
+            except Exception:
+                pass
+        for attr in ("fp", "raw", "_sock", "socket"):
+            try:
+                inner = getattr(obj, attr, None)
+            except Exception:
+                inner = None
+            if inner is not None:
+                candidates.append(inner)
+    return False
+
+
+def _is_live_http_fp(resp_fp):
+    return hasattr(resp_fp, "fp") or hasattr(resp_fp, "raw")
+
+
 def _consume_codex_sse(
     resp_fp,
     *,
@@ -474,6 +518,7 @@ def _consume_codex_sse(
     terminal_incomplete_details: Any = None
     saw_terminal = False
     stream_error: Optional[str] = None
+    answer_item_done = False
 
     def _remember_item(
         item: dict,
@@ -520,14 +565,112 @@ def _consume_codex_sse(
             sid = stream_id_by_output_index.get(oi_int, "") or _codex_stream_id(None, oi_int)
         return sid, channel, oi_int
 
-    for raw_line in resp_fp:
+    def _seal_open_channels(channels, except_sid):
+        if on_stream_item_done is None:
+            return
+        want = set(channels)
+        for prev_sid, prev_ch in list(phase_by_item_id.items()):
+            if prev_ch in want and prev_sid and prev_sid != except_sid:
+                _safe_cb(on_stream_item_done, {"stream_id": prev_sid})
+        for oi, prev_ch in list(phase_by_output_index.items()):
+            if prev_ch not in want:
+                continue
+            prev_sid = stream_id_by_output_index.get(oi, "")
+            if prev_sid and prev_sid != except_sid:
+                _safe_cb(on_stream_item_done, {"stream_id": prev_sid})
+
+    post_answer_drain = False
+    drain_started = 0.0
+    last_meaningful = 0.0
+    keepalive_streak = 0
+
+    def _finish_tool_free_answer():
+        nonlocal saw_terminal, terminal_status
+        saw_terminal = True
+        terminal_status = "completed"
+        _seal_open_channels(("progress", "reasoning", "answer"), "")
+
+    def _note_answer_text():
+        """Only answer tokens extend the idle clock. Trailing summary must not."""
+        nonlocal last_meaningful, keepalive_streak
+        last_meaningful = time.monotonic()
+        keepalive_streak = 0
+
+    def _should_finish_drain():
+        if not post_answer_drain or has_tool_calls:
+            return False
+        now = time.monotonic()
+        if now - last_meaningful >= _POST_ANSWER_IDLE_SECONDS:
+            return True
+        if now - drain_started >= _POST_ANSWER_MAX_SECONDS:
+            return True
+        return False
+
+    def _drain_tick():
+        if _should_finish_drain():
+            _finish_tool_free_answer()
+            return True
+        return False
+
+    def _begin_post_answer_drain():
+        """Start the short post-answer drain. False means caller should stop."""
+        nonlocal post_answer_drain, drain_started, last_meaningful
+        nonlocal keepalive_streak
+        if has_tool_calls:
+            return True
+        if post_answer_drain:
+            return True
+        post_answer_drain = True
+        drain_started = time.monotonic()
+        last_meaningful = drain_started
+        keepalive_streak = 0
+        armed = _arm_post_answer_idle_timeout(resp_fp, _POST_ANSWER_SLICE_SECONDS)
+        if not armed and _is_live_http_fp(resp_fp):
+            # Cannot wake from keepalives — finish now rather than hang.
+            _finish_tool_free_answer()
+            return False
+        return True
+
+    line_iter = iter(resp_fp)
+    while True:
+        try:
+            raw_line = next(line_iter)
+        except StopIteration:
+            break
+        except (TimeoutError, socket.timeout):
+            if (
+                not has_tool_calls
+                and (answer_item_done or text_deltas or collected_items)
+            ):
+                _finish_tool_free_answer()
+                break
+            if not collected_items and not text_deltas:
+                return {
+                    "status": "failed",
+                    "output": [],
+                    "output_text": "",
+                    "usage": {},
+                    "error": "Codex Responses stream timed out",
+                }
+            break
+
         line = raw_line.decode("utf-8", "replace").strip() if isinstance(raw_line, bytes) else str(raw_line).strip()
         if not line or not line.startswith("data:"):
+            if post_answer_drain and not has_tool_calls:
+                keepalive_streak += 1
+                if keepalive_streak >= _POST_ANSWER_KEEPALIVE_LIMIT or _should_finish_drain():
+                    _finish_tool_free_answer()
+                    break
             continue
         data_str = line[5:].strip()
         if not data_str or data_str == "[DONE]":
             if data_str == "[DONE]":
                 break
+            if post_answer_drain and not has_tool_calls:
+                keepalive_streak += 1
+                if keepalive_streak >= _POST_ANSWER_KEEPALIVE_LIMIT or _should_finish_drain():
+                    _finish_tool_free_answer()
+                    break
             continue
         try:
             event = json.loads(data_str)
@@ -557,18 +700,13 @@ def _consume_codex_sse(
                 itype = str(item.get("type") or "")
                 if "function_call" in itype:
                     has_tool_calls = True
-                # Final-answer item start is a lifecycle barrier for open
-                # progress streams — seal them before answer deltas land.
-                if channel == "answer" and on_stream_item_done is not None:
-                    for prev_sid, prev_ch in list(phase_by_item_id.items()):
-                        if prev_ch == "progress" and prev_sid and prev_sid != sid:
-                            _safe_cb(on_stream_item_done, {"stream_id": prev_sid})
-                    for oi, prev_ch in list(phase_by_output_index.items()):
-                        if prev_ch != "progress":
-                            continue
-                        prev_sid = stream_id_by_output_index.get(oi, "")
-                        if prev_sid and prev_sid != sid:
-                            _safe_cb(on_stream_item_done, {"stream_id": prev_sid})
+                # Final-answer item start seals open progress AND reasoning
+                # so a short reply cannot leave thinking streaming:true while
+                # Codex keeps the SSE open for a trailing summary.
+                if channel == "answer":
+                    _seal_open_channels(("progress", "reasoning"), sid)
+            if _drain_tick():
+                break
             continue
 
         if "output_text.delta" in event_type or event_type == "response.output_text.delta":
@@ -600,11 +738,16 @@ def _consume_codex_sse(
                 has_tool_calls = True
             else:
                 text_deltas.append(delta_text)
+                _note_answer_text()
+                if not _begin_post_answer_drain():
+                    break
                 # Suppress anonymous mid-tool answer crumbs (legacy JSON
                 # envelopes). Identity-bearing final_answer streams must still
                 # paint after function_call items.
                 if not has_tool_calls or bool(sid) or channel == "answer":
                     _safe_cb(on_delta, payload)
+            if _drain_tick():
+                break
             continue
 
         if "function_call" in event_type:
@@ -630,10 +773,14 @@ def _consume_codex_sse(
                         channel="reasoning",
                     ),
                 )
+            if _drain_tick():
+                break
             continue
 
-        if event_type == "response.output_item.done":
+        if event_type in ("response.output_item.done", "response.output_text.done"):
             done_item = event.get("item")
+            sid = ""
+            _channel = ""
             if isinstance(done_item, dict):
                 collected_items.append(done_item)
                 out_idx = event.get("output_index")
@@ -645,8 +792,26 @@ def _consume_codex_sse(
                         done_item.get("id") or done_item.get("item_id"),
                         out_idx,
                     )
-                if sid:
-                    _safe_cb(on_stream_item_done, {"stream_id": sid})
+            else:
+                item_id = event.get("item_id") or event.get("id")
+                out_idx = event.get("output_index")
+                sid, _channel, _oi = _resolve_channel(
+                    item_id=item_id, output_index=out_idx,
+                )
+                if not _channel:
+                    _channel = "answer"
+            if sid:
+                _safe_cb(on_stream_item_done, {"stream_id": sid})
+            if _channel == "answer" or (
+                event_type == "response.output_text.done"
+                and bool(text_deltas)
+                and _channel not in ("progress", "tool")
+            ):
+                answer_item_done = True
+                if not _begin_post_answer_drain():
+                    break
+            if _drain_tick():
+                break
             continue
 
         if event_type in _TERMINAL_EVENT_TYPES:
@@ -671,6 +836,11 @@ def _consume_codex_sse(
                 terminal_status = terminal_status or "incomplete"
             elif event_type == "response.failed":
                 terminal_status = terminal_status or "failed"
+            break
+
+        # Luna keeps the SSE open with in_progress / heartbeat JSON after the
+        # visible answer. Those are data: events, so comment-streak never fires.
+        if _drain_tick():
             break
 
     if stream_error:
