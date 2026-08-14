@@ -142,6 +142,8 @@ class McpManager:
         self._tools: Dict[str, McpTool] = {}   # qualified name -> tool
         self._lock = threading.Lock()
         self._errors: Dict[str, str] = {}
+        # Names the operator explicitly stopped (lazy-boot idle until cleared).
+        self._operator_stopped = set()
         # Generation token per server: stop/refresh bumps it so an in-flight
         # refresh that finishes after a concurrent stop does not resurrect
         # a client the operator just halted.
@@ -367,6 +369,7 @@ class McpManager:
                 raise McpError(f"MCP server '{name}' start superseded by stop/refresh")
             self._clients[name] = client
             self._errors.pop(name, None)
+            self._operator_stopped.discard(name)
             for t in tools:
                 self._tools[t.qualified] = t
             return list(tools)
@@ -374,6 +377,7 @@ class McpManager:
     def stop_server(self, name: str) -> None:
         with self._lock:
             self._lifecycle_gen[name] = self._lifecycle_gen.get(name, 0) + 1
+            self._operator_stopped.add(name)
             c = self._clients.pop(name, None)
             for q in [q for q, t in self._tools.items() if t.server == name]:
                 del self._tools[q]
@@ -552,11 +556,21 @@ class McpManager:
             clients = dict(self._clients)
             tools = list(self._tools.values())
             errors = dict(self._errors)
+            operator_stopped = set(self._operator_stopped)
             invocations = {k: dict(v) for k, v in self._last_invocations.items()}
         out = []
         for name, server in cfg.items():
             client = clients.get(name)
             alive = client is not None and client.alive
+            err = errors.get(name, "")
+            if alive:
+                lifecycle = "running"
+            elif err:
+                lifecycle = "error"
+            elif name in operator_stopped:
+                lifecycle = "stopped"
+            else:
+                lifecycle = "idle"
             ntools = (
                 sum(1 for t in tools if t.server == name)
                 if alive
@@ -566,8 +580,8 @@ class McpManager:
             row = {
                 "name": name, "command": server.get("command", "") or server.get("url", ""),
                 "transport": "http" if server.get("url") else "stdio",
-                "running": alive, "tools": ntools,
-                "error": errors.get(name, ""),
+                "running": alive, "lifecycle": lifecycle, "tools": ntools,
+                "error": err,
             }
             last = invocations.get(name)
             if last:

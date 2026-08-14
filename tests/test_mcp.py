@@ -112,9 +112,44 @@ def test_lazy_boot_status_idle_and_discovered_empty(tmp_path):
     assert len(st) == 1
     assert st[0]["name"] == "fake"
     assert st[0]["running"] is False
+    assert st[0]["lifecycle"] == "idle"
     assert st[0]["tools"] == 0
     assert not st[0].get("error")
     assert m.discovered_tools() == []
+
+
+def test_status_lifecycle_running_stopped_and_error(tmp_path):
+    """lifecycle distinguishes idle, running, operator-stopped, and start errors."""
+    cfgp = tmp_path / "mcp.json"
+    m = McpManager(config_path=str(cfgp))
+    m.save_server("fake", {"command": sys.executable, "args": [FAKE]})
+    m.save_server("bad", {"command": "no-such-cmd-xyz-lifecycle"})
+    try:
+        idle = next(s for s in m.status() if s["name"] == "fake")
+        assert idle["lifecycle"] == "idle"
+        assert idle["running"] is False
+
+        m.start_server("fake")
+        running = next(s for s in m.status() if s["name"] == "fake")
+        assert running["lifecycle"] == "running"
+        assert running["running"] is True
+
+        m.stop_server("fake")
+        stopped = next(s for s in m.status() if s["name"] == "fake")
+        assert stopped["lifecycle"] == "stopped"
+        assert stopped["running"] is False
+        assert not stopped["error"]
+
+        try:
+            m.start_server("bad")
+        except McpError:
+            pass
+        errored = next(s for s in m.status() if s["name"] == "bad")
+        assert errored["lifecycle"] == "error"
+        assert errored["running"] is False
+        assert errored["error"]
+    finally:
+        m.stop_all()
 
 
 def test_ensure_server_starts_only_when_not_alive(tmp_path):
