@@ -164,6 +164,27 @@ def _truncate(text: str, limit: int = _MAX_DESC_CHARS) -> str:
     return text[: limit - 3].rstrip() + "..."
 
 
+def _profile_compacts_descriptions(profile: Optional[str]) -> bool:
+    """MICRO/STANDARD shrink tool descriptions; DEEP/None keep full text."""
+    try:
+        from .task_profile import MICRO, STANDARD, normalize_profile
+
+        return normalize_profile(profile) in (MICRO, STANDARD)
+    except Exception as exc:
+        _diag_note("tool_discovery.profile_compacts", exc)
+        return False
+
+
+def _compact_description(text: str, limit: int = _MAX_DESC_CHARS) -> str:
+    """First sentence (split on ``. ``), then hard-cap at ``limit`` chars."""
+    text = (text or "").strip()
+    if not text:
+        return ""
+    if ". " in text:
+        text = text.split(". ", 1)[0]
+    return _truncate(text, limit)
+
+
 @dataclass
 class CatalogEntry:
     tool_id: str
@@ -234,12 +255,20 @@ class ToolCatalog:
             include_search_tools=discovery_enabled(),
         )
         entries: Dict[str, CatalogEntry] = {}
+        compact = _profile_compacts_descriptions(self._last_profile)
         for item in schema:
             fn = item.get("function") or {}
             name = fn.get("name") or ""
             if not name:
                 continue
-            desc = _normalize_path_text(fn.get("description") or "")
+            raw_desc = _normalize_path_text(fn.get("description") or "")
+            desc = _compact_description(raw_desc) if compact else raw_desc
+            schema_entry = item
+            if desc != raw_desc:
+                schema_entry = {
+                    **item,
+                    "function": {**fn, "description": desc},
+                }
             if name.startswith("mcp_"):
                 qualified = _parse_mcp_wire_name(name)
                 tool_id = f"mcp:{qualified}"
@@ -259,7 +288,7 @@ class ToolCatalog:
                 description=desc,
                 source=source,
                 hidden=hidden,
-                schema_entry=item,
+                schema_entry=schema_entry,
                 search_text=search_text,
             )
 
