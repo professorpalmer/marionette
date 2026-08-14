@@ -1015,11 +1015,23 @@ export default function ComposerDock({
             )}
             {composerBusy
               ? <>
-                  <button onClick={stop} className="px-2 h-[20px] rounded-md bg-risk/15 text-risk text-[10.5px] font-medium flex items-center gap-1"><Square size={9} />Stop</button>
-                  <button onClick={() => send()} disabled={editBusy || transcriptStale || (!input.trim() && attachedImages.length === 0)}
-                    title="Steer: redirect the current turn now (Enter). Cmd/Ctrl+Enter or Queue = run after this turn finishes. Alt+Enter or Interrupt = stop this turn, then run this prompt next."
-                    className="px-2.5 h-[20px] rounded-md bg-accent text-black/90 text-[10.5px] font-semibold flex items-center gap-1 hover:brightness-110 disabled:opacity-40 disabled:cursor-default transition">
-                    <Send size={9} />Steer</button>
+                  {input.trim() ? (
+                    <button
+                      onClick={() => send()}
+                      disabled={editBusy || transcriptStale}
+                      title="Steer: redirect the current turn now (Enter). Cmd/Ctrl+Enter or Queue = run after this turn finishes. Alt+Enter or Interrupt = stop this turn, then run this prompt next."
+                      className="px-2 h-[20px] rounded-md bg-panel2/60 border border-edge/60 text-faint hover:text-muted hover:border-edge2 text-[10.5px] font-medium flex items-center gap-1 transition disabled:opacity-40 disabled:cursor-default"
+                    >
+                      <Send size={9} />Steer
+                    </button>
+                  ) : null}
+                  <button
+                    onClick={stop}
+                    className="px-2.5 h-[20px] rounded-md bg-risk/15 text-risk text-[10.5px] font-semibold flex items-center gap-1 hover:brightness-110"
+                    title="Stop this turn. Does not steer or queue an empty prompt."
+                  >
+                    <Square size={9} />Stop
+                  </button>
                 </>
               : <button onClick={() => send()} disabled={editBusy || transcriptStale || (!input.trim() && attachedImages.length === 0)}
                   className="px-2.5 h-[20px] rounded-md bg-accent text-black/90 text-[10.5px] font-semibold flex items-center gap-1 hover:brightness-110 disabled:opacity-40 disabled:cursor-default transition">

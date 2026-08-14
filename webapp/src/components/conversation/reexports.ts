@@ -169,6 +169,7 @@ export {
   composerEnterBusy,
   executeSendGate,
   shouldBlockEmptySend,
+  shouldSteerWhileBusy,
   formatHelpSlashReply,
   formatCompactCompleteMessage,
   formatCompactErrorMessage,

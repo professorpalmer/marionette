@@ -157,6 +157,7 @@ import {
   runEditMessageFlow,
   runStopFlow,
   shouldBlockEmptySend,
+  shouldSteerWhileBusy,
   shouldClearSteerDraftOnResult,
   showStandaloneEditNoticeDismiss,
   userOrdinalBeforeIndex,
@@ -2196,6 +2197,21 @@ describe("composerSend module", () => {
     expect(
       composerEnterAction({ busy: false, metaOrCtrl: false, altKey: true }),
     ).toBe("send");
+    // Empty composer while busy must not invent a steer.
+    expect(
+      composerEnterAction({ busy: true, metaOrCtrl: false, hasText: false }),
+    ).toBe("noop");
+    expect(
+      composerEnterAction({
+        busy: true,
+        metaOrCtrl: false,
+        altKey: true,
+        hasText: false,
+      }),
+    ).toBe("noop");
+    expect(shouldSteerWhileBusy({ text: "" })).toBe(false);
+    expect(shouldSteerWhileBusy({ text: "   " })).toBe(false);
+    expect(shouldSteerWhileBusy({ text: "pivot" })).toBe(true);
     expect(
       executeSendGate({ transcriptStale: true, resume: false, userStopped: false }),
     ).toBe("stale");

@@ -75,6 +75,7 @@ import {
   runStopFlow,
   shouldBlockEmptySend,
   shouldClearSteerDraftOnResult,
+  shouldSteerWhileBusy,
   userOrdinalBeforeIndex,
 } from "./conversation/composerSend";
 import { runCommandPaletteAction } from "../lib/commandPalette";
@@ -1872,7 +1873,11 @@ export default function Conversation({
         busy,
         metaOrCtrl: e.metaKey || e.ctrlKey,
         altKey: e.altKey,
+        hasText: Boolean(input.trim()),
       });
+      if (enterAction === "noop") {
+        return;
+      }
       if (enterAction === "queue") {
         handleQueueAdd();
         return;
@@ -2638,6 +2643,9 @@ export default function Conversation({
     setEditNotice(editNoticeAfterSend(false));
 
     if (composerBusy && !resubmitEdit) {
+      // Images-only is a new-turn send. Mid-turn steer/interrupt needs words
+      // or Stop invents a phantom steer and then drops it as an error.
+      if (!shouldSteerWhileBusy({ text: msg })) return;
       // Snapshot the attached image paths BEFORE the async call so we never
       // read a stale/cleared closure value and images are never silently
       // dropped from the steer/interrupt request. Clear the draft only on

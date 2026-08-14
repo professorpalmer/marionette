@@ -20,15 +20,23 @@ export function composerEnterBusy(opts: {
 /**
  * Enter while busy: Cmd/Ctrl+Enter queues; Alt+Enter interrupts then queues
  * the typed prompt; plain Enter steers/sends. Meta/ctrl wins over alt.
+ * Empty composer while busy is a no-op — never invent a steer.
  */
 export function composerEnterAction(opts: {
   busy: boolean;
   metaOrCtrl: boolean;
   altKey?: boolean;
-}): "queue" | "send" | "interrupt" {
+  hasText?: boolean;
+}): "queue" | "send" | "interrupt" | "noop" {
+  if (opts.busy && opts.hasText === false) return "noop";
   if (opts.busy && opts.metaOrCtrl) return "queue";
   if (opts.busy && opts.altKey) return "interrupt";
   return "send";
+}
+
+/** Mid-turn steer/interrupt requires typed text. Images-only is a new turn. */
+export function shouldSteerWhileBusy(opts: { text: string }): boolean {
+  return Boolean(opts.text.trim());
 }
 
 /**
