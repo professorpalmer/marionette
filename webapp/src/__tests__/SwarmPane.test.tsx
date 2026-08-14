@@ -203,6 +203,44 @@ describe("SwarmPane pin attribution", () => {
     expect(screen.queryByText("Router pick")).not.toBeInTheDocument();
   });
 
+  it("does not paint a missing routing estimate as $0", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        status: "running",
+        artifacts_complete: true,
+        artifacts: [
+          {
+            type: "ROUTING",
+            headline: "",
+            task_id: "task-1",
+            model: "agentic/meta/muse-spark-1.1",
+            policy: "explicit_pin",
+            provider: "openrouter",
+            adapter: "agentic",
+            created_by: "router",
+          },
+        ],
+        tasks: [
+          {
+            id: "task-1",
+            status: "running",
+            role: "Worker",
+            instruction: "",
+            adapter: "agentic",
+          },
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Explicit pin · not auto-routed")).toBeInTheDocument();
+    });
+    expect(screen.getByText("—")).toBeInTheDocument();
+    expect(screen.queryByText("$0")).not.toBeInTheDocument();
+  });
+
   it("fail-closes missing policy as Pin attribution unknown (not Router pick)", async () => {
     mockSwarmLive.mockResolvedValue(
       liveJob({
