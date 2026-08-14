@@ -1408,14 +1408,13 @@ class SendLoopMixin:
 
             # 3. No actions => the pilot is done talking. Before yielding back to
             # the user, drain any pending steer. A steer that arrives while the
-            # model is finalizing has no tool result to piggyback on (the last
-            # history message is this assistant turn), so the mid-spree path in
-            # _check_and_inject_steer cannot deliver it. We deliver it here as a
-            # genuine next-turn user message (valid assistant -> user alternation)
-            # and re-ask the model instead of terminating. This is the second of
-            # the two steer delivery points (the other being the mid-spree
-            # piggyback inside _check_and_inject_steer); together they guarantee
-            # any enqueued steer is eventually delivered and never stranded.
+            # model is finalizing has a safe assistant->user boundary (the last
+            # history message is this assistant turn). drain_idle_turn delivers
+            # it as a first-class user message and re-asks the model instead of
+            # terminating. Mid-spree / step-start inject in
+            # _check_and_inject_steer is the other delivery point; together they
+            # guarantee any enqueued steer is eventually delivered and never
+            # stranded.
             if not turn.has_actions:
                 synthesis_decision = post_swarm_synthesis_decision(
                     synchronous_swarms=synchronous_swarms,

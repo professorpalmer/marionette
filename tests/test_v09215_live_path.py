@@ -184,10 +184,12 @@ def test_steer_inject_includes_task_transaction_block(tmp_path):
     s.enqueue_steer("course correct")
     events = list(s._check_and_inject_steer())
     assert any(e.kind == "steer" for e in events)
-    injected = s._history[-1]["content"]
-    assert "course correct" in injected
-    assert "## Task transaction" in injected
-    assert "note.txt" in injected
+    injected = s._history[-1]
+    assert injected.get("role") == "user"
+    assert "course correct" in (injected.get("content") or "")
+    assert "[OUT-OF-BAND USER MESSAGE" not in (injected.get("content") or "")
+    assert "## Task transaction" in (injected.get("content") or "")
+    assert "note.txt" in (injected.get("content") or "")
 
 
 def test_session_steer_interrupt_delivery_stops_then_queues():

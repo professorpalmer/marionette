@@ -193,13 +193,13 @@ export default function Conversation({
   // SSE ownership: ignore late events after detach / session switch.
   const streamSessionIdRef = useRef<string | null>(null);
   const streamGenRef = useRef(0);
-  // Mid-turn reattach: last applied /api/chat/events ring cursor (incremental).
+  // Mid-turn reattach: last applied /api/session/events store cursor (unified).
   const lastAppliedCursorRef = useRef(0);
-  // Ring generation from the last successful chatEvents replay (pin subsequent polls).
+  // Ring generation from the last successful stream event (pin subsequent polls).
   const ringGenerationRef = useRef<number | undefined>(undefined);
-  // setInterval handle for light chatEvents poll while detached-busy (no EventSource).
+  // setInterval handle for the single store-event cursor poll.
   const chatEventsPollTimerRef = useRef<number | null>(null);
-  // Cancel for live ``/api/chat/events?watch=1`` reattach (preferred over 1Hz poll).
+  // Legacy live-watch cancel slot (store cursor owns reattach; kept for armed()).
   const chatEventsLiveCancelRef = useRef<null | (() => void)>(null);
   // Shared live-SSE + reattach event applicator (assigned where handlers live).
   const applyStreamEventRef = useRef<(ev: { kind: string; data?: any }) => void>(() => {});
@@ -1199,6 +1199,7 @@ export default function Conversation({
     detachedBusyRef,
     userStoppedRef,
     turnSettledRef,
+    abandonStaleLocalStreamRef,
     resumeQueuedRef,
     approvedCommandRetryRef,
     runnerBusyPollGenRef,

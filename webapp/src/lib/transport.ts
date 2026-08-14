@@ -40,6 +40,22 @@ export type ChatEventReplay = {
   retained?: number;
 };
 
+/** One store event from GET /api/session/events (unified cursor). */
+export type StoreEvent = {
+  id: number;
+  kind: "stream" | "runners" | "ring_miss" | string;
+  data: any;
+  session_id?: string;
+};
+
+/** Payload for GET /api/session/events (read_events_since). */
+export type StoreEventsSince = {
+  ok?: boolean;
+  session_id: string;
+  cursor: number;
+  events: StoreEvent[];
+};
+
 /** Build the tokened URL for chat event replay / reattach. */
 export function chatEventsPath(opts: {
   session?: string;
@@ -55,6 +71,20 @@ export function chatEventsPath(opts: {
   if (opts.watch) params.set("watch", "1");
   const q = params.toString();
   return withToken(`/api/chat/events${q ? `?${q}` : ""}`);
+}
+
+/** Build the tokened URL for the unified session store event cursor. */
+export function sessionEventsPath(opts: {
+  session?: string;
+  since?: number;
+  generation?: number;
+} = {}): string {
+  const params = new URLSearchParams();
+  if (opts.session) params.set("session", opts.session);
+  if (opts.since != null) params.set("since", String(opts.since));
+  if (opts.generation != null) params.set("generation", String(opts.generation));
+  const q = params.toString();
+  return withToken(`/api/session/events${q ? `?${q}` : ""}`);
 }
 
 /** Live Electron preload bridge (do not freeze at module import). */

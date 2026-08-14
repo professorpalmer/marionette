@@ -22,7 +22,8 @@ import {
 } from "../components/Conversation";
 import { api } from "../lib/api";
 import type { Item } from "../components/TranscriptList";
-import { chatEventsPath } from "../lib/transport";
+import { chatEventsPath, sessionEventsPath } from "../lib/transport";
+import { nextStoreCursor, shouldApplyStoreEvent } from "../components/conversation/storeEvents";
 
 /**
  * Mid-turn chatEvents reattach contracts (cursor + poll gating).
@@ -345,33 +346,48 @@ describe("detached-busy mid-tool-batch reattach", () => {
     const transcriptFpRef = { current: "" };
     const chatEventsPollTimerRef = { current: null as number | null };
 
-    const chatEvents = vi.spyOn(api, "chatEvents")
+    const readEventsSince = vi.spyOn(api, "readEventsSince")
       .mockResolvedValueOnce({
-        ok: false,
-        missed: true,
-        available: false,
-        code: "cursor_gap",
-        generation: 2,
-        cursor: 9,
-        events: [],
-        retained: 3,
+        ok: true,
+        session_id: "sess-mid",
+        cursor: 2,
+        events: [{
+          id: 2,
+          kind: "ring_miss",
+          data: {
+            ok: false,
+            missed: true,
+            available: false,
+            code: "cursor_gap",
+            generation: 2,
+            cursor: 9,
+          },
+        }],
       } as any)
       .mockResolvedValueOnce({
         ok: true,
-        missed: false,
-        available: true,
-        generation: 2,
-        cursor: 9,
+        session_id: "sess-mid",
+        cursor: 4,
         events: [
           {
-            cursor: 7,
-            kind: "action_start",
-            data: { id: "a9", goal: "tail tool", kind: "read_file" },
+            id: 3,
+            kind: "stream",
+            data: {
+              cursor: 7,
+              kind: "action_start",
+              data: { id: "a9", goal: "tail tool", kind: "read_file" },
+              generation: 2,
+            },
           },
           {
-            cursor: 8,
-            kind: "action_start",
-            data: { id: "a10", goal: "batch sibling", kind: "read_file" },
+            id: 4,
+            kind: "stream",
+            data: {
+              cursor: 8,
+              kind: "action_start",
+              data: { id: "a10", goal: "batch sibling", kind: "read_file" },
+              generation: 2,
+            },
           },
         ],
       } as any);
@@ -431,10 +447,10 @@ describe("detached-busy mid-tool-batch reattach", () => {
 
     const keepPolling = await pullChatEvents();
     expect(keepPolling).toBe(true);
-    expect(chatEvents).toHaveBeenCalledTimes(2);
-    // First miss used the stale since; retry after hydrate uses since=0.
-    expect(chatEvents.mock.calls[0][0]).toMatchObject({ since: 1, generation: 2 });
-    expect(chatEvents.mock.calls[1][0]).toMatchObject({ since: 0, generation: 2 });
+    expect(readEventsSince).toHaveBeenCalledTimes(2);
+    expect(readEventsSince.mock.calls[0][0]).toMatchObject({ since: 1, generation: 2 });
+    // Retry advances past the ring_miss store id (not ring since=0).
+    expect(readEventsSince.mock.calls[1][0]).toMatchObject({ since: 2, generation: 2 });
     expect(applied).toEqual(["action_start", "action_start"]);
     const cardIds = items
       .filter((i): i is Extract<Item, { kind: "card" }> => i.kind === "card")
@@ -442,8 +458,8 @@ describe("detached-busy mid-tool-batch reattach", () => {
     expect(cardIds).toContain("a1");
     expect(cardIds).toContain("a9");
     expect(cardIds).toContain("a10");
-    // Advances to the replay high-water (not a synthesized mid-gap cursor).
-    expect(lastAppliedCursorRef.current).toBe(9);
+    // Advances to the store high-water cursor.
+    expect(lastAppliedCursorRef.current).toBe(4);
     expect(ringGenerationRef.current).toBe(2);
     expect(detachedBusyRef.current).toBe(true);
   });
@@ -456,15 +472,22 @@ describe("detached-busy mid-tool-batch reattach", () => {
     const ringGenerationRef = { current: 3 as number | undefined };
     const detachedBusyRef = { current: true };
 
-    const chatEvents = vi.spyOn(api, "chatEvents").mockResolvedValue({
-      ok: false,
-      missed: true,
-      available: false,
-      code: "ring_miss",
-      generation: 0,
-      cursor: 0,
-      events: [],
-      retained: 0,
+    const readEventsSince = vi.spyOn(api, "readEventsSince").mockResolvedValue({
+      ok: true,
+      session_id: "sess-long",
+      cursor: 41,
+      events: [{
+        id: 41,
+        kind: "ring_miss",
+        data: {
+          ok: false,
+          missed: true,
+          available: false,
+          code: "ring_miss",
+          generation: 0,
+          cursor: 0,
+        },
+      }],
     } as any);
 
     vi.spyOn(api, "sessionTranscript").mockResolvedValue({
@@ -514,9 +537,9 @@ describe("detached-busy mid-tool-batch reattach", () => {
 
     const keepPolling = await pullChatEvents();
     expect(keepPolling).toBe(true);
-    expect(chatEvents).toHaveBeenCalledTimes(1);
+    expect(readEventsSince).toHaveBeenCalledTimes(1);
     expect(applied).toEqual([]);
-    expect(lastAppliedCursorRef.current).toBe(0);
+    expect(lastAppliedCursorRef.current).toBe(41);
     expect(ringGenerationRef.current).toBeUndefined();
     expect(detachedBusyRef.current).toBe(true);
     expect(
@@ -555,15 +578,22 @@ describe("detached-busy mid-tool-batch reattach", () => {
     ];
     const itemsRef = { current: items };
 
-    vi.spyOn(api, "chatEvents").mockResolvedValue({
-      ok: false,
-      missed: true,
-      available: false,
-      code: "ring_miss",
-      generation: 0,
-      cursor: 0,
-      events: [],
-      retained: 0,
+    vi.spyOn(api, "readEventsSince").mockResolvedValue({
+      ok: true,
+      session_id: "sess-appr",
+      cursor: 6,
+      events: [{
+        id: 6,
+        kind: "ring_miss",
+        data: {
+          ok: false,
+          missed: true,
+          available: false,
+          code: "ring_miss",
+          generation: 0,
+          cursor: 0,
+        },
+      }],
     } as any);
 
     // Equal card count, no approval on disk — merge must still preserve pending.
@@ -733,6 +763,19 @@ describe("Wave 4 command-job reattach fences", () => {
       cachedSessionId: "sess-b",
       reattachSid: "sess-a",
     })).toBe(false);
+    expect(shouldApplyStoreEvent({
+      streamGen: 2,
+      subscriptionGen: 2,
+      cachedSessionId: "sess-a",
+      subscriptionSid: "sess-a",
+    })).toBe(true);
+    expect(shouldApplyStoreEvent({
+      streamGen: 2,
+      subscriptionGen: 2,
+      cachedSessionId: "sess-b",
+      subscriptionSid: "sess-a",
+    })).toBe(false);
+    expect(nextStoreCursor(0, [{ id: 1 }, { id: 3 }], 3)).toBe(3);
   });
 
   it("drops late ring frames after a session switch (no cross-session merge)", async () => {
@@ -740,31 +783,34 @@ describe("Wave 4 command-job reattach fences", () => {
     const cachedSessionIdRef = { current: "sess-a" as string | null };
     const streamGenRef = { current: 1 };
 
-    vi.spyOn(api, "chatEvents").mockImplementation(async () => {
+    vi.spyOn(api, "readEventsSince").mockImplementation(async () => {
       // Session switch lands while the request is in flight.
       cachedSessionIdRef.current = "sess-b";
       streamGenRef.current = 2;
       return {
         ok: true,
-        missed: false,
-        available: true,
-        generation: 1,
+        session_id: "sess-a",
         cursor: 4,
         events: [
           {
-            cursor: 3,
-            kind: "action_result",
+            id: 3,
+            kind: "stream",
             data: {
-              id: "a-stale",
-              status: "completed",
-              job_id: "local-cmd-stale",
-              message: "must not apply",
+              cursor: 3,
+              kind: "action_result",
+              data: {
+                id: "a-stale",
+                status: "completed",
+                job_id: "local-cmd-stale",
+                message: "must not apply",
+              },
+              generation: 1,
             },
           },
           {
-            cursor: 4,
-            kind: "assistant_done",
-            data: {},
+            id: 4,
+            kind: "stream",
+            data: { cursor: 4, kind: "assistant_done", data: {}, generation: 1 },
           },
         ],
       } as any;
@@ -834,14 +880,15 @@ describe("Wave 4 command-job reattach fences", () => {
       },
     };
 
-    vi.spyOn(api, "chatEvents")
+    vi.spyOn(api, "readEventsSince")
       .mockResolvedValueOnce({
         ok: true,
-        missed: false,
-        available: true,
-        generation: 1,
-        cursor: 8,
-        events: [frame, frame],
+        session_id: "sess-dup",
+        cursor: 2,
+        events: [
+          { id: 1, kind: "stream", data: { ...frame, generation: 1 } },
+          { id: 2, kind: "stream", data: { ...frame, generation: 1 } },
+        ],
       } as any);
 
     const { pullChatEvents } = createChatEventsReattach({
@@ -891,7 +938,7 @@ describe("Wave 4 command-job reattach fences", () => {
   });
 });
 
-describe("mid-turn live chatEvents watch reattach", () => {
+describe("mid-turn store-event cursor reattach", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.useRealTimers();
@@ -958,65 +1005,18 @@ describe("mid-turn live chatEvents watch reattach", () => {
     };
   }
 
-  it("opens live watch path on busy reattach (not 1Hz poll first)", async () => {
-    const deps = reattachDeps();
-    let liveHandlers: {
-      onEvent: (e: any) => void;
-      onDone?: () => void;
-      onError?: (e: any) => void;
-    } | null = null;
-    const live = vi.spyOn(api, "chatEventsLive").mockImplementation(
-      (_opts, onEvent, onDone, onError) => {
-        liveHandlers = { onEvent, onDone, onError };
-        return () => {};
-      },
-    );
-    const chatEvents = vi.spyOn(api, "chatEvents");
-    vi.spyOn(api, "getSessionState").mockResolvedValue({
-      runners: { "sess-live": "running" },
-    } as any);
-
-    const { startChatEventsReattach } = createChatEventsReattach(deps as any);
-    await startChatEventsReattach();
-
-    expect(live).toHaveBeenCalledTimes(1);
-    expect(live.mock.calls[0][0]).toMatchObject({
-      session: "sess-live",
-      since: 0,
-      generation: 1,
-    });
-    expect(deps.chatEventsLiveCancelRef.current).not.toBeNull();
-    expect(deps.chatEventsPollTimerRef.current).toBeNull();
-    expect(chatEvents).not.toHaveBeenCalled();
-
-    liveHandlers!.onEvent({
-      kind: "message_delta",
-      data: { text: "hi" },
-      cursor: 4,
-    });
-    expect(deps.applied).toEqual(["message_delta"]);
-    expect(deps.lastAppliedCursorRef.current).toBe(4);
-  });
-
-  it("falls back to 1Hz poll when live watch open fails", async () => {
+  it("arms store cursor poll on busy reattach (not live watch)", async () => {
     vi.useFakeTimers();
     const deps = reattachDeps();
-    vi.spyOn(api, "chatEventsLive").mockImplementation(
-      (_opts, _onEvent, _onDone, onError) => {
-        queueMicrotask(() => onError?.(new Error("stream /api/chat/events -> 409")));
-        return () => {};
-      },
-    );
-    const chatEvents = vi.spyOn(api, "chatEvents").mockResolvedValue({
+    const live = vi.spyOn(api, "chatEventsLive");
+    const readEventsSince = vi.spyOn(api, "readEventsSince").mockResolvedValue({
       ok: true,
-      missed: false,
-      available: true,
-      generation: 1,
-      cursor: 2,
+      session_id: "sess-live",
+      cursor: 4,
       events: [{
-        cursor: 2,
-        kind: "message_delta",
-        data: { text: "fallback" },
+        id: 4,
+        kind: "stream",
+        data: { cursor: 4, kind: "message_delta", data: { text: "hi" }, generation: 1 },
       }],
     } as any);
     vi.spyOn(api, "getSessionState").mockResolvedValue({
@@ -1025,74 +1025,74 @@ describe("mid-turn live chatEvents watch reattach", () => {
 
     const { startChatEventsReattach } = createChatEventsReattach(deps as any);
     await startChatEventsReattach();
-    // Drain live onError microtask + the first poll pull; do not run the
-    // interval forever (detached-busy keeps shouldPollChatEvents true).
-    await Promise.resolve();
     await Promise.resolve();
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(chatEvents).toHaveBeenCalled();
-    expect(deps.applied).toContain("message_delta");
+    expect(live).not.toHaveBeenCalled();
+    expect(readEventsSince).toHaveBeenCalled();
+    expect(readEventsSince.mock.calls[0][0]).toMatchObject({
+      session: "sess-live",
+      since: 0,
+      generation: 1,
+    });
     expect(deps.chatEventsLiveCancelRef.current).toBeNull();
     expect(deps.chatEventsPollTimerRef.current).not.toBeNull();
+    expect(deps.applied).toEqual(["message_delta"]);
+    expect(deps.lastAppliedCursorRef.current).toBe(4);
   });
 
-  it("drops live frames after session switch (no cross-session bleed)", async () => {
+  it("drops store stream events after session switch (no cross-session bleed)", async () => {
     const deps = reattachDeps();
-    let onEvent: ((e: any) => void) | null = null;
-    vi.spyOn(api, "chatEventsLive").mockImplementation((_opts, handler) => {
-      onEvent = handler;
-      return () => {};
+    vi.spyOn(api, "readEventsSince").mockImplementation(async () => {
+      deps.cachedSessionIdRef.current = "sess-other";
+      deps.streamGenRef.current = 2;
+      return {
+        ok: true,
+        session_id: "sess-live",
+        cursor: 9,
+        events: [{
+          id: 9,
+          kind: "stream",
+          data: {
+            cursor: 9,
+            kind: "action_result",
+            data: { id: "stale", status: "completed" },
+            generation: 1,
+          },
+        }],
+      } as any;
     });
     vi.spyOn(api, "getSessionState").mockResolvedValue({
       runners: { "sess-live": "running" },
     } as any);
 
-    const { startChatEventsReattach } = createChatEventsReattach(deps as any);
-    await startChatEventsReattach();
-
-    // Session switch bumps gen + sid fence before late live frames arrive.
-    deps.cachedSessionIdRef.current = "sess-other";
-    deps.streamGenRef.current = 2;
-    onEvent!({
-      kind: "action_result",
-      data: { id: "stale", status: "completed" },
-      cursor: 9,
-    });
+    const { pullChatEvents } = createChatEventsReattach(deps as any);
+    const keep = await pullChatEvents();
+    expect(keep).toBe(false);
     expect(deps.applied).toEqual([]);
-    expect(deps.lastAppliedCursorRef.current).toBe(0);
   });
 
-  it("settles detached-busy on live terminal without arming poll", async () => {
+  it("settles detached-busy on store terminal while keeping poll armed", async () => {
     const deps = reattachDeps();
-    let handlers: {
-      onEvent: (e: any) => void;
-      onDone?: () => void;
-    } | null = null;
-    vi.spyOn(api, "chatEventsLive").mockImplementation(
-      (_opts, onEvent, onDone) => {
-        handlers = { onEvent, onDone };
-        return () => {};
-      },
-    );
-    const chatEvents = vi.spyOn(api, "chatEvents");
-    vi.spyOn(api, "getSessionState").mockResolvedValue({
-      runners: { "sess-live": "running" },
+    vi.spyOn(api, "readEventsSince").mockResolvedValue({
+      ok: true,
+      session_id: "sess-live",
+      cursor: 5,
+      events: [{
+        id: 5,
+        kind: "stream",
+        data: { cursor: 5, kind: "assistant_done", data: {}, generation: 1 },
+      }],
     } as any);
 
-    const { startChatEventsReattach } = createChatEventsReattach(deps as any);
-    await startChatEventsReattach();
-    handlers!.onEvent({ kind: "assistant_done", data: {}, cursor: 5 });
-    handlers!.onDone?.();
-
+    const { pullChatEvents } = createChatEventsReattach(deps as any);
+    const keep = await pullChatEvents();
     expect(deps.applied).toEqual(["assistant_done"]);
     expect(deps.detachedBusyRef.current).toBe(false);
-    expect(deps.chatEventsLiveCancelRef.current).toBeNull();
-    expect(deps.chatEventsPollTimerRef.current).toBeNull();
-    expect(chatEvents).not.toHaveBeenCalled();
+    expect(keep).toBe(true);
   });
 
-  it("on getSessionState failure retries then optimistic-busy arms live watch", async () => {
+  it("on getSessionState failure optimistic-busy arms store poll", async () => {
     vi.useFakeTimers();
     const turnOpen = vi.fn();
     const setStatus = vi.fn();
@@ -1100,21 +1100,37 @@ describe("mid-turn live chatEvents watch reattach", () => {
       setTurnOpen: turnOpen,
       setStatus,
     });
-    // Session-switch forces detachedBusy false before reattach probes runners.
     deps.detachedBusyRef.current = false;
-    const live = vi.spyOn(api, "chatEventsLive").mockImplementation(() => () => {});
+    const live = vi.spyOn(api, "chatEventsLive");
+    vi.spyOn(api, "readEventsSince").mockResolvedValue({
+      ok: true,
+      session_id: "sess-live",
+      cursor: 0,
+      events: [],
+    } as any);
     const getSessionState = vi.spyOn(api, "getSessionState").mockRejectedValue(
       new Error("network"),
     );
 
     const { startChatEventsReattach } = createChatEventsReattach(deps as any);
     const done = startChatEventsReattach();
-    await vi.runAllTimersAsync();
+    // Retry uses setTimeout(100); do not runAllTimers (store poll interval loops).
+    await vi.advanceTimersByTimeAsync(250);
     await done;
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
 
     expect(getSessionState.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(deps.detachedBusyRef.current).toBe(true);
     expect(turnOpen).toHaveBeenCalledWith(true);
-    expect(live).toHaveBeenCalledTimes(1);
+    expect(live).not.toHaveBeenCalled();
+    expect(deps.chatEventsPollTimerRef.current).not.toBeNull();
+  });
+
+  it("sessionEventsPath builds the store cursor URL", () => {
+    expect(sessionEventsPath({ session: "s1", since: 3, generation: 2 })).toContain(
+      "/api/session/events",
+    );
+    expect(sessionEventsPath({ session: "s1", since: 3 })).toContain("since=3");
   });
 });

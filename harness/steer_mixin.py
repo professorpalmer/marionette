@@ -107,7 +107,7 @@ class SteerMixin:
     def steer_with_images(self, text: str, images: Optional[list] = None) -> None:
         """Enqueue a steer with attached images.
 
-        Mid-turn steers inject as TEXT into the tool-output stream, so they
+        Mid-turn steers are text-only user messages at a safe boundary, so they
         cannot carry raw image blocks. Policy:
 
         - Vision-capable pilots (gpt-5.6-luna, etc.): NEVER run the vision
@@ -186,7 +186,7 @@ class SteerMixin:
             return True
 
     def enqueue_steer(self, text: str) -> None:
-        """Append an out-of-band user message.
+        """Append a pending mid-turn user steer.
 
         While an abandoned generator still holds ``_busy`` after Stop, refuse
         to queue: a steer has nowhere truthful to go. Ready/idle sessions keep
@@ -210,42 +210,90 @@ class SteerMixin:
             return items
 
     @staticmethod
-    def _steer_marker(text: str) -> str:
-        """Single definition of the OUT-OF-BAND USER MESSAGE marker wrapping a
-        steer. Shared by both delivery points (mid-spree piggyback in
-        _check_and_inject_steer, and finalization-time user-message append in
-        the step loop) so the literal is never duplicated.
+    def _format_steer_user_content(text: str) -> str:
+        """Clamp and hard-wrap steer text for a first-class role=user message.
 
-        The incoming text is clamped (bounded length) and any single unbroken
-        run of >200 non-whitespace chars (e.g. a pasted key/sha) is hard-wrapped
-        so it cannot overflow. This covers BOTH delivery points because both
-        route through this one helper."""
+        Shared by the safe-boundary inject path and finalization-time delivery
+        so both use the same bounded content rules without OUT-OF-BAND wrapping.
+        """
         # Lazy imports avoid a conversation <-> steer_mixin cycle at module load.
         from .conversation import _clamp_tool_result, _hardwrap_long_tokens
         text = _clamp_tool_result(text)
-        text = _hardwrap_long_tokens(text, width=200)
+        return _hardwrap_long_tokens(text, width=200)
+
+    @staticmethod
+    def _steer_marker(text: str) -> str:
+        """Legacy OUT-OF-BAND wrapper kept for reading old history / tests.
+
+        Happy-path inject no longer uses this. Prefer
+        ``_format_steer_user_content`` for new role=user steers.
+        """
+        body = SteerMixin._format_steer_user_content(text)
         return (
             "\n\n[OUT-OF-BAND USER MESSAGE - a direct message from the user, "
             "delivered mid-turn; not tool output. Stop your current line of work, "
             "address THIS now, and do not resume the previous task unless the user "
-            f"asks.]\n{text}\n[/OUT-OF-BAND USER MESSAGE]"
+            f"asks.]\n{body}\n[/OUT-OF-BAND USER MESSAGE]"
         )
 
+    def _steer_inject_boundary_is_safe(self) -> bool:
+        """True when appending role=user will not break tool_use/tool_result pairing.
+
+        Unsafe while the most recent assistant tool_use still has unanswered
+        tool_calls in its contiguous adjacent result run (mid-tool / unpaired).
+        Safe after that pair completes, after a prose-only assistant, or when
+        no open tool_use exists.
+        """
+        history = getattr(self, "_history", None) or []
+        if not history:
+            return True
+        last_tool_use = None
+        for i in range(len(history) - 1, -1, -1):
+            m = history[i]
+            role = m.get("role")
+            if role == "assistant":
+                if m.get("tool_calls"):
+                    last_tool_use = i
+                break
+        if last_tool_use is None:
+            return True
+        expected = {
+            tc.get("id")
+            for tc in (history[last_tool_use].get("tool_calls") or [])
+            if tc.get("id")
+        }
+        if not expected:
+            return True
+        answered: set[str] = set()
+        j = last_tool_use + 1
+        while j < len(history) and history[j].get("role") == "tool":
+            tcid = history[j].get("tool_call_id")
+            if tcid:
+                answered.add(tcid)
+            j += 1
+        # A non-tool message already sits between the tool_use and further
+        # results (or after a partial run). Only inject when every id is
+        # answered in the contiguous adjacent run — never wedge a user row
+        # into an open pair.
+        if j < len(history) and history[last_tool_use + 1].get("role") != "tool":
+            # Something non-tool already follows the assistant tool_use with
+            # no adjacent results — pairing is already broken; refuse inject.
+            return False
+        return answered == expected
+
     def _check_and_inject_steer(self) -> Iterator["ConvEvent"]:
-        """Drain pending steers and surface them to the model WITHOUT breaking
-        message role alternation or injecting a synthetic user turn mid-loop.
+        """Drain pending steers into a first-class user message at a safe boundary.
 
-        Mirrors the Hermes design (agent/conversation_loop.py pre-API steer
-        drain): a steer is appended to the LAST tool-result message's content,
-        so the model sees it as part of the tool output on its next iteration.
-        A synthetic user message mid-loop (what this used to do) breaks strict
-        user/assistant alternation -- providers like Moonshot reject it and
-        return empty content, wedging the loop. If there is no tool/result
-        message to piggyback on yet, the steer is put back as pending for the
-        next drain rather than forced in.
+        Safe boundary: after the current assistant+tool-pair step is complete
+        (all tool_calls answered by contiguous adjacent tool results), before
+        the next chat() call. Appends ``role=user`` with clamped/hardwrapped
+        content so the next model step sees a normal user message — not a
+        piggyback inside tool output.
 
-        Sets self._steer_pending so the action loop can stop the current spree
-        and re-ask the model, which now sees the steer in the tool output.
+        If the boundary is not yet safe (mid-tool / unpaired calls), steers
+        stay pending. ``_steer_pending`` is still set so the action loop can
+        abandon the remaining spree, sanitize dangling pairs, and retry inject
+        on the next step once the boundary is safe.
 
         After Stop / cooperative interrupt, queued steers are dropped (never
         injected into an abandoned generator) and a durable/streamed notice is
@@ -265,66 +313,46 @@ class SteerMixin:
         steers = self.drain_steer()
         if not steers:
             return
+        if not self._steer_inject_boundary_is_safe():
+            # Keep pending until pairs complete (or sanitize heals them). Signal
+            # the action loop to abandon remaining tools so the next step can
+            # inject at a safe boundary — do NOT insert a user row between
+            # assistant tool_use and tool_result.
+            with self._steer_lock:
+                for steer in reversed(steers):
+                    self._steer_queue.appendleft(steer)
+            self._steer_pending = True
+            return
         for steer in steers:
-            marker_text = self._steer_marker(steer)
+            content = self._format_steer_user_content(steer)
             try:
                 from .task_transaction import context_block
 
                 extra = context_block(getattr(self, "_task_tx", None))
                 if extra:
-                    marker_text = marker_text + "\n\n" + extra
+                    content = content + "\n\n" + extra
             except Exception:
                 pass
             yield ConvEvent("steer", {"text": steer})
-            # Inject into the last result-bearing message (tool role for native
-            # tool-calling, or the user-role result the JSON-envelope path appends).
-            #
-            # Adjacency safety: a tool-role result may only be piggybacked on
-            # when it belongs to the CONTIGUOUS run of tool results IMMEDIATELY
-            # following the last assistant tool_use. Injecting into a tool
-            # message that already has a non-tool message after it (before the
-            # next assistant) would leave that assistant tool_use no longer
-            # directly followed by its tool_result -- the steer itself would
-            # create the non-adjacent tool_use/tool_result Anthropic rejects. In
-            # that case defer the steer (put it back pending), exactly like the
-            # no-target case.
-            injected = False
-            for i in range(len(self._history) - 1, -1, -1):
-                m = self._history[i]
-                role = m.get("role")
-                if role == "tool":
-                    # Only safe if this tool message traces back through a
-                    # contiguous tool-result run to an assistant tool_use with no
-                    # non-tool gap. Since we scan from the end, a non-tool
-                    # message after it would have been hit first, so reaching a
-                    # tool message here means nothing non-tool follows it.
-                    if self._tool_result_is_adjacent(i):
-                        m["content"] = (m.get("content") or "") + marker_text
-                        injected = True
-                    break
-                if role == "user" and i > 0:
-                    m["content"] = (m.get("content") or "") + marker_text
-                    injected = True
-                    break
-                if role == "assistant":
-                    # Hit an assistant turn before any tool result -- nothing to
-                    # piggyback on this iteration; put the steer back as pending.
-                    break
-            if injected:
-                self._steer_pending = True
-            else:
-                # No result message to inject into yet -- keep it pending so the
-                # next drain (after a tool batch) picks it up. Never force a
-                # synthetic user turn.
-                with self._steer_lock:
-                    self._steer_queue.appendleft(steer)
+            self._history.append({"role": "user", "content": content})
+            try:
+                display = getattr(self, "_display_transcript", None)
+                if display is not None:
+                    display.append({
+                        "type": "message",
+                        "role": "user",
+                        "text": steer,
+                    })
+            except Exception:
+                pass
+            self._steer_pending = True
 
     def _tool_result_is_adjacent(self, i: int) -> bool:
         """True when the tool-role message at history index ``i`` is part of the
         contiguous run of tool results IMMEDIATELY following an assistant
         tool_use, with no non-tool message wedged between that assistant and
-        ``i``. Piggybacking a steer onto such a message keeps the tool_use ->
-        tool_result adjacency Anthropic requires."""
+        ``i``. Kept for pairing diagnostics / callers that still reason about
+        adjacent tool runs."""
         history = self._history
         if not (0 <= i < len(history)) or history[i].get("role") != "tool":
             return False

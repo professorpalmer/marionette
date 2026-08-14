@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, useDeferredValue, memo } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { ChevronRight, Loader2, ChevronDown, ChevronUp, Play, Copy, Check, Pencil, RefreshCw, History, Share2, CheckCircle2, XCircle, Eye } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -304,9 +305,8 @@ function compactionRowChrome(it: Extract<Item, { kind: "compaction" }>): {
  * thinking) applies ONLY to the current turn — the span after the last user
  * message. Prior turns always use the sealed rule: fold only assistants that
  * still have a later tool card. Without that scope, a live turn would re-fold
- * every historical finale into its Explored group, shrink the render-window
- * group count, then peel those finales back out on seal and shove older
- * Explored / swarm-done rows behind "Show earlier messages" (the disappear).
+ * every historical finale into its Explored group, then peel those finales
+ * back out on seal (row remount churn / flicker in the virtualized feed).
  *
  * Current turn while open: fold streaming + sealed narration once there is
  * investigation activity (or while streaming before the first tool).
@@ -738,22 +738,14 @@ function stableItemKey(it: GroupedItem, i: number): string {
 }
 
 // PERF: Long sessions grow the transcript without bound, and every displayed
-// group is an expensive subtree (markdown + syntax highlight + tool cards). Cap
-// the DOM at the newest RENDER_WINDOW groups; a "Show earlier messages" affordance
-// prepends another window on demand. This is pure rendering -- older groups are
-// simply not mounted -- so it never touches scrollTop and can't fight the
-// parent's stick-to-bottom autoscroll. Adapted from the Hermes desktop thread's
-// render-budget windowing (which counts message parts; Marionette counts the
-// coarser display groups, one rendered subtree each). Short sessions render in
-// full and never show the button.
-//
-// Sized so a LONG session actually windows: at 200 the cap effectively never
-// fired (a session needs 200+ grouped turns before anything collapses), so long
-// sessions never cut off and never showed "Show earlier messages" -- the exact
-// symptom users hit. 40 groups keeps a comfortably long recent window mounted
-// (each group is a full user-turn subtree) while genuinely long sessions cap and
-// surface the button; "Show earlier" prepends another 40 on demand.
-const RENDER_WINDOW = 40;
+// group is an expensive subtree (markdown + syntax highlight + tool cards).
+// Virtualize the muted four-surface feed (msg / question / file / activity fold)
+// with @tanstack/react-virtual + measureElement so only the viewport (plus
+// overscan) stays mounted. Parent stick-to-bottom (nextFeedPinState hysteresis
+// in Conversation) still owns pin/unpin — this list only reports real total
+// height via the spacer; it never fakes a 40-row render cap.
+const FEED_ROW_ESTIMATE_PX = 72;
+const FEED_VIRTUAL_OVERSCAN = 8;
 
 // PERF: Memoized transcript renderer. Its props are intentionally free of the
 // composer `input` (or any per-keystroke state), so React.memo lets typing skip
@@ -824,36 +816,54 @@ export const TranscriptList = memo(function TranscriptList({
   const intermediateItems = collectIntermediateAssistantItems(items, agentLoopOpen);
   const grouped = groupAgentActivity(items, intermediateItems);
 
-  // PERF: window to the newest RENDER_WINDOW display groups. Walk newest-first,
-  // counting groups until the window is filled; everything before that is hidden
-  // behind the "Show earlier messages" button. Short sessions never fill the
-  // window, so hiddenCount stays 0 and nothing changes for them.
-  const [renderWindow, setRenderWindow] = useState(RENDER_WINDOW);
-  let firstVisible = grouped.length;
-  for (let i = grouped.length - 1, shown = 0; i >= 0; i--) {
-    shown += 1;
-    firstVisible = i;
-    if (shown >= renderWindow) break;
-  }
-  const hiddenCount = firstVisible;
-
-  // Prepend an older window while preserving the reading position: capture the
-  // distance from the bottom before the content grows, restore it once the taller
-  // content has laid out. The user is scrolled up here, so the parent's
-  // stick-to-bottom autoscroll is already released and won't fight this.
-  const restoreFromBottomRef = useRef<number | null>(null);
-  const showEarlier = useCallback(() => {
-    const el = scrollContainerRef.current;
-    restoreFromBottomRef.current = el ? el.scrollHeight - el.scrollTop : null;
-    setRenderWindow((w) => w + RENDER_WINDOW);
+  // Virtualizer scroll parent is the feed column (composer is a sibling). The
+  // list sits below empty-state / padding, so scrollMargin tracks that offset.
+  // scrollEpoch re-renders once feedRef attaches / resizes so getScrollElement
+  // is observed (refs alone do not trigger React updates).
+  const listAnchorRef = useRef<HTMLDivElement>(null);
+  const [scrollMargin, setScrollMargin] = useState(0);
+  const [scrollEpoch, setScrollEpoch] = useState(0);
+  useLayoutEffect(() => {
+    const scrollEl = scrollContainerRef.current;
+    if (!scrollEl) return;
+    setScrollEpoch((n) => n + 1);
+    const onResize = () => setScrollEpoch((n) => n + 1);
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(onResize) : null;
+    ro?.observe(scrollEl);
+    return () => ro?.disconnect();
   }, [scrollContainerRef]);
   useLayoutEffect(() => {
-    const el = scrollContainerRef.current;
-    if (el && restoreFromBottomRef.current != null) {
-      el.scrollTop = el.scrollHeight - restoreFromBottomRef.current;
-      restoreFromBottomRef.current = null;
-    }
-  }, [renderWindow, scrollContainerRef]);
+    const scrollEl = scrollContainerRef.current;
+    const anchor = listAnchorRef.current;
+    if (!scrollEl || !anchor) return;
+    const syncMargin = () => {
+      const next =
+        anchor.getBoundingClientRect().top -
+        scrollEl.getBoundingClientRect().top +
+        scrollEl.scrollTop;
+      setScrollMargin((prev) => (Math.abs(prev - next) > 0.5 ? next : prev));
+    };
+    syncMargin();
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(syncMargin) : null;
+    ro?.observe(scrollEl);
+    ro?.observe(anchor);
+    return () => ro?.disconnect();
+  }, [scrollContainerRef, grouped.length, scrollEpoch]);
+
+  const rowVirtualizer = useVirtualizer({
+    count: grouped.length,
+    getScrollElement: () => scrollContainerRef.current,
+    estimateSize: () => FEED_ROW_ESTIMATE_PX,
+    overscan: FEED_VIRTUAL_OVERSCAN,
+    scrollMargin,
+    getItemKey: (index) => stableItemKey(grouped[index]!, index),
+    measureElement:
+      typeof window !== "undefined" &&
+      !/firefox/i.test(window.navigator.userAgent)
+        ? (element) => element.getBoundingClientRect().height
+        : undefined,
+  });
+  void scrollEpoch;
 
   // Find the last assistant message inside the original items array
   let lastAssistantRawIdx = -1;
@@ -886,8 +896,9 @@ export const TranscriptList = memo(function TranscriptList({
   // reactivates the previous Investigating pill until turn-2 tools land.
   const lastActivityGroupIdx = liveActivityGroupIndex(grouped);
 
-  const list = grouped.map((it, i) => {
-    if (i < hiddenCount) return null;
+  const renderGroupedItem = (i: number) => {
+    const it = grouped[i];
+    if (!it) return null;
     const key = stableItemKey(it, i);
     if (it.kind === "msg") {
       const rawIdx = items.findIndex(raw => raw.kind === "msg" && (raw as { kind: "msg"; msg: Msg }).msg === it.msg);
@@ -1217,23 +1228,52 @@ export const TranscriptList = memo(function TranscriptList({
       );
     }
     return null;
-  });
+  };
+
+  const virtualItems = rowVirtualizer.getVirtualItems();
+  // jsdom / pre-layout: scroll parent missing or unsized → mount full flow so
+  // presentation tests keep working without faking a 40-row window.
+  const scrollReady = Boolean(
+    scrollContainerRef.current &&
+      (scrollContainerRef.current.clientHeight > 0 ||
+        scrollContainerRef.current.offsetHeight > 0),
+  );
+  const useVirtualWindow = scrollReady && virtualItems.length > 0;
+  const list = useVirtualWindow ? (
+    <div
+      ref={listAnchorRef}
+      data-testid="transcript-virtual-list"
+      className="relative w-full"
+      style={{ height: rowVirtualizer.getTotalSize() }}
+    >
+      {virtualItems.map((virtualRow) => (
+        <div
+          key={virtualRow.key}
+          data-index={virtualRow.index}
+          ref={rowVirtualizer.measureElement}
+          data-testid="transcript-virtual-row"
+          className="absolute top-0 left-0 w-full pb-1"
+          style={{
+            transform: `translateY(${virtualRow.start - scrollMargin}px)`,
+          }}
+        >
+          {renderGroupedItem(virtualRow.index)}
+        </div>
+      ))}
+    </div>
+  ) : (
+    <div ref={listAnchorRef} data-testid="transcript-virtual-list" className="flex flex-col gap-1 w-full">
+      {grouped.map((_, i) => renderGroupedItem(i))}
+    </div>
+  );
 
   const busyProgress = deriveBusyProgress(items, status, busyElapsedMs);
-  // Hide flat busy footer while investigation rows own the status surface (T1),
-  // or when the assistant answer already looks complete despite SSE lag (T5).
-  // Pause-point: do not hide Still working… under sticky loopOpen investigation —
-  // only real running tools / streaming thought suppress the footer.
   const hideBusyFooter = turnHasLiveInvestigation(
     items,
     pausePoint ? false : agentLoopOpen,
   );
   const showBusyFooter =
     (shouldShowBusyFooter(items, status) || pausePoint) && !hideBusyFooter;
-  // Quiet "Still working…" cue: only when the turn is busy and nothing else
-  // already signals work — including a live Investigating fold (sticky across
-  // tool gaps via agentLoopOpen). The under-fold cue must not blink on/off
-  // while collapsed investigation chrome already owns the busy signal.
   const showStall = quietWorkingCueVisible(
     items,
     status,
@@ -1244,15 +1284,6 @@ export const TranscriptList = memo(function TranscriptList({
 
   return (
     <>
-      {hiddenCount > 0 && (
-        <button
-          type="button"
-          onClick={showEarlier}
-          className="mx-auto mb-1 rounded-full border border-edge/60 bg-panel2/40 px-3 py-1 text-[11px] text-muted hover:text-txt hover:bg-panel2/70 transition-colors select-none"
-        >
-          Show earlier messages ({hiddenCount})
-        </button>
-      )}
       {list}
       {compactingStatus && (
         <div className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/15 border border-edge/20 text-[11px] text-faint w-fit my-1 select-none animate-pulse">
@@ -1285,6 +1316,7 @@ export const TranscriptList = memo(function TranscriptList({
     </>
   );
 });
+
 
 function cleanAssistantText(text: string): string {
   const lines = text.split("\n");

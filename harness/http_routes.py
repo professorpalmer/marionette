@@ -96,6 +96,7 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
     from .api import reviews as _rev_api
     from .api import schedules as _sched_api
     from .api import session_control as _sc_api
+    from .api import session_events as _session_events_api
     from .api import sessions as _sessions_api
     from .api import settings as _settings_api
     from .api import skills as _skills_api
@@ -417,6 +418,7 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
     from .api import reviews as _rev_api
     from .api import schedules as _sched_api
     from .api import session_control as _sc_api
+    from .api import session_events as _session_events_api
     from .api import sessions as _sessions_api
     from .api import settings as _settings_api
     from .api import skills as _skills_api
@@ -550,6 +552,17 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
         )
         return send_json(handler, status, payload)
 
+    def _get_session_events(handler: Any, u: Any, qs: dict) -> Any:
+        """GET /api/session/events — unified store cursor (read_events_since)."""
+        status, payload = _session_events_api.read_events_since_http(
+            qs,
+            _session_events_api.SessionEventsServices(
+                sse_services=svc.sse_services,
+                session_control_services=svc.session_control_services,
+            ),
+        )
+        return send_json(handler, status, payload)
+
     def _get_terminal_stream(handler: Any, u: Any, qs: dict) -> Any:
         return handler._stream_terminal(qs.get("id", [""])[0])
 
@@ -586,6 +599,7 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
             _sc_api.get_session_state,
             services=svc.session_control_services,
             pass_qs=True),
+        "/api/session/events": _get_session_events,
         "/api/session/goal": get_json(
             _sc_api.get_session_goal, services=svc.session_control_services),
         "/api/session/context_at": _get_session_context_at,

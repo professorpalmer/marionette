@@ -1161,7 +1161,7 @@ def test_drain_idle_turn_delivers_steers_and_continues():
     session = SimpleNamespace(
         drain_steer=lambda: list(steers),
         _history=history,
-        _steer_marker=lambda t: f"<steer>{t}</steer>",
+        _format_steer_user_content=lambda t: t,
         _steer_pending=True,
         _next_queued_needs_driver_swap=lambda: False,
         _pop_next_prompt=lambda: None,
@@ -1186,7 +1186,7 @@ def test_drain_idle_turn_delivers_steers_and_continues():
     assert user_message == "orig"
     assert session._steer_pending is False
     assert events[0].kind == "steer"
-    assert history[-1]["content"] == "<steer>course correct</steer>"
+    assert history[-1] == {"role": "user", "content": "course correct"}
     session._submit_housekeeping.assert_not_called()
 
 

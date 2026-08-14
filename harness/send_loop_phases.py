@@ -1133,15 +1133,24 @@ def drain_idle_turn(
 
     pending_steers = session.drain_steer()
     if pending_steers:
+        format_steer = getattr(
+            session, "_format_steer_user_content", None
+        )
         for steer in pending_steers:
             yield ConvEvent("steer", {"text": steer})
-            session._history.append({"role": "user", "content": session._steer_marker(steer)})
+            if callable(format_steer):
+                content = format_steer(steer)
+            else:
+                # Compatibility for hosts that still expose the legacy marker.
+                marker = getattr(session, "_steer_marker", None)
+                content = marker(steer) if callable(marker) else steer
+            session._history.append({"role": "user", "content": content})
         session._steer_pending = False
         return ("continue", user_message)
     # Steer took priority above; only if no steer was pending do we
     # look at the PROMPT QUEUE ("playlist"). A queued prompt runs as
-    # a genuine next-turn user message -- NOT wrapped in the OUT-OF-
-    # BAND marker used for steer -- so it flows through the pilot as
+    # a genuine next-turn user message — same first-class user shape as
+    # a steer at the idle boundary — so it flows through the pilot as
     # a normal fresh turn. The `continue` re-enters the same step
     # loop, which is bounded by the existing HARD_PILOT_STEPS /
     # max_steps cap; the queue cannot make the loop unbounded.

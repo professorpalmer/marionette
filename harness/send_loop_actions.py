@@ -176,11 +176,10 @@ def execute_turn_actions(
             yield from session._check_and_inject_steer()
             if session._steer_pending:
                 # A user steer arrived mid-spree. Abandon the REMAINING queued
-                # actions and loop back to re-ask the model, which now sees the
-                # steer as its current instruction. Heal unanswered sibling
-                # tool_calls at this tool-batch boundary BEFORE the next
-                # provider request (same seam as cancel) so steer never leaves
-                # dangling tool_use ids.
+                # actions so sanitize can close open tool pairs, then loop back.
+                # Inject only happens at a safe boundary (after pairs are
+                # complete); if inject deferred, the next step-start drain
+                # appends the first-class user message before chat().
                 session._sanitize_tool_pairs()
                 break
         if session._cancel.is_set():

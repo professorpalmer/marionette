@@ -63,7 +63,9 @@ export default function ConversationChatColumn({
             lands above it. scrollbar-gutter avoids a 15px jump when the bar
             appears. overscroll-contain stops rubber-band from yanking the window.
             Composer sits outside this scrollport, so scroll-padding-bottom is
-            not the last-bubble fix here — feedScroll pin/unpin still owns that. */}
+            not the last-bubble fix here — feedScroll pin/unpin still owns that.
+            TranscriptList virtualizes rows (measureElement) against this feedRef
+            scroll parent; do not move the composer inside the scrollport. */}
         <div className="max-w-3xl mx-auto px-6 py-6 flex flex-col gap-1">
           <TranscriptEmptyState transcriptStale={transcriptStale} itemCount={items.length} />
           {/*
@@ -73,7 +75,8 @@ export default function ConversationChatColumn({
             this parent) and none of TranscriptList's props change per keystroke,
             React skips re-rendering the transcript on every keystroke. This
             breaks the old coupling where items.map ran on the ENTIRE transcript
-            for each character typed (cost grew with message count).
+            for each character typed (cost grew with message count). Row mounting
+            is further bounded by @tanstack/react-virtual inside TranscriptList.
           */}
           <TranscriptList
             items={items}

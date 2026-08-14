@@ -85,6 +85,8 @@ export type UseSessionSwitchDeps = {
   userStoppedRef: MutableRefObject<boolean>;
   /** Session-global; must reset on switch so settled A cannot suppress B chrome. */
   turnSettledRef: MutableRefObject<boolean>;
+  /** Drop a zombie local EventSource after runners go idle (store cursor). */
+  abandonStaleLocalStreamRef: MutableRefObject<() => void>;
   /** Keep-alive resume queued on A must not fire into B after switch. */
   resumeQueuedRef: MutableRefObject<boolean>;
   /** Approved-command retry queued on A must not execute into B after switch. */
@@ -153,6 +155,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
     detachedBusyRef,
     userStoppedRef,
     turnSettledRef,
+    abandonStaleLocalStreamRef,
     resumeQueuedRef,
     approvedCommandRetryRef,
     runnerBusyPollGenRef,
@@ -579,6 +582,11 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
           setTranscriptStale,
           setTurnOpen,
           setStatus,
+          setCompactingStatus,
+          setWaitHint,
+          setBackendPendingSwarms,
+          turnSettledRef,
+          abandonStaleLocalStreamRef,
         });
         ensureChatEventsReattachRef.current = () => {
           void startChatEventsReattach();

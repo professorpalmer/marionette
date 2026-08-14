@@ -18,6 +18,7 @@ import {
   pathsReferToSameFile,
   subscribeWorkspaceMutations,
 } from "../lib/workspaceMutationEvents";
+import { useInFileReview } from "./useInFileReview";
 
 interface FileEditorPaneProps {
   path: string;
@@ -191,6 +192,12 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
   const rawUrl = useMemo(() => api.fileRawUrl(path), [path]);
   const canPreview = kind === "markdown" || kind === "html";
   const isTextEditable = kind === "code" || kind === "markdown" || kind === "html";
+  const {
+    extension: inFileReviewExtension,
+    pendingCount: inFilePendingCount,
+    applyError: inFileApplyError,
+    clearApplyError: clearInFileApplyError,
+  } = useInFileReview(path);
 
   // Agent-loop links may re-open the same file at a new line.
   useEffect(() => {
@@ -508,6 +515,9 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
   if (langExt) {
     extensions.push(langExt);
   }
+  if (inFilePendingCount > 0) {
+    extensions.push(inFileReviewExtension);
+  }
 
   extensions.push(
     keymap.of([
@@ -728,6 +738,35 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
               Keep mine
             </button>
           </div>
+        </div>
+      )}
+
+      {inFileApplyError && (
+        <div
+          data-testid="infile-review-apply-error"
+          className="flex items-center justify-between gap-3 px-4 py-2 border-b border-risk/40 bg-risk/10 shrink-0"
+          role="status"
+        >
+          <span className="text-[11px] text-risk min-w-0">{inFileApplyError}</span>
+          <button
+            type="button"
+            onClick={clearInFileApplyError}
+            className="px-2 py-1 rounded text-[11px] border border-edge text-muted hover:text-txt hover:bg-panel2 transition-colors shrink-0"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {inFilePendingCount > 0 && showCodeMirror && (
+        <div
+          data-testid="infile-review-banner"
+          className="flex items-center gap-2 px-4 py-1.5 border-b border-accent/30 bg-accent/5 shrink-0"
+          role="status"
+        >
+          <span className="text-[11px] text-muted">
+            {inFilePendingCount} pending review hunk{inFilePendingCount === 1 ? "" : "s"} in this file — Accept or Reject on the hunk markers (no confirm).
+          </span>
         </div>
       )}
 

@@ -34,7 +34,12 @@ class _SpreePilot:
             # user steers mid-run, right after the first spree turn is issued
             self.session.enqueue_steer("hello stop")
         for m in hist:
-            if "OUT-OF-BAND" in str(m.get("content", "")):
+            content = str(m.get("content", ""))
+            # First-class steer is a plain user message; legacy OUT-OF-BAND
+            # markers in older history remain recognized for compatibility.
+            if m.get("role") == "user" and (
+                "hello stop" in content or "OUT-OF-BAND" in content
+            ):
                 self.saw_steer = True
         if self.saw_steer:
             return _Resp('{"say":"Stopping.","actions":[]}')
