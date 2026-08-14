@@ -1927,12 +1927,9 @@ class ConversationalSession(
             + summarized_tokens
             + conversation_tokens
         )
-        # Prefer the driver's REAL last prompt-token count so the composer's
-        # context-usage % matches the actual billed context, not a chars//4
-        # estimate. Mirror _estimate_context_tokens: take the greater of the
-        # real number and the heuristic so we never under-report usage.
-        real_total = int(getattr(self, "_last_prompt_tokens", 0) or 0)
-        total_tokens = max(real_total, heuristic_total) if real_total > 0 else heuristic_total
+        # Same usage clock as compact: billed tokens plus growth since that
+        # sample. Heuristic is fallback, not a peer that can win via max().
+        total_tokens = self._usage_clock(heuristic_total)
 
         categories = [
             {"name": "System prompt", "tokens": system_prompt_tokens},

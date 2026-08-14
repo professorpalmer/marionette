@@ -60,7 +60,7 @@ import {
   typewriterCharsPerFrame,
 } from "../components/conversation/streamBubbles";
 import { derivePillStatus } from "../components/conversation/pillStatus";
-import { isAgentLoopOpen } from "../components/conversation/runnersBusy";
+import { isAgentLoopOpen, isPilotMouthBusy } from "../components/conversation/runnersBusy";
 import { workspaceLeafName } from "../components/conversation/workspaceDisplay";
 import {
   statusPillClickable,
@@ -1044,6 +1044,14 @@ describe("pillStatus + workspaceDisplay + StatusPill chrome", () => {
     expect(isAgentLoopOpen(false, "idle")).toBe(false);
     expect(isAgentLoopOpen(true, "idle")).toBe(true);
     expect(isAgentLoopOpen(false, "streaming")).toBe(true);
+  });
+
+  it("isPilotMouthBusy excludes awaiting_swarm so Send stays Send", () => {
+    expect(isPilotMouthBusy(false, "awaiting_swarm")).toBe(false);
+    expect(isPilotMouthBusy(true, "idle")).toBe(true);
+    expect(isPilotMouthBusy(false, "thinking")).toBe(true);
+    expect(isPilotMouthBusy(false, "streaming")).toBe(true);
+    expect(isPilotMouthBusy(false, "idle")).toBe(false);
   });
 
   it("workspaceLeafName and StatusPill helpers stay calm Cursor chrome", () => {
@@ -2148,19 +2156,19 @@ describe("prompt queue session-switch honesty", () => {
 });
 
 describe("composerSend module", () => {
-  it("Enter busy latch matches composerBusy / agentLoopOpen (awaiting_swarm + turnOpen)", () => {
-    expect(composerEnterBusy({ turnOpen: false, status: "awaiting_swarm" })).toBe(true);
+  it("Enter busy latch is the pilot mouth, not awaiting_swarm", () => {
+    expect(composerEnterBusy({ turnOpen: false, status: "awaiting_swarm" })).toBe(false);
     expect(composerEnterBusy({ turnOpen: true, status: "idle" })).toBe(true);
+    expect(composerEnterBusy({ turnOpen: false, status: "thinking" })).toBe(true);
     expect(composerEnterBusy({ turnOpen: false, status: "idle" })).toBe(false);
     expect(composerEnterBusy({ turnOpen: false, status: "done" })).toBe(false);
-    // During awaiting_swarm, Cmd/Ctrl+Enter must queue (not start a new send).
+    // Flying PM job: Cmd/Ctrl+Enter is a normal send, not a queue latch.
     expect(
       composerEnterAction({
         busy: composerEnterBusy({ turnOpen: false, status: "awaiting_swarm" }),
         metaOrCtrl: true,
       }),
-    ).toBe("queue");
-    // Plain Enter stays "send" so send() can steer while composerBusy.
+    ).toBe("send");
     expect(
       composerEnterAction({
         busy: composerEnterBusy({ turnOpen: false, status: "awaiting_swarm" }),

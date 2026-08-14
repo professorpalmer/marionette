@@ -10,7 +10,7 @@ export default function CheckpointsPane() {
   const [snapshotLabel, setSnapshotLabel] = useState("");
   const [isCreatingSnapshot, setIsCreatingSnapshot] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [success, setSuccess] = useState<{ text: string; undoId?: string } | null>(null);
 
   const [expandedDiffs, setExpandedDiffs] = useState<Record<string, boolean>>({});
   const [diffData, setDiffData] = useState<Record<string, CheckpointDiff>>({});
@@ -28,7 +28,7 @@ export default function CheckpointsPane() {
     setDiffData({});
     setLoadingDiffs({});
     setError(null);
-    setSuccessMsg(null);
+    setSuccess(null);
     setIsRestoring(null);
   }, []);
 
@@ -152,14 +152,14 @@ export default function CheckpointsPane() {
 
     setIsCreatingSnapshot(true);
     setError(null);
-    setSuccessMsg(null);
+    setSuccess(null);
     try {
       const res = await api.snapshotCheckpoint(snapshotLabel.trim());
       if (res.ok) {
         setSnapshotLabel("");
-        setSuccessMsg("Snapshot created successfully");
+        setSuccess({ text: "Snapshot created" });
         fetchCheckpoints();
-        setTimeout(() => setSuccessMsg(null), 3000);
+        setTimeout(() => setSuccess((cur) => (cur?.text === "Snapshot created" ? null : cur)), 3000);
       } else {
         setError("Failed to create snapshot");
       }
@@ -170,21 +170,20 @@ export default function CheckpointsPane() {
     }
   };
 
-  const handleRestore = async (cp: Checkpoint) => {
-    const confirmRestore = window.confirm(
-      `Are you sure you want to restore the workspace to: "${cp.label}"?\n\nThis will modify files in your working tree. Current uncommitted changes will be auto-saved in a new snapshot first, so you can undo this restore.`
-    );
-    if (!confirmRestore) return;
-
-    setIsRestoring(cp.id);
+  const runRestore = async (id: string, doneText: string) => {
+    // No confirm. Restore already writes an auto-snapshot first — that snapshot
+    // is the no. Asking "are you sure?" on top of a cheap undo is leftover fear.
+    setIsRestoring(id);
     setError(null);
-    setSuccessMsg(null);
+    setSuccess(null);
     try {
-      const res = await api.restoreCheckpoint(cp.id);
+      const res = await api.restoreCheckpoint(id);
       if (res.ok) {
-        setSuccessMsg(`Restored workspace. Created undo checkpoint: ${res.auto_snapshot_id.slice(0, 8)}`);
+        setSuccess({
+          text: doneText,
+          undoId: res.auto_snapshot_id || undefined,
+        });
         fetchCheckpoints();
-        // Since files restored, notify window to refresh file tree/source control if any listeners exist
         window.dispatchEvent(new Event("harness-repo-mutated"));
       } else {
         setError("Restore failed");
@@ -194,6 +193,10 @@ export default function CheckpointsPane() {
     } finally {
       setIsRestoring(null);
     }
+  };
+
+  const handleRestore = (cp: Checkpoint) => {
+    void runRestore(cp.id, `Restored "${cp.label}".`);
   };
 
   const formatTime = (timestamp: number) => {
@@ -257,10 +260,20 @@ export default function CheckpointsPane() {
           <span className="leading-snug">{error}</span>
         </div>
       )}
-      {successMsg && (
+      {success && (
         <div className="mx-2 mt-1.5 p-1.5 bg-accent2/10 border border-accent2/20 text-accent rounded flex items-start gap-1.5 shrink-0 text-[10px]">
           <Check size={12} className="shrink-0 mt-0.5" />
-          <span className="leading-snug">{successMsg}</span>
+          <span className="leading-snug flex-1 min-w-0">{success.text}</span>
+          {success.undoId ? (
+            <button
+              type="button"
+              disabled={isRestoring !== null}
+              onClick={() => void runRestore(success.undoId!, "Restore undone.")}
+              className="shrink-0 px-1.5 py-px rounded border border-accent/30 text-accent hover:bg-accent/10 disabled:opacity-40"
+            >
+              Undo
+            </button>
+          ) : null}
         </div>
       )}
 

@@ -28,7 +28,6 @@ from typing import Iterator, Optional
 MIN_SUMMARY_SEED_CHARS = 200
 MIN_COMPACTABLE_TOKENS = 5000
 MAX_REDUCTION_RATIO = 0.8
-PREFERRED_RECENT_MESSAGES = 6
 # Verbatim recent-tail cap. Lifted from oh-my-pi keepRecentTokens=20000 and
 # Hermes ``tail_token_budget = threshold * summary_target_ratio`` (~20k on a
 # 200k/50% window). The old 64k floor left ~42% residual after "compaction"
@@ -249,16 +248,9 @@ class CompactionContextMixin:
             pass
 
     def _estimate_context_tokens(self) -> int:
-        # Prefer the driver's REAL last prompt-token count when available; the
-        # chars//4 heuristic (below) can UNDER-count code / tool-arg-heavy
-        # content (which tokenizes denser than 4 chars/token), which would trip
-        # the 75% compaction trigger too LATE and risk context overflow.
-        #
-        # Use max() rather than trusting either alone: the real count reflects
-        # the last billed turn but the history may have grown since, so the
-        # heuristic can be the larger (fresher) number. Taking the greater of
-        # the two biases toward safety -- we never under-estimate, only ever
-        # compact slightly early with a small safety margin.
+        # Prefer the driver's REAL last prompt-token count when available.
+        # chars//4 is the fallback clock, not a peer. Growth since that sample
+        # is added from the heuristic delta so a fat tool result still trips.
         #
         # HOT PATH: this method is called on every compaction check and on
         # every context-usage query, and the heuristic walks the WHOLE history.
@@ -277,12 +269,23 @@ class CompactionContextMixin:
                 self._ctx_token_cache_len = cur_len
         except Exception:
             heuristic = self._estimate_context_tokens_for_list(self._history)
+        return self._usage_clock(heuristic)
+
+    def _usage_clock(self, heuristic: int) -> int:
+        """Billed prompt tokens plus heuristic growth since that sample.
+
+        chars//4 is the fallback clock when no usage exists, not a peer that
+        can win via max() and trip compact early or late.
+        """
         real = int(getattr(self, "_last_prompt_tokens", 0) or 0)
-        if real > 0:
-            return max(real, heuristic)
-        # Offline / no real usage yet: fall back to the char heuristic so tests
-        # and pre-first-turn state still behave deterministically.
-        return heuristic
+        if real <= 0:
+            return int(heuristic or 0)
+        try:
+            baseline = int(getattr(self, "_last_prompt_heuristic", 0) or 0)
+        except Exception:
+            baseline = 0
+        growth = max(0, int(heuristic or 0) - baseline) if baseline > 0 else 0
+        return real + growth
 
     def _find_safe_split(self, start_idx: int) -> int:
         """Move ``start_idx`` to a cut that does not break tool pairing.
@@ -406,12 +409,10 @@ class CompactionContextMixin:
         return max(1, idx)
 
     def _choose_compaction_split(self, *, tail_budget: int) -> int | None:
-        """Pick a tool-safe split driven by token budget, not a fixed six-tail.
+        """Pick a tool-safe split driven by the live goal, not a six-message count.
 
-        Starts from a preferred six-message recent window, then moves the split
-        forward (fewer recent messages) until the kept tail fits ``tail_budget``,
-        stopping at one complete trailing user/assistant/tool group. When the
-        preferred window already fits, expands the tail while budget remains.
+        Starts at one complete trailing turn, then shrinks only when that tail
+        exceeds ``tail_budget``. Does not expand to fill the budget with acks.
         Returns None when nothing after the system message is compactable.
         """
         history = self._history
@@ -419,27 +420,19 @@ class CompactionContextMixin:
         if n < 2:
             return None
 
-        preferred_split = max(2, n - PREFERRED_RECENT_MESSAGES)
         min_recent_start = self._minimum_recent_start()
-        # min_recent_start == n → keep no recent messages (re-compact prior only).
+        # Live goal is the tail. Message count is the wrong unit — do not
+        # start from six and expand to fill 20k with acks.
         if min_recent_start >= n:
             split_idx = n
         else:
             if min_recent_start < 2:
                 min_recent_start = 2
-            split_idx = preferred_split
-            # Shrink oversized preferred tails toward the minimum recent group.
-            while split_idx < min_recent_start:
+            split_idx = min_recent_start
+            while split_idx < n:
                 if self._estimate_context_tokens_for_list(history[split_idx:]) <= tail_budget:
                     break
                 split_idx += 1
-            # Expand when there is spare budget (legacy direction).
-            while split_idx > 2:
-                proposed = history[split_idx - 1:]
-                if self._estimate_context_tokens_for_list(proposed) <= tail_budget:
-                    split_idx -= 1
-                else:
-                    break
 
         if split_idx < 2:
             split_idx = 2
@@ -471,8 +464,10 @@ class CompactionContextMixin:
         lines = []
         for m in messages:
             if m.get("_compressed_summary"):
+                # One state doc: pass the unwrapped body. Do not re-wrap
+                # PREVIOUS HISTORICAL — that is summary-of-summary sludge.
                 body = self._unwrap_prior_summary_content(m.get("content") or "")
-                lines.append(f"{_PRIOR_SUMMARY_WRAPPER}{body}")
+                lines.append(body)
                 continue
             role = m.get("role", "user").upper()
             content = m.get("content") or ""
@@ -617,6 +612,39 @@ class CompactionContextMixin:
             pruned.append(m_copy)
         return pruned
 
+    def _extract_task_facts(self, middle_block: list[dict]) -> dict:
+        """Pull paths, errors, and the last user ask — not head+tail chat."""
+        path_re = re.compile(
+            r"(?:[A-Za-z]:)?(?:[\w.-]+/)+\w[\w.-]*\.[A-Za-z0-9]+"
+        )
+        error_re = re.compile(
+            r"(?im)^(?:\s*(?:error|exception|failed|traceback|fatal)[:\s].+)$"
+        )
+        paths: list[str] = []
+        errors: list[str] = []
+        last_user = ""
+        seen_paths: set[str] = set()
+        seen_errors: set[str] = set()
+        for m in middle_block:
+            role = m.get("role") or ""
+            content = str(m.get("content") or "")
+            if role == "user" and not m.get("_compressed_summary"):
+                last_user = content.strip().split("\n", 1)[0][:240]
+            for match in path_re.findall(content):
+                if match not in seen_paths:
+                    seen_paths.add(match)
+                    paths.append(match)
+                    if len(paths) >= 12:
+                        break
+            for match in error_re.findall(content):
+                line = match.strip()
+                if line and line not in seen_errors:
+                    seen_errors.add(line)
+                    errors.append(line[:240])
+                    if len(errors) >= 8:
+                        break
+        return {"paths": paths, "errors": errors, "last_user": last_user}
+
     def _make_fallback_summary(
         self,
         middle_block: list[dict],
@@ -625,78 +653,40 @@ class CompactionContextMixin:
     ) -> str:
         """Deterministic extractive fallback bounded by ``char_budget``.
 
-        Never returns 1–4 huge messages verbatim — always keeps structured
-        first/last excerpts plus an explicit elision marker, and preserves the
-        required historical headings when practical.
+        Fail-closed: paths, errors, and the last user ask. Not head+tail of
+        the middle essay. Required headings stay; bodies are fact bullets.
         """
         n = len(middle_block)
         if char_budget is None:
             middle_tokens = self._estimate_context_tokens_for_list(middle_block)
             char_budget = summary_token_budget_for_middle(middle_tokens) * 4
-        # Floor so degenerate-summary guard still passes when material exists.
         char_budget = max(int(char_budget), MIN_SUMMARY_SEED_CHARS + 160)
 
-        head_n = min(2, n)
-        tail_n = min(2, n)
-        # Avoid double-including the same messages when the block is tiny.
-        if n <= 2:
-            first_part = self._format_block_for_summary(middle_block)
-            last_part = ""
-            elided_count = 0
-            content_elided = True  # still may truncate body below
-        elif n <= 4:
-            first_part = self._format_block_for_summary(middle_block[:head_n])
-            last_part = self._format_block_for_summary(middle_block[-tail_n:])
-            elided_count = 0
-            content_elided = True
-        else:
-            first_part = self._format_block_for_summary(middle_block[:head_n])
-            last_part = self._format_block_for_summary(middle_block[-tail_n:])
-            elided_count = n - head_n - tail_n
-            content_elided = elided_count > 0
-
-        # Reserve room for headings + elision note; split remainder head/tail.
-        overhead = 220
-        body_budget = max(MIN_SUMMARY_SEED_CHARS, char_budget - overhead)
-        head_budget = body_budget // 2 if last_part else body_budget
-        tail_budget = body_budget - head_budget if last_part else 0
-        first_part = self._clip_text(first_part, head_budget)
-        last_part = self._clip_text(last_part, tail_budget) if last_part else ""
-
-        if elided_count > 0:
-            note = (
-                f"[... {elided_count} messages were elided here to fit context window ...]"
-            )
-        elif content_elided:
-            note = "[... oversized turn content was elided here to fit context window ...]"
-        else:
-            note = "[... content elided to fit context window ...]"
-
-        if last_part and first_part:
-            excerpts = f"{first_part}\n\n{note}\n\n{last_part}"
-        else:
-            excerpts = f"{first_part}\n\n{note}" if first_part else note
+        facts = self._extract_task_facts(middle_block)
+        path_lines = "\n".join(f"- {p}" for p in facts["paths"]) or "- (no file pointers found)"
+        error_lines = "\n".join(f"- {e}" for e in facts["errors"]) or "- (no errors captured)"
+        last_ask = facts["last_user"] or "(no open user ask captured)"
+        note = f"[... {n} middle messages compressed to task facts ...]"
 
         summary = (
             f"{_REQUIRED_SUMMARY_HEADINGS[0]}\n"
-            f"{excerpts}\n"
+            f"{note}\n"
             f"{_REQUIRED_SUMMARY_HEADINGS[1]}\n"
-            "Earlier turns were extractively compressed; see excerpts above.\n"
+            f"{error_lines}\n"
             f"{_REQUIRED_SUMMARY_HEADINGS[2]}\n"
-            "See the latest excerpt for any still-open user ask.\n"
+            f"- {last_ask}\n"
             f"{_REQUIRED_SUMMARY_HEADINGS[3]}\n"
-            "Preserved high-value paths and decisions appear in the excerpts.\n"
+            f"{path_lines}\n"
         )
         if len(summary) > char_budget:
             summary = self._clip_text(summary, char_budget)
-        # Final safety: never ship a seed shorter than the quality floor when we
-        # still have source material — pad from the head excerpt if needed.
-        if len(summary.strip()) < MIN_SUMMARY_SEED_CHARS and first_part:
+        if len(summary.strip()) < MIN_SUMMARY_SEED_CHARS:
             pad = self._clip_text(
-                first_part,
+                self._format_block_for_summary(middle_block[-2:] if n else []),
                 MIN_SUMMARY_SEED_CHARS - len(summary.strip()) + 32,
             )
-            summary = summary.rstrip() + "\n" + pad
+            if pad:
+                summary = summary.rstrip() + "\n" + pad
             if len(summary) > char_budget:
                 summary = self._clip_text(summary, char_budget)
         return summary
@@ -921,7 +911,9 @@ class CompactionContextMixin:
             "## Pending / Open Questions\n"
             "## Key Facts / Decisions / Files\n"
             f"Be extremely concise (hard budget ~{summary_token_budget} tokens). "
-            "Preserve key file paths, decisions, and unresolved asks; drop boilerplate and repeated tool chatter."
+            "Each bullet must name a file, a decision, or an open question. "
+            "Drop jokes, failed tool dumps, and 'then I ran' recap. "
+            "Overwrite the current task state; do not wrap a previous summary."
         )
 
         content_to_summarize = self._format_block_for_summary(pruned_middle)
@@ -1164,12 +1156,12 @@ class CompactionContextMixin:
         self._invalidate_ctx_cache()
         self._reset_append_only_freeze()
         # The provider-reported prompt-token count refers to the PRE-compaction
-        # history; _estimate_context_tokens() takes max(real, heuristic), so a
-        # stale real count would mask the reduction we just made (after_tokens
-        # == before_tokens and the pressure advisor never clears). Drop it; the
-        # next billed turn repopulates it from actual usage.
+        # history. The usage clock is real + growth, so a stale real would
+        # mask the reduction (after_tokens == before_tokens and the pressure
+        # advisor never clears). Drop both; the next billed turn repopulates.
         try:
             self._last_prompt_tokens = 0
+            self._last_prompt_heuristic = 0
         except Exception:
             pass
 

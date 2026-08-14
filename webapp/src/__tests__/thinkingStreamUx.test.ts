@@ -275,6 +275,70 @@ describe("swarm terminal rows stay at the end of one investigation", () => {
   });
 });
 
+describe("feed collapse: telemetry joins the activity strip", () => {
+  const card: Item = {
+    kind: "card",
+    card: { id: "read-1", goal: "read file", running: false, open: false },
+  };
+
+  it("folds compaction, gate, and verify into the investigation", () => {
+    const items: Item[] = [
+      card,
+      { kind: "compaction", before_tokens: 12000, after_tokens: 4000, mode: "extractive" },
+      { kind: "quality_gate", outcome: "pass", passed: true, cmd: "pytest" },
+      { kind: "verification", passed: true, cmd: "pytest", output: "ok" },
+      { kind: "msg", msg: { role: "assistant", text: "The import path was wrong." } },
+    ];
+    const grouped = groupAgentActivity(items, new Set());
+    expect(grouped.map((row) => row.kind)).toEqual(["activity_group", "msg"]);
+    if (grouped[0].kind !== "activity_group") return;
+    expect(grouped[0].items.map((item) => item.kind)).toEqual([
+      "card",
+      "compaction",
+      "quality_gate",
+      "verification",
+    ]);
+  });
+
+  it("keeps question, auth, and steer as conversation rows", () => {
+    const items: Item[] = [
+      card,
+      {
+        kind: "command_approval",
+        id: "appr-1",
+        command: "rm -rf /",
+        commandHash: "h",
+        sessionId: "s",
+        workspaceRoot: "/tmp",
+        category: "destructive",
+        reason: "needs a decision",
+        matched: "rm",
+        status: "pending",
+      },
+      { kind: "auth_failure", message: "OPENAI_API_KEY rejected", id: "auth-1" },
+      { kind: "steer", text: "try the other file", mode: "steer" },
+    ];
+    const grouped = groupAgentActivity(items, new Set());
+    expect(grouped.map((row) => row.kind)).toEqual([
+      "activity_group",
+      "command_approval",
+      "auth_failure",
+      "steer",
+    ]);
+  });
+
+  it("does not let a lone compaction sit beside the sentence", () => {
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "assistant", text: "Done." } },
+      { kind: "compaction", before_tokens: 8000, after_tokens: 3000 },
+    ];
+    const grouped = groupAgentActivity(items, new Set());
+    expect(grouped.map((row) => row.kind)).toEqual(["msg", "activity_group"]);
+    if (grouped[1].kind !== "activity_group") return;
+    expect(grouped[1].items.map((item) => item.kind)).toEqual(["compaction"]);
+  });
+});
+
 describe("createApplyStreamEvent task_profile", () => {
   it("publishes DEPTH chip from a live SSE task_profile frame", () => {
     const state = {

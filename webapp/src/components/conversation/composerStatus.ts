@@ -1,7 +1,8 @@
 /**
  * Composer chrome from runners poll (no local SSE).
- * When the active session's runner is "running", show Stop/Steer (thinking);
- * otherwise allow Send (idle). Used by Conversation and mirrored in tests.
+ * running ≠ busy: a flying PM job / detached runner must not replace Send.
+ * Local SSE still owns the mouth (return null). Used by tests; live chrome
+ * uses isPilotMouthBusy(turnOpen, status).
  */
 export function composerStatusFromRunner(
   activeSessionId: string | null,
@@ -9,7 +10,6 @@ export function composerStatusFromRunner(
   localStreamActive: boolean,
 ): "thinking" | "idle" | null {
   if (localStreamActive || !activeSessionId) return null;
-  // "attaching" = deferred cold pilot build — not a user turn (no thinking chrome).
-  if (runners?.[activeSessionId] === "running") return "thinking";
+  void runners;
   return "idle";
 }

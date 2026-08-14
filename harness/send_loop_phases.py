@@ -964,6 +964,12 @@ def meter_pilot_step(
     # the driver's actual number over the chars//4 heuristic.
     if _t_in > 0:
         session._last_prompt_tokens = _t_in
+        try:
+            session._last_prompt_heuristic = session._estimate_context_tokens_for_list(
+                getattr(session, "_history", []) or []
+            )
+        except Exception:
+            session._last_prompt_heuristic = 0
         # Schema-token EMA calibration (experiment-gated; telemetry-only).
         try:
             updater = getattr(session, "_maybe_update_schema_token_calibration", None)

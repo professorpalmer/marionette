@@ -83,16 +83,20 @@ def test_estimate_prefers_real_when_it_exceeds_heuristic():
     assert s._estimate_context_tokens() > heuristic
 
 
-def test_estimate_keeps_heuristic_when_history_grew_past_real():
-    """Real count reflects the last billed turn; a since-grown history (larger
-    heuristic) still wins via max() so we don't under-estimate a fresher history."""
+def test_estimate_adds_growth_without_letting_heuristic_win():
+    """Billed usage is the clock. Growth since the sample is added; the
+    full chars//4 walk must not replace the real count via max()."""
     s = _session()
-    s._last_prompt_tokens = 20  # small, stale real number
-    # Add a big message so the heuristic exceeds the stale real count.
-    s._history.append({"role": "assistant", "content": "B" * 8000})  # ~2000 tokens
+    s._history.append({"role": "assistant", "content": "B" * 800})
+    baseline = s._estimate_context_tokens_for_list(s._history)
+    s._last_prompt_tokens = 20
+    s._last_prompt_heuristic = baseline
+    s._history.append({"role": "assistant", "content": "B" * 8000})
     heuristic = s._estimate_context_tokens_for_list(s._history)
     assert heuristic > 20
-    assert s._estimate_context_tokens() == heuristic
+    grown = s._estimate_context_tokens()
+    assert grown == 20 + (heuristic - baseline)
+    assert grown < heuristic
 
 
 def test_compaction_trigger_fires_on_real_value(monkeypatch):

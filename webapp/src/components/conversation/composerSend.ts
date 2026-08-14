@@ -3,18 +3,18 @@
  */
 
 import type { CommandPaletteActionId } from "../../lib/commandPalette";
-import { isAgentLoopOpen } from "./runnersBusy";
+import { isPilotMouthBusy } from "./runnersBusy";
 
 /**
- * Enter busy latch — same truth as composerBusy / agentLoopOpen.
- * Includes awaiting_swarm and turnOpen so plain Enter steers (and
- * Cmd/Ctrl+Enter queues) while a background swarm wait is still open.
+ * Enter busy latch — same truth as composerBusy / isPilotMouthBusy.
+ * awaiting_swarm does not shut the mouth; Send starts a new turn.
+ * Steer stays the piggyback inject until after Send stays Send.
  */
 export function composerEnterBusy(opts: {
   turnOpen: boolean;
   status: string;
 }): boolean {
-  return isAgentLoopOpen(opts.turnOpen, opts.status);
+  return isPilotMouthBusy(opts.turnOpen, opts.status);
 }
 
 /**

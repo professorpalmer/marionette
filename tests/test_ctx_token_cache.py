@@ -133,8 +133,8 @@ def test_cache_survives_multiple_appends_and_stays_correct():
 
 
 def test_last_prompt_tokens_max_still_applies_with_cache():
-    """When _last_prompt_tokens > heuristic, the return must still be max(),
-    identical to the pre-cache semantics."""
+    """When billed usage exceeds the walk and there is no sample baseline,
+    the clock is the real count (heuristic does not replace it)."""
     s = _new_session()
     s._history.append({"role": "user", "content": "tiny"})
     heuristic = s._estimate_context_tokens_for_list(s._history)

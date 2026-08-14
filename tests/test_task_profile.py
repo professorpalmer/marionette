@@ -14,6 +14,8 @@ from harness.task_profile import (
     maybe_escalate,
     micro_visible_tool_names,
     profile_disables_swarm_gate,
+    profile_skips_codegraph,
+    profile_skips_wiki,
 )
 from harness.tool_discovery import core_visible_names
 from harness.wiki import WikiClient
@@ -100,6 +102,20 @@ def test_swarm_gate_allows_exploration_when_micro(monkeypatch):
     assert check_swarm_gate(
         blocked, "list_dir", SimpleNamespace(kind="list_dir", path=".")
     ).suppress is True
+
+
+def test_micro_inject_inventory_skips_auto_grounding():
+    """MICRO must not auto-inject wiki or CodeGraph. New injects need a test."""
+    assert profile_skips_wiki(MICRO) is True
+    assert profile_skips_codegraph(MICRO) is True
+    assert profile_skips_wiki(STANDARD) is False
+    assert profile_skips_codegraph(STANDARD) is False
+    from harness.send_loop import profile_skips_auto_inject
+
+    session = SimpleNamespace(_task_profile=MICRO)
+    skip_cg, skip_wiki = profile_skips_auto_inject(session)
+    assert skip_cg is True
+    assert skip_wiki is True
 
 
 def test_wiki_section_empty_when_micro_even_if_configured(tmp_path, monkeypatch):
