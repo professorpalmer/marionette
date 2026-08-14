@@ -23,8 +23,9 @@ export function useInFileReview(editorPath: string): {
   const [applyError, setApplyError] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
-    void api
-      .getReviews()
+    const fetchReviews = api.getReviews;
+    if (typeof fetchReviews !== "function") return;
+    void fetchReviews()
       .then((data) => {
         if (Array.isArray(data)) setReviews(data);
       })

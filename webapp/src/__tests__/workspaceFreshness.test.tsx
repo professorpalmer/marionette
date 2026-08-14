@@ -24,6 +24,7 @@ vi.mock("../lib/api", () => ({
     readFile: vi.fn(),
     writeFile: vi.fn(),
     fileRawUrl: vi.fn((p: string) => `raw:${p}`),
+    getReviews: vi.fn().mockResolvedValue([]),
   },
 }));
 
