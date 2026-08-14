@@ -1268,7 +1268,7 @@ export default function Conversation({
         activeSessionIdRef.current === requestSid
         && transcriptLoadGenRef.current === requestGen
       );
-      api.getSessionState()
+      api.getSessionState({ sessionId: requestSid })
         .then((res) => {
           if (!stillCurrent() || !res) return;
           setBackendPendingSwarms(!!res.pending_swarms);
@@ -1294,6 +1294,8 @@ export default function Conversation({
             getSessionState: api.getSessionState,
             resume: () => resumeTriggerRef.current(),
             stillCurrent,
+            ownerStillActive: () => activeSessionIdRef.current === requestSid,
+            sessionId: requestSid,
             schedule: setSafeTimeout,
           });
         })

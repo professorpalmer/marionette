@@ -92,8 +92,24 @@ def _harness_http_server():
             thread.join(timeout=_JOIN_TIMEOUT)
 
 
-def _session_state(port: int, token: str, *, consume_resume: bool = False) -> dict:
-    qs = "?consume_resume=1" if consume_resume else ""
+def _session_state(
+    port: int,
+    token: str,
+    *,
+    consume_resume: bool = False,
+    rearm_resume: bool = False,
+    session_id: Optional[str] = None,
+) -> dict:
+    from urllib.parse import quote
+
+    params = []
+    if consume_resume:
+        params.append("consume_resume=1")
+    if rearm_resume:
+        params.append("rearm_resume=1")
+    if session_id:
+        params.append(f"session_id={quote(session_id)}")
+    qs = ("?" + "&".join(params)) if params else ""
     req = urllib.request.Request(
         f"http://127.0.0.1:{port}/api/session/state{qs}",
         headers={"X-Harness-Token": token},
@@ -142,22 +158,26 @@ def test_trailing_user_turn_alone_does_not_report_resume_pending():
 
     saved = list(srv._pilot._history)
     saved_latch = srv._resume_latch
+    saved_active = srv._sessions._active
     try:
         with _harness_http_server() as (srv, port):
             srv._clear_resume_latch()
+            sid = "sess-resume-idle"
+            srv._sessions._active = sid
             srv._pilot._history = [
                 {"role": "system", "content": "sys"},
                 {"role": "user", "content": "please continue"},
             ]
             assert srv._pilot.has_pending_user_turn() is True
-            data = _session_state(port, srv._TOKEN)
+            data = _session_state(port, srv._TOKEN, session_id=sid)
             assert data["resume_pending"] is False
             # Second poll still false (nothing to consume).
-            data2 = _session_state(port, srv._TOKEN)
+            data2 = _session_state(port, srv._TOKEN, session_id=sid)
             assert data2["resume_pending"] is False
     finally:
         # Restore only after the serve thread and handlers have settled.
         srv._pilot._history = saved
+        srv._sessions._active = saved_active
         if saved_latch:
             srv._set_resume_latch()
         else:
@@ -169,9 +189,12 @@ def test_session_state_reports_resume_pending_after_explicit_latch():
     import harness.server as srv
 
     saved = list(srv._pilot._history)
+    saved_active = srv._sessions._active
     try:
         with _harness_http_server() as (srv, port):
             srv._clear_resume_latch()
+            sid = "sess-resume-latch"
+            srv._sessions._active = sid
             srv._pilot._history = [
                 {"role": "system", "content": "sys"},
                 {"role": "user", "content": "please continue"},
@@ -180,22 +203,39 @@ def test_session_state_reports_resume_pending_after_explicit_latch():
             status, payload = _post_session_persist(port, srv._TOKEN)
             assert status == 200
             assert payload["ok"] is True
+            assert srv._resume_latch_session_id == sid
 
             # Plain state polls (StatusBar / runners / switch) must peek only.
-            data = _session_state(port, srv._TOKEN)
+            data = _session_state(port, srv._TOKEN, session_id=sid)
             assert data["resume_pending"] is True
-            data_peek2 = _session_state(port, srv._TOKEN)
+            data_peek2 = _session_state(port, srv._TOKEN, session_id=sid)
             assert data_peek2["resume_pending"] is True
+            # Wrong session must not see or steal the latch.
+            assert _session_state(
+                port, srv._TOKEN, session_id="sess-other"
+            )["resume_pending"] is False
+            assert _session_state(
+                port,
+                srv._TOKEN,
+                consume_resume=True,
+                session_id="sess-other",
+            )["resume_pending"] is False
+            assert srv._resume_latch is True
 
             # Conversation resume path consumes once.
-            data_consume = _session_state(port, srv._TOKEN, consume_resume=True)
+            data_consume = _session_state(
+                port, srv._TOKEN, consume_resume=True, session_id=sid
+            )
             assert data_consume["resume_pending"] is True
-            data2 = _session_state(port, srv._TOKEN, consume_resume=True)
+            data2 = _session_state(
+                port, srv._TOKEN, consume_resume=True, session_id=sid
+            )
             assert data2["resume_pending"] is False
-            data_peek_after = _session_state(port, srv._TOKEN)
+            data_peek_after = _session_state(port, srv._TOKEN, session_id=sid)
             assert data_peek_after["resume_pending"] is False
     finally:
         srv._pilot._history = saved
+        srv._sessions._active = saved_active
         srv._clear_resume_latch()
 
 
@@ -207,11 +247,14 @@ def test_resume_latch_survives_same_app_run_reload(monkeypatch, tmp_path):
     monkeypatch.setattr(srv._cfg, "state_dir", str(tmp_path), raising=False)
     srv._clear_resume_latch()
     try:
-        srv._set_resume_latch()
+        srv._set_resume_latch("sess-a")
         assert srv._resume_latch is True
+        assert srv._resume_latch_session_id == "sess-a"
         srv._resume_latch = False
+        srv._resume_latch_session_id = ""
         srv._load_resume_latch()
         assert srv._resume_latch is True
+        assert srv._resume_latch_session_id == "sess-a"
         assert (tmp_path / ".resume_latch").is_file()
     finally:
         srv._clear_resume_latch()
@@ -225,13 +268,82 @@ def test_resume_latch_rejected_after_app_relaunch(monkeypatch, tmp_path):
     monkeypatch.setattr(srv._cfg, "state_dir", str(tmp_path), raising=False)
     srv._clear_resume_latch()
     try:
-        srv._set_resume_latch()
+        srv._set_resume_latch("sess-a")
         assert (tmp_path / ".resume_latch").is_file()
         monkeypatch.setenv("HARNESS_APP_RUN_ID", "run-new")
         srv._resume_latch = False
+        srv._resume_latch_session_id = ""
         srv._load_resume_latch()
         assert srv._resume_latch is False
+        assert srv._resume_latch_session_id == ""
         assert not (tmp_path / ".resume_latch").exists()
+    finally:
+        srv._clear_resume_latch()
+
+
+def test_resume_latch_session_scoped_peek_and_consume(monkeypatch, tmp_path):
+    """Latch armed for A must not peek true for B; B consume must not clear A."""
+    import harness.server as srv
+
+    monkeypatch.setattr(srv._cfg, "state_dir", str(tmp_path), raising=False)
+    srv._clear_resume_latch()
+    try:
+        srv._set_resume_latch("sess-a")
+        assert srv._peek_resume_pending(True, "sess-a") is True
+        assert srv._peek_resume_pending(True, "sess-b") is False
+        assert srv._peek_resume_pending(True, "") is False
+        assert srv._consume_resume_pending(True, "sess-b") is False
+        assert srv._peek_resume_pending(True, "sess-a") is True
+        assert srv._consume_resume_pending(True, "sess-a") is True
+        assert srv._peek_resume_pending(True, "sess-a") is False
+    finally:
+        srv._clear_resume_latch()
+
+
+def test_legacy_resume_latch_without_session_id_sole_session_only(
+    monkeypatch, tmp_path
+):
+    """v1 disk latch missing session_id: honor only when a single session exists."""
+    import harness.server as srv
+    import json as _json
+
+    monkeypatch.setenv("HARNESS_APP_RUN_ID", "run-legacy")
+    monkeypatch.setattr(srv._cfg, "state_dir", str(tmp_path), raising=False)
+    latch = tmp_path / ".resume_latch"
+    latch.write_text(
+        _json.dumps(
+            {"v": 1, "armed": True, "app_run_id": "run-legacy"},
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    rows = [{"id": "only-one"}, {"id": "two"}]
+    monkeypatch.setattr(
+        srv._sessions, "rows", lambda: list(rows), raising=False
+    )
+    try:
+        srv._resume_latch = False
+        srv._resume_latch_session_id = ""
+        srv._load_resume_latch()
+        assert srv._resume_latch is False
+
+        rows[:] = [{"id": "only-one"}]
+        latch.write_text(
+            _json.dumps(
+                {"v": 1, "armed": True, "app_run_id": "run-legacy"},
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        srv._resume_latch = False
+        srv._resume_latch_session_id = ""
+        srv._load_resume_latch()
+        assert srv._resume_latch is True
+        assert srv._resume_latch_session_id == "only-one"
+        assert srv._peek_resume_pending(True, "only-one") is True
+        assert srv._peek_resume_pending(True, "other") is False
     finally:
         srv._clear_resume_latch()
 
@@ -248,6 +360,7 @@ def test_legacy_plain_resume_latch_rejected_when_app_run_id_set(
     latch.write_text("1\n", encoding="utf-8")
     try:
         srv._resume_latch = False
+        srv._resume_latch_session_id = ""
         srv._load_resume_latch()
         assert srv._resume_latch is False
         assert not latch.exists()
@@ -294,7 +407,9 @@ def test_http_server_lifecycle_stress_no_leaks():
         for round_idx in range(_STRESS_ROUNDS):
             with _harness_http_server() as (srv, port):
                 srv._clear_resume_latch()
-                data = _session_state(port, srv._TOKEN)
+                data = _session_state(
+                    port, srv._TOKEN, session_id=srv._sessions.active or "s"
+                )
                 assert "resume_pending" in data
                 status, payload = _post_session_persist(port, srv._TOKEN)
                 assert status == 200, f"persist failed on stress round {round_idx}"

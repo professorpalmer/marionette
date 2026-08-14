@@ -223,10 +223,10 @@ def test_session_steer_interrupt_delivery_stops_then_queues():
         diag=lambda *a: None,
         get_sessions=lambda: SimpleNamespace(active=None),
         save_transcript=lambda *a, **k: None,
-        set_resume_latch=lambda: None,
+        set_resume_latch=lambda *a, **k: None,
         persist_boot_usage=lambda **k: None,
-        peek_resume_pending=lambda idle: False,
-        consume_resume_pending=lambda idle: False,
+        peek_resume_pending=lambda idle, session_id="": False,
+        consume_resume_pending=lambda idle, session_id="": False,
         checkpoint_transcript=lambda: None,
         context_at=lambda *a: None,
     )
