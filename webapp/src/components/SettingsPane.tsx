@@ -1404,6 +1404,125 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
+        {gate("providers", "providers api keys connect disconnect per-provider key management") && (<>
+        {/* Per-provider key management: connect/disconnect each provider independently */}
+        <SettingsCollapse
+          id="api-keys"
+          title="API keys"
+          defaultOpen={true}
+          forceOpen={!!q}
+          onFirstOpen={loadProvidersList}
+          className="space-y-2"
+          summary={(() => {
+            if (!providersLoaded) return "…";
+            const list = providers.filter((p) => p.name !== "bedrock");
+            const n = list.filter((p) => p.has_key && !p.disconnected).length;
+            return `${n}/${list.length} connected`;
+          })()}
+        >
+          <div className="text-[10px] text-muted">
+            One Full stack key (OpenRouter, Anthropic, OpenAI, Gemini, …) runs the chat
+            pilot and agentic swarm/implement workers. No other platform install.
+            Env-imported keys get an on/off toggle so you can swap without losing the key.
+          </div>
+          <div className="space-y-1.5">
+            {providers.filter((p) => p.name !== "bedrock").map((p) => {
+              // A provider can carry a key from the environment (e.g. a
+              // shell-exported OPENROUTER_API_KEY) rather than one stored in the
+              // app. Env-backed providers get an on/off toggle instead of a
+              // destructive Disconnect: flipping it off scrubs the key from the
+              // running process (so no worker/router uses it) but preserves it
+              // for a one-click re-enable -- painless swapping between, say, a
+              // work key and a personal one.
+              const envBacked = !!p.has_env;
+              const enabled = !p.disconnected;
+              const connected = p.has_key;
+              const busy = provBusy === p.name;
+              return (
+              <div key={p.name} className="bg-panel2 border border-edge/50 rounded p-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${connected ? "bg-good" : "bg-faint"}`} />
+                    <span className="text-txt font-medium text-[11px]">{p.display_name || p.name}</span>
+                    {p.worker_capability_label ? (
+                      <span
+                        title={p.worker_capability_hint || undefined}
+                        className={`text-[10px] shrink-0 ${
+                          p.worker_capability === "full_stack"
+                            ? "text-good/80"
+                            : p.worker_capability === "platform_worker"
+                              ? "text-accent/80"
+                              : "text-warn/90"
+                        }`}
+                      >
+                        {p.worker_capability_label}
+                      </span>
+                    ) : null}
+                    <span
+                      title={envBacked ? `Key imported from your environment (${p.env_var || "env var"})` : undefined}
+                      className="text-faint text-[10px] font-mono truncate"
+                    >
+                      {envBacked
+                        ? `${enabled ? "connected" : "disabled"} - via env`
+                        : p.has_key
+                          ? "connected - via key"
+                          : "not connected"}
+                    </span>
+                  </div>
+                  {envBacked ? (
+                    <button
+                      role="switch"
+                      aria-checked={enabled}
+                      title={enabled ? "Enabled -- click to turn off (key is kept for easy re-enable)" : "Disabled -- click to turn on"}
+                      onClick={() => handleToggleProvider(p.name, !enabled)}
+                      disabled={busy}
+                      className={`relative shrink-0 w-9 h-5 rounded-full border transition-colors disabled:opacity-40 ${
+                        enabled ? "bg-good/30 border-good/50" : "bg-panel border-edge"
+                      }`}
+                    >
+                      <span
+                        className={`absolute top-[1px] w-[15px] h-[15px] rounded-full transition-all ${
+                          enabled ? "left-[18px] bg-good" : "left-[2px] bg-faint"
+                        }`}
+                      />
+                    </button>
+                  ) : p.has_key ? (
+                    <button
+                      onClick={() => handleClearProviderKey(p.name)}
+                      disabled={busy}
+                      className="bg-risk/10 hover:bg-risk/20 text-risk border border-risk/30 hover:border-risk/50 rounded px-2 py-0.5 font-medium text-[10px] disabled:opacity-30 transition-colors shrink-0"
+                    >
+                      Disconnect
+                    </button>
+                  ) : null}
+                </div>
+                {!connected && !envBacked && (
+                  <div className="flex gap-2 mt-1.5">
+                    <input
+                      type="password"
+                      placeholder={`${p.env_var || "API key"}...`}
+                      value={provKeyInput[p.name] || ""}
+                      onChange={(e) => setProvKeyInput((prev) => ({ ...prev, [p.name]: e.target.value }))}
+                      disabled={busy}
+                      className="flex-1 bg-panel border border-edge rounded px-2 py-0.5 text-txt text-[11px] focus:outline-none focus:border-accent disabled:opacity-50 font-mono"
+                    />
+                    <button
+                      onClick={() => handleSetProviderKey(p.name)}
+                      disabled={busy || !(provKeyInput[p.name] || "").trim()}
+                      className="bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 hover:border-accent/50 rounded px-2.5 py-0.5 font-medium text-[10px] disabled:opacity-30 transition-colors shrink-0"
+                    >
+                      Connect
+                    </button>
+                  </div>
+                )}
+              </div>
+              );
+            })}
+          </div>
+        </SettingsCollapse>
+
+        </>)}
+
         {gate("providers", "sign in subscription oauth chatgpt codex claude max cursor xai grok nous plan account login") && (<>
         <SettingsCollapse
           id="sign-in"
@@ -1702,124 +1821,6 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             <p className="text-[10px] text-accent font-mono leading-normal">{oauthHint}</p>
           ) : null}
         </SettingsCollapse>
-        </>)}
-        {gate("providers", "providers api keys connect disconnect per-provider key management") && (<>
-        {/* Per-provider key management: connect/disconnect each provider independently */}
-        <SettingsCollapse
-          id="api-keys"
-          title="API keys"
-          defaultOpen={true}
-          forceOpen={!!q}
-          onFirstOpen={loadProvidersList}
-          className="space-y-2"
-          summary={(() => {
-            if (!providersLoaded) return "…";
-            const list = providers.filter((p) => p.name !== "bedrock");
-            const n = list.filter((p) => p.has_key && !p.disconnected).length;
-            return `${n}/${list.length} connected`;
-          })()}
-        >
-          <div className="text-[10px] text-muted">
-            One Full stack key (OpenRouter, Anthropic, OpenAI, Gemini, …) runs the chat
-            pilot and agentic swarm/implement workers. No other platform install.
-            Env-imported keys get an on/off toggle so you can swap without losing the key.
-          </div>
-          <div className="space-y-1.5">
-            {providers.filter((p) => p.name !== "bedrock").map((p) => {
-              // A provider can carry a key from the environment (e.g. a
-              // shell-exported OPENROUTER_API_KEY) rather than one stored in the
-              // app. Env-backed providers get an on/off toggle instead of a
-              // destructive Disconnect: flipping it off scrubs the key from the
-              // running process (so no worker/router uses it) but preserves it
-              // for a one-click re-enable -- painless swapping between, say, a
-              // work key and a personal one.
-              const envBacked = !!p.has_env;
-              const enabled = !p.disconnected;
-              const connected = p.has_key;
-              const busy = provBusy === p.name;
-              return (
-              <div key={p.name} className="bg-panel2 border border-edge/50 rounded p-2">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${connected ? "bg-good" : "bg-faint"}`} />
-                    <span className="text-txt font-medium text-[11px]">{p.display_name || p.name}</span>
-                    {p.worker_capability_label ? (
-                      <span
-                        title={p.worker_capability_hint || undefined}
-                        className={`text-[10px] shrink-0 ${
-                          p.worker_capability === "full_stack"
-                            ? "text-good/80"
-                            : p.worker_capability === "platform_worker"
-                              ? "text-accent/80"
-                              : "text-warn/90"
-                        }`}
-                      >
-                        {p.worker_capability_label}
-                      </span>
-                    ) : null}
-                    <span
-                      title={envBacked ? `Key imported from your environment (${p.env_var || "env var"})` : undefined}
-                      className="text-faint text-[10px] font-mono truncate"
-                    >
-                      {envBacked
-                        ? `${enabled ? "connected" : "disabled"} - via env`
-                        : p.has_key
-                          ? "connected - via key"
-                          : "not connected"}
-                    </span>
-                  </div>
-                  {envBacked ? (
-                    <button
-                      role="switch"
-                      aria-checked={enabled}
-                      title={enabled ? "Enabled -- click to turn off (key is kept for easy re-enable)" : "Disabled -- click to turn on"}
-                      onClick={() => handleToggleProvider(p.name, !enabled)}
-                      disabled={busy}
-                      className={`relative shrink-0 w-9 h-5 rounded-full border transition-colors disabled:opacity-40 ${
-                        enabled ? "bg-good/30 border-good/50" : "bg-panel border-edge"
-                      }`}
-                    >
-                      <span
-                        className={`absolute top-[1px] w-[15px] h-[15px] rounded-full transition-all ${
-                          enabled ? "left-[18px] bg-good" : "left-[2px] bg-faint"
-                        }`}
-                      />
-                    </button>
-                  ) : p.has_key ? (
-                    <button
-                      onClick={() => handleClearProviderKey(p.name)}
-                      disabled={busy}
-                      className="bg-risk/10 hover:bg-risk/20 text-risk border border-risk/30 hover:border-risk/50 rounded px-2 py-0.5 font-medium text-[10px] disabled:opacity-30 transition-colors shrink-0"
-                    >
-                      Disconnect
-                    </button>
-                  ) : null}
-                </div>
-                {!connected && !envBacked && (
-                  <div className="flex gap-2 mt-1.5">
-                    <input
-                      type="password"
-                      placeholder={`${p.env_var || "API key"}...`}
-                      value={provKeyInput[p.name] || ""}
-                      onChange={(e) => setProvKeyInput((prev) => ({ ...prev, [p.name]: e.target.value }))}
-                      disabled={busy}
-                      className="flex-1 bg-panel border border-edge rounded px-2 py-0.5 text-txt text-[11px] focus:outline-none focus:border-accent disabled:opacity-50 font-mono"
-                    />
-                    <button
-                      onClick={() => handleSetProviderKey(p.name)}
-                      disabled={busy || !(provKeyInput[p.name] || "").trim()}
-                      className="bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 hover:border-accent/50 rounded px-2.5 py-0.5 font-medium text-[10px] disabled:opacity-30 transition-colors shrink-0"
-                    >
-                      Connect
-                    </button>
-                  </div>
-                )}
-              </div>
-              );
-            })}
-          </div>
-        </SettingsCollapse>
-
         </>)}
         {gate("providers", "credential pool rotate cursor openrouter anthropic openai api key accounts") && (<>
         <SettingsCollapse
