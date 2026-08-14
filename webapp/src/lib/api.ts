@@ -33,6 +33,10 @@ export type Config = {
   swarm_adapter?: string;
   edit_engine?: "agentic" | "native";
   agentic_ready?: boolean;
+  /** Full stack key or CURSOR_API_KEY — swarms/implement can run. */
+  workers_ready?: boolean;
+  /** Any keyed harness provider, including Pilot-only cursor-cli. */
+  pilot_ready?: boolean;
   reasoning_effort?: ReasoningEffort;
 };
 export type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh" | "max";

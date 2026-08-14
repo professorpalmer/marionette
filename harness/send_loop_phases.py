@@ -26,8 +26,11 @@ from typing import Any, Dict, Iterator, Optional
 
 from pmharness.bridge import execute_intent
 
+from .log_reconstruction import check_outbound_reconstruction
 from .pilot import PilotAction, StreamingSayExtractor
 from .stream_identity import StreamDeltaBatch, normalize_delta_payload
+from .tool_timeout import invoke_do, run_with_tool_deadline
+from .workspace_rules_refresh import maybe_refresh_workspace_rules
 from .url_safety import sanitize_url_for_display
 
 # job_XXXXXXXXXXXX — same pattern the parallel-dispatch stdout scanner used
@@ -346,6 +349,25 @@ def maybe_attach_pilot_session_id(
     kwargs["session_id"] = sid
 
 
+def dispatch_sync_pilot_chat(session: Any, tools_schema: Any, sys_prompt: str) -> Any:
+    """Non-streaming ``pilot.chat`` with the shared sanitize + honesty check."""
+    chat_kwargs = {
+        "tools": tools_schema,
+        "system": sys_prompt,
+    }
+    maybe_attach_pilot_session_id(
+        chat_kwargs,
+        session.pilot.chat,
+        getattr(session, "harness_session_id", None),
+    )
+    outbound = session._messages_for_provider()
+    try:
+        check_outbound_reconstruction(session, outbound, sys_prompt)
+    except Exception:
+        pass
+    return session.pilot.chat(outbound, **chat_kwargs)
+
+
 def run_stream(
     session: Any,
     q: Any,
@@ -379,8 +401,13 @@ def run_stream(
             getattr(session, "harness_session_id", None),
         )
         # Sanitize immediately before dispatch (same seam as sync chat).
+        outbound = session._messages_for_provider()
+        try:
+            check_outbound_reconstruction(session, outbound, sys_prompt)
+        except Exception:
+            pass
         r = session.pilot.chat_stream(
-            session._messages_for_provider(),
+            outbound,
             **kwargs,
         )
         q.put(("done", r))
@@ -401,15 +428,15 @@ def run_prefetch(
         elif kind == "list_dir":
             return idx, session._do_list_dir(act)
         elif kind == "search_codegraph":
-            return idx, session._do_search_codegraph(act)
+            return idx, invoke_do(session, act, lambda: session._do_search_codegraph(act))
         elif kind == "search_files":
-            return idx, session._do_search_files(act)
+            return idx, invoke_do(session, act, lambda: session._do_search_files(act))
         elif kind == "web_search":
-            return idx, session._do_web_search(act)
+            return idx, invoke_do(session, act, lambda: session._do_web_search(act))
         elif kind == "web_fetch":
-            return idx, session._do_web_fetch(act)
+            return idx, invoke_do(session, act, lambda: session._do_web_fetch(act))
         elif kind == "read_pdf":
-            return idx, session._do_read_pdf(act)
+            return idx, invoke_do(session, act, lambda: session._do_read_pdf(act))
         elif kind == "view_image":
             return idx, session._do_view_image(act)
         elif kind == "lsp":
@@ -1239,6 +1266,7 @@ def dispatch_readonly_action(
                 "artifacts": [{"type": "file", "headline": f"Read {len(content)} chars from {act.path}"}],
             })
             session._append_action_result(act, aid, f"(read_file {act.path} returned)\n{content}", is_native)
+            maybe_refresh_workspace_rules(session, act.path)
         else:
             if status == "repo_not_open":
                 yield ConvEvent("action_result", {"id": aid, "error": val})
@@ -1322,7 +1350,7 @@ def dispatch_readonly_action(
         if idx in prefetch:
             ok, status, val = prefetch[idx]
         else:
-            ok, status, val = session._do_web_search(act)
+            ok, status, val = invoke_do(session, act, lambda: session._do_web_search(act))
 
         if ok:
             result_text = val
@@ -1340,7 +1368,7 @@ def dispatch_readonly_action(
         if idx in prefetch:
             ok, status, val = prefetch[idx]
         else:
-            ok, status, val = session._do_web_fetch(act)
+            ok, status, val = invoke_do(session, act, lambda: session._do_web_fetch(act))
 
         if ok:
             result_text = val
@@ -1360,7 +1388,7 @@ def dispatch_readonly_action(
         if idx in prefetch:
             ok, status, val = prefetch[idx]
         else:
-            ok, status, val = session._do_read_pdf(act)
+            ok, status, val = invoke_do(session, act, lambda: session._do_read_pdf(act))
 
         if ok:
             result_text = val
@@ -1397,7 +1425,7 @@ def dispatch_readonly_action(
         if idx in prefetch:
             ok, status, val = prefetch[idx]
         else:
-            ok, status, val = session._do_search_codegraph(act)
+            ok, status, val = invoke_do(session, act, lambda: session._do_search_codegraph(act))
 
         if ok:
             kind, output = val
@@ -1422,7 +1450,7 @@ def dispatch_readonly_action(
         if idx in prefetch:
             ok, status, val = prefetch[idx]
         else:
-            ok, status, val = session._do_search_files(act)
+            ok, status, val = invoke_do(session, act, lambda: session._do_search_files(act))
 
         if ok:
             output = val
@@ -1865,6 +1893,7 @@ def dispatch_local_action(
                 "artifacts": [{"type": "file", "headline": f"Wrote {bytes_written} bytes to {act.path}"}],
             })
             session._append_action_result(act, aid, f"(write_file {act.path} successfully wrote {bytes_written} bytes)", is_native)
+            maybe_refresh_workspace_rules(session, act.path)
             turn_changed_files.append(target_path)
             yield from _yield_task_profile_escalation(session, turn_changed_files)
         except Exception as e:
@@ -1923,6 +1952,7 @@ def dispatch_local_action(
                 "artifacts": [{"type": "file", "headline": headline}],
             })
             session._append_action_result(act, aid, f"(edit_file {act.path} successfully edited: {headline})", is_native)
+            maybe_refresh_workspace_rules(session, act.path)
             turn_changed_files.append(target_path)
             yield from _yield_task_profile_escalation(session, turn_changed_files)
         except Exception as e:
@@ -1988,6 +2018,7 @@ def dispatch_local_action(
             session._last_ast_preview = None
             yield ConvEvent("action_result", hash_edit_result)
             session._append_action_result(act, aid, f"(hash_edit {act.path} successfully applied: {headline})", is_native)
+            maybe_refresh_workspace_rules(session, act.path)
             turn_changed_files.append(target_path)
             yield from _yield_task_profile_escalation(session, turn_changed_files)
         except Exception as e:
@@ -2429,7 +2460,11 @@ def dispatch_local_action(
             return
 
         try:
-            res = session._wiki.query(question)
+            res, timed_out = run_with_tool_deadline(
+                session, "query_wiki", lambda: session._wiki.query(question),
+            )
+            if timed_out:
+                raise TimeoutError("tool call timed out after %dms" % timed_out)
             # Grounded synthesis: fold the raw wiki result through
             # harness.nl_memory.answer_from_memory so the surfaced
             # text is a concise, cited answer instead of a raw dump.
@@ -2478,7 +2513,11 @@ def dispatch_local_action(
         try:
             if act.tool:
                 session._tool_catalog.activate([act.tool])
-            out = session._mcp.call(act.tool, act.arguments)
+            out, timed_out = run_with_tool_deadline(
+                session, "call_mcp", lambda: session._mcp.call(act.tool, act.arguments),
+            )
+            if timed_out:
+                raise TimeoutError("tool call timed out after %dms" % timed_out)
             text = _mcp_result_text(out)
         except Exception as e:
             yield ConvEvent("action_result", {"id": aid, "error": f"mcp: {e}"})

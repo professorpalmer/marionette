@@ -15,6 +15,13 @@ describe("ProviderKeyBanner", () => {
     expect(screen.getByText(/Add a provider key to run real analysis/i)).toBeTruthy();
   });
 
+  it("tells a pilot-only user to add a Full stack key for swarms", () => {
+    render(<ProviderKeyBanner onAddKey={vi.fn()} variant="workers" />);
+    const banner = screen.getByTestId("provider-key-banner");
+    expect(banner.getAttribute("data-variant")).toBe("workers");
+    expect(screen.getByText(/Chat works. Add an API key for swarms/i)).toBeTruthy();
+  });
+
   it("invokes onAddKey when Add key is clicked", () => {
     const onAddKey = vi.fn();
     render(<ProviderKeyBanner onAddKey={onAddKey} />);

@@ -976,3 +976,34 @@ def test_known_spec_follows_dated_family():
     assert _known_spec_for(
         "deepseek/deepseek-v4-pro-0813", "deepseek/deepseek-v4-pro",
     ) == rolling
+
+
+def test_keyed_openrouter_not_starved_by_other_provider_toggles(monkeypatch, tmp_path):
+    """Stale anthropic Models toggles must not empty a keyed OpenRouter catalog."""
+    models_path = tmp_path / "models.json"
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
+
+    live = ["moonshotai/kimi-k3", "z-ai/glm-5.2", "xiaomi/mimo-v2-flash"]
+
+    def mock_get_provider_key(provider):
+        return "fake-openrouter" if provider.name == "openrouter" else None
+
+    def mock_enabled(name):
+        if name == "anthropic":
+            return ["claude-opus-4-8"]
+        return []
+
+    with patch("harness.registry_wizard.get_provider_key", mock_get_provider_key), \
+         patch("harness.keys.get_disconnected", lambda: set()), \
+         patch("harness.model_fetch.fetch_models", lambda *_a, **_k: list(live)), \
+         patch("harness.auto_registry._enabled_picker_models", mock_enabled):
+        from harness.auto_registry import sync_agentic_registry
+        result = sync_agentic_registry()
+
+    assert result["synced"] is True
+    ids = {m["id"] for m in json.loads(models_path.read_text())["models"]}
+    assert "agentic/moonshotai/kimi-k3" in ids
+    assert "agentic/z-ai/glm-5.2" in ids
+    assert not any("mimo" in mid for mid in ids)
+    assert not any("claude" in mid for mid in ids)

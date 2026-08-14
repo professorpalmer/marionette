@@ -1,6 +1,6 @@
 # Contributing to Marionette
 
-Welcome. This is an internal-first research rig + Electron desktop app. These are
+Welcome. This is the Marionette desktop app plus its research/eval rig. These are
 the conventions that keep the codebase coherent -- please follow them.
 
 ## Ground rules (non-negotiable)

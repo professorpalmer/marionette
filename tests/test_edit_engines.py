@@ -22,6 +22,7 @@ from harness.edit_engines import (
     finalize_worktree_patch,
     managed_worktree,
     pilot_keys_ready,
+    workers_ready,
     run_agentic_edit,
     run_edit_worker,
     run_native_edit,
@@ -314,6 +315,59 @@ def test_pilot_keys_ready_false_when_truly_keyless(monkeypatch, tmp_path):
     )
     monkeypatch.setattr("harness.keys.get_disconnected", lambda: set(), raising=False)
     assert pilot_keys_ready() is False
+
+
+def test_workers_ready_false_for_cursor_cli_only(monkeypatch, tmp_path):
+    """Pilot-only Cursor Agent login must not claim swarms can run."""
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    monkeypatch.delenv("CURSOR_API_KEY", raising=False)
+    for k in (
+        "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
+        "OPENROUTER_API_KEY", "OPENCODE_GO_API_KEY", "OPENAI_CODEX_TOKEN",
+        "AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+    ):
+        monkeypatch.delenv(k, raising=False)
+
+    def _key(provider):
+        return "cursor-cli-login" if provider.name == "cursor-cli" else None
+
+    monkeypatch.setattr("harness.registry_wizard.get_provider_key", _key)
+    monkeypatch.setattr(
+        "harness.keys.get_api_key_status",
+        lambda name: {"has_key": name == "cursor-cli", "masked": "****"},
+    )
+    monkeypatch.setattr("harness.keys.get_disconnected", lambda: set())
+    monkeypatch.setattr(
+        "harness.edit_engines.cursor_platform_available", lambda: False
+    )
+    assert workers_ready() is False
+    assert pilot_keys_ready() is True
+
+
+def test_workers_ready_true_for_stored_openrouter(monkeypatch, tmp_path):
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    monkeypatch.delenv("CURSOR_API_KEY", raising=False)
+    for k in (
+        "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
+        "OPENROUTER_API_KEY", "OPENCODE_GO_API_KEY", "OPENAI_CODEX_TOKEN",
+        "AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+    ):
+        monkeypatch.delenv(k, raising=False)
+
+    def _key(provider):
+        return "sk-or-stored" if provider.name == "openrouter" else None
+
+    monkeypatch.setattr("harness.registry_wizard.get_provider_key", _key)
+    monkeypatch.setattr(
+        "harness.keys.get_api_key_status",
+        lambda name: {"has_key": name == "openrouter", "masked": "****"},
+    )
+    monkeypatch.setattr("harness.keys.get_disconnected", lambda: set())
+    monkeypatch.setattr(
+        "harness.edit_engines.cursor_platform_available", lambda: False
+    )
+    assert workers_ready() is True
+    assert pilot_keys_ready() is True
 
 
 # --- worktree helpers (real git, no network) ---

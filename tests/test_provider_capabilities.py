@@ -4,9 +4,18 @@ from __future__ import annotations
 
 
 def test_cursor_cli_is_pilot_only():
-    from harness.provider_capabilities import worker_capability
+    from harness.provider_capabilities import worker_capability, capability_hint
 
     assert worker_capability("cursor-cli") == "pilot_only"
+    hint = capability_hint("pilot_only").lower()
+    assert "full stack" in hint
+    assert "not required" in hint
+
+
+def test_openrouter_is_full_stack():
+    from harness.provider_capabilities import worker_capability
+
+    assert worker_capability("openrouter") == "full_stack"
 
 
 def test_openai_codex_and_nous_are_full_stack():

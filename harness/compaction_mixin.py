@@ -285,32 +285,21 @@ class CompactionContextMixin:
         return heuristic
 
     def _find_safe_split(self, start_idx: int) -> int:
-        split_idx = start_idx
-        if split_idx < 2:
-            split_idx = 2
+        """Move ``start_idx`` to a cut that does not break tool pairing.
 
-        while split_idx < len(self._history):
-            middle_tool_calls = set()
-            for msg in self._history[1:split_idx]:
-                if msg.get("tool_calls"):
-                    for tc in msg["tool_calls"]:
-                        if tc.get("id"):
-                            middle_tool_calls.add(tc["id"])
+        Keeps the id-based orphan-in-kept check and additionally requires
+        in-progress tool-call count == 0 at the cut (DeepSeek pairing balance).
+        Mid-turn unanswered calls stay in the tail rather than the summary.
+        """
+        from .tool_pairing import nearest_balanced_split, orphan_tool_result_in_kept
 
-            has_orphaned = False
-            for msg in self._history[split_idx:]:
-                if msg.get("role") == "tool":
-                    tc_id = msg.get("tool_call_id")
-                    if tc_id in middle_tool_calls:
-                        has_orphaned = True
-                        break
-
-            if not has_orphaned:
-                break
-
-            split_idx += 1
-
-        return split_idx
+        history = self._history
+        return nearest_balanced_split(
+            history,
+            start_idx,
+            min_idx=2,
+            orphan_in_kept=lambda idx: orphan_tool_result_in_kept(history, idx),
+        )
 
     def _set_compaction_attempt(self, reason: str, **extra) -> None:
         """Record the latest compaction attempt outcome (diagnostic; never raises)."""

@@ -84,6 +84,13 @@ def execute_turn_actions(
     # same originating user turn (execution counts, result cache, broad-intent,
     # delegation/swarm progress). Fresh user messages clear the session attr.
     prior_guard = getattr(session, "_turn_guard_state", None)
+    if prior_guard is None:
+        try:
+            from .repeat_tool_reminder import reset_repeat_chain
+
+            reset_repeat_chain(session)
+        except Exception:
+            pass
     nested_implement = bool(getattr(session, "_nested_implement_worker", False))
     guard_state = reuse_or_new_turn_guard_state(
         prior_guard,

@@ -34,14 +34,16 @@ def get_config(svc: SettingsServices) -> tuple[int, JsonPayload]:
     cfg = svc.cfg
     session = svc.get_session()
     try:
-        from ..edit_engines import pilot_keys_ready, select_edit_engine
+        from ..edit_engines import pilot_keys_ready, select_edit_engine, workers_ready
         edit_engine = select_edit_engine(cfg)
-        # UI keyless-banner signal: any keyed harness pilot (incl. OpenCode Go /
-        # Codex). Distinct from agentic_available(), which only covers
-        # Puppetmaster's agentic worker registry.
-        agentic_ready = pilot_keys_ready()
+        # workers_ready / agentic_ready: Full stack key or CURSOR_API_KEY — the
+        # banner that claims swarms can run. pilot_ready is the broader chat
+        # lane (includes Pilot-only cursor-cli login).
+        workers = workers_ready()
+        pilot = pilot_keys_ready()
+        agentic_ready = workers
     except Exception:
-        edit_engine, agentic_ready = "native", False
+        edit_engine, agentic_ready, workers, pilot = "native", False, False, False
     try:
         from ..reasoning_effort import current_reasoning_effort
         reasoning_effort = current_reasoning_effort()
@@ -58,6 +60,8 @@ def get_config(svc: SettingsServices) -> tuple[int, JsonPayload]:
         "swarm_adapter": cfg.swarm_adapter,
         "edit_engine": edit_engine,
         "agentic_ready": agentic_ready,
+        "workers_ready": workers,
+        "pilot_ready": pilot,
         "preflight": session.preflight(),
         "reasoning_effort": reasoning_effort,
         "package_version": identity.get("package_version", ""),

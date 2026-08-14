@@ -1,16 +1,16 @@
 # Marionette
 
 A desktop AI coding harness where the LLM is a **component inside** the kernel,
-not the platform. Marionette drives any model -- frontier or cheap open-weights --
-through a structured pilot loop over [Puppetmaster](https://github.com/professorpalmer/Puppetmaster)
-durable state, with CodeGraph-aware retrieval, a portable cross-session knowledge
-wiki, and multi-worker delegation.
+not the platform. Install from GitHub, paste any Full stack API key in Settings
+(OpenRouter, Anthropic, OpenAI, Gemini, Bedrock, Codex OAuth, OpenCode Go, …),
+and both the chat **pilot** and agentic **workers** (swarm / implement) run on
+that credential. No Cursor, Claude, or Codex CLI install is required.
 
-Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
-sqlite); Puppetmaster is the one real dependency, installed editable from a local
-checkout.
+Puppetmaster is the bundled kernel — not a second product to set up.
+stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.2` is the one
+real dependency the installer puts in the venv.
 
-> Status: v0.9.218, deliberately pre-1.0. Left rail and tool cards sit on the conversation surface so they read as floating; n-way board columns resize pairwise so a middle pane is not squeezed by its neighbors; Autopilot only routes models the live catalog and Models toggles actually allow. Rides puppetmaster-ai==1.22.2.
+> Status: v0.9.219, deliberately pre-1.0. One Full stack Settings key runs both chat and agentic workers; loop hygiene now reminds on identical tool repeats, times out hanging network tools, and refuses unpaired compaction cuts. Rides puppetmaster-ai==1.22.2. Cursor CLI / `CURSOR_API_KEY` remain optional upgrades (Pilot only / platform workers).
 
 ## Documentation
 
@@ -236,7 +236,7 @@ The driver and keys are set in the app (Settings pane) or via env. Key vars:
 
 | Env var | Purpose |
 |---|---|
-| `OPENROUTER_API_KEY` | Default reach: the whole field through one endpoint. |
+| `OPENROUTER_API_KEY` | Default Full stack key: chat pilot and agentic workers through one endpoint. No other platform required. |
 | `GEMINI_API_KEY` | Optional dedicated vision key. Not required -- vision also falls back to any provider key you already have that exposes a vision model. |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_BEARER_TOKEN_BEDROCK` | AWS Bedrock BYOK (Settings can also load `~/.aws`). Pilots and agentic swarms use Converse + ConverseStream (live thinking/tool/text deltas); model pickers discover the account allow-list; prompt-cache hits feed the same token/cost/`cache_savings_usd` meters as Anthropic/OpenRouter. |
 | `HARNESS_VLM_REACH` / `HARNESS_VLM_MODEL` | Explicit vision-sidecar override (e.g. `openrouter` for an open VLM) and its model. |
