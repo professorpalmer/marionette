@@ -50,6 +50,7 @@ from .send_loop_actions import execute_turn_actions
 from .send_loop_phases import (
     drain_idle_turn,
     drain_stream_queue,
+    finalize_assistant_turn,
     maybe_attach_pilot_session_id,
     promote_trailing_reasoning_to_say,
     meter_pilot_step,
@@ -106,7 +107,9 @@ def _build_step_tools(synthesis_nudge_active: bool, build_tools: Any) -> list:
 def emit_turn_task_profile(session: Any, user_message: str) -> Iterator[Any]:
     """Classify adaptive depth for a fresh user turn and emit a ConvEvent."""
     from .conversation import ConvEvent
+    from .send_loop_phases import begin_turn_task_kernel
 
+    begin_turn_task_kernel(session, user_message)
     try:
         profile = session._resolve_task_profile_for_turn(user_message)
         yield ConvEvent("task_profile", {
@@ -1330,14 +1333,10 @@ class SendLoopMixin:
                 and not turn.has_actions
             ):
                 # Close the turn for the UI before wiki ingest (network I/O).
-                yield ConvEvent("assistant_done", {
-                    "turns": step + 1,
-                    "swarms": swarms,
-                    "turn_budget_exhausted": True,
-                })
-                self._submit_housekeeping(
-                    self._maybe_ingest,
-                    user_message, list(turn_prose), list(turn_findings),
+                yield from finalize_assistant_turn(
+                    self, user_message=user_message, step=step, swarms=swarms,
+                    turn_prose=turn_prose, turn_findings=turn_findings,
+                    extra={"turn_budget_exhausted": True},
                 )
                 return
 
@@ -1406,14 +1405,11 @@ class SendLoopMixin:
                             "role": "assistant",
                             "text": halt_msg,
                         })
-                        yield ConvEvent("assistant_done", {
-                            "turns": step + 1,
-                            "swarms": swarms,
-                            "stagnation_halt": True,
-                        })
-                        self._submit_housekeeping(
-                            self._maybe_ingest,
-                            user_message, list(turn_prose), list(turn_findings),
+                        yield from finalize_assistant_turn(
+                            self, user_message=user_message, step=step,
+                            swarms=swarms, turn_prose=turn_prose,
+                            turn_findings=turn_findings,
+                            extra={"stagnation_halt": True},
                         )
                         return
             except Exception:
@@ -1522,9 +1518,8 @@ class SendLoopMixin:
         limit_msg = "(Reached the investigation step limit for this message.)"
         yield ConvEvent("message", {"role": "assistant", "text": limit_msg})
         self._display_transcript.append({"type": "message", "role": "assistant", "text": limit_msg})
-        yield ConvEvent("assistant_done", {"turns": step + 1, "swarms": swarms})
-        self._submit_housekeeping(
-            self._maybe_ingest,
-            user_message, list(turn_prose), list(turn_findings),
+        yield from finalize_assistant_turn(
+            self, user_message=user_message, step=step, swarms=swarms,
+            turn_prose=turn_prose, turn_findings=turn_findings,
         )
 

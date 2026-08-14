@@ -856,6 +856,11 @@ class ConversationalSession(
         self._task_profile: str = ""
         self._task_profile_source: str = ""
         self._task_profile_escalated_from: Optional[str] = None
+        self._task_tx = None
+        self._turn_ran_command = False
+        self._verify_remind_count = 0
+        self._turn_user_message = ""
+        self._turn_verification = ""
         # Per-message CodeGraph slice cache. The codegraph_context() call is a
         # blocking Node subprocess (~270-500ms) -- recomputing it on every step
         # of a multi-step turn (same query) is pure dead time stacked in front of

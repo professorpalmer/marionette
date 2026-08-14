@@ -137,8 +137,17 @@ def test_parallel_reads_mixed_with_write():
     with open(file3_actual_path, "r") as f:
         assert f.read() == "file3 written content"
         
-    # Verify order and values
-    user_inputs_and_tools = [h for h in s._history if h["role"] in ("user", "tool") and h != s._history[1]]
+    # Verify order and values. MICRO/STANDARD file edits may append a
+    # verify-remind user message after the action results; ignore it here.
+    from harness.tool_requirement import SoftToolRequirement
+
+    remind = SoftToolRequirement.remind_message()
+    user_inputs_and_tools = [
+        h for h in s._history
+        if h["role"] in ("user", "tool")
+        and h != s._history[1]
+        and remind not in (h.get("content") or "")
+    ]
     assert len(user_inputs_and_tools) == 3
     
     assert "file1 init" in user_inputs_and_tools[0]["content"]

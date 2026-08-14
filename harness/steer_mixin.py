@@ -265,6 +265,14 @@ class SteerMixin:
             return
         for steer in steers:
             marker_text = self._steer_marker(steer)
+            try:
+                from .task_transaction import context_block
+
+                extra = context_block(getattr(self, "_task_tx", None))
+                if extra:
+                    marker_text = marker_text + "\n\n" + extra
+            except Exception:
+                pass
             yield ConvEvent("steer", {"text": steer})
             # Inject into the last result-bearing message (tool role for native
             # tool-calling, or the user-role result the JSON-envelope path appends).
