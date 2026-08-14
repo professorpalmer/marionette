@@ -402,8 +402,11 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
   useEffect(() => {
     return subscribeWorkspaceMutations((event) => {
       const mutated = mutationEventPath(event);
-      if (!mutated) return;
-      if (!pathsReferToSameFile(mutated, pathRef.current)) return;
+      // Pathless events (checkpoint restore / rewind) mean the workspace
+      // changed but the emitter does not know which files. Reload this
+      // clean tab; dirty tabs get a conflict notice instead of a silent
+      // overwrite.
+      if (mutated && !pathsReferToSameFile(mutated, pathRef.current)) return;
       if (isDirtyRef.current) {
         setDiskConflict(true);
         return;
