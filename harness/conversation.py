@@ -584,6 +584,7 @@ class ConversationalSession(
             )
         # workspace rules (auto-loaded from repository if available)
         ws_rules = load_workspace_rules(config.repo)
+        self._workspace_rules_block = ws_rules or ""
         if ws_rules:
             system = system + ws_rules
         # the running transcript with the pilot (conversation memory)
@@ -848,6 +849,7 @@ class ConversationalSession(
         # Cleared on fresh user messages; preserved across model steps and
         # keep-alive resume for the same originating turn.
         self._turn_guard_state = None
+        self._repeat_tool_chain = None
         self._stagnation_last_prose = None
         self._stagnation_last_actions = None
         self._stagnation_streak = 0
@@ -2560,6 +2562,13 @@ class ConversationalSession(
                 read_path = str(act.path)
         except Exception:
             read_path = None
+
+        try:
+            from .repeat_tool_reminder import note_repeat_and_maybe_nudge
+
+            clamped_content = note_repeat_and_maybe_nudge(self, act, clamped_content)
+        except Exception:
+            pass
 
         if is_native:
             msg = {"role": "tool", "tool_call_id": tc_id, "content": clamped_content}

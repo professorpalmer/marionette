@@ -26,6 +26,10 @@ explicit:
   `route_task`, …) are tools the pilot calls; they are not a separate product
   loop.
 
+Default execution is keys-only: the agentic adapter runs pilots and workers
+against whatever Full stack Settings credential the user pasted. Platform CLIs
+(Cursor, Claude Code, Codex CLI) are opt-in via Settings, not a requirement.
+
 Two consequences of that lane-B framing:
 
 - **Any model can drive.** Hot-swap the pilot by task. A cheap open-weights
@@ -394,9 +398,10 @@ synthesis of wiki pages from session output, accumulating reusable project
 knowledge over time. Paired with the skill store, this is how the harness
 learns from its own runs instead of starting cold each time.
 
-## 10. Non-goals (v1, internal-first)
+## 10. Non-goals (v1)
 
-- Not Cursor parity. Not a model-training pipeline. Not public.
+- Not Cursor parity. Not a model-training pipeline. Public path is GitHub
+  install plus one Full stack Settings key.
 - Vision sidecar uses a frontier VLM as a stand-in; swapping an open VLM
   (GLM-OCR / Kimi-VL / Qwen-VL) is a config change, not a redesign.
 - The "no black box" enterprise claim requires self-hosted open weights; the

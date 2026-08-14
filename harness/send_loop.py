@@ -857,6 +857,12 @@ class SendLoopMixin:
             self._turn_budget = None
             # Fresh turn: clear guard / stagnation / failed-objective resume state.
             self._turn_guard_state = None
+            try:
+                from .repeat_tool_reminder import reset_repeat_chain
+
+                reset_repeat_chain(self)
+            except Exception:
+                self._repeat_tool_chain = None
             self._stagnation_last_prose = None
             self._stagnation_last_actions = None
             self._stagnation_streak = 0
@@ -1136,8 +1142,15 @@ class SendLoopMixin:
                                 self.pilot.chat,
                                 getattr(self, "harness_session_id", None),
                             )
+                            outbound = self._messages_for_provider()
+                            try:
+                                from .log_reconstruction import check_outbound_reconstruction
+
+                                check_outbound_reconstruction(self, outbound, sys_prompt)
+                            except Exception:
+                                pass
                             resp = self.pilot.chat(
-                                self._messages_for_provider(),
+                                outbound,
                                 **chat_kwargs,
                             )
                     else:

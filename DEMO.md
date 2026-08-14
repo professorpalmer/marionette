@@ -31,8 +31,8 @@ open weights and the black box disappears.
   data stays in-network, needs GPUs) OR a hosted open-weights provider (cheap,
   but data leaves your network). Same architecture, different trade-off. Say
   which one you mean.
-- This is internal-first and deliberately v0.x. It is not Cursor parity and not
-  a public product. It is a working proof that the inversion holds.
+- This is deliberately v0.x, not Cursor parity. The public path is GitHub
+  install plus one Full stack Settings key — no Cursor or other CLI required.
 
 ## The receipt (why a cheap open model is enough)
 
@@ -108,7 +108,7 @@ Prereqts: an OpenRouter key in OPENROUTER_API_KEY (or use the no-key stub).
 
 ## What it is NOT (yet)
 
-- Not Cursor parity. Not public. Not a model-training pipeline.
+- Not Cursor parity. Not a model-training pipeline. Public path is install plus a Full stack key.
 - The vision sidecar default is a frontier stand-in unless you set the open VLM
   env; both are one flag apart.
 - The eval ranks competent-vs-lazy drivers; splitting the very top tier would

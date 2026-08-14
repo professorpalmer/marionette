@@ -11,22 +11,36 @@ import { TITLEBAR_TRAFFIC_PAD_PX } from "../lib/titlebarSafe";
 // "you're still keyless" reminder that reappears each launch until a key is added
 // (adding one fires harness-config-changed -> App refetches -> agentic_ready flips
 // true -> this unmounts on its own).
-export default function ProviderKeyBanner({ onAddKey }: { onAddKey: () => void }) {
+export default function ProviderKeyBanner({
+  onAddKey,
+  variant = "keyless",
+}: {
+  onAddKey: () => void;
+  variant?: "keyless" | "workers";
+}) {
   const [dismissed, setDismissed] = useState(false);
   if (dismissed) return null;
+  const workersOnly = variant === "workers";
 
   return (
     // Fixed px paddingLeft clears macOS traffic lights (hiddenInset). Rem-based
     // Tailwind pl-24 shrinks with the responsive root font-size on resize.
     <div
       data-testid="provider-key-banner"
+      data-variant={variant}
       className="flex items-center gap-2.5 pr-4 py-1.5 bg-accent/10 border-b border-accent/25 text-[11.5px] text-txt select-none shrink-0"
       style={{ paddingLeft: TITLEBAR_TRAFFIC_PAD_PX }}
     >
       <KeyRound size={13} className="text-accent shrink-0" />
-      <span className="font-medium">Add a provider key to run real analysis.</span>
+      <span className="font-medium">
+        {workersOnly
+          ? "Chat works. Add an API key for swarms."
+          : "Add a provider key to run real analysis."}
+      </span>
       <span className="text-muted hidden sm:inline">
-        Marionette routes directly through your own keys -- add one and it works out of the box.
+        {workersOnly
+          ? "Pilot-only login cannot drive workers. Paste a Full stack key (OpenRouter, Codex, …) — no Cursor install."
+          : "Marionette routes pilots and workers through your own keys -- add one and it works out of the box."}
       </span>
       <div className="flex-1" />
       <button

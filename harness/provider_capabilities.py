@@ -70,7 +70,8 @@ def capability_hint(capability: str) -> str:
         )
     return (
         "Powers the chat pilot only. Swarm/implement workers need a Full stack "
-        "provider (OpenRouter, Codex OAuth, OpenCode Go, …) or a Cursor API key."
+        "API key or OAuth (OpenRouter, Codex, OpenCode Go, …). Cursor CLI is "
+        "optional and not required. A Cursor API key is a separate platform-worker upgrade."
     )
 
 

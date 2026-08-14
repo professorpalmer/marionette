@@ -56,6 +56,9 @@ def test_get_config_and_settings(monkeypatch):
         "harness.edit_engines.pilot_keys_ready", lambda: False, raising=False
     )
     monkeypatch.setattr(
+        "harness.edit_engines.workers_ready", lambda: False, raising=False
+    )
+    monkeypatch.setattr(
         "harness.reasoning_effort.current_reasoning_effort",
         lambda: "low",
         raising=False,
@@ -65,6 +68,9 @@ def test_get_config_and_settings(monkeypatch):
     assert code == 200
     assert payload["driver"] == cfg.driver
     assert payload["models"] == ["anthropic:claude-opus-4-8"]
+    assert payload["workers_ready"] is False
+    assert payload["pilot_ready"] is False
+    assert payload["agentic_ready"] is False
     assert get_settings(svc)[1]["budget"] == 3
 
 
