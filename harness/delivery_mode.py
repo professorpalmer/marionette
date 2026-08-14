@@ -2,8 +2,8 @@ from __future__ import annotations
 
 """DeliveryMode enum — shared vocabulary for composer inject and schedule→busy.
 
-Modes: auto | steer | follow_up
-Actions: run_auto | enqueue_steer | enqueue_prompt
+Modes: auto | steer | follow_up | interrupt
+Actions: run_auto | enqueue_steer | enqueue_prompt | interrupt_then_queue
 """
 
 from enum import Enum
@@ -14,12 +14,14 @@ class DeliveryMode(str, Enum):
     AUTO = "auto"
     STEER = "steer"
     FOLLOW_UP = "follow_up"
+    INTERRUPT = "interrupt"
 
 
 class DeliveryAction(str, Enum):
     RUN_AUTO = "run_auto"
     ENQUEUE_STEER = "enqueue_steer"
     ENQUEUE_PROMPT = "enqueue_prompt"
+    INTERRUPT_THEN_QUEUE = "interrupt_then_queue"
 
 
 def normalize_delivery_mode(requested: Optional[str]) -> Optional[str]:
@@ -33,23 +35,40 @@ def normalize_delivery_mode(requested: Optional[str]) -> Optional[str]:
         DeliveryMode.AUTO.value,
         DeliveryMode.STEER.value,
         DeliveryMode.FOLLOW_UP.value,
+        DeliveryMode.INTERRUPT.value,
     ):
         return mode
     return None
 
 
+def _try_interrupt_session(session: Any) -> bool:
+    """Call the first available stop/interrupt hook. Never raises."""
+    for name in ("interrupt", "request_interrupt", "stop"):
+        fn = getattr(session, name, None)
+        if callable(fn):
+            try:
+                fn()
+            except Exception:
+                pass
+            return True
+    return False
+
+
 def resolve_delivery(session_busy: bool, requested: Optional[str]) -> str:
-    """Map (busy, mode) → action for run_auto / enqueue_steer / enqueue_prompt.
+    """Map (busy, mode) → action for run_auto / enqueue_steer / enqueue_prompt / interrupt_then_queue.
 
     ``session_busy`` influences steer (mid-turn inject when busy; when idle,
     steer still maps to enqueue_steer so the host can stage a redirect). Auto
-    always maps to run_auto; follow_up always queues a next-turn prompt.
+    always maps to run_auto; follow_up always queues a next-turn prompt;
+    interrupt stops the current turn when busy, then queues the text.
     """
     mode = normalize_delivery_mode(requested) or DeliveryMode.AUTO.value
     if mode == DeliveryMode.STEER.value:
         return DeliveryAction.ENQUEUE_STEER.value
     if mode == DeliveryMode.FOLLOW_UP.value:
         return DeliveryAction.ENQUEUE_PROMPT.value
+    if mode == DeliveryMode.INTERRUPT.value:
+        return DeliveryAction.INTERRUPT_THEN_QUEUE.value
     # auto
     _ = session_busy  # reserved for future busy-auto policy; action stays run_auto
     return DeliveryAction.RUN_AUTO.value
@@ -84,6 +103,19 @@ def apply_delivery(
             return {"ok": False, "error": "session lacks enqueue_prompt", "action": action}
         item = session.enqueue_prompt(cleaned, images=imgs)
         return {"ok": True, "action": action, "item": item}
+    if action == DeliveryAction.INTERRUPT_THEN_QUEUE.value:
+        if not cleaned:
+            return {"ok": False, "error": "missing text", "action": action}
+        interrupted = False
+        if session_busy:
+            interrupted = _try_interrupt_session(session)
+        if not hasattr(session, "enqueue_prompt"):
+            return {"ok": False, "error": "session lacks enqueue_prompt", "action": action}
+        item = session.enqueue_prompt(cleaned, images=imgs)
+        result: dict = {"ok": True, "action": action, "item": item}
+        if interrupted:
+            result["interrupted"] = True
+        return result
     # run_auto
     if not cleaned:
         return {"ok": False, "error": "missing text", "action": action}

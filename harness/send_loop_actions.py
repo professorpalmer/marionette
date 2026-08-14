@@ -90,6 +90,7 @@ def execute_turn_actions(
         user_message,
         repo_path=action_cwd,
         nested_implement=nested_implement,
+        task_profile=getattr(session, "_task_profile", "") or "",
     )
     session._turn_guard_state = guard_state
     guard_suppressed: dict[int, Any] = {}

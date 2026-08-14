@@ -50,7 +50,28 @@ def test_mixin_defines_no_init():
 
 def test_wiki_grounding_max_chars_on_mixin():
     assert "_WIKI_GROUNDING_MAX_CHARS" in WikiDistillMixin.__dict__
+    assert "_WIKI_GROUNDING_STANDARD_MAX_CHARS" in WikiDistillMixin.__dict__
     assert ConversationalSession._WIKI_GROUNDING_MAX_CHARS == 8000
+    assert ConversationalSession._WIKI_GROUNDING_STANDARD_MAX_CHARS == 2500
+
+
+def test_wiki_grounding_budget_profile_aware():
+    from harness.task_profile import DEEP, MICRO, STANDARD
+
+    class _Stub(WikiDistillMixin):
+        pass
+
+    stub = _Stub()
+    stub._task_profile = STANDARD
+    assert stub._wiki_grounding_budget() == (3, 2500)
+    stub._task_profile = DEEP
+    assert stub._wiki_grounding_budget() == (5, 8000)
+    stub._task_profile = MICRO
+    assert stub._wiki_grounding_budget() == (5, 8000)
+    stub._task_profile = "unknown"
+    assert stub._wiki_grounding_budget() == (5, 8000)
+    stub._task_profile = ""
+    assert stub._wiki_grounding_budget() == (5, 8000)
 
 
 def test_send_and_busy_not_folded_into_wiki_distill():

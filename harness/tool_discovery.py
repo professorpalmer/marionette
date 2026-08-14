@@ -81,7 +81,35 @@ _PILOT_EXTRAS: Set[str] = {
 _WORKER_EXTRAS: Set[str] = {"route_task"}
 
 
-def core_visible_names(no_delegation: bool = False) -> Set[str]:
+def core_visible_names(
+    no_delegation: bool = False,
+    profile: Optional[str] = None,
+) -> Set[str]:
+    """Core always-visible tool names for the current pilot mode / task profile.
+
+    MICRO returns the compact micro set (plus hash_edit when enabled) so prompts
+    stay small; STANDARD/DEEP keep CORE_PILOT / CORE_WORKER behavior.
+    """
+    try:
+        from .task_profile import MICRO, micro_visible_tool_names, normalize_profile
+
+        resolved = normalize_profile(profile)
+        if resolved == MICRO and not no_delegation:
+            names = set(micro_visible_tool_names())
+            try:
+                from .hash_edit import hash_edit_enabled
+
+                if hash_edit_enabled():
+                    names.add("hash_edit")
+                else:
+                    names.discard("hash_edit")
+            except Exception as exc:
+                _diag_note("tool_discovery.core_visible_hash_edit", exc)
+                names.discard("hash_edit")
+            return names
+    except Exception as exc:
+        _diag_note("tool_discovery.core_visible_profile", exc)
+
     base = _core_always()
     return base | (_WORKER_EXTRAS if no_delegation else _PILOT_EXTRAS)
 
@@ -136,6 +164,27 @@ def _truncate(text: str, limit: int = _MAX_DESC_CHARS) -> str:
     return text[: limit - 3].rstrip() + "..."
 
 
+def _profile_compacts_descriptions(profile: Optional[str]) -> bool:
+    """MICRO/STANDARD shrink tool descriptions; DEEP/None keep full text."""
+    try:
+        from .task_profile import MICRO, STANDARD, normalize_profile
+
+        return normalize_profile(profile) in (MICRO, STANDARD)
+    except Exception as exc:
+        _diag_note("tool_discovery.profile_compacts", exc)
+        return False
+
+
+def _compact_description(text: str, limit: int = _MAX_DESC_CHARS) -> str:
+    """First sentence (split on ``. ``), then hard-cap at ``limit`` chars."""
+    text = (text or "").strip()
+    if not text:
+        return ""
+    if ". " in text:
+        text = text.split(". ", 1)[0]
+    return _truncate(text, limit)
+
+
 @dataclass
 class CatalogEntry:
     tool_id: str
@@ -176,6 +225,7 @@ class ToolCatalog:
         self._last_mcp_tools: Optional[Sequence] = None
         self._last_no_delegation = False
         self._last_browser_enabled = True
+        self._last_profile: Optional[str] = None
 
     @property
     def activated(self) -> Set[str]:
@@ -187,6 +237,7 @@ class ToolCatalog:
         mcp_tools: Optional[Sequence] = None,
         no_delegation: bool = False,
         browser_enabled: bool = True,
+        profile: Optional[str] = None,
     ) -> None:
         """Rebuild the search index from the current built-in + MCP tool set."""
         if mcp_tools is not None:
@@ -194,7 +245,9 @@ class ToolCatalog:
         mcp_tools = self._last_mcp_tools
         self._last_no_delegation = no_delegation
         self._last_browser_enabled = browser_enabled
-        core = core_visible_names(no_delegation)
+        if profile is not None:
+            self._last_profile = profile
+        core = core_visible_names(no_delegation, profile=self._last_profile)
         schema = build_tools_schema(
             mcp_tools,
             no_delegation=no_delegation,
@@ -202,12 +255,20 @@ class ToolCatalog:
             include_search_tools=discovery_enabled(),
         )
         entries: Dict[str, CatalogEntry] = {}
+        compact = _profile_compacts_descriptions(self._last_profile)
         for item in schema:
             fn = item.get("function") or {}
             name = fn.get("name") or ""
             if not name:
                 continue
-            desc = _normalize_path_text(fn.get("description") or "")
+            raw_desc = _normalize_path_text(fn.get("description") or "")
+            desc = _compact_description(raw_desc) if compact else raw_desc
+            schema_entry = item
+            if desc != raw_desc:
+                schema_entry = {
+                    **item,
+                    "function": {**fn, "description": desc},
+                }
             if name.startswith("mcp_"):
                 qualified = _parse_mcp_wire_name(name)
                 tool_id = f"mcp:{qualified}"
@@ -227,7 +288,7 @@ class ToolCatalog:
                 description=desc,
                 source=source,
                 hidden=hidden,
-                schema_entry=item,
+                schema_entry=schema_entry,
                 search_text=search_text,
             )
 
@@ -336,12 +397,14 @@ class ToolCatalog:
         mcp_tools: Optional[Sequence] = None,
         no_delegation: Optional[bool] = None,
         browser_enabled: Optional[bool] = None,
+        profile: Optional[str] = None,
     ) -> List[dict]:
         """Build the tool schema exposed to the pilot for this turn."""
         self.refresh(
             mcp_tools=mcp_tools,
             no_delegation=self._last_no_delegation if no_delegation is None else no_delegation,
             browser_enabled=self._last_browser_enabled if browser_enabled is None else browser_enabled,
+            profile=self._last_profile if profile is None else profile,
         )
         if not discovery_enabled():
             return [e.schema_entry for e in sorted(self._entries.values(), key=lambda x: x.name)]

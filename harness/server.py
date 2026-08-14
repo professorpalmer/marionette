@@ -2975,18 +2975,26 @@ _sys.modules[__name__].__class__ = _HarnessServerModule
 
 
 def boot_mcp_servers(mcp: Any = None, diag: Any = None) -> None:
-    """Start configured MCP servers and record failures via ``diag``.
+    """Load MCP config at boot without connecting (Hermes-style lazy start).
 
     Extracted from the serve() boot thread so tests exercise the real
     production path (msg=/exc= kwargs) instead of reimplementing the body.
+    Servers stay idle until first use (``call`` / ``ensure_server`` /
+    explicit ``start_all`` / manage_mcp), so boot does not call ``start_all``.
     """
     mcp_client = _mcp if mcp is None else mcp
     note = _diag if diag is None else diag
     try:
-        report = mcp_client.start_all()
-        for name, result in report.items():
-            if isinstance(result, str):
-                note("mcp.boot_error", msg=f"{name}: {result}")
+        # Register/read config only — do not connect every server at boot.
+        if hasattr(mcp_client, "effective_config"):
+            cfg = mcp_client.effective_config() or {}
+        elif hasattr(mcp_client, "load_config"):
+            cfg = mcp_client.load_config() or {}
+        else:
+            cfg = {}
+        names = [n for n in cfg.keys() if isinstance(n, str) and n.strip()]
+        if names:
+            note("mcp.boot_deferred", msg=", ".join(names))
     except Exception as exc:
         note("mcp.boot_fail", exc=exc)
 

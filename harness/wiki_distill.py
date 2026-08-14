@@ -37,6 +37,19 @@ class WikiDistillMixin:
     """
 
     _WIKI_GROUNDING_MAX_CHARS = 8000  # ~2k tokens at chars//4
+    _WIKI_GROUNDING_STANDARD_MAX_CHARS = 2500
+
+    def _wiki_grounding_budget(self) -> tuple[int, int]:
+        """Return (search_limit, max_chars) for profile-aware wiki auto-inject."""
+        try:
+            from .task_profile import STANDARD, normalize_profile
+
+            profile = normalize_profile(getattr(self, "_task_profile", "") or "")
+            if profile == STANDARD:
+                return 3, self._WIKI_GROUNDING_STANDARD_MAX_CHARS
+        except Exception:
+            pass
+        return 5, self._WIKI_GROUNDING_MAX_CHARS
 
     def _wiki_grounding_query(self, user_message: str) -> str:
         """Build a compact wiki search query from the user turn and repo."""
@@ -52,6 +65,15 @@ class WikiDistillMixin:
         return " ".join(parts).strip()
 
     def _build_turn_wiki_section(self, user_message: str) -> str:
+        # MICRO skips wiki auto-inject (orchestration only; never raises).
+        try:
+            from .task_profile import profile_skips_wiki
+
+            profile = getattr(self, "_task_profile", "") or ""
+            if profile_skips_wiki(profile):
+                return ""
+        except Exception:
+            pass
         wiki_section = ""
         if not self._wiki.configured:
             return wiki_section
@@ -59,7 +81,8 @@ class WikiDistillMixin:
             query = self._wiki_grounding_query(user_message)
             if not query:
                 return wiki_section
-            hits = self._wiki.search_pages(query, limit=5)
+            search_limit, max_chars = self._wiki_grounding_budget()
+            hits = self._wiki.search_pages(query, limit=search_limit)
             if not hits:
                 self._wiki_cache_key = user_message
                 self._wiki_cache_section = ""
@@ -74,7 +97,7 @@ class WikiDistillMixin:
                 "question is outside this injected slice.\n"
             )
             lines = [authoritative, "### Wiki grounding (auto-injected)"]
-            budget = self._WIKI_GROUNDING_MAX_CHARS - len(authoritative) - 40
+            budget = max_chars - len(authoritative) - 40
             per_hit = max(120, budget // max(1, len(hits)))
             for hit in hits:
                 title = str(hit.get("title") or hit.get("slug") or "").strip()
@@ -88,8 +111,8 @@ class WikiDistillMixin:
                 lines.append(f"- {label}: {snippet}" if snippet else f"- {label}")
 
             wiki_section = "\n".join(lines)
-            if len(wiki_section) > self._WIKI_GROUNDING_MAX_CHARS:
-                wiki_section = wiki_section[: self._WIKI_GROUNDING_MAX_CHARS].rstrip() + "…"
+            if len(wiki_section) > max_chars:
+                wiki_section = wiki_section[:max_chars].rstrip() + "…"
 
             try:
                 from pmharness.registry import resolve_price

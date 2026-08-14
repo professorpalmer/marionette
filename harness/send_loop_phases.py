@@ -79,6 +79,182 @@ PLAN_SKIP_KINDS: frozenset[str] = frozenset({
 _RUN_COMMAND_UI_OUTPUT_CAP = 4 * 1024
 
 
+def _yield_task_profile_escalation(session: Any, turn_changed_files: list) -> Iterator[Any]:
+    """Best-effort MICRO/STANDARD escalate after a successful write/edit."""
+    from .conversation import ConvEvent
+
+    try:
+        from .task_transaction import note_files
+
+        session._task_tx = note_files(
+            getattr(session, "_task_tx", None), turn_changed_files,
+        )
+    except Exception:
+        pass
+    try:
+        uniq = len(dict.fromkeys(turn_changed_files))
+        payload = session._maybe_escalate_task_profile(files_touched=uniq)
+        if payload:
+            yield ConvEvent("task_profile", payload)
+    except Exception:
+        pass
+
+
+def begin_turn_task_kernel(session: Any, user_message: str) -> None:
+    """Start a compact task transaction and reset per-turn verify flags."""
+    try:
+        from .task_transaction import new_transaction
+
+        session._task_tx = new_transaction(user_message)
+    except Exception:
+        session._task_tx = None
+    session._turn_ran_command = False
+    session._verify_remind_count = 0
+    session._turn_user_message = user_message or ""
+    session._turn_verification = ""
+
+
+def _note_turn_command(session: Any, verification: str = "") -> None:
+    """Mark that this turn ran a command (or auto-verify). Never raises."""
+    try:
+        session._turn_ran_command = True
+        text = (verification or "").strip()
+        if not text:
+            return
+        session._turn_verification = text
+        from .task_transaction import note_verification
+
+        session._task_tx = note_verification(
+            getattr(session, "_task_tx", None), text,
+        )
+    except Exception:
+        pass
+
+
+def persist_turn_receipt(session: Any, user_message: str = "") -> None:
+    """Append a compact JSONL receipt. Best-effort; never raises."""
+    try:
+        from .task_receipt import (
+            append_receipt,
+            build_receipt,
+            compute_patch_hash,
+            git_branch,
+            prompt_hash,
+        )
+        from .task_transaction import as_dict
+
+        cfg = getattr(session, "config", None)
+        state_dir = str(
+            getattr(cfg, "state_dir", "")
+            or getattr(session, "state_dir", "")
+            or ""
+        )
+        if not state_dir:
+            return
+        txd = as_dict(getattr(session, "_task_tx", None))
+        files = list(txd.get("files") or [])
+        msg = user_message or getattr(session, "_turn_user_message", "") or ""
+        repo = str(getattr(cfg, "repo", "") or "")
+        verification = (
+            getattr(session, "_turn_verification", "")
+            or txd.get("verification")
+            or ""
+        )
+        if getattr(session, "_turn_ran_command", False) and not verification:
+            verification = "pass"
+        elif files and not getattr(session, "_turn_ran_command", False) and not verification:
+            verification = "skipped"
+        model = ""
+        adapter = ""
+        try:
+            model = str(getattr(getattr(session, "pilot", None), "model", "") or "")
+        except Exception:
+            pass
+        try:
+            adapter = str(getattr(cfg, "driver", "") or "")
+        except Exception:
+            pass
+        rec = build_receipt(
+            task_id=str(getattr(session, "harness_session_id", "") or "") or "turn",
+            profile=getattr(session, "_task_profile", "") or "",
+            profile_source=getattr(session, "_task_profile_source", "") or "",
+            escalated_from=getattr(session, "_task_profile_escalated_from", None),
+            model=model,
+            adapter=adapter,
+            prompt_hash=prompt_hash(msg),
+            repo=repo,
+            branch=git_branch(repo) if repo else "",
+            changed_files=files,
+            patch_hash=compute_patch_hash(files),
+            verification=verification,
+        )
+        append_receipt(state_dir, rec)
+    except Exception:
+        return
+
+
+def finalize_assistant_turn(
+    session: Any,
+    *,
+    user_message: str,
+    step: int,
+    swarms: Any,
+    turn_prose: list,
+    turn_findings: list,
+    extra: Optional[dict] = None,
+) -> Iterator[Any]:
+    """Persist a compact receipt, emit assistant_done, then housekeeping."""
+    from .conversation import ConvEvent
+
+    persist_turn_receipt(session, user_message)
+    payload: Dict[str, Any] = {"turns": step + 1, "swarms": swarms}
+    if extra:
+        payload.update(extra)
+    yield ConvEvent("assistant_done", payload)
+    session._submit_housekeeping(
+        session._maybe_ingest,
+        user_message, list(turn_prose), list(turn_findings),
+    )
+
+
+def maybe_soft_verify_nudge(session: Any) -> Iterator[Any]:
+    """Remind-then-escalate unverified MICRO/STANDARD edits. True = continue."""
+    from .conversation import ConvEvent
+
+    try:
+        from .task_transaction import as_dict
+        from .tool_requirement import SoftToolRequirement
+
+        txd = as_dict(getattr(session, "_task_tx", None))
+        files = list(txd.get("files") or [])
+        profile = getattr(session, "_task_profile", "") or ""
+        ran = bool(getattr(session, "_turn_ran_command", False))
+        count = int(getattr(session, "_verify_remind_count", 0) or 0)
+        nfiles = len(files)
+        if SoftToolRequirement.should_remind_verify(profile, nfiles, ran, count):
+            session._history.append({
+                "role": "user",
+                "content": SoftToolRequirement.remind_message(),
+            })
+            session._verify_remind_count = count + 1
+            return True
+        if SoftToolRequirement.should_escalate_unverified(
+            profile, nfiles, ran, count,
+        ):
+            try:
+                payload = session._maybe_escalate_task_profile(
+                    files_touched=nfiles,
+                )
+            except Exception:
+                payload = None
+            if payload:
+                yield ConvEvent("task_profile", payload)
+            session._turn_verification = "unverified"
+        return False
+    except Exception:
+        return False
+
+
 def _truncate_run_command_ui_output(
     output: str, cap: int = _RUN_COMMAND_UI_OUTPUT_CAP,
 ) -> str:
@@ -1016,14 +1192,20 @@ def drain_idle_turn(
         # to the newly-running queued prompt instead of the previous
         # completed one.
         return ("continue", q_text)
+    # Soft verify: remind MICRO/STANDARD file edits that skipped a command.
+    if (yield from maybe_soft_verify_nudge(session)):
+        return ("continue", user_message)
     # assistant_done first; ingest in housekeeping so the busy lock
     # releases immediately. Sync wiki I/O here used to leave the
     # final answer painted while Stop/Still working stayed up
     # (content sat in the Investigating fold until Stop flushed it).
-    yield ConvEvent("assistant_done", {"turns": step + 1, "swarms": swarms})
-    session._submit_housekeeping(
-        session._maybe_ingest,
-        user_message, list(turn_prose), list(turn_findings),
+    yield from finalize_assistant_turn(
+        session,
+        user_message=user_message,
+        step=step,
+        swarms=swarms,
+        turn_prose=turn_prose,
+        turn_findings=turn_findings,
     )
     return ("return", user_message)
 
@@ -1382,6 +1564,7 @@ def run_auto_verify(
         })
         if not passed and not session._cancel.is_set():
             auto_verify_iters += 1
+            _note_turn_command(session, "fail")
             feedback = (
                 "[auto-verify] The project check failed after your edits:\n"
                 f"$ {_verify_display}\n{output}\n"
@@ -1389,6 +1572,7 @@ def run_auto_verify(
             )
             session._history.append({"role": "user", "content": feedback})
             return (auto_verify_iters, True)
+        _note_turn_command(session, "pass")
     return (auto_verify_iters, False)
 
 
@@ -1682,6 +1866,7 @@ def dispatch_local_action(
             })
             session._append_action_result(act, aid, f"(write_file {act.path} successfully wrote {bytes_written} bytes)", is_native)
             turn_changed_files.append(target_path)
+            yield from _yield_task_profile_escalation(session, turn_changed_files)
         except Exception as e:
             yield ConvEvent("action_result", {"id": aid, "error": str(e)})
             session._append_action_result(act, aid, f"(write_file {act.path} failed: {e})", is_native)
@@ -1739,6 +1924,7 @@ def dispatch_local_action(
             })
             session._append_action_result(act, aid, f"(edit_file {act.path} successfully edited: {headline})", is_native)
             turn_changed_files.append(target_path)
+            yield from _yield_task_profile_escalation(session, turn_changed_files)
         except Exception as e:
             yield ConvEvent("action_result", {"id": aid, "error": str(e)})
             session._append_action_result(act, aid, f"(edit_file {act.path} failed: {e})", is_native)
@@ -1803,6 +1989,7 @@ def dispatch_local_action(
             yield ConvEvent("action_result", hash_edit_result)
             session._append_action_result(act, aid, f"(hash_edit {act.path} successfully applied: {headline})", is_native)
             turn_changed_files.append(target_path)
+            yield from _yield_task_profile_escalation(session, turn_changed_files)
         except Exception as e:
             yield ConvEvent("action_result", {"id": aid, "error": str(e)})
             session._append_action_result(act, aid, f"(hash_edit {act.path} failed: {e})", is_native)
@@ -1878,6 +2065,7 @@ def dispatch_local_action(
                 ),
                 is_native,
             )
+            _note_turn_command(session)
             return
         # FULL-AUTO safety + cancellable execution live in
         # ToolDispatchMixin._do_run_command; yield/append stay here.
@@ -1966,6 +2154,7 @@ def dispatch_local_action(
                     is_native,
                     ok=False,
                 )
+                _note_turn_command(session)
                 return
             yield ConvEvent("action_result", {
                 "id": aid, "error": val, "kind": "run_command", "command": command,
@@ -2014,6 +2203,7 @@ def dispatch_local_action(
         session._append_action_result(
             act, aid, _with_command_footer(hist, val), is_native,
         )
+        _note_turn_command(session, "pass" if run_status == "ok" else run_status)
         return
     # ---- run_command_batch branch (Wave 3) -------------------------
     if act.kind == "run_command_batch":
@@ -2098,6 +2288,7 @@ def dispatch_local_action(
             ),
             is_native,
         )
+        _note_turn_command(session)
         return
     # ---- run_ipython branch (persistent session kernel) ------------
     if act.kind == "run_ipython":
@@ -2126,6 +2317,7 @@ def dispatch_local_action(
                 f"(run_ipython [{backend}] ok)\n{output}",
                 is_native,
             )
+            _note_turn_command(session)
         else:
             err = val
             if isinstance(val, dict):

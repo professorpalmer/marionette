@@ -511,6 +511,9 @@ class TurnGuardState:
     # (objective_key, model_key) pairs for plumbing-only / no-FINDING swarms.
     # Identical redispatch soft-refuses; changing model pin or goal is allowed.
     plumbing_degraded_swarms: set[tuple[str, str]] = field(default_factory=set)
+    # Adaptive task depth for this turn (MICRO / STANDARD / DEEP). Separate from
+    # tiny_workspace (repo scale). MICRO disables swarm-gate suppress only.
+    task_profile: str = ""
 
 
 @dataclass(frozen=True)
@@ -1266,6 +1269,17 @@ def check_swarm_gate(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict
     if not swarm_gate_enabled():
         return GuardVerdict(False)
 
+    # MICRO disables swarm-gate suppress (orchestration skip only). INVARIANT:
+    # never hide run_swarm while swarm_gate is on — MICRO leaves the gate off.
+    try:
+        from .task_profile import profile_disables_swarm_gate
+
+        profile = getattr(state, "task_profile", "") or ""
+        if profile_disables_swarm_gate(profile):
+            return GuardVerdict(False)
+    except Exception:
+        pass
+
     if not is_swarm_gate_blocked_exploration(state, kind, act):
         return GuardVerdict(False)
 
@@ -1447,6 +1461,7 @@ def new_turn_guard_state(
     *,
     repo_path: Optional[str] = None,
     nested_implement: bool = False,
+    task_profile: str = "",
 ) -> TurnGuardState:
     tiny = bool(repo_path) and is_tiny_workspace(repo_path or "")
     # Foreground tiny pilots tighten to 12; nested implement workers keep the
@@ -1463,6 +1478,7 @@ def new_turn_guard_state(
         iteration_budget=IterationBudget(cap) if cap > 0 else None,
         tiny_workspace=tiny,
         nested_implement=bool(nested_implement),
+        task_profile=(task_profile or "").strip().upper(),
     )
 
 
@@ -1472,6 +1488,7 @@ def reuse_or_new_turn_guard_state(
     *,
     repo_path: Optional[str] = None,
     nested_implement: bool = False,
+    task_profile: str = "",
 ) -> TurnGuardState:
     """Reuse prior guard state across model steps / keep-alive resume.
 
@@ -1481,11 +1498,14 @@ def reuse_or_new_turn_guard_state(
     swarm-gate progress safely without preview/unrelated state leaks.
     """
     if prior is not None:
+        if task_profile and not getattr(prior, "task_profile", ""):
+            prior.task_profile = (task_profile or "").strip().upper()
         return prior
     return new_turn_guard_state(
         user_message,
         repo_path=repo_path,
         nested_implement=nested_implement,
+        task_profile=task_profile,
     )
 
 

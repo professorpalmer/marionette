@@ -103,6 +103,51 @@ def test_manager_start_all_reports_errors(tmp_path):
         m.stop_all()
 
 
+def test_lazy_boot_status_idle_and_discovered_empty(tmp_path):
+    """Configured-but-never-started servers are idle, not errors; tools empty."""
+    cfgp = tmp_path / "mcp.json"
+    m = McpManager(config_path=str(cfgp))
+    m.save_server("fake", {"command": sys.executable, "args": [FAKE]})
+    st = m.status()
+    assert len(st) == 1
+    assert st[0]["name"] == "fake"
+    assert st[0]["running"] is False
+    assert st[0]["tools"] == 0
+    assert not st[0].get("error")
+    assert m.discovered_tools() == []
+
+
+def test_ensure_server_starts_only_when_not_alive(tmp_path):
+    cfgp = tmp_path / "mcp.json"
+    m = McpManager(config_path=str(cfgp))
+    m.save_server("fake", {"command": sys.executable, "args": [FAKE]})
+    try:
+        tools = m.ensure_server("fake")
+        assert {t.name for t in tools} == {"echo", "add"}
+        assert m.status()[0]["running"]
+        # Second call must not restart (same tool set, still alive).
+        again = m.ensure_server("fake")
+        assert {t.name for t in again} == {"echo", "add"}
+        assert m.status()[0]["running"]
+    finally:
+        m.stop_all()
+
+
+def test_call_starts_missing_client_without_prior_start(tmp_path):
+    """Lazy connect: call() starts a configured idle server on first use."""
+    cfgp = tmp_path / "mcp.json"
+    m = McpManager(config_path=str(cfgp))
+    m.save_server("fake", {"command": sys.executable, "args": [FAKE]})
+    try:
+        assert m.discovered_tools() == []
+        out = m.call("fake.echo", {"text": "hi"})
+        assert out["content"][0]["text"] == "hi"
+        assert m.status()[0]["running"]
+        assert any(t.qualified == "fake.echo" for t in m.discovered_tools())
+    finally:
+        m.stop_all()
+
+
 def test_manager_refresh_reconnects(tmp_path):
     """Refresh must stop then start so a previously-failed server can recover."""
     cfgp = tmp_path / "mcp.json"

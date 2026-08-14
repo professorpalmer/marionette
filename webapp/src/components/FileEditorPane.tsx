@@ -46,7 +46,7 @@ function fileExt(filePath: string): string {
   return i >= 0 ? base.slice(i + 1).toLowerCase() : "";
 }
 
-function detectEditorKind(filePath: string, binary?: boolean): EditorKind {
+export function detectEditorKind(filePath: string, binary?: boolean): EditorKind {
   const ext = fileExt(filePath);
   if (binary) {
     if (ext === "pdf") return "pdf";
@@ -95,7 +95,7 @@ function getLanguageExtension(filePath: string) {
 }
 
 /** Scroll CodeMirror to a 1-based line (and optional 1-based column). */
-function _scrollEditorToLine(view: EditorView, line: number, col?: number): void {
+export function scrollEditorToLine(view: EditorView, line: number, col?: number): void {
   try {
     const doc = view.state.doc;
     const ln = Math.max(1, Math.min(line, doc.lines));
@@ -111,6 +111,8 @@ function _scrollEditorToLine(view: EditorView, line: number, col?: number): void
     /* ignore */
   }
 }
+
+const _scrollEditorToLine = scrollEditorToLine;
 
 function getLanguageFromPath(filePath: string): string {
   const ext = fileExt(filePath);

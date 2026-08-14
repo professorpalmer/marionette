@@ -1,4 +1,4 @@
-"""DeliveryMode — auto | steer | follow_up shared vocabulary."""
+"""DeliveryMode — auto | steer | follow_up | interrupt shared vocabulary."""
 from __future__ import annotations
 
 from harness.delivery_mode import (
@@ -34,6 +34,15 @@ class _FakeSession:
     def run_auto(self, objective, budget=None):
         self.auto_calls.append(objective)
         return iter(())
+
+
+class _FakeSessionWithInterrupt(_FakeSession):
+    def __init__(self):
+        super().__init__()
+        self.interrupts = []
+
+    def interrupt(self):
+        self.interrupts.append(True)
 
 
 def test_delivery_mode_steer_when_busy():
@@ -108,3 +117,31 @@ def test_delivery_mode_follow_up_on_schedule_busy():
     delivered = deliver_schedule_to_session(schedule, session, session_busy=True)
     assert delivered["action"] == "enqueue_prompt"
     assert session.prompts[0]["text"] == "queue this"
+
+
+def test_delivery_mode_interrupt_when_busy():
+    assert resolve_delivery(True, "interrupt") == DeliveryAction.INTERRUPT_THEN_QUEUE.value
+    session = _FakeSessionWithInterrupt()
+    session._busy = True
+    result = apply_delivery(
+        session, "stop and do this", session_busy=True, requested="interrupt",
+    )
+    assert result["ok"] is True
+    assert result["action"] == "interrupt_then_queue"
+    assert result.get("interrupted") is True
+    assert session.interrupts == [True]
+    assert session.prompts[0]["text"] == "stop and do this"
+
+
+def test_delivery_mode_interrupt_when_idle():
+    assert resolve_delivery(False, "interrupt") == DeliveryAction.INTERRUPT_THEN_QUEUE.value
+    session = _FakeSession()
+    session._busy = False
+    result = apply_delivery(
+        session, "just queue", session_busy=False, requested="interrupt",
+    )
+    assert result["ok"] is True
+    assert result["action"] == "interrupt_then_queue"
+    assert "interrupted" not in result
+    assert session.prompts[0]["text"] == "just queue"
+    assert normalize_delivery_mode("interrupt") == DeliveryMode.INTERRUPT.value

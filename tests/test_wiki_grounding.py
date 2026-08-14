@@ -5,6 +5,7 @@ import tempfile
 
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession
+from harness.task_profile import DEEP, STANDARD
 from harness.wiki import WikiClient
 from harness.wiki_grounding_savings import (
     JSONL_FILENAME,
@@ -169,6 +170,62 @@ def test_session_grounding_payload_shape(tmp_path):
     assert payload["wiki_tokens_fed"] == 200
     assert payload["wiki_pages_fed"] == 2
     assert "wiki_estimated_savings_usd" in payload
+
+
+def test_wiki_section_standard_profile_uses_tighter_budget(tmp_path, monkeypatch):
+    s = _session(
+        tmp_path,
+        wiki_url="https://wiki.example.com",
+        wiki_token="tok",
+        repo=str(tmp_path / "marionette"),
+    )
+    s._task_profile = STANDARD
+    captured = {}
+
+    def fake_search(query, *, limit=5):
+        captured["limit"] = limit
+        return [
+            {
+                "title": f"Hit {i}",
+                "slug": f"hit-{i}",
+                "snippet": "x" * 500,
+            }
+            for i in range(limit)
+        ]
+
+    monkeypatch.setattr(s._wiki, "search_pages", fake_search)
+    section = s._build_turn_wiki_section("what about the default driver?")
+    assert captured["limit"] == 3
+    assert section
+    assert len(section) <= s._WIKI_GROUNDING_STANDARD_MAX_CHARS
+
+
+def test_wiki_section_deep_profile_keeps_full_budget(tmp_path, monkeypatch):
+    s = _session(
+        tmp_path,
+        wiki_url="https://wiki.example.com",
+        wiki_token="tok",
+        repo=str(tmp_path / "marionette"),
+    )
+    s._task_profile = DEEP
+    captured = {}
+
+    def fake_search(query, *, limit=5):
+        captured["limit"] = limit
+        return [
+            {
+                "title": f"Hit {i}",
+                "slug": f"hit-{i}",
+                "snippet": "x" * 500,
+            }
+            for i in range(limit)
+        ]
+
+    monkeypatch.setattr(s._wiki, "search_pages", fake_search)
+    section = s._build_turn_wiki_section("audit authentication architecture")
+    assert captured["limit"] == 5
+    assert section
+    assert len(section) <= s._WIKI_GROUNDING_MAX_CHARS
 
 
 def test_wiki_client_search_pages_parses_results(monkeypatch):

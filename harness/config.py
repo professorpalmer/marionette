@@ -54,6 +54,9 @@ class HarnessConfig:
     resource_pressure_load_reject: float | None = None
     resource_pressure_wait_timeout_sec: float = 5.0
     resource_pressure_poll_interval_sec: float = 0.25
+    # Adaptive task depth: auto | micro | standard | deep (see harness.task_profile).
+    # Separate from repo-scale is_tiny_workspace; MICRO skips orchestration only.
+    task_profile: str = "auto"
 
     @classmethod
     def from_env(cls) -> "HarnessConfig":
@@ -217,4 +220,8 @@ class HarnessConfig:
                     "resource_pressure_poll_interval_sec",
                 ) or 0.25
             ),
+            task_profile=str(
+                pick("HARNESS_TASK_PROFILE", "task_profile", "auto") or "auto"
+            ).strip().lower()
+            or "auto",
         )

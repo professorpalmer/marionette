@@ -170,6 +170,29 @@ def main(argv=None) -> int:
     ap.add_argument("--swarm-adapter", default=None, choices=["demo", "openai"],
                     help="demo (free/safe substrate) | openai (real read-only code analysis)")
     ap.add_argument("--json", action="store_true", help="emit raw JSON events")
+    depth = ap.add_mutually_exclusive_group()
+    depth.add_argument(
+        "--micro",
+        action="store_const",
+        const="micro",
+        dest="task_profile",
+        help="force MICRO task depth (skip wiki/codegraph/swarm-gate orchestration)",
+    )
+    depth.add_argument(
+        "--standard",
+        action="store_const",
+        const="standard",
+        dest="task_profile",
+        help="force STANDARD task depth",
+    )
+    depth.add_argument(
+        "--deep",
+        action="store_const",
+        const="deep",
+        dest="task_profile",
+        help="force DEEP task depth",
+    )
+    ap.set_defaults(task_profile=None)
     args = ap.parse_args(raw)
 
     cfg = HarnessConfig.from_env()
@@ -179,6 +202,8 @@ def main(argv=None) -> int:
     if args.state_dir: cfg.state_dir = args.state_dir
     if args.repo: cfg.repo = args.repo
     if args.swarm_adapter: cfg.swarm_adapter = args.swarm_adapter
+    if args.task_profile:
+        cfg.task_profile = args.task_profile
 
     try:
         session = Session(cfg)
