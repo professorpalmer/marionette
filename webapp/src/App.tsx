@@ -27,12 +27,14 @@ const LEFT_MAX_W = 420;
 const RIGHT_MIN_W = 320;
 const RIGHT_COMPACT_MIN_W = 220;
 
-/** Flex chrome around the center column: shell padding and 1px resizers. */
+/** Flex chrome around the center column: shell padding and rail gutters. */
+const RAIL_GUTTER_W = 6;
+
 function layoutChrome(leftOpen: boolean, rightOpen: boolean): number {
-  let resizers = 0;
-  if (leftOpen) resizers += 1;
-  if (rightOpen) resizers += 1;
-  return 2 + resizers;
+  let gutters = 0;
+  if (leftOpen) gutters += 1;
+  if (rightOpen) gutters += 1;
+  return 2 + gutters * RAIL_GUTTER_W;
 }
 
 /** Keep open rails within min/window budget while preserving MIN_CENTER_W for the chat column. */
@@ -345,85 +347,94 @@ export default function App() {
           }}
         />
       )}
-      {/* The conversation and tool board are siblings; the dock remains attached
-          to the conversation edge while the board is closed. */}
+      {/* Left rail and tool cards sit on the conversation surface. */}
       <div className="flex-1 min-h-0 min-w-0 flex px-px pt-px">
-        {leftOpen && (
-          <>
-            <div style={{ width: leftW }} className="shell-inset-panel shrink-0 h-full">
-              <LeftRail jobsRefresh={jobsRefresh} onSessionChange={setActiveSessionId} />
-            </div>
-            <Resizer
-              side="left"
-              onResize={(dx) => {
-                const next = reclampRailWidths(
-                  leftWRef.current + dx,
-                  rightWRef.current,
-                  true,
-                  rightOpen,
-                  window.innerWidth,
-                );
-                setLeftW(next.leftW);
-                setRightW(next.rightW);
-              }}
-            />
-          </>
-        )}
         <div
-          className="relative flex-1 min-w-0 h-full flex flex-col rounded-[var(--shell-panel-radius)] overflow-hidden border border-[var(--shell-panel-border)]"
+          className={`relative flex-1 min-w-0 h-full flex overflow-hidden border border-[var(--shell-panel-border)] ${
+            leftOpen && rightOpen
+              ? "rounded-none"
+              : leftOpen
+                ? "rounded-r-[var(--shell-panel-radius)]"
+                : rightOpen
+                  ? "rounded-l-[var(--shell-panel-radius)]"
+                  : "rounded-[var(--shell-panel-radius)]"
+          } ${leftOpen ? "border-l-0" : ""} ${rightOpen ? "border-r-0" : ""}`}
           style={{
             backgroundColor: "var(--shell-chat, #0f1113)",
             backgroundImage:
               "radial-gradient(120% 80% at 50% -10%, rgba(139,150,196,0.06), rgba(139,150,196,0) 60%)",
           }}
         >
-          <div className="flex-1 min-h-0 min-w-0">
-            <ErrorBoundary label="Chat">
-              <Conversation
-                config={config}
-                activeSessionId={activeSessionId}
-                onArtifacts={(a) => setArtifacts((prev) => [...a, ...prev])}
-                onJobChange={() => setJobsRefresh((n) => n + 1)}
+          {leftOpen && (
+            <>
+              <div style={{ width: leftW }} className="shell-inset-panel shrink-0 h-full">
+                <LeftRail jobsRefresh={jobsRefresh} onSessionChange={setActiveSessionId} />
+              </div>
+              <Resizer
+                side="left"
+                onResize={(dx) => {
+                  const next = reclampRailWidths(
+                    leftWRef.current + dx,
+                    rightWRef.current,
+                    true,
+                    rightOpen,
+                    window.innerWidth,
+                  );
+                  setLeftW(next.leftW);
+                  setRightW(next.rightW);
+                }}
+              />
+            </>
+          )}
+          <div className="relative flex-1 min-w-0 min-h-0 flex flex-col">
+            <div className="flex-1 min-h-0 min-w-0">
+              <ErrorBoundary label="Chat">
+                <Conversation
+                  config={config}
+                  activeSessionId={activeSessionId}
+                  onArtifacts={(a) => setArtifacts((prev) => [...a, ...prev])}
+                  onJobChange={() => setJobsRefresh((n) => n + 1)}
+                />
+              </ErrorBoundary>
+            </div>
+            <RightDock
+              panelsOpen={rightOpen}
+              onOpenTab={openRightTo}
+              onExpand={() => openRightTo(lastRightTab())}
+              onCollapse={() => setRightOpen(false)}
+            />
+          </div>
+          {rightOpen && (
+            <Resizer
+              side="right"
+              onResize={(dx) => {
+                const next = reclampRailWidths(
+                  leftWRef.current,
+                  rightWRef.current + dx,
+                  leftOpen,
+                  true,
+                  window.innerWidth,
+                );
+                setLeftW(next.leftW);
+                setRightW(next.rightW);
+              }}
+            />
+          )}
+          <div
+            className={`shrink-0 h-full min-w-0 overflow-hidden ${rightOpen ? "" : "hidden"}`}
+            style={{ width: rightW }}
+          >
+            <ErrorBoundary label="Tool board">
+              <RightPane
+                visible={rightOpen}
+                artifacts={artifacts}
+                onOpenWizard={() => setShowWizard(true)}
+                initialTab={pendingRightTab.current}
+                onEmpty={closeEmptyRightPane}
+                onRequestMinWidth={requestRightMinWidth}
               />
             </ErrorBoundary>
           </div>
-          <RightDock
-            panelsOpen={rightOpen}
-            onOpenTab={openRightTo}
-            onExpand={() => openRightTo(lastRightTab())}
-            onCollapse={() => setRightOpen(false)}
-          />
-        </div>
-        {rightOpen && (
-          <Resizer
-            side="right"
-            onResize={(dx) => {
-              const next = reclampRailWidths(
-                leftWRef.current,
-                rightWRef.current + dx,
-                leftOpen,
-                true,
-                window.innerWidth,
-              );
-              setLeftW(next.leftW);
-              setRightW(next.rightW);
-            }}
-          />
-        )}
-        <div
-          className={`shrink-0 h-full min-w-0 overflow-hidden ${rightOpen ? "" : "hidden"}`}
-          style={{ width: rightW, backgroundColor: "var(--shell-chat, #0f1113)" }}
-        >
-          <ErrorBoundary label="Tool board">
-            <RightPane
-              visible={rightOpen}
-              artifacts={artifacts}
-              onOpenWizard={() => setShowWizard(true)}
-              initialTab={pendingRightTab.current}
-              onEmpty={closeEmptyRightPane}
-              onRequestMinWidth={requestRightMinWidth}
-            />
-          </ErrorBoundary>
         </div>
       </div>
       <div className="shrink-0 px-px py-px">

@@ -703,7 +703,7 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
                 return (
             <div
               key={pairKey}
-              className="right-pane-card-stack"
+              className={`right-pane-card-stack${stackPlacement.groupIndex > 0 ? " right-pane-card-stack-join-end" : ""}`}
               style={{
                 gridColumn: stackPlacement.gridColumn,
                 gridRow: "1",
@@ -723,7 +723,7 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
               tabIndex={-1}
               role="region"
               aria-label={`${config.label} panel`}
-              className={`right-pane-card pointer-events-auto flex flex-col ${draggedTab === tabName ? "opacity-40" : ""}`}
+              className={`right-pane-card pointer-events-auto flex flex-col${Number(placement.gridRow) > 1 ? " right-pane-card-join-top" : ""}${draggedTab === tabName ? " opacity-40" : ""}`}
               style={{
                 gridColumn: "1",
                 gridRow: placement.gridRow,
