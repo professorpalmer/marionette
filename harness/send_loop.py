@@ -47,7 +47,9 @@ from .pilot import (
 )
 from .send_image_prep import prepare_turn_images
 from .send_loop_actions import execute_turn_actions
+from .repeat_tool_reminder import reset_repeat_chain
 from .send_loop_phases import (
+    dispatch_sync_pilot_chat,
     drain_idle_turn,
     drain_stream_queue,
     finalize_assistant_turn,
@@ -857,12 +859,7 @@ class SendLoopMixin:
             self._turn_budget = None
             # Fresh turn: clear guard / stagnation / failed-objective resume state.
             self._turn_guard_state = None
-            try:
-                from .repeat_tool_reminder import reset_repeat_chain
-
-                reset_repeat_chain(self)
-            except Exception:
-                self._repeat_tool_chain = None
+            reset_repeat_chain(self)
             self._stagnation_last_prose = None
             self._stagnation_last_actions = None
             self._stagnation_streak = 0
@@ -1133,26 +1130,7 @@ class SendLoopMixin:
                             self._streamed_prose = streamed_prose
                             step_emitted_user_prose = bool(streamed_prose.strip())
                         else:
-                            chat_kwargs = {
-                                "tools": tools_schema,
-                                "system": sys_prompt,
-                            }
-                            maybe_attach_pilot_session_id(
-                                chat_kwargs,
-                                self.pilot.chat,
-                                getattr(self, "harness_session_id", None),
-                            )
-                            outbound = self._messages_for_provider()
-                            try:
-                                from .log_reconstruction import check_outbound_reconstruction
-
-                                check_outbound_reconstruction(self, outbound, sys_prompt)
-                            except Exception:
-                                pass
-                            resp = self.pilot.chat(
-                                outbound,
-                                **chat_kwargs,
-                            )
+                            resp = dispatch_sync_pilot_chat(self, tools_schema, sys_prompt)
                     else:
                         # Same affinity helper as chat — only when complete()
                         # declares session_id. Compaction summarizers call

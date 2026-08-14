@@ -349,6 +349,25 @@ def maybe_attach_pilot_session_id(
     kwargs["session_id"] = sid
 
 
+def dispatch_sync_pilot_chat(session: Any, tools_schema: Any, sys_prompt: str) -> Any:
+    """Non-streaming ``pilot.chat`` with the shared sanitize + honesty check."""
+    chat_kwargs = {
+        "tools": tools_schema,
+        "system": sys_prompt,
+    }
+    maybe_attach_pilot_session_id(
+        chat_kwargs,
+        session.pilot.chat,
+        getattr(session, "harness_session_id", None),
+    )
+    outbound = session._messages_for_provider()
+    try:
+        check_outbound_reconstruction(session, outbound, sys_prompt)
+    except Exception:
+        pass
+    return session.pilot.chat(outbound, **chat_kwargs)
+
+
 def run_stream(
     session: Any,
     q: Any,
