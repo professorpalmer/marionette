@@ -411,7 +411,11 @@ class McpManager:
         return self.start_server(name, expect_gen=refresh_gen)
 
     def start_all(self) -> Dict[str, object]:
-        """Start every configured server; return {name: tool_count | error_str}."""
+        """Start every configured server; return {name: tool_count | error_str}.
+
+        Explicit operator path (manage_mcp / Settings). Boot uses lazy connect
+        instead — see ``ensure_server`` and ``boot_mcp_servers``.
+        """
         report: Dict[str, object] = {}
         for name in self.effective_config():
             try:
@@ -420,6 +424,17 @@ class McpManager:
             except McpError as e:
                 report[name] = f"error: {_sanitize_lifecycle_error(str(e))}"
         return report
+
+    def ensure_server(self, name: str) -> List[McpTool]:
+        """Start ``name`` only if it is not already alive; return its tools."""
+        name = (name or "").strip()
+        if not name:
+            raise McpError("ensure_server requires a server name")
+        with self._lock:
+            existing = self._clients.get(name)
+            if existing is not None and existing.alive:
+                return [t for t in self._tools.values() if t.server == name]
+        return self.start_server(name)
 
     def manage(
         self,
@@ -593,17 +608,21 @@ class McpManager:
                 self._reject_if_disallowed(cached.server, cached.name)
                 client = self._clients.get(cached.server)
                 if not client or not client.alive:
-                    self.start_server(cached.server)
+                    # Dead/missing client: reconnect on demand (unchanged).
+                    self.ensure_server(cached.server)
                     client = self._clients.get(cached.server)
                 out = client.call_tool(cached.name, arguments)
                 self._record_invocation(cached.server, cached.name, ok=True)
                 return out
 
-            # Allow "server.tool" when the server is running but the tool is not
-            # in the local cache (e.g. freshly advertised tools).
+            # Allow "server.tool" for configured servers that are idle or whose
+            # tools are not yet in the local cache (lazy boot / fresh ads).
             if server and tool_name:
                 self._reject_if_disallowed(server, tool_name)
                 client = self._clients.get(server)
+                if (not client or not client.alive) and server in self.effective_config():
+                    self.ensure_server(server)
+                    client = self._clients.get(server)
                 if client and client.alive:
                     out = client.call_tool(tool_name, arguments)
                     self._record_invocation(server, tool_name, ok=True)
