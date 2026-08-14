@@ -283,9 +283,9 @@ export default function RegistryWizard({ onClose }: RegistryWizardProps) {
         <div className="flex items-center justify-between px-4 py-3 border-b border-edge">
           <div className="flex items-center gap-2">
             <span className="font-bold text-[14px] uppercase tracking-wider text-txt">
-              Provider & Model Setup
+              Add a key — pilots and workers
             </span>
-            <span className="text-[10px] text-faint uppercase font-medium">wizard</span>
+            <span className="text-[10px] text-faint uppercase font-medium">first run</span>
           </div>
           <button 
             onClick={onClose}
@@ -315,13 +315,22 @@ export default function RegistryWizard({ onClose }: RegistryWizardProps) {
           <div className="space-y-3">
             <div className="flex items-center justify-between border-b border-edge/60 pb-1.5">
               <span className="uppercase tracking-wider text-[11px] text-faint font-bold">
-                1. API Key Providers & Live Probing
+                1. Full stack API keys
               </span>
-              <span className="text-[10px] text-muted">Configure keys to load real models</span>
+              <span className="text-[10px] text-muted">One key runs chat and swarms. No Cursor install.</span>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {providers.map((p) => {
+              {[...providers]
+                .filter((p) => p.name !== "cursor-cli")
+                .sort((a, b) => {
+                  if (a.name === "openrouter") return -1;
+                  if (b.name === "openrouter") return 1;
+                  const aFull = a.worker_capability === "full_stack" ? 0 : 1;
+                  const bFull = b.worker_capability === "full_stack" ? 0 : 1;
+                  return aFull - bFull;
+                })
+                .map((p) => {
                 const isProbing = probing[p.name];
                 const probeRes = probeStatus[p.name];
                 const hasProbedModels = probedModels[p.name]?.length > 0;

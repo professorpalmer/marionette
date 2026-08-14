@@ -339,8 +339,13 @@ export default function App() {
       {/* Keyless nudge: agentic is the shipped default, so instead of a demo run
           we tell the user to plug in a key. Suppressed while the first-run wizard
           is up (it already covers key setup) to avoid stacking two prompts. */}
-      {config?.agentic_ready === false && !showWizard && (
+      {config && (config.workers_ready ?? config.agentic_ready) === false && !showWizard && (
         <ProviderKeyBanner
+          variant={
+            config.pilot_ready && (config.workers_ready ?? config.agentic_ready) === false
+              ? "workers"
+              : "keyless"
+          }
           onAddKey={() => {
             focusSettingsPage("providers");
             openRightTo("settings");

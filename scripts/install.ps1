@@ -300,5 +300,8 @@ Launch it:
 If 'marionette' is not found, open a new terminal (PATH was updated) or run:
   $CmdLauncher
 
-Set your API keys in the app's Settings pane, or in $env:USERPROFILE\.pmharness\keys.json.
+Open Marionette, then Settings: paste any Full stack API key (OpenRouter,
+Anthropic, OpenAI, Gemini, ...) or sign in with Codex / OpenCode Go. That one
+credential runs the chat pilot and agentic workers. Cursor / Claude / Codex
+CLI installs are optional — not required.
 "@

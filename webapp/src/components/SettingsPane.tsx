@@ -1407,8 +1407,8 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         {gate("providers", "sign in subscription oauth chatgpt codex claude max cursor xai grok nous plan account login") && (<>
         <SettingsCollapse
           id="sign-in"
-          title="Sign in"
-          defaultOpen={true}
+          title="Optional plan sign-in"
+          defaultOpen={false}
           forceOpen={!!q}
           onFirstOpen={loadSignInData}
           className="space-y-2"
@@ -1423,8 +1423,9 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
           })()}
         >
           <p className="text-[10px] text-muted leading-normal">
-            Log in with the subscription you already pay for. Labels mark Full stack
-            (pilot + workers) vs Pilot only (chat only until another Full stack auth is connected).
+            Optional. A Full stack API key below is enough for chat and swarms — no
+            Cursor, Claude, or Codex CLI install. Plan logins that are Full stack
+            (Codex, Claude Max, OpenCode Go, Nous) also drive workers. Cursor CLI is Pilot only.
           </p>
           <div className="space-y-1.5">
             <div className="bg-panel2 border border-edge/50 rounded p-2">
@@ -1560,7 +1561,8 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                 </span>
               </div>
               <p className="text-[10px] text-muted mt-1 leading-normal">
-                Burns Cursor plan credits via the local Agent CLI. Requires the `agent` binary on PATH.
+                Optional. Burns Cursor plan credits via the local Agent CLI when the
+                `agent` binary is on PATH. Not required — paste a Full stack API key instead.
               </p>
               <div className="flex items-center gap-2 flex-wrap mt-1.5">
                 <button
@@ -1706,7 +1708,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         <SettingsCollapse
           id="api-keys"
           title="API keys"
-          defaultOpen={false}
+          defaultOpen={true}
           forceOpen={!!q}
           onFirstOpen={loadProvidersList}
           className="space-y-2"
@@ -1718,7 +1720,9 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
           })()}
         >
           <div className="text-[10px] text-muted">
-            Connect or disconnect each provider independently. Keys imported from your environment get an on/off toggle -- flip one off to stop using it without losing the key, for easy swapping (e.g. work vs. personal).
+            One Full stack key (OpenRouter, Anthropic, OpenAI, Gemini, …) runs the chat
+            pilot and agentic swarm/implement workers. No other platform install.
+            Env-imported keys get an on/off toggle so you can swap without losing the key.
           </div>
           <div className="space-y-1.5">
             {providers.filter((p) => p.name !== "bedrock").map((p) => {
@@ -1835,7 +1839,8 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             Add multiple API keys for the same provider. On plan-limit / 429 / 402 the pilot
             rotates to the next healthy entry (prompt cache may reset on rotate).
             Plan accounts (ChatGPT Codex, Claude Max, Cursor CLI, xAI, Nous) come from
-            Sign in above — pools are for multi-key rotate only. When every entry is
+            Optional plan sign-in above — pools are for multi-key rotate only. Cursor CLI
+            is Pilot only; a single Full stack API key is enough. When every entry is
             exhausted, the turn fails until a cooldown expires or you add another key.
           </p>
           <div className="flex flex-wrap gap-1.5">

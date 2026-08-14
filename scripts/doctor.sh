@@ -55,6 +55,7 @@ if [ -f webapp/dist/index.html ]; then ok "renderer built (webapp/dist)"; else b
 # --- optional external tools -------------------------------------------------
 command -v rg     >/dev/null 2>&1 && ok "ripgrep (rg) present"     || note "ripgrep (rg) not found -- some search is slower without it"
 command -v ffmpeg >/dev/null 2>&1 && ok "ffmpeg present"           || note "ffmpeg not found -- optional (media features)"
+note "Cursor / Claude / Codex CLI are optional -- a Full stack API key is enough"
 
 # --- CodeGraph binding -------------------------------------------------------
 if [ -x "$PY" ] && $PY -c "import puppetmaster" 2>/dev/null; then

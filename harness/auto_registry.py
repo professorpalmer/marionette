@@ -342,17 +342,6 @@ def _promote_openrouter_snapshots(
     return promoted
 
 
-def _has_picker_curation() -> bool:
-    """True when Settings -> Models has any enabled spec for an agentic provider.
-
-    Uses ``_enabled_picker_models`` so tests that patch that helper stay hermetic.
-    """
-    names = set(_CURATED_MODELS)
-    names.update(_AGENTIC_PROVIDER_SLUGS.keys())
-    names.update(_AGENTIC_PROVIDER_SLUGS.values())
-    return any(_enabled_picker_models(name) for name in names)
-
-
 def _in_live_catalog(name: str, slug: str, live_models: list[str]) -> bool:
     """True when *name* or *slug* is in the live listing, including dated siblings."""
     if not live_models:
@@ -440,8 +429,8 @@ def _get_provider_models_from_discovery(
                 ]
             return selected
 
-        if _has_picker_curation():
-            return []
+        # Per-provider only: another provider's Models toggles must not empty
+        # this keyed Full stack catalog. Fall through to curated ∩ live.
 
         # Try live discovery
         live_models = fetch_models(provider, provider_key, force=force)

@@ -58,6 +58,7 @@ if (Test-Path $dist) { Ok "renderer built (webapp/dist)" } else { Bad "renderer 
 # --- optional external tools -------------------------------------------------
 $rg = Get-Command rg -ErrorAction SilentlyContinue
 if ($rg) { Ok "ripgrep (rg) present" } else { Note "ripgrep (rg) not found -- some search is slower without it" }
+Note "Cursor / Claude / Codex CLI are optional -- a Full stack API key is enough"
 
 # --- CodeGraph binding -------------------------------------------------------
 if ((Test-Path $Py) -and (& $Py -c "import puppetmaster" 2>$null; $LASTEXITCODE -eq 0)) {

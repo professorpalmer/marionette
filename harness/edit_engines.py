@@ -188,28 +188,64 @@ def cursor_platform_available() -> bool:
         return bool(os.environ.get("CURSOR_API_KEY", "").strip())
 
 
+def _provider_has_usable_key(provider) -> bool:
+    """Stored / env / OAuth key present and not disconnected (``has_key`` truth)."""
+    from harness.registry_wizard import get_provider_key
+    from harness.keys import get_api_key_status
+
+    status = get_api_key_status(provider.name)
+    return (get_provider_key(provider) is not None) or bool(status.get("has_key"))
+
+
+def workers_ready() -> bool:
+    """True when swarm/implement workers can run without a platform CLI install.
+
+    Full stack Settings auths (OpenRouter, Codex OAuth, …) drive the agentic
+    adapter. ``CURSOR_API_KEY`` is an optional platform-worker upgrade.
+    cursor-cli agent login does **not** count — that path is Pilot only.
+    """
+    if cursor_platform_available():
+        return True
+    try:
+        from harness.provider_capabilities import worker_capability
+        from harness.registry_wizard import PROVIDERS
+        from harness.keys import get_disconnected
+
+        disconnected = get_disconnected()
+        for p in PROVIDERS:
+            if p.name in disconnected:
+                continue
+            if worker_capability(p.name) != "full_stack":
+                continue
+            if _provider_has_usable_key(p):
+                return True
+        return False
+    except Exception as exc:
+        _diag("edit_engines.workers_ready", exc)
+        return agentic_available() or cursor_platform_available()
+
+
 def pilot_keys_ready() -> bool:
     """True when Marionette has at least one usable keyed harness provider.
 
-    Powers ``/api/config`` ``agentic_ready`` (the ProviderKeyBanner gate). Broader
-    than :func:`agentic_available`: a keyed OpenCode Go or Codex OAuth pilot is
-    enough to dismiss the keyless nudge, without claiming Puppetmaster agentic
-    workers can run on those providers.
+    Chat-lane signal (``/api/config`` ``pilot_ready``). Broader than
+    :func:`workers_ready`: a cursor-cli agent login counts here, but does not
+    make agentic workers runnable. Use :func:`workers_ready` for the banner
+    that claims swarms can run.
 
     Authoritative semantics match ``GET /api/providers`` ``has_key``: stored keys,
     env keys, and credential-pool OAuth (ChatGPT Codex) all count, and explicit
     disconnects hide a provider even when its key remains on disk / in the shell.
     """
     try:
-        from harness.registry_wizard import PROVIDERS, get_provider_key
-        from harness.keys import get_api_key_status, get_disconnected
+        from harness.registry_wizard import PROVIDERS
+        from harness.keys import get_disconnected
 
         disconnected = get_disconnected()
         for p in PROVIDERS:
             if p.name in disconnected:
                 continue
-            status = get_api_key_status(p.name)
-            if (get_provider_key(p) is not None) or status.get("has_key"):
+            if _provider_has_usable_key(p):
                 return True
         return False
     except Exception as exc:

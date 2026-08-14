@@ -26,6 +26,10 @@ explicit:
   `route_task`, …) are tools the pilot calls; they are not a separate product
   loop.
 
+Default execution is keys-only: the agentic adapter runs pilots and workers
+against whatever Full stack Settings credential the user pasted. Platform CLIs
+(Cursor, Claude Code, Codex CLI) are opt-in via Settings, not a requirement.
+
 Two consequences of that lane-B framing:
 
 - **Any model can drive.** Hot-swap the pilot by task. A cheap open-weights
