@@ -976,10 +976,10 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             onClick={onOpenWizard}
             className="w-full bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 hover:border-accent/50 rounded py-2 font-bold transition-colors text-[11px]"
           >
-            Open Provider & Model Setup
+            Connect a provider
           </button>
           <p className="text-[10px] text-muted">
-            Configure API keys, probe models, select conversational pilots, and adjust routing scores.
+            Pick a provider, paste a key, start chatting. One Full stack key runs chat and swarms.
           </p>
         </div>
 
