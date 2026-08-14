@@ -269,19 +269,23 @@ class CompactionContextMixin:
                 self._ctx_token_cache_len = cur_len
         except Exception:
             heuristic = self._estimate_context_tokens_for_list(self._history)
+        return self._usage_clock(heuristic)
+
+    def _usage_clock(self, heuristic: int) -> int:
+        """Billed prompt tokens plus heuristic growth since that sample.
+
+        chars//4 is the fallback clock when no usage exists, not a peer that
+        can win via max() and trip compact early or late.
+        """
         real = int(getattr(self, "_last_prompt_tokens", 0) or 0)
-        if real > 0:
-            # Usage is the clock. Heuristic only measures growth since that
-            # sample — it must not win via max() and trip compact early/late.
-            try:
-                baseline = int(getattr(self, "_last_prompt_heuristic", 0) or 0)
-            except Exception:
-                baseline = 0
-            growth = max(0, heuristic - baseline) if baseline > 0 else 0
-            return real + growth
-        # Offline / no real usage yet: fall back to the char heuristic so tests
-        # and pre-first-turn state still behave deterministically.
-        return heuristic
+        if real <= 0:
+            return int(heuristic or 0)
+        try:
+            baseline = int(getattr(self, "_last_prompt_heuristic", 0) or 0)
+        except Exception:
+            baseline = 0
+        growth = max(0, int(heuristic or 0) - baseline) if baseline > 0 else 0
+        return real + growth
 
     def _find_safe_split(self, start_idx: int) -> int:
         """Move ``start_idx`` to a cut that does not break tool pairing.
@@ -1152,10 +1156,9 @@ class CompactionContextMixin:
         self._invalidate_ctx_cache()
         self._reset_append_only_freeze()
         # The provider-reported prompt-token count refers to the PRE-compaction
-        # history; _estimate_context_tokens() takes max(real, heuristic), so a
-        # stale real count would mask the reduction we just made (after_tokens
-        # == before_tokens and the pressure advisor never clears). Drop it; the
-        # next billed turn repopulates it from actual usage.
+        # history. The usage clock is real + growth, so a stale real would
+        # mask the reduction (after_tokens == before_tokens and the pressure
+        # advisor never clears). Drop both; the next billed turn repopulates.
         try:
             self._last_prompt_tokens = 0
             self._last_prompt_heuristic = 0
