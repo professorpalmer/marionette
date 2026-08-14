@@ -27,4 +27,20 @@ describe("api.getSessionState consume_resume query", () => {
     await api.getSessionState({ rearmResume: true });
     expect(getJSON).toHaveBeenCalledWith(withToken("/api/session/state?rearm_resume=1"));
   });
+
+  it("threads session_id for session-scoped latch peek/consume/rearm", async () => {
+    const { api } = await import("../lib/api");
+    await api.getSessionState({ sessionId: "sess-a" });
+    expect(getJSON).toHaveBeenCalledWith(
+      withToken("/api/session/state?session_id=sess-a"),
+    );
+    await api.getSessionState({ consumeResume: true, sessionId: "sess-a" });
+    expect(getJSON).toHaveBeenCalledWith(
+      withToken("/api/session/state?consume_resume=1&session_id=sess-a"),
+    );
+    await api.getSessionState({ rearmResume: true, sessionId: "sess-b" });
+    expect(getJSON).toHaveBeenCalledWith(
+      withToken("/api/session/state?rearm_resume=1&session_id=sess-b"),
+    );
+  });
 });

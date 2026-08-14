@@ -25,6 +25,20 @@ def test_steer_queue_round_trip():
     assert s.drain_steer() == []
 
 
+def test_enqueue_steer_ignores_blank_and_stop_does_not_notice():
+    """Empty composer must not become a phantom steer that Stop then errors on."""
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    s = ConversationalSession(cfg)
+    s.enqueue_steer("")
+    s.enqueue_steer("   ")
+    assert s.drain_steer() == []
+    s.enqueue_steer("")
+    dropped = s.drop_queued_steers()
+    assert dropped == []
+    assert s._record_steer_drop_notice(dropped) is None
+    assert getattr(s, "_pending_steer_drop_notice", None) in (None, {})
+
+
 class _SteeringPilot:
     def __init__(self, session):
         self.session = session

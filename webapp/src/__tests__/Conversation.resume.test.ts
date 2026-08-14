@@ -146,11 +146,75 @@ describe("Conversation ghost-resume gate", () => {
       resume,
       stillCurrent: () => current,
       schedule: setTimeout,
+      sessionId: "sess-a",
     });
     await vi.advanceTimersByTimeAsync(300);
     expect(resume).not.toHaveBeenCalled();
-    expect(getSessionState).toHaveBeenCalledWith({ consumeResume: true });
-    expect(getSessionState).toHaveBeenCalledWith({ rearmResume: true });
+    expect(getSessionState).toHaveBeenCalledWith({
+      consumeResume: true,
+      sessionId: "sess-a",
+    });
+    expect(getSessionState).toHaveBeenCalledWith({
+      rearmResume: true,
+      sessionId: "sess-a",
+    });
+  });
+
+  it("re-schedules after abandon rearm when owner session is active again", async () => {
+    const resume = vi.fn();
+    let current = true;
+    let ownerActive = true;
+    const getSessionState = vi.fn()
+      .mockResolvedValueOnce({
+        state: "idle",
+        pending_swarms: false,
+        resume_pending: true,
+      })
+      .mockImplementationOnce(async () => {
+        current = false;
+        return {
+          state: "idle",
+          pending_swarms: false,
+          resume_pending: true,
+        };
+      })
+      // rearm
+      .mockResolvedValueOnce({
+        state: "idle",
+        pending_swarms: false,
+        resume_pending: true,
+      })
+      // scheduleResumeIfPending peek after rearm
+      .mockResolvedValueOnce({
+        state: "idle",
+        pending_swarms: false,
+        resume_pending: true,
+      })
+      // delayed consume for the rescheduled kick
+      .mockResolvedValueOnce({
+        state: "idle",
+        pending_swarms: false,
+        resume_pending: true,
+      });
+
+    await scheduleResumeIfPending({
+      getSessionState,
+      resume,
+      stillCurrent: () => current,
+      ownerStillActive: () => ownerActive,
+      schedule: setTimeout,
+      sessionId: "sess-a",
+    });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(resume).not.toHaveBeenCalled();
+    expect(getSessionState).toHaveBeenCalledWith({
+      rearmResume: true,
+      sessionId: "sess-a",
+    });
+    // Owner is active again — rescheduled kick consumes and resumes.
+    current = true;
+    await vi.advanceTimersByTimeAsync(300);
+    expect(resume).toHaveBeenCalledTimes(1);
   });
 
   it("clearSafeTimeouts cancel after peek does not consume (owning session keeps latch)", async () => {

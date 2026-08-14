@@ -58,6 +58,48 @@ function formatLastInvocation(inv: McpLastInvocation | undefined): string {
   return `Last call: ${inv.tool} failed — ${err}${when}`;
 }
 
+type McpLifecycle = "running" | "idle" | "stopped" | "error";
+
+function serverLifecycle(s: { running?: boolean; lifecycle?: string; error?: string }): McpLifecycle {
+  if (s.lifecycle === "running" || s.lifecycle === "idle" || s.lifecycle === "stopped" || s.lifecycle === "error") {
+    return s.lifecycle;
+  }
+  if (s.running) return "running";
+  if (s.error) return "error";
+  return "idle";
+}
+
+function lifecycleStatusLabel(s: { running?: boolean; lifecycle?: string; error?: string; tools?: number }): string {
+  const lc = serverLifecycle(s);
+  if (lc === "running") return `${s.tools ?? 0} tools`;
+  if (lc === "idle") return "idle";
+  return "stopped";
+}
+
+function lifecycleDotClass(s: { running?: boolean; lifecycle?: string; error?: string }): string {
+  const lc = serverLifecycle(s);
+  if (lc === "running") return "bg-good";
+  if (lc === "error") return "bg-risk";
+  return "bg-faint";
+}
+
+function formatMcpHeaderSummary(servers: { running?: boolean; lifecycle?: string; error?: string }[]): string {
+  if (servers.length === 0) return "No servers";
+  const counts = { running: 0, idle: 0, stopped: 0, error: 0 };
+  for (const s of servers) {
+    counts[serverLifecycle(s)] += 1;
+  }
+  if (counts.idle > 0) {
+    const parts: string[] = [];
+    if (counts.running) parts.push(`${counts.running} running`);
+    if (counts.idle) parts.push(`${counts.idle} idle`);
+    if (counts.stopped) parts.push(`${counts.stopped} stopped`);
+    if (counts.error) parts.push(`${counts.error} error`);
+    return parts.join(", ");
+  }
+  return `${counts.running}/${servers.length} running`;
+}
+
 export default function McpPane({ embedded = false }: { embedded?: boolean }) {
   const [servers, setServers] = useState<any[]>([]);
   const [tools, setTools] = useState<any[]>([]);
@@ -218,9 +260,7 @@ export default function McpPane({ embedded = false }: { embedded?: boolean }) {
           </span>
         ) : (
           <span className="text-[9px] text-faint">
-            {servers.length === 0
-              ? "No servers"
-              : `${servers.filter((s) => s.running).length}/${servers.length} running`}
+            {formatMcpHeaderSummary(servers)}
           </span>
         )}
         <button
@@ -259,7 +299,7 @@ export default function McpPane({ embedded = false }: { embedded?: boolean }) {
           return (
           <div key={s.name} className="border border-edge rounded-lg p-2 bg-panel2/40">
             <div className="flex items-center gap-2">
-              <span className={`w-1.5 h-1.5 rounded-full ${s.running ? "bg-good" : "bg-faint"}`} />
+              <span className={`w-1.5 h-1.5 rounded-full ${lifecycleDotClass(s)}`} />
               <span className="font-medium text-txt flex-1 truncate flex items-center gap-1.5">
                 <span>{s.name}</span>
                 {s.transport && (
@@ -268,7 +308,7 @@ export default function McpPane({ embedded = false }: { embedded?: boolean }) {
                   </span>
                 )}
               </span>
-              <span className="text-faint text-[10px]">{s.running ? `${s.tools} tools` : "stopped"}</span>
+              <span className="text-faint text-[10px]">{lifecycleStatusLabel(s)}</span>
               <button
                 onClick={() => refreshServer(s.name)}
                 disabled={busy === s.name}

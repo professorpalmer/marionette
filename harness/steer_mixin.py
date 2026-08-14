@@ -60,7 +60,7 @@ class SteerMixin:
             self._steer_pending = False
         except Exception:
             pass
-        return items
+        return [item for item in items if str(item or "").strip()]
 
     @staticmethod
     def _steer_drop_notice_text(dropped: list[str]) -> str:
@@ -193,12 +193,14 @@ class SteerMixin:
         standard enqueue/drain even if ``_stop_holds_idle`` is still sticky for
         runners chrome (cleared on the next real user send).
         """
+        cleaned = (text or "").strip()
+        if not cleaned:
+            return
         if self._abandoned_turn_blocks_steer_enqueue():
-            if text:
-                self._record_steer_drop_notice([text])
+            self._record_steer_drop_notice([cleaned])
             return
         with self._steer_lock:
-            self._steer_queue.append(text)
+            self._steer_queue.append(cleaned)
 
     def drain_steer(self) -> list[str]:
         """Atomically pop and return all pending steer messages (empty list if none)."""

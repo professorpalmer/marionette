@@ -37,10 +37,10 @@ def _svc(pilot=None, runners=None, upload_dir="/uploads", sessions=None):
         diag=lambda *a: None,
         get_sessions=lambda: sessions or SimpleNamespace(active=None),
         save_transcript=lambda *a, **k: None,
-        set_resume_latch=lambda: None,
+        set_resume_latch=lambda *a, **k: None,
         persist_boot_usage=lambda **k: None,
-        peek_resume_pending=lambda idle: False,
-        consume_resume_pending=lambda idle: False,
+        peek_resume_pending=lambda idle, session_id="": False,
+        consume_resume_pending=lambda idle, session_id="": False,
         checkpoint_transcript=lambda: None,
         context_at=lambda *a: None,
     )
@@ -151,7 +151,7 @@ def test_rewind_requires_target():
 
 
 def test_persist_and_restart_prepare():
-    calls = {"latch": 0, "usage": 0, "save": 0}
+    calls = {"latch": 0, "usage": 0, "save": 0, "sid": None}
 
     class _Pilot:
         def export_transcript_data(self):
@@ -159,7 +159,12 @@ def test_persist_and_restart_prepare():
 
     sessions = SimpleNamespace(active="s1")
     svc = _svc(pilot=_Pilot(), sessions=sessions)
-    svc.set_resume_latch = lambda: calls.__setitem__("latch", calls["latch"] + 1)
+
+    def _set_latch(session_id=""):
+        calls["latch"] = calls["latch"] + 1
+        calls["sid"] = session_id
+
+    svc.set_resume_latch = _set_latch
     svc.persist_boot_usage = lambda **k: calls.__setitem__(
         "usage", calls["usage"] + 1
     )
@@ -168,7 +173,8 @@ def test_persist_and_restart_prepare():
     )
 
     assert prepare_session_restart(svc) == (True, None)
-    assert calls == {"latch": 1, "usage": 1, "save": 1}
+    assert calls["latch"] == 1 and calls["usage"] == 1 and calls["save"] == 1
+    assert calls["sid"] == "s1"
     code, payload = post_session_persist(svc)
     assert code == 200 and payload["ok"] is True
 
@@ -260,15 +266,17 @@ def test_compact_and_state():
 def test_session_state_resume_pending_peek_vs_consume():
     """Plain GET peeks; only ?consume_resume=1 clears the latch."""
     calls = {"peek": 0, "consume": 0}
-    latch = {"armed": True}
+    latch = {"armed": True, "owner": "sess-a"}
 
-    def peek(idle: bool) -> bool:
+    def peek(idle: bool, session_id: str = "") -> bool:
         calls["peek"] += 1
-        return bool(latch["armed"] and idle)
+        return bool(
+            latch["armed"] and idle and session_id == latch["owner"]
+        )
 
-    def consume(idle: bool) -> bool:
+    def consume(idle: bool, session_id: str = "") -> bool:
         calls["consume"] += 1
-        if not (latch["armed"] and idle):
+        if not (latch["armed"] and idle and session_id == latch["owner"]):
             return False
         latch["armed"] = False
         return True
@@ -278,43 +286,87 @@ def test_session_state_resume_pending_peek_vs_consume():
     svc.peek_resume_pending = peek
     svc.consume_resume_pending = consume
 
-    code, state = get_session_state({}, svc)
+    code, state = get_session_state({"session_id": ["sess-a"]}, svc)
     assert code == 200 and state["resume_pending"] is True
     assert calls == {"peek": 1, "consume": 0}
     assert latch["armed"] is True
 
-    code, state = get_session_state({"consume_resume": ["0"]}, svc)
+    code, state = get_session_state(
+        {"consume_resume": ["0"], "session_id": ["sess-a"]}, svc
+    )
     assert code == 200 and state["resume_pending"] is True
     assert calls == {"peek": 2, "consume": 0}
     assert latch["armed"] is True
 
-    code, state = get_session_state({"consume_resume": ["1"]}, svc)
+    code, state = get_session_state(
+        {"consume_resume": ["1"], "session_id": ["sess-a"]}, svc
+    )
     assert code == 200 and state["resume_pending"] is True
     assert calls == {"peek": 2, "consume": 1}
     assert latch["armed"] is False
 
-    code, state = get_session_state({"consume_resume": ["1"]}, svc)
+    code, state = get_session_state(
+        {"consume_resume": ["1"], "session_id": ["sess-a"]}, svc
+    )
     assert code == 200 and state["resume_pending"] is False
     assert calls["consume"] == 2
 
 
-def test_session_state_rearm_resume_restores_latch():
-    """?rearm_resume=1 restores latch after a consume abandoned by switch."""
-    latch = {"armed": False}
-    rearm_calls = {"n": 0}
+def test_session_state_resume_pending_fail_closed_wrong_session():
+    """Latch armed for A must not peek/consume for B."""
+    latch = {"armed": True, "owner": "sess-a"}
 
-    def peek(idle: bool) -> bool:
-        return bool(latch["armed"] and idle)
+    def peek(idle: bool, session_id: str = "") -> bool:
+        return bool(
+            latch["armed"] and idle and session_id == latch["owner"]
+        )
 
-    def consume(idle: bool) -> bool:
-        if not (latch["armed"] and idle):
+    def consume(idle: bool, session_id: str = "") -> bool:
+        if not (latch["armed"] and idle and session_id == latch["owner"]):
             return False
         latch["armed"] = False
         return True
 
-    def set_latch() -> None:
+    pilot = _CompactingPilot()
+    svc = _svc(pilot=pilot)
+    svc.peek_resume_pending = peek
+    svc.consume_resume_pending = consume
+
+    code, state = get_session_state({"session_id": ["sess-b"]}, svc)
+    assert code == 200 and state["resume_pending"] is False
+    assert latch["armed"] is True
+
+    code, state = get_session_state(
+        {"consume_resume": ["1"], "session_id": ["sess-b"]}, svc
+    )
+    assert code == 200 and state["resume_pending"] is False
+    assert latch["armed"] is True
+
+    code, state = get_session_state({"session_id": ["sess-a"]}, svc)
+    assert code == 200 and state["resume_pending"] is True
+
+
+def test_session_state_rearm_resume_restores_latch():
+    """?rearm_resume=1 restores latch after a consume abandoned by switch."""
+    latch = {"armed": False, "owner": ""}
+    rearm_calls = {"n": 0, "sid": ""}
+
+    def peek(idle: bool, session_id: str = "") -> bool:
+        return bool(
+            latch["armed"] and idle and session_id == latch["owner"]
+        )
+
+    def consume(idle: bool, session_id: str = "") -> bool:
+        if not (latch["armed"] and idle and session_id == latch["owner"]):
+            return False
+        latch["armed"] = False
+        return True
+
+    def set_latch(session_id: str = "") -> None:
         rearm_calls["n"] += 1
+        rearm_calls["sid"] = session_id
         latch["armed"] = True
+        latch["owner"] = session_id
 
     pilot = _CompactingPilot()
     svc = _svc(pilot=pilot)
@@ -322,16 +374,22 @@ def test_session_state_rearm_resume_restores_latch():
     svc.consume_resume_pending = consume
     svc.set_resume_latch = set_latch
 
-    code, state = get_session_state({"rearm_resume": ["1"]}, svc)
+    code, state = get_session_state(
+        {"rearm_resume": ["1"], "session_id": ["sess-a"]}, svc
+    )
     assert code == 200 and state["resume_pending"] is True
-    assert rearm_calls["n"] == 1
+    assert rearm_calls == {"n": 1, "sid": "sess-a"}
     assert latch["armed"] is True
 
-    code, state = get_session_state({"consume_resume": ["1"]}, svc)
+    code, state = get_session_state(
+        {"consume_resume": ["1"], "session_id": ["sess-a"]}, svc
+    )
     assert code == 200 and state["resume_pending"] is True
     assert latch["armed"] is False
 
-    code, state = get_session_state({"rearm_resume": ["1"]}, svc)
+    code, state = get_session_state(
+        {"rearm_resume": ["1"], "session_id": ["sess-a"]}, svc
+    )
     assert code == 200 and state["resume_pending"] is True
     assert latch["armed"] is True
 

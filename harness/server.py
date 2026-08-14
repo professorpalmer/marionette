@@ -1143,6 +1143,8 @@ _pilot_swap_lock = threading.Lock()
 # quit / update relaunch mints a new app-run id so a leftover latch cannot
 # ghost-resume the last turn on reopen.
 _resume_latch = False
+# Owning view / harness session id for the armed latch (empty = unbound legacy).
+_resume_latch_session_id = ""
 from .pty_manager import PtyManager
 _pty = PtyManager()
 _pilot._mcp = _mcp
@@ -1162,16 +1164,44 @@ def _resume_latch_app_run_id() -> str:
     return (os.environ.get("HARNESS_APP_RUN_ID") or "").strip()
 
 
-def _set_resume_latch() -> None:
-    """Arm the one-shot auto-resume signal for the next process / state poll."""
-    global _resume_latch
+def _resume_latch_sole_session_id() -> str:
+    """Return the only session id when exactly one row exists; else empty."""
+    try:
+        rows = _sessions.rows()
+    except Exception:
+        return ""
+    if len(rows) != 1:
+        return ""
+    return str(rows[0].get("id") or "").strip()
+
+
+def _resolve_resume_latch_session_id(session_id: Optional[str] = None) -> str:
+    """Prefer explicit id, then active view / harness session id."""
+    sid = (session_id or "").strip()
+    if sid:
+        return sid
+    try:
+        active = (_sessions.active or "").strip()
+    except Exception:
+        active = ""
+    if active:
+        return active
+    return (getattr(_pilot, "harness_session_id", None) or "").strip()
+
+
+def _set_resume_latch(session_id: Optional[str] = None) -> None:
+    """Arm the one-shot auto-resume signal for the owning session view."""
+    global _resume_latch, _resume_latch_session_id
+    sid = _resolve_resume_latch_session_id(session_id)
     _resume_latch = True
+    _resume_latch_session_id = sid
     try:
         p = _resume_latch_path()
         payload = {
             "v": 1,
             "armed": True,
             "app_run_id": _resume_latch_app_run_id(),
+            "session_id": sid,
         }
         with open(p, "w", encoding="utf-8", newline="\n") as f:
             json.dump(payload, f, separators=(",", ":"))
@@ -1183,8 +1213,9 @@ def _set_resume_latch() -> None:
 
 def _clear_resume_latch() -> None:
     """Consume the latch (in-memory + on disk) so a later view cannot re-fire."""
-    global _resume_latch
+    global _resume_latch, _resume_latch_session_id
     _resume_latch = False
+    _resume_latch_session_id = ""
     try:
         p = _resume_latch_path()
         if os.path.exists(p):
@@ -1193,33 +1224,56 @@ def _clear_resume_latch() -> None:
         _diag("server.resume_latch_clear", e)
 
 
-def _parse_resume_latch_file(raw: str) -> tuple[bool, str]:
-    """Return ``(armed, stored_app_run_id)`` from on-disk latch contents."""
+def _parse_resume_latch_file(raw: str) -> Tuple[bool, str, str]:
+    """Return ``(armed, stored_app_run_id, session_id)`` from on-disk latch."""
     text = (raw or "").strip()
     if not text:
-        return False, ""
+        return False, "", ""
     # Legacy plain flag from pre-fence builds.
     if text == "1":
-        return True, ""
+        return True, "", ""
     try:
         data = json.loads(text)
     except Exception:
-        return False, ""
+        return False, "", ""
     if not isinstance(data, dict) or not data.get("armed"):
-        return False, ""
-    return True, str(data.get("app_run_id") or "").strip()
+        return False, "", ""
+    return (
+        True,
+        str(data.get("app_run_id") or "").strip(),
+        str(data.get("session_id") or "").strip(),
+    )
+
+
+def _resume_latch_owner_matches(request_session_id: str) -> bool:
+    """Fail closed unless the request names the latch owner.
+
+    Unbound (missing session_id) latches are honored only when a single session
+    exists and the request names that session.
+    """
+    if not _resume_latch:
+        return False
+    req = (request_session_id or "").strip()
+    if not req:
+        return False
+    owner = (_resume_latch_session_id or "").strip()
+    if owner:
+        return req == owner
+    sole = _resume_latch_sole_session_id()
+    return bool(sole) and req == sole
 
 
 def _load_resume_latch() -> None:
     """Adopt a same-app-run latch left by an intentional backend restart."""
-    global _resume_latch
+    global _resume_latch, _resume_latch_session_id
     try:
         p = _resume_latch_path()
         if not os.path.exists(p):
             _resume_latch = False
+            _resume_latch_session_id = ""
             return
         with open(p, encoding="utf-8", errors="replace") as f:
-            armed, stored_run_id = _parse_resume_latch_file(f.read())
+            armed, stored_run_id, stored_sid = _parse_resume_latch_file(f.read())
         current_run_id = _resume_latch_app_run_id()
         # Electron stamps HARNESS_APP_RUN_ID once per shell process. Same-process
         # backend respawn (self-edit restart) keeps the id; update relaunch /
@@ -1232,23 +1286,33 @@ def _load_resume_latch() -> None:
             adopt = not stored_run_id
         else:
             adopt = False
+        if adopt and not stored_sid:
+            # Pre-session-scope disk latch: bind only when a sole session exists.
+            stored_sid = _resume_latch_sole_session_id()
+            if not stored_sid:
+                adopt = False
         _resume_latch = bool(adopt)
+        _resume_latch_session_id = stored_sid if adopt else ""
         if not _resume_latch:
             _clear_resume_latch()
     except Exception as e:
         _diag("server.resume_latch_load", e)
         _resume_latch = False
+        _resume_latch_session_id = ""
 
 
-def _peek_resume_pending(idle: bool) -> bool:
-    """True when the latch is armed and the pilot is idle (does not clear)."""
-    return bool(_resume_latch and idle)
+def _peek_resume_pending(idle: bool, session_id: str = "") -> bool:
+    """True when the latch is armed for ``session_id`` and the pilot is idle."""
+    return bool(
+        _resume_latch and idle and _resume_latch_owner_matches(session_id)
+    )
 
 
-def _consume_resume_pending(idle: bool) -> bool:
-    """True once when the latch is armed and the pilot is idle; then clear it."""
-    global _resume_latch
-    if not (_resume_latch and idle):
+def _consume_resume_pending(idle: bool, session_id: str = "") -> bool:
+    """True once when armed for ``session_id`` and idle; then clear it."""
+    if not (
+        _resume_latch and idle and _resume_latch_owner_matches(session_id)
+    ):
         return False
     _clear_resume_latch()
     return True

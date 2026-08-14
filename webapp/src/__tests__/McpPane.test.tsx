@@ -66,6 +66,7 @@ describe("McpPane last_invocation and action errors", () => {
           name: "aws",
           command: "uvx aws",
           running: false,
+          lifecycle: "error",
           tools: 0,
           error: "spawn failed",
           last_invocation: {
@@ -84,6 +85,48 @@ describe("McpPane last_invocation and action errors", () => {
     expect(screen.getByText("Server: spawn failed")).toBeInTheDocument();
     expect(screen.getByText(/Last call: list ok/)).toBeInTheDocument();
     expect(screen.getByText("stopped")).toBeInTheDocument();
+  });
+
+  it("shows idle vs operator-stopped labels and compact header counts", async () => {
+    mockMcp.mockResolvedValue({
+      servers: [
+        {
+          name: "github",
+          command: "npx github",
+          transport: "stdio",
+          running: true,
+          lifecycle: "running",
+          tools: 3,
+          error: "",
+        },
+        {
+          name: "aws",
+          command: "uvx aws",
+          transport: "stdio",
+          running: false,
+          lifecycle: "idle",
+          tools: 0,
+          error: "",
+        },
+        {
+          name: "vercel",
+          command: "npx vercel",
+          transport: "stdio",
+          running: false,
+          lifecycle: "stopped",
+          tools: 0,
+          error: "",
+        },
+      ],
+      tools: [],
+    });
+
+    render(<McpPane embedded />);
+    await waitFor(() => expect(screen.getByText("github")).toBeInTheDocument());
+    expect(screen.getByText("3 tools")).toBeInTheDocument();
+    expect(screen.getByText("idle")).toBeInTheDocument();
+    expect(screen.getByText("stopped")).toBeInTheDocument();
+    expect(screen.getByText("1 running, 1 idle, 1 stopped")).toBeInTheDocument();
   });
 
   it("surfaces HTTP 200 {ok:false} start failures as role=alert", async () => {

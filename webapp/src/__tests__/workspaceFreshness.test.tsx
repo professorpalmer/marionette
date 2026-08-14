@@ -163,6 +163,61 @@ describe("workspace freshness fan-out", () => {
     });
   });
 
+  it("FileEditorPane reloads a clean buffer on pathless workspace mutation", async () => {
+    vi.mocked(api.readFile)
+      .mockResolvedValueOnce({ ok: true, content: "v1\n" } as any)
+      .mockResolvedValueOnce({ ok: true, content: "v2-from-restore\n" } as any);
+
+    const { getByTestId } = render(
+      <FileEditorPane
+        path="src/a.ts"
+        onClose={() => {}}
+        onDirtyChange={() => {}}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(getByTestId("cm-value").textContent).toContain("v1");
+    });
+
+    await act(async () => {
+      notifyWorkspaceMutated();
+    });
+
+    await waitFor(() => {
+      expect(api.readFile).toHaveBeenCalledTimes(2);
+      expect(getByTestId("cm-value").textContent).toContain("v2-from-restore");
+    });
+  });
+
+  it("FileEditorPane dirty buffer conflicts on pathless workspace mutation", async () => {
+    const onDirtyChange = vi.fn();
+    const { getByTestId } = render(
+      <FileEditorPane
+        path="src/a.ts"
+        onClose={() => {}}
+        onDirtyChange={onDirtyChange}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(getByTestId("cm-value").textContent).toContain("v1");
+    });
+
+    await act(async () => {
+      getByTestId("cm-dirty").click();
+    });
+    expect(onDirtyChange).toHaveBeenCalledWith(true);
+
+    await act(async () => {
+      notifyWorkspaceMutated();
+    });
+
+    expect(getByTestId("disk-conflict-banner")).toBeTruthy();
+    expect(api.readFile).toHaveBeenCalledTimes(1);
+    expect(getByTestId("cm-value").textContent).toContain("local-edit");
+  });
+
   it("FileEditorPane ignores mutation events for other paths", async () => {
     render(
       <FileEditorPane

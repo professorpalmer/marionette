@@ -29,12 +29,14 @@ class SessionControlServices:
     # persist / compact / state / context_at / swarm-results / restart-prepare
     get_sessions: Optional[Callable[[], Any]] = None
     save_transcript: Optional[Callable[..., None]] = None
-    set_resume_latch: Optional[Callable[[], None]] = None
+    # Arms for the active view; optional session_id stamps the latch owner.
+    set_resume_latch: Optional[Callable[..., None]] = None
     persist_boot_usage: Optional[Callable[..., None]] = None
     # Peek leaves the latch armed so StatusBar / LeftRail / runners polls cannot
     # steal the one-shot; consume is opt-in via ?consume_resume=1 (Conversation).
-    peek_resume_pending: Optional[Callable[[bool], bool]] = None
-    consume_resume_pending: Optional[Callable[[bool], bool]] = None
+    # Both take (idle, session_id) and fail closed on owner mismatch.
+    peek_resume_pending: Optional[Callable[..., bool]] = None
+    consume_resume_pending: Optional[Callable[..., bool]] = None
     checkpoint_transcript: Optional[Callable[[], None]] = None
     context_at: Optional[Callable[..., Any]] = None
 
@@ -77,7 +79,10 @@ def prepare_session_restart(svc: SessionControlServices) -> tuple[bool, Optional
                 pilot.export_transcript_data(),
             )
         if svc.set_resume_latch is not None:
-            svc.set_resume_latch()
+            sid = ""
+            if sessions is not None:
+                sid = (getattr(sessions, "active", None) or "").strip()
+            svc.set_resume_latch(sid)
         if svc.persist_boot_usage is not None:
             svc.persist_boot_usage(fold_live=True, force=True)
         return True, None
@@ -260,6 +265,10 @@ def _truthy_qs_flag(qs: dict, key: str) -> bool:
     return raw in ("1", "true", "yes")
 
 
+def _qs_session_id(qs: dict) -> str:
+    return (qs.get("session_id", [""])[0] or "").strip()
+
+
 def get_session_state(qs: dict, svc: SessionControlServices) -> tuple[int, JsonPayload]:
     """GET /api/session/state.
 
@@ -267,7 +276,8 @@ def get_session_state(qs: dict, svc: SessionControlServices) -> tuple[int, JsonP
     self-edit restart latch. Pass ``?consume_resume=1`` to consume once (the
     Conversation resume-schedule path). Pass ``?rearm_resume=1`` to restore the
     latch after a consume that was abandoned by a session switch / cancelled
-    kick (Conversation stillCurrent fence).
+    kick (Conversation stillCurrent fence). Pass ``?session_id=`` so peek /
+    consume / rearm only apply to the latch owner (fail closed on mismatch).
     """
     pilot = svc.get_pilot()
     runners = svc.get_runners()
@@ -275,18 +285,19 @@ def get_session_state(qs: dict, svc: SessionControlServices) -> tuple[int, JsonP
     idle = state == "idle"
     resume_pending = False
     qs = qs or {}
+    session_id = _qs_session_id(qs)
     if _truthy_qs_flag(qs, "rearm_resume"):
         if svc.set_resume_latch is not None:
-            svc.set_resume_latch()
+            svc.set_resume_latch(session_id)
         if svc.peek_resume_pending is not None:
-            resume_pending = svc.peek_resume_pending(idle)
+            resume_pending = svc.peek_resume_pending(idle, session_id)
         else:
             resume_pending = bool(idle)
     elif _truthy_qs_flag(qs, "consume_resume"):
         if svc.consume_resume_pending is not None:
-            resume_pending = svc.consume_resume_pending(idle)
+            resume_pending = svc.consume_resume_pending(idle, session_id)
     elif svc.peek_resume_pending is not None:
-        resume_pending = svc.peek_resume_pending(idle)
+        resume_pending = svc.peek_resume_pending(idle, session_id)
     elif svc.consume_resume_pending is not None:
         # Legacy services without peek: never consume on a plain state read.
         resume_pending = False

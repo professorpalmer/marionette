@@ -175,7 +175,7 @@ export type Item =
   | { kind: "auto_status"; cycle: number; snapshot: AutoBudgetSnapshot }
   | { kind: "auto_halt"; reason: string; snapshot: AutoBudgetSnapshot }
   | { kind: "auth_failure"; message: string; id?: string }
-  | { kind: "steer"; text: string }
+  | { kind: "steer"; text: string; mode?: "steer" | "interrupt" }
   | {
       kind: "quality_gate";
       outcome: string;
@@ -216,7 +216,7 @@ export type GroupedItem =
   | { kind: "auto_status"; cycle: number; snapshot: AutoBudgetSnapshot }
   | { kind: "auto_halt"; reason: string; snapshot: AutoBudgetSnapshot }
   | { kind: "auth_failure"; message: string; id?: string }
-  | { kind: "steer"; text: string }
+  | { kind: "steer"; text: string; mode?: "steer" | "interrupt" }
   | {
       kind: "quality_gate";
       outcome: string;
@@ -1082,7 +1082,7 @@ export const TranscriptList = memo(function TranscriptList({
     } else if (it.kind === "steer") {
       return (
         <div key={key} className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/15 border border-edge/20 text-[10.5px] text-faint w-fit my-1 select-none font-mono animate-in fade-in duration-200">
-          <span className="text-muted">steer:</span>
+          <span className="text-muted">{it.mode === "interrupt" ? "interrupt:" : "steer:"}</span>
           <span>{it.text}</span>
         </div>
       );

@@ -391,6 +391,12 @@ function formatCost(cost: number, estimated?: boolean): string {
   return estimated ? `~${body}` : body;
 }
 
+/** Missing/unpriceable estimates must not paint as measured $0. */
+function formatKnownCost(cost: unknown, estimated?: boolean): string {
+  if (typeof cost !== "number" || !isFinite(cost)) return "—";
+  return formatCost(cost, estimated);
+}
+
 function positiveUsd(n?: number): number {
   return typeof n === "number" && isFinite(n) && n > 0 ? n : 0;
 }
@@ -1040,8 +1046,8 @@ export default function SwarmPane() {
                     <span className="text-accent/90">{jobCompactTokens(j).toLocaleString()} compact</span>
                   )}
                   <span className="text-good/90">
-                    {formatCost(
-                      jobCost(j),
+                    {formatKnownCost(
+                      j.est_cost_usd,
                       j.estimated !== false && j.cost_provenance !== "provider",
                     )}
                   </span>
@@ -1245,9 +1251,7 @@ export default function SwarmPane() {
                           )}
                         </span>
                         <span className="font-mono text-good shrink-0 font-semibold">
-                          {art.est_cost_usd !== undefined && art.est_cost_usd > 0
-                            ? `~$${Number(art.est_cost_usd).toFixed(4)}`
-                            : "$0"}
+                          {formatKnownCost(art.est_cost_usd, true)}
                         </span>
                       </div>
                       {/* One plain-language line on why this model won. */}

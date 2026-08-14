@@ -16,6 +16,11 @@ import {
   X,
 } from "lucide-react";
 import { api, type Config, type SessionGoal, type SessionState, type UsageData } from "../lib/api";
+import {
+  subscribeTaskProfile,
+  taskProfileTitle,
+  type TaskProfileChip,
+} from "../lib/taskProfileChrome";
 import { isDesktop } from "../lib/transport";
 import { usePolling } from "../lib/usePolling";
 import CostBreakdown, {
@@ -88,6 +93,7 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
     actionEvent?: string;
   } | null>(null);
   const [sessionState, setSessionState] = useState<SessionState | null>(null);
+  const [taskProfile, setTaskProfile] = useState<TaskProfileChip | null>(null);
   const [goalBusy, setGoalBusy] = useState(false);
   // Dedup runtime-stale notes across the 5-minute focus throttle and 30-minute polls.
   const lastRuntimeNoteRef = useRef<string | null>(null);
@@ -144,6 +150,8 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
     window.addEventListener("harness-toast", onToast);
     return () => window.removeEventListener("harness-toast", onToast);
   }, []);
+
+  useEffect(() => subscribeTaskProfile(setTaskProfile), []);
 
   // Self-update check: how far behind the tracked branch we are (desktop only).
   // Silent on failure -- an update nudge must never get in the way. Re-checks
@@ -299,6 +307,7 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
     const onSessionChanged = () => {
       acceptZeroUsageRef.current = true;
       setUsage(null);
+      setTaskProfile(null);
       fetchUsage();
       // Session/view swaps carry a different sticky GOAL — refresh immediately
       // rather than waiting for the next 4s poll tick.
@@ -377,6 +386,17 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
         {footerRuntimeStatusLabel(runtimeStatus)}
       </span>
       {branch && <span className="flex items-center gap-1"><GitBranch size={10} />{branch}</span>}
+      {taskProfile && (
+        <span
+          data-testid="task-profile-chip"
+          className="inline-flex items-center gap-1 px-1.5 py-px rounded-full bg-panel2 border border-edge text-txt/90"
+          title={taskProfileTitle(taskProfile)}
+        >
+          <Zap size={10} className="shrink-0 text-accent" aria-hidden="true" />
+          <span className="uppercase tracking-wide text-faint shrink-0">DEPTH</span>
+          <span>{taskProfile.profile}</span>
+        </span>
+      )}
       {sessionGoal && (
         <span
           data-testid="session-goal-chip"

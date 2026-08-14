@@ -157,6 +157,7 @@ import {
   runEditMessageFlow,
   runStopFlow,
   shouldBlockEmptySend,
+  shouldSteerWhileBusy,
   shouldClearSteerDraftOnResult,
   showStandaloneEditNoticeDismiss,
   userOrdinalBeforeIndex,
@@ -2184,6 +2185,33 @@ describe("composerSend module", () => {
   it("gates enter/send and formats slash replies", () => {
     expect(composerEnterAction({ busy: true, metaOrCtrl: true })).toBe("queue");
     expect(composerEnterAction({ busy: true, metaOrCtrl: false })).toBe("send");
+    // Alt+Enter while busy interrupts (stop turn, then queue typed prompt).
+    expect(
+      composerEnterAction({ busy: true, metaOrCtrl: false, altKey: true }),
+    ).toBe("interrupt");
+    // Cmd/Ctrl wins over Alt when both are held.
+    expect(
+      composerEnterAction({ busy: true, metaOrCtrl: true, altKey: true }),
+    ).toBe("queue");
+    // Idle: Alt+Enter is a normal send (no interrupt latch).
+    expect(
+      composerEnterAction({ busy: false, metaOrCtrl: false, altKey: true }),
+    ).toBe("send");
+    // Empty composer while busy must not invent a steer.
+    expect(
+      composerEnterAction({ busy: true, metaOrCtrl: false, hasText: false }),
+    ).toBe("noop");
+    expect(
+      composerEnterAction({
+        busy: true,
+        metaOrCtrl: false,
+        altKey: true,
+        hasText: false,
+      }),
+    ).toBe("noop");
+    expect(shouldSteerWhileBusy({ text: "" })).toBe(false);
+    expect(shouldSteerWhileBusy({ text: "   " })).toBe(false);
+    expect(shouldSteerWhileBusy({ text: "pivot" })).toBe(true);
     expect(
       executeSendGate({ transcriptStale: true, resume: false, userStopped: false }),
     ).toBe("stale");
