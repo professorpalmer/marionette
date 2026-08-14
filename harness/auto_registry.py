@@ -342,6 +342,38 @@ def _promote_openrouter_snapshots(
     return promoted
 
 
+def _has_picker_curation() -> bool:
+    """True when Settings -> Models has any enabled spec for an agentic provider.
+
+    Uses ``_enabled_picker_models`` so tests that patch that helper stay hermetic.
+    """
+    names = set(_CURATED_MODELS)
+    names.update(_AGENTIC_PROVIDER_SLUGS.keys())
+    names.update(_AGENTIC_PROVIDER_SLUGS.values())
+    return any(_enabled_picker_models(name) for name in names)
+
+
+def _in_live_catalog(name: str, slug: str, live_models: list[str]) -> bool:
+    """True when *name* or *slug* is in the live listing, including dated siblings."""
+    if not live_models:
+        return False
+    live = [str(m or "").strip() for m in live_models if str(m or "").strip()]
+    live_set = {m.lower() for m in live}
+    for key in (name, slug):
+        raw = str(key or "").strip()
+        if not raw:
+            continue
+        if raw.lower() in live_set:
+            return True
+        promoted = _newest_dated_snapshot(raw, live)
+        if promoted.lower() in live_set:
+            return True
+        family = _strip_dated_suffix(raw)
+        if family and family.lower() in live_set:
+            return True
+    return False
+
+
 def _known_spec_for(model_name: str, slug: str):
     """Static economics for a wire id, rolling slug, or dated family sibling."""
     for key in (model_name, slug):
@@ -387,10 +419,9 @@ def _get_provider_models_from_discovery(
 
         curated = _CURATED_MODELS.get(provider_name, [])
 
-        # The user's explicit picker curation is authoritative for the
-        # discretionary rows.  Marionette's small OpenRouter ladder is the
-        # exception: retain those required fallbacks so a picker or discovery
-        # refresh cannot strand an otherwise keyed provider.
+        # Models toggles are the only discretionary allowlist. Do not union
+        # curated/live extras onto an explicit picker set — that is how
+        # MiniMax / Xiaomi MIMO leaked into Autopilot when they were off.
         enabled = _enabled_picker_models(provider_name)
         if enabled:
             def _slug_for(name: str) -> str:
@@ -399,21 +430,23 @@ def _get_provider_models_from_discovery(
                 return name
 
             selected = [(m, _tier_of_known(m), _slug_for(m)) for m in enabled]
-            if provider_name == "openrouter":
-                selected_slugs = {item[2] for item in selected}
-                selected.extend(
-                    item for item in curated if item[2] not in selected_slugs
-                )
-                live_models = fetch_models(provider, provider_key, force=force)
-                if live_models:
+            live_models = fetch_models(provider, provider_key, force=force)
+            if live_models:
+                if provider_name == "openrouter":
                     selected = _promote_openrouter_snapshots(selected, live_models)
+                selected = [
+                    item for item in selected
+                    if _in_live_catalog(item[0], item[2], live_models)
+                ]
             return selected
+
+        if _has_picker_curation():
+            return []
 
         # Try live discovery
         live_models = fetch_models(provider, provider_key, force=force)
         if not live_models:
-            # No live models, use curated
-            return _CURATED_MODELS.get(provider_name, [])
+            return list(curated)
         
         # Classify each live model into a tier. Order matters: check the
         # frontier "opus/pro/ultra" markers BEFORE the cheap "flash/mini/lite"
@@ -507,37 +540,31 @@ def _get_provider_models_from_discovery(
                     break
 
         if provider_name == "openrouter":
-            # Scan the full live list for dated siblings of the curated
-            # ladder (DeepSeek 0813, ...). Keep rolling slugs so Autopilot
-            # ids stay stable; extras stay capped so we do not dump OR.
+            # Curated ladder intersect live catalog. Dated siblings promote
+            # onto stable slugs. Do not dump the first N live extras — that
+            # is how MIMO and other untoggled OpenRouter ids entered Autopilot.
             curated_promoted = _promote_openrouter_snapshots(
                 list(curated), live_models,
             )
-            curated_slugs = {item[2] for item in curated_promoted}
-            curated_wires = {item[0].lower() for item in curated_promoted}
-            curated_bases = [slug for _n, _t, slug in curated]
-            extras: list[tuple[str, str, str]] = []
-            extra_seen: set[str] = set()
-            for model_id in live_models:
-                if not _keep(model_id):
-                    continue
-                if model_id in extra_seen:
-                    continue
-                if model_id in curated_slugs or model_id.lower() in curated_wires:
-                    continue
-                if _is_dated_or_exact_sibling(model_id, curated_bases):
-                    continue
-                extra_seen.add(model_id)
-                extras.append((model_id, _tier_of(model_id), model_id))
-                if len(extras) >= 6:
-                    break
-            result = list(curated_promoted) + extras
+            result = [
+                item for item in curated_promoted
+                if _in_live_catalog(item[0], item[2], live_models)
+            ]
         elif provider_name == "openai-codex":
             # Keep curated Codex ladder even when live discovery returns a
             # partial list (or a different naming wave).
             seen_slugs = {item[2] for item in result}
             result.extend(item for item in curated if item[2] not in seen_slugs)
-        return result if result else curated
+        elif provider_name == "opencode-go":
+            # Live listing is authoritative: do not keep MIMO (or anything
+            # else) that the Go workspace does not actually serve.
+            result = [
+                item for item in curated
+                if _in_live_catalog(item[0], item[2], live_models)
+            ]
+        if provider_name == "openrouter":
+            return result
+        return result if result else list(curated)
     except Exception as e:
         _diag("auto_registry.discovery", e, msg=f"provider={provider_name}")
         return _CURATED_MODELS.get(provider_name, [])
@@ -838,13 +865,14 @@ def ensure_keyed_provider_registry_health() -> dict:
             return report
         sync_agentic_registry_safe()
         report["pruned"] = prune_unavailable_agentic_rows(keyed).get("pruned", 0)
-        if "openrouter" in keyed:
+        if "openrouter" in keyed and not _enabled_picker_models("openrouter"):
             required = _openrouter_ladder_ids()
             present = _agentic_ids_present()
             missing = [mid for mid in required if mid not in present]
             # Every ladder row missing means auto_route has nothing Marionette
             # curated to pick; re-seed from the curated set rather than routing
             # blind. A partial gap is normal (picker curation) and left alone.
+            # Never seed when the user already toggled an OpenRouter subset.
             if required and len(missing) == len(required):
                 if _seed_openrouter_ladder_rows(missing):
                     report["seeded_ladder"] = list(missing)
@@ -927,8 +955,10 @@ def sync_agentic_registry(force: bool = False) -> dict:
                 provider_name, key, force=force,
             )
             if not models:
-                # Even with no discovery, use curated fallback
-                models = _CURATED_MODELS.get(agentic_name, [])
+                if _enabled_picker_models(provider_name):
+                    models = []
+                else:
+                    models = _CURATED_MODELS.get(agentic_name, [])
             
             if models:
                 synced_providers.append(agentic_name)

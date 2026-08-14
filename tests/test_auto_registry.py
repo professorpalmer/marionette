@@ -682,7 +682,7 @@ def test_kimi_k3_static_economics_match_marketplace():
     assert "frontier" in tags
 
 
-def test_openrouter_picker_union_retains_curated_ladder(monkeypatch, tmp_path):
+def test_openrouter_picker_does_not_union_curated_ladder(monkeypatch, tmp_path):
     models_path = tmp_path / "models.json"
     monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
     monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
@@ -706,15 +706,13 @@ def test_openrouter_picker_union_retains_curated_ladder(monkeypatch, tmp_path):
     assert result["synced"] is True
     data = json.loads(models_path.read_text())
     ids = {m["id"] for m in data["models"]}
-    assert "agentic/anthropic/claude-opus-4.8" in ids
-    assert "agentic/moonshotai/kimi-k3" in ids
-    assert "agentic/deepseek/deepseek-v4-pro" in ids
-    kimi = next(m for m in data["models"] if m["id"] == "agentic/moonshotai/kimi-k3")
-    assert kimi["payload_defaults"]["provider"] == "openrouter"
-    assert "tools" in kimi["tags"]
+    assert ids == {"agentic/anthropic/claude-opus-4.8"}
+    opus = next(m for m in data["models"] if m["id"] == "agentic/anthropic/claude-opus-4.8")
+    assert opus["payload_defaults"]["provider"] == "openrouter"
+    assert "tools" in opus["tags"]
 
 
-def test_openrouter_discovery_retains_curated_ladder(monkeypatch, tmp_path):
+def test_openrouter_discovery_intersects_curated_with_live(monkeypatch, tmp_path):
     models_path = tmp_path / "models.json"
     monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
     monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
@@ -734,8 +732,93 @@ def test_openrouter_discovery_retains_curated_ladder(monkeypatch, tmp_path):
 
     data = json.loads(models_path.read_text())
     ids = {m["id"] for m in data["models"]}
+    assert ids == {"agentic/z-ai/glm-5.2"}
+    assert "agentic/moonshotai/kimi-k3" not in ids
+    assert "agentic/deepseek/deepseek-v4-flash" not in ids
+
+
+def test_openrouter_live_extras_do_not_inject_mimo(monkeypatch, tmp_path):
+    models_path = tmp_path / "models.json"
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
+
+    live = [
+        "xiaomi/mimo-v2-flash",
+        "xiaomi/mimo-v2-pro",
+        "minimax/minimax-m3",
+        "moonshotai/kimi-k3",
+        "deepseek/deepseek-v4-pro",
+    ]
+
+    def mock_get_provider_key(provider):
+        return "fake-openrouter" if provider.name == "openrouter" else None
+
+    with patch("harness.registry_wizard.get_provider_key", mock_get_provider_key), \
+         patch("harness.keys.get_disconnected", lambda: set()), \
+         patch("harness.model_fetch.fetch_models", lambda *_a, **_k: list(live)), \
+         patch(
+             "harness.auto_registry._enabled_picker_models",
+             lambda name: ["moonshotai/kimi-k3"] if name == "openrouter" else [],
+         ):
+        from harness.auto_registry import sync_agentic_registry
+        sync_agentic_registry()
+
+    ids = {m["id"] for m in json.loads(models_path.read_text())["models"]}
+    assert ids == {"agentic/moonshotai/kimi-k3"}
+    assert not any("mimo" in mid for mid in ids)
+    assert "agentic/minimax/minimax-m3" not in ids
+
+
+def test_openrouter_uncurated_live_does_not_dump_mimo(monkeypatch, tmp_path):
+    models_path = tmp_path / "models.json"
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
+
+    live = [
+        "xiaomi/mimo-v2-flash",
+        "other/filler-1",
+        "moonshotai/kimi-k3",
+        "deepseek/deepseek-v4-pro",
+    ]
+
+    def mock_get_provider_key(provider):
+        return "fake-openrouter" if provider.name == "openrouter" else None
+
+    with patch("harness.registry_wizard.get_provider_key", mock_get_provider_key), \
+         patch("harness.keys.get_disconnected", lambda: set()), \
+         patch("harness.model_fetch.fetch_models", lambda *_a, **_k: list(live)), \
+         patch("harness.auto_registry._enabled_picker_models", lambda _name: []):
+        from harness.auto_registry import sync_agentic_registry
+        sync_agentic_registry()
+
+    ids = {m["id"] for m in json.loads(models_path.read_text())["models"]}
     assert "agentic/moonshotai/kimi-k3" in ids
-    assert "agentic/deepseek/deepseek-v4-flash" in ids
+    assert "agentic/deepseek/deepseek-v4-pro" in ids
+    assert not any("mimo" in mid for mid in ids)
+    assert "agentic/other/filler-1" not in ids
+
+
+def test_opencode_go_live_drops_mimo_when_not_served(monkeypatch, tmp_path):
+    models_path = tmp_path / "models.json"
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
+
+    def mock_get_provider_key(provider):
+        return "fake-go" if provider.name == "opencode-go" else None
+
+    live = ["gpt-5.6-luna", "deepseek-v4-flash", "kimi-k3"]
+
+    with patch("harness.registry_wizard.get_provider_key", mock_get_provider_key), \
+         patch("harness.keys.get_disconnected", lambda: set()), \
+         patch("harness.model_fetch.fetch_models", lambda *_a, **_k: list(live)), \
+         patch("harness.auto_registry._enabled_picker_models", lambda _name: []):
+        from harness.auto_registry import sync_agentic_registry
+        sync_agentic_registry()
+
+    ids = {m["id"] for m in json.loads(models_path.read_text())["models"]}
+    assert "agentic/gpt-5.6-luna" in ids
+    assert "agentic/deepseek-v4-flash" in ids
+    assert not any("mimo" in mid for mid in ids)
 
 
 def test_sync_with_no_keys_writes_no_agentic_models(monkeypatch, tmp_path):
@@ -829,7 +912,10 @@ def test_openrouter_picker_promotes_dated_snapshot(monkeypatch, tmp_path):
          patch("harness.model_fetch.fetch_models", mock_fetch_models), \
          patch(
              "harness.auto_registry._enabled_picker_models",
-             lambda name: ["anthropic/claude-opus-4.8"] if name == "openrouter" else [],
+             lambda name: (
+                 ["deepseek/deepseek-v4-pro", "anthropic/claude-opus-4.8"]
+                 if name == "openrouter" else []
+             ),
          ):
         from harness.auto_registry import sync_agentic_registry
         sync_agentic_registry()
@@ -838,6 +924,7 @@ def test_openrouter_picker_promotes_dated_snapshot(monkeypatch, tmp_path):
     by_id = {m["id"]: m for m in data["models"]}
     pro = by_id["agentic/deepseek/deepseek-v4-pro"]
     assert pro["adapter_model_name"] == "deepseek/deepseek-v4-pro-0813"
+    assert "agentic/moonshotai/kimi-k3" not in by_id
 
 
 def test_sync_force_is_passed_to_fetch_models(monkeypatch, tmp_path):
@@ -869,6 +956,17 @@ def test_registry_auto_refresh_kill_switch(monkeypatch):
     monkeypatch.setenv("HARNESS_REGISTRY_AUTO_REFRESH", "0")
     monkeypatch.setattr(ar, "_refresh_thread", None)
     assert ar.start_registry_auto_refresh() is False
+
+
+def test_in_live_catalog_accepts_dated_siblings():
+    from harness.auto_registry import _in_live_catalog
+
+    live = ["deepseek/deepseek-v4-pro-0813", "moonshotai/kimi-k3"]
+    assert _in_live_catalog(
+        "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-pro", live,
+    )
+    assert _in_live_catalog("moonshotai/kimi-k3", "moonshotai/kimi-k3", live)
+    assert not _in_live_catalog("xiaomi/mimo-v2-flash", "xiaomi/mimo-v2-flash", live)
 
 
 def test_known_spec_follows_dated_family():

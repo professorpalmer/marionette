@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.218, deliberately pre-1.0. Left rail and tool cards sit on the conversation surface so they read as floating; stacked cards keep their rounded corners and stay flush at any zoom. Rides puppetmaster-ai==1.22.2.
+> Status: v0.9.218, deliberately pre-1.0. Left rail and tool cards sit on the conversation surface so they read as floating; n-way board columns resize pairwise so a middle pane is not squeezed by its neighbors; Autopilot only routes models the live catalog and Models toggles actually allow. Rides puppetmaster-ai==1.22.2.
 
 ## Documentation
 

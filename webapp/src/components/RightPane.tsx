@@ -34,6 +34,15 @@ import {
   reconcileColumns,
 } from "../lib/boardColumns";
 import {
+  CARD_LAYOUT_STORAGE_KEY,
+  GRID_COLUMN_COUNT,
+  MIN_CARD_COLUMN_SPAN,
+  applyPairwiseColumnResize,
+  clampCardColumnSpan,
+  normalizeGroupWidths,
+  showColumnResizeHandle,
+} from "../lib/boardColumnWidths";
+import {
   STACK_FRACTIONS_STORAGE_KEY,
   STACK_ROW_RESIZE_LABEL,
   STACK_SPLIT_STORAGE_KEY,
@@ -72,10 +81,6 @@ const CANONICAL_ORDER: Tab[] = [
   PINNED_LAST,
 ];
 
-const CARD_LAYOUT_STORAGE_KEY = "pmharness.board.cardLayouts.v1";
-const GRID_COLUMN_COUNT = 12;
-const MIN_CARD_COLUMN_SPAN = 1;
-
 type CardLayout = {
   columnSpan: number;
   customized?: boolean;
@@ -91,11 +96,6 @@ type CardPlacement = {
   columnSpan: number;
   groupIndex: number;
 };
-
-function clampCardColumnSpan(value: number, fallback: number): number {
-  if (!Number.isFinite(value)) return fallback;
-  return Math.max(MIN_CARD_COLUMN_SPAN, Math.min(GRID_COLUMN_COUNT, Math.round(value)));
-}
 
 function readCardLayouts(): CardLayouts {
   try {
@@ -127,49 +127,6 @@ function cardColumnSpan(tab: Tab, layouts: CardLayouts, groupCount: number): num
   return clampCardColumnSpan(layouts[tab]?.columnSpan ?? fallback, fallback);
 }
 
-function normalizeGroupWidths(requested: number[], preferredGroupIndex: number): number[] {
-  if (requested.length === 0) return [];
-  const minimumWidth: number = requested.length <= 4 ? 2 : 1;
-  const widths = requested.map(width => Math.max(minimumWidth, Math.min(GRID_COLUMN_COUNT, width)));
-  const totalRequested = widths.reduce((total, width) => total + width, 0);
-
-  if (totalRequested <= GRID_COLUMN_COUNT) {
-    let remaining = GRID_COLUMN_COUNT - totalRequested;
-    const order = [...widths.keys()].sort((a, b) => {
-      if (a === preferredGroupIndex) return -1;
-      if (b === preferredGroupIndex) return 1;
-      return a - b;
-    });
-    let cursor = 0;
-    while (remaining > 0) {
-      widths[order[cursor % order.length]] += 1;
-      remaining -= 1;
-      cursor += 1;
-    }
-    return widths;
-  }
-
-  const primaryIndex = preferredGroupIndex >= 0 && preferredGroupIndex < widths.length
-    ? preferredGroupIndex
-    : widths.indexOf(Math.max(...widths));
-  const primaryWidth = Math.min(widths[primaryIndex], GRID_COLUMN_COUNT - minimumWidth * (widths.length - 1));
-  const normalized = widths.map(() => minimumWidth);
-  normalized[primaryIndex] = primaryWidth;
-  let remaining = GRID_COLUMN_COUNT - primaryWidth - minimumWidth * (widths.length - 1);
-  const secondaryOrder = [...widths.keys()]
-    .filter(index => index !== primaryIndex)
-    .sort((a, b) => widths[b] - widths[a]);
-
-  for (const index of secondaryOrder) {
-    if (remaining <= 0) break;
-    const extraCapacity = Math.max(0, widths[index] - minimumWidth);
-    const extra = Math.min(extraCapacity, remaining);
-    normalized[index] += extra;
-    remaining -= extra;
-  }
-  return normalized;
-}
-
 function buildCardPlacements(
   columns: Tab[][],
   layouts: CardLayouts,
@@ -188,16 +145,14 @@ function buildCardPlacements(
     const groupWidth = groupWidths[groupIndex];
     const groupStart = rightmostColumn - groupWidth + 1;
     rightmostColumn = groupStart - 1;
-    const isRightmostGroup = groupIndex === 0;
 
     group.forEach((tab, cardIndex) => {
       placements.set(tab, {
         gridColumn: `${groupStart} / span ${groupWidth}`,
         gridRow: String(cardIndex + 1),
-        // Left-edge splitter on every card in the rightmost column so the
-        // grab target covers the full stack. A single column always fills
-        // the board; the shell Resizer owns that width.
-        showResizeHandle: groupCount > 1 && isRightmostGroup,
+        // Left-edge splitter on every column except the leftmost. A single
+        // column always fills the board; the shell Resizer owns that width.
+        showResizeHandle: showColumnResizeHandle(groupIndex, groupCount),
         showRowResizeHandle: group.length > 1 && cardIndex < group.length - 1,
         columnSpan: groupWidth,
         groupIndex,
@@ -383,28 +338,16 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
   const setGroupColumnSpan = useCallback((groupIndex: number, nextSpan: number) => {
     const groups = columnsRef.current.filter((group) => group.length > 0);
     const groupCount = groups.length;
-    if (groupCount <= 1) return;
+    if (!showColumnResizeHandle(groupIndex, groupCount)) return;
     preferredResizeGroupRef.current = groupIndex;
-    const minWidth = groupCount <= 4 ? 2 : 1;
-    const requested = groups.map((group, index) => {
-      if (index === groupIndex) return clampCardColumnSpan(nextSpan, minWidth);
-      return Math.max(
-        ...group.map(tab => cardColumnSpan(tab, cardLayoutsRef.current, groupCount)),
-      );
-    });
-    if (groupCount === 2) {
-      const primary = Math.max(
-        minWidth,
-        Math.min(GRID_COLUMN_COUNT - minWidth, requested[groupIndex]),
-      );
-      requested[groupIndex] = primary;
-      requested[1 - groupIndex] = GRID_COLUMN_COUNT - primary;
-    }
-    const normalized = normalizeGroupWidths(requested, groupIndex);
+    const current = groups.map((group) => Math.max(
+      ...group.map(tab => cardColumnSpan(tab, cardLayoutsRef.current, groupCount)),
+    ));
+    const next = applyPairwiseColumnResize(current, groupIndex, nextSpan);
     const nextLayouts: CardLayouts = { ...cardLayoutsRef.current };
     groups.forEach((group, index) => {
       for (const tab of group) {
-        nextLayouts[tab] = { columnSpan: normalized[index], customized: true };
+        nextLayouts[tab] = { columnSpan: next[index], customized: true };
       }
     });
     persistCardLayouts(nextLayouts);
@@ -736,6 +679,7 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
                 role="separator"
                 aria-orientation="vertical"
                 aria-label="Resize tool columns"
+                data-testid={`column-resize-${placement.groupIndex}`}
                 tabIndex={0}
                 className="right-pane-card-resize-handle left-0"
                 onPointerDown={event => resizeGroupFromPointer(event, placement)}

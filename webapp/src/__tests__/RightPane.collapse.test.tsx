@@ -285,6 +285,67 @@ describe("RightPane Claude-style card packing", () => {
     expectCardGridPlacement("Browser", "1 / span 5", "1");
   });
 
+  it("gives the middle of three columns its own width handle", () => {
+    localStorage.setItem(
+      "pmharness.board.openCards",
+      JSON.stringify(["files", "browser", "state"]),
+    );
+    localStorage.setItem(
+      "pmharness.board.columns.v1",
+      JSON.stringify([["files"], ["browser"], ["state"]]),
+    );
+    localStorage.setItem(
+      "pmharness.board.cardLayouts.v1",
+      JSON.stringify({
+        files: { columnSpan: 4, customized: true },
+        browser: { columnSpan: 4, customized: true },
+        state: { columnSpan: 4, customized: true },
+      }),
+    );
+
+    render(<RightPane {...baseProps} />);
+
+    expect(screen.getByTestId("column-resize-0")).toBeInTheDocument();
+    expect(screen.getByTestId("column-resize-1")).toBeInTheDocument();
+    expect(screen.queryByTestId("column-resize-2")).toBeNull();
+    expect(screen.getAllByRole("separator", { name: "Resize tool columns" })).toHaveLength(2);
+    expectCardGridPlacement("Files", "9 / span 4", "1");
+    expectCardGridPlacement("Browser", "5 / span 4", "1");
+    expectCardGridPlacement("State", "1 / span 4", "1");
+  });
+
+  it("resizes the middle column against its left neighbor only", () => {
+    localStorage.setItem(
+      "pmharness.board.openCards",
+      JSON.stringify(["files", "browser", "state"]),
+    );
+    localStorage.setItem(
+      "pmharness.board.columns.v1",
+      JSON.stringify([["files"], ["browser"], ["state"]]),
+    );
+    localStorage.setItem(
+      "pmharness.board.cardLayouts.v1",
+      JSON.stringify({
+        files: { columnSpan: 4, customized: true },
+        browser: { columnSpan: 4, customized: true },
+        state: { columnSpan: 4, customized: true },
+      }),
+    );
+
+    render(<RightPane {...baseProps} />);
+
+    fireEvent.keyDown(screen.getByTestId("column-resize-1"), { key: "ArrowLeft" });
+
+    expect(JSON.parse(localStorage.getItem("pmharness.board.cardLayouts.v1") || "{}")).toMatchObject({
+      files: { columnSpan: 4, customized: true },
+      browser: { columnSpan: 5, customized: true },
+      state: { columnSpan: 3, customized: true },
+    });
+    expectCardGridPlacement("Files", "9 / span 4", "1");
+    expectCardGridPlacement("Browser", "4 / span 5", "1");
+    expectCardGridPlacement("State", "1 / span 3", "1");
+  });
+
   it("shrinks the top stacked card so the bottom card can fill the rest", () => {
     render(<RightPane {...baseProps} />);
 
