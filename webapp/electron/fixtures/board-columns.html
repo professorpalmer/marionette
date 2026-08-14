@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Marionette three-column resize fixture</title>
+  <style>
+    :root {
+      --shell-panel: #14171a;
+      --shell-panel-border: #2a3036;
+      --shell-panel-radius: 8px;
+      --bg: #0f1113;
+    }
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: var(--bg);
+      color: #e6e8eb;
+      font: 13px/1.4 ui-sans-serif, system-ui, sans-serif;
+    }
+    .board {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      grid-template-rows: minmax(0, 1fr);
+      height: 100%;
+      gap: 0;
+    }
+    .col {
+      position: relative;
+      min-width: 0;
+      grid-row: 1;
+      border: 1px solid var(--shell-panel-border);
+      border-radius: var(--shell-panel-radius);
+      background: var(--shell-panel);
+    }
+    .col + .col { margin-left: -1px; }
+    .handle {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: 7px;
+      cursor: col-resize;
+      background: rgba(154, 168, 255, 0.45);
+    }
+    .label {
+      padding: 10px 12px;
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <div class="board" id="board"></div>
+  <script>
+    const GRID = 12;
+    let widths = [4, 4, 4];
+    const labels = ["Files", "Browser", "State"];
+
+    function minWidth(count) { return count <= 4 ? 2 : 1; }
+
+    function applyPairwise(current, groupIndex, nextSpan) {
+      if (current.length <= 1) return current.slice();
+      const min = minWidth(current.length);
+      const neighbor = groupIndex + 1;
+      if (neighbor >= current.length) return current.slice();
+      const pair = current[groupIndex] + current[neighbor];
+      const primary = Math.max(min, Math.min(pair - min, Math.round(nextSpan)));
+      const next = current.slice();
+      next[groupIndex] = primary;
+      next[neighbor] = pair - primary;
+      return next;
+    }
+
+    function showHandle(index, count) {
+      return count > 1 && index < count - 1;
+    }
+
+    function render() {
+      const board = document.getElementById("board");
+      board.innerHTML = "";
+      let start = GRID + 1;
+      widths.forEach((span, index) => {
+        start -= span;
+        const col = document.createElement("section");
+        col.className = "col";
+        col.dataset.group = String(index);
+        col.style.gridColumn = start + " / span " + span;
+        col.setAttribute("aria-label", labels[index] + " panel");
+        if (showHandle(index, widths.length)) {
+          const handle = document.createElement("span");
+          handle.className = "handle";
+          handle.setAttribute("role", "separator");
+          handle.setAttribute("aria-label", "Resize tool columns");
+          handle.dataset.testid = "column-resize-" + index;
+          col.appendChild(handle);
+        }
+        const label = document.createElement("div");
+        label.className = "label";
+        label.textContent = labels[index] + " · " + span;
+        col.appendChild(label);
+        board.appendChild(col);
+      });
+    }
+
+    window.__boardState = function () {
+      return {
+        widths: widths.slice(),
+        handleCount: document.querySelectorAll('[role="separator"]').length,
+        handleIndexes: Array.from(document.querySelectorAll("[data-testid]"))
+          .map((el) => el.getAttribute("data-testid")),
+      };
+    };
+
+    window.__resizeGroup = function (groupIndex, nextSpan) {
+      widths = applyPairwise(widths, groupIndex, nextSpan);
+      render();
+      return window.__boardState();
+    };
+
+    render();
+  </script>
+</body>
+</html>

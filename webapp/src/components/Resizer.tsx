@@ -40,12 +40,12 @@ export default function Resizer({ onResize, side = "left" }: {
       role="separator"
       aria-orientation="vertical"
       aria-label={`Resize ${side === "left" ? "left" : "right"} panel`}
-      className="group relative w-px shrink-0 self-stretch cursor-col-resize"
+      className="group relative w-[6px] shrink-0 self-stretch cursor-col-resize bg-transparent"
       style={{ zIndex: 10, touchAction: "none" }}
       title="Drag to resize"
     >
       <span
-        className="pointer-events-none absolute inset-y-px left-1/2 w-px -translate-x-1/2 rounded-full bg-edge/30 transition-colors group-hover:bg-accent2/50"
+        className="pointer-events-none absolute inset-y-2 left-1/2 w-px -translate-x-1/2 rounded-full bg-transparent transition-colors group-hover:bg-accent2/50 group-focus-visible:bg-accent2/50"
         aria-hidden="true"
       />
       <span className="absolute -inset-x-2 inset-y-0 cursor-col-resize" aria-hidden="true" />

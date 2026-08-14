@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.217, deliberately pre-1.0. GPT Luna / Codex Responses settles a tool-free answer instead of hanging on Still working; pings classify as MICRO. Right-board cards stay in one stack until you drop one left to open a column, and every stacked card can resize. Session Rename is on the context menu. Shell chrome matches the chat surface so stacked panels float. Rides puppetmaster-ai==1.22.2.
+> Status: v0.9.218, deliberately pre-1.0. Left rail and tool cards sit on the conversation surface so they read as floating; n-way board columns resize pairwise so a middle pane is not squeezed by its neighbors; Autopilot only routes models the live catalog and Models toggles actually allow. Rides puppetmaster-ai==1.22.2.
 
 ## Documentation
 

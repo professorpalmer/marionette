@@ -35,6 +35,10 @@ def _hermetic(monkeypatch, tmp_path):
     monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
     monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
+    vis_store = tmp_path / "visibility.json"
+    monkeypatch.setattr(
+        "harness.model_visibility._store_path", lambda: str(vis_store),
+    )
     return models_path
 
 
@@ -137,6 +141,41 @@ def test_ladder_is_reseeded_when_every_required_row_is_missing(monkeypatch, tmp_
     assert set(report["seeded_ladder"]) == {
         "agentic/moonshotai/kimi-k3", "agentic/deepseek/deepseek-v4-pro",
     }
+
+
+def test_ladder_is_not_seeded_when_openrouter_picker_is_set(monkeypatch, tmp_path):
+    models_path = _hermetic(monkeypatch, tmp_path)
+    _write_registry(models_path, [{
+        "id": "agentic/z-ai/glm-5.2",
+        "adapter": "agentic",
+        "capability_score": 86,
+        "payload_defaults": {"provider": "openrouter"},
+    }])
+
+    from harness import auto_registry
+
+    def _sync_without_ladder():
+        _write_registry(models_path, [{
+            "id": "agentic/z-ai/glm-5.2",
+            "adapter": "agentic",
+            "capability_score": 86,
+            "payload_defaults": {"provider": "openrouter"},
+        }])
+
+    with patch("harness.registry_wizard.get_provider_key", _only("openrouter")), \
+         patch("harness.keys.get_disconnected", lambda: set()), \
+         patch("harness.model_fetch.fetch_models", lambda p, k, force=False: []), \
+         patch.object(auto_registry, "sync_agentic_registry_safe", _sync_without_ladder), \
+         patch.object(
+             auto_registry, "_enabled_picker_models",
+             lambda name: ["z-ai/glm-5.2"] if name == "openrouter" else [],
+         ):
+        report = auto_registry.ensure_keyed_provider_registry_health()
+
+    ids = {m["id"] for m in _read_models(models_path)}
+    assert ids == {"agentic/z-ai/glm-5.2"}
+    assert report["seeded_ladder"] == []
+    assert "agentic/moonshotai/kimi-k3" not in ids
 
 
 def test_prune_keeps_non_agentic_peers_untouched(monkeypatch, tmp_path):
