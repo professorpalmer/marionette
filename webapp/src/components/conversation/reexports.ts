@@ -174,6 +174,7 @@ export {
   formatCompactErrorMessage,
   shouldApplyCompactSettle,
   formatSteerErrorMessage,
+  formatInterruptErrorMessage,
   shouldClearSteerDraftOnResult,
   formatRenderCommandErrorMessage,
   editNoticeAfterSend,

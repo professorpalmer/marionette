@@ -452,7 +452,7 @@ export type SessionGoal = {
   token_budget?: number | null;
 };
 
-export type DeliveryMode = "auto" | "steer" | "follow_up";
+export type DeliveryMode = "auto" | "steer" | "follow_up" | "interrupt";
 
 export type SessionState = {
   state: "idle" | "thinking" | "awaiting_swarm";

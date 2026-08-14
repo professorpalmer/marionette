@@ -68,6 +68,7 @@ import {
   formatHelpSlashReply,
   formatRenderCommandErrorMessage,
   formatSteerErrorMessage,
+  formatInterruptErrorMessage,
   localSlashChromeAction,
   localSlashPaletteAction,
   runEditMessageFlow,
@@ -1861,13 +1862,23 @@ export default function Conversation({
       e.preventDefault();
       // Match composerBusy / agentLoopOpen (awaiting_swarm + holdSwarmAwait)
       // so plain Enter steers during a background swarm wait instead of a new send.
-      // Cmd/Ctrl+Enter still queues while that latch is armed.
+      // Cmd/Ctrl+Enter still queues while that latch is armed; Alt+Enter interrupts.
       const busy = composerBusy;
       // While a turn is running, plain Enter STEERS (redirects the current turn);
-      // Cmd/Ctrl+Enter QUEUES (runs after the current turn finishes). When idle,
+      // Cmd/Ctrl+Enter QUEUES (runs after the current turn finishes); Alt+Enter
+      // INTERRUPTS (stop this turn, then run the typed prompt next). When idle,
       // Enter always sends a normal turn.
-      if (composerEnterAction({ busy, metaOrCtrl: e.metaKey || e.ctrlKey }) === "queue") {
+      const enterAction = composerEnterAction({
+        busy,
+        metaOrCtrl: e.metaKey || e.ctrlKey,
+        altKey: e.altKey,
+      });
+      if (enterAction === "queue") {
         handleQueueAdd();
+        return;
+      }
+      if (enterAction === "interrupt") {
+        send("interrupt");
         return;
       }
       send();
@@ -2462,7 +2473,7 @@ export default function Conversation({
   };
   resumeTriggerRef.current = triggerResume;
 
-  const send = () => {
+  const send = (mode?: "interrupt") => {
     if (editBusy) return;
     const msg = input.trim();
     // Allow a send/steer that is only attached image(s) with no text -- the
@@ -2629,26 +2640,42 @@ export default function Conversation({
     if (composerBusy && !resubmitEdit) {
       // Snapshot the attached image paths BEFORE the async call so we never
       // read a stale/cleared closure value and images are never silently
-      // dropped from the steer request. Clear the draft only on success
-      // (Cursor parity — keep operator text when steer 4xx/network fails).
+      // dropped from the steer/interrupt request. Clear the draft only on
+      // success (Cursor parity — keep operator text when 4xx/network fails).
       const steerImages = attachedImages.map((img) => img.path).filter(Boolean);
-      api.steerSession(msg, steerImages)
+      const deliveryMode = mode === "interrupt" ? "interrupt" as const : undefined;
+      api.steerSession(msg, steerImages, deliveryMode)
         .then(() => {
           if (shouldClearSteerDraftOnResult(true)) {
             setInput("");
             setAttachedImages([]);
           }
-          setItems((prev) => [...prev, { kind: "steer", text: msg }]);
+          setItems((prev) => [
+            ...prev,
+            {
+              kind: "steer",
+              text: msg,
+              ...(mode === "interrupt" ? { mode: "interrupt" as const } : {}),
+            },
+          ]);
         })
         .catch((err) => {
-          console.error("Failed to steer session:", err);
+          console.error(
+            mode === "interrupt"
+              ? "Failed to interrupt session:"
+              : "Failed to steer session:",
+            err,
+          );
           setItems((prev) => [
             ...prev,
             {
               kind: "msg",
               msg: {
                 role: "assistant",
-                text: formatSteerErrorMessage(err),
+                text:
+                  mode === "interrupt"
+                    ? formatInterruptErrorMessage(err)
+                    : formatSteerErrorMessage(err),
               }
             }
           ]);
