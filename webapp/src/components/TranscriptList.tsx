@@ -283,6 +283,19 @@ function isActivityTelemetry(
   );
 }
 
+function compactionRowChrome(it: Extract<Item, { kind: "compaction" }>): {
+  label: string;
+  title: string;
+} {
+  const tokens = `${it.before_tokens} → ${it.after_tokens}${it.mode ? ` · ${it.mode}` : ""}`;
+  if (it.aborted) {
+    const label = it.message
+      || (it.reason ? `Compaction aborted (${it.reason})` : "Compaction aborted");
+    return { label, title: it.reason ? `${tokens} · ${it.reason}` : tokens };
+  }
+  return { label: "Context summarized", title: tokens };
+}
+
 
 /**
  * Assistants that belong inside the investigation fold for this turn.
@@ -1091,26 +1104,19 @@ export const TranscriptList = memo(function TranscriptList({
         </div>
       );
     } else if (it.kind === "compaction") {
-      if (it.aborted) {
-        const abortText = it.message
-          || (it.reason ? `Context compaction aborted (${it.reason})` : "Context compaction aborted");
-        return (
-          <div
-            key={key}
-            role="status"
-            title={it.reason ? `compaction aborted: ${it.reason}` : "compaction aborted"}
-            className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-amber-500/10 border border-amber-500/25 text-[10.5px] text-amber-200/90 w-fit my-1 select-none font-mono"
-          >
-            <span>{abortText}</span>
-          </div>
-        );
-      }
+      const chrome = compactionRowChrome(it);
       return (
-        <div key={key} className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/10 border border-edge/10 text-[10.5px] text-faint w-fit my-1 select-none font-mono">
-          <span>
-            Context summarized: {it.before_tokens} → {it.after_tokens} tokens
-            {it.mode ? ` · ${it.mode}` : ""}
-          </span>
+        <div
+          key={key}
+          role="status"
+          title={chrome.title}
+          className={`flex items-center gap-1.5 py-1 px-3 rounded-full w-fit my-1 select-none font-mono text-[10.5px] ${
+            it.aborted
+              ? "bg-amber-500/10 border border-amber-500/25 text-amber-200/90"
+              : "bg-panel2/10 border border-edge/10 text-faint"
+          }`}
+        >
+          <span>{chrome.label}</span>
         </div>
       );
     } else if (it.kind === "steer") {
@@ -1571,12 +1577,17 @@ function ActivityGroup({
       );
     }
     if (it.kind === "compaction") {
-      const label = it.aborted
-        ? (it.message || (it.reason ? `Compaction aborted (${it.reason})` : "Compaction aborted"))
-        : `Context summarized: ${it.before_tokens} → ${it.after_tokens}${it.mode ? ` · ${it.mode}` : ""}`;
+      // Tokens are hover, not a peer of the sentence. Hide the row entirely
+      // when the strip already has tools — the fold title carries the hover.
+      if (actionCount > 0 && !it.aborted) return null;
+      const chrome = compactionRowChrome(it);
       return (
-        <div key={`compact-${idx}`} className="flex items-center gap-1.5 py-0.5 text-[10px] text-faint/80 select-none font-mono">
-          <span>{label}</span>
+        <div
+          key={`compact-${idx}`}
+          className="flex items-center gap-1.5 py-0.5 text-[10px] text-faint/80 select-none font-mono"
+          title={chrome.title}
+        >
+          <span>{chrome.label}</span>
         </div>
       );
     }
@@ -1664,6 +1675,13 @@ function ActivityGroup({
     const preview = normalizeReasoningPreview(narrationPreview, 72);
     return preview || "Thought";
   })();
+  const compactionHover = (() => {
+    const compact = telemetryItems.find((row) => row.kind === "compaction");
+    return compact && compact.kind === "compaction" ? compactionRowChrome(compact).title : "";
+  })();
+  const foldTitle = [investigating ? (runningCard?.goal || quietSummary) : quietSummary, compactionHover]
+    .filter(Boolean)
+    .join(" · ");
 
   return (
     <div className="my-1 w-full">
@@ -1677,7 +1695,7 @@ function ActivityGroup({
         {investigating ? <Loader2 size={11} className="animate-spin text-faint/60 shrink-0" /> : null}
         <span
           className="truncate max-w-[52ch] normal-case"
-          title={investigating ? (runningCard?.goal || quietSummary) : quietSummary}
+          title={foldTitle}
         >
           {quietSummary}
         </span>
