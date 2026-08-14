@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.2` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.218, deliberately pre-1.0. Left rail and tool cards sit on the conversation surface so they read as floating; n-way board columns resize pairwise so a middle pane is not squeezed by its neighbors; Autopilot only routes models the live catalog and Models toggles actually allow. Rides puppetmaster-ai==1.22.2. Cursor CLI / `CURSOR_API_KEY` remain optional upgrades (Pilot only / platform workers).
+> Status: v0.9.219, deliberately pre-1.0. One Full stack Settings key runs both chat and agentic workers; loop hygiene now reminds on identical tool repeats, times out hanging network tools, and refuses unpaired compaction cuts. Rides puppetmaster-ai==1.22.2. Cursor CLI / `CURSOR_API_KEY` remain optional upgrades (Pilot only / platform workers).
 
 ## Documentation
 
