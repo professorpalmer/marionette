@@ -66,7 +66,16 @@ export default function CommandPalette({
       });
     };
     window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
+    const onOpen = () => {
+      setQuery("");
+      setActiveIndex(0);
+      setOpen(true);
+    };
+    window.addEventListener("harness-open-command-palette", onOpen);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("harness-open-command-palette", onOpen);
+    };
   }, []);
 
   useEffect(() => {

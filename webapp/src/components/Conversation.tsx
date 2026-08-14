@@ -65,7 +65,6 @@ import {
   formatCompactCompleteMessage,
   formatCompactErrorMessage,
   shouldApplyCompactSettle,
-  formatHelpSlashReply,
   formatRenderCommandErrorMessage,
   formatSteerErrorMessage,
   formatInterruptErrorMessage,
@@ -2580,18 +2579,8 @@ export default function Conversation({
     if (slash.kind === "help") {
       setInput("");
       setEditingIndex(null);
-      const helpText = formatHelpSlashReply(allSlashCommands);
-      setItems((p) => [
-        ...p,
-        { kind: "msg", msg: { role: "user", text: msg } },
-        {
-          kind: "msg",
-          msg: {
-            role: "assistant",
-            text: helpText
-          }
-        }
-      ]);
+      // Protocol stays in the palette. Do not dump /help as a fake assistant memo.
+      window.dispatchEvent(new Event("harness-open-command-palette"));
       return;
     }
     const paletteId = localSlashPaletteAction(slash);
