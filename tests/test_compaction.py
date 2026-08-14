@@ -404,6 +404,28 @@ def test_no_orphaned_tool_messages_in_kept_window():
             assert m.get("tool_call_id") != "call_123"
 
 
+def test_unanswered_mid_turn_call_stays_in_tail():
+    cfg = HarnessConfig(max_context_tokens=1000)
+    s = ConversationalSession(cfg)
+    s._history = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "old"},
+        {
+            "role": "assistant",
+            "content": "call",
+            "tool_calls": [{
+                "id": "open",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": "{}"},
+            }],
+        },
+    ]
+    # Preferred cut after the unanswered call would summarize it. Walk back
+    # so the in-progress pair stays in the tail.
+    assert s._find_safe_split(3) == 3
+
+
 def test_single_writer_synchronous_compaction():
     cfg = HarnessConfig(max_context_tokens=1000)
     s = ConversationalSession(cfg)
