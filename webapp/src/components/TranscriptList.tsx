@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, useCallback, memo } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useDeferredValue, memo } from "react";
 import { ChevronRight, Loader2, ChevronDown, ChevronUp, Play, Copy, Check, Pencil, RefreshCw, History, Share2, CheckCircle2, XCircle, Eye } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -28,6 +28,7 @@ import {
   tokenizeClickableOutput,
   isSingleShellCommandFence,
 } from "../lib/clickableOutput";
+import { splitStreamingMarkdown } from "../lib/streamMarkdown";
 import {
   aggregateExplorationSummary,
   cardEffectivelyRunning,
@@ -243,7 +244,44 @@ type ActivityItem =
   | { kind: "checkpoint"; id: string; label: string; trigger: string }
   | SwarmPendingItem
   | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string; held_for_review?: boolean; analysis_ok?: boolean; reuse_status?: string; source_job_id?: string; reuse_reason?: string; invalidated_paths?: string[]; validation_fingerprint?: string; environment_fingerprint?: string; acceptance_criteria?: string[] }
-  | { kind: "msg"; msg: Msg };
+  | { kind: "msg"; msg: Msg }
+  | Extract<
+      Item,
+      | { kind: "compaction" }
+      | { kind: "command_blocked" }
+      | { kind: "auto_status" }
+      | { kind: "auto_halt" }
+      | { kind: "quality_gate" }
+      | { kind: "verifying" }
+      | { kind: "auto_verify" }
+      | { kind: "verification" }
+    >;
+
+/** Receipts that belong inside the activity strip, not beside the sentence. */
+function isActivityTelemetry(
+  item: ActivityItem | Item,
+): item is Extract<
+  Item,
+  | { kind: "compaction" }
+  | { kind: "command_blocked" }
+  | { kind: "auto_status" }
+  | { kind: "auto_halt" }
+  | { kind: "quality_gate" }
+  | { kind: "verifying" }
+  | { kind: "auto_verify" }
+  | { kind: "verification" }
+> {
+  return (
+    item.kind === "compaction"
+    || item.kind === "command_blocked"
+    || item.kind === "auto_status"
+    || item.kind === "auto_halt"
+    || item.kind === "quality_gate"
+    || item.kind === "verifying"
+    || item.kind === "auto_verify"
+    || item.kind === "verification"
+  );
+}
 
 
 /**
@@ -372,9 +410,11 @@ export function collectIntermediateAssistantItems(
 }
 
 export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>): GroupedItem[] {
-  // Mental model: a turn is [user msg] + sticky pre-tool bubbles +
-  // [investigation fold: thinking / tools / post-tool micro-narration] +
-  // [final answer]. Surfaces do not reclassify after first paint.
+  // The feed is a conversation, not an event log. Top-level rows are
+  // msg / steer, a question (command_approval), a file (pending_review),
+  // a loud auth failure, and one activity strip. Compaction, gates, verify,
+  // and auto receipts fold into that strip. Surfaces do not reclassify
+  // after first paint.
   const grouped: GroupedItem[] = [];
   let currentGroup: ActivityItem[] = [];
   let terminalSwarmItems: ActivityItem[] = [];
@@ -438,18 +478,12 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
           ? item
           : { ...item, job_ids: uncoveredJobIds },
       );
+    } else if (isActivityTelemetry(item)) {
+      currentGroup.push(item);
     } else if (
-      item.kind === "compaction"
-      || item.kind === "command_blocked"
-      || item.kind === "command_approval"
-      || item.kind === "auto_status"
-      || item.kind === "auto_halt"
+      item.kind === "command_approval"
       || item.kind === "auth_failure"
       || item.kind === "steer"
-      || item.kind === "quality_gate"
-      || item.kind === "verifying"
-      || item.kind === "auto_verify"
-      || item.kind === "verification"
     ) {
       flush();
       grouped.push(item);
@@ -1417,7 +1451,8 @@ function ActivityGroup({
   // "0 steps" box -- suppress it. But folded intermediate narration OR a reasoning
   // trace must still show (collapsed), so reasoning never silently vanishes from
   // the step list the way it used to.
-  if (actionCount === 0 && narrationMsgs.length === 0 && thinkingItems.length === 0 && checkpointItems.length === 0 && swarmResults.length === 0 && swarmPendingItems.length === 0) {
+  const telemetryItems = items.filter(isActivityTelemetry);
+  if (actionCount === 0 && narrationMsgs.length === 0 && thinkingItems.length === 0 && checkpointItems.length === 0 && swarmResults.length === 0 && swarmPendingItems.length === 0 && telemetryItems.length === 0) {
     return null;
   }
 
@@ -1535,6 +1570,62 @@ function ActivityGroup({
         />
       );
     }
+    if (it.kind === "compaction") {
+      const label = it.aborted
+        ? (it.message || (it.reason ? `Compaction aborted (${it.reason})` : "Compaction aborted"))
+        : `Context summarized: ${it.before_tokens} → ${it.after_tokens}${it.mode ? ` · ${it.mode}` : ""}`;
+      return (
+        <div key={`compact-${idx}`} className="flex items-center gap-1.5 py-0.5 text-[10px] text-faint/80 select-none font-mono">
+          <span>{label}</span>
+        </div>
+      );
+    }
+    if (it.kind === "command_blocked") {
+      const blocked = commandBlockedPresentation(it);
+      return (
+        <div key={`blocked-${idx}`} className="flex items-center gap-1.5 py-0.5 text-[10px] text-faint/80 select-none">
+          <span>{blocked.label}{blocked.detail ? ` · ${blocked.detail}` : ""}</span>
+        </div>
+      );
+    }
+    if (it.kind === "auto_status") {
+      const status = autoStatusPresentation(it.cycle, it.snapshot);
+      return (
+        <div key={`auto-status-${idx}`} className="flex items-center gap-1.5 py-0.5 text-[10px] text-faint/80 select-none font-mono">
+          <span>{status.label}{status.detail ? ` · ${status.detail}` : ""}</span>
+        </div>
+      );
+    }
+    if (it.kind === "auto_halt") {
+      const halt = autoHaltPresentation(it.reason, it.snapshot);
+      return (
+        <div key={`auto-halt-${idx}`} className="flex items-center gap-1.5 py-0.5 text-[10px] text-faint/80 select-none font-mono">
+          <span>{halt.label} · {halt.detail}</span>
+        </div>
+      );
+    }
+    if (it.kind === "quality_gate") {
+      const gate = qualityGatePresentation(it);
+      return (
+        <div key={`gate-${idx}`} className="flex items-center gap-1.5 py-0.5 text-[10px] text-faint/80 select-none font-mono" title={it.output ? it.output.slice(0, 400) : gate.label}>
+          <span>{gate.label}{gate.detail ? ` · ${gate.detail}` : ""}</span>
+        </div>
+      );
+    }
+    if (it.kind === "verifying" || it.kind === "auto_verify" || it.kind === "verification") {
+      const receipt = verificationReceiptPresentation(
+        it.kind === "verifying"
+          ? { kind: "verifying", cmd: it.cmd, auto: it.auto }
+          : it.kind === "auto_verify"
+            ? { kind: "auto_verify", passed: it.passed, command: it.command }
+            : { kind: "verification", passed: it.passed, cmd: it.cmd },
+      );
+      return (
+        <div key={`verify-${idx}`} className="flex items-center gap-1.5 py-0.5 text-[10px] text-faint/80 select-none font-mono">
+          <span>{receipt.label}{receipt.detail ? ` · ${receipt.detail}` : ""}</span>
+        </div>
+      );
+    }
     return null;
   };
 
@@ -1551,6 +1642,25 @@ function ActivityGroup({
       return swarmPendingRunning ? "Swarm · running" : `Swarm · ${swarmPendingItems.length} pending`;
     }
     if (investigating) return stepHeadline || "Investigating…";
+    if (telemetryItems.length > 0 && actionCount === 0 && thinkingItems.length === 0) {
+      const first = telemetryItems[0];
+      if (first.kind === "compaction") {
+        return first.aborted ? "Compaction aborted" : "Context summarized";
+      }
+      if (first.kind === "quality_gate") return qualityGatePresentation(first).label;
+      if (first.kind === "auto_halt") return autoHaltPresentation(first.reason, first.snapshot).label;
+      if (first.kind === "verifying" || first.kind === "auto_verify" || first.kind === "verification") {
+        return verificationReceiptPresentation(
+          first.kind === "verifying"
+            ? { kind: "verifying", cmd: first.cmd, auto: first.auto }
+            : first.kind === "auto_verify"
+              ? { kind: "auto_verify", passed: first.passed, command: first.command }
+              : { kind: "verification", passed: first.passed, cmd: first.cmd },
+        ).label;
+      }
+      if (first.kind === "command_blocked") return commandBlockedPresentation(first).label;
+      if (first.kind === "auto_status") return autoStatusPresentation(first.cycle, first.snapshot).label;
+    }
     const preview = normalizeReasoningPreview(narrationPreview, 72);
     return preview || "Thought";
   })();
@@ -1857,11 +1967,9 @@ function openMarkdownHref(href: string, e: React.MouseEvent): void {
   openAgentLink(href, e);
 }
 
-// Memoized so a streaming bubble only re-parses when the text actually changes.
-// The typewriter re-renders the parent every animation frame; without this the
-// full remark/rehype pipeline would run each frame even when no character was
-// added. Restores formatted-while-streaming without the old ~40% CPU cost.
-const Markdown = memo(function Markdown({ text }: { text: string }) {
+// Pretty tree only. Streaming wrappers pass a deferred `flushed` string so
+// highlight.js never remounts on a fence the next token can still extend.
+const PrettyMarkdown = memo(function PrettyMarkdown({ text }: { text: string }) {
   const linked = autolinkAgentText(text || "");
   return (
     <ReactMarkdown
@@ -1991,6 +2099,48 @@ const Markdown = memo(function Markdown({ text }: { text: string }) {
       {linked}
     </ReactMarkdown>
   );
+});
+
+function StreamingMarkdown({ text }: { text: string }) {
+  const buf = splitStreamingMarkdown(text || "");
+  const deferredFlushed = useDeferredValue(buf.flushed);
+  const lag = deferredFlushed !== buf.flushed
+    ? buf.flushed.slice(deferredFlushed.length)
+    : "";
+  return (
+    <>
+      <PrettyMarkdown text={deferredFlushed} />
+      {lag ? (
+        <span data-md-lag className="whitespace-pre-wrap">{lag}</span>
+      ) : null}
+      {buf.open ? (
+        <pre
+          data-md-pending
+          data-lang={buf.open.lang || undefined}
+          className="block bg-panel/80 border border-accent/20 rounded-md p-3 overflow-x-auto font-mono text-[0.719rem] leading-[1.55] text-txt/90 my-2 whitespace-pre"
+        >
+          {buf.open.body + buf.hold}
+        </pre>
+      ) : buf.hold ? (
+        <span data-md-hold className="font-mono">{buf.hold}</span>
+      ) : null}
+    </>
+  );
+}
+
+// Memoized so a streaming bubble only re-parses when the text actually changes.
+// The typewriter re-renders the parent every animation frame; without this the
+// full remark/rehype pipeline would run each frame even when no character was
+// added. Restores formatted-while-streaming without the old ~40% CPU cost.
+const Markdown = memo(function Markdown({
+  text,
+  streaming = false,
+}: {
+  text: string;
+  streaming?: boolean;
+}) {
+  if (streaming) return <StreamingMarkdown text={text} />;
+  return <PrettyMarkdown text={text} />;
 });
 
 function Bubble({
@@ -2152,7 +2302,7 @@ function Bubble({
             {normalizePlainTextNarration(displayedText)}
           </pre>
         ) : (
-          <Markdown text={displayedText} />
+          <Markdown text={displayedText} streaming={Boolean(msg.streaming)} />
         )}
         
         {/* Assistant copy & regenerate buttons */}

@@ -55,7 +55,15 @@ export default function ConversationChatColumn({
 }) {
   return (
     <div className="flex flex-col flex-1 min-h-0">
-      <div ref={feedRef} className={`flex-1 overflow-y-auto ${panelOpacityClass(transcriptStale)}`}>
+      <div
+        ref={feedRef}
+        className={`flex-1 overflow-y-auto overscroll-contain [overflow-anchor:auto] [scrollbar-gutter:stable] ${panelOpacityClass(transcriptStale)}`}
+      >
+        {/* overflow-anchor keeps the row you are reading still when height
+            lands above it. scrollbar-gutter avoids a 15px jump when the bar
+            appears. overscroll-contain stops rubber-band from yanking the window.
+            Composer sits outside this scrollport, so scroll-padding-bottom is
+            not the last-bubble fix here — feedScroll pin/unpin still owns that. */}
         <div className="max-w-3xl mx-auto px-6 py-6 flex flex-col gap-1">
           <TranscriptEmptyState transcriptStale={transcriptStale} itemCount={items.length} />
           {/*
