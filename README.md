@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.216, deliberately pre-1.0. Empty-composer Stop no longer invents a phantom steer; lazy MCP servers read as idle; self-edit resume stays on the owning session; MICRO/STANDARD/DEEP shows in the footer. Rides puppetmaster-ai==1.22.2.
+> Status: v0.9.217, deliberately pre-1.0. GPT Luna / Codex Responses settles a tool-free answer instead of hanging on Still working; pings classify as MICRO. Right-board cards stay in one stack until you drop one left to open a column, and every stacked card can resize. Session Rename is on the context menu. Shell chrome matches the chat surface so stacked panels float. Rides puppetmaster-ai==1.22.2.
 
 ## Documentation
 

@@ -159,6 +159,17 @@ export default function App() {
     });
   };
   const closeEmptyRightPane = useCallback(() => setRightOpen(false), []);
+  const requestRightMinWidth = useCallback((minPx: number) => {
+    const next = reclampRailWidths(
+      leftWRef.current,
+      Math.max(rightWRef.current, minPx),
+      leftOpen,
+      true,
+      window.innerWidth,
+    );
+    setLeftW(next.leftW);
+    setRightW(next.rightW);
+  }, [leftOpen]);
 
   const [showWizard, setShowWizard] = useState(false);
 
@@ -361,7 +372,7 @@ export default function App() {
         <div
           className="relative flex-1 min-w-0 h-full flex flex-col rounded-[var(--shell-panel-radius)] overflow-hidden border border-[var(--shell-panel-border)]"
           style={{
-            backgroundColor: "#0f1113",
+            backgroundColor: "var(--shell-chat, #0f1113)",
             backgroundImage:
               "radial-gradient(120% 80% at 50% -10%, rgba(139,150,196,0.06), rgba(139,150,196,0) 60%)",
           }}
@@ -401,7 +412,7 @@ export default function App() {
         )}
         <div
           className={`shrink-0 h-full min-w-0 overflow-hidden ${rightOpen ? "" : "hidden"}`}
-          style={{ width: rightW }}
+          style={{ width: rightW, backgroundColor: "var(--shell-chat, #0f1113)" }}
         >
           <ErrorBoundary label="Tool board">
             <RightPane
@@ -410,6 +421,7 @@ export default function App() {
               onOpenWizard={() => setShowWizard(true)}
               initialTab={pendingRightTab.current}
               onEmpty={closeEmptyRightPane}
+              onRequestMinWidth={requestRightMinWidth}
             />
           </ErrorBoundary>
         </div>

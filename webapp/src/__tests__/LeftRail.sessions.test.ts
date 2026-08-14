@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { clearSWRCache, readSWRCache, writeSWRCache } from "../lib/useStaleWhileRevalidate";
 import { repoPathsEqual } from "../lib/pathNormalize";
-import { buildProjectsList, canSettleSessionsForProject, collectUnreadFinishedSessionIds, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, jobsCacheKey, partitionProjectSessions, patchSessionArchivedInCaches, patchSessionSettledInCaches, projectSessionsEmptyState, purgeSessionFromRootCaches, readSessionSettledFromCaches, SESSION_LEASE_EXHAUSTED_MESSAGE, shouldOfferBackgroundStop, workspacesCacheKey } from "../components/LeftRail";
+import { buildProjectsList, canSettleSessionsForProject, collectUnreadFinishedSessionIds, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, jobsCacheKey, partitionProjectSessions, patchSessionArchivedInCaches, patchSessionSettledInCaches, patchSessionTitleInCaches, projectSessionsEmptyState, purgeSessionFromRootCaches, readSessionSettledFromCaches, SESSION_LEASE_EXHAUSTED_MESSAGE, shouldOfferBackgroundStop, workspacesCacheKey } from "../components/LeftRail";
 import type { Session } from "../lib/api";
 
 /**
@@ -580,5 +580,15 @@ describe("LeftRail session list contracts", () => {
     expect(patchSessionArchivedInCaches([marionette], "sess-a", false)).toBe(1);
     expect(readSWRCache<Session[]>(`sessions:${marionette}`)?.[0]?.archived).toBe(false);
     expect(readSWRCache<Session[]>(`sessions:${marionette}`)?.[0]?.settled).toBe(true);
+  });
+
+  it("patchSessionTitleInCaches updates the display title on matching root caches", () => {
+    const marionette = "C:\\Projects\\marionette";
+    writeSWRCache(`sessions:${marionette}`, [
+      { id: "sess-a", title: "portable-llm-wiki", created: 1, repo: marionette, workspace_root: marionette },
+    ]);
+
+    expect(patchSessionTitleInCaches([marionette], "sess-a", "Wiki ingest")).toBe(1);
+    expect(readSWRCache<Session[]>(`sessions:${marionette}`)?.[0]?.title).toBe("Wiki ingest");
   });
 });

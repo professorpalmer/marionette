@@ -2368,6 +2368,48 @@ describe("composerSend module", () => {
     expect(shouldClearSteerDraftOnResult(false)).toBe(false);
   });
 
+  it("composerBusy + empty input must not steerSession; Stop interrupts without prior steer", async () => {
+    // Mirrors Conversation.send busy branch + stop(): empty draft returns
+    // before api.steerSession; Stop goes stopLocal → interrupt only.
+    const order: string[] = [];
+    const steerSession = vi.fn(async () => {
+      order.push("steer");
+      return { ok: true };
+    });
+    const interruptSession = vi.fn(async () => {
+      order.push("interrupt");
+      return { ok: true, notices: [] };
+    });
+
+    const composerBusy = true;
+    const input = "";
+    const attachedImages: string[] = [];
+    if (
+      !shouldBlockEmptySend({
+        transcriptStale: false,
+        text: input.trim(),
+        imageCount: attachedImages.length,
+      })
+      && composerBusy
+      && shouldSteerWhileBusy({ text: input })
+    ) {
+      await steerSession(input);
+    }
+    expect(steerSession).not.toHaveBeenCalled();
+    expect(composerEnterAction({ busy: true, metaOrCtrl: false, hasText: false })).toBe(
+      "noop",
+    );
+
+    await runStopFlow({
+      stopLocal: () => {
+        order.push("stopLocal");
+      },
+      interruptSession,
+    });
+    expect(order).toEqual(["stopLocal", "interrupt"]);
+    expect(steerSession).not.toHaveBeenCalled();
+  });
+
   it("runEditMessageFlow stops locally, awaits interrupt, then rewinds when busy", async () => {
     const order: string[] = [];
     const stopLocal = vi.fn(() => { order.push("stopLocal"); });

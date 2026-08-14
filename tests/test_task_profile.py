@@ -23,6 +23,13 @@ def test_classify_typo_readme_is_micro():
     assert classify_task_profile("typo in README.md") == MICRO
 
 
+def test_classify_trivial_ping_is_micro():
+    assert classify_task_profile("test") == MICRO
+    assert classify_task_profile("pong") == MICRO
+    assert classify_task_profile("ok") == MICRO
+    assert classify_task_profile("add OAuth support") == STANDARD
+
+
 def test_classify_add_oauth_is_standard():
     assert classify_task_profile("add OAuth support") == STANDARD
 

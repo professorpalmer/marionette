@@ -54,6 +54,13 @@ _FILENAME_RE = re.compile(
 _SHORT_MAX_CHARS = 120
 _SHORT_MAX_WORDS = 16
 
+# One-word pings / acks: never spend CodeGraph+wiki inject on "test".
+_TRIVIAL_MICRO_RE = re.compile(
+    r"^(?:test|testing|ok|okay|thanks|thank you|ping|pong|hi|hello|hey|yo|"
+    r"sup|got it|nm|never mind)[.!?]*$",
+    re.IGNORECASE,
+)
+
 _MICRO_VISIBLE: FrozenSet[str] = frozenset(
     {
         "read_file",
@@ -118,6 +125,8 @@ def _looks_micro(text: str) -> bool:
     words = text.split()
     if len(words) > _SHORT_MAX_WORDS:
         return False
+    if _TRIVIAL_MICRO_RE.match(text):
+        return True
     if _TYPO_RE.search(text):
         return True
     if _RENAME_COMMENT_RE.search(text):

@@ -22,14 +22,28 @@ import {
 } from "../lib/rightPaneTabVisibility";
 import { beginColumnResize, beginRowResize, endColumnResize, endRowResize } from "../lib/columnResize";
 import {
-  clampStackSplit,
-  DEFAULT_STACK_SPLIT,
+  BOARD_COLUMNS_STORAGE_KEY,
+  MIN_MULTI_COLUMN_BOARD_PX,
+  NEW_COLUMN_DROP_LABEL,
+  canOpenLeftColumn,
+  columnIndexOf,
+  defaultColumns,
+  extractCardToLeftColumn,
+  flattenColumns,
+  moveCardIntoColumn,
+  reconcileColumns,
+} from "../lib/boardColumns";
+import {
+  STACK_FRACTIONS_STORAGE_KEY,
   STACK_ROW_RESIZE_LABEL,
   STACK_SPLIT_STORAGE_KEY,
+  clampStackSplit,
+  equalFractions,
+  fractionsFromBoundaryDrag,
+  fractionsFromKey,
+  normalizeFractions,
   stackPairKey,
-  stackRowTemplate,
-  stackSplitFromDrag,
-  stackSplitFromKey,
+  stackRowTemplateN,
 } from "../lib/stackSplit";
 
 type Tab = "state" | "files" | "git" | "worktrees" | "terminal" | "browser" | "settings" | "checkpoints" | "review" | "swarm";
@@ -157,14 +171,12 @@ function normalizeGroupWidths(requested: number[], preferredGroupIndex: number):
 }
 
 function buildCardPlacements(
-  openCards: Tab[],
+  columns: Tab[][],
   layouts: CardLayouts,
   preferredGroupIndex: number,
 ): Map<Tab, CardPlacement> {
-  const groupCount = Math.ceil(openCards.length / 2);
-  const groups = Array.from({ length: groupCount }, (_, index) =>
-    openCards.slice(index * 2, index * 2 + 2),
-  );
+  const groups = columns.filter((group) => group.length > 0);
+  const groupCount = groups.length;
   const requestedWidths = groups.map(group =>
     Math.max(...group.map(tab => cardColumnSpan(tab, layouts, groupCount))),
   );
@@ -181,12 +193,12 @@ function buildCardPlacements(
     group.forEach((tab, cardIndex) => {
       placements.set(tab, {
         gridColumn: `${groupStart} / span ${groupWidth}`,
-        gridRow: group.length === 1 ? "1" : String(cardIndex + 1),
+        gridRow: String(cardIndex + 1),
         // Left-edge splitter on every card in the rightmost column so the
         // grab target covers the full stack. A single column always fills
         // the board; the shell Resizer owns that width.
         showResizeHandle: groupCount > 1 && isRightmostGroup,
-        showRowResizeHandle: group.length === 2 && cardIndex === 0,
+        showRowResizeHandle: group.length > 1 && cardIndex < group.length - 1,
         columnSpan: groupWidth,
         groupIndex,
       });
@@ -204,18 +216,49 @@ function readTabList(key: string): string[] | null {
   }
 }
 
-function readStackSplits(): Record<string, number> {
+function readStackFractions(): Record<string, number[]> {
+  const fractions: Record<string, number[]> = {};
+  try {
+    const raw = JSON.parse(localStorage.getItem(STACK_FRACTIONS_STORAGE_KEY) || "null");
+    if (raw && typeof raw === "object") {
+      for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+        if (typeof key !== "string" || !Array.isArray(value)) continue;
+        const nums = value.map(Number).filter((item) => Number.isFinite(item));
+        if (nums.length >= 2) fractions[key] = normalizeFractions(nums, nums.length);
+      }
+    }
+  } catch {
+    /* fall through to v1 */
+  }
   try {
     const raw = JSON.parse(localStorage.getItem(STACK_SPLIT_STORAGE_KEY) || "null");
-    if (!raw || typeof raw !== "object") return {};
-    const splits: Record<string, number> = {};
-    for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
-      if (typeof key !== "string" || !key.includes("|")) continue;
-      splits[key] = clampStackSplit(Number(value));
+    if (raw && typeof raw === "object") {
+      for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+        if (fractions[key] || typeof key !== "string" || !key.includes("|")) continue;
+        const split = clampStackSplit(Number(value));
+        fractions[key] = [split, 1 - split];
+      }
     }
-    return splits;
   } catch {
-    return {};
+    /* ignore corrupt v1 */
+  }
+  return fractions;
+}
+
+function readBoardColumns(openCards: Tab[]): Tab[][] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(BOARD_COLUMNS_STORAGE_KEY) || "null");
+    if (!Array.isArray(raw)) return defaultColumns(openCards);
+    const parsed = raw
+      .filter((col): col is unknown[] => Array.isArray(col))
+      .map((col) => col.filter((tab): tab is Tab => (
+        typeof tab === "string"
+        && CANONICAL_ORDER.includes(tab as Tab)
+        && tab !== PINNED_LAST
+      )));
+    return reconcileColumns(openCards, parsed);
+  } catch {
+    return defaultColumns(openCards);
   }
 }
 
@@ -232,20 +275,31 @@ function readLegacyOpenCards(): Tab[] {
   }
 }
 
-export default function RightPane({ visible, artifacts, onOpenWizard, initialTab, onEmpty }: {
+function readInitialOpenCards(): Tab[] {
+  const savedOpen = readTabList("pmharness.board.openCards");
+  const legacyCards = readLegacyOpenCards();
+  const initialCards = savedOpen ?? (legacyCards.length > 0 ? legacyCards : []);
+  return initialCards
+    .map(tab => tab === "mcp" ? "state" : tab)
+    .filter((tab, index, list): tab is Tab =>
+      CANONICAL_ORDER.includes(tab as Tab) && tab !== PINNED_LAST && list.indexOf(tab) === index);
+}
+
+export default function RightPane({ visible, artifacts, onOpenWizard, initialTab, onEmpty, onRequestMinWidth }: {
   visible: boolean;
   artifacts: { type: string; headline: string; confidence?: number }[];
   onOpenWizard: () => void;
   initialTab?: string | null;
   onEmpty?: () => void;
+  onRequestMinWidth?: (minPx: number) => void;
 }) {
   const tabVisibilityRef = useRef<RightPaneTabVisibility>(loadRightPaneTabVisibility());
   const [cardLayouts, setCardLayouts] = useState<CardLayouts>(() => readCardLayouts());
   const cardLayoutsRef = useRef(cardLayouts);
   cardLayoutsRef.current = cardLayouts;
-  const [stackSplits, setStackSplits] = useState<Record<string, number>>(() => readStackSplits());
-  const stackSplitsRef = useRef(stackSplits);
-  stackSplitsRef.current = stackSplits;
+  const [stackFractions, setStackFractions] = useState<Record<string, number[]>>(() => readStackFractions());
+  const stackFractionsRef = useRef(stackFractions);
+  stackFractionsRef.current = stackFractions;
   const boardRef = useRef<HTMLDivElement | null>(null);
   const preferredResizeGroupRef = useRef(-1);
   const [draggedTab, setDraggedTab] = useState<Tab | null>(null);
@@ -259,31 +313,33 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
       .map(tab => tab === "mcp" ? "state" : tab)
       .filter((tab, index, list): tab is Tab =>
         validTabs.includes(tab as Tab) && list.indexOf(tab) === index);
-    const savedOpen = readTabList("pmharness.board.openCards");
-    const openCards = (savedOpen || (legacySplit.length > 0 ? legacySplit : []))
-      .map(tab => tab === "mcp" ? "state" : tab)
-      .filter((tab, index, list): tab is Tab =>
-        validTabs.includes(tab as Tab) && list.indexOf(tab) === index);
-    if (!savedOpen) localStorage.setItem("pmharness.board.openCards", JSON.stringify(openCards));
+    const openCards = readInitialOpenCards();
+    if (!readTabList("pmharness.board.openCards")) {
+      localStorage.setItem("pmharness.board.openCards", JSON.stringify(openCards));
+    }
     return order;
   });
-  const [openCards, setOpenCards] = useState<Tab[]>(() => {
-    const savedOpen = readTabList("pmharness.board.openCards");
-    const legacyCards = readLegacyOpenCards();
-    const initialCards = savedOpen ?? (legacyCards.length > 0 ? legacyCards : []);
-    return initialCards
-      .map(tab => tab === "mcp" ? "state" : tab)
-      .filter((tab, index, list): tab is Tab =>
-        CANONICAL_ORDER.includes(tab as Tab) && tab !== PINNED_LAST && list.indexOf(tab) === index);
-  });
+  const [openCards, setOpenCards] = useState<Tab[]>(() => readInitialOpenCards());
+  const [columns, setColumns] = useState<Tab[][]>(() => readBoardColumns(readInitialOpenCards()));
+  const columnsRef = useRef(columns);
+  columnsRef.current = columns;
 
-  const persistBoard = useCallback((nextOrder: Tab[], nextOpenCards: Tab[]) => {
+  const persistBoard = useCallback((
+    nextOrder: Tab[],
+    nextOpenCards: Tab[],
+    nextColumns?: Tab[][],
+  ) => {
     preferredResizeGroupRef.current = -1;
+    const cols = reconcileColumns(nextOpenCards, nextColumns ?? columnsRef.current);
+    const flat = flattenColumns(cols);
+    columnsRef.current = cols;
     setTabOrder(nextOrder);
-    setOpenCards(nextOpenCards);
+    setOpenCards(flat);
+    setColumns(cols);
     localStorage.setItem("pmharness.tabOrder", JSON.stringify(nextOrder));
-    localStorage.setItem("pmharness.board.openCards", JSON.stringify(nextOpenCards));
-    if (nextOpenCards.length === 0) onEmpty?.();
+    localStorage.setItem("pmharness.board.openCards", JSON.stringify(flat));
+    localStorage.setItem(BOARD_COLUMNS_STORAGE_KEY, JSON.stringify(cols));
+    if (flat.length === 0) onEmpty?.();
   }, [onEmpty]);
 
   const addCard = useCallback((tabName: Tab) => {
@@ -311,26 +367,24 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
     localStorage.setItem(CARD_LAYOUT_STORAGE_KEY, JSON.stringify(nextLayouts));
   }, []);
 
-  const persistStackSplits = useCallback((nextSplits: Record<string, number>) => {
-    stackSplitsRef.current = nextSplits;
-    setStackSplits(nextSplits);
-    localStorage.setItem(STACK_SPLIT_STORAGE_KEY, JSON.stringify(nextSplits));
+  const persistStackFractions = useCallback((nextFractions: Record<string, number[]>) => {
+    stackFractionsRef.current = nextFractions;
+    setStackFractions(nextFractions);
+    localStorage.setItem(STACK_FRACTIONS_STORAGE_KEY, JSON.stringify(nextFractions));
   }, []);
 
-  const setStackSplit = useCallback((pairKey: string, nextSplit: number) => {
-    persistStackSplits({
-      ...stackSplitsRef.current,
-      [pairKey]: clampStackSplit(nextSplit),
+  const setStackFractionsForKey = useCallback((pairKey: string, nextFractions: number[]) => {
+    persistStackFractions({
+      ...stackFractionsRef.current,
+      [pairKey]: normalizeFractions(nextFractions, nextFractions.length),
     });
-  }, [persistStackSplits]);
+  }, [persistStackFractions]);
 
   const setGroupColumnSpan = useCallback((groupIndex: number, nextSpan: number) => {
-    const groupCount = Math.ceil(openCards.length / 2);
+    const groups = columnsRef.current.filter((group) => group.length > 0);
+    const groupCount = groups.length;
     if (groupCount <= 1) return;
     preferredResizeGroupRef.current = groupIndex;
-    const groups = Array.from({ length: groupCount }, (_, index) =>
-      openCards.slice(index * 2, index * 2 + 2),
-    );
     const minWidth = groupCount <= 4 ? 2 : 1;
     const requested = groups.map((group, index) => {
       if (index === groupIndex) return clampCardColumnSpan(nextSpan, minWidth);
@@ -354,7 +408,7 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
       }
     });
     persistCardLayouts(nextLayouts);
-  }, [openCards, persistCardLayouts]);
+  }, [persistCardLayouts]);
 
   const resizeGroupFromPointer = useCallback((
     event: React.PointerEvent<HTMLSpanElement>,
@@ -394,6 +448,8 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
   const resizeStackFromPointer = useCallback((
     event: React.PointerEvent<HTMLSpanElement>,
     pairKey: string,
+    boundaryIndex: number,
+    stackLength: number,
   ) => {
     if (event.button !== 0) return;
     event.preventDefault();
@@ -404,13 +460,17 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
     const handle = event.currentTarget;
     handle.setPointerCapture(event.pointerId);
     const startY = event.clientY;
-    const startSplit = stackSplitsRef.current[pairKey] ?? DEFAULT_STACK_SPLIT;
+    const startFractions = normalizeFractions(
+      stackFractionsRef.current[pairKey] ?? equalFractions(stackLength),
+      stackLength,
+    );
     beginRowResize();
 
     const onMove = (moveEvent: PointerEvent) => {
       if (!handle.hasPointerCapture(moveEvent.pointerId)) return;
-      setStackSplit(pairKey, stackSplitFromDrag({
-        startSplit,
+      setStackFractionsForKey(pairKey, fractionsFromBoundaryDrag({
+        fractions: startFractions,
+        boundaryIndex,
         startClientY: startY,
         clientY: moveEvent.clientY,
         stackHeight,
@@ -428,7 +488,7 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
     handle.addEventListener("pointermove", onMove);
     handle.addEventListener("pointerup", onUp);
     handle.addEventListener("pointercancel", onUp);
-  }, [setStackSplit]);
+  }, [setStackFractionsForKey]);
 
   const handleDragStart = (event: React.DragEvent, tabId: Tab) => {
     setDraggedTab(tabId);
@@ -440,13 +500,25 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
     event.preventDefault();
     const sourceTab = draggedTab || event.dataTransfer.getData("text/plain") as Tab;
     if (!sourceTab || sourceTab === targetTab) return;
-    const fromIndex = openCards.indexOf(sourceTab);
-    const toIndex = openCards.indexOf(targetTab);
-    if (fromIndex < 0 || toIndex < 0) return;
-    const next = [...openCards];
-    next.splice(fromIndex, 1);
-    next.splice(toIndex, 0, sourceTab);
-    persistBoard(tabOrder, next);
+    const destCol = columnIndexOf(columnsRef.current, targetTab);
+    if (destCol < 0) return;
+    const destIndex = columnsRef.current[destCol].indexOf(targetTab);
+    const nextCols = moveCardIntoColumn(columnsRef.current, sourceTab, destCol, destIndex);
+    persistBoard(tabOrder, flattenColumns(nextCols), nextCols);
+    setDraggedTab(null);
+  };
+
+  const handleDropNewColumn = (event: React.DragEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const sourceTab = draggedTab || event.dataTransfer.getData("text/plain") as Tab;
+    if (!sourceTab || !canOpenLeftColumn(columnsRef.current, sourceTab)) {
+      setDraggedTab(null);
+      return;
+    }
+    const nextCols = extractCardToLeftColumn(columnsRef.current, sourceTab);
+    persistBoard(tabOrder, flattenColumns(nextCols), nextCols);
+    onRequestMinWidth?.(MIN_MULTI_COLUMN_BOARD_PX);
     setDraggedTab(null);
   };
 
@@ -591,19 +663,28 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
     }
   };
   const cardPlacements = buildCardPlacements(
-    openCards,
+    columns,
     cardLayouts,
     preferredResizeGroupRef.current,
   );
-  const cardStacks = Array.from(
-    { length: Math.ceil(openCards.length / 2) },
-    (_, index) => openCards.slice(index * 2, index * 2 + 2),
-  );
+  const cardStacks = columns.filter((group) => group.length > 0);
+  const showNewColumnDrop = Boolean(draggedTab && canOpenLeftColumn(columns, draggedTab));
 
   return (
     <>
       {visible && openCards.length > 0 && (
         <div ref={boardRef} className="right-pane-board h-full w-full overflow-y-auto">
+            {showNewColumnDrop && (
+              <div
+                role="region"
+                aria-label={NEW_COLUMN_DROP_LABEL}
+                className="right-pane-new-column-drop"
+                onDragOver={event => event.preventDefault()}
+                onDrop={handleDropNewColumn}
+              >
+                {NEW_COLUMN_DROP_LABEL}
+              </div>
+            )}
             <div
               className="right-pane-board-grid"
               style={{
@@ -615,7 +696,10 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
                 const stackPlacement = cardPlacements.get(stackTabs[0]);
                 if (!stackPlacement) return null;
                 const pairKey = stackPairKey(stackTabs);
-                const stackSplit = stackSplits[pairKey] ?? DEFAULT_STACK_SPLIT;
+                const stackRows = normalizeFractions(
+                  stackFractions[pairKey] ?? equalFractions(stackTabs.length),
+                  stackTabs.length,
+                );
                 return (
             <div
               key={pairKey}
@@ -625,7 +709,7 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
                 gridRow: "1",
                 gridTemplateRows: stackTabs.length === 1
                   ? "minmax(0, 1fr)"
-                  : stackRowTemplate(stackSplit),
+                  : stackRowTemplateN(stackRows),
               }}
             >
               {stackTabs.map((tabName) => {
@@ -672,11 +756,19 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
                 aria-label={STACK_ROW_RESIZE_LABEL}
                 tabIndex={0}
                 className="right-pane-card-row-resize-handle"
-                onPointerDown={event => resizeStackFromPointer(event, pairKey)}
+                onPointerDown={event => resizeStackFromPointer(
+                  event,
+                  pairKey,
+                  Number(placement.gridRow) - 1,
+                  stackTabs.length,
+                )}
                 onKeyDown={event => {
                   if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
                   event.preventDefault();
-                  setStackSplit(pairKey, stackSplitFromKey(stackSplit, event.key));
+                  setStackFractionsForKey(
+                    pairKey,
+                    fractionsFromKey(stackRows, Number(placement.gridRow) - 1, event.key),
+                  );
                 }}
               />
               )}
@@ -698,13 +790,18 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
                     onKeyDown={event => {
                       if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
                       event.preventDefault();
-                      const currentIndex = openCards.indexOf(tabName);
+                      const colIndex = columnIndexOf(columnsRef.current, tabName);
+                      if (colIndex < 0) return;
+                      const col = columnsRef.current[colIndex];
+                      const currentIndex = col.indexOf(tabName);
                       const targetIndex = currentIndex + (event.key === "ArrowUp" ? -1 : 1);
-                      if (currentIndex < 0 || targetIndex < 0 || targetIndex >= openCards.length) return;
-                      const next = [...openCards];
-                      next.splice(currentIndex, 1);
-                      next.splice(targetIndex, 0, tabName);
-                      persistBoard(tabOrder, next);
+                      if (currentIndex < 0 || targetIndex < 0 || targetIndex >= col.length) return;
+                      const nextCol = col.slice();
+                      nextCol.splice(currentIndex, 1);
+                      nextCol.splice(targetIndex, 0, tabName);
+                      const nextCols = columnsRef.current.slice();
+                      nextCols[colIndex] = nextCol;
+                      persistBoard(tabOrder, flattenColumns(nextCols), nextCols);
                     }}
                     className="right-pane-drag-handle"
                   >

@@ -4,8 +4,13 @@ import {
   DEFAULT_STACK_SPLIT,
   MAX_STACK_SPLIT,
   MIN_STACK_SPLIT,
+  equalFractions,
+  fractionsFromBoundaryDrag,
+  fractionsFromKey,
+  normalizeFractions,
   stackPairKey,
   stackRowTemplate,
+  stackRowTemplateN,
   stackSplitFromDrag,
   stackSplitFromKey,
 } from "../lib/stackSplit";
@@ -52,5 +57,26 @@ describe("stackSplit", () => {
     expect(stackSplitFromKey(0.5, "ArrowUp")).toBe(0.45);
     expect(stackSplitFromKey(0.5, "ArrowDown")).toBe(0.55);
     expect(stackSplitFromKey(0.5, "ArrowLeft")).toBe(0.5);
+  });
+
+  it("keeps n-way stack fractions summing to one", () => {
+    expect(equalFractions(3)).toEqual([1 / 3, 1 / 3, 1 / 3]);
+    expect(normalizeFractions([0.2, 0.2, 0.6], 3).reduce((sum, value) => sum + value, 0)).toBeCloseTo(1);
+    expect(stackRowTemplateN([1 / 3, 1 / 3, 1 / 3])).toBe("minmax(0, 33fr) minmax(0, 33fr) minmax(0, 33fr)");
+  });
+
+  it("moves only the dragged boundary in a three-card stack", () => {
+    const next = fractionsFromBoundaryDrag({
+      fractions: [1 / 3, 1 / 3, 1 / 3],
+      boundaryIndex: 1,
+      startClientY: 100,
+      clientY: 80,
+      stackHeight: 400,
+    });
+    expect(next).toHaveLength(3);
+    expect(next[0]).toBeCloseTo(1 / 3, 5);
+    expect(next[1]).toBeLessThan(1 / 3);
+    expect(next[2]).toBeGreaterThan(1 / 3);
+    expect(fractionsFromKey([0.5, 0.5], 0, "ArrowUp")[0]).toBeCloseTo(0.45);
   });
 });

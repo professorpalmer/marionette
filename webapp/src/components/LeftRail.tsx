@@ -169,6 +169,29 @@ export function patchSessionSettledInCaches(
   return touched;
 }
 
+/** Optimistically set the display title on every per-root sessions cache that holds the id. */
+export function patchSessionTitleInCaches(
+  roots: string[],
+  sessionId: string,
+  title: string,
+  read: (key: string) => Session[] | undefined = readSWRCache,
+  write: (key: string, data: Session[]) => void = writeSWRCache,
+): number {
+  let touched = 0;
+  for (const root of roots) {
+    if (!root) continue;
+    const key = `sessions:${root}`;
+    const cached = read(key);
+    if (!cached || !cached.some((s) => s.id === sessionId)) continue;
+    write(
+      key,
+      cached.map((s) => (s.id === sessionId ? { ...s, title } : s)),
+    );
+    touched += 1;
+  }
+  return touched;
+}
+
 /** Optimistically flip durable `archived` on every per-root sessions cache that holds the id. */
 export function patchSessionArchivedInCaches(
   roots: string[],
@@ -291,6 +314,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     x: number;
     y: number;
     sessionId: string;
+    title: string;
     settled: boolean;
     archived: boolean;
     running: boolean;
@@ -476,21 +500,6 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     return cgStatus;
   };
 
-  const handleRenameSubmit = async (id: string) => {
-    if (!renamingTitle.trim()) {
-      setRenamingId(null);
-      return;
-    }
-    try {
-      await api.renameSession(id, renamingTitle.trim());
-      await refreshSessionsRef.current();
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setRenamingId(null);
-    }
-  };
-
   const [opening, setOpening] = useState(false);
   const [switchingSessionId, setSwitchingSessionId] = useState<string | null>(null);
   const [sessionActivationNotice, setSessionActivationNotice] = useState<string | null>(null);
@@ -527,6 +536,31 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   // re-render). Without this, deleting a session under an inactive project
   // left phantom titles until a full reload.
   const [sessionsCacheEpoch, setSessionsCacheEpoch] = useState(0);
+
+  const beginSessionRename = (id: string, title: string) => {
+    setRenamingId(id);
+    setRenamingTitle(title || "Untitled");
+  };
+
+  const handleRenameSubmit = async (id: string) => {
+    const title = renamingTitle.trim();
+    if (!title) {
+      setRenamingId(null);
+      return;
+    }
+    const roots = projectsRef.current.filter(Boolean);
+    patchSessionTitleInCaches(roots, id, title);
+    setSessionsCacheEpoch((n) => n + 1);
+    setBankSessions((prev) => prev.map((row) => (row.id === id ? { ...row, title } : row)));
+    setRenamingId(null);
+    try {
+      await api.renameSession(id, title);
+      await refreshSessionsRef.current();
+    } catch (err) {
+      console.error(err);
+      await refreshSessionsRef.current();
+    }
+  };
 
   const onSessionsLoaded = useCallback((sess: Session[], forRepo?: string) => {
     // Stale-response guard: a late payload for a different root must not
@@ -1097,6 +1131,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       x: e.clientX,
       y: e.clientY,
       sessionId: s.id,
+      title: s.title || "Untitled",
       settled: !!s.settled,
       archived: !!s.archived,
       running: runners[s.id] === "running",
@@ -1537,12 +1572,34 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                   const root = s.workspace_root || s.repo || "";
                   const label = getWorkspaceBasename(root) || "Home";
                   const isActive = !!s.active;
+                  if (renamingId === s.id) {
+                    return (
+                      <input
+                        key={s.id}
+                        type="text"
+                        value={renamingTitle}
+                        onChange={(e) => setRenamingTitle(e.target.value)}
+                        onBlur={() => handleRenameSubmit(s.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            handleRenameSubmit(s.id);
+                          } else if (e.key === "Escape") {
+                            setRenamingId(null);
+                          }
+                        }}
+                        autoFocus
+                        className="w-full bg-bg border border-accent rounded px-2 py-1 text-[12px] text-txt focus:outline-none"
+                      />
+                    );
+                  }
                   return (
                     <button
                       key={s.id}
                       type="button"
                       disabled={!!switchingSessionId || opening}
                       onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
+                      onDoubleClick={() => beginSessionRename(s.id, s.title || "Untitled")}
+                      onContextMenu={(e) => handleContextMenu(e, s, canSettleSessionsForProject(root, workspaceInfo?.repo))}
                       className={`w-full min-h-8 flex flex-col justify-center text-left px-2 rounded transition min-w-0 disabled:opacity-60 ${
                         isActive ? "bg-panel2/60 border-l-2 border-accent" : "hover:bg-panel2/30"
                       }`}
@@ -1713,10 +1770,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                                 onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
                                 disabled={!!switchingSessionId || opening}
                                 title={s.preview ? `${s.title || "Untitled"}\n${s.preview}` : (s.title || "Untitled")}
-                                onDoubleClick={() => {
-                                  setRenamingId(s.id);
-                                  setRenamingTitle(s.title || "Untitled");
-                                }}
+                                onDoubleClick={() => beginSessionRename(s.id, s.title || "Untitled")}
                                 onContextMenu={(e) => handleContextMenu(e, s, isCurrentActive)}
                                 className={`flex-1 min-w-0 h-7 text-left rounded pl-2.5 pr-1.5 flex items-center gap-1.5 text-[12px] transition disabled:opacity-60
                                   ${s.active ? "text-txt font-medium" : "text-muted group-hover:text-txt"}
@@ -1799,9 +1853,27 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                           <div className="space-y-0 motion-safe:transition-opacity">
                             {projectSettled.map((s) => (
                               <div key={s.id} className="group relative flex items-center gap-0.5 min-w-0">
+                                {renamingId === s.id ? (
+                                  <input
+                                    type="text"
+                                    value={renamingTitle}
+                                    onChange={(e) => setRenamingTitle(e.target.value)}
+                                    onBlur={() => handleRenameSubmit(s.id)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter") {
+                                        handleRenameSubmit(s.id);
+                                      } else if (e.key === "Escape") {
+                                        setRenamingId(null);
+                                      }
+                                    }}
+                                    autoFocus
+                                    className="w-full bg-bg border border-accent rounded px-2 py-1 text-[12px] text-txt focus:outline-none"
+                                  />
+                                ) : (
                                 <button
                                   onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
                                   disabled={!!switchingSessionId || opening}
+                                  onDoubleClick={() => beginSessionRename(s.id, s.title || "Untitled")}
                                   onContextMenu={(e) => handleContextMenu(e, s, isCurrentActive)}
                                   className={`flex-1 min-w-0 h-6 text-left rounded px-1.5 flex items-center gap-1.5 text-[11px] motion-safe:transition opacity-45 hover:opacity-90 disabled:opacity-40
                                     ${s.active ? "bg-accent/10 text-accent" : "text-faint hover:bg-panel2/50 hover:text-muted"}
@@ -1811,6 +1883,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                                   <Square size={10} className="shrink-0" />
                                   <span className="truncate">{s.title || "Untitled"}</span>
                                 </button>
+                                )}
                                 {isCurrentActive ? (
                                   <button
                                     onClick={(e) => {
@@ -1876,10 +1949,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                       type="button"
                       onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
                       disabled={!!switchingSessionId || opening}
-                      onDoubleClick={() => {
-                        setRenamingId(s.id);
-                        setRenamingTitle(s.title || "Untitled");
-                      }}
+                      onDoubleClick={() => beginSessionRename(s.id, s.title || "Untitled")}
                       onContextMenu={(e) => handleContextMenu(e, s, true)}
                       className={`w-full h-7 text-left rounded px-2 flex items-center gap-1.5 text-[12.5px] transition opacity-60 hover:opacity-100 disabled:opacity-40
                         ${s.active ? "bg-accent/10 text-accent font-semibold" : "hover:bg-panel2/60 text-muted"}
@@ -2173,6 +2243,16 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
               <div className="border-t border-edge my-1" />
             </>
           )}
+          <button
+            onClick={() => {
+              beginSessionRename(contextMenu.sessionId, contextMenu.title);
+              setContextMenu(null);
+            }}
+            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
+          >
+            Rename
+          </button>
+          <div className="border-t border-edge my-1" />
           <button
             onClick={() => {
               handleExport(contextMenu.sessionId, "md");
