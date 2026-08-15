@@ -43,6 +43,7 @@ OPENAI_RESPONSES = "openai_responses"
 CURATED_MODELS = (
     "grok-4.6",
     "grok-4.5",
+    "glm-5.3",
     "glm-5.2",
     "glm-5.1",
     "gpt-5.6-luna",
@@ -156,8 +157,15 @@ def temperature_for_model(model: Optional[str], requested: float = 0.0) -> float
     return float(requested)
 
 
+def _is_glm_5_3(bare: str) -> bool:
+    """GLM-5.3 across the alias spellings config files carry."""
+    return any(token in bare for token in ("glm-5.3", "glm-5-3", "glm-5p3"))
+
+
 def _is_glm_5_2(bare: str) -> bool:
     """GLM-5.2 across the alias spellings config files carry."""
+    if _is_glm_5_3(bare):
+        return False
     return any(token in bare for token in ("glm-5.2", "glm-5-2", "glm-5p2"))
 
 
@@ -178,6 +186,9 @@ def reasoning_body_extras(model: Optional[str], effort: Optional[str] = None) ->
     Each family speaks a different dialect and rejects the others, so the
     mapping is per-family rather than one shared knob:
 
+    - GLM-5.3 requires ``thinking.type=enabled`` and accepts
+      ``reasoning_effort`` of ``low`` / ``high`` / ``max``. UI ``none``
+      maps to ``low`` — omitting thinking fails the request.
     - GLM-5.2 exposes ``reasoning_effort`` with only ``high`` and ``max``
       enabled, so Marionette's richer scale collapses onto those two.
     - Kimi K2 and DeepSeek accept ``thinking`` (a binary toggle) OR
@@ -195,6 +206,15 @@ def reasoning_body_extras(model: Optional[str], effort: Optional[str] = None) ->
     level = normalize_reasoning_effort(
         effort if effort is not None else current_reasoning_effort()
     )
+
+    if _is_glm_5_3(bare):
+        if level in ("none", "low"):
+            effort = "low"
+        elif level in _MAXED_EFFORTS:
+            effort = "max"
+        else:
+            effort = "high"
+        return {"thinking": {"type": "enabled"}, "reasoning_effort": effort}
 
     if _is_glm_5_2(bare):
         if level == "none":

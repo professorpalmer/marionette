@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.2` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.223, deliberately pre-1.0. Vision+busy Enter queues the next turn (no steer+QUE). Prior Investigating folds seal; only the live fold spins. `run_command` preflights `.venv` / `webapp/` before doomed interpreter or cwd launches. Rides puppetmaster-ai==1.22.2.
+> Status: v0.9.224, deliberately pre-1.0. Settings catalogs are live-first and promote family version bumps (glm-5.2 → glm-5.3) without a per-provider curated edit. Turning a provider off reseats the composer onto a still-listed model. Z.AI defaults to the GLM Coding Plan host. Rides puppetmaster-ai==1.22.2.
 
 ## Documentation
 

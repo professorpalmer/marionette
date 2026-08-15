@@ -188,6 +188,66 @@ def test_sync_with_openai_codex_only(monkeypatch, tmp_path):
         assert "/" not in str(model.get("adapter_model_name") or "")
 
 
+def test_sync_zai_coding_plan_is_plan_billed(monkeypatch, tmp_path):
+    """Direct Z.AI Coding Plan rows are subscription-billed, not cash API."""
+    models_path = tmp_path / "models.json"
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
+    monkeypatch.delenv("ZAI_BASE_URL", raising=False)
+    monkeypatch.delenv("GLM_BASE_URL", raising=False)
+
+    def mock_get_provider_key(provider):
+        if provider.name == "zai":
+            return "fake-key-zai"
+        return None
+
+    with patch("harness.registry_wizard.get_provider_key", mock_get_provider_key), \
+         patch("harness.keys.get_disconnected", lambda: set()), \
+         patch("harness.model_fetch.fetch_models", lambda *_a, **_k: []), \
+         patch("harness.auto_registry._enabled_picker_models", lambda *_a, **_k: []):
+        from harness.auto_registry import sync_agentic_registry
+
+        result = sync_agentic_registry()
+
+    assert result["synced"] is True
+    assert result["providers"] == ["zai"]
+    with open(models_path, encoding="utf-8") as f:
+        data = json.load(f)
+    agentic = [m for m in data["models"] if m.get("adapter") == "agentic"]
+    assert agentic
+    for model in agentic:
+        assert (model.get("payload_defaults") or {}).get("provider") == "zai"
+        assert model.get("billing") == "plan"
+    ids = {m["id"] for m in agentic}
+    assert "agentic/glm-5.2" in ids
+    assert "agentic/glm-5.3" in ids
+
+
+def test_zai_discovery_backfills_glm_53_when_listing_lags(monkeypatch, tmp_path):
+    models_path = tmp_path / "models.json"
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
+
+    live = [
+        "glm-5.2", "glm-4.7-flash", "glm-4.5", "glm-4.5-air",
+        "glm-4.6", "glm-4.7", "glm-5.1",
+    ]
+
+    def mock_get_provider_key(provider):
+        return "fake-zai" if provider.name == "zai" else None
+
+    with patch("harness.registry_wizard.get_provider_key", mock_get_provider_key), \
+         patch("harness.keys.get_disconnected", lambda: set()), \
+         patch("harness.model_fetch.fetch_models", lambda *_a, **_k: list(live)), \
+         patch("harness.auto_registry._enabled_picker_models", lambda *_a, **_k: []):
+        from harness.auto_registry import sync_agentic_registry
+        sync_agentic_registry()
+
+    ids = {m["id"] for m in json.loads(models_path.read_text())["models"]}
+    assert "agentic/glm-5.2" in ids
+    assert "agentic/glm-5.3" in ids
+
+
 def test_sync_with_nous_minimax_nvidia(monkeypatch, tmp_path):
     """HTTP pilots that were previously catalog-orphans must seed agentic rows."""
     models_path = tmp_path / "models.json"
@@ -735,6 +795,36 @@ def test_openrouter_discovery_intersects_curated_with_live(monkeypatch, tmp_path
     assert ids == {"agentic/z-ai/glm-5.2"}
     assert "agentic/moonshotai/kimi-k3" not in ids
     assert "agentic/deepseek/deepseek-v4-flash" not in ids
+    assert "agentic/z-ai/glm-5.3" not in ids
+
+
+def test_openrouter_discovery_promotes_newer_family_version(monkeypatch, tmp_path):
+    """Live glm-5.3 joins Autopilot as a sibling of curated glm-5.2; MIMO does not."""
+    models_path = tmp_path / "models.json"
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
+
+    live = [
+        "z-ai/glm-5.2",
+        "z-ai/glm-5.3",
+        "xiaomi/mimo-v2-flash",
+        "anthropic/claude-opus-4.8",
+    ]
+
+    def mock_get_provider_key(provider):
+        return "fake-openrouter" if provider.name == "openrouter" else None
+
+    with patch("harness.registry_wizard.get_provider_key", mock_get_provider_key), \
+         patch("harness.keys.get_disconnected", lambda: set()), \
+         patch("harness.model_fetch.fetch_models", lambda *_a, **_k: list(live)), \
+         patch("harness.auto_registry._enabled_picker_models", lambda _name: []):
+        from harness.auto_registry import sync_agentic_registry
+        sync_agentic_registry()
+
+    ids = {m["id"] for m in json.loads(models_path.read_text())["models"]}
+    assert "agentic/z-ai/glm-5.2" in ids
+    assert "agentic/z-ai/glm-5.3" in ids
+    assert not any("mimo" in mid for mid in ids)
 
 
 def test_openrouter_live_extras_do_not_inject_mimo(monkeypatch, tmp_path):

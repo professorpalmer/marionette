@@ -526,6 +526,12 @@ def set_provider_enabled(reach: str, enabled: bool) -> None:
                     os.environ[ev] = val
         elif stored and isinstance(stored, str):
             os.environ[get_env_var_for_reach(reach)] = stored
+            if reach == "zai":
+                try:
+                    from .providers import ensure_zai_worker_base_url
+                    ensure_zai_worker_base_url()
+                except Exception:
+                    pass
         else:
             for ev, val in _ENV_KEY_CACHE.get(reach, {}).items():
                 os.environ[ev] = val
@@ -646,6 +652,12 @@ def set_api_key(reach: str, value: str):
                 del os.environ[env_var]
         else:
             os.environ[env_var] = value
+            if reach == "zai":
+                try:
+                    from .providers import ensure_zai_worker_base_url
+                    ensure_zai_worker_base_url()
+                except Exception:
+                    pass
             # Reconnecting clears the explicit-disconnect flag.
             unmark_disconnected(reach)
             # Keep the credential pool in sync so multi-key rotation can include
@@ -768,6 +780,16 @@ def load_api_keys_on_startup(reach: str):
             env_var = get_env_var_for_reach(name)
             if env_var:
                 os.environ[env_var] = value
+    if any(
+        isinstance(value, str) and value.strip() and not is_placeholder_credential(value)
+        for name, value in keys.items()
+        if name == "zai"
+    ):
+        try:
+            from .providers import ensure_zai_worker_base_url
+            ensure_zai_worker_base_url()
+        except Exception:
+            pass
     # Capture env-provided keys before scrubbing so a toggled-off provider can be
     # re-enabled later in the same session without re-pasting the key.
     snapshot_env_keys()

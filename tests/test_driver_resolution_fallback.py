@@ -151,6 +151,42 @@ def test_opencode_go_driver_survives_openrouter_disconnect(monkeypatch):
     assert srv._cfg.driver == "opencode-go:deepseek-v4-flash"
 
 
+def test_orphaned_openrouter_driver_swaps_to_remaining_picker(monkeypatch):
+    """Turning OpenRouter off must not leave DeepSeek selected when only GLM remains."""
+    _install_cfg(
+        monkeypatch,
+        enabled=["zai:glm-5.3", "zai:glm-5.2"],
+        driver="openrouter:deepseek/deepseek-v4-flash",
+        disconnect=["openrouter"],
+    )
+    monkeypatch.setenv("GLM_API_KEY", "sk-zai-test")
+    srv._resolve_available_driver()
+    assert srv._cfg.driver.startswith("zai:")
+    assert srv._cfg.driver in ("zai:glm-5.3", "zai:glm-5.2")
+
+
+def test_available_pilots_does_not_pin_disconnected_curated_spec(monkeypatch):
+    """A Models toggle left on for a disconnected provider is not a picker row."""
+    _install_cfg(
+        monkeypatch,
+        enabled=["zai:glm-5.2", "openrouter:deepseek/deepseek-v4-flash"],
+        driver="openrouter:deepseek/deepseek-v4-flash",
+        disconnect=["openrouter"],
+    )
+    monkeypatch.setenv("GLM_API_KEY", "sk-zai-test")
+    monkeypatch.setattr(
+        "harness.model_visibility.enabled_pilots",
+        lambda: ["zai:glm-5.2"],
+    )
+    monkeypatch.setattr(
+        "harness.model_visibility.get_enabled",
+        lambda: ["zai:glm-5.2", "openrouter:deepseek/deepseek-v4-flash"],
+    )
+    pilots = srv._available_pilots()
+    assert "openrouter:deepseek/deepseek-v4-flash" not in pilots
+    assert pilots == ["zai:glm-5.2"]
+
+
 def test_bare_go_catalog_id_available_when_openrouter_disconnected(monkeypatch):
     """Bare deepseek-v4-flash resolves via keyed OpenCode Go, not dead reach."""
     state = os.environ["HARNESS_STATE_DIR"]

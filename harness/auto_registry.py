@@ -103,7 +103,9 @@ _KNOWN_MODEL_SPECS = {
     "deepseek/deepseek-v4-pro": (80, 0.435, 0.87, 1000000, ["balanced", "code", "reasoning", "long-context"]),
     "minimax/minimax-m3": (79, 0.098, 1.21, 1000000, ["balanced", "code", "vision", "long-context"]),
     "moonshotai/kimi-k3": (98, 3.0, 15.0, 1000000, ["frontier", "code", "vision", "agent-loop"]),
+    "z-ai/glm-5.3": (86, 1.0, 3.5, 1000000, ["quality", "code", "reasoning", "long-context"]),
     "z-ai/glm-5.2": (86, 1.0, 3.5, 1000000, ["quality", "code", "reasoning", "long-context"]),
+    "glm-5.3": (86, 1.0, 3.5, 1000000, ["quality", "code", "reasoning", "long-context"]),
     "anthropic/claude-opus-4.8": (99, 5.0, 25.0, 1000000, ["frontier", "reasoning", "code", "vision", "long-context"]),
 }
 
@@ -132,6 +134,7 @@ _CURATED_MODELS = {
         ("minimax/minimax-m3", "balanced", "minimax/minimax-m3"),
         ("deepseek/deepseek-v4-pro", "balanced", "deepseek/deepseek-v4-pro"),
         ("moonshotai/kimi-k3", "frontier", "moonshotai/kimi-k3"),
+        ("z-ai/glm-5.3", "frontier", "z-ai/glm-5.3"),
         ("z-ai/glm-5.2", "balanced", "z-ai/glm-5.2"),
     ],
     "deepseek": [
@@ -139,6 +142,7 @@ _CURATED_MODELS = {
         ("deepseek-reasoner", "balanced", "deepseek-reasoner"),
     ],
     "zai": [
+        ("glm-5.3", "frontier", "glm-5.3"),
         ("glm-5.2", "balanced", "glm-5.2"),
         ("glm-4.7-flash", "cheap", "glm-4.7-flash"),
     ],
@@ -195,7 +199,7 @@ def _opencode_go_curated() -> list[tuple[str, str, str]]:
         if not bare:
             continue
         n = bare.lower()
-        if any(tok in n for tok in ("kimi-k3", "grok-4.6", "grok-4.5", "gpt-5.6-sol", "glm-5.2")):
+        if any(tok in n for tok in ("kimi-k3", "grok-4.6", "grok-4.5", "gpt-5.6-sol", "glm-5.3", "glm-5.2")):
             tier = "frontier"
         elif "flash" in n or n.endswith("-plus") or n in ("hy3", "mimo-v2.5"):
             tier = "cheap"
@@ -364,7 +368,8 @@ def _in_live_catalog(name: str, slug: str, live_models: list[str]) -> bool:
 
 
 def _known_spec_for(model_name: str, slug: str):
-    """Static economics for a wire id, rolling slug, or dated family sibling."""
+    """Static economics for a wire id, rolling slug, dated sibling, or
+    a newer dotted/hyphen family bump (``glm-5.3`` inherits ``glm-5.2``)."""
     for key in (model_name, slug):
         spec = _KNOWN_MODEL_SPECS.get(key)
         if spec:
@@ -375,7 +380,41 @@ def _known_spec_for(model_name: str, slug: str):
             spec = _KNOWN_MODEL_SPECS.get(family)
             if spec:
                 return spec
-    return None
+    try:
+        from .model_visibility import inherit_family_spec
+        return inherit_family_spec(model_name, slug, _KNOWN_MODEL_SPECS)
+    except Exception:
+        return None
+
+
+def _with_family_promotions(
+    result: list,
+    curated: list,
+    live_models: list,
+    tier_of,
+    *,
+    slug_fn=None,
+) -> list:
+    """Append live ids that are a newer X.Y of a curated or already-selected family."""
+    try:
+        from .model_visibility import promote_newer_family_versions
+    except Exception:
+        return list(result)
+    known = []
+    seen = set()
+    for name, _tier, slug in list(result) + list(curated):
+        known.append(name)
+        known.append(slug)
+        seen.add(name)
+        seen.add(slug)
+    extra = []
+    for newer in promote_newer_family_versions(known, live_models):
+        if newer in seen:
+            continue
+        seen.add(newer)
+        slug = slug_fn(newer) if slug_fn else newer
+        extra.append((newer, tier_of(newer), slug))
+    return list(result) + extra
 
 
 def _get_provider_models_from_discovery(
@@ -530,8 +569,9 @@ def _get_provider_models_from_discovery(
 
         if provider_name == "openrouter":
             # Curated ladder intersect live catalog. Dated siblings promote
-            # onto stable slugs. Do not dump the first N live extras — that
-            # is how MIMO and other untoggled OpenRouter ids entered Autopilot.
+            # onto stable slugs. Newer family versions of those curated
+            # rows (glm-5.2 → glm-5.3) come in from live. Do not dump the
+            # first N live extras — that is how MIMO entered Autopilot.
             curated_promoted = _promote_openrouter_snapshots(
                 list(curated), live_models,
             )
@@ -539,6 +579,8 @@ def _get_provider_models_from_discovery(
                 item for item in curated_promoted
                 if _in_live_catalog(item[0], item[2], live_models)
             ]
+            result = _with_family_promotions(result, curated, live_models, _tier_of)
+            return result
         elif provider_name == "openai-codex":
             # Keep curated Codex ladder even when live discovery returns a
             # partial list (or a different naming wave).
@@ -551,8 +593,19 @@ def _get_provider_models_from_discovery(
                 item for item in curated
                 if _in_live_catalog(item[0], item[2], live_models)
             ]
-        if provider_name == "openrouter":
-            return result
+            result = _with_family_promotions(result, curated, live_models, _tier_of)
+        else:
+            result = _with_family_promotions(
+                result, curated, live_models, _tier_of,
+            )
+            if provider_name != "bedrock":
+                # Curated seeds that /models has not listed yet (Coding Plan
+                # serving glm-5.3 while the listing still stops at 5.2).
+                seen_ids = {item[0] for item in result} | {item[2] for item in result}
+                result.extend(
+                    item for item in curated
+                    if item[0] not in seen_ids and item[2] not in seen_ids
+                )
         return result if result else list(curated)
     except Exception as e:
         _diag("auto_registry.discovery", e, msg=f"provider={provider_name}")
@@ -604,6 +657,15 @@ def _reset_live_price_stats() -> None:
     global _LIVE_PRICE_APPLIED, _LIVE_PRICE_FALLBACK
     _LIVE_PRICE_APPLIED = 0
     _LIVE_PRICE_FALLBACK = 0
+
+
+def _zai_coding_plan_billing() -> bool:
+    """GLM Coding Plan is subscription credits — $0 marginal like OpenCode Go."""
+    try:
+        from .providers import zai_uses_coding_plan
+        return bool(zai_uses_coding_plan())
+    except Exception:
+        return True
 
 
 def _build_agentic_spec(provider_name: str, model_name: str, tier: str, slug: str) -> dict:
@@ -660,7 +722,10 @@ def _build_agentic_spec(provider_name: str, model_name: str, tier: str, slug: st
         # Plan OAuth / subscription providers: $0 marginal; nominal rates above
         # are for router ranking only. Cash API keys stay billing=api.
         "billing": (
-            "plan" if provider_name in ("openai-codex", "opencode-go") else "api"
+            "plan"
+            if provider_name in ("openai-codex", "opencode-go")
+            or (provider_name == "zai" and _zai_coding_plan_billing())
+            else "api"
         ),
     }
 

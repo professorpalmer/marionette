@@ -21,12 +21,33 @@ export function filterPilotModels(models: string[], query: string): string[] {
   });
 }
 
+/** Bare model id from a `provider:model` spec (or the whole string). */
+export function modelIdOf(spec: string): string {
+  if (!spec) return "";
+  const idx = spec.indexOf(":");
+  return idx <= 0 ? spec : spec.slice(idx + 1);
+}
+
 /** Pin the current driver at the front when present; leave others in order. */
 export function pinCurrentPilot(models: string[], current: string): string[] {
   if (!current) return models.slice();
   const rest = models.filter((m) => m !== current);
   if (models.includes(current)) return [current, ...rest];
   return rest;
+}
+
+/**
+ * Keep the current spec when it is still in the picker; otherwise the first
+ * live model. A disconnected OpenRouter DeepSeek must not stay selected when
+ * the list is only Z.AI.
+ */
+export function fallbackPilot(models: string[], current: string): string {
+  if (!models.length) return current || "";
+  if (!current) return models[0];
+  if (models.includes(current)) return current;
+  const curModel = modelIdOf(current);
+  const alias = models.find((m) => m === curModel || modelIdOf(m) === curModel);
+  return alias || models[0];
 }
 
 /** Group specs by provider prefix, preserving first-seen provider order. */

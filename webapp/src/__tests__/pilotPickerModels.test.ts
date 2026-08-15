@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   filterPilotModels,
   groupPilotModelsByProvider,
+  fallbackPilot,
   organizePilotModels,
   pinCurrentPilot,
   providerOf,
@@ -67,6 +68,27 @@ describe("groupPilotModelsByProvider", () => {
       "anthropic:claude-opus-4-8",
       "anthropic:claude-sonnet-4-6",
     ]);
+  });
+});
+
+describe("fallbackPilot", () => {
+  it("keeps the current spec when it is still listed", () => {
+    expect(fallbackPilot(MODELS, "openai:gpt-5.2")).toBe("openai:gpt-5.2");
+  });
+
+  it("swaps to the first live model when the current provider is gone", () => {
+    expect(
+      fallbackPilot(
+        ["zai:glm-5.3", "zai:glm-5.2"],
+        "openrouter:deepseek/deepseek-v4-flash",
+      ),
+    ).toBe("zai:glm-5.3");
+  });
+
+  it("keeps a bare id that still matches a live provider spec", () => {
+    expect(
+      fallbackPilot(["opencode-go:deepseek-v4-flash", "zai:glm-5.2"], "deepseek-v4-flash"),
+    ).toBe("opencode-go:deepseek-v4-flash");
   });
 });
 

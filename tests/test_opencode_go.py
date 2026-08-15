@@ -52,7 +52,7 @@ def test_deepseek_entry_is_v4_flash_not_a_stale_alias():
 
 def test_curated_catalog_covers_the_published_endpoint_table():
     for model in (
-        "grok-4.6", "grok-4.5", "gpt-5.6-luna", "glm-5.2", "glm-5.1", "kimi-k3",
+        "grok-4.6", "grok-4.5", "gpt-5.6-luna", "glm-5.3", "glm-5.2", "glm-5.1", "kimi-k3",
         "kimi-k2.7-code", "kimi-k2.6", "mimo-v2.5", "mimo-v2.5-pro",
         "minimax-m3", "minimax-m2.7", "qwen3.7-max", "qwen3.7-plus",
         "qwen3.6-plus", "deepseek-v4-pro", "deepseek-v4-flash", "hy3",
@@ -150,6 +150,24 @@ def test_glm_5_2_reasoning_collapses_onto_its_two_enabled_levels(effort, expecte
 def test_glm_5_2_alias_spellings_are_recognized():
     for alias in ("glm-5-2", "glm-5p2", "opencode-go/glm-5.2"):
         assert go.reasoning_body_extras(alias, "high") == {"reasoning_effort": "high"}
+
+
+@pytest.mark.parametrize("effort,expected", [
+    ("none", {"thinking": {"type": "enabled"}, "reasoning_effort": "low"}),
+    ("low", {"thinking": {"type": "enabled"}, "reasoning_effort": "low"}),
+    ("high", {"thinking": {"type": "enabled"}, "reasoning_effort": "high"}),
+    ("xhigh", {"thinking": {"type": "enabled"}, "reasoning_effort": "max"}),
+    ("max", {"thinking": {"type": "enabled"}, "reasoning_effort": "max"}),
+])
+def test_glm_5_3_requires_thinking_and_maps_effort(effort, expected):
+    assert go.reasoning_body_extras("glm-5.3", effort) == expected
+
+
+def test_glm_5_3_alias_spellings_are_recognized():
+    for alias in ("glm-5-3", "glm-5p3", "opencode-go/glm-5.3", "z-ai/glm-5.3"):
+        extras = go.reasoning_body_extras(alias, "high")
+        assert extras["thinking"] == {"type": "enabled"}
+        assert extras["reasoning_effort"] == "high"
 
 
 @pytest.mark.parametrize("effort,expected", [

@@ -39,6 +39,28 @@ def test_fetch_success_clears_prior_error(monkeypatch):
     assert mf.last_fetch_error("anthropic") is None
 
 
+def test_zai_models_accept_name_when_id_missing(monkeypatch):
+    monkeypatch.setattr(
+        mf, "_get",
+        lambda url, headers: {"data": [{"name": "glm-5.3"}, {"id": "glm-5.2"}]},
+    )
+    out = mf._fetch_provider_models(prov.get_provider("zai"), "good-key")
+    assert out == ["glm-5.3", "glm-5.2"]
+
+
+def test_vendor_ids_from_openrouter_use_cached_namespace(monkeypatch):
+    mf._RECORD_MEM["openrouter"] = [
+        {"id": "z-ai/glm-5.3", "source": "live"},
+        {"id": "z-ai/glm-ocr", "source": "live"},
+        {"id": "moonshotai/kimi-k3", "source": "live"},
+    ]
+    try:
+        assert mf.vendor_ids_from_openrouter("zai") == ["glm-5.3", "glm-ocr"]
+        assert mf.vendor_ids_from_openrouter("anthropic") == []
+    finally:
+        mf._RECORD_MEM.pop("openrouter", None)
+
+
 def test_provider_models_merges_live_with_curated(monkeypatch):
     # Curated list for anthropic is 3; simulate a live fetch returning more.
     p = prov.get_provider("anthropic")
@@ -47,13 +69,47 @@ def test_provider_models_merges_live_with_curated(monkeypatch):
         mf, "fetch_models",
         lambda provider, key, **kw: ["claude-opus-4-8", "claude-fable-5", "claude-opus-4-7"],
     )
+    monkeypatch.setattr(mf, "vendor_ids_from_openrouter", lambda *_a, **_k: [])
     merged = mv.provider_models(p)
-    # Curated entries come first, then new live ones, de-duplicated.
+    # Live listing leads; curated ids that are not live still backfill.
     assert merged[0] == "claude-opus-4-8"
     assert "claude-fable-5" in merged
     assert "claude-opus-4-7" in merged
     # No duplicate of the curated opus-4-8 even though it is in both.
     assert merged.count("claude-opus-4-8") == 1
+    for curated in p.pilot_models:
+        assert curated in merged
+
+
+def test_provider_models_promotes_newer_family_from_overlay(monkeypatch):
+    """Vendor /models can lag; an OpenRouter sibling still surfaces glm-5.3."""
+    p = prov.get_provider("zai")
+    monkeypatch.setattr(p.__class__, "key", lambda self: "fake-key")
+    monkeypatch.setattr(
+        mf, "fetch_models",
+        lambda provider, key, **kw: ["glm-5.2", "glm-4.7-flash", "glm-5.1"],
+    )
+    monkeypatch.setattr(
+        mf, "vendor_ids_from_openrouter",
+        lambda name, **kw: ["glm-5.3", "glm-ocr"] if name == "zai" else [],
+    )
+    merged = mv.provider_models(p)
+    assert merged[0] == "glm-5.2"
+    assert "glm-5.3" in merged
+    assert "glm-ocr" not in merged
+
+
+def test_provider_models_backfills_curated_when_listing_lags(monkeypatch):
+    p = prov.get_provider("zai")
+    monkeypatch.setattr(p.__class__, "key", lambda self: "fake-key")
+    monkeypatch.setattr(
+        mf, "fetch_models",
+        lambda provider, key, **kw: ["glm-5.2", "glm-4.7-flash"],
+    )
+    monkeypatch.setattr(mf, "vendor_ids_from_openrouter", lambda *_a, **_k: [])
+    merged = mv.provider_models(p)
+    assert "glm-5.3" in merged
+    assert merged.index("glm-5.2") < merged.index("glm-5.3")
 
 
 def test_cursor_cli_provider_models_prefers_live_order(monkeypatch):

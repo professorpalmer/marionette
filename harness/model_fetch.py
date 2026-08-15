@@ -298,10 +298,12 @@ def _fetch_provider_models(provider, key: str) -> list[Any]:
                 )
             return ids
         if name in ("openai", "deepseek", "zai", "xai", "nvidia"):
-            # OpenAI-compatible /models listing.
-            base = provider.base_url.rstrip("/")
+            # OpenAI-compatible /models listing. Accept id or name so a
+            # vendor envelope that only stamps `name` still surfaces.
+            resolver = getattr(provider, "resolved_base_url", None)
+            base = (resolver() if callable(resolver) else provider.base_url).rstrip("/")
             data = _get(base + "/models", {"Authorization": f"Bearer {key}"})
-            return [m["id"] for m in data.get("data", []) if m.get("id")]
+            return _flat_catalog_ids(data)
         if name == "gemini":
             # Gemini native listing (not the OpenAI-compat shim base_url).
             data = _get(
@@ -435,3 +437,96 @@ def fetch_models(provider, key: str, *, force: bool = False) -> list[str]:
     """Live model ids for a keyed provider, memoized in-process and cached on
     disk with a TTL. Returns [] on total failure (caller merges with curated)."""
     return [record["id"] for record in fetch_model_records(provider, key, force=force)]
+
+
+# Direct-vendor Settings lists can lag the model the account already serves
+# (Z.AI Coding Plan listing glm-5.2 while glm-5.3 is live). OpenRouter's
+# public catalog is a second discovery source; we only take the vendor
+# namespace, never dump the whole OR field.
+_OR_VENDOR_PREFIX = {
+    "zai": "z-ai/",
+    "anthropic": "anthropic/",
+    "openai": "openai/",
+    "deepseek": "deepseek/",
+    "xai": "x-ai/",
+    "minimax": "minimax/",
+    "gemini": "google/",
+}
+
+_OPENROUTER_PUBLIC_CACHE = "openrouter_public"
+
+
+def _openrouter_cached_ids() -> list[str]:
+    records = _RECORD_MEM.get("openrouter") or []
+    if records:
+        return [record["id"] for record in records if record.get("id")]
+    return [
+        record["id"]
+        for record in _cached_records(_read_cache().get("openrouter"))
+        if record.get("id")
+    ]
+
+
+def _fetch_openrouter_public_ids() -> list[str]:
+    """Unauthenticated OpenRouter /models; cached like other provider lists."""
+    if os.environ.get("PMHARNESS_LIVE_MODELS", "1") == "0":
+        return []
+    now = time.time()
+    disk = _read_cache()
+    entry = disk.get(_OPENROUTER_PUBLIC_CACHE)
+    cached = _cached_records(entry)
+    if cached and (now - entry.get("fetched_at", 0)) < _CACHE_TTL:
+        return [record["id"] for record in cached if record.get("id")]
+    try:
+        data = _get(
+            "https://openrouter.ai/api/v1/models",
+            {"User-Agent": "pm-harness"},
+        )
+        items = data.get("data") if isinstance(data, dict) else None
+        if not isinstance(items, list):
+            return [record["id"] for record in cached if record.get("id")]
+        fresh = [
+            record
+            for item in items
+            if isinstance(item, dict)
+            for record in [_normalize_openrouter_record(item, source="live")]
+            if record and _is_chat_model(record["id"])
+        ]
+        if fresh:
+            disk[_OPENROUTER_PUBLIC_CACHE] = {"fetched_at": now, "models": fresh}
+            _write_cache(disk)
+            return [record["id"] for record in fresh]
+    except Exception as e:
+        _diag("model_fetch.openrouter_public", e)
+    return [record["id"] for record in cached if record.get("id")]
+
+
+def vendor_ids_from_openrouter(provider_name: str, *, force: bool = False) -> list[str]:
+    """Bare vendor ids from a cached or public OpenRouter catalog.
+
+    Cache-only on a normal load (no extra network). Settings refresh
+    (``force=True``) may hit the public listing when no keyed OR cache
+    exists so a Z.AI-only install can still see ``glm-5.3``.
+    """
+    prefix = _OR_VENDOR_PREFIX.get(provider_name)
+    if not prefix:
+        return []
+    try:
+        ids = _openrouter_cached_ids()
+        if not ids and force:
+            ids = _fetch_openrouter_public_ids()
+        out = []
+        seen = set()
+        for mid in ids:
+            raw = str(mid or "").strip()
+            if not raw.lower().startswith(prefix):
+                continue
+            bare = raw[len(prefix):]
+            if not bare or not _is_chat_model(bare) or bare in seen:
+                continue
+            seen.add(bare)
+            out.append(bare)
+        return out
+    except Exception as e:
+        _diag("model_fetch.or_vendor_overlay", e, msg=f"provider={provider_name}")
+        return []

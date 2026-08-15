@@ -45,4 +45,9 @@ describe("onboardingProviders", () => {
     expect(onboardingCopy("openrouter").keyUrl).toBe("https://openrouter.ai/keys");
     expect(onboardingCopy("openrouter").tagline).toMatch(/one key/i);
   });
+
+  it("points Z.AI at the Coding Plan key page", () => {
+    expect(onboardingCopy("zai").keyUrl).toBe("https://z.ai/manage-apikey/apikey-list");
+    expect(onboardingCopy("zai").tagline).toMatch(/coding plan/i);
+  });
 });
