@@ -138,7 +138,11 @@ def post_settings(body: dict, svc: SettingsServices) -> tuple[int, JsonPayload]:
                 svc.resolve_available_driver()
         except Exception:
             pass
-        svc.rebuild_pilot_and_session()
+        # Clearing the last key can leave no runnable replacement. Skip
+        # rebuild so Settings disconnect returns 200 instead of 500.
+        driver = str(getattr(svc.cfg, "driver", "") or "")
+        if driver.startswith("stub") or svc.driver_provider_available(driver):
+            svc.rebuild_pilot_and_session()
         from ..auto_registry import sync_agentic_registry_safe
         sync_agentic_registry_safe()
 

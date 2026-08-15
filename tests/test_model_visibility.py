@@ -76,6 +76,30 @@ def test_enabled_pilots_filters_to_available(mv, monkeypatch):
     assert "anthropic:claude-opus-4-8" not in pilots  # no anthropic key -> filtered
 
 
+def test_promote_newer_family_versions_glm_and_not_mimo(mv):
+    promoted = mv.promote_newer_family_versions(
+        ["glm-5.2", "z-ai/glm-5.2", "moonshotai/kimi-k3"],
+        ["glm-5.3", "z-ai/glm-5.3", "xiaomi/mimo-v2-flash", "glm-4.7"],
+    )
+    assert "glm-5.3" in promoted
+    assert not any("mimo" in item for item in promoted)
+    assert "glm-4.7" not in promoted
+
+
+def test_promote_newer_family_keeps_openrouter_prefix(mv):
+    promoted = mv.promote_newer_family_versions(
+        ["z-ai/glm-5.2"],
+        ["z-ai/glm-5.3"],
+    )
+    assert promoted == ["z-ai/glm-5.3"]
+
+
+def test_inherit_family_spec_uses_older_sibling(mv):
+    specs = {"z-ai/glm-5.2": (86, 1.0, 3.5, 1000000, ["quality"])}
+    assert mv.inherit_family_spec("z-ai/glm-5.3", "z-ai/glm-5.3", specs) == specs["z-ai/glm-5.2"]
+    assert mv.inherit_family_spec("xiaomi/mimo-v2-flash", "xiaomi/mimo-v2-flash", specs) is None
+
+
 def test_enabled_pilots_falls_back_when_empty(mv, monkeypatch):
     import harness.providers as prov
     monkeypatch.setattr(prov, "available_providers", lambda: [prov.get_provider("openrouter")])

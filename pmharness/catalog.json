@@ -33,7 +33,7 @@
       "price_out": 4.4,
       "openrouter": "z-ai/glm-5.2",
       "native": {
-        "base_url": "https://api.z.ai/api/paas/v4",
+        "base_url": "https://api.z.ai/api/coding/paas/v4",
         "model": "glm-5.2",
         "api_key_env": "ZAI_API_KEY"
       },

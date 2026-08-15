@@ -72,9 +72,9 @@ export const ONBOARDING_COPY: Record<string, OnboardingCopy> = {
     keyUrl: "https://portal.nousresearch.com",
   },
   zai: {
-    tagline: "GLM models",
-    blurb: "Z.AI / GLM API key. Full stack chat and swarms.",
-    keyUrl: "https://z.ai",
+    tagline: "GLM Coding Plan",
+    blurb: "Z.AI Coding Plan or API key. Full stack chat and swarms on GLM-5.2.",
+    keyUrl: "https://z.ai/manage-apikey/apikey-list",
   },
   minimax: {
     tagline: "MiniMax models",

@@ -1043,33 +1043,32 @@ def _driver_in_enabled_set(driver: str, enabled: list) -> bool:
     return False
 
 
+def _driver_in_picker(driver: str, pilots: list) -> bool:
+    """True when *driver* is a live picker spec (or a bare/alias of one)."""
+    if not driver or not pilots:
+        return False
+    return driver in pilots or _driver_in_enabled_set(driver, pilots)
+
+
 def _resolve_available_driver():
-    """Make sure the active driver is one the user can actually use: its
-    provider must have a key AND, when the user has curated an enabled picker
-    set, the driver must be in that set. Otherwise fall back to the first
-    available enabled model -- so a fresh boot never lands on the compiled-in
-    default (qwen3-coder-30b) when the user disabled it, and never lands on a
-    dead provider."""
+    """Keep the active driver inside the live picker catalog.
+
+    The picker list (``enabled_pilots``) is the source of truth: a provider
+    disconnect, Models toggle, or keyed-catalog change that drops the current
+    spec must land on the first still-runnable model. An empty curated set is
+    not a free pass to keep a driver that is no longer listed.
+    """
     global _cfg
     try:
-        if not _driver_provider_available(_cfg.driver):
-            driver_ok = False
-        elif _cfg.driver.startswith("stub") or "HARNESS_DRIVER" in os.environ:
-            # Stub/offline drivers and an explicit env override are deliberate
-            # choices -- never second-guess them against the picker curation.
-            driver_ok = True
-        else:
-            from . import model_visibility as _mv
-            enabled = _mv.get_enabled()
-            driver_ok = not enabled or _driver_in_enabled_set(_cfg.driver, enabled)
-        if driver_ok:
+        if _cfg.driver.startswith("stub"):
             return
         from . import model_visibility as _mv
-        # Pick the first available pilot (enabled set, key-filtered).
-        # enabled_pilots() is ordered by provider then catalog — first toggled
-        # model on the first keyed provider wins when the compiled-in default
-        # is not in the curated set.
         candidates = _mv.enabled_pilots()
+        provider_ok = _driver_provider_available(_cfg.driver)
+        if provider_ok and "HARNESS_DRIVER" in os.environ:
+            return
+        if provider_ok and _driver_in_picker(_cfg.driver, candidates):
+            return
         for spec in candidates:
             if _driver_provider_available(spec):
                 _cfg.driver = spec
@@ -2893,25 +2892,15 @@ def _available_pilots():
     FULL live catalog (incl. newly released models like gpt-5.5) as toggles; the
     picker shows only what is toggled on there, so the two always agree.
 
-    The current driver is forced first when it is still in the enabled set so
-    the picker shows it selected. A stale compiled-in default (e.g. qwen) that
-    the user never toggled on is NOT injected — that made the composer look
-    like it was on a model that could not run.
+    The current driver is forced first only when it is still in the live
+    picker catalog. A disconnected provider's spec is never injected just
+    because it remains in the Models toggle store — that left DeepSeek
+    selected after OpenRouter was turned off.
     """
     from . import model_visibility as _mv
     cur = _cfg.driver
     pilots = _mv.enabled_pilots()
-    curated = _mv.get_enabled()
-    cur_allowed = False
-    if cur:
-        if cur in pilots:
-            cur_allowed = True
-        elif curated and _driver_in_enabled_set(cur, curated):
-            cur_allowed = True
-        elif not curated:
-            # No curation yet: full available set — keep current first if present.
-            cur_allowed = cur in pilots or _driver_in_enabled_set(cur, pilots)
-    if cur_allowed:
+    if cur and _driver_in_picker(cur, pilots):
         ordered = [cur] + [p for p in pilots if p != cur]
     else:
         ordered = list(pilots)
@@ -2922,7 +2911,7 @@ def _available_pilots():
         if s and s not in seen:
             seen.add(s)
             out.append(s)
-    return out or ([cur] if cur else [])
+    return out
 
 
 def _get_settings_dict():

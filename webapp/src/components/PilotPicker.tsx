@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, useRef } from "react";
 import { ChevronDown, Check, Search } from "lucide-react";
 import { api, type Config, type ReasoningEffort } from "../lib/api";
-import { organizePilotModels } from "../lib/pilotPickerModels";
+import { fallbackPilot, organizePilotModels } from "../lib/pilotPickerModels";
 
 const REASONING_LEVELS: { value: ReasoningEffort; label: string }[] = [
   { value: "none", label: "None" },
@@ -43,10 +43,18 @@ export default function PilotPicker({ config }: {
   const filterRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (config) {
-      setModels(config.models || [config.driver]);
-      setCurrent(config.driver);
-      setReasoning(config.reasoning_effort || "low");
+    if (!config) return;
+    const nextModels = config.models?.length ? config.models : [config.driver].filter(Boolean);
+    setModels(nextModels);
+    setReasoning(config.reasoning_effort || "low");
+    const next = fallbackPilot(nextModels, config.driver);
+    setCurrent(next);
+    if (next && next !== config.driver) {
+      api.swapPilot(next).then(() => {
+        window.dispatchEvent(new Event("harness-config-changed"));
+      }).catch(() => {
+        /* next config fetch retries; keep the local fallback label */
+      });
     }
   }, [config]);
 

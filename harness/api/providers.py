@@ -99,7 +99,7 @@ def get_providers() -> tuple[int, list]:
             "name": p.name,
             "display_name": getattr(p, "display_name", "") or p.name,
             "env_var": p.env_vars[0] if p.env_vars else "",
-            "base_url": p.base_url,
+            "base_url": p.resolved_base_url() if hasattr(p, "resolved_base_url") else p.base_url,
             "has_key": (get_provider_key(p) is not None) or status["has_key"],
             "masked": status["masked"],
             "api_mode": p.api_mode,
@@ -167,12 +167,12 @@ def post_providers_key(body: dict, svc: ProviderServices) -> tuple[int, dict]:
         # models.json is pruned without a backend restart.
         from ..auto_registry import sync_agentic_registry_safe
         sync_agentic_registry_safe()
-        # Keep the active driver honest: enabling may make a better model
-        # reachable; disabling may kill the current one.
+        # Always re-seat the active driver against the live picker. Disabling
+        # OpenRouter must not leave deepseek-v4-flash selected when only GLM
+        # remains; enabling a provider may also make the saved driver valid.
+        sync = {}
         try:
-            if not svc.driver_provider_available(svc.cfg.driver):
-                svc.resolve_available_driver()
-                svc.rebuild_pilot_and_session()
+            sync = svc.resync_driver_after_model_curation() or {}
         except Exception as e:
             svc.diag("server.provider_toggle_driver_rebuild", e)
         status = get_api_key_status(p.name)
@@ -183,6 +183,8 @@ def post_providers_key(body: dict, svc: ProviderServices) -> tuple[int, dict]:
             "has_key": status["has_key"],
             "masked": status["masked"],
             "disconnected": p.name in get_disconnected(),
+            "driver": sync.get("driver") or svc.cfg.driver,
+            "driver_changed": bool(sync.get("changed")),
         }
     if action == "clear" or body.get("clear") is True:
         clear_api_key(p.name)
@@ -192,15 +194,10 @@ def post_providers_key(body: dict, svc: ProviderServices) -> tuple[int, dict]:
         scrub_provider_env(p.name)
         from ..auto_registry import sync_agentic_registry_safe
         sync_agentic_registry_safe()
-        # If the active driver's provider is no longer available (we just
-        # disconnected the provider backing it -- whether a 'provider:model'
-        # spec OR a bare name routed through the reach), re-resolve to the
-        # first available enabled model and rebuild, so the app never sits
-        # on a dead driver.
+        # Clearing a key is the same as disable for the picker: drop a
+        # now-unlistable driver instead of leaving it selected.
         try:
-            if not svc.driver_provider_available(svc.cfg.driver):
-                svc.resolve_available_driver()
-                svc.rebuild_pilot_and_session()
+            svc.resync_driver_after_model_curation()
         except Exception as e:
             svc.diag("server.provider_clear_driver_rebuild", e)
     else:
@@ -217,12 +214,17 @@ def post_providers_key(body: dict, svc: ProviderServices) -> tuple[int, dict]:
         # Resync agentic registry when a provider key is set
         from ..auto_registry import sync_agentic_registry_safe
         sync_agentic_registry_safe()
+        try:
+            svc.resync_driver_after_model_curation()
+        except Exception as e:
+            svc.diag("server.provider_set_driver_rebuild", e)
     status = get_api_key_status(p.name)
     return 200, {
         "ok": True,
         "provider": p.name,
         "has_key": status["has_key"],
         "masked": status["masked"],
+        "driver": svc.cfg.driver,
     }
 
 

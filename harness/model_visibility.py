@@ -13,10 +13,127 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 from typing import Optional
 
 _LOCK = threading.Lock()
+
+# Dotted (glm-5.2, grok-4.6-fast) then hyphen (claude-opus-4-8). Prefix +
+# suffix are the family; only a higher (major, minor) is a promotion.
+_DOTTED_FAMILY = re.compile(
+    r"^(?P<prefix>.*?)(?P<major>\d+)\.(?P<minor>\d+)(?P<suffix>.*)$"
+)
+_HYPHEN_FAMILY = re.compile(
+    r"^(?P<prefix>.*?)(?P<major>\d+)-(?P<minor>\d+)(?P<suffix>.*)$"
+)
+
+
+def bare_model_id(model_id: str) -> str:
+    """Strip a vendor namespace (``z-ai/glm-5.3`` → ``glm-5.3``)."""
+    raw = str(model_id or "").strip()
+    if "/" in raw:
+        return raw.rsplit("/", 1)[-1]
+    return raw
+
+
+def parse_family_version(model_id: str):
+    """Return ``(prefix, major, minor, suffix)`` or None.
+
+    Matching is on the bare id so ``z-ai/glm-5.2`` and ``glm-5.2`` are the
+    same family. ``kimi-k3`` and ``xiaomi/mimo-v2-flash`` do not parse.
+    """
+    bare = bare_model_id(model_id)
+    if not bare:
+        return None
+    match = _DOTTED_FAMILY.match(bare) or _HYPHEN_FAMILY.match(bare)
+    if not match:
+        return None
+    return (
+        match.group("prefix").lower(),
+        int(match.group("major")),
+        int(match.group("minor")),
+        match.group("suffix").lower(),
+    )
+
+
+def _emit_in_known_form(known_id: str, candidate_id: str) -> str:
+    """Keep the provider's id shape: prefixed for OpenRouter, bare for vendors."""
+    cand_bare = bare_model_id(candidate_id)
+    known = str(known_id or "").strip()
+    if "/" in known and "/" not in candidate_id:
+        return known.rsplit("/", 1)[0] + "/" + cand_bare
+    if "/" not in known and "/" in candidate_id:
+        return cand_bare
+    return str(candidate_id or "").strip() or cand_bare
+
+
+def promote_newer_family_versions(known_ids, candidate_ids) -> list:
+    """Live (or overlay) ids that are a newer X.Y of an already-known family.
+
+    ``glm-5.2`` + live ``glm-5.3`` → ``glm-5.3``. Different families
+    (``moonshotai/kimi-k3`` vs ``xiaomi/mimo-v2-flash``) never promote.
+    """
+    parsed_known = []
+    known_set = set()
+    for kid in known_ids or []:
+        raw = str(kid or "").strip()
+        if not raw:
+            continue
+        known_set.add(raw)
+        known_set.add(bare_model_id(raw))
+        parsed = parse_family_version(raw)
+        if parsed:
+            parsed_known.append((raw, parsed))
+    if not parsed_known:
+        return []
+    out = []
+    seen = set()
+    for cid in candidate_ids or []:
+        raw = str(cid or "").strip()
+        if not raw:
+            continue
+        parsed = parse_family_version(raw)
+        if not parsed:
+            continue
+        prefix, major, minor, suffix = parsed
+        for known_id, (kprefix, kmajor, kminor, ksuffix) in parsed_known:
+            if prefix != kprefix or suffix != ksuffix:
+                continue
+            if (major, minor) <= (kmajor, kminor):
+                continue
+            emitted = _emit_in_known_form(known_id, raw)
+            if not emitted or emitted in seen or emitted in known_set:
+                continue
+            if bare_model_id(emitted) in known_set:
+                continue
+            seen.add(emitted)
+            out.append(emitted)
+            break
+    return out
+
+
+def inherit_family_spec(model_name: str, slug: str, specs: dict):
+    """Newest known spec in the same family at or below this version."""
+    target = parse_family_version(model_name) or parse_family_version(slug)
+    if not target or not specs:
+        return None
+    prefix, major, minor, suffix = target
+    best = None
+    best_ver = None
+    for key, spec in specs.items():
+        parsed = parse_family_version(key)
+        if not parsed:
+            continue
+        kprefix, kmajor, kminor, ksuffix = parsed
+        if kprefix != prefix or ksuffix != suffix:
+            continue
+        if (kmajor, kminor) <= (major, minor) and (
+            best_ver is None or (kmajor, kminor) > best_ver
+        ):
+            best_ver = (kmajor, kminor)
+            best = spec
+    return best
 
 
 def _store_path() -> str:
@@ -91,11 +208,14 @@ def toggle(spec: str, on: bool) -> list:
 
 
 def provider_models(p, *, force: bool = False) -> list:
-    """All selectable model ids for a provider: its LIVE catalog (fetched from
-    the provider's own listing endpoint when a key is present) merged with the
-    curated pilot_models fallback for providers that support it. OpenRouter's
-    keyed catalog is authoritative and therefore never gains curated entries
-    after an empty or failed live fetch."""
+    """Selectable model ids for a provider.
+
+    Keyed providers are live-first: the vendor listing leads, then newer
+    family versions discovered via live or an OpenRouter vendor overlay
+    (``glm-5.2`` → ``glm-5.3``), then curated ids that listing has not
+    published yet. OpenRouter stays live-only once keyed — an empty or
+    failed fetch must not be disguised with the static list.
+    """
     curated = list(p.pilot_models)
     live = []
     keyed = False
@@ -111,15 +231,28 @@ def provider_models(p, *, force: bool = False) -> list:
     # failed response must not be disguised with the curated static list.
     if p.name == "openrouter" and keyed:
         return list(dict.fromkeys(m for m in live if m))
+    extras = []
+    if keyed:
+        try:
+            from .model_fetch import vendor_ids_from_openrouter
+            extras = vendor_ids_from_openrouter(p.name, force=force)
+        except Exception:
+            extras = []
+    live_set = set(live)
+    known = list(dict.fromkeys([m for m in list(curated) + list(live) if m]))
+    promoted = promote_newer_family_versions(
+        known, list(dict.fromkeys([m for m in list(live) + list(extras) if m])),
+    )
+    if live:
+        ordered = (
+            list(live)
+            + [m for m in promoted if m not in live_set]
+            + [m for m in curated if m not in live_set and m not in set(promoted)]
+        )
+    else:
+        ordered = list(curated)
     seen = set()
     merged = []
-    # Plan/subscription catalogs (Cursor CLI, OpenCode Go) rotate faster than
-    # the curated fallback, so a successful live listing leads and curated only
-    # backfills. An empty or failed listing still leaves curated in place.
-    if getattr(p, "api_mode", "") in ("cursor_cli", "opencode_go") and live:
-        ordered = list(live) + [m for m in curated if m not in set(live)]
-    else:
-        ordered = list(curated) + list(live)
     for m in ordered:
         if m and m not in seen:
             seen.add(m)
@@ -132,8 +265,8 @@ def catalog(available_only: bool = True, *, force: bool = False) -> list:
         {provider, provider_display, model, spec, available, enabled}
 
     spec is the 'provider:model' string the picker uses. When available_only is
-    True, only providers with a present key are included. Non-OpenRouter
-    providers retain their curated fallback; keyed OpenRouter uses live data.
+    True, only providers with a present key are included. Keyed providers are
+    live-first with curated backfill; keyed OpenRouter uses live data only.
     """
     from . import providers as prov
     enabled = set(get_enabled())

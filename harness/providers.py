@@ -28,6 +28,40 @@ from typing import Optional
 
 from . import opencode_go as _opencode_go
 
+# GLM Coding Plan (subscription credits) vs pay-as-you-go API. Official docs:
+# Coding Plan OpenAI Chat Completions must use /api/coding/paas/v4 — the
+# general /api/paas/v4 host cannot burn weekly plan credits.
+ZAI_CODING_BASE_URL = "https://api.z.ai/api/coding/paas/v4"
+ZAI_PAYG_BASE_URL = "https://api.z.ai/api/paas/v4"
+ZAI_BASE_URL_ENVS = ("ZAI_BASE_URL", "GLM_BASE_URL")
+
+
+def zai_resolved_base_url() -> str:
+    """Z.AI OpenAI-compat root: env override, else the Coding Plan host."""
+    for ev in ZAI_BASE_URL_ENVS:
+        override = (os.environ.get(ev) or "").strip()
+        if override:
+            return override.rstrip("/")
+    return ZAI_CODING_BASE_URL
+
+
+def zai_uses_coding_plan(base_url=None) -> bool:
+    """True when the resolved Z.AI URL is the Coding Plan Chat Completions host."""
+    url = (base_url or zai_resolved_base_url()).rstrip("/").lower()
+    return "/coding/" in url
+
+
+def ensure_zai_worker_base_url() -> None:
+    """Stamp ZAI_BASE_URL so Puppetmaster workers share the pilot host.
+
+    The desktop pin still defaults Z.AI to pay-as-you-go. Setting this env
+    (when the user has not already overridden it) points workers at Coding
+    Plan credits without waiting for a kernel bump.
+    """
+    if any((os.environ.get(ev) or "").strip() for ev in ZAI_BASE_URL_ENVS):
+        return
+    os.environ["ZAI_BASE_URL"] = ZAI_CODING_BASE_URL
+
 
 @dataclass(frozen=True)
 class Provider:
@@ -128,6 +162,12 @@ class Provider:
     @property
     def available(self) -> bool:
         return self.key() is not None
+
+    def resolved_base_url(self) -> str:
+        """Wire root for this provider, honoring Z.AI Coding Plan overrides."""
+        if self.name == "zai":
+            return zai_resolved_base_url()
+        return self.base_url
 
 # ── Provider profiles (data adapted from Hermes model-provider plugins, MIT) ──
 # OpenRouter intentionally first: one key fans out to the whole open field.
@@ -255,9 +295,9 @@ PROVIDERS = (
     Provider(
         name="zai", aliases=("glm", "z-ai", "zhipu"),
         env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
-        base_url="https://api.z.ai/api/paas/v4",
+        base_url=ZAI_CODING_BASE_URL,
         api_mode="chat_completions", display_name="Z.AI (GLM)",
-        pilot_models=("glm-5.2", "glm-4.7-flash"),
+        pilot_models=("glm-5.3", "glm-5.2", "glm-4.7-flash"),
     ),
     Provider(
         name="minimax", aliases=("mini-max",),
@@ -532,9 +572,19 @@ def build_pilot(spec: str, *, max_tokens: int | None = None):
                 name=spec, model=model, max_tokens=max_tokens, cwd=cwd,
             )
         )
+    extra_body = None
+    bare = (model or "").lower().replace("_", "-")
+    if any(tok in bare for tok in ("glm-5.3", "glm-5-3", "glm-5p3")):
+        extra_body = _opencode_go.reasoning_body_extras(model) or None
     return _finalize_driver(
-        OpenAICompatDriver(name=spec, model=model, base_url=provider.base_url,
-                           api_key_env=key_env, max_tokens=max_tokens)
+        OpenAICompatDriver(
+            name=spec,
+            model=model,
+            base_url=provider.resolved_base_url(),
+            api_key_env=key_env,
+            max_tokens=max_tokens,
+            extra_body=extra_body,
+        )
     )
 
 

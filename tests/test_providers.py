@@ -77,6 +77,55 @@ def test_provider_aliases():
     assert prov.get_provider("cursor-agent").name == "cursor-cli"
 
 
+def test_zai_defaults_to_coding_plan_endpoint(monkeypatch):
+    """GLM Coding Plan keys must hit /api/coding/paas/v4, not pay-as-you-go."""
+    monkeypatch.delenv("ZAI_BASE_URL", raising=False)
+    monkeypatch.delenv("GLM_BASE_URL", raising=False)
+    p = prov.get_provider("zai")
+    assert p is not None
+    assert p.base_url == prov.ZAI_CODING_BASE_URL
+    assert p.resolved_base_url() == "https://api.z.ai/api/coding/paas/v4"
+    assert prov.zai_uses_coding_plan() is True
+    monkeypatch.setenv("ZAI_BASE_URL", "https://api.z.ai/api/paas/v4")
+    assert p.resolved_base_url() == "https://api.z.ai/api/paas/v4"
+    assert prov.zai_uses_coding_plan() is False
+
+
+def test_build_pilot_zai_uses_coding_plan_url(monkeypatch):
+    from pmharness.drivers.openai_compat import OpenAICompatDriver
+
+    _clear_provider_env(monkeypatch)
+    monkeypatch.delenv("ZAI_BASE_URL", raising=False)
+    monkeypatch.delenv("GLM_BASE_URL", raising=False)
+    monkeypatch.setenv("GLM_API_KEY", "sk-zai-test")
+    d = prov.build_pilot("zai:glm-5.2")
+    assert isinstance(d, OpenAICompatDriver)
+    assert d.base_url == "https://api.z.ai/api/coding/paas/v4"
+    assert d.model == "glm-5.2"
+
+
+def test_build_pilot_zai_glm_53_sends_required_thinking(monkeypatch):
+    from pmharness.drivers.openai_compat import OpenAICompatDriver
+
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("GLM_API_KEY", "sk-zai-test")
+    d = prov.build_pilot("zai:glm-5.3")
+    assert isinstance(d, OpenAICompatDriver)
+    assert d.model == "glm-5.3"
+    assert d.extra_body.get("thinking") == {"type": "enabled"}
+    assert d.extra_body.get("reasoning_effort") in {"low", "high", "max"}
+
+
+def test_ensure_zai_worker_base_url_does_not_clobber_override(monkeypatch):
+    monkeypatch.setenv("ZAI_BASE_URL", "https://api.z.ai/api/paas/v4")
+    prov.ensure_zai_worker_base_url()
+    assert os.environ["ZAI_BASE_URL"] == "https://api.z.ai/api/paas/v4"
+    monkeypatch.delenv("ZAI_BASE_URL", raising=False)
+    monkeypatch.delenv("GLM_BASE_URL", raising=False)
+    prov.ensure_zai_worker_base_url()
+    assert os.environ["ZAI_BASE_URL"] == prov.ZAI_CODING_BASE_URL
+
+
 def test_build_pilot_selects_cursor_cli_driver(monkeypatch):
     from pmharness.drivers.cursor_acp import CursorAcpDriver
     from pmharness.drivers.cursor_cli import CursorCliDriver
