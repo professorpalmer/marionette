@@ -142,6 +142,33 @@ export function shouldClearSteerDraftOnResult(ok: boolean): boolean {
   return ok;
 }
 
+/**
+ * Chrome after POST /api/session/steer. Match the action the harness took —
+ * a vision busy-Enter queues a follow-up and must not also paint `steer:`.
+ */
+export function steerResultChrome(opts: {
+  action?: string;
+  composerMode?: "send" | "queue" | "interrupt" | "noop";
+}): "steer" | "queue" | "interrupt" {
+  if (opts.composerMode === "interrupt" || opts.action === "interrupt_then_queue") {
+    return "interrupt";
+  }
+  if (opts.action === "enqueue_prompt") return "queue";
+  return "steer";
+}
+
+/** Transcript `steer:` / `interrupt:` row — never for a queued follow-up. */
+export function steerTranscriptItem(opts: {
+  text: string;
+  chrome: "steer" | "queue" | "interrupt";
+}): { kind: "steer"; text: string; mode?: "steer" | "interrupt" } | null {
+  if (opts.chrome === "queue") return null;
+  if (opts.chrome === "interrupt") {
+    return { kind: "steer", text: opts.text, mode: "interrupt" };
+  }
+  return { kind: "steer", text: opts.text };
+}
+
 export type StopHonestyNotice = {
   message?: string;
   reason?: string;

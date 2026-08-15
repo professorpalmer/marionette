@@ -75,6 +75,8 @@ import {
   shouldBlockEmptySend,
   shouldClearSteerDraftOnResult,
   shouldSteerWhileBusy,
+  steerResultChrome,
+  steerTranscriptItem,
   userOrdinalBeforeIndex,
 } from "./conversation/composerSend";
 import { runCommandPaletteAction } from "../lib/commandPalette";
@@ -88,6 +90,7 @@ import {
   feedWheelUnpinListenerOptions,
   shouldUnpinOnWheel,
 } from "./conversation/feedScroll";
+import { restoreFeedScrollAfterFocus } from "./conversation/transcriptVirtualWindow";
 import {
   STREAM_ABORT_MESSAGE,
   streamErrorText,
@@ -1139,6 +1142,48 @@ export default function Conversation({
       scrollSettlingRef.current = false;
     };
   }, [activeSessionId]);
+
+  // Alt-tab / blur can zero the feed height and reset scrollTop. Restore the
+  // last offset (or re-stick to bottom if still pinned) after focus paints.
+  useEffect(() => {
+    let saved = 0;
+    let raf1 = 0;
+    let raf2 = 0;
+    const remember = () => {
+      const node = feedRef.current;
+      if (node) saved = node.scrollTop;
+    };
+    const restore = () => {
+      window.cancelAnimationFrame(raf1);
+      window.cancelAnimationFrame(raf2);
+      raf1 = window.requestAnimationFrame(() => {
+        raf2 = window.requestAnimationFrame(() => {
+          const node = feedRef.current;
+          if (!node) return;
+          node.scrollTop = restoreFeedScrollAfterFocus({
+            savedScrollTop: saved,
+            pinned: pinnedToBottomRef.current,
+            settling: scrollSettlingRef.current,
+            scrollHeight: node.scrollHeight,
+          });
+        });
+      });
+    };
+    const onVisibility = () => {
+      if (document.hidden) remember();
+      else restore();
+    };
+    window.addEventListener("blur", remember);
+    window.addEventListener("focus", restore);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.cancelAnimationFrame(raf1);
+      window.cancelAnimationFrame(raf2);
+      window.removeEventListener("blur", remember);
+      window.removeEventListener("focus", restore);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, []);
 
   const contextUsageFetchGenRef = useRef(0);
   const fetchContextUsage = () => {
@@ -2643,19 +2688,22 @@ export default function Conversation({
       const steerImages = attachedImages.map((img) => img.path).filter(Boolean);
       const deliveryMode = mode === "interrupt" ? "interrupt" as const : undefined;
       api.steerSession(msg, steerImages, deliveryMode)
-        .then(() => {
+        .then((res) => {
           if (shouldClearSteerDraftOnResult(true)) {
             setInput("");
             setAttachedImages([]);
           }
-          setItems((prev) => [
-            ...prev,
-            {
-              kind: "steer",
-              text: msg,
-              ...(mode === "interrupt" ? { mode: "interrupt" as const } : {}),
-            },
-          ]);
+          const chrome = steerResultChrome({
+            action: res?.action,
+            composerMode: mode,
+          });
+          if (chrome === "queue") {
+            refreshQueue();
+            return;
+          }
+          const row = steerTranscriptItem({ text: msg, chrome });
+          if (!row) return;
+          setItems((prev) => [...prev, row]);
         })
         .catch((err) => {
           console.error(

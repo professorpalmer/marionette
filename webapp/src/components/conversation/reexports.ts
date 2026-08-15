@@ -177,6 +177,8 @@ export {
   formatSteerErrorMessage,
   formatInterruptErrorMessage,
   shouldClearSteerDraftOnResult,
+  steerResultChrome,
+  steerTranscriptItem,
   formatRenderCommandErrorMessage,
   editNoticeAfterSend,
   EDIT_BUSY_PROGRESS_NOTICE,

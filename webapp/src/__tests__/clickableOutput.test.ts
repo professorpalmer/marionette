@@ -39,6 +39,13 @@ describe("tokenizeClickableOutput", () => {
     expect(segs.every((s) => s.kind === "text")).toBe(true);
   });
 
+  it("does not treat npm package specs as file paths", () => {
+    const segs = tokenizeClickableOutput(
+      "critical tar@6.2.1 and @anysphere/ui plus @cursor/july@0.1.40\n",
+    );
+    expect(segs.every((s) => s.kind === "text")).toBe(true);
+  });
+
   it("tokenizes quoted and unquoted spaced paths without prose spam", () => {
     const spaced = tokenizeClickableOutput(
       "boom /Users/me/My Projects/app.ts:3\n",

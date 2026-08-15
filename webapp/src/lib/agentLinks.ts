@@ -96,6 +96,37 @@ export function stableCommandId(value: string): string {
 }
 
 /**
+ * Hermes `looksLikePath` / Prime `isLocalPathSpecifier`: a real filesystem
+ * prefix, not merely a slash. `@scope/pkg` has a slash and is not a path.
+ */
+function hasFilesystemPrefix(clean: string): boolean {
+  return (
+    /^[A-Za-z]:[\\/]/.test(clean)
+    || clean.startsWith("/")
+    || clean.startsWith("~/")
+    || /^\.{1,2}[\\/]/.test(clean)
+  );
+}
+
+/**
+ * Last segment looks like a filename (`App.tsx`, `foo.py:12`, `archive.7z`).
+ * Letter-start extensions reject version tails (`.1` in `tar@6.2.1`).
+ */
+function hasFilenameExtension(clean: string): boolean {
+  const withoutLine = clean.replace(/(?::\d+){0,2}$/, "");
+  const base = withoutLine.split(/[\\/]/).pop() || "";
+  return /\.([A-Za-z][\w]{0,7}|7z)$/.test(base);
+}
+
+/**
+ * npm/pip-style package specs and import aliases, not local files.
+ * `@` without a filesystem prefix is `@scope/pkg`, `tar@6.2.1`, `@/alias`.
+ */
+function looksLikePackageSpec(clean: string): boolean {
+  return clean.includes("@") && !hasFilesystemPrefix(clean);
+}
+
+/**
  * Conservative spaced filesystem path (macOS "My Projects/app.ts", etc.).
  * Requires a directory separator and a dotted filename so prose / shell
  * lines with spaces stay non-paths.
@@ -103,13 +134,12 @@ export function stableCommandId(value: string): string {
 function looksLikeSpacedFilePath(text: string): boolean {
   const clean = text
     .replace(/^file:\/\//i, "")
-    .replace(/^["']|["']$/g, "")
-    .replace(/(?::\d+){0,2}$/, "");
+    .replace(/^["']|["']$/g, "");
   if (!clean || !/\s/.test(clean)) return false;
   if (/&&|\|\||[|<>;&]/.test(clean)) return false;
   if (!/[\\/]/.test(clean)) return false;
-  const base = clean.split(/[\\/]/).pop() || "";
-  return /\.\w{1,8}$/.test(base);
+  if (looksLikePackageSpec(clean)) return false;
+  return hasFilenameExtension(clean);
 }
 
 /**
@@ -139,8 +169,9 @@ export function isExternalUrl(href: string): boolean {
 
 /**
  * Heuristic: does this look like a filesystem path (not a URL/scheme)?
- * Accepts Windows abs, POSIX abs/rel, and dotted filenames with optional :line[:col].
- * Rejects shell command lines and bare launcher executables (npm.cmd, etc.).
+ * Accepts Windows abs, POSIX abs/home/rel, and dotted filenames with optional
+ * :line[:col]. Rejects shell lines, launchers, and package specs
+ * (`@scope/pkg`, `tar@6.2.1`) the way Hermes/Prime require a path prefix.
  */
 export function looksLikeFilePath(href: string): boolean {
   if (!href) return false;
@@ -156,14 +187,13 @@ export function looksLikeFilePath(href: string): boolean {
   const clean = h
     .replace(/^file:\/\//i, "")
     .replace(/^["']|["']$/g, "");
+  if (looksLikePackageSpec(clean)) return false;
   // Bare executables without a directory separator are shell launchers, not files.
   if (!/[\\/]/.test(clean) && BARE_EXEC_EXT.test(clean)) return false;
-  // Drive letter, absolute, relative with slash, or name.ext[:line[:col]]
-  if (/^[A-Za-z]:[\\/]/.test(clean)) return true;
-  if (/[\\/]/.test(clean)) return true;
-  if (/^\.\.?[\\/]/.test(clean)) return true;
-  if (/\.\w{1,8}(:\d+){0,2}$/.test(clean)) return true;
-  return false;
+  if (hasFilesystemPrefix(clean)) return true;
+  // Repo-relative `dir/file.ext` or bare `name.ext` — never a slash-only token
+  // (`anysphere/ui`) or a numeric version tail (`6.2.1`).
+  return hasFilenameExtension(clean);
 }
 
 /** Strip file:// and optional :line[:col] suffix. */
@@ -194,7 +224,7 @@ export function parseFileHref(href: string): ParsedFileHref | null {
   return { path: raw, line, col };
 }
 
-/** Inline `` `path` `` that should open as a file. */
+/** Inline `` `path` `` that should open as a file — not a package or command. */
 export function looksLikePathInlineCode(text: string): boolean {
   const t = (text || "").trim();
   if (!t || t.includes("\n") || t.length > 260) return false;
