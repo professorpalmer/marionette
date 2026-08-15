@@ -53,24 +53,43 @@ def test_text_only_steer_still_works(monkeypatch):
 def test_steer_native_vision_queues_prompt_skips_sidecar(monkeypatch):
     """gpt-5.6-luna-class pilots must not get a weaker sidecar paraphrase."""
     s = _session()
-    called = {"transcribe": 0}
-    queued = {}
+    called = {"transcribe": 0, "steer": 0}
+    queued = []
 
     def _boom(*_a, **_k):
         called["transcribe"] += 1
         raise AssertionError("sidecar must not run for native vision steer")
 
     def _queue(text, images=None, **_k):
-        queued["text"] = text
-        queued["images"] = list(images or [])
+        queued.append({"text": text, "images": list(images or [])})
         return {"id": "q1", "text": text}
+
+    def _steer(text):
+        called["steer"] += 1
+        raise AssertionError("vision busy Enter must not enqueue_steer a notice")
 
     monkeypatch.setattr("harness.vision.session_supports_native_images", lambda _s: True)
     monkeypatch.setattr("harness.vision.transcribe_images", _boom)
     s.enqueue_prompt = _queue
+    s.enqueue_steer = _steer
     s.steer_with_images("look at this", ["/tmp/shot.png"])
     assert called["transcribe"] == 0
-    assert queued.get("text") == "look at this"
-    assert queued.get("images") == ["/tmp/shot.png"]
-    nudge = s.drain_steer()
-    assert nudge and "native vision" in nudge[0].lower()
+    assert called["steer"] == 0
+    assert queued == [{"text": "look at this", "images": ["/tmp/shot.png"]}]
+    assert s.drain_steer() == []
+
+
+def test_steer_native_vision_images_only_is_queue_only(monkeypatch):
+    """Images-only on a vision pilot queues the placeholder; no steer chrome."""
+    s = _session()
+    queued = []
+
+    def _queue(text, images=None, **_k):
+        queued.append({"text": text, "images": list(images or [])})
+        return {"id": "q1", "text": text}
+
+    monkeypatch.setattr("harness.vision.session_supports_native_images", lambda _s: True)
+    s.enqueue_prompt = _queue
+    s.steer_with_images("", ["/tmp/shot.png"])
+    assert queued == [{"text": "(see attached image)", "images": ["/tmp/shot.png"]}]
+    assert s.drain_steer() == []

@@ -254,3 +254,145 @@ describe("holdSwarmAwait transcript latch + awaiting_swarm pause-point", () => {
     expect(screen.getByText(/Still working/i)).toBeTruthy();
   });
 });
+
+describe("prior fold does not stay Investigating after steer flush", () => {
+  function runningCard(id: string, goal: string): Extract<Item, { kind: "card" }> {
+    return {
+      kind: "card",
+      card: {
+        id,
+        goal,
+        cwd: null,
+        kind: "read_file",
+        running: true,
+        open: false,
+      },
+    };
+  }
+
+  it("stale running / swarm_pending in the prior fold stay Explored while the live fold investigates", () => {
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "do the work" } },
+      runningCard("stale-card", "auth.ts"),
+      {
+        kind: "swarm_pending",
+        job_ids: ["job_stale"],
+        objective: "audit auth",
+        status: "running",
+      },
+      { kind: "steer", text: "also check billing" },
+      runningCard("live-card", "billing.ts"),
+    ];
+
+    render(
+      <TranscriptList
+        {...listProps(items, { turnOpen: true, status: "executing" })}
+      />,
+    );
+
+    const investigating = screen.getAllByText(/Investigating/i);
+    const explored = screen.getAllByText(/Explored/i);
+    expect(investigating).toHaveLength(1);
+    expect(explored).toHaveLength(1);
+  });
+
+  it("sealed prior cards never spin even when a later fold is live", () => {
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "do the work" } },
+      sealedCard("sealed-a", "auth.ts"),
+      sealedCard("sealed-b", "session.ts"),
+      { kind: "steer", text: "also check billing" },
+      runningCard("live-card", "billing.ts"),
+    ];
+
+    render(
+      <TranscriptList
+        {...listProps(items, { turnOpen: true, status: "executing" })}
+      />,
+    );
+
+    expect(screen.getAllByText(/Investigating/i)).toHaveLength(1);
+    expect(screen.getAllByText(/Explored/i)).toHaveLength(1);
+  });
+
+  it("prior-fold durable job shows quiet job still running, not a second Investigating", () => {
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "do the work" } },
+      {
+        kind: "card",
+        card: {
+          id: "durable-prior",
+          goal: "pytest",
+          cwd: null,
+          kind: "run_command",
+          running: true,
+          open: false,
+          result: { job_id: "local-cmd-1", status: "pending" },
+        },
+      },
+      { kind: "steer", text: "also check billing" },
+      runningCard("live-card", "billing.ts"),
+    ];
+
+    render(
+      <TranscriptList
+        {...listProps(items, { turnOpen: true, status: "executing" })}
+      />,
+    );
+
+    expect(screen.getAllByText(/Investigating/i)).toHaveLength(1);
+    expect(screen.getByText(/job still running/i)).toBeTruthy();
+    expect(screen.queryByText(/Explored/i)).toBeNull();
+  });
+
+  it("prior-fold swarm_pending only shows Swarm pending, not a second Investigating", () => {
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "do the work" } },
+      {
+        kind: "swarm_pending",
+        job_ids: ["job_stale"],
+        objective: "audit auth",
+        status: "running",
+      },
+      { kind: "steer", text: "also check billing" },
+      runningCard("live-card", "billing.ts"),
+    ];
+
+    render(
+      <TranscriptList
+        {...listProps(items, { turnOpen: true, status: "executing" })}
+      />,
+    );
+
+    expect(screen.getAllByText(/Investigating/i)).toHaveLength(1);
+    expect(screen.getByText(/Swarm · 1 pending/i)).toBeTruthy();
+    expect(screen.queryByText(/Explored/i)).toBeNull();
+  });
+
+  it("holdSwarmAwait cannot keep a prior swarm_pending fold Investigating", () => {
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "do the work" } },
+      {
+        kind: "swarm_pending",
+        job_ids: ["job_stale"],
+        objective: "audit auth",
+        status: "running",
+      },
+      { kind: "steer", text: "also check billing" },
+      runningCard("live-card", "billing.ts"),
+    ];
+
+    render(
+      <TranscriptList
+        {...listProps(items, {
+          turnOpen: true,
+          status: "awaiting_swarm",
+          holdSwarmAwait: true,
+        })}
+      />,
+    );
+
+    expect(screen.getAllByText(/Investigating/i)).toHaveLength(1);
+    expect(screen.getByText(/Swarm · 1 pending/i)).toBeTruthy();
+  });
+});

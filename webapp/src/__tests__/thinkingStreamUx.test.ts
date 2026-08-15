@@ -9,6 +9,7 @@ import {
   upsertStreamingThinking,
 } from "../components/Conversation";
 import {
+  activityFoldInvestigating,
   activityGroupStableId,
   clearActivityFoldPrefs,
   groupAgentActivity,
@@ -965,6 +966,124 @@ describe("liveActivityGroupIndex fences prior turns", () => {
       },
     ];
     expect(liveActivityGroupIndex(grouped)).toBe(3);
+  });
+});
+
+describe("activityFoldInvestigating fences prior folds", () => {
+  const liveInputs = {
+    anyRunning: true,
+    liveThinking: false,
+    pausePoint: false,
+    swarmPendingRunning: true,
+    loopOpen: true,
+    hasFoldContent: true,
+  };
+
+  it("only the live fold reports Investigating from running / swarm leftover", () => {
+    expect(activityFoldInvestigating({ isLiveFold: true, ...liveInputs })).toBe(true);
+    expect(activityFoldInvestigating({ isLiveFold: false, ...liveInputs })).toBe(false);
+  });
+
+  it("stale running or swarm_pending on a prior fold never spins", () => {
+    expect(
+      activityFoldInvestigating({
+        isLiveFold: false,
+        anyRunning: true,
+        liveThinking: false,
+        pausePoint: false,
+        swarmPendingRunning: false,
+        loopOpen: false,
+        hasFoldContent: true,
+      }),
+    ).toBe(false);
+    expect(
+      activityFoldInvestigating({
+        isLiveFold: false,
+        anyRunning: false,
+        liveThinking: false,
+        pausePoint: false,
+        swarmPendingRunning: true,
+        loopOpen: false,
+        hasFoldContent: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("holdSwarmAwait / loopOpen cannot keep a prior fold Investigating", () => {
+    expect(
+      activityFoldInvestigating({
+        isLiveFold: false,
+        anyRunning: false,
+        liveThinking: true,
+        pausePoint: false,
+        swarmPendingRunning: true,
+        loopOpen: true,
+        hasFoldContent: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("steer flush: prior group with stale swarm, live group is the only Investigating fold", () => {
+    const staleSwarm: Item = {
+      kind: "swarm_pending",
+      job_ids: ["job_stale"],
+      objective: "audit auth",
+      status: "running",
+    };
+    const staleCard: Item = {
+      kind: "card",
+      card: {
+        id: "stale-card",
+        goal: "auth.ts",
+        cwd: null,
+        kind: "read_file",
+        running: true,
+        open: false,
+      },
+    };
+    const liveCard: Item = {
+      kind: "card",
+      card: {
+        id: "live-card",
+        goal: "billing.ts",
+        cwd: null,
+        kind: "read_file",
+        running: true,
+        open: false,
+      },
+    };
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "do the work" } },
+      staleCard,
+      staleSwarm,
+      { kind: "steer", text: "also check billing" },
+      liveCard,
+    ];
+    const grouped = groupAgentActivity(items, new Set());
+    const liveIdx = liveActivityGroupIndex(grouped);
+    const chrome = grouped.flatMap((g, idx) => {
+      if (g.kind !== "activity_group") return [];
+      const isLiveFold = idx === liveIdx;
+      const anyRunning = g.items.some((it) => it.kind === "card" && it.card.running);
+      const swarmPendingRunning = g.items.some(
+        (it) => it.kind === "swarm_pending" && (it.status || "running") === "running",
+      );
+      return [{
+        isLiveFold,
+        investigating: activityFoldInvestigating({
+          isLiveFold,
+          anyRunning,
+          liveThinking: false,
+          pausePoint: false,
+          swarmPendingRunning,
+          loopOpen: isLiveFold,
+          hasFoldContent: g.items.length > 0,
+        }),
+      }];
+    });
+    expect(chrome).toHaveLength(2);
+    expect(chrome[0]).toEqual({ isLiveFold: false, investigating: false });
+    expect(chrome[1]).toEqual({ isLiveFold: true, investigating: true });
   });
 });
 

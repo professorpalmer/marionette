@@ -33,6 +33,7 @@ import { splitStreamingMarkdown } from "../lib/streamMarkdown";
 import {
   aggregateExplorationSummary,
   cardEffectivelyRunning,
+  cardHasDurableJob,
   deriveBusyProgress,
   investigatingHeadline,
   resolveCardCliInput,
@@ -650,6 +651,34 @@ export function liveActivityGroupIndex(grouped: GroupedItem[]): number {
   return -1;
 }
 
+/**
+ * Investigating chrome is live-fold only. A prior fold may still hold a
+ * stale ``running`` card or leftover swarm_pending after a steer flush
+ * splits the turn — those must not keep a second Investigating spinner.
+ */
+export function activityFoldInvestigating(opts: {
+  isLiveFold: boolean;
+  anyRunning: boolean;
+  liveThinking: boolean;
+  pausePoint: boolean;
+  swarmPendingRunning: boolean;
+  loopOpen: boolean;
+  hasFoldContent: boolean;
+}): boolean {
+  if (!opts.isLiveFold) return false;
+  return (
+    opts.anyRunning
+    || opts.liveThinking
+    || (
+      !opts.pausePoint
+      && (
+        opts.swarmPendingRunning
+        || (opts.loopOpen && opts.hasFoldContent)
+      )
+    )
+  );
+}
+
 /** Stable React key for one investigation fold. Exported for unit tests. */
 export function activityGroupStableId(items: ActivityItem[], fallbackIndex: number): string {
   // Collect durable members (thinking ids first so a live reasoning stream that
@@ -1221,6 +1250,7 @@ export const TranscriptList = memo(function TranscriptList({
           key={key}
           groupId={openId}
           items={it.items}
+          isLiveFold={i === lastActivityGroupIdx}
           loopOpen={agentLoopOpen && i === lastActivityGroupIdx}
           pausePoint={pausePoint && i === lastActivityGroupIdx}
           onToggleCard={(card) => onSetCard(card.id, { open: !card.open })}
@@ -1407,6 +1437,7 @@ function ActivityGroup({
   groupId,
   loopOpen = false,
   pausePoint = false,
+  isLiveFold = false,
 }: {
   items: ActivityItem[];
   onToggleCard: (card: Card) => void;
@@ -1418,6 +1449,8 @@ function ActivityGroup({
    * do not keep a sticky Investigating spinner over settled tools.
    */
   pausePoint?: boolean;
+  /** True only for the live-index fold. Prior folds never show Investigating. */
+  isLiveFold?: boolean;
 }) {
   // Investigation chrome stays collapsed by default (Cursor/Hermes). The
   // headline still tracks Investigating / Explored while closed; the user
@@ -1473,16 +1506,19 @@ function ActivityGroup({
   // A running swarm_pending is itself live investigation chrome.
   // Pause-point (awaiting_swarm / hold): seal sticky Investigating so the fold
   // shows Explored while StatusPill / busy footer own Still working….
-  const investigating =
-    anyRunning
-    || liveThinking
-    || (
-      !pausePoint
-      && (
-        swarmPendingRunning
-        || (loopOpen && (actionCount > 0 || thinkingItems.length > 0 || swarmPendingItems.length > 0))
-      )
-    );
+  // Prior folds (steer-flushed leftover running / swarm cards) stay Explored.
+  const durableJobRunning = cards.some(
+    (c) => cardHasDurableJob(c.card) && cardEffectivelyRunning(c.card),
+  );
+  const investigating = activityFoldInvestigating({
+    isLiveFold,
+    anyRunning,
+    liveThinking,
+    pausePoint,
+    swarmPendingRunning,
+    loopOpen,
+    hasFoldContent: actionCount > 0 || thinkingItems.length > 0 || swarmPendingItems.length > 0,
+  });
 
   // A group with NO tool actions, no narration AND no reasoning (just a lone
   // CodeGraph chip from the per-step auto-injection) would render a misleading
@@ -1677,11 +1713,15 @@ function ActivityGroup({
   // disagreed with Cursor/Hermes (collapsed until the user opens them).
 
   const quietSummary = (() => {
+    if (!investigating && !isLiveFold && durableJobRunning) return "job still running";
     if (actionCount > 0) return stepHeadline;
     if (swarmResults.length > 0) {
       return `Swarm · ${swarmResults.length} result${swarmResults.length === 1 ? "" : "s"}`;
     }
     if (swarmPendingItems.length > 0) {
+      if (!isLiveFold) {
+        return `Swarm · ${swarmPendingItems.length} pending`;
+      }
       return swarmPendingRunning ? "Swarm · running" : `Swarm · ${swarmPendingItems.length} pending`;
     }
     if (investigating) return stepHeadline || "Investigating…";

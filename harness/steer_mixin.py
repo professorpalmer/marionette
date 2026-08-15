@@ -112,8 +112,9 @@ class SteerMixin:
 
         - Vision-capable pilots (gpt-5.6-luna, etc.): NEVER run the vision
           sidecar (weaker VLM paraphrase). Queue a follow-up turn via
-          ``enqueue_prompt`` so the next turn gets native multimodal pixels,
-          plus a short mid-turn nudge that images are queued.
+          ``enqueue_prompt`` so the next turn gets native multimodal pixels.
+          Do not enqueue a mid-turn steer notice — that would paint a second
+          chrome row (``steer:`` plus QUEUED TO SEND) for one Enter.
         - Text-only pilots: transcribe via sidecar into the steer text (same
           path as view_image for non-vision models).
         """
@@ -124,12 +125,9 @@ class SteerMixin:
                 from .vision import session_supports_native_images
                 if session_supports_native_images(self):
                     # Preserve pixels; do not degrade to a weaker sidecar VLM.
+                    # Queue-only: enqueue_prompt carries text + paths. A steer
+                    # notice here would double-paint chrome on busy Enter.
                     if hasattr(self, "enqueue_prompt"):
-                        if cleaned:
-                            self.enqueue_steer(
-                                "[User attached image(s) for native vision — "
-                                "full message queued for the next turn.]"
-                            )
                         self.enqueue_prompt(
                             cleaned or "(see attached image)",
                             images=paths,
