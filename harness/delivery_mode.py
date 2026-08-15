@@ -54,6 +54,17 @@ def _try_interrupt_session(session: Any) -> bool:
     return False
 
 
+def realized_steer_action(result: Any) -> str:
+    """Map ``steer_with_images`` return (or None) to the action taken.
+
+    Vision busy-Enter queues a follow-up (``enqueue_prompt``). Everything
+    else, including a missing/legacy ``None`` return, is a mid-turn steer.
+    """
+    if result == DeliveryAction.ENQUEUE_PROMPT.value:
+        return DeliveryAction.ENQUEUE_PROMPT.value
+    return DeliveryAction.ENQUEUE_STEER.value
+
+
 def resolve_delivery(session_busy: bool, requested: Optional[str]) -> str:
     """Map (busy, mode) → action for run_auto / enqueue_steer / enqueue_prompt / interrupt_then_queue.
 
@@ -90,7 +101,11 @@ def apply_delivery(
         if not cleaned and not imgs:
             return {"ok": False, "error": "missing text", "action": action}
         if imgs and hasattr(session, "steer_with_images"):
-            session.steer_with_images(cleaned, imgs)
+            actual = realized_steer_action(session.steer_with_images(cleaned, imgs))
+            result = {"ok": True, "action": actual}
+            if actual != action:
+                result["requested_action"] = action
+            return result
         elif hasattr(session, "enqueue_steer"):
             session.enqueue_steer(cleaned)
         else:

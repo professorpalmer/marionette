@@ -63,6 +63,10 @@ import {
   shouldUnpinInnerOnWheel,
   THINKING_INNER_PIN_THRESHOLD_PX,
 } from "./conversation/feedScroll";
+import {
+  isOccludedScrollParentSize,
+  shouldUseVirtualTranscriptWindow,
+} from "./conversation/transcriptVirtualWindow";
 import { focusReviewTabAndRefresh } from "./conversation/streamApply";
 
 export type Msg = {
@@ -850,13 +854,21 @@ export const TranscriptList = memo(function TranscriptList({
   // scrollEpoch re-renders once feedRef attaches / resizes so getScrollElement
   // is observed (refs alone do not trigger React updates).
   const listAnchorRef = useRef<HTMLDivElement>(null);
+  const virtualizedOnceRef = useRef(false);
   const [scrollMargin, setScrollMargin] = useState(0);
   const [scrollEpoch, setScrollEpoch] = useState(0);
   useLayoutEffect(() => {
     const scrollEl = scrollContainerRef.current;
     if (!scrollEl) return;
     setScrollEpoch((n) => n + 1);
-    const onResize = () => setScrollEpoch((n) => n + 1);
+    const onResize = () => {
+      // Alt-tab / occlusion often reports 0x0. Bumping epoch then would
+      // remount the unvirtualized list and snap the feed to the top.
+      if (isOccludedScrollParentSize(scrollEl.clientHeight, scrollEl.offsetHeight)) {
+        return;
+      }
+      setScrollEpoch((n) => n + 1);
+    };
     const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(onResize) : null;
     ro?.observe(scrollEl);
     return () => ro?.disconnect();
@@ -1263,12 +1275,20 @@ export const TranscriptList = memo(function TranscriptList({
   const virtualItems = rowVirtualizer.getVirtualItems();
   // jsdom / pre-layout: scroll parent missing or unsized → mount full flow so
   // presentation tests keep working without faking a 40-row window.
-  const scrollReady = Boolean(
+  // Once sized, stay virtual even if alt-tab reports a 0-height parent —
+  // flipping back remounts every bubble and snaps the feed to the top.
+  const scrollParentSized = Boolean(
     scrollContainerRef.current &&
-      (scrollContainerRef.current.clientHeight > 0 ||
-        scrollContainerRef.current.offsetHeight > 0),
+      !isOccludedScrollParentSize(
+        scrollContainerRef.current.clientHeight,
+        scrollContainerRef.current.offsetHeight,
+      ),
   );
-  const useVirtualWindow = scrollReady && virtualItems.length > 0;
+  if (scrollParentSized) virtualizedOnceRef.current = true;
+  const useVirtualWindow = shouldUseVirtualTranscriptWindow({
+    scrollParentSized,
+    alreadyVirtualized: virtualizedOnceRef.current,
+  });
   const list = useVirtualWindow ? (
     <div
       ref={listAnchorRef}

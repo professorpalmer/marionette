@@ -57,15 +57,14 @@ export default function ConversationChatColumn({
     <div className="flex flex-col flex-1 min-h-0">
       <div
         ref={feedRef}
-        className={`flex-1 overflow-y-auto overscroll-contain [overflow-anchor:auto] [scrollbar-gutter:stable] ${panelOpacityClass(transcriptStale)}`}
+        className={`flex-1 overflow-y-auto overscroll-contain [overflow-anchor:none] [scrollbar-gutter:stable] ${panelOpacityClass(transcriptStale)}`}
       >
-        {/* overflow-anchor keeps the row you are reading still when height
-            lands above it. scrollbar-gutter avoids a 15px jump when the bar
-            appears. overscroll-contain stops rubber-band from yanking the window.
-            Composer sits outside this scrollport, so scroll-padding-bottom is
-            not the last-bubble fix here — feedScroll pin/unpin still owns that.
-            TranscriptList virtualizes rows (measureElement) against this feedRef
-            scroll parent; do not move the composer inside the scrollport. */}
+        {/* overflow-anchor:none — the virtualizer unmounts off-screen rows, so
+            auto-anchor would snap to the first remaining node (top of history)
+            on alt-tab / compositor restore. feedScroll pin/unpin owns stick.
+            scrollbar-gutter avoids a 15px jump when the bar appears.
+            overscroll-contain stops rubber-band from yanking the window.
+            Composer sits outside this scrollport; do not move it inside. */}
         <div className="max-w-3xl mx-auto px-6 py-6 flex flex-col gap-1">
           <TranscriptEmptyState transcriptStale={transcriptStale} itemCount={items.length} />
           {/*

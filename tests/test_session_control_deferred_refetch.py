@@ -101,6 +101,7 @@ def test_steer_refetches_pilot_after_deferred_gate_swap():
     code, payload = post_session_steer({"text": "nudge"}, svc)
 
     assert code == 200 and payload["ok"] is True
+    assert payload["action"] == "enqueue_steer"
     assert real.steers == ["nudge"]
     assert box["gate_calls"] == 1
     assert any(p is placeholder for p in box["get_snapshots"])

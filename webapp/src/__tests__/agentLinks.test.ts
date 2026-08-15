@@ -88,6 +88,30 @@ describe("agentLinks detection", () => {
     expect(looksLikePathInlineCode("/Users/me/My Projects/app.ts:12")).toBe(true);
   });
 
+  it("does not treat package specs as file editor links", () => {
+    const packages = [
+      "@anysphere/ui",
+      "@anysphere/agent-store-sync",
+      "@cursor/july@0.1.40",
+      "@base-ui/react@1.6.0",
+      "@stylexjs/stylex@0.18.3",
+      "@tanstack/react-virtual@3.13.23",
+      "tar@6.2.1",
+      "lodash@4.17.21",
+      "@/lib/utils",
+    ];
+    for (const spec of packages) {
+      expect(looksLikeFilePath(spec)).toBe(false);
+      expect(looksLikePathInlineCode(spec)).toBe(false);
+    }
+    expect(looksLikeFilePath("anysphere/ui")).toBe(false);
+    expect(looksLikePathInlineCode("anysphere/ui")).toBe(false);
+    expect(looksLikeFilePath("package.json")).toBe(true);
+    expect(looksLikeFilePath("~/Downloads/security-assessment-report.md")).toBe(true);
+    expect(looksLikePathInlineCode("~/Downloads/security-assessment-report.md")).toBe(true);
+    expect(looksLikeFilePath("/tmp/@scope/pkg/index.ts")).toBe(true);
+  });
+
   it("classifies action goals by kind", () => {
     expect(classifyActionGoal("read_file", "a/b.ts")).toEqual({
       linkKind: "file",
@@ -201,6 +225,14 @@ describe("autolinkAgentText", () => {
   it("wraps bare spill:// URIs outside fences", () => {
     const out = autolinkAgentText("Full output at spill://sess1/call_a for recall.");
     expect(out).toContain("[spill://sess1/call_a](spill://sess1/call_a)");
+  });
+
+  it("does not autolink package specs in prose", () => {
+    const src = "The critical tar@6.2.1 finding and @anysphere/ui stay plain.";
+    const out = autolinkAgentText(src);
+    expect(out).toBe(src);
+    expect(out).not.toContain("](@anysphere");
+    expect(out).not.toContain("](tar@");
   });
 
   it("skips fenced code and existing links", () => {

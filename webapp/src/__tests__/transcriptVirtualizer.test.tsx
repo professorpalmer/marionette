@@ -180,4 +180,26 @@ describe("transcript feed virtualizer", () => {
     expect(screen.queryByRole("button", { name: /Show earlier messages/i })).toBeNull();
     expect(screen.getByTestId("transcript-virtual-list")).toBeTruthy();
   });
+
+  it("keeps the virtual window after the scroll parent reports 0 height", async () => {
+    vi.stubGlobal("ResizeObserver", SizedResizeObserver);
+    const items = longTranscript(60);
+    const { rerender } = render(<VirtualFeedHarness items={items} />);
+
+    await waitFor(() => {
+      const rows = screen.getAllByTestId("transcript-virtual-row");
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.length).toBeLessThan(80);
+    });
+
+    const feed = screen.getByTestId("virtual-feed") as HTMLDivElement;
+    Object.defineProperty(feed, "clientHeight", { configurable: true, get: () => 0 });
+    Object.defineProperty(feed, "offsetHeight", { configurable: true, get: () => 0 });
+    rerender(<VirtualFeedHarness items={items} />);
+
+    const list = screen.getByTestId("transcript-virtual-list");
+    expect(list.className).toContain("relative");
+    expect(list.className).not.toContain("flex-col");
+    expect(screen.queryAllByTestId("transcript-virtual-row").length).toBeLessThan(80);
+  });
 });

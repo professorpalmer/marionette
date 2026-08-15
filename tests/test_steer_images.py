@@ -46,7 +46,7 @@ def test_steer_image_error_is_surfaced_not_dropped(monkeypatch):
 
 def test_text_only_steer_still_works(monkeypatch):
     s = _session()
-    s.steer_with_images("just text", [])
+    assert s.steer_with_images("just text", []) == "enqueue_steer"
     assert s.drain_steer() == ["just text"]
 
 
@@ -72,7 +72,8 @@ def test_steer_native_vision_queues_prompt_skips_sidecar(monkeypatch):
     monkeypatch.setattr("harness.vision.transcribe_images", _boom)
     s.enqueue_prompt = _queue
     s.enqueue_steer = _steer
-    s.steer_with_images("look at this", ["/tmp/shot.png"])
+    action = s.steer_with_images("look at this", ["/tmp/shot.png"])
+    assert action == "enqueue_prompt"
     assert called["transcribe"] == 0
     assert called["steer"] == 0
     assert queued == [{"text": "look at this", "images": ["/tmp/shot.png"]}]
@@ -90,6 +91,7 @@ def test_steer_native_vision_images_only_is_queue_only(monkeypatch):
 
     monkeypatch.setattr("harness.vision.session_supports_native_images", lambda _s: True)
     s.enqueue_prompt = _queue
-    s.steer_with_images("", ["/tmp/shot.png"])
+    action = s.steer_with_images("", ["/tmp/shot.png"])
+    assert action == "enqueue_prompt"
     assert queued == [{"text": "(see attached image)", "images": ["/tmp/shot.png"]}]
     assert s.drain_steer() == []

@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+import threading
 from pathlib import Path
 
 from harness.task_receipt import (
+    JSONL_FILENAME,
     TaskReceipt,
     append_receipt,
     build_receipt,
@@ -101,6 +104,64 @@ def test_append_receipt_never_raises(tmp_path: Path):
     bad.write_text("x", encoding="utf-8")
     append_receipt(str(bad), {"task_id": "x"})
     assert load_receipts(str(tmp_path / "missing"), limit=5) == []
+
+
+def test_concurrent_append_receipts_are_intact_jsonl(tmp_path: Path):
+    """Barrier-synced threads must each land as one intact JSON object.
+
+    Unlocked Windows ``open(..., "a")`` can drop whole lines (CI 3.11 lost
+    2/8). Each line is larger than a typical 8KiB stdio buffer so a torn
+    write would fail json.loads or drop a task_id. load_receipts skips
+    malformed lines, so the raw JSONL is checked as well.
+    """
+    n = 8
+    # Optional field only — receipt schema is unchanged.
+    oversized_repo = "R" * 9000
+    state = tmp_path / "state"
+    barrier = threading.Barrier(n)
+    errors = []
+
+    def worker(index: int) -> None:
+        try:
+            barrier.wait(timeout=5)
+            append_receipt(
+                str(state),
+                {
+                    "task_id": "concurrent-{0}".format(index),
+                    "profile": "MICRO",
+                    "repo": oversized_repo,
+                    "created_at": "2026-08-15T00:00:00+00:00",
+                },
+            )
+        except Exception as exc:  # pragma: no cover - failure surfaces below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert errors == []
+    loaded = load_receipts(str(state), limit=n)
+    expected_ids = {"concurrent-{0}".format(i) for i in range(n)}
+    assert {row["task_id"] for row in loaded} == expected_ids
+    assert len(loaded) == n
+    for row in loaded:
+        assert isinstance(row, dict)
+        assert row["repo"] == oversized_repo
+
+    raw_path = state / JSONL_FILENAME
+    raw_lines = [
+        line for line in raw_path.read_text(encoding="utf-8").splitlines() if line.strip()
+    ]
+    assert len(raw_lines) == n
+    parsed_ids = []
+    for line in raw_lines:
+        rec = json.loads(line)
+        assert isinstance(rec, dict)
+        parsed_ids.append(rec["task_id"])
+    assert set(parsed_ids) == expected_ids
 
 
 def test_compute_patch_hash_empty_and_stable(tmp_path: Path):

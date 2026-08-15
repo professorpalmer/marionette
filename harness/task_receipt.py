@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import subprocess
+import threading
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, List, Optional
@@ -16,6 +17,10 @@ from typing import Any, List, Optional
 JSONL_FILENAME = "task_receipts.jsonl"
 PROMPT_HASH_LEN = 16
 GIT_TIMEOUT_S = 5
+
+# Windows concurrent ``open(..., "a")`` writers can drop whole lines (CI
+# Windows 3.11 lost 2/8 oversized receipts). Serialize same-process appends.
+_APPEND_LOCK = threading.Lock()
 
 
 @dataclass
@@ -134,8 +139,9 @@ def append_receipt(state_dir: str, receipt: Any) -> None:
         os.makedirs(root, exist_ok=True)
         path = os.path.join(root, JSONL_FILENAME)
         line = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
-        with open(path, "a", encoding="utf-8", newline="\n") as fh:
-            fh.write(line + "\n")
+        with _APPEND_LOCK:
+            with open(path, "a", encoding="utf-8", newline="\n") as fh:
+                fh.write(line + "\n")
     except Exception:
         return
 

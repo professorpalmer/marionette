@@ -7,6 +7,7 @@ from harness.delivery_mode import (
     apply_delivery,
     deliver_schedule_to_session,
     normalize_delivery_mode,
+    realized_steer_action,
     resolve_delivery,
     schedule_should_inject,
 )
@@ -53,6 +54,36 @@ def test_delivery_mode_steer_when_busy():
     assert result["ok"] is True
     assert result["action"] == "enqueue_steer"
     assert session.steers == ["nudge left"]
+
+
+def test_realized_steer_action_maps_vision_queue():
+    assert realized_steer_action("enqueue_prompt") == "enqueue_prompt"
+    assert realized_steer_action("enqueue_steer") == "enqueue_steer"
+    assert realized_steer_action(None) == "enqueue_steer"
+    assert realized_steer_action("") == "enqueue_steer"
+
+
+def test_delivery_mode_steer_vision_images_reports_queue():
+    """Requested steer + native-vision images must report enqueue_prompt."""
+
+    class _VisionSession(_FakeSession):
+        def steer_with_images(self, text, images=None):
+            self.enqueue_prompt(text or "(see attached image)", images=images)
+            return "enqueue_prompt"
+
+    session = _VisionSession()
+    result = apply_delivery(
+        session,
+        "look at this",
+        session_busy=True,
+        requested="steer",
+        images=["/tmp/shot.png"],
+    )
+    assert result["ok"] is True
+    assert result["action"] == "enqueue_prompt"
+    assert result["requested_action"] == "enqueue_steer"
+    assert session.steers == []
+    assert session.prompts[0]["text"] == "look at this"
 
 
 def test_delivery_mode_follow_up_queues():

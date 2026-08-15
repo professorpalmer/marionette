@@ -159,6 +159,8 @@ import {
   shouldBlockEmptySend,
   shouldSteerWhileBusy,
   shouldClearSteerDraftOnResult,
+  steerResultChrome,
+  steerTranscriptItem,
   showStandaloneEditNoticeDismiss,
   userOrdinalBeforeIndex,
 } from "../components/conversation/composerSend";
@@ -2220,6 +2222,24 @@ describe("composerSend module", () => {
     expect(shouldSteerWhileBusy({ text: "" })).toBe(false);
     expect(shouldSteerWhileBusy({ text: "   " })).toBe(false);
     expect(shouldSteerWhileBusy({ text: "pivot" })).toBe(true);
+    // Vision busy-Enter reports enqueue_prompt — queue chip only, no steer row.
+    expect(steerResultChrome({ action: "enqueue_prompt" })).toBe("queue");
+    expect(steerTranscriptItem({ text: "look", chrome: "queue" })).toBeNull();
+    expect(steerResultChrome({ action: "enqueue_steer" })).toBe("steer");
+    expect(steerTranscriptItem({ text: "nudge", chrome: "steer" })).toEqual({
+      kind: "steer",
+      text: "nudge",
+    });
+    expect(steerResultChrome({ action: undefined })).toBe("steer");
+    expect(
+      steerResultChrome({ action: "enqueue_prompt", composerMode: "interrupt" }),
+    ).toBe("interrupt");
+    expect(steerResultChrome({ action: "interrupt_then_queue" })).toBe("interrupt");
+    expect(steerTranscriptItem({ text: "stop", chrome: "interrupt" })).toEqual({
+      kind: "steer",
+      text: "stop",
+      mode: "interrupt",
+    });
     expect(
       executeSendGate({ transcriptStale: true, resume: false, userStopped: false }),
     ).toBe("stale");
