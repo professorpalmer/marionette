@@ -129,7 +129,10 @@ def test_steer_and_queue(tmp_path):
     p = _P()
     svc = _svc(pilot=p, upload_dir=str(tmp_path))
     assert post_session_steer({}, svc)[0] == 400
-    assert post_session_steer({"text": "go"}, svc)[0] == 200
+    code_steer, payload_steer = post_session_steer({"text": "go"}, svc)
+    assert code_steer == 200
+    assert payload_steer["ok"] is True
+    assert payload_steer["action"] == "enqueue_steer"
     assert p.steers == ["go"]
     code, enq = post_session_queue({"text": "next"}, svc)
     assert code == 200 and enq["item"]["id"] == "q1"
@@ -137,6 +140,40 @@ def test_steer_and_queue(tmp_path):
     assert post_session_queue({"clear": True}, svc)[1]["cleared"] == 1
     code2, reo = post_session_queue_reorder({"ids": ["a", "b"]}, svc)
     assert code2 == 200 and [i["id"] for i in reo["items"]] == ["a", "b"]
+
+
+def test_steer_vision_images_reports_enqueue_prompt(tmp_path):
+    """Busy-Enter with pixels must tell the UI it queued, not steered."""
+    img = tmp_path / "shot.png"
+    img.write_bytes(b"x")
+
+    class _P:
+        def __init__(self):
+            self.steers = []
+            self.prompts = []
+
+        def enqueue_steer(self, text):
+            self.steers.append(text)
+
+        def enqueue_prompt(self, text, images=None, model=None):
+            item = {"id": "q1", "text": text, "images": list(images or [])}
+            self.prompts.append(item)
+            return item
+
+        def steer_with_images(self, text, images=None):
+            self.enqueue_prompt(text or "(see attached image)", images=images)
+            return "enqueue_prompt"
+
+    p = _P()
+    svc = _svc(pilot=p, upload_dir=str(tmp_path))
+    code, payload = post_session_steer(
+        {"text": "look", "images": [str(img)]}, svc,
+    )
+    assert code == 200
+    assert payload["ok"] is True
+    assert payload["action"] == "enqueue_prompt"
+    assert p.steers == []
+    assert p.prompts[0]["text"] == "look"
 
 
 def test_rewind_requires_target():

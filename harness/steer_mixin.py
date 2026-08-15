@@ -104,7 +104,7 @@ class SteerMixin:
         from .conversation import ConvEvent
         yield ConvEvent("notice", dict(pending))
 
-    def steer_with_images(self, text: str, images: Optional[list] = None) -> None:
+    def steer_with_images(self, text: str, images: Optional[list] = None) -> str:
         """Enqueue a steer with attached images.
 
         Mid-turn steers are text-only user messages at a safe boundary, so they
@@ -117,7 +117,13 @@ class SteerMixin:
           chrome row (``steer:`` plus QUEUED TO SEND) for one Enter.
         - Text-only pilots: transcribe via sidecar into the steer text (same
           path as view_image for non-vision models).
+
+        Returns the action actually taken (``enqueue_prompt`` or
+        ``enqueue_steer``) so HTTP/UI chrome can match. Empty string if
+        nothing was enqueued.
         """
+        from .delivery_mode import DeliveryAction
+
         cleaned = text.strip() if text and text.strip() else ""
         paths = [p for p in (images or []) if p]
         if paths:
@@ -132,7 +138,7 @@ class SteerMixin:
                             cleaned or "(see attached image)",
                             images=paths,
                         )
-                        return
+                        return DeliveryAction.ENQUEUE_PROMPT.value
                     notice = (
                         cleaned + "\n\n" if cleaned else ""
                     ) + (
@@ -141,7 +147,7 @@ class SteerMixin:
                         "pixels — send as a follow-up turn]"
                     )
                     self.enqueue_steer(notice)
-                    return
+                    return DeliveryAction.ENQUEUE_STEER.value
                 from .vision import transcribe_images
                 parts = [cleaned] if cleaned else []
                 for r in transcribe_images(paths):
@@ -152,16 +158,18 @@ class SteerMixin:
                 combined = "\n\n".join(p for p in parts if p)
                 if combined:
                     self.enqueue_steer(combined)
-                return
+                return DeliveryAction.ENQUEUE_STEER.value
             except Exception as e:
                 parts = [cleaned] if cleaned else []
                 parts.append(f"[attached image transcription failed: {e}]")
                 combined = "\n\n".join(p for p in parts if p)
                 if combined:
                     self.enqueue_steer(combined)
-                return
+                return DeliveryAction.ENQUEUE_STEER.value
         if cleaned:
             self.enqueue_steer(cleaned)
+            return DeliveryAction.ENQUEUE_STEER.value
+        return ""
 
     def _abandoned_turn_blocks_steer_enqueue(self) -> bool:
         """True only while a Stop-abandoned generator may still own the turn.

@@ -562,10 +562,12 @@ def post_session_steer(body: dict, svc: SessionControlServices) -> tuple[int, Js
         code = 200 if result.get("ok") else 400
         return code, result
     if valid_imgs and hasattr(pilot, "steer_with_images"):
-        pilot.steer_with_images(text, valid_imgs)
-    else:
-        pilot.enqueue_steer(text)
-    return 200, {"ok": True}
+        from ..delivery_mode import realized_steer_action
+
+        actual = realized_steer_action(pilot.steer_with_images(text, valid_imgs))
+        return 200, {"ok": True, "action": actual}
+    pilot.enqueue_steer(text)
+    return 200, {"ok": True, "action": "enqueue_steer"}
 
 
 def post_session_queue(body: dict, svc: SessionControlServices) -> tuple[int, JsonPayload]:
