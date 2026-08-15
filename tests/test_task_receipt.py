@@ -109,8 +109,8 @@ def test_append_receipt_never_raises(tmp_path: Path):
 def test_concurrent_append_receipts_are_intact_jsonl(tmp_path: Path):
     """Barrier-synced threads must each land as one intact JSON object.
 
-    POSIX writes under PIPE_BUF are often atomic; this test does not assume
-    that. Each line is larger than a typical 8KiB stdio buffer so a torn
+    Unlocked Windows ``open(..., "a")`` can drop whole lines (CI 3.11 lost
+    2/8). Each line is larger than a typical 8KiB stdio buffer so a torn
     write would fail json.loads or drop a task_id. load_receipts skips
     malformed lines, so the raw JSONL is checked as well.
     """
