@@ -1306,9 +1306,14 @@ class ToolDispatchMixin:
         - full-auto danger block →
           ``(False, "blocked", {message, category, reason, matched})``
 
-        Every payload also echoes the effective ``cwd``. Genuine failures carry
-        a one-line ``hint``; output beyond the inline cap carries ``spill_uri``
-        so it stays recoverable instead of being discarded.
+        Every payload also echoes the effective ``cwd``. Unambiguous interpreter
+        / package-root rewrites run before execution; when applied the payload
+        also carries ``rewritten`` and ``preflight_reason``. Full-auto danger
+        classify and the approval hash stay on the original ``act.command`` so
+        a rewrite cannot silently bypass a prior approval. Genuine failures
+        carry a one-line ``hint`` (and ``failure_class`` for env-prerequisite
+        shapes); output beyond the inline cap carries ``spill_uri`` so it stays
+        recoverable instead of being discarded.
         """
         if not self.config.repo:
             return False, "repo_not_open", "No workspace directory (config.repo) is open."
@@ -1354,10 +1359,19 @@ class ToolDispatchMixin:
             # Do not unlocked-discard again: a fresh same-hash re-approval raced
             # in after consume must survive for its own retry.
 
+        from .command_preflight import (
+            classify_env_prerequisite_failure,
+            resolve_command_preflight,
+        )
+
+        preflight = resolve_command_preflight(act.command or "", self.config.repo)
+        effective_command = preflight.get("command") or act.command or ""
+        effective_cwd = preflight.get("cwd") or self.config.repo
+
         cmd_timeout = effective_command_timeout()
         output, exit_code, run_status = run_cancellable(
-            act.command,
-            cwd=self.config.repo,
+            effective_command,
+            cwd=effective_cwd,
             timeout=cmd_timeout,
             cancel_event=getattr(self, "_cancel", None),
         )
@@ -1371,12 +1385,22 @@ class ToolDispatchMixin:
             "status": run_status,
             # Models routinely assume the cwd is wherever they last cd'd to.
             # Echoing it makes every relative-path failure self-diagnosing.
-            "cwd": self.config.repo,
+            "cwd": effective_cwd,
         }
+        if preflight.get("rewritten"):
+            payload["rewritten"] = True
+            reason = preflight.get("reason")
+            if reason:
+                payload["preflight_reason"] = reason
         payload.update(recovery)
-        hint = _command_failure_hint(act.command or "", exit_code, output)
+        hint = _command_failure_hint(effective_command, exit_code, output)
         if hint:
             payload["hint"] = hint
+        failure_class = classify_env_prerequisite_failure(
+            effective_command, exit_code, output
+        )
+        if failure_class:
+            payload["failure_class"] = failure_class
         # Terminal failures stay on the sync path but must not look like success.
         # truncated keeps ok=True so callers still get the capped output while
         # status remains distinct from a clean ok.
