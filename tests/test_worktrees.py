@@ -204,6 +204,77 @@ def test_delete_branch_refuses_current_checkout():
         shutil.rmtree(repo, ignore_errors=True)
 
 
+def test_reap_stale_managed_worktrees_removes_leftover_pmedit():
+    repo = create_temp_git_repo()
+    managed_dir = os.path.abspath(os.path.join(repo, "..", ".pmharness-worktrees"))
+    try:
+        leftover = _wt.add_worktree(repo, "pmedit-leftover1")
+        user_wt = _wt.add_worktree(repo, "feature-keep")
+        result = _wt.reap_stale_managed_worktrees(repo)
+        assert leftover["path"] in result["removed"]
+        assert result["count"] == 1
+        paths = {wt["path"] for wt in _wt.list_worktrees(repo)}
+        assert leftover["path"] not in paths
+        assert user_wt["path"] in paths
+        assert os.path.realpath(repo) in {os.path.realpath(p) for p in paths}
+        assert "pmedit-leftover1" not in _branch_list(repo)
+        assert "feature-keep" in _branch_list(repo)
+    finally:
+        shutil.rmtree(repo, ignore_errors=True)
+        shutil.rmtree(managed_dir, ignore_errors=True)
+
+
+def test_reap_stale_managed_worktrees_skips_registered_live_pid():
+    repo = create_temp_git_repo()
+    managed_dir = os.path.abspath(os.path.join(repo, "..", ".pmharness-worktrees"))
+    try:
+        live = _wt.add_worktree(repo, "pmedit-live01")
+        _wt.register_worktree_process(live["path"], 424242, kind="worker")
+        result = _wt.reap_stale_managed_worktrees(repo)
+        assert live["path"] not in result["removed"]
+        assert os.path.isdir(live["path"])
+        assert "pmedit-live01" in _branch_list(repo)
+    finally:
+        _wt.clear_managed_process_registry_for_tests()
+        shutil.rmtree(repo, ignore_errors=True)
+        shutil.rmtree(managed_dir, ignore_errors=True)
+
+
+def test_reap_stale_managed_worktrees_honors_max_age():
+    repo = create_temp_git_repo()
+    managed_dir = os.path.abspath(os.path.join(repo, "..", ".pmharness-worktrees"))
+    try:
+        recent = _wt.add_worktree(repo, "pmedit-recent1")
+        kept = _wt.reap_stale_managed_worktrees(repo, max_age_seconds=3600)
+        assert recent["path"] not in kept["removed"]
+        assert os.path.isdir(recent["path"])
+        reaped = _wt.reap_stale_managed_worktrees(repo, max_age_seconds=0)
+        assert recent["path"] in reaped["removed"]
+        assert not os.path.isdir(recent["path"])
+    finally:
+        shutil.rmtree(repo, ignore_errors=True)
+        shutil.rmtree(managed_dir, ignore_errors=True)
+
+
+def test_reap_stale_managed_worktrees_never_touches_main():
+    repo = create_temp_git_repo()
+    try:
+        result = _wt.reap_stale_managed_worktrees(repo)
+        assert result["count"] == 0
+        trees = _wt.list_worktrees(repo)
+        assert len(trees) == 1
+        assert trees[0]["is_main"] is True
+    finally:
+        shutil.rmtree(repo, ignore_errors=True)
+
+
+def test_boot_reaper_wires_managed_worktree_reap():
+    import inspect
+    import harness.server as srv
+    source = inspect.getsource(srv._reap_stale_swarms_on_boot)
+    assert "reap_stale_managed_worktrees" in source
+
+
 def test_prune_orphan_edit_branches_skips_active_and_attached_worktree():
     repo = create_temp_git_repo()
     managed_dir = os.path.abspath(os.path.join(repo, "..", ".pmharness-worktrees"))

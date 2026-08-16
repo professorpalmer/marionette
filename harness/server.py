@@ -1442,6 +1442,19 @@ def _reap_stale_swarms_on_boot() -> None:
                 )
         except Exception as e:
             _diag("server.boot_reaper_sweep", e)
+    try:
+        from . import worktrees as _wt
+        repo = str(getattr(_cfg, "repo", "") or "").strip()
+        if repo:
+            result = _wt.reap_stale_managed_worktrees(repo)
+            reaped_trees = int(result.get("count") or 0)
+            if reaped_trees:
+                _diag(
+                    "server.boot_worktree_reaper",
+                    msg=f"removed {reaped_trees} stale managed worktree(s)",
+                )
+    except Exception as e:
+        _diag("server.boot_worktree_reaper", e)
 
 
 threading.Thread(target=_reap_stale_swarms_on_boot, daemon=True).start()

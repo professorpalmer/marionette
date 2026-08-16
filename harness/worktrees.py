@@ -8,6 +8,7 @@ import logging
 import subprocess
 import tempfile
 import threading
+import time
 from typing import Optional
 
 from .paths import path_within
@@ -602,6 +603,62 @@ def cleanup_old_worktrees(repo: str, max_count: int = 25) -> None:
             remove_worktree(repo, wt["path"], force=True)
         except Exception as exc:
             logger.warning("failed to remove stale worktree %s: %s", wt["path"], exc)
+
+
+def _is_managed_worktree(wt: dict) -> bool:
+    """True for pmedit-/pmworker- scratch trees, never the main checkout."""
+    if not wt or wt.get("is_main") or wt.get("locked"):
+        return False
+    branch = (wt.get("branch") or "").strip()
+    if _is_managed_branch_name(branch):
+        return True
+    name = os.path.basename(os.path.normpath(wt.get("path") or ""))
+    return _is_managed_branch_name(name)
+
+
+def reap_stale_managed_worktrees(repo: str, max_age_seconds: float = 0) -> dict:
+    """Remove leftover managed worktrees after a crash or forgotten teardown.
+
+    Only ``pmedit-*`` / ``pmworker-*`` trees under the managed directory are
+    eligible. The main checkout, locked trees, user-named worktrees, and any
+    tree with a still-registered live pid are left alone. ``max_age_seconds=0``
+    (boot) reaps every leftover; a positive age keeps recent in-session trees.
+    """
+    if not repo or not _is_repo(repo):
+        return {"removed": [], "count": 0}
+
+    managed_dir = _get_managed_dir(repo)
+    now = time.time()
+    removed: list[str] = []
+    for wt in list_worktrees(repo):
+        path = (wt.get("path") or "").strip()
+        if not path or not _is_managed_worktree(wt):
+            continue
+        real = os.path.realpath(path)
+        if not _is_confined(real, managed_dir):
+            continue
+        if _registered_pids_for_worktree(path):
+            continue
+        if max_age_seconds > 0:
+            try:
+                age = now - os.path.getmtime(path)
+            except OSError:
+                age = max_age_seconds + 1
+            if age < max_age_seconds:
+                continue
+        try:
+            remove_worktree(repo, path, force=True)
+            removed.append(path)
+        except Exception as exc:
+            logger.warning("failed to reap stale managed worktree %s: %s", path, exc)
+
+    if removed:
+        try:
+            prune_orphan_edit_branches(repo)
+        except Exception as exc:
+            logger.warning("failed to prune orphan edit branches after reap: %s", exc)
+    return {"removed": removed, "count": len(removed)}
+
 
 _MANAGED_BRANCH_PREFIXES = ("pmedit-", "pmworker-")
 _PROTECTED_BRANCHES = frozenset({"main", "master"})
