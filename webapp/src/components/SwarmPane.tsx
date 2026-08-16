@@ -79,22 +79,6 @@ function routingPolicy(art: Artifact): string {
   return (detail.match(/policy=(\w+)/) || [])[1] || "";
 }
 
-// Turn the router's policy into one plain-language sentence. Fail closed when
-// policy is missing/unparsed: never claim "Router pick" without attestation.
-function summarizeRouting(art: Artifact): string {
-  const detail = typeof art.detail === "string" ? art.detail : "";
-  const policy = routingPolicy(art);
-  const planBilled = /plan-billed|in-subscription/i.test(detail);
-  const lead: Record<string, string> = {
-    balanced: "Right-sized: cheapest model that clears the task's need",
-    cheap: "Cheapest available model",
-    quality: "Highest-capability model for the task",
-    escalating: "Cheapest sufficient model, escalates if it stalls",
-    explicit_pin: "Explicit pin \u00b7 not auto-routed",
-  };
-  const base = lead[policy] || "Pin attribution unknown";
-  return planBilled ? `${base} \u00b7 plan-billed, no marginal cost` : base;
-}
 
 // FINDING headlines that look like the worker echoed its prompt rather than
 // reporting a finding. Warn with a chip; never rewrite the headline itself.
@@ -625,7 +609,6 @@ export default function SwarmPane() {
   const [selectedProjectRoot, setSelectedProjectRoot] = useState(lastSelectedProjectRoot);
   const projectSwitching = useProjectSwitching();
   const [expandedJobs, setExpandedJobs] = useState<Record<string, boolean>>({});
-  const [expandedAlts, setExpandedAlts] = useState<Record<string, boolean>>({});
   const [expandedTasks, setExpandedTasks] = useState<Record<string, boolean>>({});
   const [expandedFindings, setExpandedFindings] = useState<Record<string, boolean>>({});
   // Findings section open/closed per job. Default open (missing key); user toggle sticks.
@@ -998,9 +981,12 @@ export default function SwarmPane() {
       // Adapter chip stays separate; never badge bare agentic/native as model.
       adapterFallback: isEngineOnlyModelId(adapter) ? "" : adapter,
     });
+    // Once canonical task rows exist, they exclusively own worker→model truth.
+    // Keep the job-level model only for jobs that do not expose workers.
+    const headerModel = workerCount === 0 ? displayModel : "";
     const terminal = isTerminal(j);
     const savings = jobSavings(j);
-    const showRoutingPlaceholder = !displayModel && st === "in_progress";
+
 
     const toggle = () => {
       const next = !isExpanded;
@@ -1115,28 +1101,13 @@ export default function SwarmPane() {
               jobs (Cursor MCP, terminal `puppetmaster`) share the workspace
               store and are merged in on purpose; label them so they don't look
               like Marionette-dispatched swarms. */}
-          {(displayModel || showRoutingPlaceholder || workerCount > 0 || adapter || j.source === "cli" || attestedPolicy === "explicit_pin") && (
+          {(headerModel || workerCount > 0 || adapter || j.source === "cli") && (
             <div className="flex items-center gap-1.5 pl-6 pr-1 mt-1 flex-wrap">
-              {displayModel ? (
-                <span className="flex items-center gap-1 text-[9px] font-mono text-accent/90 bg-accent/10 px-1.5 py-0.5 rounded" title={`Model: ${displayModel}`}>
-                  <Cpu size={9} /> {displayModel}
-                </span>
-              ) : showRoutingPlaceholder ? (
-                <span
-                  className="flex items-center gap-1 text-[9px] font-mono text-faint bg-panel2/30 px-1.5 py-0.5 rounded"
-                  title="Model routing in progress"
-                >
-                  <Cpu size={9} /> routing…
+              {headerModel ? (
+                <span className="flex items-center gap-1 text-[9px] font-mono text-accent/90 bg-accent/10 px-1.5 py-0.5 rounded" title={`Model: ${headerModel}`}>
+                  <Cpu size={9} /> {headerModel}
                 </span>
               ) : null}
-              {attestedPolicy === "explicit_pin" && (
-                <span
-                  className="text-[9px] text-faint bg-edge/25 px-1.5 py-0.5 rounded font-mono"
-                  title="Routing policy: explicit_pin (not auto-routed)"
-                >
-                  explicit_pin
-                </span>
-              )}
               {workerCount > 0 && (
                 <span className="text-[9px] text-muted bg-panel2/40 px-1.5 py-0.5 rounded tabular-nums">
                   {workerCount} worker{workerCount > 1 ? "s" : ""}
@@ -1240,82 +1211,6 @@ export default function SwarmPane() {
         {/* Expanded details */}
         {isExpanded && (
           <div className="px-2 pb-2 pt-1 flex flex-col gap-2 bg-panel2/10">
-            {/* Routing */}
-            {routingArts.length > 0 && (
-              <div className="flex flex-col gap-1.5">
-                {routingArts.map((art: Artifact, idx: number) => {
-                  const hasRejected = art.rejected && art.rejected.length > 0;
-                  const key = `${art.id || idx}`;
-                  const altsExpanded = !!expandedAlts[key];
-                  const policyLabel = routingPolicy(art) || "Pin attribution unknown";
-                  const providerLabel = [art.provider, art.adapter]
-                    .map((v) => (typeof v === "string" ? v.trim() : ""))
-                    .filter(Boolean)
-                    .filter((v, i, arr) => arr.indexOf(v) === i)
-                    .join(" · ");
-                  return (
-                    <div key={key} className="p-2 bg-panel2/30 rounded border border-edge/50 text-[10px] flex flex-col gap-1.5">
-                      <div className="flex items-center justify-between text-muted gap-2">
-                        <span className="flex items-center gap-1.5 min-w-0 flex-wrap">
-                          <Cpu size={11} className="text-accent shrink-0" />
-                          <span className="text-txt font-mono font-medium truncate" title={art.model}>
-                            {art.model || "Unknown model"}
-                          </span>
-                          <span
-                            className="text-[8px] text-faint bg-edge/20 px-1 py-0.5 rounded shrink-0 font-mono"
-                            title="Routing policy"
-                          >
-                            {policyLabel}
-                          </span>
-                          {providerLabel && (
-                            <span
-                              className="text-[8px] text-faint bg-edge/20 px-1 py-0.5 rounded shrink-0 font-mono truncate max-w-[140px]"
-                              title={providerLabel}
-                            >
-                              {providerLabel}
-                            </span>
-                          )}
-                        </span>
-                        <span className="font-mono text-good shrink-0 font-semibold">
-                          {formatKnownCost(art.est_cost_usd, true)}
-                        </span>
-                      </div>
-                      {/* One plain-language line on why this model won. */}
-                      <div className="text-[9.5px] text-faint leading-relaxed">
-                        {summarizeRouting(art)}
-                      </div>
-                      {/* Alternatives, deliberately de-emphasized: a muted count,
-                          expanding to model-name chips (full reason on hover)
-                          instead of a red-looking wall of text. */}
-                      {hasRejected && (
-                        <div>
-                          <button
-                            onClick={(e) => { e.stopPropagation(); setExpandedAlts((prev) => ({ ...prev, [key]: !altsExpanded })); }}
-                            className="text-[9px] text-faint/80 hover:text-muted flex items-center gap-0.5 focus:outline-none"
-                          >
-                            {altsExpanded ? <ChevronDown size={9} /> : <ChevronRight size={9} />}
-                            {art.rejected?.length} alternatives considered
-                          </button>
-                          {altsExpanded && (
-                            <div className="mt-1.5 flex flex-wrap gap-1">
-                              {art.rejected?.map((rej: { model: string; reason: string }, ridx: number) => (
-                                <Tooltip
-                                  key={ridx}
-                                  label={rej.reason}
-                                  className="font-mono text-[8.5px] text-faint bg-panel2/30 border border-edge/40 px-1.5 py-0.5 rounded cursor-default"
-                                >
-                                  {rej.model}
-                                </Tooltip>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
 
             {/* Single-worker / provider jobs (run_implement, run_parallel) have
                 NO routing artifact, so the per-worker cost row above never
@@ -1359,6 +1254,7 @@ export default function SwarmPane() {
                     const taskModelLabel = displayModelId(task.model || "", {});
                     const adapterLabel = (task.adapter || "").trim();
                     const secondaryLabel = taskModelLabel
+                      || (ts === "running" && isEngineOnlyModelId(adapterLabel) ? "routing…" : "")
                       || (adapterLabel && !isEngineOnlyModelId(adapterLabel) ? adapterLabel : "");
                     return (
                       <div

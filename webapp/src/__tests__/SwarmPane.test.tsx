@@ -210,12 +210,12 @@ describe("SwarmPane model badge", () => {
 
     render(<SwarmPane />);
 
-    await waitFor(() => {
-      expect(screen.getByTitle("Model: openrouter")).toHaveTextContent("openrouter");
-    });
+    const worker = await screen.findByText("Worker");
+    expect(worker.closest('[role="button"]')).toHaveTextContent("openrouter");
+    expect(screen.queryByTitle("Model: openrouter")).not.toBeInTheDocument();
   });
 
-  it("shows routing placeholder instead of bare agentic while running", async () => {
+  it("shows routing in the worker model slot instead of a separate routing card", async () => {
     mockSwarmLive.mockResolvedValue(
       liveJob({
         adapter: "agentic",
@@ -235,9 +235,9 @@ describe("SwarmPane model badge", () => {
 
     render(<SwarmPane />);
 
-    await waitFor(() => {
-      expect(screen.getByTitle("Model routing in progress")).toHaveTextContent("routing…");
-    });
+    const worker = await screen.findByText("implement (agentic)");
+    expect(worker.closest('[role="button"]')).toHaveTextContent("routing…");
+    expect(screen.queryByTitle("Model routing in progress")).not.toBeInTheDocument();
     expect(screen.queryByTitle("Model: agentic")).not.toBeInTheDocument();
   });
 
@@ -281,12 +281,36 @@ describe("SwarmPane model badge", () => {
       });
 
       render(<SwarmPane />);
-      await waitFor(() => expect(screen.queryByText("(routed-model)")).not.toBeInTheDocument());
+      await waitFor(() => expect(screen.getByText("(routing…)")).toBeInTheDocument());
+      expect(screen.queryByText("(routed-model)")).not.toBeInTheDocument();
       await vi.advanceTimersByTimeAsync(6000);
       await waitFor(() => expect(screen.getByText("(routed-model)")).toBeInTheDocument());
+      expect(screen.queryByText("(routing…)")).not.toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("does not label a terminal worker as routing when no model was recorded", async () => {
+    mockSwarmLive.mockResolvedValue(
+      finishedJob("job-terminal-unrouted", "Terminal worker without model", {
+        tasks: [{
+          id: "task-terminal-unrouted",
+          status: "complete",
+          adapter: "agentic",
+          role: "completed-worker",
+          instruction: "",
+        }],
+      }),
+    );
+
+    render(<SwarmPane />);
+    await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Finished"));
+    fireEvent.click(await screen.findByText("Terminal worker without model"));
+
+    const worker = await screen.findByText("completed-worker");
+    expect(worker.closest('[role="button"]')).not.toHaveTextContent("routing…");
   });
 });
 
@@ -331,7 +355,7 @@ describe("SwarmPane worker details", () => {
   });
 });
 
-describe("SwarmPane pin attribution", () => {
+describe("SwarmPane artifact presentation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
@@ -340,121 +364,6 @@ describe("SwarmPane pin attribution", () => {
     mockArtifacts.mockResolvedValue([]);
   });
 
-  it("labels explicit_pin routing as Explicit pin · not auto-routed", async () => {
-    mockSwarmLive.mockResolvedValue(
-      liveJob({
-        status: "running",
-        artifacts_complete: true,
-        artifacts: [
-          {
-            type: "ROUTING",
-            headline: "",
-            task_id: "task-1",
-            model: "agentic/meta/muse-spark-1.1",
-            adapter_model_name: "meta/muse-spark-1.1",
-            policy: "explicit_pin",
-            provider: "openrouter",
-            adapter: "agentic",
-            created_by: "router",
-            est_cost_usd: 0.01,
-          },
-        ],
-        tasks: [
-          {
-            id: "task-1",
-            status: "running",
-            role: "Worker",
-            instruction: "",
-            adapter: "agentic",
-          },
-        ],
-      }),
-    );
-
-    render(<SwarmPane />);
-
-    await waitFor(() => {
-      expect(screen.getByText("Explicit pin · not auto-routed")).toBeInTheDocument();
-    });
-    // Collapsed summary keeps the full registry id (not stripped agentic/).
-    expect(screen.getAllByText("agentic/meta/muse-spark-1.1").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("explicit_pin").length).toBeGreaterThan(0);
-    expect(screen.getByText("openrouter · agentic")).toBeInTheDocument();
-    expect(screen.queryByText("Router pick")).not.toBeInTheDocument();
-  });
-
-  it("does not paint a missing routing estimate as $0", async () => {
-    mockSwarmLive.mockResolvedValue(
-      liveJob({
-        status: "running",
-        artifacts_complete: true,
-        artifacts: [
-          {
-            type: "ROUTING",
-            headline: "",
-            task_id: "task-1",
-            model: "agentic/meta/muse-spark-1.1",
-            policy: "explicit_pin",
-            provider: "openrouter",
-            adapter: "agentic",
-            created_by: "router",
-          },
-        ],
-        tasks: [
-          {
-            id: "task-1",
-            status: "running",
-            role: "Worker",
-            instruction: "",
-            adapter: "agentic",
-          },
-        ],
-      }),
-    );
-
-    render(<SwarmPane />);
-
-    await waitFor(() => {
-      expect(screen.getByText("Explicit pin · not auto-routed")).toBeInTheDocument();
-    });
-    expect(screen.getByText("—")).toBeInTheDocument();
-    expect(screen.queryByText("$0")).not.toBeInTheDocument();
-  });
-
-  it("fail-closes missing policy as Pin attribution unknown (not Router pick)", async () => {
-    mockSwarmLive.mockResolvedValue(
-      liveJob({
-        status: "running",
-        artifacts_complete: true,
-        artifacts: [
-          {
-            type: "ROUTING",
-            headline: "",
-            task_id: "task-1",
-            model: "mystery-model",
-            created_by: "router",
-            est_cost_usd: 0.01,
-          },
-        ],
-        tasks: [
-          {
-            id: "task-1",
-            status: "running",
-            role: "Worker",
-            instruction: "",
-            adapter: "agentic",
-          },
-        ],
-      }),
-    );
-
-    render(<SwarmPane />);
-
-    await waitFor(() => {
-      expect(screen.getAllByText("Pin attribution unknown").length).toBeGreaterThanOrEqual(1);
-    });
-    expect(screen.queryByText("Router pick")).not.toBeInTheDocument();
-  });
 
   it("warns FINDING headlines that look like prompt echoes without rewriting them", async () => {
     const echoHeadline = "Role: auditor — find auth bypass paths";
@@ -483,62 +392,6 @@ describe("SwarmPane pin attribution", () => {
   });
 });
 
-describe("SwarmPane routing dedupe", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    localStorage.clear();
-    sessionStorage.clear();
-    clearSWRCache();
-    mockArtifacts.mockResolvedValue([]);
-  });
-
-  it("shows one routing model row per task when router and router-fallback both exist", async () => {
-    // Ground truth: a 5-worker swarm stores 10 ROUTING artifacts (router +
-    // router-fallback per task). Display must show the final choice only.
-    const artifacts = Array.from({ length: 5 }, (_, i) => [
-      {
-        type: "ROUTING",
-        headline: "",
-        task_id: `task-${i}`,
-        model: `initial-model-${i}`,
-        created_by: "router",
-        est_cost_usd: 0.01,
-      },
-      {
-        type: "ROUTING",
-        headline: "",
-        task_id: `task-${i}`,
-        model: `final-model-${i}`,
-        created_by: "router-fallback",
-        est_cost_usd: 0.02,
-      },
-    ]).flat();
-
-    mockSwarmLive.mockResolvedValue(
-      liveJob({
-        status: "running",
-        artifacts,
-        artifacts_complete: true,
-        tasks: Array.from({ length: 5 }, (_, i) => ({
-          id: `task-${i}`,
-          status: "running",
-          role: "Worker",
-          instruction: "",
-          adapter: "agentic",
-        })),
-      }),
-    );
-
-    render(<SwarmPane />);
-
-    await waitFor(() => {
-      expect(screen.getByTitle("Model: final-model-0")).toBeInTheDocument();
-    });
-    expect(screen.queryByText("initial-model-0")).not.toBeInTheDocument();
-    // One expanded routing card per task (5), not 10 router+fallback pairs.
-    expect(screen.getAllByTitle(/^final-model-\d$/)).toHaveLength(5);
-  });
-});
 
 describe("SwarmPane mid-run job-row meters", () => {
   beforeEach(() => {
@@ -751,46 +604,7 @@ describe("SwarmPane mid-run job-row meters", () => {
     expect(parts.total).toBe(0);
   });
 
-  it("renders local-job routing policy label after reload the same as live", async () => {
-    // Persisted local-* jobs carry UI-shaped ROUTING rows (with policy) inline;
-    // running jobs auto-expand so the chip is visible without a click.
-    mockSwarmLive.mockResolvedValue(
-      liveJob({
-        id: "local-1",
-        status: "running",
-        artifacts_complete: true,
-        artifacts: [
-          {
-            type: "ROUTING",
-            headline: "Routed to cheap-model",
-            created_by: "router",
-            model: "cheap-model",
-            policy: "balanced",
-            adapter: "agentic",
-            est_cost_usd: 0.02,
-            detail: "balanced pick",
-            task_id: "local-1-w0",
-          },
-        ],
-        tasks: [
-          {
-            id: "local-1-w0",
-            status: "running",
-            role: "implement (agentic)",
-            instruction: "",
-            adapter: "agentic",
-          },
-        ],
-      }),
-    );
 
-    render(<SwarmPane />);
-    await waitFor(() => {
-      expect(screen.getByText("balanced")).toBeInTheDocument();
-    });
-    expect(screen.getByText(/Right-sized: cheapest model/)).toBeInTheDocument();
-    expect(screen.queryByText("Pin attribution unknown")).not.toBeInTheDocument();
-  });
 });
 
 describe("SwarmPane truthful failed vs cancelled chrome", () => {
