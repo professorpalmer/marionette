@@ -1324,7 +1324,6 @@ export default function SwarmPane() {
                   {tasks.map((task) => {
                     const ts = taskState(task);
                     const tExpanded = !!expandedTasks[task.id];
-                    const hasInstruction = !!task.instruction;
                     // Prefer a real routed model over repeating the engine label
                     // already present in role ("implement (agentic) (agentic)").
                     const taskModelLabel = displayModelId(task.model || "", {});
@@ -1334,11 +1333,12 @@ export default function SwarmPane() {
                     return (
                       <div
                         key={task.id}
-                        role={hasInstruction ? "button" : undefined}
-                        tabIndex={hasInstruction ? 0 : undefined}
-                        onClick={hasInstruction ? () => toggleTask(task.id) : undefined}
-                        onKeyDown={hasInstruction ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleTask(task.id); } } : undefined}
-                        className={`p-1.5 rounded bg-panel2/20 border border-edge/40 flex items-start gap-2 text-[10px] ${hasInstruction ? "cursor-pointer hover:bg-panel2/35 focus:outline-none" : ""}`}
+                        role="button"
+                        tabIndex={0}
+                        aria-expanded={tExpanded}
+                        onClick={() => toggleTask(task.id)}
+                        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleTask(task.id); } }}
+                        className="p-1.5 rounded bg-panel2/20 border border-edge/40 flex items-start gap-2 text-[10px] cursor-pointer hover:bg-panel2/35 focus:outline-none"
                       >
                         <span className="mt-0.5 shrink-0">
                           {ts === "running" ? <Loader2 size={10} className="animate-spin text-accent" />
@@ -1349,9 +1349,9 @@ export default function SwarmPane() {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center justify-between gap-1">
                             <span className="font-semibold text-txt truncate flex items-center gap-1 min-w-0">
-                              {hasInstruction && (tExpanded
+                              {tExpanded
                                 ? <ChevronDown size={9} className="text-faint shrink-0" />
-                                : <ChevronRight size={9} className="text-faint shrink-0" />)}
+                                : <ChevronRight size={9} className="text-faint shrink-0" />}
                               <span className="truncate">
                                 {task.role || "Worker"}
                                 {secondaryLabel ? (
@@ -1383,11 +1383,18 @@ export default function SwarmPane() {
                               }`}>{task.status}</span>
                             </span>
                           </div>
-                          {hasInstruction && (tExpanded ? (
-                            <div className="text-muted text-[9.5px] mt-1 whitespace-pre-wrap break-words leading-relaxed">{task.instruction}</div>
-                          ) : (
+                          {tExpanded && (
+                            <div className="mt-1 text-[9px] font-mono text-faint grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5">
+                              <span>task</span><span className="text-muted break-all">{task.id}</span>
+                              {taskModelLabel && <><span>model</span><span className="text-muted break-all">{taskModelLabel}</span></>}
+                              {adapterLabel && <><span>adapter</span><span className="text-muted break-all">{adapterLabel}</span></>}
+                              {task.completed_at && <><span>completed</span><span className="text-muted break-all">{task.completed_at}</span></>}
+                              {task.instruction && <><span>instruction</span><span className="text-muted whitespace-pre-wrap break-words font-sans">{task.instruction}</span></>}
+                            </div>
+                          )}
+                          {!tExpanded && task.instruction && (
                             <Tooltip label={task.instruction} className="block text-muted text-[9.5px] mt-0.5 truncate">{task.instruction}</Tooltip>
-                          ))}
+                          )}
                         </div>
                       </div>
                     );

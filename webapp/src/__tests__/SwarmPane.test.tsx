@@ -199,6 +199,47 @@ describe("SwarmPane model badge", () => {
   });
 });
 
+describe("SwarmPane worker details", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
+    clearSWRCache();
+    mockArtifacts.mockResolvedValue([]);
+  });
+
+  it("lets a terminal worker reveal its source-backed identity", async () => {
+    mockSwarmLive.mockResolvedValue(
+      finishedJob("job-terminal-worker", "Inspect completed worker", {
+        artifacts_complete: true,
+        tasks: [{
+          id: "task-terminal",
+          status: "complete",
+          adapter: "agentic",
+          role: "completed-worker",
+          instruction: "",
+          model: "agentic/gpt-5.6-luna",
+          completed_at: "2026-08-16T17:00:00+00:00",
+        }],
+      }),
+    );
+
+    render(<SwarmPane />);
+    await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Finished"));
+    fireEvent.click(await screen.findByText("Inspect completed worker"));
+
+    const worker = screen.getByText("completed-worker").closest('[role="button"]');
+    expect(worker).not.toBeNull();
+    expect(worker).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(worker!);
+
+    expect(worker).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("task-terminal")).toBeInTheDocument();
+    expect(screen.getByText("2026-08-16T17:00:00+00:00")).toBeInTheDocument();
+  });
+});
+
 describe("SwarmPane pin attribution", () => {
   beforeEach(() => {
     vi.clearAllMocks();
