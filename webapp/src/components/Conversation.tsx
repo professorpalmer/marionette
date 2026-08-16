@@ -112,6 +112,8 @@ import {
   filterMentionPaths,
   filterSlashCommands,
   mentionTokenForDroppedPath,
+  resolveDroppedOsPath,
+  uploadErrorMessage,
 } from "./conversation/composerInput";
 import {
   blankMsgQueueOnSessionSwitch,
@@ -1692,16 +1694,24 @@ export default function Conversation({
     setIsDragOver(false);
     const files = Array.from(e.dataTransfer.files);
     if (files.length === 0) return;
+    const items = Array.from(e.dataTransfer.items || []);
 
     setUploadError(null);
     const repo = (config?.repo || "").replace(/\/+$/, "");
     const mentions: string[] = [];
     let addedCount = attachedImages.length;
 
-    for (const file of files) {
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
       const isImage = file.type.startsWith("image/");
-      // Electron exposes the real OS path on dropped files; the browser does not.
-      const osPath: string = (file as any).path || "";
+      const osPath = resolveDroppedOsPath(file as { path?: string });
+      let isDirectory = false;
+      try {
+        const entry = items[i]?.webkitGetAsEntry?.();
+        isDirectory = !!entry && entry.isDirectory;
+      } catch {
+        isDirectory = false;
+      }
 
       if (isImage) {
         // Images attach as visual context (upload + thumbnail), as before.
@@ -1719,8 +1729,24 @@ export default function Conversation({
           addedCount++;
         } catch (err) {
           console.error("Failed to upload dropped image:", err);
-          flashUploadError("Image upload failed");
+          flashUploadError(uploadErrorMessage(err, "Image upload failed"));
         }
+        continue;
+      }
+
+      if (isDirectory) {
+        const folderToken = mentionTokenForDroppedPath({
+          osPath,
+          repo,
+          isDirectory: true,
+        });
+        if (folderToken) {
+          mentions.push(folderToken);
+          continue;
+        }
+        flashUploadError(
+          "Folders outside the open workspace cannot be attached. Open that folder as the workspace, or drop a file from it.",
+        );
         continue;
       }
 
@@ -1733,9 +1759,8 @@ export default function Conversation({
         mentions.push(insideToken);
         continue;
       }
-      // Outside repo: upload then @-mention (quoted when the path has spaces).
       try {
-        const uploaded = await api.uploadImage(file); // generic file upload endpoint
+        const uploaded = await api.uploadImage(file);
         const token = mentionTokenForDroppedPath({
           osPath: "",
           repo,
@@ -1745,7 +1770,7 @@ export default function Conversation({
         else flashUploadError("Dropped file could not be attached");
       } catch (err) {
         console.error("Failed to upload dropped file:", err);
-        flashUploadError("File upload failed");
+        flashUploadError(uploadErrorMessage(err, "File upload failed"));
       }
     }
 

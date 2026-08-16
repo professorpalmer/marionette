@@ -203,6 +203,42 @@ export function cycleSelectIndex(
   return (current + delta + total) % total;
 }
 
+/** Normalize OS paths so Windows `\` compares and mentions like POSIX `/`. */
+export function normalizeOsPath(path: string): string {
+  return String(path || "").replace(/\\/g, "/").replace(/\/+$/, "");
+}
+
+/** True when `osPath` is the repo root or a file/folder inside it. */
+export function pathIsInsideRepo(osPath: string, repo: string): boolean {
+  const a = normalizeOsPath(osPath);
+  const b = normalizeOsPath(repo);
+  if (!a || !b) return false;
+  const al = a.toLowerCase();
+  const bl = b.toLowerCase();
+  return al === bl || al.startsWith(bl + "/");
+}
+
+/**
+ * Electron no longer puts the OS path on `File.path`. Prefer
+ * `webUtils.getPathForFile` exposed as `harnessIPC.pathForFile`.
+ */
+export function resolveDroppedOsPath(file: { path?: string }): string {
+  const ipc =
+    typeof window !== "undefined"
+      ? (window as unknown as { harnessIPC?: { pathForFile?: (f: unknown) => string } })
+          .harnessIPC?.pathForFile
+      : undefined;
+  if (typeof ipc === "function") {
+    try {
+      const resolved = ipc(file);
+      if (resolved) return normalizeOsPath(String(resolved));
+    } catch {
+      // fall through to the legacy File.path field
+    }
+  }
+  return normalizeOsPath(String(file?.path || ""));
+}
+
 /**
  * Resolve a dropped non-image file/folder to an @-mention token.
  * Paths with spaces become quoted tokens (@"path with spaces.ts") so the
@@ -216,22 +252,31 @@ export function mentionTokenForDroppedPath(opts: {
   uploadedPath?: string;
   isDirectory?: boolean;
 }): string | null {
-  const { osPath, repo, uploadedPath, isDirectory } = opts;
-  const kind = isDirectory ? "folder" : "file";
-  const insideRepo =
-    !!osPath && !!repo && (osPath === repo || osPath.startsWith(repo + "/"));
-  if (insideRepo) {
+  const osPath = normalizeOsPath(opts.osPath);
+  const repo = normalizeOsPath(opts.repo);
+  const uploadedPath = opts.uploadedPath ? normalizeOsPath(opts.uploadedPath) : "";
+  const kind = opts.isDirectory ? "folder" : "file";
+  if (pathIsInsideRepo(osPath, repo)) {
     const rel = osPath.slice(repo.length + 1);
     if (!rel) return null;
     return formatMentionToken(rel, kind);
   }
   if (!uploadedPath) return null;
   const rel =
-    repo && uploadedPath.startsWith(repo + "/")
+    repo && pathIsInsideRepo(uploadedPath, repo)
       ? uploadedPath.slice(repo.length + 1)
       : uploadedPath;
   if (!rel) return null;
   return formatMentionToken(rel, kind);
+}
+
+/** Prefer the server/upload Error message over a generic flash. */
+export function uploadErrorMessage(err: unknown, fallback: string): string {
+  if (err instanceof Error) {
+    const msg = String(err.message || "").trim();
+    if (msg && msg !== "Upload failed") return msg;
+  }
+  return fallback;
 }
 
 /** Append mention tokens to the composer, adding a leading space when needed. */

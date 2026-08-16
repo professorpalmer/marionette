@@ -183,6 +183,10 @@ import {
   filterMentionPaths,
   filterSlashCommands,
   mentionTokenForDroppedPath,
+  normalizeOsPath,
+  pathIsInsideRepo,
+  resolveDroppedOsPath,
+  uploadErrorMessage,
 } from "../components/conversation/composerInput";
 import {
   blankMsgQueueOnSessionSwitch,
@@ -2834,6 +2838,39 @@ describe("composerInput module", () => {
       }),
     ).toBe('@"/tmp/cool file.txt"');
     expect(appendMentionsToInput("hi", ["@a", "@b"])).toBe("hi @a @b ");
+    expect(normalizeOsPath("C:\\repo\\a.ts")).toBe("C:/repo/a.ts");
+    expect(pathIsInsideRepo("C:\\repo\\a.ts", "C:/repo")).toBe(true);
+    expect(pathIsInsideRepo("C:\\other\\a.ts", "C:/repo")).toBe(false);
+    expect(
+      mentionTokenForDroppedPath({
+        osPath: "C:\\repo\\src\\a.ts",
+        repo: "C:\\repo",
+      }),
+    ).toBe("@src/a.ts");
+    expect(
+      mentionTokenForDroppedPath({
+        osPath: "C:\\repo\\docs",
+        repo: "C:/repo",
+        isDirectory: true,
+      }),
+    ).toBe("@folder:docs");
+    expect(
+      mentionTokenForDroppedPath({
+        osPath: "/Users/me/paper.md",
+        repo: "/repo",
+      }),
+    ).toBeNull();
+    expect(uploadErrorMessage(new Error("Upload failed"), "File upload failed")).toBe(
+      "File upload failed",
+    );
+    expect(uploadErrorMessage(new Error("This file type cannot be attached."), "File upload failed")).toBe(
+      "This file type cannot be attached.",
+    );
+    const prevIpc = (window as any).harnessIPC;
+    (window as any).harnessIPC = { pathForFile: () => "/abs/dropped.md" };
+    expect(resolveDroppedOsPath({ path: "" })).toBe("/abs/dropped.md");
+    if (prevIpc === undefined) delete (window as any).harnessIPC;
+    else (window as any).harnessIPC = prevIpc;
   });
 });
 

@@ -239,3 +239,34 @@ def test_upload_rejects_single_quoted_boundary():
             assert e.code == 400
             data = json.loads(e.read().decode())
             assert "quoted" in data["error"].lower() or "boundary" in data["error"].lower()
+
+
+def test_save_upload_accepts_markdown(tmp_path):
+    from harness.api.files import save_upload
+
+    body, ctype = _multipart("file", "paper.md", b"# title\n", "text/markdown")
+    status, payload = save_upload(body, ctype, str(tmp_path))
+    assert status == 200
+    assert payload["saved"]
+    assert payload["saved"][0]["path"].endswith(".md")
+    assert os.path.exists(payload["saved"][0]["path"])
+
+
+def test_save_upload_rejects_exe_and_extensionless(tmp_path):
+    from harness.api.files import save_upload
+
+    body, ctype = _multipart("file", "payload.exe", b"MZ", "application/octet-stream")
+    status, payload = save_upload(body, ctype, str(tmp_path))
+    assert status == 400
+    assert payload.get("saved") == []
+    assert "cannot be attached" in (payload.get("error") or "")
+
+    body, ctype = _multipart(
+        "file", "authority-spoof", b"not an image", "application/octet-stream"
+    )
+    status, payload = save_upload(body, ctype, str(tmp_path))
+    assert status == 400
+    assert not any(
+        str(item.get("path") or "").endswith(".png")
+        for item in payload.get("saved") or []
+    )

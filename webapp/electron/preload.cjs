@@ -1,7 +1,7 @@
 // Preload: exposes window.harnessIPC implementing the renderer's transport seam
 // (lib/transport.ts checks for window.harnessIPC and routes through it). Plus
 // native fs/git bridges for the file-tree and source-control panels.
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 let streamSeq = 0;
 
@@ -13,6 +13,15 @@ contextBridge.exposeInMainWorld("harnessIPC", {
   // Open a URL in the OS default browser (escape hatch when in-app Google OAuth rejects).
   openExternal: (url) => ipcRenderer.invoke("browser:openExternal", url),
   uploadFile: (payload) => ipcRenderer.invoke("harness:uploadFile", payload),
+  // Electron no longer sets File.path; this is the supported drop-path API.
+  pathForFile: (file) => {
+    try {
+      if (webUtils && typeof webUtils.getPathForFile === "function") {
+        return webUtils.getPathForFile(file) || "";
+      }
+    } catch (_) {}
+    return "";
+  },
   // Fire-and-forget: persist a caught renderer error to the Electron main log so
   // a UI crash is diagnosable from ~/.pmharness/electron.log without devtools.
   logError: (payload) => { try { ipcRenderer.send("harness:rendererError", payload); } catch (_) {} },
