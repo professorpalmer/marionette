@@ -3,12 +3,16 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from harness.api.jobs import canonical_job_outcome
+from harness.api.jobs import (
+    canonical_job_outcome,
+    get_swarm_live,
+    make_job_services,
+)
 from harness.server import (
     _job_status_is_terminal,
     _slim_swarm_list_artifacts,
 )
-from puppetmaster.models import Artifact, ArtifactType
+from puppetmaster.models import Artifact, ArtifactType, Task, TaskStatus
 
 
 def _art(
@@ -81,6 +85,65 @@ def test_slim_keeps_routing_and_verdicts_drops_findings():
     assert "finding" not in types
     assert "risk" not in types
     assert len(slim) == 2
+
+
+def test_swarm_live_projects_each_tasks_final_routed_model():
+    tasks = [
+        Task(job_id="job-1", id="t1", role="one", instruction="", status=TaskStatus.COMPLETE, adapter="agentic"),
+        Task(job_id="job-1", id="t2", role="two", instruction="", status=TaskStatus.COMPLETE, adapter="agentic"),
+    ]
+    artifacts = [
+        Artifact(
+            job_id="job-1", task_id="t1", type=ArtifactType.ROUTING,
+            created_by="router", payload={"model_id": "model-a"},
+            confidence=1.0, evidence=["route"],
+        ),
+        Artifact(
+            job_id="job-1", task_id="t2", type=ArtifactType.ROUTING,
+            created_by="router", payload={"model_id": "model-b"},
+            confidence=1.0, evidence=["route"],
+        ),
+    ]
+
+    class Store:
+        def list_artifacts_for_jobs(self, _job_ids):
+            return artifacts
+
+        def list_tasks_for_jobs(self, _job_ids):
+            return tasks
+
+    store = Store()
+    state = SimpleNamespace(store=store, format_artifacts=_Fmt().format_artifacts)
+    pilot = SimpleNamespace(
+        harness_session_id="", live_local_jobs=lambda: [],
+        _tokens_used=0, _tokens_cached=0, _worker_tokens_in=0,
+        _worker_tokens_out=0, _provider_cost_usd=0.0,
+    )
+    errors = []
+    svc = make_job_services(
+        cfg=SimpleNamespace(driver="agentic", repo="/repo", state_dir="/tmp"),
+        sessions=SimpleNamespace(active=""),
+        get_pilot=lambda: pilot,
+        get_session=lambda: SimpleNamespace(state=lambda: state),
+        diag=lambda *args, **_kwargs: errors.append(args),
+        scoped_jobs_with_stores=lambda **_k: ([{
+            "id": "job-1", "status": "complete", "goal": "two models",
+            "adapter": "agentic", "source": "harness",
+            "accounting_owned": True, "accounting_scope": "marionette",
+        }], store, None),
+        job_status_is_terminal=lambda _status: True,
+        slim_swarm_list_artifacts=_slim_swarm_list_artifacts,
+        job_swarm_accounting=lambda *_a, **_k: (0, 0.0),
+    )
+
+    code, payload = get_swarm_live("/repo", svc)
+
+    assert code == 200
+    assert payload["jobs"], errors
+    assert {task["id"]: task.get("model") for task in payload["jobs"][0]["tasks"]} == {
+        "t1": "model-a",
+        "t2": "model-b",
+    }
 
 
 def test_canonical_outcome_uses_full_raw_artifacts_before_slim():

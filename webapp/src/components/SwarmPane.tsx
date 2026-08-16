@@ -247,7 +247,7 @@ function swarmSignature(res: SwarmLive | null): string {
     );
     for (const t of tasks) {
       parts.push(
-        `${t.id}=${t.status}:${t.tokens ?? 0}:${(t.est_cost_usd ?? 0).toFixed(4)}`,
+        `${t.id}=${t.status}:${t.model ?? ""}:${t.tokens ?? 0}:${(t.est_cost_usd ?? 0).toFixed(4)}`,
       );
     }
     for (const a of arts) {
@@ -1327,7 +1327,7 @@ export default function SwarmPane() {
                     const hasInstruction = !!task.instruction;
                     // Prefer a real routed model over repeating the engine label
                     // already present in role ("implement (agentic) (agentic)").
-                    const taskModelLabel = displayModelId(task.model || "", {}) || displayModel;
+                    const taskModelLabel = displayModelId(task.model || "", {});
                     const adapterLabel = (task.adapter || "").trim();
                     const secondaryLabel = taskModelLabel
                       || (adapterLabel && !isEngineOnlyModelId(adapterLabel) ? adapterLabel : "");
