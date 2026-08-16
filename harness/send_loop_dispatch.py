@@ -741,6 +741,31 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                 )
         except Exception:
             pass
+    try:
+        from .pilot_guards import note_kernel_recovery_from_result
+        gs = getattr(session, '_turn_guard_state', None)
+        if gs is not None and not _swarm_ok:
+            _art_notes = []
+            for _art in list(getattr(result, 'artifacts', None) or []):
+                if not isinstance(_art, dict):
+                    continue
+                _art_notes.append(str(
+                    _art.get('headline') or _art.get('failure')
+                    or _art.get('summary') or _art.get('body') or ''
+                ))
+            _kernel_blob = '\n'.join(
+                str(part) for part in (
+                    _badge_summary,
+                    _badge_error,
+                    auth_failure,
+                    getattr(result, 'error', '') or '',
+                    getattr(result, 'message', '') or '',
+                    *_art_notes,
+                ) if part
+            )
+            note_kernel_recovery_from_result(gs, 'run_swarm', _kernel_blob)
+    except Exception:
+        pass
     # Only surfaced artifacts become turn findings; a refused demo contributes none.
     turn_findings.extend((a for a in _all_arts if a.get('type') != 'verification'))
     full_digest_raw = (getattr(act, 'arguments', None) or {}).get('full_digest')

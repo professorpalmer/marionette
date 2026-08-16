@@ -35,6 +35,7 @@ from harness.pilot_guards import (
     is_broad_intent_user_message,
     is_exploration_command,
     is_headless_chrome_file_smoke_command,
+    is_local_handoff_command,
     is_native_exploration,
     is_puppetmaster_cli_command,
     is_swarm_gate_blocked_exploration,
@@ -47,6 +48,9 @@ from harness.pilot_guards import (
     normalize_action_args,
     note_implement_exhausted_from_provenance,
     note_implement_success_from_job_result,
+    note_kernel_recovery,
+    note_kernel_recovery_from_result,
+    result_shows_kernel_failure,
     post_implement_tool_allowance,
     puppetmaster_cli_native_mapping,
     record_action_execution,
@@ -777,6 +781,81 @@ def test_echo_not_blocked_on_narrow_turn():
     assert is_swarm_gate_blocked_exploration(state, "run_command", act) is False
     verdict = check_swarm_gate(state, "run_command", act)
     assert verdict.suppress is False
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo 'handoff summary' | pbcopy",
+        "printf '%s' \"$note\" | pbcopy",
+        "pbpaste",
+        "echo hi | clip",
+        "Set-Clipboard -Value 'handoff'",
+        "xclip -selection clipboard",
+        "wl-copy",
+    ],
+)
+def test_clipboard_handoff_is_not_exploration(command):
+    assert is_local_handoff_command(command) is True
+    assert is_exploration_command(command) is False
+    assert is_native_exploration("run_command", _Act(command=command)) is False
+
+
+def test_delegate_gate_allows_clipboard_after_threshold():
+    state = new_turn_guard_state()
+    for i in range(DELEGATE_THRESHOLD):
+        record_action_execution(state, "read_file", _Act(kind="read_file", path=f"f{i}.py"))
+    act = _Act(kind="run_command", command="echo 'handoff' | pbcopy")
+    assert check_delegate_gate(state, "run_command", act).suppress is False
+    assert check_pilot_guards(state, "run_command", act).suppress is False
+
+
+def test_result_shows_kernel_failure_markers():
+    luna_400 = (
+        "HTTP 400: Function tools with reasoning_effort are not supported "
+        "for gpt-5.6-luna in /v1/chat/completions. Use /v1/responses or "
+        "set reasoning_effort to 'none'."
+    )
+    assert result_shows_kernel_failure(luna_400) is True
+    assert result_shows_kernel_failure("preflight_blocked: puppetmaster unavailable") is True
+    assert result_shows_kernel_failure("swarm produced no FINDING/RISK/DECISION artifacts") is False
+    assert result_shows_kernel_failure("") is False
+
+
+def test_kernel_recovery_lifts_swarm_and_delegate_gates():
+    state = new_turn_guard_state("Give me an audit of this directory")
+    for i in range(DELEGATE_THRESHOLD):
+        record_action_execution(state, "read_file", _Act(kind="read_file", path=f"z{i}.py"))
+    record_action_execution(state, "run_swarm", _Act(kind="run_swarm", goal="map auth"))
+    assert state.swarm_dispatched is True
+    assert state.delegation_seen is True
+
+    list_act = _Act(kind="list_dir", path=".")
+    rg_act = _Act(kind="run_command", command="rg reasoning_effort")
+    assert is_swarm_gate_blocked_exploration(state, "list_dir", list_act) is True
+    assert check_swarm_gate(state, "list_dir", list_act).suppress is True
+    assert check_swarm_gate(state, "run_command", rg_act).suppress is True
+
+    note_kernel_recovery_from_result(
+        state,
+        "run_swarm",
+        "HTTP 400: Function tools with reasoning_effort are not supported",
+    )
+    assert state.kernel_recovery is True
+    assert is_swarm_gate_blocked_exploration(state, "list_dir", list_act) is False
+    assert check_swarm_gate(state, "list_dir", list_act).suppress is False
+    assert check_swarm_gate(state, "run_command", rg_act).suppress is False
+    assert check_delegate_gate(state, "search_files", _Act(query="adapter")).suppress is False
+
+
+def test_kernel_recovery_still_loop_blocks_identical_swarm():
+    state = new_turn_guard_state("Give me an audit of this directory")
+    act = _Act(kind="run_swarm", goal="map auth")
+    record_action_execution(state, "run_swarm", act)
+    note_kernel_recovery(state)
+    verdict = check_pilot_guards(state, "run_swarm", act)
+    assert verdict.suppress is True
+    assert verdict.reason == "loop"
 
 
 @pytest.mark.parametrize(
