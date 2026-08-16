@@ -13,6 +13,7 @@ import {
   SWARM_AWAIT_HINT,
   swarmResultsAwaitChromeClear,
   terminalJobIdsFromSwarmLive,
+  terminalJobIdsNeedingResultRecovery,
   triggerResumeGate,
   waitHintForAssistantDone,
 } from "../components/conversation/swarmPoll";
@@ -490,6 +491,42 @@ describe("swarm await chrome", () => {
     ).toEqual(["job_alive"]);
     expect(pruneTerminalJobIds(["job_alive"], [])).toEqual(["job_alive"]);
     expect(pruneTerminalJobIds([], ["job_done"])).toEqual([]);
+  });
+
+  it("recovers a missed terminal result through the durable drain exactly once", () => {
+    const pending = [{
+      kind: "swarm_pending",
+      job_ids: ["job_failed"],
+      objective: "repair terminal continuation",
+      status: "running",
+      resolved: false,
+    }] as Item[];
+
+    expect(terminalJobIdsNeedingResultRecovery(
+      ["job_failed"],
+      ["job_failed", "job_other_session"],
+      pending,
+    )).toEqual(["job_failed"]);
+
+    const delivered = [...pending, {
+      kind: "swarm_result",
+      job_id: "job_failed",
+      objective: "repair terminal continuation",
+      applied: false,
+      files: [],
+      summary: "Background work failed.",
+      error: "worker died",
+    }] as Item[];
+    expect(terminalJobIdsNeedingResultRecovery(
+      ["job_failed"],
+      ["job_failed"],
+      delivered,
+    )).toEqual([]);
+    expect(terminalJobIdsNeedingResultRecovery(
+      ["job_failed"],
+      ["job_other_session"],
+      pending,
+    )).toEqual([]);
   });
 
   it("fences trailing getSessionState apply so late session-A poll cannot mutate B", () => {

@@ -1149,20 +1149,7 @@ class ConversationJobsMixin:
                 if isinstance(row, dict)
                 and str(row.get("type") or "") in ("finding", "risk", "decision")
             ]
-            self._finish_local_job(
-                job_id,
-                ok=not res_dict.get("error"),
-                summary=res_dict.get("summary", ""),
-                files=res_dict.get("files") or [],
-                tokens=res_dict.get("tokens_out", 0) + res_dict.get("tokens_in", 0),
-                est_cost_usd=float(getattr(res, "est_cost_usd", 0.0) or 0.0),
-                engine=wr_engine,
-                model=wr_model,
-                findings=_signal_rows,
-                diff=(getattr(res, "patch", "") or ""),
-                worker_provenance=provenance,
-            )
-            # Copy reuse provenance from the stamped local job onto the queued
+            # Copy reuse provenance from the registered local job onto the queued
             # result so drain/SSE hydrate stay honest after reload.
             try:
                 stamped = (getattr(self, "_local_jobs", {}) or {}).get(job_id) or {}
@@ -1185,6 +1172,22 @@ class ConversationJobsMixin:
                 "result": res_dict,
                 "state_dir": None
             })
+            # Queue the chat continuation before publishing terminal tracker
+            # status. Otherwise swarm/live can prune the final pending id and
+            # disable the only drain poll while this result is not yet visible.
+            self._finish_local_job(
+                job_id,
+                ok=not res_dict.get("error"),
+                summary=res_dict.get("summary", ""),
+                files=res_dict.get("files") or [],
+                tokens=res_dict.get("tokens_out", 0) + res_dict.get("tokens_in", 0),
+                est_cost_usd=float(getattr(res, "est_cost_usd", 0.0) or 0.0),
+                engine=wr_engine,
+                model=wr_model,
+                findings=_signal_rows,
+                diff=(getattr(res, "patch", "") or ""),
+                worker_provenance=provenance,
+            )
 
         except Exception as e:
             try:
@@ -1209,10 +1212,6 @@ class ConversationJobsMixin:
                 return
             failure_text = _worker_provenance_text(failure_provenance)
             failure_summary = f"{failure_text}\nFailed background worker: {e}".strip()
-            self._finish_local_job(
-                job_id, ok=False, summary=failure_summary,
-                worker_provenance=failure_provenance,
-            )
             self._swarm_results.put({
                 "job_id": job_id,
                 "objective": objective,
@@ -1234,6 +1233,12 @@ class ConversationJobsMixin:
                 },
                 "state_dir": None
             })
+            # The result queue owns the durable/visible terminal continuation;
+            # publish failed tracker state only after that continuation exists.
+            self._finish_local_job(
+                job_id, ok=False, summary=failure_summary,
+                worker_provenance=failure_provenance,
+            )
         finally:
             # Free the objective for legitimate future dispatch regardless of
             # how this worker settled (applied, failed, or crashed).

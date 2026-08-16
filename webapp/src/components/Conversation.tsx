@@ -152,6 +152,7 @@ import {
   SWARM_AWAIT_HINT,
   swarmResultsAwaitChromeClear,
   terminalJobIdsFromSwarmLive,
+  terminalJobIdsNeedingResultRecovery,
   triggerResumeGate,
 } from "./conversation/swarmPoll";
 import { armResumeKick } from "./conversation/sessionResumeLatch";
@@ -1959,6 +1960,7 @@ export default function Conversation({
     () => {
       const pollSid = activeSessionId;
       const pollGen = transcriptLoadGenRef.current;
+      let pollResumeFired = false;
       return api.getSwarmResults()
         .then((res) => {
           // Same session+gen fence as swarmLive: do not apply pilot_resume /
@@ -1975,7 +1977,6 @@ export default function Conversation({
           if (res && res.results && res.results.length > 0) {
             // At most one triggerResume per poll tick (first pilot_resume wins;
             // extras only set resumeQueuedRef). Mid-stream path already coalesces.
-            let pollResumeFired = false;
             res.results.forEach((evt) => {
               if (!shouldApplySwarmLiveMerge({
                 pollGen,
@@ -2049,6 +2050,11 @@ export default function Conversation({
             );
             const terminalIds = terminalJobIdsFromSwarmLive(jobs);
             const hasTerminal = terminalIds.length > 0;
+            const recoveryIds = terminalJobIdsNeedingResultRecovery(
+              pendingJobIdsRef.current,
+              terminalIds,
+              itemsRef.current,
+            );
             // Live terminal status must prune await trackers even when drain
             // never delivered swarm_result (busy-held starve / missed poll).
             if (hasTerminal) {
@@ -2074,6 +2080,44 @@ export default function Conversation({
                   return prev;
                 }
                 return mergeJobActionsIntoItems(prev, jobs);
+              });
+            }
+            if (recoveryIds.length > 0) {
+              const recoverySet = new Set(recoveryIds);
+              return api.getSwarmResults().then((recovered) => {
+                if (!shouldApplySwarmLiveMerge({
+                  pollGen,
+                  currentGen: transcriptLoadGenRef.current,
+                  pollSessionId: pollSid,
+                  cachedSessionId: cachedSessionIdRef.current,
+                  activeSessionId: cachedSessionIdRef.current,
+                })) {
+                  return null;
+                }
+                for (const evt of recovered?.results || []) {
+                  const action = classifySwarmPollEvent(evt);
+                  if (
+                    action.kind === "swarm_result"
+                    && recoverySet.has(String(action.data?.job_id || ""))
+                  ) {
+                    handleSwarmResult(action.data);
+                  } else if (action.kind === "pilot_resume") {
+                    const resumeAct = pilotResumePollAction({
+                      userStopped: userStoppedRef.current,
+                      alreadyFired: pollResumeFired,
+                    });
+                    if (resumeAct === "suppress_clear_hint") {
+                      setWaitHint((prev) => clearSwarmAwaitWaitHint(prev));
+                    } else if (resumeAct === "fire_looking") {
+                      pollResumeFired = true;
+                      setWaitHint(PILOT_LOOKING_HINT);
+                      resumeTriggerRef.current();
+                    } else {
+                      resumeQueuedRef.current = true;
+                    }
+                  }
+                }
+                return api.getSessionState();
               });
             }
             return api.getSessionState();
