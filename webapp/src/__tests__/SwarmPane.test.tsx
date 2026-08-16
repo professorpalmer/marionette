@@ -149,6 +149,54 @@ describe("SwarmPane model badge", () => {
     });
     expect(screen.queryByTitle("Model: agentic")).not.toBeInTheDocument();
   });
+
+  it("shows each worker's own model without inheriting the job model", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        model: "job-default",
+        adapter: "agentic",
+        tasks: [
+          { id: "task-a", status: "running", adapter: "agentic", role: "worker-a", instruction: "", model: "model-a" },
+          { id: "task-b", status: "running", adapter: "agentic", role: "worker-b", instruction: "", model: "model-b" },
+          { id: "task-unknown", status: "running", adapter: "agentic", role: "worker-unknown", instruction: "" },
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+
+    await waitFor(() => {
+      expect(screen.getByText("(model-a)")).toBeInTheDocument();
+      expect(screen.getByText("(model-b)")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("(job-default)")).not.toBeInTheDocument();
+  });
+
+  it("updates a worker model when routing settles on a later poll", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let pollCount = 0;
+      mockSwarmLive.mockImplementation(async () => {
+        pollCount += 1;
+        return liveJob({
+          model: "job-default",
+          adapter: "agentic",
+          tasks: [{
+            id: "task-1", status: "running", adapter: "agentic",
+            role: "worker", instruction: "",
+            ...(pollCount > 2 ? { model: "routed-model" } : {}),
+          }],
+        });
+      });
+
+      render(<SwarmPane />);
+      await waitFor(() => expect(screen.queryByText("(routed-model)")).not.toBeInTheDocument());
+      await vi.advanceTimersByTimeAsync(6000);
+      await waitFor(() => expect(screen.getByText("(routed-model)")).toBeInTheDocument());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("SwarmPane pin attribution", () => {

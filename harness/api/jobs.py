@@ -486,6 +486,12 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
                         "adapter": getattr(t, "adapter", ""),
                         "completed_at": getattr(t, "completed_at", None),
                     }
+                    task_model = resolve_job_model(
+                        [a for a in raw_arts if getattr(a, "task_id", "") == tid],
+                        [t],
+                    ) if tid else ""
+                    if task_model:
+                        entry["model"] = task_model
                     acct = task_accounting.get(tid) if tid else None
                     if acct:
                         t_tokens = int(acct.get("tokens") or 0)
