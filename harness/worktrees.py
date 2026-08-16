@@ -648,7 +648,7 @@ def reap_stale_managed_worktrees(repo: str, max_age_seconds: float = 0) -> dict:
                 continue
         try:
             remove_worktree(repo, path, force=True)
-            removed.append(path)
+            removed.append(os.path.abspath(path))
         except Exception as exc:
             logger.warning("failed to reap stale managed worktree %s: %s", path, exc)
 

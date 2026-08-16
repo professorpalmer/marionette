@@ -158,6 +158,15 @@ def _create_branch(repo: str, name: str) -> None:
     )
 
 
+def _norm_path(path: str) -> str:
+    """Compare worktree paths across git porcelain (forward slashes on Windows)."""
+    return os.path.normcase(os.path.realpath(path))
+
+
+def _path_set(paths) -> set[str]:
+    return {_norm_path(p) for p in paths if p}
+
+
 def _branch_list(repo: str) -> set[str]:
     out = subprocess.run(
         ["git", "-C", repo, "branch", "--format=%(refname:short)"],
@@ -211,12 +220,13 @@ def test_reap_stale_managed_worktrees_removes_leftover_pmedit():
         leftover = _wt.add_worktree(repo, "pmedit-leftover1")
         user_wt = _wt.add_worktree(repo, "feature-keep")
         result = _wt.reap_stale_managed_worktrees(repo)
-        assert leftover["path"] in result["removed"]
+        removed = _path_set(result["removed"])
+        assert _norm_path(leftover["path"]) in removed
         assert result["count"] == 1
-        paths = {wt["path"] for wt in _wt.list_worktrees(repo)}
-        assert leftover["path"] not in paths
-        assert user_wt["path"] in paths
-        assert os.path.realpath(repo) in {os.path.realpath(p) for p in paths}
+        paths = _path_set(wt["path"] for wt in _wt.list_worktrees(repo))
+        assert _norm_path(leftover["path"]) not in paths
+        assert _norm_path(user_wt["path"]) in paths
+        assert _norm_path(repo) in paths
         assert "pmedit-leftover1" not in _branch_list(repo)
         assert "feature-keep" in _branch_list(repo)
     finally:
@@ -231,7 +241,7 @@ def test_reap_stale_managed_worktrees_skips_registered_live_pid():
         live = _wt.add_worktree(repo, "pmedit-live01")
         _wt.register_worktree_process(live["path"], 424242, kind="worker")
         result = _wt.reap_stale_managed_worktrees(repo)
-        assert live["path"] not in result["removed"]
+        assert _norm_path(live["path"]) not in _path_set(result["removed"])
         assert os.path.isdir(live["path"])
         assert "pmedit-live01" in _branch_list(repo)
     finally:
@@ -246,10 +256,10 @@ def test_reap_stale_managed_worktrees_honors_max_age():
     try:
         recent = _wt.add_worktree(repo, "pmedit-recent1")
         kept = _wt.reap_stale_managed_worktrees(repo, max_age_seconds=3600)
-        assert recent["path"] not in kept["removed"]
+        assert _norm_path(recent["path"]) not in _path_set(kept["removed"])
         assert os.path.isdir(recent["path"])
         reaped = _wt.reap_stale_managed_worktrees(repo, max_age_seconds=0)
-        assert recent["path"] in reaped["removed"]
+        assert _norm_path(recent["path"]) in _path_set(reaped["removed"])
         assert not os.path.isdir(recent["path"])
     finally:
         shutil.rmtree(repo, ignore_errors=True)
