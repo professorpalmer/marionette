@@ -43,7 +43,7 @@ function Tooltip({ label, children, className }: { label: string; children: Reac
   );
 }
 
-type Status = "pending" | "in_progress" | "completed" | "degraded" | "failed" | "cancelled";
+type Status = "pending" | "in_progress" | "completed" | "failed" | "cancelled";
 
 // Compact "how long ago" label for a job's last activity. Accepts epoch seconds
 // or an ISO string (the backend sends created_at/updated_at as either). Returns
@@ -128,14 +128,7 @@ function jobStatus(j: Job): Status {
     return "failed";
   }
   if (s.includes("run") || s.includes("progress") || s.includes("active")) return "in_progress";
-  if (s.includes("complete") || s.includes("done")) {
-    const quality = String(j.outcome?.quality || "").toLowerCase();
-    if (quality === "blocked") return "failed";
-    if (quality === "degraded" || quality === "empty" || j.outcome?.trustworthy === false) {
-      return "degraded";
-    }
-    return "completed";
-  }
+  if (s.includes("complete") || s.includes("done")) return "completed";
   return "pending";
 }
 
@@ -144,7 +137,7 @@ function jobStatus(j: Job): Status {
 // into a wall.
 function isTerminal(j: Job): boolean {
   const st = jobStatus(j);
-  return st === "completed" || st === "degraded" || st === "failed" || st === "cancelled";
+  return st === "completed" || st === "failed" || st === "cancelled";
 }
 
 function taskState(t: Task): "running" | "done" | "fail" | "idle" {
@@ -339,8 +332,18 @@ function mergeSwarmLive(prev: SwarmLive | null | undefined, next: SwarmLive): Sw
     jobs: (next.jobs || []).map((j) => {
       const old = prevById.get(j.id);
       if (!old) return j;
-      // Keep a previously hydrated full artifact list when the poll is slim.
-      if (j.artifacts_complete === false && old.artifacts_complete === true) {
+      // Keep hydrated artifacts only while the fresh row remains healthy. A
+      // failed or non-trustworthy terminal poll is authoritative and must not
+      // retain stale success evidence from an earlier expansion of the same job.
+      const freshStatus = jobStatus(j);
+      const mayKeepHydrated = freshStatus !== "failed"
+        && freshStatus !== "cancelled"
+        && j.outcome?.trustworthy !== false;
+      if (
+        mayKeepHydrated
+        && j.artifacts_complete === false
+        && old.artifacts_complete === true
+      ) {
         return {
           ...j,
           artifacts: old.artifacts,
@@ -551,8 +554,10 @@ function jobPhase(j: Job): { key: string; label: string; index: number; failed: 
     const label = st === "cancelled" ? "cancelled" : "failed";
     return { key: label, label, index: reached, failed: true };
   }
-  if (st === "degraded") return { key: "degraded", label: "degraded", index: 3, failed: false };
-  if (st === "completed") return { key: "done", label: "done", index: 3, failed: false };
+  if (st === "completed") {
+    const label = j.outcome?.trustworthy === false ? j.outcome.quality : "done";
+    return { key: "done", label, index: 3, failed: false };
+  }
   if (total > 0 && running > 0) return { key: "workers", label: `running ${doneCount}/${total}`, index: 2, failed: false };
   if (total > 0) return { key: "workers", label: `${total} worker${total > 1 ? "s" : ""}`, index: 2, failed: false };
   if (hasRouting) return { key: "routing", label: "routing", index: 1, failed: false };
@@ -561,7 +566,8 @@ function jobPhase(j: Job): { key: string; label: string; index: number; failed: 
 
 function PhaseStrip({ job, phase }: { job: Job; phase?: ReturnType<typeof jobPhase> }) {
   const { index, failed, key } = phase ?? jobPhase(job);
-  const active = key !== "done" && key !== "degraded" && !failed;
+  const warning = jobStatus(job) === "completed" && job.outcome?.trustworthy === false;
+  const active = key !== "done" && !failed;
   return (
     <div className="flex items-center gap-1 mt-1.5" title={PHASES.join(" -> ")}>
       {PHASES.map((_, i) => {
@@ -569,8 +575,10 @@ function PhaseStrip({ job, phase }: { job: Job; phase?: ReturnType<typeof jobPha
         const isActiveSeg = i === index && active;
         const color = failed && i === index
           ? (key === "cancelled" ? "bg-muted" : "bg-risk")
+          : warning && reached
+          ? "bg-warn"
           : reached
-          ? (key === "done" ? "bg-good" : key === "degraded" ? "bg-warn" : "bg-accent")
+          ? (key === "done" ? "bg-good" : "bg-accent")
           : "bg-edge/60";
         return (
           <div
@@ -899,9 +907,10 @@ export default function SwarmPane() {
   const running = visibleJobs.filter((j) => !isTerminal(j));
   const finished = visibleJobs.filter((j) => isTerminal(j));
   const failedCount = finished.filter((j) => jobStatus(j) === "failed").length;
-  const degradedCount = finished.filter((j) => jobStatus(j) === "degraded").length;
   const cancelledCount = finished.filter((j) => jobStatus(j) === "cancelled").length;
-  const completedCount = finished.length - failedCount - degradedCount - cancelledCount;
+  const completedCount = finished.filter(
+    (j) => jobStatus(j) === "completed" && j.outcome?.trustworthy !== false,
+  ).length;
   const runningCount = running.filter((j) => jobStatus(j) === "in_progress").length;
   const anyRunning = runningCount > 0;
 
@@ -926,6 +935,7 @@ export default function SwarmPane() {
   // instead of threading a dozen props.
   const renderJob = (j: Job) => {
     const st = jobStatus(j);
+    const outcomeWarning = st === "completed" && j.outcome?.trustworthy === false;
     const manualExpanded = expandedJobs[j.id];
     const isExpanded = manualExpanded !== undefined ? manualExpanded : (st === "in_progress");
     const phase = jobPhase(j);
@@ -977,12 +987,12 @@ export default function SwarmPane() {
         className={`shrink-0 rounded-md border bg-panel2/20 flex flex-col overflow-hidden transition-colors ${
           st === "in_progress"
             ? "border-accent/30"
-            : st === "completed"
-            ? "border-good/25"
-            : st === "degraded"
-            ? "border-warn/35"
             : st === "failed"
             ? "border-risk/25"
+            : outcomeWarning
+            ? "border-warn/35"
+            : st === "completed"
+            ? "border-good/25"
             : st === "cancelled"
             ? "border-muted/40"
             : "border-edge"
@@ -1005,12 +1015,12 @@ export default function SwarmPane() {
               <span className="shrink-0">
                 {st === "in_progress" ? (
                   <Loader2 size={12} className="animate-spin text-accent" />
-                ) : st === "completed" ? (
-                  <CheckCircle2 size={12} className="text-good" />
-                ) : st === "degraded" ? (
-                  <Circle size={12} className="text-warn" />
                 ) : st === "failed" ? (
                   <XCircle size={12} className="text-risk" />
+                ) : outcomeWarning ? (
+                  <Circle size={12} className="text-warn" />
+                ) : st === "completed" ? (
+                  <CheckCircle2 size={12} className="text-good" />
                 ) : st === "cancelled" ? (
                   <XCircle size={12} className="text-muted" />
                 ) : (
@@ -1148,7 +1158,7 @@ export default function SwarmPane() {
             </div>
           )}
 
-          {st === "degraded" && j.outcome?.reasons?.length ? (
+          {outcomeWarning && j.outcome?.reasons?.length ? (
             <div className="pl-6 pr-1 mt-1 text-[9.5px] text-warn/90">
               {j.outcome.reasons[0]}
             </div>
@@ -1162,7 +1172,7 @@ export default function SwarmPane() {
                 ? "text-muted"
                 : phase.failed
                 ? "text-risk/80"
-                : phase.key === "degraded"
+                : outcomeWarning
                 ? "text-warn/80"
                 : phase.key === "done"
                 ? "text-good/80"
@@ -1573,9 +1583,6 @@ export default function SwarmPane() {
                     <span className="text-faint/60 normal-case tracking-normal">({finished.length})</span>
                     {failedCount > 0 && (
                       <span className="text-risk/70 normal-case tracking-normal">{"\u00b7"} {failedCount} failed</span>
-                    )}
-                    {degradedCount > 0 && (
-                      <span className="text-warn/80 normal-case tracking-normal">{"\u00b7"} {degradedCount} degraded</span>
                     )}
                     {cancelledCount > 0 && (
                       <span className="text-muted normal-case tracking-normal">{"\u00b7"} {cancelledCount} cancelled</span>

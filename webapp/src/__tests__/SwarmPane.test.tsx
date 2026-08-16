@@ -437,6 +437,53 @@ describe("SwarmPane mid-run job-row meters", () => {
     }
   });
 
+  it("drops hydrated success artifacts when the same job becomes degraded", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let pollCount = 0;
+      mockSwarmLive.mockImplementation(async () => {
+        pollCount += 1;
+        if (pollCount <= 2) {
+          return liveJob({
+            id: "job-outcome-flip",
+            goal: "Outcome flips",
+            status: "complete",
+            outcome: { quality: "ok", trustworthy: true, reasons: [] },
+            artifacts_complete: true,
+            artifacts: [{ type: "finding", headline: "stale success finding" }],
+          });
+        }
+        return liveJob({
+          id: "job-outcome-flip",
+          goal: "Outcome flips",
+          status: "complete",
+          outcome: {
+            quality: "degraded",
+            trustworthy: false,
+            reasons: ["only verification artifacts — no findings/decisions/patches"],
+          },
+          artifacts_complete: false,
+          artifacts: [{ type: "verification", headline: "provider failed", result: "failed" }],
+        });
+      });
+
+      render(<SwarmPane />);
+      await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
+      fireEvent.click(screen.getByText("Finished"));
+      fireEvent.click(await screen.findByText("Outcome flips"));
+      expect(await screen.findByText("stale success finding")).toBeInTheDocument();
+
+      await vi.advanceTimersByTimeAsync(6000);
+
+      await waitFor(() => {
+        expect(screen.getByText("degraded")).toBeInTheDocument();
+        expect(screen.queryByText("stale success finding")).not.toBeInTheDocument();
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("refuses visibility-only jobs in jobSavings totals", () => {
     const parts = jobSavings({
       id: "j-ext",
@@ -678,7 +725,6 @@ describe("SwarmPane truthful failed vs cancelled chrome", () => {
 
     render(<SwarmPane />);
     await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
-    expect(screen.getByText(/1 degraded/)).toBeInTheDocument();
     fireEvent.click(screen.getByText("Finished"));
     await waitFor(() => {
       expect(screen.getByText("degraded")).toBeInTheDocument();
