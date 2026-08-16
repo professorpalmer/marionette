@@ -1071,11 +1071,22 @@ ipcMain.handle("harness:uploadFile", async (_e, payload) => {
         let b = "";
         res.on("data", (c) => (b += c));
         res.on("end", () => {
-          try { resolve(JSON.parse(b || "{}").saved || []); }
-          catch { resolve([]); }
+          try {
+            const parsed = JSON.parse(b || "{}");
+            if (res.statusCode >= 400) {
+              resolve({
+                error: parsed.error || `Upload failed (${res.statusCode})`,
+                saved: [],
+              });
+            } else {
+              resolve({ saved: parsed.saved || [] });
+            }
+          } catch {
+            resolve({ error: "Upload failed", saved: [] });
+          }
         });
       });
-      req.on("error", () => resolve([]));
+      req.on("error", () => resolve({ error: "Upload failed", saved: [] }));
       req.write(body);
       req.end();
     });

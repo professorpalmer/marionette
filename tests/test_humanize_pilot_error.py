@@ -79,6 +79,15 @@ def test_context_overflow_is_explained():
     assert "context window" in out.lower()
 
 
+def test_max_tokens_parameter_reject_is_not_overflow():
+    s = _s()
+    out = s._humanize_pilot_error(
+        'HTTP 400: {"error":{"message":"max_tokens is too large"}}'
+    )
+    assert "context window" not in out.lower()
+    assert "pilot:" in out
+
+
 def test_server_error_is_retryable_guidance():
     s = _s()
     out = s._humanize_pilot_error("HTTP 503: service unavailable")

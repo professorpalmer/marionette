@@ -29,12 +29,17 @@ class ErrorClass(str, Enum):
 
 # Phrases that mean "the prompt exceeded the model's context window" across
 # OpenAI, Anthropic, OpenRouter, z.ai, Moonshot, and most compat providers.
+# Do NOT match bare ``max_tokens`` / ``exceeds the maximum``: those fire on
+# completion-limit 400s (Kimi/GLM accept a large max_tokens; other models
+# reject the same request). Compacting history cannot fix that, and the UI
+# then lies with "overflow persists" on a 1% window.
 _CONTEXT_PATTERNS = [
     "context length", "context window", "maximum context",
-    "too many tokens", "reduce the length", "maximum_tokens",
-    "string too long", "prompt is too long", "input is too long",
-    "exceeds the maximum", "context_length_exceeded", "max_tokens",
-    "tokens > ", "request too large",
+    "too many tokens", "reduce the length of the messages",
+    "reduce the length of the prompt",
+    "prompt is too long", "input is too long",
+    "exceeds the maximum context", "exceeded the context",
+    "context_length_exceeded", "request too large",
 ]
 
 # Transient signals that appear in 5xx bodies or network exception reprs.
@@ -77,7 +82,7 @@ def classify(http_status: Optional[int] = None, message: Optional[str] = None) -
     # Context-overflow can surface as a 400 OR (rarely) a 413; the body text is
     # the reliable signal, so check it before the generic 400=fatal rule.
     if any(p in msg for p in _CONTEXT_PATTERNS):
-        # Guard: a 401 mentioning "max_tokens" in a hint is still auth.
+        # Guard: a 401 mentioning a context hint is still auth.
         if http_status not in (401, 403):
             return ErrorClass.CONTEXT_OVERFLOW
 

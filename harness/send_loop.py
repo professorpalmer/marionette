@@ -136,6 +136,41 @@ def profile_skips_auto_inject(session: Any) -> tuple[bool, bool]:
         return False, False
 
 
+# After emergency compact, a remaining "overflow" on a tiny history is almost
+# always a misclassified provider 400 (completion max_tokens), not a window blow.
+OVERFLOW_RETRY_SMALL_CONTEXT_TOKENS = 16_000
+
+
+def format_overflow_persist_error(
+    raw: str,
+    estimated_tokens: int,
+    humanize: Any,
+) -> str:
+    """Humanize a second overflow after emergency compact. Never the raw persist string."""
+    text = str(raw or "").strip() or "the provider rejected the compacted turn"
+    if int(estimated_tokens or 0) < OVERFLOW_RETRY_SMALL_CONTEXT_TOKENS:
+        try:
+            from harness.api.redaction import redact_api_secrets
+
+            tail = str(redact_api_secrets(text) or text)[:160]
+        except Exception:
+            tail = text[:160]
+        return (
+            "pilot: the provider rejected this turn after history was "
+            "compacted, and the remaining context is small -- this is "
+            "not a full context window. Try another model, or send again."
+            + (f" [provider said: {tail}]" if tail else "")
+        )
+    try:
+        return str(humanize(text) or text)
+    except Exception:
+        return (
+            "pilot: this turn still exceeded the model's context window "
+            "after compaction. Start a fresh session or pick a "
+            "longer-context model."
+        )
+
+
 class SendLoopMixin:
     """Mixin holding send-loop orchestration for ConversationalSession.
 
@@ -1168,8 +1203,17 @@ class SendLoopMixin:
                             )
                             continue
                         else:
-                            # Context overflow persists after compaction
-                            yield ConvEvent("error", {"error": "context overflow persists after compaction"})
+                            try:
+                                est = int(self._estimate_context_tokens() or 0)
+                            except Exception:
+                                est = 0
+                            yield ConvEvent("error", {
+                                "error": format_overflow_persist_error(
+                                    resp.error or "",
+                                    est,
+                                    self._humanize_pilot_error,
+                                ),
+                            })
                             return
 
                 # If there's no error or it is not context overflow, we're done

@@ -265,12 +265,21 @@ export async function uploadFile(file: File): Promise<{ path: string; name: stri
   const bridge = getHarnessIpc();
   if (bridge?.uploadFile) {
     const buf = await file.arrayBuffer();
-    return bridge.uploadFile({ name: file.name, type: file.type, bytes: new Uint8Array(buf) });
+    const result = await bridge.uploadFile({ name: file.name, type: file.type, bytes: new Uint8Array(buf) });
+    if (Array.isArray(result)) return result;
+    if (result && typeof result === "object") {
+      if (result.error) throw new Error(String(result.error));
+      return result.saved || [];
+    }
+    return [];
   }
   const fd = new FormData();
   fd.append("file", file);
   const r = await fetch("/api/upload", { method: "POST", body: fd, headers: { "X-Harness-Token": authToken() } });
-  const j = await r.json();
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    throw new Error((j && j.error) || `Upload failed (${r.status})`);
+  }
   return j.saved || [];
 }
 

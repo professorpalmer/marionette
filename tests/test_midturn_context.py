@@ -114,3 +114,81 @@ def test_midturn_overflow_recovery():
         # No error event because recovery handled the context overflow
         error_events = [ev for ev in events if ev.kind == "error"]
         assert len(error_events) == 0
+
+
+class MockPilotAlwaysOverflow:
+    name = "mock_always_overflow"
+
+    def chat(self, messages, tools=None, system=None):
+        return MockDriverResponse(error="HTTP 400: maximum context length exceeded")
+
+    def complete(self, prompt, system=None):
+        return MockDriverResponse(error="HTTP 400: maximum context length exceeded")
+
+
+class MockPilotMaxTokensReject:
+    name = "mock_max_tokens_reject"
+
+    def chat(self, messages, tools=None, system=None):
+        return MockDriverResponse(
+            error='HTTP 400: {"error":{"message":"max_tokens is too large"}}'
+        )
+
+    def complete(self, prompt, system=None):
+        return MockDriverResponse(
+            error='HTTP 400: {"error":{"message":"max_tokens is too large"}}'
+        )
+
+
+def test_overflow_persist_is_humanized_not_raw():
+    from harness.send_loop import format_overflow_persist_error
+
+    small = format_overflow_persist_error(
+        "HTTP 400: max_tokens is too large",
+        200,
+        lambda s: f"HUMAN {s}",
+    )
+    assert "context overflow persists" not in small
+    assert "not a full context window" in small.lower()
+    assert "max_tokens is too large" in small
+
+    large = format_overflow_persist_error(
+        "HTTP 400: maximum context length exceeded",
+        80_000,
+        lambda s: f"HUMAN:{s}",
+    )
+    assert large.startswith("HUMAN:")
+    assert "context overflow persists" not in large
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        cfg = HarnessConfig(state_dir=temp_dir, max_context_tokens=1000)
+        session = ConversationalSession(cfg)
+        session.pilot = MockPilotAlwaysOverflow()
+        for i in range(10):
+            session._history.append(
+                {"role": "user", "content": f"User msg {i}: " + ("A" * 150)}
+            )
+            session._history.append(
+                {"role": "assistant", "content": f"Assistant msg {i}: " + ("B" * 150)}
+            )
+        events = list(session.send("Solve the issue"))
+        errors = [ev for ev in events if ev.kind == "error"]
+        assert errors
+        msg = errors[0].data.get("error") or ""
+        assert "context overflow persists after compaction" not in msg
+        assert msg.startswith("pilot:")
+
+
+def test_max_tokens_reject_does_not_compact():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        cfg = HarnessConfig(state_dir=temp_dir, max_context_tokens=1000)
+        session = ConversationalSession(cfg)
+        session.pilot = MockPilotMaxTokensReject()
+        events = list(session.send("hello"))
+        compact = [ev for ev in events if ev.kind in ("compacting", "compaction")]
+        assert compact == []
+        errors = [ev for ev in events if ev.kind == "error"]
+        assert errors
+        msg = errors[0].data.get("error") or ""
+        assert "context overflow persists" not in msg
+        assert "context window" not in msg.lower()

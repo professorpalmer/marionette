@@ -393,18 +393,46 @@ def check_upload_request(
     return None
 
 
+_IMAGE_UPLOAD_EXTS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
+_DOCUMENT_UPLOAD_EXTS = frozenset({
+    ".md", ".txt", ".pdf", ".json", ".py", ".ts", ".tsx", ".js",
+    ".cjs", ".mjs", ".html", ".css", ".csv", ".xml", ".yml", ".yaml",
+    ".toml", ".rst", ".tex", ".ipynb", ".rtf", ".log", ".cfg", ".ini",
+    ".svg",
+})
+_UPLOAD_EXTS = _IMAGE_UPLOAD_EXTS | _DOCUMENT_UPLOAD_EXTS
+
+
 def save_upload(body: bytes, content_type: str, upload_dir: str) -> tuple[int, dict]:
-    """POST /api/upload body — save image parts under the process upload dir."""
+    """POST /api/upload body — save image/document parts under the upload dir.
+
+    Missing extensions are not rewritten to ``.png`` (a folder drop named
+    ``authority-spoof`` used to be stored as a fake PNG). Rejected types
+    return 400 instead of an empty 200 that the UI reports as "Upload failed".
+    """
     saved = []
+    skipped = []
     for filename, data in parse_multipart_files(body, content_type):
-        ext = os.path.splitext(filename)[1].lower() or ".png"
-        if ext not in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
+        ext = os.path.splitext(filename)[1].lower()
+        if ext not in _UPLOAD_EXTS:
+            skipped.append(filename or "unnamed")
             continue
         path = os.path.join(upload_dir, f"{uuid.uuid4().hex}{ext}")
         with open(path, "wb") as out:
             out.write(data)
         saved.append({"path": path, "name": filename})
-    return 200, {"saved": saved}
+    if saved:
+        return 200, {"saved": saved}
+    if skipped:
+        return 400, {
+            "error": (
+                "This file type cannot be attached. Drop an image or a "
+                "document (md, txt, pdf, json, source), or drop a file "
+                "from the open workspace to @-mention it."
+            ),
+            "saved": [],
+        }
+    return 400, {"error": "No file in upload", "saved": []}
 
 
 # ---------------------------------------------------------------------------
