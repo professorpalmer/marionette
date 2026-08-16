@@ -725,6 +725,7 @@ describe("SwarmPane truthful failed vs cancelled chrome", () => {
 
     render(<SwarmPane />);
     await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
+    expect(screen.getByText(/1 untrustworthy/)).toBeInTheDocument();
     fireEvent.click(screen.getByText("Finished"));
     await waitFor(() => {
       expect(screen.getByText("degraded")).toBeInTheDocument();

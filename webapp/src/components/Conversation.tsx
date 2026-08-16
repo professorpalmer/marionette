@@ -2055,9 +2055,8 @@ export default function Conversation({
               terminalIds,
               itemsRef.current,
             );
-            // Live terminal status must prune await trackers even when drain
-            // never delivered swarm_result (busy-held starve / missed poll).
-            if (hasTerminal) {
+            const pruneTerminalTrackers = () => {
+              if (!hasTerminal) return;
               setPendingJobIds((prev) => {
                 const next = pruneTerminalJobIds(prev, terminalIds);
                 // Sync ref so same-tick getSessionState chrome clear sees the
@@ -2065,6 +2064,12 @@ export default function Conversation({
                 pendingJobIdsRef.current = next;
                 return next;
               });
+            };
+            // Do not drop the last pending id until the one-shot recovery
+            // drain has had a chance to surface swarm_result. Otherwise
+            // Investigating clears before the failed continuation exists.
+            if (hasTerminal && recoveryIds.length === 0) {
+              pruneTerminalTrackers();
             }
             if (hasActions || hasTerminal) {
               setItems((prev) => {
@@ -2084,41 +2089,55 @@ export default function Conversation({
             }
             if (recoveryIds.length > 0) {
               const recoverySet = new Set(recoveryIds);
-              return api.getSwarmResults().then((recovered) => {
-                if (!shouldApplySwarmLiveMerge({
-                  pollGen,
-                  currentGen: transcriptLoadGenRef.current,
-                  pollSessionId: pollSid,
-                  cachedSessionId: cachedSessionIdRef.current,
-                  activeSessionId: cachedSessionIdRef.current,
-                })) {
-                  return null;
-                }
-                for (const evt of recovered?.results || []) {
-                  const action = classifySwarmPollEvent(evt);
-                  if (
-                    action.kind === "swarm_result"
-                    && recoverySet.has(String(action.data?.job_id || ""))
-                  ) {
-                    handleSwarmResult(action.data);
-                  } else if (action.kind === "pilot_resume") {
-                    const resumeAct = pilotResumePollAction({
-                      userStopped: userStoppedRef.current,
-                      alreadyFired: pollResumeFired,
-                    });
-                    if (resumeAct === "suppress_clear_hint") {
-                      setWaitHint((prev) => clearSwarmAwaitWaitHint(prev));
-                    } else if (resumeAct === "fire_looking") {
-                      pollResumeFired = true;
-                      setWaitHint(PILOT_LOOKING_HINT);
-                      resumeTriggerRef.current();
-                    } else {
-                      resumeQueuedRef.current = true;
+              return api.getSwarmResults()
+                .then((recovered) => {
+                  if (!shouldApplySwarmLiveMerge({
+                    pollGen,
+                    currentGen: transcriptLoadGenRef.current,
+                    pollSessionId: pollSid,
+                    cachedSessionId: cachedSessionIdRef.current,
+                    activeSessionId: cachedSessionIdRef.current,
+                  })) {
+                    return;
+                  }
+                  for (const evt of recovered?.results || []) {
+                    const action = classifySwarmPollEvent(evt);
+                    if (
+                      action.kind === "swarm_result"
+                      && recoverySet.has(String(action.data?.job_id || ""))
+                    ) {
+                      handleSwarmResult(action.data);
+                    } else if (action.kind === "pilot_resume") {
+                      const resumeAct = pilotResumePollAction({
+                        userStopped: userStoppedRef.current,
+                        alreadyFired: pollResumeFired,
+                      });
+                      if (resumeAct === "suppress_clear_hint") {
+                        setWaitHint((prev) => clearSwarmAwaitWaitHint(prev));
+                      } else if (resumeAct === "fire_looking") {
+                        pollResumeFired = true;
+                        setWaitHint(PILOT_LOOKING_HINT);
+                        resumeTriggerRef.current();
+                      } else {
+                        resumeQueuedRef.current = true;
+                      }
                     }
                   }
-                }
-                return api.getSessionState();
-              });
+                })
+                .catch(() => {})
+                .then(() => {
+                  if (!shouldApplySwarmLiveMerge({
+                    pollGen,
+                    currentGen: transcriptLoadGenRef.current,
+                    pollSessionId: pollSid,
+                    cachedSessionId: cachedSessionIdRef.current,
+                    activeSessionId: cachedSessionIdRef.current,
+                  })) {
+                    return null;
+                  }
+                  pruneTerminalTrackers();
+                  return api.getSessionState();
+                });
             }
             return api.getSessionState();
           });

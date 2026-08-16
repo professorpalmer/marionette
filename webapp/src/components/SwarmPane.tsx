@@ -908,6 +908,9 @@ export default function SwarmPane() {
   const finished = visibleJobs.filter((j) => isTerminal(j));
   const failedCount = finished.filter((j) => jobStatus(j) === "failed").length;
   const cancelledCount = finished.filter((j) => jobStatus(j) === "cancelled").length;
+  const warningCount = finished.filter(
+    (j) => jobStatus(j) === "completed" && j.outcome?.trustworthy === false,
+  ).length;
   const completedCount = finished.filter(
     (j) => jobStatus(j) === "completed" && j.outcome?.trustworthy !== false,
   ).length;
@@ -1583,6 +1586,9 @@ export default function SwarmPane() {
                     <span className="text-faint/60 normal-case tracking-normal">({finished.length})</span>
                     {failedCount > 0 && (
                       <span className="text-risk/70 normal-case tracking-normal">{"\u00b7"} {failedCount} failed</span>
+                    )}
+                    {warningCount > 0 && (
+                      <span className="text-warn/80 normal-case tracking-normal">{"\u00b7"} {warningCount} untrustworthy</span>
                     )}
                     {cancelledCount > 0 && (
                       <span className="text-muted normal-case tracking-normal">{"\u00b7"} {cancelledCount} cancelled</span>

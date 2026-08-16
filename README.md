@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.5` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.226, deliberately pre-1.0. When Puppetmaster fails before start, the pilot keeps a local diagnosis lane (clipboard is not exploration; identical swarm retry stays blocked). Rides puppetmaster-ai==1.22.5 (exact registry pins + GPT-5.6 tool reasoning).
+> Status: v0.9.227, deliberately pre-1.0. Swarm Tracker uses Puppetmaster's canonical run quality (amber when untrustworthy; no invented status) and queues the chat continuation before publishing terminal tracker state. Rides puppetmaster-ai==1.22.5.
 
 ## Documentation
 

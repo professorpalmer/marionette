@@ -116,3 +116,17 @@ def test_canonical_outcome_uses_full_raw_artifacts_before_slim():
         for a in slim_only
         if "verification" in str(a["type"]).lower()
     )
+
+
+def test_canonical_outcome_fail_closed_when_kernel_errors(monkeypatch):
+    """A missing or throwing quality module must not paint green or wipe live."""
+    import puppetmaster.quality as quality
+
+    def _boom(_artifacts):
+        raise RuntimeError("kernel down")
+
+    monkeypatch.setattr(quality, "assess_run_quality", _boom)
+    outcome = canonical_job_outcome([])
+    assert outcome["trustworthy"] is False
+    assert outcome["quality"] == "empty"
+    assert "could not be assessed" in outcome["reasons"][0]

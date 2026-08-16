@@ -90,10 +90,23 @@ def make_job_services(**overrides: Any) -> JobServices:
 
 
 def canonical_job_outcome(raw_artifacts: list[Any]) -> dict[str, Any]:
-    """Return Puppetmaster's canonical artifact-quality verdict unchanged."""
-    from puppetmaster.quality import assess_run_quality
+    """Return Puppetmaster's artifact-quality verdict, fail-closed on kernel errors.
 
-    return assess_run_quality(raw_artifacts)
+    Lifecycle stays in ``job.status``. This is chrome only — never invent a
+    status string. If the kernel is missing or assess throws, treat the run as
+    untrustworthy rather than painting a green default.
+    """
+    try:
+        from puppetmaster.quality import assess_run_quality
+
+        return assess_run_quality(raw_artifacts or [])
+    except Exception:
+        return {
+            "quality": "empty",
+            "reasons": ["run quality could not be assessed"],
+            "trustworthy": False,
+            "blocking_failures": [],
+        }
 
 
 def post_swarm_cancel(body: dict, svc: JobServices) -> tuple[int, dict]:

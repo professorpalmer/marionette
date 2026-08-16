@@ -1149,23 +1149,6 @@ class ConversationJobsMixin:
                 if isinstance(row, dict)
                 and str(row.get("type") or "") in ("finding", "risk", "decision")
             ]
-            # Copy reuse provenance from the registered local job onto the queued
-            # result so drain/SSE hydrate stay honest after reload.
-            try:
-                stamped = (getattr(self, "_local_jobs", {}) or {}).get(job_id) or {}
-                for _rk in (
-                    "reuse_status",
-                    "source_job_id",
-                    "validation_fingerprint",
-                    "environment_fingerprint",
-                    "invalidated_paths",
-                    "reuse_reason",
-                    "acceptance_criteria",
-                ):
-                    if stamped.get(_rk) not in (None, "", [], {}):
-                        res_dict[_rk] = stamped[_rk]
-            except Exception:
-                pass
             self._swarm_results.put({
                 "job_id": job_id,
                 "objective": objective,
@@ -1188,6 +1171,23 @@ class ConversationJobsMixin:
                 diff=(getattr(res, "patch", "") or ""),
                 worker_provenance=provenance,
             )
+            # Finish stamps analysis reuse onto the local job. Mutate the same
+            # queued res_dict so a drain that has not popped yet still sees it.
+            try:
+                stamped = (getattr(self, "_local_jobs", {}) or {}).get(job_id) or {}
+                for _rk in (
+                    "reuse_status",
+                    "source_job_id",
+                    "validation_fingerprint",
+                    "environment_fingerprint",
+                    "invalidated_paths",
+                    "reuse_reason",
+                    "acceptance_criteria",
+                ):
+                    if stamped.get(_rk) not in (None, "", [], {}):
+                        res_dict[_rk] = stamped[_rk]
+            except Exception:
+                pass
 
         except Exception as e:
             try:
