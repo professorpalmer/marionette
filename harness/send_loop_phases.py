@@ -46,9 +46,17 @@ READ_ONLY_KINDS: frozenset[str] = frozenset({
 })
 
 # Honest composer wait-hint when the provider stream goes quiet mid-turn.
+# Stage 1 is a one-shot at 9s; later stages escalate so a 15-minute stall
+# is not a single stale "still working" line.
 STREAM_IDLE_NOTICE_SEC = 9.0
+STREAM_IDLE_ESCALATE_SEC = 60.0
+STREAM_IDLE_STUCK_SEC = 300.0
 STREAM_IDLE_POLL_SEC = 1.0
 STREAM_IDLE_NOTICE_MESSAGE = "Provider still working — stream idle"
+STREAM_IDLE_ESCALATE_MESSAGE = "Provider still idle after 1m — stream has not advanced"
+STREAM_IDLE_STUCK_MESSAGE = (
+    "Provider still idle after 5m — consider Stop if the stream is stuck"
+)
 
 LOCAL_ACTION_KINDS: frozenset[str] = frozenset({
     "open_project", "relocate_session", "session_bank",
@@ -680,25 +688,35 @@ def drain_stream_queue(q: Any) -> Iterator[Any]:
     progress_batch = StreamDeltaBatch()
     reasoning_batch = StreamDeltaBatch()
     last_queue_activity = time.monotonic()
-    stream_idle_notice_sent = False
+    stream_idle_stage = 0
 
     def _note_queue_activity():
-        nonlocal last_queue_activity, stream_idle_notice_sent
+        nonlocal last_queue_activity, stream_idle_stage
         last_queue_activity = time.monotonic()
-        stream_idle_notice_sent = False
+        stream_idle_stage = 0
 
     def _maybe_emit_stream_idle_notice():
-        nonlocal stream_idle_notice_sent
-        if stream_idle_notice_sent:
-            return None
-        now = time.monotonic()
-        if (now - last_queue_activity) < STREAM_IDLE_NOTICE_SEC:
-            return None
-        stream_idle_notice_sent = True
-        return ConvEvent("notice", {
-            "message": STREAM_IDLE_NOTICE_MESSAGE,
-            "kind": "wait",
-        })
+        nonlocal stream_idle_stage
+        idle_for = time.monotonic() - last_queue_activity
+        if idle_for >= STREAM_IDLE_STUCK_SEC and stream_idle_stage < 3:
+            stream_idle_stage = 3
+            return ConvEvent("notice", {
+                "message": STREAM_IDLE_STUCK_MESSAGE,
+                "kind": "wait",
+            })
+        if idle_for >= STREAM_IDLE_ESCALATE_SEC and stream_idle_stage < 2:
+            stream_idle_stage = 2
+            return ConvEvent("notice", {
+                "message": STREAM_IDLE_ESCALATE_MESSAGE,
+                "kind": "wait",
+            })
+        if idle_for >= STREAM_IDLE_NOTICE_SEC and stream_idle_stage < 1:
+            stream_idle_stage = 1
+            return ConvEvent("notice", {
+                "message": STREAM_IDLE_NOTICE_MESSAGE,
+                "kind": "wait",
+            })
+        return None
 
     def _flush_all():
         for bat, ek, ch in (

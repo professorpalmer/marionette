@@ -430,6 +430,7 @@ def get_workspace(svc: WorkspaceServices) -> tuple[int, JsonPayload]:
     repo = svc.cfg.repo
     is_git = False
     branch = ""
+    head_unborn = False
     if repo and os.path.isdir(repo):
         try:
             proc = subprocess.run(
@@ -444,6 +445,12 @@ def get_workspace(svc: WorkspaceServices) -> tuple[int, JsonPayload]:
                 )
                 if proc_branch.returncode == 0:
                     branch = proc_branch.stdout.strip()
+                try:
+                    from ..validation_reuse import _git_head_unborn
+
+                    head_unborn = bool(_git_head_unborn(repo))
+                except Exception:
+                    head_unborn = False
         except Exception:
             pass
     cg_status = svc.get_codegraph_status(repo) if repo else "none"
@@ -474,6 +481,7 @@ def get_workspace(svc: WorkspaceServices) -> tuple[int, JsonPayload]:
         "repo": repo,
         "branch": branch,
         "is_git": is_git,
+        "head_unborn": head_unborn,
         "codegraph_status": cg_status,
         "recents": recents,
         "home": svc.home_workspace_path(),

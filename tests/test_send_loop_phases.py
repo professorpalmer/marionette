@@ -36,8 +36,12 @@ from harness.send_loop_phases import (
     run_prefetch,
     run_stream,
     stream_swarm,
+    STREAM_IDLE_ESCALATE_MESSAGE,
+    STREAM_IDLE_ESCALATE_SEC,
     STREAM_IDLE_NOTICE_MESSAGE,
     STREAM_IDLE_NOTICE_SEC,
+    STREAM_IDLE_STUCK_MESSAGE,
+    STREAM_IDLE_STUCK_SEC,
 )
 
 PHASE_HELPERS = (
@@ -604,6 +608,39 @@ def test_drain_stream_queue_stream_idle_notice_is_one_shot_until_progress(monkey
         and e.data.get("message") == STREAM_IDLE_NOTICE_MESSAGE
     ]
     assert len(idle) == 2
+    assert got is resp
+
+
+def test_drain_stream_queue_escalates_stream_idle_notice(monkeypatch):
+    clock = {"t": 0.0}
+    monkeypatch.setattr(time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr("harness.send_loop_phases.STREAM_IDLE_POLL_SEC", 0)
+
+    resp = SimpleNamespace(text="ok")
+    script = [
+        ("reasoning", "partial thought"),
+        ("advance", STREAM_IDLE_NOTICE_SEC + 1),
+        queue.Empty,
+        ("advance", STREAM_IDLE_ESCALATE_SEC - STREAM_IDLE_NOTICE_SEC),
+        queue.Empty,
+        ("advance", STREAM_IDLE_STUCK_SEC - STREAM_IDLE_ESCALATE_SEC),
+        queue.Empty,
+        ("done", resp),
+    ]
+    q = MagicMock()
+    q.get = _mock_stream_queue_get(clock, script)
+
+    events, (_prose, got) = _collect_drain_events(drain_stream_queue(q))
+    idle = [
+        e.data.get("message")
+        for e in events
+        if e.kind == "notice" and e.data.get("kind") == "wait"
+    ]
+    assert idle == [
+        STREAM_IDLE_NOTICE_MESSAGE,
+        STREAM_IDLE_ESCALATE_MESSAGE,
+        STREAM_IDLE_STUCK_MESSAGE,
+    ]
     assert got is resp
 
 

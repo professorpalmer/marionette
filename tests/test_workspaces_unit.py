@@ -40,6 +40,13 @@ def test_list_workspaces_empty_without_repo():
     assert list_workspaces("/no/such/path") == []
 
 
+def test_list_workspaces_empty_on_unborn_head(tmp_path):
+    repo = tmp_path / "unborn"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True, capture_output=True)
+    assert list_workspaces(str(repo)) == []
+
+
 def test_list_workspaces_marks_active_and_dirty(tmp_path):
     repo = _init_repo(tmp_path)
     _git(repo, "branch", "feature")

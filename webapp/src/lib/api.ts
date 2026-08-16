@@ -440,6 +440,8 @@ export type WorkspaceInfo = {
   repo: string;
   branch: string;
   is_git: boolean;
+  /** True when `.git` exists but HEAD has no commits yet. */
+  head_unborn?: boolean;
   codegraph_status: string;
   recents?: string[];
   home?: string;

@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.5` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.230, deliberately pre-1.0. File drops resolve via Electron pathForFile and accept documents; completion `max_tokens` 400s are not treated as context overflow. Rides puppetmaster-ai==1.22.5.
+> Status: v0.9.231, deliberately pre-1.0. Context windows resolve from the live model catalog (GLM-5.3 is 1M, not 128k); write_file fingerprints content; unborn HEAD is refused before worktree dispatch. Rides puppetmaster-ai==1.22.5.
 
 ## Documentation
 

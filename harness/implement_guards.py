@@ -287,6 +287,18 @@ def check_implement_workspace(repo: str, *, goal: str = "") -> Optional[str]:
             f"Project on that path, or use run_command / run_swarm with a "
             f"git cwd."
         )
+    try:
+        from harness.validation_reuse import _git_head_unborn
+
+        if _git_head_unborn(repo):
+            return (
+                f"REFUSED: {repo} is a git repository with no commits yet "
+                f"(unborn HEAD), so run_implement cannot create a worktree. "
+                f"Make an initial commit first, then retry; or use "
+                f"write_file / edit_file / run_command on the live tree."
+            )
+    except Exception:
+        pass
     return None
 
 
@@ -299,6 +311,8 @@ def is_preflight_worker_error(error: str) -> bool:
         "not a git repo",
         "not a valid git repository",
         "no git repository",
+        "unborn head",
+        "no commits yet",
         "refused:",
         "no workspace directory",
         "could not select a model",

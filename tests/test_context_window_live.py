@@ -42,6 +42,15 @@ def test_live_map_wins_when_present(monkeypatch):
     assert reg.context_window("glm-5.2") == 1048576
 
 
+def test_glm_5_3_live_map_wins_over_static(monkeypatch):
+    import pmharness.registry as reg
+    monkeypatch.setenv("PMHARNESS_OR_LIVE_WINDOWS", "1")
+    monkeypatch.setattr(reg, "_CW_MEM", None, raising=False)
+    monkeypatch.setattr(reg, "_live_windows", lambda: {"z-ai/glm-5.3": 1048576})
+    assert reg.context_window("glm-5.3") == 1048576
+    assert reg.context_window("zai:glm-5.3") == 1048576
+
+
 def test_native_name_fuzzy_matches_openrouter_twin(monkeypatch):
     import pmharness.registry as reg
     monkeypatch.setenv("PMHARNESS_OR_LIVE_WINDOWS", "1")

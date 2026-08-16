@@ -648,7 +648,11 @@ def _tool_output_savings_fields(price_in: float, *, process_wide: bool = False) 
     try:
         from ..compaction_advisor import advice_payload, apply_manual_compaction_ack
 
-        budget = getattr(getattr(_pilot(), "config", None), "max_context_tokens", 96000)
+        pilot = _pilot()
+        try:
+            budget = int(pilot.active_context_limit())
+        except Exception:
+            budget = getattr(getattr(pilot, "config", None), "max_context_tokens", 96000)
         advice = advice_payload(
             _pilot().state_dir,
             getattr(_pilot(), "harness_session_id", "") or "default",
