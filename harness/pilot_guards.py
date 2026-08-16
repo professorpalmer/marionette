@@ -6,12 +6,16 @@ Per-turn guards wired before native tool dispatch:
 
 1. LOOP BREAKER — suppress repeated (tool, normalized-args) calls within a turn.
 2. SWARM GATE — on broad-intent user messages, block native exploration until
-   run_swarm / run_parallel / run_implement is dispatched. After dispatch,
-   list_dir / search_files / exploration run_command stay blocked on broad
-   turns (read_file + search_codegraph remain allowed to validate concrete
-   findings); thin swarm results require re-dispatch, not an inline campaign.
+   run_swarm / run_parallel / run_implement is dispatched. After a healthy
+   dispatch, list_dir / search_files / exploration run_command stay blocked on
+   broad turns (read_file + search_codegraph remain allowed to validate
+   concrete findings); thin swarm results require re-dispatch, not an inline
+   campaign. After a kernel failure (HTTP 400 / preflight / PM unavailable)
+   the gate lifts so the pilot can diagnose locally instead of deadlocking.
 3. DELEGATE GATE — after too many native exploration calls without delegation,
    redirect the pilot to search_codegraph or Puppetmaster dispatch verbs.
+   Clipboard / local handoff commands are never exploration. Kernel recovery
+   also lifts this gate.
 4. ITERATION BUDGET — hard cap on total tool calls per pilot turn.
 
 ``TurnGuardState`` persists across model steps and keep-alive resume for the
@@ -129,6 +133,36 @@ _BARE_DIR_PROBE_RE = re.compile(
 
 _ECHO_PROBE_RE = re.compile(
     r"^echo\b",
+    re.IGNORECASE,
+)
+
+# Local clipboard / handoff sinks — not codebase exploration. ``echo hello``
+# stays an exploration probe; ``echo … | pbcopy`` is a handoff.
+_CLIPBOARD_SINK_RE = re.compile(
+    r"(?:"
+    r"\bpbcopy\b|\bpbpaste\b|"
+    r"\bclip\.exe\b|(?:^|[\s|&;])clip(?:\s|$)|"
+    r"\bwl-copy\b|\bwl-paste\b|"
+    r"\bxclip\b|\bxsel\b|"
+    r"Set-Clipboard|Get-Clipboard"
+    r")",
+    re.IGNORECASE,
+)
+
+# Failed-before-start / kernel-unavailable markers. Tight on purpose: a
+# plumbing-only swarm is not kernel recovery (that stays on the thrash path).
+_KERNEL_FAILURE_RE = re.compile(
+    r"(?:"
+    r"HTTP\s+400|"
+    r"reasoning_effort|"
+    r"Function tools with reasoning|"
+    r"Use /v1/responses|"
+    r"preflight[_ ](?:blocked|failed)|"
+    r"puppetmaster (?:is )?(?:unavailable|not (?:installed|available)|broken)|"
+    r"failed before start|"
+    r"No module named ['\"]puppetmaster|"
+    r"kernel (?:unavailable|offline)"
+    r")",
     re.IGNORECASE,
 )
 
@@ -514,6 +548,11 @@ class TurnGuardState:
     # Adaptive task depth for this turn (MICRO / STANDARD / DEEP). Separate from
     # tiny_workspace (repo scale). MICRO disables swarm-gate suppress only.
     task_profile: str = ""
+    # Set when a swarm/implement/parallel attempt failed before the kernel
+    # produced usable work (HTTP 400, preflight, PM unavailable). Lifts
+    # swarm/delegate exploration gates so the pilot can diagnose locally.
+    # Loop/thrash still block identical redispatch.
+    kernel_recovery: bool = False
 
 
 @dataclass(frozen=True)
@@ -703,9 +742,19 @@ def normalize_action_args(kind: str, act: Any) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
+def is_local_handoff_command(command: str) -> bool:
+    """True for clipboard copy/paste — local I/O, not codebase exploration."""
+    cmd = _norm_whitespace(command)
+    if not cmd:
+        return False
+    return bool(_CLIPBOARD_SINK_RE.search(cmd))
+
+
 def is_exploration_command(command: str) -> bool:
     cmd = _norm_whitespace(command)
     if not cmd:
+        return False
+    if is_local_handoff_command(cmd):
         return False
     if _BARE_DIR_PROBE_RE.match(cmd):
         return True
@@ -788,6 +837,11 @@ def _is_durable_recall_read(act: Any) -> bool:
 
 def is_swarm_gate_blocked_exploration(state: TurnGuardState, kind: str, act: Any) -> bool:
     if not state.broad_intent:
+        return False
+
+    # Kernel failed before producing usable work — do not deadlock the pilot
+    # on "delegate again" when the kernel is the broken path.
+    if state.kernel_recovery:
         return False
 
     # Durable recall is never swarm-gated: search_state and read_file of
@@ -1316,7 +1370,7 @@ def check_delegate_gate(state: TurnGuardState, kind: str, act: Any) -> GuardVerd
     if not is_native_exploration(kind, act):
         return GuardVerdict(False)
 
-    if state.delegation_seen:
+    if state.delegation_seen or state.kernel_recovery:
         return GuardVerdict(False)
 
     if state.exploration_count >= DELEGATE_THRESHOLD:
@@ -1349,6 +1403,29 @@ def check_iteration_budget(state: TurnGuardState, kind: str, act: Any) -> GuardV
 def plumbing_swarm_fingerprint(goal: str, model: str = "") -> tuple[str, str]:
     """Fingerprint for plumbing-only swarm thrash soft-refuse."""
     return (normalize_objective_key(goal or ""), _norm_whitespace(model or "").lower())
+
+
+def result_shows_kernel_failure(content: str) -> bool:
+    """True when a dispatch result is a failed-before-start / PM-unavailable error."""
+    text = str(content or "")
+    if not text.strip():
+        return False
+    return bool(_KERNEL_FAILURE_RE.search(text))
+
+
+def note_kernel_recovery(state: TurnGuardState) -> None:
+    """Open the local diagnosis lane after a kernel-unavailable dispatch."""
+    state.kernel_recovery = True
+
+
+def note_kernel_recovery_from_result(
+    state: TurnGuardState, kind: str, content: str,
+) -> None:
+    """Best-effort: mark recovery when a swarm/implement result is a kernel fault."""
+    if kind not in SWARM_DISPATCH_KINDS:
+        return
+    if result_shows_kernel_failure(content):
+        note_kernel_recovery(state)
 
 
 def record_plumbing_degraded_swarm(

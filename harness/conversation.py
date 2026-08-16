@@ -2585,23 +2585,29 @@ class ConversationalSession(
         # Loop-guard cache: remember successful results so identical repeats
         # within the turn can replay instead of re-executing (token bleed).
         # Skip suppress/redirect/error-shaped content even if ok was left True.
-        if ok:
-            try:
-                from .pilot_guards import record_successful_result
-                gs = getattr(self, "_turn_guard_state", None)
-                kind = getattr(act, "kind", "") or ""
-                head = (clamped_content or "")[:24]
-                if (
-                    gs is not None
-                    and kind
-                    and not is_invalid_action(act)
-                    and not head.startswith("(SUPPRESSED")
-                    and not head.startswith("(REDIRECT")
-                    and " failed:" not in (clamped_content or "")[:120]
-                ):
-                    record_successful_result(gs, kind, act, clamped_content)
-            except Exception:
-                pass
+        # Failed swarm/implement results may open kernel recovery (local
+        # diagnosis) when the kernel itself is the broken path.
+        try:
+            from .pilot_guards import (
+                note_kernel_recovery_from_result,
+                record_successful_result,
+            )
+            gs = getattr(self, "_turn_guard_state", None)
+            kind = getattr(act, "kind", "") or ""
+            if gs is not None and kind:
+                if not ok:
+                    note_kernel_recovery_from_result(gs, kind, clamped_content or "")
+                else:
+                    head = (clamped_content or "")[:24]
+                    if (
+                        not is_invalid_action(act)
+                        and not head.startswith("(SUPPRESSED")
+                        and not head.startswith("(REDIRECT")
+                        and " failed:" not in (clamped_content or "")[:120]
+                    ):
+                        record_successful_result(gs, kind, act, clamped_content)
+        except Exception:
+            pass
 
     def _read_allowed_roots(self) -> list:
         """Roots read_file may read from: the open workspace, its git toplevel
