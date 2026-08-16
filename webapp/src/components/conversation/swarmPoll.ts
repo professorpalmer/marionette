@@ -128,6 +128,34 @@ export function pruneTerminalJobIds(
   return pending.filter((id) => !terminal.has(id));
 }
 
+/**
+ * Terminal ids owned by this conversation that still lack a visible result.
+ * These need one final durable drain before pending ids are allowed to vanish.
+ */
+export function terminalJobIdsNeedingResultRecovery(
+  pendingJobIds: readonly string[],
+  terminalJobIds: readonly string[],
+  items: readonly Item[],
+): string[] {
+  if (!pendingJobIds.length || !terminalJobIds.length) return [];
+  const pending = new Set(pendingJobIds.map((id) => String(id || "").trim()).filter(Boolean));
+  const delivered = new Set(
+    items
+      .filter((item) => item.kind === "swarm_result")
+      .map((item) => String(item.job_id || "").trim())
+      .filter(Boolean),
+  );
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of terminalJobIds) {
+    const id = String(raw || "").trim();
+    if (!id || seen.has(id) || !pending.has(id) || delivered.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
 /** Job ids from swarm/live rows whose status is already terminal. */
 export function terminalJobIdsFromSwarmLive(
   jobs: readonly SwarmLiveJobRow[],

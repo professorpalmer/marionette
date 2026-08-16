@@ -246,8 +246,13 @@ export type Job = {
   // False on /api/swarm/live (slim routing+verdicts for in-progress and terminal).
   // Expand fetches /api/artifacts and flips this true.
   artifacts_complete?: boolean;
-  // Server-computed before slim: all workers failed/blocked with no real work.
-  dead_run_failure?: string | null;
+  // Puppetmaster's canonical artifact-quality verdict, computed from full raw artifacts.
+  outcome?: {
+    quality: "ok" | "degraded" | "empty" | "blocked" | string;
+    trustworthy: boolean;
+    reasons: string[];
+    blocking_failures?: string[];
+  };
   /** Validation reuse: fresh | reused | partial | invalidated (optional/backcompat). */
   reuse_status?: "fresh" | "reused" | "partial" | "invalidated" | string;
   /** Prior job whose findings were reused or partially reverified. */

@@ -10,8 +10,10 @@ import ast
 import inspect
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
+from harness.config import HarnessConfig
+from harness.conversation import ConversationalSession
 from harness.pilot import PilotAction
 from harness.send_loop import SendLoopMixin
 from harness.send_loop_dispatch import (
@@ -31,6 +33,86 @@ DISPATCH_HELPERS = (
     "dispatch_route_task_action",
     "dispatch_memory_action",
 )
+
+
+def test_background_failure_queues_result_before_tracker_turns_terminal(tmp_path):
+    """A terminal live row must never outrun its drainable chat continuation."""
+    session = ConversationalSession(
+        HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path))
+    )
+    job_id = "local-terminal-order"
+    session._register_local_job(
+        job_id,
+        goal="prove terminal ordering",
+        role="implement",
+        engine="native",
+    )
+    queue_ready_when_finished: list[bool] = []
+    finish = session._finish_local_job
+
+    def finish_after_queue(*args, **kwargs):
+        queue_ready_when_finished.append(not session._swarm_results.empty())
+        return finish(*args, **kwargs)
+
+    with (
+        patch.object(
+            session,
+            "_run_edit_worker_bounded",
+            side_effect=RuntimeError("worker died"),
+        ),
+        patch.object(session, "_finish_local_job", side_effect=finish_after_queue),
+    ):
+        session._run_provider_worker_background(job_id, "prove terminal ordering")
+
+    assert queue_ready_when_finished == [True]
+    queued = session._swarm_results.get_nowait()
+    assert queued["job_id"] == job_id
+    assert queued["result"]["error"] == "worker died"
+
+
+def test_background_success_copies_finish_reuse_onto_queued_result(tmp_path):
+    """Finish-time reuse stamps must land on the already-queued continuation."""
+    from harness.worker import WorkerResult
+
+    session = ConversationalSession(
+        HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path))
+    )
+    job_id = "local-reuse-order"
+    session._register_local_job(
+        job_id,
+        goal="prove reuse survives queue-first",
+        role="implement",
+        engine="native",
+    )
+    finish = session._finish_local_job
+
+    def finish_then_stamp(*args, **kwargs):
+        out = finish(*args, **kwargs)
+        session._local_jobs[job_id]["reuse_status"] = "fresh"
+        session._local_jobs[job_id]["validation_fingerprint"] = "fp-test"
+        return out
+
+    fake = WorkerResult(
+        ok=True,
+        summary="analysis complete",
+        patch="",
+        files_changed=[],
+        tokens_in=4,
+        tokens_out=2,
+        tokens_cached=0,
+        engine="native",
+        model="stub",
+    )
+    with (
+        patch.object(session, "_run_edit_worker_bounded", return_value=fake),
+        patch.object(session, "_finish_local_job", side_effect=finish_then_stamp),
+    ):
+        session._run_provider_worker_background(job_id, "prove reuse survives queue-first")
+
+    queued = session._swarm_results.get_nowait()
+    assert queued["job_id"] == job_id
+    assert queued["result"]["reuse_status"] == "fresh"
+    assert queued["result"]["validation_fingerprint"] == "fp-test"
 
 
 def _inner_source() -> str:

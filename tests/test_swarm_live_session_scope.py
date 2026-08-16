@@ -152,6 +152,12 @@ def test_swarm_live_repo_scope_excludes_active_pilot_meters(monkeypatch):
             assert live["session"]["swarm_cache_savings_basis"] == "unknown"
             assert live["session"]["swarm_cache_unpriced_tokens"] == 400
             assert live["jobs"][0]["swarm_cache_unpriced_tokens"] == 400
+            assert live["jobs"][0]["outcome"] == {
+                "quality": "empty",
+                "reasons": ["no artifacts were produced"],
+                "trustworthy": False,
+                "blocking_failures": [],
+            }
 
             # Unscoped still includes the active pilot meters + active-repo jobs.
             unscoped = json.loads(
