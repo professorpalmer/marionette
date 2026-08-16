@@ -60,16 +60,51 @@ _ROUTING_TYPE = "routing"
 _SPEND_FIELDS = ("tokens", "est_cost_usd", "estimated_cost_usd")
 
 # Self-report criteria that ask about stamped identity, not a worker checklist.
-# Keep this narrow: "pyright is clean" must still require a structured citation.
-_PROVENANCE_SELF_REPORT_MARKERS = (
-    "model id",
-    "model-id",
-    "model_id",
+# Field names and honesty clauses are enough on their own. Identity phrases
+# cover "state your model" without requiring the exact "model id" spelling.
+# A scope phrase plus a stamp/model word catches "every artifact carries
+# provenance" without letting "document the provenance of the cache bug"
+# or "fix the model registry" through. Check criteria stay citation-only.
+_PROVENANCE_FIELD_PHRASES = (
     "execution provenance",
     "execution_provenance",
     "usage_known",
     "cost_known",
+    "usage known",
+    "cost known",
+)
+_PROVENANCE_HONESTY_PHRASES = (
     "no fake zero",
+    "no invented zero",
+    "no fabricated zero",
+    "no fabricated spend",
+)
+_PROVENANCE_IDENTITY_PHRASES = (
+    "model id",
+    "model-id",
+    "model_id",
+    "model identifier",
+    "adapter_model_name",
+    "adapter model name",
+    "router_model_id",
+    "router model id",
+    "state your model",
+    "state the model",
+    "name your model",
+    "name the model",
+)
+_PROVENANCE_SCOPE_PHRASES = (
+    "non-routing",
+    "non routing",
+    "every artifact",
+    "all artifacts",
+    "each artifact",
+    "every finding",
+    "all findings",
+    "each finding",
+    "every row",
+    "all rows",
+    "each row",
 )
 
 # Environment probes are bounded but not free (PATH scans, a Chrome lookup).
@@ -373,12 +408,36 @@ def _verified_criterion_loci(artifact: Mapping[str, Any]) -> dict[str, str]:
     return verified
 
 
+def _phrase_in(text: str, phrase: str) -> bool:
+    return bool(phrase) and phrase in text
+
+
+def _word_in(text: str, word: str) -> bool:
+    """Whole-word match so ``stamp`` does not hit ``timestamp``."""
+    if not word or not text:
+        return False
+    return f" {word} " in f" {text} "
+
+
 def _is_provenance_self_report_criterion(criterion: str) -> bool:
-    """True only for model-id / execution_provenance / no-fake-zero rows."""
+    """True for stamp/model-id self-report rows, not check criteria."""
     text = _normalized_text(criterion)
     if not text:
         return False
-    return any(marker in text for marker in _PROVENANCE_SELF_REPORT_MARKERS)
+    if any(_phrase_in(text, phrase) for phrase in _PROVENANCE_FIELD_PHRASES):
+        return True
+    if any(_phrase_in(text, phrase) for phrase in _PROVENANCE_HONESTY_PHRASES):
+        return True
+    if any(_phrase_in(text, phrase) for phrase in _PROVENANCE_IDENTITY_PHRASES):
+        return True
+    if not any(_phrase_in(text, phrase) for phrase in _PROVENANCE_SCOPE_PHRASES):
+        return False
+    return (
+        _word_in(text, "provenance")
+        or _word_in(text, "stamped")
+        or _word_in(text, "stamp")
+        or _word_in(text, "model")
+    )
 
 
 def _honest_execution_provenance(artifact: Mapping[str, Any]) -> bool:

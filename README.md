@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.5` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.228, deliberately pre-1.0. Acceptance-criteria reconciler settles model-id / execution_provenance rows from stamped artifact provenance (no worker checklist required); boot reaps leftover pmedit-/pmworker- worktrees. Rides puppetmaster-ai==1.22.5.
+> Status: v0.9.229, deliberately pre-1.0. Provenance self-report criteria match stamp fields, honesty clauses, or artifact-scope plus a model/provenance word — not a single "model id" substring. Rides puppetmaster-ai==1.22.5.
 
 ## Documentation
 
