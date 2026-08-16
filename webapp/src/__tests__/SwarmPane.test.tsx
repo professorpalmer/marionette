@@ -437,6 +437,53 @@ describe("SwarmPane mid-run job-row meters", () => {
     }
   });
 
+  it("drops hydrated success artifacts when the same job becomes degraded", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let pollCount = 0;
+      mockSwarmLive.mockImplementation(async () => {
+        pollCount += 1;
+        if (pollCount <= 2) {
+          return liveJob({
+            id: "job-outcome-flip",
+            goal: "Outcome flips",
+            status: "complete",
+            outcome: { quality: "ok", trustworthy: true, reasons: [] },
+            artifacts_complete: true,
+            artifacts: [{ type: "finding", headline: "stale success finding" }],
+          });
+        }
+        return liveJob({
+          id: "job-outcome-flip",
+          goal: "Outcome flips",
+          status: "complete",
+          outcome: {
+            quality: "degraded",
+            trustworthy: false,
+            reasons: ["only verification artifacts — no findings/decisions/patches"],
+          },
+          artifacts_complete: false,
+          artifacts: [{ type: "verification", headline: "provider failed", result: "failed" }],
+        });
+      });
+
+      render(<SwarmPane />);
+      await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
+      fireEvent.click(screen.getByText("Finished"));
+      fireEvent.click(await screen.findByText("Outcome flips"));
+      expect(await screen.findByText("stale success finding")).toBeInTheDocument();
+
+      await vi.advanceTimersByTimeAsync(6000);
+
+      await waitFor(() => {
+        expect(screen.getByText("degraded")).toBeInTheDocument();
+        expect(screen.queryByText("stale success finding")).not.toBeInTheDocument();
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("refuses visibility-only jobs in jobSavings totals", () => {
     const parts = jobSavings({
       id: "j-ext",
@@ -659,14 +706,18 @@ describe("SwarmPane truthful failed vs cancelled chrome", () => {
     expect(screen.getByText("Interrupted command")).toBeInTheDocument();
   });
 
-  it("keeps dead_run_failure authoritative as failed chrome", async () => {
+  it("renders Puppetmaster's canonical degraded outcome as amber, never green", async () => {
     mockSwarmLive.mockResolvedValue(
       liveJob({
-        id: "job-dead",
-        goal: "Dead run",
+        id: "job-degraded",
+        goal: "Provider failed before analysis",
         status: "complete",
         adapter: "agentic",
-        dead_run_failure: "no_model",
+        outcome: {
+          quality: "degraded",
+          trustworthy: false,
+          reasons: ["only verification artifacts — no findings/decisions/patches"],
+        },
         artifacts_complete: false,
         artifacts: [],
       }),
@@ -674,13 +725,12 @@ describe("SwarmPane truthful failed vs cancelled chrome", () => {
 
     render(<SwarmPane />);
     await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
-    expect(screen.getByText(/1 failed/)).toBeInTheDocument();
-    expect(screen.queryByText(/cancelled/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByText("Finished"));
     await waitFor(() => {
-      expect(screen.getByText(/all workers failed: no model/)).toBeInTheDocument();
-      expect(screen.getByText("failed")).toBeInTheDocument();
+      expect(screen.getByText("degraded")).toBeInTheDocument();
+      expect(screen.getByText(/only verification artifacts/)).toBeInTheDocument();
     });
+    expect(screen.queryByText("done")).not.toBeInTheDocument();
   });
 
   it("paints true user cancel as cancelled and does not tally it as failed", async () => {
@@ -803,7 +853,7 @@ describe("SwarmPane cancel Kill contract", () => {
   });
 });
 
-describe("SwarmPane dead-run detection", () => {
+describe("SwarmPane canonical outcome", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
@@ -812,58 +862,12 @@ describe("SwarmPane dead-run detection", () => {
     mockArtifacts.mockResolvedValue([]);
   });
 
-  it("renders a complete job whose every artifact failed as a failed run with the reason", async () => {
+  it("keeps a trustworthy complete job rendered as done", async () => {
     mockSwarmLive.mockResolvedValue(
       liveJob({
         status: "complete",
         adapter: "agentic",
-        artifacts: [
-          { type: "verification", headline: "audit", result: "failed", failure: "no_model" },
-          { type: "verification", headline: "audit", result: "failed", failure: "no_model" },
-        ],
-      }),
-    );
-
-    render(<SwarmPane />);
-
-    // Terminal jobs fold into the collapsed Finished accordion; open it.
-    await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
-    fireEvent.click(screen.getByText("Finished"));
-
-    await waitFor(() => {
-      expect(screen.getByText(/all workers failed: no model/)).toBeInTheDocument();
-      expect(screen.getByText("failed")).toBeInTheDocument();
-      expect(screen.queryByText("done")).not.toBeInTheDocument();
-    });
-  });
-
-  it("uses server dead_run_failure when the live payload is slim", async () => {
-    mockSwarmLive.mockResolvedValue(
-      liveJob({
-        status: "complete",
-        adapter: "agentic",
-        artifacts_complete: false,
-        dead_run_failure: "no_model",
-        artifacts: [
-          { type: "verification", headline: "audit", result: "failed", failure: "no_model" },
-        ],
-      }),
-    );
-
-    render(<SwarmPane />);
-    await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
-    fireEvent.click(screen.getByText("Finished"));
-
-    await waitFor(() => {
-      expect(screen.getByText(/all workers failed: no model/)).toBeInTheDocument();
-    });
-  });
-
-  it("keeps a complete job with real findings rendered as done", async () => {
-    mockSwarmLive.mockResolvedValue(
-      liveJob({
-        status: "complete",
-        adapter: "agentic",
+        outcome: { quality: "ok", trustworthy: true, reasons: [] },
         artifacts: [
           { type: "finding", headline: "found a bug" },
           { type: "verification", headline: "audit", result: "failed", failure: "no_model" },
@@ -878,7 +882,7 @@ describe("SwarmPane dead-run detection", () => {
 
     await waitFor(() => {
       expect(screen.getByText("done")).toBeInTheDocument();
-      expect(screen.queryByText(/all workers failed/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/only verification artifacts/)).not.toBeInTheDocument();
     });
   });
 });

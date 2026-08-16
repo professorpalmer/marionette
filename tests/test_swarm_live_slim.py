@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from harness.api.jobs import canonical_job_outcome
 from harness.server import (
-    _job_dead_run_failure,
     _job_status_is_terminal,
     _slim_swarm_list_artifacts,
 )
@@ -83,28 +83,34 @@ def test_slim_keeps_routing_and_verdicts_drops_findings():
     assert len(slim) == 2
 
 
-def test_dead_run_from_raw_before_slim():
-    dead = [
+def test_canonical_outcome_uses_full_raw_artifacts_before_slim():
+    failed_before_execution = [
         _art(
-            art_type=ArtifactType.VERIFICATION,
-            payload={"result": "failed", "failure": "no_model"},
+            art_type=ArtifactType.ROUTING,
+            created_by="router",
+            payload={"model_id": "gpt-5.6-luna"},
         ),
         _art(
             art_type=ArtifactType.VERIFICATION,
-            payload={"result": "failed", "failure": "no_model"},
+            payload={"result": "failed", "failure": "provider_error"},
         ),
     ]
-    assert _job_dead_run_failure(dead, "completed") == "no_model"
+    outcome = canonical_job_outcome(failed_before_execution)
+    assert outcome["quality"] == "degraded"
+    assert outcome["trustworthy"] is False
+    assert outcome["reasons"] == [
+        "only verification artifacts — no findings/decisions/patches"
+    ]
 
-    alive = dead + [
+    substantive = failed_before_execution + [
         _art(art_type=ArtifactType.FINDING, payload={"claim": "real work"}),
     ]
-    assert _job_dead_run_failure(alive, "completed") is None
+    outcome = canonical_job_outcome(substantive)
+    assert outcome["quality"] == "ok"
+    assert outcome["trustworthy"] is True
 
-    # Slim list of only failed verdicts must not be used client-side alone;
-    # server stamp is computed on the full raw list above.
-    slim_only = _slim_swarm_list_artifacts(alive, _Fmt())
-    # After slim, findings are gone -- client would mis-detect without stamp.
+    # Canonical quality is computed before the poll payload drops findings.
+    slim_only = _slim_swarm_list_artifacts(substantive, _Fmt())
     assert all(
         (a.get("result") or "").lower() in ("failed", "blocked", "")
         for a in slim_only

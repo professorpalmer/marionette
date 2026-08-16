@@ -36,7 +36,6 @@ class JobServices:
     routing_saved_usd: Callable[..., float]
     cache_saved_usd_swarm: Callable[..., float]
     tokens_cached_swarm: Callable[..., int]
-    job_dead_run_failure: Callable[..., Any]
     job_savings_fields: Callable[[str], dict]
     repo_session_stamped_meters: Callable[[str], dict]
     session_cost_split: Callable[..., float]
@@ -76,7 +75,6 @@ def make_job_services(**overrides: Any) -> JobServices:
         "routing_saved_usd": lambda *_a, **_k: 0.0,
         "cache_saved_usd_swarm": lambda *_a, **_k: 0.0,
         "tokens_cached_swarm": lambda *_a, **_k: 0,
-        "job_dead_run_failure": lambda *_a, **_k: None,
         "job_savings_fields": lambda *_a, **_k: {},
         "repo_session_stamped_meters": lambda *_a, **_k: {},
         "session_cost_split": lambda *_a, **_k: 0.0,
@@ -89,6 +87,13 @@ def make_job_services(**overrides: Any) -> JobServices:
     }
     defaults.update(overrides)
     return JobServices(**defaults)
+
+
+def canonical_job_outcome(raw_artifacts: list[Any]) -> dict[str, Any]:
+    """Return Puppetmaster's canonical artifact-quality verdict unchanged."""
+    from puppetmaster.quality import assess_run_quality
+
+    return assess_run_quality(raw_artifacts)
 
 
 def post_swarm_cancel(body: dict, svc: JobServices) -> tuple[int, dict]:
@@ -449,7 +454,7 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
                 (tasks_by_job.get(jid, []) if tasks_by_job is not None else []),
                 j.get("adapter", ""),
             )
-            dead_run = svc.job_dead_run_failure(raw_arts, str(job_status))
+            outcome = canonical_job_outcome(raw_arts)
 
             tasks_list = []
             try:
@@ -523,6 +528,7 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
                 "swarm_cache_unpriced_tokens": job_cache_unpriced_tokens,
                 "artifacts": artifacts_list,
                 "artifacts_complete": artifacts_complete,
+                "outcome": outcome,
                 "tasks": tasks_list,
                 "source": j.get("source", "harness"),
                 "label": j.get("label"),
@@ -542,8 +548,6 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
             ):
                 if j.get(_rk) not in (None, "", [], {}):
                     row[_rk] = j.get(_rk)
-            if dead_run:
-                row["dead_run_failure"] = dead_run
             res_jobs.append(apply_job_economics_policy(row))
     except Exception as e:
         svc.diag("server.jobs_list_aggregate", e)
