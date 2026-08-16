@@ -915,6 +915,7 @@ if "HARNESS_DRIVER" not in os.environ:
                 try:
                     from pmharness.registry import context_window as _boot_ctx_window
                     _cfg.max_context_tokens = _boot_ctx_window(_cfg.driver, default=200000)
+                    _cfg.max_context_tokens_pinned = False
                 except Exception as e:
                     _diag("server.boot_driver_context_window", e)
     except Exception as e:
@@ -1041,6 +1042,7 @@ def _resolve_available_driver():
                     try:
                         from pmharness.registry import context_window
                         _cfg.max_context_tokens = context_window(_cfg.driver, default=200000)
+                        _cfg.max_context_tokens_pinned = False
                     except Exception as e:
                         _diag("server.resolve_driver_context_window", e)
                 return
@@ -1912,9 +1914,11 @@ def _apply_model_context_window():
     after a model swap. An explicit HARNESS_MAX_CONTEXT_TOKENS env override
     always wins (so a deliberate cap is never silently widened)."""
     if "HARNESS_MAX_CONTEXT_TOKENS" in os.environ:
+        _cfg.max_context_tokens_pinned = True
         return
     from pmharness.registry import apply_context_window
     _cfg.max_context_tokens = apply_context_window(_cfg.driver, default=200000)
+    _cfg.max_context_tokens_pinned = False
 
 
 def _attach_services():

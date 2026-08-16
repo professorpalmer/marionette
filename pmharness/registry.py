@@ -641,7 +641,11 @@ _STATIC_WINDOWS = {
     "gemini25flash": 1000000,
     "gemini": 1000000,
     # Open-weights frontier families.
+    # GLM-5.3 / 5.2 are 1M input (128k is max *output*, not the window).
+    # Longest-prefix match: glm53/glm52 beat the legacy "glm" 128k family.
+    "glm53": 1000000,
     "glm52": 1000000,
+    "glm51": 200000,
     "glm47": 128000,
     "glm": 128000,
     "qwen3coder": 262144,

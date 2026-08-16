@@ -30,6 +30,12 @@ def test_unknown_model_falls_back_to_floor():
     assert context_window("not-a-real-model", default=120000) == 120000
 
 
+def test_glm_5_3_static_window_is_1m_not_128k():
+    """128k is GLM-5.3 max output. Input window is 1M (same base as 5.2)."""
+    assert context_window("glm-5.3") == 1000000
+    assert context_window("zai:glm-5.3") == 1000000
+
+
 def test_config_resolves_window_from_driver(monkeypatch):
     monkeypatch.delenv("HARNESS_MAX_CONTEXT_TOKENS", raising=False)
     monkeypatch.setenv("HARNESS_DRIVER", "claude-frontier")

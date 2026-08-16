@@ -79,6 +79,21 @@ def test_workspace_forget_clears_active(tmp_path):
     assert cleared["n"] == 1
 
 
+def test_get_workspace_reports_unborn_head(tmp_path):
+    import subprocess
+
+    repo = tmp_path / "unborn"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True, capture_output=True)
+    cfg = SimpleNamespace(repo=str(repo))
+    svc, _, ws_json, _ = _svc(cfg, tmp_path)
+    ws_json.write_text(json.dumps({"recents": []}), encoding="utf-8")
+    code, payload = get_workspace(svc)
+    assert code == 200
+    assert payload["is_git"] is True
+    assert payload["head_unborn"] is True
+
+
 def test_get_workspace_reports_home_without_rerecording(tmp_path):
     cfg = SimpleNamespace(repo="")
     svc, _, ws_json, home = _svc(cfg, tmp_path)

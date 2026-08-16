@@ -21,6 +21,11 @@ class HarnessConfig:
     wiki_url: str = ""               # portable-llm-wiki base url (HARNESS_WIKI_URL)
     wiki_auto: bool = False          # auto-ingest findings to the wiki (HARNESS_WIKI_AUTO)
     max_context_tokens: int = 96000
+    # True when the caller (test fixture, HARNESS_MAX_CONTEXT_TOKENS, or
+    # ~/.harness.json) pinned a cap. False when from_env resolved the window
+    # from the live/catalog model — get_context_usage must re-resolve so a
+    # stale 128k family fallback cannot stick after a model swap.
+    max_context_tokens_pinned: bool = True
     no_delegation: bool = False
     verify_cmd: str = ""
     # Host quality GATE (interactive turn finish): optional shell command(s)
@@ -129,8 +134,10 @@ class HarnessConfig:
             except (ValueError, TypeError):
                 pass
 
+        max_ctx_pinned = False
         if max_ctx_val is not None:
             max_ctx = max_ctx_val
+            max_ctx_pinned = True
         else:
             try:
                 from pmharness.registry import context_window
@@ -175,6 +182,7 @@ class HarnessConfig:
             wiki_url=pick("HARNESS_WIKI_URL", "wiki_url", ""),
             wiki_auto=str(pick("HARNESS_WIKI_AUTO", "wiki_auto", "")).strip() in ("1","true","yes","True"),
             max_context_tokens=max_ctx,
+            max_context_tokens_pinned=max_ctx_pinned,
             no_delegation=str(pick("HARNESS_NO_DELEGATION", "no_delegation", "")).strip() in ("1","true","yes","True"),
             verify_cmd=pick("HARNESS_VERIFY_CMD", "verify_cmd", ""),
             quality_gate_cmds=pick("HARNESS_QUALITY_GATE_CMDS", "quality_gate_cmds", ""),

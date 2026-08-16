@@ -90,7 +90,34 @@ def test_check_implement_workspace_allows_git(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "t@example.com"],
+        cwd=repo, check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"],
+        cwd=repo, check=True, capture_output=True,
+    )
+    (repo / "README.md").write_text("ok\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-qm", "initial"],
+        cwd=repo, check=True, capture_output=True,
+    )
     assert check_implement_workspace(str(repo), goal="edit foo.py") is None
+
+
+def test_check_implement_workspace_refuses_unborn_head(tmp_path, monkeypatch):
+    import subprocess
+
+    monkeypatch.setenv("HARNESS_IMPLEMENT_GIT_GUARD", "1")
+    repo = tmp_path / "unborn"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    msg = check_implement_workspace(str(repo), goal="edit foo.py")
+    assert msg is not None
+    assert "REFUSED" in msg
+    assert "unborn" in msg.lower() or "no commits" in msg.lower()
 
 
 def test_check_implement_workspace_refuses_home(tmp_path, monkeypatch):

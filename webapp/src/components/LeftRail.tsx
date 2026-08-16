@@ -1734,7 +1734,9 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
             </div>
           }
         >
-          {workspaces.length === 0 && <Empty>No branches</Empty>}
+          {workspaces.length === 0 && (
+            <Empty>{workspaceInfo?.head_unborn ? "No commits yet" : "No branches"}</Empty>
+          )}
           <div className="space-y-0.5 overflow-y-auto" style={{ height: branchesHeight }}>
             {workspaces.map((w) => {
               const linked = !!w.worktree_path;

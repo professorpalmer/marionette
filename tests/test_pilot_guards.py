@@ -66,6 +66,7 @@ from harness.pilot_guards import (
 class _Act:
     kind: str = ""
     path: str = ""
+    content: str = ""
     command: str = ""
     query: str = ""
     goal: str = ""
@@ -515,6 +516,42 @@ def test_delegate_gate_trips_after_threshold():
     assert verdict.reason == "delegate"
     assert "search_codegraph" in verdict.message
     assert "run_swarm" in verdict.message
+
+
+def test_write_file_fingerprint_includes_content():
+    a = _Act(kind="write_file", path="wiki/README.md", content="first draft")
+    b = _Act(kind="write_file", path="wiki/README.md", content="rewritten body")
+    assert normalize_action_args("write_file", a) != normalize_action_args("write_file", b)
+    same = _Act(kind="write_file", path="wiki/README.md", content="first draft")
+    assert normalize_action_args("write_file", a) == normalize_action_args("write_file", same)
+
+
+def test_write_file_loop_guard_allows_changed_content():
+    from harness.pilot_guards import record_successful_result
+
+    state = new_turn_guard_state()
+    first = _Act(kind="write_file", path="canaries/BANK.md", content="mangled")
+    record_action_execution(state, "write_file", first)
+    record_successful_result(state, "write_file", first, "wrote 3064 bytes")
+    retry = _Act(kind="write_file", path="canaries/BANK.md", content="clean table")
+    verdict = check_loop_guard(state, "write_file", retry)
+    assert verdict.suppress is False
+
+
+def test_heredoc_write_is_not_exploration():
+    command = (
+        "cat > harness/build_canaries.py <<'EOF'\n"
+        "def find_all():\n"
+        "    which = 'not a probe'\n"
+        "EOF"
+    )
+    assert is_exploration_command(command) is False
+    assert is_native_exploration("run_command", _Act(command=command)) is False
+
+
+def test_which_and_where_are_not_exploration():
+    assert is_exploration_command("which ollama") is False
+    assert is_exploration_command("where python") is False
 
 
 def test_delegate_gate_counts_exploration_run_command():

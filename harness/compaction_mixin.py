@@ -728,7 +728,10 @@ class CompactionContextMixin:
             })
             return
 
-        budget = getattr(self.config, "max_context_tokens", 96000)
+        try:
+            budget = int(self.active_context_limit())
+        except Exception:
+            budget = getattr(self.config, "max_context_tokens", 96000)
         trigger = int(budget * 0.75)
         # Advisor-driven auto compaction fires only at level "now". "soon" is a
         # warning / Needs-attention signal and must not bypass the 75% trigger

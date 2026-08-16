@@ -157,6 +157,19 @@ def test_context_usage_prefers_real_total():
     assert usage_real["total"] > heuristic_total
 
 
+def test_context_usage_limit_follows_live_driver_when_unpinned(monkeypatch):
+    monkeypatch.setenv("PMHARNESS_OR_LIVE_WINDOWS", "0")
+    import pmharness.registry as reg
+    monkeypatch.setattr(reg, "_CW_MEM", None, raising=False)
+    cfg = HarnessConfig(driver="glm-5.3", max_context_tokens=128000)
+    cfg.max_context_tokens_pinned = False
+    s = ConversationalSession(cfg)
+    s._history[0]["content"] = "sys"
+    usage = s.get_context_usage()
+    assert usage["limit"] == 1000000
+    assert cfg.max_context_tokens == 1000000
+
+
 def test_context_usage_falls_back_offline():
     """No real usage -> total is the heuristic category sum (unchanged behavior)."""
     s = _session(budget=5000)

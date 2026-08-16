@@ -118,21 +118,30 @@ NATIVE_EXPLORATION_KINDS = frozenset({
     "list_dir",
 })
 
-_EXPLORATION_CMD_RE = re.compile(
-    r"(?:^|[\s;&|])(?:"
-    r"rg|ripgrep|grep|find|fd|tree|ls|dir|ack|ag|locate|where|which|"
-    r"Get-ChildItem|Select-String|gci|git\s+grep"
-    r")\b",
-    re.IGNORECASE,
-)
+# First-argv exploration only. Searching the whole command string falsely
+# classified `cat <<EOF` / `python …` writes as exploration whenever the
+# body mentioned find/which/where/ls.
+_EXPLORATION_COMMANDS = frozenset({
+    "rg",
+    "ripgrep",
+    "grep",
+    "find",
+    "fd",
+    "tree",
+    "ls",
+    "dir",
+    "ack",
+    "ag",
+    "locate",
+    "get-childitem",
+    "select-string",
+    "gci",
+})
+_LEADING_SEGMENT_RE = re.compile(r"[;&|\n]")
+_ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 _BARE_DIR_PROBE_RE = re.compile(
     r"^(?:ls(?:\s+-1)?|dir)\s*$",
-    re.IGNORECASE,
-)
-
-_ECHO_PROBE_RE = re.compile(
-    r"^echo\b",
     re.IGNORECASE,
 )
 
@@ -668,6 +677,15 @@ def normalize_action_args(kind: str, act: Any) -> str:
         if kind == "read_file":
             payload["start_line"] = _norm_optional_int(getattr(act, "start_line", None))
             payload["limit"] = _norm_optional_int(getattr(act, "limit", None))
+        if kind == "write_file":
+            import hashlib
+            content = getattr(act, "content", None)
+            if content is None or content == "":
+                content = args.get("content") or args.get("text") or ""
+            text = str(content or "")
+            payload["content_fingerprint"] = (
+                hashlib.sha256(text.encode("utf-8")).hexdigest()[:16] if text else ""
+            )
         if kind == "edit_file":
             payload["old_str"] = _norm_whitespace(getattr(act, "old_str", "") or "")
             payload["new_str"] = _norm_whitespace(getattr(act, "new_str", "") or "")
@@ -750,6 +768,25 @@ def is_local_handoff_command(command: str) -> bool:
     return bool(_CLIPBOARD_SINK_RE.search(cmd))
 
 
+def _leading_command_tokens(command: str) -> list[str]:
+    """First argv tokens of the first pipeline/simple command (ignore env assigns)."""
+    cmd = _norm_whitespace(command)
+    if not cmd:
+        return []
+    segment = _LEADING_SEGMENT_RE.split(cmd, 1)[0].strip()
+    tokens: list[str] = []
+    for raw in segment.split():
+        if _ENV_ASSIGN_RE.match(raw):
+            continue
+        name = raw.rsplit("/", 1)[-1].rsplit("\\", 1)[-1].lower()
+        if name.endswith(".exe"):
+            name = name[:-4]
+        tokens.append(name)
+        if len(tokens) >= 2:
+            break
+    return tokens
+
+
 def is_exploration_command(command: str) -> bool:
     cmd = _norm_whitespace(command)
     if not cmd:
@@ -758,9 +795,15 @@ def is_exploration_command(command: str) -> bool:
         return False
     if _BARE_DIR_PROBE_RE.match(cmd):
         return True
-    if _ECHO_PROBE_RE.match(cmd):
+    tokens = _leading_command_tokens(cmd)
+    if not tokens:
+        return False
+    lead = tokens[0]
+    if lead == "echo":
         return True
-    return bool(_EXPLORATION_CMD_RE.search(cmd))
+    if lead == "git" and len(tokens) > 1 and tokens[1] == "grep":
+        return True
+    return lead in _EXPLORATION_COMMANDS
 
 
 def is_puppetmaster_cli_command(command: str) -> bool:

@@ -1902,8 +1902,35 @@ class ConversationalSession(
         except Exception:
             return {}
 
+    def active_context_limit(self) -> int:
+        """Live context window for the current driver.
+
+        Explicit pins (HARNESS_MAX_CONTEXT_TOKENS / harness.json / test
+        fixtures) win. Otherwise resolve from the live catalog every call so
+        a stale 128k family fallback cannot stick after a model swap.
+        """
+        cfg = self.config
+        if getattr(cfg, "max_context_tokens_pinned", False):
+            return int(getattr(cfg, "max_context_tokens", 200000) or 200000)
+        try:
+            from pmharness.registry import context_window
+
+            window = context_window(getattr(cfg, "driver", "") or "", default=200000)
+            if window > 0:
+                cfg.max_context_tokens = window
+                try:
+                    from harness.context_budget import budget_for_context_window
+
+                    self.context_budget_config = budget_for_context_window(window)
+                except Exception:
+                    pass
+                return window
+        except Exception:
+            pass
+        return int(getattr(cfg, "max_context_tokens", 200000) or 200000)
+
     def get_context_usage(self) -> dict:
-        budget = getattr(self.config, "max_context_tokens", 96000)
+        budget = self.active_context_limit()
 
         prefix = self._context_usage_prefix_tokens()
         system_prompt_tokens = prefix["system_prompt_tokens"]
