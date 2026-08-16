@@ -55,6 +55,23 @@ _KNOWN_FILE_EXTENSIONS = frozenset({
 
 _ROUTING_TYPE = "routing"
 
+# Spend numbers belong on the job envelope. A child row that copies them is
+# fabricating a receipt (including a fake $0 / 0-token measurement).
+_SPEND_FIELDS = ("tokens", "est_cost_usd", "estimated_cost_usd")
+
+# Self-report criteria that ask about stamped identity, not a worker checklist.
+# Keep this narrow: "pyright is clean" must still require a structured citation.
+_PROVENANCE_SELF_REPORT_MARKERS = (
+    "model id",
+    "model-id",
+    "model_id",
+    "execution provenance",
+    "execution_provenance",
+    "usage_known",
+    "cost_known",
+    "no fake zero",
+)
+
 # Environment probes are bounded but not free (PATH scans, a Chrome lookup).
 # A drain pass that settles several jobs at once must not pay for each one.
 _PROBE_TTL_SECONDS = 60.0
@@ -356,18 +373,98 @@ def _verified_criterion_loci(artifact: Mapping[str, Any]) -> dict[str, str]:
     return verified
 
 
+def _is_provenance_self_report_criterion(criterion: str) -> bool:
+    """True only for model-id / execution_provenance / no-fake-zero rows."""
+    text = _normalized_text(criterion)
+    if not text:
+        return False
+    return any(marker in text for marker in _PROVENANCE_SELF_REPORT_MARKERS)
+
+
+def _honest_execution_provenance(artifact: Mapping[str, Any]) -> bool:
+    """Stamped identity plus known-flags, and no fabricated spend on the child."""
+    prov = artifact.get("execution_provenance")
+    if not isinstance(prov, Mapping):
+        return False
+    model = str(
+        prov.get("model")
+        or prov.get("adapter_model_name")
+        or prov.get("router_model_id")
+        or ""
+    ).strip()
+    if not model:
+        return False
+    if "usage_known" not in prov or "cost_known" not in prov:
+        return False
+    if not isinstance(prov.get("usage_known"), bool):
+        return False
+    if not isinstance(prov.get("cost_known"), bool):
+        return False
+    bags: tuple[Mapping[str, Any], ...] = (artifact, prov)
+    for bag in bags:
+        for field in _SPEND_FIELDS:
+            if field in bag:
+                return False
+    return True
+
+
+def _provenance_self_report_basis(
+    criterion: str,
+    artifacts: Sequence[Mapping[str, Any]],
+    job_id: str,
+) -> str:
+    """Settle a provenance criterion from stamps, not a worker-cited checklist.
+
+    Every current-job non-routing artifact must already carry honest
+    ``execution_provenance``. Zero inspected rows, a missing model id, absent
+    known-flags, or copied spend numbers leave the criterion unverified.
+    """
+    if not _is_provenance_self_report_criterion(criterion):
+        return ""
+    current = str(job_id or "").strip()
+    if not current:
+        return ""
+    inspected = 0
+    for artifact in artifacts or ():
+        if not isinstance(artifact, Mapping):
+            continue
+        if _parent_job_id(artifact) != current:
+            continue
+        if str(artifact.get("failure") or "").strip():
+            continue
+        kind = str(artifact.get("type") or "").strip().lower()
+        if kind == _ROUTING_TYPE:
+            continue
+        inspected += 1
+        if not _honest_execution_provenance(artifact):
+            return ""
+    if inspected == 0:
+        return ""
+    return (
+        f"stamped execution_provenance on {inspected} current-job "
+        "non-routing artifact(s)"
+    )
+
+
 def evaluate_acceptance_criteria(
     criteria: Sequence[str],
     artifacts: Sequence[Mapping[str, Any]],
     job_id: str,
 ) -> tuple[CriterionFact, ...]:
-    """Echo each criterion with the current-job artifact that settles it.
+    """Echo each criterion with the current-job evidence that settles it.
 
-    A criterion counts as verified only when a successful substantive artifact
-    **attributed to THIS job** explicitly maps itself to that criterion through
-    its ``acceptance_criteria`` list. Prompt/check prose is never searched: a
-    failed worker artifact often repeats the entire instruction, and treating
-    that repetition as evidence makes every criterion falsely green.
+    A code/check criterion counts as verified only when a successful
+    substantive artifact **attributed to THIS job** explicitly maps itself to
+    that criterion through its ``acceptance_criteria`` list. Prompt/check prose
+    is never searched: a failed worker artifact often repeats the entire
+    instruction, and treating that repetition as evidence makes every
+    criterion falsely green.
+
+    A narrow second path settles self-report model-id / execution_provenance
+    criteria from stamps already on current-job non-routing artifacts. That
+    path still fails closed: missing model, missing known-flags, copied spend
+    (including fake zeros), or no current-job rows leave the criterion
+    ``not_verified``.
     """
     from harness.environment_fingerprint import normalize_acceptance_criteria
 
@@ -400,6 +497,17 @@ def evaluate_acceptance_criteria(
                 break
         if basis:
             facts.append(CriterionFact(criterion, VERIFIED, basis))
+            continue
+        stamp_basis = _provenance_self_report_basis(criterion, artifacts, current)
+        if stamp_basis:
+            facts.append(CriterionFact(criterion, VERIFIED, stamp_basis))
+        elif _is_provenance_self_report_criterion(criterion):
+            facts.append(CriterionFact(
+                criterion,
+                NOT_VERIFIED,
+                "current-job non-routing artifacts do not all carry "
+                "honest execution_provenance",
+            ))
         else:
             facts.append(CriterionFact(
                 criterion,

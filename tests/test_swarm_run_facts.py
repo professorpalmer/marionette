@@ -573,6 +573,146 @@ class TestAcceptanceCriteria:
         assert " at harness/a.py:1" in facts[0].basis
 
 
+def _honest_provenance(**overrides):
+    stamp = {
+        "adapter": "agentic",
+        "model": "anthropic/claude-sonnet",
+        "usage_known": False,
+        "cost_known": False,
+    }
+    stamp.update(overrides)
+    return stamp
+
+
+class TestProvenanceSelfReportCriteria:
+    """Model-id / execution_provenance rows settle from stamps, not citations.
+
+    The anti-false-green citation rule still owns check criteria (pyright,
+    tsc). This class pins the narrow second path: already-stamped
+    ``execution_provenance`` on current-job non-routing artifacts.
+    """
+
+    _CRITERION = (
+        "Every non-routing artifact carries full provenance "
+        "(model id, usage_known:false, cost_known:false — no fake zeros)"
+    )
+
+    def _row(self, **overrides):
+        row = {
+            "type": "finding",
+            "headline": "something else entirely",
+            "execution_ref": {"job_id": CURRENT_JOB},
+            "execution_provenance": _honest_provenance(),
+        }
+        row.update(overrides)
+        return row
+
+    def test_stamped_provenance_verifies_without_a_worker_citation(self):
+        facts = evaluate_acceptance_criteria(
+            [self._CRITERION],
+            [self._row(), self._row(type="risk", headline="another signal")],
+            CURRENT_JOB,
+        )
+        assert [f.status for f in facts] == [VERIFIED]
+        assert "stamped execution_provenance" in facts[0].basis
+        assert "2 current-job" in facts[0].basis
+
+    def test_routing_rows_are_outside_the_denominator(self):
+        facts = evaluate_acceptance_criteria(
+            [self._CRITERION],
+            [
+                self._row(),
+                {
+                    "type": "routing",
+                    "execution_ref": {"job_id": CURRENT_JOB},
+                },
+            ],
+            CURRENT_JOB,
+        )
+        assert facts[0].status == VERIFIED
+        assert "1 current-job" in facts[0].basis
+
+    def test_check_criteria_still_require_a_structured_citation(self):
+        facts = evaluate_acceptance_criteria(
+            ["pyright is clean"],
+            [self._row()],
+            CURRENT_JOB,
+        )
+        assert facts[0].status == NOT_VERIFIED
+        assert "stamped execution_provenance" not in facts[0].basis
+
+    def test_prose_echo_without_stamps_does_not_verify(self):
+        facts = evaluate_acceptance_criteria(
+            [self._CRITERION],
+            [{
+                "type": "finding",
+                "headline": self._CRITERION,
+                "body": "model id usage_known cost_known no fake zeros",
+                "execution_ref": {"job_id": CURRENT_JOB},
+            }],
+            CURRENT_JOB,
+        )
+        assert facts[0].status == NOT_VERIFIED
+
+    def test_missing_model_stays_not_verified(self):
+        facts = evaluate_acceptance_criteria(
+            [self._CRITERION],
+            [self._row(execution_provenance=_honest_provenance(model=""))],
+            CURRENT_JOB,
+        )
+        assert facts[0].status == NOT_VERIFIED
+
+    def test_missing_known_flags_stays_not_verified(self):
+        facts = evaluate_acceptance_criteria(
+            [self._CRITERION],
+            [self._row(execution_provenance={
+                "model": "anthropic/claude-sonnet",
+            })],
+            CURRENT_JOB,
+        )
+        assert facts[0].status == NOT_VERIFIED
+
+    def test_copied_spend_zeros_stay_not_verified(self):
+        facts = evaluate_acceptance_criteria(
+            [self._CRITERION],
+            [self._row(execution_provenance=_honest_provenance(
+                tokens=0, est_cost_usd=0.0,
+            ))],
+            CURRENT_JOB,
+        )
+        assert facts[0].status == NOT_VERIFIED
+
+    def test_one_unstamped_sibling_blocks_the_row(self):
+        facts = evaluate_acceptance_criteria(
+            [self._CRITERION],
+            [
+                self._row(),
+                {
+                    "type": "finding",
+                    "execution_ref": {"job_id": CURRENT_JOB},
+                },
+            ],
+            CURRENT_JOB,
+        )
+        assert facts[0].status == NOT_VERIFIED
+
+    def test_foreign_job_stamps_do_not_count(self):
+        facts = evaluate_acceptance_criteria(
+            [self._CRITERION],
+            [self._row(execution_ref={"job_id": "job-older"})],
+            CURRENT_JOB,
+        )
+        assert facts[0].status == NOT_VERIFIED
+
+    def test_mixed_list_verifies_only_the_provenance_row(self):
+        facts = evaluate_acceptance_criteria(
+            [self._CRITERION, "pyright is clean"],
+            [self._row()],
+            CURRENT_JOB,
+        )
+        assert [f.status for f in facts] == [VERIFIED, NOT_VERIFIED]
+
+
 class TestRunFacts:
     def test_surfaces_the_current_build_and_subject(self, stub_probe):
         facts = _facts(stub_probe)
