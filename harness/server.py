@@ -203,43 +203,6 @@ def _slim_swarm_list_artifacts(raw_arts, state_obj) -> list:
         return []
 
 
-def _job_dead_run_failure(raw_arts, status: str):
-    """Mirror SwarmPane dead-run detection against raw store artifacts.
-
-    Computed server-side before the live payload is slimmed -- otherwise a
-    finished job that still has FINDING rows would look like an all-failed
-    dead run once those findings are stripped from the poll response.
-
-    Returns the failure class string, or None when the job is not a dead run.
-    """
-    s = (status or "").lower()
-    if "complete" not in s and "done" not in s:
-        return None
-    if not raw_arts:
-        return None
-    failed = []
-    for art in raw_arts:
-        payload = getattr(art, "payload", None)
-        if not isinstance(payload, dict):
-            # Already-formatted dict rows (local jobs) carry result on the art.
-            if isinstance(art, dict):
-                payload = art
-            else:
-                return None
-        result = str(payload.get("result") or "").lower()
-        if result in ("failed", "blocked"):
-            failed.append(payload)
-        else:
-            return None
-    if not failed:
-        return None
-    for payload in failed:
-        failure = payload.get("failure")
-        if failure:
-            return str(failure)
-    return "workers failed"
-
-
 def _get_platform_json_path() -> str:
     """Canonical platform.json — same file Puppetmaster's lock reads."""
     from .platform_config import platform_json_path
@@ -1579,7 +1542,6 @@ def _job_services():
         cache_saved_usd_swarm=_cache_saved_usd_swarm,
         cache_saved_usd_swarm_detail=_cache_saved_usd_swarm_detail,
         tokens_cached_swarm=_tokens_cached_swarm,
-        job_dead_run_failure=_job_dead_run_failure,
         job_savings_fields=_job_savings_fields,
         repo_session_stamped_meters=_repo_session_stamped_meters,
         session_cost_split=_session_cost_split,
