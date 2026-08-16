@@ -712,6 +712,62 @@ class TestProvenanceSelfReportCriteria:
         )
         assert [f.status for f in facts] == [VERIFIED, NOT_VERIFIED]
 
+    @pytest.mark.parametrize(
+        "criterion",
+        [
+            "state your model",
+            "state the model identifier on each finding",
+            "every artifact carries full provenance",
+            "all artifacts report their model",
+            "each finding is stamped with provenance",
+            "no invented zeros on child artifacts",
+            "usage known and cost known on every row",
+        ],
+        ids=[
+            "state_your_model",
+            "model_identifier",
+            "every_artifact_provenance",
+            "all_artifacts_model",
+            "each_finding_stamped",
+            "no_invented_zeros",
+            "usage_known_words",
+        ],
+    )
+    def test_alternate_wordings_still_settle_from_stamps(self, criterion):
+        facts = evaluate_acceptance_criteria(
+            [criterion],
+            [self._row()],
+            CURRENT_JOB,
+        )
+        assert facts[0].status == VERIFIED
+        assert "stamped execution_provenance" in facts[0].basis
+
+    @pytest.mark.parametrize(
+        "criterion",
+        [
+            "document the provenance of the cache bug",
+            "the model router chose composer",
+            "fix the model registry",
+            "every artifact has a timestamp",
+            "tsc passes",
+        ],
+        ids=[
+            "bug_provenance",
+            "router_chose",
+            "model_registry",
+            "timestamp",
+            "tsc",
+        ],
+    )
+    def test_unrelated_wordings_stay_citation_only(self, criterion):
+        facts = evaluate_acceptance_criteria(
+            [criterion],
+            [self._row()],
+            CURRENT_JOB,
+        )
+        assert facts[0].status == NOT_VERIFIED
+        assert "stamped execution_provenance" not in facts[0].basis
+
 
 class TestRunFacts:
     def test_surfaces_the_current_build_and_subject(self, stub_probe):
