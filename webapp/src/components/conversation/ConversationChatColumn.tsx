@@ -4,6 +4,7 @@
  */
 
 import type { ReactNode, RefObject } from "react";
+import { ChevronDown } from "lucide-react";
 import { panelOpacityClass } from "../../lib/panelTransition";
 import {
   TranscriptList,
@@ -32,6 +33,8 @@ export default function ConversationChatColumn({
   onExecutePlan,
   onCommandApproval,
   composerDock,
+  showJumpToBottom = false,
+  onJumpToBottom,
 }: {
   feedRef: RefObject<HTMLDivElement | null>;
   transcriptStale: boolean;
@@ -52,13 +55,16 @@ export default function ConversationChatColumn({
   onExecutePlan: (planText: string) => void;
   onCommandApproval: (item: CommandApprovalItem, approve: boolean) => void;
   composerDock: ReactNode;
+  showJumpToBottom?: boolean;
+  onJumpToBottom?: () => void;
 }) {
   return (
     <div className="flex flex-col flex-1 min-h-0">
-      <div
-        ref={feedRef}
-        className={`flex-1 overflow-y-auto overscroll-contain [overflow-anchor:none] [scrollbar-gutter:stable] ${panelOpacityClass(transcriptStale)}`}
-      >
+      <div className="relative flex-1 min-h-0 flex flex-col">
+        <div
+          ref={feedRef}
+          className={`flex-1 min-h-0 overflow-y-auto overscroll-contain [overflow-anchor:none] [scrollbar-gutter:stable] ${panelOpacityClass(transcriptStale)}`}
+        >
         {/* overflow-anchor:none — the virtualizer unmounts off-screen rows, so
             auto-anchor would snap to the first remaining node (top of history)
             on alt-tab / compositor restore. feedScroll pin/unpin owns stick.
@@ -96,6 +102,20 @@ export default function ConversationChatColumn({
             onCommandApproval={onCommandApproval}
           />
         </div>
+      </div>
+      {showJumpToBottom ? (
+        <button
+          type="button"
+          data-testid="jump-to-latest"
+          title="Jump to latest"
+          aria-label="Jump to latest"
+          onClick={onJumpToBottom}
+          className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full border border-edge2 text-muted hover:text-txt hover:bg-panel2/80 transition-colors"
+          style={{ backgroundColor: "#0f1113" }}
+        >
+          <ChevronDown size={16} />
+        </button>
+      ) : null}
       </div>
       {composerDock}
     </div>

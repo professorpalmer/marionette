@@ -92,6 +92,14 @@ export function nextFeedPinState(opts: {
   return { pinned: false, releasedByGesture: false };
 }
 
+/** Show the jump-to-latest control only while the user has read away. */
+export function shouldShowJumpToBottom(opts: {
+  pinned: boolean;
+  settling: boolean;
+}): boolean {
+  return !opts.pinned && !opts.settling;
+}
+
 /** Upward wheel should unpin (unless settle glue is active). */
 export function shouldUnpinOnWheel(deltaY: number, settling: boolean): boolean {
   if (settling) return false;

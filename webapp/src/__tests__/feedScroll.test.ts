@@ -3,6 +3,7 @@ import {
   FEED_REPIN_THRESHOLD_PX,
   nextFeedPinState,
   settleFrameResult,
+  shouldShowJumpToBottom,
   shouldUnpinOnWheel,
 } from "../components/conversation/feedScroll";
 
@@ -52,5 +53,11 @@ describe("feedScroll hysteresis", () => {
       frame: 4,
     });
     expect(settle.done).toBe(true);
+  });
+
+  it("shows jump-to-latest only when unpinned and not settling", () => {
+    expect(shouldShowJumpToBottom({ pinned: true, settling: false })).toBe(false);
+    expect(shouldShowJumpToBottom({ pinned: false, settling: true })).toBe(false);
+    expect(shouldShowJumpToBottom({ pinned: false, settling: false })).toBe(true);
   });
 });

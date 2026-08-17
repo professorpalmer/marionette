@@ -322,6 +322,8 @@ export default function App() {
         case "b": e.preventDefault(); setLeftOpen((v) => !v); break;        // toggle sessions panel
         case "j": e.preventDefault(); setRightOpen((v) => !v); break;       // toggle right pane
         case "i":                                                          // focus chat input (Cursor: toggle sidepanel)
+        // Cmd/Ctrl+L focuses the composer. TerminalPane capture steals this
+        // when the live xterm has a selection (Add to chat).
         case "l": e.preventDefault(); window.dispatchEvent(new Event("harness-focus-input")); break;
         case "n":                                                          // new session (Cursor: new chat)
         case "r": e.preventDefault(); window.dispatchEvent(new Event("harness-new-session")); break;

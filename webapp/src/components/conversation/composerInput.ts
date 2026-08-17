@@ -17,9 +17,13 @@ export type ComposerTrigger =
 function isActiveMentionQuery(textAfterAt: string): boolean {
   if (textAfterAt.includes("\n")) return false;
 
-  const kindMatch = /^(folder:|symbol:|codebase:)/i.exec(textAfterAt);
+  const kindMatch = /^(folder:|symbol:|codebase:|terminal:)/i.exec(textAfterAt);
   const kind = kindMatch ? kindMatch[1].toLowerCase() : "";
   const body = kindMatch ? textAfterAt.slice(kindMatch[0].length) : textAfterAt;
+
+  // Terminal refs are inserted complete (`@terminal:term:12`). Never open
+  // the file picker on that prefix.
+  if (kind === "terminal:") return false;
 
   // Quoted path/filter: stay open only until the closing quote appears.
   if (body.startsWith('"')) {
