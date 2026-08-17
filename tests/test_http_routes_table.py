@@ -29,6 +29,7 @@ _SAMPLE_GUARDED_GET = (
     "/api/platform",
     "/api/settings",
     "/api/session/state",
+    "/api/session/performance",
     "/api/jobs",
     "/api/sessions",
     "/api/providers",

@@ -29,6 +29,17 @@ from pmharness.bridge import execute_intent
 from .log_reconstruction import check_outbound_reconstruction
 from .pilot import PilotAction, StreamingSayExtractor
 from .stream_identity import StreamDeltaBatch, normalize_delta_payload
+from .stream_performance import (
+    STREAM_PERFORMANCE_KEY,
+    StreamTimingAccumulator,
+    attach_stream_performance,
+    call_timed_phase,
+)
+from .stream_performance_store import (
+    StreamPerformanceReceiptStore,
+    build_receipt,
+    copy_stream_performance,
+)
 from .tool_timeout import invoke_do, run_with_tool_deadline
 from .workspace_rules_refresh import maybe_refresh_workspace_rules
 from .url_safety import sanitize_url_for_display
@@ -357,7 +368,61 @@ def maybe_attach_pilot_session_id(
     kwargs["session_id"] = sid
 
 
-def dispatch_sync_pilot_chat(session: Any, tools_schema: Any, sys_prompt: str) -> Any:
+def _finish_and_attach_timing(acc: Any, resp: Any) -> None:
+    """Mark provider-call return and merge a snapshot. Never raises.
+
+    This is request dispatch → provider return, not drain terminal.
+    Malformed ``tokens_out`` must not drop the rest of the receipt or
+    raise into the stream/send hot path. Billing still reads ``tokens_out``
+    from the response itself.
+    """
+    if acc is None:
+        return
+    try:
+        acc.finish()
+    except Exception:
+        pass
+    try:
+        tokens_out = getattr(resp, "tokens_out", 0)
+    except Exception:
+        tokens_out = 0
+    try:
+        attach_stream_performance(resp, acc.snapshot(tokens_out=tokens_out))
+    except Exception:
+        return
+
+
+_PROVIDER_DISPATCH_INVOKED_ATTR = "_provider_dispatch_invoked"
+
+
+def _clear_provider_dispatch_invoked(session: Any) -> None:
+    try:
+        setattr(session, _PROVIDER_DISPATCH_INVOKED_ATTR, False)
+    except Exception:
+        return
+
+
+def _mark_provider_dispatch_invoked(session: Any) -> None:
+    try:
+        setattr(session, _PROVIDER_DISPATCH_INVOKED_ATTR, True)
+    except Exception:
+        return
+
+
+def _provider_dispatch_was_invoked(session: Any) -> bool:
+    try:
+        return bool(getattr(session, _PROVIDER_DISPATCH_INVOKED_ATTR, False))
+    except Exception:
+        return False
+
+
+def dispatch_sync_pilot_chat(
+    session: Any,
+    tools_schema: Any,
+    sys_prompt: str,
+    *,
+    accumulator: Any = None,
+) -> Any:
     """Non-streaming ``pilot.chat`` with the shared sanitize + honesty check."""
     chat_kwargs = {
         "tools": tools_schema,
@@ -373,7 +438,15 @@ def dispatch_sync_pilot_chat(session: Any, tools_schema: Any, sys_prompt: str) -
         check_outbound_reconstruction(session, outbound, sys_prompt)
     except Exception:
         pass
-    return session.pilot.chat(outbound, **chat_kwargs)
+    if accumulator is not None:
+        try:
+            accumulator.mark_request_start()
+        except Exception:
+            pass
+    _mark_provider_dispatch_invoked(session)
+    resp = session.pilot.chat(outbound, **chat_kwargs)
+    _finish_and_attach_timing(accumulator, resp)
+    return resp
 
 
 def run_stream(
@@ -381,14 +454,55 @@ def run_stream(
     q: Any,
     tools_schema: Any,
     sys_prompt: str,
+    *,
+    clock: Any = None,
+    accumulator: Any = None,
 ) -> None:
-    """Background target: pilot.chat_stream → queue (delta/reasoning/tool_hint/wait/done/error)."""
+    """Background target: pilot.chat_stream → queue (delta/reasoning/tool_hint/wait/done/error).
+
+    Best-effort ``stream_performance`` timing is merged onto the terminal
+    DriverResponse.meta. Queue event shapes and order are unchanged.
+    ``clock`` is a monotonic callable for deterministic tests.
+    ``accumulator`` is an optional send-thread pre-request clock; when omitted
+    this function constructs its own so standalone tests keep working.
+    Request-start is marked immediately before ``chat_stream``, after outbound
+    construction / reconstruction check.
+    """
     try:
+        acc = accumulator
+        if acc is None:
+            try:
+                acc = StreamTimingAccumulator(clock=clock)
+            except Exception:
+                acc = None
+        # Stream-thread close of send-thread thread_start (no-op if unopened).
+        if acc is not None:
+            try:
+                acc.end_phase("thread_start")
+            except Exception:
+                pass
+
+        def _on_delta(delta: Any) -> None:
+            if acc is not None:
+                try:
+                    acc.note("delta", delta)
+                except Exception:
+                    pass
+            q.put(("delta", delta))
+
+        def _on_reasoning(delta: Any) -> None:
+            if acc is not None:
+                try:
+                    acc.note("reasoning", delta)
+                except Exception:
+                    pass
+            q.put(("reasoning", delta))
+
         kwargs = {
             "tools": tools_schema,
             "system": sys_prompt,
-            "on_delta": lambda delta: q.put(("delta", delta)),
-            "on_reasoning_delta": lambda delta: q.put(("reasoning", delta)),
+            "on_delta": _on_delta,
+            "on_reasoning_delta": _on_reasoning,
             "on_tool_hint": lambda name: q.put(("tool_hint", name)),
         }
         try:
@@ -414,13 +528,111 @@ def run_stream(
             check_outbound_reconstruction(session, outbound, sys_prompt)
         except Exception:
             pass
+        if acc is not None:
+            try:
+                acc.mark_request_start()
+            except Exception:
+                pass
+        _mark_provider_dispatch_invoked(session)
         r = session.pilot.chat_stream(
             outbound,
             **kwargs,
         )
+        _finish_and_attach_timing(acc, r)
         q.put(("done", r))
     except Exception as ex:
         q.put(("error", ex))
+
+
+def dispatch_pilot_provider_call(
+    session: Any,
+    *,
+    plan: bool,
+    sys_prompt: str,
+    prompt: str,
+    synthesis_nudge_active: bool,
+    accumulator: Any = None,
+) -> Iterator[Any]:
+    """Apply host mode and dispatch chat_stream / chat / complete.
+
+    Generator return is ``(streamed_prose, resp)``. The stream path yields the
+    same ``drain_stream_queue`` ConvEvents as the former inline kernel.
+    ``thread_start`` is opened on the send thread and closed on the stream
+    thread; request-start is marked immediately before the provider call.
+    """
+    _clear_provider_dispatch_invoked(session)
+    # Cursor CLI/ACP: Autopilot → agent tools; Marionette Plan → ask.
+    # Env HARNESS_CURSOR_CLI_MODE still wins inside apply_host_mode.
+    _apply_mode = getattr(session.pilot, "apply_host_mode", None)
+    if callable(_apply_mode):
+        try:
+            _apply_mode(plan=plan)
+        except Exception:
+            pass
+    if hasattr(session.pilot, "chat"):
+        from .send_loop import _build_step_tools
+        tools_schema = call_timed_phase(
+            accumulator,
+            "prompt_tools",
+            _build_step_tools,
+            synthesis_nudge_active,
+            session._build_visible_tools_schema,
+        )
+        is_interactive = not getattr(session.config, "no_delegation", False)
+        # Gate on an EXPLICIT capability flag (is True) + a callable chat_stream.
+        # Using `is True` avoids MagicMock test pilots (which fabricate any attr as a
+        # truthy Mock) wrongly entering the streaming branch.
+        _can_stream = (
+            getattr(session.pilot, "supports_streaming", False) is True
+            and callable(getattr(session.pilot, "chat_stream", None))
+        )
+        if is_interactive and _can_stream:
+            import queue
+            import threading
+            q = queue.Queue()
+            t = threading.Thread(
+                target=run_stream,
+                args=(session, q, tools_schema, sys_prompt),
+                kwargs={"accumulator": accumulator},
+                daemon=True,
+            )
+            if accumulator is not None:
+                try:
+                    accumulator.begin_phase("thread_start")
+                except Exception:
+                    pass
+            try:
+                t.start()
+            except Exception:
+                if accumulator is not None:
+                    try:
+                        accumulator.end_phase("thread_start")
+                    except Exception:
+                        pass
+                raise
+            return (yield from drain_stream_queue(q, accumulator=accumulator))
+        resp = dispatch_sync_pilot_chat(
+            session, tools_schema, sys_prompt, accumulator=accumulator,
+        )
+        return "", resp
+
+    # Same affinity helper as chat — only when complete() declares session_id.
+    # Compaction summarizers call complete() directly without this attach.
+    complete_kwargs: dict = {"system": sys_prompt}
+    maybe_attach_pilot_session_id(
+        complete_kwargs,
+        session.pilot.complete,
+        getattr(session, "harness_session_id", None),
+    )
+    if accumulator is not None:
+        try:
+            accumulator.mark_request_start()
+        except Exception:
+            pass
+    _mark_provider_dispatch_invoked(session)
+    resp = session.pilot.complete(prompt, **complete_kwargs)
+    _finish_and_attach_timing(accumulator, resp)
+    return "", resp
 
 
 def run_prefetch(
@@ -656,7 +868,7 @@ def _emit_batched_delta(
     return ConvEvent(event_kind, data)  # type: ignore[arg-type]
 
 
-def drain_stream_queue(q: Any) -> Iterator[Any]:
+def drain_stream_queue(q: Any, accumulator: Any = None) -> Iterator[Any]:
     """Consume a ``run_stream`` queue and yield ConvEvents until done/error.
 
     On success, generator return value is ``(streamed_prose, resp)``. On
@@ -670,7 +882,16 @@ def drain_stream_queue(q: Any) -> Iterator[Any]:
 
     Same-(channel, stream_id) deltas are batched (~40ms / 80 chars) before
     becoming SSE frames so word-sized tokens cannot exhaust the replay ring.
-    Barriers (item done, tool hint, channel change, terminal) always flush first.
+    Each new contentful (channel, stream_id) answer/reasoning identity yields
+    its first frame immediately so perceived TTFT is not gated on the batch
+    timeout; later same-identity deltas still coalesce. Progress stays on
+    the batch path. Identities without stream_id stay on the immediate
+    legacy path (no batching). Barriers (item done, tool hint, channel
+    change, terminal) always flush first.
+
+    When ``accumulator`` is provided, the first cleaned-answer instant is
+    marked at the say-extractor boundary (backend event-ready, not paint)
+    and merged key-wise onto ``resp.meta`` at terminal.
     """
     from .conversation import ConvEvent
 
@@ -687,6 +908,7 @@ def drain_stream_queue(q: Any) -> Iterator[Any]:
     answer_batch = StreamDeltaBatch()
     progress_batch = StreamDeltaBatch()
     reasoning_batch = StreamDeltaBatch()
+    first_frames_emitted = set()
     last_queue_activity = time.monotonic()
     stream_idle_stage = 0
 
@@ -740,6 +962,51 @@ def drain_stream_queue(q: Any) -> Iterator[Any]:
                 if ev is not None:
                     yield ev
 
+    def _mark_visible_answer() -> None:
+        if accumulator is None:
+            return
+        try:
+            mark = getattr(accumulator, "mark_first_visible_answer", None)
+            if callable(mark):
+                mark()
+        except Exception:
+            return
+
+    def _emit_push_or_first_frame(
+        batch,
+        flushed,
+        *,
+        event_kind,
+        default_channel,
+        stream_id,
+    ):
+        """Yield a threshold/identity flush, then this identity's first frame.
+
+        First-frame is per (channel, stream_id), not once per channel for
+        the whole drain. A later stream_id (post-tool narration, dual
+        output) gets its own immediate first frame; later same-identity
+        deltas still batch.
+        """
+        if flushed:
+            data = dict(flushed)
+            data.setdefault("channel", default_channel)
+            if event_kind == "thinking":
+                data["delta"] = True
+            yield ConvEvent(event_kind, data)
+            flushed_sid = str(flushed.get("stream_id") or "").strip()
+            first_frames_emitted.add((default_channel, flushed_sid))
+        if not batch.pending:
+            return
+        identity = (default_channel, stream_id)
+        if identity in first_frames_emitted:
+            return
+        ev = _emit_batched_delta(
+            batch, event_kind=event_kind, default_channel=default_channel,
+        )
+        if ev is not None:
+            first_frames_emitted.add(identity)
+            yield ev
+
     def _handle_assistant_delta(val: Any):
         nonlocal last_content_kind
         text, meta = normalize_delta_payload(val)
@@ -770,6 +1037,7 @@ def drain_stream_queue(q: Any) -> Iterator[Any]:
         clean = say_extractor.feed(text)
         if not clean:
             return
+        _mark_visible_answer()
         streamed_prose.append(clean)
         last_content_kind = "prose"
         ans_meta = dict(meta)
@@ -785,10 +1053,14 @@ def drain_stream_queue(q: Any) -> Iterator[Any]:
             yield ConvEvent("message_delta", data)
             return
         flushed = answer_batch.push(clean, ans_meta, default_channel="answer")
-        if flushed:
-            data = dict(flushed)
-            data.setdefault("channel", "answer")
-            yield ConvEvent("message_delta", data)
+        for ev in _emit_push_or_first_frame(
+            answer_batch,
+            flushed,
+            event_kind="message_delta",
+            default_channel="answer",
+            stream_id=sid,
+        ):
+            yield ev
 
     def _handle_reasoning_delta(val: Any):
         nonlocal last_content_kind
@@ -808,11 +1080,14 @@ def drain_stream_queue(q: Any) -> Iterator[Any]:
         flushed = reasoning_batch.push(
             text, r_meta, default_channel="reasoning",
         )
-        if flushed:
-            data = dict(flushed)
-            data["delta"] = True
-            data.setdefault("channel", "reasoning")
-            yield ConvEvent("thinking", data)
+        for ev in _emit_push_or_first_frame(
+            reasoning_batch,
+            flushed,
+            event_kind="thinking",
+            default_channel="reasoning",
+            stream_id=sid,
+        ):
+            yield ev
 
     while True:
         # Prefer a short wait when a batch is open so time thresholds can fire
@@ -917,11 +1192,191 @@ def drain_stream_queue(q: Any) -> Iterator[Any]:
                     # Fill meta.reasoning when the driver omitted it (Cursor ACP/CLI).
                     if not str(meta.get("reasoning") or "").strip():
                         meta["reasoning"] = reasoning
+            if accumulator is not None:
+                try:
+                    mark_backend = getattr(accumulator, "mark_backend_ready", None)
+                    if callable(mark_backend):
+                        mark_backend()
+                except Exception:
+                    pass
+                try:
+                    tokens_out = getattr(val, "tokens_out", 0)
+                except Exception:
+                    tokens_out = 0
+                try:
+                    attach_stream_performance(
+                        val, accumulator.snapshot(tokens_out=tokens_out),
+                    )
+                except Exception:
+                    pass
             return "".join(streamed_prose), val
         elif kind == "error":
             for ev in _flush_all():
                 yield ev
             raise val
+
+
+def classify_provider_receipt_status(resp: Any) -> str:
+    """Map a driver response to a receipt terminal status. Never raises."""
+    try:
+        error = getattr(resp, "error", None) if resp is not None else None
+        if not error:
+            return "success"
+        from pmharness.drivers import error_classifier
+        err_cls = error_classifier.classify(None, error)
+        if err_cls == error_classifier.ErrorClass.CONTEXT_OVERFLOW:
+            return "context_overflow"
+        return "error"
+    except Exception:
+        return "error"
+
+
+def _receipt_model_label(session: Any, resp: Any, driver: str) -> str:
+    meta = getattr(resp, "meta", None) if resp is not None else None
+    if isinstance(meta, dict):
+        raw = meta.get("model")
+        if isinstance(raw, str):
+            text = raw.strip()
+            if text and len(text) <= 128 and "\n" not in text and "\x00" not in text:
+                return text
+    if "/" in driver:
+        return driver.rsplit("/", 1)[-1]
+    return driver
+
+
+def record_provider_stream_receipt(
+    session: Any,
+    resp: Any = None,
+    *,
+    provider_step: Any = 0,
+    provider_attempt: Any = 0,
+    status: Any = None,
+    stream_performance: Any = None,
+) -> None:
+    """Copy one terminal snapshot into the durable sidecar. Never raises.
+
+    Reads ``resp.meta['stream_performance']`` unless ``stream_performance``
+    is supplied. Does not mutate ``resp.meta``, does not store the
+    accumulator, and does not change ConvEvents, billing, prompt, retry,
+    or response flow on sink failure. Missing session id or state_dir
+    skips the write. ``resp`` may be omitted when ``status`` is given
+    (invoked-dispatch error path).
+    """
+    try:
+        sid = str(getattr(session, "harness_session_id", "") or "").strip()
+        state_dir = str(getattr(session, "state_dir", "") or "").strip()
+        if not sid or not state_dir:
+            return
+        if stream_performance is None:
+            if resp is None and status is None:
+                return
+            meta = getattr(resp, "meta", None) if resp is not None else None
+            raw_perf = None
+            if isinstance(meta, dict):
+                raw_perf = meta.get(STREAM_PERFORMANCE_KEY)
+            perf = copy_stream_performance(raw_perf)
+        else:
+            perf = copy_stream_performance(stream_performance)
+        if status is None:
+            if resp is None:
+                return
+            status = classify_provider_receipt_status(resp)
+        user_ordinal = None
+        try:
+            user_ordinal = session._current_user_ordinal()
+        except Exception:
+            user_ordinal = None
+        turn_index = 0
+        if user_ordinal is not None:
+            try:
+                turn_index = int(user_ordinal) + 1
+            except (TypeError, ValueError):
+                turn_index = 0
+        driver = ""
+        try:
+            driver = str(getattr(getattr(session, "config", None), "driver", "") or "")
+        except Exception:
+            driver = ""
+        receipt = build_receipt(
+            session_id=sid,
+            stream_performance=perf,
+            turn_index=turn_index,
+            user_ordinal=user_ordinal,
+            provider_step=provider_step,
+            provider_attempt=provider_attempt,
+            driver=driver,
+            model=_receipt_model_label(session, resp, driver),
+            status=status,
+        )
+        StreamPerformanceReceiptStore(state_dir).record(sid, receipt)
+    except Exception:
+        return
+
+
+def _snapshot_accumulator_for_receipt(accumulator: Any) -> Any:
+    """Best-effort terminal snapshot. Empty when timing evidence is unavailable."""
+    if accumulator is None:
+        return {}
+    try:
+        finish = getattr(accumulator, "finish", None)
+        if callable(finish):
+            finish()
+    except Exception:
+        pass
+    try:
+        snap = accumulator.snapshot()
+    except Exception:
+        return {}
+    return snap if isinstance(snap, dict) else {}
+
+
+def record_provider_dispatch_error_receipt(
+    session: Any,
+    accumulator: Any = None,
+    *,
+    provider_step: Any = 0,
+    provider_attempt: Any = 0,
+) -> None:
+    """One terminal status=error receipt after an invoked provider raise.
+
+    Skips when the provider method was never invoked. Empty
+    ``stream_performance`` is allowed; a safe accumulator snapshot is
+    copied when available. Never raises. Does not meter or mutate
+    prompt / history / display.
+    """
+    try:
+        if not _provider_dispatch_was_invoked(session):
+            return
+        record_provider_stream_receipt(
+            session,
+            None,
+            provider_step=provider_step,
+            provider_attempt=provider_attempt,
+            status="error",
+            stream_performance=_snapshot_accumulator_for_receipt(accumulator),
+        )
+    except Exception:
+        return
+
+
+def account_provider_attempt(
+    session: Any,
+    resp: Any,
+    prompt: str,
+    *,
+    provider_step: Any = 0,
+    provider_attempt: Any = 0,
+) -> None:
+    """Persist the sidecar receipt, then meter.
+
+    Receipt is written after dispatch has attached terminal timing and
+    before ``meter_pilot_step`` can raise, so a malformed ``tokens_out``
+    still produces exactly one receipt. Billing semantics are unchanged.
+    """
+    record_provider_stream_receipt(
+        session, resp, provider_step=provider_step, provider_attempt=provider_attempt,
+    )
+    meter_pilot_step(session, resp, prompt)
 
 
 def meter_pilot_step(
@@ -934,6 +1389,9 @@ def meter_pilot_step(
     Mechanical lift of the post-stream accounting block from
     ``_send_locked_inner`` — same counters, same provider-billed preference,
     same ``_session_cost`` fallback. Mutates ``session`` in place.
+
+    Per-step ``stream_performance`` (when present) stays on ``resp.meta``;
+    this function does not persist it onto the session.
 
     Anthropic may stamp ``meta.cache_write_ttl_basis`` as ``provider``,
     ``inferred``, or ``absent``. Aggregate ``cache_write_tokens`` are always
@@ -948,7 +1406,14 @@ def meter_pilot_step(
     # Preserve the effective total / fallback for compaction + UI meters, but
     # label whether tokens_in came from the provider or the prompt heuristic
     # so estimated input never masquerades as measured.
-    _t_out = int(getattr(resp, "tokens_out", 0) or 0)
+    try:
+        _raw_out = getattr(resp, "tokens_out", 0)
+        if isinstance(_raw_out, bool):
+            _t_out = 0
+        else:
+            _t_out = int(_raw_out or 0)
+    except (TypeError, ValueError, OverflowError):
+        _t_out = 0
     try:
         _reported_in = int(getattr(resp, "tokens_in", 0) or 0)
     except (TypeError, ValueError):

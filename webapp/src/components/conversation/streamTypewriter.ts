@@ -11,6 +11,30 @@ export type TypewriterRefs = {
   typeDoneRef: { current: boolean };
 };
 
+/** Reveal one live/done policy chunk from the buffer into React state. */
+function takeTypewriterChunk(
+  refs: TypewriterRefs,
+  appendStreamingText: (chunk: string) => void,
+): void {
+  const buf = refs.typeBufRef.current;
+  if (!buf) return;
+  const perFrame = typewriterCharsPerFrame(buf.length, refs.typeDoneRef.current);
+  if (perFrame <= 0) return;
+  const take = buf.slice(0, perFrame);
+  refs.typeBufRef.current = buf.slice(perFrame);
+  appendStreamingText(take);
+}
+
+function scheduleTypewriterPump(
+  refs: TypewriterRefs,
+  appendStreamingText: (chunk: string) => void,
+  schedule: (cb: () => void) => number,
+): void {
+  refs.typeRafRef.current = schedule(() =>
+    pumpTypewriterFrame(refs, appendStreamingText, schedule),
+  );
+}
+
 /** One animation frame: reveal backlog chars and schedule the next pump. */
 export function pumpTypewriterFrame(
   refs: TypewriterRefs,
@@ -21,20 +45,13 @@ export function pumpTypewriterFrame(
   const buf = refs.typeBufRef.current;
   if (!buf) {
     if (!refs.typeDoneRef.current) {
-      refs.typeRafRef.current = schedule(() =>
-        pumpTypewriterFrame(refs, appendStreamingText, schedule),
-      );
+      scheduleTypewriterPump(refs, appendStreamingText, schedule);
     }
     return;
   }
-  const perFrame = typewriterCharsPerFrame(buf.length, refs.typeDoneRef.current);
-  const take = buf.slice(0, perFrame);
-  refs.typeBufRef.current = buf.slice(perFrame);
-  appendStreamingText(take);
+  takeTypewriterChunk(refs, appendStreamingText);
   if (refs.typeBufRef.current || !refs.typeDoneRef.current) {
-    refs.typeRafRef.current = schedule(() =>
-      pumpTypewriterFrame(refs, appendStreamingText, schedule),
-    );
+    scheduleTypewriterPump(refs, appendStreamingText, schedule);
   }
 }
 
@@ -44,11 +61,13 @@ export function startTypewriterLoop(
   schedule: (cb: () => void) => number,
 ): void {
   refs.typeDoneRef.current = false;
-  if (refs.typeRafRef.current == null) {
-    refs.typeRafRef.current = schedule(() =>
-      pumpTypewriterFrame(refs, appendStreamingText, schedule),
-    );
+  if (refs.typeRafRef.current != null) {
+    return;
   }
+  if (refs.typeBufRef.current) {
+    takeTypewriterChunk(refs, appendStreamingText);
+  }
+  scheduleTypewriterPump(refs, appendStreamingText, schedule);
 }
 
 export function flushTypewriterBuffer(

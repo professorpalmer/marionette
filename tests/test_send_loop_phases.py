@@ -46,6 +46,7 @@ from harness.send_loop_phases import (
 
 PHASE_HELPERS = (
     "run_stream",
+    "dispatch_pilot_provider_call",
     "run_prefetch",
     "run_parallel_prefetch",
     "stream_swarm",
@@ -53,6 +54,9 @@ PHASE_HELPERS = (
     "action_display_goal",
     "drain_stream_queue",
     "meter_pilot_step",
+    "record_provider_stream_receipt",
+    "account_provider_attempt",
+    "record_provider_dispatch_error_receipt",
     "drain_idle_turn",
     "dispatch_readonly_action",
     "dispatch_local_action",
@@ -103,17 +107,106 @@ def test_mixin_still_owns_public_orchestration_surface():
 
 def test_mixin_calls_new_phase_helpers():
     src = Path(inspect.getsourcefile(SendLoopMixin)).read_text(encoding="utf-8")
-    assert "drain_stream_queue(" in src
-    assert "meter_pilot_step(" in src
+    assert "dispatch_pilot_provider_call(" in src
+    assert "account_provider_attempt(" in src
+    assert "record_provider_dispatch_error_receipt(" in src
     assert "drain_idle_turn(" in src
     assert "run_auto_verify(" in src
     assert "execute_turn_actions(" in src
+    assert "reset_timing_before_step(" in src
+    assert "yield_timed_phase(" in src
     # Action-spree fan-out (prefetch / readonly / local) lives in send_loop_actions.
     actions_src = Path("harness/send_loop_actions.py").read_text(encoding="utf-8")
     assert "action_display_goal(" in actions_src
     assert "run_parallel_prefetch(" in actions_src
     assert "dispatch_readonly_action(" in actions_src
     assert "dispatch_local_action(" in actions_src
+
+
+def test_send_locked_inner_excludes_yield_suspension_from_phase_timers():
+    """Advisory compaction and overflow compact must not use timed_phase around yield."""
+    src = Path(inspect.getsourcefile(SendLoopMixin)).read_text(encoding="utf-8")
+    assert 'yield from yield_timed_phase(' in src
+    assert 'timing, "advisory_compaction"' in src
+    assert "reset_timing_before_step(timing, step)" in src
+    # Plan+append-only order: timed trailer, untimed suffix, timed encode/append.
+    inner = inspect.getsource(SendLoopMixin._send_locked_inner)
+    first_user = inner.find('with timed_phase(timing, "user_append")')
+    plan_idx = inner.find("PLAN_SYSTEM_SUFFIX")
+    second_user = inner.find('with timed_phase(timing, "user_append")', first_user + 1)
+    assert first_user != -1 and plan_idx != -1 and second_user != -1
+    assert first_user < plan_idx < second_user
+    # CodeGraph visibility event is yielded after the timed compute block.
+    assert "cg_event" in src
+
+
+def test_plan_append_only_user_message_byte_order(tmp_path, monkeypatch):
+    """User content, append-only trailer, plan suffix, then native image parts."""
+    from harness.config import HarnessConfig
+    from harness.conversation import ConversationalSession
+    from harness.pilot import PLAN_SYSTEM_SUFFIX
+    from pmharness.drivers.base import DriverResponse
+
+    trailer_mark = "TRAILER_UNIQUE_MARK"
+    encoded = {}
+
+    def fake_prep(session, user_message, images):
+        if False:
+            yield None
+        return user_message, ["fake.png"]
+
+    def fake_encode(text, paths):
+        encoded["text"] = text
+        encoded["paths"] = list(paths)
+        return [
+            {"type": "text", "text": text},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,xx"}},
+        ]
+
+    monkeypatch.setattr("harness.send_loop.prepare_turn_images", fake_prep)
+    monkeypatch.setattr(
+        "harness.vision.native_multimodal_user_content", fake_encode,
+    )
+
+    cfg = HarnessConfig(
+        driver="stub-oracle-v2",
+        state_dir=str(tmp_path),
+        repo=str(tmp_path),
+    )
+    session = ConversationalSession(cfg)
+    monkeypatch.setattr(session, "_resolve_append_only", lambda: True)
+    monkeypatch.setattr(
+        session,
+        "_append_turn_context_trailer",
+        lambda message, user_message: message + "\n" + trailer_mark,
+    )
+
+    class OrderPilot:
+        name = "order-spy"
+
+        def chat(self, messages, tools=None, system=None):
+            return DriverResponse(
+                text='{"say": "ok", "actions": []}',
+                tokens_out=1,
+                latency_ms=1.0,
+            )
+
+    session.pilot = OrderPilot()
+    user = "hello order test"
+    list(session.send(user, plan=True))
+
+    body = encoded["text"]
+    assert body.index(user) < body.index(trailer_mark) < body.index(PLAN_SYSTEM_SUFFIX)
+    expected = user + "\n" + trailer_mark + "\n\n" + PLAN_SYSTEM_SUFFIX
+    assert body == expected
+    assert encoded["paths"] == ["fake.png"]
+
+    contents = [
+        m.get("content") for m in session._history if m.get("role") == "user"
+    ]
+    multimodal = next(c for c in contents if isinstance(c, list))
+    assert multimodal[0]["text"] == expected
+    assert multimodal[1]["type"] == "image_url"
 
 
 def test_send_locked_inner_no_longer_inlines_readonly_branches():

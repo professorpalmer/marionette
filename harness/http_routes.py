@@ -419,6 +419,7 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
     from .api import schedules as _sched_api
     from .api import session_control as _sc_api
     from .api import session_events as _session_events_api
+    from .api import session_performance as _session_perf_api
     from .api import sessions as _sessions_api
     from .api import settings as _settings_api
     from .api import skills as _skills_api
@@ -597,6 +598,10 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
         "/api/git/diff": _get_git_diff,
         "/api/session/state": get_json(
             _sc_api.get_session_state,
+            services=svc.session_control_services,
+            pass_qs=True),
+        "/api/session/performance": get_json(
+            _session_perf_api.get_session_performance,
             services=svc.session_control_services,
             pass_qs=True),
         "/api/session/events": _get_session_events,
