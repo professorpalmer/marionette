@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { X, Cpu, SlidersHorizontal, ShieldCheck, Zap, Bell, Wrench, Info, Puzzle } from "lucide-react";
 import ModelsSettingsPage from "./ModelsSettingsPage";
 import SettingsPane, { type SettingsSection } from "./SettingsPane";
@@ -76,8 +77,8 @@ export default function SettingsShell({
     return () => window.removeEventListener("harness-settings-page", onPage as EventListener);
   }, []);
 
-  return (
-    <div className="fixed inset-0 z-50 bg-bg flex flex-col">
+  return createPortal(
+    <div className="fixed inset-0 z-[80] bg-bg flex flex-col" data-testid="settings-shell">
       {/* top bar -- fixed px pad clears macOS traffic lights (not rem) */}
       <div
         data-testid="settings-shell-titlebar"
@@ -86,6 +87,7 @@ export default function SettingsShell({
       >
         <span className="text-[13px] font-semibold text-txt">Settings</span>
         <button
+          type="button"
           onClick={onClose}
           title="Close settings"
           className="p-1.5 rounded-md text-muted hover:text-txt hover:bg-panel2 transition"
@@ -134,6 +136,7 @@ export default function SettingsShell({
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

@@ -806,6 +806,8 @@ export type TranscriptListProps = {
    */
   holdSwarmAwait?: boolean;
   scrollContainerRef: React.RefObject<HTMLDivElement | null>;
+  /** Conversation jump-to-latest / stick-to-bottom: virtualizer-aware end scroll. */
+  scrollToEndRef?: React.MutableRefObject<(() => void) | null>;
   onEditMessage: (idx: number, originalText: string) => void;
   onExecuteSend: (msg: string, useAuto: boolean, usePlan?: boolean) => void;
   onImageClick: (url: string) => void;
@@ -825,6 +827,7 @@ export const TranscriptList = memo(function TranscriptList({
   turnOpen = false,
   holdSwarmAwait = false,
   scrollContainerRef,
+  scrollToEndRef,
   onEditMessage,
   onExecuteSend,
   onImageClick,
@@ -904,6 +907,23 @@ export const TranscriptList = memo(function TranscriptList({
         ? (element) => element.getBoundingClientRect().height
         : undefined,
   });
+  const scrollToEnd = useCallback(() => {
+    const last = grouped.length - 1;
+    if (last >= 0) {
+      rowVirtualizer.scrollToIndex(last, { align: "end" });
+    }
+    const el = scrollContainerRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [grouped.length, rowVirtualizer, scrollContainerRef]);
+  useLayoutEffect(() => {
+    if (!scrollToEndRef) return;
+    scrollToEndRef.current = scrollToEnd;
+    return () => {
+      if (scrollToEndRef.current === scrollToEnd) {
+        scrollToEndRef.current = null;
+      }
+    };
+  }, [scrollToEnd, scrollToEndRef]);
   void scrollEpoch;
 
   // Find the last assistant message inside the original items array

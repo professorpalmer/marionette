@@ -1043,6 +1043,8 @@ export default function Conversation({
   // tracks real geometry so keyboard/scrollbar unpin is not swallowed.
   const scrollSettlingRef = useRef(false);
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
+  const [feedSettleEpoch, setFeedSettleEpoch] = useState(0);
+  const scrollFeedToEndRef = useRef<(() => void) | null>(null);
   const publishJumpVisibilityRef = useRef(() => {});
   publishJumpVisibilityRef.current = () => {
     const next = shouldShowJumpToBottom({
@@ -1052,13 +1054,13 @@ export default function Conversation({
     setShowJumpToBottom((prev) => (prev === next ? prev : next));
   };
   const jumpToLatest = () => {
-    const el = feedRef.current;
-    if (!el) return;
     pinnedToBottomRef.current = true;
     scrollReleasedByGestureRef.current = false;
-    scrollSettlingRef.current = false;
-    el.scrollTop = el.scrollHeight;
     setShowJumpToBottom(false);
+    const scrollToEnd = scrollFeedToEndRef.current;
+    if (scrollToEnd) scrollToEnd();
+    else if (feedRef.current) feedRef.current.scrollTop = feedRef.current.scrollHeight;
+    setFeedSettleEpoch((n) => n + 1);
   };
   useEffect(() => {
     const el = feedRef.current;
@@ -1131,7 +1133,9 @@ export default function Conversation({
     const el = feedRef.current;
     if (!el) return;
     if (pinnedToBottomRef.current || scrollSettlingRef.current) {
-      el.scrollTo(0, el.scrollHeight);
+      const scrollToEnd = scrollFeedToEndRef.current;
+      if (scrollToEnd) scrollToEnd();
+      else el.scrollTo(0, el.scrollHeight);
     }
   }, [items]);
 
@@ -1145,7 +1149,9 @@ export default function Conversation({
     prevFeedScrollTopRef.current = null;
     scrollSettlingRef.current = true;
     setShowJumpToBottom(false);
-    el.scrollTop = el.scrollHeight;
+    const scrollToEnd = scrollFeedToEndRef.current;
+    if (scrollToEnd) scrollToEnd();
+    else el.scrollTop = el.scrollHeight;
     let frame = 0;
     let stableFrames = 0;
     let lastHeight = el.scrollHeight;
@@ -1169,7 +1175,9 @@ export default function Conversation({
       stableFrames = step.stableFrames;
       frame = step.frame;
       lastHeight = height;
-      node.scrollTop = height;
+      const scrollToEnd = scrollFeedToEndRef.current;
+      if (scrollToEnd) scrollToEnd();
+      else node.scrollTop = height;
       pinnedToBottomRef.current = true;
       if (step.done) {
         scrollSettlingRef.current = false;
@@ -1183,7 +1191,7 @@ export default function Conversation({
       cancelAnimationFrame(rafId);
       scrollSettlingRef.current = false;
     };
-  }, [activeSessionId]);
+  }, [activeSessionId, feedSettleEpoch]);
 
   // Alt-tab / blur can zero the feed height and reset scrollTop. Restore the
   // last offset (or re-stick to bottom if still pinned) after focus paints.
@@ -3073,6 +3081,7 @@ export default function Conversation({
           busyElapsedMs={busyElapsedMs}
           turnOpen={turnOpen}
           holdSwarmAwait={holdSwarmAwait}
+          scrollToEndRef={scrollFeedToEndRef}
           onEditMessage={stableEditMessage}
           onExecuteSend={stableExecuteSend}
           onImageClick={handleTranscriptImageClick}

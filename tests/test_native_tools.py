@@ -31,6 +31,7 @@ def test_build_tools_schema():
     assert "web_fetch" in names
     assert "read_pdf" in names
     assert "run_swarm" in names
+    assert "wait" in names
     assert "search_codegraph" in names
     assert "query_wiki" in names
 

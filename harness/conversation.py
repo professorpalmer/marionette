@@ -854,6 +854,7 @@ class ConversationalSession(
         self._stagnation_last_actions = None
         self._stagnation_streak = 0
         self._failed_objective_resume_counts: dict[str, int] = {}
+        self._keep_alive_waits = 0
         # Adaptive task depth for the current originating user turn.
         self._task_profile: str = ""
         self._task_profile_source: str = ""

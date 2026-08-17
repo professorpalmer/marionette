@@ -515,7 +515,21 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     result = None
     swarm_error = None
     while True:
-        msg_kind, msg_val = _delta_q.get()
+        if getattr(session, "_cancel", None) is not None:
+            try:
+                if session._cancel.is_set():
+                    swarm_error = "interrupted"
+                    break
+            except Exception:
+                pass
+        try:
+            msg_kind, msg_val = _delta_q.get(timeout=2.0)
+        except _queue.Empty:
+            yield ConvEvent("notice", {
+                "kind": "wait",
+                "message": "Waiting for swarm workers…",
+            })
+            continue
         if msg_kind == 'delta':
             wid, dkind, dtext = msg_val
             yield ConvEvent('worker_delta', {'id': aid, 'worker_id': wid, 'kind': dkind, 'text': dtext})

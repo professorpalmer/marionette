@@ -61,7 +61,7 @@ STREAM_IDLE_STUCK_MESSAGE = (
 LOCAL_ACTION_KINDS: frozenset[str] = frozenset({
     "open_project", "relocate_session", "session_bank",
     "write_file", "edit_file", "hash_edit", "run_command",
-    "run_command_batch", "run_ipython",
+    "run_command_batch", "run_ipython", "wait",
     "search_tools", "search_state",
     "store_scratch", "load_scratch", "list_scratch", "clear_scratch",
     "browser_navigate", "browser_snapshot", "browser_click",
@@ -1665,6 +1665,11 @@ def dispatch_local_action(
 
     if act_goal is None:
         act_goal = action_display_goal(act)
+
+    if act.kind == "wait":
+        from .pilot_wait import dispatch_wait_action
+        yield from dispatch_wait_action(session, act, aid, is_native)
+        return
 
     if plan and (
         act.kind in PLAN_SKIP_KINDS or act.kind.startswith("browser_")

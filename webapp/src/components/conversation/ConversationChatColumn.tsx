@@ -3,7 +3,7 @@
  * Conversation owns all state; this is a presentational peel.
  */
 
-import type { ReactNode, RefObject } from "react";
+import type { MutableRefObject, ReactNode, RefObject } from "react";
 import { ChevronDown } from "lucide-react";
 import { panelOpacityClass } from "../../lib/panelTransition";
 import {
@@ -26,6 +26,7 @@ export default function ConversationChatColumn({
   busyElapsedMs,
   turnOpen,
   holdSwarmAwait = false,
+  scrollToEndRef,
   onEditMessage,
   onExecuteSend,
   onImageClick,
@@ -48,6 +49,7 @@ export default function ConversationChatColumn({
   turnOpen: boolean;
   /** Same hold as Conversation — pending jobs keep transcript latch through idle flaps. */
   holdSwarmAwait?: boolean;
+  scrollToEndRef?: MutableRefObject<(() => void) | null>;
   onEditMessage: (idx: number, text: string) => void;
   onExecuteSend: (msg: string, useAuto: boolean, usePlan?: boolean) => void;
   onImageClick: (url: string) => void;
@@ -94,6 +96,7 @@ export default function ConversationChatColumn({
             turnOpen={turnOpen}
             holdSwarmAwait={holdSwarmAwait}
             scrollContainerRef={feedRef}
+            scrollToEndRef={scrollToEndRef}
             onEditMessage={onEditMessage}
             onExecuteSend={onExecuteSend}
             onImageClick={onImageClick}

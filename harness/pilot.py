@@ -53,6 +53,7 @@ ActionKind = Literal[
     "run_command",
     "run_command_batch",
     "run_ipython",
+    "wait",
     "list_dir",
     "web_search",
     "web_fetch",
@@ -309,6 +310,19 @@ class PilotAction:
                     "peek_artifact requires artifact:// uri (or path) "
                     "or both job_id and artifact_id"
                 )
+        if self.kind == "wait":
+            raw_seconds = None
+            if isinstance(self.arguments, dict):
+                raw_seconds = self.arguments.get("seconds")
+            if raw_seconds is None and self.limit is not None:
+                raw_seconds = self.limit
+            if raw_seconds is not None:
+                try:
+                    seconds = float(raw_seconds)
+                except (TypeError, ValueError):
+                    raise PilotError("wait seconds must be a number")
+                if seconds != seconds or seconds <= 0:
+                    raise PilotError("wait seconds must be a positive number")
         if self.kind == "run_swarm" and not (self.goal or "").strip():
             raise PilotError("run_swarm action requires a non-empty goal")
         if self.kind == "run_implement" and not (self.goal or "").strip():
@@ -1087,6 +1101,37 @@ def build_tools_schema(
                     },
                 },
                 "required": ["code"],
+            },
+        },
+    })
+
+    # 3d. wait — keep this turn alive while background jobs run
+    schema.append({
+        "type": "function",
+        "function": {
+            "name": "wait",
+            "description": (
+                "Stay on this turn while background jobs run (Cursor-style Await). "
+                "Sleeps up to `seconds` (default 2, max 30), emits keep-alive "
+                "notices, and returns whether jobs settled. After run_implement / "
+                "run_parallel / a background dispatch, call wait instead of ending "
+                "the turn. Call again if jobs are still running."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "seconds": {
+                        "type": "number",
+                        "description": (
+                            "How long to wait before returning status. Default 2, "
+                            "maximum 30."
+                        ),
+                    },
+                    "job_id": {
+                        "type": "string",
+                        "description": "Optional job id to watch; omit to watch all pending jobs.",
+                    },
+                },
             },
         },
     })
@@ -2181,6 +2226,7 @@ You have direct access to a local CodeGraph-indexed workspace and can explore/ed
 - `write_file`: write/create a file atomically. Requires `path` and `content`. Use ONLY to create brand-new files.
 - `run_command`: run a terminal shell command. Requires `command`.
 - `run_ipython`: execute Python in a session-scoped persistent REPL (variables survive across turns). Prefer read_file/hash_edit/run_command/swarms for normal coding; use this for stateful probes. Requires `code`.
+- `wait`: stay on this turn while background jobs run (Cursor-style Await). Sleeps up to `seconds` (default 2, max 30) and returns whether jobs settled. After run_implement / run_parallel, call wait instead of ending the turn.
 - `list_dir`: list the files and folders inside a directory. `path` is optional.
 - `run_swarm`: dispatch a parallel agent swarm for complex/broad investigations. Requires `goal`. One worker runs per role -- for a broad ask (audit, "review the platform", "find ways to improve quality/robustness/scale") pass SEVERAL `roles` (explore, pipeline-mapper, decision-explainer, conflict-auditor, test-coverage-reviewer) so it fans out into real parallel coverage; pass all five for a full audit. Omit roles only for a single narrow question. Prefer omitting `model` so the harness auto-routes among currently keyed agentic worker providers (ChatGPT Codex OAuth, OpenCode Go, OpenRouter, …). Pass `model` only when the user names a worker from the live agentic catalog in the tool schema; session pilot ids (openai-codex:…, cursor/…, codex/…) remap to matching worker rows when present. Unknown pins demote to auto-route; they do not fail the swarm. Prompt text alone does not pin a model. To audit a DIFFERENT checkout than the open workspace, pass `repo`=<absolute git path>: the workers read that subject, while your own writes/edits/commands stay in the open session workspace.
 - `run_implement`: dispatch an edit-capable worker that edits the repo in an isolated worktree and produces a reviewable patch. Requires `goal`. Default engine is standalone `agentic` (routes directly through your provider keys, no external CLI); pass `adapter` only to force a specific engine. Optional `mode` (`implement` default, or `analysis`/`review` for read-only reports).
@@ -2227,8 +2273,8 @@ You are not just an investigator -- you can GET WORK DONE. Prefer fan-out:
 - `run_implement` ONLY for one tightly-coupled change that must land as a single coherent PATCH (shared types, interlocking modules, one atomic feature). Do NOT use a single implement worker for work that cleanly splits.
 Use route_task to preview model/cost before a big dispatch.
 
-DISPATCH IS A PAUSE-POINT (mandatory):
-When you dispatch background work (run_implement, run_parallel, or a backgrounded run_swarm), that dispatch is a PAUSE-POINT, not a completion. Emit AT MOST ONE background dispatch verb per turn (never two run_implement calls for the same objective). Do not treat the job as done at dispatch time. The worker finishes later and its result arrives as a "[swarm result ...]" record followed by a "[background job ... finished]" continuation. When you see that, you MUST first report the outcome to the user in plain language -- what the worker did, whether it passed or applied, and the key findings -- and THEN take the next step yourself. For a finished read-only analysis swarm whose findings are shallow or empty: diagnose why (too broad, wrong roles, missing repo focus) and re-dispatch a narrowed run_swarm / run_parallel analysis wave -- do NOT "validate with native tools" or grind an inline exploration campaign yourself. For implement/patch jobs: validate, run tests, fix, apply, or run a narrowed follow-up. It is not the user's job to prompt you to interpret the result or continue; do it on your own.
+DISPATCH THEN WAIT (mandatory):
+When you dispatch background work (run_implement, run_parallel, or a backgrounded run_swarm), that dispatch is not a completion. Emit AT MOST ONE background dispatch verb per turn (never two run_implement calls for the same objective). Do not treat the job as done at dispatch time. Stay on this turn: call `wait` (default 2s, repeat as needed) until the job settles, the same way an IDE agent uses Await. Do not end the turn and wait for a later resume. When wait reports the job finished — or you see a "[swarm result ...]" / "[background job ... finished]" record — first report the outcome to the user in plain language -- what the worker did, whether it passed or applied, and the key findings -- and THEN take the next step yourself. For a finished read-only analysis swarm whose findings are shallow or empty: diagnose why (too broad, wrong roles, missing repo focus) and re-dispatch a narrowed run_swarm / run_parallel analysis wave -- do NOT "validate with native tools" or grind an inline exploration campaign yourself. For implement/patch jobs: validate, run tests, fix, apply, or run a narrowed follow-up. It is not the user's job to prompt you to interpret the result or continue; do it on your own.
 
 TINY / STATIC WORKSPACE AFTER IMPLEMENT (mandatory): After a successful implement on a tiny or static workspace (few source files, HTML/CSS/JS demos, small sites), perform AT MOST ONE cheap verification (read the changed file, `node --check`, or a focused grep) and then STOP. Report the outcome. Do NOT launch headless Chrome/Chromium `--dump-dom` / `file://` smoke probes, do NOT open browsers, and do NOT re-investigate or re-read the same files in a validation campaign unless the user explicitly requests browser QA or visual validation. Native `browser_*` tools remain available only for that explicit ask.
 
