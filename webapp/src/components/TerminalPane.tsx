@@ -12,6 +12,16 @@ import {
   syncAgentTerminalSnapshot,
 } from "../lib/agentTerminalStream";
 import { registerTerminalPathLinks } from "../lib/terminalPathLinks";
+import {
+  addToChatShortcutHint,
+  dispatchAddTerminalSelection,
+  isAddSelectionShortcut,
+  isMacNavigator,
+  readLiveTerminalSelection,
+  readTerminalSelectionPosition,
+  terminalSelectionAnchor,
+  terminalSelectionLabel,
+} from "../lib/terminalSelection";
 import { hostHasLayout, safePtyDims } from "./terminalDims";
 import { terminalBareOnDoneAction } from "./terminalStreamPolicy";
 
@@ -52,6 +62,30 @@ export default function TerminalPane() {
   const [restartNonce, setRestartNonce] = useState(0);
   const [exited, setExited] = useState(false);
   const [agentView, setAgentView] = useState<AgentView | null>(null);
+  const [selection, setSelection] = useState("");
+  const [selectionStyle, setSelectionStyle] = useState<{ left: number; top: number } | null>(null);
+  const agentViewRef = useRef<AgentView | null>(null);
+  agentViewRef.current = agentView;
+
+  const clearSelectionUi = () => {
+    setSelection("");
+    setSelectionStyle(null);
+  };
+
+  const addSelectionToChat = (term: Terminal | null, shellName: string) => {
+    const text = readLiveTerminalSelection(term);
+    if (!text.trim() || !term) return;
+    const label = terminalSelectionLabel(
+      text,
+      shellName,
+      readTerminalSelectionPosition(term),
+    );
+    dispatchAddTerminalSelection(text, label);
+    try {
+      term.clearSelection();
+    } catch { /* ignore */ }
+    clearSelectionUi();
+  };
 
   const restart = () => {
     setExited(false);
@@ -119,6 +153,7 @@ export default function TerminalPane() {
       agentUnregisterRef.current = null;
       return;
     }
+    clearSelectionUi();
     const host = agentHostRef.current;
     if (!host) return;
 
@@ -162,6 +197,13 @@ export default function TerminalPane() {
       } catch { /* ignore */ }
     });
 
+    const syncSelection = () => {
+      const text = readLiveTerminalSelection(term);
+      setSelection(text);
+      setSelectionStyle(text.trim() ? terminalSelectionAnchor(host) : null);
+    };
+    const selectionSub = term.onSelectionChange(syncSelection);
+
     const ro = new ResizeObserver(() => {
       try {
         fit?.fit();
@@ -170,9 +212,11 @@ export default function TerminalPane() {
     ro.observe(host);
 
     return () => {
+      try { selectionSub.dispose(); } catch { /* ignore */ }
       ro.disconnect();
       agentUnregisterRef.current?.();
       agentUnregisterRef.current = null;
+      clearSelectionUi();
     };
   }, [agentView]);
 
@@ -214,6 +258,12 @@ export default function TerminalPane() {
     attachTerminalLinkHandlers(term);
     term.open(host);
     termRef.current = term;
+    const selectionSub = term.onSelectionChange(() => {
+      if (agentViewRef.current) return;
+      const text = readLiveTerminalSelection(term);
+      setSelection(text);
+      setSelectionStyle(text.trim() ? terminalSelectionAnchor(host) : null);
+    });
 
     let disposed = false;
     let layoutWaitRo: ResizeObserver | null = null;
@@ -359,9 +409,27 @@ export default function TerminalPane() {
       if (cancelRef.current) cancelRef.current();
       if (idRef.current) postJSON("/api/terminal/kill", { id: idRef.current });
       idRef.current = "";
+      try { selectionSub.dispose(); } catch { /* ignore */ }
       term.dispose();
+      clearSelectionUi();
     };
   }, [restartNonce]);
+
+  // Cmd/Ctrl+L adds the live xterm selection to the composer. Only swallow
+  // the key when there is text -- otherwise App.tsx still focuses the input.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!isAddSelectionShortcut(e, isMacNavigator())) return;
+      const agent = agentViewRef.current;
+      const term = agent ? agentTermRef.current : termRef.current;
+      if (!readLiveTerminalSelection(term).trim()) return;
+      e.preventDefault();
+      e.stopPropagation();
+      addSelectionToChat(term, agent ? "agent" : "term");
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
 
   const agentLabel = agentView
     ? (agentView.command.length > 64
@@ -408,7 +476,7 @@ export default function TerminalPane() {
           </>
         )}
       </div>
-      <div className="relative flex-1 min-h-0">
+      <div className="relative flex-1 min-h-0" data-terminal="">
         <div
           ref={hostRef}
           className={`absolute inset-0 p-1.5 overflow-hidden ${agentView ? "invisible pointer-events-none" : ""}`}
@@ -420,6 +488,28 @@ export default function TerminalPane() {
           aria-hidden={!agentView}
           data-testid="agent-terminal-mirror"
         />
+        {selection.trim() ? (
+          <button
+            type="button"
+            data-testid="terminal-add-to-chat"
+            title={`Add selection to chat (${addToChatShortcutHint(isMacNavigator())})`}
+            className="absolute z-10 text-[10px] px-1.5 py-0.5 rounded border text-faint border-edge2 bg-[#0f1113] hover:text-muted hover:bg-panel2/80 transition-colors"
+            style={selectionStyle ?? { right: 12, top: 8 }}
+            onMouseDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              addSelectionToChat(
+                agentView ? agentTermRef.current : termRef.current,
+                agentView ? "agent" : "term",
+              );
+            }}
+          >
+            Add to chat
+            <span className="ml-1 opacity-60">
+              {addToChatShortcutHint(isMacNavigator())}
+            </span>
+          </button>
+        ) : null}
       </div>
     </div>
   );

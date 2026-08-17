@@ -85,11 +85,23 @@ import {
   FEED_REPIN_THRESHOLD_PX,
   nextFeedPinState,
   settleFrameResult,
+  shouldShowJumpToBottom,
   shouldUnpinOnTouchMove,
   FEED_UNPIN_BUBBLE_EVENT,
   feedWheelUnpinListenerOptions,
   shouldUnpinOnWheel,
 } from "./conversation/feedScroll";
+import {
+  ADD_TERMINAL_SELECTION_EVENT,
+  appendTerminalMention,
+  applyTerminalSelectionsToMessage,
+  terminalLabelsFromDraft,
+} from "../lib/terminalSelection";
+import {
+  dropTerminalLabels,
+  peekTerminalSelections,
+  putTerminalSelection,
+} from "./conversation/terminalSelectionCache";
 import { restoreFeedScrollAfterFocus } from "./conversation/transcriptVirtualWindow";
 import {
   STREAM_ABORT_MESSAGE,
@@ -909,7 +921,9 @@ export default function Conversation({
   };
 
   const handleQueueAdd = () => {
-    const text = input.trim();
+    const raw = input.trim();
+    const sessionKey = activeSessionIdRef.current || "_draft";
+    const text = applyTerminalSelectionsToMessage(raw, peekTerminalSelections(sessionKey));
     if (!text) return;
     // Snapshot the attached image paths BEFORE clearing input/attachments, so a
     // queued prompt carries its images just like a normal turn. The backend
@@ -917,6 +931,7 @@ export default function Conversation({
     const sid = activeSessionIdRef.current;
     const queueImages = attachedImages.map((img) => img.path).filter(Boolean);
     setInput("");
+    dropTerminalLabels(sessionKey, terminalLabelsFromDraft(raw));
     setAttachedImages([]);
     api.queueAdd(text, queueImages)
       .then(() => {
@@ -1027,6 +1042,24 @@ export default function Conversation({
   // to bottom until height stabilizes (or wall-clock timeout). onScroll still
   // tracks real geometry so keyboard/scrollbar unpin is not swallowed.
   const scrollSettlingRef = useRef(false);
+  const [showJumpToBottom, setShowJumpToBottom] = useState(false);
+  const publishJumpVisibilityRef = useRef(() => {});
+  publishJumpVisibilityRef.current = () => {
+    const next = shouldShowJumpToBottom({
+      pinned: pinnedToBottomRef.current,
+      settling: scrollSettlingRef.current,
+    });
+    setShowJumpToBottom((prev) => (prev === next ? prev : next));
+  };
+  const jumpToLatest = () => {
+    const el = feedRef.current;
+    if (!el) return;
+    pinnedToBottomRef.current = true;
+    scrollReleasedByGestureRef.current = false;
+    scrollSettlingRef.current = false;
+    el.scrollTop = el.scrollHeight;
+    setShowJumpToBottom(false);
+  };
   useEffect(() => {
     const el = feedRef.current;
     if (!el) return;
@@ -1044,6 +1077,7 @@ export default function Conversation({
       pinnedToBottomRef.current = next.pinned;
       scrollReleasedByGestureRef.current = next.releasedByGesture;
       prevFeedScrollTopRef.current = el.scrollTop;
+      publishJumpVisibilityRef.current();
     };
     const onScroll = () => {
       applyPinState();
@@ -1055,12 +1089,14 @@ export default function Conversation({
       if (shouldUnpinOnWheel(e.deltaY, scrollSettlingRef.current)) {
         scrollReleasedByGestureRef.current = true;
         pinnedToBottomRef.current = false;
+        publishJumpVisibilityRef.current();
       }
     };
     const onNestedFeedUnpin = () => {
       if (!scrollSettlingRef.current) {
         scrollReleasedByGestureRef.current = true;
         pinnedToBottomRef.current = false;
+        publishJumpVisibilityRef.current();
       }
     };
     let touchY: number | null = null;
@@ -1072,6 +1108,7 @@ export default function Conversation({
       if (shouldUnpinOnTouchMove(touchY, y ?? null, scrollSettlingRef.current)) {
         scrollReleasedByGestureRef.current = true;
         pinnedToBottomRef.current = false;
+        publishJumpVisibilityRef.current();
       }
       touchY = y ?? touchY;
     };
@@ -1107,6 +1144,7 @@ export default function Conversation({
     scrollReleasedByGestureRef.current = false;
     prevFeedScrollTopRef.current = null;
     scrollSettlingRef.current = true;
+    setShowJumpToBottom(false);
     el.scrollTop = el.scrollHeight;
     let frame = 0;
     let stableFrames = 0;
@@ -1135,6 +1173,7 @@ export default function Conversation({
       pinnedToBottomRef.current = true;
       if (step.done) {
         scrollSettlingRef.current = false;
+        publishJumpVisibilityRef.current();
         return;
       }
       rafId = requestAnimationFrame(settle);
@@ -1358,6 +1397,21 @@ export default function Conversation({
     const onFocus = () => { taRef.current?.focus(); };
     window.addEventListener("harness-focus-input", onFocus);
     return () => window.removeEventListener("harness-focus-input", onFocus);
+  }, []);
+
+  useEffect(() => {
+    const onAdd = (e: Event) => {
+      const detail = (e as CustomEvent<{ text?: string; label?: string }>).detail || {};
+      const text = String(detail.text || "").trim();
+      const label = String(detail.label || "").trim();
+      if (!text || !label) return;
+      const sid = activeSessionIdRef.current || "_draft";
+      putTerminalSelection(sid, label, text);
+      setInput((prev) => appendTerminalMention(prev, label));
+      taRef.current?.focus();
+    };
+    window.addEventListener(ADD_TERMINAL_SELECTION_EVENT, onAdd as EventListener);
+    return () => window.removeEventListener(ADD_TERMINAL_SELECTION_EVENT, onAdd as EventListener);
   }, []);
 
   // Command palette (and other chrome) can clear/compact without going through
@@ -2613,7 +2667,9 @@ export default function Conversation({
 
   const send = (mode?: "interrupt") => {
     if (editBusy) return;
-    const msg = input.trim();
+    const raw = input.trim();
+    const sid = activeSessionIdRef.current || "_draft";
+    const msg = applyTerminalSelectionsToMessage(raw, peekTerminalSelections(sid));
     // Allow a send/steer that is only attached image(s) with no text -- the
     // backend accepts text OR images.
     if (shouldBlockEmptySend({
@@ -2779,6 +2835,7 @@ export default function Conversation({
         .then((res) => {
           if (shouldClearSteerDraftOnResult(true)) {
             setInput("");
+            dropTerminalLabels(sid, terminalLabelsFromDraft(raw));
             setAttachedImages([]);
           }
           const chrome = steerResultChrome({
@@ -2819,6 +2876,7 @@ export default function Conversation({
 
     const kickSend = () => {
       setInput("");
+      dropTerminalLabels(sid, terminalLabelsFromDraft(raw));
       executeSend(msg, auto, plan);
     };
 
@@ -3021,6 +3079,8 @@ export default function Conversation({
           onSetCard={stableSetCard}
           onExecutePlan={handleTranscriptExecutePlan}
           onCommandApproval={handleCommandApproval}
+          showJumpToBottom={showJumpToBottom}
+          onJumpToBottom={jumpToLatest}
           composerDock={(
       <ComposerDock
         config={config}

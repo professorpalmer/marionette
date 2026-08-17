@@ -2753,6 +2753,8 @@ describe("composerInput module", () => {
     expect(detectComposerTrigger("@folder:src/lib ", 16).kind).toBe("none");
     expect(detectComposerTrigger('@folder:"my docs" ', 18).kind).toBe("none");
     expect(detectComposerTrigger("@codebase ", 10).kind).toBe("none");
+    expect(detectComposerTrigger("@terminal:term:12", 17).kind).toBe("none");
+    expect(detectComposerTrigger("@terminal:term:12 ", 18).kind).toBe("none");
   });
 
   it("builds inserts, cycles selection, and resolves drop mentions", () => {
