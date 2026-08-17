@@ -125,4 +125,12 @@ describe("ComposerDock busy chrome", () => {
     expect(screen.getByRole("button", { name: /queue/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /stop/i })).toBeInTheDocument();
   });
+
+  it("keeps send actions in a non-shrinking cluster so the picker can truncate", () => {
+    const { container } = renderBusyDock("");
+    expect(container.querySelector(".composer-toolbar")).toBeTruthy();
+    expect(container.querySelector(".composer-toolbar-actions")).toBeTruthy();
+    expect(container.querySelector(".composer-toolbar-send")).toBeTruthy();
+    expect(container.querySelector(".pilot-picker-slot")).toBeTruthy();
+  });
 });

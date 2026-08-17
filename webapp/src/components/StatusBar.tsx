@@ -31,6 +31,7 @@ import CostBreakdown, {
   spendIsEstimated,
 } from "./CostBreakdown";
 import { sanitizeUpdateMessage } from "../lib/updateMessages";
+import { shortPilotModelLabel } from "../lib/turnProgress";
 
 type FooterRuntimeStatus = "ready" | "thinking" | "busy";
 
@@ -75,7 +76,8 @@ function truncateGoalText(text: string, max = 36): string {
 // Bottom status strip (Hermes shell/statusbar pattern): runtime health, active
 // workspace branch, pilot model, spend, and shell toggles. Job inventory lives
 // in LeftRail SESSION JOBS -- a footer total was stale across dir swaps and
-// disagreed with the scoped list, so it was removed.
+// disagreed with the scoped list, so it was removed. Narrow widths hide
+// secondary labels via container queries instead of overlapping the clusters.
 export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, onToggleRight }: {
   config: Config | null;
   leftOpen: boolean; rightOpen: boolean;
@@ -366,16 +368,21 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
   };
 
   const showUsage = usage && (usage.tokens_used > 0 || usage.est_cost_usd > 0);
+  const driverLabel = shortPilotModelLabel(config?.driver) || "pilot";
+  const driverProvider = config?.driver?.includes(":")
+    ? config.driver.split(":")[0]
+    : (config?.reach || "");
 
   return (
-    <div className="shell-inset-footer flex items-center gap-3 px-3 h-7 text-[10px] text-muted select-none">
+    <div className="shell-inset-footer status-bar px-3 h-7 text-[10px] text-muted select-none">
+      <div className="status-bar-cluster status-bar-cluster-start">
       <button onClick={onToggleLeft} title="Toggle sessions panel (Ctrl/Cmd+B)"
-        className={`p-0.5 rounded hover:bg-panel2 ${leftOpen ? "text-txt" : "text-muted"}`}><PanelLeft size={12} /></button>
+        className={`p-0.5 rounded hover:bg-panel2 shrink-0 ${leftOpen ? "text-txt" : "text-muted"}`}><PanelLeft size={12} /></button>
       <button onClick={onToggleRight} title="Toggle floating panels (Ctrl/Cmd+J)"
-        className={`p-0.5 rounded hover:bg-panel2 ${rightOpen ? "text-txt" : "text-muted"}`}><PanelRight size={12} /></button>
-      <span className="w-px h-3 bg-edge" />
+        className={`p-0.5 rounded hover:bg-panel2 shrink-0 ${rightOpen ? "text-txt" : "text-muted"}`}><PanelRight size={12} /></button>
+      <span className="w-px h-3 bg-edge shrink-0" />
       <span
-        className={`flex items-center gap-1 ${runtimeReady ? "text-good" : "text-accent"}`}
+        className={`flex items-center gap-1 shrink-0 ${runtimeReady ? "text-good" : "text-accent"}`}
         title={runtimeReady ? "Idle" : runtimeStatus === "busy" ? "Swarm or background work in progress" : "Session runner active"}
         data-runtime-status={runtimeStatus}
       >
@@ -383,24 +390,24 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
           size={7}
           className={runtimeReady ? "fill-good text-good" : "fill-accent text-accent animate-pulse"}
         />
-        {footerRuntimeStatusLabel(runtimeStatus)}
+        <span className="status-bar-optional-sm">{footerRuntimeStatusLabel(runtimeStatus)}</span>
       </span>
-      {branch && <span className="flex items-center gap-1"><GitBranch size={10} />{branch}</span>}
+      {branch && <span className="status-bar-optional-sm flex items-center gap-1"><GitBranch size={10} />{branch}</span>}
       {taskProfile && (
         <span
           data-testid="task-profile-chip"
-          className="inline-flex items-center gap-1 px-1.5 py-px rounded-full bg-panel2 border border-edge text-txt/90"
+          className="status-bar-optional-xs inline-flex items-center gap-1 px-1.5 py-px rounded-full bg-panel2 border border-edge text-txt/90"
           title={taskProfileTitle(taskProfile)}
         >
           <Zap size={10} className="shrink-0 text-accent" aria-hidden="true" />
-          <span className="uppercase tracking-wide text-faint shrink-0">DEPTH</span>
+          <span className="uppercase tracking-wide text-faint shrink-0 status-bar-optional-md">DEPTH</span>
           <span>{taskProfile.profile}</span>
         </span>
       )}
       {sessionGoal && (
         <span
           data-testid="session-goal-chip"
-          className="inline-flex items-center gap-1 max-w-[240px] px-1.5 py-px rounded-full bg-panel2 border border-edge text-txt/90"
+          className="status-bar-optional-xs inline-flex items-center gap-1 max-w-[240px] px-1.5 py-px rounded-full bg-panel2 border border-edge text-txt/90"
           title={`Session GOAL (${sessionGoal.status}): ${sessionGoal.text}`}
         >
           <Target size={10} className="shrink-0 text-accent" aria-hidden="true" />
@@ -462,10 +469,10 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
       )}
       {showUsage && (
         <>
-          <span className="w-px h-3 bg-edge/40" />
-          <span className="flex items-center gap-1.5 text-muted/80" title="Process-wide token usage and estimated cost since app launch (not repo session spend in Swarm pane; survives backend restart; resets on full quit)">
-            <Coins size={10} className="text-faint" />
-            <span>{formatTokens(usage.tokens_used)} tok</span>
+          <span className="w-px h-3 bg-edge/40 shrink-0" />
+          <span className="flex items-center gap-1.5 text-muted/80 min-w-0" title="Process-wide token usage and estimated cost since app launch (not repo session spend in Swarm pane; survives backend restart; resets on full quit)">
+            <Coins size={10} className="text-faint shrink-0" />
+            <span className="status-bar-optional-xs">{formatTokens(usage.tokens_used)} tok</span>
             {(() => {
               const cached = usage.tokens_cached || 0;
               const compacted = usage.tool_output_tokens_saved || 0;
@@ -528,7 +535,7 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
               ].filter(Boolean).join("  ·  ");
               return (
                 <span
-                  className="inline-flex items-center gap-1 px-1.5 py-px rounded-full bg-good/10 border border-good/20 text-good/90"
+                  className="status-bar-optional-sm inline-flex items-center gap-1 px-1.5 py-px rounded-full bg-good/10 border border-good/20 text-good/90"
                   title={`${hit.title} List-price value from model selection, prompt-cache, and compaction (additive, not overlapping cash refunds): ${detail}`}
                 >
                   <span className="text-good/60" aria-hidden="true">&#8595;</span>
@@ -549,7 +556,7 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
             {/* The estimated cost is now a click/hover trigger for a compact
                 routing-value breakdown (why this model / what it saved). It
                 stays a plain figure when there is nothing meaningful to expand. */}
-            <span className="relative inline-flex items-center gap-1" ref={costRef}>
+            <span className="relative inline-flex items-center gap-1 shrink-0" ref={costRef}>
               <button
                 type="button"
                 onClick={() => setCostOpen((v) => !v)}
@@ -569,7 +576,7 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
                 {spendIsEstimated(usage) ? "~" : ""}
                 {formatCost(usage.est_cost_usd)}
               </button>
-              <span className="text-faint/70 normal-case font-sans tracking-normal">process</span>
+              <span className="text-faint/70 normal-case font-sans tracking-normal status-bar-optional-lg">process</span>
               {costOpen && (
                 <div className="absolute bottom-full right-0 mb-1.5 z-50">
                   <CostBreakdown
@@ -636,7 +643,8 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
           </span>
         </>
       )}
-      <div className="flex-1" />
+      </div>
+      <div className="status-bar-cluster status-bar-cluster-end">
       {toast && (
         <span className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 text-amber-300/90">
           <span>{toast.message}</span>
@@ -654,18 +662,24 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
           ) : null}
         </span>
       )}
-      <span className="flex items-center gap-1"><Cpu size={10} />{config?.driver?.split(":").pop() || "pilot"}</span>
+      <span className="status-bar-model" title={config?.driver || "pilot"}>
+        <Cpu size={10} className="shrink-0" />
+        <span>{driverLabel}</span>
+      </span>
       {/* Show the ACTIVE model's provider (the driver spec's prefix), not the
           fallback reach. A "provider:model" driver routes through that provider;
           only a bare, unprefixed model actually falls back to reach. Showing
           reach unconditionally made e.g. anthropic:claude-opus read "openrouter". */}
-      <span>{(config?.driver?.includes(":") ? config.driver.split(":")[0] : config?.reach) || ""}</span>
+      {driverProvider ? (
+        <span className="status-bar-optional-md">{driverProvider}</span>
+      ) : null}
       {config?.edit_engine === "agentic" && (
         <span
-          className="flex items-center gap-1 text-good/80"
+          className="flex items-center gap-1 text-good/80 shrink-0"
           title="Standalone: edits and swarms route directly through your provider keys -- no external agent CLI"
         >
-          <Zap size={10} className="text-good/70" />standalone
+          <Zap size={10} className="text-good/70" />
+          <span className="status-bar-optional-md">standalone</span>
         </span>
       )}
       {apply ? (
@@ -689,7 +703,8 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
           <span>update{update.behind ? ` (${update.behind})` : ""}</span>
         </button>
       ) : null}
-      <span className="text-muted/60">{isDesktop() ? "desktop" : "web"}</span>
+      <span className="text-muted/60 status-bar-optional-lg">{isDesktop() ? "desktop" : "web"}</span>
+      </div>
     </div>
   );
 }

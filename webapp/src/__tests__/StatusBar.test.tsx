@@ -798,3 +798,47 @@ describe("StatusBar task profile chip", () => {
     });
   });
 });
+
+describe("StatusBar compact chrome", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockWorkspaces.mockResolvedValue([]);
+    mockGetSessionState.mockResolvedValue({
+      state: "idle",
+      pending_swarms: false,
+      runners: {},
+    });
+    mockSessions.mockResolvedValue([]);
+    mockGetUsage.mockResolvedValue({
+      session: {
+        tokens_used: 1500,
+        est_cost_usd: 0.05,
+        driver: "openrouter:deepseek/deepseek-v4-pro-0813",
+        price_in: 0.4,
+        price_out: 0.8,
+      },
+      jobs: [],
+    });
+  });
+
+  it("splits the footer into overflow-safe clusters and shortens long model ids", async () => {
+    const { container } = render(
+      <StatusBar
+        {...statusBarProps}
+        config={{
+          driver: "openrouter:deepseek/deepseek-v4-pro-0813",
+          reach: "openrouter",
+          budget: 0,
+        }}
+      />,
+    );
+
+    expect(container.querySelector(".status-bar-cluster-start")).toBeTruthy();
+    expect(container.querySelector(".status-bar-cluster-end")).toBeTruthy();
+    expect(container.querySelector(".status-bar-model")).toHaveTextContent("deepseek-v4-pro-0813");
+    expect(container.querySelector(".status-bar-model")).not.toHaveTextContent("openrouter:deepseek/");
+    await waitFor(() => {
+      expect(screen.getByText("process")).toBeInTheDocument();
+    });
+  });
+});
