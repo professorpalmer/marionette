@@ -80,6 +80,15 @@ export type CostBreakdownData = {
   prompt_cache_state?: "warm" | "expired";
   price_in?: number;
   price_out?: number;
+  /** Locked cumulative spend per pilot that actually ran (picker-safe). */
+  pilot_by_model?: Array<{
+    model: string;
+    est_cost_usd: number;
+    tokens_used?: number;
+    tokens_in?: number;
+    tokens_out?: number;
+    tokens_cached?: number;
+  }>;
 };
 
 /** Credit routing USD only when basis is actual or estimated — never unknown. */
@@ -292,6 +301,15 @@ export function compactionAdvicePresentation(
 // Local formatter so this subcomponent stays self-contained. Mirrors the
 // StatusBar cost formatting (coarser as the number grows) but never emits a
 // bare "$0.00" for a value that is meaningfully zero -- callers gate on that.
+/** Last path segment of a provider:model spec for the cost rows. */
+export function shortPilotModel(spec: string): string {
+  const text = (spec || "").trim();
+  if (!text) return "unknown";
+  const afterColon = text.includes(":") ? text.slice(text.lastIndexOf(":") + 1) : text;
+  const slash = afterColon.lastIndexOf("/");
+  return slash >= 0 ? afterColon.slice(slash + 1) : afterColon;
+}
+
 function fmtCost(num: number): string {
   if (!isFinite(num) || num <= 0) return "$0.00";
   if (num < 0.001) return `$${num.toFixed(4)}`;
@@ -547,6 +565,23 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
           <span className="text-good font-medium tabular-nums">{spendPrefix}{fmtCost(est)}</span>
         </div>
       ) : null}
+
+      {Array.isArray(data.pilot_by_model)
+        ? data.pilot_by_model
+            .filter((row) => typeof row?.est_cost_usd === "number" && isFinite(row.est_cost_usd) && row.est_cost_usd > 0)
+            .map((row) => (
+              <div
+                key={row.model}
+                className="flex items-center justify-between mb-1 pl-2 text-faint"
+                title={`Locked to ${row.model} — swapping the pilot does not reprice this row.`}
+              >
+                <span className="truncate pr-2">{shortPilotModel(row.model)}</span>
+                <span className="tabular-nums shrink-0">
+                  {spendPrefix}{fmtCost(row.est_cost_usd)}
+                </span>
+              </div>
+            ))
+        : null}
 
       {/* (b) Prompt-cache value -- uncapped pilot gross + swarm store. */}
       {promptCacheSaved > 0 ? (

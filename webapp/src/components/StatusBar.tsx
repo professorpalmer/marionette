@@ -627,6 +627,7 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
                       prompt_cache_state: usage.prompt_cache_state,
                       price_in: usage.price_in,
                       price_out: usage.price_out,
+                      pilot_by_model: usage.pilot_by_model,
                     }}
                   />
                 </div>

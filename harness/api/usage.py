@@ -44,6 +44,17 @@ class UsageServices:
 JsonPayload = Union[dict, list]
 
 
+def _usage_pilot_by_model() -> list:
+    """Best-effort per-model rows; never fail the usage pill."""
+    try:
+        from .usage_meters import _boot_pilot_by_model_payload
+
+        rows = _boot_pilot_by_model_payload()
+        return rows if isinstance(rows, list) else []
+    except Exception:
+        return []
+
+
 def get_context_usage(svc: UsageServices) -> tuple[int, JsonPayload]:
     """GET /api/context/usage."""
     try:
@@ -385,16 +396,16 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
         provider_cost if usage_cost_source in ("provider", "mixed") else None
     )
     try:
-        from .cost_accounting import (
-            _cache_savings_gross,
-            _cache_savings_with_basis,
-            _spend_is_estimated,
-        )
+        from .cost_accounting import _spend_is_estimated
+        from .usage_meters import _boot_pilot_cache_savings
 
-        cache_savings_usd, cache_savings_basis = _cache_savings_with_basis(
-            pilot_only_cached, price_in, provider_cost_usd=cache_provider_cap
+        cache_savings_usd, cache_savings_gross_usd, cache_savings_basis = (
+            _boot_pilot_cache_savings(
+                fallback_cached=pilot_only_cached,
+                fallback_price_in=price_in,
+                provider_cost_usd=cache_provider_cap,
+            )
         )
-        cache_savings_gross_usd = _cache_savings_gross(pilot_only_cached, price_in)
         spend_estimated = _spend_is_estimated(usage_cost_source, price_source)
     except Exception:
         cache_savings_usd = svc.cache_savings(pilot_only_cached, price_in)
@@ -438,6 +449,9 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
             # catalog = uncapped estimate; capped = limited to provider
             # spend; unknown = provider path present but net spend ≤ 0.
             "cache_savings_basis": cache_savings_basis,
+            # Locked cumulative spend per pilot that actually ran. Picker
+            # swaps must not reprice these rows at the newly selected model.
+            "pilot_by_model": _usage_pilot_by_model(),
             # Routing + delegation + swarm-cache savings over the boot-repo
             # epoch job set (additive to the pilot cache/compaction figures).
             "routing_saved_usd": round(routing_saved_usd, 6),

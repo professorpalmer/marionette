@@ -7,6 +7,7 @@ import CostBreakdown, {
   formatCacheHitPercent,
   listPriceValueTotal,
   routingSavingsCredited,
+  shortPilotModel,
   spendIsEstimated,
   type CostBreakdownData,
 } from "../components/CostBreakdown";
@@ -60,6 +61,14 @@ describe("compactionAdvicePresentation", () => {
   });
 });
 
+describe("shortPilotModel", () => {
+  it("keeps the last path segment of a provider spec", () => {
+    expect(shortPilotModel("openrouter:moonshotai/kimi-k3")).toBe("kimi-k3");
+    expect(shortPilotModel("composer-2.5-fast")).toBe("composer-2.5-fast");
+    expect(shortPilotModel("")).toBe("unknown");
+  });
+});
+
 describe("CostBreakdown", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -69,6 +78,25 @@ describe("CostBreakdown", () => {
       before_tokens: 1000,
       after_tokens: 400,
     });
+  });
+
+  it("lists locked cumulative spend per pilot model", () => {
+    render(
+      <CostBreakdown
+        data={{
+          ...baseData,
+          est_cost_usd: 2.62,
+          pilot_by_model: [
+            { model: "openrouter:moonshotai/kimi-k3", est_cost_usd: 2.1 },
+            { model: "composer-2.5-fast", est_cost_usd: 0.52 },
+          ],
+        }}
+      />,
+    );
+    expect(screen.getByText("kimi-k3")).toBeInTheDocument();
+    expect(screen.getByText("composer-2.5-fast")).toBeInTheDocument();
+    expect(screen.getByText("~$2.10")).toBeInTheDocument();
+    expect(screen.getByText("~$0.52")).toBeInTheDocument();
   });
 
   it("renders the session cost fields it is given", () => {
