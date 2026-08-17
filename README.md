@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.5` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.236, deliberately pre-1.0. Product swarms pick Luna vs Sol by role need on a two-tier catalog; a global pin still pins every role. Rides puppetmaster-ai==1.22.5.
+> Status: v0.9.237, deliberately pre-1.0. SESSION COST locks cumulative spend per pilot model across swaps; product swarms pick Luna vs Sol by role need on a two-tier catalog. Rides puppetmaster-ai==1.22.5.
 
 ## Documentation
 
