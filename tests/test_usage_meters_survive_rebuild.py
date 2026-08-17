@@ -521,6 +521,9 @@ def test_deferred_driver_change_does_not_reprice_live_meters():
     saved_carry = dict(srv._BOOT_METER_CARRY)
     saved_cost = float(getattr(srv, "_BOOT_CARRY_COST_USD", 0.0) or 0.0)
     saved_slices = dict(getattr(srv, "_BOOT_PILOT_BY_MODEL", {}) or {})
+    saved_bound = ""
+    if getattr(srv._pilot, "config", None) is not None:
+        saved_bound = str(getattr(srv._pilot.config, "driver", "") or "")
     try:
         _zero_boot_carry(srv)
         expensive_in, expensive_out = 5.0, 25.0
@@ -555,6 +558,8 @@ def test_deferred_driver_change_does_not_reprice_live_meters():
         assert rows[0]["model"] == "expensive-pilot"
     finally:
         _restore_meters(srv._pilot, saved)
+        if getattr(srv._pilot, "config", None) is not None:
+            srv._pilot.config.driver = saved_bound
         srv._BOOT_METER_CARRY.clear()
         srv._BOOT_METER_CARRY.update(saved_carry)
         srv._BOOT_CARRY_COST_USD = saved_cost

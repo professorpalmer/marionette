@@ -110,6 +110,14 @@ def test_http_interrupt_empty_busy_turn_has_no_phantom_steer_drop():
                     latency_ms=1.0,
                 )
 
+        # Chat start rebuilds when config.driver lags _cfg.driver. Keep them
+        # aligned so this stub stays on the object that handles the request.
+        try:
+            want = str(getattr(srv._cfg, "driver", "") or "").strip()
+            if want and getattr(pilot, "config", None) is not None:
+                pilot.config.driver = want
+        except Exception:
+            pass
         pilot.pilot = _SlowPilot()
         errors = []
 
@@ -129,7 +137,9 @@ def test_http_interrupt_empty_busy_turn_has_no_phantom_steer_drop():
         chat_thread = threading.Thread(target=_run_chat, name="v09216-chat", daemon=True)
         chat_thread.start()
         try:
-            _wait_busy(pilot, errors=errors)
+            # Watch the live module pilot — a prior test that left
+            # config.driver mismatched can rebuild _pilot on chat start.
+            _wait_busy(srv._pilot, errors=errors)
             assert list(pilot._steer_queue) == []
 
             with _post_json(port, "/api/session/interrupt", {}, srv._TOKEN) as resp:
