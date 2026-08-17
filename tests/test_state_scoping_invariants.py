@@ -310,8 +310,14 @@ def test_session_delete_removes_metadata_and_transcript(tmp_path):
     meta = store.create("Doomed", repo=str(tmp_path), workspace_root=str(tmp_path))
     sid = meta["id"]
     save_transcript(str(state_dir), sid, {"display": [{"role": "user", "text": "hi"}]})
+    from harness.compaction_archive import append_compaction_archive, compaction_archive_path
+
+    append_compaction_archive(str(state_dir), sid, [{"role": "user", "content": "elided"}])
     transcript = state_dir / "transcripts" / f"{sid}.json"
+    archive = state_dir / "transcripts" / f"{sid}.archive.json"
     assert transcript.is_file()
+    assert archive.is_file()
+    assert compaction_archive_path(str(state_dir), sid) == str(archive)
 
     class _Runners:
         def drop(self, _sid):
@@ -331,6 +337,7 @@ def test_session_delete_removes_metadata_and_transcript(tmp_path):
     assert body["ok"] is True
     assert sid not in {s["id"] for s in store.rows()}
     assert not transcript.exists()
+    assert not archive.exists()
 
 
 def test_remove_session_transcript_is_idempotent(tmp_path):

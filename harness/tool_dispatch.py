@@ -921,29 +921,45 @@ class ToolDispatchMixin:
         sid = (getattr(self, "harness_session_id", None) or "").strip() or "default"
         state_dir = getattr(self, "state_dir", None) or getattr(self.config, "state_dir", "") or ""
         messages: list = []
+        archive: list = []
+        try:
+            from .compaction_archive import load_compaction_archive_messages
+
+            archive = load_compaction_archive_messages(state_dir, sid)
+        except Exception:
+            archive = []
+        disk_messages: list = []
         try:
             data = load_transcript(state_dir, sid)
             if isinstance(data, dict):
-                messages = list(data.get("history") or [])
+                disk_messages = list(data.get("history") or [])
             elif isinstance(data, list):
-                messages = list(data)
+                disk_messages = list(data)
         except Exception:
-            messages = []
-        if not messages:
-            try:
-                export = getattr(self, "export_transcript_data", None)
-                if callable(export):
-                    data = export()
-                    if isinstance(data, dict):
-                        messages = list(data.get("history") or [])
-                if not messages:
-                    history = list(getattr(self, "_history", []) or [])
-                    messages = [
-                        m for m in history
-                        if isinstance(m, dict) and m.get("role") != "system"
-                    ]
-            except Exception:
-                messages = []
+            disk_messages = []
+        live_messages: list = []
+        try:
+            export = getattr(self, "export_transcript_data", None)
+            if callable(export):
+                data = export()
+                if isinstance(data, dict):
+                    live_messages = list(data.get("history") or [])
+            if not live_messages:
+                history = list(getattr(self, "_history", []) or [])
+                live_messages = [
+                    m for m in history
+                    if isinstance(m, dict) and m.get("role") != "system"
+                ]
+        except Exception:
+            live_messages = []
+        # When an archive exists, residual must be the post-compact tail
+        # (live first) so a stale pre-compact transcript is not concatenated
+        # on top of the elided rows. Without an archive, keep preferring disk.
+        if archive:
+            residual = live_messages or disk_messages
+            messages = list(archive) + residual
+        else:
+            messages = disk_messages or live_messages
 
         if role_filter:
             messages = [
