@@ -208,8 +208,13 @@ export default function ModelsSettingsPage() {
                   <div className="flex flex-col rounded-lg border border-edge/40 overflow-hidden">
                     {g.items.map((entry, i) => (
                       <button
+                        type="button"
                         key={entry.spec}
-                        onClick={() => toggle(entry)}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          void toggle(entry);
+                        }}
                         disabled={busy === entry.spec}
                         className={`flex items-center justify-between px-3 py-2 text-left transition
                           ${i > 0 ? "border-t border-edge/30" : ""}

@@ -1310,7 +1310,11 @@ class ConversationJobsMixin:
             pass
         return True
 
-    def drain_swarm_results(self) -> Iterator[ConvEvent]:
+    def drain_swarm_results(
+        self,
+        emit_resume: bool = True,
+        already_holding_busy: bool = False,
+    ) -> Iterator[ConvEvent]:
         # Drain finished background-swarm results, appending follow-up messages to
         # history under the single-writer _busy lock. CRITICAL: acquire NON-blocking.
         # This is called from an HTTP handler (the 2.5s frontend poll). If a chat
@@ -1331,11 +1335,14 @@ class ConversationJobsMixin:
         from .conversation import ConvEvent
 
         self._reap_stuck_turn()
-        if not self._busy.acquire(blocking=False):
-            if not self._try_recover_busy_for_swarm_drain():
-                return
+        acquired_here = False
+        if not already_holding_busy:
             if not self._busy.acquire(blocking=False):
-                return
+                if not self._try_recover_busy_for_swarm_drain():
+                    return
+                if not self._busy.acquire(blocking=False):
+                    return
+            acquired_here = True
         try:
             import queue
             # (job_id, objective, failed, error, degraded)
@@ -1690,11 +1697,12 @@ class ConversationJobsMixin:
                     else:
                         self._history.append({"role": "user", "content": resume_text})
 
-                    yield ConvEvent("pilot_resume", {
-                        "job_id": finished_jobs[0][0],
-                        "job_ids": [jid for jid, _obj, _f, _e, _d in finished_jobs],
-                        "objective": finished_jobs[0][1],
-                    })
+                    if emit_resume:
+                        yield ConvEvent("pilot_resume", {
+                            "job_id": finished_jobs[0][0],
+                            "job_ids": [jid for jid, _obj, _f, _e, _d in finished_jobs],
+                            "objective": finished_jobs[0][1],
+                        })
                 except Exception:
                     # Degrade: emit one resume per job (previous behavior) so the
                     # keep-alive contract is preserved even if merge fails.
@@ -1738,11 +1746,13 @@ class ConversationJobsMixin:
                                 )
                             else:
                                 self._history.append({"role": "user", "content": resume_text})
-                            yield ConvEvent("pilot_resume", {
-                                "job_id": job_id,
-                                "objective": objective,
-                            })
+                            if emit_resume:
+                                yield ConvEvent("pilot_resume", {
+                                    "job_id": job_id,
+                                    "objective": objective,
+                                })
                         except Exception:
                             pass
         finally:
-            self._busy.release()
+            if acquired_here:
+                self._busy.release()

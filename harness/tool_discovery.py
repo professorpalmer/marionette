@@ -34,6 +34,7 @@ CORE_ALWAYS: Set[str] = {
     "edit_file",
     "run_command",
     "run_ipython",
+    "wait",
     "list_dir",
     "search_tools",
 }
@@ -74,6 +75,7 @@ _PILOT_EXTRAS: Set[str] = {
     "run_swarm",
     "run_implement",
     "run_parallel",
+    "wait",
     "query_wiki",
 }
 

@@ -6,6 +6,7 @@ import { api } from "../lib/api";
 import { dispatchProjectSelected } from "../lib/panelTransition";
 import { usePolling } from "../lib/usePolling";
 import { clearSWRCache, readSWRCache } from "../lib/useStaleWhileRevalidate";
+import { resetSettingsOverlay, setSettingsOverlayOpen } from "../lib/settingsOverlay";
 
 vi.mock("../lib/api", () => ({
   api: {
@@ -23,7 +24,13 @@ vi.mock("../components/BrowserPane", () => ({ default: () => <div /> }));
 vi.mock("../components/FileTree", () => ({ default: () => <div /> }));
 vi.mock("../components/SourceControl", () => ({ default: () => <div /> }));
 vi.mock("../components/WorktreesPane", () => ({ default: () => <div /> }));
-vi.mock("../components/SettingsShell", () => ({ default: () => <div /> }));
+vi.mock("../components/SettingsShell", () => ({
+  default: ({ onClose }: { onClose: () => void }) => (
+    <div data-testid="settings-shell">
+      <button type="button" onClick={onClose}>close-settings</button>
+    </div>
+  ),
+}));
 vi.mock("../components/TerminalPane", () => ({
   default: () => <div data-testid="terminal-pane" />,
 }));
@@ -71,6 +78,7 @@ describe("RightPane collapse placement", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    resetSettingsOverlay();
     Element.prototype.scrollIntoView = vi.fn();
     seedBoardTabOrder();
   });
@@ -145,6 +153,27 @@ describe("RightPane collapse placement", () => {
     expect(screen.getByRole("separator", { name: "Resize stacked panel height" })).toBeInTheDocument();
     const stack = screen.getByRole("region", { name: "State panel" }).closest(".right-pane-card-stack") as HTMLElement;
     expect(stack.style.gridTemplateRows).toBe("minmax(0, 50fr) minmax(0, 50fr)");
+  });
+
+  it("does not close the rail while Settings is open on an empty board", () => {
+    localStorage.setItem("pmharness.board.openCards", JSON.stringify([]));
+    const onEmpty = vi.fn();
+
+    render(<RightPane {...baseProps} onEmpty={onEmpty} initialTab="settings" />);
+
+    expect(screen.getByTestId("settings-shell")).toBeInTheDocument();
+    expect(onEmpty).not.toHaveBeenCalled();
+  });
+
+  it("keeps Settings open across a remount when the overlay latch is set", () => {
+    setSettingsOverlayOpen(true);
+    const onEmpty = vi.fn();
+    const { unmount } = render(<RightPane {...baseProps} onEmpty={onEmpty} />);
+    expect(screen.getByTestId("settings-shell")).toBeInTheDocument();
+    unmount();
+    render(<RightPane {...baseProps} onEmpty={onEmpty} />);
+    expect(screen.getByTestId("settings-shell")).toBeInTheDocument();
+    expect(onEmpty).not.toHaveBeenCalled();
   });
 
   it("does not render an empty board and asks the shell to close it", () => {

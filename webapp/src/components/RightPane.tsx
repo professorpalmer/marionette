@@ -16,6 +16,10 @@ import { lastSelectedProjectRoot } from "../lib/panelTransition";
 import { usePolling } from "../lib/usePolling";
 import { writeSWRCache } from "../lib/useStaleWhileRevalidate";
 import {
+  isSettingsOverlayOpen,
+  setSettingsOverlayOpen,
+} from "../lib/settingsOverlay";
+import {
   loadRightPaneTabVisibility,
   saveRightPaneTabVisibility,
   type RightPaneTabVisibility,
@@ -258,7 +262,7 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
   const boardRef = useRef<HTMLDivElement | null>(null);
   const preferredResizeGroupRef = useRef(-1);
   const [draggedTab, setDraggedTab] = useState<Tab | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(isSettingsOverlayOpen);
   const handledInitialTab = useRef<string | null>(null);
   const [tabOrder, setTabOrder] = useState<Tab[]>(() => {
     const validTabs = CANONICAL_ORDER.filter(tab => tab !== PINNED_LAST);
@@ -294,12 +298,23 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
     localStorage.setItem("pmharness.tabOrder", JSON.stringify(nextOrder));
     localStorage.setItem("pmharness.board.openCards", JSON.stringify(flat));
     localStorage.setItem(BOARD_COLUMNS_STORAGE_KEY, JSON.stringify(cols));
-    if (flat.length === 0) onEmpty?.();
+    if (flat.length === 0 && !isSettingsOverlayOpen()) onEmpty?.();
   }, [onEmpty]);
+
+  const openSettings = useCallback(() => {
+    setSettingsOverlayOpen(true);
+    setSettingsOpen(true);
+  }, []);
+
+  const closeSettings = useCallback(() => {
+    setSettingsOverlayOpen(false);
+    setSettingsOpen(false);
+    if (openCards.length === 0) onEmpty?.();
+  }, [onEmpty, openCards.length]);
 
   const addCard = useCallback((tabName: Tab) => {
     if (tabName === PINNED_LAST) {
-      setSettingsOpen(true);
+      openSettings();
       return;
     }
     if (!tabVisibilityRef.current[tabName]) {
@@ -309,7 +324,7 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
     }
     persistBoard(tabOrder, openCards.includes(tabName) ? openCards : [...openCards, tabName]);
     requestAnimationFrame(() => document.getElementById(`right-pane-card-${tabName}`)?.focus());
-  }, [openCards, persistBoard, tabOrder]);
+  }, [openCards, openSettings, persistBoard, tabOrder]);
 
   const removeCard = (tabName: Tab) => {
     const nextOpenCards = openCards.filter(card => card !== tabName);
@@ -467,17 +482,17 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
 
   useEffect(() => {
     if (!initialTab || initialTab === PINNED_LAST) {
-      if (initialTab === PINNED_LAST) setSettingsOpen(true);
+      if (initialTab === PINNED_LAST) openSettings();
       return;
     }
     if (handledInitialTab.current === initialTab) return;
     handledInitialTab.current = initialTab;
     addCard(initialTab as Tab);
-  }, [initialTab, addCard]);
+  }, [initialTab, addCard, openSettings]);
 
   useEffect(() => {
-    if (visible && openCards.length === 0 && !initialTab) onEmpty?.();
-  }, [initialTab, onEmpty, openCards.length, visible]);
+    if (visible && openCards.length === 0 && !initialTab && !settingsOpen) onEmpty?.();
+  }, [initialTab, onEmpty, openCards.length, settingsOpen, visible]);
 
   const [reviews, setReviews] = useState<PendingReview[]>([]);
   /** Sticky when getReviews fails — DiffReviewPane must not claim an empty queue. */
@@ -558,7 +573,7 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
         const validTabs: Tab[] = ["state", "files", "git", "worktrees", "terminal", "browser", "settings", "swarm", "checkpoints", "review"];
         if (validTabs.includes(targetTab)) {
           if (targetTab === "settings") {
-            setSettingsOpen(true);
+            openSettings();
             return;
           }
           addCard(targetTab);
@@ -567,7 +582,7 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
     };
     window.addEventListener("harness-focus-tab", onFocusTab as EventListener);
     return () => window.removeEventListener("harness-focus-tab", onFocusTab as EventListener);
-  }, [addCard]);
+  }, [addCard, openSettings]);
 
   const renderCardBody = (tabName: Tab) => (
     <ErrorBoundary label={TAB_CONFIG[tabName]?.label || tabName} inline>
@@ -782,13 +797,10 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
           </div>
         )}
       </div>
-      {visible && settingsOpen && (
+      {settingsOpen && (
         <SettingsShell
           onOpenWizard={onOpenWizard}
-          onClose={() => {
-            setSettingsOpen(false);
-            if (openCards.length === 0) onEmpty?.();
-          }}
+          onClose={closeSettings}
         />
       )}
     </>

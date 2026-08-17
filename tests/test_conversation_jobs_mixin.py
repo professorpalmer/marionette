@@ -154,6 +154,31 @@ def test_drain_swarm_results_characterization():
     )
 
 
+def test_drain_swarm_results_in_turn_skips_pilot_resume():
+    """In-turn keep-alive applies results without starting a FE resume turn."""
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    session = ConversationalSession(cfg)
+    session._swarm_results.put({
+        "job_id": "job_in_turn",
+        "objective": "in-turn drain",
+        "result": {
+            "applied": True,
+            "files": ["a.py"],
+            "summary": "ok",
+        },
+    })
+    events = list(session.drain_swarm_results(
+        emit_resume=False, already_holding_busy=True,
+    ))
+    kinds = [e.kind for e in events]
+    assert "swarm_result" in kinds
+    assert "pilot_resume" not in kinds
+    assert any(
+        m["role"] == "user" and "[background job job_in_turn finished]" in m["content"]
+        for m in session._history
+    )
+
+
 def test_run_provider_worker_background_finishes_local_job():
     """Provider-worker background path still finishes the local job + queues result."""
     from harness.worker import WorkerResult

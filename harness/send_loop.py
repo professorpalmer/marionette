@@ -899,6 +899,7 @@ class SendLoopMixin:
             self._stagnation_last_actions = None
             self._stagnation_streak = 0
             self._failed_objective_resume_counts = {}
+            self._keep_alive_waits = 0
             yield from emit_turn_task_profile(self, user_message)
             try:
                 from .turn_budget import turn_budget_enabled
@@ -1450,15 +1451,10 @@ class SendLoopMixin:
             except Exception:
                 pass
 
-            # 3. No actions => the pilot is done talking. Before yielding back to
-            # the user, drain any pending steer. A steer that arrives while the
-            # model is finalizing has a safe assistant->user boundary (the last
-            # history message is this assistant turn). drain_idle_turn delivers
-            # it as a first-class user message and re-asks the model instead of
-            # terminating. Mid-spree / step-start inject in
-            # _check_and_inject_steer is the other delivery point; together they
-            # guarantee any enqueued steer is eventually delivered and never
-            # stranded.
+            # 3. No actions => the pilot is done talking unless a wait tool
+            # kept the step productive. drain_idle_turn delivers pending
+            # steers or finalizes. Mid-spree / step-start inject in
+            # _check_and_inject_steer is the other steer delivery point.
             if not turn.has_actions:
                 synthesis_decision = post_swarm_synthesis_decision(
                     synchronous_swarms=synchronous_swarms,
