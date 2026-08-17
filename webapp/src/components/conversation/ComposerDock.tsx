@@ -264,8 +264,8 @@ export default function ComposerDock({
   };
 
   return (
-    <div className="px-6 pb-3 pt-0.5">
-      <div className="max-w-3xl mx-auto">
+    <div className="composer-dock-shell px-6 pb-3 pt-0.5 min-w-0">
+      <div className="max-w-3xl mx-auto min-w-0">
         {wikiPrepared && wikiPrepared.pages.length > 0 && (
           <div className="mb-2 px-2.5 py-1.5 rounded-lg bg-accent/5 border border-accent/20 flex items-center gap-2 text-[11px] text-txt/85">
             <Share2 size={11} className="text-accent shrink-0" />
@@ -548,7 +548,7 @@ export default function ComposerDock({
           onDragOver={handleComposerDragOver}
           onDragLeave={handleComposerDragLeave}
           onDrop={handleComposerDrop}
-          className={`relative bg-panel2/80 border rounded-2xl focus-within:border-edge2 shadow-lg shadow-black/20 transition ${
+          className={`composer-dock relative bg-panel2/80 border rounded-2xl focus-within:border-edge2 shadow-lg shadow-black/20 transition ${
             isDragOver ? "border-accent ring-1 ring-accent" : "border-edge"
           }`}
         >
@@ -951,31 +951,35 @@ export default function ComposerDock({
             onPaste={handlePaste}
             rows={1} placeholder={auto ? "Give the pilot an objective..." : "Message the pilot..."}
             className="w-full bg-transparent px-3 pt-2.5 pb-1 text-[0.8125rem] resize-none focus:outline-none overflow-hidden placeholder:text-faint" />
-          <div className="flex items-center gap-1.5 px-3 pb-2">
-            <button onClick={() => {
+          <div className="composer-toolbar px-3 pb-2">
+            <div className="composer-toolbar-actions">
+            <button type="button" onClick={() => {
               onSetAuto((a) => {
                 const next = !a;
                 if (next) onSetPlan(false);
                 return next;
               });
             }} title="Autopilot: the pilot plans and executes autonomously (vs. you steering each step)"
-              className={`px-1.5 h-[20px] rounded-md text-[10.5px] flex items-center gap-1 transition
+              className={`px-1.5 h-[20px] rounded-md text-[10.5px] flex items-center gap-1 shrink-0 transition
                 ${auto ? "bg-warn/15 text-warn" : "text-faint hover:text-muted"}`}>
-              <Zap size={11} /> Autopilot
+              <Zap size={11} /> <span className="composer-toolbar-label">Autopilot</span>
             </button>
-            <button onClick={() => {
+            <button type="button" onClick={() => {
               onSetPlan((p) => {
                 const next = !p;
                 if (next) onSetAuto(false);
                 return next;
               });
             }} title="Plan mode -- get an actionable plan instead of execution (read-only)"
-              className={`px-1.5 h-[20px] rounded-md text-[10.5px] flex items-center gap-1 transition
+              className={`px-1.5 h-[20px] rounded-md text-[10.5px] flex items-center gap-1 shrink-0 transition
                 ${plan ? "bg-accent/15 text-accent" : "text-faint hover:text-muted"}`}>
-              <ListChecks size={11} /> Plan
+              <ListChecks size={11} /> <span className="composer-toolbar-label">Plan</span>
             </button>
-            <PilotPicker config={config} />
+            <div className="pilot-picker-slot">
+              <PilotPicker config={config} />
+            </div>
             <button
+              type="button"
               onClick={() => {
                 onSetShowContextPanel(!showContextPanel);
                 if (!showContextPanel) {
@@ -983,59 +987,68 @@ export default function ComposerDock({
                 }
               }}
               title="View context window usage breakdown"
-              className={`px-1.5 h-[20px] rounded-md text-[10.5px] font-mono flex items-center gap-1 transition
+              className={`px-1.5 h-[20px] rounded-md text-[10.5px] font-mono flex items-center gap-1 shrink-0 transition
                 ${showContextPanel ? "bg-accent/15 text-accent border border-accent/20" : "text-faint hover:text-muted bg-panel2/40 border border-edge/30 hover:bg-panel2/80"}`}
             >
               <FileText size={11} />
-              <span>
-                {contextUsage
-                  ? `${contextUsagePercent(contextUsage.total, contextUsage.limit)}%`
-                  : "Usage"}
-              </span>
+              {contextUsage ? (
+                <span>{contextUsagePercent(contextUsage.total, contextUsage.limit)}%</span>
+              ) : (
+                <span className="composer-toolbar-label">Usage</span>
+              )}
             </button>
-            <div className="flex-1" />
+            </div>
+            <div className="composer-toolbar-send">
             {input.trim() && (
               <button
+                type="button"
                 onClick={handleQueueAdd}
                 title="Queue: runs after the current turn finishes (same as Cmd/Ctrl+Enter)"
                 className="px-2 h-[20px] rounded-md bg-panel2/60 border border-edge/60 text-faint hover:text-muted hover:border-edge2 text-[10.5px] font-medium flex items-center gap-1 transition"
               >
-                <ListChecks size={9} />Queue
+                <ListChecks size={9} /><span className="composer-toolbar-send-label">Queue</span>
               </button>
             )}
             {composerBusy && input.trim() && (
               <button
+                type="button"
                 onClick={() => send("interrupt")}
                 disabled={editBusy || transcriptStale}
                 title="Stop this turn, then run this prompt next (Alt+Enter)"
+                aria-label="Interrupt"
                 className="px-2 h-[20px] rounded-md bg-panel2/60 border border-edge/60 text-faint hover:text-muted hover:border-edge2 text-[10.5px] font-medium flex items-center gap-1 transition disabled:opacity-40 disabled:cursor-default"
               >
-                Interrupt
+                <span className="composer-toolbar-send-label">Interrupt</span>
               </button>
             )}
             {composerBusy
               ? <>
                   {input.trim() ? (
                     <button
+                      type="button"
                       onClick={() => send()}
                       disabled={editBusy || transcriptStale}
                       title="Steer: redirect the current turn now (Enter). Cmd/Ctrl+Enter or Queue = run after this turn finishes. Alt+Enter or Interrupt = stop this turn, then run this prompt next."
                       className="px-2 h-[20px] rounded-md bg-panel2/60 border border-edge/60 text-faint hover:text-muted hover:border-edge2 text-[10.5px] font-medium flex items-center gap-1 transition disabled:opacity-40 disabled:cursor-default"
                     >
-                      <Send size={9} />Steer
+                      <Send size={9} /><span className="composer-toolbar-send-label">Steer</span>
                     </button>
                   ) : null}
                   <button
+                    type="button"
                     onClick={stop}
                     className="px-2.5 h-[20px] rounded-md bg-risk/15 text-risk text-[10.5px] font-semibold flex items-center gap-1 hover:brightness-110"
                     title="Stop this turn. Does not steer or queue an empty prompt."
+                    aria-label="Stop"
                   >
-                    <Square size={9} />Stop
+                    <Square size={9} /><span className="composer-toolbar-send-label">Stop</span>
                   </button>
                 </>
-              : <button onClick={() => send()} disabled={editBusy || transcriptStale || (!input.trim() && attachedImages.length === 0)}
+              : <button type="button" onClick={() => send()} disabled={editBusy || transcriptStale || (!input.trim() && attachedImages.length === 0)}
+                  aria-label={auto ? "Run" : plan ? "Plan" : "Send"}
                   className="px-2.5 h-[20px] rounded-md bg-accent text-black/90 text-[10.5px] font-semibold flex items-center gap-1 hover:brightness-110 disabled:opacity-40 disabled:cursor-default transition">
-                  <Send size={9} />{auto ? "Run" : plan ? "Plan" : "Send"}</button>}
+                  <Send size={9} /><span className="composer-toolbar-send-label">{auto ? "Run" : plan ? "Plan" : "Send"}</span></button>}
+            </div>
           </div>
         </div>
 

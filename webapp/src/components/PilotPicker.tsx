@@ -170,17 +170,17 @@ export default function PilotPicker({ config }: {
   };
 
   return (
-    <div className="relative inline-flex items-center gap-1" ref={containerRef}>
-      <div className="relative inline-block">
+    <div className="relative flex items-center gap-1 min-w-0 w-full" ref={containerRef}>
+      <div className="relative min-w-0 flex-1">
         <button
           onClick={() => {
             setReasonOpen(false);
             setModelOpen((prev) => !prev);
           }}
           title={current || "Pilot model"}
-          className="flex items-center gap-1 text-[11px] text-muted hover:text-txt rounded-md px-2 h-[22px] bg-transparent hover:bg-panel2 border border-edge/40 transition select-none"
+          className="flex items-center gap-1 min-w-0 w-full text-[11px] text-muted hover:text-txt rounded-md px-2 h-[22px] bg-transparent hover:bg-panel2 border border-edge/40 transition select-none"
         >
-          <span className="truncate max-w-[170px]">{currentLabel}</span>
+          <span className="truncate min-w-0 flex-1 text-left">{currentLabel}</span>
           <ChevronDown size={11} className="shrink-0 opacity-60" />
         </button>
 
@@ -219,7 +219,7 @@ export default function PilotPicker({ config }: {
       </div>
 
       {showReasoning && (
-        <div className="relative inline-block">
+        <div className="relative shrink-0">
           <button
             onClick={() => {
               setModelOpen(false);

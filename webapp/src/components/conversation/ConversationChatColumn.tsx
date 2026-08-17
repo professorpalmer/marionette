@@ -61,7 +61,7 @@ export default function ConversationChatColumn({
   onJumpToBottom?: () => void;
 }) {
   return (
-    <div className="flex flex-col flex-1 min-h-0">
+    <div className="chat-column flex flex-col flex-1 min-h-0 min-w-0">
       <div className="relative flex-1 min-h-0 flex flex-col">
         <div
           ref={feedRef}

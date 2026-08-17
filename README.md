@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.5` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.238, deliberately pre-1.0. Settings stays open across model toggles; the pilot keeps the turn alive with wait instead of idle-plus-resume; jump-to-latest lands on the newest feed row. Rides puppetmaster-ai==1.22.5.
+> Status: v0.9.239, deliberately pre-1.0. Composer and footer chrome yield at narrow widths instead of overlapping. Rides puppetmaster-ai==1.22.5.
 
 ## Documentation
 
