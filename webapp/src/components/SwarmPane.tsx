@@ -44,19 +44,23 @@ function Tooltip({ label, children, className }: { label: string; children: Reac
 }
 
 type Status = "pending" | "in_progress" | "completed" | "failed" | "cancelled";
+type SortOrder = "newest" | "oldest";
+type JobFilter = "all" | "active" | "completed" | "failed" | "untrustworthy" | "cancelled";
+
+function timestampMs(ts: unknown): number | null {
+  if (typeof ts === "number" && isFinite(ts)) return ts > 1e12 ? ts : ts * 1000;
+  if (typeof ts === "string" && ts) {
+    const parsed = Date.parse(ts);
+    if (!isNaN(parsed)) return parsed;
+  }
+  return null;
+}
 
 // Compact "how long ago" label for a job's last activity. Accepts epoch seconds
 // or an ISO string (the backend sends created_at/updated_at as either). Returns
 // "" when we can't parse a timestamp so the caller can omit the affordance.
 function relativeSince(ts: unknown, nowMs: number): string {
-  let t: number | null = null;
-  if (typeof ts === "number" && isFinite(ts)) {
-    // Heuristic: seconds vs milliseconds.
-    t = ts > 1e12 ? ts : ts * 1000;
-  } else if (typeof ts === "string" && ts) {
-    const parsed = Date.parse(ts);
-    if (!isNaN(parsed)) t = parsed;
-  }
+  const t = timestampMs(ts);
   if (t === null) return "";
   const secs = Math.max(0, Math.round((nowMs - t) / 1000));
   if (secs < 60) return `${secs}s ago`;
@@ -632,6 +636,8 @@ export default function SwarmPane() {
 
   const [dismissed, setDismissed] = useState<Set<string>>(() => loadDismissed(scopedRepo));
   const [finishedOpen, setFinishedOpen] = useState(false);
+  const [jobFilter, setJobFilter] = useState<JobFilter>("all");
+  const [sortOrder, setSortOrder] = useState<SortOrder>("newest");
   // Job ids we have asked the backend to cancel. Held in local view state so the
   // row can show a subtle 'cancelling...' affordance immediately, before the next
   // poll reflects the terminal 'cancelled' status from /api/swarm/live.
@@ -732,6 +738,7 @@ export default function SwarmPane() {
     });
     setExpandedJobs((prev) => ({ ...prev, [id]: true }));
     setFinishedOpen(true);
+    setJobFilter("all");
     const job = dataRef.current?.jobs?.find((j) => j.id === id);
     if (job) ensureFullArtifacts(job);
     const scrollToJob = () => {
@@ -903,7 +910,28 @@ export default function SwarmPane() {
     });
   }, [allJobs]);
 
-  const visibleJobs = allJobs.filter((j) => !isTerminal(j) || !dismissed.has(j.id));
+  const undismissedJobs = allJobs.filter((j) => !isTerminal(j) || !dismissed.has(j.id));
+  const matchesJobFilter = (j: Job) => {
+    const status = jobStatus(j);
+    if (jobFilter === "active") return status === "pending" || status === "in_progress";
+    if (jobFilter === "completed") return status === "completed" && j.outcome?.trustworthy !== false;
+    if (jobFilter === "failed") return status === "failed";
+    if (jobFilter === "untrustworthy") return status === "completed" && j.outcome?.trustworthy === false;
+    if (jobFilter === "cancelled") return status === "cancelled";
+    return true;
+  };
+  const compareJobs = (a: Job, b: Job) => {
+    const aTime = timestampMs(a.created_at) ?? timestampMs(a.updated_at);
+    const bTime = timestampMs(b.created_at) ?? timestampMs(b.updated_at);
+    if (aTime === null || bTime === null) {
+      if (aTime !== bTime) return aTime === null ? 1 : -1;
+      return a.id.localeCompare(b.id);
+    }
+    const byTime = aTime - bTime;
+    if (byTime !== 0) return sortOrder === "oldest" ? byTime : -byTime;
+    return a.id.localeCompare(b.id);
+  };
+  const visibleJobs = undismissedJobs.filter(matchesJobFilter).sort(compareJobs);
   const running = visibleJobs.filter((j) => !isTerminal(j));
   const finished = visibleJobs.filter((j) => isTerminal(j));
   const failedCount = finished.filter((j) => jobStatus(j) === "failed").length;
@@ -926,7 +954,9 @@ export default function SwarmPane() {
   const clearFinished = () =>
     setDismissed((prev) => {
       const next = new Set(prev);
-      for (const j of finished) next.add(j.id);
+      for (const j of undismissedJobs) {
+        if (isTerminal(j)) next.add(j.id);
+      }
       return next;
     });
   const restoreDismissed = () => setDismissed(new Set());
@@ -1536,6 +1566,35 @@ export default function SwarmPane() {
         </div>
       </div>
 
+      <div className="shrink-0 grid grid-cols-2 gap-1.5 px-2 py-1.5 border-b border-[var(--shell-panel-border)] bg-panel2/10">
+        <select
+          aria-label="Filter swarms"
+          value={jobFilter}
+          onChange={(e) => {
+            const next = e.target.value as JobFilter;
+            setJobFilter(next);
+            if (next !== "all" && next !== "active") setFinishedOpen(true);
+          }}
+          className="w-full h-6 rounded border border-edge bg-panel2/40 px-1.5 text-[10px] text-muted focus:outline-none focus:border-accent/60"
+        >
+          <option value="all">All statuses</option>
+          <option value="active">Active</option>
+          <option value="completed">Completed</option>
+          <option value="failed">Failed</option>
+          <option value="untrustworthy">Untrustworthy</option>
+          <option value="cancelled">Cancelled</option>
+        </select>
+        <select
+          aria-label="Sort swarms"
+          value={sortOrder}
+          onChange={(e) => setSortOrder(e.target.value as SortOrder)}
+          className="w-full h-6 rounded border border-edge bg-panel2/40 px-1.5 text-[10px] text-muted focus:outline-none focus:border-accent/60"
+        >
+          <option value="newest">Newest first</option>
+          <option value="oldest">Oldest first</option>
+        </select>
+      </div>
+
       {/* Scrollable Jobs list. min-h-0 is load-bearing: without it a flex-1 item
           in a flex-col defaults to min-height:auto, refuses to shrink below its
           content, grows past the panel, and the root's overflow-hidden clips it
@@ -1547,9 +1606,18 @@ export default function SwarmPane() {
             <span className="text-[12px] text-muted font-medium">
               {isValidating && !data
                 ? "Loading swarm jobs..."
-                : hiddenCount > 0 ? "All swarm jobs cleared" : "No swarm jobs yet"}
+                : undismissedJobs.length > 0
+                  ? "No swarm jobs match this filter"
+                  : hiddenCount > 0 ? "All swarm jobs cleared" : "No swarm jobs yet"}
             </span>
-            {hiddenCount > 0 ? (
+            {undismissedJobs.length > 0 ? (
+              <button
+                onClick={() => setJobFilter("all")}
+                className="text-[10.5px] text-accent hover:underline focus:outline-none"
+              >
+                Clear filter
+              </button>
+            ) : hiddenCount > 0 ? (
               // "Clear" hid every job. Without this affordance the pane read as
               // "No swarm jobs yet" even though the backend had a full history --
               // indistinguishable from a broken tracker.
@@ -1569,8 +1637,8 @@ export default function SwarmPane() {
           </div>
         ) : (
           <>
-            {/* Active runs pinned on top, newest first. */}
-            {running.slice().reverse().map(renderJob)}
+            {/* Active runs stay pinned above terminal history; sort applies within each group. */}
+            {running.map(renderJob)}
 
             {/* Finished runs folded into a collapsible section so a long session
                 stays a short list. Non-destructive: "Clear" only hides. */}
@@ -1602,7 +1670,7 @@ export default function SwarmPane() {
                     Clear
                   </button>
                 </div>
-                {finishedOpen && finished.slice().reverse().map(renderJob)}
+                {finishedOpen && finished.map(renderJob)}
               </div>
             )}
           </>
