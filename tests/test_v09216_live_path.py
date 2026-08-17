@@ -68,9 +68,17 @@ def _notices_have_steer_drop(notices) -> bool:
     return False
 
 
-def _wait_busy(pilot, timeout: float = 5.0) -> None:
+def _wait_busy(pilot, timeout: float = 20.0, errors=None) -> None:
+    """Wait until send() holds ``_busy``.
+
+    ``GET /api/chat`` does driver-match, CodeGraph refresh, and mention
+    expansion before ``send()`` acquires the lock. Five seconds flakes on
+    CI when those pre-lock steps contend with blocked catalog fetches.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if errors:
+            raise AssertionError("chat thread failed before busy: %r" % (errors,))
         try:
             if pilot._busy.locked():
                 return
@@ -121,7 +129,7 @@ def test_http_interrupt_empty_busy_turn_has_no_phantom_steer_drop():
         chat_thread = threading.Thread(target=_run_chat, name="v09216-chat", daemon=True)
         chat_thread.start()
         try:
-            _wait_busy(pilot)
+            _wait_busy(pilot, errors=errors)
             assert list(pilot._steer_queue) == []
 
             with _post_json(port, "/api/session/interrupt", {}, srv._TOKEN) as resp:
