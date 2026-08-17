@@ -67,6 +67,7 @@ REASON_BELOW_MIN_FLOOR = "below_min_compactable"
 REASON_SUMMARY_REJECTED = "summary_rejected"
 REASON_THRASH_COOLDOWN = "thrash_cooldown"
 REASON_CACHE_DEFERRED = "cache_deferred"
+REASON_RESIDUAL_OFF = "residual_off"
 
 
 def neutralize_compaction_control_tokens(text: str) -> str:
@@ -691,10 +692,63 @@ class CompactionContextMixin:
                 summary = self._clip_text(summary, char_budget)
         return summary
 
+    def _residual_char_budget(
+        self,
+        middle_block: list[dict],
+        char_budget: Optional[int],
+    ) -> int:
+        if char_budget is None:
+            middle_tokens = self._estimate_context_tokens_for_list(middle_block)
+            char_budget = summary_token_budget_for_middle(middle_tokens) * 4
+        return max(int(char_budget), MIN_SUMMARY_SEED_CHARS + 160)
+
+    def _make_catalog_residual(
+        self,
+        middle_block: list[dict],
+        *,
+        char_budget: Optional[int] = None,
+    ) -> str:
+        """Deterministic unique-handle catalog. ConvEvent mode stays extractive."""
+        from .compaction_residual import build_catalog_residual
+
+        return build_catalog_residual(
+            middle_block,
+            char_budget=self._residual_char_budget(middle_block, char_budget),
+        )
+
+    def _make_hybrid_residual(
+        self,
+        middle_block: list[dict],
+        *,
+        char_budget: Optional[int] = None,
+    ) -> str:
+        """Extractive four-heading snapshot plus a capped unique-handle index."""
+        from harness.api.redaction import redact_secret_text
+
+        from .compaction_residual import append_handle_index
+
+        budget = self._residual_char_budget(middle_block, char_budget)
+        body = redact_secret_text(
+            self._make_fallback_summary(middle_block, char_budget=budget)
+        )
+        return append_handle_index(body, middle_block, char_budget=budget)
+
     def _maybe_compact_history(
         self, force: bool = False, emergency: bool = False,
     ) -> Iterator["ConvEvent"]:
         from .conversation import ConvEvent
+        from .compaction_residual import (
+            RESIDUAL_CATALOG,
+            RESIDUAL_HYBRID,
+            RESIDUAL_OFF,
+            compaction_residual_mode,
+        )
+
+        residual_mode = compaction_residual_mode()
+        # Explicit off only — empty/invalid env values stay on the summary path.
+        if residual_mode == RESIDUAL_OFF:
+            self._set_compaction_attempt(REASON_RESIDUAL_OFF)
+            return
 
         self._set_compaction_attempt(REASON_BELOW_TRIGGER)
 
@@ -944,6 +998,14 @@ class CompactionContextMixin:
 
         def _fallback() -> str:
             # Same prune discipline as the LLM path — raw middle_block can flood.
+            if residual_mode == RESIDUAL_CATALOG:
+                return self._make_catalog_residual(
+                    pruned_middle, char_budget=summary_char_budget
+                )
+            if residual_mode == RESIDUAL_HYBRID:
+                return self._make_hybrid_residual(
+                    pruned_middle, char_budget=summary_char_budget
+                )
             return self._make_fallback_summary(
                 pruned_middle, char_budget=summary_char_budget
             )
@@ -957,7 +1019,10 @@ class CompactionContextMixin:
         # Manual force bypasses summarizer-fail cooldown (same as anti-thrash)
         # so Compact Now actually calls the pilot instead of only falling back.
         _fail_until = float(getattr(self, "_compaction_fail_until", 0.0) or 0.0)
-        if (not force) and now < _fail_until:
+        if residual_mode in (RESIDUAL_CATALOG, RESIDUAL_HYBRID):
+            # Deterministic extractive residuals — never call the summarizer.
+            summary = _fallback()
+        elif (not force) and now < _fail_until:
             summary = _fallback()
         else:
             try:
