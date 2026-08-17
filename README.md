@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.5` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.232, deliberately pre-1.0. Swarm tracker keeps worker models task-scoped (unknown stays unknown). Context windows resolve from the live catalog (GLM-5.3 is 1M, not 128k); write_file fingerprints content; unborn HEAD is refused before worktree dispatch. Rides puppetmaster-ai==1.22.5.
+> Status: v0.9.233, deliberately pre-1.0. Swarm tracker sorts Newest/Oldest within Active and Finished, and filters Active/Completed/Failed/Untrustworthy/Cancelled without conflating lifecycle with artifact quality. Rides puppetmaster-ai==1.22.5.
 
 ## Documentation
 
