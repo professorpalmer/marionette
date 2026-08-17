@@ -83,6 +83,31 @@ def test_finish_local_job_overwrites_model_from_worker_result(monkeypatch):
     assert job["status"] == "completed"
 
 
+def test_failed_local_terminal_artifact_carries_exact_task_id(monkeypatch):
+    monkeypatch.setattr(
+        "harness.local_job_routing.preview_agentic_route",
+        lambda *a, **k: {},
+    )
+    s = _session()
+    s._register_local_job(
+        "local-fail", "audit failure", role="analysis",
+        engine="agentic", model="",
+    )
+    task_id = s._local_jobs["local-fail"]["tasks"][0]["id"]
+
+    s._finish_local_job(
+        "local-fail", ok=False, summary="Provider login required",
+        engine="agentic", model="",
+    )
+
+    terminal = next(
+        art for art in s._local_jobs["local-fail"]["artifacts"]
+        if art["id"] == "local-fail-result"
+    )
+    assert terminal["type"] == "error"
+    assert terminal["task_id"] == task_id
+
+
 def test_finish_does_not_clobber_preview_model_with_engine_only(monkeypatch):
     """Finish with engine but empty model must keep the preview ROUTING stamp."""
     monkeypatch.setattr(

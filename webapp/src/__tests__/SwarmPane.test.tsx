@@ -406,6 +406,67 @@ describe("SwarmPane worker details", () => {
     expect(screen.getByText("2026-08-16T17:00:00+00:00")).toBeInTheDocument();
   });
 
+  it("reveals only the exact task-matched failure class and reason", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        id: "job-failed-workers",
+        goal: "Inspect failed workers",
+        status: "failed",
+        artifacts_complete: true,
+        artifacts: [
+          {
+            type: "verification",
+            headline: "worker a",
+            task_id: "task-a",
+            result: "failed",
+            failure: "codex_turn_failed",
+            detail: "Workspace spend cap reached",
+          },
+          {
+            type: "verification",
+            headline: "worker b",
+            task_id: "task-b",
+            result: "failed",
+            failure: "auth_failure",
+            detail: "Provider login required",
+          },
+          {
+            type: "verification",
+            headline: "unmatched",
+            result: "failed",
+            failure: "no_model",
+            detail: "Must not be guessed onto a worker",
+          },
+        ],
+        tasks: [
+          { id: "task-a", status: "failed", adapter: "agentic", role: "worker-a", instruction: "", completed_at: "2026-08-17T19:00:00+00:00" },
+          { id: "task-b", status: "failed", adapter: "agentic", role: "worker-b", instruction: "" },
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+    await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Finished"));
+    fireEvent.click(await screen.findByText("Inspect failed workers"));
+
+    const workerA = screen.getByRole("button", { name: /worker-a/ });
+    fireEvent.click(workerA);
+    const detailsA = document.getElementById(workerA.getAttribute("aria-controls") || "");
+    expect(detailsA).toHaveTextContent("failurecodex_turn_failed");
+    expect(detailsA).toHaveTextContent("reasonWorkspace spend cap reached");
+    expect(detailsA).toHaveTextContent("completed2026-08-17T19:00:00+00:00");
+    expect(detailsA).not.toHaveTextContent("Provider login required");
+    expect(detailsA).not.toHaveTextContent("Must not be guessed onto a worker");
+
+    const workerB = screen.getByRole("button", { name: /worker-b/ });
+    fireEvent.click(workerB);
+    const detailsB = document.getElementById(workerB.getAttribute("aria-controls") || "");
+    expect(detailsB).toHaveTextContent("failureauth_failure");
+    expect(detailsB).toHaveTextContent("reasonProvider login required");
+    expect(detailsB).not.toHaveTextContent("Workspace spend cap reached");
+  });
+
   it("expands a worker from the keyboard and keeps nested Kill from toggling the job", async () => {
     mockSwarmLive.mockResolvedValue(
       liveJob({
@@ -2174,6 +2235,49 @@ describe("SwarmPane final-review blockers", () => {
       });
       expect(screen.queryByText("routing…")).not.toBeInTheDocument();
       expect(screen.queryByText("stale-preview-model")).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("applies failure-detail poll updates when task state and headline stay fixed", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let pollCount = 0;
+      mockSwarmLive.mockImplementation(async () => {
+        pollCount += 1;
+        return liveJob({
+          status: "running",
+          artifacts_complete: true,
+          artifacts: [{
+            type: "verification",
+            headline: "worker failed",
+            task_id: "task-1",
+            result: "failed",
+            failure: "codex_turn_failed",
+            ...(pollCount > 2 ? { detail: "Workspace spend cap reached" } : {}),
+          }],
+          tasks: [{
+            id: "task-1",
+            status: "failed",
+            adapter: "agentic",
+            role: "worker",
+            instruction: "",
+          }],
+        });
+      });
+
+      render(<SwarmPane />);
+      const worker = await screen.findByRole("button", { name: /^worker, failed/i });
+      fireEvent.click(worker);
+      expect(screen.getByText("codex_turn_failed")).toBeInTheDocument();
+      expect(screen.queryByText("Workspace spend cap reached")).not.toBeInTheDocument();
+
+      await vi.advanceTimersByTimeAsync(6000);
+
+      await waitFor(() => {
+        expect(screen.getByText("Workspace spend cap reached")).toBeInTheDocument();
+      });
     } finally {
       vi.useRealTimers();
     }
