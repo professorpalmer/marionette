@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Loader2, CheckCircle2, XCircle, Circle, ChevronDown, ChevronRight, Cpu, Activity, Network, X } from "lucide-react";
+import { Loader2, CheckCircle2, XCircle, Circle, ChevronDown, ChevronRight, Cpu, Activity, Network, X, AlertTriangle } from "lucide-react";
 import { api, jobArtifactList, type SwarmLive, type Job, type Artifact, type Task } from "../lib/api";
 import { displayModelId, isEngineOnlyModelId, modelIdsEqual } from "../lib/modelIdentity";
 import { lastSelectedProjectRoot, panelOpacityClass, useProjectSwitching } from "../lib/panelTransition";
@@ -382,7 +382,40 @@ function associateRoutingToTasks(
 function isFailedArtifact(art: Artifact): boolean {
   const result = String(art.result || "").trim().toLowerCase();
   const kind = String(art.type || "").trim().toLowerCase();
-  return !!art.failure || result === "failed" || result === "blocked" || result === "error" || kind === "error";
+  return !!art.failure
+    || result === "failed"
+    || result === "blocked"
+    || result === "error"
+    || result === "degraded"
+    || kind === "error";
+}
+
+export type WorkerOutcome = "running" | "idle" | "ok" | "degraded" | "failed";
+
+/** Product quality for a worker row. Lifecycle stays in taskState(); this never infers from role/model/index. */
+export function workerOutcome(task: Task, failureArt?: Artifact | null): WorkerOutcome {
+  const life = taskState(task);
+  if (life === "running") return "running";
+  if (life === "fail") return "failed";
+  const unsuccessful = !!failureArt && isFailedArtifact(failureArt);
+  if (unsuccessful && (life === "done" || life === "idle")) return "degraded";
+  if (life === "done") return "ok";
+  return "idle";
+}
+
+function WorkerOutcomeGlyph({ outcome }: { outcome: WorkerOutcome }) {
+  switch (outcome) {
+    case "running":
+      return <Loader2 size={10} className="animate-spin text-accent" />;
+    case "ok":
+      return <CheckCircle2 size={10} className="text-good" />;
+    case "degraded":
+      return <AlertTriangle size={10} className="text-warn" />;
+    case "failed":
+      return <XCircle size={10} className="text-risk" />;
+    default:
+      return <Circle size={10} className="text-muted" />;
+  }
 }
 
 function failureArtifactsByTaskId(arts: Artifact[]): Map<string, Artifact> {
@@ -782,33 +815,61 @@ function PhaseStrip({ job, phase }: { job: Job; phase?: ReturnType<typeof jobPha
   );
 }
 
-function WorkerProgress({ tasks }: { tasks: Task[] }) {
+function WorkerProgress({
+  tasks,
+  failureForTask,
+}: {
+  tasks: Task[];
+  failureForTask: Map<string, Artifact>;
+}) {
   const total = tasks.length;
   if (total === 0) return null;
-  const done = tasks.filter((t) => taskState(t) === "done").length;
-  const failed = tasks.filter((t) => taskState(t) === "fail").length;
-  const donePct = Math.round((done / total) * 100);
+  let ok = 0;
+  let degraded = 0;
+  let failed = 0;
+  for (const t of tasks) {
+    const outcome = workerOutcome(t, failureForTask.get(t.id));
+    if (outcome === "ok") ok += 1;
+    else if (outcome === "degraded") degraded += 1;
+    else if (outcome === "failed") failed += 1;
+  }
+  const finished = ok + degraded + failed;
+  const okPct = Math.round((ok / total) * 100);
+  const degradedPct = Math.round((degraded / total) * 100);
   const failedPct = Math.round((failed / total) * 100);
+  const allOk = ok === total;
+  const countText = [
+    `${finished}/${total}`,
+    failed > 0 ? `${failed} failed` : "",
+    degraded > 0 ? `${degraded} degraded` : "",
+  ].filter(Boolean).join(" · ");
   return (
     <div
       className="flex items-center gap-2"
       role="progressbar"
-      aria-label={`${done + failed} of ${total} workers finished`}
+      aria-label={`${finished} of ${total} workers finished, ${failed} failed, ${degraded} degraded`}
       aria-valuemin={0}
       aria-valuemax={total}
-      aria-valuenow={done + failed}
+      aria-valuenow={finished}
     >
       <div className="flex-1 h-px bg-edge/50 overflow-hidden flex">
-        {donePct > 0 && (
-          <div className="h-full bg-good transition-all duration-500" style={{ width: `${donePct}%` }} />
+        {okPct > 0 && (
+          <div className="h-full bg-good transition-all duration-500" style={{ width: `${okPct}%` }} />
+        )}
+        {degradedPct > 0 && (
+          <div className="h-full bg-warn transition-all duration-500" style={{ width: `${degradedPct}%` }} />
         )}
         {failedPct > 0 && (
           <div className="h-full bg-risk transition-all duration-500" style={{ width: `${failedPct}%` }} />
         )}
       </div>
-      <span className={`text-[9px] tabular-nums shrink-0 ${failed > 0 ? "text-risk/80" : "text-faint"}`}>
-        {done + failed}/{total}{failed > 0 ? ` · ${failed} failed` : ""}
-      </span>
+      {!allOk && (
+        <span className={`text-[9px] tabular-nums shrink-0 ${
+          failed > 0 ? "text-risk/80" : degraded > 0 ? "text-warn/80" : "text-faint"
+        }`}>
+          {countText}
+        </span>
+      )}
     </div>
   );
 }
@@ -1516,10 +1577,9 @@ export default function SwarmPane() {
                 <div className="flex items-center justify-between">
                   <span className="text-[8.5px] uppercase tracking-[0.14em] text-faint font-medium">Workers ({tasks.length})</span>
                 </div>
-                <WorkerProgress tasks={tasks} />
+                <WorkerProgress tasks={tasks} failureForTask={failureForTask} />
                 <div className="flex flex-col divide-y divide-edge/20 mt-0.5">
                   {tasks.map((task) => {
-                    const ts = taskState(task);
                     const tExpanded = !!expandedTasks[task.id];
                     const routing = routingForTask.get(task.id);
                     const view = workerModelView(task, routing);
@@ -1542,7 +1602,11 @@ export default function SwarmPane() {
                     const showSpend = showTokens || showCost;
                     const roleLabel = task.role || "Worker";
                     const detailsId = `swarm-worker-${task.id}`;
-                    const workerState = (task.status || ts).trim() || "idle";
+                    const outcome = workerOutcome(task, failureArtifact);
+                    const rawStatus = (task.status || "").trim();
+                    const ariaBits = [roleLabel, outcome];
+                    if (rawStatus && rawStatus.toLowerCase() !== outcome) ariaBits.push(rawStatus);
+                    if (view.slot) ariaBits.push(view.slot);
                     return (
                       <div
                         key={task.id}
@@ -1553,22 +1617,28 @@ export default function SwarmPane() {
                           tabIndex={0}
                           aria-expanded={tExpanded}
                           aria-controls={detailsId}
-                          aria-label={`${roleLabel}, ${workerState}${view.slot ? `, ${view.slot}` : ""}`}
+                          aria-label={ariaBits.join(", ")}
                           onClick={() => toggleTask(task.id)}
                           onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleTask(task.id); } }}
                           className={`group flex items-start gap-2 min-w-0 px-1 py-0.5 cursor-pointer hover:bg-panel2/25 transition-colors ${DISCLOSURE_FOCUS}`}
                         >
                           <span className="shrink-0 mt-0.5">
-                            {ts === "running" ? <Loader2 size={10} className="animate-spin text-accent" />
-                              : ts === "done" ? <CheckCircle2 size={10} className="text-good" />
-                              : ts === "fail" ? <XCircle size={10} className="text-risk" />
-                              : <Circle size={10} className="text-muted" />}
+                            <WorkerOutcomeGlyph outcome={outcome} />
                           </span>
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-1 min-w-0">
                               <span className="min-w-0 flex-1 truncate font-semibold text-txt">
                                 {roleLabel}
                               </span>
+                              {(outcome === "degraded" || outcome === "failed") && (
+                                <span
+                                  className={`shrink-0 text-[8.5px] font-medium ${
+                                    outcome === "failed" ? "text-risk/90" : "text-warn/90"
+                                  }`}
+                                >
+                                  {outcome}
+                                </span>
+                              )}
                               <span className="shrink-0 text-faint/60 group-hover:text-faint transition-colors">
                                 {tExpanded
                                   ? <ChevronDown size={9} />
@@ -1599,52 +1669,66 @@ export default function SwarmPane() {
                         {tExpanded && (
                           <div
                             id={detailsId}
-                            className="ml-5 mt-1 border-l border-edge/35 pl-2 text-[9px] font-mono text-faint grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5"
+                            className="ml-5 mt-1 border-l border-edge/35 pl-2 text-[9px] font-mono text-faint flex flex-col gap-1.5"
                           >
-                            <span>task</span><span className="text-muted break-all">{task.id}</span>
-                            {view.rawModel && <><span>model</span><span className="text-muted break-all">{view.rawModel}</span></>}
-                            {adapterLabel && <><span>adapter</span><span className="text-muted break-all">{adapterLabel}</span></>}
-                            {failureClass && <><span>failure</span><span className="text-risk/85 break-all">{failureClass}</span></>}
-                            {sourceFailureReason && <><span>reason</span><span className="text-muted whitespace-pre-wrap break-words font-sans">{sourceFailureReason}</span></>}
-                            {view.policy ? (
-                              <><span>policy</span><span className="text-muted break-all">{view.policy}{view.pinned ? " · pin" : ""}</span></>
-                            ) : view.routing ? (
-                              <><span>policy</span><span className="text-muted break-all">Pin attribution unknown</span></>
-                            ) : null}
-                            {provider && <><span>provider</span><span className="text-muted break-all">{provider}</span></>}
-                            {createdBy === "router-fallback" && <><span>route</span><span className="text-muted">fallback</span></>}
-                            {createdBy === "router-escalation" && <><span>route</span><span className="text-muted">escalation</span></>}
-                            {task.completed_at && <><span>completed</span><span className="text-muted break-all">{task.completed_at}</span></>}
-                            {task.instruction && <><span>instruction</span><span className="text-muted whitespace-pre-wrap break-words font-sans">{task.instruction}</span></>}
-                            {hasRejected && (
-                              <>
-                                <span>rejected</span>
-                                <span>
-                                  <button
-                                    type="button"
-                                    aria-expanded={altsExpanded}
-                                    onClick={(e) => { e.stopPropagation(); setExpandedAlts((prev) => ({ ...prev, [altKey]: !altsExpanded })); }}
-                                    onKeyDown={(e) => e.stopPropagation()}
-                                    className={`text-[9px] text-faint/80 hover:text-muted inline-flex items-center gap-0.5 ${DISCLOSURE_FOCUS}`}
-                                  >
-                                    {altsExpanded ? <ChevronDown size={9} /> : <ChevronRight size={9} />}
-                                    {routing?.rejected?.length} alternatives
-                                  </button>
-                                  {altsExpanded && (
-                                    <span className="mt-1 flex flex-wrap gap-1">
-                                      {routing?.rejected?.map((rej: { model: string; reason: string }, ridx: number) => (
-                                        <Tooltip
-                                          key={ridx}
-                                          label={rej.reason}
-                                          className="font-mono text-[8.5px] text-faint bg-panel2/30 border border-edge/40 px-1.5 py-0.5 rounded cursor-default"
-                                        >
-                                          {rej.model}
-                                        </Tooltip>
-                                      ))}
-                                    </span>
-                                  )}
-                                </span>
-                              </>
+                            {(failureClass || sourceFailureReason) && (
+                              <div className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5">
+                                {failureClass && <><span>failure</span><span className="text-risk/85 break-all">{failureClass}</span></>}
+                                {sourceFailureReason && <><span>reason</span><span className="text-muted whitespace-pre-wrap break-words font-sans">{sourceFailureReason}</span></>}
+                              </div>
+                            )}
+                            <div className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5">
+                              <span>task</span><span className="text-muted break-all">{task.id}</span>
+                              {view.rawModel && <><span>model</span><span className="text-muted break-all">{view.rawModel}</span></>}
+                              {adapterLabel && <><span>adapter</span><span className="text-muted break-all">{adapterLabel}</span></>}
+                              {view.policy ? (
+                                <><span>policy</span><span className="text-muted break-all">{view.policy}{view.pinned ? " · pin" : ""}</span></>
+                              ) : view.routing ? (
+                                <><span>policy</span><span className="text-muted break-all">Pin attribution unknown</span></>
+                              ) : null}
+                              {provider && <><span>provider</span><span className="text-muted break-all">{provider}</span></>}
+                              {createdBy === "router-fallback" && <><span>route</span><span className="text-muted">fallback</span></>}
+                              {createdBy === "router-escalation" && <><span>route</span><span className="text-muted">escalation</span></>}
+                              {hasRejected && (
+                                <>
+                                  <span>rejected</span>
+                                  <span>
+                                    <button
+                                      type="button"
+                                      aria-expanded={altsExpanded}
+                                      onClick={(e) => { e.stopPropagation(); setExpandedAlts((prev) => ({ ...prev, [altKey]: !altsExpanded })); }}
+                                      onKeyDown={(e) => e.stopPropagation()}
+                                      className={`text-[9px] text-faint/80 hover:text-muted inline-flex items-center gap-0.5 ${DISCLOSURE_FOCUS}`}
+                                    >
+                                      {altsExpanded ? <ChevronDown size={9} /> : <ChevronRight size={9} />}
+                                      {routing?.rejected?.length} alternatives
+                                    </button>
+                                    {altsExpanded && (
+                                      <span className="mt-1 flex flex-wrap gap-1">
+                                        {routing?.rejected?.map((rej: { model: string; reason: string }, ridx: number) => (
+                                          <Tooltip
+                                            key={ridx}
+                                            label={rej.reason}
+                                            className="font-mono text-[8.5px] text-faint bg-panel2/30 border border-edge/40 px-1.5 py-0.5 rounded cursor-default"
+                                          >
+                                            {rej.model}
+                                          </Tooltip>
+                                        ))}
+                                      </span>
+                                    )}
+                                  </span>
+                                </>
+                              )}
+                            </div>
+                            {task.completed_at && (
+                              <div className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5">
+                                <span>completed</span><span className="text-muted break-all">{task.completed_at}</span>
+                              </div>
+                            )}
+                            {task.instruction && (
+                              <div className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5">
+                                <span>instruction</span><span className="text-muted whitespace-pre-wrap break-words font-sans">{task.instruction}</span>
+                              </div>
                             )}
                           </div>
                         )}
