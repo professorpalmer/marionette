@@ -900,6 +900,8 @@ class LocalJobsMixin:
                 ),
                 "headline": headline[:240],
             }
+            if job.get("tasks") and job["tasks"][0].get("id"):
+                terminal_art["task_id"] = job["tasks"][0]["id"]
             # Provenance the artifact read surfaces need to attribute the work.
             terminal_art = stamp_provenance(terminal_art, {
                 "adapter": job.get("adapter"),

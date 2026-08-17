@@ -251,8 +251,10 @@ function swarmSignature(res: SwarmLive | null): string {
           `:${routingPolicy(a)}:${a.provider ?? ""}`,
         );
       } else {
+        const detail = typeof a.detail === "string" ? a.detail.slice(0, 500) : "";
         parts.push(
-          `A:${(a.type || "").slice(0, 8)}:${(a.headline || "").slice(0, 120)}:${a.result ?? ""}`,
+          `A:${(a.type || "").slice(0, 8)}:${(a.headline || "").slice(0, 120)}:${a.result ?? ""}` +
+          `:${a.failure ?? ""}:${detail}`,
         );
       }
     }
@@ -375,6 +377,36 @@ function associateRoutingToTasks(
     return !tid || !ids.has(tid);
   });
   return { routingForTask, unmatched };
+}
+
+function isFailedArtifact(art: Artifact): boolean {
+  const result = String(art.result || "").trim().toLowerCase();
+  const kind = String(art.type || "").trim().toLowerCase();
+  return !!art.failure || result === "failed" || result === "blocked" || result === "error" || kind === "error";
+}
+
+function failureArtifactsByTaskId(arts: Artifact[]): Map<string, Artifact> {
+  const byTask = new Map<string, Artifact>();
+  for (const art of arts) {
+    const taskId = String(art.task_id || "").trim();
+    if (!taskId || !isFailedArtifact(art)) continue;
+    const current = byTask.get(taskId);
+    const score = (art.detail ? 4 : 0) + (art.failure ? 2 : 0) + (art.headline ? 1 : 0);
+    const currentScore = current
+      ? (current.detail ? 4 : 0) + (current.failure ? 2 : 0) + (current.headline ? 1 : 0)
+      : -1;
+    if (score >= currentScore) byTask.set(taskId, art);
+  }
+  return byTask;
+}
+
+function failureReason(art?: Artifact): string {
+  if (!art) return "";
+  if (typeof art.detail === "string" && art.detail.trim()) return art.detail.trim();
+  if (String(art.type || "").trim().toLowerCase() === "error") {
+    return String(art.headline || "").trim();
+  }
+  return "";
 }
 
 function unmatchedAddsTruth(arts: Artifact[], headerModel: string): boolean {
@@ -1205,6 +1237,7 @@ export default function SwarmPane() {
       artifacts.filter((a: Artifact) => (a.type || "").toUpperCase() === "ROUTING"),
     );
     const streamArts = artifacts.filter((a: Artifact) => (a.type || "").toUpperCase() !== "ROUTING");
+    const failureForTask = failureArtifactsByTaskId(streamArts);
     const tasks = j.tasks || [];
     const { routingForTask, unmatched: unmatchedRouting } = associateRoutingToTasks(routingArts, tasks);
     // Prefer the deduped final routing decision (fallback/escalation wins) over
@@ -1490,6 +1523,9 @@ export default function SwarmPane() {
                     const tExpanded = !!expandedTasks[task.id];
                     const routing = routingForTask.get(task.id);
                     const view = workerModelView(task, routing);
+                    const failureArtifact = failureForTask.get(task.id);
+                    const failureClass = String(failureArtifact?.failure || "").trim();
+                    const sourceFailureReason = failureReason(failureArtifact);
                     const adapterLabel = (task.adapter || "").trim();
                     const provider = (routing?.provider || "").trim();
                     const createdBy = routing?.created_by || "";
@@ -1568,6 +1604,8 @@ export default function SwarmPane() {
                             <span>task</span><span className="text-muted break-all">{task.id}</span>
                             {view.rawModel && <><span>model</span><span className="text-muted break-all">{view.rawModel}</span></>}
                             {adapterLabel && <><span>adapter</span><span className="text-muted break-all">{adapterLabel}</span></>}
+                            {failureClass && <><span>failure</span><span className="text-risk/85 break-all">{failureClass}</span></>}
+                            {sourceFailureReason && <><span>reason</span><span className="text-muted whitespace-pre-wrap break-words font-sans">{sourceFailureReason}</span></>}
                             {view.policy ? (
                               <><span>policy</span><span className="text-muted break-all">{view.policy}{view.pinned ? " · pin" : ""}</span></>
                             ) : view.routing ? (
