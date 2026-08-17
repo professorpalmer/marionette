@@ -200,7 +200,7 @@ describe("SwarmPane model badge", () => {
     });
   });
 
-  it("falls back to the adapter when no routed model is present", async () => {
+  it("falls back to the adapter on the worker row when no routed model is present", async () => {
     mockSwarmLive.mockResolvedValue(
       liveJob({
         adapter: "openrouter",
@@ -210,12 +210,16 @@ describe("SwarmPane model badge", () => {
 
     render(<SwarmPane />);
 
-    await waitFor(() => {
-      expect(screen.getByTitle("Model: openrouter")).toHaveTextContent("openrouter");
-    });
+    const worker = await screen.findByRole("button", { name: /Worker/ });
+    expect(worker).toHaveTextContent("openrouter");
+    expect(screen.getByLabelText("Model: openrouter")).toBeInTheDocument();
+    // Job-level model badge stays off once canonical task rows exist.
+    const job = screen.getByRole("button", { name: /Audit auth flow/ });
+    expect(job).not.toHaveTextContent("openrouter");
+    expect(job.getAttribute("aria-label") || "").toMatch(/running|worker|dispatched|routing/i);
   });
 
-  it("shows routing placeholder instead of bare agentic while running", async () => {
+  it("shows routing in the worker model slot instead of a job-level badge", async () => {
     mockSwarmLive.mockResolvedValue(
       liveJob({
         adapter: "agentic",
@@ -235,10 +239,12 @@ describe("SwarmPane model badge", () => {
 
     render(<SwarmPane />);
 
-    await waitFor(() => {
-      expect(screen.getByTitle("Model routing in progress")).toHaveTextContent("routing…");
-    });
+    const worker = await screen.findByRole("button", { name: /implement \(agentic\)/ });
+    expect(worker).toHaveTextContent("routing…");
+    expect(screen.getByLabelText("Model routing in progress")).toHaveTextContent("routing…");
     expect(screen.queryByTitle("Model: agentic")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Model: agentic")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Audit auth flow/ })).not.toHaveTextContent("routing…");
   });
 
   it("shows each worker's own model without inheriting the job model", async () => {
@@ -257,10 +263,12 @@ describe("SwarmPane model badge", () => {
     render(<SwarmPane />);
 
     await waitFor(() => {
-      expect(screen.getByText("(model-a)")).toBeInTheDocument();
-      expect(screen.getByText("(model-b)")).toBeInTheDocument();
+      expect(screen.getByLabelText("Model: model-a")).toBeInTheDocument();
+      expect(screen.getByLabelText("Model: model-b")).toBeInTheDocument();
     });
-    expect(screen.queryByText("(job-default)")).not.toBeInTheDocument();
+    expect(screen.queryByTitle("Model: job-default")).not.toBeInTheDocument();
+    expect(screen.queryByText("(model-a)")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /worker-unknown/ })).toHaveTextContent("routing…");
   });
 
   it("updates a worker model when routing settles on a later poll", async () => {
@@ -281,12 +289,80 @@ describe("SwarmPane model badge", () => {
       });
 
       render(<SwarmPane />);
-      await waitFor(() => expect(screen.queryByText("(routed-model)")).not.toBeInTheDocument());
+      await waitFor(() => expect(screen.getByText("routing…")).toBeInTheDocument());
+      expect(screen.queryByLabelText("Model: routed-model")).not.toBeInTheDocument();
       await vi.advanceTimersByTimeAsync(6000);
-      await waitFor(() => expect(screen.getByText("(routed-model)")).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByLabelText("Model: routed-model")).toBeInTheDocument());
+      expect(screen.queryByText("routing…")).not.toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("does not label a terminal worker as routing when no model was recorded", async () => {
+    mockSwarmLive.mockResolvedValue(
+      finishedJob("job-terminal-unrouted", "Terminal worker without model", {
+        tasks: [{
+          id: "task-terminal-unrouted",
+          status: "complete",
+          adapter: "agentic",
+          role: "completed-worker",
+          instruction: "",
+        }],
+      }),
+    );
+
+    render(<SwarmPane />);
+    await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Finished"));
+    fireEvent.click(await screen.findByText("Terminal worker without model"));
+
+    const worker = await screen.findByRole("button", { name: /completed-worker/ });
+    expect(worker).not.toHaveTextContent("routing…");
+    expect(worker).toHaveTextContent("no-model");
+    expect(screen.getByLabelText("No model recorded")).toBeInTheDocument();
+  });
+
+  it("shows routing… for queued and pending workers without a model", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        adapter: "agentic",
+        status: "running",
+        tasks: [
+          { id: "task-queued", status: "queued", adapter: "agentic", role: "queued-worker", instruction: "" },
+          { id: "task-pending", status: "pending", adapter: "agentic", role: "pending-worker", instruction: "" },
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+
+    const queued = await screen.findByRole("button", { name: /queued-worker/ });
+    const pending = screen.getByRole("button", { name: /pending-worker/ });
+    expect(queued).toHaveTextContent("routing…");
+    expect(pending).toHaveTextContent("routing…");
+    expect(queued).not.toHaveTextContent("no-model");
+    expect(pending).not.toHaveTextContent("no-model");
+    expect(queued.getAttribute("aria-label") || "").toMatch(/queued/i);
+    expect(pending.getAttribute("aria-label") || "").toMatch(/pending/i);
+  });
+
+  it("keeps job-level routing… only when there are zero task rows", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        adapter: "agentic",
+        model: "agentic",
+        status: "running",
+        tasks: [],
+      }),
+    );
+
+    render(<SwarmPane />);
+
+    await waitFor(() => {
+      expect(screen.getByTitle("Model routing in progress")).toHaveTextContent("routing…");
+    });
+    expect(screen.queryByText("Workers")).not.toBeInTheDocument();
   });
 });
 
@@ -329,6 +405,58 @@ describe("SwarmPane worker details", () => {
     expect(screen.getByText("task-terminal")).toBeInTheDocument();
     expect(screen.getByText("2026-08-16T17:00:00+00:00")).toBeInTheDocument();
   });
+
+  it("expands a worker from the keyboard and keeps nested Kill from toggling the job", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        id: "job-keys",
+        goal: "Keyboard disclosure",
+        status: "running",
+        tasks: [
+          {
+            id: "task-keys",
+            status: "running",
+            adapter: "agentic",
+            role: "key-worker",
+            instruction: "do the secret thing",
+            model: "routed-model",
+          },
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+    mockSwarmCancel.mockResolvedValue({ ok: true, job_id: "job-keys" });
+    const job = await screen.findByRole("button", { name: /Keyboard disclosure/ });
+    expect(job).toHaveAttribute("aria-expanded", "true");
+    expect(job.className).toMatch(/focus-visible:outline/);
+    expect(job.getAttribute("aria-label") || "").toMatch(/Keyboard disclosure/);
+    expect(screen.queryByText("do the secret thing")).not.toBeInTheDocument();
+
+    const worker = screen.getByRole("button", { name: /key-worker/ });
+    expect(worker).toHaveAttribute("aria-expanded", "false");
+    expect(worker).toHaveAttribute("aria-controls");
+    expect(worker.className).toMatch(/focus-visible:outline/);
+    expect(worker.getAttribute("aria-label") || "").toMatch(/running/i);
+    worker.focus();
+    fireEvent.keyDown(worker, { key: " " });
+    expect(worker).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("do the secret thing")).toBeInTheDocument();
+    const details = document.getElementById(worker.getAttribute("aria-controls") || "");
+    expect(details).toBeTruthy();
+    expect(worker.contains(details)).toBe(false);
+
+    const kill = screen.getByRole("button", { name: "Cancel this job" });
+    kill.focus();
+    fireEvent.keyDown(kill, { key: " " });
+    fireEvent.keyDown(kill, { key: "Enter" });
+    expect(job).toHaveAttribute("aria-expanded", "true");
+    expect(mockSwarmCancel).not.toHaveBeenCalled();
+    fireEvent.click(kill);
+    await waitFor(() => {
+      expect(mockSwarmCancel).toHaveBeenCalledWith("job-keys");
+    });
+  });
 });
 
 describe("SwarmPane pin attribution", () => {
@@ -340,7 +468,7 @@ describe("SwarmPane pin attribution", () => {
     mockArtifacts.mockResolvedValue([]);
   });
 
-  it("labels explicit_pin routing as Explicit pin · not auto-routed", async () => {
+  it("keeps explicit_pin full registry id and a pin marker on the worker", async () => {
     mockSwarmLive.mockResolvedValue(
       liveJob({
         status: "running",
@@ -373,14 +501,20 @@ describe("SwarmPane pin attribution", () => {
 
     render(<SwarmPane />);
 
-    await waitFor(() => {
-      expect(screen.getByText("Explicit pin · not auto-routed")).toBeInTheDocument();
-    });
-    // Collapsed summary keeps the full registry id (not stripped agentic/).
-    expect(screen.getAllByText("agentic/meta/muse-spark-1.1").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("explicit_pin").length).toBeGreaterThan(0);
-    expect(screen.getByText("openrouter · agentic")).toBeInTheDocument();
+    const worker = await screen.findByRole("button", { name: /Worker/ });
+    expect(worker).toHaveTextContent("agentic/meta/muse-spark-1.1");
+    expect(screen.getByTitle("explicit_pin · not auto-routed")).toHaveTextContent("pin");
     expect(screen.queryByText("Router pick")).not.toBeInTheDocument();
+    expect(screen.queryByText("Explicit pin · not auto-routed")).not.toBeInTheDocument();
+
+    fireEvent.click(worker);
+    expect(worker).toHaveAttribute("aria-expanded", "true");
+    expect(worker).toHaveAttribute("aria-controls");
+    expect(screen.getByText("explicit_pin · pin")).toBeInTheDocument();
+    expect(screen.getByText("openrouter")).toBeInTheDocument();
+    const details = document.getElementById(worker.getAttribute("aria-controls") || "");
+    expect(details).toHaveTextContent("agentic");
+    expect(worker.contains(details)).toBe(false);
   });
 
   it("does not paint a missing routing estimate as $0", async () => {
@@ -414,10 +548,8 @@ describe("SwarmPane pin attribution", () => {
 
     render(<SwarmPane />);
 
-    await waitFor(() => {
-      expect(screen.getByText("Explicit pin · not auto-routed")).toBeInTheDocument();
-    });
-    expect(screen.getByText("—")).toBeInTheDocument();
+    const worker = await screen.findByRole("button", { name: /Worker/ });
+    expect(worker).not.toHaveTextContent("—");
     expect(screen.queryByText("$0")).not.toBeInTheDocument();
   });
 
@@ -450,6 +582,8 @@ describe("SwarmPane pin attribution", () => {
 
     render(<SwarmPane />);
 
+    const worker = await screen.findByRole("button", { name: /Worker/ });
+    fireEvent.click(worker);
     await waitFor(() => {
       expect(screen.getAllByText("Pin attribution unknown").length).toBeGreaterThanOrEqual(1);
     });
@@ -492,7 +626,7 @@ describe("SwarmPane routing dedupe", () => {
     mockArtifacts.mockResolvedValue([]);
   });
 
-  it("shows one routing model row per task when router and router-fallback both exist", async () => {
+  it("shows one final model per worker when router and router-fallback both exist", async () => {
     // Ground truth: a 5-worker swarm stores 10 ROUTING artifacts (router +
     // router-fallback per task). Display must show the final choice only.
     const artifacts = Array.from({ length: 5 }, (_, i) => [
@@ -522,7 +656,7 @@ describe("SwarmPane routing dedupe", () => {
         tasks: Array.from({ length: 5 }, (_, i) => ({
           id: `task-${i}`,
           status: "running",
-          role: "Worker",
+          role: `worker-${i}`,
           instruction: "",
           adapter: "agentic",
         })),
@@ -532,11 +666,40 @@ describe("SwarmPane routing dedupe", () => {
     render(<SwarmPane />);
 
     await waitFor(() => {
-      expect(screen.getByTitle("Model: final-model-0")).toBeInTheDocument();
+      expect(screen.getByLabelText("Model: final-model-0")).toBeInTheDocument();
     });
     expect(screen.queryByText("initial-model-0")).not.toBeInTheDocument();
-    // One expanded routing card per task (5), not 10 router+fallback pairs.
-    expect(screen.getAllByTitle(/^final-model-\d$/)).toHaveLength(5);
+    expect(screen.getAllByLabelText(/^Model: final-model-\d$/)).toHaveLength(5);
+    expect(screen.queryByText("Right-sized: cheapest model that clears the task's need")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /worker-0/ }));
+    expect(screen.getByText("fallback")).toBeInTheDocument();
+  });
+
+  it("prefers router-escalation over fallback for the worker model", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        status: "running",
+        artifacts_complete: true,
+        artifacts: [
+          { type: "ROUTING", headline: "", task_id: "task-1", model: "initial-model", created_by: "router" },
+          { type: "ROUTING", headline: "", task_id: "task-1", model: "fallback-model", created_by: "router-fallback" },
+          { type: "ROUTING", headline: "", task_id: "task-1", model: "escalated-model", created_by: "router-escalation" },
+        ],
+        tasks: [
+          { id: "task-1", status: "running", role: "Worker", instruction: "", adapter: "agentic" },
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Model: escalated-model")).toBeInTheDocument();
+    });
+    expect(screen.queryByLabelText("Model: fallback-model")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Model: initial-model")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Worker/ }));
+    expect(screen.getByText("escalation")).toBeInTheDocument();
   });
 });
 
@@ -751,9 +914,10 @@ describe("SwarmPane mid-run job-row meters", () => {
     expect(parts.total).toBe(0);
   });
 
-  it("renders local-job routing policy label after reload the same as live", async () => {
-    // Persisted local-* jobs carry UI-shaped ROUTING rows (with policy) inline;
-    // running jobs auto-expand so the chip is visible without a click.
+  it("renders local-job routing policy on worker expansion without template prose", async () => {
+    // Production local-* preview ROUTING rows have no task_id; the sole
+    // worker is `${job_id}-w0`. Associate the final unscoped route (fallback
+    // over router) so the worker owns model/policy and no unmatched note.
     mockSwarmLive.mockResolvedValue(
       liveJob({
         id: "local-1",
@@ -762,14 +926,23 @@ describe("SwarmPane mid-run job-row meters", () => {
         artifacts: [
           {
             type: "ROUTING",
-            headline: "Routed to cheap-model",
+            headline: "Routed to initial-cheap",
             created_by: "router",
+            model: "initial-cheap",
+            policy: "balanced",
+            adapter: "agentic",
+            est_cost_usd: 0.01,
+            detail: "balanced pick",
+          },
+          {
+            type: "ROUTING",
+            headline: "Routed to cheap-model",
+            created_by: "router-fallback",
             model: "cheap-model",
             policy: "balanced",
             adapter: "agentic",
             est_cost_usd: 0.02,
             detail: "balanced pick",
-            task_id: "local-1-w0",
           },
         ],
         tasks: [
@@ -785,11 +958,21 @@ describe("SwarmPane mid-run job-row meters", () => {
     );
 
     render(<SwarmPane />);
-    await waitFor(() => {
-      expect(screen.getByText("balanced")).toBeInTheDocument();
-    });
-    expect(screen.getByText(/Right-sized: cheapest model/)).toBeInTheDocument();
+    const worker = await screen.findByRole("button", { name: /implement \(agentic\)/ });
+    expect(worker).toHaveTextContent("cheap-model");
+    expect(screen.queryByText("initial-cheap")).not.toBeInTheDocument();
+    expect(screen.queryByText("balanced")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Right-sized: cheapest model/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Unmatched routing/)).not.toBeInTheDocument();
+
+    fireEvent.click(worker);
+    expect(screen.getByText("balanced")).toBeInTheDocument();
+    expect(screen.getByText("fallback")).toBeInTheDocument();
+    expect(screen.queryByText(/Right-sized: cheapest model/)).not.toBeInTheDocument();
     expect(screen.queryByText("Pin attribution unknown")).not.toBeInTheDocument();
+    expect(screen.queryByText("Router pick")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Unmatched routing/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/no matching worker/)).not.toBeInTheDocument();
   });
 });
 
@@ -1147,6 +1330,257 @@ describe("SwarmPane findings section collapse", () => {
   });
 });
 
+describe("SwarmPane worker-owned routing surface", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
+    clearSWRCache();
+    mockArtifacts.mockResolvedValue([]);
+  });
+
+  it("keeps the model slot distinct from a long role and hides collapsed instructions", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        status: "running",
+        artifacts_complete: true,
+        artifacts: [
+          {
+            type: "ROUTING",
+            headline: "",
+            task_id: "task-1",
+            model: "agentic/meta/muse-spark-1.1",
+            policy: "explicit_pin",
+            created_by: "router",
+          },
+        ],
+        tasks: [
+          {
+            id: "task-1",
+            status: "running",
+            role: "test-coverage-reviewer",
+            instruction: "review every uncovered branch in the swarm tracker",
+            adapter: "agentic",
+          },
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+
+    const worker = await screen.findByRole("button", { name: /test-coverage-reviewer/ });
+    expect(worker).toHaveTextContent("test-coverage-reviewer");
+    expect(worker.textContent || "").not.toMatch(/test-coverage-reviewer \(/);
+    const modelSlot = screen.getByLabelText("Model: agentic/meta/muse-spark-1.1");
+    expect(modelSlot).toBeInTheDocument();
+    expect(modelSlot.className).toMatch(/truncate/);
+    expect(modelSlot.className).toMatch(/min-w-0/);
+    expect(modelSlot).not.toHaveAttribute("title");
+    expect(screen.queryByText("running")).not.toBeInTheDocument();
+    expect(worker).not.toHaveTextContent("—");
+    expect(screen.queryByText("review every uncovered branch in the swarm tracker")).not.toBeInTheDocument();
+    expect(screen.queryByText("Routing")).not.toBeInTheDocument();
+  });
+
+  it("shows one unmatched routing residual after workers, never a card stack", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        status: "running",
+        artifacts_complete: true,
+        artifacts: [
+          {
+            type: "ROUTING",
+            headline: "",
+            task_id: "orphan-a",
+            model: "orphan-model-a",
+            created_by: "router",
+            provider: "openrouter",
+          },
+        ],
+        tasks: [
+          {
+            id: "task-1",
+            status: "running",
+            role: "matched-worker",
+            instruction: "",
+            adapter: "agentic",
+            model: "worker-model",
+          },
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Workers (1)")).toBeInTheDocument();
+    });
+    expect(screen.getByLabelText("Model: worker-model")).toBeInTheDocument();
+    expect(screen.getByText(/Unmatched routing · orphan-model-a · no matching worker/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Model: orphan-model-a")).not.toBeInTheDocument();
+    expect(screen.queryByText("Right-sized: cheapest model that clears the task's need")).not.toBeInTheDocument();
+    const workers = screen.getByText("Workers (1)");
+    const unmatched = screen.getByText(/Unmatched routing · orphan-model-a/);
+    expectBefore(workers, unmatched);
+  });
+
+  it("does not repeat unmatched routing when the job header already owns the model", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        status: "running",
+        model: "glm-5.2",
+        artifacts_complete: true,
+        artifacts: [
+          {
+            type: "ROUTING",
+            headline: "",
+            model: "glm-5.2",
+            created_by: "router",
+            policy: "balanced",
+            provider: "openrouter",
+          },
+        ],
+        tasks: [],
+      }),
+    );
+
+    render(<SwarmPane />);
+
+    await waitFor(() => {
+      expect(screen.getByTitle("Model: glm-5.2")).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/Unmatched routing/)).not.toBeInTheDocument();
+  });
+
+  it("exposes rejected alternatives on worker expansion only", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        status: "running",
+        artifacts_complete: true,
+        artifacts: [
+          {
+            type: "ROUTING",
+            headline: "",
+            task_id: "task-1",
+            model: "final-model",
+            created_by: "router-fallback",
+            rejected: [
+              { model: "alt-a", reason: "too expensive" },
+              { model: "alt-b", reason: "unavailable" },
+            ],
+          },
+        ],
+        tasks: [
+          { id: "task-1", status: "running", role: "Worker", instruction: "", adapter: "agentic" },
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+    const worker = await screen.findByRole("button", { name: /Worker/ });
+    expect(screen.queryByText("2 alternatives")).not.toBeInTheDocument();
+    fireEvent.click(worker);
+    const alts = screen.getByRole("button", { name: /2 alternatives/ });
+    expect(alts).toHaveAttribute("aria-expanded", "false");
+    expect(worker.contains(alts)).toBe(false);
+    fireEvent.click(alts);
+    expect(alts).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("alt-a")).toBeInTheDocument();
+    expect(screen.getByText("alt-b")).toBeInTheDocument();
+  });
+
+  it("does not paint plan-billed zero as measured provider $0", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        status: "running",
+        artifacts_complete: true,
+        artifacts: [
+          {
+            type: "ROUTING",
+            headline: "",
+            task_id: "task-1",
+            model: "cursor/gpt-5-4",
+            created_by: "router",
+            est_cost_usd: 0,
+            detail: "plan-billed in-subscription",
+          },
+        ],
+        tasks: [
+          { id: "task-1", status: "running", role: "Worker", instruction: "", adapter: "agentic" },
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+    const worker = await screen.findByRole("button", { name: /Worker/ });
+    expect(worker).not.toHaveTextContent("—");
+    expect(screen.queryByText("$0")).not.toBeInTheDocument();
+  });
+
+  it("keeps provider-attested exact zero as $0 even when routing is plan-billed", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        status: "running",
+        artifacts_complete: true,
+        artifacts: [
+          {
+            type: "ROUTING",
+            headline: "",
+            task_id: "task-1",
+            model: "free-model",
+            created_by: "router",
+            est_cost_usd: 0,
+            detail: "plan-billed in-subscription",
+          },
+        ],
+        tasks: [
+          {
+            id: "task-1",
+            status: "running",
+            role: "Worker",
+            instruction: "",
+            adapter: "openrouter",
+            model: "free-model",
+            est_cost_usd: 0,
+            estimated: false,
+            cost_provenance: "provider",
+          },
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+    const worker = await screen.findByRole("button", { name: /Worker/ });
+    expect(worker).toHaveTextContent("$0");
+    expect(worker).not.toHaveTextContent("—");
+  });
+
+  it("keeps provider-attested exact zero as $0", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        status: "running",
+        tasks: [
+          {
+            id: "task-1",
+            status: "running",
+            role: "Worker",
+            instruction: "",
+            adapter: "openrouter",
+            model: "free-model",
+            est_cost_usd: 0,
+            estimated: false,
+            cost_provenance: "provider",
+          },
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+    const worker = await screen.findByRole("button", { name: /Worker/ });
+    expect(worker).toHaveTextContent("$0");
+  });
+});
+
 describe("SwarmPane worker tokens and cost", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1197,6 +1631,10 @@ describe("SwarmPane worker tokens and cost", () => {
     expect(screen.getByText("~$0.1400")).toBeInTheDocument();
     expect(screen.getByText("60,000t")).toBeInTheDocument();
     expect(screen.getByText("~$0.0700")).toBeInTheDocument();
+    expect(screen.queryByText("build it")).not.toBeInTheDocument();
+    expect(screen.queryByText("check it")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /implement/ }));
+    expect(screen.getByText("build it")).toBeInTheDocument();
   });
 });
 
@@ -1621,5 +2059,253 @@ describe("SwarmPane harness-open-swarm-job deep-link", () => {
     await waitFor(() => {
       expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
     });
+  });
+});
+
+describe("SwarmPane final-review blockers", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
+    clearSWRCache();
+    mockArtifacts.mockResolvedValue([]);
+  });
+
+  it("prefers final associated ROUTING over a stale task.model preview", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        status: "running",
+        artifacts_complete: true,
+        artifacts: [
+          {
+            type: "ROUTING",
+            headline: "",
+            task_id: "task-1",
+            model: "final-routed-model",
+            created_by: "router-fallback",
+            policy: "balanced",
+          },
+        ],
+        tasks: [
+          {
+            id: "task-1",
+            status: "running",
+            role: "Worker",
+            instruction: "",
+            adapter: "agentic",
+            model: "stale-preview-model",
+          },
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+
+    const worker = await screen.findByRole("button", { name: /Worker/ });
+    expect(worker).toHaveTextContent("final-routed-model");
+    expect(worker).not.toHaveTextContent("stale-preview-model");
+    expect(screen.getByLabelText("Model: final-routed-model")).toBeInTheDocument();
+  });
+
+  it("chooses escalation over fallback for zero-task job header model", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        status: "running",
+        model: "stale-job-model",
+        artifacts_complete: true,
+        artifacts: [
+          { type: "ROUTING", headline: "", model: "initial-model", created_by: "router", policy: "balanced" },
+          { type: "ROUTING", headline: "", model: "fallback-model", created_by: "router-fallback", policy: "balanced" },
+          { type: "ROUTING", headline: "", model: "escalated-model", created_by: "router-escalation", policy: "balanced" },
+        ],
+        tasks: [],
+      }),
+    );
+
+    render(<SwarmPane />);
+
+    await waitFor(() => {
+      expect(screen.getByTitle("Model: escalated-model")).toBeInTheDocument();
+    });
+    expect(screen.queryByTitle("Model: fallback-model")).not.toBeInTheDocument();
+    expect(screen.queryByTitle("Model: initial-model")).not.toBeInTheDocument();
+    expect(screen.queryByTitle("Model: stale-job-model")).not.toBeInTheDocument();
+  });
+
+  it("applies routing-only poll updates when task.model and counts stay fixed", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let pollCount = 0;
+      mockSwarmLive.mockImplementation(async () => {
+        pollCount += 1;
+        const artifacts = pollCount > 2
+          ? [{
+              type: "ROUTING" as const,
+              headline: "",
+              task_id: "task-1",
+              model: "poll-settled-model",
+              created_by: "router-fallback",
+              policy: "balanced",
+              provider: "openrouter",
+            }]
+          : [];
+        return liveJob({
+          status: "running",
+          artifacts_complete: true,
+          artifacts,
+          tasks: [{
+            id: "task-1",
+            status: "running",
+            adapter: "agentic",
+            role: "worker",
+            instruction: "",
+            ...(pollCount > 2 ? { model: "stale-preview-model" } : {}),
+          }],
+        });
+      });
+
+      render(<SwarmPane />);
+      await waitFor(() => expect(screen.getByText("routing…")).toBeInTheDocument());
+
+      await vi.advanceTimersByTimeAsync(6000);
+
+      await waitFor(() => {
+        expect(screen.getByLabelText("Model: poll-settled-model")).toBeInTheDocument();
+      });
+      expect(screen.queryByText("routing…")).not.toBeInTheDocument();
+      expect(screen.queryByText("stale-preview-model")).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not render orphan receipt divider or green em dash on empty terminal jobs", async () => {
+    mockSwarmLive.mockResolvedValue(
+      finishedJob("job-empty-receipt", "Terminal without meters", {
+        adapter: "agentic",
+        est_cost_usd: undefined,
+        tokens: 0,
+        tool_output_tokens_saved: 0,
+      }),
+    );
+
+    render(<SwarmPane />);
+    await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Finished"));
+
+    const job = await screen.findByRole("button", { name: /Terminal without meters/ });
+    expect(job).not.toHaveTextContent("—");
+    expect(job.textContent || "").not.toMatch(/\$0/);
+    expect(job.querySelector('[aria-hidden="true"].bg-edge\\/70, [aria-hidden="true"][class*="bg-edge"]')).toBeNull();
+  });
+
+  it("still renders provider-attested $0 on terminal jobs when cost is known", async () => {
+    mockSwarmLive.mockResolvedValue(
+      finishedJob("job-zero-cost", "Terminal with attested zero", {
+        adapter: "openrouter",
+        est_cost_usd: 0,
+        estimated: false,
+        cost_provenance: "provider",
+      }),
+    );
+
+    render(<SwarmPane />);
+    await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Finished"));
+
+    const job = await screen.findByRole("button", { name: /Terminal with attested zero/ });
+    expect(job).toHaveTextContent("$0");
+    expect(job).not.toHaveTextContent("—");
+  });
+
+  function renderInCompactRail(widthPx: number) {
+    const { container } = render(
+      <div style={{ width: `${widthPx}px`, overflow: "hidden" }}>
+        <SwarmPane />
+      </div>,
+    );
+    return container;
+  }
+
+  it("keeps role and model slot distinct at 320px rail width", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        status: "running",
+        artifacts_complete: true,
+        artifacts: [
+          {
+            type: "ROUTING",
+            headline: "",
+            task_id: "task-1",
+            model: "agentic/meta/muse-spark-1.1",
+            policy: "explicit_pin",
+            created_by: "router",
+          },
+        ],
+        tasks: [
+          {
+            id: "task-1",
+            status: "running",
+            role: "test-coverage-reviewer",
+            instruction: "",
+            adapter: "agentic",
+          },
+        ],
+      }),
+    );
+
+    renderInCompactRail(320);
+
+    const worker = await screen.findByRole("button", { name: /test-coverage-reviewer/ });
+    expect(worker).toHaveTextContent("test-coverage-reviewer");
+    expect(worker.textContent || "").not.toMatch(/test-coverage-reviewer \(/);
+    const modelSlot = screen.getByLabelText("Model: agentic/meta/muse-spark-1.1");
+    expect(modelSlot).toBeInTheDocument();
+    expect(modelSlot.className).toMatch(/truncate/);
+    expect(modelSlot.className).toMatch(/min-w-0/);
+    expect(modelSlot.closest(".inline-flex")).toHaveClass("min-w-0");
+  });
+
+  it("wraps worker model slot safely at 220px rail width", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        status: "running",
+        artifacts_complete: true,
+        artifacts: [
+          {
+            type: "ROUTING",
+            headline: "",
+            task_id: "task-1",
+            model: "agentic/meta/muse-spark-1.1",
+            policy: "explicit_pin",
+            created_by: "router",
+          },
+        ],
+        tasks: [
+          {
+            id: "task-1",
+            status: "running",
+            role: "test-coverage-reviewer",
+            instruction: "",
+            adapter: "agentic",
+            tokens: 12_000,
+            est_cost_usd: 0.05,
+          },
+        ],
+      }),
+    );
+
+    const container = renderInCompactRail(220);
+
+    const worker = await screen.findByRole("button", { name: /test-coverage-reviewer/ });
+    expect(worker).toHaveTextContent("test-coverage-reviewer");
+    const modelSlot = screen.getByLabelText("Model: agentic/meta/muse-spark-1.1");
+    expect(modelSlot).toBeInTheDocument();
+    expect(modelSlot.className).toMatch(/truncate/);
+    expect(modelSlot.className).toMatch(/min-w-0/);
+    const modelWrap = modelSlot.closest(".inline-flex");
+    expect(modelWrap).toHaveClass("min-w-0");
+    expect(modelWrap).toHaveClass("flex-wrap");
+    expect(container.querySelector('[style*="width: 220px"]')).toBeTruthy();
   });
 });

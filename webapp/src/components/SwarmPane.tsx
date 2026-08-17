@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Loader2, CheckCircle2, XCircle, Circle, ChevronDown, ChevronRight, Cpu, Activity, Network, X } from "lucide-react";
 import { api, jobArtifactList, type SwarmLive, type Job, type Artifact, type Task } from "../lib/api";
-import { displayModelId, isEngineOnlyModelId } from "../lib/modelIdentity";
+import { displayModelId, isEngineOnlyModelId, modelIdsEqual } from "../lib/modelIdentity";
 import { lastSelectedProjectRoot, panelOpacityClass, useProjectSwitching } from "../lib/panelTransition";
 import {
   peekPendingSwarmOpenJob,
@@ -79,21 +79,10 @@ function routingPolicy(art: Artifact): string {
   return (detail.match(/policy=(\w+)/) || [])[1] || "";
 }
 
-// Turn the router's policy into one plain-language sentence. Fail closed when
-// policy is missing/unparsed: never claim "Router pick" without attestation.
-function summarizeRouting(art: Artifact): string {
+function isPlanBilledRouting(art?: Artifact): boolean {
+  if (!art) return false;
   const detail = typeof art.detail === "string" ? art.detail : "";
-  const policy = routingPolicy(art);
-  const planBilled = /plan-billed|in-subscription/i.test(detail);
-  const lead: Record<string, string> = {
-    balanced: "Right-sized: cheapest model that clears the task's need",
-    cheap: "Cheapest available model",
-    quality: "Highest-capability model for the task",
-    escalating: "Cheapest sufficient model, escalates if it stalls",
-    explicit_pin: "Explicit pin \u00b7 not auto-routed",
-  };
-  const base = lead[policy] || "Pin attribution unknown";
-  return planBilled ? `${base} \u00b7 plan-billed, no marginal cost` : base;
+  return /plan-billed|in-subscription/i.test(detail);
 }
 
 // FINDING headlines that look like the worker echoed its prompt rather than
@@ -255,9 +244,17 @@ function swarmSignature(res: SwarmLive | null): string {
       );
     }
     for (const a of arts) {
-      parts.push(
-        `A:${(a.type || "").slice(0, 8)}:${(a.headline || "").slice(0, 120)}:${a.result ?? ""}`,
-      );
+      const type = (a.type || "").toUpperCase();
+      if (type === "ROUTING") {
+        parts.push(
+          `R:${a.task_id ?? ""}:${a.model ?? ""}:${a.created_by ?? ""}` +
+          `:${routingPolicy(a)}:${a.provider ?? ""}`,
+        );
+      } else {
+        parts.push(
+          `A:${(a.type || "").slice(0, 8)}:${(a.headline || "").slice(0, 120)}:${a.result ?? ""}`,
+        );
+      }
     }
   }
   const s = res.session;
@@ -327,6 +324,132 @@ function dedupeRouting(arts: Artifact[]): Artifact[] {
   return [...groups.values()];
 }
 
+function routingByTaskId(arts: Artifact[]): Map<string, Artifact> {
+  const map = new Map<string, Artifact>();
+  for (const art of arts) {
+    const id = (art.task_id || "").trim();
+    if (id) map.set(id, art);
+  }
+  return map;
+}
+
+function isUnscopedRouting(art: Artifact): boolean {
+  return !(art.task_id || "").trim();
+}
+
+function bestUnscopedRouting(arts: Artifact[]): Artifact | undefined {
+  let best: Artifact | undefined;
+  for (const art of arts) {
+    if (!isUnscopedRouting(art)) continue;
+    if (!best || routingCreatedByRank(art.created_by) > routingCreatedByRank(best.created_by)) {
+      best = art;
+    }
+  }
+  return best;
+}
+
+/** Local single-worker jobs use `${job_id}-w0` but the ROUTING preview has no task_id. */
+function associateRoutingToTasks(
+  arts: Artifact[],
+  tasks: Task[],
+): { routingForTask: Map<string, Artifact>; unmatched: Artifact[] } {
+  const routingForTask = routingByTaskId(arts);
+  const consumedUnscoped = new Set<Artifact>();
+  if (tasks.length === 1 && !routingForTask.has(tasks[0].id)) {
+    const taskId = tasks[0].id;
+    const isLocalWorkerSlot = /-w\d+$/.test(taskId);
+    if (isLocalWorkerSlot) {
+      const best = bestUnscopedRouting(arts);
+      if (best) {
+        routingForTask.set(tasks[0].id, best);
+        for (const art of arts) {
+          if (isUnscopedRouting(art)) consumedUnscoped.add(art);
+        }
+      }
+    }
+  }
+  const ids = new Set(tasks.map((t) => t.id));
+  const unmatched = arts.filter((a) => {
+    if (consumedUnscoped.has(a)) return false;
+    const tid = (a.task_id || "").trim();
+    return !tid || !ids.has(tid);
+  });
+  return { routingForTask, unmatched };
+}
+
+function unmatchedAddsTruth(arts: Artifact[], headerModel: string): boolean {
+  return arts.some((a) => {
+    const policy = routingPolicy(a);
+    if (policy === "explicit_pin") return true;
+    const created = a.created_by || "";
+    if (created === "router-fallback" || created === "router-escalation") return true;
+    if (a.rejected && a.rejected.length > 0) return true;
+    const model = (a.model || "").trim();
+    // Header already owns this model — a provider stamp is not extra truth.
+    if (model && headerModel && modelIdsEqual(model, headerModel)) return false;
+    if ((a.provider || "").trim()) return true;
+    return !!(model && headerModel && !modelIdsEqual(model, headerModel));
+  });
+}
+
+type WorkerModelView = {
+  rawModel: string;
+  display: string;
+  slot: string;
+  pending: boolean;
+  residual: boolean;
+  pinned: boolean;
+  policy: string;
+  routing?: Artifact;
+};
+
+function isInFlightWorker(task: Task): boolean {
+  const ts = taskState(task);
+  if (ts === "running") return true;
+  if (ts === "done" || ts === "fail") return false;
+  const s = (task.status || "").toLowerCase();
+  return (
+    s.includes("queued")
+    || s.includes("pending")
+    || s.includes("registered")
+    || s.includes("started")
+  );
+}
+
+function workerModelView(task: Task, routing?: Artifact): WorkerModelView {
+  const adapterLabel = (task.adapter || "").trim();
+  // Associated final ROUTING wins over a stale task.model preview from an earlier poll.
+  const rawModel = (routing?.model || task.model || "").trim();
+  const policy = routing ? routingPolicy(routing) : "";
+  const display = displayModelId(rawModel, {
+    policy,
+    adapterFallback: isEngineOnlyModelId(adapterLabel) ? "" : adapterLabel,
+  });
+  const ts = taskState(task);
+  const pinned = policy === "explicit_pin";
+  if (display) {
+    return { rawModel, display, slot: display, pending: false, residual: false, pinned, policy, routing };
+  }
+  if (isInFlightWorker(task)) {
+    return { rawModel, display, slot: "routing…", pending: true, residual: false, pinned: false, policy, routing };
+  }
+  const meaningfulResidual =
+    ts === "fail" || isEngineOnlyModelId(adapterLabel) || isEngineOnlyModelId(rawModel);
+  return {
+    rawModel,
+    display,
+    slot: meaningfulResidual ? "no-model" : "",
+    pending: false,
+    residual: meaningfulResidual,
+    pinned: false,
+    policy,
+    routing,
+  };
+}
+
+const DISCLOSURE_FOCUS =
+  "focus:outline-none focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-1 focus-visible:outline-accent";
+
 /** Merge a fresh /swarm/live poll into cached state without wiping expanded full artifacts. */
 function mergeSwarmLive(prev: SwarmLive | null | undefined, next: SwarmLive): SwarmLive {
   if (!prev?.jobs?.length) return next;
@@ -366,10 +489,6 @@ function mergeSwarmLive(prev: SwarmLive | null | undefined, next: SwarmLive): Sw
   };
 }
 
-function jobCost(j: Job): number {
-  return Number(j.est_cost_usd || 0);
-}
-
 function jobTokens(j: Job): number {
   return Number(j.tokens || 0);
 }
@@ -387,7 +506,36 @@ function formatCost(cost: number, estimated?: boolean): string {
 /** Missing/unpriceable estimates must not paint as measured $0. */
 function formatKnownCost(cost: unknown, estimated?: boolean): string {
   if (typeof cost !== "number" || !isFinite(cost)) return "—";
+  if (!(cost > 0) && estimated) return "—";
   return formatCost(cost, estimated);
+}
+
+function isKnownPositiveCost(cost: unknown): boolean {
+  return typeof cost === "number" && isFinite(cost) && cost > 0;
+}
+
+function isProviderAttestedExactZero(cost: unknown, estimated?: boolean): cost is number {
+  return typeof cost === "number" && isFinite(cost) && !(cost > 0) && estimated === false;
+}
+
+function hasMeaningfulJobCost(j: Job): boolean {
+  const estimated = j.estimated !== false && j.cost_provenance !== "provider";
+  if (isKnownPositiveCost(j.est_cost_usd)) return true;
+  return isProviderAttestedExactZero(j.est_cost_usd, estimated);
+}
+
+function formatWorkerCost(
+  cost: unknown,
+  estimated?: boolean,
+  planBilled?: boolean,
+): string {
+  if (isProviderAttestedExactZero(cost, estimated)) {
+    return formatCost(cost, false);
+  }
+  if (planBilled && !isKnownPositiveCost(cost)) {
+    return "—";
+  }
+  return formatKnownCost(cost, estimated);
 }
 
 function positiveUsd(n?: number): number {
@@ -531,10 +679,10 @@ export function SavingsChip({ parts, className }: { parts: SavingsParts; classNa
   if (parts.total <= 0) return null;
   return (
     <span
-      className={`inline-flex items-center gap-0.5 px-1 py-px rounded-full bg-good/10 border border-good/20 text-good/80 tabular-nums ${className ?? ""}`}
+      className={`inline-flex items-center gap-1 text-good/80 tabular-nums ${className ?? ""}`}
       title={`List-price value from model selection, prompt-cache, and compaction (additive, not billed): ${savingsDetail(parts)}`}
     >
-      <span className="text-good/60" aria-hidden="true">{"\u2193"}</span>
+      <span className="text-good/45" aria-hidden="true">{"\u2193"}</span>
       {formatCost(parts.total, parts.modelSelectionEstimated || parts.cachePartial)} saved
     </span>
   );
@@ -573,7 +721,14 @@ function PhaseStrip({ job, phase }: { job: Job; phase?: ReturnType<typeof jobPha
   const warning = jobStatus(job) === "completed" && job.outcome?.trustworthy === false;
   const active = key !== "done" && !failed;
   return (
-    <div className="flex items-center gap-1 mt-1.5" title={PHASES.join(" -> ")}>
+    <div
+      className="flex items-center gap-0.5"
+      role="progressbar"
+      aria-label={`Swarm phase: ${key}`}
+      aria-valuemin={0}
+      aria-valuemax={PHASES.length - 1}
+      aria-valuenow={index}
+    >
       {PHASES.map((_, i) => {
         const reached = i <= index;
         const isActiveSeg = i === index && active;
@@ -587,7 +742,7 @@ function PhaseStrip({ job, phase }: { job: Job; phase?: ReturnType<typeof jobPha
         return (
           <div
             key={i}
-            className={`h-1 flex-1 rounded-full transition-all ${color} ${isActiveSeg ? "animate-pulse" : ""}`}
+            className={`h-px flex-1 transition-all ${color} ${isActiveSeg ? "animate-pulse" : ""}`}
           />
         );
       })}
@@ -603,8 +758,15 @@ function WorkerProgress({ tasks }: { tasks: Task[] }) {
   const donePct = Math.round((done / total) * 100);
   const failedPct = Math.round((failed / total) * 100);
   return (
-    <div className="flex items-center gap-2">
-      <div className="flex-1 h-1.5 bg-panel2/40 border border-edge/50 rounded-full overflow-hidden flex">
+    <div
+      className="flex items-center gap-2"
+      role="progressbar"
+      aria-label={`${done + failed} of ${total} workers finished`}
+      aria-valuemin={0}
+      aria-valuemax={total}
+      aria-valuenow={done + failed}
+    >
+      <div className="flex-1 h-px bg-edge/50 overflow-hidden flex">
         {donePct > 0 && (
           <div className="h-full bg-good transition-all duration-500" style={{ width: `${donePct}%` }} />
         )}
@@ -615,6 +777,71 @@ function WorkerProgress({ tasks }: { tasks: Task[] }) {
       <span className={`text-[9px] tabular-nums shrink-0 ${failed > 0 ? "text-risk/80" : "text-faint"}`}>
         {done + failed}/{total}{failed > 0 ? ` · ${failed} failed` : ""}
       </span>
+    </div>
+  );
+}
+
+function WorkerModelSlot({
+  view,
+}: {
+  view: WorkerModelView;
+}) {
+  if (!view.slot) return null;
+  const title = view.pending
+    ? "Model routing in progress"
+    : view.residual
+      ? "No model recorded"
+      : `Model: ${view.display || view.rawModel || view.slot}`;
+  return (
+    <span className="inline-flex items-center gap-1 min-w-0 max-w-full flex-wrap">
+      <Cpu size={9} className={`shrink-0 ${view.pending || view.residual ? "text-faint/60" : "text-accent/65"}`} />
+      <Tooltip label={title} className="min-w-0 max-w-full">
+        <span
+          className={`font-mono text-[9px] truncate min-w-0 max-w-full ${
+            view.pending
+              ? "text-faint italic"
+              : view.residual
+                ? "text-faint"
+                : "text-accent/85"
+          }`}
+          aria-label={title}
+        >
+          {view.slot}
+        </span>
+      </Tooltip>
+      {view.pinned && (
+        <span
+          className="text-[7.5px] text-faint uppercase tracking-[0.12em] shrink-0"
+          title="explicit_pin · not auto-routed"
+        >
+          pinned
+        </span>
+      )}
+    </span>
+  );
+}
+
+function UnmatchedRoutingNote({
+  arts,
+  hasTasks,
+  headerModel,
+}: {
+  arts: Artifact[];
+  hasTasks: boolean;
+  headerModel: string;
+}) {
+  if (arts.length === 0) return null;
+  if (!hasTasks && !unmatchedAddsTruth(arts, headerModel)) return null;
+  const firstModel = (arts[0].model || "").trim() || "unresolved";
+  const label = arts.length === 1
+    ? `Unmatched routing · ${firstModel} · no matching worker`
+    : `Unmatched routing · ${arts.length} routes · no matching worker`;
+  return (
+    <div
+      className="text-[9px] text-faint leading-relaxed px-0.5 py-0.5"
+      title="ROUTING artifact with no matching worker task_id"
+    >
+      {label}
     </div>
   );
 }
@@ -979,28 +1206,33 @@ export default function SwarmPane() {
     );
     const streamArts = artifacts.filter((a: Artifact) => (a.type || "").toUpperCase() !== "ROUTING");
     const tasks = j.tasks || [];
-    // Prefer the deduped final routing card (fallback/escalation wins) over the
-    // job.model field so a stale initial router pick never badges the header.
-    // Local agentic jobs stamp model as "agentic/<id>"; strip the engine prefix
-    // so the badge shows the real model next to the separate adapter chip.
-    const primaryRouting =
-      routingArts.find((a: Artifact) => a.model) || routingArts[0];
+    const { routingForTask, unmatched: unmatchedRouting } = associateRoutingToTasks(routingArts, tasks);
+    // Prefer the deduped final routing decision (fallback/escalation wins) over
+    // the job.model field so a stale initial router pick never badges the header.
+    const primaryRouting = tasks.length === 0
+      ? bestUnscopedRouting(routingArts) || routingArts.find((a: Artifact) => a.model) || routingArts[0]
+      : routingArts.find((a: Artifact) => a.model) || routingArts[0];
     const routerModel = primaryRouting?.model || j.model || "";
     const attestedPolicy = primaryRouting ? routingPolicy(primaryRouting) : "";
     const workerCount = tasks.length;
     const adapter = j.adapter || tasks[0]?.adapter || "";
-    // Explicit pins keep the full registry id (agentic/meta/...) on the
-    // collapsed summary so Sol-style attribution is visible without expanding.
-    // Auto-routed rows strip every engine prefix (idempotent) for scannability
-    // so agentic/agentic/... never badges as agentic/<provider>/...
     const displayModel = displayModelId(routerModel || "", {
       policy: attestedPolicy,
-      // Adapter chip stays separate; never badge bare agentic/native as model.
       adapterFallback: isEngineOnlyModelId(adapter) ? "" : adapter,
     });
+    // Canonical task rows own worker→model truth. Job-level model / routing…
+    // stays only when there are zero task rows (including pre-task in-flight).
+    const headerModel = workerCount === 0 ? displayModel : "";
+    const showJobRoutingPlaceholder = workerCount === 0 && !headerModel && st === "in_progress";
+    const showUnmatched = unmatchedRouting.length > 0
+      && (workerCount > 0 || unmatchedAddsTruth(unmatchedRouting, headerModel));
     const terminal = isTerminal(j);
     const savings = jobSavings(j);
-    const showRoutingPlaceholder = !displayModel && st === "in_progress";
+    const showJobTokens = jobTokens(j) > 0;
+    const showJobCompactTokens = jobCompactTokens(j) > 0;
+    const showJobCost = hasMeaningfulJobCost(j);
+    const showJobSavings = savings.total > 0;
+    const hasHeaderMeters = showJobTokens || showJobCompactTokens || showJobCost || showJobSavings;
 
     const toggle = () => {
       const next = !isExpanded;
@@ -1036,11 +1268,13 @@ export default function SwarmPane() {
         <div
           role="button"
           tabIndex={0}
+          aria-expanded={isExpanded}
+          aria-label={`${j.goal || "Swarm job"}, ${phase.label}`}
           onClick={toggle}
           onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } }}
-          className="w-full flex flex-col gap-0 p-2 hover:bg-panel2/35 text-left transition-colors select-none cursor-pointer focus:outline-none"
+          className={`w-full flex flex-col gap-0 p-2 hover:bg-panel2/35 text-left transition-colors select-none cursor-pointer ${DISCLOSURE_FOCUS}`}
         >
-          <div className="flex items-center justify-between w-full">
+          <div className="flex items-center justify-between w-full gap-2">
             <div className="flex items-center gap-2 min-w-0 flex-1">
               <span className="shrink-0 text-faint">
                 {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
@@ -1064,22 +1298,7 @@ export default function SwarmPane() {
                 {j.goal}
               </Tooltip>
             </div>
-            <div className="flex items-center gap-3 shrink-0 text-[10px] pl-2">
-              {(terminal || jobCost(j) > 0 || jobTokens(j) > 0 || jobCompactTokens(j) > 0 || savings.total > 0) && (
-                <span className="text-muted font-mono flex items-center gap-1.5">
-                  {jobTokens(j) > 0 && <span>{jobTokens(j).toLocaleString()}t</span>}
-                  {jobCompactTokens(j) > 0 && (
-                    <span className="text-accent/90">{jobCompactTokens(j).toLocaleString()} compact</span>
-                  )}
-                  <span className="text-good/90">
-                    {formatKnownCost(
-                      j.est_cost_usd,
-                      j.estimated !== false && j.cost_provenance !== "provider",
-                    )}
-                  </span>
-                  <SavingsChip parts={savings} className="text-[9px] font-sans" />
-                </span>
-              )}
+            <div className="flex items-center gap-2 shrink-0 text-[10px]">
               {/* Kill: running jobs only. Best-effort cooperative cancel on the
                   backend. Shows 'cancelling...' until the next poll flips the job
                   to a terminal state. */}
@@ -1088,9 +1307,12 @@ export default function SwarmPane() {
                   <span className="text-[9px] text-risk/70 italic tabular-nums">cancelling...</span>
                 ) : (
                   <button
+                    type="button"
                     onClick={(e) => { e.stopPropagation(); void cancelJob(j.id); }}
+                    onKeyDown={(e) => e.stopPropagation()}
                     title="Cancel this job"
-                    className="text-faint/50 hover:text-risk transition-colors focus:outline-none"
+                    aria-label="Cancel this job"
+                    className={`text-faint/50 hover:text-risk transition-colors ${DISCLOSURE_FOCUS}`}
                   >
                     <X size={12} />
                   </button>
@@ -1100,9 +1322,12 @@ export default function SwarmPane() {
                   confusing. Non-destructive; the run stays in PM history. */}
               {terminal && (
                 <button
+                  type="button"
                   onClick={(e) => { e.stopPropagation(); dismissJob(j.id); }}
+                  onKeyDown={(e) => e.stopPropagation()}
                   title="Dismiss from tracker (stays in Puppetmaster history)"
-                  className="text-faint/50 hover:text-risk transition-colors focus:outline-none"
+                  aria-label="Dismiss from tracker (stays in Puppetmaster history)"
+                  className={`text-faint/50 hover:text-risk transition-colors ${DISCLOSURE_FOCUS}`}
                 >
                   <X size={12} />
                 </button>
@@ -1110,44 +1335,63 @@ export default function SwarmPane() {
             </div>
           </div>
 
-          {/* Model + worker count + adapter -- the "who's doing this and on what"
-              line, so the swarm's shape reads without expanding. CLI/external
-              jobs (Cursor MCP, terminal `puppetmaster`) share the workspace
-              store and are merged in on purpose; label them so they don't look
-              like Marionette-dispatched swarms. */}
-          {(displayModel || showRoutingPlaceholder || workerCount > 0 || adapter || j.source === "cli" || attestedPolicy === "explicit_pin") && (
-            <div className="flex items-center gap-1.5 pl-6 pr-1 mt-1 flex-wrap">
-              {displayModel ? (
-                <span className="flex items-center gap-1 text-[9px] font-mono text-accent/90 bg-accent/10 px-1.5 py-0.5 rounded" title={`Model: ${displayModel}`}>
-                  <Cpu size={9} /> {displayModel}
+          {/* One quiet receipt line: spend first, then execution identity.
+              Rare provenance remains textual so the header never becomes a
+              dashboard of pills. */}
+          {(hasHeaderMeters || headerModel || showJobRoutingPlaceholder || workerCount > 0 || adapter || j.source === "cli" || (workerCount === 0 && attestedPolicy === "explicit_pin")) && (
+            <div className="flex items-center gap-x-2 gap-y-1 pl-6 pr-1 mt-1.5 flex-wrap text-[9px]">
+              {hasHeaderMeters && (
+                <span className="inline-flex items-center gap-1.5 min-w-0 flex-wrap font-mono text-muted tabular-nums">
+                  {showJobTokens && <span>{jobTokens(j).toLocaleString()}t</span>}
+                  {showJobCompactTokens && (
+                    <span className="text-accent/80">{jobCompactTokens(j).toLocaleString()} compact</span>
+                  )}
+                  {showJobCost && (
+                    <span className="text-good/85">
+                      {formatKnownCost(
+                        j.est_cost_usd,
+                        j.estimated !== false && j.cost_provenance !== "provider",
+                      )}
+                    </span>
+                  )}
+                  {showJobSavings && <SavingsChip parts={savings} className="font-sans" />}
                 </span>
-              ) : showRoutingPlaceholder ? (
+              )}
+              {hasHeaderMeters && (headerModel || showJobRoutingPlaceholder || workerCount > 0 || adapter) && (
+                <span className="h-2.5 w-px bg-edge/70" aria-hidden="true" />
+              )}
+              {headerModel ? (
+                <span className="inline-flex items-center gap-1 min-w-0 max-w-full font-mono text-accent/85" title={`Model: ${headerModel}`}>
+                  <Cpu size={9} className="shrink-0" />
+                  <span className="truncate min-w-0">{headerModel}</span>
+                </span>
+              ) : showJobRoutingPlaceholder ? (
                 <span
-                  className="flex items-center gap-1 text-[9px] font-mono text-faint bg-panel2/30 px-1.5 py-0.5 rounded"
+                  className="flex items-center gap-1 font-mono text-faint italic"
                   title="Model routing in progress"
                 >
                   <Cpu size={9} /> routing…
                 </span>
               ) : null}
-              {attestedPolicy === "explicit_pin" && (
+              {workerCount === 0 && attestedPolicy === "explicit_pin" && (
                 <span
-                  className="text-[9px] text-faint bg-edge/25 px-1.5 py-0.5 rounded font-mono"
-                  title="Routing policy: explicit_pin (not auto-routed)"
+                  className="text-[8px] text-faint uppercase tracking-wide"
+                  title="explicit_pin · not auto-routed"
                 >
-                  explicit_pin
+                  pin
                 </span>
               )}
               {workerCount > 0 && (
-                <span className="text-[9px] text-muted bg-panel2/40 px-1.5 py-0.5 rounded tabular-nums">
+                <span className="text-muted tabular-nums">
                   {workerCount} worker{workerCount > 1 ? "s" : ""}
                 </span>
               )}
               {adapter && adapter.toLowerCase() !== displayModel.toLowerCase() && (
-                <span className="text-[9px] text-faint bg-panel2/30 px-1.5 py-0.5 rounded lowercase">{adapter}</span>
+                <span className="text-faint lowercase">{adapter}</span>
               )}
               {j.source === "cli" && (
                 <span
-                  className="text-[9px] text-muted bg-panel2/40 border border-edge/50 px-1.5 py-0.5 rounded"
+                  className="text-muted uppercase tracking-[0.1em]"
                   title="Started outside Marionette (Cursor MCP or terminal Puppetmaster) for this workspace"
                 >
                   external
@@ -1198,7 +1442,7 @@ export default function SwarmPane() {
           ) : null}
 
           {/* Phase strip + label -- the at-a-glance "where is this swarm". */}
-          <div className="flex items-center gap-2 pl-6 pr-1 mt-1">
+          <div className="flex items-center gap-2 pl-6 pr-1 mt-2">
             <div className="flex-1"><PhaseStrip job={j} phase={phase} /></div>
             <span className={`text-[9px] font-medium tabular-nums shrink-0 ${
               phase.key === "cancelled"
@@ -1215,23 +1459,16 @@ export default function SwarmPane() {
             </span>
           </div>
 
-          {/* Live-progress line for a running job: a "last activity" relative time
-              plus a compact token readout that updates on each poll, so the row
-              visibly moves instead of sitting on a static spinner. Cost is
-              deliberately omitted here (shown once in the bottom status bar). */}
+          {/* Last activity supplies motion without repeating the receipt. */}
           {st === "in_progress" && (() => {
             const since = relativeSince(j.updated_at ?? j.created_at, nowTick);
-            const showTokens = j.tokens !== undefined && j.tokens > 0;
-            if (!since && !showTokens) return null;
+            if (!since) return null;
             return (
               <div className="flex items-center gap-2 pl-6 pr-1 mt-1 text-[9px] text-faint tabular-nums">
-                {since && (
-                  <span className="flex items-center gap-1">
-                    <Activity size={9} className="text-accent/70 animate-pulse" />
-                    {since}
-                  </span>
-                )}
-                {showTokens && <span className="font-mono text-muted">{j.tokens!.toLocaleString()}t</span>}
+                <span className="flex items-center gap-1">
+                  <Activity size={9} className="text-accent/60 animate-pulse" />
+                  {since}
+                </span>
               </div>
             );
           })()}
@@ -1240,197 +1477,152 @@ export default function SwarmPane() {
         {/* Expanded details */}
         {isExpanded && (
           <div className="px-2 pb-2 pt-1 flex flex-col gap-2 bg-panel2/10">
-            {/* Routing */}
-            {routingArts.length > 0 && (
-              <div className="flex flex-col gap-1.5">
-                {routingArts.map((art: Artifact, idx: number) => {
-                  const hasRejected = art.rejected && art.rejected.length > 0;
-                  const key = `${art.id || idx}`;
-                  const altsExpanded = !!expandedAlts[key];
-                  const policyLabel = routingPolicy(art) || "Pin attribution unknown";
-                  const providerLabel = [art.provider, art.adapter]
-                    .map((v) => (typeof v === "string" ? v.trim() : ""))
-                    .filter(Boolean)
-                    .filter((v, i, arr) => arr.indexOf(v) === i)
-                    .join(" · ");
-                  return (
-                    <div key={key} className="p-2 bg-panel2/30 rounded border border-edge/50 text-[10px] flex flex-col gap-1.5">
-                      <div className="flex items-center justify-between text-muted gap-2">
-                        <span className="flex items-center gap-1.5 min-w-0 flex-wrap">
-                          <Cpu size={11} className="text-accent shrink-0" />
-                          <span className="text-txt font-mono font-medium truncate" title={art.model}>
-                            {art.model || "Unknown model"}
-                          </span>
-                          <span
-                            className="text-[8px] text-faint bg-edge/20 px-1 py-0.5 rounded shrink-0 font-mono"
-                            title="Routing policy"
-                          >
-                            {policyLabel}
-                          </span>
-                          {providerLabel && (
-                            <span
-                              className="text-[8px] text-faint bg-edge/20 px-1 py-0.5 rounded shrink-0 font-mono truncate max-w-[140px]"
-                              title={providerLabel}
-                            >
-                              {providerLabel}
-                            </span>
-                          )}
-                        </span>
-                        <span className="font-mono text-good shrink-0 font-semibold">
-                          {formatKnownCost(art.est_cost_usd, true)}
-                        </span>
-                      </div>
-                      {/* One plain-language line on why this model won. */}
-                      <div className="text-[9.5px] text-faint leading-relaxed">
-                        {summarizeRouting(art)}
-                      </div>
-                      {/* Alternatives, deliberately de-emphasized: a muted count,
-                          expanding to model-name chips (full reason on hover)
-                          instead of a red-looking wall of text. */}
-                      {hasRejected && (
-                        <div>
-                          <button
-                            onClick={(e) => { e.stopPropagation(); setExpandedAlts((prev) => ({ ...prev, [key]: !altsExpanded })); }}
-                            className="text-[9px] text-faint/80 hover:text-muted flex items-center gap-0.5 focus:outline-none"
-                          >
-                            {altsExpanded ? <ChevronDown size={9} /> : <ChevronRight size={9} />}
-                            {art.rejected?.length} alternatives considered
-                          </button>
-                          {altsExpanded && (
-                            <div className="mt-1.5 flex flex-wrap gap-1">
-                              {art.rejected?.map((rej: { model: string; reason: string }, ridx: number) => (
-                                <Tooltip
-                                  key={ridx}
-                                  label={rej.reason}
-                                  className="font-mono text-[8.5px] text-faint bg-panel2/30 border border-edge/40 px-1.5 py-0.5 rounded cursor-default"
-                                >
-                                  {rej.model}
-                                </Tooltip>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* Single-worker / provider jobs (run_implement, run_parallel) have
-                NO routing artifact, so the per-worker cost row above never
-                rendered for them -- the dash showed a single-worker swarm with no
-                price. Synthesize a cost/model line from the job fields so every
-                job surfaces its spend, matching multi-worker swarms. */}
-            {routingArts.length === 0 && ((j.est_cost_usd ?? 0) > 0 || (j.tokens ?? 0) > 0) && (
-              <div className="p-2 bg-panel2/30 rounded border border-edge/50 text-[10px] flex items-center justify-between text-muted">
-                <span className="flex items-center gap-1.5 truncate max-w-[72%]">
-                  <Cpu size={11} className="text-accent shrink-0" />
-                  <span className="text-txt font-mono font-medium truncate" title={displayModel}>
-                    {displayModel || "worker"}
-                  </span>
-                </span>
-                <span className="flex items-center gap-2 shrink-0 font-mono">
-                  {(j.tokens ?? 0) > 0 && <span className="text-faint">{j.tokens!.toLocaleString()}t</span>}
-                  <span className="text-good font-semibold">
-                    {formatCost(
-                      Number(j.est_cost_usd || 0),
-                      j.estimated !== false && j.cost_provenance !== "provider",
-                    )}
-                  </span>
-                </span>
-              </div>
-            )}
-
-            {/* Workers -- with a completion progress bar so a wave of parallel
-                workers reads as a single advancing unit. */}
+            {/* Workers first -- never a standalone Routing card stack. */}
             {tasks.length > 0 && (
-              <div className="border-t border-edge/20 pt-1.5 flex flex-col gap-1.5">
+              <div className="border-t border-edge/25 pt-2 flex flex-col gap-1.5">
                 <div className="flex items-center justify-between">
-                  <span className="text-[9px] uppercase tracking-wider text-faint font-medium">Workers ({tasks.length})</span>
+                  <span className="text-[8.5px] uppercase tracking-[0.14em] text-faint font-medium">Workers ({tasks.length})</span>
                 </div>
                 <WorkerProgress tasks={tasks} />
-                <div className="flex flex-col gap-1 mt-0.5">
+                <div className="flex flex-col divide-y divide-edge/20 mt-0.5">
                   {tasks.map((task) => {
                     const ts = taskState(task);
                     const tExpanded = !!expandedTasks[task.id];
-                    // Prefer a real routed model over repeating the engine label
-                    // already present in role ("implement (agentic) (agentic)").
-                    const taskModelLabel = displayModelId(task.model || "", {});
+                    const routing = routingForTask.get(task.id);
+                    const view = workerModelView(task, routing);
                     const adapterLabel = (task.adapter || "").trim();
-                    const secondaryLabel = taskModelLabel
-                      || (adapterLabel && !isEngineOnlyModelId(adapterLabel) ? adapterLabel : "");
+                    const provider = (routing?.provider || "").trim();
+                    const createdBy = routing?.created_by || "";
+                    const hasRejected = !!(routing?.rejected && routing.rejected.length > 0);
+                    const altKey = `${j.id}:${task.id}`;
+                    const altsExpanded = !!expandedAlts[altKey];
+                    const costValue = task.est_cost_usd ?? routing?.est_cost_usd;
+                    const costEstimated = task.est_cost_usd != null
+                      ? task.estimated !== false && task.cost_provenance !== "provider"
+                      : true;
+                    const showTokens = (task.tokens ?? 0) > 0;
+                    const showCost = isKnownPositiveCost(costValue)
+                      || isProviderAttestedExactZero(costValue, costEstimated);
+                    const showSpend = showTokens || showCost;
+                    const roleLabel = task.role || "Worker";
+                    const detailsId = `swarm-worker-${task.id}`;
+                    const workerState = (task.status || ts).trim() || "idle";
                     return (
                       <div
                         key={task.id}
-                        role="button"
-                        tabIndex={0}
-                        aria-expanded={tExpanded}
-                        onClick={() => toggleTask(task.id)}
-                        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleTask(task.id); } }}
-                        className="p-1.5 rounded bg-panel2/20 border border-edge/40 flex items-start gap-2 text-[10px] cursor-pointer hover:bg-panel2/35 focus:outline-none"
+                        className="py-1.5 flex flex-col text-[10px]"
                       >
-                        <span className="mt-0.5 shrink-0">
-                          {ts === "running" ? <Loader2 size={10} className="animate-spin text-accent" />
-                            : ts === "done" ? <CheckCircle2 size={10} className="text-good" />
-                            : ts === "fail" ? <XCircle size={10} className="text-risk" />
-                            : <Circle size={10} className="text-muted" />}
-                        </span>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between gap-1">
-                            <span className="font-semibold text-txt truncate flex items-center gap-1 min-w-0">
-                              {tExpanded
-                                ? <ChevronDown size={9} className="text-faint shrink-0" />
-                                : <ChevronRight size={9} className="text-faint shrink-0" />}
-                              <span className="truncate">
-                                {task.role || "Worker"}
-                                {secondaryLabel ? (
-                                  <span className="text-faint font-normal"> ({secondaryLabel})</span>
-                                ) : !task.role ? (
-                                  <span className="text-faint font-normal"> (no-adapter)</span>
-                                ) : null}
+                        <div
+                          role="button"
+                          tabIndex={0}
+                          aria-expanded={tExpanded}
+                          aria-controls={detailsId}
+                          aria-label={`${roleLabel}, ${workerState}${view.slot ? `, ${view.slot}` : ""}`}
+                          onClick={() => toggleTask(task.id)}
+                          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleTask(task.id); } }}
+                          className={`group flex items-start gap-2 min-w-0 px-1 py-0.5 cursor-pointer hover:bg-panel2/25 transition-colors ${DISCLOSURE_FOCUS}`}
+                        >
+                          <span className="shrink-0 mt-0.5">
+                            {ts === "running" ? <Loader2 size={10} className="animate-spin text-accent" />
+                              : ts === "done" ? <CheckCircle2 size={10} className="text-good" />
+                              : ts === "fail" ? <XCircle size={10} className="text-risk" />
+                              : <Circle size={10} className="text-muted" />}
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1 min-w-0">
+                              <span className="min-w-0 flex-1 truncate font-semibold text-txt">
+                                {roleLabel}
                               </span>
-                            </span>
-                            <span className="flex items-center gap-1.5 shrink-0">
-                              {((task.tokens ?? 0) > 0 || (task.est_cost_usd ?? 0) > 0) && (
-                                <span className="text-muted font-mono text-[9px] flex items-center gap-1 tabular-nums">
-                                  {(task.tokens ?? 0) > 0 && (
+                              <span className="shrink-0 text-faint/60 group-hover:text-faint transition-colors">
+                                {tExpanded
+                                  ? <ChevronDown size={9} />
+                                  : <ChevronRight size={9} />}
+                              </span>
+                            </div>
+                            <div className="mt-0.5 flex items-center gap-x-2 gap-y-0.5 min-w-0 flex-wrap">
+                              <WorkerModelSlot view={view} />
+                              {showSpend && (
+                                <span className="text-muted font-mono text-[8.5px] flex items-center gap-1 tabular-nums">
+                                  {showTokens && (
                                     <span>{Number(task.tokens).toLocaleString()}t</span>
                                   )}
-                                  <span className="text-good/90">
-                                    {formatCost(
-                                      Number(task.est_cost_usd || 0),
-                                      task.estimated !== false && task.cost_provenance !== "provider",
-                                    )}
-                                  </span>
+                                  {showCost && (
+                                    <span className="text-good/85">
+                                      {formatWorkerCost(
+                                        costValue,
+                                        costEstimated,
+                                        isPlanBilledRouting(routing),
+                                      )}
+                                    </span>
+                                  )}
                                 </span>
                               )}
-                              <span className={`text-[8px] uppercase font-bold px-1 rounded ${
-                                ts === "running" ? "text-accent bg-accent/10"
-                                  : ts === "done" ? "text-good bg-good/10"
-                                  : ts === "fail" ? "text-risk bg-risk/10"
-                                  : "text-muted bg-panel2/30"
-                              }`}>{task.status}</span>
-                            </span>
-                          </div>
-                          {tExpanded && (
-                            <div className="mt-1 text-[9px] font-mono text-faint grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5">
-                              <span>task</span><span className="text-muted break-all">{task.id}</span>
-                              {taskModelLabel && <><span>model</span><span className="text-muted break-all">{taskModelLabel}</span></>}
-                              {adapterLabel && <><span>adapter</span><span className="text-muted break-all">{adapterLabel}</span></>}
-                              {task.completed_at && <><span>completed</span><span className="text-muted break-all">{task.completed_at}</span></>}
-                              {task.instruction && <><span>instruction</span><span className="text-muted whitespace-pre-wrap break-words font-sans">{task.instruction}</span></>}
                             </div>
-                          )}
-                          {!tExpanded && task.instruction && (
-                            <Tooltip label={task.instruction} className="block text-muted text-[9.5px] mt-0.5 truncate">{task.instruction}</Tooltip>
-                          )}
+                          </div>
                         </div>
+                        {tExpanded && (
+                          <div
+                            id={detailsId}
+                            className="ml-5 mt-1 border-l border-edge/35 pl-2 text-[9px] font-mono text-faint grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5"
+                          >
+                            <span>task</span><span className="text-muted break-all">{task.id}</span>
+                            {view.rawModel && <><span>model</span><span className="text-muted break-all">{view.rawModel}</span></>}
+                            {adapterLabel && <><span>adapter</span><span className="text-muted break-all">{adapterLabel}</span></>}
+                            {view.policy ? (
+                              <><span>policy</span><span className="text-muted break-all">{view.policy}{view.pinned ? " · pin" : ""}</span></>
+                            ) : view.routing ? (
+                              <><span>policy</span><span className="text-muted break-all">Pin attribution unknown</span></>
+                            ) : null}
+                            {provider && <><span>provider</span><span className="text-muted break-all">{provider}</span></>}
+                            {createdBy === "router-fallback" && <><span>route</span><span className="text-muted">fallback</span></>}
+                            {createdBy === "router-escalation" && <><span>route</span><span className="text-muted">escalation</span></>}
+                            {task.completed_at && <><span>completed</span><span className="text-muted break-all">{task.completed_at}</span></>}
+                            {task.instruction && <><span>instruction</span><span className="text-muted whitespace-pre-wrap break-words font-sans">{task.instruction}</span></>}
+                            {hasRejected && (
+                              <>
+                                <span>rejected</span>
+                                <span>
+                                  <button
+                                    type="button"
+                                    aria-expanded={altsExpanded}
+                                    onClick={(e) => { e.stopPropagation(); setExpandedAlts((prev) => ({ ...prev, [altKey]: !altsExpanded })); }}
+                                    onKeyDown={(e) => e.stopPropagation()}
+                                    className={`text-[9px] text-faint/80 hover:text-muted inline-flex items-center gap-0.5 ${DISCLOSURE_FOCUS}`}
+                                  >
+                                    {altsExpanded ? <ChevronDown size={9} /> : <ChevronRight size={9} />}
+                                    {routing?.rejected?.length} alternatives
+                                  </button>
+                                  {altsExpanded && (
+                                    <span className="mt-1 flex flex-wrap gap-1">
+                                      {routing?.rejected?.map((rej: { model: string; reason: string }, ridx: number) => (
+                                        <Tooltip
+                                          key={ridx}
+                                          label={rej.reason}
+                                          className="font-mono text-[8.5px] text-faint bg-panel2/30 border border-edge/40 px-1.5 py-0.5 rounded cursor-default"
+                                        >
+                                          {rej.model}
+                                        </Tooltip>
+                                      ))}
+                                    </span>
+                                  )}
+                                </span>
+                              </>
+                            )}
+                          </div>
+                        )}
                       </div>
                     );
                   })}
                 </div>
               </div>
+            )}
+
+            {showUnmatched && (
+              <UnmatchedRoutingNote
+                arts={unmatchedRouting}
+                hasTasks={workerCount > 0}
+                headerModel={headerModel}
+              />
             )}
 
             {/* Findings / artifacts stream -- the substance of an audit, made
@@ -1517,7 +1709,7 @@ export default function SwarmPane() {
               );
             })()}
 
-            {tasks.length === 0 && streamArts.length === 0 && routingArts.length === 0 && (
+            {tasks.length === 0 && streamArts.length === 0 && !showUnmatched && (
               <div className="text-[9.5px] text-faint italic px-1 py-0.5">
                 {loadingArts.has(j.id) || (j.artifacts_complete === false)
                   ? "Loading artifacts..."

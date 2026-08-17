@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.6` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.240, deliberately pre-1.0. Compacted history remains durably retrievable through bounded session archives. Rides puppetmaster-ai==1.22.6.
+> Status: v0.9.241, deliberately pre-1.0. Swarm workers own their model-routing receipt, and opt-in residual labs compare bounded compaction representations without changing the production default. Rides puppetmaster-ai==1.22.6.
 
 ## Documentation
 
