@@ -47,6 +47,97 @@ function finishedJob(
   return liveJob({ id, goal, status: "complete", adapter: "agentic", ...overrides });
 }
 
+function expectBefore(first: HTMLElement, second: HTMLElement) {
+  expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+}
+
+describe("SwarmPane sort and filter controls", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
+    clearSWRCache();
+    mockArtifacts.mockResolvedValue([]);
+    mockSwarmLive.mockResolvedValue({
+      session: { tokens_used: 0, est_cost_usd: 0 },
+      jobs: [
+        { id: "job-z", goal: "Older active audit", status: "running", created_at: "2026-01-01T00:00:00Z", model: "model-old" },
+        { id: "job-a", goal: "Newest active build", status: "running", created_at: "2026-03-01T00:00:00Z", model: "model-new" },
+        { id: "job-no-time", goal: "Active job without timestamp", status: "running" },
+        { id: "job-y", goal: "Older completed review", status: "complete", created_at: "2026-01-15T00:00:00Z" },
+        { id: "job-b", goal: "Newest failed review", status: "failed", created_at: "2026-02-15T00:00:00Z" },
+        { id: "job-c", goal: "Degraded architecture review", status: "complete", created_at: "2026-02-01T00:00:00Z", outcome: { quality: "degraded", trustworthy: false, reasons: ["only verification artifacts"] } },
+      ],
+    });
+  });
+
+  it("distributes filter and sort controls evenly across the toolbar", async () => {
+    render(<SwarmPane />);
+    const filter = await screen.findByLabelText("Filter swarms");
+    const sort = screen.getByLabelText("Sort swarms");
+
+    expect(filter.parentElement).toHaveClass("grid", "grid-cols-2");
+    expect(filter).toHaveClass("w-full");
+    expect(sort).toHaveClass("w-full");
+  });
+
+  it("sorts active and finished jobs newest-first by creation time", async () => {
+    render(<SwarmPane />);
+
+    const newestActive = await screen.findByText("Newest active build");
+    expectBefore(newestActive, screen.getByText("Older active audit"));
+
+    fireEvent.click(screen.getByText("Finished"));
+    expectBefore(
+      await screen.findByText("Newest failed review"),
+      screen.getByText("Degraded architecture review"),
+    );
+    expectBefore(
+      screen.getByText("Degraded architecture review"),
+      screen.getByText("Older completed review"),
+    );
+  });
+
+  it("reverses both lifecycle groups when Oldest is selected", async () => {
+    render(<SwarmPane />);
+    await screen.findByText("Newest active build");
+
+    fireEvent.change(screen.getByLabelText("Sort swarms"), { target: { value: "oldest" } });
+    expectBefore(screen.getByText("Older active audit"), screen.getByText("Newest active build"));
+    expectBefore(screen.getByText("Newest active build"), screen.getByText("Active job without timestamp"));
+
+    fireEvent.click(screen.getByText("Finished"));
+    expectBefore(
+      await screen.findByText("Older completed review"),
+      screen.getByText("Degraded architecture review"),
+    );
+  });
+
+  it("filters by lifecycle without conflating failed and untrustworthy jobs", async () => {
+    render(<SwarmPane />);
+    await screen.findByText("Newest active build");
+
+    fireEvent.change(screen.getByLabelText("Filter swarms"), { target: { value: "failed" } });
+    expect(await screen.findByText("Newest failed review")).toBeInTheDocument();
+    expect(screen.queryByText("Degraded architecture review")).not.toBeInTheDocument();
+    expect(screen.queryByText("Newest active build")).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Filter swarms"), { target: { value: "untrustworthy" } });
+    expect(await screen.findByText("Degraded architecture review")).toBeInTheDocument();
+    expect(screen.queryByText("Newest failed review")).not.toBeInTheDocument();
+  });
+
+  it("clears a filter with no matching jobs", async () => {
+    render(<SwarmPane />);
+    await screen.findByText("Newest active build");
+
+    fireEvent.change(screen.getByLabelText("Filter swarms"), { target: { value: "cancelled" } });
+    expect(await screen.findByText("No swarm jobs match this filter")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Clear filter" }));
+    expect(await screen.findByText("Newest active build")).toBeInTheDocument();
+  });
+});
+
 describe("SwarmPane SWR cache first-open", () => {
   const REPO = "C:\\Users\\pwall\\Projects\\warm-swarm";
 
@@ -1437,6 +1528,26 @@ describe("SwarmPane harness-open-swarm-job deep-link", () => {
     await waitFor(() => {
       expect(mockArtifacts).toHaveBeenCalledWith("job_abcdef012345");
     });
+  });
+
+  it("clears filters that hide a deep-link target", async () => {
+    mockSwarmLive.mockResolvedValue(
+      finishedJob("job_abcdef012345", "Deep-link target behind filter"),
+    );
+    render(<SwarmPane />);
+    await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
+
+    fireEvent.change(screen.getByLabelText("Filter swarms"), { target: { value: "active" } });
+    expect(await screen.findByText("No swarm jobs match this filter")).toBeInTheDocument();
+
+    window.dispatchEvent(
+      new CustomEvent("harness-open-swarm-job", {
+        detail: { jobId: "job_abcdef012345" },
+      }),
+    );
+
+    expect(await screen.findByText("Deep-link target behind filter")).toBeInTheDocument();
+    expect(screen.getByLabelText("Filter swarms")).toHaveValue("all");
   });
 
   it("consumes a pending open-job queued before mount", async () => {
