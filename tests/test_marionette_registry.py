@@ -365,3 +365,58 @@ def test_ladder_stamps_deepseek_v4_pro_0813_snapshot(tmp_path, monkeypatch):
     assert row["capability_score"] == 85
     assert "vision" not in row["tags"]
     assert "detailed-vision" not in row["tags"]
+
+
+def test_ladder_splits_flattened_luna_sol_pair(tmp_path, monkeypatch):
+    """Picker sync used to stamp Luna and Sol both at 85; ladder must split them."""
+    dest = tmp_path / "marionette-models.json"
+    dest.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "models": [
+                    {
+                        "id": "agentic/openai-codex/gpt-5.6-luna",
+                        "adapter": "agentic",
+                        "adapter_model_name": "gpt-5.6-luna",
+                        "capability_score": 85,
+                        "tags": ["balanced", "fast", "code", "tools", "agentic"],
+                    },
+                    {
+                        "id": "agentic/gpt-5.6-luna",
+                        "adapter": "agentic",
+                        "adapter_model_name": "gpt-5.6-luna",
+                        "capability_score": 85,
+                        "tags": ["balanced", "fast", "code", "tools", "agentic"],
+                    },
+                    {
+                        "id": "agentic/openai-codex/gpt-5.6-sol",
+                        "adapter": "agentic",
+                        "adapter_model_name": "gpt-5.6-sol",
+                        "capability_score": 85,
+                        "tags": ["balanced", "fast", "code", "tools", "agentic"],
+                    },
+                    {
+                        "id": "agentic/gpt-5.6-sol",
+                        "adapter": "agentic",
+                        "adapter_model_name": "gpt-5.6-sol",
+                        "capability_score": 85,
+                        "tags": ["balanced", "fast", "code", "tools", "agentic"],
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(dest))
+    report = apply_marionette_router_ladder(str(dest))
+    data = json.loads(dest.read_text(encoding="utf-8"))
+    by_id = {m["id"]: m for m in data["models"]}
+    assert by_id["agentic/openai-codex/gpt-5.6-luna"]["capability_score"] == 76
+    assert by_id["agentic/gpt-5.6-luna"]["capability_score"] == 76
+    assert by_id["agentic/openai-codex/gpt-5.6-sol"]["capability_score"] == 85
+    assert by_id["agentic/gpt-5.6-sol"]["capability_score"] == 85
+    assert "vision" in by_id["agentic/openai-codex/gpt-5.6-luna"]["tags"]
+    assert "vision" in by_id["agentic/openai-codex/gpt-5.6-sol"]["tags"]
+    assert "agentic/openai-codex/gpt-5.6-luna" in report["updated"]
+    assert "agentic/openai-codex/gpt-5.6-sol" in report["updated"]

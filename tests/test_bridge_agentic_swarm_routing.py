@@ -379,3 +379,203 @@ def test_execute_intent_pins_isolated_marionette_registry_path(tmp_path, monkeyp
         )
         assert kimi is not None
         assert "vision" in (kimi.get("tags") or [])
+
+
+class _RoutingOrchestrator:
+    """Product-path fake: run the real router on bridge-built specs, no workers."""
+
+    last_decisions: list = []
+
+    def __init__(self, store: Any) -> None:
+        self.store = store
+
+    def run(self, goal: str, specs=None, worker_mode=None, label=None):
+        from puppetmaster.model_registry import default_registry_path, load_registry
+        from puppetmaster.router import route_task, signals_from_worker_spec
+
+        from pathlib import Path
+
+        env_path = os.environ.get("PUPPETMASTER_MODELS_PATH")
+        registry_path = Path(env_path) if env_path else default_registry_path()
+        registry = load_registry(registry_path)
+        decisions = []
+        for spec in specs or []:
+            payload = spec.payload or {}
+            if payload.get("auto_route") and not payload.get("pinned_model"):
+                policy = payload.get("routing_policy") or "balanced"
+                decision = route_task(
+                    signals_from_worker_spec(spec), registry, policy=policy,
+                )
+                payload["model"] = decision.model.adapter_model_name
+                payload["router_model_id"] = decision.model.id
+                decisions.append((spec.role, decision.model.id, decision.to_artifact_payload()))
+            else:
+                model_id = str(
+                    payload.get("pinned_model")
+                    or payload.get("router_model_id")
+                    or ""
+                )
+                decisions.append((spec.role, model_id, {"model_id": model_id}))
+        type(self).last_decisions = decisions
+        return _FakeResult()
+
+
+def _two_tier_codex_catalog() -> dict:
+    """Isolated catalog that mimics the flattened Luna/Sol 85/85 sync defect."""
+    shared_tags = ["balanced", "fast", "code", "tools", "agentic"]
+    return {
+        "version": 1,
+        "models": [
+            {
+                "id": "agentic/openai-codex/gpt-5.6-luna",
+                "adapter": "agentic",
+                "adapter_model_name": "gpt-5.6-luna",
+                "capability_score": 85,
+                "input_per_mtok_usd": 1.25,
+                "output_per_mtok_usd": 5.0,
+                "context_window": 200000,
+                "enabled": True,
+                "billing": "plan",
+                "tags": list(shared_tags),
+                "payload_defaults": {
+                    "provider": "openai-codex",
+                    "model": "gpt-5.6-luna",
+                },
+            },
+            {
+                "id": "agentic/openai-codex/gpt-5.6-sol",
+                "adapter": "agentic",
+                "adapter_model_name": "gpt-5.6-sol",
+                "capability_score": 85,
+                "input_per_mtok_usd": 2.5,
+                "output_per_mtok_usd": 10.0,
+                "context_window": 200000,
+                "enabled": True,
+                "billing": "plan",
+                "tags": list(shared_tags),
+                "payload_defaults": {
+                    "provider": "openai-codex",
+                    "model": "gpt-5.6-sol",
+                },
+            },
+        ],
+    }
+
+
+def _install_two_tier_product_path(monkeypatch, tmp_path):
+    """Isolated marionette-models.json + allowlist + capturing specs + real router."""
+    import json
+
+    shared = tmp_path / ".puppetmaster" / "models.json"
+    shared.parent.mkdir(parents=True)
+    shared.write_text(
+        json.dumps({"version": 1, "models": []}),
+        encoding="utf-8",
+    )
+    marionette = tmp_path / ".pmharness" / "marionette-models.json"
+    marionette.parent.mkdir(parents=True)
+    marionette.write_text(
+        json.dumps(_two_tier_codex_catalog()),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(marionette))
+    monkeypatch.delenv("HARNESS_ANALYSIS_DEEP", raising=False)
+    monkeypatch.delenv("HARNESS_ANALYSIS_MAX_CAPABILITY", raising=False)
+    monkeypatch.setattr(
+        "harness.marionette_registry.marionette_models_path",
+        lambda: marionette,
+    )
+    monkeypatch.setattr(
+        "harness.marionette_registry.shared_puppetmaster_models_path",
+        lambda: shared,
+    )
+    monkeypatch.setattr(
+        "puppetmaster.providers.available_providers",
+        lambda: {"openai-codex"},
+    )
+    _CapturingWorkerSpec._last_captured = []
+    _RoutingOrchestrator.last_decisions = []
+    monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")
+    monkeypatch.setenv("HARNESS_REPO", str(tmp_path))
+    _pin_agentic_only_allowlist(monkeypatch)
+    monkeypatch.setattr("puppetmaster.workers.WorkerSpec", _CapturingWorkerSpec)
+    monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _RoutingOrchestrator)
+    monkeypatch.setattr(bridge, "_warn_if_unindexed", lambda *_a, **_k: None)
+    return marionette
+
+
+def test_run_swarm_two_tier_catalog_selects_two_models(monkeypatch, tmp_path):
+    """explore (~73) vs conflict-auditor (clips to 85) must cross Luna 76 / Sol 85."""
+    _install_two_tier_product_path(monkeypatch, tmp_path)
+    intent = DriverIntent(
+        action="run_swarm",
+        goal="Map the auth middleware",
+        roles=["explore", "conflict-auditor"],
+    )
+    result = bridge.execute_intent(intent, state_dir=str(tmp_path / "state"))
+    assert result is not None
+    by_role = {role: model_id for role, model_id, _payload in _RoutingOrchestrator.last_decisions}
+    assert by_role["explore"] == "agentic/openai-codex/gpt-5.6-luna"
+    assert by_role["conflict-auditor"] == "agentic/openai-codex/gpt-5.6-sol"
+    selected = {model_id for _role, model_id, _payload in _RoutingOrchestrator.last_decisions}
+    assert selected == {
+        "agentic/openai-codex/gpt-5.6-luna",
+        "agentic/openai-codex/gpt-5.6-sol",
+    }
+    captured = {spec.role: spec.payload for spec in _CapturingWorkerSpec._last_captured}
+    assert captured["explore"].get("router_model_id") == "agentic/openai-codex/gpt-5.6-luna"
+    assert captured["conflict-auditor"].get("router_model_id") == "agentic/openai-codex/gpt-5.6-sol"
+    for _role, _model_id, payload in _RoutingOrchestrator.last_decisions:
+        assert payload.get("model_id")
+        assert "capability_needed" in payload or "capability_score" in payload
+
+
+def test_run_swarm_equivalent_roles_stay_homogeneous(monkeypatch, tmp_path):
+    """Roles whose needs both sit under Luna still share one model."""
+    _install_two_tier_product_path(monkeypatch, tmp_path)
+    intent = DriverIntent(
+        action="run_swarm",
+        goal="Map the auth middleware",
+        roles=["explore", "test-coverage-reviewer"],
+    )
+    result = bridge.execute_intent(intent, state_dir=str(tmp_path / "state"))
+    assert result is not None
+    selected = {model_id for _role, model_id, _payload in _RoutingOrchestrator.last_decisions}
+    assert selected == {"agentic/openai-codex/gpt-5.6-luna"}
+
+
+def test_run_swarm_global_pin_applies_to_every_role(monkeypatch, tmp_path):
+    """A single intent.model pin stays intentionally homogeneous across roles."""
+    _install_two_tier_product_path(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "harness.swarm_model_pin.resolve_swarm_model_pin",
+        lambda pin, allowed_adapters=None: {
+            "pin_fields": {
+                "model": "gpt-5.6-luna",
+                "pinned_model": "agentic/openai-codex/gpt-5.6-luna",
+                "pinned_adapter_model_name": "gpt-5.6-luna",
+                "router_model_id": "agentic/openai-codex/gpt-5.6-luna",
+                "auto_route": False,
+            },
+            "auto_route": False,
+            "requested": pin,
+            "resolved": "agentic/openai-codex/gpt-5.6-luna",
+            "demoted": False,
+            "reason": "exact",
+            "adapter": "agentic",
+        },
+    )
+    intent = DriverIntent(
+        action="run_swarm",
+        goal="Map the auth middleware",
+        roles=["explore", "conflict-auditor"],
+        model="gpt-5.6-luna",
+    )
+    result = bridge.execute_intent(intent, state_dir=str(tmp_path / "state"))
+    assert result is not None
+    assert len(_CapturingWorkerSpec._last_captured) == 2
+    for spec in _CapturingWorkerSpec._last_captured:
+        assert spec.payload.get("auto_route") is False
+        assert spec.payload.get("pinned_model") == "agentic/openai-codex/gpt-5.6-luna"
+    selected = {model_id for _role, model_id, _payload in _RoutingOrchestrator.last_decisions}
+    assert selected == {"agentic/openai-codex/gpt-5.6-luna"}

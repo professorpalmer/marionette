@@ -742,6 +742,20 @@ def test_kimi_k3_static_economics_match_marketplace():
     assert "frontier" in tags
 
 
+def test_codex_luna_sol_known_specs_are_two_tier():
+    from harness.auto_registry import _KNOWN_MODEL_SPECS, _known_spec_for
+
+    luna = _known_spec_for("gpt-5.6-luna", "openai-codex/gpt-5.6-luna")
+    sol = _known_spec_for("gpt-5.6-sol", "openai-codex/gpt-5.6-sol")
+    assert luna is not None and sol is not None
+    assert luna[0] == 76
+    assert sol[0] == 85
+    assert luna[0] < sol[0]
+    assert luna[1] < sol[1]
+    assert _KNOWN_MODEL_SPECS["gpt-5.6-luna"][0] == 76
+    assert _KNOWN_MODEL_SPECS["gpt-5.6-sol"][0] == 85
+
+
 def test_openrouter_picker_does_not_union_curated_ladder(monkeypatch, tmp_path):
     models_path = tmp_path / "models.json"
     monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))

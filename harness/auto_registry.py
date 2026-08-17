@@ -107,6 +107,12 @@ _KNOWN_MODEL_SPECS = {
     "z-ai/glm-5.2": (86, 1.0, 3.5, 1000000, ["quality", "code", "reasoning", "long-context"]),
     "glm-5.3": (86, 1.0, 3.5, 1000000, ["quality", "code", "reasoning", "long-context"]),
     "anthropic/claude-opus-4.8": (99, 5.0, 25.0, 1000000, ["frontier", "reasoning", "code", "vision", "long-context"]),
+    # Codex pair: Sol must outrank Luna or live price overlay leaves Sol
+    # strictly dominated at the shared balanced-85 template.
+    "gpt-5.6-luna": (76, 1.25, 5.0, 200000, ["balanced", "fast", "code", "vision"]),
+    "openai-codex/gpt-5.6-luna": (76, 1.25, 5.0, 200000, ["balanced", "fast", "code", "vision"]),
+    "gpt-5.6-sol": (85, 2.5, 10.0, 200000, ["frontier", "reasoning", "code", "vision"]),
+    "openai-codex/gpt-5.6-sol": (85, 2.5, 10.0, 200000, ["frontier", "reasoning", "code", "vision"]),
 }
 
 # Per-provider model discovery: maps provider name to a list of model descriptors.

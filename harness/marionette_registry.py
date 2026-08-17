@@ -28,6 +28,15 @@ _LADDER: tuple[tuple[str, int, tuple[str, ...]], ...] = (
     ("agentic/cursor-grok-4.5-high-fast", 92, ("vision",)),
     ("cursor/grok-4-5", 91, ("vision",)),
     ("agentic/deepseek/deepseek-v4-pro", 85, ()),
+    # Codex OAuth pair. Live picker sync used to stamp both at 85 with the
+    # same tags; Sol is more expensive, so balanced cheapest-sufficient never
+    # selected it. Keep Sol at the analysis ceiling (85). Luna sits with
+    # composer-2.5-fast (76) so a real run_swarm brief (explore classifies
+    # ~73 after the shared analysis wrapper) still fits Luna, while
+    # conflict-auditor clips to 85 and can escalate. Sol above 85 is unused:
+    # max_capability clips every run_swarm need to 85.
+    ("agentic/openai-codex/gpt-5.6-sol", 85, ("vision",)),
+    ("agentic/openai-codex/gpt-5.6-luna", 76, ("vision",)),
     ("agentic/composer-2.5-fast", 76, ("vision",)),
     ("cursor/composer-2-5", 75, ("vision",)),
     ("agentic/composer-2.5", 74, ("vision",)),
@@ -75,6 +84,18 @@ _LADDER_ALIASES: dict[str, tuple[str, ...]] = {
         "agentic/deepseek/deepseek-v4-pro-0813",
         "deepseek/deepseek-v4-pro-0813",
         "deepseek-v4-pro-0813",
+    ),
+    "agentic/openai-codex/gpt-5.6-sol": (
+        "agentic/gpt-5.6-sol",
+        "gpt-5.6-sol",
+        "openai-codex/gpt-5.6-sol",
+        "openai/gpt-5.6-sol",
+    ),
+    "agentic/openai-codex/gpt-5.6-luna": (
+        "agentic/gpt-5.6-luna",
+        "gpt-5.6-luna",
+        "openai-codex/gpt-5.6-luna",
+        "openai/gpt-5.6-luna",
     ),
     "agentic/composer-2.5-fast": (
         "agentic/composer-2-5-fast",
