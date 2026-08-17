@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.5` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.234, deliberately pre-1.0. Every swarm worker row expands to source-backed identity (task id, model, adapter, completion time, instruction when present). Rides puppetmaster-ai==1.22.5.
+> Status: v0.9.235, deliberately pre-1.0. Highlight terminal output into the composer as an `@terminal` mention; jump-to-latest when you scroll up. Rides puppetmaster-ai==1.22.5.
 
 ## Documentation
 
