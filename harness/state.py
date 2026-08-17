@@ -231,6 +231,21 @@ class DurableState:
             art_type = str(getattr(a, "type", ""))
             task_id = getattr(a, "task_id", "") or None
             job_id = getattr(a, "job_id", "") or None
+            detail = payload.get("reason") or payload.get("detail")
+            result = payload.get("result")
+            failure = payload.get("failure")
+            kind = art_type.strip().lower()
+            if kind.endswith("verification") and (
+                failure or str(result or "").strip().lower() in ("failed", "blocked", "error")
+            ):
+                source_reason = (
+                    payload.get("turn_failure_message")
+                    or payload.get("message")
+                    or payload.get("stderr")
+                )
+                if source_reason:
+                    from harness.api.redaction import redact_secret_text
+                    detail = redact_secret_text(str(source_reason).strip())[:500] or None
             row = {
                 "id": getattr(a, "id", ""),
                 "type": art_type,
@@ -267,13 +282,13 @@ class DurableState:
                         or payload.get("model_chosen") or payload.get("driver")
                     ),
                 ),
-                "detail": payload.get("reason") or payload.get("detail"),
+                "detail": detail,
                 # Verification verdicts. "result" is failed/blocked/pass;
                 # "failure" is the machine class (no_model, billing_or_quota).
                 # The GUI needs these to render a swarm whose every worker
                 # fast-failed as a red failed run instead of a green "done".
-                "result": payload.get("result"),
-                "failure": payload.get("failure"),
+                "result": result,
+                "failure": failure,
                 # Only present for patch artifacts; None elsewhere so the GUI can
                 # cheaply test truthiness before rendering a diffstat row.
                 "files": files,
@@ -282,7 +297,6 @@ class DurableState:
             # Lightweight parent-execution pointer for signal rows. Prefer an
             # explicit payload stamp; otherwise synthesize from job/task ids so
             # legacy store rows still resolve without copying spend fields.
-            kind = art_type.strip().lower()
             if kind in ("finding", "risk", "decision"):
                 ref = payload.get("execution_ref")
                 if not isinstance(ref, dict):
