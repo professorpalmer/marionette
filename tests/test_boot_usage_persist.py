@@ -25,6 +25,23 @@ def test_persist_and_restore_boot_usage_same_app_run(tmp_path, monkeypatch):
     srv._BOOT_METER_CARRY["_tokens_out"] = 10_000
     srv._BOOT_METER_CARRY["_tokens_cached"] = 12_000
     srv._BOOT_METER_CARRY["_worker_cost_usd"] = 0.25
+    srv._BOOT_CARRY_COST_USD = 1.25
+    srv._BOOT_PILOT_BY_MODEL.clear()
+    srv._BOOT_PILOT_BY_MODEL["cursor/grok-4-6"] = {
+        "model": "cursor/grok-4-6",
+        "est_cost_usd": 1.25,
+        "tokens_used": 50_000,
+        "tokens_in": 40_000,
+        "tokens_out": 10_000,
+        "tokens_cached": 12_000,
+        "pilot_cache_read_tokens": 12_000,
+        "worker_cost_usd": 0.25,
+        "worker_tokens_cached": 0.0,
+        "provider_cost_usd": 0.0,
+        "cache_savings_gross_usd": 0.4,
+        "price_in": 5.0,
+        "price_out": 25.0,
+    }
     epoch = datetime.now(timezone.utc) - timedelta(hours=1)
     srv._COST_EPOCH = epoch
     repo = tmp_path / "repo"
@@ -37,10 +54,13 @@ def test_persist_and_restore_boot_usage_same_app_run(tmp_path, monkeypatch):
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["app_run_id"] == "run-test-abc"
     assert data["carry"]["_tokens_cached"] == 12_000
+    assert data["pilot_by_model"]["cursor/grok-4-6"]["est_cost_usd"] >= 1.25
 
     # Simulate a fresh backend process in the same Electron app run.
     for attr in srv._BOOT_METER_ATTRS:
         srv._BOOT_METER_CARRY[attr] = 0.0
+    srv._BOOT_PILOT_BY_MODEL.clear()
+    srv._BOOT_CARRY_COST_USD = 0.0
     srv._BOOT_REPOS.clear()
     srv._COST_EPOCH = datetime.now(timezone.utc)
     srv._BOOT_USAGE_RESTORED = False
@@ -49,6 +69,8 @@ def test_persist_and_restore_boot_usage_same_app_run(tmp_path, monkeypatch):
     assert srv._BOOT_METER_CARRY["_tokens_used"] == 50_000
     assert srv._BOOT_METER_CARRY["_tokens_cached"] == 12_000
     assert srv._BOOT_METER_CARRY["_worker_cost_usd"] == 0.25
+    assert "cursor/grok-4-6" in srv._BOOT_PILOT_BY_MODEL
+    assert float(srv._BOOT_PILOT_BY_MODEL["cursor/grok-4-6"]["est_cost_usd"]) >= 1.25
     assert abs((srv._COST_EPOCH - epoch).total_seconds()) < 1.0
     assert str(repo.resolve()) in srv._BOOT_REPOS
 

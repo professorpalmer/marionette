@@ -93,5 +93,6 @@ def test_get_usage_builds_session_pill(monkeypatch):
     assert payload["session"]["driver"] == "m1"
     assert payload["session"]["price_in"] == 1.0
     assert payload["session"]["tokens_used"] == 100
+    assert isinstance(payload["session"].get("pilot_by_model"), list)
     assert "jobs" in payload
     assert store  # cached

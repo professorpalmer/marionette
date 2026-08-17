@@ -671,6 +671,15 @@ export type UsageData = {
     driver: string;
     price_in: number;
     price_out: number;
+    /** Locked cumulative spend per pilot that actually ran. */
+    pilot_by_model?: Array<{
+      model: string;
+      est_cost_usd: number;
+      tokens_used?: number;
+      tokens_in?: number;
+      tokens_out?: number;
+      tokens_cached?: number;
+    }>;
     tokens_cached?: number;
     /** Pilot prompt-input tokens (exclusive of worker-folded split). */
     pilot_input_tokens?: number;

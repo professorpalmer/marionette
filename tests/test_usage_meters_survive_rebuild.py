@@ -51,6 +51,10 @@ def _zero_boot_carry(srv):
     for attr in _METER_ATTRS:
         srv._BOOT_METER_CARRY[attr] = 0.0
     srv._BOOT_CARRY_COST_USD = 0.0
+    try:
+        srv._BOOT_PILOT_BY_MODEL.clear()
+    except Exception:
+        pass
 
 
 def test_rebuild_pilot_preserves_usage_meters():
@@ -507,4 +511,123 @@ def test_idle_perform_pilot_swap_freezes_meters():
         srv._BOOT_METER_CARRY.clear()
         srv._BOOT_METER_CARRY.update(saved_carry)
         srv._BOOT_CARRY_COST_USD = saved_cost
+        httpd.shutdown()
+
+
+def test_deferred_driver_change_does_not_reprice_live_meters():
+    """Deferred swap retargets cfg.driver; live tokens stay on the old runner rate."""
+    srv, httpd, port = _spin_server()
+    saved = _snapshot_meters(srv._pilot)
+    saved_carry = dict(srv._BOOT_METER_CARRY)
+    saved_cost = float(getattr(srv, "_BOOT_CARRY_COST_USD", 0.0) or 0.0)
+    saved_slices = dict(getattr(srv, "_BOOT_PILOT_BY_MODEL", {}) or {})
+    try:
+        _zero_boot_carry(srv)
+        expensive_in, expensive_out = 5.0, 25.0
+        cheap_in, cheap_out = 0.1, 0.3
+        srv._pilot._tokens_used = 1_000_000
+        srv._pilot._tokens_in = 1_000_000
+        srv._pilot._tokens_out = 0
+        srv._pilot._tokens_cached = 0
+        srv._pilot._worker_cost_usd = 0.0
+        srv._pilot._worker_tokens_in = 0
+        srv._pilot._worker_tokens_out = 0
+        if getattr(srv._pilot, "config", None) is not None:
+            srv._pilot.config.driver = "expensive-pilot"
+
+        def _expensive_for_runner(_runner):
+            return expensive_in, expensive_out
+
+        orig_runner_prices = srv._resolve_prices_for_runner
+        srv._resolve_prices_for_runner = _expensive_for_runner
+        try:
+            locked = srv._boot_session_cost(expensive_in, expensive_out)
+            # Active picker rates go cheap (deferred swap) — spend must not move.
+            still = srv._boot_session_cost(cheap_in, cheap_out)
+            rows = srv._boot_pilot_by_model_payload()
+        finally:
+            srv._resolve_prices_for_runner = orig_runner_prices
+
+        assert abs(locked - 5.0) < 1e-12
+        assert abs(still - locked) < 1e-12
+        assert rows
+        assert abs(float(rows[0]["est_cost_usd"]) - 5.0) < 1e-12
+        assert rows[0]["model"] == "expensive-pilot"
+    finally:
+        _restore_meters(srv._pilot, saved)
+        srv._BOOT_METER_CARRY.clear()
+        srv._BOOT_METER_CARRY.update(saved_carry)
+        srv._BOOT_CARRY_COST_USD = saved_cost
+        srv._BOOT_PILOT_BY_MODEL.clear()
+        srv._BOOT_PILOT_BY_MODEL.update(saved_slices)
+        httpd.shutdown()
+
+
+def test_fold_locks_per_model_rows_across_reprice():
+    """Folded grok spend stays on grok after a cheap live composer turn."""
+    import types
+
+    srv, httpd, port = _spin_server()
+    old_runners = srv._runners
+    old_pilot = srv._pilot
+    saved_carry = dict(srv._BOOT_METER_CARRY)
+    saved_cost = float(getattr(srv, "_BOOT_CARRY_COST_USD", 0.0) or 0.0)
+    saved_slices = dict(getattr(srv, "_BOOT_PILOT_BY_MODEL", {}) or {})
+    try:
+        _zero_boot_carry(srv)
+        grok = types.SimpleNamespace(
+            config=types.SimpleNamespace(driver="cursor/grok-4-6"),
+            _tokens_used=1_000_000,
+            _tokens_in=1_000_000,
+            _tokens_out=0,
+            _tokens_cached=0,
+            _worker_cost_usd=0.0,
+            _worker_tokens_in=0,
+            _worker_tokens_out=0,
+            _worker_tokens_cached=0,
+            _provider_cost_usd=0.0,
+        )
+        srv._fold_runner_meters_into_boot_carry(
+            "sess", grok, price_in=5.0, price_out=25.0
+        )
+        composer = types.SimpleNamespace(
+            config=types.SimpleNamespace(driver="composer-2.5-fast"),
+            _tokens_used=1_000_000,
+            _tokens_in=1_000_000,
+            _tokens_out=0,
+            _tokens_cached=0,
+            _worker_cost_usd=0.0,
+            _worker_tokens_in=0,
+            _worker_tokens_out=0,
+            _worker_tokens_cached=0,
+            _provider_cost_usd=0.0,
+        )
+
+        def _composer_prices(runner):
+            return 0.5, 2.0
+
+        orig_runner_prices = srv._resolve_prices_for_runner
+        srv._runners = SessionRunnerRegistry(max_concurrent_sessions=3)
+        srv._pilot = composer
+        srv._resolve_prices_for_runner = _composer_prices
+        try:
+            total = srv._boot_session_cost(0.1, 0.3)
+            rows = {row["model"]: row for row in srv._boot_pilot_by_model_payload()}
+            # Cheap active rates must not collapse the grok row.
+            still = srv._boot_session_cost(0.1, 0.3)
+        finally:
+            srv._resolve_prices_for_runner = orig_runner_prices
+
+        assert abs(float(rows["cursor/grok-4-6"]["est_cost_usd"]) - 5.0) < 1e-12
+        assert abs(float(rows["composer-2.5-fast"]["est_cost_usd"]) - 0.5) < 1e-12
+        assert abs(total - 5.5) < 1e-12
+        assert abs(still - 5.5) < 1e-12
+    finally:
+        srv._runners = old_runners
+        srv._pilot = old_pilot
+        srv._BOOT_METER_CARRY.clear()
+        srv._BOOT_METER_CARRY.update(saved_carry)
+        srv._BOOT_CARRY_COST_USD = saved_cost
+        srv._BOOT_PILOT_BY_MODEL.clear()
+        srv._BOOT_PILOT_BY_MODEL.update(saved_slices)
         httpd.shutdown()

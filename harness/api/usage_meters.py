@@ -72,6 +72,7 @@ def _boot_usage_reset_for_tests() -> None:
     _BOOT_USAGE_RESTORED = False
     for attr in _BOOT_METER_ATTRS:
         _BOOT_METER_CARRY[attr] = 0.0
+    _BOOT_PILOT_BY_MODEL.clear()
     _BOOT_REPOS.clear()
 
 
@@ -141,6 +142,10 @@ _BOOT_METER_CARRY: dict[str, float] = {attr: 0.0 for attr in _BOOT_METER_ATTRS}
 # carry stay for display; cost must NOT be recomputed at a later pilot rate
 # after a model swap (that would silently reprice historical spend).
 _BOOT_CARRY_COST_USD: float = 0.0
+# Cumulative pilot spend locked to the model that incurred it. Fold writes
+# here at fold-time rates; live runners are merged on read at each runner's
+# bound ``config.driver`` — never the currently selected picker model.
+_BOOT_PILOT_BY_MODEL: dict[str, dict] = {}
 # Every workspace opened this process -- boot-pill swarm dollars merge
 # epoch-windowed jobs across these repos, not only the active _cfg().repo.
 _BOOT_REPOS: set[str] = set()
@@ -252,6 +257,7 @@ def _persist_boot_usage(*, fold_live: bool = False, force: bool = False) -> None
                 "carry": carry_snap,
                 "carry_cost_usd": cost_snap,
                 "plan_billing": bool(_BOOT_PLAN_BILLING),
+                "pilot_by_model": _pilot_slices_for_persist(),
                 "repos": sorted(_BOOT_REPOS),
                 "saved_at": now,
             }
@@ -323,6 +329,13 @@ def _restore_boot_usage() -> bool:
             _BOOT_PLAN_BILLING = bool(data.get("plan_billing", False))
         except Exception:
             _BOOT_PLAN_BILLING = False
+        try:
+            _restore_pilot_slices(
+                data.get("pilot_by_model"),
+                carry_cost=float(_BOOT_CARRY_COST_USD or 0.0),
+            )
+        except Exception:
+            _BOOT_PILOT_BY_MODEL.clear()
         for repo in data.get("repos") or []:
             try:
                 if repo and os.path.isdir(str(repo)):
@@ -703,6 +716,272 @@ def _job_savings_fields(job_id: str) -> dict:
 
 
 
+def _iter_live_runners() -> list:
+    """Live registry runners plus the active pilot when it is not registered."""
+    try:
+        live = list(_runners().runners())
+    except Exception:
+        live = []
+    seen = {id(r) for r in live}
+    try:
+        pilot = _pilot()
+    except Exception:
+        pilot = None
+    if pilot is not None and id(pilot) not in seen:
+        live.append(pilot)
+    return live
+
+
+def _runner_pilot_model(runner: Any) -> str:
+    """Driver that actually owns this runner's meters (not the picker target)."""
+    cfg = getattr(runner, "config", None)
+    driver = getattr(cfg, "driver", None) if cfg is not None else None
+    text = str(driver or "").strip()
+    return text or "unknown"
+
+
+def _empty_pilot_slice(model: str, price_in: float = 0.0, price_out: float = 0.0) -> dict:
+    return {
+        "model": model,
+        "est_cost_usd": 0.0,
+        "tokens_used": 0.0,
+        "tokens_in": 0.0,
+        "tokens_out": 0.0,
+        "tokens_cached": 0.0,
+        "pilot_cache_read_tokens": 0.0,
+        "worker_cost_usd": 0.0,
+        "worker_tokens_cached": 0.0,
+        "provider_cost_usd": 0.0,
+        "cache_savings_gross_usd": 0.0,
+        "price_in": float(price_in or 0.0),
+        "price_out": float(price_out or 0.0),
+    }
+
+
+def _runner_has_meters(runner: Any) -> bool:
+    for attr in (
+        "_tokens_used",
+        "_tokens_in",
+        "_tokens_out",
+        "_tokens_cached",
+        "_worker_cost_usd",
+        "_provider_cost_usd",
+    ):
+        try:
+            if float(getattr(runner, attr, 0) or 0) != 0.0:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _merge_runner_into_slices(
+    dest: dict,
+    runner: Any,
+    price_in: float,
+    price_out: float,
+) -> None:
+    """Add a runner's locked spend onto ``dest`` without mutating the runner."""
+    from .cost_accounting import _cache_savings_gross
+
+    model = _runner_pilot_model(runner)
+    split_fn = _server_attr("_session_cost_split", _session_cost_split)
+    try:
+        cost = float(split_fn(runner, float(price_in), float(price_out)))
+    except Exception:
+        cost = 0.0
+    sl = dest.get(model)
+    if sl is None:
+        sl = _empty_pilot_slice(model, price_in, price_out)
+        dest[model] = sl
+    tokens_cached = float(getattr(runner, "_tokens_cached", 0) or 0)
+    worker_cached = float(getattr(runner, "_worker_tokens_cached", 0) or 0)
+    pilot_cached = max(0.0, tokens_cached - worker_cached)
+    sl["est_cost_usd"] = float(sl.get("est_cost_usd") or 0.0) + cost
+    sl["tokens_used"] = float(sl.get("tokens_used") or 0.0) + float(
+        getattr(runner, "_tokens_used", 0) or 0
+    )
+    sl["tokens_in"] = float(sl.get("tokens_in") or 0.0) + float(
+        getattr(runner, "_tokens_in", 0) or 0
+    )
+    sl["tokens_out"] = float(sl.get("tokens_out") or 0.0) + float(
+        getattr(runner, "_tokens_out", 0) or 0
+    )
+    sl["tokens_cached"] = float(sl.get("tokens_cached") or 0.0) + tokens_cached
+    sl["pilot_cache_read_tokens"] = (
+        float(sl.get("pilot_cache_read_tokens") or 0.0) + pilot_cached
+    )
+    sl["worker_cost_usd"] = float(sl.get("worker_cost_usd") or 0.0) + float(
+        getattr(runner, "_worker_cost_usd", 0) or 0
+    )
+    sl["worker_tokens_cached"] = (
+        float(sl.get("worker_tokens_cached") or 0.0) + worker_cached
+    )
+    sl["provider_cost_usd"] = float(sl.get("provider_cost_usd") or 0.0) + float(
+        getattr(runner, "_provider_cost_usd", 0) or 0
+    )
+    try:
+        sl["cache_savings_gross_usd"] = float(
+            sl.get("cache_savings_gross_usd") or 0.0
+        ) + float(_cache_savings_gross(pilot_cached, price_in))
+    except Exception:
+        pass
+    if float(price_in or 0.0) > 0:
+        sl["price_in"] = float(price_in)
+    if float(price_out or 0.0) > 0:
+        sl["price_out"] = float(price_out)
+
+
+def _copy_pilot_slices(src: dict) -> dict:
+    return {str(model): dict(sl) for model, sl in src.items() if isinstance(sl, dict)}
+
+
+def _boot_pilot_by_model_map() -> dict:
+    """Carry slices plus live runners priced at each runner's bound driver."""
+    merged = _copy_pilot_slices(_BOOT_PILOT_BY_MODEL)
+    resolve_runner = _server_attr(
+        "_resolve_prices_for_runner", _resolve_prices_for_runner
+    )
+    for runner in _iter_live_runners():
+        if not _runner_has_meters(runner):
+            continue
+        try:
+            pin, pout = resolve_runner(runner)
+        except Exception:
+            pin, pout = 0.0, 0.0
+        _merge_runner_into_slices(merged, runner, float(pin or 0.0), float(pout or 0.0))
+    if not merged:
+        carry_cost = float(_BOOT_CARRY_COST_USD or 0.0)
+        has_carry = any(
+            float(_BOOT_METER_CARRY.get(attr, 0.0) or 0.0) != 0.0
+            for attr in _BOOT_METER_ATTRS
+        )
+        if carry_cost > 0.0 or has_carry:
+            sl = _empty_pilot_slice("unknown")
+            sl["est_cost_usd"] = carry_cost
+            sl["tokens_used"] = float(_BOOT_METER_CARRY.get("_tokens_used", 0.0) or 0.0)
+            sl["tokens_in"] = float(_BOOT_METER_CARRY.get("_tokens_in", 0.0) or 0.0)
+            sl["tokens_out"] = float(_BOOT_METER_CARRY.get("_tokens_out", 0.0) or 0.0)
+            sl["tokens_cached"] = float(_BOOT_METER_CARRY.get("_tokens_cached", 0.0) or 0.0)
+            merged["unknown"] = sl
+    return merged
+
+
+def _boot_pilot_by_model_payload() -> list:
+    """JSON rows for /api/usage: locked cumulative spend per pilot model."""
+    rows = []
+    for model, sl in _boot_pilot_by_model_map().items():
+        cost = float(sl.get("est_cost_usd") or 0.0)
+        tokens = int(float(sl.get("tokens_used") or 0.0))
+        if cost <= 0.0 and tokens <= 0:
+            continue
+        rows.append({
+            "model": str(sl.get("model") or model),
+            "est_cost_usd": round(cost, 6),
+            "tokens_used": tokens,
+            "tokens_in": int(float(sl.get("tokens_in") or 0.0)),
+            "tokens_out": int(float(sl.get("tokens_out") or 0.0)),
+            "tokens_cached": int(float(sl.get("tokens_cached") or 0.0)),
+        })
+    rows.sort(key=lambda row: (-float(row["est_cost_usd"]), str(row["model"])))
+    return rows
+
+
+def _pilot_slices_for_persist() -> dict:
+    """Snapshot carry+live slices (same shape restored after an in-run respawn)."""
+    out = {}
+    for model, sl in _boot_pilot_by_model_map().items():
+        if not isinstance(sl, dict):
+            continue
+        out[str(model)] = {
+            "model": str(sl.get("model") or model),
+            "est_cost_usd": float(sl.get("est_cost_usd") or 0.0),
+            "tokens_used": float(sl.get("tokens_used") or 0.0),
+            "tokens_in": float(sl.get("tokens_in") or 0.0),
+            "tokens_out": float(sl.get("tokens_out") or 0.0),
+            "tokens_cached": float(sl.get("tokens_cached") or 0.0),
+            "pilot_cache_read_tokens": float(sl.get("pilot_cache_read_tokens") or 0.0),
+            "worker_cost_usd": float(sl.get("worker_cost_usd") or 0.0),
+            "worker_tokens_cached": float(sl.get("worker_tokens_cached") or 0.0),
+            "provider_cost_usd": float(sl.get("provider_cost_usd") or 0.0),
+            "cache_savings_gross_usd": float(sl.get("cache_savings_gross_usd") or 0.0),
+            "price_in": float(sl.get("price_in") or 0.0),
+            "price_out": float(sl.get("price_out") or 0.0),
+        }
+    return out
+
+
+def _restore_pilot_slices(raw: Any, *, carry_cost: float = 0.0) -> None:
+    """Replace carry slices from boot_usage.json; synthesize unknown if legacy."""
+    _BOOT_PILOT_BY_MODEL.clear()
+    if isinstance(raw, dict) and raw:
+        for model, sl in raw.items():
+            if not isinstance(sl, dict):
+                continue
+            key = str(sl.get("model") or model or "").strip() or "unknown"
+            restored = _empty_pilot_slice(key)
+            for field in restored:
+                if field == "model":
+                    continue
+                try:
+                    restored[field] = float(sl.get(field, 0.0) or 0.0)
+                except Exception:
+                    pass
+            restored["model"] = key
+            _BOOT_PILOT_BY_MODEL[key] = restored
+        return
+    if carry_cost > 0.0:
+        sl = _empty_pilot_slice("unknown")
+        sl["est_cost_usd"] = float(carry_cost)
+        sl["tokens_used"] = float(_BOOT_METER_CARRY.get("_tokens_used", 0.0) or 0.0)
+        sl["tokens_in"] = float(_BOOT_METER_CARRY.get("_tokens_in", 0.0) or 0.0)
+        sl["tokens_out"] = float(_BOOT_METER_CARRY.get("_tokens_out", 0.0) or 0.0)
+        sl["tokens_cached"] = float(_BOOT_METER_CARRY.get("_tokens_cached", 0.0) or 0.0)
+        _BOOT_PILOT_BY_MODEL["unknown"] = sl
+
+
+def _boot_pilot_cache_savings(
+    *,
+    fallback_cached: float,
+    fallback_price_in: float,
+    provider_cost_usd: Optional[float] = None,
+) -> Tuple[float, float, str]:
+    """Prompt-cache value locked to each slice's fold-time input rate.
+
+    Leftover cached tokens not yet attributed to a slice (legacy carry) still
+    use ``fallback_price_in`` so a first poll before any fold is not $0.
+    """
+    from .cost_accounting import _cache_savings_gross
+
+    gross = 0.0
+    accounted = 0.0
+    for sl in _boot_pilot_by_model_map().values():
+        try:
+            gross += float(sl.get("cache_savings_gross_usd") or 0.0)
+            accounted += float(sl.get("pilot_cache_read_tokens") or 0.0)
+        except Exception:
+            continue
+    leftover = max(0.0, float(fallback_cached or 0.0) - accounted)
+    if leftover > 0.0 and float(fallback_price_in or 0.0) > 0.0:
+        try:
+            gross += float(_cache_savings_gross(leftover, fallback_price_in))
+        except Exception:
+            pass
+    if gross <= 0:
+        return 0.0, 0.0, "catalog"
+    if provider_cost_usd is None:
+        return gross, gross, "catalog"
+    try:
+        prov = float(provider_cost_usd)
+    except (TypeError, ValueError):
+        return 0.0, gross, "unknown"
+    if prov <= 0:
+        return 0.0, gross, "unknown"
+    if gross > prov:
+        return prov, gross, "capped"
+    return gross, gross, "catalog"
+
+
 def _fold_runner_meters_into_boot_carry(
     session_id: str,
     runner: Any,
@@ -734,6 +1013,9 @@ def _fold_runner_meters_into_boot_carry(
         split_fn = _server_attr("_session_cost_split", _session_cost_split)
         _BOOT_CARRY_COST_USD = float(_BOOT_CARRY_COST_USD or 0.0) + float(
             split_fn(runner, float(price_in), float(price_out))
+        )
+        _merge_runner_into_slices(
+            _BOOT_PILOT_BY_MODEL, runner, float(price_in), float(price_out)
         )
     except Exception:
         pass
@@ -786,14 +1068,7 @@ def _boot_usage_meters() -> dict[str, float]:
     ``_pilot`` pointer cannot double-count with carry.
     """
     totals = {attr: float(_BOOT_METER_CARRY.get(attr, 0.0) or 0.0) for attr in _BOOT_METER_ATTRS}
-    try:
-        live = list(_runners().runners())
-    except Exception:
-        live = []
-    seen = {id(r) for r in live}
-    if _pilot() is not None and id(_pilot()) not in seen:
-        live.append(_pilot())
-    for runner in live:
+    for runner in _iter_live_runners():
         for attr in _BOOT_METER_ATTRS:
             try:
                 totals[attr] = float(totals[attr]) + float(getattr(runner, attr, 0) or 0)
@@ -806,7 +1081,9 @@ def _boot_session_cost(price_in: float, price_out: float) -> float:
     """Sum snapshotted carry USD + per-live-runner ``_session_cost_split``.
 
     Carry dollars are frozen at fold-time rates (see ``_BOOT_CARRY_COST_USD``).
-    Live runners still price at the active rate. Legacy carry with token meters
+    Live runners price at each runner's bound ``config.driver``, not the
+    currently selected picker — a deferred mid-turn swap must not reprice
+    tokens the outgoing model already churned. Legacy carry with token meters
     but no snapshotted USD (pre-upgrade / tests) falls back to pricing carry
     tokens at the supplied rate.
     """
@@ -825,16 +1102,18 @@ def _boot_session_cost(price_in: float, price_out: float) -> float:
             })
             carry_cost = float(_session_cost_split(carry_pilot, price_in, price_out))
     total = carry_cost
-    try:
-        live = list(_runners().runners())
-    except Exception:
-        live = []
-    seen = {id(r) for r in live}
-    if _pilot() is not None and id(_pilot()) not in seen:
-        live.append(_pilot())
-    for runner in live:
+    resolve_runner = _server_attr(
+        "_resolve_prices_for_runner", _resolve_prices_for_runner
+    )
+    for runner in _iter_live_runners():
         try:
-            total += float(_session_cost_split(runner, price_in, price_out))
+            pin, pout = resolve_runner(runner)
+            total += float(
+                _session_cost_split(runner, float(pin), float(pout))
+            )
         except Exception:
-            pass
+            try:
+                total += float(_session_cost_split(runner, price_in, price_out))
+            except Exception:
+                pass
     return total
