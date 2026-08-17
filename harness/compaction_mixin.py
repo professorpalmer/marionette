@@ -1152,6 +1152,20 @@ class CompactionContextMixin:
         chars_before = sum(len(str(m.get("content") or "")) for m in middle_block)
         chars_after = len(summary_msg["content"])
 
+        # Persist the elided middle before the rewrite so peek_history can
+        # still address those rows after residual transcript persist. Fail
+        # closed: archive I/O must not block or crash Compact Now.
+        try:
+            from .compaction_archive import append_compaction_archive
+
+            append_compaction_archive(
+                getattr(self, "state_dir", "") or "",
+                getattr(self, "harness_session_id", None) or "default",
+                middle_block,
+            )
+        except Exception:
+            pass
+
         self._history[:] = [self._history[0], summary_msg] + recent_block
         # Compaction replaces the middle with a summary; new length usually
         # differs but not guaranteed (a tiny middle replaced by a summary_msg

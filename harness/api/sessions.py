@@ -101,6 +101,11 @@ def remove_session_transcript(
         except Exception as e:
             diag("server.session_delete_transcript", e, msg=f"sid={safe_sid}")
     try:
+        from ..compaction_archive import remove_compaction_archive
+        remove_compaction_archive(state_dir, safe_sid)
+    except Exception as e:
+        diag("server.session_delete_compaction_archive", e, msg=f"sid={safe_sid}")
+    try:
         from ..session_fts import remove_session_from_index
         remove_session_from_index(state_dir, safe_sid)
     except Exception as e:
