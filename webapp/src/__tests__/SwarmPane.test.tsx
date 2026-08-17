@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import SwarmPane, { jobSavings } from "../components/SwarmPane";
+import SwarmPane, { jobSavings, workerOutcome } from "../components/SwarmPane";
 import { api, type Job, type SwarmLive } from "../lib/api";
 import { dispatchProjectSelected } from "../lib/panelTransition";
 import { clearSWRCache, writeSWRCache } from "../lib/useStaleWhileRevalidate";
@@ -404,6 +404,67 @@ describe("SwarmPane worker details", () => {
     expect(worker).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText("task-terminal")).toBeInTheDocument();
     expect(screen.getByText("2026-08-16T17:00:00+00:00")).toBeInTheDocument();
+  });
+
+  it("reveals only the exact task-matched failure class and reason", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        id: "job-failed-workers",
+        goal: "Inspect failed workers",
+        status: "failed",
+        artifacts_complete: true,
+        artifacts: [
+          {
+            type: "verification",
+            headline: "worker a",
+            task_id: "task-a",
+            result: "failed",
+            failure: "codex_turn_failed",
+            detail: "Workspace spend cap reached",
+          },
+          {
+            type: "verification",
+            headline: "worker b",
+            task_id: "task-b",
+            result: "failed",
+            failure: "auth_failure",
+            detail: "Provider login required",
+          },
+          {
+            type: "verification",
+            headline: "unmatched",
+            result: "failed",
+            failure: "no_model",
+            detail: "Must not be guessed onto a worker",
+          },
+        ],
+        tasks: [
+          { id: "task-a", status: "failed", adapter: "agentic", role: "worker-a", instruction: "", completed_at: "2026-08-17T19:00:00+00:00" },
+          { id: "task-b", status: "failed", adapter: "agentic", role: "worker-b", instruction: "" },
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+    await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Finished"));
+    fireEvent.click(await screen.findByText("Inspect failed workers"));
+
+    const workerA = screen.getByRole("button", { name: /worker-a/ });
+    fireEvent.click(workerA);
+    const detailsA = document.getElementById(workerA.getAttribute("aria-controls") || "");
+    expect(detailsA).toHaveTextContent("failurecodex_turn_failed");
+    expect(detailsA).toHaveTextContent("reasonWorkspace spend cap reached");
+    expect(detailsA).toHaveTextContent("completed2026-08-17T19:00:00+00:00");
+    expect(detailsA).not.toHaveTextContent("Provider login required");
+    expect(detailsA).not.toHaveTextContent("Must not be guessed onto a worker");
+
+    const workerB = screen.getByRole("button", { name: /worker-b/ });
+    fireEvent.click(workerB);
+    const detailsB = document.getElementById(workerB.getAttribute("aria-controls") || "");
+    expect(detailsB).toHaveTextContent("failureauth_failure");
+    expect(detailsB).toHaveTextContent("reasonProvider login required");
+    expect(detailsB).not.toHaveTextContent("Workspace spend cap reached");
   });
 
   it("expands a worker from the keyboard and keeps nested Kill from toggling the job", async () => {
@@ -1670,6 +1731,225 @@ describe("SwarmPane worker progress", () => {
   });
 });
 
+describe("SwarmPane worker outcome hierarchy", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
+    clearSWRCache();
+    mockArtifacts.mockResolvedValue([]);
+  });
+
+  it("maps lifecycle and exact-task artifacts in workerOutcome", () => {
+    const complete = { id: "t", status: "complete", role: "w", instruction: "", adapter: "agentic" };
+    const idle = { id: "t", status: "queued", role: "w", instruction: "", adapter: "agentic" };
+    const failedArt = { type: "verification", headline: "", result: "failed" as const };
+    expect(workerOutcome(complete, failedArt)).toBe("degraded");
+    expect(workerOutcome(complete, { type: "verification", headline: "", result: "degraded" })).toBe("degraded");
+    expect(workerOutcome(complete, { type: "verification", headline: "", result: "blocked" })).toBe("degraded");
+    expect(workerOutcome(complete, { type: "finding", headline: "ok" })).toBe("ok");
+    expect(workerOutcome(complete)).toBe("ok");
+    expect(workerOutcome({ ...complete, status: "failed" })).toBe("failed");
+    expect(workerOutcome({ ...complete, status: "running" }, failedArt)).toBe("running");
+    expect(workerOutcome(idle, failedArt)).toBe("degraded");
+    expect(workerOutcome(idle)).toBe("idle");
+  });
+
+  it("paints lifecycle complete plus exact failed verification as degraded, not green success", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        id: "job-complete-failed-verify",
+        goal: "Complete but failed verification",
+        status: "complete",
+        artifacts_complete: true,
+        artifacts: [
+          {
+            type: "verification",
+            headline: "worker a",
+            task_id: "task-a",
+            result: "failed",
+            failure: "codex_turn_failed",
+            detail: "Workspace spend cap reached",
+          },
+        ],
+        tasks: [
+          {
+            id: "task-a",
+            status: "complete",
+            adapter: "agentic",
+            role: "verify-worker",
+            instruction: "",
+            completed_at: "2026-08-17T19:00:00+00:00",
+          },
+        ],
+      }),
+    );
+
+    const { container } = render(
+      <div style={{ width: "220px", overflow: "hidden" }}>
+        <SwarmPane />
+      </div>,
+    );
+    await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Finished"));
+    fireEvent.click(await screen.findByText("Complete but failed verification"));
+
+    const worker = screen.getByRole("button", { name: /verify-worker/ });
+    expect(worker.getAttribute("aria-label") || "").toMatch(/degraded/i);
+    expect(worker).toHaveTextContent("degraded");
+    expect(worker.querySelector(".text-good")).toBeNull();
+    expect(screen.getByText("1/1 · 1 degraded")).toBeInTheDocument();
+    expect(screen.getByLabelText(/1 of 1 workers finished, 0 failed, 1 degraded/)).toBeInTheDocument();
+    expect(container.querySelector('[style*="width: 220px"]')).toBeTruthy();
+
+    fireEvent.click(worker);
+    const details = document.getElementById(worker.getAttribute("aria-controls") || "");
+    expect(details).toHaveTextContent("failurecodex_turn_failed");
+    expect(details).toHaveTextContent("reasonWorkspace spend cap reached");
+  });
+
+  it("suppresses x/N text when every worker is ok", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        id: "job-all-ok",
+        goal: "Fully successful terminal",
+        status: "complete",
+        artifacts_complete: true,
+        tasks: [
+          { id: "t1", role: "ok-a", instruction: "", status: "complete", adapter: "agentic" },
+          { id: "t2", role: "ok-b", instruction: "", status: "complete", adapter: "agentic" },
+          { id: "t3", role: "ok-c", instruction: "", status: "complete", adapter: "agentic" },
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+    await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Finished"));
+    fireEvent.click(await screen.findByText("Fully successful terminal"));
+
+    expect(screen.getByText("Workers (3)")).toBeInTheDocument();
+    expect(screen.queryByText("3/3")).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/3 of 3 workers finished, 0 failed, 0 degraded/)).toBeInTheDocument();
+  });
+
+  it("keeps x/N and failed count on mixed 2/3 terminal progress", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        id: "job-mixed-outcome",
+        goal: "Mixed terminal outcomes",
+        status: "running",
+        tasks: [
+          { id: "t1", role: "ok-a", instruction: "", status: "complete", adapter: "agentic" },
+          { id: "t2", role: "fail-b", instruction: "", status: "failed", adapter: "agentic" },
+          { id: "t3", role: "run-c", instruction: "", status: "running", adapter: "agentic" },
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+    await waitFor(() => {
+      expect(screen.getByText("2/3 · 1 failed")).toBeInTheDocument();
+    });
+    expect(screen.getByLabelText(/2 of 3 workers finished, 1 failed, 0 degraded/)).toBeInTheDocument();
+  });
+
+  it("keeps x/N during active 1/3 progress", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        id: "job-active-progress",
+        goal: "Active worker progress",
+        status: "running",
+        tasks: [
+          { id: "t1", role: "done-a", instruction: "", status: "complete", adapter: "agentic" },
+          { id: "t2", role: "run-b", instruction: "", status: "running", adapter: "agentic" },
+          { id: "t3", role: "run-c", instruction: "", status: "running", adapter: "agentic" },
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+    const progress = await screen.findByLabelText(/1 of 3 workers finished, 0 failed, 0 degraded/);
+    expect(screen.getByText("Workers (3)")).toBeInTheDocument();
+    expect(progress).toHaveTextContent("1/3");
+  });
+
+  it("does not mark any worker degraded from unmatched verification without task_id", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        id: "job-unmatched-verify",
+        goal: "Unmatched verification",
+        status: "complete",
+        artifacts_complete: true,
+        artifacts: [
+          {
+            type: "verification",
+            headline: "unmatched",
+            result: "failed",
+            failure: "no_model",
+            detail: "Must not be guessed onto a worker",
+          },
+        ],
+        tasks: [
+          { id: "task-a", status: "complete", adapter: "agentic", role: "ok-worker-a", instruction: "" },
+          { id: "task-b", status: "complete", adapter: "agentic", role: "ok-worker-b", instruction: "" },
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+    await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Finished"));
+    fireEvent.click(await screen.findByText("Unmatched verification"));
+
+    const workerA = screen.getByRole("button", { name: /ok-worker-a/ });
+    const workerB = screen.getByRole("button", { name: /ok-worker-b/ });
+    expect(workerA.getAttribute("aria-label") || "").toMatch(/\bok\b/);
+    expect(workerB.getAttribute("aria-label") || "").toMatch(/\bok\b/);
+    expect(workerA).not.toHaveTextContent("degraded");
+    expect(workerB).not.toHaveTextContent("degraded");
+    expect(screen.queryByText(/degraded/)).not.toBeInTheDocument();
+    expect(screen.queryByText("2/2")).not.toBeInTheDocument();
+  });
+
+  it("does not paint workers failed or degraded from job-level degraded without task-scoped artifact", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        id: "job-canonical-degraded",
+        goal: "Job-level degraded only",
+        status: "complete",
+        adapter: "agentic",
+        outcome: {
+          quality: "degraded",
+          trustworthy: false,
+          reasons: ["only verification artifacts — no findings/decisions/patches"],
+        },
+        artifacts_complete: true,
+        artifacts: [{ type: "verification", headline: "provider failed", result: "failed" }],
+        tasks: [
+          { id: "task-a", status: "complete", adapter: "agentic", role: "ok-worker-a", instruction: "" },
+          { id: "task-b", status: "complete", adapter: "agentic", role: "ok-worker-b", instruction: "" },
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+    await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Finished"));
+    fireEvent.click(await screen.findByText("Job-level degraded only"));
+
+    const workerA = screen.getByRole("button", { name: /ok-worker-a/ });
+    const workerB = screen.getByRole("button", { name: /ok-worker-b/ });
+    expect(workerA.getAttribute("aria-label") || "").toMatch(/\bok\b/);
+    expect(workerB.getAttribute("aria-label") || "").toMatch(/\bok\b/);
+    expect(workerA).not.toHaveTextContent("degraded");
+    expect(workerB).not.toHaveTextContent("failed");
+    expect(workerA.querySelector(".text-risk")).toBeNull();
+    expect(screen.getByText("degraded")).toBeInTheDocument();
+    expect(screen.getByText(/only verification artifacts/)).toBeInTheDocument();
+  });
+});
+
 describe("SwarmPane tracker header", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -2174,6 +2454,49 @@ describe("SwarmPane final-review blockers", () => {
       });
       expect(screen.queryByText("routing…")).not.toBeInTheDocument();
       expect(screen.queryByText("stale-preview-model")).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("applies failure-detail poll updates when task state and headline stay fixed", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let pollCount = 0;
+      mockSwarmLive.mockImplementation(async () => {
+        pollCount += 1;
+        return liveJob({
+          status: "running",
+          artifacts_complete: true,
+          artifacts: [{
+            type: "verification",
+            headline: "worker failed",
+            task_id: "task-1",
+            result: "failed",
+            failure: "codex_turn_failed",
+            ...(pollCount > 2 ? { detail: "Workspace spend cap reached" } : {}),
+          }],
+          tasks: [{
+            id: "task-1",
+            status: "failed",
+            adapter: "agentic",
+            role: "worker",
+            instruction: "",
+          }],
+        });
+      });
+
+      render(<SwarmPane />);
+      const worker = await screen.findByRole("button", { name: /^worker, failed/i });
+      fireEvent.click(worker);
+      expect(screen.getByText("codex_turn_failed")).toBeInTheDocument();
+      expect(screen.queryByText("Workspace spend cap reached")).not.toBeInTheDocument();
+
+      await vi.advanceTimersByTimeAsync(6000);
+
+      await waitFor(() => {
+        expect(screen.getByText("Workspace spend cap reached")).toBeInTheDocument();
+      });
     } finally {
       vi.useRealTimers();
     }

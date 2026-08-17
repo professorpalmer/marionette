@@ -110,6 +110,11 @@ def remove_session_transcript(
         remove_session_from_index(state_dir, safe_sid)
     except Exception as e:
         diag("server.session_delete_fts", e, msg=f"sid={safe_sid}")
+    try:
+        from ..stream_performance_store import remove_session_performance_receipts
+        remove_session_performance_receipts(state_dir, safe_sid)
+    except Exception as e:
+        diag("server.session_delete_stream_performance", e, msg=f"sid={safe_sid}")
 
 
 def handle_session_delete(sid: str, svc: SessionServices) -> tuple[int, dict]:

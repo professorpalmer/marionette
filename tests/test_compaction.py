@@ -486,10 +486,11 @@ def test_advisory_compact_once_per_user_turn_not_per_tool_step(monkeypatch, tmp_
 
     from pmharness.drivers.openai_compat import DriverResponse
 
-    # Call-site contract: advisory compact is before the step loop; force=True
-    # overflow path stays inside the loop.
+    # Call-site contract: advisory compact is before the step loop; emergency
+    # overflow path stays inside the loop. Timing may wrap the advisory call
+    # in yield_timed_phase — do not require the obsolete bare yield-from.
     src = inspect.getsource(ConversationalSession._send_locked_inner)
-    advisory_idx = src.find("yield from self._maybe_compact_history()")
+    advisory_idx = src.find("self._maybe_compact_history()")
     force_idx = src.find("emergency=True")
     step_loop_idx = src.find("for step in _step_iter:")
     assert advisory_idx != -1, "advisory _maybe_compact_history() must remain"
@@ -499,11 +500,12 @@ def test_advisory_compact_once_per_user_turn_not_per_tool_step(monkeypatch, tmp_
         "advisory compact must run once before the tool-loop step iterator"
     )
     assert force_idx > step_loop_idx, (
-        "force=True overflow compact must stay inside the step loop"
+        "emergency=True overflow compact must stay inside the step loop"
     )
-    # No per-step advisory call after the loop starts (only force=True).
+    # No per-step no-arg advisory call after the loop starts (only emergency).
     after_loop = src[step_loop_idx:]
-    assert "yield from self._maybe_compact_history()" not in after_loop
+    assert "self._maybe_compact_history()" not in after_loop
+    assert "emergency=True" in after_loop
 
     class _TwoStepPilot:
         name = "two-step-compact-spy"

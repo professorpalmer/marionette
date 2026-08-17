@@ -248,6 +248,7 @@ import {
 import {
   cancelTypewriterWithoutFlush,
   flushTypewriterBuffer,
+  pumpTypewriterFrame,
   startTypewriterLoop,
 } from "../components/conversation/streamTypewriter";
 import type { Item } from "../components/TranscriptList";
@@ -3211,6 +3212,129 @@ describe("completionNotify / feedScroll / streamTerminal / swarmPoll", () => {
       },
     );
     expect(scheduled).toBe(1);
+  });
+});
+
+describe("streamTypewriter first reveal", () => {
+  function makeRefs(buf: string, raf: number | null = null) {
+    return {
+      typeBufRef: { current: buf },
+      typeRafRef: { current: raf },
+      typeDoneRef: { current: false },
+    };
+  }
+
+  it("idle start with buffered text appends one live chunk then schedules", () => {
+    const text = "Hello world, this is buffered prose.";
+    const refs = makeRefs(text);
+    const chunks: string[] = [];
+    let scheduled = 0;
+    startTypewriterLoop(refs, (c) => chunks.push(c), () => {
+      scheduled += 1;
+      return 42;
+    });
+    const take = text.slice(0, typewriterCharsPerFrame(text.length, false));
+    expect(chunks).toEqual([take]);
+    expect(refs.typeBufRef.current).toBe(text.slice(take.length));
+    expect(scheduled).toBe(1);
+    expect(refs.typeRafRef.current).toBe(42);
+    expect(refs.typeDoneRef.current).toBe(false);
+  });
+
+  it("active loop does not append or schedule again", () => {
+    const text = "already pumping";
+    const refs = makeRefs(text, 7);
+    const chunks: string[] = [];
+    let scheduled = 0;
+    startTypewriterLoop(refs, (c) => chunks.push(c), () => {
+      scheduled += 1;
+      return 8;
+    });
+    expect(chunks).toEqual([]);
+    expect(scheduled).toBe(0);
+    expect(refs.typeRafRef.current).toBe(7);
+    expect(refs.typeBufRef.current).toBe(text);
+    expect(refs.typeDoneRef.current).toBe(false);
+  });
+
+  it("empty idle start still schedules without appending", () => {
+    const refs = makeRefs("");
+    const chunks: string[] = [];
+    let scheduled = 0;
+    startTypewriterLoop(refs, (c) => chunks.push(c), () => {
+      scheduled += 1;
+      return 1;
+    });
+    expect(chunks).toEqual([]);
+    expect(scheduled).toBe(1);
+    expect(refs.typeRafRef.current).toBe(1);
+  });
+
+  it("flush and cancel invariants remain after first reveal", () => {
+    const text = "Hello world, this is buffered prose.";
+    const refs = makeRefs(text);
+    const chunks: string[] = [];
+    let cancelled = 0;
+    startTypewriterLoop(refs, (c) => chunks.push(c), () => 3);
+    const remaining = refs.typeBufRef.current;
+    expect(remaining.length).toBeGreaterThan(0);
+    flushTypewriterBuffer(refs, (c) => chunks.push(c), () => {
+      cancelled += 1;
+    });
+    expect(chunks.join("")).toBe(text);
+    expect(refs.typeBufRef.current).toBe("");
+    expect(refs.typeDoneRef.current).toBe(true);
+    expect(refs.typeRafRef.current).toBeNull();
+    expect(cancelled).toBe(1);
+
+    refs.typeBufRef.current = "x";
+    refs.typeRafRef.current = 9;
+    cancelTypewriterWithoutFlush(refs, () => {
+      cancelled += 1;
+    });
+    expect(refs.typeBufRef.current).toBe("");
+    expect(refs.typeDoneRef.current).toBe(false);
+    expect(refs.typeRafRef.current).toBeNull();
+    expect(cancelled).toBe(2);
+  });
+
+  it("scheduled pump continues the same live cadence on leftover buffer", () => {
+    const text = "Hello world, this is buffered prose.";
+    const refs = makeRefs(text);
+    const chunks: string[] = [];
+    let pump: (() => void) | null = null;
+    startTypewriterLoop(refs, (c) => chunks.push(c), (cb) => {
+      pump = cb;
+      return 11;
+    });
+    const first = text.slice(0, typewriterCharsPerFrame(text.length, false));
+    expect(chunks).toEqual([first]);
+    const leftover = text.slice(first.length);
+    expect(refs.typeBufRef.current).toBe(leftover);
+    expect(pump).not.toBeNull();
+    pumpTypewriterFrame(refs, (c) => chunks.push(c), () => 12);
+    const second = leftover.slice(0, typewriterCharsPerFrame(leftover.length, false));
+    expect(chunks).toEqual([first, second]);
+    expect(refs.typeBufRef.current).toBe(leftover.slice(second.length));
+  });
+
+  it("empty-buffer pump with typeDone false reschedules without appending", () => {
+    const refs = {
+      typeBufRef: { current: "" },
+      typeRafRef: { current: 5 as number | null },
+      typeDoneRef: { current: false },
+    };
+    const chunks: string[] = [];
+    let scheduled = 0;
+    pumpTypewriterFrame(refs, (c) => chunks.push(c), () => {
+      scheduled += 1;
+      return 99;
+    });
+    expect(chunks).toEqual([]);
+    expect(scheduled).toBe(1);
+    expect(refs.typeRafRef.current).toBe(99);
+    expect(refs.typeBufRef.current).toBe("");
+    expect(refs.typeDoneRef.current).toBe(false);
   });
 });
 

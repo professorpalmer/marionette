@@ -36,7 +36,6 @@ import os
 import re
 import subprocess
 import sys
-import threading
 import time
 from typing import Any, Iterator, Optional
 
@@ -49,15 +48,20 @@ from .send_image_prep import prepare_turn_images
 from .send_loop_actions import execute_turn_actions
 from .repeat_tool_reminder import reset_repeat_chain
 from .send_loop_phases import (
-    dispatch_sync_pilot_chat,
+    account_provider_attempt,
+    dispatch_pilot_provider_call,
     drain_idle_turn,
-    drain_stream_queue,
     finalize_assistant_turn,
-    maybe_attach_pilot_session_id,
     promote_trailing_reasoning_to_say,
-    meter_pilot_step,
+    record_provider_dispatch_error_receipt,
     run_auto_verify,
-    run_stream,
+)
+from .stream_performance import (
+    make_stream_timing_accumulator,
+    reset_provider_step_timing,
+    reset_timing_before_step,
+    timed_phase,
+    yield_timed_phase,
 )
 from .text_clean import clean_say
 from .tool_dispatch import _strip_ansi, is_safe_path
@@ -875,6 +879,7 @@ class SendLoopMixin:
             _hard_pilot_steps,
             _prewarm_worker_imports,
         )
+        timing = make_stream_timing_accumulator()
         if resume:
             # Keep-alive continuation: drain_swarm_results already appended the
             # result record + a user-role continuation. Generate off that history
@@ -885,7 +890,10 @@ class SendLoopMixin:
                 return
         else:
             # Native multimodal vs sidecar transcription; abort if images unusable.
-            image_prep = yield from prepare_turn_images(self, user_message, images)
+            image_prep = yield from yield_timed_phase(
+                timing, "image_prep",
+                prepare_turn_images(self, user_message, images),
+            )
             if image_prep is None:
                 return
             processed_message, native_image_paths = image_prep
@@ -900,7 +908,10 @@ class SendLoopMixin:
             self._stagnation_streak = 0
             self._failed_objective_resume_counts = {}
             self._keep_alive_waits = 0
-            yield from emit_turn_task_profile(self, user_message)
+            yield from yield_timed_phase(
+                timing, "task_profile",
+                emit_turn_task_profile(self, user_message),
+            )
             try:
                 from .turn_budget import turn_budget_enabled
 
@@ -911,10 +922,15 @@ class SendLoopMixin:
             except Exception:
                 pass
 
+            image_encode_error = None
+            # Exact order: user content, append-only trailer, plan suffix,
+            # then native image encode/append. user_append_ms is additive
+            # around trailer + encode/append; suffix stays outside the clock.
             if self._resolve_append_only():
-                processed_message = self._append_turn_context_trailer(
-                    processed_message, user_message
-                )
+                with timed_phase(timing, "user_append"):
+                    processed_message = self._append_turn_context_trailer(
+                        processed_message, user_message
+                    )
 
             if plan:
                 from .pilot import PLAN_SYSTEM_SUFFIX
@@ -922,33 +938,39 @@ class SendLoopMixin:
                     processed_message.rstrip() + "\n\n" + PLAN_SYSTEM_SUFFIX
                 )
 
-            if native_image_paths:
-                from .vision import native_multimodal_user_content
-                try:
-                    history_content = native_multimodal_user_content(
-                        processed_message, native_image_paths,
-                    )
-                except Exception as e:
-                    yield ConvEvent("error", {
-                        "error": f"Failed to load attached image(s): {e}",
-                    })
-                    return
-            else:
-                history_content = processed_message
+            with timed_phase(timing, "user_append"):
+                if native_image_paths:
+                    from .vision import native_multimodal_user_content
+                    try:
+                        history_content = native_multimodal_user_content(
+                            processed_message, native_image_paths,
+                        )
+                    except Exception as e:
+                        image_encode_error = e
+                        history_content = None
+                else:
+                    history_content = processed_message
 
-            # Preserve strict user/assistant alternation in _history: if the last
-            # message is already a user turn (e.g. a background job just drained a
-            # pilot-resume continuation before the user typed), merge into it rather
-            # than appending a second adjacent user message, which some chat APIs
-            # (Anthropic) reject and the concurrency stress test forbids.
-            if self._history and self._history[-1].get("role") == "user":
-                from .vision import merge_user_contents
-                self._history[-1]["content"] = merge_user_contents(
-                    self._history[-1].get("content"), history_content,
-                )
-            else:
-                self._history.append({"role": "user", "content": history_content})
-            self._display_transcript.append({"type": "message", "role": "user", "text": user_message})
+                # Preserve strict user/assistant alternation in _history: if the last
+                # message is already a user turn (e.g. a background job just drained a
+                # pilot-resume continuation before the user typed), merge into it rather
+                # than appending a second adjacent user message, which some chat APIs
+                # (Anthropic) reject and the concurrency stress test forbids.
+                if history_content is not None:
+                    if self._history and self._history[-1].get("role") == "user":
+                        from .vision import merge_user_contents
+                        self._history[-1]["content"] = merge_user_contents(
+                            self._history[-1].get("content"), history_content,
+                        )
+                    else:
+                        self._history.append({"role": "user", "content": history_content})
+                    self._display_transcript.append({"type": "message", "role": "user", "text": user_message})
+
+            if image_encode_error is not None:
+                yield ConvEvent("error", {
+                    "error": f"Failed to load attached image(s): {image_encode_error}",
+                })
+                return
 
             # Inject relevance-ranked CodeGraph context (best-effort, exception-guarded)
             # so the driver sees the most relevant code BEFORE it starts calling tools.
@@ -960,9 +982,10 @@ class SendLoopMixin:
                 and not self._resolve_append_only()
                 and not _skip_cg
             ):
-                cg_context = self._get_codegraph_context(user_message)
-                if cg_context:
-                    self._history.append({"role": "user", "content": cg_context})
+                with timed_phase(timing, "auto_codegraph"):
+                    cg_context = self._get_codegraph_context(user_message)
+                    if cg_context:
+                        self._history.append({"role": "user", "content": cg_context})
 
         swarms = 0
         synchronous_swarms = 0
@@ -1005,12 +1028,16 @@ class SendLoopMixin:
         # in history), NOT at the start of every tool-loop step. Mid-turn
         # history rewrites bust prefix cache for all providers. CONTEXT_OVERFLOW
         # still force-compacts inside the step loop as a last resort.
-        yield from self._maybe_compact_history()
+        yield from yield_timed_phase(
+            timing, "advisory_compaction",
+            self._maybe_compact_history(),
+        )
 
         for step in _step_iter:
             # Heal dangling tool pairs from a prior mid-spree abandon (steer/
             # cancel) BEFORE the cancel check so an interrupt never freezes
             # invalid history into the next request / export.
+            reset_timing_before_step(timing, step)
             self._sanitize_tool_pairs()
             if self._cancel.is_set():
                 yield from self._yield_stop_boundary_notices()
@@ -1039,57 +1066,62 @@ class SendLoopMixin:
             cg_symbol_count = 0
             append_only = self._resolve_append_only()
             _skip_cg, _skip_wiki = profile_skips_auto_inject(self)
+            cg_event = None
             if self.config.repo and not _no_deleg and not append_only and not _skip_cg:
-                # Cache the CodeGraph slice per user message: the underlying
-                # codegraph_context() is a blocking Node subprocess (~270-500ms).
-                # Recomputing it on every step of a multi-step turn (identical
-                # query) just stacks dead time in front of the model. Compute it
-                # once on the first step, reuse it for the rest of this turn.
-                if self._cg_cache_key == user_message:
-                    cg_section = self._cg_cache_section
-                    cg_symbol_count = self._cg_cache_symbols
-                else:
-                    try:
-                        from puppetmaster.codegraph import codegraph_context, codegraph_prompt_section
-                        cg_slice = codegraph_context(task=user_message, cwd=self.config.repo)
-                        if cg_slice:
-                            # Count located symbols (entry points + related symbols) so the
-                            # UI can show that CodeGraph was consulted this turn.
-                            cg_symbol_count = cg_slice.count("- **") + cg_slice.count("#### ")
-                            # Prepend an AUTHORITATIVE directive so the model leans on the
-                            # already-injected CodeGraph slice instead of redundantly raw-reading
-                            # whole files (qwen tends to dump files even with context present).
-                            authoritative = (
-                                "CODEGRAPH HAS ALREADY BEEN QUERIED FOR THIS TASK. The relevant "
-                                "symbols, definitions, and code are provided in the section below. "
-                                "USE THIS as your primary source. Do NOT re-read entire files that "
-                                "already appear here -- only read_file specific additional lines you "
-                                "still need (with start_line + limit), or call search_codegraph to "
-                                "widen the graph. Whole-file dumps when the answer is already below "
-                                "are wasteful and wrong.\n"
-                            )
-                            cg_section = authoritative + codegraph_prompt_section(cg_slice)
-                        # Cache the result (even an empty slice) so we never re-run
-                        # the subprocess for the same message this turn.
-                        self._cg_cache_key = user_message
-                        self._cg_cache_section = cg_section
-                        self._cg_cache_symbols = cg_symbol_count
-                        # Visibility: tell the UI CodeGraph was consulted -- only on
-                        # the first compute, so the chip shows once per turn.
-                        if cg_section and not _no_deleg:
-                            yield ConvEvent("codegraph_context", {
-                                "symbols": cg_symbol_count,
-                                "query": (user_message or "")[:120],
-                            })
-                    except Exception:
-                        pass
+                with timed_phase(timing, "step_codegraph"):
+                    # Cache the CodeGraph slice per user message: the underlying
+                    # codegraph_context() is a blocking Node subprocess (~270-500ms).
+                    # Recomputing it on every step of a multi-step turn (identical
+                    # query) just stacks dead time in front of the model. Compute it
+                    # once on the first step, reuse it for the rest of this turn.
+                    if self._cg_cache_key == user_message:
+                        cg_section = self._cg_cache_section
+                        cg_symbol_count = self._cg_cache_symbols
+                    else:
+                        try:
+                            from puppetmaster.codegraph import codegraph_context, codegraph_prompt_section
+                            cg_slice = codegraph_context(task=user_message, cwd=self.config.repo)
+                            if cg_slice:
+                                # Count located symbols (entry points + related symbols) so the
+                                # UI can show that CodeGraph was consulted this turn.
+                                cg_symbol_count = cg_slice.count("- **") + cg_slice.count("#### ")
+                                # Prepend an AUTHORITATIVE directive so the model leans on the
+                                # already-injected CodeGraph slice instead of redundantly raw-reading
+                                # whole files (qwen tends to dump files even with context present).
+                                authoritative = (
+                                    "CODEGRAPH HAS ALREADY BEEN QUERIED FOR THIS TASK. The relevant "
+                                    "symbols, definitions, and code are provided in the section below. "
+                                    "USE THIS as your primary source. Do NOT re-read entire files that "
+                                    "already appear here -- only read_file specific additional lines you "
+                                    "still need (with start_line + limit), or call search_codegraph to "
+                                    "widen the graph. Whole-file dumps when the answer is already below "
+                                    "are wasteful and wrong.\n"
+                                )
+                                cg_section = authoritative + codegraph_prompt_section(cg_slice)
+                            # Cache the result (even an empty slice) so we never re-run
+                            # the subprocess for the same message this turn.
+                            self._cg_cache_key = user_message
+                            self._cg_cache_section = cg_section
+                            self._cg_cache_symbols = cg_symbol_count
+                            # Visibility: tell the UI CodeGraph was consulted -- only on
+                            # the first compute, so the chip shows once per turn.
+                            if cg_section and not _no_deleg:
+                                cg_event = {
+                                    "symbols": cg_symbol_count,
+                                    "query": (user_message or "")[:120],
+                                }
+                        except Exception:
+                            pass
+            if cg_event is not None:
+                yield ConvEvent("codegraph_context", cg_event)
 
             wiki_section = ""
             if self._wiki.configured and not append_only and not _skip_wiki:
-                if self._wiki_cache_key == user_message:
-                    wiki_section = self._wiki_cache_section
-                else:
-                    wiki_section = self._build_turn_wiki_section(user_message)
+                with timed_phase(timing, "step_wiki"):
+                    if self._wiki_cache_key == user_message:
+                        wiki_section = self._wiki_cache_section
+                    else:
+                        wiki_section = self._build_turn_wiki_section(user_message)
 
             resp = None
             self._streamed_prose = ""  # reset per step; set if this step streams
@@ -1099,88 +1131,57 @@ class SendLoopMixin:
                 # interrupted spree — cancel/steer/worker-ceiling/exception —
                 # otherwise 400s the next provider request.)
                 self._sanitize_tool_pairs()
-                if append_only:
-                    sys_prompt = self._ensure_frozen_system_prompt(base_sys)
-                    prompt = self._render_history()
-                    self._record_prompt_stability(prompt)
-                else:
-                    sys_prompt = base_sys
-                    if cg_section:
-                        sys_prompt += "\n\n" + cg_section
-                    if wiki_section:
-                        sys_prompt += "\n\n" + wiki_section
-                    mcp_section = _format_mcp_tools_section(
-                        self._mcp,
-                        self._tool_catalog,
-                        no_delegation=getattr(self.config, "no_delegation", False),
-                        browser_enabled=getattr(self.config, "browser_enabled", True),
-                    )
-                    if mcp_section:
-                        sys_prompt += "\n\n" + mcp_section
-                    turn_note = self._turn_budget_system_note()
-                    if turn_note:
-                        sys_prompt += "\n\n" + turn_note
-                    identity_note = self._pilot_identity_system_note()
-                    if identity_note:
-                        sys_prompt += "\n\n" + identity_note
-                    adapter_note = self._active_adapters_system_note()
-                    if adapter_note:
-                        sys_prompt += "\n\n" + adapter_note
+                # prompt_tools_ms is additive: this render block plus
+                # dispatch_pilot_provider_call's tool-schema assembly.
+                with timed_phase(timing, "prompt_tools"):
+                    if append_only:
+                        sys_prompt = self._ensure_frozen_system_prompt(base_sys)
+                        prompt = self._render_history()
+                        self._record_prompt_stability(prompt)
+                    else:
+                        sys_prompt = base_sys
+                        if cg_section:
+                            sys_prompt += "\n\n" + cg_section
+                        if wiki_section:
+                            sys_prompt += "\n\n" + wiki_section
+                        mcp_section = _format_mcp_tools_section(
+                            self._mcp,
+                            self._tool_catalog,
+                            no_delegation=getattr(self.config, "no_delegation", False),
+                            browser_enabled=getattr(self.config, "browser_enabled", True),
+                        )
+                        if mcp_section:
+                            sys_prompt += "\n\n" + mcp_section
+                        turn_note = self._turn_budget_system_note()
+                        if turn_note:
+                            sys_prompt += "\n\n" + turn_note
+                        identity_note = self._pilot_identity_system_note()
+                        if identity_note:
+                            sys_prompt += "\n\n" + identity_note
+                        adapter_note = self._active_adapters_system_note()
+                        if adapter_note:
+                            sys_prompt += "\n\n" + adapter_note
 
-                    self._history[0]["content"] = sys_prompt
-                    prompt = self._render_history()
+                        self._history[0]["content"] = sys_prompt
+                        prompt = self._render_history()
 
                 try:
-                    # Cursor CLI/ACP: Autopilot → agent tools; Marionette Plan → ask.
-                    # Env HARNESS_CURSOR_CLI_MODE still wins inside apply_host_mode.
-                    _apply_mode = getattr(self.pilot, "apply_host_mode", None)
-                    if callable(_apply_mode):
-                        try:
-                            _apply_mode(plan=plan)
-                        except Exception:
-                            pass
-                    if hasattr(self.pilot, "chat"):
-                        tools_schema = _build_step_tools(synthesis_nudge_active, self._build_visible_tools_schema)
-
-                        is_interactive = not getattr(self.config, "no_delegation", False)
-                        # Gate on an EXPLICIT capability flag (is True) + a callable chat_stream.
-                        # Using `is True` avoids MagicMock test pilots (which fabricate any attr as a
-                        # truthy Mock) wrongly entering the streaming branch.
-                        _can_stream = (
-                            getattr(self.pilot, "supports_streaming", False) is True
-                            and callable(getattr(self.pilot, "chat_stream", None))
-                        )
-                        if is_interactive and _can_stream:
-                            import queue
-                            import threading
-                            q = queue.Queue()
-
-                            t = threading.Thread(
-                                target=run_stream,
-                                args=(self, q, tools_schema, sys_prompt),
-                                daemon=True,
-                            )
-                            t.start()
-
-                            streamed_prose, resp = yield from drain_stream_queue(q)
-                            self._streamed_prose = streamed_prose
-                            step_emitted_user_prose = bool(streamed_prose.strip())
-                        else:
-                            resp = dispatch_sync_pilot_chat(self, tools_schema, sys_prompt)
-                    else:
-                        # Same affinity helper as chat — only when complete()
-                        # declares session_id. Compaction summarizers call
-                        # complete() directly without this attach.
-                        complete_kwargs: dict = {"system": sys_prompt}
-                        maybe_attach_pilot_session_id(
-                            complete_kwargs,
-                            self.pilot.complete,
-                            getattr(self, "harness_session_id", None),
-                        )
-                        resp = self.pilot.complete(prompt, **complete_kwargs)
+                    streamed_prose, resp = yield from dispatch_pilot_provider_call(
+                        self,
+                        plan=plan,
+                        sys_prompt=sys_prompt,
+                        prompt=prompt,
+                        synthesis_nudge_active=synthesis_nudge_active,
+                        accumulator=timing,
+                    )
+                    self._streamed_prose = streamed_prose
+                    step_emitted_user_prose = bool(streamed_prose.strip())
                 except Exception as e:
                     # Humanize + redact — never stream raw exception/provider
                     # bodies (may contain URL tokens or key fragments).
+                    record_provider_dispatch_error_receipt(
+                        self, timing, provider_step=step, provider_attempt=attempt,
+                    )
                     try:
                         msg = self._humanize_pilot_error(str(e))
                     except Exception:
@@ -1191,16 +1192,24 @@ class SendLoopMixin:
                     if not append_only:
                         self._history[0]["content"] = base_sys
 
-                meter_pilot_step(self, resp, prompt)
+                account_provider_attempt(
+                    self, resp, prompt,
+                    provider_step=step, provider_attempt=attempt,
+                )
 
                 if resp and resp.error:
                     from pmharness.drivers import error_classifier
                     err_cls = error_classifier.classify(None, resp.error)
                     if err_cls == error_classifier.ErrorClass.CONTEXT_OVERFLOW:
                         if attempt == 0:
-                            # Force history compaction and try again
-                            yield from self._maybe_compact_history(
-                                force=True, emergency=True,
+                            # Reset this attempt's provider marks only —
+                            # keep closed turn-once pre-request durations.
+                            reset_provider_step_timing(timing)
+                            yield from yield_timed_phase(
+                                timing, "advisory_compaction",
+                                self._maybe_compact_history(
+                                    force=True, emergency=True,
+                                ),
                             )
                             continue
                         else:
