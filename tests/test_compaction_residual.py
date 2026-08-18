@@ -220,14 +220,69 @@ def test_hybrid_keeps_four_headings_and_handle_index(tmp_path, monkeypatch):
     assert SELECTED_STORY_HEADING in injected
 
 
-def _compact_summary_case(tmp_path, monkeypatch, case_id, return_text=_GOOD_SUMMARY):
-    from pmharness.compaction_residual_battery import cases_by_id
+def _filler_pairs(n: int, prefix: str) -> list[dict]:
+    rows = []
+    for i in range(n):
+        rows.append({
+            "role": "user",
+            "content": f"{prefix} user {i}: refactor comments and docs only. " + ("pad " * 20),
+        })
+        rows.append({
+            "role": "assistant",
+            "content": f"{prefix} assistant {i}: acknowledged docs pass. " + ("ack " * 20),
+        })
+    return rows
 
+
+def _reversal_transcript() -> list[dict]:
+    return (
+        [{"role": "system", "content": "You are a coding assistant in a long session."}]
+        + [{
+            "role": "user",
+            "content": (
+                "please don't write to the live ledger; "
+                "the east replica is the only sink."
+            ),
+        }, {"role": "assistant", "content": "Noted."}]
+        + _filler_pairs(4, "rev-mid")
+        + [{
+            "role": "user",
+            "content": (
+                "go ahead and write to the live ledger now; "
+                "the east replica is retired."
+            ),
+        }, {"role": "assistant", "content": "Reversed."}]
+        + _filler_pairs(4, "rev-after")
+        + [
+            {"role": "user", "content": "Please continue the current docs pass."},
+            {"role": "assistant", "content": "Continuing the docs pass without restating earlier facts."},
+        ]
+    )
+
+
+def _obligation_transcript() -> list[dict]:
+    return (
+        [{"role": "system", "content": "You are a coding assistant in a long session."}]
+        + [{
+            "role": "user",
+            "content": (
+                "please don't write to the live ledger; "
+                "the east replica is the only sink."
+            ),
+        }, {"role": "assistant", "content": "Noted."}]
+        + _filler_pairs(8, "unprefixed")
+        + [
+            {"role": "user", "content": "Please continue the current docs pass."},
+            {"role": "assistant", "content": "Continuing the docs pass without restating earlier facts."},
+        ]
+    )
+
+
+def _compact_summary_case(tmp_path, monkeypatch, transcript, return_text=_GOOD_SUMMARY):
     monkeypatch.setenv("HARNESS_COMPACTION_RESIDUAL", "summary")
     session = _session(tmp_path, monkeypatch)
     session.pilot = MockPilot(return_text=return_text)
-    case = cases_by_id()[case_id]
-    session._history = [dict(row) for row in case.transcript]
+    session._history = [dict(row) for row in transcript]
     session._history.append({"role": "user", "content": "please continue"})
     session._history.append({"role": "assistant", "content": "continuing"})
     events = list(session._maybe_compact_history(force=True))
@@ -236,7 +291,9 @@ def _compact_summary_case(tmp_path, monkeypatch, case_id, return_text=_GOOD_SUMM
 
 def test_summary_skips_ack_and_pins_last_wins_story(tmp_path, monkeypatch):
     """Ack-only 'Reversed.' must not reach the summarizer or undo last-wins."""
-    session, events = _compact_summary_case(tmp_path, monkeypatch, "unprefixed_reversal")
+    session, events = _compact_summary_case(
+        tmp_path, monkeypatch, _reversal_transcript()
+    )
     assert events[-1].data.get("mode") == "llm"
     assert session.pilot.chat_calls
     prompt = session.pilot.chat_calls[0][0][0]["content"]
@@ -256,7 +313,7 @@ def test_summary_lying_paragraph_still_pins_later_policy(tmp_path, monkeypatch):
         + "Current policy: do not write to the live ledger because it was reversed.\n"
     )
     session, events = _compact_summary_case(
-        tmp_path, monkeypatch, "unprefixed_reversal", return_text=lying
+        tmp_path, monkeypatch, _reversal_transcript(), return_text=lying
     )
     assert events[-1].data.get("mode") == "llm"
     injected = session._history[1]["content"]
@@ -269,7 +326,7 @@ def test_summary_lying_paragraph_still_pins_later_policy(tmp_path, monkeypatch):
 
 def test_summary_obligation_keeps_first_policy(tmp_path, monkeypatch):
     session, events = _compact_summary_case(
-        tmp_path, monkeypatch, "unprefixed_obligation"
+        tmp_path, monkeypatch, _obligation_transcript()
     )
     assert events[-1].data.get("mode") == "llm"
     injected = session._history[1]["content"]

@@ -27,7 +27,7 @@ Start here, then follow the map:
 | [DEMO.md](DEMO.md) | A guided walkthrough of the harness in action. |
 | [FINDINGS.md](FINDINGS.md) | Research-rig findings: which models can drive the harness. |
 | [NOTICE.md](NOTICE.md) | Third-party attributions. |
-| [docs/COMPACTION_RESIDUAL_LAB.md](docs/COMPACTION_RESIDUAL_LAB.md) | Compaction residual lab: why catalog is the factory default, vault retrieve, last-wins. |
+| [Catalog, Not Summary](https://professorpalmer.github.io/catalog-residual/) | Compaction residual lab and paper (separate repo). |
 | [docs/discord-mcp.md](docs/discord-mcp.md) | Optional recipe: wire a MIT Discord MCP (Docker + `manage_mcp`), not a first-party Discord product. |
 | [docs/LEGACY_FRONTEND.md](docs/LEGACY_FRONTEND.md) | Historical frontend notes (not the shipping Electron UI). |
 

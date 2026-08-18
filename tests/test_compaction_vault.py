@@ -66,109 +66,102 @@ def test_vault_retrieve_is_session_scoped(tmp_path):
     assert not any("omega-cache-token-9f3a" in hit for hit in hits)
 
 
-def test_vault_recalls_battery_catalog_miss_probe(tmp_path):
-    from pmharness.compaction_residual_battery import RESIDUAL_CASES
-
-    case = next(c for c in RESIDUAL_CASES if c.id == "catalog_miss_plain_fact")
-    written = index_elided_messages(str(tmp_path), "sess-miss", list(case.transcript))
+def test_vault_recalls_plain_measurement_nonce(tmp_path):
+    messages = [
+        {"role": "user", "content": "Run the cache probe."},
+        {
+            "role": "tool",
+            "content": "Plain measurement only: omega-cache-token-9f3a shard-omega-p95.",
+        },
+        {"role": "assistant", "content": "Cache probe finished."},
+    ]
+    written = index_elided_messages(str(tmp_path), "sess-miss", messages)
     assert written >= 1
     section = build_turn_vault_section(
         str(tmp_path),
         "sess-miss",
-        case.probe_prompt,
+        "What cache-shard measurement tokens were returned by the probe?",
     )
     lowered = section.lower()
-    for token in case.must_contain:
-        assert token.lower() in lowered
+    assert "omega-cache-token-9f3a" in lowered
+    assert "shard-omega-p95" in lowered
 
 
 def test_vault_only_prose_selected_story_and_vault_hit(tmp_path):
     from harness.compaction_residual import build_catalog_residual
-    from pmharness.compaction_residual_battery import cases_by_id
 
-    case = cases_by_id()["vault_only_prose_cutoff"]
-    catalog = build_catalog_residual(list(case.transcript), char_budget=4000)
+    messages = [
+        {"role": "system", "content": "You are a coding assistant in a long session."},
+        {
+            "role": "user",
+            "content": (
+                "The billing cutoff is the fourteenth of each month "
+                "for the omega ledger close."
+            ),
+        },
+        {"role": "assistant", "content": "Noted the close date."},
+    ]
+    catalog = build_catalog_residual(messages, char_budget=4000)
     assert "fourteenth of each month" in catalog.lower()
-    written = index_elided_messages(str(tmp_path), "sess-prose", list(case.transcript))
-    assert written >= 1
-    section = build_turn_vault_section(str(tmp_path), "sess-prose", case.probe_prompt)
-    assert "fourteenth of each month" in section.lower()
-
-
-def test_vault_narrative_and_paraphrase_miss_lexical_twin_false_hits(tmp_path):
-    from harness.compaction_residual import build_catalog_residual
-    from harness.compaction_vault import vault_match_query
-    from pmharness.compaction_residual_battery import cases_by_id
-    from pmharness.compaction_residual_live import score_end_task_text
-
-    narrative = cases_by_id()["vault_narrative_no_overlap"]
-    paraphrase = cases_by_id()["vault_paraphrase_no_overlap"]
-    twin = cases_by_id()["vault_false_retrieve_twin"]
-    for case, sid in (
-        (narrative, "sess-narr"),
-        (paraphrase, "sess-para"),
-        (twin, "sess-twin"),
-    ):
-        catalog = build_catalog_residual(list(case.transcript), char_budget=4000)
-        lowered = catalog.lower()
-        for token in case.must_contain:
-            assert token.lower() in lowered
-        index_elided_messages(str(tmp_path), sid, list(case.transcript))
-
-    recap_q = vault_match_query(narrative.probe_prompt)
-    assert "spare" not in recap_q.lower()
-    assert is_recap_ask(narrative.probe_prompt) is True
-    raw_fts = vault_match_query(narrative.probe_prompt)
-    assert "Remind" in raw_fts or "decided" in raw_fts
-    plan = build_plan_recap_chunk(list(narrative.transcript))
-    assert "spare region" in plan.lower()
-    narr = retrieve_vault_result(str(tmp_path), "sess-narr", narrative.probe_prompt)
-    assert narr["route"] == "recap_plan"
-    assert "spare region" in "\n".join(narr["hits"]).lower()
-    assert "earlier facts" not in "\n".join(narr["hits"]).lower()
-
-    para_q = vault_match_query(paraphrase.probe_prompt)
-    assert "twenty" not in para_q.lower()
-    assert "omega" not in para_q.lower()
-    para = retrieve_vault_result(str(tmp_path), "sess-para", paraphrase.probe_prompt)
-    assert para["route"] == "empty"
-    assert para["hits"] == []
-
-    twin_hits = retrieve_vault_chunks(str(tmp_path), "sess-twin", twin.probe_prompt)
-    twin_blob = "\n".join(twin_hits).lower()
-    assert "spare region" in twin_blob
-    assert "primary region" not in twin_blob
-    twin_section = build_turn_vault_section(
-        str(tmp_path), "sess-twin", twin.probe_prompt
-    )
-    assert len(twin_section) >= 80
-
-    assert score_end_task_text(paraphrase, "Invoices freeze on the 27th.")[
-        "end_task_success"
-    ] is True
-    assert score_end_task_text(paraphrase, "Invoices freeze mid-month.")[
-        "end_task_success"
-    ] is False
-
-
-def test_vault_peek_evicted_case_drops_archive_and_keeps_vault(tmp_path):
-    import json
-
-    from harness.compaction_archive import retain_archive_messages
-    from pmharness.compaction_residual_battery import cases_by_id
-
-    case = cases_by_id()["vault_peek_evicted_cutoff"]
-    assert case.hide_peek is False
-    retained = retain_archive_messages(list(case.transcript))
-    assert "fourteenth" not in json.dumps(retained).lower()
-    written = index_elided_messages(str(tmp_path), "sess-evict-case", list(case.transcript))
+    written = index_elided_messages(str(tmp_path), "sess-prose", messages)
     assert written >= 1
     section = build_turn_vault_section(
         str(tmp_path),
-        "sess-evict-case",
-        case.probe_prompt,
+        "sess-prose",
+        "When is the billing cutoff for the ledger close?",
     )
     assert "fourteenth of each month" in section.lower()
+
+
+def test_vault_recap_paraphrase_and_twin_routes(tmp_path):
+    from harness.compaction_residual import build_catalog_residual
+
+    narrative = [
+        {"role": "user", "content": "The canary ships to the spare region before Friday."},
+        {"role": "assistant", "content": "Noted the ship plan."},
+    ]
+    paraphrase = [
+        {"role": "user", "content": "The omega ledger close uses cutoff day twenty-seven."},
+        {"role": "assistant", "content": "Noted the close day."},
+    ]
+    twin = [
+        {"role": "user", "content": "The canary ships to the primary region."},
+        {"role": "assistant", "content": "Recorded the first ship plan."},
+        {"role": "user", "content": "The canary now ships to the spare region."},
+        {"role": "assistant", "content": "Recorded the replacement ship plan."},
+    ]
+    catalog = build_catalog_residual(narrative, char_budget=4000)
+    assert "spare region" in catalog.lower()
+    index_elided_messages(str(tmp_path), "sess-narr", narrative)
+    index_elided_messages(str(tmp_path), "sess-para", paraphrase)
+    index_elided_messages(str(tmp_path), "sess-twin", twin)
+
+    recap_q = vault_match_query("Remind me what we decided earlier.")
+    assert "spare" not in recap_q.lower()
+    assert is_recap_ask("Remind me what we decided earlier.") is True
+    assert "Remind" in recap_q or "decided" in recap_q
+    plan = build_plan_recap_chunk(narrative)
+    assert "spare region" in plan.lower()
+    narr = retrieve_vault_result(
+        str(tmp_path), "sess-narr", "Remind me what we decided earlier."
+    )
+    assert narr["route"] == "recap_plan"
+    assert "spare region" in "\n".join(narr["hits"]).lower()
+
+    para_q = vault_match_query("When do invoices freeze?")
+    assert "twenty" not in para_q.lower()
+    para = retrieve_vault_result(
+        str(tmp_path), "sess-para", "When do invoices freeze?"
+    )
+    assert para["route"] == "empty"
+    assert para["hits"] == []
+
+    twin_hits = retrieve_vault_chunks(
+        str(tmp_path), "sess-twin", "Where does the canary ship?"
+    )
+    twin_blob = "\n".join(twin_hits).lower()
+    assert "spare region" in twin_blob
+    assert "primary region" not in twin_blob
 
 
 def test_vault_survives_peek_archive_middle_eviction(tmp_path):
@@ -219,10 +212,25 @@ def test_plan_chunk_skips_injected_residuals():
 
 
 def test_topic_last_wins_drops_superseded_obligation(tmp_path):
-    from pmharness.compaction_residual_battery import cases_by_id
-
-    reversal = cases_by_id()["unprefixed_reversal"]
-    plan = build_plan_recap_chunk(list(reversal.transcript))
+    reversal = [
+        {
+            "role": "user",
+            "content": (
+                "please don't write to the live ledger; "
+                "the east replica is the only sink."
+            ),
+        },
+        {"role": "assistant", "content": "Noted."},
+        {
+            "role": "user",
+            "content": (
+                "go ahead and write to the live ledger now; "
+                "the east replica is retired."
+            ),
+        },
+        {"role": "assistant", "content": "Reversed."},
+    ]
+    plan = build_plan_recap_chunk(reversal)
     low = plan.lower()
     assert "write to the live ledger now" in low
     assert "east replica is retired" in low
@@ -230,27 +238,45 @@ def test_topic_last_wins_drops_superseded_obligation(tmp_path):
     assert "only sink" not in low
     assert "reversed." not in low
 
-    twin = cases_by_id()["vault_false_retrieve_twin"]
-    twin_plan = build_plan_recap_chunk(list(twin.transcript))
+    twin = [
+        {"role": "user", "content": "The canary ships to the primary region."},
+        {"role": "assistant", "content": "Recorded the first ship plan."},
+        {"role": "user", "content": "The canary now ships to the spare region."},
+        {"role": "assistant", "content": "Recorded the replacement ship plan."},
+    ]
+    twin_plan = build_plan_recap_chunk(twin)
     assert "spare region" in twin_plan.lower()
     assert "primary region" not in twin_plan.lower()
 
-    kept = cases_by_id()["unprefixed_obligation"]
-    kept_plan = build_plan_recap_chunk(list(kept.transcript))
+    kept = [
+        {
+            "role": "user",
+            "content": (
+                "please don't write to the live ledger; "
+                "the east replica is the only sink."
+            ),
+        },
+        {"role": "assistant", "content": "Noted."},
+    ]
+    kept_plan = build_plan_recap_chunk(kept)
     assert "don't write" in kept_plan.lower() or "live ledger" in kept_plan.lower()
 
-    index_elided_messages(str(tmp_path), "sess-rev", list(reversal.transcript))
+    index_elided_messages(str(tmp_path), "sess-rev", reversal)
     rev_hit = retrieve_vault_result(
-        str(tmp_path), "sess-rev", reversal.probe_prompt
+        str(tmp_path),
+        "sess-rev",
+        "What is the current live-ledger write policy?",
     )
     rev_blob = "\n".join(rev_hit["hits"]).lower()
     assert "write to the live ledger now" in rev_blob
     assert "don't write" not in rev_blob
     assert "only sink" not in rev_blob
 
-    index_elided_messages(str(tmp_path), "sess-keep", list(kept.transcript))
+    index_elided_messages(str(tmp_path), "sess-keep", kept)
     keep_hit = retrieve_vault_result(
-        str(tmp_path), "sess-keep", kept.probe_prompt
+        str(tmp_path),
+        "sess-keep",
+        "What write sink is allowed, and what must not be written?",
     )
     keep_blob = "\n".join(keep_hit["hits"]).lower()
     assert "live ledger" in keep_blob
@@ -259,17 +285,14 @@ def test_topic_last_wins_drops_superseded_obligation(tmp_path):
 def test_vault_selector_default_worthy_contract(tmp_path):
     """Last-N story, no miss_plan, tighter recap. These used to fail."""
     from harness.compaction_vault import _filler_like
-    from pmharness.compaction_residual_battery import cases_by_id
 
-    catalog = cases_by_id()
-    leak = catalog["vault_selector_plausible_filler"]
-    kept = catalog["vault_selector_docs_only_plan"]
-    capped = catalog["vault_selector_cap_drops_late"]
-    assistant = catalog["vault_selector_assistant_only"]
-    wrong = catalog["vault_selector_miss_wrong_plan"]
-    false_fire = catalog["vault_recap_false_fire"]
-
-    leak_plan = build_plan_recap_chunk(list(leak.transcript))
+    leak = [
+        {"role": "user", "content": "The canary ships to the spare region before Friday."},
+        {"role": "assistant", "content": "Noted the ship plan."},
+        {"role": "user", "content": "please update the changelog tone to be warmer."},
+        {"role": "assistant", "content": "recorded."},
+    ]
+    leak_plan = build_plan_recap_chunk(leak)
     assert "spare region" in leak_plan.lower()
     assert "warmer" in leak_plan.lower()
 
@@ -277,31 +300,67 @@ def test_vault_selector_default_worthy_contract(tmp_path):
         "please keep this docs only: ship the canary to the spare "
         "region before Friday."
     )
-    kept_plan = build_plan_recap_chunk(list(kept.transcript))
+    kept = [
+        {
+            "role": "user",
+            "content": (
+                "please keep this docs only: ship the canary to the spare "
+                "region before Friday."
+            ),
+        },
+        {"role": "assistant", "content": "Noted the ship plan."},
+    ]
+    kept_plan = build_plan_recap_chunk(kept)
     assert "spare region" in kept_plan.lower()
-    index_elided_messages(str(tmp_path), "sess-docs", list(kept.transcript))
+    index_elided_messages(str(tmp_path), "sess-docs", kept)
     kept_hit = retrieve_vault_result(
-        str(tmp_path), "sess-docs", kept.probe_prompt
+        str(tmp_path), "sess-docs", "Remind me what we decided earlier."
     )
     assert kept_hit["route"] == "recap_plan"
     assert "spare region" in "\n".join(kept_hit["hits"]).lower()
 
-    capped_plan = build_plan_recap_chunk(list(capped.transcript))
+    notes = []
+    for i in range(12):
+        notes.append({
+            "role": "user",
+            "content": f"cap note {i}: please update the changelog tone to be warmer.",
+        })
+        notes.append({"role": "assistant", "content": f"cap note {i}: recorded."})
+    capped = (
+        [{"role": "user", "content": "The canary ships to the primary region."},
+         {"role": "assistant", "content": "Recorded the first ship plan."}]
+        + notes
+        + [{"role": "user", "content": "The canary now ships to the spare region."},
+           {"role": "assistant", "content": "Recorded the replacement ship plan."}]
+    )
+    capped_plan = build_plan_recap_chunk(capped)
     assert "spare region" in capped_plan.lower()
     assert "primary region" not in capped_plan.lower()
 
-    assistant_plan = build_plan_recap_chunk(list(assistant.transcript))
+    assistant = [
+        {"role": "user", "content": "What should we do about the canary?"},
+        {"role": "assistant", "content": "Ship the canary to the spare region before Friday."},
+    ]
+    assistant_plan = build_plan_recap_chunk(assistant)
     assert "spare region" in assistant_plan.lower()
 
-    index_elided_messages(str(tmp_path), "sess-wrong", list(wrong.transcript))
-    wrong_hit = retrieve_vault_result(str(tmp_path), "sess-wrong", wrong.probe_prompt)
+    wrong = [
+        {"role": "user", "content": "The canary ships to the spare region before Friday."},
+        {"role": "assistant", "content": "Noted the ship plan."},
+    ]
+    index_elided_messages(str(tmp_path), "sess-wrong", wrong)
+    wrong_hit = retrieve_vault_result(
+        str(tmp_path), "sess-wrong", "When do invoices freeze?"
+    )
     assert wrong_hit["route"] == "empty"
     assert wrong_hit["hits"] == []
 
-    assert is_recap_ask(false_fire.probe_prompt) is False
-    index_elided_messages(str(tmp_path), "sess-fire", list(false_fire.transcript))
+    assert is_recap_ask("Can you remind the test runner to skip flaky peek?") is False
+    index_elided_messages(str(tmp_path), "sess-fire", wrong)
     fire_hit = retrieve_vault_result(
-        str(tmp_path), "sess-fire", false_fire.probe_prompt
+        str(tmp_path),
+        "sess-fire",
+        "Can you remind the test runner to skip flaky peek?",
     )
     assert fire_hit["route"] != "recap_plan"
     assert "spare region" not in "\n".join(fire_hit["hits"]).lower()

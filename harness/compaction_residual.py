@@ -1,21 +1,21 @@
 from __future__ import annotations
 
-"""Experimental compaction residual representations (Wave 2 lab seam).
+"""Compaction residual representations.
 
 ``HARNESS_COMPACTION_RESIDUAL`` selects how the compacted middle is rewritten:
 
-- ``summary`` (default): existing LLM / extractive four-heading snapshot
-- ``catalog``: deterministic unique-handle index from the pruned middle
+- ``catalog`` (factory): extractive handle index plus a last-N selected story
 - ``hybrid``: real LLM four-heading summary plus a capped unique-handle index
+- ``summary``: paid LLM / extractive four-heading snapshot
 - ``off``: test-only no-compaction ceiling (must be an explicit value)
 
-Empty, missing, or unknown values resolve to ``summary`` — never to ``off``
-or ``hybrid``. Settings offers ``summary`` / ``hybrid`` / ``catalog``; off stays
-env-only. Catalog is extractive and skips the summarizer. Hybrid
-runs the existing LLM summarizer path; timeout / degenerate / insufficient
-reduction fall back to the extractive four-heading body plus handle index.
-Neither path invents turn IDs or peek offsets. Text copied into a residual
-is redacted for likely secrets.
+Empty, missing, or unknown values resolve to ``catalog`` — never to ``off``.
+Settings offers ``catalog`` / ``hybrid`` / ``summary``; off stays env-only.
+Catalog is extractive and skips the summarizer. Hybrid runs the existing
+LLM summarizer path; timeout / degenerate / insufficient reduction fall
+back to the extractive four-heading body plus handle index. Neither path
+invents turn IDs or peek offsets. Text copied into a residual is redacted
+for likely secrets. Lab protocol and paper live in professorpalmer/catalog-residual.
 """
 
 import os
