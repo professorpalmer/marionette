@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.7` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.243, deliberately pre-1.0. Compact residual factory default is catalog (extractive handle index plus a selected story, with vault retrieve). Summary and hybrid stay Settings opt-ins. Rides puppetmaster-ai==1.22.7.
+> Status: v0.9.244, deliberately pre-1.0. Compact residual factory default is catalog (extractive handle index plus a selected story, with vault retrieve). Summary and hybrid stay Settings opt-ins. Rides puppetmaster-ai==1.22.7.
 
 ## Documentation
 
