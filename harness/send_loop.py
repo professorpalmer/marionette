@@ -1123,11 +1123,23 @@ class SendLoopMixin:
                     else:
                         wiki_section = self._build_turn_wiki_section(user_message)
             vault_section = ""
+            vault_cite = None
             if not append_only:
                 try:
-                    vault_section = self._build_turn_vault_section(user_message)
+                    cite = self._build_turn_vault_cite(user_message)
+                    vault_section = cite.get("section") or ""
+                    snippets = list(cite.get("snippets") or [])
+                    route = str(cite.get("route") or "empty")
+                    if snippets and route != "empty":
+                        vault_cite = {
+                            "route": route,
+                            "snippets": snippets,
+                            "query": (user_message or "")[:120],
+                        }
                 except Exception:
                     vault_section = ""
+            if vault_cite is not None:
+                yield ConvEvent("vault_cite", vault_cite)
 
             resp = None
             self._streamed_prose = ""  # reset per step; set if this step streams

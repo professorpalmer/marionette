@@ -18,6 +18,7 @@ from harness.session import VALID_SESSION_EVENT_KINDS, SessionEvent, SessionEven
 def test_conv_event_kind_literal_matches_valid_set():
     assert frozenset(get_args(ConvEventKind)) == VALID_CONV_EVENT_KINDS
     assert "done" not in VALID_CONV_EVENT_KINDS  # framing-only; not a ConvEvent
+    assert "vault_cite" in VALID_CONV_EVENT_KINDS
     hints = get_type_hints(ConvEvent)
     assert hints["kind"] is ConvEventKind
 

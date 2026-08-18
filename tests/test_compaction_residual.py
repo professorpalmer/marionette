@@ -131,6 +131,16 @@ def test_default_catalog_mode_is_extractive(tmp_path, monkeypatch):
     events = list(session._maybe_compact_history(force=True))
     assert [e.kind for e in events] == ["compacting", "compaction"]
     assert events[-1].data.get("mode") == "extractive"
+    payload = events[-1].data
+    assert isinstance(payload.get("kept"), list)
+    assert isinstance(payload.get("dropped"), list)
+    assert isinstance(payload.get("handles"), list)
+    assert any(
+        "ledger_v3" in item or "read_file" in item or "spill://" in item
+        for item in payload["handles"]
+    )
+    assert "CATALOG_HEADING" not in payload
+    assert CATALOG_HEADING not in str(payload.get("kept"))
     assert not session.pilot.chat_calls
     injected = session._history[1]["content"]
     assert session._history[1].get("_compressed_summary") is True
@@ -220,14 +230,69 @@ def test_hybrid_keeps_four_headings_and_handle_index(tmp_path, monkeypatch):
     assert SELECTED_STORY_HEADING in injected
 
 
-def _compact_summary_case(tmp_path, monkeypatch, case_id, return_text=_GOOD_SUMMARY):
-    from pmharness.compaction_residual_battery import cases_by_id
+def _filler_pairs(n: int, prefix: str) -> list[dict]:
+    rows = []
+    for i in range(n):
+        rows.append({
+            "role": "user",
+            "content": f"{prefix} user {i}: refactor comments and docs only. " + ("pad " * 20),
+        })
+        rows.append({
+            "role": "assistant",
+            "content": f"{prefix} assistant {i}: acknowledged docs pass. " + ("ack " * 20),
+        })
+    return rows
 
+
+def _reversal_transcript() -> list[dict]:
+    return (
+        [{"role": "system", "content": "You are a coding assistant in a long session."}]
+        + [{
+            "role": "user",
+            "content": (
+                "please don't write to the live ledger; "
+                "the east replica is the only sink."
+            ),
+        }, {"role": "assistant", "content": "Noted."}]
+        + _filler_pairs(4, "rev-mid")
+        + [{
+            "role": "user",
+            "content": (
+                "go ahead and write to the live ledger now; "
+                "the east replica is retired."
+            ),
+        }, {"role": "assistant", "content": "Reversed."}]
+        + _filler_pairs(4, "rev-after")
+        + [
+            {"role": "user", "content": "Please continue the current docs pass."},
+            {"role": "assistant", "content": "Continuing the docs pass without restating earlier facts."},
+        ]
+    )
+
+
+def _obligation_transcript() -> list[dict]:
+    return (
+        [{"role": "system", "content": "You are a coding assistant in a long session."}]
+        + [{
+            "role": "user",
+            "content": (
+                "please don't write to the live ledger; "
+                "the east replica is the only sink."
+            ),
+        }, {"role": "assistant", "content": "Noted."}]
+        + _filler_pairs(8, "unprefixed")
+        + [
+            {"role": "user", "content": "Please continue the current docs pass."},
+            {"role": "assistant", "content": "Continuing the docs pass without restating earlier facts."},
+        ]
+    )
+
+
+def _compact_summary_case(tmp_path, monkeypatch, transcript, return_text=_GOOD_SUMMARY):
     monkeypatch.setenv("HARNESS_COMPACTION_RESIDUAL", "summary")
     session = _session(tmp_path, monkeypatch)
     session.pilot = MockPilot(return_text=return_text)
-    case = cases_by_id()[case_id]
-    session._history = [dict(row) for row in case.transcript]
+    session._history = [dict(row) for row in transcript]
     session._history.append({"role": "user", "content": "please continue"})
     session._history.append({"role": "assistant", "content": "continuing"})
     events = list(session._maybe_compact_history(force=True))
@@ -236,7 +301,9 @@ def _compact_summary_case(tmp_path, monkeypatch, case_id, return_text=_GOOD_SUMM
 
 def test_summary_skips_ack_and_pins_last_wins_story(tmp_path, monkeypatch):
     """Ack-only 'Reversed.' must not reach the summarizer or undo last-wins."""
-    session, events = _compact_summary_case(tmp_path, monkeypatch, "unprefixed_reversal")
+    session, events = _compact_summary_case(
+        tmp_path, monkeypatch, _reversal_transcript()
+    )
     assert events[-1].data.get("mode") == "llm"
     assert session.pilot.chat_calls
     prompt = session.pilot.chat_calls[0][0][0]["content"]
@@ -256,7 +323,7 @@ def test_summary_lying_paragraph_still_pins_later_policy(tmp_path, monkeypatch):
         + "Current policy: do not write to the live ledger because it was reversed.\n"
     )
     session, events = _compact_summary_case(
-        tmp_path, monkeypatch, "unprefixed_reversal", return_text=lying
+        tmp_path, monkeypatch, _reversal_transcript(), return_text=lying
     )
     assert events[-1].data.get("mode") == "llm"
     injected = session._history[1]["content"]
@@ -269,7 +336,7 @@ def test_summary_lying_paragraph_still_pins_later_policy(tmp_path, monkeypatch):
 
 def test_summary_obligation_keeps_first_policy(tmp_path, monkeypatch):
     session, events = _compact_summary_case(
-        tmp_path, monkeypatch, "unprefixed_obligation"
+        tmp_path, monkeypatch, _obligation_transcript()
     )
     assert events[-1].data.get("mode") == "llm"
     injected = session._history[1]["content"]
@@ -624,6 +691,15 @@ def test_version_and_ticket_harvest():
     assert "E-7721" in index["facts"]
 
 
+def test_reversal_transcript_index_reports_dropped_vs_kept():
+    index = extract_handle_index(_reversal_transcript())
+    kept = " ".join(index["stems"] + index["story"]).lower()
+    dropped = " ".join(index.get("dropped") or []).lower()
+    assert "write to the live ledger now" in kept
+    assert "don't write" not in kept
+    assert "don't write" in dropped or "only sink" in dropped
+
+
 def test_obligation_harvest_keeps_later_reversal():
     middle = [
         {
@@ -643,10 +719,12 @@ def test_obligation_harvest_keeps_later_reversal():
     ]
     index = extract_handle_index(middle)
     blob = " ".join(index["stems"] + index["story"]).lower()
+    dropped = " ".join(index.get("dropped") or []).lower()
     assert "write to the live ledger now" in blob
     assert "east replica is retired" in blob
     assert "don't write" not in blob
     assert "only sink" not in blob
+    assert "don't write" in dropped or "only sink" in dropped
 
 
 def test_obligation_harvest_folds_unicode_apostrophes():

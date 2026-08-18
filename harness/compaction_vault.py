@@ -179,12 +179,21 @@ def same_topic(left: str, right: str) -> bool:
     return (overlap / float(min(len(older), len(newer)))) >= _TOPIC_LAST_WINS
 
 
+def topic_last_wins_receipt(lines: List[str]):
+    """Return (kept, dropped) using the same same_topic rule as last-wins."""
+    kept: List[str] = []
+    dropped: List[str] = []
+    for text in lines:
+        evicted = [row for row in kept if same_topic(row, text)]
+        kept = [row for row in kept if not same_topic(row, text)]
+        dropped.extend(evicted)
+        kept.append(text)
+    return kept, dropped
+
+
 def apply_topic_last_wins(lines: List[str]) -> List[str]:
     """Drop earlier lines that share a topic with a later one."""
-    kept: List[str] = []
-    for text in lines:
-        kept = [row for row in kept if not same_topic(row, text)]
-        kept.append(text)
+    kept, _dropped = topic_last_wins_receipt(lines)
     return kept
 
 
@@ -443,14 +452,47 @@ def format_vault_section(hits: List[str]) -> str:
     return "\n".join(lines)
 
 
+_CITE_SNIPPET_CHARS = 120
+
+
+def _clip_cite_snippet(text: str, limit: int = _CITE_SNIPPET_CHARS) -> str:
+    raw = " ".join(str(text or "").split())
+    if raw.startswith(PLAN_CHUNK_PREFIX):
+        raw = raw[len(PLAN_CHUNK_PREFIX):].strip()
+    if len(raw) <= limit:
+        return raw
+    return raw[:limit].rstrip()
+
+
+def build_turn_vault_cite(
+    state_dir: str,
+    session_id: str,
+    user_message: str,
+) -> dict:
+    """Section text plus cite payload for the current ask. Never raises."""
+    empty = {"section": "", "route": "empty", "snippets": []}
+    try:
+        if not (user_message or "").strip():
+            return empty
+        result = retrieve_vault_result(state_dir, session_id, user_message)
+        hits = list(result.get("hits") or [])
+        route = str(result.get("route") or "empty")
+        snippets = [
+            _clip_cite_snippet(hit) for hit in hits if str(hit or "").strip()
+        ]
+        return {
+            "section": format_vault_section(hits),
+            "route": route,
+            "snippets": snippets,
+        }
+    except Exception:
+        return empty
+
+
 def build_turn_vault_section(
     state_dir: str,
     session_id: str,
     user_message: str,
 ) -> str:
     """Wiki-style inject for the current user ask. Never raises."""
-    try:
-        hits = retrieve_vault_chunks(state_dir, session_id, user_message)
-        return format_vault_section(hits)
-    except Exception:
-        return ""
+    return str(build_turn_vault_cite(state_dir, session_id, user_message).get("section") or "")

@@ -1037,6 +1037,63 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
     expect(row.after_tokens).toBe(4000);
   });
 
+  it("successful compaction forwards kept/dropped/handles and is not Context summarized", () => {
+    const state = {
+      items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    state.itemsRef.current = state.items;
+    const apply = createApplyStreamEvent(makeApplyDeps(state));
+
+    apply({
+      kind: "compaction",
+      data: {
+        before_tokens: 12000,
+        after_tokens: 4000,
+        summarized_messages: 8,
+        mode: "extractive",
+        kept: ["later policy"],
+        dropped: ["earlier policy"],
+        handles: ["src/billing/ledger_v3.py"],
+      },
+    });
+    const rows = state.items.filter((it) => it.kind === "compaction");
+    expect(rows).toHaveLength(1);
+    const row = rows[0];
+    if (row.kind !== "compaction") throw new Error("expected compaction");
+    expect(row.kept).toEqual(["later policy"]);
+    expect(row.dropped).toEqual(["earlier policy"]);
+    expect(row.handles).toEqual(["src/billing/ledger_v3.py"]);
+    expect(row.message || "").not.toMatch(/Context summarized/i);
+  });
+
+  it("vault_cite appends a from compacted history chip payload", () => {
+    const state = {
+      items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    state.itemsRef.current = state.items;
+    const apply = createApplyStreamEvent(makeApplyDeps(state));
+
+    apply({
+      kind: "vault_cite",
+      data: {
+        route: "fts",
+        snippets: ["omega-cache-token-9f3a observed"],
+        query: "What cache-shard measurement tokens were returned?",
+      },
+    });
+    const rows = state.items.filter((it) => it.kind === "vault_cite");
+    expect(rows).toHaveLength(1);
+    const row = rows[0];
+    if (row.kind !== "vault_cite") throw new Error("expected vault_cite");
+    expect(row.route).toBe("fts");
+    expect(row.snippets[0]).toMatch(/omega-cache-token-9f3a/);
+    expect(row.query).toMatch(/cache-shard/);
+  });
+
   it("replayed swarm_pending stays one pill and set-unions pendingJobIds", () => {
     const state = {
       items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],

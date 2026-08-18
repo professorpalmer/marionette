@@ -465,6 +465,7 @@ ConvEventKind = Literal[
     "task_profile",
     "thinking",
     "tool_prep",
+    "vault_cite",
     "verification",
     "verifying",
     "vision",

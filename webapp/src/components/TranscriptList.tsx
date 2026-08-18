@@ -67,7 +67,12 @@ import {
   isOccludedScrollParentSize,
   shouldUseVirtualTranscriptWindow,
 } from "./conversation/transcriptVirtualWindow";
-import { focusReviewTabAndRefresh } from "./conversation/streamApply";
+import {
+  compactionKeptDroppedLine,
+  compactionSuccessLabel,
+  focusReviewTabAndRefresh,
+  vaultCiteChipLabel,
+} from "./conversation/streamApply";
 
 export type Msg = {
   role: "user" | "assistant";
@@ -175,8 +180,13 @@ export type Item =
       reason?: string;
       message?: string;
       mode?: "extractive" | "llm";
+      kept?: string[];
+      dropped?: string[];
+      handles?: string[];
+      story?: string[];
     }
   | { kind: "codegraph_context"; symbols: number; query: string }
+  | { kind: "vault_cite"; route: string; snippets: string[]; query?: string }
   | { kind: "command_blocked"; command: string; category: string; reason: string; matched: string }
   | CommandApprovalItem
   | { kind: "auto_status"; cycle: number; snapshot: AutoBudgetSnapshot }
@@ -216,8 +226,13 @@ export type GroupedItem =
       reason?: string;
       message?: string;
       mode?: "extractive" | "llm";
+      kept?: string[];
+      dropped?: string[];
+      handles?: string[];
+      story?: string[];
     }
   | { kind: "codegraph_context"; symbols: number; query: string }
+  | { kind: "vault_cite"; route: string; snippets: string[]; query?: string }
   | { kind: "command_blocked"; command: string; category: string; reason: string; matched: string }
   | CommandApprovalItem
   | { kind: "auto_status"; cycle: number; snapshot: AutoBudgetSnapshot }
@@ -247,6 +262,7 @@ type ActivityItem =
   | { kind: "card"; card: Card }
   | { kind: "thinking"; text: string; streaming?: boolean; id?: string; stream_id?: string }
   | { kind: "codegraph_context"; symbols: number; query: string }
+  | { kind: "vault_cite"; route: string; snippets: string[]; query?: string }
   | { kind: "checkpoint"; id: string; label: string; trigger: string }
   | SwarmPendingItem
   | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string; held_for_review?: boolean; analysis_ok?: boolean; reuse_status?: string; source_job_id?: string; reuse_reason?: string; invalidated_paths?: string[]; validation_fingerprint?: string; environment_fingerprint?: string; acceptance_criteria?: string[] }
@@ -299,7 +315,110 @@ function compactionRowChrome(it: Extract<Item, { kind: "compaction" }>): {
       || (it.reason ? `Compaction aborted (${it.reason})` : "Compaction aborted");
     return { label, title: it.reason ? `${tokens} · ${it.reason}` : tokens };
   }
-  return { label: "Context summarized", title: tokens };
+  const counts = compactionKeptDroppedLine(it.kept, it.dropped);
+  return {
+    label: compactionSuccessLabel(),
+    title: counts ? `${tokens} · ${counts}` : tokens,
+  };
+}
+
+function CompactionReceipt({
+  it,
+  fold,
+}: {
+  it: Extract<Item, { kind: "compaction" }>;
+  fold?: boolean;
+}) {
+  const [openHandle, setOpenHandle] = useState<string | null>(null);
+  const chrome = compactionRowChrome(it);
+  const counts = !it.aborted ? compactionKeptDroppedLine(it.kept, it.dropped) : undefined;
+  const handles = it.handles || [];
+  const story = it.story || [];
+  const pillClass = fold
+    ? "flex items-center gap-1.5 py-0.5 text-[10px] text-faint/80 select-none font-mono"
+    : `flex items-center gap-1.5 py-1 px-3 rounded-full w-fit select-none font-mono text-[10.5px] ${
+        it.aborted
+          ? "bg-amber-500/10 border border-amber-500/25 text-amber-200/90"
+          : "bg-panel2/10 border border-edge/10 text-faint"
+      }`;
+  return (
+    <div className={fold ? undefined : "flex flex-col gap-0.5 my-1"}>
+      <div
+        role={fold ? undefined : "status"}
+        title={chrome.title}
+        className={pillClass}
+      >
+        <span>{chrome.label}</span>
+      </div>
+      {!fold && counts ? (
+        <div className="text-[10.5px] text-faint font-mono px-3">{counts}</div>
+      ) : null}
+      {handles.length > 0 && !fold ? (
+        <div className="flex flex-wrap gap-1 px-3">
+          {handles.map((handle) => (
+            <button
+              type="button"
+              key={handle}
+              title={handle}
+              onClick={() => setOpenHandle((cur) => (cur === handle ? null : handle))}
+              className="text-[10.5px] text-faint font-mono bg-transparent border-0 p-0 cursor-pointer hover:underline underline-offset-2"
+            >
+              {handle}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {handles.length > 0 && fold ? (
+        <span className="text-[10px] text-faint/70 font-mono" title={handles.join(" · ")}>
+          {handles.length} handle{handles.length === 1 ? "" : "s"}
+        </span>
+      ) : null}
+      {openHandle && !fold ? (
+        <div className="text-[10.5px] text-faint font-mono px-3 whitespace-pre-wrap break-all">
+          <div>{openHandle}</div>
+          {story.map((line) => (
+            <div key={line}>{line}</div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function VaultCiteChip({
+  it,
+  fold,
+}: {
+  it: Extract<Item, { kind: "vault_cite" }>;
+  fold?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const first = (it.snippets[0] || "").trim();
+  const snippet = first.length > 72 ? `${first.slice(0, 70)}…` : first;
+  const title = [it.query, ...it.snippets].filter(Boolean).join("\n");
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={() => setOpen((v) => !v)}
+      className={
+        fold
+          ? "flex items-center gap-1.5 py-0.5 text-[10px] text-faint/70 select-none bg-transparent border-0 p-0 cursor-pointer text-left"
+          : "flex items-center gap-1.5 py-0.5 text-[10px] text-accent/70 w-fit my-0.5 select-none bg-transparent border-0 p-0 cursor-pointer text-left"
+      }
+    >
+      <History size={9} className={fold ? "text-faint/60" : "text-accent/70"} />
+      <span>
+        {vaultCiteChipLabel()}
+        {snippet ? ` -- ${snippet}` : ""}
+      </span>
+      {open && it.snippets.length > 1 ? (
+        <span className="block text-[10px] text-faint font-mono whitespace-pre-wrap">
+          {it.snippets.slice(1).join("\n")}
+        </span>
+      ) : null}
+    </button>
+  );
 }
 
 
@@ -505,8 +624,8 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
     ) {
       flush();
       grouped.push(item);
-    } else if (item.kind === "card" || item.kind === "thinking" || item.kind === "codegraph_context") {
-      // Cards, reasoning, codegraph chips: all collect into the one box.
+    } else if (item.kind === "card" || item.kind === "thinking" || item.kind === "codegraph_context" || item.kind === "vault_cite") {
+      // Cards, reasoning, codegraph/vault chips: all collect into the one box.
       currentGroup.push(item);
     }
   }
@@ -743,6 +862,8 @@ function stableItemKey(it: GroupedItem, i: number): string {
       return `cmp-${it.aborted ? "abort" : "ok"}-${it.before_tokens}-${it.after_tokens}-${it.reason || it.mode || i}`;
     case "codegraph_context":
       return `cg-${i}-${it.symbols}`;
+    case "vault_cite":
+      return `vault-${i}-${it.route}`;
     case "command_blocked":
       return `blk-${i}-${it.category}`;
     case "command_approval":
@@ -1052,6 +1173,8 @@ export const TranscriptList = memo(function TranscriptList({
           <span>CodeGraph consulted{it.symbols > 0 ? ` -- ${it.symbols} symbols` : ""}</span>
         </div>
       );
+    } else if (it.kind === "vault_cite") {
+      return <VaultCiteChip key={key} it={it} />;
     } else if (it.kind === "command_blocked") {
       const blocked = commandBlockedPresentation(it);
       return (
@@ -1176,21 +1299,7 @@ export const TranscriptList = memo(function TranscriptList({
         </div>
       );
     } else if (it.kind === "compaction") {
-      const chrome = compactionRowChrome(it);
-      return (
-        <div
-          key={key}
-          role="status"
-          title={chrome.title}
-          className={`flex items-center gap-1.5 py-1 px-3 rounded-full w-fit my-1 select-none font-mono text-[10.5px] ${
-            it.aborted
-              ? "bg-amber-500/10 border border-amber-500/25 text-amber-200/90"
-              : "bg-panel2/10 border border-edge/10 text-faint"
-          }`}
-        >
-          <span>{chrome.label}</span>
-        </div>
-      );
+      return <CompactionReceipt key={key} it={it} />;
     } else if (it.kind === "steer") {
       return (
         <div key={key} className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/15 border border-edge/20 text-[10.5px] text-faint w-fit my-1 select-none font-mono animate-in fade-in duration-200">
@@ -1645,6 +1754,9 @@ function ActivityGroup({
         </div>
       );
     }
+    if (it.kind === "vault_cite") {
+      return <VaultCiteChip key={`vault-${idx}-${it.route}`} it={it} fold />;
+    }
     if (it.kind === "checkpoint") {
       return (
         <div key={`ckpt-${it.id}`} className="flex items-center gap-1.5 py-0.5 text-[10px] text-faint/80 select-none">
@@ -1688,16 +1800,7 @@ function ActivityGroup({
       // Tokens are hover, not a peer of the sentence. Hide the row entirely
       // when the strip already has tools — the fold title carries the hover.
       if (actionCount > 0 && !it.aborted) return null;
-      const chrome = compactionRowChrome(it);
-      return (
-        <div
-          key={`compact-${idx}`}
-          className="flex items-center gap-1.5 py-0.5 text-[10px] text-faint/80 select-none font-mono"
-          title={chrome.title}
-        >
-          <span>{chrome.label}</span>
-        </div>
-      );
+      return <CompactionReceipt key={`compact-${idx}`} it={it} fold />;
     }
     if (it.kind === "command_blocked") {
       const blocked = commandBlockedPresentation(it);
@@ -1768,7 +1871,7 @@ function ActivityGroup({
     if (telemetryItems.length > 0 && actionCount === 0 && thinkingItems.length === 0) {
       const first = telemetryItems[0];
       if (first.kind === "compaction") {
-        return first.aborted ? "Compaction aborted" : "Context summarized";
+        return first.aborted ? "Compaction aborted" : compactionSuccessLabel();
       }
       if (first.kind === "quality_gate") return qualityGatePresentation(first).label;
       if (first.kind === "auto_halt") return autoHaltPresentation(first.reason, first.snapshot).label;

@@ -306,6 +306,7 @@ function toolPrepInsertIndex(items: Item[], turnStart: number): number {
       || it.kind === "tool_prep"
       || it.kind === "swarm_result"
       || it.kind === "codegraph_context"
+      || it.kind === "vault_cite"
     ) {
       continue;
     }

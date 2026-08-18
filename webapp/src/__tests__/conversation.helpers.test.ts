@@ -97,7 +97,10 @@ import {
   shouldApplySwarmLiveMerge,
   appendCompaction,
   appendStopHonestyNotice,
+  appendVaultCite,
   compactionAbortLabel,
+  compactionSuccessLabel,
+  vaultCiteChipLabel,
   noticeIsStopHonesty,
   noticeShowsWaitHint,
   patchCardInItems,
@@ -1823,6 +1826,29 @@ describe("streamApply module", () => {
       after_tokens: 3000,
       mode: "llm",
     });
+    expect(compactionSuccessLabel()).toBe("Context compacted");
+    expect(compactionSuccessLabel()).not.toMatch(/Context summarized/i);
+    expect(appendCompaction([], 9000, 3000, {
+      mode: "llm",
+      kept: ["later policy"],
+      dropped: ["earlier policy"],
+      handles: ["src/billing/ledger_v3.py"],
+      story: ["go ahead and write to the live ledger now"],
+    })[0]).toMatchObject({
+      kind: "compaction",
+      kept: ["later policy"],
+      dropped: ["earlier policy"],
+      handles: ["src/billing/ledger_v3.py"],
+      story: ["go ahead and write to the live ledger now"],
+    });
+    expect(vaultCiteChipLabel()).toBe("from compacted history");
+    expect(appendVaultCite([], "fts", ["omega-cache-token-9f3a"], "what token")[0]).toMatchObject({
+      kind: "vault_cite",
+      route: "fts",
+      snippets: ["omega-cache-token-9f3a"],
+      query: "what token",
+    });
+    expect(appendVaultCite([], "empty", [], "no hits")).toEqual([]);
     const approvals = appendCommandApproval([], {
       id: "call-1",
       command: "ssh prod reboot",
