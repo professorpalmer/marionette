@@ -135,9 +135,16 @@ def test_post_settings_compaction_residual_hybrid(monkeypatch):
     assert dict(calls["persist"])["HARNESS_COMPACTION_RESIDUAL"] == "hybrid"
 
 
-def test_post_settings_compaction_residual_rejects_catalog():
+def test_post_settings_compaction_residual_catalog():
     svc, _, _, calls = _svc()
-    code, payload = post_settings({"compactionResidual": "catalog"}, svc)
+    code, _ = post_settings({"compactionResidual": "catalog"}, svc)
+    assert code == 200
+    assert dict(calls["persist"])["HARNESS_COMPACTION_RESIDUAL"] == "catalog"
+
+
+def test_post_settings_compaction_residual_rejects_off():
+    svc, _, _, calls = _svc()
+    code, payload = post_settings({"compactionResidual": "off"}, svc)
     assert code == 400
     assert calls["persist"] == []
     assert payload["error"] == "Invalid compactionResidual"

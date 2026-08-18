@@ -7,7 +7,7 @@ archive-backed peek_history path. No API keys. No fake string-only runner.
 """
 
 from harness.compaction_archive import load_compaction_archive_messages
-from harness.compaction_residual import RESIDUAL_SUMMARY, compaction_residual_mode
+from harness.compaction_residual import RESIDUAL_CATALOG, compaction_residual_mode
 from pmharness.compaction_residual_battery import RESIDUAL_CASES, ResidualCase
 from pmharness.compaction_residual_bench import (
     ARM_A,
@@ -84,9 +84,9 @@ def test_scoring_is_deterministic_substring_oracle():
     assert silent["end_task_success"] is False
 
 
-def test_default_summary_mode_untouched_by_import(monkeypatch):
+def test_default_catalog_mode_untouched_by_import(monkeypatch):
     monkeypatch.delenv("HARNESS_COMPACTION_RESIDUAL", raising=False)
-    assert compaction_residual_mode() == RESIDUAL_SUMMARY
+    assert compaction_residual_mode() == RESIDUAL_CATALOG
 
 
 def test_all_four_arms_on_representative_cases(tmp_path, monkeypatch):
@@ -109,9 +109,8 @@ def test_all_four_arms_on_representative_cases(tmp_path, monkeypatch):
         assert arm_a["mode"] == "llm"
         assert arm_a["residual_mode"] == "summary"
         assert arm_a["peek_calls"] == 0
-        # Arm A is a scripted omission control, not production summarizer quality.
-        assert arm_a["buried_fact_recall"] is False
-        assert arm_a["residual_buried_fact_recall"] is False
+        # Scripted paragraph still omits tokens; last-wins story can restore
+        # distinctive last-N facts after filler skip.
         assert arm_a["peek_buried_fact_recall"] is False
 
         assert arm_b["compacted"] is True

@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.7` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.243, deliberately pre-1.0. Settings can opt compact into a hybrid residual that keeps the usual summary and pins a handle index so decisions and files survive compaction. Default stays summary. Rides puppetmaster-ai==1.22.7.
+> Status: v0.9.243, deliberately pre-1.0. Compact residual factory default is catalog (extractive handle index plus a selected story, with vault retrieve). Summary and hybrid stay Settings opt-ins. Rides puppetmaster-ai==1.22.7.
 
 ## Documentation
 
@@ -27,6 +27,7 @@ Start here, then follow the map:
 | [DEMO.md](DEMO.md) | A guided walkthrough of the harness in action. |
 | [FINDINGS.md](FINDINGS.md) | Research-rig findings: which models can drive the harness. |
 | [NOTICE.md](NOTICE.md) | Third-party attributions. |
+| [docs/COMPACTION_RESIDUAL_LAB.md](docs/COMPACTION_RESIDUAL_LAB.md) | Compaction residual lab: why catalog is the factory default, vault retrieve, last-wins. |
 | [docs/discord-mcp.md](docs/discord-mcp.md) | Optional recipe: wire a MIT Discord MCP (Docker + `manage_mcp`), not a first-party Discord product. |
 | [docs/LEGACY_FRONTEND.md](docs/LEGACY_FRONTEND.md) | Historical frontend notes (not the shipping Electron UI). |
 
@@ -232,6 +233,16 @@ python3 -m venv .venv && .venv/bin/pip install -e /path/to/Puppetmaster pytest
 
 ## Configuration
 
+### Compact residual
+
+After a long chat, Marionette compresses older turns so the next prompt stays
+inside the context window. The factory residual is **catalog**: an extractive
+index of files, tools, handles, and a last-wins selected story, plus a local
+SQLite vault that retrieves matching slices on later asks. Settings >
+General can opt into **hybrid** (paid LLM paragraph plus handles) or
+**summary** (paid paragraph alone). `off` is env-only and is never inferred
+from an empty value.
+
 The driver and keys are set in the app (Settings pane) or via env. Key vars:
 
 | Env var | Purpose |
@@ -245,7 +256,9 @@ The driver and keys are set in the app (Settings pane) or via env. Key vars:
 | `HARNESS_COMMAND_TIMEOUT` | Per-command shell timeout in seconds; 0/off = unbounded. |
 | `HARNESS_COMMAND_HARD_CEILING` | Safety ceiling (seconds) when command timeout is unbounded; default 900. 0/off disables. |
 | `HARNESS_WORKER_TOKEN_BUDGET` | Default token ceiling for a single unsupervised worker run (default 250000). |
-| `FIRECRAWL_API_KEY` | Optional. Enables the Firecrawl MCP catalog entry (State ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ MCP); not used by native `web_fetch`. |
+| `FIRECRAWL_API_KEY` | Optional. Enables the Firecrawl MCP catalog entry (State > MCP); not used by native `web_fetch`. |
+| `HARNESS_COMPACTION_RESIDUAL` | Compact residual. Default `catalog` (also the empty/invalid fallback). Settings cycle: catalog, hybrid, summary. `off` is env-only. |
+| `HARNESS_COMPACTION_VAULT` | SQLite FTS retrieve of compacted history (default on). Set `0` to disable inject. |
 | `HARNESS_AUTO_COMMAND_GUARD` | Full-auto danger guard; default on, off to disable. |
 | `HARNESS_WIKI_ORCHESTRATE` | Local wiki structuring: unset (off), 1/approve (prepare-and-approve), auto (silent ingest). |
 | `HARNESS_AUTO_MAX_SWARMS` / `_TOKENS` / `_SECONDS` / `_MAX_IDLE` | Full-auto budget governor ceilings. |

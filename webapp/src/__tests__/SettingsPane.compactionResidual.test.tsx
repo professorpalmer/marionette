@@ -34,7 +34,7 @@ const sampleSettings: Settings = {
   auto_distill: false,
   state_dir: "/tmp/state",
   repo: "/tmp/repo",
-  compactionResidual: "summary",
+  compactionResidual: "catalog",
 };
 
 describe("SettingsPane compact residual opt-in", () => {
@@ -45,13 +45,13 @@ describe("SettingsPane compact residual opt-in", () => {
     mockUpdate.mockResolvedValue({ ...sampleSettings, compactionResidual: "hybrid" });
   });
 
-  it("defaults the control to summary and can opt into hybrid", async () => {
+  it("defaults the control to catalog and can opt into hybrid", async () => {
     render(<SettingsPane onOpenWizard={vi.fn()} section="general" />);
 
     expect(await screen.findByText("Compact Residual")).toBeInTheDocument();
-    expect(screen.getByText("summary")).toBeInTheDocument();
+    expect(screen.getByText("catalog")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: /pin handle index after compact/i }));
+    fireEvent.click(screen.getByRole("button", { name: /handle catalog; vault retrieve/i }));
     await waitFor(() => {
       expect(mockUpdate).toHaveBeenCalledWith({ compactionResidual: "hybrid" });
     });

@@ -10,8 +10,8 @@ from __future__ import annotations
 - ``off``: test-only no-compaction ceiling (must be an explicit value)
 
 Empty, missing, or unknown values resolve to ``summary`` — never to ``off``
-or ``hybrid``. Settings offers only ``summary`` / ``hybrid``; catalog and
-off stay env-only. Catalog is extractive and skips the summarizer. Hybrid
+or ``hybrid``. Settings offers ``summary`` / ``hybrid`` / ``catalog``; off stays
+env-only. Catalog is extractive and skips the summarizer. Hybrid
 runs the existing LLM summarizer path; timeout / degenerate / insufficient
 reduction fall back to the extractive four-heading body plus handle index.
 Neither path invents turn IDs or peek offsets. Text copied into a residual
@@ -23,6 +23,7 @@ import re
 from typing import Any, Iterable
 
 from harness.api.redaction import redact_secret_text
+from harness.compaction_vault import apply_topic_last_wins, select_story_lines
 
 _SPILL_URI_RE = re.compile(r"spill://[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 
@@ -46,11 +47,16 @@ VALID_RESIDUAL_MODES = frozenset({
     RESIDUAL_HYBRID,
     RESIDUAL_OFF,
 })
-# Settings offers only the product pair. Catalog and off stay env-only.
-SETTINGS_RESIDUAL_CHOICES = frozenset({RESIDUAL_SUMMARY, RESIDUAL_HYBRID})
+# Settings offers summary / hybrid / catalog. Off stays env-only.
+SETTINGS_RESIDUAL_CHOICES = frozenset({
+    RESIDUAL_SUMMARY,
+    RESIDUAL_HYBRID,
+    RESIDUAL_CATALOG,
+})
 
 CATALOG_HEADING = "## Handle catalog"
 HYBRID_INDEX_HEADING = "## Unique handles"
+SELECTED_STORY_HEADING = "### Selected story"
 
 _PATH_RE = re.compile(
     r"(?:[A-Za-z]:)?(?:[\w.-]+/)+\w[\w.-]*\.[A-Za-z0-9]+"
@@ -77,9 +83,10 @@ _VERSION_RE = re.compile(r"\bv?\d+\.\d+\.\d+\b")
 _TICKET_RE = re.compile(r"\b[A-Z]{1,6}-\d{3,6}\b")
 _LEADING_BULLET_RE = re.compile(r"^\s*-\s+")
 _CATALOG_SECTION_RE = re.compile(
-    r"^###\s+(Files|Tools|Handles|Stems|Facts|Last ask)\s*$",
+    r"^###\s+(Files|Tools|Handles|Stems|Facts|Last ask|Selected story)\s*$",
     re.IGNORECASE,
 )
+_MAX_STORY = 12
 _HYBRID_LIST_RE = re.compile(
     r"^-\s+(files(?:\s*\(\d+\))?|tools|uris|stems|facts)\s*:\s*(.*)$",
     re.IGNORECASE,
@@ -105,6 +112,7 @@ _PLACEHOLDER_HANDLES = frozenset({
     "(no error/decision/constraint stems)",
     "(no distinctive fact tokens)",
     "(no open user ask captured)",
+    "(no selected story)",
     "(none)",
 })
 
@@ -124,23 +132,24 @@ _HYBRID_INDEX_CHARS = 1000
 
 
 def compaction_residual_mode() -> str:
-    """Return the residual representation. Empty / invalid -> ``summary``."""
+    """Return the residual representation. Empty / invalid -> ``catalog``."""
     try:
         raw = (os.environ.get("HARNESS_COMPACTION_RESIDUAL") or "").strip().lower()
     except Exception:
-        return RESIDUAL_SUMMARY
+        return RESIDUAL_CATALOG
     if not raw:
-        return RESIDUAL_SUMMARY
+        return RESIDUAL_CATALOG
     if raw in VALID_RESIDUAL_MODES:
         return raw
-    return RESIDUAL_SUMMARY
+    return RESIDUAL_CATALOG
 
 
 def settings_residual_choice() -> str:
-    """Summary or hybrid for Settings. Catalog / off display as summary."""
-    if compaction_residual_mode() == RESIDUAL_HYBRID:
-        return RESIDUAL_HYBRID
-    return RESIDUAL_SUMMARY
+    """Settings choice. Off and unknown display as catalog."""
+    mode = compaction_residual_mode()
+    if mode in SETTINGS_RESIDUAL_CHOICES:
+        return mode
+    return RESIDUAL_CATALOG
 
 
 def _unique_append(dst: list[str], seen: set[str], value: str, cap: int) -> None:
@@ -266,7 +275,7 @@ def _ingest_catalog_sections(
         heading = _CATALOG_SECTION_RE.match(raw_line.strip())
         if heading:
             section = heading.group(1).lower()
-            if section == "last ask":
+            if section in ("last ask", "selected story"):
                 section = ""
             continue
         if raw_line.strip().startswith("## ") and CATALOG_HEADING not in raw_line:
@@ -326,6 +335,26 @@ def _ingest_hybrid_lists(
         elif kind == "facts":
             for item in _split_classified_list(raw_items):
                 _unique_append(facts, seen_facts, item, _MAX_FACTS)
+
+
+def _ingest_selected_story(
+    text: str,
+    story: list[str],
+    seen_story: set[str],
+) -> None:
+    start = text.find(SELECTED_STORY_HEADING)
+    if start < 0:
+        return
+    for raw_line in text[start:].splitlines()[1:]:
+        stripped = raw_line.strip()
+        if stripped.startswith("### ") or stripped.startswith("## "):
+            break
+        if not stripped.startswith("- "):
+            continue
+        item = _without_leading_bullet(raw_line)
+        if _is_placeholder_handle(item):
+            continue
+        _unique_append_last_wins(story, seen_story, item, _MAX_STORY)
 
 
 def _ingest_structured_residual(
@@ -417,6 +446,8 @@ def extract_handle_index(middle_block: list[dict]) -> dict[str, Any]:
     seen_stems: set[str] = set()
     seen_facts: set[str] = set()
     last_ask = ""
+    story: list[str] = []
+    seen_story: set[str] = set()
 
     if not isinstance(middle_block, list):
         middle_block = []
@@ -454,6 +485,7 @@ def extract_handle_index(middle_block: list[dict]) -> dict[str, Any]:
                 facts,
                 seen_facts,
             )
+            _ingest_selected_story(text, story, seen_story)
             for match in _PATH_RE.findall(text):
                 _unique_append(files, seen_files, match, _MAX_FILES)
             for match in _SPILL_URI_RE.findall(text):
@@ -493,6 +525,12 @@ def extract_handle_index(middle_block: list[dict]) -> dict[str, Any]:
             for match in _TICKET_RE.findall(text):
                 _unique_append(facts, seen_facts, match, _MAX_FACTS)
 
+    for text in select_story_lines(middle_block):
+        _unique_append_last_wins(story, seen_story, text, _MAX_STORY)
+
+    stems = apply_topic_last_wins(stems)
+    story = apply_topic_last_wins(story)
+
     return {
         "files": files,
         "tools": tools,
@@ -500,6 +538,7 @@ def extract_handle_index(middle_block: list[dict]) -> dict[str, Any]:
         "stems": stems,
         "facts": facts,
         "last_ask": last_ask,
+        "story": story,
         "middle_messages": len(middle_block),
     }
 
@@ -558,6 +597,11 @@ def build_catalog_residual(
         + _bullet_block("### Handles", index["handles"], "(no durable handles found)")
         + _bullet_block("### Stems", index["stems"], "(no error/decision/constraint stems)")
         + _bullet_block("### Facts", index["facts"], "(no distinctive fact tokens)")
+        + _bullet_block(
+            SELECTED_STORY_HEADING,
+            index.get("story") or [],
+            "(no selected story)",
+        )
         + f"### Last ask\n- {last_ask}\n"
     )
     if len(summary) > char_budget:
@@ -593,6 +637,32 @@ def build_hybrid_index(
     if len(text) > max_chars:
         text = _clip(text, max_chars)
     return text
+
+
+def append_selected_story(
+    body: str,
+    middle_block: list[dict],
+    *,
+    char_budget: int,
+) -> str:
+    """Pin last-wins story after an LLM paragraph so a misread cannot hide it."""
+    char_budget = max(int(char_budget), _min_summary_seed_chars() + 160)
+    if SELECTED_STORY_HEADING in (body or ""):
+        return body
+    story = extract_handle_index(middle_block).get("story") or []
+    if not story:
+        return body or ""
+    block = _bullet_block(SELECTED_STORY_HEADING, story, "(no selected story)")
+    body = (body or "").rstrip()
+    room = char_budget - len(block) - 1
+    if room < 40:
+        return _clip(body + "\n" + block, char_budget)
+    if len(body) > room:
+        body = _clip(body, room)
+    combined = body + "\n" + block
+    if len(combined) > char_budget:
+        combined = _clip(combined, char_budget)
+    return combined
 
 
 def append_handle_index(

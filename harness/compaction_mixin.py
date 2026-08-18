@@ -498,6 +498,13 @@ class CompactionContextMixin:
                 continue
             role = m.get("role", "user").upper()
             content = m.get("content") or ""
+            if str(m.get("role") or "") == "assistant" and not m.get("tool_calls"):
+                try:
+                    from .compaction_vault import _ack_like
+                except Exception:
+                    _ack_like = None
+                if _ack_like is not None and _ack_like(str(content).strip()):
+                    continue
             if m.get("tool_calls"):
                 tc_strs = []
                 for tc in m["tool_calls"]:
@@ -716,7 +723,23 @@ class CompactionContextMixin:
                 summary = summary.rstrip() + "\n" + pad
             if len(summary) > char_budget:
                 summary = self._clip_text(summary, char_budget)
-        return summary
+        return self._pin_selected_story(summary, middle_block, char_budget)
+
+    def _pin_selected_story(
+        self,
+        body: str,
+        middle_block: list[dict],
+        char_budget: Optional[int],
+    ) -> str:
+        try:
+            from .compaction_residual import append_selected_story
+        except Exception:
+            return body
+        return append_selected_story(
+            body,
+            middle_block,
+            char_budget=self._residual_char_budget(middle_block, char_budget),
+        )
 
     def _residual_char_budget(
         self,
@@ -762,7 +785,24 @@ class CompactionContextMixin:
         body = redact_secret_text(
             self._make_fallback_summary(middle_block, char_budget=budget)
         )
-        return append_handle_index(body, middle_block, char_budget=budget)
+        return self._pin_selected_story(
+            append_handle_index(body, middle_block, char_budget=budget),
+            middle_block,
+            budget,
+        )
+
+    def _build_turn_vault_section(self, user_message: str) -> str:
+        """Query-conditioned recall of elided history. Never raises."""
+        try:
+            from .compaction_vault import build_turn_vault_section
+
+            return build_turn_vault_section(
+                getattr(self, "state_dir", "") or "",
+                getattr(self, "harness_session_id", None) or "default",
+                user_message,
+            )
+        except Exception:
+            return ""
 
     def _maybe_compact_history(
         self, force: bool = False, emergency: bool = False,
@@ -776,7 +816,7 @@ class CompactionContextMixin:
         )
 
         residual_mode = compaction_residual_mode()
-        # Explicit off only — empty/invalid env values stay on the summary path.
+        # Explicit off only — empty/invalid env values stay on catalog.
         if residual_mode == RESIDUAL_OFF:
             self._set_compaction_attempt(REASON_RESIDUAL_OFF)
             return
@@ -1001,7 +1041,9 @@ class CompactionContextMixin:
             f"Be extremely concise (hard budget ~{summary_token_budget} tokens). "
             "Each bullet must name a file, a decision, or an open question. "
             "Drop jokes, failed tool dumps, and 'then I ran' recap. "
-            "Overwrite the current task state; do not wrap a previous summary."
+            "Overwrite the current task state; do not wrap a previous summary. "
+            "Later decisions replace earlier ones on the same topic. "
+            "One-word acknowledgements (Noted, Reversed, Recorded) are not policy."
         )
 
         content_to_summarize = self._format_block_for_summary(pruned_middle)
@@ -1131,8 +1173,18 @@ class CompactionContextMixin:
                                     char_budget=summary_char_budget,
                                 )
                             )
-                    elif len(summary) > summary_char_budget:
-                        summary = summary[:summary_char_budget] + "\n... [summary truncated to fit budget]"
+                            summary = self._pin_selected_story(
+                                summary, pruned_middle, summary_char_budget
+                            )
+                    else:
+                        if len(summary) > summary_char_budget:
+                            summary = (
+                                summary[:summary_char_budget]
+                                + "\n... [summary truncated to fit budget]"
+                            )
+                        summary = self._pin_selected_story(
+                            summary, pruned_middle, summary_char_budget
+                        )
                 else:
                     summary = _use_extractive_fallback()
                     self._compaction_fail_until = time.time() + _compact_cooldown
@@ -1280,12 +1332,12 @@ class CompactionContextMixin:
         # closed: archive I/O must not block or crash Compact Now.
         try:
             from .compaction_archive import append_compaction_archive
+            from .compaction_vault import index_elided_messages
 
-            append_compaction_archive(
-                getattr(self, "state_dir", "") or "",
-                getattr(self, "harness_session_id", None) or "default",
-                middle_block,
-            )
+            sid = getattr(self, "harness_session_id", None) or "default"
+            state_dir = getattr(self, "state_dir", "") or ""
+            append_compaction_archive(state_dir, sid, middle_block)
+            index_elided_messages(state_dir, sid, middle_block)
         except Exception:
             pass
 

@@ -9,6 +9,7 @@ from harness.compaction_mixin import (
 from harness.compaction_residual import (
     CATALOG_HEADING,
     HYBRID_INDEX_HEADING,
+    SELECTED_STORY_HEADING,
     RESIDUAL_CATALOG,
     RESIDUAL_HYBRID,
     RESIDUAL_OFF,
@@ -106,35 +107,37 @@ def _session(tmp_path, monkeypatch, budget: int = 4000) -> ConversationalSession
 
 def test_residual_mode_default_and_empty_never_off(monkeypatch):
     monkeypatch.delenv("HARNESS_COMPACTION_RESIDUAL", raising=False)
-    assert compaction_residual_mode() == RESIDUAL_SUMMARY
+    assert compaction_residual_mode() == RESIDUAL_CATALOG
     monkeypatch.setenv("HARNESS_COMPACTION_RESIDUAL", "")
-    assert compaction_residual_mode() == RESIDUAL_SUMMARY
+    assert compaction_residual_mode() == RESIDUAL_CATALOG
     monkeypatch.setenv("HARNESS_COMPACTION_RESIDUAL", "   ")
-    assert compaction_residual_mode() == RESIDUAL_SUMMARY
+    assert compaction_residual_mode() == RESIDUAL_CATALOG
     monkeypatch.setenv("HARNESS_COMPACTION_RESIDUAL", "nope")
-    assert compaction_residual_mode() == RESIDUAL_SUMMARY
+    assert compaction_residual_mode() == RESIDUAL_CATALOG
     monkeypatch.setenv("HARNESS_COMPACTION_RESIDUAL", "off")
     assert compaction_residual_mode() == RESIDUAL_OFF
     monkeypatch.setenv("HARNESS_COMPACTION_RESIDUAL", "CATALOG")
     assert compaction_residual_mode() == RESIDUAL_CATALOG
-    assert settings_residual_choice() == RESIDUAL_SUMMARY
+    assert settings_residual_choice() == RESIDUAL_CATALOG
     monkeypatch.setenv("HARNESS_COMPACTION_RESIDUAL", "hybrid")
     assert settings_residual_choice() == RESIDUAL_HYBRID
 
 
-def test_default_summary_mode_unchanged(tmp_path, monkeypatch):
-    """Unset residual switch keeps the existing LLM summary path (mode=llm)."""
+def test_default_catalog_mode_is_extractive(tmp_path, monkeypatch):
+    """Unset residual switch uses the catalog path (mode=extractive)."""
     monkeypatch.delenv("HARNESS_COMPACTION_RESIDUAL", raising=False)
     session = _session(tmp_path, monkeypatch)
     _fat_history(session)
     events = list(session._maybe_compact_history(force=True))
     assert [e.kind for e in events] == ["compacting", "compaction"]
-    assert events[-1].data.get("mode") == "llm"
-    assert session.pilot.chat_calls
+    assert events[-1].data.get("mode") == "extractive"
+    assert not session.pilot.chat_calls
+    injected = session._history[1]["content"]
     assert session._history[1].get("_compressed_summary") is True
-    assert "[Earlier conversation summarized to fit context]" in session._history[1]["content"]
-    assert "compaction_generation=" in session._history[1]["content"]
-    assert "Compaction fixture summary" in session._history[1]["content"]
+    assert "[Earlier conversation summarized to fit context]" in injected
+    assert "compaction_generation=" in injected
+    assert CATALOG_HEADING in injected
+    assert "Compaction fixture summary" not in injected
     assert session._history[-1]["content"] == "continuing"
 
 
@@ -186,6 +189,14 @@ def test_catalog_extractive_no_llm_and_redacts(tmp_path, monkeypatch):
     assert "sk-abcdefghijklmnopqrstuvwx" not in injected
     assert "REDACTED" in injected
     assert session._history[-1]["content"] == "continuing"
+    from harness.compaction_vault import retrieve_vault_chunks
+
+    vault_hits = retrieve_vault_chunks(
+        str(tmp_path),
+        "sess-residual",
+        "What is the source of truth for the billing ledger?",
+    )
+    assert any("ledger_v3.py" in hit for hit in vault_hits)
 
 
 def test_hybrid_keeps_four_headings_and_handle_index(tmp_path, monkeypatch):
@@ -206,6 +217,66 @@ def test_hybrid_keeps_four_headings_and_handle_index(tmp_path, monkeypatch):
     assert "src/billing/ledger_v3.py" in injected
     assert "spill://sess-lab/result-omega" in injected
     assert "Compaction fixture summary" in injected
+    assert SELECTED_STORY_HEADING in injected
+
+
+def _compact_summary_case(tmp_path, monkeypatch, case_id, return_text=_GOOD_SUMMARY):
+    from pmharness.compaction_residual_battery import cases_by_id
+
+    monkeypatch.setenv("HARNESS_COMPACTION_RESIDUAL", "summary")
+    session = _session(tmp_path, monkeypatch)
+    session.pilot = MockPilot(return_text=return_text)
+    case = cases_by_id()[case_id]
+    session._history = [dict(row) for row in case.transcript]
+    session._history.append({"role": "user", "content": "please continue"})
+    session._history.append({"role": "assistant", "content": "continuing"})
+    events = list(session._maybe_compact_history(force=True))
+    return session, events
+
+
+def test_summary_skips_ack_and_pins_last_wins_story(tmp_path, monkeypatch):
+    """Ack-only 'Reversed.' must not reach the summarizer or undo last-wins."""
+    session, events = _compact_summary_case(tmp_path, monkeypatch, "unprefixed_reversal")
+    assert events[-1].data.get("mode") == "llm"
+    assert session.pilot.chat_calls
+    prompt = session.pilot.chat_calls[0][0][0]["content"]
+    system = session.pilot.chat_calls[0][1]
+    assert "Reversed." not in prompt
+    assert "Later decisions replace" in system
+    injected = session._history[1]["content"]
+    assert SELECTED_STORY_HEADING in injected
+    assert "write to the live ledger now" in injected.lower()
+    assert "don't write" not in injected.lower()
+
+
+def test_summary_lying_paragraph_still_pins_later_policy(tmp_path, monkeypatch):
+    """A rollback paragraph must not hide the extractive last-wins story."""
+    lying = (
+        _GOOD_SUMMARY
+        + "Current policy: do not write to the live ledger because it was reversed.\n"
+    )
+    session, events = _compact_summary_case(
+        tmp_path, monkeypatch, "unprefixed_reversal", return_text=lying
+    )
+    assert events[-1].data.get("mode") == "llm"
+    injected = session._history[1]["content"]
+    assert SELECTED_STORY_HEADING in injected
+    assert "write to the live ledger now" in injected.lower()
+    story = injected.split(SELECTED_STORY_HEADING, 1)[1]
+    assert "don't write" not in story.lower()
+    assert "do not write" not in story.lower()
+
+
+def test_summary_obligation_keeps_first_policy(tmp_path, monkeypatch):
+    session, events = _compact_summary_case(
+        tmp_path, monkeypatch, "unprefixed_obligation"
+    )
+    assert events[-1].data.get("mode") == "llm"
+    injected = session._history[1]["content"]
+    assert SELECTED_STORY_HEADING in injected
+    assert "don't write to the live ledger" in injected.lower()
+    assert "east replica is the only sink" in injected.lower()
+    assert "retired" not in injected.lower()
 
 
 def test_hybrid_degenerate_pilot_falls_back_extractively(tmp_path, monkeypatch):
@@ -571,9 +642,11 @@ def test_obligation_harvest_keeps_later_reversal():
         },
     ]
     index = extract_handle_index(middle)
-    blob = " ".join(index["stems"]).lower()
+    blob = " ".join(index["stems"] + index["story"]).lower()
     assert "write to the live ledger now" in blob
     assert "east replica is retired" in blob
+    assert "don't write" not in blob
+    assert "only sink" not in blob
 
 
 def test_obligation_harvest_folds_unicode_apostrophes():
@@ -638,6 +711,32 @@ def test_catalog_placeholders_are_not_ingested_as_handles():
     assert index["handles"] == []
     assert index["stems"] == []
     assert index["facts"] == []
+    assert index["story"] == []
     blob = _index_blob(index)
     assert "(no file pointers found)" not in blob
     assert "(none)" not in blob
+    assert "(no selected story)" not in blob
+
+
+def test_selected_story_survives_catalog_reextract():
+    """Last-N story must re-enter the next catalog from ### Selected story."""
+    from harness.compaction_residual import SELECTED_STORY_HEADING
+
+    middle = [
+        {"role": "user", "content": "The canary now ships to the spare region."},
+        {"role": "assistant", "content": "Recorded the replacement ship plan."},
+        {"role": "user", "content": "Please continue the current docs pass."},
+    ]
+    first = extract_handle_index(middle)
+    assert any("spare region" in line.lower() for line in first["story"])
+    catalog = build_catalog_residual(middle, char_budget=4000)
+    assert SELECTED_STORY_HEADING in catalog
+    assert "spare region" in catalog.lower()
+    second = extract_handle_index([{
+        "role": "user",
+        "content": (
+            "[Earlier conversation summarized to fit context]\n" + catalog
+        ),
+        "_compressed_summary": True,
+    }])
+    assert any("spare region" in line.lower() for line in second["story"])

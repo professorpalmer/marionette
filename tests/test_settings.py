@@ -54,7 +54,7 @@ def test_settings_get_returns_expected_shape(monkeypatch):
         assert "reasoning_effort" in data
         assert data["reasoning_effort"] == "low"
         assert "compactionResidual" in data
-        assert data["compactionResidual"] == "summary"
+        assert data["compactionResidual"] == "catalog"
         assert "state_dir" in data
         assert "repo" in data
     finally:
@@ -167,7 +167,7 @@ def test_settings_post_persists_compaction_residual(tmp_path, monkeypatch):
     try:
         assert json.loads(_get(port, "/api/settings").read().decode())[
             "compactionResidual"
-        ] == "summary"
+        ] == "catalog"
 
         post_resp = _post(
             port,
@@ -190,14 +190,23 @@ def test_settings_post_persists_compaction_residual(tmp_path, monkeypatch):
             persisted = json.load(f)
         assert persisted["HARNESS_COMPACTION_RESIDUAL"] == "hybrid"
 
+        catalog_resp = _post(
+            port,
+            "/api/settings",
+            {"compactionResidual": "catalog"},
+            {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN},
+        )
+        assert catalog_resp.status == 200
+        assert json.loads(catalog_resp.read().decode())["compactionResidual"] == "catalog"
+
         try:
             _post(
                 port,
                 "/api/settings",
-                {"compactionResidual": "catalog"},
+                {"compactionResidual": "off"},
                 {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN},
             )
-            assert False, "catalog must stay env-only"
+            assert False, "off must stay env-only"
         except urllib.error.HTTPError as e:
             assert e.code == 400
 
