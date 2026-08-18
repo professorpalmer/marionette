@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowUpCircle, RefreshCw, X } from "lucide-react";
 import { sanitizeUpdateMessage } from "../lib/updateMessages";
 import { TITLEBAR_TRAFFIC_PAD_PX } from "../lib/titlebarSafe";
@@ -14,7 +14,17 @@ import { TITLEBAR_TRAFFIC_PAD_PX } from "../lib/titlebarSafe";
 //
 // The pill stays as the always-present compact indicator; this banner is the
 // occasional "your update is ready, one click to finish" nudge.
-export default function UpdateBanner() {
+export type UpdateAvailability = {
+  behind: number;
+  branch: string;
+  version: string;
+};
+
+export default function UpdateBanner({
+  onAvailabilityChange,
+}: {
+  onAvailabilityChange?: (update: UpdateAvailability | null) => void;
+} = {}) {
   const [latest, setLatest] = useState<string>("");
   const [ready, setReady] = useState(false);
   const [applying, setApplying] = useState(false);
@@ -27,6 +37,20 @@ export default function UpdateBanner() {
   // Restart, so genuine post-commit install/relaunch stages still show progress.
   const readyRef = useRef(false);
   const committedRef = useRef(false);
+  const lastRuntimeNoteRef = useRef<string | null>(null);
+  const publishAvailability = useCallback((res: any) => {
+    onAvailabilityChange?.({
+      behind: res.behind || 0,
+      branch: res.branch || "main",
+      version: res.current || "",
+    });
+  }, [onAvailabilityChange]);
+  const revokeAvailability = useCallback(() => {
+    readyRef.current = false;
+    setReady(false);
+    setLatest("");
+    onAvailabilityChange?.(null);
+  }, [onAvailabilityChange]);
 
   useEffect(() => {
     const ipc = (window as any).harnessIPC;
@@ -69,6 +93,14 @@ export default function UpdateBanner() {
         .check()
         .then((res: any) => {
           if (cancelled || committedRef.current || res?.busy) return;
+          if (
+            res.runtimeStale &&
+            res.runtimeNote &&
+            res.runtimeNote !== lastRuntimeNoteRef.current
+          ) {
+            lastRuntimeNoteRef.current = res.runtimeNote;
+            window.dispatchEvent(new CustomEvent("harness-toast", { detail: res.runtimeNote }));
+          }
           if (res.available || res.downloaded) {
             // Only a real version string labels the banner. Source-run updates
             // track a branch tip, and falling back to the branch name rendered
@@ -76,10 +108,12 @@ export default function UpdateBanner() {
             setLatest(res.latest || "");
             readyRef.current = true;
             setReady(true);
+            publishAvailability(res);
           } else {
             // Packaged shell checks emit transient "Checking for app shell update"
             // progress; when the poll finishes with nothing to install, drop that
             // spinner so the banner (and StatusBar pill mirror) cannot stick at 0%.
+            revokeAvailability();
             clearCheckProgress();
           }
         })
@@ -102,6 +136,7 @@ export default function UpdateBanner() {
           setLatest(res.latest || "");
           readyRef.current = true;
           setReady(true);
+          publishAvailability(res);
         })
       : null;
 
@@ -164,7 +199,7 @@ export default function UpdateBanner() {
       if (off) off();
       if (offAvailable) offAvailable();
     };
-  }, []);
+  }, [publishAvailability, revokeAvailability]);
 
   const restart = (strategy?: "ff" | "stash") => {
     const ipc = (window as any).harnessIPC;
@@ -178,10 +213,13 @@ export default function UpdateBanner() {
     window.dispatchEvent(new Event("harness-update-committing"));
 
     // Recover the banner to an actionable state instead of stranding the user.
-    const recover = (msg: string) => {
+    const settleApply = () => {
       committedRef.current = false;
       setApplying(false);
       window.dispatchEvent(new Event("harness-update-idle")); // release the pill mirror too
+    };
+    const recover = (msg: string) => {
+      settleApply();
       window.dispatchEvent(new CustomEvent("harness-toast", { detail: msg }));
     };
 
@@ -196,10 +234,15 @@ export default function UpdateBanner() {
     ipc.updates
       .apply(strategy ? { strategy } : undefined)
       .then((r: any) => {
-        // apply() resolves { ok:false, error } when there's nothing to install
-        // (e.g. a stale banner) -- surface it instead of spinning.
+        // A stale positive can race the authoritative apply-time check. Clear
+        // both update surfaces silently when that check says nothing remains.
         if (r && r.ok === false) {
           window.clearTimeout(watchdog);
+          if (r.error === "no update available") {
+            revokeAvailability();
+            settleApply();
+            return;
+          }
           // A self-edited checkout collides with fast-forward. Offer the sane
           // recovery for each case instead of a dead-end error (Marionette
           // edits its own source, so this is a normal path, not an edge case).

@@ -5,7 +5,7 @@ import Conversation from "./components/Conversation";
 import RightPane from "./components/RightPane";
 import RightDock from "./components/RightDock";
 import StatusBar from "./components/StatusBar";
-import UpdateBanner from "./components/UpdateBanner";
+import UpdateBanner, { type UpdateAvailability } from "./components/UpdateBanner";
 import ProviderKeyBanner from "./components/ProviderKeyBanner";
 import Resizer from "./components/Resizer";
 import RegistryWizard from "./components/RegistryWizard";
@@ -117,6 +117,7 @@ function hasStoredRightPaneCards(): boolean {
 
 export default function App() {
   const [config, setConfig] = useState<Config | null>(null);
+  const [availableUpdate, setAvailableUpdate] = useState<UpdateAvailability | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [artifacts, setArtifacts] = useState<{ type: string; headline: string; confidence?: number }[]>([]);
   const [jobsRefresh, setJobsRefresh] = useState(0);
@@ -336,7 +337,7 @@ export default function App() {
 
   return (
     <div className="h-full flex flex-col bg-[var(--shell-chrome)]">
-      <UpdateBanner />
+      <UpdateBanner onAvailabilityChange={setAvailableUpdate} />
       {/* Keyless nudge: agentic is the shipped default, so instead of a demo run
           we tell the user to plug in a key. Suppressed while the first-run wizard
           is up (it already covers key setup) to avoid stacking two prompts. */}
@@ -441,7 +442,7 @@ export default function App() {
         </div>
       </div>
       <div className="shrink-0 px-px py-px">
-        <StatusBar config={config}
+        <StatusBar config={config} update={availableUpdate}
           leftOpen={leftOpen} rightOpen={rightOpen}
           onToggleLeft={() => setLeftOpen((v) => !v)} onToggleRight={() => setRightOpen((v) => !v)} />
       </div>

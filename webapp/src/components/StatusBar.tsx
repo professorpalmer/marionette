@@ -32,6 +32,7 @@ import CostBreakdown, {
 } from "./CostBreakdown";
 import { sanitizeUpdateMessage } from "../lib/updateMessages";
 import { shortPilotModelLabel } from "../lib/turnProgress";
+import type { UpdateAvailability } from "./UpdateBanner";
 
 type FooterRuntimeStatus = "ready" | "thinking" | "busy";
 
@@ -78,8 +79,9 @@ function truncateGoalText(text: string, max = 36): string {
 // in LeftRail SESSION JOBS -- a footer total was stale across dir swaps and
 // disagreed with the scoped list, so it was removed. Narrow widths hide
 // secondary labels via container queries instead of overlapping the clusters.
-export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, onToggleRight }: {
+export default function StatusBar({ config, update, leftOpen, rightOpen, onToggleLeft, onToggleRight }: {
   config: Config | null;
+  update: UpdateAvailability | null;
   leftOpen: boolean; rightOpen: boolean;
   onToggleLeft: () => void; onToggleRight: () => void;
 }) {
@@ -87,7 +89,6 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
   const [usage, setUsage] = useState<UsageData["session"] | null>(null);
   const [costOpen, setCostOpen] = useState(false);
   const costRef = useRef<HTMLDivElement | null>(null);
-  const [update, setUpdate] = useState<{ behind: number; branch: string; version: string } | null>(null);
   const [apply, setApply] = useState<{ stage: string; message: string; percent: number | null } | null>(null);
   const [toast, setToast] = useState<{
     message: string;
@@ -97,8 +98,6 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
   const [sessionState, setSessionState] = useState<SessionState | null>(null);
   const [taskProfile, setTaskProfile] = useState<TaskProfileChip | null>(null);
   const [goalBusy, setGoalBusy] = useState(false);
-  // Dedup runtime-stale notes across the 5-minute focus throttle and 30-minute polls.
-  const lastRuntimeNoteRef = useRef<string | null>(null);
 
   const refreshSessionState = () =>
     api.getSessionState()
@@ -155,57 +154,6 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
 
   useEffect(() => subscribeTaskProfile(setTaskProfile), []);
 
-  // Self-update check: how far behind the tracked branch we are (desktop only).
-  // Silent on failure -- an update nudge must never get in the way. Re-checks
-  // every 30 minutes and on window focus (throttled) so a release that lands
-  // mid-session surfaces without a relaunch -- previously the pill only ever
-  // checked once on mount.
-  useEffect(() => {
-    const ipc = (window as any).harnessIPC;
-    if (!ipc || !ipc.updates) return;
-    let cancelled = false;
-    let lastCheck = 0;
-    const MIN_GAP_MS = 5 * 60 * 1000;
-    const check = (force = false) => {
-      const now = Date.now();
-      if (!force && now - lastCheck < MIN_GAP_MS) return;
-      lastCheck = now;
-      ipc.updates.check()
-        .then((res: any) => {
-          if (cancelled || !res) return;
-          // Informational only: a stale Puppetmaster runtime is not an actionable
-          // app update, but users deserve an honest one-line explanation once.
-          if (res.runtimeStale && res.runtimeNote && res.runtimeNote !== lastRuntimeNoteRef.current) {
-            lastRuntimeNoteRef.current = res.runtimeNote;
-            window.dispatchEvent(new CustomEvent("harness-toast", { detail: res.runtimeNote }));
-          }
-          if (res.available || res.downloaded) {
-            setUpdate({ behind: res.behind || 0, branch: res.branch || "main", version: res.current || "" });
-          }
-        })
-        .catch(() => {});
-    };
-    check(true);
-    const interval = window.setInterval(() => check(true), 30 * 60 * 1000);
-    const onFocus = () => check();
-    window.addEventListener("focus", onFocus);
-    // PUSH path: the main-process update watcher notifies the moment its
-    // background fetch sees new commits, so the pill appears without waiting
-    // for the next renderer poll tick.
-    const offAvailable = ipc.updates.onAvailable
-      ? ipc.updates.onAvailable((res: any) => {
-          if (!cancelled && res && (res.available || res.downloaded)) {
-            setUpdate({ behind: res.behind || 0, branch: res.branch || "main", version: res.current || "" });
-          }
-        })
-      : null;
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-      window.removeEventListener("focus", onFocus);
-      if (offAvailable) offAvailable();
-    };
-  }, []);
 
   // The UpdateBanner owns the single, robust apply() path (latching, error
   // recovery, watchdog, idempotent install). The pill just asks it to start and

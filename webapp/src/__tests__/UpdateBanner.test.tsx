@@ -6,6 +6,11 @@ type CheckResult = {
   available: boolean;
   downloaded: boolean;
   busy?: boolean;
+  behind?: number;
+  branch?: string;
+  current?: string;
+  runtimeStale?: boolean;
+  runtimeNote?: string;
 };
 
 type ProgressPayload = {
@@ -50,6 +55,90 @@ describe("UpdateBanner update checks", () => {
   afterEach(() => {
     window.removeEventListener("harness-update-idle", idleListener);
     delete (window as any).harnessIPC;
+    vi.restoreAllMocks();
+  });
+
+  it("revokes a latched update only after a definitive unavailable check", async () => {
+    let now = 1_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const onAvailabilityChange = vi.fn();
+    const check = vi
+      .fn()
+      .mockResolvedValueOnce({
+        available: true,
+        downloaded: false,
+        behind: 2,
+        branch: "main",
+        current: "0.9.245",
+      })
+      .mockResolvedValueOnce({ available: false, downloaded: false });
+    (window as any).harnessIPC.updates.check = check;
+
+    render(<UpdateBanner onAvailabilityChange={onAvailabilityChange} />);
+
+    expect(await screen.findByTestId("update-banner")).toBeInTheDocument();
+    expect(onAvailabilityChange).toHaveBeenLastCalledWith({
+      behind: 2,
+      branch: "main",
+      version: "0.9.245",
+    });
+
+    now += 5 * 60 * 1000;
+    act(() => window.dispatchEvent(new Event("focus")));
+
+    await waitFor(() => expect(check).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByTestId("update-banner")).not.toBeInTheDocument());
+    expect(onAvailabilityChange).toHaveBeenLastCalledWith(null);
+  });
+
+  it("preserves a latched update across busy and failed checks", async () => {
+    let now = 1_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const onAvailabilityChange = vi.fn();
+    const check = vi
+      .fn()
+      .mockResolvedValueOnce({
+        available: true,
+        downloaded: false,
+        behind: 1,
+        branch: "main",
+        current: "0.9.245",
+      })
+      .mockResolvedValueOnce({ available: false, downloaded: false, busy: true })
+      .mockRejectedValueOnce(new Error("network unavailable"));
+    (window as any).harnessIPC.updates.check = check;
+
+    render(<UpdateBanner onAvailabilityChange={onAvailabilityChange} />);
+    expect(await screen.findByTestId("update-banner")).toBeInTheDocument();
+
+    now += 5 * 60 * 1000;
+    act(() => window.dispatchEvent(new Event("focus")));
+    await waitFor(() => expect(check).toHaveBeenCalledTimes(2));
+    expect(screen.getByTestId("update-banner")).toBeInTheDocument();
+
+    now += 5 * 60 * 1000;
+    act(() => window.dispatchEvent(new Event("focus")));
+    await waitFor(() => expect(check).toHaveBeenCalledTimes(3));
+    expect(screen.getByTestId("update-banner")).toBeInTheDocument();
+    expect(onAvailabilityChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("surfaces a runtime-stale note from the owner check", async () => {
+    const note = "Puppetmaster must be updated before workers are ready.";
+    const toast = vi.fn();
+    window.addEventListener("harness-toast", toast);
+    (window as any).harnessIPC.updates.check = vi.fn().mockResolvedValue({
+      available: false,
+      downloaded: false,
+      runtimeStale: true,
+      runtimeNote: note,
+    });
+
+    render(<UpdateBanner />);
+
+    await waitFor(() => expect(toast).toHaveBeenCalledTimes(1));
+    expect((toast.mock.calls[0][0] as CustomEvent).detail).toBe(note);
+    window.removeEventListener("harness-toast", toast);
   });
 
   it("keeps checking progress invisible when no packaged update is available", async () => {
@@ -196,5 +285,28 @@ describe("UpdateBanner update checks", () => {
     });
     // Must not recover to a second Restart click while quitAndInstall runs.
     expect(screen.queryByRole("button", { name: /restart now/i })).not.toBeInTheDocument();
+  });
+
+  it("revokes stale availability when apply confirms there is no update", async () => {
+    const onAvailabilityChange = vi.fn();
+    const apply = vi.fn(async () => ({ ok: false, error: "no update available" }));
+    (window as any).harnessIPC.updates.apply = apply;
+    (window as any).harnessIPC.updates.onAvailable = vi.fn((listener: (res: CheckResult) => void) => {
+      listener({
+        available: true,
+        downloaded: false,
+        behind: 1,
+        branch: "main",
+        current: "0.9.245",
+      });
+      return () => {};
+    });
+
+    render(<UpdateBanner onAvailabilityChange={onAvailabilityChange} />);
+    await act(async () => screen.getByRole("button", { name: /restart now/i }).click());
+
+    await waitFor(() => expect(apply).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByTestId("update-banner")).not.toBeInTheDocument());
+    expect(onAvailabilityChange).toHaveBeenLastCalledWith(null);
   });
 });

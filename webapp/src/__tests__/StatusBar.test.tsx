@@ -1,10 +1,12 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import StatusBar, {
   deriveFooterRuntimeStatus,
   footerRuntimeStatusLabel,
   sessionGoalForChip,
 } from "../components/StatusBar";
+import UpdateBanner, { type UpdateAvailability } from "../components/UpdateBanner";
 import { api } from "../lib/api";
 import { publishTaskProfile } from "../lib/taskProfileChrome";
 
@@ -37,11 +39,22 @@ const mockClearSessionGoal = vi.mocked(api.clearSessionGoal);
 
 const statusBarProps = {
   config: null,
+  update: null,
   leftOpen: true,
   rightOpen: false,
   onToggleLeft: vi.fn(),
   onToggleRight: vi.fn(),
 };
+
+function AppUpdateChromeHarness() {
+  const [update, setUpdate] = useState<UpdateAvailability | null>(null);
+  return (
+    <>
+      <UpdateBanner onAvailabilityChange={setUpdate} />
+      <StatusBar {...statusBarProps} update={update} />
+    </>
+  );
+}
 
 describe("sessionGoalForChip", () => {
   it("returns null when goal is absent, cleared, or empty", () => {
@@ -650,58 +663,6 @@ describe("StatusBar session GOAL chip", () => {
   });
 });
 
-describe("StatusBar runtime stale toast", () => {
-  const runtimeNote =
-    "Puppetmaster is at 1.20.10 but this Marionette needs 1.22.4 -- offline. Reconnect and update to finish.";
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockWorkspaces.mockResolvedValue([]);
-    mockGetUsage.mockResolvedValue({ session: emptyUsageSession, jobs: [] });
-    mockGetSessionState.mockResolvedValue({
-      state: "idle",
-      pending_swarms: false,
-      runners: {},
-    });
-    mockSessions.mockResolvedValue([]);
-  });
-
-  afterEach(() => {
-    delete (window as any).harnessIPC;
-  });
-
-  it("surfaces runtimeNote once as a toast without showing the update pill", async () => {
-    const check = vi
-      .fn()
-      .mockResolvedValue({ runtimeStale: true, runtimeNote, available: false });
-    (window as any).harnessIPC = {
-      updates: { check, onAvailable: null, onProgress: vi.fn(() => () => {}) },
-    };
-
-    render(<StatusBar {...statusBarProps} />);
-
-    await waitFor(() => expect(check).toHaveBeenCalled());
-    await waitFor(() => {
-      expect(screen.getByText(runtimeNote)).toBeInTheDocument();
-    });
-    expect(screen.queryByText(/^update/)).not.toBeInTheDocument();
-  });
-
-  it("does not toast when runtimeStale is absent", async () => {
-    const check = vi.fn().mockResolvedValue({ available: false });
-    (window as any).harnessIPC = {
-      updates: { check, onAvailable: null, onProgress: vi.fn(() => () => {}) },
-    };
-
-    render(<StatusBar {...statusBarProps} />);
-
-    await waitFor(() => {
-      expect(check).toHaveBeenCalled();
-    });
-    expect(screen.queryByText(/Puppetmaster is at/i)).not.toBeInTheDocument();
-  });
-});
-
 describe("StatusBar update progress mirror", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -717,6 +678,70 @@ describe("StatusBar update progress mirror", () => {
 
   afterEach(() => {
     delete (window as any).harnessIPC;
+  });
+
+  it("renders the projected compact update and delegates its click", async () => {
+    const applyRequest = vi.fn();
+    window.addEventListener("harness-update-apply", applyRequest);
+    (window as any).harnessIPC = {
+      updates: {
+        onProgress: vi.fn(() => () => {}),
+      },
+    };
+
+    const { rerender } = render(
+      <StatusBar
+        {...statusBarProps}
+        update={{ behind: 2, branch: "main", version: "0.9.245" }}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "update (2)" }));
+    expect(applyRequest).toHaveBeenCalledTimes(1);
+
+    rerender(<StatusBar {...statusBarProps} update={null} />);
+    expect(screen.queryByRole("button", { name: "update (2)" })).not.toBeInTheDocument();
+    window.removeEventListener("harness-update-apply", applyRequest);
+  });
+
+  it("shares App-projected availability and banner-owned apply progress", async () => {
+    let availableListener: ((payload: any) => void) | null = null;
+    const progressListeners: Array<(payload: any) => void> = [];
+    const apply = vi.fn(() => new Promise(() => {}));
+    (window as any).harnessIPC = {
+      updates: {
+        check: vi.fn(() => new Promise(() => {})),
+        apply,
+        onAvailable: vi.fn((listener) => {
+          availableListener = listener;
+          return () => {};
+        }),
+        onProgress: vi.fn((listener) => {
+          progressListeners.push(listener);
+          return () => {};
+        }),
+      },
+    };
+
+    render(<AppUpdateChromeHarness />);
+    act(() => availableListener?.({
+      available: true,
+      downloaded: false,
+      behind: 2,
+      branch: "main",
+      current: "0.9.245",
+    }));
+
+    expect(await screen.findByTestId("update-banner")).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "update (2)" }));
+    await waitFor(() => expect(apply).toHaveBeenCalledTimes(1));
+
+    act(() => progressListeners.forEach((listener) => listener({
+      stage: "install",
+      message: "Installing update",
+      percent: 50,
+    })));
+    await waitFor(() => expect(screen.getAllByText("Installing update 50%")).toHaveLength(2));
   });
 
   it("clears apply chrome when a terminal idle progress event arrives", async () => {
