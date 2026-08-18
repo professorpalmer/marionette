@@ -804,6 +804,29 @@ class CompactionContextMixin:
         except Exception:
             return {"section": "", "route": "empty", "snippets": []}
 
+    def _turn_vault_context(self, user_message: str, append_only: bool):
+        """Return inject section plus optional transcript cite payload.
+
+        Lives here so ``_send_locked_inner`` does not grow past its fence.
+        Empty FTS stays empty (no cite). Never raises.
+        """
+        if append_only:
+            return "", None
+        try:
+            cite = self._build_turn_vault_cite(user_message)
+            section = cite.get("section") or ""
+            snippets = list(cite.get("snippets") or [])
+            route = str(cite.get("route") or "empty")
+            if snippets and route != "empty":
+                return section, {
+                    "route": route,
+                    "snippets": snippets,
+                    "query": (user_message or "")[:120],
+                }
+            return section, None
+        except Exception:
+            return "", None
+
     def _build_turn_vault_section(self, user_message: str) -> str:
         """Query-conditioned recall of elided history. Never raises."""
         return str(self._build_turn_vault_cite(user_message).get("section") or "")
