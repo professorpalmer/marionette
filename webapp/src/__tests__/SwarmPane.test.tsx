@@ -200,6 +200,20 @@ describe("SwarmPane model badge", () => {
     });
   });
 
+  it("keeps active worker motion semantic while the window is visibly unfocused", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        status: "running",
+        tasks: [{ id: "task-1", status: "running", adapter: "agentic", role: "Worker", instruction: "" }],
+      }),
+    );
+
+    const { container } = render(<SwarmPane />);
+    await screen.findByRole("button", { name: /Worker/ });
+
+    expect(container.querySelectorAll(".semantic-activity-spinner").length).toBeGreaterThanOrEqual(3);
+  });
+
   it("falls back to the adapter on the worker row when no routed model is present", async () => {
     mockSwarmLive.mockResolvedValue(
       liveJob({

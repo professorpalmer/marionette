@@ -9,13 +9,16 @@ html, body, #root { height: 100%; margin: 0; }
    windows, so dozens of always-running spinners/pulses (swarm rows, status bar,
    composer) keep the compositor pinned even after you alt-tab away -- which is
    exactly what makes window-switching stutter during a long session with live
-   swarms. When hidden or blurred we set animation-play-state: paused so the
-   compositor goes idle and the window server gets its frames back. Visible/
-   focused restores everything with zero code changes at the call sites. */
+   swarms. Semantic worker indicators are the narrow exception while the window
+   remains visible; a hidden/minimized window still pauses everything. */
 html.app-idle *,
 html.app-idle *::before,
 html.app-idle *::after {
   animation-play-state: paused !important;
+}
+
+html.app-idle:not(.app-hidden) .semantic-activity-spinner {
+  animation-play-state: running !important;
 }
 
 /* Respect users who ask for less motion: kill the continuous spinners/pulses. */
