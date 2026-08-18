@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.7` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.245, deliberately pre-1.0. Compact residual factory default is catalog (extractive handle index plus a selected story, with vault retrieve). After compact, the transcript shows last-wins kept/dropped plus handle chips; overlapping asks cite vault hits as from compacted history. Summary and hybrid stay Settings opt-ins. Rides puppetmaster-ai==1.22.7.
+> Status: v0.9.246, deliberately pre-1.0. Update availability now has one authoritative renderer owner, visible background workers keep truthful activity motion, and source relaunches fall back from a dead Vite URL to the built renderer. Compact residual factory default remains catalog; summary and hybrid stay Settings opt-ins. Rides puppetmaster-ai==1.22.7.
 
 ## Documentation
 
