@@ -406,7 +406,7 @@ export function workerOutcome(task: Task, failureArt?: Artifact | null): WorkerO
 function WorkerOutcomeGlyph({ outcome }: { outcome: WorkerOutcome }) {
   switch (outcome) {
     case "running":
-      return <Loader2 size={10} className="animate-spin text-accent" />;
+      return <Loader2 size={10} className="animate-spin semantic-activity-spinner text-accent" />;
     case "ok":
       return <CheckCircle2 size={10} className="text-good" />;
     case "degraded":
@@ -1375,7 +1375,7 @@ export default function SwarmPane() {
               </span>
               <span className="shrink-0">
                 {st === "in_progress" ? (
-                  <Loader2 size={12} className="animate-spin text-accent" />
+                  <Loader2 size={12} className="animate-spin semantic-activity-spinner text-accent" />
                 ) : st === "failed" ? (
                   <XCircle size={12} className="text-risk" />
                 ) : outcomeWarning ? (
@@ -1876,7 +1876,7 @@ export default function SwarmPane() {
         <div className="flex items-center gap-2.5 text-[10px]">
           {anyRunning && (
             <span className="flex items-center gap-1 text-accent">
-              <Loader2 size={10} className="animate-spin" /> {runningCount} running
+              <Loader2 size={10} className="animate-spin semantic-activity-spinner" /> {runningCount} running
             </span>
           )}
           {completedCount > 0 && (

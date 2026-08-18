@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type Config } from "./lib/api";
+import { subscribeDocumentMotionPolicy } from "./lib/motionPolicy";
 import LeftRail from "./components/LeftRail";
 import Conversation from "./components/Conversation";
 import RightPane from "./components/RightPane";
@@ -233,28 +234,11 @@ export default function App() {
     checkSetupStatus();
   }, []);
 
-  // PERF: pause CSS animations when the app is backgrounded or the OS window is
-  // not focused. Toggles html.app-idle (see index.css) so the shared macOS GPU
-  // compositor goes idle instead of driving dozens of spinners/pulses at 60fps
-  // while you are in another window -- the cause of alt-tab/window-switch stutter
-  // during a long session with live swarms. blur/focus covers alt-tab (the window
-  // can stay "visible" but unfocused); visibilitychange covers minimize/hide.
-  useEffect(() => {
-    const root = document.documentElement;
-    const setIdle = () => {
-      const idle = document.hidden || !document.hasFocus();
-      root.classList.toggle("app-idle", idle);
-    };
-    setIdle();
-    window.addEventListener("blur", setIdle);
-    window.addEventListener("focus", setIdle);
-    document.addEventListener("visibilitychange", setIdle);
-    return () => {
-      window.removeEventListener("blur", setIdle);
-      window.removeEventListener("focus", setIdle);
-      document.removeEventListener("visibilitychange", setIdle);
-    };
-  }, []);
+  // PERF: pause nonessential CSS motion while the app is backgrounded. Keep
+  // separate idle/hidden classes so visible worker activity can remain truthful
+  // when the window is merely unfocused, while hidden windows fully pause.
+  // Unsubscribe clears both classes so App unmount cannot leave them on <html>.
+  useEffect(() => subscribeDocumentMotionPolicy(), []);
 
   // persist layout
   useEffect(() => { localStorage.setItem(LS.left, String(leftW)); }, [leftW]);
