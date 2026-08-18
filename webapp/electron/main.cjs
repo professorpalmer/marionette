@@ -34,12 +34,18 @@ const {
   decideBackendReuse,
   buildBackendMarkerPayload,
 } = require("./backend-identity.cjs");
+const {
+  createDevServerFallbackLatch,
+  shouldRetryFailedRendererLoad,
+  resolveClassicDevRendererSource,
+} = require("./renderer-fallback.cjs");
 
 // Must run before any git/npm/uv child spawns: on Windows the portable tools
 // installed by first-run bootstrap are only on PATH in-memory, per process.
 reinjectPortableTools();
 
 const isDev = !!process.env.PMHARNESS_DEV_SERVER;
+const configuredDevServerLatch = createDevServerFallbackLatch();
 const isPackaged = app.isPackaged;
 
 // Keep the renderer at full speed while the window is blurred or occluded
@@ -558,9 +564,21 @@ function cleanupVite() {
 
 // Point the window at the right renderer source: the classic dev server, the
 // self-dev Vite HMR server (live React), or the prebuilt dist/ bundle.
+// After a matching classic-dev fail-load, the process-local latch stays on
+// dist for this process (including later restartBackend reloads).
 async function loadRenderer() {
   if (!win) return;
-  if (isDev) { win.loadURL(process.env.PMHARNESS_DEV_SERVER); return; }
+  if (isDev) {
+    if (resolveClassicDevRendererSource({
+      configuredDevServerUrl: process.env.PMHARNESS_DEV_SERVER,
+      abandoned: configuredDevServerLatch.isAbandoned(),
+    }) === "dev") {
+      win.loadURL(process.env.PMHARNESS_DEV_SERVER);
+      return;
+    }
+    win.loadFile(resolveDistIndex());
+    return;
+  }
   if (shouldUseViteDev(resolveRepoRoot())) {
     const url = await ensureViteDevServer(resolveRepoRoot());
     if (url) { win.loadURL(url); return; }
@@ -1473,11 +1491,28 @@ function createWindow() {
   // Drop the reference when the window is closed so a reopen builds a clean one
   // (and a failed renderer load doesn't leave a half-dead window bound to `win`).
   win.on("closed", () => { win = null; });
-  // If the renderer fails to load (white screen / error), reload it once so a
-  // transient failure on reopen self-heals instead of stranding the user.
+  // If the renderer fails to load (white screen / error), reload it so a
+  // transient failure on reopen self-heals. A matching classic-dev origin
+  // failure latches onto dist instead of retrying the dead Vite URL forever.
   win.webContents.on("did-fail-load", (_e, errorCode, errorDesc, validatedURL, isMainFrame) => {
     if (isMainFrame && errorCode !== -3) {  // -3 = aborted (navigation), ignore
       _dbg2(`renderer did-fail-load ${errorCode} ${errorDesc} ${validatedURL}`);
+    }
+    const details = {
+      isMainFrame,
+      errorCode,
+      validatedURL,
+      configuredDevServerUrl: process.env.PMHARNESS_DEV_SERVER,
+    };
+    if (configuredDevServerLatch.noteFailure(details)) {
+      _dbg2(`renderer abandoning dead dev server; falling back to dist`);
+      try { if (win) loadRenderer(); } catch {}
+      return;
+    }
+    if (shouldRetryFailedRendererLoad({
+      ...details,
+      abandoned: configuredDevServerLatch.isAbandoned(),
+    })) {
       setTimeout(() => {
         try { if (win) loadRenderer(); } catch {}
       }, 500);
