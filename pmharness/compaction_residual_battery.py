@@ -268,11 +268,10 @@ def _distractor_twin() -> ResidualCase:
 
 
 def _catalog_miss_plain_fact() -> ResidualCase:
-    """Catalog-miss / peek-hit: a plain tool-result fact with no handle shape.
+    """Nonce measurement tokens with no path or URI shape.
 
-    extract_handle_index collects paths, URIs, error/decision stems, and tool
-    names — not arbitrary measurement tokens. Arm B must fail recall; arm C
-    recovers the tokens from the Wave 1 archive via peek_history.
+    The catalog now harvests distinctive hyphenated identifiers that contain
+    a digit, so these tokens are residual facts rather than peek-only.
     """
     token_a = "omega-cache-token-9f3a"
     token_b = "shard-omega-p95"
@@ -312,7 +311,7 @@ def _catalog_miss_plain_fact() -> ResidualCase:
         must_contain=(token_a, token_b),
         must_not_contain=("omega-cache-token-0000",),
         expected_arms=_arm_meta(),
-        catalog_recalls_fact=False,
+        catalog_recalls_fact=True,
     )
 
 

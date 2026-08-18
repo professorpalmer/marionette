@@ -51,9 +51,9 @@ def test_battery_schema_covers_six_templates():
         assert case.expected_arms["D"]["compact"] is False
     distractor = next(c for c in RESIDUAL_CASES if c.id == "distractor_twin")
     assert distractor.must_not_contain == ("auth_legacy_v1.py",)
-    peek_only = next(c for c in RESIDUAL_CASES if c.id == "catalog_miss_plain_fact")
-    assert peek_only.catalog_recalls_fact is False
-    assert len(peek_only.must_contain) >= 2
+    nonce_facts = next(c for c in RESIDUAL_CASES if c.id == "catalog_miss_plain_fact")
+    assert nonce_facts.catalog_recalls_fact is True
+    assert len(nonce_facts.must_contain) >= 2
 
 
 def test_scoring_is_deterministic_substring_oracle():
@@ -199,20 +199,17 @@ def test_arm_c_peek_reads_elided_middle(tmp_path, monkeypatch):
     assert receipt["peek_buried_fact_recall"] is True
 
 
-def test_catalog_miss_plain_fact_is_peek_only_lift(tmp_path, monkeypatch):
+def test_catalog_miss_plain_fact_is_now_residual_recall(tmp_path, monkeypatch):
     monkeypatch.delenv("HARNESS_COMPACTION_RESIDUAL", raising=False)
     case = next(c for c in RESIDUAL_CASES if c.id == "catalog_miss_plain_fact")
-    assert case.catalog_recalls_fact is False
+    assert case.catalog_recalls_fact is True
     arm_b = run_residual_arm(case, ARM_B, state_dir=str(tmp_path))
     arm_c = run_residual_arm(case, ARM_C, state_dir=str(tmp_path))
-    assert arm_b["residual_buried_fact_recall"] is False
-    assert arm_b["buried_fact_recall"] is False
-    assert arm_b["end_task_success"] is False
+    assert arm_b["residual_buried_fact_recall"] is True
+    assert arm_b["buried_fact_recall"] is True
+    assert arm_b["end_task_success"] is True
     assert arm_b["peek_calls"] == 0
-    assert arm_c["residual_buried_fact_recall"] is False
-    assert arm_c["peek_buried_fact_recall"] is True
-    assert arm_c["peek_false_recall"] is False
-    assert arm_c["peek_task_success"] is True
+    assert arm_c["residual_buried_fact_recall"] is True
     assert arm_c["buried_fact_recall"] is True
     assert arm_c["end_task_success"] is True
     archive = load_compaction_archive_messages(
