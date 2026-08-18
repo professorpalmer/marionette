@@ -18,6 +18,56 @@ from harness.diag import note as _diag_note
 
 _merge_failure_logged = False
 
+# Inline Orchestrator stores created by run_agentic_edit / run_cursor_edit.
+# These are never the durable workspace CLI store, even when the process
+# temporarily exports PUPPETMASTER_STATE_DIR to the scratch root.
+HOST_SCRATCH_MARKER_NAME = ".marionette-host-scratch"
+HOST_SCRATCH_DIR_PREFIXES = ("pmh-edit-", "pmh-cursor-edit-")
+
+
+def is_marionette_host_scratch_dir(path: Any) -> bool:
+    """True when ``path`` is a Marionette inline-Orchestrator scratch store.
+
+    Identity is the temp-dir prefix and/or an explicit marker file. Never
+    raises — merge hot paths treat an unreadable candidate as "not scratch".
+    """
+    try:
+        if path is None:
+            return False
+        raw = str(path).strip()
+        if not raw:
+            return False
+        candidate = Path(raw).expanduser()
+        name = candidate.name
+        if name.startswith(HOST_SCRATCH_DIR_PREFIXES):
+            return True
+        return (candidate / HOST_SCRATCH_MARKER_NAME).is_file()
+    except Exception:
+        return False
+
+
+def mark_marionette_host_scratch(path: Any) -> None:
+    """Write the host-scratch marker under ``path``. Best-effort; never raises."""
+    try:
+        if path is None:
+            return
+        raw = str(path).strip()
+        if not raw:
+            return
+        root = Path(raw)
+        root.mkdir(parents=True, exist_ok=True)
+        (root / HOST_SCRATCH_MARKER_NAME).write_text("", encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _durable_workspace_state_dir(workspace_root: str = "") -> Optional[Path]:
+    """Resolve the durable per-workspace store without honoring process env."""
+    from puppetmaster.state import default_state_dir
+
+    cwd = Path(workspace_root or os.getcwd())
+    return default_state_dir(cwd)
+
 
 def reset_merge_diag_for_tests() -> None:
     """Clear the one-shot diagnostics flag (tests only)."""
@@ -46,12 +96,27 @@ def _retry_on_locked(read, attempts: int = 3, delay: float = 0.15):
 
 
 def resolve_cli_state_dir(workspace_root: str = "") -> Optional[str]:
-    """Resolve the Puppetmaster project state dir for ``workspace_root``."""
+    """Resolve the Puppetmaster project state dir for ``workspace_root``.
+
+    A host scratch ``PUPPETMASTER_STATE_DIR`` (inline Orchestrator) is ignored
+    so ``/api/swarm/live`` opens the durable workspace store. Process env is
+    never mutated.
+    """
     try:
         from puppetmaster.state import resolve_state_dir
 
         cwd = Path(workspace_root or os.getcwd())
-        state_path = resolve_state_dir(cwd=cwd)
+        env_value = (os.environ.get("PUPPETMASTER_STATE_DIR") or "").strip()
+        if env_value and is_marionette_host_scratch_dir(env_value):
+            state_path = _durable_workspace_state_dir(str(cwd))
+        else:
+            state_path = resolve_state_dir(cwd=cwd)
+            if is_marionette_host_scratch_dir(state_path):
+                state_path = _durable_workspace_state_dir(str(cwd))
+        if state_path is None:
+            return None
+        if is_marionette_host_scratch_dir(state_path):
+            return None
         if not state_path.is_dir():
             return None
         if not (state_path / "state.sqlite3").is_file():
@@ -90,6 +155,8 @@ def open_cli_durable_at(state_dir: str, *, busy_timeout_ms: int = 5000):
     if not state_dir:
         return None
     try:
+        if is_marionette_host_scratch_dir(state_dir):
+            return None
         from harness.state import DurableState
 
         durable = DurableState(state_dir)
@@ -128,6 +195,8 @@ def _foreign_state_dir_candidates(
         except Exception:
             state_dir = str(project)
         if primary_resolved and state_dir == primary_resolved:
+            continue
+        if is_marionette_host_scratch_dir(state_dir):
             continue
         db = Path(state_dir) / "state.sqlite3"
         if not db.is_file():

@@ -77,7 +77,7 @@ def _fake_managed_worktree(repo: str, base: str = "HEAD"):
 
 def _install_agentic_mocks(
     monkeypatch, *, orchestrator_result=None, capture_payload=None,
-    capture_specs=None,
+    capture_specs=None, capture_run=None,
 ):
     """Patch Puppetmaster + worktree so run_agentic_edit stays hermetic."""
     monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
@@ -86,6 +86,7 @@ def _install_agentic_mocks(
 
     storage: list[dict] = capture_payload if capture_payload is not None else []
     specs_out: list[dict] = capture_specs if capture_specs is not None else []
+    runs_out: list[dict] = capture_run if capture_run is not None else []
 
     class _CapturingWorkerSpec:
         def __init__(self, role, instruction, adapter, payload):
@@ -106,6 +107,7 @@ def _install_agentic_mocks(
             self.store = store
 
         def run(self, goal, specs=None, worker_mode="inline", **kwargs):
+            runs_out.append({"goal": goal, "worker_mode": worker_mode, **kwargs})
             return orchestrator_result or _fake_pm_result()
 
     monkeypatch.setattr("puppetmaster.workers.WorkerSpec", _CapturingWorkerSpec)
@@ -1046,6 +1048,113 @@ def test_agentic_edit_success_with_patch(monkeypatch):
 # --- run_edit_worker dispatch and fallback ---
 
 
+def test_run_edit_worker_forwards_job_id_to_agentic(monkeypatch):
+    repo_dir = create_temp_git_repo()
+    try:
+        cfg = _cfg(repo_dir)
+        monkeypatch.setattr("harness.edit_engines.select_edit_engine", lambda *a, **k: "agentic")
+        seen = {}
+
+        def fake_agentic(config, goal, **kwargs):
+            seen.update(kwargs)
+            return WorkerResult(ok=True, patch="p", summary="ok")
+
+        monkeypatch.setattr("harness.edit_engines.run_agentic_edit", fake_agentic)
+        result = run_edit_worker(
+            cfg, "do it", job_id="local-abc", session_id="sess-1",
+        )
+        assert result.ok is True
+        assert seen["job_id"] == "local-abc"
+        assert seen["session_id"] == "sess-1"
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
+def test_agentic_edit_marks_scratch_and_stamps_host_dispatch(monkeypatch):
+    import json
+
+    from harness.cli_job_merge import HOST_SCRATCH_MARKER_NAME, is_marionette_host_scratch_dir
+
+    repo_dir = create_temp_git_repo()
+    try:
+        cfg = _cfg(repo_dir)
+        marked = []
+        runs = []
+        from harness.cli_job_merge import mark_marionette_host_scratch as real_mark
+
+        def _spy_mark(path):
+            marked.append(path)
+            real_mark(path)
+            assert is_marionette_host_scratch_dir(path)
+            assert os.path.basename(path).startswith("pmh-edit-")
+            assert os.path.isfile(os.path.join(path, HOST_SCRATCH_MARKER_NAME))
+
+        monkeypatch.setattr(
+            "harness.cli_job_merge.mark_marionette_host_scratch", _spy_mark,
+        )
+        _install_agentic_mocks(
+            monkeypatch,
+            orchestrator_result=_fake_pm_result([
+                _fake_artifact(tokens_out=10, tokens_in=4, stdout="ok"),
+            ]),
+            capture_run=runs,
+        )
+        monkeypatch.setattr(
+            "harness.edit_engines.finalize_worktree_patch",
+            lambda _wt: ("diff --git a/x b/x\n+line", ["x.py"]),
+        )
+        result = run_agentic_edit(
+            cfg, "goal", session_id="sess-z", job_id="local-host-1",
+        )
+        assert result.ok is True
+        assert marked
+        assert os.path.basename(marked[0]).startswith("pmh-edit-")
+        assert runs
+        label = json.loads(runs[0]["label"])
+        assert label["session_id"] == "sess-z"
+        assert label["dispatch_id"] == "local-host-1"
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
+def test_cursor_edit_marks_scratch_and_stamps_host_dispatch(monkeypatch):
+    import json
+
+    from harness.edit_engines import run_cursor_edit
+
+    repo_dir = create_temp_git_repo()
+    try:
+        cfg = _cfg(repo_dir)
+        marked = []
+        runs = []
+        from harness.cli_job_merge import mark_marionette_host_scratch as real_mark
+
+        def _spy_mark(path):
+            marked.append(path)
+            real_mark(path)
+
+        monkeypatch.setattr(
+            "harness.cli_job_merge.mark_marionette_host_scratch", _spy_mark,
+        )
+        monkeypatch.setattr("harness.edit_engines.cursor_platform_available", lambda: True)
+        _install_agentic_mocks(monkeypatch, capture_run=runs)
+        monkeypatch.setattr(
+            "harness.edit_engines.finalize_worktree_patch",
+            lambda _wt: ("diff --git a/x b/x\n+line", ["x.py"]),
+        )
+        result = run_cursor_edit(
+            cfg, "goal", session_id="sess-c", job_id="local-cur-1",
+        )
+        assert result.ok is True
+        assert marked
+        assert os.path.basename(marked[0]).startswith("pmh-cursor-edit-")
+        label = json.loads(runs[0]["label"])
+        assert label["session_id"] == "sess-c"
+        assert label["dispatch_id"] == "local-cur-1"
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
 def test_run_edit_worker_dispatches_native(monkeypatch):
     repo_dir = create_temp_git_repo()
     try:
@@ -1091,6 +1200,7 @@ def test_run_edit_worker_falls_back_on_agentic_unavailable(monkeypatch):
     try:
         cfg = _cfg(repo_dir)
         monkeypatch.setattr("harness.edit_engines.select_edit_engine", lambda *a, **k: "agentic")
+        monkeypatch.setattr("harness.edit_engines.cursor_platform_available", lambda: False)
         monkeypatch.setattr(
             "harness.edit_engines.run_agentic_edit",
             lambda *a, **k: WorkerResult(ok=False, error=AGENTIC_UNAVAILABLE, summary="no key"),
@@ -1131,6 +1241,7 @@ def test_run_edit_worker_falls_back_on_route_and_runtime_errors(monkeypatch):
     try:
         cfg = _cfg(repo_dir)
         monkeypatch.setattr("harness.edit_engines.select_edit_engine", lambda *a, **k: "agentic")
+        monkeypatch.setattr("harness.edit_engines.cursor_platform_available", lambda: False)
         native_sentinel = WorkerResult(ok=True, summary="native")
 
         for err in (AGENTIC_ROUTE_FAILED, AGENTIC_ERROR):

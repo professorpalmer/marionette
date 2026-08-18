@@ -320,7 +320,7 @@ def run_edit_worker(
     if engine == "cursor":
         result = run_cursor_edit(
             config, goal, session_id=session_id, cwd=target_cwd,
-            expects_diff=expects_diff,
+            expects_diff=expects_diff, job_id=job_id,
         )
         if result.error in _FALLBACK_REASONS:
             _diag("edit_engines.run_edit_worker",
@@ -333,7 +333,7 @@ def run_edit_worker(
     if engine == "agentic":
         result = run_agentic_edit(
             config, goal, session_id=session_id, cwd=target_cwd,
-            expects_diff=expects_diff,
+            expects_diff=expects_diff, job_id=job_id,
         )
         if result.error in _FALLBACK_REASONS:
             if cursor_platform_available():
@@ -341,7 +341,7 @@ def run_edit_worker(
                       msg=f"agentic unavailable ({result.error}); trying cursor")
                 cursor_result = run_cursor_edit(
                     config, goal, session_id=session_id, cwd=target_cwd,
-                    expects_diff=expects_diff,
+                    expects_diff=expects_diff, job_id=job_id,
                 )
                 if cursor_result.error not in _FALLBACK_REASONS:
                     return cursor_result
@@ -427,7 +427,7 @@ def run_native_edit(
 
 def run_cursor_edit(
     config: "HarnessConfig", goal: str, *, session_id: str = "", cwd: str = "",
-    expects_diff: bool = True,
+    expects_diff: bool = True, job_id: str = "",
 ) -> "WorkerResult":
     """Platform Cursor SDK workers (CURSOR_API_KEY) in a managed worktree.
 
@@ -435,6 +435,7 @@ def run_cursor_edit(
     Cursor CLI agent-login pilot auth.
     """
     from harness.worker import WorkerResult
+    from harness.cli_job_merge import mark_marionette_host_scratch
     from harness.job_scoping import job_label_for_session, stamp_task_payload
 
     if not cursor_platform_available():
@@ -502,13 +503,14 @@ def run_cursor_edit(
                 payload=payload,
             )
             tmp = tempfile.mkdtemp(prefix="pmh-cursor-edit-")
+            mark_marionette_host_scratch(tmp)
             try:
                 store = create_store("sqlite", tmp)
                 result = Orchestrator(store).run(
                     goal,
                     specs=[spec],
                     worker_mode="inline",
-                    label=job_label_for_session(session_id),
+                    label=job_label_for_session(session_id, dispatch_id=job_id),
                 )
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
@@ -551,7 +553,7 @@ def run_cursor_edit(
 
 def run_agentic_edit(
     config: "HarnessConfig", goal: str, *, session_id: str = "", cwd: str = "",
-    expects_diff: bool = True,
+    expects_diff: bool = True, job_id: str = "",
 ) -> "WorkerResult":
     """Puppetmaster agentic adapter in a managed worktree.
 
@@ -568,6 +570,7 @@ def run_agentic_edit(
         coerce_unlabeled_analysis_prose,
         parse_analysis_signal_rows,
     )
+    from harness.cli_job_merge import mark_marionette_host_scratch
     from harness.job_scoping import job_label_for_session, stamp_task_payload
 
     if not agentic_available():
@@ -677,6 +680,7 @@ def run_agentic_edit(
             # never parse prose/stdout. Without the rmtree every agentic
             # implement worker leaked a pmh-edit-* dir (audit finding #3).
             tmp = tempfile.mkdtemp(prefix="pmh-edit-")
+            mark_marionette_host_scratch(tmp)
             mapped_events: list = []
             try:
                 store = create_store("sqlite", tmp)
@@ -684,7 +688,7 @@ def run_agentic_edit(
                     goal,
                     specs=[spec],
                     worker_mode="inline",
-                    label=job_label_for_session(session_id),
+                    label=job_label_for_session(session_id, dispatch_id=job_id),
                 )
                 pm_job_id = str(getattr(getattr(result, "job", None), "id", "") or "")
                 mapped_events = agentic_events_from_store(store, pm_job_id)

@@ -591,13 +591,17 @@ class LocalJobsMixin:
         the live status the UI renders.
 
         ``engine`` is ``agentic`` or ``native`` (never the pilot provider slug).
-        When known, ``model`` is the routed/driver model id; the panel shows
-        ``{engine}/{model}``. Task role is ``{role} ({engine})`` -- never
-        ``provider worker``.
+        When known, ``model`` is the actually selected/driver model id; the
+        panel shows ``{engine}/{model}``. Task role is ``{role} ({engine})``
+        -- never ``provider worker``.
 
         For agentic jobs with no model yet, dry-run the router and stamp a
-        ROUTING artifact + estimate so the tracker shows model/cost mid-flight
-        instead of a bare ``agentic`` badge. Zero-work full reuse passes
+        ROUTING artifact + estimate as metadata only. Preview ``model_id`` is
+        not the selected ``job.model`` — that stays empty until
+        ``_refresh_local_job_routed_model`` or ``_finish_local_job`` receives
+        a real routed id. Orchestrator.run is blocking and does not expose a
+        mid-run routing event without invasive hooks, so mid-flight identity
+        is explicitly provisional. Zero-work full reuse passes
         ``skip_routing_preview=True`` so preview economics are never stamped
         or exported for a job that performs no adapter work.
         """
@@ -626,9 +630,8 @@ class LocalJobsMixin:
                 preview = preview_agentic_route(goal, role=role or "implement")
             except Exception:
                 preview = {}
-            model_id = collapse_engine_prefixes(
-                (preview.get("model_id") or "").strip()
-            ) or (preview.get("model_id") or "").strip()
+            # Estimated routing metadata only — do not present preview
+            # model_id as the selected job.model.
             est_cost = float(preview.get("est_cost_usd") or 0.0)
             routing_saved = float(preview.get("routing_saved_usd") or 0.0)
             routing_basis = str(preview.get("routing_savings_basis") or "")
@@ -691,12 +694,15 @@ class LocalJobsMixin:
                 try:
                     from harness.observability_export import export_routing_savings
 
+                    preview_mid = collapse_engine_prefixes(
+                        (preview.get("model_id") or "").strip()
+                    ) or (preview.get("model_id") or "").strip()
                     export_routing_savings(
                         job_id=job_id,
                         session_id=session_id,
                         routing_saved_usd=routing_saved,
                         routing_savings_basis=routing_basis or "estimated",
-                        model_id=model_id,
+                        model_id=preview_mid or model_id,
                         baseline_model_id=str(preview.get("baseline_model_id") or ""),
                         tokens_compared=int(
                             (preview.get("tokens_in") or 0) + (preview.get("tokens_out") or 0)
@@ -704,6 +710,45 @@ class LocalJobsMixin:
                     )
                 except Exception:
                     pass
+
+    def _refresh_local_job_routed_model(
+        self, job_id: str, model: str, engine: str = "",
+    ) -> None:
+        """Best-effort mid-run stamp of an actually routed model.
+
+        Preview / dry-run ids must not be passed here. Never copies identity
+        from an EXTERNAL card. Never raises. ``_finish_local_job`` remains
+        terminal truth.
+        """
+        try:
+            if not job_id:
+                return
+            model_id = collapse_engine_prefixes((model or "").strip()) or (
+                model or ""
+            ).strip()
+            if not model_id or is_engine_only_model_id(model_id):
+                return
+            with self._local_jobs_lock:
+                job = self._local_jobs.get(job_id)
+                if not isinstance(job, dict):
+                    return
+                status = str(job.get("status") or "").strip().lower()
+                if status in _TERMINAL_LOCAL_JOB_STATUSES:
+                    return
+                engine_label = (engine or job.get("adapter") or "").strip().lower()
+                if engine_label not in ("agentic", "native"):
+                    engine_label = ""
+                display = envelope_model_id(engine_label, model_id)
+                if not display or is_engine_only_model_id(display):
+                    return
+                import time
+                job["model"] = display
+                job["updated_at"] = time.time()
+                if job.get("tasks"):
+                    job["tasks"][0]["model"] = display
+                self._persist_local_jobs_locked()
+        except Exception:
+            return
 
     def _finish_local_job(self, job_id: str, ok: bool, summary: str = "",
                           files: Optional[list] = None, tokens: int = 0,
@@ -763,28 +808,15 @@ class LocalJobsMixin:
                     job["tasks"][0]["adapter"] = engine_label
                     base_role = (job.get("role") or "implement").strip() or "implement"
                     job["tasks"][0]["role"] = f"{base_role} ({engine_label})"
-            # Never downgrade a real ROUTING/preview model to bare agentic/native.
-            # Empty finish-time model promotes from ROUTING artifact or keeps the
-            # existing non-engine-only stamp; prefer empty over eng-only honesty.
+            # Empty / engine-only finish keeps a real mid-run stamp (refresh
+            # seam) but does not promote preview ROUTING metadata to
+            # selected identity. Prefer empty over a dry-run lie.
             if is_engine_only_model_id(model_id):
-                promoted = ""
-                for art in (job.get("artifacts") or []):
-                    if not isinstance(art, dict):
-                        continue
-                    if (art.get("type") or "").strip().upper() != "ROUTING":
-                        continue
-                    art_mid = collapse_engine_prefixes(
-                        str(art.get("model") or art.get("model_id") or "").strip()
-                    ) or str(art.get("model") or art.get("model_id") or "").strip()
-                    if art_mid and not is_engine_only_model_id(art_mid):
-                        promoted = art_mid
-                if not promoted:
-                    existing = (job.get("model") or "").strip()
-                    if existing and not is_engine_only_model_id(existing):
-                        promoted = (
-                            collapse_engine_prefixes(existing) or existing
-                        )
-                model_id = promoted
+                existing = (job.get("model") or "").strip()
+                if existing and not is_engine_only_model_id(existing):
+                    model_id = collapse_engine_prefixes(existing) or existing
+                else:
+                    model_id = ""
             if model_id and not is_engine_only_model_id(model_id):
                 eng = engine_label if engine_label in ("agentic", "native") else ""
                 if not eng:

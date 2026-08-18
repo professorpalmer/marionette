@@ -2,17 +2,23 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import urllib.parse
 import urllib.request
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 from types import SimpleNamespace
 
 from harness.cli_job_merge import (
+    is_marionette_host_scratch_dir,
+    mark_marionette_host_scratch,
     merge_running_cli_jobs_all_projects,
     merge_scoped_cli_jobs,
+    open_cli_durable_at,
     open_cli_durable_state,
     reset_merge_diag_for_tests,
+    resolve_cli_state_dir,
 )
 from harness.job_scoping import (
     ACCOUNTING_SCOPE_VISIBILITY,
@@ -201,6 +207,86 @@ def test_foreign_state_dir_candidates_skips_stale_and_caps(tmp_path, monkeypatch
     got = _foreign_state_dir_candidates("", max_opens=8, max_age_s=48 * 3600)
     assert any(str(fresh.resolve()) == p or str(fresh) in p for p in got)
     assert not any("stale" in p for p in got)
+
+
+def test_scratch_identity_prefix_and_marker(tmp_path):
+    prefixed = tmp_path / "pmh-edit-abc123"
+    prefixed.mkdir()
+    assert is_marionette_host_scratch_dir(prefixed)
+    cursor = tmp_path / "pmh-cursor-edit-xyz"
+    cursor.mkdir()
+    assert is_marionette_host_scratch_dir(cursor)
+    hashed = tmp_path / "workspace-deadbeef"
+    hashed.mkdir()
+    assert not is_marionette_host_scratch_dir(hashed)
+    mark_marionette_host_scratch(hashed)
+    assert is_marionette_host_scratch_dir(hashed)
+    assert is_marionette_host_scratch_dir("") is False
+    assert is_marionette_host_scratch_dir(None) is False
+
+
+def test_resolve_cli_state_dir_ignores_host_scratch_env(tmp_path, monkeypatch):
+    import subprocess
+
+    from puppetmaster.state import default_state_dir
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+    monkeypatch.setattr(
+        "puppetmaster.state.app_state_root",
+        lambda: tmp_path / "pm-root",
+    )
+    ws = default_state_dir(repo)
+    ws.mkdir(parents=True, exist_ok=True)
+    (ws / "state.sqlite3").write_bytes(b"x")
+
+    scratch = tmp_path / "pmh-edit-hijack"
+    scratch.mkdir()
+    (scratch / "state.sqlite3").write_bytes(b"x")
+    mark_marionette_host_scratch(scratch)
+    monkeypatch.setenv("PUPPETMASTER_STATE_DIR", str(scratch))
+
+    got = resolve_cli_state_dir(str(repo))
+    assert got is not None
+    assert Path(got).resolve() == ws.resolve()
+    assert Path(os.environ["PUPPETMASTER_STATE_DIR"]).resolve() == scratch.resolve()
+
+
+def test_resolve_cli_state_dir_honors_non_scratch_env(tmp_path, monkeypatch):
+    override = tmp_path / "operator-store"
+    override.mkdir()
+    (override / "state.sqlite3").write_bytes(b"x")
+    monkeypatch.setenv("PUPPETMASTER_STATE_DIR", str(override))
+    got = resolve_cli_state_dir(str(tmp_path / "unused"))
+    assert Path(got).resolve() == override.resolve()
+
+
+def test_foreign_candidates_skip_host_scratch(tmp_path, monkeypatch):
+    from harness.cli_job_merge import _foreign_state_dir_candidates
+
+    scratch = tmp_path / "pmh-edit-foreign"
+    durable = tmp_path / "durable-ok"
+    scratch.mkdir()
+    durable.mkdir()
+    (scratch / "state.sqlite3").write_bytes(b"")
+    (durable / "state.sqlite3").write_bytes(b"")
+    mark_marionette_host_scratch(scratch)
+    monkeypatch.setattr(
+        "puppetmaster.state.list_project_state_dirs",
+        lambda: [scratch, durable],
+    )
+    got = _foreign_state_dir_candidates("", max_opens=8, max_age_s=48 * 3600)
+    assert not any("pmh-edit" in p for p in got)
+    assert any("durable-ok" in p for p in got)
+
+
+def test_open_cli_durable_at_skips_scratch(tmp_path):
+    scratch = tmp_path / "pmh-edit-open"
+    scratch.mkdir()
+    (scratch / "state.sqlite3").write_bytes(b"x")
+    mark_marionette_host_scratch(scratch)
+    assert open_cli_durable_at(str(scratch)) is None
 
 
 def test_accounting_fields_from_cli_fixture_store(tmp_path):

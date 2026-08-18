@@ -123,6 +123,28 @@ test("planPuppetmasterUpgrade: an editable dev checkout is left untouched", () =
   assert.match(plan.reason, /editable/);
 });
 
+test("operational Puppetmaster pins match DEFAULT_PUPPETMASTER_SPEC", () => {
+  const spec = pm.DEFAULT_PUPPETMASTER_SPEC;
+  assert.match(spec, /^puppetmaster-ai==\d+\.\d+\.\d+$/);
+  const repoRoot = path.join(__dirname, "..", "..");
+  const copies = [
+    "webapp/electron/update-pm.cjs",
+    "webapp/electron/bootstrap.cjs",
+    "scripts/install.sh",
+    "scripts/install.ps1",
+    "scripts/doctor.sh",
+    "scripts/doctor.ps1",
+    ".github/workflows/tests.yml",
+    ".github/workflows/release.yml",
+  ];
+  const escaped = spec.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const specRe = new RegExp(escaped);
+  for (const rel of copies) {
+    const text = fs.readFileSync(path.join(repoRoot, rel), "utf8");
+    assert.match(text, specRe, `${rel} must pin ${spec}`);
+  }
+});
+
 test("planPuppetmasterUpgrade: a custom MARIONETTE_PUPPETMASTER_SPEC is honored (never clobbered)", () => {
   const plan = pm.planPuppetmasterUpgrade({
     specEnv: "/Users/dev/Puppetmaster",

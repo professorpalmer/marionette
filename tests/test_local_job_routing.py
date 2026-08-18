@@ -193,8 +193,10 @@ def test_register_registry_shaped_id_never_double_prefixes(monkeypatch, tmp_path
         "local-ds", "edit", role="implement", engine="agentic", model="",
     )
     job = s._local_jobs["local-ds"]
-    assert job["model"] == "agentic/deepseek/deepseek-v4-pro"
-    assert "agentic/agentic/" not in job["model"]
+    assert job["model"] == ""
+    routing = next(a for a in job["artifacts"] if a.get("type") == "ROUTING")
+    assert routing["model"] == "agentic/deepseek/deepseek-v4-pro"
+    assert "agentic/agentic/" not in routing["model"]
 
 
 def test_finish_reconciles_flash_preview_when_pro_is_realized(monkeypatch, tmp_path):

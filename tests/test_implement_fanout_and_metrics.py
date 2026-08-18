@@ -363,7 +363,7 @@ def test_register_local_job_stamps_routing(monkeypatch):
         engine="agentic", model="",
     )
     job = s._local_jobs["local-route"]
-    assert job["model"] == "agentic/z-ai/glm-4.9"
+    assert job["model"] == ""
     assert abs(job["est_cost_usd"] - 0.0123) < 1e-9
     arts = job["artifacts"]
     assert len(arts) == 1
