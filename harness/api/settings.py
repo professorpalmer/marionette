@@ -240,5 +240,12 @@ def post_settings(body: dict, svc: SettingsServices) -> tuple[int, JsonPayload]:
         from ..reasoning_effort import normalize_reasoning_effort
         normalized = normalize_reasoning_effort(body["reasoning_effort"])
         _set_env_setting("HARNESS_CODEX_REASONING_EFFORT", normalized)
+    if "compactionResidual" in body:
+        from ..compaction_residual import SETTINGS_RESIDUAL_CHOICES
+
+        raw = str(body["compactionResidual"] or "").strip().lower()
+        if raw not in SETTINGS_RESIDUAL_CHOICES:
+            return 400, {"error": "Invalid compactionResidual"}
+        _set_env_setting("HARNESS_COMPACTION_RESIDUAL", raw)
 
     return 200, svc.get_settings_dict()

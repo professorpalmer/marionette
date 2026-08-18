@@ -1,6 +1,8 @@
 """Focused tests for grok-build-style history compaction quality guards."""
 from __future__ import annotations
 
+import pytest
+
 from harness.compaction_mixin import (
     ANTI_THRASH_STRIKES,
     DEFAULT_MAX_RETAINED_TAIL_TOKENS,
@@ -19,6 +21,11 @@ from harness.compaction_mixin import (
 )
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession
+
+
+@pytest.fixture(autouse=True)
+def _summarizer_residual_path(monkeypatch):
+    monkeypatch.setenv("HARNESS_COMPACTION_RESIDUAL", "summary")
 
 
 # Long enough to clear MIN_SUMMARY_SEED_CHARS while still shrinking a fat middle.

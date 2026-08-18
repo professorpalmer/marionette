@@ -1089,6 +1089,52 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
+        {gate("general", "compaction residual hybrid summary catalog vault compact handle index") && settings && (<>
+        <div className="space-y-1.5">
+          <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
+            Compact Residual
+          </label>
+          <button
+            onClick={() => {
+              const cur = settings.compactionResidual || "catalog";
+              const next = cur === "catalog"
+                ? "hybrid"
+                : cur === "hybrid"
+                  ? "summary"
+                  : "catalog";
+              update({ compactionResidual: next });
+            }}
+            disabled={saving}
+            className={`w-full flex items-center justify-between px-3 py-2 rounded border transition text-left ${
+              settings.compactionResidual && settings.compactionResidual !== "catalog"
+                ? "bg-accent/10 border-accent/30 text-accent"
+                : "bg-panel2 border-edge text-muted"
+            } disabled:opacity-50`}
+          >
+            <span className="font-medium text-[11px]">
+              {settings.compactionResidual === "hybrid"
+                ? "Pin handle index after compact"
+                : settings.compactionResidual === "summary"
+                  ? "LLM snapshot after compact"
+                  : "Handle catalog; vault retrieve"}
+            </span>
+            <span className="text-[10px] uppercase font-bold tracking-wider">
+              {settings.compactionResidual === "hybrid"
+                ? "hybrid"
+                : settings.compactionResidual === "summary"
+                  ? "summary"
+                  : "catalog"}
+            </span>
+          </button>
+          <p className="text-[10px] text-muted">
+            Default is catalog: keep files, decisions, and the last-wins
+            story after compact, then retrieve matching slices later.
+            Hybrid adds a paid LLM paragraph on top. Summary is the paid
+            paragraph alone.
+          </p>
+        </div>
+
+        </>)}
         {gate("general", "review edits diff review toggle") && settings && (<>
         {/* Diff Review Toggle */}
         <div className="space-y-1.5">

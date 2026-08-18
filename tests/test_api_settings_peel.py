@@ -125,6 +125,31 @@ def test_post_settings_bad_worker_token_budget():
     assert post_settings({"workerTokenBudget": "nope"}, svc)[0] == 400
 
 
+def test_post_settings_compaction_residual_hybrid(monkeypatch):
+    monkeypatch.setattr(
+        "harness.auto_registry.sync_agentic_registry_safe", lambda: None
+    )
+    svc, _, _, calls = _svc()
+    code, _ = post_settings({"compactionResidual": "hybrid"}, svc)
+    assert code == 200
+    assert dict(calls["persist"])["HARNESS_COMPACTION_RESIDUAL"] == "hybrid"
+
+
+def test_post_settings_compaction_residual_catalog():
+    svc, _, _, calls = _svc()
+    code, _ = post_settings({"compactionResidual": "catalog"}, svc)
+    assert code == 200
+    assert dict(calls["persist"])["HARNESS_COMPACTION_RESIDUAL"] == "catalog"
+
+
+def test_post_settings_compaction_residual_rejects_off():
+    svc, _, _, calls = _svc()
+    code, payload = post_settings({"compactionResidual": "off"}, svc)
+    assert code == 400
+    assert calls["persist"] == []
+    assert payload["error"] == "Invalid compactionResidual"
+
+
 def test_post_settings_bad_budget():
     svc, _, _, _ = _svc()
     assert post_settings({"budget": "x"}, svc)[0] == 400

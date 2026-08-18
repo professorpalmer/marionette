@@ -2236,6 +2236,12 @@ class ConversationalSession(
                 wiki_section = self._build_turn_wiki_section(user_message)
                 if wiki_section:
                     parts.append(wiki_section)
+            try:
+                vault_section = self._build_turn_vault_section(user_message)
+                if vault_section:
+                    parts.append(vault_section)
+            except Exception:
+                pass
             turn_note = self._turn_budget_system_note()
             if turn_note:
                 parts.append(turn_note)

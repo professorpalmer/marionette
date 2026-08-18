@@ -907,6 +907,10 @@ class ToolDispatchMixin:
                 expected_generation = int(expected_raw)
             except (TypeError, ValueError):
                 return False, "invalid_arguments", "expected_generation must be an integer"
+            # Optional JSON integers often arrive as 0. That is "unset", not
+            # a claim that history_compactions is still zero after compact.
+            if expected_generation == 0:
+                expected_generation = None
 
         generation = self._compaction_generation()
         if expected_generation is not None and expected_generation != generation:

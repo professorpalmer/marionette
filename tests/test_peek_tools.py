@@ -118,6 +118,11 @@ def test_peek_history_reads_elided_rows_after_real_compact_and_persist(tmp_path,
 
     generation = session._compaction_generation()
     assert generation >= 1
+    assert "compaction_generation=" in str(session._history[1].get("content") or "")
+    ok_zero, status_zero, _zero = session._do_peek_history(
+        PilotAction(kind="peek_history", arguments={"expected_generation": 0, "limit": 3})
+    )
+    assert ok_zero and status_zero == "success"
     ok_stale, status_stale, err = session._do_peek_history(
         PilotAction(kind="peek_history", arguments={"expected_generation": generation + 7})
     )

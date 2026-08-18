@@ -1122,6 +1122,12 @@ class SendLoopMixin:
                         wiki_section = self._wiki_cache_section
                     else:
                         wiki_section = self._build_turn_wiki_section(user_message)
+            vault_section = ""
+            if not append_only:
+                try:
+                    vault_section = self._build_turn_vault_section(user_message)
+                except Exception:
+                    vault_section = ""
 
             resp = None
             self._streamed_prose = ""  # reset per step; set if this step streams
@@ -1144,6 +1150,8 @@ class SendLoopMixin:
                             sys_prompt += "\n\n" + cg_section
                         if wiki_section:
                             sys_prompt += "\n\n" + wiki_section
+                        if vault_section:
+                            sys_prompt += "\n\n" + vault_section
                         mcp_section = _format_mcp_tools_section(
                             self._mcp,
                             self._tool_catalog,

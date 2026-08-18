@@ -60,6 +60,7 @@ export type Settings = {
   pilotToolBudget?: string;
   workerTokenBudget?: string;
   reasoning_effort?: ReasoningEffort;
+  compactionResidual?: "summary" | "hybrid" | "catalog";
   wiki_auto?: boolean;
   state_dir: string;
   repo: string;

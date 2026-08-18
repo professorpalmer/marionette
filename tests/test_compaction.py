@@ -20,6 +20,8 @@ _GOOD_SUMMARY = (
 @pytest.fixture(autouse=True)
 def _allow_small_fixture_compaction(monkeypatch):
     monkeypatch.setattr("harness.compaction_mixin.MIN_COMPACTABLE_TOKENS", 0)
+    # These tests exercise the paid summarizer path, not the catalog default.
+    monkeypatch.setenv("HARNESS_COMPACTION_RESIDUAL", "summary")
 
 
 class MockDriverResponse:
