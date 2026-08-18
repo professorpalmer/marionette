@@ -223,6 +223,43 @@ def test_merge_keeps_identical_goal_with_different_dispatch_identity():
     ]
 
 
+def test_merge_drops_store_row_owned_by_host_local_dispatch():
+    """Scratch/hashed Orchestrator rows stamped dispatch_id=<local-*> stay hidden."""
+    store = [{
+        "id": "job_scratch",
+        "goal": "same implement goal",
+        "status": "running",
+        "source": "cli",
+        "dispatch_id": "local-e0d790a9",
+    }]
+    local = [_sample_local_job(
+        id="local-e0d790a9",
+        goal="same implement goal",
+        model="",
+    )]
+    merged = merge_local_jobs_into_swarm_live(store, local)
+    assert [job["id"] for job in merged] == ["local-e0d790a9"]
+
+
+def test_merge_keeps_unstamped_external_and_two_local_same_goal():
+    store = [{
+        "id": "job_external",
+        "goal": "same implement goal",
+        "status": "running",
+        "source": "cli",
+    }]
+    local = [
+        _sample_local_job(id="local-one", goal="same implement goal", model=""),
+        _sample_local_job(id="local-two", goal="same implement goal", model=""),
+    ]
+    merged = merge_local_jobs_into_swarm_live(store, local)
+    assert [job["id"] for job in merged] == [
+        "job_external",
+        "local-one",
+        "local-two",
+    ]
+
+
 def test_merge_keeps_placeholder_when_durable_dispatch_identity_is_missing():
     store = [{
         "id": "job_legacy",

@@ -237,7 +237,24 @@ def merge_local_jobs_into_swarm_live(
     local_jobs: Iterable[dict],
 ) -> list[dict]:
     """Merge local rows while durable store identities remain authoritative."""
-    out = list(store_jobs or [])
+    host_local_ids = {
+        str(job.get("id") or "").strip()
+        for job in (local_jobs or [])
+        if isinstance(job, dict)
+        and str(job.get("id") or "").startswith("local-")
+        and str(job.get("id") or "").strip()
+    }
+    # Exact ownership only: a store/cli row stamped dispatch_id=<local-*>
+    # is the host implement's internal Orchestrator job, not a second card.
+    # No goal / time / origin / session heuristic.
+    out = []
+    for job in store_jobs or []:
+        if not isinstance(job, dict):
+            continue
+        dispatch_id = str(job.get("dispatch_id") or "").strip()
+        if dispatch_id and dispatch_id in host_local_ids:
+            continue
+        out.append(job)
     existing_ids = {j.get("id") for j in out if j.get("id")}
     replaced_local_ids = {
         f"local-swarm-{str(job.get('dispatch_id') or '').strip()}"
