@@ -109,6 +109,12 @@ export default function UpdateBanner({
             readyRef.current = true;
             setReady(true);
             publishAvailability(res);
+          } else if (res.error) {
+            // Live updates.check() resolves git/network/remote failures as
+            // {available:false,error:...} instead of rejecting. A transient
+            // miss must not revoke a latched update; only an authoritative
+            // available:false without error does that.
+            clearCheckProgress();
           } else {
             // Packaged shell checks emit transient "Checking for app shell update"
             // progress; when the poll finishes with nothing to install, drop that
@@ -238,7 +244,7 @@ export default function UpdateBanner({
         // both update surfaces silently when that check says nothing remains.
         if (r && r.ok === false) {
           window.clearTimeout(watchdog);
-          if (r.error === "no update available") {
+          if (r.code === "no_update") {
             revokeAvailability();
             settleApply();
             return;

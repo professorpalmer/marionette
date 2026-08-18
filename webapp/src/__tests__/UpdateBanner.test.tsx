@@ -6,6 +6,7 @@ type CheckResult = {
   available: boolean;
   downloaded: boolean;
   busy?: boolean;
+  error?: string;
   behind?: number;
   branch?: string;
   current?: string;
@@ -123,6 +124,46 @@ describe("UpdateBanner update checks", () => {
     expect(onAvailabilityChange).toHaveBeenCalledTimes(1);
   });
 
+  it("preserves a latched update when check resolves a live IPC error", async () => {
+    let now = 1_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const onAvailabilityChange = vi.fn();
+    const check = vi
+      .fn()
+      .mockResolvedValueOnce({
+        available: true,
+        downloaded: false,
+        behind: 2,
+        branch: "main",
+        current: "0.9.245",
+      })
+      .mockResolvedValueOnce({
+        available: false,
+        downloaded: false,
+        error: "fatal: unable to access 'https://github.com/professorpalmer/marionette.git/': Could not resolve host",
+      });
+    (window as any).harnessIPC.updates.check = check;
+
+    render(<UpdateBanner onAvailabilityChange={onAvailabilityChange} />);
+    expect(await screen.findByTestId("update-banner")).toBeInTheDocument();
+    expect(onAvailabilityChange).toHaveBeenLastCalledWith({
+      behind: 2,
+      branch: "main",
+      version: "0.9.245",
+    });
+
+    now += 5 * 60 * 1000;
+    act(() => window.dispatchEvent(new Event("focus")));
+    await waitFor(() => expect(check).toHaveBeenCalledTimes(2));
+    expect(screen.getByTestId("update-banner")).toBeInTheDocument();
+    expect(onAvailabilityChange).toHaveBeenCalledTimes(1);
+    expect(onAvailabilityChange).toHaveBeenLastCalledWith({
+      behind: 2,
+      branch: "main",
+      version: "0.9.245",
+    });
+  });
+
   it("surfaces a runtime-stale note from the owner check", async () => {
     const note = "Puppetmaster must be updated before workers are ready.";
     const toast = vi.fn();
@@ -198,6 +239,33 @@ describe("UpdateBanner update checks", () => {
 
     act(() => {
       rejectCheck?.(new Error("network unavailable"));
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("update-banner")).not.toBeInTheDocument();
+    });
+    expect(idleListener).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears checking progress when a resolved check carries an error", async () => {
+    render(<UpdateBanner />);
+
+    await waitFor(() => expect(progressListener).not.toBeNull());
+    act(() => {
+      progressListener?.({
+        stage: "check",
+        message: "Checking for app shell update",
+        percent: 0,
+      });
+    });
+    expect(screen.queryByTestId("update-banner")).not.toBeInTheDocument();
+
+    act(() => {
+      resolveCheck?.({
+        available: false,
+        downloaded: false,
+        error: "git fetch failed",
+      });
     });
 
     await waitFor(() => {
@@ -289,7 +357,7 @@ describe("UpdateBanner update checks", () => {
 
   it("revokes stale availability when apply confirms there is no update", async () => {
     const onAvailabilityChange = vi.fn();
-    const apply = vi.fn(async () => ({ ok: false, error: "no update available" }));
+    const apply = vi.fn(async () => ({ ok: false, code: "no_update", error: "no update available" }));
     (window as any).harnessIPC.updates.apply = apply;
     (window as any).harnessIPC.updates.onAvailable = vi.fn((listener: (res: CheckResult) => void) => {
       listener({
@@ -308,5 +376,44 @@ describe("UpdateBanner update checks", () => {
     await waitFor(() => expect(apply).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(screen.queryByTestId("update-banner")).not.toBeInTheDocument());
     expect(onAvailabilityChange).toHaveBeenLastCalledWith(null);
+  });
+
+  it("preserves availability when apply-time check fails", async () => {
+    const onAvailabilityChange = vi.fn();
+    const toast = vi.fn();
+    window.addEventListener("harness-toast", toast);
+    const apply = vi.fn(async () => ({
+      ok: false,
+      code: "check_failed",
+      error: "fatal: unable to access 'https://github.com/professorpalmer/marionette.git/': Could not resolve host",
+    }));
+    (window as any).harnessIPC.updates.apply = apply;
+    (window as any).harnessIPC.updates.onAvailable = vi.fn((listener: (res: CheckResult) => void) => {
+      listener({
+        available: true,
+        downloaded: false,
+        behind: 1,
+        branch: "main",
+        current: "0.9.245",
+      });
+      return () => {};
+    });
+
+    render(<UpdateBanner onAvailabilityChange={onAvailabilityChange} />);
+    expect(await screen.findByTestId("update-banner")).toBeInTheDocument();
+    await act(async () => screen.getByRole("button", { name: /restart now/i }).click());
+
+    await waitFor(() => expect(apply).toHaveBeenCalledTimes(1));
+    expect(screen.getByTestId("update-banner")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /restart now/i })).toBeInTheDocument();
+    expect(onAvailabilityChange).toHaveBeenLastCalledWith({
+      behind: 1,
+      branch: "main",
+      version: "0.9.245",
+    });
+    expect(onAvailabilityChange).not.toHaveBeenCalledWith(null);
+    await waitFor(() => expect(toast).toHaveBeenCalled());
+    expect((toast.mock.calls[0][0] as CustomEvent).detail).toMatch(/Could not resolve host/);
+    window.removeEventListener("harness-toast", toast);
   });
 });
