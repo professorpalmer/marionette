@@ -1089,6 +1089,37 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
+        {gate("general", "compaction residual hybrid summary compact handle index") && settings && (<>
+        <div className="space-y-1.5">
+          <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
+            Compact Residual
+          </label>
+          <button
+            onClick={() => update({
+              compactionResidual: (settings.compactionResidual === "hybrid")
+                ? "summary"
+                : "hybrid",
+            })}
+            disabled={saving}
+            className={`w-full flex items-center justify-between px-3 py-2 rounded border transition text-left ${
+              settings.compactionResidual === "hybrid"
+                ? "bg-accent/10 border-accent/30 text-accent"
+                : "bg-panel2 border-edge text-muted"
+            } disabled:opacity-50`}
+          >
+            <span className="font-medium text-[11px]">Pin handle index after compact</span>
+            <span className="text-[10px] uppercase font-bold tracking-wider">
+              {settings.compactionResidual === "hybrid" ? "hybrid" : "summary"}
+            </span>
+          </button>
+          <p className="text-[10px] text-muted">
+            Summary is the default. Hybrid keeps that paragraph and pins a
+            deterministic index of files, decisions, and distinctive tokens so
+            compact does not wash them out.
+          </p>
+        </div>
+
+        </>)}
         {gate("general", "review edits diff review toggle") && settings && (<>
         {/* Diff Review Toggle */}
         <div className="space-y-1.5">

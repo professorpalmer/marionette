@@ -17,6 +17,7 @@ from harness.compaction_residual import (
     build_hybrid_index,
     compaction_residual_mode,
     extract_handle_index,
+    settings_residual_choice,
 )
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession
@@ -116,6 +117,9 @@ def test_residual_mode_default_and_empty_never_off(monkeypatch):
     assert compaction_residual_mode() == RESIDUAL_OFF
     monkeypatch.setenv("HARNESS_COMPACTION_RESIDUAL", "CATALOG")
     assert compaction_residual_mode() == RESIDUAL_CATALOG
+    assert settings_residual_choice() == RESIDUAL_SUMMARY
+    monkeypatch.setenv("HARNESS_COMPACTION_RESIDUAL", "hybrid")
+    assert settings_residual_choice() == RESIDUAL_HYBRID
 
 
 def test_default_summary_mode_unchanged(tmp_path, monkeypatch):
@@ -366,6 +370,13 @@ def _washout_middle() -> list[dict]:
             "content": "active auth module",
             "_read_path": "auth_current_v2.py",
         },
+        {
+            "role": "tool",
+            "content": (
+                "Plain measurement only: omega-cache-token-9f3a observed "
+                "on shard-omega-p95."
+            ),
+        },
     ]
 
 
@@ -381,6 +392,7 @@ def _index_blob(index: dict) -> str:
         + list(index["tools"])
         + list(index["handles"])
         + list(index["stems"])
+        + list(index.get("facts") or [])
     )
 
 
@@ -422,8 +434,10 @@ def test_catalog_reextraction_preserves_stems_and_bare_files():
         "content": catalog,
         "_compressed_summary": True,
     }])
-    _assert_closed_loop(first, second, ("files", "tools", "handles", "stems"))
+    _assert_closed_loop(first, second, ("files", "tools", "handles", "stems", "facts"))
     second_blob = _index_blob(second)
+    assert "omega-cache-token-9f3a" in second["facts"]
+    assert "shard-omega-p95" in second["facts"]
     assert "Decision: use SQLite instead of Redis" in second_blob
     assert "never write to production.db" in second_blob
     assert "production.db" in second_blob
@@ -463,12 +477,13 @@ def test_hybrid_index_reextraction_preserves_classified_handles():
     hybrid = build_hybrid_index(middle)
     assert HYBRID_INDEX_HEADING in hybrid
     assert "- stems:" in hybrid
+    assert "- facts:" in hybrid
     second = extract_handle_index([{
         "role": "assistant",
         "content": hybrid,
         "_compressed_summary": True,
     }])
-    _assert_closed_loop(first, second, ("files", "tools", "handles", "stems"))
+    _assert_closed_loop(first, second, ("files", "tools", "handles", "stems", "facts"))
     assert "production.db" in second["files"]
     assert "scratch.sqlite" in second["files"]
     assert "auth_current_v2.py" in second["files"]
@@ -482,6 +497,133 @@ def test_hybrid_index_reextraction_preserves_classified_handles():
     assert "(none)" not in second["tools"]
     assert "(none)" not in second["handles"]
     assert "(none)" not in second["stems"]
+    assert "(none)" not in second["facts"]
+    assert "omega-cache-token-9f3a" in second["facts"]
+    assert "shard-omega-p95" in second["facts"]
+
+
+def test_file_stem_lookalikes_are_not_facts():
+    """auth_legacy_v1 must not leak into facts from distractor prose."""
+    middle = [
+        {"role": "user", "content": "Ignore auth_legacy_v1.py; it is the retired twin."},
+        {"role": "user", "content": "Read auth_current_v2.py — that is the active auth module."},
+    ]
+    index = extract_handle_index(middle)
+    blob = " ".join(index["facts"])
+    assert "auth_legacy_v1" not in blob
+    assert "auth_current_v2" not in blob
+
+
+def test_hybrid_index_keeps_newest_stems_under_cap():
+    """Hybrid appendix must take the stem tail, not the oldest six."""
+    middle = []
+    for i in range(12):
+        middle.append({"role": "user", "content": f"never touch filler-file-{i}-zz."})
+    middle.append({
+        "role": "user",
+        "content": "Decision: use SQLite instead of Redis for the session store.",
+    })
+    hybrid = build_hybrid_index(middle)
+    assert "SQLite instead of Redis" in hybrid
+
+
+def test_last_wins_stems_keep_late_decision_after_cap():
+    middle = []
+    for i in range(12):
+        middle.append({"role": "user", "content": f"never touch filler-file-{i}-zz."})
+    middle.append({
+        "role": "user",
+        "content": "Decision: use SQLite instead of Redis for the session store.",
+    })
+    index = extract_handle_index(middle)
+    blob = " ".join(index["stems"]).lower()
+    assert "sqlite instead of redis" in blob
+    assert len(index["stems"]) <= 10
+
+
+def test_version_and_ticket_harvest():
+    middle = [
+        {
+            "role": "user",
+            "content": "Pin marionette to 0.9.187 and see ticket E-7721.",
+        },
+    ]
+    index = extract_handle_index(middle)
+    assert "0.9.187" in index["facts"]
+    assert "E-7721" in index["facts"]
+
+
+def test_obligation_harvest_keeps_later_reversal():
+    middle = [
+        {
+            "role": "user",
+            "content": (
+                "please don't write to the live ledger; "
+                "the east replica is the only sink."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                "go ahead and write to the live ledger now; "
+                "the east replica is retired."
+            ),
+        },
+    ]
+    index = extract_handle_index(middle)
+    blob = " ".join(index["stems"]).lower()
+    assert "write to the live ledger now" in blob
+    assert "east replica is retired" in blob
+
+
+def test_obligation_harvest_folds_unicode_apostrophes():
+    middle = [{
+        "role": "user",
+        "content": "please don\u2019t write to the live ledger.",
+    }]
+    index = extract_handle_index(middle)
+    blob = " ".join(index["stems"]).lower()
+    assert "live ledger" in blob
+
+
+def test_obligation_harvest_keeps_unprefixed_policy_lines():
+    """Unprefixed don't / the-only lines enter stems without a Decision: prefix."""
+    middle = [
+        {
+            "role": "user",
+            "content": (
+                "please don't write to the live ledger; "
+                "the east replica is the only sink."
+            ),
+        },
+    ]
+    index = extract_handle_index(middle)
+    blob = " ".join(index["stems"]).lower()
+    assert "live ledger" in blob
+    assert "east replica" in blob
+    assert "don't write" in blob
+
+
+def test_fact_harvest_keeps_measurement_nonces_not_paths():
+    """Hyphenated measurement tokens enter facts; file stems do not."""
+    middle = [
+        {
+            "role": "tool",
+            "content": (
+                "Plain measurement only: omega-cache-token-9f3a observed "
+                "on shard-omega-p95. Also read auth_current_v2.py."
+            ),
+            "_read_path": "auth_current_v2.py",
+        },
+    ]
+    index = extract_handle_index(middle)
+    assert "omega-cache-token-9f3a" in index["facts"]
+    assert "shard-omega-p95" in index["facts"]
+    assert "auth_current_v2.py" in index["files"]
+    assert "auth_current_v2" not in index["facts"]
+    catalog = build_catalog_residual(middle, char_budget=2000)
+    assert "### Facts" in catalog
+    assert "omega-cache-token-9f3a" in catalog
 
 
 def test_catalog_placeholders_are_not_ingested_as_handles():
@@ -495,6 +637,7 @@ def test_catalog_placeholders_are_not_ingested_as_handles():
     assert index["tools"] == []
     assert index["handles"] == []
     assert index["stems"] == []
+    assert index["facts"] == []
     blob = _index_blob(index)
     assert "(no file pointers found)" not in blob
     assert "(none)" not in blob

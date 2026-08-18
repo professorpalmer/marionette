@@ -53,6 +53,8 @@ def test_settings_get_returns_expected_shape(monkeypatch):
         assert "wiki_auto" in data
         assert "reasoning_effort" in data
         assert data["reasoning_effort"] == "low"
+        assert "compactionResidual" in data
+        assert data["compactionResidual"] == "summary"
         assert "state_dir" in data
         assert "repo" in data
     finally:
@@ -154,5 +156,58 @@ def test_settings_post_persists_reasoning_effort(tmp_path, monkeypatch):
             {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN},
         )
         assert restore_resp.status == 200
+    finally:
+        httpd.shutdown()
+
+
+def test_settings_post_persists_compaction_residual(tmp_path, monkeypatch):
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    monkeypatch.delenv("HARNESS_COMPACTION_RESIDUAL", raising=False)
+    httpd, port, srv = _server()
+    try:
+        assert json.loads(_get(port, "/api/settings").read().decode())[
+            "compactionResidual"
+        ] == "summary"
+
+        post_resp = _post(
+            port,
+            "/api/settings",
+            {"compactionResidual": "hybrid"},
+            {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN},
+        )
+        assert post_resp.status == 200
+        post_data = json.loads(post_resp.read().decode())
+        assert post_data["compactionResidual"] == "hybrid"
+
+        get_data = json.loads(_get(port, "/api/settings").read().decode())
+        assert get_data["compactionResidual"] == "hybrid"
+
+        import os
+        assert os.environ.get("HARNESS_COMPACTION_RESIDUAL") == "hybrid"
+
+        env_path = os.path.join(str(tmp_path), "env_settings.json")
+        with open(env_path, encoding="utf-8") as f:
+            persisted = json.load(f)
+        assert persisted["HARNESS_COMPACTION_RESIDUAL"] == "hybrid"
+
+        try:
+            _post(
+                port,
+                "/api/settings",
+                {"compactionResidual": "catalog"},
+                {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN},
+            )
+            assert False, "catalog must stay env-only"
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+
+        restore_resp = _post(
+            port,
+            "/api/settings",
+            {"compactionResidual": "summary"},
+            {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN},
+        )
+        assert restore_resp.status == 200
+        assert json.loads(restore_resp.read().decode())["compactionResidual"] == "summary"
     finally:
         httpd.shutdown()

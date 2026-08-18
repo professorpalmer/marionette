@@ -131,6 +131,15 @@ describe("toSafeSettingsSnapshot", () => {
     expect(stored!).toContain("cursor");
   });
 
+  it("includes compactionResidual in safe snapshot fields", () => {
+    const raw = { ...sampleSettings, compactionResidual: "hybrid" as const };
+    const safe = toSafeSettingsSnapshot(raw);
+    expect(safe.compactionResidual).toBe("hybrid");
+    writeSettingsSnapshot(raw);
+    const stored = JSON.parse(localStorage.getItem(SETTINGS_SNAPSHOT_KEY)!);
+    expect(stored.settings.compactionResidual).toBe("hybrid");
+  });
+
   it("includes pilotToolBudget in safe snapshot fields", () => {
     const raw = { ...sampleSettings, pilotToolBudget: "25" };
     const safe = toSafeSettingsSnapshot(raw);

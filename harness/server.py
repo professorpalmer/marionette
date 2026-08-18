@@ -2896,6 +2896,14 @@ def _available_pilots():
     return out
 
 
+def _settings_compaction_residual():
+    try:
+        from .compaction_residual import settings_residual_choice
+        return settings_residual_choice()
+    except Exception:
+        return "summary"
+
+
 def _get_settings_dict():
     from harness.hash_edit import hash_edit_enabled
     from harness.reasoning_effort import current_reasoning_effort
@@ -2924,6 +2932,7 @@ def _get_settings_dict():
             os.environ.get("HARNESS_WORKER_TOKEN_BUDGET", "").strip() or "250000"
         ),
         "reasoning_effort": current_reasoning_effort(),
+        "compactionResidual": _settings_compaction_residual(),
         "state_dir": _session.state_dir,
         "repo": _cfg.repo,
         "has_api_key": status["has_key"],
