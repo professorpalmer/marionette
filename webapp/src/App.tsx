@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type Config } from "./lib/api";
+import { subscribeDocumentMotionPolicy } from "./lib/motionPolicy";
 import LeftRail from "./components/LeftRail";
 import Conversation from "./components/Conversation";
 import RightPane from "./components/RightPane";
 import RightDock from "./components/RightDock";
 import StatusBar from "./components/StatusBar";
-import UpdateBanner from "./components/UpdateBanner";
+import UpdateBanner, { type UpdateAvailability } from "./components/UpdateBanner";
 import ProviderKeyBanner from "./components/ProviderKeyBanner";
 import Resizer from "./components/Resizer";
 import RegistryWizard from "./components/RegistryWizard";
@@ -117,6 +118,7 @@ function hasStoredRightPaneCards(): boolean {
 
 export default function App() {
   const [config, setConfig] = useState<Config | null>(null);
+  const [availableUpdate, setAvailableUpdate] = useState<UpdateAvailability | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [artifacts, setArtifacts] = useState<{ type: string; headline: string; confidence?: number }[]>([]);
   const [jobsRefresh, setJobsRefresh] = useState(0);
@@ -232,28 +234,11 @@ export default function App() {
     checkSetupStatus();
   }, []);
 
-  // PERF: pause CSS animations when the app is backgrounded or the OS window is
-  // not focused. Toggles html.app-idle (see index.css) so the shared macOS GPU
-  // compositor goes idle instead of driving dozens of spinners/pulses at 60fps
-  // while you are in another window -- the cause of alt-tab/window-switch stutter
-  // during a long session with live swarms. blur/focus covers alt-tab (the window
-  // can stay "visible" but unfocused); visibilitychange covers minimize/hide.
-  useEffect(() => {
-    const root = document.documentElement;
-    const setIdle = () => {
-      const idle = document.hidden || !document.hasFocus();
-      root.classList.toggle("app-idle", idle);
-    };
-    setIdle();
-    window.addEventListener("blur", setIdle);
-    window.addEventListener("focus", setIdle);
-    document.addEventListener("visibilitychange", setIdle);
-    return () => {
-      window.removeEventListener("blur", setIdle);
-      window.removeEventListener("focus", setIdle);
-      document.removeEventListener("visibilitychange", setIdle);
-    };
-  }, []);
+  // PERF: pause nonessential CSS motion while the app is backgrounded. Keep
+  // separate idle/hidden classes so visible worker activity can remain truthful
+  // when the window is merely unfocused, while hidden windows fully pause.
+  // Unsubscribe clears both classes so App unmount cannot leave them on <html>.
+  useEffect(() => subscribeDocumentMotionPolicy(), []);
 
   // persist layout
   useEffect(() => { localStorage.setItem(LS.left, String(leftW)); }, [leftW]);
@@ -336,7 +321,7 @@ export default function App() {
 
   return (
     <div className="h-full flex flex-col bg-[var(--shell-chrome)]">
-      <UpdateBanner />
+      <UpdateBanner onAvailabilityChange={setAvailableUpdate} />
       {/* Keyless nudge: agentic is the shipped default, so instead of a demo run
           we tell the user to plug in a key. Suppressed while the first-run wizard
           is up (it already covers key setup) to avoid stacking two prompts. */}
@@ -441,7 +426,7 @@ export default function App() {
         </div>
       </div>
       <div className="shrink-0 px-px py-px">
-        <StatusBar config={config}
+        <StatusBar config={config} update={availableUpdate}
           leftOpen={leftOpen} rightOpen={rightOpen}
           onToggleLeft={() => setLeftOpen((v) => !v)} onToggleRight={() => setRightOpen((v) => !v)} />
       </div>

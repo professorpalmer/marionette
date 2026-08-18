@@ -200,6 +200,49 @@ describe("SwarmPane model badge", () => {
     });
   });
 
+  it("marks only worker, job, and aggregate running indicators as semantic", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        status: "running",
+        tasks: [{ id: "task-1", status: "running", adapter: "agentic", role: "Worker", instruction: "" }],
+      }),
+    );
+
+    const { container } = render(<SwarmPane />);
+    const worker = await screen.findByRole("button", { name: /Worker/ });
+    const job = screen.getByRole("button", { name: /Audit auth flow/ });
+    const aggregate = screen.getByText("1 running");
+
+    expect(worker.querySelector(".semantic-activity-spinner")).toBeTruthy();
+    expect(job.querySelector(".semantic-activity-spinner")).toBeTruthy();
+    expect(aggregate.querySelector(".semantic-activity-spinner")).toBeTruthy();
+    expect(container.querySelectorAll(".semantic-activity-spinner")).toHaveLength(3);
+
+    const headerPulse = screen.getByTitle("1 running");
+    expect(headerPulse).toHaveClass("animate-pulse");
+    expect(headerPulse).not.toHaveClass("semantic-activity-spinner");
+    for (const pulse of container.querySelectorAll(".animate-pulse")) {
+      expect(pulse).not.toHaveClass("semantic-activity-spinner");
+    }
+  });
+
+  it("does not mark finished-job chrome as semantic activity", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        status: "complete",
+        tasks: [{ id: "task-1", status: "complete", adapter: "agentic", role: "Worker", instruction: "" }],
+      }),
+    );
+
+    const { container } = render(<SwarmPane />);
+    await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Finished"));
+    fireEvent.click(await screen.findByText("Audit auth flow"));
+    await screen.findByRole("button", { name: /Worker/ });
+
+    expect(container.querySelectorAll(".semantic-activity-spinner")).toHaveLength(0);
+  });
+
   it("falls back to the adapter on the worker row when no routed model is present", async () => {
     mockSwarmLive.mockResolvedValue(
       liveJob({

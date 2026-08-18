@@ -420,3 +420,30 @@ test("describeMainProcessUpdate: no shell change means nothing extra to require"
   assert.equal(verdict.installerUpdateRequired, false);
   assert.equal(verdict.note, undefined);
 });
+
+test("emptyApplyPlanResult: authoritative no-update is a no_update code", () => {
+  const result = bridge.emptyApplyPlanResult({
+    gitResult: { available: false, behind: 0 },
+    packagedResult: { available: false },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "no_update");
+  assert.equal(result.error, "no update available");
+});
+
+test("emptyApplyPlanResult: a failed apply-time check is check_failed", () => {
+  const gitFail = bridge.emptyApplyPlanResult({
+    gitResult: { available: false, error: "git fetch failed" },
+    packagedResult: { available: false },
+  });
+  assert.equal(gitFail.ok, false);
+  assert.equal(gitFail.code, "check_failed");
+  assert.equal(gitFail.error, "git fetch failed");
+
+  const packagedFail = bridge.emptyApplyPlanResult({
+    gitResult: { available: false, behind: 0 },
+    packagedResult: { available: false, error: "electron-updater unavailable" },
+  });
+  assert.equal(packagedFail.code, "check_failed");
+  assert.equal(packagedFail.error, "electron-updater unavailable");
+});

@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.7` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.245, deliberately pre-1.0. Compact residual factory default is catalog (extractive handle index plus a selected story, with vault retrieve). After compact, the transcript shows last-wins kept/dropped plus handle chips; overlapping asks cite vault hits as from compacted history. Summary and hybrid stay Settings opt-ins. Rides puppetmaster-ai==1.22.7.
+> Status: v0.9.246, deliberately pre-1.0. Update availability now has one authoritative renderer owner, visible background workers keep truthful activity motion, and source relaunches fall back from a dead Vite URL to the built renderer. Compact residual factory default remains catalog; summary and hybrid stay Settings opt-ins. Rides puppetmaster-ai==1.22.7.
 
 ## Documentation
 
@@ -27,7 +27,7 @@ Start here, then follow the map:
 | [DEMO.md](DEMO.md) | A guided walkthrough of the harness in action. |
 | [FINDINGS.md](FINDINGS.md) | Research-rig findings: which models can drive the harness. |
 | [NOTICE.md](NOTICE.md) | Third-party attributions. |
-| [Catalog, Not Summary](https://professorpalmer.github.io/catalog-residual/) | Compaction residual lab and paper (separate repo). |
+| [Extractive Residuals After Compaction](https://professorpalmer.github.io/catalog-residual/) | Compaction residual lab and paper (separate repo). |
 | [docs/discord-mcp.md](docs/discord-mcp.md) | Optional recipe: wire a MIT Discord MCP (Docker + `manage_mcp`), not a first-party Discord product. |
 | [docs/LEGACY_FRONTEND.md](docs/LEGACY_FRONTEND.md) | Historical frontend notes (not the shipping Electron UI). |
 

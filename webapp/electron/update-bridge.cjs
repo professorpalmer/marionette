@@ -638,6 +638,18 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff",
   }
 }
 
+/** Result when apply has nothing to run: authoritative idle vs failed check. */
+function emptyApplyPlanResult({ gitResult = {}, packagedResult = null } = {}) {
+  const checkError =
+    (gitResult && gitResult.error) ||
+    (packagedResult && packagedResult.error) ||
+    "";
+  if (checkError) {
+    return { ok: false, code: "check_failed", error: checkError };
+  }
+  return { ok: false, code: "no_update", error: "no update available" };
+}
+
 // Register IPC. `opts.getRepoRoot()` returns the checkout path; `opts.relaunch()`
 // tears down the backend and re-execs the app. Packaged installs also get
 // `opts.packagedUpdater` (electron-updater) so shell skew is resolved via a
@@ -876,7 +888,7 @@ function registerUpdateBridge(ipcMain, app, shell, opts = {}) {
         return sourceResult;
       }
 
-      return { ok: false, error: "no update available" };
+      return emptyApplyPlanResult({ gitResult: gitRes, packagedResult: packagedRes });
     } finally {
       applying = false;
     }
@@ -908,5 +920,6 @@ module.exports = {
   isElectronMainProcessFile,
   updateChangesElectronMain,
   describeMainProcessUpdate,
+  emptyApplyPlanResult,
   resolvePuppetmasterPin,
 };
