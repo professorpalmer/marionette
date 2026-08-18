@@ -10,7 +10,8 @@ html, body, #root { height: 100%; margin: 0; }
    composer) keep the compositor pinned even after you alt-tab away -- which is
    exactly what makes window-switching stutter during a long session with live
    swarms. Semantic worker indicators are the narrow exception while the window
-   remains visible; a hidden/minimized window still pauses everything. */
+   remains visible; a hidden/minimized window still pauses everything.
+   prefers-reduced-motion below stays authoritative and has no semantic exception. */
 html.app-idle *,
 html.app-idle *::before,
 html.app-idle *::after {

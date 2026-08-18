@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type Config } from "./lib/api";
+import { subscribeDocumentMotionPolicy } from "./lib/motionPolicy";
 import LeftRail from "./components/LeftRail";
 import Conversation from "./components/Conversation";
 import RightPane from "./components/RightPane";
@@ -235,22 +236,8 @@ export default function App() {
   // PERF: pause nonessential CSS motion while the app is backgrounded. Keep
   // separate idle/hidden classes so visible worker activity can remain truthful
   // when the window is merely unfocused, while hidden windows fully pause.
-  useEffect(() => {
-    const root = document.documentElement;
-    const setIdle = () => {
-      root.classList.toggle("app-idle", document.hidden || !document.hasFocus());
-      root.classList.toggle("app-hidden", document.hidden);
-    };
-    setIdle();
-    window.addEventListener("blur", setIdle);
-    window.addEventListener("focus", setIdle);
-    document.addEventListener("visibilitychange", setIdle);
-    return () => {
-      window.removeEventListener("blur", setIdle);
-      window.removeEventListener("focus", setIdle);
-      document.removeEventListener("visibilitychange", setIdle);
-    };
-  }, []);
+  // Unsubscribe clears both classes so App unmount cannot leave them on <html>.
+  useEffect(() => subscribeDocumentMotionPolicy(), []);
 
   // persist layout
   useEffect(() => { localStorage.setItem(LS.left, String(leftW)); }, [leftW]);
