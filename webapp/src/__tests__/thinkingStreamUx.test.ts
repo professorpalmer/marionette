@@ -328,6 +328,27 @@ describe("feed collapse: telemetry joins the activity strip", () => {
     ]);
   });
 
+  it("folds vault_cite into the investigation like codegraph_context", () => {
+    const items: Item[] = [
+      card,
+      { kind: "codegraph_context", symbols: 2, query: "auth" },
+      {
+        kind: "vault_cite",
+        route: "fts",
+        snippets: ["omega-cache-token-9f3a"],
+        query: "what token",
+      },
+    ];
+    const grouped = groupAgentActivity(items, new Set());
+    expect(grouped).toHaveLength(1);
+    if (grouped[0].kind !== "activity_group") return;
+    expect(grouped[0].items.map((item) => item.kind)).toEqual([
+      "card",
+      "codegraph_context",
+      "vault_cite",
+    ]);
+  });
+
   it("does not let a lone compaction sit beside the sentence", () => {
     const items: Item[] = [
       { kind: "msg", msg: { role: "assistant", text: "Done." } },

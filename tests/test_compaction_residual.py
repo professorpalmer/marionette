@@ -131,6 +131,16 @@ def test_default_catalog_mode_is_extractive(tmp_path, monkeypatch):
     events = list(session._maybe_compact_history(force=True))
     assert [e.kind for e in events] == ["compacting", "compaction"]
     assert events[-1].data.get("mode") == "extractive"
+    payload = events[-1].data
+    assert isinstance(payload.get("kept"), list)
+    assert isinstance(payload.get("dropped"), list)
+    assert isinstance(payload.get("handles"), list)
+    assert any(
+        "ledger_v3" in item or "read_file" in item or "spill://" in item
+        for item in payload["handles"]
+    )
+    assert "CATALOG_HEADING" not in payload
+    assert CATALOG_HEADING not in str(payload.get("kept"))
     assert not session.pilot.chat_calls
     injected = session._history[1]["content"]
     assert session._history[1].get("_compressed_summary") is True
@@ -681,6 +691,15 @@ def test_version_and_ticket_harvest():
     assert "E-7721" in index["facts"]
 
 
+def test_reversal_transcript_index_reports_dropped_vs_kept():
+    index = extract_handle_index(_reversal_transcript())
+    kept = " ".join(index["stems"] + index["story"]).lower()
+    dropped = " ".join(index.get("dropped") or []).lower()
+    assert "write to the live ledger now" in kept
+    assert "don't write" not in kept
+    assert "don't write" in dropped or "only sink" in dropped
+
+
 def test_obligation_harvest_keeps_later_reversal():
     middle = [
         {
@@ -700,10 +719,12 @@ def test_obligation_harvest_keeps_later_reversal():
     ]
     index = extract_handle_index(middle)
     blob = " ".join(index["stems"] + index["story"]).lower()
+    dropped = " ".join(index.get("dropped") or []).lower()
     assert "write to the live ledger now" in blob
     assert "east replica is retired" in blob
     assert "don't write" not in blob
     assert "only sink" not in blob
+    assert "don't write" in dropped or "only sink" in dropped
 
 
 def test_obligation_harvest_folds_unicode_apostrophes():

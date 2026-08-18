@@ -23,7 +23,7 @@ import re
 from typing import Any, Iterable
 
 from harness.api.redaction import redact_secret_text
-from harness.compaction_vault import apply_topic_last_wins, select_story_lines
+from harness.compaction_vault import select_story_lines, topic_last_wins_receipt
 
 _SPILL_URI_RE = re.compile(r"spill://[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 
@@ -528,8 +528,15 @@ def extract_handle_index(middle_block: list[dict]) -> dict[str, Any]:
     for text in select_story_lines(middle_block):
         _unique_append_last_wins(story, seen_story, text, _MAX_STORY)
 
-    stems = apply_topic_last_wins(stems)
-    story = apply_topic_last_wins(story)
+    stems, dropped_stems = topic_last_wins_receipt(stems)
+    story, dropped_story = topic_last_wins_receipt(story)
+    dropped: list[str] = []
+    seen_dropped: set[str] = set()
+    for line in dropped_stems + dropped_story:
+        text = (line or "").strip()
+        if text and text not in seen_dropped:
+            seen_dropped.add(text)
+            dropped.append(text)
 
     return {
         "files": files,
@@ -539,7 +546,57 @@ def extract_handle_index(middle_block: list[dict]) -> dict[str, Any]:
         "facts": facts,
         "last_ask": last_ask,
         "story": story,
+        "dropped": dropped,
         "middle_messages": len(middle_block),
+    }
+
+
+_RECEIPT_LINE_CHARS = 80
+_RECEIPT_KEPT_CAP = 6
+_RECEIPT_DROPPED_CAP = 6
+_RECEIPT_HANDLE_CAP = 8
+_RECEIPT_STORY_CAP = 3
+
+
+def _clip_receipt_line(text: str, limit: int = _RECEIPT_LINE_CHARS) -> str:
+    raw = " ".join(str(text or "").split())
+    if len(raw) <= limit:
+        return raw
+    return raw[:limit].rstrip()
+
+
+def _clip_receipt_lines(lines: list[str], cap: int, limit: int = _RECEIPT_LINE_CHARS) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for line in lines or []:
+        clipped = _clip_receipt_line(line, limit)
+        if not clipped or clipped in seen:
+            continue
+        seen.add(clipped)
+        out.append(clipped)
+        if len(out) >= cap:
+            break
+    return out
+
+
+def clip_compaction_receipt(index: dict[str, Any]) -> dict[str, list[str]]:
+    """Cap/clip last-wins + handle fields for the compact SSE receipt."""
+    if not isinstance(index, dict):
+        index = {}
+    kept_src = list(index.get("stems") or []) + list(index.get("story") or [])
+    handle_src: list[str] = []
+    seen_handles: set[str] = set()
+    for bucket in (index.get("files"), index.get("tools"), index.get("handles")):
+        for item in bucket or []:
+            text = str(item or "").strip()
+            if text and text not in seen_handles:
+                seen_handles.add(text)
+                handle_src.append(text)
+    return {
+        "kept": _clip_receipt_lines(kept_src, _RECEIPT_KEPT_CAP),
+        "dropped": _clip_receipt_lines(list(index.get("dropped") or []), _RECEIPT_DROPPED_CAP),
+        "handles": _clip_receipt_lines(handle_src, _RECEIPT_HANDLE_CAP),
+        "story": _clip_receipt_lines(list(index.get("story") or []), _RECEIPT_STORY_CAP),
     }
 
 

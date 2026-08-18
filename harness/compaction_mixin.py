@@ -791,18 +791,22 @@ class CompactionContextMixin:
             budget,
         )
 
-    def _build_turn_vault_section(self, user_message: str) -> str:
-        """Query-conditioned recall of elided history. Never raises."""
+    def _build_turn_vault_cite(self, user_message: str) -> dict:
+        """Query-conditioned recall plus cite payload. Never raises."""
         try:
-            from .compaction_vault import build_turn_vault_section
+            from .compaction_vault import build_turn_vault_cite
 
-            return build_turn_vault_section(
+            return build_turn_vault_cite(
                 getattr(self, "state_dir", "") or "",
                 getattr(self, "harness_session_id", None) or "default",
                 user_message,
             )
         except Exception:
-            return ""
+            return {"section": "", "route": "empty", "snippets": []}
+
+    def _build_turn_vault_section(self, user_message: str) -> str:
+        """Query-conditioned recall of elided history. Never raises."""
+        return str(self._build_turn_vault_cite(user_message).get("section") or "")
 
     def _maybe_compact_history(
         self, force: bool = False, emergency: bool = False,
@@ -1457,6 +1461,17 @@ class CompactionContextMixin:
         }
         if _compact_policy == "refreeze":
             _compaction_payload["refreeze"] = True
+        try:
+            from .compaction_residual import (
+                clip_compaction_receipt,
+                extract_handle_index,
+            )
+
+            receipt = clip_compaction_receipt(extract_handle_index(pruned_middle))
+            for key in ("kept", "dropped", "handles", "story"):
+                _compaction_payload[key] = list(receipt.get(key) or [])
+        except Exception:
+            pass
         yield ConvEvent("compaction", _compaction_payload)
 
     def _elide_stale_reads(self, messages: list) -> list:

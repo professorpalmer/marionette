@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from harness.compaction_vault import (
     VAULT_HEADING,
+    apply_topic_last_wins,
     build_plan_recap_chunk,
+    build_turn_vault_cite,
     build_turn_vault_section,
     drop_ack_like_messages,
     index_elided_messages,
     is_recap_ask,
     retrieve_vault_chunks,
     retrieve_vault_result,
+    topic_last_wins_receipt,
     vault_match_query,
 )
 
@@ -44,6 +47,18 @@ def test_vault_retrieve_recalls_elided_nonce(tmp_path):
     )
     assert VAULT_HEADING in section
     assert "omega-cache-token-9f3a" in section
+    cite = build_turn_vault_cite(
+        str(tmp_path),
+        "sess-vault",
+        "What cache-shard measurement tokens were returned by the probe?",
+    )
+    assert cite["route"] == "fts"
+    assert any("omega-cache-token-9f3a" in snippet for snippet in cite["snippets"])
+    assert VAULT_HEADING in cite["section"]
+    empty = build_turn_vault_cite(str(tmp_path), "sess-vault", "")
+    assert empty["route"] == "empty"
+    assert empty["snippets"] == []
+    assert empty["section"] == ""
 
 
 def test_vault_retrieve_is_session_scoped(tmp_path):
@@ -211,6 +226,18 @@ def test_plan_chunk_skips_injected_residuals():
     assert "spare region" not in plan.lower()
 
 
+def test_topic_last_wins_receipt_keeps_later_drops_earlier():
+    lines = [
+        "please don't write to the live ledger; the east replica is the only sink.",
+        "go ahead and write to the live ledger now; the east replica is retired.",
+    ]
+    kept, dropped = topic_last_wins_receipt(lines)
+    assert apply_topic_last_wins(lines) == kept
+    assert any("write to the live ledger now" in row for row in kept)
+    assert any("don't write" in row for row in dropped)
+    assert "don't write" not in " ".join(kept).lower()
+
+
 def test_topic_last_wins_drops_superseded_obligation(tmp_path):
     reversal = [
         {
@@ -318,6 +345,11 @@ def test_vault_selector_default_worthy_contract(tmp_path):
     )
     assert kept_hit["route"] == "recap_plan"
     assert "spare region" in "\n".join(kept_hit["hits"]).lower()
+    recap_cite = build_turn_vault_cite(
+        str(tmp_path), "sess-docs", "Remind me what we decided earlier."
+    )
+    assert recap_cite["route"] == "recap_plan"
+    assert any("spare region" in snippet.lower() for snippet in recap_cite["snippets"])
 
     notes = []
     for i in range(12):

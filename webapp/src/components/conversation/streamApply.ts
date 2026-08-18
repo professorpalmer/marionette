@@ -950,6 +950,32 @@ export function appendCodegraphContext(
   return [...items, { kind: "codegraph_context" as const, symbols, query }];
 }
 
+export const VAULT_CITE_CHIP_LABEL = "from compacted history";
+
+export function vaultCiteChipLabel(): string {
+  return VAULT_CITE_CHIP_LABEL;
+}
+
+export function appendVaultCite(
+  items: Item[],
+  route: string,
+  snippets: string[],
+  query?: string,
+): Item[] {
+  const cleaned = (snippets || []).map((s) => String(s || "").trim()).filter(Boolean);
+  if (!cleaned.length) return items;
+  const q = String(query || "").trim();
+  return [
+    ...items,
+    {
+      kind: "vault_cite" as const,
+      route: String(route || ""),
+      snippets: cleaned,
+      ...(q ? { query: q } : {}),
+    },
+  ];
+}
+
 /** Operator-facing label for an aborted compaction SSE (never a success row). */
 export function compactionAbortLabel(message?: string | null, reason?: string | null): string {
   const msg = String(message || "").trim();
@@ -959,11 +985,35 @@ export function compactionAbortLabel(message?: string | null, reason?: string | 
   return "Context compaction aborted";
 }
 
+/** Operator-facing label for a successful compaction SSE. */
+export function compactionSuccessLabel(): string {
+  return "Context compacted";
+}
+
+function optionalStringList(value?: string[] | null): string[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  return value.map((item) => String(item));
+}
+
+export function compactionKeptDroppedLine(
+  kept?: string[] | null,
+  dropped?: string[] | null,
+): string | undefined {
+  const keptN = Array.isArray(kept) ? kept.length : 0;
+  const droppedN = Array.isArray(dropped) ? dropped.length : 0;
+  if (!keptN && !droppedN) return undefined;
+  return `kept ${keptN} · dropped ${droppedN}`;
+}
+
 export type CompactionAppendOpts = {
   aborted?: boolean;
   reason?: string | null;
   message?: string | null;
   mode?: "extractive" | "llm" | string | null;
+  kept?: string[] | null;
+  dropped?: string[] | null;
+  handles?: string[] | null;
+  story?: string[] | null;
 };
 
 export function appendCompaction(
@@ -979,6 +1029,10 @@ export function appendCompaction(
   const message = aborted
     ? compactionAbortLabel(opts?.message, opts?.reason)
     : (String(opts?.message || "").trim() || undefined);
+  const kept = optionalStringList(opts?.kept);
+  const dropped = optionalStringList(opts?.dropped);
+  const handles = optionalStringList(opts?.handles);
+  const story = optionalStringList(opts?.story);
   return [
     ...items,
     {
@@ -989,6 +1043,10 @@ export function appendCompaction(
       ...(reason ? { reason } : {}),
       ...(message ? { message } : {}),
       ...(mode ? { mode } : {}),
+      ...(kept ? { kept } : {}),
+      ...(dropped ? { dropped } : {}),
+      ...(handles ? { handles } : {}),
+      ...(story ? { story } : {}),
     },
   ];
 }

@@ -24,6 +24,7 @@ import {
   appendCommandApproval,
   appendCommandBlocked,
   appendCompaction,
+  appendVaultCite,
   appendNonStreamingThinking,
   appendPendingReview,
   appendQualityGate,
@@ -194,6 +195,11 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       }
     } else if (ev.kind === "codegraph_context") {
       setItems((p) => appendCodegraphContext(p, d.symbols || 0, d.query || ""));
+    } else if (ev.kind === "vault_cite") {
+      const snippets = Array.isArray(d.snippets) ? d.snippets : [];
+      if (snippets.length) {
+        setItems((p) => appendVaultCite(p, d.route || "", snippets, d.query || ""));
+      }
     } else if (ev.kind === "compaction") {
       // Always clear "Summarizing chat context". Aborted compactions (rejected
       // summary / insufficient reduction) still emit this event so the UI
@@ -206,6 +212,10 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
         reason: d.reason,
         message: d.message,
         mode: d.mode,
+        kept: d.kept,
+        dropped: d.dropped,
+        handles: d.handles,
+        story: d.story,
       }));
       if (!d.aborted) {
         window.dispatchEvent(new Event("harness-context-changed"));

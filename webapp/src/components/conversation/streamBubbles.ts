@@ -127,7 +127,7 @@ export function findStreamingBubbleIdx(
     if (it.kind === "card" || it.kind === "tool_prep") {
       return -1;
     }
-    if (it.kind === "thinking" || it.kind === "codegraph_context") {
+    if (it.kind === "thinking" || it.kind === "codegraph_context" || it.kind === "vault_cite") {
       continue;
     }
     if (it.kind === "msg") {
