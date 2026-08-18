@@ -6,12 +6,15 @@ from __future__ import annotations
 
 - ``summary`` (default): existing LLM / extractive four-heading snapshot
 - ``catalog``: deterministic unique-handle index from the pruned middle
-- ``hybrid``: existing extractive four-heading body plus a capped handle index
+- ``hybrid``: real LLM four-heading summary plus a capped unique-handle index
 - ``off``: test-only no-compaction ceiling (must be an explicit value)
 
-Empty, missing, or unknown values resolve to ``summary`` — never to ``off``.
-Catalog / hybrid paths are extractive and do not invent turn IDs or peek
-offsets. Text copied into a residual is redacted for likely secrets.
+Empty, missing, or unknown values resolve to ``summary`` — never to ``off``
+or ``hybrid``. Catalog is extractive and skips the summarizer. Hybrid runs
+the existing LLM summarizer path; timeout / degenerate / insufficient
+reduction fall back to the extractive four-heading body plus handle index.
+Neither path invents turn IDs or peek offsets. Text copied into a residual
+is redacted for likely secrets.
 """
 
 import os
@@ -51,12 +54,37 @@ _PATH_RE = re.compile(
 )
 _ARTIFACT_URI_RE = re.compile(r"artifact://[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 _JOB_URI_RE = re.compile(r"job://[A-Za-z0-9._-]+")
+# Optional leading "- " so catalog bullets still match on re-extract.
 _ERROR_RE = re.compile(
-    r"(?im)^(?:\s*(?:error|exception|failed|traceback|fatal)[:\s].+)$"
+    r"(?im)^\s*(?:-\s+)?(?:error|exception|failed|traceback|fatal)[:\s].+$"
 )
 _STEM_RE = re.compile(
-    r"(?im)^(?:\s*(?:decision|decided|constraint|must not|never|require[sd]?)[:\s].+)$"
+    r"(?im)^\s*(?:-\s+)?(?:decision|decided|constraint|must not|never|require[sd]?)[:\s].+$"
 )
+_LEADING_BULLET_RE = re.compile(r"^\s*-\s+")
+_CATALOG_SECTION_RE = re.compile(
+    r"^###\s+(Files|Tools|Handles|Stems|Last ask)\s*$",
+    re.IGNORECASE,
+)
+_HYBRID_LIST_RE = re.compile(
+    r"^-\s+(files(?:\s*\(\d+\))?|tools|uris|stems)\s*:\s*(.*)$",
+    re.IGNORECASE,
+)
+# Split a hybrid stems line only at a new decision/constraint/error prefix so
+# an inner "; " inside one stem is not treated as a list separator.
+_STEM_SPLIT_RE = re.compile(
+    r";\s+(?=(?:decision|decided|constraint|must not|never|"
+    r"require[sd]?|error|exception|failed|traceback|fatal)[:\s])",
+    re.IGNORECASE,
+)
+_PLACEHOLDER_HANDLES = frozenset({
+    "(no file pointers found)",
+    "(no tool names found)",
+    "(no durable handles found)",
+    "(no error/decision/constraint stems)",
+    "(no open user ask captured)",
+    "(none)",
+})
 
 _MAX_FILES = 24
 _MAX_TOOLS = 16
@@ -67,7 +95,8 @@ _LAST_ASK_CHARS = 240
 _HYBRID_INDEX_FILES = 8
 _HYBRID_INDEX_HANDLES = 8
 _HYBRID_INDEX_TOOLS = 8
-_HYBRID_INDEX_CHARS = 400
+_HYBRID_INDEX_STEMS = 6
+_HYBRID_INDEX_CHARS = 800
 
 
 def compaction_residual_mode() -> str:
@@ -89,6 +118,166 @@ def _unique_append(dst: list[str], seen: set[str], value: str, cap: int) -> None
         return
     seen.add(text)
     dst.append(text)
+
+
+def _without_leading_bullet(text: str) -> str:
+    return _LEADING_BULLET_RE.sub("", (text or "").strip(), count=1).strip()
+
+
+def _is_placeholder_handle(value: str) -> bool:
+    text = (value or "").strip()
+    if not text:
+        return True
+    if text in _PLACEHOLDER_HANDLES:
+        return True
+    lowered = text.lower()
+    return lowered.startswith("(no ") and lowered.endswith(")")
+
+
+def _error_stem(match: str) -> str:
+    """Keep first-pass 'error: ' prefix without doubling catalog bullets."""
+    body = _without_leading_bullet(match)
+    if body.lower().startswith("error:"):
+        return body[: len("error: ") + _STEM_CHARS]
+    return "error: " + body[:_STEM_CHARS]
+
+
+def _split_classified_list(raw: str) -> list[str]:
+    text = (raw or "").strip()
+    if not text or _is_placeholder_handle(text):
+        return []
+    sep = ";" if ";" in text else ","
+    items: list[str] = []
+    for part in text.split(sep):
+        item = part.strip()
+        if item and not _is_placeholder_handle(item):
+            items.append(item)
+    return items
+
+
+def _split_stem_list(raw: str) -> list[str]:
+    """Split a hybrid stems line without breaking stems that contain '; '."""
+    text = (raw or "").strip()
+    if not text or _is_placeholder_handle(text):
+        return []
+    items: list[str] = []
+    for part in _STEM_SPLIT_RE.split(text):
+        item = part.strip()
+        if item and not _is_placeholder_handle(item):
+            items.append(item)
+    return items
+
+
+def _ingest_catalog_sections(
+    text: str,
+    files: list[str],
+    seen_files: set[str],
+    tools: list[str],
+    seen_tools: set[str],
+    handles: list[str],
+    seen_handles: set[str],
+    stems: list[str],
+    seen_stems: set[str],
+) -> None:
+    start = text.find(CATALOG_HEADING)
+    if start < 0:
+        return
+    section = ""
+    for raw_line in text[start:].splitlines():
+        heading = _CATALOG_SECTION_RE.match(raw_line.strip())
+        if heading:
+            section = heading.group(1).lower()
+            if section == "last ask":
+                section = ""
+            continue
+        if raw_line.strip().startswith("## ") and CATALOG_HEADING not in raw_line:
+            section = ""
+            continue
+        if not section or not raw_line.lstrip().startswith("- "):
+            continue
+        item = _without_leading_bullet(raw_line)
+        if _is_placeholder_handle(item):
+            continue
+        if section == "files":
+            _unique_append(files, seen_files, item, _MAX_FILES)
+        elif section == "tools":
+            _unique_append(tools, seen_tools, item, _MAX_TOOLS)
+        elif section == "handles":
+            _unique_append(handles, seen_handles, item, _MAX_HANDLES)
+        elif section == "stems":
+            _unique_append(stems, seen_stems, item, _MAX_STEMS)
+
+
+def _ingest_hybrid_lists(
+    text: str,
+    files: list[str],
+    seen_files: set[str],
+    tools: list[str],
+    seen_tools: set[str],
+    handles: list[str],
+    seen_handles: set[str],
+    stems: list[str],
+    seen_stems: set[str],
+) -> None:
+    start = text.find(HYBRID_INDEX_HEADING)
+    if start < 0:
+        return
+    for raw_line in text[start:].splitlines():
+        parsed = _HYBRID_LIST_RE.match(raw_line.strip())
+        if not parsed:
+            continue
+        kind = parsed.group(1).split("(", 1)[0].strip().lower()
+        raw_items = parsed.group(2)
+        if kind == "files":
+            for item in _split_classified_list(raw_items):
+                _unique_append(files, seen_files, item, _MAX_FILES)
+        elif kind == "tools":
+            for item in _split_classified_list(raw_items):
+                _unique_append(tools, seen_tools, item, _MAX_TOOLS)
+        elif kind == "uris":
+            for item in _split_classified_list(raw_items):
+                _unique_append(handles, seen_handles, item, _MAX_HANDLES)
+        elif kind == "stems":
+            for item in _split_stem_list(raw_items):
+                _unique_append(stems, seen_stems, item, _MAX_STEMS)
+
+
+def _ingest_structured_residual(
+    text: str,
+    files: list[str],
+    seen_files: set[str],
+    tools: list[str],
+    seen_tools: set[str],
+    handles: list[str],
+    seen_handles: set[str],
+    stems: list[str],
+    seen_stems: set[str],
+) -> None:
+    """Re-ingest already-classified catalog / hybrid residual text."""
+    if CATALOG_HEADING in text:
+        _ingest_catalog_sections(
+            text,
+            files,
+            seen_files,
+            tools,
+            seen_tools,
+            handles,
+            seen_handles,
+            stems,
+            seen_stems,
+        )
+    if HYBRID_INDEX_HEADING in text:
+        _ingest_hybrid_lists(
+            text,
+            files,
+            seen_files,
+            tools,
+            seen_tools,
+            handles,
+            seen_handles,
+            stems,
+            seen_stems,
+        )
 
 
 def _iter_message_text(message: dict) -> Iterable[str]:
@@ -156,6 +345,17 @@ def extract_handle_index(middle_block: list[dict]) -> dict[str, Any]:
         for text in _iter_message_text(message):
             if not text:
                 continue
+            _ingest_structured_residual(
+                text,
+                files,
+                seen_files,
+                tools,
+                seen_tools,
+                handles,
+                seen_handles,
+                stems,
+                seen_stems,
+            )
             for match in _PATH_RE.findall(text):
                 _unique_append(files, seen_files, match, _MAX_FILES)
             for match in _SPILL_URI_RE.findall(text):
@@ -165,12 +365,13 @@ def extract_handle_index(middle_block: list[dict]) -> dict[str, Any]:
             for match in _JOB_URI_RE.findall(text):
                 _unique_append(handles, seen_handles, match, _MAX_HANDLES)
             for match in _ERROR_RE.findall(text):
-                _unique_append(
-                    stems, seen_stems, "error: " + match.strip()[:_STEM_CHARS], _MAX_STEMS
-                )
+                _unique_append(stems, seen_stems, _error_stem(match), _MAX_STEMS)
             for match in _STEM_RE.findall(text):
                 _unique_append(
-                    stems, seen_stems, match.strip()[:_STEM_CHARS], _MAX_STEMS
+                    stems,
+                    seen_stems,
+                    _without_leading_bullet(match)[:_STEM_CHARS],
+                    _MAX_STEMS,
                 )
 
     return {
@@ -252,14 +453,17 @@ def build_hybrid_index(
     files = index["files"][:_HYBRID_INDEX_FILES]
     tools = index["tools"][:_HYBRID_INDEX_TOOLS]
     handles = index["handles"][:_HYBRID_INDEX_HANDLES]
+    stems = index["stems"][:_HYBRID_INDEX_STEMS]
     file_part = "; ".join(files) if files else "(none)"
     tool_part = ", ".join(tools) if tools else "(none)"
     handle_part = "; ".join(handles) if handles else "(none)"
+    stem_part = "; ".join(stems) if stems else "(none)"
     text = (
         f"{HYBRID_INDEX_HEADING}\n"
         f"- files ({len(index['files'])}): {file_part}\n"
         f"- tools: {tool_part}\n"
         f"- uris: {handle_part}\n"
+        f"- stems: {stem_part}\n"
     )
     if len(text) > max_chars:
         text = _clip(text, max_chars)
@@ -272,7 +476,7 @@ def append_handle_index(
     *,
     char_budget: int,
 ) -> str:
-    """Append a capped handle index to an existing extractive snapshot."""
+    """Append a capped handle index to an LLM or extractive snapshot."""
     char_budget = max(int(char_budget), _min_summary_seed_chars() + 160)
     index_budget = min(_HYBRID_INDEX_CHARS, max(80, char_budget // 4))
     index = build_hybrid_index(middle_block, max_chars=index_budget)

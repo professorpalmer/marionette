@@ -52,6 +52,9 @@ ANTI_THRASH_STRIKES = 2
 _ZERO_WIDTH_SPACE = "\u200b"
 _PRIOR_SUMMARY_WRAPPER = "PREVIOUS HISTORICAL CONVERSATION SUMMARY:\n"
 _INJECTED_SUMMARY_PREFIX = "[Earlier conversation summarized to fit context]\n"
+_COMPACTION_GENERATION_NOTICE_RE = re.compile(
+    r"^compaction_generation=\d+\.[^\n]*\n?"
+)
 _REQUIRED_SUMMARY_HEADINGS = (
     "## Historical Task Snapshot",
     "## Resolved",
@@ -370,6 +373,24 @@ class CompactionContextMixin:
             pass
         return savings_pct, int(getattr(self, "_compaction_ineffective_count", 0) or 0)
 
+    def _advertised_compaction_generation(self) -> int:
+        """Generation peek_history will see after this compact is journaled."""
+        try:
+            fields = self._history_compaction_fields() or {}
+            return int(fields.get("history_compactions") or 0) + 1
+        except Exception:
+            return 1
+
+    def _injected_residual_content(self, summary: str) -> str:
+        """Prefix + current generation so peek_history need not guess 0."""
+        generation = self._advertised_compaction_generation()
+        return (
+            f"{_INJECTED_SUMMARY_PREFIX}"
+            f"compaction_generation={generation}. "
+            "peek_history: omit expected_generation or pass this value.\n"
+            f"{summary}"
+        )
+
     def _unwrap_prior_summary_content(self, content: str) -> str:
         """Peel nested prior-summary wrappers so re-compaction stays bounded."""
         text = content or ""
@@ -381,6 +402,11 @@ class CompactionContextMixin:
                     text = stripped[len(prefix):]
                     progressed = True
                     break
+            if not progressed:
+                notice = _COMPACTION_GENERATION_NOTICE_RE.match(stripped)
+                if notice:
+                    text = stripped[notice.end():]
+                    progressed = True
             if not progressed:
                 return stripped if stripped != text else text
 
@@ -722,7 +748,12 @@ class CompactionContextMixin:
         *,
         char_budget: Optional[int] = None,
     ) -> str:
-        """Extractive four-heading snapshot plus a capped unique-handle index."""
+        """Extractive four-heading + handle index used only as hybrid fallback.
+
+        Successful hybrid compaction runs the real LLM summarizer, then appends
+        the bounded unique-handle index. This helper is the timeout / error /
+        degenerate / insufficient-reduction path and emits extractive mode.
+        """
         from harness.api.redaction import redact_secret_text
 
         from .compaction_residual import append_handle_index
@@ -1011,19 +1042,26 @@ class CompactionContextMixin:
             )
 
         summary = ""
-        # True only when the pilot returned usable summary text this pass.
-        # Timeout / error / cooldown-fallback paths keep the shared fail-until
-        # plane even if the extractive fallback later proves effective.
+        # True only when the injected residual is the pilot's usable summary
+        # (hybrid then appends a handle index). Timeout / error / cooldown /
+        # degenerate / insufficient-reduction paths keep extractive mode.
         summarizer_ok = False
         now = time.time()
         # Manual force bypasses summarizer-fail cooldown (same as anti-thrash)
         # so Compact Now actually calls the pilot instead of only falling back.
         _fail_until = float(getattr(self, "_compaction_fail_until", 0.0) or 0.0)
-        if residual_mode in (RESIDUAL_CATALOG, RESIDUAL_HYBRID):
-            # Deterministic extractive residuals — never call the summarizer.
-            summary = _fallback()
+
+        def _use_extractive_fallback() -> str:
+            nonlocal summarizer_ok
+            summarizer_ok = False
+            return _fallback()
+
+        if residual_mode == RESIDUAL_CATALOG:
+            # Deterministic catalog residual — never call the summarizer.
+            # Hybrid uses the same LLM path as summary, then appends handles.
+            summary = _use_extractive_fallback()
         elif (not force) and now < _fail_until:
-            summary = _fallback()
+            summary = _use_extractive_fallback()
         else:
             try:
                 box: dict = {}
@@ -1074,16 +1112,35 @@ class CompactionContextMixin:
                 if resp and not getattr(resp, "error", None) and getattr(resp, "text", None):
                     summary = resp.text.strip()
                     summarizer_ok = True
-                    if len(summary) > summary_char_budget:
+                    if residual_mode == RESIDUAL_HYBRID:
+                        from harness.api.redaction import redact_secret_text
+
+                        from .compaction_residual import append_handle_index
+
+                        # Judge the LLM body alone so a stems/handle appendix
+                        # cannot rescue a degenerate summary.
+                        if is_degenerate_summary(summary):
+                            summary = _use_extractive_fallback()
+                        else:
+                            # Append before neutralization / injection so the
+                            # residual is LLM summary + bounded unique handles.
+                            summary = redact_secret_text(
+                                append_handle_index(
+                                    summary,
+                                    pruned_middle,
+                                    char_budget=summary_char_budget,
+                                )
+                            )
+                    elif len(summary) > summary_char_budget:
                         summary = summary[:summary_char_budget] + "\n... [summary truncated to fit budget]"
                 else:
-                    summary = _fallback()
+                    summary = _use_extractive_fallback()
                     self._compaction_fail_until = time.time() + _compact_cooldown
             except TimeoutError:
-                summary = _fallback()
+                summary = _use_extractive_fallback()
                 self._compaction_fail_until = time.time() + _compact_cooldown
             except Exception:
-                summary = _fallback()
+                summary = _use_extractive_fallback()
                 self._compaction_fail_until = time.time() + _compact_cooldown
 
         # Degenerate model output is not a reason to strand an over-limit
@@ -1091,7 +1148,7 @@ class CompactionContextMixin:
         # only reject if that safety fallback is also invalid.
         try:
             if is_degenerate_summary(summary):
-                summary = _fallback()
+                summary = _use_extractive_fallback()
                 if is_degenerate_summary(summary):
                     _pct, _strikes = self._note_compaction_effectiveness(
                         before_tokens=before_tokens,
@@ -1146,7 +1203,7 @@ class CompactionContextMixin:
 
         summary_msg = {
             "role": "user",
-            "content": f"{_INJECTED_SUMMARY_PREFIX}{summary}",
+            "content": self._injected_residual_content(summary),
             "_compressed_summary": True
         }
 
@@ -1159,7 +1216,7 @@ class CompactionContextMixin:
                 fallback_summary = neutralize_compaction_control_tokens(_fallback())
                 fallback_msg = {
                     "role": "user",
-                    "content": f"{_INJECTED_SUMMARY_PREFIX}{fallback_summary}",
+                    "content": self._injected_residual_content(fallback_summary),
                     "_compressed_summary": True,
                 }
                 fallback_tokens = self._estimate_context_tokens_for_list([fallback_msg])
@@ -1191,6 +1248,7 @@ class CompactionContextMixin:
                     return
                 summary = fallback_summary
                 summary_msg = fallback_msg
+                summarizer_ok = False
         except Exception:
             # Fail closed: refuse the rewrite when the reduction check cannot run.
             _pct, _strikes = self._note_compaction_effectiveness(

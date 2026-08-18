@@ -1637,7 +1637,9 @@ def build_tools_schema(
                     "expected_generation": {
                         "type": "integer",
                         "description": (
-                            "If set, refuse/stale-note when compaction_generation differs"
+                            "Positive compaction_generation from a prior peek or "
+                            "compact notice. Omit or pass 0 to skip the fence. "
+                            "Do not default to 0 after a compact."
                         ),
                     },
                 },

@@ -14,6 +14,7 @@ from harness.compaction_residual import (
     RESIDUAL_OFF,
     RESIDUAL_SUMMARY,
     build_catalog_residual,
+    build_hybrid_index,
     compaction_residual_mode,
     extract_handle_index,
 )
@@ -128,6 +129,7 @@ def test_default_summary_mode_unchanged(tmp_path, monkeypatch):
     assert session.pilot.chat_calls
     assert session._history[1].get("_compressed_summary") is True
     assert "[Earlier conversation summarized to fit context]" in session._history[1]["content"]
+    assert "compaction_generation=" in session._history[1]["content"]
     assert "Compaction fixture summary" in session._history[1]["content"]
     assert session._history[-1]["content"] == "continuing"
 
@@ -144,6 +146,19 @@ def test_off_is_no_compaction_ceiling(tmp_path, monkeypatch):
     assert not session.pilot.chat_calls
 
 
+def test_unwrap_peels_injected_generation_notice():
+    """Re-compaction must not stack compaction_generation lines."""
+    session = ConversationalSession(HarnessConfig())
+    nested = (
+        "[Earlier conversation summarized to fit context]\n"
+        "compaction_generation=2. peek_history: omit expected_generation or pass this value.\n"
+        "[Earlier conversation summarized to fit context]\n"
+        "compaction_generation=1. peek_history: omit expected_generation or pass this value.\n"
+        "inner summary body"
+    )
+    assert session._unwrap_prior_summary_content(nested) == "inner summary body"
+
+
 def test_catalog_extractive_no_llm_and_redacts(tmp_path, monkeypatch):
     monkeypatch.setenv("HARNESS_COMPACTION_RESIDUAL", "catalog")
     session = _session(tmp_path, monkeypatch)
@@ -151,10 +166,11 @@ def test_catalog_extractive_no_llm_and_redacts(tmp_path, monkeypatch):
     _fat_history(session, secret=secret)
     events = list(session._maybe_compact_history(force=True))
     assert [e.kind for e in events] == ["compacting", "compaction"]
-    # Deterministic catalog/hybrid paths emit mode=extractive (not llm).
+    # Catalog is extractive and must not call the summarizer.
     assert events[-1].data.get("mode") == "extractive"
     assert not session.pilot.chat_calls
     injected = session._history[1]["content"]
+    assert "compaction_generation=" in injected
     assert CATALOG_HEADING in injected
     assert "src/billing/ledger_v3.py" in injected
     assert "read_file" in injected
@@ -173,9 +189,32 @@ def test_hybrid_keeps_four_headings_and_handle_index(tmp_path, monkeypatch):
     session = _session(tmp_path, monkeypatch)
     _fat_history(session)
     events = list(session._maybe_compact_history(force=True))
-    assert events[-1].data.get("mode") == "extractive"
-    assert not session.pilot.chat_calls
+    assert events[-1].data.get("mode") == "llm"
+    assert session.pilot.chat_calls
     injected = session._history[1]["content"]
+    assert "compaction_generation=" in injected
+    assert "## Historical Task Snapshot" in injected
+    assert "## Resolved" in injected
+    assert "## Pending / Open Questions" in injected
+    assert "## Key Facts / Decisions / Files" in injected
+    assert HYBRID_INDEX_HEADING in injected
+    assert "- stems:" in injected
+    assert "src/billing/ledger_v3.py" in injected
+    assert "spill://sess-lab/result-omega" in injected
+    assert "Compaction fixture summary" in injected
+
+
+def test_hybrid_degenerate_pilot_falls_back_extractively(tmp_path, monkeypatch):
+    """Failed / degenerate hybrid summarizer uses extractive + handle index."""
+    monkeypatch.setenv("HARNESS_COMPACTION_RESIDUAL", "hybrid")
+    session = _session(tmp_path, monkeypatch)
+    session.pilot = MockPilot(return_text="too short")
+    _fat_history(session)
+    events = list(session._maybe_compact_history(force=True))
+    assert events[-1].data.get("mode") == "extractive"
+    assert session.pilot.chat_calls
+    injected = session._history[1]["content"]
+    assert "too short" not in injected
     assert "## Historical Task Snapshot" in injected
     assert "## Resolved" in injected
     assert "## Pending / Open Questions" in injected
@@ -183,20 +222,47 @@ def test_hybrid_keeps_four_headings_and_handle_index(tmp_path, monkeypatch):
     assert HYBRID_INDEX_HEADING in injected
     assert "src/billing/ledger_v3.py" in injected
     assert "spill://sess-lab/result-omega" in injected
+    assert "middle messages compressed to task facts" in injected
+
+
+def test_hybrid_error_pilot_falls_back_extractively(tmp_path, monkeypatch):
+    monkeypatch.setenv("HARNESS_COMPACTION_RESIDUAL", "hybrid")
+    session = _session(tmp_path, monkeypatch)
+
+    class ErrorPilot(MockPilot):
+        def chat(self, messages, tools=None, system=None):
+            self.chat_calls.append((messages, system))
+            return type("Resp", (), {"text": "", "error": "simulated hybrid fail", "tokens_out": 0})()
+
+    session.pilot = ErrorPilot()
+    _fat_history(session)
+    events = list(session._maybe_compact_history(force=True))
+    assert events[-1].data.get("mode") == "extractive"
+    assert session.pilot.chat_calls
+    injected = session._history[1]["content"]
+    assert HYBRID_INDEX_HEADING in injected
+    assert "## Historical Task Snapshot" in injected
+    assert "src/billing/ledger_v3.py" in injected
 
 
 def test_hybrid_redacts_secrets_in_body_and_index(tmp_path, monkeypatch):
-    """Hybrid body and handle index must redact secrets like catalog mode."""
+    """Hybrid LLM body and handle index must redact secrets like catalog mode."""
     monkeypatch.setenv("HARNESS_COMPACTION_RESIDUAL", "hybrid")
     session = _session(tmp_path, monkeypatch)
     secret = "supersecret-hybrid-residual-key"
+    leaky = (
+        _GOOD_SUMMARY
+        + f"\napi_key={secret} token sk-abcdefghijklmnopqrstuvwx\n"
+    )
+    session.pilot = MockPilot(return_text=leaky)
     _fat_history(session, secret=secret)
-    session._history[-2]["content"] = (
-        f"please continue with api_key={secret} token sk-zyxwvutsrqponmlkjihgfedcba"
+    session._history[1]["content"] = (
+        "CONSTRAINT: keep src/billing/ledger_v3.py; "
+        f"api_key={secret} token sk-zyxwvutsrqponmlkjihgfedcba"
     )
     events = list(session._maybe_compact_history(force=True))
-    assert events[-1].data.get("mode") == "extractive"
-    assert not session.pilot.chat_calls
+    assert events[-1].data.get("mode") == "llm"
+    assert session.pilot.chat_calls
     injected = session._history[1]["content"]
     assert "## Historical Task Snapshot" in injected
     assert HYBRID_INDEX_HEADING in injected
@@ -256,3 +322,179 @@ def test_repeated_catalog_compaction_stays_bounded(tmp_path, monkeypatch):
     assert later.count("src/billing/ledger_v3.py") <= 4
     assert later.count("spill://sess-lab/result-omega") <= 4
     assert len(later) < first_len * 3
+
+
+def _washout_middle() -> list[dict]:
+    """Raw middle with the catalog-washout tokens from the residual lab."""
+    return [
+        {
+            "role": "user",
+            "content": "Decision: use SQLite instead of Redis",
+        },
+        {
+            "role": "user",
+            "content": "never write to production.db; keep scratch.sqlite as the scratch store.",
+        },
+        {
+            "role": "assistant",
+            "content": "inspect src/billing/ledger_v3.py",
+            "tool_calls": [{
+                "id": "call_ledger",
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "arguments": '{"path": "src/billing/ledger_v3.py"}',
+                },
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_ledger",
+            "content": (
+                "ERROR: ConfigMissing: /etc/marionette/secret-policy.yaml "
+                "not found (code E-7721) spill://sess-lab/result-omega"
+            ),
+            "_read_path": "scratch.sqlite",
+        },
+        {
+            "role": "tool",
+            "content": "bare production pointer",
+            "_read_path": "production.db",
+        },
+        {
+            "role": "tool",
+            "content": "active auth module",
+            "_read_path": "auth_current_v2.py",
+        },
+    ]
+
+
+def _assert_closed_loop(first: dict, second: dict, keys: tuple[str, ...]) -> None:
+    for key in keys:
+        missing = [item for item in first[key] if item not in second[key]]
+        assert missing == [], f"{key} washed out on re-extract: {missing}"
+
+
+def _index_blob(index: dict) -> str:
+    return "\n".join(
+        list(index["files"])
+        + list(index["tools"])
+        + list(index["handles"])
+        + list(index["stems"])
+    )
+
+
+def test_stem_and_error_regexes_accept_markdown_bullets():
+    """Catalog-style '- STEM' bullets must still extract without inventing IDs."""
+    middle = [{
+        "role": "assistant",
+        "content": (
+            "- Decision: use SQLite instead of Redis\n"
+            "- never write to production.db\n"
+            "- error: ConfigMissing secret-policy.yaml (code E-7721)\n"
+        ),
+    }]
+    index = extract_handle_index(middle)
+    blob = _index_blob(index)
+    assert "Decision: use SQLite instead of Redis" in blob
+    assert "never write to production.db" in blob
+    assert "E-7721" in blob
+    assert "turn-" not in blob
+
+
+def test_catalog_reextraction_preserves_stems_and_bare_files():
+    """Re-extracting a catalog residual must not wash out stems or bare files."""
+    middle = _washout_middle()
+    first = extract_handle_index(middle)
+    first_blob = _index_blob(first)
+    assert "Decision: use SQLite instead of Redis" in first_blob
+    assert "never write to production.db" in first_blob
+    assert "production.db" in first_blob
+    assert "scratch.sqlite" in first_blob
+    assert "src/billing/ledger_v3.py" in first["files"]
+    assert "spill://sess-lab/result-omega" in first["handles"]
+    assert "E-7721" in first_blob or "secret-policy.yaml" in first_blob
+
+    catalog = build_catalog_residual(middle, char_budget=4000)
+    assert CATALOG_HEADING in catalog
+    second = extract_handle_index([{
+        "role": "assistant",
+        "content": catalog,
+        "_compressed_summary": True,
+    }])
+    _assert_closed_loop(first, second, ("files", "tools", "handles", "stems"))
+    second_blob = _index_blob(second)
+    assert "Decision: use SQLite instead of Redis" in second_blob
+    assert "never write to production.db" in second_blob
+    assert "production.db" in second_blob
+    assert "scratch.sqlite" in second_blob
+    assert "E-7721" in second_blob or "secret-policy.yaml" in second_blob
+    assert "auth_current_v2.py" in second["files"]
+    assert "(no file pointers found)" not in second["files"]
+    assert "(no error/decision/constraint stems)" not in second["stems"]
+
+
+def test_hybrid_stems_line_keeps_inner_semicolons():
+    """A stems line must split only at a new stem prefix, not every '; '."""
+    residual = (
+        f"{HYBRID_INDEX_HEADING}\n"
+        "- files (0): (none)\n"
+        "- tools: (none)\n"
+        "- uris: (none)\n"
+        "- stems: Decision: keep Redis; never write to production.db; "
+        "error: failed: timeout; retry later\n"
+    )
+    index = extract_handle_index([{
+        "role": "assistant",
+        "content": residual,
+        "_compressed_summary": True,
+    }])
+    assert index["stems"] == [
+        "Decision: keep Redis",
+        "never write to production.db",
+        "error: failed: timeout; retry later",
+    ]
+
+
+def test_hybrid_index_reextraction_preserves_classified_handles():
+    """Re-extracting a hybrid appendix must recover files / tools / URIs / stems."""
+    middle = _washout_middle()
+    first = extract_handle_index(middle)
+    hybrid = build_hybrid_index(middle)
+    assert HYBRID_INDEX_HEADING in hybrid
+    assert "- stems:" in hybrid
+    second = extract_handle_index([{
+        "role": "assistant",
+        "content": hybrid,
+        "_compressed_summary": True,
+    }])
+    _assert_closed_loop(first, second, ("files", "tools", "handles", "stems"))
+    assert "production.db" in second["files"]
+    assert "scratch.sqlite" in second["files"]
+    assert "auth_current_v2.py" in second["files"]
+    assert "src/billing/ledger_v3.py" in second["files"]
+    assert "read_file" in second["tools"]
+    assert "spill://sess-lab/result-omega" in second["handles"]
+    second_blob = _index_blob(second)
+    assert "Decision: use SQLite instead of Redis" in second_blob
+    assert "never write to production.db" in second_blob
+    assert "(none)" not in second["files"]
+    assert "(none)" not in second["tools"]
+    assert "(none)" not in second["handles"]
+    assert "(none)" not in second["stems"]
+
+
+def test_catalog_placeholders_are_not_ingested_as_handles():
+    empty = build_catalog_residual([], char_budget=2000)
+    index = extract_handle_index([{
+        "role": "assistant",
+        "content": empty,
+        "_compressed_summary": True,
+    }])
+    assert index["files"] == []
+    assert index["tools"] == []
+    assert index["handles"] == []
+    assert index["stems"] == []
+    blob = _index_blob(index)
+    assert "(no file pointers found)" not in blob
+    assert "(none)" not in blob
