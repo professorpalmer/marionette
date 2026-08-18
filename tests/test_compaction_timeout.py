@@ -15,6 +15,7 @@ from harness.conversation import ConversationalSession
 @pytest.fixture(autouse=True)
 def _allow_small_fixture_compaction(monkeypatch):
     monkeypatch.setattr("harness.compaction_mixin.MIN_COMPACTABLE_TOKENS", 0)
+    monkeypatch.setenv("HARNESS_COMPACTION_RESIDUAL", "summary")
 
 
 class _HangPilot:

@@ -1177,14 +1177,19 @@ class CompactionContextMixin:
                                 summary, pruned_middle, summary_char_budget
                             )
                     else:
-                        if len(summary) > summary_char_budget:
-                            summary = (
-                                summary[:summary_char_budget]
-                                + "\n... [summary truncated to fit budget]"
+                        # Judge the LLM body alone so a pinned story cannot
+                        # rescue a degenerate paragraph.
+                        if is_degenerate_summary(summary):
+                            summary = _use_extractive_fallback()
+                        else:
+                            if len(summary) > summary_char_budget:
+                                summary = (
+                                    summary[:summary_char_budget]
+                                    + "\n... [summary truncated to fit budget]"
+                                )
+                            summary = self._pin_selected_story(
+                                summary, pruned_middle, summary_char_budget
                             )
-                        summary = self._pin_selected_story(
-                            summary, pruned_middle, summary_char_budget
-                        )
                 else:
                     summary = _use_extractive_fallback()
                     self._compaction_fail_until = time.time() + _compact_cooldown
