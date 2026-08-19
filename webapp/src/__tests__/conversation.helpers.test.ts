@@ -194,6 +194,7 @@ import {
   pathIsInsideRepo,
   resolveDroppedOsPath,
   uploadErrorMessage,
+  type DirectoryEntryLike,
 } from "../components/conversation/composerInput";
 import {
   blankMsgQueueOnSessionSwitch,
@@ -2921,13 +2922,13 @@ describe("composerInput module", () => {
   });
 
   it("walks dropped directory entries, skips noise dirs, and caps files", async () => {
-    const fileEntry = (name: string): any => ({
+    const fileEntry = (name: string): DirectoryEntryLike => ({
       isFile: true,
       isDirectory: false,
       name,
       file: (ok: (f: File) => void) => ok(new File([name], name)),
     });
-    let remaining = [
+    let remaining: DirectoryEntryLike[] = [
       fileEntry("readme.md"),
       fileEntry("notes.txt"),
       {
@@ -2935,7 +2936,7 @@ describe("composerInput module", () => {
         isDirectory: true,
         name: "node_modules",
         createReader: () => ({
-          readEntries: (ok: (entries: unknown[]) => void) => ok([fileEntry("secret.js")]),
+          readEntries: (ok: (entries: DirectoryEntryLike[]) => void) => ok([fileEntry("secret.js")]),
         }),
       },
       {
@@ -2945,7 +2946,7 @@ describe("composerInput module", () => {
         createReader: () => {
           let sent = false;
           return {
-            readEntries: (ok: (entries: unknown[]) => void) => {
+            readEntries: (ok: (entries: DirectoryEntryLike[]) => void) => {
               if (sent) {
                 ok([]);
                 return;
@@ -2962,7 +2963,7 @@ describe("composerInput module", () => {
       isDirectory: true,
       name: "authority-spoof",
       createReader: () => ({
-        readEntries: (ok: (entries: unknown[]) => void) => {
+        readEntries: (ok: (entries: DirectoryEntryLike[]) => void) => {
           const batch = remaining;
           remaining = [];
           ok(batch);
@@ -2985,7 +2986,7 @@ describe("composerInput module", () => {
       createReader: () => {
         let sent = false;
         return {
-          readEntries: (ok: (entries: unknown[]) => void) => {
+          readEntries: (ok: (entries: DirectoryEntryLike[]) => void) => {
             if (sent) {
               ok([]);
               return;
