@@ -137,30 +137,44 @@ def _tree_resolver(repo):
         # type: (str) -> Optional[str]
         if sha in cache:
             return cache[sha]
-        # Prefer the API so a shallow tag checkout (fetch-depth 1) can
-        # still match dest-PR head SHAs that are not local objects.
-        tree = _commit_tree_via_api(repo, sha)
+        tree = None
+        # Prefer local git when the object exists (tag checkout is
+        # fetch-depth 0, so dest-PR parent SHAs resolve without the API).
+        try:
+            tree = git_tree_sha(sha)
+        except subprocess.CalledProcessError:
+            tree = None
         if not tree:
-            try:
-                tree = git_tree_sha(sha)
-            except subprocess.CalledProcessError:
-                tree = None
+            tree = _commit_tree_via_api(repo, sha)
         cache[sha] = tree
         return tree
 
     return tree_for
 
 
-def _list_successful_tests_runs(repo, limit):
-    # type: (str, int) -> List[Dict[str, Any]]
+def filter_successful_runs(runs):
+    # type: (Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]
+    """Keep conclusion=success only.
+
+    Do not pass ``gh run list --status success``: on tag jobs GITHUB_TOKEN
+    has omitted dest-PR successes, so ``tests-already-green`` failed and
+    signed mac artifacts never published.
+    """
+    out = []
+    for run in runs:
+        if run.get("conclusion") == "success":
+            out.append(run)
+    return out
+
+
+def _list_workflow_runs(repo, workflow, limit):
+    # type: (str, str, int) -> List[Dict[str, Any]]
     return _gh_json(
         [
             "run",
             "list",
             "--workflow",
-            "tests",
-            "--status",
-            "success",
+            workflow,
             "--limit",
             str(limit),
             "--json",
@@ -168,25 +182,16 @@ def _list_successful_tests_runs(repo, limit):
         ],
         repo=repo,
     )
+
+
+def _list_successful_tests_runs(repo, limit):
+    # type: (str, int) -> List[Dict[str, Any]]
+    return filter_successful_runs(_list_workflow_runs(repo, "tests", limit))
 
 
 def _list_successful_release_runs(repo, limit):
     # type: (str, int) -> List[Dict[str, Any]]
-    return _gh_json(
-        [
-            "run",
-            "list",
-            "--workflow",
-            "release",
-            "--status",
-            "success",
-            "--limit",
-            str(limit),
-            "--json",
-            "headSha,databaseId,url,event,displayTitle,conclusion",
-        ],
-        repo=repo,
-    )
+    return filter_successful_runs(_list_workflow_runs(repo, "release", limit))
 
 
 def _artifact_names(repo, run):
@@ -318,6 +323,16 @@ def cmd_adopt_installers(args):
                 )
             )
             return 1
+    if platform == "linux" and not linux_release_has_appimage(out_dir):
+        for path in moved:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        sys.stderr.write(
+            "refusing empty linux adopt from run {}: no .AppImage\n".format(run_id)
+        )
+        return 1
     sys.stdout.write(
         "adopted installer-{} from run {} ({}) for tree {}\n".format(
             platform, run_id, match.get("url") or "", target_tree
@@ -376,6 +391,16 @@ def parse_mac_codesign_dump(text):
         "developer_id": developer_id,
         "adhoc": adhoc,
     }
+
+
+def linux_release_has_appimage(directory):
+    # type: (str) -> bool
+    if not directory or not os.path.isdir(directory):
+        return False
+    for name in os.listdir(directory):
+        if name.endswith(".AppImage"):
+            return True
+    return False
 
 
 def find_mac_update_zip(directory):
@@ -470,7 +495,7 @@ def build_parser():
     )
     require.add_argument("--sha", default="HEAD")
     require.add_argument("--repo", default="")
-    require.add_argument("--limit", type=int, default=50)
+    require.add_argument("--limit", type=int, default=80)
     require.set_defaults(func=cmd_require_green)
 
     adopt = sub.add_parser(
