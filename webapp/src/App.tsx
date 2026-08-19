@@ -196,12 +196,12 @@ export default function App() {
     const prevent = (e: DragEvent) => {
       if (hasFiles(e)) e.preventDefault();
     };
-    const onDrop = (e: DragEvent) => {
+    const onDrop = async (e: DragEvent) => {
       prevent(e);
       const files = Array.from(e.dataTransfer?.files || []);
       for (const file of files) {
         const osPath = resolveDroppedOsPath(file as { path?: string });
-        if (osPath && droppedPathIsDirectory(osPath)) {
+        if (osPath && await droppedPathIsDirectory(osPath)) {
           openAgentWorkspace(osPath);
         }
       }

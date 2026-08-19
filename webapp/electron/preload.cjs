@@ -2,7 +2,6 @@
 // (lib/transport.ts checks for window.harnessIPC and routes through it). Plus
 // native fs/git bridges for the file-tree and source-control panels.
 const { contextBridge, ipcRenderer, webUtils } = require("electron");
-const fs = require("fs");
 
 let streamSeq = 0;
 
@@ -23,17 +22,9 @@ contextBridge.exposeInMainWorld("harnessIPC", {
     } catch (_) {}
     return "";
   },
-  // User-initiated drop/open: stat only, not path-confined (outside folders
-  // must still be detectable so the composer can open them).
-  isDirectory: (absPath) => {
-    try {
-      const p = String(absPath || "");
-      if (!p) return false;
-      return fs.statSync(p).isDirectory();
-    } catch (_) {
-      return false;
-    }
-  },
+  // User-initiated drop/open: main owns filesystem access because Electron's
+  // sandboxed preload cannot import Node's fs module.
+  isDirectory: (absPath) => ipcRenderer.invoke("fs:isDirectory", absPath),
   // Fire-and-forget: persist a caught renderer error to the Electron main log so
   // a UI crash is diagnosable from ~/.pmharness/electron.log without devtools.
   logError: (payload) => { try { ipcRenderer.send("harness:rendererError", payload); } catch (_) {} },
