@@ -8,8 +8,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from ci_release_gate import (  # noqa: E402
     _flatten_installer_files,
+    find_mac_update_zip,
     matching_green_run,
     matching_installer_run,
+    parse_mac_codesign_dump,
 )
 
 
@@ -115,6 +117,41 @@ def test_flatten_installer_files_lifts_nested_artifact_layout(tmp_path):
     assert (dest / "latest-mac.yml").is_file()
 
 
+def test_parse_mac_codesign_dump_accepts_developer_id():
+    dump = """
+Identifier=com.marionette.app
+Format=app bundle with Mach-O universal (x86_64 arm64)
+Authority=Developer ID Application: Cary Palmer (ZDSDN9VC8M)
+Authority=Developer ID Certification Authority
+TeamIdentifier=ZDSDN9VC8M
+"""
+    parsed = parse_mac_codesign_dump(dump)
+    assert parsed["ok"] is True
+    assert parsed["team"] == "ZDSDN9VC8M"
+    assert parsed["adhoc"] is False
+
+
+def test_parse_mac_codesign_dump_rejects_adhoc_electron_identity():
+    dump = """
+Identifier=Electron
+Format=app bundle with Mach-O universal (x86_64 arm64)
+Signature=adhoc
+TeamIdentifier=not set
+"""
+    parsed = parse_mac_codesign_dump(dump)
+    assert parsed["ok"] is False
+    assert parsed["adhoc"] is True
+    assert parsed["identifier"] == "Electron"
+
+
+def test_find_mac_update_zip_prefers_electron_builder_name(tmp_path):
+    (tmp_path / "Marionette-0.9.251-universal-mac.zip").write_bytes(b"zip")
+    (tmp_path / "notes.txt").write_text("ignore")
+    found = find_mac_update_zip(str(tmp_path))
+    assert found is not None
+    assert found.endswith("Marionette-0.9.251-universal-mac.zip")
+
+
 def test_release_yml_does_not_rerun_pytest():
     text = (ROOT / ".github" / "workflows" / "release.yml").read_text()
     assert "python -m pytest" not in text
@@ -123,6 +160,8 @@ def test_release_yml_does_not_rerun_pytest():
     assert "needs: [tests-already-green, build]" in text
     assert "puppetmaster-ai==" in text
     assert "fetch-depth: 0" in text
+    assert "CSC_FOR_PULL_REQUEST" in text
+    assert "require-mac-signature" in text
 
 
 def test_tests_yml_windows_runner_is_swappable():

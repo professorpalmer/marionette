@@ -102,6 +102,12 @@ jobs:
         env:
           CSC_LINK: ${{ matrix.platform == 'mac' && secrets.CSC_LINK || '' }}
           CSC_KEY_PASSWORD: ${{ matrix.platform == 'mac' && secrets.CSC_KEY_PASSWORD || '' }}
+          # Dest->main PRs build the installers the tag later adopts. electron-builder
+          # skips signing on pull_request unless this is set; unsigned mac zips then
+          # fail ShipIt ("code failed to satisfy specified code requirement(s)") on
+          # every existing Developer ID install. Fork PRs still cannot sign: GitHub
+          # does not expose CSC_* secrets to them.
+          CSC_FOR_PULL_REQUEST: ${{ matrix.platform == 'mac' && 'true' || '' }}
           APPLE_ID: ${{ matrix.platform == 'mac' && secrets.APPLE_ID || '' }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ matrix.platform == 'mac' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
           APPLE_TEAM_ID: ${{ matrix.platform == 'mac' && secrets.APPLE_TEAM_ID || '' }}
@@ -112,6 +118,11 @@ jobs:
           # (avoids matrix races). publish: in electron-builder.yml is still
           # required so the updater feed files are generated.
           npm run dist -- --${{ matrix.platform }} --publish never
+
+      - name: Require Developer ID signature on mac zip
+        if: matrix.platform == 'mac'
+        shell: bash
+        run: python3 scripts/ci_release_gate.py require-mac-signature --dir webapp/release
 
       - name: Require electron-updater feed metadata
         shell: bash

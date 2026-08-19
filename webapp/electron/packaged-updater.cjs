@@ -54,6 +54,19 @@ function readCheckoutPackageVersion(repoRoot) {
   }
 }
 
+function describePackagedUpdateError(message) {
+  const raw = String(message || "").trim();
+  if (!raw) return "packaged update failed";
+  if (/code failed to satisfy specified code requirement/i.test(raw)) {
+    return (
+      "The downloaded mac update is not signed with the same Developer ID as this install. " +
+      "The published zip was likely built on a pull_request without CSC_FOR_PULL_REQUEST. " +
+      raw
+    );
+  }
+  return raw;
+}
+
 function packagedUpdaterEnabled({ isPackaged, env = process.env }) {
   if (!isPackaged) return false;
   if (String(env.MARIONETTE_PACKAGED_UPDATER || "").trim() === "0") return false;
@@ -264,7 +277,7 @@ function registerPackagedUpdater(ipcMain, app, opts = {}) {
     log(`update-downloaded ${version}`);
   });
   autoUpdater.on("error", (err) => {
-    const message = String(err && err.message ? err.message : err || "packaged update failed");
+    const message = describePackagedUpdateError(err && err.message ? err.message : err);
     log(`error ${message}`);
     emitProgress({ stage: "error", message });
     if (checking) emitCheckIdle();
@@ -344,7 +357,7 @@ function registerPackagedUpdater(ipcMain, app, opts = {}) {
       quitTimer.unref?.();
       return { ok: true, installerUpdateRequired: true, packagedInstallPending: true };
     } catch (err) {
-      const message = String(err && err.message ? err.message : err);
+      const message = describePackagedUpdateError(err && err.message ? err.message : err);
       log(`download/install failed: ${message}`);
       emitProgress({ stage: "error", message });
       return { ok: false, error: message };
@@ -380,5 +393,6 @@ module.exports = {
   mergeUpdateAvailability,
   shouldRelaunchAfterSourceUpdate,
   planSeamlessApplyStages,
+  describePackagedUpdateError,
   registerPackagedUpdater,
 };

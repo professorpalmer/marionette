@@ -48,8 +48,10 @@ run on that SHA when `merge^{tree}` equals the already-green dest PR tree.
 PR it starts installer builds in parallel with `tests.yml`. On a `v*` tag it
 checks that a successful `tests` run exists for this tree (or this commit),
 reuses those PR installers when the tree matches, and publishes only after
-that check. Users wait `max(tests, builds)`, not tests + builds + a second
-pytest gate.
+that check. Dest-PR mac builds must Developer ID-sign
+(`CSC_FOR_PULL_REQUEST`); an unsigned zip fails ShipIt on existing installs
+and must not be adopted. Users wait `max(tests, builds)`, not tests + builds
++ a second pytest gate.
 
 If a conflict resolution changes the tree, wait for `tests` on the new tree.
 That is the only exception.
