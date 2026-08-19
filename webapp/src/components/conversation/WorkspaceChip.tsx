@@ -3,6 +3,8 @@ import { ChevronDown, Folder, GitBranch, Home } from "lucide-react";
 import { api } from "../../lib/api";
 import { repoPathsEqual } from "../../lib/pathNormalize";
 import { pickFolder } from "../../lib/transport";
+import { sharedReadinessNotice } from "../../lib/operationalDiagnostic";
+import { useOperationalDiagnostic } from "../../lib/useOperationalDiagnostic";
 import {
   formatWorkspaceOpenLeaseExhaustedMessage,
   isWorkspaceOpenLeaseExhausted,
@@ -39,6 +41,7 @@ export const WORKSPACE_CHIP_ROW_CLASS =
   "w-full max-w-full min-w-0 overflow-hidden text-left px-3 py-1.5 hover:bg-panel2 transition";
 
 export default function WorkspaceChip() {
+  const operationalDiagnostic = useOperationalDiagnostic();
   const [ws, setWs] = useState<{ repo: string; branch: string; recents?: string[]; home?: string } | null>(null);
   const [open, setOpen] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
@@ -93,7 +96,9 @@ export default function WorkspaceChip() {
     const picked = await pickFolder();
     if (picked) await openPath(picked);
   };
-  const name = ws?.repo ? base(ws.repo) : (ws?.home ? "Home" : "No folder");
+  const name = ws?.repo
+    ? base(ws.repo)
+    : (ws?.home ? "Home" : sharedReadinessNotice("No folder", operationalDiagnostic));
   const home = ws?.home;
   const homeActive = isWorkspaceHomeActive(ws?.repo, home);
   const recents = workspaceChipRecents(ws?.recents, ws?.repo, home);

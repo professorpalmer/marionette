@@ -5,6 +5,7 @@ import {
   TRANSPORT_UNCERTAIN,
   belongsToActiveScope,
   classifyFailure,
+  conversationLifecycleAfterFailure,
   createOperationalDiagnostic,
   desktopBridgeMissing,
   desktopBridgeMissingDiagnostic,
@@ -16,7 +17,13 @@ import {
   resolveRepaired,
   sameRoot,
   sanitizeDiagnosticText,
+  sharedReadinessNotice,
 } from "../lib/operationalDiagnostic";
+import {
+  getActiveDiagnostic,
+  publishDiagnostic,
+  resetDiagnosticBus,
+} from "../lib/operationalDiagnosticBus";
 
 describe("classifyFailure", () => {
   it("keeps form, upload, and validation local", () => {
@@ -165,6 +172,36 @@ describe("scope and retry rules", () => {
     expect(resolveRepaired(queue, queue)).toBeNull();
     expect(resolveRepaired(other, queue)).toBe(other);
     expect(sameRoot(queue, { id: "other", code: TRANSPORT_HTTP, scope: "prompt_queue", operation: "refresh" })).toBe(true);
+  });
+});
+
+describe("shared readiness copy", () => {
+  it("replaces unrelated empty/error labels with the desktop-bridge root", () => {
+    const diag = desktopBridgeMissingDiagnostic();
+    expect(sharedReadinessNotice("No projects", diag)).toBe("Desktop bridge is missing");
+    expect(sharedReadinessNotice("No folder", diag)).toBe("Desktop bridge is missing");
+    expect(sharedReadinessNotice("Couldn’t refresh prompt queue", diag)).toBe("Desktop bridge is missing");
+    expect(sharedReadinessNotice("No projects", null)).toBe("No projects");
+  });
+
+  it("treats a failed turn as settled lifecycle plus diagnostic", () => {
+    expect(conversationLifecycleAfterFailure()).toBe("idle");
+  });
+});
+
+describe("diagnostic bus", () => {
+  it("keeps one desktop-bridge root when later uncertain transport arrives", () => {
+    resetDiagnosticBus();
+    publishDiagnostic(desktopBridgeMissingDiagnostic());
+    const flap = fromTransportFailure({
+      operation: "getJSON",
+      isTransient: true,
+      userAgent: "Chrome",
+      hasBridge: false,
+    });
+    publishDiagnostic(flap);
+    expect(getActiveDiagnostic()?.code).toBe(DESKTOP_BRIDGE_MISSING);
+    resetDiagnosticBus();
   });
 });
 

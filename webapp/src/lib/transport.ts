@@ -5,6 +5,13 @@
 // ONLY this file changes: getJSON/postJSON/stream route through window.harnessIPC
 // (preload bridge) instead of HTTP. Components never know the difference.
 
+import {
+  DESKTOP_BRIDGE_MISSING,
+  desktopBridgeMissing,
+  desktopBridgeMissingDiagnostic,
+} from "./operationalDiagnostic";
+import { publishDiagnostic } from "./operationalDiagnosticBus";
+
 /**
  * Live SSE payload from /api/chat, /api/auto, /api/run.
  * Chat/auto omit `turn` (ConvEvent); classic /run includes it (SessionEvent).
@@ -93,6 +100,18 @@ export function getHarnessIpc(): any {
   return (window as any).harnessIPC || null;
 }
 
+/** Desktop shell without harnessIPC — one root diagnostic, do not fetch. */
+function refuseIfDesktopBridgeMissing(operation: string, path?: string): void {
+  if (!desktopBridgeMissing()) return;
+  const diag = desktopBridgeMissingDiagnostic({ operation });
+  publishDiagnostic(diag);
+  const err = new Error(diag.summary) as Error & { diagnostic?: typeof diag; code?: string; path?: string };
+  err.diagnostic = diag;
+  err.code = DESKTOP_BRIDGE_MISSING;
+  if (path) err.path = path;
+  throw err;
+}
+
 // Web/vite builds may set window.__HARNESS_TOKEN__ for headered fetch.
 // Desktop Electron does not inject the token into the renderer — API calls
 // go through harnessIPC (main attaches X-Harness-Token) or webRequest
@@ -128,6 +147,7 @@ export function isTransientHarnessConnError(err: unknown): boolean {
 
 /** Like getJSON but returns parsed JSON for non-2xx responses instead of throwing. */
 export async function getJSONSoft<T = any>(path: string): Promise<T> {
+  refuseIfDesktopBridgeMissing("getJSONSoft", path);
   const bridge = getHarnessIpc();
   if (bridge?.getJSON) return bridge.getJSON(path);
   const r = await fetch(path, { headers: { "X-Harness-Token": authToken() } });
@@ -142,6 +162,7 @@ export async function getJSONSoft<T = any>(path: string): Promise<T> {
 }
 
 export async function getJSON<T = any>(path: string): Promise<T> {
+  refuseIfDesktopBridgeMissing("getJSON", path);
   const bridge = getHarnessIpc();
   if (bridge?.getJSON) return bridge.getJSON(path);
   const r = await fetch(path, { headers: { "X-Harness-Token": authToken() } });
@@ -150,6 +171,7 @@ export async function getJSON<T = any>(path: string): Promise<T> {
 }
 
 export async function postJSON<T = any>(path: string, body: any): Promise<T> {
+  refuseIfDesktopBridgeMissing("postJSON", path);
   const bridge = getHarnessIpc();
   if (bridge?.postJSON) return bridge.postJSON(path, body);
   const r = await fetch(path, {
@@ -185,6 +207,12 @@ export function stream(
   onDone?: () => void,
   onError?: (e: any) => void
 ): () => void {
+  try {
+    refuseIfDesktopBridgeMissing("stream", path);
+  } catch (err) {
+    onError?.(err);
+    return () => {};
+  }
   const bridge = getHarnessIpc();
   if (bridge?.stream) return bridge.stream(path, onEvent, onDone, onError);
 
@@ -262,6 +290,7 @@ export function stream(
 // process, which POSTs a multipart body to the loopback backend. On the web build
 // (real same-origin server) we use a normal multipart fetch.
 export async function uploadFile(file: File): Promise<{ path: string; name: string }[]> {
+  refuseIfDesktopBridgeMissing("uploadFile");
   const bridge = getHarnessIpc();
   if (bridge?.uploadFile) {
     const buf = await file.arrayBuffer();

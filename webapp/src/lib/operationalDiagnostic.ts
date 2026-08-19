@@ -248,3 +248,19 @@ export function resolveRepaired(
   if (!current) return null;
   return sameRoot(current, repaired) ? null : current;
 }
+
+/** Shared readiness surfaces reuse one root summary instead of inventing local causes. */
+export function sharedReadinessNotice(
+  fallback: string,
+  diag: OperationalDiagnostic | null | undefined,
+): string {
+  if (diag && (diag.scope === "desktop_bridge" || diag.scope === "backend")) {
+    return diag.summary;
+  }
+  return fallback;
+}
+
+/** Failed-turn lifecycle is settled; the diagnostic owns the explanation. */
+export function conversationLifecycleAfterFailure(): "idle" {
+  return "idle";
+}
