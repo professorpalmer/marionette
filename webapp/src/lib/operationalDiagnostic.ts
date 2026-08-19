@@ -1,0 +1,250 @@
+/**
+ * Renderer-owned operational diagnostic contract (issue #74 PR 1).
+ *
+ * Lifecycle (idle / thinking / error) stays how a turn is progressing.
+ * Puppetmaster artifacts stay authoritative for worker outcome quality.
+ * This record is only the safe, presentable explanation of an application
+ * failure — not a second durable store, not form validation, not a PM taxonomy.
+ */
+
+export type DiagnosticScope =
+  | "desktop_bridge"
+  | "transport"
+  | "backend"
+  | "conversation"
+  | "workspace"
+  | "projects"
+  | "sessions"
+  | "prompt_queue"
+  | "config"
+  | "update"
+  | "panel";
+
+export type DiagnosticSeverity = "info" | "warning" | "error";
+
+export type DiagnosticRecovery =
+  | { kind: "none" }
+  | { kind: "retry"; label: string }
+  | { kind: "relaunch"; label: string };
+
+export type FailureClass = "operational" | "local";
+
+export type OperationalDiagnostic = {
+  id: string;
+  scope: DiagnosticScope;
+  operation: string;
+  code?: string;
+  summary: string;
+  detail?: string;
+  severity: DiagnosticSeverity;
+  retryable: boolean;
+  /** Undefined when we do not know. Never invent "unsafe". */
+  dataSafe?: boolean;
+  recovery: DiagnosticRecovery;
+  sessionId?: string;
+  repo?: string;
+  jobId?: string;
+  taskId?: string;
+  createdAt: number;
+};
+
+export const DESKTOP_BRIDGE_MISSING = "desktop_bridge_missing";
+export const TRANSPORT_HTTP = "transport_http";
+export const TRANSPORT_IPC = "transport_ipc";
+export const TRANSPORT_UNCERTAIN = "transport_uncertain";
+export const TRANSPORT_BUSY = "transport_busy";
+
+const SUMMARY_MAX = 160;
+const DETAIL_MAX = 280;
+
+const SECRET_LIKE =
+  /(?:bearer\s+[a-z0-9._\-+=\/]+|sk-[a-z0-9]{8,}|api[_-]?key\s*[:=]\s*\S+|x-harness-token\s*[:=]\s*\S+|authorization\s*[:=]\s*\S+)/gi;
+
+let nextId = 0;
+
+function newDiagnosticId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  nextId += 1;
+  return `diag-${nextId}`;
+}
+
+/** Form, upload, and field validation stay beside their controls. */
+export function classifyFailure(input: {
+  kind?: "validation" | "upload" | "form" | "operational";
+  scope?: DiagnosticScope;
+}): FailureClass {
+  if (input.kind === "validation" || input.kind === "upload" || input.kind === "form") {
+    return "local";
+  }
+  return "operational";
+}
+
+export function isOperationalDiagnostic(value: unknown): value is OperationalDiagnostic {
+  if (!value || typeof value !== "object") return false;
+  const d = value as OperationalDiagnostic;
+  return Boolean(d.id && d.scope && d.operation && d.summary && d.severity && d.recovery);
+}
+
+export function sanitizeDiagnosticText(text: string, max = SUMMARY_MAX): string {
+  const cut = String(text || "").replace(/\r/g, "").split("\n")[0] || "";
+  const redacted = cut.replace(SECRET_LIKE, "[redacted]").replace(SECRET_LIKE, "[redacted]");
+  if (redacted.length <= max) return redacted;
+  return redacted.slice(0, Math.max(0, max - 1)).trimEnd() + "…";
+}
+
+export function desktopShellExpected(env?: {
+  userAgent?: string;
+  shellFlag?: boolean;
+}): boolean {
+  if (env?.shellFlag) return true;
+  const ua = env?.userAgent ?? (typeof navigator !== "undefined" ? navigator.userAgent : "");
+  return /Electron/i.test(ua);
+}
+
+export function desktopBridgeMissing(env?: {
+  userAgent?: string;
+  shellFlag?: boolean;
+  hasBridge?: boolean;
+}): boolean {
+  const expected = desktopShellExpected(env);
+  const hasBridge = env?.hasBridge ?? (
+    typeof window !== "undefined" && !!(window as { harnessIPC?: unknown }).harnessIPC
+  );
+  return expected && !hasBridge;
+}
+
+export function createOperationalDiagnostic(
+  input: Omit<OperationalDiagnostic, "id" | "createdAt" | "summary" | "detail" | "recovery"> & {
+    summary: string;
+    detail?: string;
+    recovery?: DiagnosticRecovery;
+    id?: string;
+    createdAt?: number;
+  },
+): OperationalDiagnostic {
+  const recovery = input.recovery || { kind: "none" };
+  return {
+    ...input,
+    id: input.id || newDiagnosticId(),
+    createdAt: input.createdAt ?? Date.now(),
+    summary: sanitizeDiagnosticText(input.summary, SUMMARY_MAX),
+    detail: input.detail ? sanitizeDiagnosticText(input.detail, DETAIL_MAX) : undefined,
+    recovery,
+  };
+}
+
+/** One root cause for the v0.9.249–v0.9.252 sandboxed-preload crash. */
+export function desktopBridgeMissingDiagnostic(opts?: {
+  operation?: string;
+  sessionId?: string;
+  repo?: string;
+}): OperationalDiagnostic {
+  return createOperationalDiagnostic({
+    scope: "desktop_bridge",
+    operation: opts?.operation || "preload",
+    code: DESKTOP_BRIDGE_MISSING,
+    summary: "Desktop bridge is missing",
+    detail:
+      "The Electron preload did not expose harnessIPC. Backend data can still be intact; panels fail independently until the shell is relaunched.",
+    severity: "error",
+    retryable: false,
+    dataSafe: true,
+    recovery: { kind: "relaunch", label: "Relaunch Marionette" },
+    sessionId: opts?.sessionId,
+    repo: opts?.repo,
+  });
+}
+
+export function fromTransportFailure(input: {
+  operation: string;
+  err?: unknown;
+  path?: string;
+  isTransient?: boolean;
+  hasBridge?: boolean;
+  userAgent?: string;
+  shellFlag?: boolean;
+  sessionId?: string;
+  repo?: string;
+}): OperationalDiagnostic {
+  if (desktopBridgeMissing(input)) {
+    return desktopBridgeMissingDiagnostic({
+      operation: input.operation,
+      sessionId: input.sessionId,
+      repo: input.repo,
+    });
+  }
+  const err = input.err as { message?: string; code?: string; status?: number } | undefined;
+  const raw = String(err?.message || err || "request failed");
+  if (input.isTransient) {
+    return createOperationalDiagnostic({
+      scope: "transport",
+      operation: input.operation,
+      code: TRANSPORT_UNCERTAIN,
+      summary: "Backend connection is uncertain",
+      detail: sanitizeDiagnosticText(raw, DETAIL_MAX),
+      severity: "warning",
+      retryable: true,
+      recovery: { kind: "retry", label: "Retry" },
+      sessionId: input.sessionId,
+      repo: input.repo,
+    });
+  }
+  const viaIpc = input.hasBridge ?? (
+    typeof window !== "undefined" && !!(window as { harnessIPC?: unknown }).harnessIPC
+  );
+  return createOperationalDiagnostic({
+    scope: "transport",
+    operation: input.operation,
+    code: viaIpc ? TRANSPORT_IPC : TRANSPORT_HTTP,
+    summary: "Request failed",
+    detail: sanitizeDiagnosticText(input.path ? `${input.path}: ${raw}` : raw, DETAIL_MAX),
+    severity: "error",
+    retryable: true,
+    recovery: { kind: "retry", label: "Retry" },
+    sessionId: input.sessionId,
+    repo: input.repo,
+  });
+}
+
+export function sameRoot(
+  a: Pick<OperationalDiagnostic, "id" | "code" | "scope" | "operation">,
+  b: Pick<OperationalDiagnostic, "id" | "code" | "scope" | "operation">,
+): boolean {
+  if (a.id && b.id && a.id === b.id) return true;
+  return Boolean(a.code && a.code === b.code && a.scope === b.scope && a.operation === b.operation);
+}
+
+export function belongsToActiveScope(
+  diag: OperationalDiagnostic,
+  active: { sessionId?: string; repo?: string },
+): boolean {
+  if (diag.sessionId && active.sessionId && diag.sessionId !== active.sessionId) return false;
+  if (diag.repo && active.repo && diag.repo !== active.repo) return false;
+  return true;
+}
+
+export function isUncertainTransport(diag: OperationalDiagnostic): boolean {
+  return diag.code === TRANSPORT_UNCERTAIN || diag.code === TRANSPORT_BUSY;
+}
+
+/** Busy or uncertain transport must not erase a known failure. */
+export function nextDiagnostic(
+  current: OperationalDiagnostic | null,
+  incoming: OperationalDiagnostic | null,
+): OperationalDiagnostic | null {
+  if (!incoming) return current;
+  if (!current) return incoming;
+  if (isUncertainTransport(incoming) && !isUncertainTransport(current)) return current;
+  return incoming;
+}
+
+/** A successful retry clears only the diagnostic it repaired. */
+export function resolveRepaired(
+  current: OperationalDiagnostic | null,
+  repaired: Pick<OperationalDiagnostic, "id" | "code" | "scope" | "operation">,
+): OperationalDiagnostic | null {
+  if (!current) return null;
+  return sameRoot(current, repaired) ? null : current;
+}
