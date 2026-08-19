@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.12` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.254, deliberately pre-1.0. Rides puppetmaster-ai==1.22.12. A missing desktop bridge is one operational diagnostic (status-pill hover, projects, folder chip, prompt queue) instead of several unrelated empty/error states. Compact residual factory default remains catalog; summary and hybrid stay Settings opt-ins.
+> Status: v0.9.255, deliberately pre-1.0. Rides puppetmaster-ai==1.22.12. Operational panel errors share one readiness diagnostic so a missing desktop bridge is not several unrelated empty/error states. Compact residual factory default remains catalog; summary and hybrid stay Settings opt-ins.
 
 ## Documentation
 
