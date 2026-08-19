@@ -8,7 +8,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from ci_release_gate import (  # noqa: E402
     _flatten_installer_files,
+    filter_successful_runs,
     find_mac_update_zip,
+    linux_release_has_appimage,
     matching_green_run,
     matching_installer_run,
     parse_mac_codesign_dump,
@@ -115,6 +117,23 @@ def test_flatten_installer_files_lifts_nested_artifact_layout(tmp_path):
     names = sorted(Path(path).name for path in moved)
     assert names == ["Marionette.dmg", "latest-mac.yml"]
     assert (dest / "latest-mac.yml").is_file()
+
+
+def test_filter_successful_runs_keeps_only_conclusion_success():
+    runs = [
+        {"headSha": "dest-tip", "conclusion": "success"},
+        {"headSha": "in-flight", "conclusion": "", "status": "in_progress"},
+        {"headSha": "failed", "conclusion": "failure"},
+    ]
+    kept = filter_successful_runs(runs)
+    assert [run["headSha"] for run in kept] == ["dest-tip"]
+
+
+def test_linux_release_has_appimage(tmp_path):
+    (tmp_path / "latest-linux.yml").write_text("path: x.AppImage\n")
+    assert linux_release_has_appimage(str(tmp_path)) is False
+    (tmp_path / "Marionette-0.9.253.AppImage").write_bytes(b"app")
+    assert linux_release_has_appimage(str(tmp_path)) is True
 
 
 def test_parse_mac_codesign_dump_accepts_developer_id():

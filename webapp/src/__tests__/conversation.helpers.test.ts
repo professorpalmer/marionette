@@ -2789,7 +2789,7 @@ describe("composerInput module", () => {
     expect(detectComposerTrigger("@terminal:term:12 ", 18).kind).toBe("none");
   });
 
-  it("builds inserts, cycles selection, and resolves drop mentions", () => {
+  it("builds inserts, cycles selection, and resolves drop mentions", async () => {
     expect(buildMentionInsert("hi @", 3, 4, "a.ts")).toEqual({
       next: "hi @a.ts ",
       cursor: 9,
@@ -2901,11 +2901,13 @@ describe("composerInput module", () => {
       droppedDirectoryPlan({ osPath: "/Users/me/authority-spoof", repo: "/repo" }),
     ).toEqual({ kind: "open-workspace", path: "/Users/me/authority-spoof" });
     expect(droppedDirectoryPlan({ osPath: "", repo: "/repo" })).toEqual({ kind: "fail" });
-    expect(droppedPathIsDirectory("/Users/me/authority-spoof")).toBe(false);
+    await expect(droppedPathIsDirectory("/Users/me/authority-spoof")).resolves.toBe(false);
     const prevDirIpc = (window as any).harnessIPC;
-    (window as any).harnessIPC = { isDirectory: (p: string) => p.endsWith("/authority-spoof") };
-    expect(droppedPathIsDirectory("/Users/me/authority-spoof")).toBe(true);
-    expect(droppedPathIsDirectory("/Users/me/notes.md")).toBe(false);
+    (window as any).harnessIPC = {
+      isDirectory: async (p: string) => p.endsWith("/authority-spoof"),
+    };
+    await expect(droppedPathIsDirectory("/Users/me/authority-spoof")).resolves.toBe(true);
+    await expect(droppedPathIsDirectory("/Users/me/notes.md")).resolves.toBe(false);
     if (prevDirIpc === undefined) delete (window as any).harnessIPC;
     else (window as any).harnessIPC = prevDirIpc;
     expect(uploadErrorMessage(new Error("Upload failed"), "File upload failed")).toBe(

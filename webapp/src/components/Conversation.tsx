@@ -1807,7 +1807,8 @@ export default function Conversation({
       } catch {
         entry = null;
       }
-      const isDirectory = !!(entry && entry.isDirectory) || droppedPathIsDirectory(osPath);
+      const isDirectory = !!(entry && entry.isDirectory)
+        || await droppedPathIsDirectory(osPath);
 
       if (isImage) {
         // Images attach as visual context (upload + thumbnail), as before.

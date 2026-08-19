@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.12` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.252, deliberately pre-1.0. Rides puppetmaster-ai==1.22.12. Dest-PR mac installers are Developer ID-signed so in-app ShipIt updates succeed on existing installs. Release tags when dest-PR tests are green for this tree. Compact residual factory default remains catalog; summary and hybrid stay Settings opt-ins.
+> Status: v0.9.253, deliberately pre-1.0. Rides puppetmaster-ai==1.22.12. Sandboxed preload no longer requires Node fs (desktop IPC restored). Dest-PR mac installers Developer ID-sign, and tag publish can see dest-PR tests so the signed zip actually ships. Compact residual factory default remains catalog; summary and hybrid stay Settings opt-ins.
 
 ## Documentation
 
