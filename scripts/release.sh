@@ -67,6 +67,10 @@ git -c user.name=professorpalmer -c user.email=professorpalmer@users.noreply.git
   add webapp/package.json pyproject.toml harness/__init__.py
 git -c user.name=professorpalmer -c user.email=professorpalmer@users.noreply.github.com \
   commit -q -m "release: ${TAG}" || echo "(nothing to commit)"
+
+echo "== require green tests for this tree =="
+python3 "$REPO_ROOT/scripts/ci_release_gate.py" require-green
+
 git tag -f "$TAG"
 git push origin main
 git push -f origin "$TAG"

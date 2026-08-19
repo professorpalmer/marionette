@@ -24,7 +24,14 @@ jobs:
       matrix:
         # Floor (3.9, the requires-python minimum) + the dev interpreter (3.11),
         # on every OS users actually run: Linux, macOS, and Windows.
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # CI_WINDOWS_RUNNER swaps GitHub-hosted windows-latest for a faster
+        # machine (Blacksmith `blacksmith-4vcpu-windows-2025`) without a new
+        # workflow. Unset keeps windows-latest so CI never queues on a missing
+        # runner label.
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - ${{ vars.CI_WINDOWS_RUNNER || 'windows-latest' }}
         python-version: ["3.9", "3.11"]
         exclude:
           # actions/setup-python has no CPython 3.9 build for arm64 macOS.
@@ -46,7 +53,7 @@ jobs:
           # Floor matches the accounting/routing fixes this release needs.
           # Unpinned `puppetmaster-ai` + pip cache can leave CI on an older
           # wheel (e.g. 1.14.0) and fail fallback-pricing regressions.
-          pip install -e ".[dev]" "puppetmaster-ai==1.22.9"
+          pip install -e ".[dev]" "puppetmaster-ai==1.22.11"
 
       # full_auto_safety modules already run inside this job via conftest
       # auto-tagging; a separate named job was redundant PR compute.

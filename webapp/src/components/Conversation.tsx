@@ -102,7 +102,11 @@ import {
   peekTerminalSelections,
   putTerminalSelection,
 } from "./conversation/terminalSelectionCache";
-import { restoreFeedScrollAfterFocus } from "./conversation/transcriptVirtualWindow";
+import {
+  chatColumnMountClass,
+  isChatColumnActive,
+  restoreFeedScrollAfterFocus,
+} from "./conversation/transcriptVirtualWindow";
 import {
   STREAM_ABORT_MESSAGE,
   streamErrorText,
@@ -123,10 +127,16 @@ import {
   detectComposerTrigger,
   filterMentionPaths,
   filterSlashCommands,
+  collectFilesFromDirectoryEntry,
+  DROP_FOLDER_FILE_CAP,
+  droppedDirectoryPlan,
+  droppedPathIsDirectory,
   mentionTokenForDroppedPath,
   resolveDroppedOsPath,
   uploadErrorMessage,
+  type DirectoryEntryLike,
 } from "./conversation/composerInput";
+import { openAgentWorkspace } from "../lib/agentLinks";
 import {
   blankMsgQueueOnSessionSwitch,
   blankQueueItemsOnSessionSwitch,
@@ -1235,6 +1245,30 @@ export default function Conversation({
     };
   }, []);
 
+  // Opening a file used to unmount the chat column; coming back remounted the
+  // virtualizer at 0. Chat stays mounted (hidden). Still restore the last
+  // offset in case the hide pass reported a 0-height scroll parent.
+  const fileTabScrollTopRef = useRef(0);
+  const prevActiveTabRef = useRef(activeTab);
+  useLayoutEffect(() => {
+    const prev = prevActiveTabRef.current;
+    prevActiveTabRef.current = activeTab;
+    const node = feedRef.current;
+    if (!node) return;
+    if (isChatColumnActive(prev) && !isChatColumnActive(activeTab)) {
+      fileTabScrollTopRef.current = node.scrollTop;
+      return;
+    }
+    if (!isChatColumnActive(prev) && isChatColumnActive(activeTab)) {
+      node.scrollTop = restoreFeedScrollAfterFocus({
+        savedScrollTop: fileTabScrollTopRef.current,
+        pinned: pinnedToBottomRef.current,
+        settling: scrollSettlingRef.current,
+        scrollHeight: node.scrollHeight,
+      });
+    }
+  }, [activeTab]);
+
   const contextUsageFetchGenRef = useRef(0);
   const fetchContextUsage = () => {
     if (!activeSessionId) return;
@@ -1767,13 +1801,13 @@ export default function Conversation({
       const file = files[i];
       const isImage = file.type.startsWith("image/");
       const osPath = resolveDroppedOsPath(file as { path?: string });
-      let isDirectory = false;
+      let entry: DirectoryEntryLike | null = null;
       try {
-        const entry = items[i]?.webkitGetAsEntry?.();
-        isDirectory = !!entry && entry.isDirectory;
+        entry = (items[i]?.webkitGetAsEntry?.() as DirectoryEntryLike | null) || null;
       } catch {
-        isDirectory = false;
+        entry = null;
       }
+      const isDirectory = !!(entry && entry.isDirectory) || droppedPathIsDirectory(osPath);
 
       if (isImage) {
         // Images attach as visual context (upload + thumbnail), as before.
@@ -1797,18 +1831,46 @@ export default function Conversation({
       }
 
       if (isDirectory) {
-        const folderToken = mentionTokenForDroppedPath({
-          osPath,
-          repo,
-          isDirectory: true,
-        });
-        if (folderToken) {
-          mentions.push(folderToken);
+        const plan = droppedDirectoryPlan({ osPath, repo });
+        if (plan.kind === "mention") {
+          mentions.push(plan.token);
           continue;
         }
-        flashUploadError(
-          "Folders outside the open workspace cannot be attached. Open that folder as the workspace, or drop a file from it.",
-        );
+        if (entry?.isDirectory) {
+          try {
+            const collected = await collectFilesFromDirectoryEntry(entry);
+            if (collected.files.length > 0) {
+              for (const inner of collected.files) {
+                try {
+                  const uploaded = await api.uploadImage(inner.file);
+                  const token = mentionTokenForDroppedPath({
+                    osPath: "",
+                    repo,
+                    uploadedPath: uploaded.path,
+                  });
+                  if (token) mentions.push(token);
+                  else flashUploadError("Dropped file could not be attached");
+                } catch (err) {
+                  console.error("Failed to upload dropped folder file:", err);
+                  flashUploadError(uploadErrorMessage(err, "File upload failed"));
+                }
+              }
+              if (collected.truncated) {
+                flashUploadError(
+                  `Attached the first ${DROP_FOLDER_FILE_CAP} files from that folder.`,
+                );
+              }
+              continue;
+            }
+          } catch (err) {
+            console.error("Failed to read dropped folder:", err);
+          }
+        }
+        if (plan.kind === "open-workspace") {
+          openAgentWorkspace(plan.path);
+          continue;
+        }
+        flashUploadError("Could not open that folder.");
         continue;
       }
 
@@ -3068,7 +3130,11 @@ export default function Conversation({
         onCloseContextMenu={() => setTabContextMenu(null)}
       />
 
-      {activeTab === "chat" ? (
+      <div className="relative flex flex-col flex-1 min-h-0 min-w-0">
+      <div
+        className={chatColumnMountClass(activeTab)}
+        aria-hidden={!isChatColumnActive(activeTab)}
+      >
         <ConversationChatColumn
           feedRef={feedRef}
           transcriptStale={transcriptStale}
@@ -3179,7 +3245,8 @@ export default function Conversation({
       />
       )}
         />
-  ) : (
+      </div>
+      {!isChatColumnActive(activeTab) ? (
     <FileEditorPane
       path={activeTab}
       line={openTabs.find((t) => t.path === activeTab)?.line}
@@ -3187,7 +3254,8 @@ export default function Conversation({
       onClose={() => handleCloseTab(activeTab)}
       onDirtyChange={(dirty) => handleTabDirtyChange(activeTab, dirty)}
     />
-  )}
+      ) : null}
+      </div>
 
       {lightboxUrl && (
         <ImageLightbox url={lightboxUrl} onClose={() => setLightboxUrl(null)} />

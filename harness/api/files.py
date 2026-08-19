@@ -399,8 +399,14 @@ _DOCUMENT_UPLOAD_EXTS = frozenset({
     ".cjs", ".mjs", ".html", ".css", ".csv", ".xml", ".yml", ".yaml",
     ".toml", ".rst", ".tex", ".ipynb", ".rtf", ".log", ".cfg", ".ini",
     ".svg",
+    ".go", ".rs", ".java", ".kt", ".c", ".h", ".cc", ".cpp", ".hpp",
+    ".rb", ".php", ".swift", ".cs", ".sh", ".bash", ".zsh", ".ps1",
+    ".sql", ".proto", ".vue", ".svelte", ".jsx",
 })
-_UPLOAD_EXTS = _IMAGE_UPLOAD_EXTS | _DOCUMENT_UPLOAD_EXTS
+_ARCHIVE_UPLOAD_EXTS = frozenset({
+    ".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".7z",
+})
+_UPLOAD_EXTS = _IMAGE_UPLOAD_EXTS | _DOCUMENT_UPLOAD_EXTS | _ARCHIVE_UPLOAD_EXTS
 
 
 def save_upload(body: bytes, content_type: str, upload_dir: str) -> tuple[int, dict]:
@@ -426,8 +432,8 @@ def save_upload(body: bytes, content_type: str, upload_dir: str) -> tuple[int, d
     if skipped:
         return 400, {
             "error": (
-                "This file type cannot be attached. Drop an image or a "
-                "document (md, txt, pdf, json, source), or drop a file "
+                "This file type cannot be attached. Drop an image, "
+                "document, archive (zip), or source file, or drop a file "
                 "from the open workspace to @-mention it."
             ),
             "saved": [],

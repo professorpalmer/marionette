@@ -30,7 +30,7 @@ Or set up a checkout by hand. Backend (uv provides Python per `.python-version`)
 
 ```bash
 uv venv .venv
-uv pip install --python .venv -e . "puppetmaster-ai==1.22.9"
+uv pip install --python .venv -e . "puppetmaster-ai==1.22.11"
 .venv/bin/python -m pytest -q          # full offline suite -- must be green
 ```
 
@@ -64,7 +64,7 @@ runs from source.
 Marionette self-updates from git, Hermes-style: every source checkout tracks
 `main` and shows an `update (N)` pill when it's behind, then pulls + rebuilds +
 relaunches in place. So **merging `dev` into `main` (green `tests` CI on that
-SHA) ships your change to every source install** on their next relaunch. Tagged
+tree) ships your change to every source install** on their next relaunch. Tagged
 releases also rebuild the thin Electron installers (macOS, Windows, Linux) via
 CI; those users pick up changes after bootstrap + update or by installing a
 newer Release.
