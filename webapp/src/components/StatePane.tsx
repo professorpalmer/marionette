@@ -13,6 +13,7 @@ import {
 } from "../lib/statePaneVisibility";
 import { useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
 import McpPane from "./McpPane";
+import { usePanelNotice } from "../lib/useOperationalDiagnostic";
 
 // Re-enable when a better presentation exists. Artifacts stay fully
 // logged/stored on the backend; this flag is display-only.
@@ -135,6 +136,7 @@ export default function StatePane({ artifacts }: {
   const [envReady, setEnvReady] = useState<EnvironmentReadiness | null>(null);
   const [envLoading, setEnvLoading] = useState(false);
   const [envFetchError, setEnvFetchError] = useState("");
+  const envNotice = usePanelNotice(envFetchError || null);
   const toggleCg = () => setCgOpen((v) => { localStorage.setItem("pmharness.statePane.cgOpen", v ? "0" : "1"); return !v; });
   const toggleWiki = () => setWikiOpen((v) => { localStorage.setItem("pmharness.statePane.wikiOpen", v ? "0" : "1"); return !v; });
   const toggleMcp = () => setMcpOpen((v) => { localStorage.setItem("pmharness.statePane.mcpOpen", v ? "0" : "1"); return !v; });
@@ -456,6 +458,10 @@ export default function StatePane({ artifacts }: {
   const wikiOk = wiki?.status === "ok";
   const wikiNeedsAuth = wiki?.status === "needs_auth";
   const wikiErr = wiki?.status === "error";
+  const wikiStatusNotice = usePanelNotice(wikiErr ? (wiki?.error || "Failed to fetch wiki status") : null);
+  const wikiGraphNotice = usePanelNotice(
+    wikiGraph?.status === "error" ? (wikiGraph.error || "Could not load wiki graph") : null,
+  );
   const wikiDot = wikiOk
     ? "bg-good"
     : wikiNeedsAuth
@@ -685,7 +691,7 @@ export default function StatePane({ artifacts }: {
             <div className="px-2.5 pb-2 pt-1.5 border-t border-edge/30 text-[10px]">
               {wikiErr ? (
                 <div className="flex flex-col gap-1.5">
-                  <div className="text-risk italic">{wiki?.error || "Failed to fetch wiki status"}</div>
+                  <div className="text-risk italic">{wikiStatusNotice || wiki?.error || "Failed to fetch wiki status"}</div>
                   <div className="flex items-center justify-between gap-2">
                     {wiki?.base_url
                       ? <span className="text-[8px] text-faint truncate">{wiki.base_url}</span>
@@ -798,7 +804,7 @@ export default function StatePane({ artifacts }: {
                     </div>
                   ) : wikiGraph?.status === "error" ? (
                     <div className="text-[9px] text-risk/90 leading-snug">
-                      {wikiGraph.error || "Could not load wiki graph"}
+                      {wikiGraphNotice || wikiGraph.error || "Could not load wiki graph"}
                     </div>
                   ) : wikiGraph?.status === "needs_auth" ? (
                     <div className="text-[9px] text-warn leading-snug">
@@ -872,22 +878,22 @@ export default function StatePane({ artifacts }: {
             <span className="uppercase tracking-wider font-semibold text-faint">Environment</span>
             {envLoading
               ? <Loader2 className="w-2.5 h-2.5 animate-spin text-accent shrink-0" />
-              : <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${envFetchError ? "bg-risk" : envDot}`} aria-hidden />}
-            <span className="text-muted lowercase">{envFetchError ? "error" : envWord}</span>
+              : <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${envNotice ? "bg-risk" : envDot}`} aria-hidden />}
+            <span className="text-muted lowercase">{envNotice ? "error" : envWord}</span>
             <span className="flex-1" />
             {envMetric && <span className="text-faint tabular-nums truncate">{envMetric}</span>}
           </button>
           {envOpen && (
             <div className="px-2.5 pb-2 pt-1 border-t border-edge/30 space-y-2">
-              {envFetchError && (
+              {envNotice && (
                 <div
                   role="alert"
                   className="text-risk text-[10px] leading-snug bg-risk/10 border border-risk/35 rounded px-2 py-1.5 break-words"
                 >
-                  {envFetchError}
+                  {envNotice}
                 </div>
               )}
-              {!envReady && !envFetchError && (
+              {!envReady && !envNotice && (
                 <div role="status" className="text-[9px] text-faint leading-snug">
                   {envLoading ? "Checking optional tools…" : "No readiness data yet."}
                 </div>

@@ -5,6 +5,7 @@ import {
   reviewHunkDecisionKey,
   seedApplyDecisions,
 } from "../lib/reviewDecisions";
+import { usePanelNotice } from "../lib/useOperationalDiagnostic";
 
 export { reviewHunkDecisionKey, seedApplyDecisions };
 
@@ -14,6 +15,7 @@ export default function DiffReviewPane({ reviews, onRefresh, loadError = null }:
   /** Sticky honesty when RightPane getReviews fails (do not claim empty queue). */
   loadError?: string | null;
 }) {
+  const reviewsNotice = usePanelNotice(loadError);
   const [decisions, setDecisions] = useState<Record<string, "accept" | "reject">>({});
   const [loading, setLoading] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ text: string; type: "success" | "error" } | null>(null);
@@ -218,14 +220,14 @@ export default function DiffReviewPane({ reviews, onRefresh, loadError = null }:
   };
 
   if (reviews.length === 0) {
-    if (loadError) {
+    if (reviewsNotice) {
       return (
         <div
           data-testid="reviews-load-error"
           className="flex flex-col items-center justify-center h-full p-6 text-center text-muted"
         >
           <AlertCircle size={24} className="mb-2 text-risk" />
-          <span className="text-xs font-medium text-risk">{loadError}</span>
+          <span className="text-xs font-medium text-risk">{reviewsNotice}</span>
           <button
             type="button"
             onClick={onRefresh}
@@ -264,13 +266,13 @@ export default function DiffReviewPane({ reviews, onRefresh, loadError = null }:
           animation: scale-up 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
         }
       `}</style>
-      {loadError && (
+      {reviewsNotice && (
         <div
           data-testid="reviews-load-error"
           className="p-2 rounded text-[11px] flex items-start gap-1.5 bg-risk/10 border border-risk/20 text-risk"
         >
           <AlertCircle size={12} className="shrink-0 mt-0.5" />
-          <span className="flex-1">{loadError}</span>
+          <span className="flex-1">{reviewsNotice}</span>
           <button
             type="button"
             onClick={onRefresh}

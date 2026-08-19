@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { GitFork, Plus, Trash2 } from "lucide-react";
 import { api, type Worktree } from "../lib/api";
+import { usePanelNotice } from "../lib/useOperationalDiagnostic";
 
 export default function WorktreesPane() {
   const [worktrees, setWorktrees] = useState<Worktree[]>([]);
@@ -11,6 +12,7 @@ export default function WorktreesPane() {
   const [newWtBranch, setNewWtBranch] = useState("");
   const [newWtBase, setNewWtBase] = useState("HEAD");
   const [wtError, setWtError] = useState("");
+  const wtNotice = usePanelNotice(wtError || null);
   const [wtStatus, setWtStatus] = useState("");
 
   const loadWorktrees = async () => {
@@ -20,7 +22,10 @@ export default function WorktreesPane() {
       setWorktrees(data.worktrees || []);
       setMaxWorktrees(data.max ?? 25);
     } catch (err) {
-      console.error("Failed to load worktrees", err);
+      const message = err && typeof err === "object" && "error" in err
+        ? String((err as { error?: string }).error)
+        : "";
+      setWtError(message || "Failed to load worktrees");
     } finally {
       setLoading(false);
     }
@@ -113,9 +118,9 @@ export default function WorktreesPane() {
       {/* Scrollable Container */}
       <div className="flex-1 overflow-y-auto p-2.5 flex flex-col gap-3">
         {/* Status messages */}
-        {wtError && (
+        {wtNotice && (
           <div className="p-2 bg-risk/10 border border-risk/30 rounded text-risk text-[10.5px] font-medium leading-relaxed">
-            {wtError}
+            {wtNotice}
           </div>
         )}
         {wtStatus && (

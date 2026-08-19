@@ -14,6 +14,7 @@ import {
   isOperationalDiagnostic,
   isUncertainTransport,
   nextDiagnostic,
+  panelNotice,
   resolveRepaired,
   sameRoot,
   sanitizeDiagnosticText,
@@ -182,6 +183,24 @@ describe("shared readiness copy", () => {
     expect(sharedReadinessNotice("No folder", diag)).toBe("Desktop bridge is missing");
     expect(sharedReadinessNotice("Couldn’t refresh prompt queue", diag)).toBe("Desktop bridge is missing");
     expect(sharedReadinessNotice("No projects", null)).toBe("No projects");
+  });
+
+  it("lets a panel keep local operational copy unless a readiness root exists", () => {
+    expect(panelNotice("Failed to get workspace files", null)).toBe("Failed to get workspace files");
+    expect(panelNotice("Failed to get workspace files", desktopBridgeMissingDiagnostic())).toBe(
+      "Desktop bridge is missing",
+    );
+    const files = createOperationalDiagnostic({
+      scope: "panel",
+      operation: "readDir",
+      summary: "Workspace files could not be listed",
+      severity: "error",
+      retryable: true,
+    });
+    expect(panelNotice("Failed to get workspace files", files, "panel")).toBe(
+      "Workspace files could not be listed",
+    );
+    expect(panelNotice("Failed to load settings", files, "config")).toBe("Failed to load settings");
   });
 
   it("treats a failed turn as settled lifecycle plus diagnostic", () => {

@@ -5,6 +5,7 @@ import {
   type ScheduleInfo,
   type ScheduleRun,
 } from "../lib/api";
+import { usePanelNotice } from "../lib/useOperationalDiagnostic";
 
 /**
  * Thin Settings schedules control: list / enable / disable / run-now / history.
@@ -13,6 +14,7 @@ import {
 export default function SchedulesPane() {
   const [schedules, setSchedules] = useState<ScheduleInfo[]>([]);
   const [error, setError] = useState("");
+  const errorNotice = usePanelNotice(error || null);
   const [status, setStatus] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [history, setHistory] = useState<Record<string, ScheduleRun[]>>({});
@@ -71,7 +73,7 @@ export default function SchedulesPane() {
 
   return (
     <div className="space-y-2">
-      {error && <div className="text-risk text-[10px] font-medium">{error}</div>}
+      {errorNotice && <div className="text-risk text-[10px] font-medium">{errorNotice}</div>}
       {status && <div className="text-good text-[10px] font-medium">{status}</div>}
       <div className="text-[10px] text-muted leading-snug">
         Cron fire still needs the local schedule daemon. This panel polls; SSE is deferred.

@@ -4,6 +4,7 @@ import { nativeGit, gitWritesAvailable } from "../lib/transport";
 import { api } from "../lib/api";
 import { lastSelectedProjectRoot } from "../lib/panelTransition";
 import { subscribeWorkspaceMutations } from "../lib/workspaceMutationEvents";
+import { usePanelNotice } from "../lib/useOperationalDiagnostic";
 
 interface ChangedFile {
   status: string;
@@ -38,6 +39,9 @@ export default function SourceControl() {
   const [commitLoading, setCommitLoading] = useState(false);
   const [commitError, setCommitError] = useState<string | null>(null);
   const [commitStatus, setCommitStatus] = useState<string | null>(null);
+  const errorNotice = usePanelNotice(error);
+  const diffNotice = usePanelNotice(diffError);
+  const commitNotice = usePanelNotice(commitError);
   const readOnly = !gitWritesAvailable();
 
   const clearGitUiState = useCallback(() => {
@@ -396,7 +400,7 @@ export default function SourceControl() {
       </div>
 
       <div className="flex-1 overflow-y-auto px-3 py-2 flex flex-col gap-3">
-        {error && <div className="text-[11px] text-risk">{error}</div>}
+        {errorNotice && <div className="text-[11px] text-risk">{errorNotice}</div>}
 
         <div>
           <div className="text-[9px] uppercase tracking-wider text-muted mb-1.5 font-semibold">
@@ -564,7 +568,7 @@ export default function SourceControl() {
             {commitLoading ? "Committing..." : "Commit"}
           </button>
         </div>
-        {commitError && <div className="text-[10px] text-risk mt-1">{commitError}</div>}
+        {commitNotice && <div className="text-[10px] text-risk mt-1">{commitNotice}</div>}
       </div>
       )}
 
@@ -591,15 +595,15 @@ export default function SourceControl() {
           {diffLoading && (
             <div className="text-[11px] text-muted">Generating diff view...</div>
           )}
-          {diffError && <div className="text-[11px] text-risk">{diffError}</div>}
+          {diffNotice && <div className="text-[11px] text-risk">{diffNotice}</div>}
           
-          {!diffLoading && !diffError && diffText !== null && !hasHunks && (
+          {!diffLoading && !diffNotice && diffText !== null && !hasHunks && (
             <div className="space-y-0.5 select-text">
               {diffText.split("\n").map((line, idx) => renderDiffLine(line, idx))}
             </div>
           )}
 
-          {!diffLoading && !diffError && diffText !== null && hasHunks && (
+          {!diffLoading && !diffNotice && diffText !== null && hasHunks && (
             <div className="space-y-4">
               {headerLines.length > 0 && (
                 <div className="p-1.5 bg-panel2/30 border border-edge/10 rounded text-muted font-mono text-[10px] select-text">
@@ -632,7 +636,7 @@ export default function SourceControl() {
             </div>
           )}
 
-          {!diffLoading && !diffError && diffText === null && (
+          {!diffLoading && !diffNotice && diffText === null && (
             <div className="text-[11px] text-muted italic">
               Select a changed file above to view its diff
             </div>

@@ -11,6 +11,7 @@ import {
   notifyWorkspaceMutated,
   subscribeWorkspaceMutations,
 } from "../lib/workspaceMutationEvents";
+import { usePanelNotice } from "../lib/useOperationalDiagnostic";
 
 interface FileNode {
   name: string;
@@ -198,6 +199,7 @@ export default function FileTree() {
   const [rootNodes, setRootNodes] = useState<FileNode[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const notice = usePanelNotice(error);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<FileContextMenu | null>(null);
   const [confirmDeletePath, setConfirmDeletePath] = useState<string | null>(null);
@@ -549,8 +551,8 @@ export default function FileTree() {
         {loading && rootNodes.length === 0 && (
           <div className="text-[11px] text-muted p-2">Loading workspace...</div>
         )}
-        {error && <div className="text-[11px] text-risk p-2">{error}</div>}
-        {!loading && !error && rootNodes.length === 0 && (
+        {notice && <div className="text-[11px] text-risk p-2">{notice}</div>}
+        {!loading && !notice && rootNodes.length === 0 && (
           <div className="text-[11px] text-muted italic p-2">No files found</div>
         )}
         {rootNodes.map((n) => (

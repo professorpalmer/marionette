@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Puzzle, Power, PowerOff, FolderPlus } from "lucide-react";
 import { api, type AgentPlugin } from "../lib/api";
+import { usePanelNotice } from "../lib/useOperationalDiagnostic";
 
 /** Minimal Agent Plugins v1 Settings pane: list, enable/disable, install path. */
 export default function PluginsPane({ embedded = false }: { embedded?: boolean }) {
@@ -9,11 +10,17 @@ export default function PluginsPane({ embedded = false }: { embedded?: boolean }
   const [msg, setMsg] = useState("");
   const [installPath, setInstallPath] = useState("");
   const [error, setError] = useState("");
+  const errorNotice = usePanelNotice(error || null);
 
   const refresh = () => {
     api.plugins()
-      .then((r) => setPlugins(r.plugins || []))
-      .catch(() => {});
+      .then((r) => {
+        setPlugins(r.plugins || []);
+        setError("");
+      })
+      .catch((err: { message?: string }) => {
+        setError(err?.message || "Failed to load plugins");
+      });
   };
   useEffect(() => {
     refresh();
@@ -102,8 +109,8 @@ export default function PluginsPane({ embedded = false }: { embedded?: boolean }
       </div>
 
       {(msg || error) && (
-        <div className={`text-[11px] ${error ? "text-red-400" : "text-muted"}`}>
-          {error || msg}
+        <div className={`text-[11px] ${errorNotice ? "text-red-400" : "text-muted"}`}>
+          {errorNotice || msg}
         </div>
       )}
 
