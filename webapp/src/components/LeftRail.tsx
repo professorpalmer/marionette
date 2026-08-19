@@ -8,6 +8,8 @@ import { mapSessionSearchHits, type SessionSearchRow } from "../lib/sessionSearc
 import { usePolling } from "../lib/usePolling";
 import { readSWRCache, writeSWRCache, useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
 import { writeTranscriptCache } from "./Conversation";
+import { sharedReadinessNotice } from "../lib/operationalDiagnostic";
+import { useOperationalDiagnostic } from "../lib/useOperationalDiagnostic";
 
 export {
   SESSION_LEASE_EXHAUSTED_MESSAGE,
@@ -58,6 +60,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   onSessionChange?: (id: string) => void;
 }) {
   const [swapping, setSwapping] = useState<string | null>(null);
+  const operationalDiagnostic = useOperationalDiagnostic();
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
@@ -1375,7 +1378,9 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       {railTab === "projects" && (
       <div ref={projectsSectionRef} className="pb-1">
       <div className="px-2 pt-3 pb-2 shrink-0 min-w-0">
-        {projects.length === 0 && !panelSwitching && <Empty>No projects</Empty>}
+        {projects.length === 0 && !panelSwitching && (
+          <Empty>{sharedReadinessNotice("No projects", operationalDiagnostic)}</Empty>
+        )}
       <div className="space-y-0.5 -mx-2">
           {projects.map((projectPath) => {
             const basename = getWorkspaceBasename(projectPath) || "Untitled Project";

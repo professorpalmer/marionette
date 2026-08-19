@@ -56,6 +56,12 @@ export function statusPillLabel(status: string, detail?: string): string {
   return status;
 }
 
+/** Hover text: error keeps the compact label and discloses the safe reason. */
+export function statusPillHoverText(status: string, detail?: string): string {
+  if (status === "error" && detail) return detail;
+  return detail || status;
+}
+
 export function statusPillTextClass(status: string): string {
   return STATUS_TEXT[status] || STATUS_TEXT.idle;
 }
@@ -75,6 +81,7 @@ export default function StatusPill({
   onDetailClick?: () => void;
 }) {
   const label = statusPillLabel(status, detail);
+  const hoverText = statusPillHoverText(status, detail);
   const clickable = statusPillClickable(status, detail, onDetailClick);
   const className =
     `text-[10.5px] flex items-center gap-1.5 min-w-0 max-w-[42ch] ${statusPillTextClass(status)}`
@@ -95,7 +102,7 @@ export default function StatusPill({
   return (
     <span
       className={className}
-      title={detail || status}
+      title={hoverText}
     >
       <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusPillDotClass(status)}`} />
       <span className="truncate">{label}</span>

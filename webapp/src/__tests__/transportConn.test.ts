@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { DESKTOP_BRIDGE_MISSING } from "../lib/operationalDiagnostic";
+import { getActiveDiagnostic, resetDiagnosticBus } from "../lib/operationalDiagnosticBus";
 import {
   getHarnessIpc,
+  getJSON,
   isDesktop,
   isTransientHarnessConnError,
   stream,
@@ -26,6 +29,27 @@ describe("getHarnessIpc", () => {
     const bridge = { stream: () => () => {} };
     w.harnessIPC = bridge;
     expect(getHarnessIpc()).toBe(bridge);
+    if (prev === undefined) delete w.harnessIPC;
+    else w.harnessIPC = prev;
+  });
+});
+
+describe("desktop bridge refuse", () => {
+  afterEach(() => {
+    resetDiagnosticBus();
+    vi.restoreAllMocks();
+  });
+
+  it("throws one desktop-bridge diagnostic instead of fetching", async () => {
+    const w = window as any;
+    const prev = w.harnessIPC;
+    delete w.harnessIPC;
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Mozilla/5.0 Electron/39.0.0");
+    await expect(getJSON("/api/workspaces")).rejects.toMatchObject({
+      code: DESKTOP_BRIDGE_MISSING,
+      message: "Desktop bridge is missing",
+    });
+    expect(getActiveDiagnostic()?.code).toBe(DESKTOP_BRIDGE_MISSING);
     if (prev === undefined) delete w.harnessIPC;
     else w.harnessIPC = prev;
   });

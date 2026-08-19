@@ -65,6 +65,7 @@ import { workspaceLeafName } from "../components/conversation/workspaceDisplay";
 import {
   statusPillClickable,
   statusPillDotClass,
+  statusPillHoverText,
   statusPillLabel,
   statusPillTextClass,
 } from "../components/conversation/StatusPill";
@@ -1082,6 +1083,9 @@ describe("pillStatus + workspaceDisplay + StatusPill chrome", () => {
     expect(statusPillLabel("idle")).toBe("Ready");
     expect(statusPillLabel("done")).toBe("Done");
     expect(statusPillLabel("error")).toBe("Error");
+    expect(statusPillLabel("error", "Desktop bridge is missing")).toBe("Error");
+    expect(statusPillHoverText("error", "Desktop bridge is missing")).toBe("Desktop bridge is missing");
+    expect(statusPillHoverText("idle")).toBe("idle");
     expect(statusPillTextClass("error")).toContain("risk");
     expect(statusPillDotClass("streaming")).toContain("animate-pulse");
     expect(statusPillDotClass("investigating")).toContain("animate-pulse");

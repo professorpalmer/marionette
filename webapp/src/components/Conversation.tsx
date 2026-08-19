@@ -137,6 +137,9 @@ import {
   type DirectoryEntryLike,
 } from "./conversation/composerInput";
 import { openAgentWorkspace } from "../lib/agentLinks";
+import { sharedReadinessNotice } from "../lib/operationalDiagnostic";
+import { getActiveDiagnostic } from "../lib/operationalDiagnosticBus";
+import { useOperationalDiagnostic } from "../lib/useOperationalDiagnostic";
 import {
   blankMsgQueueOnSessionSwitch,
   blankQueueItemsOnSessionSwitch,
@@ -500,6 +503,7 @@ export default function Conversation({
   const queueItemsRef = useRef<{ id: string; text: string; images?: string[]; model?: string }[]>([]);
   useEffect(() => { queueItemsRef.current = queueItems; }, [queueItems]);
   const [queueLoadError, setQueueLoadError] = useState<string | null>(null);
+  const operationalDiagnostic = useOperationalDiagnostic();
   const queueFetchGenRef = useRef(0);
   const [queueDragIndex, setQueueDragIndex] = useState<number | null>(null);
   const [queueDragOverIndex, setQueueDragOverIndex] = useState<number | null>(null);
@@ -535,7 +539,9 @@ export default function Conversation({
     holdSwarmAwait,
     turnOpen,
   });
-  const pillStatus: string = derivePillStatus({
+  // Mouth ≠ runner. awaiting_swarm / holdSwarmAwait keep the fold, not Stop.
+  const composerBusy = isPilotMouthBusy(turnOpen, status);
+  const derivedPillStatus: string = derivePillStatus({
     transcriptStale,
     answerChromeIdle: false,
     liveInvestigation,
@@ -544,8 +550,14 @@ export default function Conversation({
     awaitingSwarm: swarmPausePoint,
     agentLoopOpen,
   });
-  // Mouth ≠ runner. awaiting_swarm / holdSwarmAwait keep the fold, not Stop.
-  const composerBusy = isPilotMouthBusy(turnOpen, status);
+  // Operational diagnostic is settled failure, not a live turn lifecycle.
+  const pillStatus: string = (
+    operationalDiagnostic
+    && operationalDiagnostic.severity === "error"
+    && !composerBusy
+      ? "error"
+      : derivedPillStatus
+  );
   // Keep the busy footer clock alive while holdSwarmAwait outlives status flaps.
   useEffect(() => {
     if (holdSwarmAwait) {
@@ -787,7 +799,7 @@ export default function Conversation({
           return;
         }
         console.error("Failed to load prompt queue:", err);
-        setQueueLoadError(QUEUE_LOAD_FAIL_NOTICE);
+        setQueueLoadError(sharedReadinessNotice(QUEUE_LOAD_FAIL_NOTICE, getActiveDiagnostic()));
       });
   };
 
@@ -3092,19 +3104,23 @@ export default function Conversation({
       <ConversationHeader
         pillStatus={pillStatus}
         detail={
-          !transcriptStale && pillStatus !== "idle" && composerBusy
-            ? (
-              busyProgress.label
-                ? busyProgress.pill
-                // Sticky busy without a footer line: pause-point Still working…
-                // wins over hold-sticky liveInvestigation (matches Explored fold).
-                : derivePillBusyDetail({
-                  liveInvestigation,
-                  pillStatus,
-                  agentLoopOpen,
-                })
+          pillStatus === "error" && operationalDiagnostic
+            ? operationalDiagnostic.summary
+            : (
+              !transcriptStale && pillStatus !== "idle" && composerBusy
+                ? (
+                  busyProgress.label
+                    ? busyProgress.pill
+                    // Sticky busy without a footer line: pause-point Still working…
+                    // wins over hold-sticky liveInvestigation (matches Explored fold).
+                    : derivePillBusyDetail({
+                      liveInvestigation,
+                      pillStatus,
+                      agentLoopOpen,
+                    })
+                )
+                : undefined
             )
-            : undefined
         }
         onBusyDetailClick={() => {
           // Worker / shell busy chrome → terminal, never the file editor.
