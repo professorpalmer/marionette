@@ -252,6 +252,19 @@ def test_save_upload_accepts_markdown(tmp_path):
     assert os.path.exists(payload["saved"][0]["path"])
 
 
+def test_save_upload_accepts_zip(tmp_path):
+    from harness.api.files import save_upload
+
+    body, ctype = _multipart(
+        "file", "bundle.zip", b"PK\x03\x04payload", "application/zip"
+    )
+    status, payload = save_upload(body, ctype, str(tmp_path))
+    assert status == 200
+    assert payload["saved"]
+    assert payload["saved"][0]["path"].endswith(".zip")
+    assert os.path.exists(payload["saved"][0]["path"])
+
+
 def test_save_upload_rejects_exe_and_extensionless(tmp_path):
     from harness.api.files import save_upload
 

@@ -274,6 +274,170 @@ export function mentionTokenForDroppedPath(opts: {
   return formatMentionToken(rel, kind);
 }
 
+type HarnessDropIpc = {
+  pathForFile?: (f: unknown) => string;
+  isDirectory?: (absPath: string) => boolean;
+};
+
+function dropIpc(): HarnessDropIpc | undefined {
+  if (typeof window === "undefined") return undefined;
+  return (window as unknown as { harnessIPC?: HarnessDropIpc }).harnessIPC;
+}
+
+/** True when Electron can stat `osPath` as a directory (outside-workspace ok). */
+export function droppedPathIsDirectory(osPath: string): boolean {
+  const path = normalizeOsPath(osPath);
+  if (!path) return false;
+  const probe = dropIpc()?.isDirectory;
+  if (typeof probe !== "function") return false;
+  try {
+    return !!probe(path);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Same noise dirs `harness/mention_context.py` skips when expanding `@folder:`.
+ * Keep in sync when that set changes.
+ */
+export const DROP_FOLDER_SKIP_DIRS = new Set([
+  ".git",
+  "node_modules",
+  ".venv",
+  ".codegraph",
+  "dist",
+  "build",
+  ".pytest_cache",
+  "__pycache__",
+  ".mypy_cache",
+  ".ruff_cache",
+  ".idea",
+  ".vscode",
+  "venv",
+  ".next",
+  "coverage",
+  ".hermes",
+  "release",
+  "backend-dist",
+]);
+
+/** Aligns with `DEFAULT_FOLDER_ENTRY_CAP` in mention_context. */
+export const DROP_FOLDER_FILE_CAP = 40;
+
+type DirectoryReaderLike = {
+  readEntries: (
+    success: (entries: DirectoryEntryLike[]) => void,
+    error?: (err: unknown) => void,
+  ) => void;
+};
+
+export type DirectoryEntryLike = {
+  isFile: boolean;
+  isDirectory: boolean;
+  name: string;
+  createReader?: () => DirectoryReaderLike;
+  file?: (
+    success: (file: File) => void,
+    error?: (err: unknown) => void,
+  ) => void;
+};
+
+async function readAllDirectoryEntries(
+  reader: DirectoryReaderLike,
+): Promise<DirectoryEntryLike[]> {
+  const all: DirectoryEntryLike[] = [];
+  for (;;) {
+    const batch = await new Promise<DirectoryEntryLike[]>((resolve) => {
+      try {
+        reader.readEntries((entries) => resolve(entries || []), () => resolve([]));
+      } catch {
+        resolve([]);
+      }
+    });
+    if (!batch.length) break;
+    all.push(...batch);
+  }
+  return all;
+}
+
+function fileFromEntry(ent: DirectoryEntryLike): Promise<File | null> {
+  if (typeof ent.file !== "function") return Promise.resolve(null);
+  return new Promise((resolve) => {
+    try {
+      ent.file!((f) => resolve(f), () => resolve(null));
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+/** Walk a dropped directory entry; skip noise dirs; hard-cap file count. */
+export async function collectFilesFromDirectoryEntry(
+  entry: DirectoryEntryLike,
+  opts?: { cap?: number; skipDirs?: ReadonlySet<string> },
+): Promise<{ files: Array<{ file: File; relPath: string }>; truncated: boolean }> {
+  const cap = opts?.cap ?? DROP_FOLDER_FILE_CAP;
+  const skipDirs = opts?.skipDirs ?? DROP_FOLDER_SKIP_DIRS;
+  const files: Array<{ file: File; relPath: string }> = [];
+  let truncated = false;
+
+  const walkDir = async (dir: DirectoryEntryLike, dirRel: string): Promise<void> => {
+    const reader = dir.createReader?.();
+    if (!reader) return;
+    const children = await readAllDirectoryEntries(reader);
+    for (const child of children) {
+      if (files.length >= cap) {
+        truncated = true;
+        return;
+      }
+      const childRel = dirRel ? `${dirRel}/${child.name}` : child.name;
+      if (child.isDirectory) {
+        if (skipDirs.has(child.name)) continue;
+        await walkDir(child, childRel);
+        continue;
+      }
+      if (!child.isFile) continue;
+      const file = await fileFromEntry(child);
+      if (file) files.push({ file, relPath: childRel });
+    }
+  };
+
+  if (entry.isFile) {
+    const file = await fileFromEntry(entry);
+    if (file) files.push({ file, relPath: entry.name });
+    return { files, truncated };
+  }
+  if (entry.isDirectory) {
+    await walkDir(entry, "");
+  }
+  return { files, truncated };
+}
+
+export type DroppedDirectoryPlan =
+  | { kind: "mention"; token: string }
+  | { kind: "open-workspace"; path: string }
+  | { kind: "fail" };
+
+/**
+ * Inside the open repo: @folder mention. Anywhere else with an OS path:
+ * open that folder as the workspace (window-drop / walk-empty fallback).
+ */
+export function droppedDirectoryPlan(opts: {
+  osPath: string;
+  repo: string;
+}): DroppedDirectoryPlan {
+  const token = mentionTokenForDroppedPath({
+    osPath: opts.osPath,
+    repo: opts.repo,
+    isDirectory: true,
+  });
+  if (token) return { kind: "mention", token };
+  const path = normalizeOsPath(opts.osPath);
+  if (path) return { kind: "open-workspace", path };
+  return { kind: "fail" };
+}
+
 /** Prefer the server/upload Error message over a generic flash. */
 export function uploadErrorMessage(err: unknown, fallback: string): string {
   if (err instanceof Error) {

@@ -12,6 +12,11 @@ import Resizer from "./components/Resizer";
 import RegistryWizard from "./components/RegistryWizard";
 import ErrorBoundary from "./components/ErrorBoundary";
 import CommandPalette from "./components/CommandPalette";
+import {
+  droppedPathIsDirectory,
+  resolveDroppedOsPath,
+} from "./components/conversation/composerInput";
+import { openAgentWorkspace } from "./lib/agentLinks";
 
 const LS = {
   left: "pmharness.leftW",
@@ -184,17 +189,28 @@ export default function App() {
   // outside an explicit drop target (the default would replace the whole app
   // with the file). Composer + message drop zones stopPropagation, so they keep
   // working; this is the safety net for drops that miss those targets.
+  // Folders that miss the composer open as the workspace (Hermes-style).
   useEffect(() => {
+    const hasFiles = (e: DragEvent) =>
+      !!(e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files"));
     const prevent = (e: DragEvent) => {
-      if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files")) {
-        e.preventDefault();
+      if (hasFiles(e)) e.preventDefault();
+    };
+    const onDrop = (e: DragEvent) => {
+      prevent(e);
+      const files = Array.from(e.dataTransfer?.files || []);
+      for (const file of files) {
+        const osPath = resolveDroppedOsPath(file as { path?: string });
+        if (osPath && droppedPathIsDirectory(osPath)) {
+          openAgentWorkspace(osPath);
+        }
       }
     };
     window.addEventListener("dragover", prevent);
-    window.addEventListener("drop", prevent);
+    window.addEventListener("drop", onDrop);
     return () => {
       window.removeEventListener("dragover", prevent);
-      window.removeEventListener("drop", prevent);
+      window.removeEventListener("drop", onDrop);
     };
   }, []);
 

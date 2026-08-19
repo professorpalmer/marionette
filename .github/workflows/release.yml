@@ -1,46 +1,46 @@
 name: release
 
-# Build thin Electron shell installers on tag push. The packaged app bootstraps a
-# source checkout on first launch; it does NOT bundle Python or a PyInstaller backend.
+# Thin Electron shell installers. The packaged app bootstraps a source checkout
+# on first launch; it does NOT bundle Python or a PyInstaller backend.
+#
+# Dest->main PRs start installer builds in parallel with tests.yml. A v* tag
+# publishes only after a successful `tests` workflow exists for this git tree
+# (commit or same-tree dest PR). release.yml does not re-run pytest.
 
 on:
+  pull_request:
+    branches: [main]
   push:
     tags:
       - "v*"
   workflow_dispatch:
 
+# Operational pin (installers inherit Puppetmaster from the checkout).
+# Kept here so desktop/CI pin-parity tests stay honest.
+env:
+  PUPPETMASTER_SPEC: puppetmaster-ai==1.22.11
+
 permissions:
   contents: write
+  actions: read
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Hard gate: a tag build must prove the suite green before any installer is
-  # built or uploaded. Releases can never ship from a red tree.
-  test-gate:
+  tests-already-green:
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: true
-      matrix:
-        # Floor (3.9, the requires-python minimum) + the dev interpreter (3.11).
-        python-version: ["3.9", "3.11"]
     steps:
       - uses: actions/checkout@v5
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
-
-      - name: Install (rig + dev extras + Puppetmaster from PyPI)
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]" "puppetmaster-ai==1.22.9"
-
-      - name: Run the offline test suite
-        run: python -m pytest -q -p no:cacheprovider
+      - name: Require a successful tests workflow for this tree
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/ci_release_gate.py require-green
 
   build:
-    needs: test-gate
     strategy:
       fail-fast: false
       matrix:
@@ -55,7 +55,29 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Set up Python (tag adopt)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Reuse same-tree installers from dest PR
+        id: reuse
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if python scripts/ci_release_gate.py adopt-installers \
+               --platform "${{ matrix.platform }}" \
+               --out webapp/release; then
+            echo "adopted=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "adopted=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up Node
+        if: steps.reuse.outputs.adopted != 'true'
         uses: actions/setup-node@v6
         with:
           node-version-file: .nvmrc
@@ -63,15 +85,16 @@ jobs:
           cache-dependency-path: webapp/package-lock.json
 
       - name: Install uv (Unix)
-        if: runner.os != 'Windows'
+        if: steps.reuse.outputs.adopted != 'true' && runner.os != 'Windows'
         run: curl -LsSf https://astral.sh/uv/install.sh | sh
 
       - name: Install uv (Windows)
-        if: runner.os == 'Windows'
+        if: steps.reuse.outputs.adopted != 'true' && runner.os == 'Windows'
         shell: pwsh
         run: irm https://astral.sh/uv/install.ps1 | iex
 
       - name: Build renderer + package Electron shell
+        if: steps.reuse.outputs.adopted != 'true'
         working-directory: webapp
         shell: bash
         env:
@@ -102,7 +125,7 @@ jobs:
           printf '  %s\n' "${feeds[@]}"
 
       # Stage installers as Actions artifacts. Do NOT call the Releases API from
-      # the matrix â€” three parallel softprops uploads race and flake hard when
+      # the matrix -- three parallel softprops uploads race and flake hard when
       # GitHub returns HTML 503/unicorn pages for /releases.
       - name: Stage installer artifacts
         uses: actions/upload-artifact@v4
@@ -119,7 +142,8 @@ jobs:
           retention-days: 7
 
   publish:
-    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [tests-already-green, build]
     runs-on: ubuntu-latest
     steps:
       # Checkout so `gh release create --generate-notes` can read git history.
@@ -142,7 +166,7 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
-          # Keep the finder free of escaped parens â€” Actions wraps this into a
+          # Keep the finder free of escaped parens -- Actions wraps this into a
           # temp .sh and `find \( ... \)` has failed with syntax errors.
           mapfile -t ALL < <(find dist -type f | sort)
           FILTERED=()

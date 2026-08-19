@@ -185,11 +185,16 @@ import {
   detectComposerTrigger,
   filterMentionPaths,
   filterSlashCommands,
+  collectFilesFromDirectoryEntry,
+  DROP_FOLDER_FILE_CAP,
+  droppedDirectoryPlan,
+  droppedPathIsDirectory,
   mentionTokenForDroppedPath,
   normalizeOsPath,
   pathIsInsideRepo,
   resolveDroppedOsPath,
   uploadErrorMessage,
+  type DirectoryEntryLike,
 } from "../components/conversation/composerInput";
 import {
   blankMsgQueueOnSessionSwitch,
@@ -2889,6 +2894,20 @@ describe("composerInput module", () => {
         repo: "/repo",
       }),
     ).toBeNull();
+    expect(
+      droppedDirectoryPlan({ osPath: "/repo/src", repo: "/repo" }),
+    ).toEqual({ kind: "mention", token: "@folder:src" });
+    expect(
+      droppedDirectoryPlan({ osPath: "/Users/me/authority-spoof", repo: "/repo" }),
+    ).toEqual({ kind: "open-workspace", path: "/Users/me/authority-spoof" });
+    expect(droppedDirectoryPlan({ osPath: "", repo: "/repo" })).toEqual({ kind: "fail" });
+    expect(droppedPathIsDirectory("/Users/me/authority-spoof")).toBe(false);
+    const prevDirIpc = (window as any).harnessIPC;
+    (window as any).harnessIPC = { isDirectory: (p: string) => p.endsWith("/authority-spoof") };
+    expect(droppedPathIsDirectory("/Users/me/authority-spoof")).toBe(true);
+    expect(droppedPathIsDirectory("/Users/me/notes.md")).toBe(false);
+    if (prevDirIpc === undefined) delete (window as any).harnessIPC;
+    else (window as any).harnessIPC = prevDirIpc;
     expect(uploadErrorMessage(new Error("Upload failed"), "File upload failed")).toBe(
       "File upload failed",
     );
@@ -2900,6 +2919,89 @@ describe("composerInput module", () => {
     expect(resolveDroppedOsPath({ path: "" })).toBe("/abs/dropped.md");
     if (prevIpc === undefined) delete (window as any).harnessIPC;
     else (window as any).harnessIPC = prevIpc;
+  });
+
+  it("walks dropped directory entries, skips noise dirs, and caps files", async () => {
+    const fileEntry = (name: string): DirectoryEntryLike => ({
+      isFile: true,
+      isDirectory: false,
+      name,
+      file: (ok: (f: File) => void) => ok(new File([name], name)),
+    });
+    let remaining: DirectoryEntryLike[] = [
+      fileEntry("readme.md"),
+      fileEntry("notes.txt"),
+      {
+        isFile: false,
+        isDirectory: true,
+        name: "node_modules",
+        createReader: () => ({
+          readEntries: (ok: (entries: DirectoryEntryLike[]) => void) => ok([fileEntry("secret.js")]),
+        }),
+      },
+      {
+        isFile: false,
+        isDirectory: true,
+        name: "src",
+        createReader: () => {
+          let sent = false;
+          return {
+            readEntries: (ok: (entries: DirectoryEntryLike[]) => void) => {
+              if (sent) {
+                ok([]);
+                return;
+              }
+              sent = true;
+              ok([fileEntry("a.ts"), fileEntry("b.ts")]);
+            },
+          };
+        },
+      },
+    ];
+    const root = {
+      isFile: false,
+      isDirectory: true,
+      name: "authority-spoof",
+      createReader: () => ({
+        readEntries: (ok: (entries: DirectoryEntryLike[]) => void) => {
+          const batch = remaining;
+          remaining = [];
+          ok(batch);
+        },
+      }),
+    };
+    const walked = await collectFilesFromDirectoryEntry(root);
+    expect(walked.files.map((row) => row.relPath).sort()).toEqual([
+      "notes.txt",
+      "readme.md",
+      "src/a.ts",
+      "src/b.ts",
+    ]);
+    expect(walked.truncated).toBe(false);
+
+    const tiny = {
+      isFile: false,
+      isDirectory: true,
+      name: "bundle",
+      createReader: () => {
+        let sent = false;
+        return {
+          readEntries: (ok: (entries: DirectoryEntryLike[]) => void) => {
+            if (sent) {
+              ok([]);
+              return;
+            }
+            sent = true;
+            ok([fileEntry("one.md"), fileEntry("two.md")]);
+          },
+        };
+      },
+    };
+    const limited = await collectFilesFromDirectoryEntry(tiny, { cap: 1 });
+    expect(limited.files).toHaveLength(1);
+    expect(limited.truncated).toBe(true);
+    expect(limited.files[0].relPath).toBe("one.md");
+    expect(DROP_FOLDER_FILE_CAP).toBe(40);
   });
 });
 

@@ -15,4 +15,10 @@ describe("fs-bridge revealInFolder", () => {
     const preload = fs.readFileSync(path.join(__dirname, "preload.cjs"), "utf8");
     assert.match(preload, /revealInFolder:\s*\(absPath\)\s*=>\s*ipcRenderer\.invoke\("fs:revealInFolder"/);
   });
+
+  it("preload exposes harnessIPC.isDirectory for outside-workspace drops", () => {
+    const preload = fs.readFileSync(path.join(__dirname, "preload.cjs"), "utf8");
+    assert.match(preload, /isDirectory:\s*\(absPath\)\s*=>/);
+    assert.match(preload, /statSync\(p\)\.isDirectory\(\)/);
+  });
 });

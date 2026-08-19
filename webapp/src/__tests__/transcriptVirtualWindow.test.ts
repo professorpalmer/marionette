@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  chatColumnMountClass,
+  isChatColumnActive,
   isOccludedScrollParentSize,
   restoreFeedScrollAfterFocus,
   shouldUseVirtualTranscriptWindow,
@@ -58,5 +60,17 @@ describe("transcriptVirtualWindow", () => {
         scrollHeight: 8000,
       }),
     ).toBe(8000);
+  });
+
+  it("keeps the chat column mounted (hidden) when a file tab is active", () => {
+    expect(isChatColumnActive("chat")).toBe(true);
+    expect(isChatColumnActive("src/a.ts")).toBe(false);
+    const chat = chatColumnMountClass("chat");
+    const file = chatColumnMountClass("src/a.ts");
+    expect(chat).toContain("flex-1");
+    expect(chat).not.toContain("invisible");
+    expect(file).toContain("invisible");
+    expect(file).toContain("absolute");
+    expect(file).not.toContain("hidden");
   });
 });
