@@ -122,6 +122,7 @@ def test_release_yml_does_not_rerun_pytest():
     assert "tests-already-green" in text
     assert "needs: [tests-already-green, build]" in text
     assert "puppetmaster-ai==" in text
+    assert "fetch-depth: 0" in text
 
 
 def test_tests_yml_windows_runner_is_swappable():
