@@ -9,8 +9,17 @@ const {
   mergeUpdateAvailability,
   shouldRelaunchAfterSourceUpdate,
   planSeamlessApplyStages,
+  describePackagedUpdateError,
   registerPackagedUpdater,
 } = require("./packaged-updater.cjs");
+
+test("describePackagedUpdateError: ShipIt requirement mismatch names the unsigned zip", () => {
+  const explained = describePackagedUpdateError(
+    "Code signature at URL file:///tmp/Marionette.app/ did not pass validation: code failed to satisfy specified code requirement(s)",
+  );
+  assert.match(explained, /not signed with the same Developer ID/);
+  assert.match(explained, /CSC_FOR_PULL_REQUEST/);
+});
 
 test("compareVersions: basic ordering", () => {
   assert.equal(compareVersions("0.9.161", "0.9.154"), 1);

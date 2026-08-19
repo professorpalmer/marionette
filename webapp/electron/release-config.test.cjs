@@ -16,6 +16,7 @@ test("mac release uses electron-builder notarization exactly once", () => {
     fs.readFileSync(path.join(webappDir, "package.json"), "utf8"),
   );
 
+  assert.match(config, /^\s*forceCodeSigning\s*:\s*true\s*$/m);
   assert.doesNotMatch(config, /^\s*afterSign\s*:/m);
   assert.equal(
     fs.existsSync(path.join(webappDir, "build", "notarize.cjs")),

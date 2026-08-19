@@ -18,6 +18,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional
 
 
 REQUIRED_INSTALLER_NAMES = ("installer-mac", "installer-win", "installer-linux")
+MAC_BUNDLE_IDENTIFIER = "com.marionette.app"
 
 
 def matching_green_run(
@@ -303,6 +304,20 @@ def cmd_adopt_installers(args):
             )
         )
         return 1
+    if platform == "mac":
+        verdict = verify_mac_release_dir(out_dir)
+        if not verdict.get("ok"):
+            for path in moved:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+            sys.stderr.write(
+                "refusing unsigned mac adopt from run {}: {}\n".format(
+                    run_id, verdict.get("error") or "Developer ID check failed"
+                )
+            )
+            return 1
     sys.stdout.write(
         "adopted installer-{} from run {} ({}) for tree {}\n".format(
             platform, run_id, match.get("url") or "", target_tree
@@ -330,6 +345,120 @@ def _flatten_installer_files(src_dir, dest_dir):
     return moved
 
 
+def parse_mac_codesign_dump(text):
+    # type: (str) -> Dict[str, Any]
+    """Parse `codesign -dv --verbose=4` output (fields land on stderr)."""
+    identifier = ""
+    team = ""
+    developer_id = False
+    adhoc = False
+    for raw in str(text or "").splitlines():
+        line = raw.strip()
+        if line.startswith("Identifier="):
+            identifier = line.split("=", 1)[1].strip()
+        elif line.startswith("TeamIdentifier="):
+            team = line.split("=", 1)[1].strip()
+        elif line.startswith("Authority=Developer ID Application"):
+            developer_id = True
+        elif line.startswith("Signature=adhoc") or "adhoc,linker-signed" in line:
+            adhoc = True
+    ok = (
+        identifier == MAC_BUNDLE_IDENTIFIER
+        and developer_id
+        and bool(team)
+        and team != "not set"
+        and not adhoc
+    )
+    return {
+        "ok": ok,
+        "identifier": identifier,
+        "team": team,
+        "developer_id": developer_id,
+        "adhoc": adhoc,
+    }
+
+
+def find_mac_update_zip(directory):
+    # type: (str) -> Optional[str]
+    if not directory or not os.path.isdir(directory):
+        return None
+    names = sorted(os.listdir(directory))
+    for name in names:
+        lower = name.lower()
+        if lower.endswith("-mac.zip") or lower.endswith("universal-mac.zip"):
+            return os.path.join(directory, name)
+    return None
+
+
+def _codesign_dump_for_app(app_path):
+    # type: (str) -> str
+    proc = subprocess.run(
+        ["codesign", "-dv", "--verbose=4", app_path],
+        capture_output=True,
+        text=True,
+    )
+    return (proc.stderr or "") + "\n" + (proc.stdout or "")
+
+
+def inspect_mac_release_zip(zip_path):
+    # type: (str) -> Dict[str, Any]
+    if not zip_path or not os.path.isfile(zip_path):
+        return {"ok": False, "error": "mac update zip not found"}
+    tmp = tempfile.mkdtemp(prefix="marionette-mac-sig-")
+    try:
+        try:
+            subprocess.check_call(["ditto", "-x", "-k", zip_path, tmp])
+        except (OSError, subprocess.CalledProcessError) as exc:
+            return {"ok": False, "error": "failed to extract mac zip: {}".format(exc)}
+        app = os.path.join(tmp, "Marionette.app")
+        if not os.path.isdir(app):
+            for root, _dirs, _files in os.walk(tmp):
+                if os.path.basename(root) == "Marionette.app" and os.path.isdir(root):
+                    app = root
+                    break
+        if not os.path.isdir(app):
+            return {"ok": False, "error": "Marionette.app missing from mac zip"}
+        parsed = parse_mac_codesign_dump(_codesign_dump_for_app(app))
+        if parsed.get("ok"):
+            return parsed
+        parsed["error"] = (
+            "mac zip is not Developer ID signed "
+            "(identifier={identifier} team={team} adhoc={adhoc})".format(
+                identifier=parsed.get("identifier") or "?",
+                team=parsed.get("team") or "?",
+                adhoc=parsed.get("adhoc"),
+            )
+        )
+        return parsed
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def verify_mac_release_dir(directory):
+    # type: (str) -> Dict[str, Any]
+    zip_path = find_mac_update_zip(directory)
+    if zip_path is None:
+        return {"ok": False, "error": "no *-mac.zip in {}".format(directory)}
+    return inspect_mac_release_zip(zip_path)
+
+
+def cmd_require_mac_signature(args):
+    # type: (argparse.Namespace) -> int
+    verdict = verify_mac_release_dir(args.dir)
+    if not verdict.get("ok"):
+        sys.stderr.write(
+            "{}\n".format(verdict.get("error") or "mac zip failed Developer ID check")
+        )
+        return 1
+    sys.stdout.write(
+        "mac zip Developer ID ok identifier={} team={}\n".format(
+            verdict.get("identifier") or "",
+            verdict.get("team") or "",
+        )
+    )
+    return 0
+
+
 def build_parser():
     # type: () -> argparse.ArgumentParser
     parser = argparse.ArgumentParser(description=__doc__)
@@ -354,6 +483,13 @@ def build_parser():
     adopt.add_argument("--repo", default="")
     adopt.add_argument("--limit", type=int, default=20)
     adopt.set_defaults(func=cmd_adopt_installers)
+
+    mac_sig = sub.add_parser(
+        "require-mac-signature",
+        help="fail unless webapp/release contains a Developer ID-signed mac zip",
+    )
+    mac_sig.add_argument("--dir", required=True)
+    mac_sig.set_defaults(func=cmd_require_mac_signature)
     return parser
 
 
