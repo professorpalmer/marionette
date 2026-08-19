@@ -276,7 +276,7 @@ export function mentionTokenForDroppedPath(opts: {
 
 type HarnessDropIpc = {
   pathForFile?: (f: unknown) => string;
-  isDirectory?: (absPath: string) => boolean;
+  isDirectory?: (absPath: string) => Promise<boolean>;
 };
 
 function dropIpc(): HarnessDropIpc | undefined {
@@ -285,13 +285,13 @@ function dropIpc(): HarnessDropIpc | undefined {
 }
 
 /** True when Electron can stat `osPath` as a directory (outside-workspace ok). */
-export function droppedPathIsDirectory(osPath: string): boolean {
+export async function droppedPathIsDirectory(osPath: string): Promise<boolean> {
   const path = normalizeOsPath(osPath);
   if (!path) return false;
   const probe = dropIpc()?.isDirectory;
   if (typeof probe !== "function") return false;
   try {
-    return !!probe(path);
+    return !!(await probe(path));
   } catch {
     return false;
   }
