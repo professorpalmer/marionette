@@ -136,11 +136,14 @@ def _tree_resolver(repo):
         # type: (str) -> Optional[str]
         if sha in cache:
             return cache[sha]
-        tree = None  # type: Optional[str]
-        try:
-            tree = git_tree_sha(sha)
-        except subprocess.CalledProcessError:
-            tree = _commit_tree_via_api(repo, sha)
+        # Prefer the API so a shallow tag checkout (fetch-depth 1) can
+        # still match dest-PR head SHAs that are not local objects.
+        tree = _commit_tree_via_api(repo, sha)
+        if not tree:
+            try:
+                tree = git_tree_sha(sha)
+            except subprocess.CalledProcessError:
+                tree = None
         cache[sha] = tree
         return tree
 

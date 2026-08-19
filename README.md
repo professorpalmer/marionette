@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.11` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.249, deliberately pre-1.0. Rides puppetmaster-ai==1.22.11 (Sonnet 5 curated catalogs, discovery-origin provenance, spawned-worker exemption from the delegate-first gate). Composer accepts outside folder and zip drops. Release tags when dest-PR tests are green for this tree. Compact residual factory default remains catalog; summary and hybrid stay Settings opt-ins.
+> Status: v0.9.250, deliberately pre-1.0. Rides puppetmaster-ai==1.22.11 (Sonnet 5 curated catalogs, discovery-origin provenance, spawned-worker exemption from the delegate-first gate). Composer accepts outside folder and zip drops. Release tags when dest-PR tests are green for this tree. Compact residual factory default remains catalog; summary and hybrid stay Settings opt-ins.
 
 ## Documentation
 
