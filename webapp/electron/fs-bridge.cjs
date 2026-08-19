@@ -25,6 +25,17 @@ function registerFsBridge(ipcMain, opts = {}) {
   const guard = (targetPath) =>
     denyOutsideAllowedRoots(targetPath, getAllowedRoots());
 
+  // A dropped folder may sit outside the current workspace. Return only its
+  // type; all reads remain protected by the workspace-root guard below.
+  ipcMain.handle("fs:isDirectory", async (_event, absPath) => {
+    try {
+      if (typeof absPath !== "string" || !absPath) return false;
+      return (await fs.promises.stat(absPath)).isDirectory();
+    } catch {
+      return false;
+    }
+  });
+
   ipcMain.handle("fs:readDir", (_e, dir) => {
     try {
       const denied = guard(dir);
