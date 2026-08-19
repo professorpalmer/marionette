@@ -251,7 +251,7 @@ export function resolveRepaired(
 
 export function isReadinessDiagnostic(
   diag: OperationalDiagnostic | null | undefined,
-): diag is OperationalDiagnostic {
+): boolean {
   return Boolean(diag && (diag.scope === "desktop_bridge" || diag.scope === "backend"));
 }
 
@@ -269,8 +269,8 @@ export function panelNotice(
   diag: OperationalDiagnostic | null | undefined,
   scope?: DiagnosticScope,
 ): string {
-  if (isReadinessDiagnostic(diag)) return diag.summary;
-  if (scope && diag?.scope === scope) return diag.summary;
+  if (diag && isReadinessDiagnostic(diag)) return diag.summary;
+  if (scope && diag && diag.scope === scope) return diag.summary;
   return fallback;
 }
 
