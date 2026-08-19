@@ -19,6 +19,7 @@ import {
   subscribeWorkspaceMutations,
 } from "../lib/workspaceMutationEvents";
 import { useInFileReview } from "./useInFileReview";
+import { usePanelNotice } from "../lib/useOperationalDiagnostic";
 
 interface FileEditorPaneProps {
   path: string;
@@ -156,6 +157,7 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
   const [originalContent, setOriginalContent] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const notice = usePanelNotice(error);
   const [isDirty, setIsDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
@@ -496,10 +498,10 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
     );
   }
 
-  if (error && kind !== "binary" && kind !== "pdf" && kind !== "image") {
+  if (notice && kind !== "binary" && kind !== "pdf" && kind !== "image") {
     return (
       <div className="flex-1 flex flex-col items-center justify-center bg-bg px-6 text-center">
-        <span className="text-risk font-semibold text-[13px] mb-2">{error}</span>
+        <span className="text-risk font-semibold text-[13px] mb-2">{notice}</span>
         <button
           onClick={onClose}
           className="text-[11px] text-muted hover:text-txt underline transition-colors"

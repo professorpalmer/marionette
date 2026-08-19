@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Brain, Trash2, Plus } from "lucide-react";
 import { api } from "../lib/api";
+import { usePanelNotice } from "../lib/useOperationalDiagnostic";
 
 interface MemoryEntry {
   id: string;
@@ -35,6 +36,7 @@ export default function MemoryPane({ embedded = false }: { embedded?: boolean })
   const [newCategory, setNewCategory] = useState("general");
   const [busy, setBusy] = useState("");
   const [msg, setMsg] = useState("");
+  const msgNotice = usePanelNotice(msg || null);
 
   const refresh = async () => {
     try {
@@ -113,7 +115,7 @@ export default function MemoryPane({ embedded = false }: { embedded?: boolean })
           />
         </div>
 
-        {msg && <div className="text-[10px] text-muted px-1 mb-2">{msg}</div>}
+        {msgNotice && <div className="text-[10px] text-muted px-1 mb-2">{msgNotice}</div>}
 
         <form onSubmit={handleAdd} className="space-y-1.5 mb-3 bg-panel2/20 p-2 rounded border border-edge/30">
           <div className="text-[10px] uppercase tracking-wider text-faint font-semibold">

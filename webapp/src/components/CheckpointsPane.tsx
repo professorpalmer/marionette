@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { History, Play, ShieldAlert, Check, RefreshCw, Eye, EyeOff } from "lucide-react";
 import { api, type Checkpoint, type CheckpointDiff } from "../lib/api";
 import { lastSelectedProjectRoot } from "../lib/panelTransition";
+import { usePanelNotice } from "../lib/useOperationalDiagnostic";
 
 export default function CheckpointsPane() {
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
@@ -10,6 +11,7 @@ export default function CheckpointsPane() {
   const [snapshotLabel, setSnapshotLabel] = useState("");
   const [isCreatingSnapshot, setIsCreatingSnapshot] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const errorNotice = usePanelNotice(error);
   const [success, setSuccess] = useState<{ text: string; undoId?: string } | null>(null);
 
   const [expandedDiffs, setExpandedDiffs] = useState<Record<string, boolean>>({});
@@ -254,10 +256,10 @@ export default function CheckpointsPane() {
       </div>
 
       {/* Status messages */}
-      {error && (
+      {errorNotice && (
         <div className="mx-2 mt-1.5 p-1.5 bg-risk/10 border border-risk/20 text-risk rounded flex items-start gap-1.5 shrink-0 text-[10px]">
           <ShieldAlert size={12} className="shrink-0 mt-0.5" />
-          <span className="leading-snug">{error}</span>
+          <span className="leading-snug">{errorNotice}</span>
         </div>
       )}
       {success && (

@@ -35,6 +35,7 @@ import {
   formatTokenK,
 } from "./contextUsageColors";
 import { showStandaloneEditNoticeDismiss } from "./composerSend";
+import { usePanelNotice } from "../../lib/useOperationalDiagnostic";
 
 export type AttachedImage = { path: string; name: string; previewUrl: string };
 export type MsgQueueItem = { text: string; auto: boolean; plan?: boolean };
@@ -228,6 +229,7 @@ export default function ComposerDock({
   stop: () => void;
   send: (mode?: "interrupt") => void;
 }) {
+  const queueNotice = usePanelNotice(queueLoadError);
   const matchingSlash =
     slashSearch !== null
       ? filterSlashCommands(allSlashCommands, slashSearch)
@@ -468,9 +470,9 @@ export default function ComposerDock({
         {/* Server-side PROMPT QUEUE, stacked ABOVE the composer (Cursor-style)
             so the "runs next" items are always visible right over the input.
             These prompts are drained by the backend one full turn at a time. */}
-        {queueLoadError && (
+        {queueNotice && (
           <div className="mb-2 px-1 text-[10px] text-danger/90">
-            {queueLoadError}
+            {queueNotice}
           </div>
         )}
         {queueItems.length > 0 && (

@@ -249,14 +249,28 @@ export function resolveRepaired(
   return sameRoot(current, repaired) ? null : current;
 }
 
+export function isReadinessDiagnostic(
+  diag: OperationalDiagnostic | null | undefined,
+): diag is OperationalDiagnostic {
+  return Boolean(diag && (diag.scope === "desktop_bridge" || diag.scope === "backend"));
+}
+
 /** Shared readiness surfaces reuse one root summary instead of inventing local causes. */
 export function sharedReadinessNotice(
   fallback: string,
   diag: OperationalDiagnostic | null | undefined,
 ): string {
-  if (diag && (diag.scope === "desktop_bridge" || diag.scope === "backend")) {
-    return diag.summary;
-  }
+  return panelNotice(fallback, diag);
+}
+
+/** Panel operational copy: readiness root wins; matching scope wins; else fallback. */
+export function panelNotice(
+  fallback: string,
+  diag: OperationalDiagnostic | null | undefined,
+  scope?: DiagnosticScope,
+): string {
+  if (isReadinessDiagnostic(diag)) return diag.summary;
+  if (scope && diag?.scope === scope) return diag.summary;
   return fallback;
 }
 

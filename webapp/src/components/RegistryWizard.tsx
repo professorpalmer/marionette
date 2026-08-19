@@ -7,6 +7,7 @@ import {
   onboardingCopy,
   openOnboardingKeyUrl,
 } from "../lib/onboardingProviders";
+import { usePanelNotice } from "../lib/useOperationalDiagnostic";
 
 interface RegistryWizardProps {
   onClose: () => void;
@@ -27,6 +28,7 @@ export default function RegistryWizard({ onClose }: RegistryWizardProps) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const errorNotice = usePanelNotice(error || null);
 
   const tiles = useMemo(() => onboardableProviders(providers), [providers]);
   const copy = onboardingCopy(selected);
@@ -188,9 +190,9 @@ export default function RegistryWizard({ onClose }: RegistryWizardProps) {
                 disabled={saving || !selected}
                 className="w-full bg-bg border border-edge rounded-lg px-3 py-2.5 text-[13px] font-mono text-txt placeholder:text-faint focus:outline-none focus:border-accent disabled:opacity-50"
               />
-              {error ? (
+              {errorNotice ? (
                 <p className="mt-2 text-[12px] text-risk" role="alert">
-                  {error}
+                  {errorNotice}
                 </p>
               ) : null}
               <div className="mt-3 flex justify-end">

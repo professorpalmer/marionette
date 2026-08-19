@@ -18,6 +18,7 @@ import {
   readSettingsSnapshot,
   writeSettingsSnapshot,
 } from "./settingsSnapshot";
+import { usePanelNotice } from "../lib/useOperationalDiagnostic";
 import { SettingsCollapse } from "./SettingsCollapse";
 
 export type SettingsSection = "general" | "safety" | "providers" | "notifications" | "plugins" | "advanced";
@@ -58,6 +59,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
+  const errorNotice = usePanelNotice(error || null);
   const [usage, setUsage] = useState<UsageData | null>(null);
   const [wikiCfg, setWikiCfg] = useState<{ api_base: string; has_token: boolean } | null>(null);
   const [wikiBase, setWikiBase] = useState("");
@@ -917,7 +919,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
   if (!settings && !canRenderWithoutSettings) {
     return (
       <div className="flex flex-col h-full text-[12px] p-4 text-faint">
-        {error ? error : "Loading settings..."}
+        {errorNotice ? errorNotice : "Loading settings..."}
       </div>
     );
   }
@@ -934,7 +936,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                         animate-in fade-in slide-in-from-bottom-2 duration-150
                         border-edge">
           {status && <span className="text-good text-[11px] font-medium">{status}</span>}
-          {error && <span className="text-risk text-[11px] font-medium">{error}</span>}
+          {errorNotice && <span className="text-risk text-[11px] font-medium">{errorNotice}</span>}
         </div>
       )}
 
