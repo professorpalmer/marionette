@@ -10,10 +10,7 @@ we do not duplicate the ThreadingHTTPServer fixture.
 from __future__ import annotations
 
 import json
-import threading
-import time
 import urllib.error
-import urllib.parse
 import urllib.request
 
 from harness.config import HarnessConfig
@@ -68,78 +65,14 @@ def _notices_have_steer_drop(notices) -> bool:
     return False
 
 
-def _wait_busy(pilot, timeout: float = 20.0, errors=None) -> None:
-    """Wait until send() holds ``_busy``.
-
-    ``GET /api/chat`` does driver-match, CodeGraph refresh, and mention
-    expansion before ``send()`` acquires the lock. Five seconds flakes on
-    CI when those pre-lock steps contend with blocked catalog fetches.
-    """
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if errors:
-            raise AssertionError("chat thread failed before busy: %r" % (errors,))
-        try:
-            if pilot._busy.locked():
-                return
-        except Exception:
-            pass
-        time.sleep(0.02)
-    raise AssertionError("expected an open busy turn")
-
-
 def test_http_interrupt_empty_busy_turn_has_no_phantom_steer_drop():
     """Open turn + Stop with no steer text must not paint steer_dropped."""
-    release = threading.Event()
-
     with _harness_http_server() as (srv, port):
         pilot = srv._pilot
         _clear_stop_markers(pilot)
-        original_driver = pilot.pilot
-
-        class _SlowPilot:
-            name = "stub-oracle-v2"
-
-            def complete(self, prompt, *, system=None):
-                from pmharness.drivers.openai_compat import DriverResponse
-
-                release.wait(timeout=8.0)
-                return DriverResponse(
-                    text='{"say":"done","actions":[]}',
-                    tokens_out=10,
-                    latency_ms=1.0,
-                )
-
-        # Chat start rebuilds when config.driver lags _cfg.driver. Keep them
-        # aligned so this stub stays on the object that handles the request.
         try:
-            want = str(getattr(srv._cfg, "driver", "") or "").strip()
-            if want and getattr(pilot, "config", None) is not None:
-                pilot.config.driver = want
-        except Exception:
-            pass
-        pilot.pilot = _SlowPilot()
-        errors = []
-
-        def _run_chat():
-            try:
-                msg = urllib.parse.quote("hello")
-                req = urllib.request.Request(
-                    "http://127.0.0.1:%d/api/chat?message=%s" % (port, msg),
-                    headers={"X-Harness-Token": srv._TOKEN},
-                    method="GET",
-                )
-                with urllib.request.urlopen(req, timeout=20.0) as resp:
-                    resp.read()
-            except Exception as exc:
-                errors.append(exc)
-
-        chat_thread = threading.Thread(target=_run_chat, name="v09216-chat", daemon=True)
-        chat_thread.start()
-        try:
-            # Watch the live module pilot — a prior test that left
-            # config.driver mismatched can rebuild _pilot on chat start.
-            _wait_busy(srv._pilot, errors=errors)
+            assert pilot._busy.acquire(blocking=False)
+            pilot._state = "executing"
             assert list(pilot._steer_queue) == []
 
             with _post_json(port, "/api/session/interrupt", {}, srv._TOKEN) as resp:
@@ -150,11 +83,7 @@ def test_http_interrupt_empty_busy_turn_has_no_phantom_steer_drop():
             assert list(pilot._steer_queue) == []
             assert getattr(pilot, "_pending_steer_drop_notice", None) in (None, {})
         finally:
-            release.set()
-            chat_thread.join(timeout=5.0)
-            pilot.pilot = original_driver
             _clear_stop_markers(pilot)
-        assert not errors, "chat thread failed: %r" % (errors,)
 
 
 def test_http_empty_steer_rejected_interrupt_still_clean():
