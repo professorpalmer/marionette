@@ -237,6 +237,8 @@ def test_api_swarm_live_cli_job_visible_zero_economics(tmp_path, monkeypatch):
     _cli_store, cli_dir, cli_job_id = _seed_cli_store(tmp_path, str(repo))
 
     httpd, port, srv = _api_server(str(harness_dir))
+    saved_driver = srv._cfg.driver
+    saved_repo = srv._cfg.repo
     try:
         monkeypatch.setenv("HARNESS_APP_RUN_ID", "epoch-test")
         monkeypatch.delenv("HARNESS_CLI_COST_MERGE", raising=False)
@@ -295,6 +297,8 @@ def test_api_swarm_live_cli_job_visible_zero_economics(tmp_path, monkeypatch):
         assert data["session"]["tokens_cached"] >= 4_000
         assert data["session"]["tokens_used"] >= 12_000
     finally:
+        srv._cfg.driver = saved_driver
+        srv._cfg.repo = saved_repo
         httpd.shutdown()
 
 

@@ -47,46 +47,11 @@ def _restore_meters(pilot, snap):
         setattr(pilot, attr, val)
 
 
-def _stub_rebuild_constructors(monkeypatch, srv):
-    """Keep meter-carry tests off the live catalog (xdist / keyed-health)."""
-
-    class _FreshPilot:
-        def __init__(self, cfg):
-            self.config = cfg
-            self.state_dir = getattr(srv._pilot, "state_dir", "")
-            self._history = []
-            self._auto_distill = False
-            self._busy = None
-            for attr in _METER_ATTRS:
-                setattr(self, attr, 0.0 if "usd" in attr or "cost" in attr else 0)
-
-    class _FreshSession:
-        def __init__(self, cfg):
-            self.state_dir = getattr(srv._pilot, "state_dir", "")
-
-    monkeypatch.setattr("harness.api.attach.ConversationalSession", _FreshPilot)
-    monkeypatch.setattr("harness.api.attach.Session", _FreshSession)
-    monkeypatch.setattr("harness.server.ConversationalSession", _FreshPilot)
-    monkeypatch.setattr(srv, "_apply_model_context_window", lambda: None)
-
-
-def _restore_boot_singletons(srv, saved_pilot, saved_session):
-    srv._pilot = saved_pilot
-    srv._session = saved_session
-    active_id = getattr(srv._sessions, "active", None) or getattr(
-        srv._runners, "active_view_id", None
-    )
-    if not active_id:
-        return
-    try:
-        srv._runners.drop(active_id, notify=False)
-    except Exception:
-        pass
-    try:
-        srv._runners.get_or_create(active_id, lambda: saved_pilot)
-        srv._runners.set_active_view(active_id)
-    except Exception:
-        pass
+def _pin_offline_driver(srv):
+    """Rebuild/attach must not inherit a leaked catalog-unknown driver."""
+    previous = srv._cfg.driver
+    srv._cfg.driver = "stub-oracle-v2"
+    return previous
 
 
 def _zero_boot_carry(srv):
@@ -99,13 +64,12 @@ def _zero_boot_carry(srv):
         pass
 
 
-def test_rebuild_pilot_preserves_usage_meters(monkeypatch):
+def test_rebuild_pilot_preserves_usage_meters():
     srv, httpd, port = _spin_server()
-    saved_pilot = srv._pilot
-    saved_session = srv._session
-    saved = _snapshot_meters(saved_pilot)
+    saved = _snapshot_meters(srv._pilot)
     saved_carry = dict(srv._BOOT_METER_CARRY)
     saved_cost = float(getattr(srv, "_BOOT_CARRY_COST_USD", 0.0) or 0.0)
+    saved_driver = _pin_offline_driver(srv)
     try:
         _zero_boot_carry(srv)
         srv._pilot._tokens_used = 12_000
@@ -124,7 +88,6 @@ def test_rebuild_pilot_preserves_usage_meters(monkeypatch):
         assert before["session"]["est_cost_usd"] > 0
         before_cost = before["session"]["est_cost_usd"]
 
-        _stub_rebuild_constructors(monkeypatch, srv)
         srv._rebuild_pilot_and_session()
 
         after = _get_usage(port, srv._TOKEN)
@@ -148,9 +111,9 @@ def test_rebuild_pilot_preserves_usage_meters(monkeypatch):
         assert after["session"]["est_cost_usd"] > 0
         assert abs(after["session"]["est_cost_usd"] - before_cost) < 1e-9
     finally:
-        # Global singleton -- restore the real boot pilot, not the stub.
-        _restore_boot_singletons(srv, saved_pilot, saved_session)
+        # Global singleton -- restore so later /api/usage tests see a clean pilot.
         _restore_meters(srv._pilot, saved)
+        srv._cfg.driver = saved_driver
         srv._BOOT_METER_CARRY.clear()
         srv._BOOT_METER_CARRY.update(saved_carry)
         srv._BOOT_CARRY_COST_USD = saved_cost
@@ -166,6 +129,7 @@ def test_usage_sums_across_sessions_and_survives_reattach(tmp_path):
     saved_carry = dict(srv._BOOT_METER_CARRY)
     saved_cost = float(getattr(srv, "_BOOT_CARRY_COST_USD", 0.0) or 0.0)
     saved_repos = set(srv._BOOT_REPOS)
+    saved_driver = _pin_offline_driver(srv)
     try:
         _zero_boot_carry(srv)
         srv._BOOT_REPOS.clear()
@@ -238,6 +202,7 @@ def test_usage_sums_across_sessions_and_survives_reattach(tmp_path):
     finally:
         srv._runners = old_runners
         srv._pilot = old_pilot
+        srv._cfg.driver = saved_driver
         srv._cfg.repo = old_repo
         if old_env is None:
             os.environ.pop("HARNESS_REPO", None)
@@ -263,6 +228,7 @@ def test_tool_output_savings_survive_attach_to_other_session(tmp_path):
     saved_carry = dict(srv._BOOT_METER_CARRY)
     saved_cost = float(getattr(srv, "_BOOT_CARRY_COST_USD", 0.0) or 0.0)
     saved_repos = set(srv._BOOT_REPOS)
+    saved_driver = _pin_offline_driver(srv)
     try:
         _zero_boot_carry(srv)
         srv._BOOT_REPOS.clear()
@@ -336,6 +302,7 @@ def test_tool_output_savings_survive_attach_to_other_session(tmp_path):
             srv._pilot.harness_session_id = old_sid
         except Exception:
             pass
+        srv._cfg.driver = saved_driver
         srv._cfg.repo = old_repo
         if old_env is None:
             os.environ.pop("HARNESS_REPO", None)
@@ -356,6 +323,7 @@ def test_drop_folds_meters_into_boot_carry():
     old_pilot = srv._pilot
     saved_carry = dict(srv._BOOT_METER_CARRY)
     saved_cost = float(getattr(srv, "_BOOT_CARRY_COST_USD", 0.0) or 0.0)
+    saved_driver = _pin_offline_driver(srv)
     try:
         _zero_boot_carry(srv)
         reg = SessionRunnerRegistry(
@@ -385,6 +353,7 @@ def test_drop_folds_meters_into_boot_carry():
     finally:
         srv._runners = old_runners
         srv._pilot = old_pilot
+        srv._cfg.driver = saved_driver
         srv._BOOT_METER_CARRY.clear()
         srv._BOOT_METER_CARRY.update(saved_carry)
         srv._BOOT_CARRY_COST_USD = saved_cost
@@ -452,16 +421,15 @@ def test_fold_snapshots_cost_survives_model_reprice():
         httpd.shutdown()
 
 
-def test_idle_swap_snapshots_cost_survives_model_reprice(monkeypatch):
+def test_idle_swap_snapshots_cost_survives_model_reprice():
     """Idle pilot rebuild must freeze USD at old rates (not reprice live meters)."""
     srv, httpd, port = _spin_server()
-    saved_pilot = srv._pilot
-    saved_session = srv._session
-    saved = _snapshot_meters(saved_pilot)
+    saved = _snapshot_meters(srv._pilot)
     saved_carry = dict(srv._BOOT_METER_CARRY)
     saved_cost = float(getattr(srv, "_BOOT_CARRY_COST_USD", 0.0) or 0.0)
-    saved_history = getattr(saved_pilot, "_history", None)
-    saved_auto = getattr(saved_pilot, "_auto_distill", False)
+    saved_history = getattr(srv._pilot, "_history", None)
+    saved_auto = getattr(srv._pilot, "_auto_distill", False)
+    saved_driver = _pin_offline_driver(srv)
     try:
         _zero_boot_carry(srv)
         expensive_in, expensive_out = 5.0, 25.0
@@ -487,7 +455,6 @@ def test_idle_swap_snapshots_cost_survives_model_reprice(monkeypatch):
         orig_runner_prices = srv._resolve_prices_for_runner
         srv._resolve_prices_for_runner = _expensive_for_runner
         try:
-            _stub_rebuild_constructors(monkeypatch, srv)
             srv._rebuild_pilot_and_session()
         finally:
             srv._resolve_prices_for_runner = orig_runner_prices
@@ -505,28 +472,26 @@ def test_idle_swap_snapshots_cost_survives_model_reprice(monkeypatch):
         assert abs(legacy - 0.1) < 1e-12
         assert abs(cost_after_swap - legacy) > 1.0
     finally:
-        _restore_boot_singletons(srv, saved_pilot, saved_session)
         _restore_meters(srv._pilot, saved)
         try:
             srv._pilot._history = saved_history
             srv._pilot._auto_distill = saved_auto
         except Exception:
             pass
+        srv._cfg.driver = saved_driver
         srv._BOOT_METER_CARRY.clear()
         srv._BOOT_METER_CARRY.update(saved_carry)
         srv._BOOT_CARRY_COST_USD = saved_cost
         httpd.shutdown()
 
 
-def test_idle_perform_pilot_swap_freezes_meters(monkeypatch):
+def test_idle_perform_pilot_swap_freezes_meters():
     """``_perform_pilot_swap`` freezes meters into carry (idle path, not deferred)."""
     srv, httpd, port = _spin_server()
-    saved_pilot = srv._pilot
-    saved_session = srv._session
-    saved = _snapshot_meters(saved_pilot)
+    saved = _snapshot_meters(srv._pilot)
     saved_carry = dict(srv._BOOT_METER_CARRY)
     saved_cost = float(getattr(srv, "_BOOT_CARRY_COST_USD", 0.0) or 0.0)
-    saved_driver = srv._cfg.driver
+    saved_driver = _pin_offline_driver(srv)
     try:
         _zero_boot_carry(srv)
         expensive_in, expensive_out = 5.0, 25.0
@@ -550,7 +515,6 @@ def test_idle_perform_pilot_swap_freezes_meters(monkeypatch):
         try:
             # Same driver rebuild exercises the freeze path without needing a
             # second catalog model; mirrors idle swap when the pilot is not busy.
-            _stub_rebuild_constructors(monkeypatch, srv)
             srv._perform_pilot_swap(srv._cfg.driver)
         finally:
             srv._resolve_prices_for_runner = orig_runner_prices
@@ -559,7 +523,6 @@ def test_idle_perform_pilot_swap_freezes_meters(monkeypatch):
         assert getattr(srv._pilot, "_tokens_in") == 0
         assert abs(srv._boot_session_cost(cheap_in, cheap_out) - expected) < 1e-12
     finally:
-        _restore_boot_singletons(srv, saved_pilot, saved_session)
         _restore_meters(srv._pilot, saved)
         srv._cfg.driver = saved_driver
         srv._BOOT_METER_CARRY.clear()
