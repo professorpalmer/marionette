@@ -3,6 +3,7 @@ import {
   DEFAULT_RIGHT_PANE_TAB_VISIBILITY,
   loadRightPaneTabVisibility,
   normalizeRightPaneTabVisibility,
+  RIGHT_PANE_OPTIONAL_TAB_IDS,
   RIGHT_PANE_TAB_VISIBILITY_KEY,
   saveRightPaneTabVisibility,
   toggleRightPaneTabVisibility,
@@ -15,6 +16,7 @@ describe("rightPaneTabVisibility", () => {
     expect(DEFAULT_RIGHT_PANE_TAB_VISIBILITY).toMatchObject({
       state: true,
       swarm: true,
+      economics: true,
       files: true,
       git: true,
       terminal: true,
@@ -25,6 +27,7 @@ describe("rightPaneTabVisibility", () => {
       checkpoints: false,
     });
     expect(loadRightPaneTabVisibility()).toEqual(DEFAULT_RIGHT_PANE_TAB_VISIBILITY);
+    expect(RIGHT_PANE_OPTIONAL_TAB_IDS).not.toContain("economics");
   });
 
   it("persists optional tab choices under the versioned key", () => {

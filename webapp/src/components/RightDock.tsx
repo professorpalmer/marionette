@@ -7,6 +7,7 @@ import {
   GitPullRequest,
   Globe,
   History,
+  Coins,
   Network,
   PanelRight,
   PanelRightClose,
@@ -56,6 +57,7 @@ const DOCK_LINKS: { id: string; tab: string; icon: ReactNode; title: string }[] 
 const PANEL_OPTIONS = [
   { tab: "state", label: "State", icon: <Database size={12} /> },
   { tab: "swarm", label: "Swarm", icon: <Network size={12} /> },
+  { tab: "economics", label: "Economics", icon: <Coins size={12} /> },
   { tab: "files", label: "Files", icon: <FolderTree size={12} /> },
   { tab: "git", label: "Git", icon: <GitBranch size={12} /> },
   { tab: "worktrees", label: "Worktrees", icon: <GitFork size={12} /> },
@@ -194,10 +196,13 @@ export default function RightDock({
           {addMenuOpen && (
             <div key={menuVersion} role="menu" aria-label="Add panel" className="right-pane-add-menu right-[calc(100%+8px)] left-auto top-0">
               <div className="px-2 py-1 text-[9px] uppercase tracking-wider text-faint">Add panel</div>
-              {(readStoredList("pmharness.tabOrder").length > 0
-                ? readStoredList("pmharness.tabOrder")
-                : PANEL_OPTIONS.map(option => option.tab)
-              ).filter(tab => tab !== "settings").map(tab => {
+              {(() => {
+                const stored = readStoredList("pmharness.tabOrder");
+                const fallback = PANEL_OPTIONS.map(option => option.tab);
+                return stored.length > 0
+                  ? [...stored, ...fallback.filter(tab => !stored.includes(tab))]
+                  : fallback;
+              })().filter(tab => tab !== "settings").map(tab => {
                 const option = PANEL_OPTIONS.find(item => item.tab === tab);
                 if (!option || readStoredList("pmharness.board.openCards").includes(tab)) return null;
                 return (

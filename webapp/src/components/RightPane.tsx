@@ -10,6 +10,7 @@ import TerminalPane from "./TerminalPane";
 import CheckpointsPane from "./CheckpointsPane";
 import DiffReviewPane from "./DiffReviewPane";
 import SwarmPane from "./SwarmPane";
+import EconomicsPane from "./EconomicsPane";
 import ErrorBoundary from "./ErrorBoundary";
 import { api, type PendingReview } from "../lib/api";
 import { lastSelectedProjectRoot } from "../lib/panelTransition";
@@ -59,7 +60,7 @@ import {
   stackRowTemplateN,
 } from "../lib/stackSplit";
 
-type Tab = "state" | "files" | "git" | "worktrees" | "terminal" | "browser" | "settings" | "checkpoints" | "review" | "swarm";
+type Tab = "state" | "files" | "git" | "worktrees" | "terminal" | "browser" | "settings" | "checkpoints" | "review" | "swarm" | "economics";
 
 const TAB_CONFIG: Record<Tab, { label: string }> = {
   state: { label: "State" },
@@ -72,10 +73,11 @@ const TAB_CONFIG: Record<Tab, { label: string }> = {
   checkpoints: { label: "History" },
   review: { label: "Review" },
   swarm: { label: "Swarm" },
+  economics: { label: "Economics" },
 };
 
 const TAB_GROUPS: { group: string; tabs: Tab[] }[] = [
-  { group: "workspace", tabs: ["state", "swarm", "files", "git", "worktrees", "terminal"] },
+  { group: "workspace", tabs: ["state", "swarm", "economics", "files", "git", "worktrees", "terminal"] },
   { group: "changes", tabs: ["review", "checkpoints"] },
   { group: "tools", tabs: ["browser"] },
 ];
@@ -570,7 +572,7 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
           return;
         }
         const targetTab = e.detail as Tab;
-        const validTabs: Tab[] = ["state", "files", "git", "worktrees", "terminal", "browser", "settings", "swarm", "checkpoints", "review"];
+        const validTabs: Tab[] = ["state", "files", "git", "worktrees", "terminal", "browser", "settings", "swarm", "economics", "checkpoints", "review"];
         if (validTabs.includes(targetTab)) {
           if (targetTab === "settings") {
             openSettings();
@@ -608,6 +610,8 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
         return <CheckpointsPane />;
       case "swarm":
         return <SwarmPane />;
+      case "economics":
+        return <EconomicsPane />;
       case "review":
         return (
           <DiffReviewPane

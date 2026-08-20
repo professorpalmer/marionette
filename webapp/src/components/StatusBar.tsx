@@ -23,7 +23,7 @@ import {
 } from "../lib/taskProfileChrome";
 import { isDesktop } from "../lib/transport";
 import { usePolling } from "../lib/usePolling";
-import CostBreakdown, {
+import {
   cacheHitDisplay,
   delegationSavingsCredited,
   listPriceValueTotal,
@@ -79,16 +79,15 @@ function truncateGoalText(text: string, max = 36): string {
 // in LeftRail SESSION JOBS -- a footer total was stale across dir swaps and
 // disagreed with the scoped list, so it was removed. Narrow widths hide
 // secondary labels via container queries instead of overlapping the clusters.
-export default function StatusBar({ config, update, leftOpen, rightOpen, onToggleLeft, onToggleRight }: {
+export default function StatusBar({ config, update, leftOpen, rightOpen, onToggleLeft, onToggleRight, onOpenEconomics }: {
   config: Config | null;
   update: UpdateAvailability | null;
   leftOpen: boolean; rightOpen: boolean;
   onToggleLeft: () => void; onToggleRight: () => void;
+  onOpenEconomics: () => void;
 }) {
   const [branch, setBranch] = useState("");
   const [usage, setUsage] = useState<UsageData["session"] | null>(null);
-  const [costOpen, setCostOpen] = useState(false);
-  const costRef = useRef<HTMLDivElement | null>(null);
   const [apply, setApply] = useState<{ stage: string; message: string; percent: number | null } | null>(null);
   const [toast, setToast] = useState<{
     message: string;
@@ -278,22 +277,6 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
     };
   }, [usageBusy]);
 
-  // Dismiss the cost breakdown popover on outside click or Escape, matching the
-  // PilotPicker dropdown behavior so the status bar has one consistent pattern.
-  useEffect(() => {
-    if (!costOpen) return;
-    const onDown = (e: MouseEvent) => {
-      if (costRef.current && !costRef.current.contains(e.target as Node)) setCostOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setCostOpen(false); };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [costOpen]);
-
   const formatTokens = (num: number) => {
     if (num >= 1000000) {
       return (num / 1000000).toFixed(1).replace(/\.0$/, "") + "M";
@@ -482,7 +465,9 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
                   : "",
               ].filter(Boolean).join("  ·  ");
               return (
-                <span
+                <button
+                  type="button"
+                  onClick={onOpenEconomics}
                   className="status-bar-optional-sm inline-flex items-center gap-1 px-1.5 py-px rounded-full bg-good/10 border border-good/20 text-good/90"
                   title={`${hit.title} List-price value from model selection, prompt-cache, and compaction (additive, not overlapping cash refunds): ${detail}`}
                 >
@@ -498,95 +483,30 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
                     : (cached > 0 || compacted > 0)
                       ? `${formatTokens(cached + compacted)} saved`
                       : null}
-                </span>
+                </button>
               );
             })()}
-            {/* The estimated cost is now a click/hover trigger for a compact
-                routing-value breakdown (why this model / what it saved). It
-                stays a plain figure when there is nothing meaningful to expand. */}
-            <span className="relative inline-flex items-center gap-1 shrink-0" ref={costRef}>
+            <span className="relative inline-flex items-center gap-1 shrink-0">
               <button
                 type="button"
-                onClick={() => setCostOpen((v) => !v)}
+                onClick={onOpenEconomics}
                 title={
                   !spendIsEstimated(usage)
-                    ? "Process-wide billed spend since app launch (provider usage.cost) -- click for the full cost breakdown"
+                    ? "Process-wide billed spend since app launch (provider usage.cost) -- click to open Economics"
                     : usage.cost_source === "plan_estimated"
-                      ? "Process-wide plan-credit estimate since app launch (subscription pilots; not an API receipt) -- click for the full cost breakdown"
+                      ? "Process-wide plan-credit estimate since app launch (subscription pilots; not an API receipt) -- click to open Economics"
                       : usage.price_source === "default"
-                        ? "Process-wide estimated spend using default rates (live/catalog pricing unavailable) -- click for the full cost breakdown"
+                        ? "Process-wide estimated spend using default rates (live/catalog pricing unavailable) -- click to open Economics"
                         : usage.price_source === "unknown"
-                          ? "Process-wide spend with unavailable model rates (no fabricated dollars) -- click for the full cost breakdown"
-                          : "Process-wide estimated spend since app launch -- click for the full cost breakdown (Swarm pane shows per-repo session spend)"
+                          ? "Process-wide spend with unavailable model rates (no fabricated dollars) -- click to open Economics"
+                          : "Process-wide estimated spend since app launch -- click to open Economics (Swarm pane shows per-repo session spend)"
                 }
-                className="inline-flex items-center gap-1 px-1.5 py-px rounded-full bg-panel2 border border-edge text-txt/90 font-medium hover:border-good/40 hover:text-good transition cursor-pointer"
+                className="inline-flex items-center gap-1 px-1.5 py-px rounded-full bg-panel2 border border-edge text-txt/90 font-medium hover:border-edge hover:text-txt transition cursor-pointer"
               >
                 {spendIsEstimated(usage) ? "~" : ""}
                 {formatCost(usage.est_cost_usd)}
               </button>
               <span className="text-faint/70 normal-case font-sans tracking-normal status-bar-optional-lg">process</span>
-              {costOpen && (
-                <div className="absolute bottom-full right-0 mb-1.5 z-50">
-                  <CostBreakdown
-                    data={{
-                      tokens_used: usage.tokens_used,
-                      est_cost_usd: usage.est_cost_usd,
-                      cost_source: usage.cost_source,
-                      price_source: usage.price_source,
-                      estimated: usage.estimated,
-                      tokens_cached: usage.tokens_cached,
-                      pilot_input_tokens: usage.pilot_input_tokens,
-                      pilot_cache_read_tokens: usage.pilot_cache_read_tokens,
-                      pilot_cache_hit_ratio: usage.pilot_cache_hit_ratio,
-                      swarm_input_tokens: usage.swarm_input_tokens,
-                      swarm_cache_read_tokens: usage.swarm_cache_read_tokens,
-                      swarm_cache_hit_ratio: usage.swarm_cache_hit_ratio,
-                      prompt_input_tokens: usage.prompt_input_tokens,
-                      prompt_cache_read_tokens: usage.prompt_cache_read_tokens,
-                      prompt_cache_hit_ratio: usage.prompt_cache_hit_ratio,
-                      cache_savings_usd: usage.cache_savings_usd,
-                      cache_savings_gross_usd: usage.cache_savings_gross_usd,
-                      cache_savings_basis: usage.cache_savings_basis,
-                      routing_saved_usd: usage.routing_saved_usd,
-                      routing_savings_basis: usage.routing_savings_basis,
-                      routing_tokens_compared: usage.routing_tokens_compared,
-                      delegation_saved_usd: usage.delegation_saved_usd,
-                      delegation_savings_basis: usage.delegation_savings_basis,
-                      delegation_tokens_compared: usage.delegation_tokens_compared,
-                      cache_saved_usd_swarm: usage.cache_saved_usd_swarm,
-                      swarm_cache_savings_basis: usage.swarm_cache_savings_basis,
-                      swarm_cache_unpriced_tokens: usage.swarm_cache_unpriced_tokens,
-                      tool_output_tokens_saved: usage.tool_output_tokens_saved,
-                      tool_output_savings_usd: usage.tool_output_savings_usd,
-                      history_compactions: usage.history_compactions,
-                      history_tokens_saved: usage.history_tokens_saved,
-                      history_cache_bust_tokens: usage.history_cache_bust_tokens,
-                      history_thrash_events: usage.history_thrash_events,
-                      history_compaction_cost_usd: usage.history_compaction_cost_usd,
-                      spill_count: usage.spill_count,
-                      spill_chars: usage.spill_chars,
-                      evals_recorded: usage.evals_recorded,
-                      evals_failed: usage.evals_failed,
-                      memory_layers: usage.memory_layers,
-                      compaction_advice: usage.compaction_advice,
-                      history_compaction_ran: usage.history_compaction_ran,
-                      standing_economics_basis: usage.standing_economics_basis,
-                      standing_system_tokens: usage.standing_system_tokens,
-                      standing_tool_tokens: usage.standing_tool_tokens,
-                      standing_floor_tokens: usage.standing_floor_tokens,
-                      standing_floor_cost_usd: usage.standing_floor_cost_usd,
-                      standing_floor_cost_cached_usd: usage.standing_floor_cost_cached_usd,
-                      prompt_cache_ttl_ms: usage.prompt_cache_ttl_ms,
-                      prompt_cache_age_ms: usage.prompt_cache_age_ms,
-                      prompt_cache_expires_in_ms: usage.prompt_cache_expires_in_ms,
-                      prompt_cache_state: usage.prompt_cache_state,
-                      price_in: usage.price_in,
-                      price_out: usage.price_out,
-                      pilot_by_model: usage.pilot_by_model,
-                    }}
-                  />
-                </div>
-              )}
             </span>
           </span>
         </>

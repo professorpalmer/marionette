@@ -44,6 +44,7 @@ const statusBarProps = {
   rightOpen: false,
   onToggleLeft: vi.fn(),
   onToggleRight: vi.fn(),
+  onOpenEconomics: vi.fn(),
 };
 
 function AppUpdateChromeHarness() {
@@ -196,8 +197,8 @@ describe("StatusBar usage pills", () => {
 
     render(<StatusBar {...statusBarProps} />);
 
-    const saved = await screen.findByText("~$0.05 saved");
-    expect(saved.closest("span")).toHaveAttribute(
+    const saved = await screen.findByRole("button", { name: /~\$0\.05 saved/ });
+    expect(saved).toHaveAttribute(
       "title",
       expect.stringMatching(/8k tokens unpriced/i),
     );
@@ -240,6 +241,32 @@ describe("StatusBar usage pills", () => {
     await waitFor(() => {
       expect(screen.getByText("~$0.05")).toBeInTheDocument();
     });
+  });
+
+  it("opens Economics from both the spend and savings pills", async () => {
+    const onOpenEconomics = vi.fn();
+    mockGetUsage.mockResolvedValue({
+      session: {
+        tokens_used: 8000,
+        est_cost_usd: 0.12,
+        driver: "anthropic:claude-sonnet",
+        price_in: 3,
+        price_out: 15,
+        tokens_cached: 2000,
+        cache_savings_usd: 0.04,
+        tool_output_savings_usd: 0.02,
+      },
+      jobs: [],
+    });
+
+    render(<StatusBar {...statusBarProps} onOpenEconomics={onOpenEconomics} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "~$0.12" }));
+    expect(onOpenEconomics).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "$0.06 saved" }));
+    expect(onOpenEconomics).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText("Session cost")).not.toBeInTheDocument();
+    expect(screen.queryByText(/click for the full cost breakdown/i)).not.toBeInTheDocument();
   });
 
   it("labels process-wide spend to distinguish from Swarm pane session spend", async () => {

@@ -3,6 +3,7 @@
 export type RightPaneTabId =
   | "state"
   | "swarm"
+  | "economics"
   | "files"
   | "git"
   | "worktrees"
@@ -26,6 +27,7 @@ export type RightPaneTabVisibility = Record<RightPaneTabId, boolean>;
 export const DEFAULT_RIGHT_PANE_TAB_VISIBILITY: RightPaneTabVisibility = {
   state: true,
   swarm: true,
+  economics: true,
   files: true,
   git: true,
   worktrees: false,
