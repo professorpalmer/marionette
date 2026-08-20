@@ -4,8 +4,8 @@ from __future__ import annotations
 
 Spawns the local Cursor Agent CLI (`agent` / `cursor-agent`) in non-interactive
 `--print` mode and parses NDJSON `stream-json` events into DriverResponse +
-streaming callbacks. Auth is the CLI session store — NOT CURSOR_API_KEY and
-NOT CredentialPool bearer rotate (unlike CodexResponsesDriver).
+streaming callbacks. Auth is the CLI session store and/or ``CURSOR_API_KEY``
+(the Agent CLI reads that env itself). Not CredentialPool bearer rotate.
 """
 
 import json
@@ -147,6 +147,12 @@ def _agent_child_env() -> dict:
     # (prompt-only bans are not enough — Agent calls MCP directly). Shell swarm
     # + cli_job_merge remain the trackable path. Puppetmaster reads this flag.
     env["MARIONETTE_TRACKABLE_SWARMS"] = "1"
+    # Settings may store a pasted Cursor key on CURSOR_CLI_LOGIN (dummy name).
+    # The Agent CLI only reads CURSOR_API_KEY / `agent login` — forward it.
+    if not (env.get("CURSOR_API_KEY") or "").strip():
+        extra = (env.get("CURSOR_CLI_LOGIN") or "").strip()
+        if extra and not _cursor_cli_login_is_sentinel(extra):
+            env["CURSOR_API_KEY"] = extra
     return env
 
 
@@ -157,6 +163,10 @@ def resolve_cursor_execution_mode(*, plan: bool = False, explicit: str | None = 
     1. ``HARNESS_CURSOR_CLI_MODE`` env override
     2. Constructor ``explicit`` mode (sticky raw override)
     3. Per-turn Marionette mapping — Plan → ``ask``, Autopilot → ``agent``
+
+    ``agent`` is Marionette's Autopilot name. Current Agent CLI (2026.08+)
+    only accepts ``--mode plan|ask``; Autopilot is the default when the flag
+    is omitted. Use :func:`cursor_cli_mode_flags` for print-CLI argv.
     """
     env = (os.environ.get("HARNESS_CURSOR_CLI_MODE") or "").strip()
     if env:
@@ -166,6 +176,22 @@ def resolve_cursor_execution_mode(*, plan: bool = False, explicit: str | None = 
         if override:
             return override
     return "ask" if plan else "agent"
+
+
+def cursor_cli_mode_flags(mode: str | None) -> list[str]:
+    """``--mode`` argv for the print CLI. Omit Autopilot/agent (the default).
+
+    Passing ``--mode agent`` exits immediately:
+    ``argument 'agent' is invalid. Allowed choices are plan, ask.``
+    """
+    raw = (mode or "").strip().lower()
+    if not raw or raw in ("agent", "default"):
+        return []
+    return ["--mode", raw]
+
+
+def _cursor_cli_login_is_sentinel(value: str) -> bool:
+    return (value or "").strip().lower() in ("1", "true", "yes")
 
 
 def resolve_agent_binary() -> Optional[str]:
@@ -980,8 +1006,7 @@ class CursorCliDriver:
         workspace = self._workspace()
         if workspace:
             cmd.extend(["--workspace", workspace])
-        if self.mode:
-            cmd.extend(["--mode", self.mode])
+        cmd.extend(cursor_cli_mode_flags(self.mode))
         # Only the Cursor-native chat id — never Marionette harness session_id.
         # Do not use --continue (speculative / wrong chat).
         if resume_chat_id:

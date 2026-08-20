@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 from pmharness.drivers.cursor_cli import (
     DEFAULT_CURSOR_CLI_MODELS,
     INSTALL_HINT,
+    _cursor_cli_login_is_sentinel,
     resolve_agent_binary,
     resolve_agent_exec,
 )
@@ -183,6 +184,13 @@ def _get_status_uncached() -> Dict[str, Any]:
         }
 
     authed, label = _authenticated_from_status(data, stdout)
+    auth_kind = "cursor_account"
+    if not authed and _cursor_cli_api_key():
+        # Agent CLI also accepts CURSOR_API_KEY (and a pasted Settings key
+        # stored on CURSOR_CLI_LOGIN). `agent status` only reports login.
+        authed = True
+        label = "API key"
+        auth_kind = "cursor_api_key"
     return {
         "ok": True,
         "installed": True,
@@ -190,7 +198,7 @@ def _get_status_uncached() -> Dict[str, Any]:
         "binary": binary,
         "label": label if authed else "",
         "error": None if authed else "Not signed in. Click Sign in to run `agent login`.",
-        "auth_kind": "cursor_account",
+        "auth_kind": auth_kind,
         "raw": data or None,
     }
 
@@ -219,10 +227,24 @@ def is_authenticated() -> bool:
         return False
 
 
+def _cursor_cli_api_key() -> str:
+    """Key the Agent CLI will actually honor (CURSOR_API_KEY, or a pasted one)."""
+    key = (os.environ.get("CURSOR_API_KEY") or "").strip()
+    if key:
+        return key
+    extra = (os.environ.get("CURSOR_CLI_LOGIN") or "").strip()
+    if extra and not _cursor_cli_login_is_sentinel(extra):
+        return extra
+    return ""
+
+
 def login_token_if_ready() -> Optional[str]:
     """Sentinel for Provider.key() — never a real secret; presence means ready."""
     # Env override first — avoids spawning agent for tests / power users.
-    if (os.environ.get("CURSOR_CLI_LOGIN") or "").strip() in ("1", "true", "yes"):
+    if _cursor_cli_login_is_sentinel(os.environ.get("CURSOR_CLI_LOGIN") or ""):
+        return "1"
+    # Current Agent CLI authenticates with CURSOR_API_KEY without `agent login`.
+    if _cursor_cli_api_key():
         return "1"
     if is_authenticated():
         return "1"

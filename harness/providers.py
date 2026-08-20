@@ -17,7 +17,8 @@ machinery the bounded pilot does not need. Our transport stays the thin
 OpenAICompatDriver / AnthropicDriver already in pmharness/drivers/.
 
 cursor-cli is Marionette-native (no Hermes profile): local `agent` CLI
-stream-json + `agent login` session auth — not CURSOR_API_KEY pool rotate.
+stream-json + `agent login` and/or CURSOR_API_KEY (the CLI reads that env).
+Not CredentialPool bearer rotate.
 
 MIT License text: https://github.com/NousResearch/hermes-agent (LICENSE).
 """

@@ -4,8 +4,11 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const {
+  DEFAULT_GLASS_MATERIAL,
+  DEFAULT_INTENSITY,
   ENABLE_INTENSITY,
   GLASS_MATERIALS,
+  TRANSLUCENCY_DEFAULTS_VERSION,
   THEMED_BACKGROUND,
   applyWindowTranslucency,
   backgroundMaterialFor,
@@ -64,6 +67,15 @@ describe("platform support", () => {
 });
 
 describe("normalizeMode", () => {
+  it("defaults a missing file to Soft 40", () => {
+    assert.deepEqual(normalizeState(null, true), {
+      intensity: DEFAULT_INTENSITY,
+      fade: 0,
+      mode: "glass",
+      material: DEFAULT_GLASS_MATERIAL,
+    });
+  });
+
   it("pre-selects glass on a capable OS when nothing is saved", () => {
     assert.equal(normalizeMode(undefined, true, 0), "glass");
   });
@@ -223,7 +235,8 @@ describe("createTranslucencyController", () => {
       release: "25.4.0",
       homeDir,
     });
-    assert.equal(first.getState().intensity, 0);
+    assert.equal(first.getState().intensity, DEFAULT_INTENSITY);
+    assert.equal(first.getState().material, DEFAULT_GLASS_MATERIAL);
     first.setState({ intensity: ENABLE_INTENSITY, mode: "glass", material: "titlebar" });
     first.flush();
 
@@ -245,9 +258,63 @@ describe("createTranslucencyController", () => {
     assert.equal(off.surfaceOptions().backgroundColor, undefined);
   });
 
+  it("forces Soft 40 on update when the saved file has no defaults version", () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "marionette-glass-"));
+    const dest = path.join(homeDir, ".pmharness");
+    fs.mkdirSync(dest, { recursive: true });
+    fs.writeFileSync(
+      path.join(dest, "translucency.json"),
+      JSON.stringify({ intensity: 0, fade: 0, mode: "glass", material: "under-window" }),
+    );
+    const ctl = createTranslucencyController({
+      platform: "darwin",
+      release: "25.4.0",
+      homeDir,
+    });
+    assert.equal(ctl.getState().intensity, DEFAULT_INTENSITY);
+    assert.equal(ctl.getState().material, DEFAULT_GLASS_MATERIAL);
+    assert.equal(ctl.getState().mode, "glass");
+    ctl.flush();
+    const saved = JSON.parse(fs.readFileSync(path.join(dest, "translucency.json"), "utf8"));
+    assert.equal(saved.intensity, DEFAULT_INTENSITY);
+    assert.equal(saved.material, DEFAULT_GLASS_MATERIAL);
+    assert.equal(saved.defaultsVersion, TRANSLUCENCY_DEFAULTS_VERSION);
+  });
+
+  it("keeps a post-update off after the factory flip", () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "marionette-glass-"));
+    const dest = path.join(homeDir, ".pmharness");
+    fs.mkdirSync(dest, { recursive: true });
+    fs.writeFileSync(
+      path.join(dest, "translucency.json"),
+      JSON.stringify({
+        intensity: 0,
+        fade: 0,
+        mode: "glass",
+        material: "titlebar",
+        defaultsVersion: TRANSLUCENCY_DEFAULTS_VERSION,
+      }),
+    );
+    const ctl = createTranslucencyController({
+      platform: "darwin",
+      release: "25.4.0",
+      homeDir,
+    });
+    assert.equal(ctl.getState().intensity, 0);
+    assert.equal(ctl.getState().material, "titlebar");
+  });
+
   it("reports Linux as unsupported", () => {
     const caps = capabilities("linux", "6.8.0");
     assert.equal(caps.translucencySupported, false);
     assert.equal(caps.glassSupported, false);
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "marionette-glass-"));
+    const ctl = createTranslucencyController({
+      platform: "linux",
+      release: "6.8.0",
+      homeDir,
+    });
+    assert.equal(ctl.getState().mode, "clear");
+    assert.equal(ctl.getState().intensity, 0);
   });
 });

@@ -1578,7 +1578,9 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
               </div>
               <p className="text-[10px] text-muted mt-1 leading-normal">
                 Optional. Burns Cursor plan credits via the local Agent CLI when the
-                `agent` binary is on PATH. Not required — paste a Full stack API key instead.
+                `agent` binary is on PATH. Sign in here, or set CURSOR_API_KEY — the
+                Agent CLI accepts either. Not required if you already have a Full stack
+                chat key (OpenRouter, Anthropic, …).
               </p>
               <div className="flex items-center gap-2 flex-wrap mt-1.5">
                 <button

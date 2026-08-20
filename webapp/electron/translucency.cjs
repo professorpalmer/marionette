@@ -7,8 +7,10 @@
  * path — native vibrancy / DWM material under a thinned page, text stays
  * full contrast.
  *
- * One lever, 0–100 (0 = off). Main persists ~/.pmharness/translucency.json so
- * a cold launch can apply the backing at BrowserWindow construction.
+ * One lever, 0–100 (0 = off). Factory default is Soft 40 (popover / tint 40).
+ * `defaultsVersion` 2 one-shot-migrates older installs onto that look; later
+ * Settings changes keep. Main persists ~/.pmharness/translucency.json so a
+ * cold launch can apply the backing at BrowserWindow construction.
  *
  * Marionette ships Electron 33. On darwin the window is born transparent and
  * vibrancy-backed, then stays that way: CSS paints the opaque theme when glass
@@ -23,7 +25,9 @@ const os = require("node:os");
 const path = require("node:path");
 
 const GLASS_MATERIALS = ["under-window", "popover", "titlebar", "header"];
-const DEFAULT_GLASS_MATERIAL = "under-window";
+const DEFAULT_GLASS_MATERIAL = "popover";
+const DEFAULT_INTENSITY = 40;
+const TRANSLUCENCY_DEFAULTS_VERSION = 2;
 const WINDOWS_BACKGROUND_MATERIALS = ["acrylic", "tabbed", "mica", "none"];
 const WINDOWS_MATERIAL_BY_FROST = {
   "under-window": "acrylic",
@@ -43,7 +47,7 @@ const TRANSLUCENCY_MAX = 100;
 const TRANSLUCENCY_OPACITY_FLOOR = 0.3;
 const TRANSLUCENCY_CURVE = 2;
 const THEMED_BACKGROUND = "#0f1113";
-const ENABLE_INTENSITY = 60;
+const ENABLE_INTENSITY = DEFAULT_INTENSITY;
 
 function clampIntensity(value) {
   const n = Math.round(Number(value));
@@ -73,8 +77,44 @@ function normalizeMaterial(value) {
   return GLASS_MATERIALS.includes(value) ? value : DEFAULT_GLASS_MATERIAL;
 }
 
+function defaultTranslucencyState(glassSupported) {
+  if (!glassSupported) {
+    return {
+      intensity: TRANSLUCENCY_MIN,
+      fade: TRANSLUCENCY_MIN,
+      mode: "clear",
+      material: DEFAULT_GLASS_MATERIAL,
+    };
+  }
+  return {
+    intensity: DEFAULT_INTENSITY,
+    fade: TRANSLUCENCY_MIN,
+    mode: "glass",
+    material: DEFAULT_GLASS_MATERIAL,
+  };
+}
+
+function persistedDefaultsVersion(payload) {
+  if (!payload || typeof payload !== "object") return 0;
+  const version = Number(payload.defaultsVersion);
+  return Number.isFinite(version) ? version : 0;
+}
+
+function withDefaultsVersion(state) {
+  return {
+    intensity: state.intensity,
+    fade: state.fade,
+    mode: state.mode,
+    material: state.material,
+    defaultsVersion: TRANSLUCENCY_DEFAULTS_VERSION,
+  };
+}
+
 function normalizeState(payload, glassSupported) {
-  const record = payload && typeof payload === "object" ? payload : {};
+  if (!payload || typeof payload !== "object") {
+    return defaultTranslucencyState(glassSupported);
+  }
+  const record = payload;
   const intensity = clampIntensity(record.intensity);
   return {
     intensity,
@@ -150,22 +190,33 @@ function configPath(homeDir) {
   return path.join(homeDir || os.homedir(), ".pmharness", "translucency.json");
 }
 
-function readPersistedTranslucency(opts) {
+function loadPersistedTranslucency(opts) {
   const glassSupported = !!(opts && opts.glassSupported);
+  let raw = null;
   try {
-    return normalizeState(
-      JSON.parse(fs.readFileSync(configPath(opts && opts.homeDir), "utf8")),
-      glassSupported,
-    );
+    raw = JSON.parse(fs.readFileSync(configPath(opts && opts.homeDir), "utf8"));
   } catch {
-    return normalizeState(null, glassSupported);
+    raw = null;
   }
+  const factoryFlipped =
+    !raw || persistedDefaultsVersion(raw) < TRANSLUCENCY_DEFAULTS_VERSION;
+  const state = factoryFlipped
+    ? defaultTranslucencyState(glassSupported)
+    : normalizeState(raw, glassSupported);
+  return {
+    state: withDefaultsVersion(state),
+    factoryFlipped,
+  };
+}
+
+function readPersistedTranslucency(opts) {
+  return loadPersistedTranslucency(opts).state;
 }
 
 function writePersistedTranslucency(state, opts) {
   const dest = configPath(opts && opts.homeDir);
   fs.mkdirSync(path.dirname(dest), { recursive: true });
-  fs.writeFileSync(dest, JSON.stringify(state, null, 2), "utf8");
+  fs.writeFileSync(dest, JSON.stringify(withDefaultsVersion(state), null, 2), "utf8");
 }
 
 function windowSurfaceOptions(state, opts) {
@@ -231,10 +282,11 @@ function createTranslucencyController(opts) {
   const getWindow = opts && opts.getWindow;
   const log = (opts && opts.log) || (() => {});
   const caps = capabilities(platform, release);
-  let state = readPersistedTranslucency({
+  const loaded = loadPersistedTranslucency({
     homeDir,
     glassSupported: caps.glassSupported,
   });
+  let state = loaded.state;
   let persistTimer = null;
 
   const persistSoon = () => {
@@ -248,6 +300,8 @@ function createTranslucencyController(opts) {
       }
     }, 120);
   };
+
+  if (loaded.factoryFlipped) persistSoon();
 
   return {
     capabilities: () => caps,
@@ -270,7 +324,7 @@ function createTranslucencyController(opts) {
       }
     },
     setState: (payload) => {
-      const next = normalizeState(payload, caps.glassSupported);
+      const next = withDefaultsVersion(normalizeState(payload, caps.glassSupported));
       const changed = translucencyDiff(state, next);
       state = next;
       const win = typeof getWindow === "function" ? getWindow() : null;
@@ -303,8 +357,10 @@ function createTranslucencyController(opts) {
 
 module.exports = {
   DEFAULT_GLASS_MATERIAL,
+  DEFAULT_INTENSITY,
   ENABLE_INTENSITY,
   GLASS_MATERIALS,
+  TRANSLUCENCY_DEFAULTS_VERSION,
   THEMED_BACKGROUND,
   TRANSLUCENCY_MAX,
   TRANSLUCENCY_MIN,

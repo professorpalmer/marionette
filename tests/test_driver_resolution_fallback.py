@@ -21,6 +21,7 @@ def _isolate(monkeypatch):
     monkeypatch.setenv("HARNESS_STATE_DIR", tempfile.mkdtemp())
     # Ambient Cursor CLI login on a developer machine must not steal fallback.
     monkeypatch.delenv("CURSOR_CLI_LOGIN", raising=False)
+    monkeypatch.delenv("CURSOR_API_KEY", raising=False)
     monkeypatch.setattr(
         "harness.cursor_cli_auth.is_authenticated",
         lambda: False,

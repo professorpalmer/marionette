@@ -17,7 +17,7 @@ export default function WindowGlassSettings() {
   const [state, setState] = useState<TranslucencyState>(() => defaultTranslucencyState());
 
   useEffect(() => {
-    setState(hydrateWindowGlass());
+    setState(hydrateWindowGlass(setState));
     void loadTranslucencyCapabilities().then(setCaps);
     return () => resetTranslucencyPeek();
   }, []);

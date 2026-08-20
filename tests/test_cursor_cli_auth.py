@@ -10,6 +10,13 @@ import pytest
 from harness import cursor_cli_auth as auth
 
 
+@pytest.fixture(autouse=True)
+def _isolate_cursor_cli_env(monkeypatch):
+    monkeypatch.delenv("CURSOR_CLI_LOGIN", raising=False)
+    monkeypatch.delenv("CURSOR_API_KEY", raising=False)
+    auth.invalidate_status_cache()
+
+
 def test_get_status_missing_binary(monkeypatch):
     auth.invalidate_status_cache()
     monkeypatch.setattr(auth, "resolve_agent_binary", lambda: None)
@@ -66,6 +73,26 @@ def test_get_status_isAuthenticated_field(monkeypatch):
     monkeypatch.setattr(auth, "_run_agent", lambda *a, **k: Proc())
     st = auth.get_status(refresh=True)
     assert st["authenticated"] is False
+
+
+def test_get_status_api_key_counts_when_login_missing(monkeypatch):
+    monkeypatch.setattr(auth, "resolve_agent_binary", lambda: "/fake/agent")
+    auth.invalidate_status_cache()
+
+    class Proc:
+        returncode = 0
+        stdout = json.dumps({
+            "status": "unauthenticated",
+            "isAuthenticated": False,
+        })
+        stderr = ""
+
+    monkeypatch.setattr(auth, "_run_agent", lambda *a, **k: Proc())
+    monkeypatch.setenv("CURSOR_API_KEY", "key_live_test")
+    st = auth.get_status(refresh=True)
+    assert st["authenticated"] is True
+    assert st["auth_kind"] == "cursor_api_key"
+    assert st["label"] == "API key"
 
 
 def test_get_status_cache_avoids_respawn(monkeypatch):
@@ -198,9 +225,16 @@ def test_ensure_workspace_trusted_timeout_is_soft(monkeypatch, tmp_path):
 
 def test_login_token_sentinel(monkeypatch):
     monkeypatch.delenv("CURSOR_CLI_LOGIN", raising=False)
+    monkeypatch.delenv("CURSOR_API_KEY", raising=False)
     monkeypatch.setattr(auth, "is_authenticated", lambda: False)
     assert auth.login_token_if_ready() is None
     monkeypatch.setenv("CURSOR_CLI_LOGIN", "1")
+    assert auth.login_token_if_ready() == "1"
+    monkeypatch.delenv("CURSOR_CLI_LOGIN", raising=False)
+    monkeypatch.setenv("CURSOR_API_KEY", "key_live_test")
+    assert auth.login_token_if_ready() == "1"
+    monkeypatch.delenv("CURSOR_API_KEY", raising=False)
+    monkeypatch.setenv("CURSOR_CLI_LOGIN", "key_live_pasted")
     assert auth.login_token_if_ready() == "1"
     monkeypatch.delenv("CURSOR_CLI_LOGIN", raising=False)
     monkeypatch.setattr(auth, "is_authenticated", lambda: True)

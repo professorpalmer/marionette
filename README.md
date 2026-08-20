@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.15` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.259, deliberately pre-1.0. Rides puppetmaster-ai==1.22.15 (dashboard per-project isolation plus hermetic test-suite credential isolation). Economics is one right-pane surface: process spend for this app run, plus a Durable projection of Puppetmaster savings/cost/receipt that names the counterfactual reference and keeps visibility-only jobs out of owned totals. Compact residual factory default remains catalog; summary and hybrid stay Settings opt-ins.
+> Status: v0.9.260, deliberately pre-1.0. Rides puppetmaster-ai==1.22.15. Cursor CLI accepts `CURSOR_API_KEY` (or a pasted Settings key) and no longer passes the invalid `--mode agent` flag. Window glass factory-flips to Soft 40 on this update; later Settings changes keep. Economics remains one right-pane surface for process spend plus a Durable Puppetmaster projection. Compact residual factory default remains catalog.
 
 ## Documentation
 
