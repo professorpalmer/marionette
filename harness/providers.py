@@ -557,10 +557,11 @@ def build_pilot(spec: str, *, max_tokens: int | None = None):
     if provider.api_mode == "cursor_cli":
         # Workspace trust / --workspace follow the open project (HARNESS_REPO).
         cwd = (os.environ.get("HARNESS_REPO") or "").strip() or None
-        # Warm ACP is default (turn-2 ~2s in probe). HARNESS_CURSOR_ACP=0
-        # forces classic per-turn `agent --print`.
+        # ACP is opt-in (HARNESS_CURSOR_ACP=1) and only for auto/empty.
+        # Explicit picker models always use --print --model so served
+        # identity can be verified. ACP does not pin or report the model.
         from pmharness.drivers.cursor_acp import CursorAcpDriver, cursor_acp_enabled
-        if cursor_acp_enabled():
+        if cursor_acp_enabled(model):
             return _finalize_driver(
                 CursorAcpDriver(
                     name=spec, model=model, max_tokens=max_tokens, cwd=cwd,

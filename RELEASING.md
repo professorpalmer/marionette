@@ -39,8 +39,10 @@ tagged installer from Releases.
 ## Cutting a version tag
 
 Tags/versions label what checkouts and installers report via `app.getVersion()`.
-Green CI Before Tag still holds: the `tests` workflow (3.9 floor, 3.11,
-Windows, frontend-build) must be green for **this git tree**. The tag may
+Green CI Before Tag still holds: the `tests` workflow (Ubuntu 3.9 xdist,
+Windows 3.9 four-way shard, frontend-build) must be green for **this git
+tree**. macOS, Python 3.11, and `@pytest.mark.resource_soak` run in
+`tests-full.yml` (nightly / manual) and do not block the tag. The tag may
 point at the dest-into-main merge commit; it does not need a second `tests`
 run on that SHA when `merge^{tree}` equals the already-green dest PR tree.
 

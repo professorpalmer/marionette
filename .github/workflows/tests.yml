@@ -1,9 +1,9 @@
 name: tests
 
-# Gate every PR and every push to main on the offline test suite. No API keys,
-# no Apple secrets -- this only runs pytest in a clean venv with PyPI deps, which
-# is exactly how a contributor's machine installs the rig (verified: 584 pass
-# with `pip install -e .[dev] puppetmaster-ai`).
+# Fast dest-into-main / main-push gate. Wall clock target is ~5 minutes:
+# Ubuntu 3.9 with xdist, Windows 3.9 split into 4 shards, frontend-build.
+# The 3.9 floor and one Windows cell stay required. macOS, 3.11, and the
+# million-token soak live in tests-full.yml (nightly / manual).
 
 on:
   pull_request:
@@ -11,61 +11,58 @@ on:
   push:
     branches: [main]
 
-# Cancel an in-flight run when a new commit is pushed to the same PR/branch.
 concurrency:
   group: tests-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  pytest:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # Floor (3.9, the requires-python minimum) + the dev interpreter (3.11),
-        # on every OS users actually run: Linux, macOS, and Windows.
-        # CI_WINDOWS_RUNNER swaps GitHub-hosted windows-latest for a faster
-        # machine (Blacksmith `blacksmith-4vcpu-windows-2025`) without a new
-        # workflow. Unset keeps windows-latest so CI never queues on a missing
-        # runner label.
-        os:
-          - ubuntu-latest
-          - macos-latest
-          - ${{ vars.CI_WINDOWS_RUNNER || 'windows-latest' }}
-        python-version: ["3.9", "3.11"]
-        exclude:
-          # actions/setup-python has no CPython 3.9 build for arm64 macOS.
-          # The 3.9 floor is still proven on Linux and Windows.
-          - os: macos-latest
-            python-version: "3.9"
+  pytest-linux:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Set up Python 3.9
         uses: actions/setup-python@v6
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.9"
           cache: pip
 
       - name: Install (rig + dev extras + Puppetmaster from PyPI)
         run: |
           python -m pip install --upgrade pip
-          # Floor matches the accounting/routing fixes this release needs.
-          # Unpinned `puppetmaster-ai` + pip cache can leave CI on an older
-          # wheel (e.g. 1.14.0) and fail fallback-pricing regressions.
           pip install -e ".[dev]" "puppetmaster-ai==1.22.12"
 
-      # full_auto_safety modules already run inside this job via conftest
-      # auto-tagging; a separate named job was redundant PR compute.
       - name: Run the offline test suite
-        if: matrix.os != 'ubuntu-latest' || matrix.python-version != '3.11'
-        run: python -m pytest -q -p no:cacheprovider
+        run: python -m pytest -q -p no:cacheprovider -n 4 --dist loadscope
 
-      # One cell keeps a slow-test ranking in CI logs without paying for it
-      # on every OS/Python combination.
-      - name: Run the offline test suite (durations)
-        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
-        run: python -m pytest -q -p no:cacheprovider --durations=25
+  pytest-windows:
+    # CI_WINDOWS_RUNNER swaps GitHub-hosted windows-latest for a faster
+    # machine (Blacksmith `blacksmith-4vcpu-windows-2025`) without a new
+    # workflow. Unset keeps windows-latest so CI never queues on a missing
+    # runner label.
+    runs-on: ${{ vars.CI_WINDOWS_RUNNER || 'windows-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.9"
+          cache: pip
+
+      - name: Install (rig + dev extras + Puppetmaster from PyPI)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]" "puppetmaster-ai==1.22.12"
+
+      - name: Run the offline test suite (shard)
+        env:
+          PYTEST_SHARD: ${{ matrix.shard }}/4
+        run: python -m pytest -q -p no:cacheprovider
 
   frontend-build:
     runs-on: ubuntu-latest

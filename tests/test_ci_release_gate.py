@@ -187,3 +187,17 @@ def test_tests_yml_windows_runner_is_swappable():
     text = (ROOT / ".github" / "workflows" / "tests.yml").read_text()
     assert "vars.CI_WINDOWS_RUNNER" in text
     assert "windows-latest" in text
+
+
+def test_tests_yml_is_the_fast_dest_into_main_gate():
+    text = (ROOT / ".github" / "workflows" / "tests.yml").read_text()
+    assert "pytest-linux" in text
+    assert "pytest-windows" in text
+    assert "-n 4" in text
+    assert "--dist loadscope" in text
+    assert "PYTEST_SHARD" in text
+    assert "python-version: \"3.9\"" in text
+    assert "macos-latest" not in text
+    full = (ROOT / ".github" / "workflows" / "tests-full.yml").read_text()
+    assert "--resource-soak" in full
+    assert "macos-latest" in full

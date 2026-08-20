@@ -31,16 +31,23 @@ from .cursor_cli import (
     resolve_agent_exec,
     resolve_cursor_execution_mode,
 )
-def cursor_acp_enabled() -> bool:
-    """Warm ACP path (default ON). Set ``HARNESS_CURSOR_ACP=0`` to force --print.
+from .cursor_identity import IDENTITY_AUTO, is_unpinned_cursor_model
 
-    Live probe on Windows: turn-1 ``session/prompt`` ~11s, turn-2 on the same
-    process ~2s. Per-turn ``--print`` stays ~10–12s forever — so warm ACP is
-    the daily-driver default. Auth is best-effort (short timeout); a hung
-    authenticate must not block the session.
+
+def cursor_acp_enabled(model: Optional[str] = None) -> bool:
+    """Warm ACP path (default OFF). Set ``HARNESS_CURSOR_ACP=1`` to opt in.
+
+    ACP never pins ``--model`` and never reports served identity, so even
+    when opted in it is only allowed for unpinned models (``auto`` / empty)
+    where substitution is intentional. Explicit picker ids use
+    ``CursorCliDriver --print --model``.
     """
-    raw = (os.environ.get("HARNESS_CURSOR_ACP") or "1").strip().lower()
-    return raw not in ("0", "false", "no", "off")
+    raw = (os.environ.get("HARNESS_CURSOR_ACP") or "").strip().lower()
+    if raw not in ("1", "true", "yes", "on"):
+        return False
+    if model is None:
+        return True
+    return is_unpinned_cursor_model(model)
 
 
 def _normalize_workspace(cwd: Optional[str]) -> Optional[str]:
@@ -1043,6 +1050,7 @@ class CursorAcpDriver:
             raise RuntimeError(self._acp_fail_reason)
         tin = int(out.get("tokens_in") or 0)
         tout = int(out.get("tokens_out") or 0)
+        requested = (self.model or "").strip()
         meta = {
             "tool_calls": [],
             "session_id": out.get("session_id") or "",
@@ -1054,6 +1062,11 @@ class CursorAcpDriver:
             # Plan credits — $ meter is estimate-only unless agent returns cost.
             "billing": "plan",
             "reasoning": str(out.get("reasoning") or ""),
+            "requested_model": requested,
+            # ACP never reports served identity; auto/empty is the only
+            # allowed ACP pin (substitution is intentional).
+            "identity_status": IDENTITY_AUTO,
+            "token_basis": "provider" if (tin or tout) else "unknown",
         }
         cost = out.get("provider_cost_usd")
         if cost is not None:
@@ -1087,7 +1100,7 @@ class CursorAcpDriver:
         on_tool_hint: Callable[[str], None] | None = None,
     ) -> DriverResponse:
         _ = tools
-        if cursor_acp_enabled() and not self._acp_disabled:
+        if cursor_acp_enabled(self.model) and not self._acp_disabled:
             try:
                 return self._run_acp(
                     messages,

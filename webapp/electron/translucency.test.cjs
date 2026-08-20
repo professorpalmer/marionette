@@ -128,11 +128,12 @@ describe("windowBackingOptions / surfaceOptions", () => {
     });
   });
 
-  it("pins macOS vibrancy and visualEffectState only while glass is live", () => {
+  it("makes macOS WebContents transparent over pinned vibrancy", () => {
     const on = windowSurfaceOptions(glass(60, "popover"), {
       platform: "darwin",
       glassSupported: true,
     });
+    assert.equal(on.transparent, true);
     assert.equal(on.vibrancy, "popover");
     assert.equal(on.visualEffectState, "active");
     assert.equal(on.backgroundColor, undefined);
@@ -141,8 +142,10 @@ describe("windowBackingOptions / surfaceOptions", () => {
       platform: "darwin",
       glassSupported: true,
     });
-    assert.equal(off.vibrancy, undefined);
-    assert.equal(off.backgroundColor, THEMED_BACKGROUND);
+    assert.equal(off.transparent, true);
+    assert.equal(off.vibrancy, "popover");
+    assert.equal(off.visualEffectState, "active");
+    assert.equal(off.backgroundColor, undefined);
   });
 
   it("marks glass-capable Windows windows transparent for DWM", () => {
@@ -176,6 +179,20 @@ describe("translucencyDiff", () => {
 });
 
 describe("applyWindowTranslucency", () => {
+  it("does not restamp a transparent backgroundColor on macOS", () => {
+    const calls = [];
+    const win = {
+      setVibrancy: (material) => calls.push(["vibrancy", material]),
+      setBackgroundColor: (color) => calls.push(["bg", color]),
+      setOpacity: (n) => calls.push(["opacity", n]),
+    };
+    applyWindowTranslucency(win, glass(60, "popover"), { backing: true, material: true }, {
+      platform: "darwin",
+      glassSupported: true,
+    });
+    assert.deepEqual(calls, [["vibrancy", "popover"]]);
+  });
+
   it("sets vibrancy only on a material change", () => {
     const calls = [];
     const win = {
@@ -194,7 +211,7 @@ describe("applyWindowTranslucency", () => {
       platform: "darwin",
       glassSupported: true,
     });
-    assert.deepEqual(calls, [["vibrancy", null]]);
+    assert.deepEqual(calls, [["vibrancy", "popover"]]);
   });
 });
 
@@ -218,6 +235,14 @@ describe("createTranslucencyController", () => {
     assert.equal(second.getState().intensity, ENABLE_INTENSITY);
     assert.equal(second.getState().material, "titlebar");
     assert.equal(second.surfaceOptions().vibrancy, "titlebar");
+    const off = createTranslucencyController({
+      platform: "darwin",
+      release: "25.4.0",
+      homeDir,
+    });
+    off.setState({ intensity: 0, mode: "glass", material: "titlebar" });
+    assert.equal(off.surfaceOptions().vibrancy, "titlebar");
+    assert.equal(off.surfaceOptions().backgroundColor, undefined);
   });
 
   it("reports Linux as unsupported", () => {

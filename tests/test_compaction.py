@@ -575,6 +575,7 @@ def test_advisory_compact_once_per_user_turn_not_per_tool_step(monkeypatch, tmp_
     assert any(c["force"] for c in compact_calls)
 
 
+@pytest.mark.resource_soak
 def test_million_token_window_keeps_bounded_tail_and_reduces_large_session():
     cfg = HarnessConfig(max_context_tokens=1_048_576)
     session = ConversationalSession(cfg)

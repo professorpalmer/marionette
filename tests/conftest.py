@@ -176,11 +176,47 @@ def pytest_addoption(parser):
                      help="allow tests marked @pytest.mark.network to use the network")
     parser.addoption("--swarm", action="store_true", default=False,
                      help="run tests marked @pytest.mark.swarm (real Puppetmaster, slow)")
+    parser.addoption(
+        "--resource-soak",
+        action="store_true",
+        default=False,
+        help="run tests marked @pytest.mark.resource_soak (million-token walks)",
+    )
+
+
+def parse_pytest_shard(spec):
+    """Parse ``PYTEST_SHARD=2/4`` into a 1-based (index, total) pair."""
+    raw = (spec or "").strip()
+    if not raw:
+        return None
+    try:
+        idx_s, total_s = raw.split("/", 1)
+        idx = int(idx_s)
+        total = int(total_s)
+    except ValueError:
+        return None
+    if total < 2 or idx < 1 or idx > total:
+        return None
+    return idx, total
+
+
+def select_pytest_shard(items, spec):
+    """Stable interleave so one fat test cannot land with all of its neighbors."""
+    parsed = parse_pytest_shard(spec)
+    if parsed is None:
+        return list(items)
+    idx, total = parsed
+    ordered = sorted(items, key=lambda item: getattr(item, "nodeid", str(item)))
+    return [item for i, item in enumerate(ordered) if i % total == (idx - 1)]
 
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "network: test requires real network access")
     config.addinivalue_line("markers", "swarm: test drives real Puppetmaster (slow subprocess spawns)")
+    config.addinivalue_line(
+        "markers",
+        "resource_soak: optional FD/RSS cleanup soak (manual/CI opt-in)",
+    )
     config.addinivalue_line(
         "markers",
         "full_auto_safety: offline full-auto safety invariants "
@@ -197,12 +233,24 @@ def pytest_collection_modifyitems(config, items):
         if leaf in _FULL_AUTO_SAFETY_MODULES:
             item.add_marker(safety)
 
-    if config.getoption("--swarm"):
-        return
-    skip = pytest.mark.skip(reason="real-Puppetmaster swarm test; run with --swarm")
-    for item in items:
-        if item.get_closest_marker("swarm"):
-            item.add_marker(skip)
+    if not config.getoption("--swarm"):
+        skip_swarm = pytest.mark.skip(reason="real-Puppetmaster swarm test; run with --swarm")
+        for item in items:
+            if item.get_closest_marker("swarm"):
+                item.add_marker(skip_swarm)
+
+    if not config.getoption("--resource-soak"):
+        skip_soak = pytest.mark.skip(
+            reason="resource soak; run with --resource-soak (tests-full.yml)"
+        )
+        for item in items:
+            if item.get_closest_marker("resource_soak"):
+                item.add_marker(skip_soak)
+
+    shard_spec = os.environ.get("PYTEST_SHARD") or ""
+    selected = select_pytest_shard(items, shard_spec)
+    if selected is not items and len(selected) != len(items):
+        items[:] = selected
 
 
 @pytest.fixture(autouse=True)
