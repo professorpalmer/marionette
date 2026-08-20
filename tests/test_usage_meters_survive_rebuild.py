@@ -47,6 +47,29 @@ def _restore_meters(pilot, snap):
         setattr(pilot, attr, val)
 
 
+def _stub_rebuild_constructors(monkeypatch, srv):
+    """Keep meter-carry tests off the live catalog (xdist / keyed-health)."""
+
+    class _FreshPilot:
+        def __init__(self, cfg):
+            self.config = cfg
+            self.state_dir = getattr(srv._pilot, "state_dir", "")
+            self._history = []
+            self._auto_distill = False
+            self._busy = None
+            for attr in _METER_ATTRS:
+                setattr(self, attr, 0.0 if "usd" in attr or "cost" in attr else 0)
+
+    class _FreshSession:
+        def __init__(self, cfg):
+            self.state_dir = getattr(srv._pilot, "state_dir", "")
+
+    monkeypatch.setattr("harness.api.attach.ConversationalSession", _FreshPilot)
+    monkeypatch.setattr("harness.api.attach.Session", _FreshSession)
+    monkeypatch.setattr("harness.server.ConversationalSession", _FreshPilot)
+    monkeypatch.setattr(srv, "_apply_model_context_window", lambda: None)
+
+
 def _zero_boot_carry(srv):
     for attr in _METER_ATTRS:
         srv._BOOT_METER_CARRY[attr] = 0.0
@@ -57,7 +80,7 @@ def _zero_boot_carry(srv):
         pass
 
 
-def test_rebuild_pilot_preserves_usage_meters():
+def test_rebuild_pilot_preserves_usage_meters(monkeypatch):
     srv, httpd, port = _spin_server()
     saved = _snapshot_meters(srv._pilot)
     saved_carry = dict(srv._BOOT_METER_CARRY)
@@ -80,6 +103,7 @@ def test_rebuild_pilot_preserves_usage_meters():
         assert before["session"]["est_cost_usd"] > 0
         before_cost = before["session"]["est_cost_usd"]
 
+        _stub_rebuild_constructors(monkeypatch, srv)
         srv._rebuild_pilot_and_session()
 
         after = _get_usage(port, srv._TOKEN)
@@ -406,7 +430,7 @@ def test_fold_snapshots_cost_survives_model_reprice():
         httpd.shutdown()
 
 
-def test_idle_swap_snapshots_cost_survives_model_reprice():
+def test_idle_swap_snapshots_cost_survives_model_reprice(monkeypatch):
     """Idle pilot rebuild must freeze USD at old rates (not reprice live meters)."""
     srv, httpd, port = _spin_server()
     saved = _snapshot_meters(srv._pilot)
@@ -439,6 +463,7 @@ def test_idle_swap_snapshots_cost_survives_model_reprice():
         orig_runner_prices = srv._resolve_prices_for_runner
         srv._resolve_prices_for_runner = _expensive_for_runner
         try:
+            _stub_rebuild_constructors(monkeypatch, srv)
             srv._rebuild_pilot_and_session()
         finally:
             srv._resolve_prices_for_runner = orig_runner_prices
@@ -468,7 +493,7 @@ def test_idle_swap_snapshots_cost_survives_model_reprice():
         httpd.shutdown()
 
 
-def test_idle_perform_pilot_swap_freezes_meters():
+def test_idle_perform_pilot_swap_freezes_meters(monkeypatch):
     """``_perform_pilot_swap`` freezes meters into carry (idle path, not deferred)."""
     srv, httpd, port = _spin_server()
     saved = _snapshot_meters(srv._pilot)
@@ -498,6 +523,7 @@ def test_idle_perform_pilot_swap_freezes_meters():
         try:
             # Same driver rebuild exercises the freeze path without needing a
             # second catalog model; mirrors idle swap when the pilot is not busy.
+            _stub_rebuild_constructors(monkeypatch, srv)
             srv._perform_pilot_swap(srv._cfg.driver)
         finally:
             srv._resolve_prices_for_runner = orig_runner_prices

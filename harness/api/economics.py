@@ -11,11 +11,16 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional, Union
 
-from harness.job_scoping import apply_job_economics_policy, filter_accountable_jobs
+from harness.job_scoping import (
+    apply_job_economics_policy,
+    filter_accountable_jobs,
+    parse_job_session_id,
+)
 
 
 SCOPES = ("repo", "window30", "all_projects", "conversation")
 RECENT_JOB_LIMIT = 12
+ALL_PROJECTS_DIR_CAP = 32
 COST_BASIS = "measured_usage_x_registry_price"
 COUNTERFACTUAL_LABEL = (
     "list-price vs the named reference model, not a cash refund"
@@ -221,6 +226,8 @@ def _savings_state_dirs(scope: str, workspace: str) -> list:
                 continue
             seen.add(key)
             dirs.append(extra)
+            if len(dirs) >= ALL_PROJECTS_DIR_CAP:
+                break
     return dirs
 
 
@@ -286,7 +293,9 @@ def _conversation_jobs(jobs: list, active_session_id: str) -> list:
     owned = filter_accountable_jobs(jobs)
     out = []
     for job in owned:
-        sid = str(job.get("session_id") or "").strip()
+        sid = parse_job_session_id(
+            job.get("label"), job.get("tasks") or []
+        ) or str(job.get("session_id") or "").strip()
         if sid == active:
             out.append(job)
     return out
@@ -328,18 +337,62 @@ def _receipt_tokens(receipt: dict) -> Optional[int]:
         except (TypeError, ValueError):
             return None
     if isinstance(tokens, dict):
-        parts = (
-            tokens.get("measured_tokens_in"),
-            tokens.get("measured_tokens_out"),
-            tokens.get("estimated_tokens_in"),
-            tokens.get("estimated_tokens_out"),
-        )
-        if any(p is not None for p in parts):
-            try:
-                return int(sum(int(p or 0) for p in parts))
-            except (TypeError, ValueError):
-                return None
+        measured = (tokens.get("measured_tokens_in"), tokens.get("measured_tokens_out"))
+        estimated = (tokens.get("estimated_tokens_in"), tokens.get("estimated_tokens_out"))
+        try:
+            if any(p is not None for p in measured):
+                return int(sum(int(p or 0) for p in measured))
+            if any(p is not None for p in estimated):
+                return int(sum(int(p or 0) for p in estimated))
+        except (TypeError, ValueError):
+            return None
     return None
+
+
+def _job_in_window(job: dict, window_days: Optional[float]) -> bool:
+    if not window_days:
+        return True
+    created = _created_at_key(job)
+    if created <= 0:
+        return False
+    cutoff = datetime.now(timezone.utc).timestamp() - float(window_days) * 86400.0
+    return created >= cutoff
+
+
+def _int_attr(obj: Any, name: str) -> Optional[int]:
+    raw = getattr(obj, name, None)
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _cost_basis_for_job(job_cost: Any) -> Optional[str]:
+    """Unknown / empty / unpriced ledgers must not claim measured cash."""
+    priced = _int_attr(job_cost, "priced_tasks")
+    unpriced = _int_attr(job_cost, "unpriced_tasks")
+    if priced is None and unpriced is None:
+        return COST_BASIS
+    if not priced:
+        return None
+    measured_runs = _int_attr(job_cost, "measured_runs") or 0
+    estimated_runs = _int_attr(job_cost, "estimated_runs") or 0
+    billings = []
+    by_model = getattr(job_cost, "by_model", None) or {}
+    for bucket in by_model.values():
+        if isinstance(bucket, dict) and bucket.get("billing"):
+            billings.append(str(bucket.get("billing") or "").strip().lower())
+    if billings and all(item == "plan" for item in billings):
+        return "plan"
+    if estimated_runs and not measured_runs:
+        return "estimated"
+    if estimated_runs and measured_runs:
+        return "mixed"
+    if unpriced:
+        return "mixed"
+    return COST_BASIS
 
 
 def _project_job_row(
@@ -408,12 +461,17 @@ def _project_job_row(
         "degraded_tasks": degraded_tasks,
     }
     # Visibility-only / unstamped CLI jobs stay listed but cannot be summed.
+    # Empty or unpriced JobCost objects are 0.0 — that is not measured cash.
     if owned and job_cost is not None:
-        row["actual_marginal_usd"] = getattr(job_cost, "total_marginal_cost_usd", None)
-        row["measured_cost_usd"] = getattr(job_cost, "measured_cost_usd", None)
-        row["estimated_cost_usd"] = getattr(job_cost, "estimated_cost_usd", None)
-        row["cost_basis"] = COST_BASIS
-        row["counterfactual"] = _serialize_job_counterfactual(cf)
+        basis = _cost_basis_for_job(job_cost)
+        if basis is None:
+            row["cost_basis"] = "unknown"
+        else:
+            row["actual_marginal_usd"] = getattr(job_cost, "total_marginal_cost_usd", None)
+            row["measured_cost_usd"] = getattr(job_cost, "measured_cost_usd", None)
+            row["estimated_cost_usd"] = getattr(job_cost, "estimated_cost_usd", None)
+            row["cost_basis"] = basis
+            row["counterfactual"] = _serialize_job_counterfactual(cf)
     return row
 
 
@@ -456,6 +514,8 @@ def _recent_job_rows(scope: str, svc: EconomicsServices) -> list:
     jobs = list(jobs or [])
     if scope == "conversation":
         jobs = _conversation_jobs(jobs, svc.active_session_id())
+    elif scope == "window30":
+        jobs = [job for job in jobs if _job_in_window(job, 30.0)]
     jobs.sort(key=_created_at_key, reverse=True)
     jobs = jobs[:RECENT_JOB_LIMIT]
     registry: list = []
@@ -500,16 +560,20 @@ def _recent_job_rows(scope: str, svc: EconomicsServices) -> list:
 
 def _project_economics(scope: str, svc: EconomicsServices) -> dict:
     workspace = _workspace_root(svc)
-    report = _build_savings(scope, workspace)
-    savings = _serialize_savings(report)
-    counterfactual = _with_counterfactual_label(
-        (savings or {}).get("counterfactual") if savings else None
-    )
+    # Conversation is jobs-only. Do not open repo-lifetime savings stores.
+    if scope == "conversation":
+        savings = None
+        counterfactual = None
+        savings_scope = "repo"
+    else:
+        report = _build_savings(scope, workspace)
+        savings = _serialize_savings(report)
+        counterfactual = _with_counterfactual_label(
+            (savings or {}).get("counterfactual") if savings else None
+        )
+        savings_scope = scope
     recent_jobs = _recent_job_rows(scope, svc)
     totals = _owned_totals(recent_jobs)
-    # Conversation owns job rows only. PM savings is still this-repo
-    # lifetime — name that so the pane cannot present it as conversation spend.
-    savings_scope = "repo" if scope == "conversation" else scope
     return {
         "scope": scope,
         "savings_scope": savings_scope,

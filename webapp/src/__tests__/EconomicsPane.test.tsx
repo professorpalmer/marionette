@@ -107,6 +107,7 @@ describe("EconomicsPane", () => {
           tokens_per_typed_artifact: 400,
           degraded_rate: 0,
           actual_marginal_usd: 1.25,
+          cost_basis: "measured_usage_x_registry_price",
           counterfactual: { avoided_usd: 2.0 },
         },
         {
@@ -128,6 +129,30 @@ describe("EconomicsPane", () => {
     expect(screen.getByText(/visible only/)).toBeInTheDocument();
     expect(screen.queryByText("$9.99")).not.toBeInTheDocument();
     expect(screen.queryByText("~$9.99")).not.toBeInTheDocument();
+    expect(screen.getByText("$1.25 vs $2.00 · measured")).toBeInTheDocument();
+  });
+
+  it("clears durable state when getEconomics returns a soft 400", async () => {
+    mockGetUsage.mockResolvedValue({
+      session: usageSession,
+      jobs: [],
+    });
+    mockGetEconomics.mockImplementation(async (nextScope?: string) => {
+      if (nextScope === "conversation") {
+        return { ok: false, error: "scope must be repo, window30, all_projects, or conversation" };
+      }
+      return durablePayload;
+    });
+
+    render(<EconomicsPane />);
+    expect(await screen.findByText("Routing saved (measured)")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Economics scope"), {
+      target: { value: "conversation" },
+    });
+    await waitFor(() => {
+      expect(screen.queryByText("Routing saved (measured)")).not.toBeInTheDocument();
+    });
   });
 
   it("does not present repo savings as conversation spend", async () => {

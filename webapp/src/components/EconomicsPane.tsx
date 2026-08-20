@@ -31,8 +31,13 @@ export default function EconomicsPane() {
   const loadEconomics = () =>
     Promise.resolve(api.getEconomics(scope))
       .then((data) => {
-        if (isEconomicsPayload(data)) {
+        if (isEconomicsPayload(data) && (!data.scope || data.scope === scope)) {
           setEconomics(data);
+          return;
+        }
+        // getJSONSoft turns HTTP 400 into {ok:false} without `available`.
+        if (data && typeof data === "object" && (data as { ok?: boolean }).ok === false) {
+          setEconomics(null);
         }
       })
       .catch(() => {

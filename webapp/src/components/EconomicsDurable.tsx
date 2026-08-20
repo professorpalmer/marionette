@@ -44,6 +44,16 @@ function jobModel(row: EconomicsJobRow): string {
   return shortModel(id);
 }
 
+function costBasisLabel(basis: string | null | undefined): string {
+  const value = (basis || "").trim().toLowerCase();
+  if (value === "plan") return " · plan $0-marginal";
+  if (value === "estimated") return " · estimated";
+  if (value === "mixed") return " · mixed basis";
+  if (value === "unknown") return " · unknown basis";
+  if (value.includes("measured")) return " · measured";
+  return "";
+}
+
 export default function EconomicsDurable({
   data,
   scope,
@@ -68,7 +78,7 @@ export default function EconomicsDurable({
       <p className="text-[10px] text-muted mb-2 leading-snug">
         {scope === "conversation"
           ? "Owned jobs for this conversation. Puppetmaster savings stay on This repo / Last 30 days / All projects."
-          : "Puppetmaster savings and job receipts for the selected scope. App-run spend stays above."}
+          : "Puppetmaster savings for the selected scope. Recent jobs are this workspace tracker; Last 30 days keeps jobs created in that window. App-run spend stays above."}
       </p>
 
       <label className="flex items-center justify-between mb-2 text-faint">
@@ -159,7 +169,9 @@ export default function EconomicsDurable({
                 <div className="flex items-center justify-between text-faint">
                   <span className="truncate pr-2">{job.job_id || "job"}</span>
                   <span className="tabular-nums shrink-0">
-                    {owned ? `${fmtUnknownMoney(actual)} vs ${fmtUnknownMoney(jobAvoided)}` : "—"}
+                    {owned
+                      ? `${fmtUnknownMoney(actual)} vs ${fmtUnknownMoney(jobAvoided)}${costBasisLabel(job.cost_basis)}`
+                      : "—"}
                   </span>
                 </div>
                 <div className="flex items-center justify-between text-faint">

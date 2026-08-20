@@ -29,17 +29,33 @@ class _Store:
 
 
 class _JobCost:
-    def __init__(self, usd=1.25, avoided=2.5, model="composer-2"):
+    def __init__(
+        self,
+        usd=1.25,
+        avoided=2.5,
+        model="composer-2",
+        *,
+        priced_tasks=1,
+        unpriced_tasks=0,
+        measured_runs=1,
+        estimated_runs=0,
+        estimated_usd=0.0,
+        billing="metered",
+    ):
         self.total_marginal_cost_usd = usd
         self.measured_cost_usd = usd
-        self.estimated_cost_usd = 0.0
+        self.estimated_cost_usd = estimated_usd
+        self.priced_tasks = priced_tasks
+        self.unpriced_tasks = unpriced_tasks
+        self.measured_runs = measured_runs
+        self.estimated_runs = estimated_runs
         self.by_model = {
             model: {
                 "calls": 1,
                 "tokens_in": 100,
                 "tokens_out": 50,
                 "marginal_cost_usd": usd,
-                "billing": "metered",
+                "billing": billing,
             }
         }
         self.tasks = []
@@ -307,8 +323,10 @@ def test_conversation_scope_filters_to_owned_active_session(monkeypatch):
     assert code == 200
     assert payload["scope"] == "conversation"
     assert payload["savings_scope"] == "repo"
+    assert payload["savings"] is None
+    assert payload["counterfactual"] is None
     assert payload["all_projects"] is False
-    assert reports[0]["window_days"] is None
+    assert reports == []
     assert [row["job_id"] for row in payload["recent_jobs"]] == ["here"]
     assert payload["owned_jobs_considered"] == 1
 
@@ -335,3 +353,93 @@ def test_invalid_scope_returns_400():
     code, payload = get_economics({"scope": ["nope"]}, _svc())
     assert code == 400
     assert "error" in payload
+
+
+def test_conversation_reads_session_id_from_label(monkeypatch):
+    jobs = [
+        {
+            "id": "from-label",
+            "status": "complete",
+            "source": "harness",
+            "accounting_owned": True,
+            "accounting_scope": "marionette",
+            "label": '{"session_id": "sess-1"}',
+            "created_at": "2026-08-20T00:06:00+00:00",
+        },
+    ]
+    _patch_pm(monkeypatch)
+    code, payload = get_economics({"scope": ["conversation"]}, _svc(jobs=jobs))
+    assert code == 200
+    assert [row["job_id"] for row in payload["recent_jobs"]] == ["from-label"]
+
+
+def test_window30_drops_jobs_older_than_thirty_days(monkeypatch):
+    jobs = [
+        {
+            "id": "fresh",
+            "status": "complete",
+            "source": "harness",
+            "accounting_owned": True,
+            "accounting_scope": "marionette",
+            "created_at": "2026-08-19T00:00:00+00:00",
+        },
+        {
+            "id": "stale",
+            "status": "complete",
+            "source": "harness",
+            "accounting_owned": True,
+            "accounting_scope": "marionette",
+            "created_at": "2026-06-01T00:00:00+00:00",
+        },
+    ]
+    _patch_pm(monkeypatch)
+    code, payload = get_economics({"scope": ["window30"]}, _svc(jobs=jobs))
+    assert code == 200
+    assert [row["job_id"] for row in payload["recent_jobs"]] == ["fresh"]
+
+
+def test_all_projects_caps_extra_store_opens(tmp_path, monkeypatch):
+    extras = []
+    for idx in range(40):
+        path = tmp_path / f"proj-{idx}"
+        path.mkdir()
+        extras.append(path)
+    opened = []
+    reports, opened = _patch_pm(monkeypatch, extra_dirs=extras, opened=opened)
+    code, payload = get_economics({"scope": ["all_projects"]}, _svc())
+    assert code == 200
+    assert payload["all_projects"] is True
+    assert len(opened) == 32
+    assert opened[0] == ("sqlite", "/tmp/pm-primary")
+    assert reports[0]["window_days"] is None
+
+
+def test_unpriced_job_cost_is_unknown_not_measured_zero(monkeypatch):
+    jobs = [
+        {
+            "id": "empty-price",
+            "status": "complete",
+            "source": "harness",
+            "accounting_owned": True,
+            "accounting_scope": "marionette",
+            "created_at": "2026-08-20T00:00:00+00:00",
+        },
+    ]
+    _patch_pm(monkeypatch)
+    monkeypatch.setattr(
+        "puppetmaster.cost.price_job",
+        lambda arts, reg: _JobCost(
+            usd=0.0,
+            priced_tasks=0,
+            unpriced_tasks=1,
+            measured_runs=0,
+            estimated_runs=0,
+        ),
+    )
+    code, payload = get_economics({"scope": ["repo"]}, _svc(jobs=jobs))
+    assert code == 200
+    row = payload["recent_jobs"][0]
+    assert row["actual_marginal_usd"] is None
+    assert row["measured_cost_usd"] is None
+    assert row["cost_basis"] == "unknown"
+    assert payload["owned_actual_marginal_usd"] is None
