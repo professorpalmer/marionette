@@ -70,6 +70,25 @@ def _stub_rebuild_constructors(monkeypatch, srv):
     monkeypatch.setattr(srv, "_apply_model_context_window", lambda: None)
 
 
+def _restore_boot_singletons(srv, saved_pilot, saved_session):
+    srv._pilot = saved_pilot
+    srv._session = saved_session
+    active_id = getattr(srv._sessions, "active", None) or getattr(
+        srv._runners, "active_view_id", None
+    )
+    if not active_id:
+        return
+    try:
+        srv._runners.drop(active_id, notify=False)
+    except Exception:
+        pass
+    try:
+        srv._runners.get_or_create(active_id, lambda: saved_pilot)
+        srv._runners.set_active_view(active_id)
+    except Exception:
+        pass
+
+
 def _zero_boot_carry(srv):
     for attr in _METER_ATTRS:
         srv._BOOT_METER_CARRY[attr] = 0.0
@@ -82,7 +101,9 @@ def _zero_boot_carry(srv):
 
 def test_rebuild_pilot_preserves_usage_meters(monkeypatch):
     srv, httpd, port = _spin_server()
-    saved = _snapshot_meters(srv._pilot)
+    saved_pilot = srv._pilot
+    saved_session = srv._session
+    saved = _snapshot_meters(saved_pilot)
     saved_carry = dict(srv._BOOT_METER_CARRY)
     saved_cost = float(getattr(srv, "_BOOT_CARRY_COST_USD", 0.0) or 0.0)
     try:
@@ -127,7 +148,8 @@ def test_rebuild_pilot_preserves_usage_meters(monkeypatch):
         assert after["session"]["est_cost_usd"] > 0
         assert abs(after["session"]["est_cost_usd"] - before_cost) < 1e-9
     finally:
-        # Global singleton -- restore so later /api/usage tests see a clean pilot.
+        # Global singleton -- restore the real boot pilot, not the stub.
+        _restore_boot_singletons(srv, saved_pilot, saved_session)
         _restore_meters(srv._pilot, saved)
         srv._BOOT_METER_CARRY.clear()
         srv._BOOT_METER_CARRY.update(saved_carry)
@@ -433,11 +455,13 @@ def test_fold_snapshots_cost_survives_model_reprice():
 def test_idle_swap_snapshots_cost_survives_model_reprice(monkeypatch):
     """Idle pilot rebuild must freeze USD at old rates (not reprice live meters)."""
     srv, httpd, port = _spin_server()
-    saved = _snapshot_meters(srv._pilot)
+    saved_pilot = srv._pilot
+    saved_session = srv._session
+    saved = _snapshot_meters(saved_pilot)
     saved_carry = dict(srv._BOOT_METER_CARRY)
     saved_cost = float(getattr(srv, "_BOOT_CARRY_COST_USD", 0.0) or 0.0)
-    saved_history = getattr(srv._pilot, "_history", None)
-    saved_auto = getattr(srv._pilot, "_auto_distill", False)
+    saved_history = getattr(saved_pilot, "_history", None)
+    saved_auto = getattr(saved_pilot, "_auto_distill", False)
     try:
         _zero_boot_carry(srv)
         expensive_in, expensive_out = 5.0, 25.0
@@ -481,6 +505,7 @@ def test_idle_swap_snapshots_cost_survives_model_reprice(monkeypatch):
         assert abs(legacy - 0.1) < 1e-12
         assert abs(cost_after_swap - legacy) > 1.0
     finally:
+        _restore_boot_singletons(srv, saved_pilot, saved_session)
         _restore_meters(srv._pilot, saved)
         try:
             srv._pilot._history = saved_history
@@ -496,7 +521,9 @@ def test_idle_swap_snapshots_cost_survives_model_reprice(monkeypatch):
 def test_idle_perform_pilot_swap_freezes_meters(monkeypatch):
     """``_perform_pilot_swap`` freezes meters into carry (idle path, not deferred)."""
     srv, httpd, port = _spin_server()
-    saved = _snapshot_meters(srv._pilot)
+    saved_pilot = srv._pilot
+    saved_session = srv._session
+    saved = _snapshot_meters(saved_pilot)
     saved_carry = dict(srv._BOOT_METER_CARRY)
     saved_cost = float(getattr(srv, "_BOOT_CARRY_COST_USD", 0.0) or 0.0)
     saved_driver = srv._cfg.driver
@@ -532,6 +559,7 @@ def test_idle_perform_pilot_swap_freezes_meters(monkeypatch):
         assert getattr(srv._pilot, "_tokens_in") == 0
         assert abs(srv._boot_session_cost(cheap_in, cheap_out) - expected) < 1e-12
     finally:
+        _restore_boot_singletons(srv, saved_pilot, saved_session)
         _restore_meters(srv._pilot, saved)
         srv._cfg.driver = saved_driver
         srv._BOOT_METER_CARRY.clear()
