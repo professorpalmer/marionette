@@ -60,11 +60,42 @@ function translucencySupportedOn(platform) {
   return platform === "darwin" || platform === "win32";
 }
 
-function glassSupportedOn(platform, release) {
+function windowsBuildNumber(release) {
+  const parts = String(release || "").split(".");
+  const raw = parts.length >= 3 ? parts[2] : parts[0];
+  const build = Number.parseInt(raw || "", 10);
+  return Number.isFinite(build) ? build : 0;
+}
+
+function resolveSystemRelease(explicit) {
+  if (explicit) return String(explicit);
+  try {
+    if (typeof process.getSystemVersion === "function") {
+      const version = process.getSystemVersion();
+      if (version) return String(version);
+    }
+  } catch {
+    /* Electron-only */
+  }
+  return os.release();
+}
+
+function readOsVersionName(explicit) {
+  if (explicit != null) return String(explicit);
+  try {
+    return os.version();
+  } catch {
+    return "";
+  }
+}
+
+function glassSupportedOn(platform, release, versionName) {
   if (platform === "darwin") return true;
   if (platform !== "win32") return false;
-  const build = Number.parseInt(String(release || "").split(".")[2] || "", 10);
-  return Number.isFinite(build) && build >= WINDOWS_GLASS_MIN_BUILD;
+  if (windowsBuildNumber(release) >= WINDOWS_GLASS_MIN_BUILD) return true;
+  // Application-manifest compat can make os.release() look like 6.2.9200
+  // on a real Windows 11 box. os.version() still says Windows 11.
+  return /Windows 11/i.test(String(versionName || ""));
 }
 
 function normalizeMode(value, glassSupported, legacyIntensity) {
@@ -176,12 +207,13 @@ function translucencyDiff(previous, next) {
   };
 }
 
-function capabilities(platform, release) {
-  const glassSupported = glassSupportedOn(platform, release);
+function capabilities(platform, release, versionName) {
+  const glassSupported = glassSupportedOn(platform, release, versionName);
   return {
     translucencySupported: translucencySupportedOn(platform),
     glassSupported,
     isWindows: platform === "win32",
+    windowsBuild: platform === "win32" ? windowsBuildNumber(release) : 0,
     materials: glassMaterialsFor(platform === "win32" && glassSupported),
   };
 }
@@ -277,11 +309,20 @@ function applyWindowTranslucency(win, state, changed, opts) {
 
 function createTranslucencyController(opts) {
   const platform = (opts && opts.platform) || process.platform;
-  const release = (opts && opts.release) || os.release();
+  const release = resolveSystemRelease(opts && opts.release);
+  const versionName = readOsVersionName(opts && opts.versionName);
   const homeDir = opts && opts.homeDir;
   const getWindow = opts && opts.getWindow;
   const log = (opts && opts.log) || (() => {});
-  const caps = capabilities(platform, release);
+  const caps = capabilities(platform, release, versionName);
+  try {
+    log(
+      `[translucency] platform=${platform} release=${release} ` +
+        `build=${caps.windowsBuild} glass=${caps.glassSupported}`,
+    );
+  } catch {
+    /* logging must never throw */
+  }
   const loaded = loadPersistedTranslucency({
     homeDir,
     glassSupported: caps.glassSupported,
@@ -378,6 +419,9 @@ module.exports = {
   glassMaterialsFor,
   glassSurfaceKeep,
   glassSupportedOn,
+  readOsVersionName,
+  resolveSystemRelease,
+  windowsBuildNumber,
   normalizeMaterial,
   normalizeMode,
   normalizeState,

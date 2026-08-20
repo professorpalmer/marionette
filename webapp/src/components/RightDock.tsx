@@ -159,10 +159,11 @@ export default function RightDock({
       className="pointer-events-none absolute right-4 top-[3.75rem] bottom-10 z-20 flex flex-col items-center select-none"
       aria-label="Floating panel shortcuts"
     >
-      {/* Floating dock — a quiet charcoal surface keeps shortcuts legible. */}
+      {/* Same --shell-panel glass as the left rail: slightly darker keep so
+          icons stay readable, no extra backdrop-blur island. */}
       <div
-        className="pointer-events-auto flex flex-col items-center gap-0.5 rounded-2xl px-1 py-1.5
-          bg-[#13161a]/90 backdrop-blur-md border border-edge/50 shadow-[0_4px_18px_rgba(0,0,0,0.3)]"
+        data-testid="floating-dock-pill"
+        className="pointer-events-auto flex flex-col items-center gap-0.5 rounded-2xl px-1 py-1.5 shell-inset-glass"
       >
         <button
           type="button"

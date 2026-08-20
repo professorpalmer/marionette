@@ -94,6 +94,14 @@ body {
 
 /* Side rails + footer sit "within" the window: rounded, lightly bordered,
    with gutter from the window edge instead of flush hard dividers. */
+/* Shared fill with the left rail. Callers keep their own radius (the floating
+   pill is a capsule; inset panels are 12px). */
+.shell-inset-glass {
+  border: 1px solid var(--shell-panel-border);
+  background: var(--shell-panel);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+}
+
 .shell-inset-panel {
   border-radius: var(--shell-panel-radius);
   border: 1px solid var(--shell-panel-border);

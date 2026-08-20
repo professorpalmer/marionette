@@ -17,6 +17,7 @@ export type TranslucencyCapabilities = {
   translucencySupported: boolean;
   glassSupported: boolean;
   isWindows: boolean;
+  windowsBuild?: number;
   materials: GlassMaterial[];
 };
 
@@ -216,6 +217,7 @@ export async function loadTranslucencyCapabilities(): Promise<TranslucencyCapabi
     translucencySupported: false,
     glassSupported: false,
     isWindows: false,
+    windowsBuild: 0,
     materials: ["under-window", "popover", "titlebar", "header"],
   };
 }

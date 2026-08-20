@@ -61,8 +61,13 @@ describe("platform support", () => {
     assert.equal(glassSupportedOn("darwin"), true);
     assert.equal(glassSupportedOn("linux"), false);
     assert.equal(glassSupportedOn("win32", "10.0.22621"), true);
+    assert.equal(glassSupportedOn("win32", "10.0.26100.4652"), true);
     assert.equal(glassSupportedOn("win32", "10.0.19045"), false);
     assert.equal(glassSupportedOn("win32", ""), false);
+    assert.equal(glassSupportedOn("win32", "6.2.9200"), false);
+    assert.equal(glassSupportedOn("win32", "6.2.9200", "Windows 11 Pro"), true);
+    assert.equal(capabilities("win32", "10.0.26100.4652").windowsBuild, 26100);
+    assert.equal(capabilities("win32", "6.2.9200", "Windows 11 Pro").glassSupported, true);
   });
 });
 
