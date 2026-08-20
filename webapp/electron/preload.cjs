@@ -93,6 +93,11 @@ contextBridge.exposeInMainWorld("harnessIPC", {
     get: () => ipcRenderer.invoke("harness:selfDev:get"),
     set: (enabled) => ipcRenderer.invoke("harness:selfDev:set", enabled),
   },
+  translucency: {
+    get: () => ipcRenderer.invoke("translucency:get"),
+    set: (state) => ipcRenderer.invoke("translucency:set", state),
+    capabilities: () => ipcRenderer.invoke("translucency:capabilities"),
+  },
   restart: () => ipcRenderer.invoke("harness:restart"),
   // Fired when main respawns the Python backend on a new port. Panels that
   // painted a transient ECONNREFUSED can re-fetch without a full window reload.

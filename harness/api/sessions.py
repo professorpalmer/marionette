@@ -583,9 +583,64 @@ class SessionExportAttachment:
     data: bytes
 
 
-def get_sessions_export(qs: dict, svc: SessionServices) -> SessionExportAttachment:
+def _sanitize_export_filename_part(value):
+    cleaned = re.sub(r"[^a-zA-Z0-9\-_]", "_", value or "")
+    cleaned = re.sub(r"_+", "_", cleaned).strip("_-")
+    return cleaned or "session"
+
+
+def session_export_filename(title, sid, ext):
+    """Hermes-style `{title}-{id}.{ext}` so the file itself carries the transcript ID."""
+    id_part = _sanitize_export_filename_part(sid or "session")
+    title_part = _sanitize_export_filename_part(title or id_part)
+    if title_part.lower() == id_part.lower():
+        return "%s.%s" % (id_part, ext)
+    return "%s-%s.%s" % (title_part, id_part, ext)
+
+
+def session_transcript_relpath(sid):
+    safe_sid = "".join(c for c in (sid or "") if c.isalnum() or c in ("-", "_"))
+    return "transcripts/%s.json" % (safe_sid or "session")
+
+
+def format_session_export_markdown(payload):
     import datetime
 
+    sid = payload.get("transcript_id") or payload.get("session_id") or ""
+    title = payload.get("title") or "Unknown Session"
+    relpath = payload.get("transcript_relpath") or session_transcript_relpath(sid)
+    created = payload.get("created")
+    exported_at = payload.get("exported_at")
+    created_str = (
+        datetime.datetime.fromtimestamp(created).strftime("%Y-%m-%d %H:%M:%S")
+        if created
+        else "Unknown"
+    )
+    exported_str = (
+        datetime.datetime.fromtimestamp(exported_at).strftime("%Y-%m-%d %H:%M:%S")
+        if exported_at
+        else "Unknown"
+    )
+    md_lines = [
+        "# %s" % title,
+        "",
+        "**Transcript ID:** %s  " % sid,
+        "**Session ID:** %s  " % sid,
+        "**On disk:** `%s`  " % relpath,
+        "**Created:** %s  " % created_str,
+        "**Exported:** %s" % exported_str,
+        "",
+    ]
+    for msg in payload.get("messages") or []:
+        role = (msg.get("role") or "").capitalize()
+        content = msg.get("content", "")
+        if not isinstance(content, str):
+            content = json.dumps(content)
+        md_lines.extend(["## %s" % role, "", content, ""])
+    return "\n".join(md_lines)
+
+
+def get_sessions_export(qs: dict, svc: SessionServices) -> SessionExportAttachment:
     sid = qs.get("session", [None])[0] or svc.sessions.active or ""
     fmt = qs.get("format", ["json"])[0]
 
@@ -597,59 +652,29 @@ def get_sessions_export(qs: dict, svc: SessionServices) -> SessionExportAttachme
         history = data
 
     title = meta.get("title", "Unknown Session") if meta else "Unknown Session"
-    filename_base = meta.get("title") if meta else ""
-    if not filename_base:
-        filename_base = sid or "session"
-
-    safe_title = re.sub(r'[^a-zA-Z0-9\-_]', '_', filename_base)
-    safe_title = re.sub(r'_+', '_', safe_title)
-    safe_title = safe_title.strip('_-')
-    if not safe_title:
-        safe_title = sid or "session"
-
-    if fmt == "md":
-        created = meta.get("created") if meta else None
-        created_str = (
-            datetime.datetime.fromtimestamp(created).strftime('%Y-%m-%d %H:%M:%S')
-            if created else "Unknown"
-        )
-        exported_str = datetime.datetime.fromtimestamp(time.time()).strftime('%Y-%m-%d %H:%M:%S')
-
-        md_lines = []
-        md_lines.append(f"# {title or 'Unknown Session'}")
-        md_lines.append("")
-        md_lines.append(f"**Session ID:** {sid}  ")
-        md_lines.append(f"**Created:** {created_str}  ")
-        md_lines.append(f"**Exported:** {exported_str}")
-        md_lines.append("")
-
-        for msg in history:
-            role = msg.get("role", "").capitalize()
-            content = msg.get("content", "")
-            md_lines.append(f"## {role}")
-            md_lines.append("")
-            md_lines.append(content)
-            md_lines.append("")
-
-        body = "\n".join(md_lines)
-        return SessionExportAttachment(
-            content_type="text/markdown",
-            filename=f"{safe_title}.md",
-            data=body.encode("utf-8"),
-        )
-
     created = meta.get("created") if meta else None
     export_data = {
+        "transcript_id": sid,
         "session_id": sid,
+        "transcript_relpath": session_transcript_relpath(sid),
         "title": title or "Unknown Session",
         "created": created,
         "exported_at": time.time(),
         "messages": history,
     }
+
+    if fmt == "md":
+        body = format_session_export_markdown(export_data)
+        return SessionExportAttachment(
+            content_type="text/markdown",
+            filename=session_export_filename(title, sid, "md"),
+            data=body.encode("utf-8"),
+        )
+
     body = json.dumps(export_data, indent=2)
     return SessionExportAttachment(
         content_type="application/json",
-        filename=f"{safe_title}.json",
+        filename=session_export_filename(title, sid, "json"),
         data=body.encode("utf-8"),
     )
 
