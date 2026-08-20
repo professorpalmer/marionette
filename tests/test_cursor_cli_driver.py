@@ -1162,3 +1162,125 @@ def test_driver_meta_preserves_explicit_zero_cache_and_served_model(
     assert "cache_write_tokens" not in resp2.meta
     assert resp2.meta.get("raw_usage") == {"inputTokens": 10, "outputTokens": 1}
     assert resp2.meta.get("served_model") == "composer-2.5-served"
+    assert resp2.meta.get("requested_model") == "composer-2.5"
+    assert resp2.meta.get("identity_status") == "verified"
+    assert resp2.error is None
+    assert resp2.model == "cursor-cli:m"
+
+
+def test_cursor_fable_display_is_compatible():
+    from pmharness.drivers.cursor_identity import cursor_models_compatible
+
+    assert cursor_models_compatible(
+        "claude-fable-5-high",
+        "Claude Fable 5 High (200K)",
+    )
+    assert cursor_models_compatible(
+        "claude-fable-5-high",
+        "Claude Fable 5 High · No Thinking",
+    )
+    assert cursor_models_compatible(
+        "claude-fable-5-high",
+        "claude-fable-5-high",
+    )
+    assert not cursor_models_compatible(
+        "claude-fable-5-high",
+        "claude-fable-5-medium",
+    )
+
+
+def test_cursor_fable_vs_luna_is_incompatible():
+    from pmharness.drivers.cursor_identity import cursor_models_compatible
+
+    assert not cursor_models_compatible(
+        "claude-fable-5-high",
+        "gpt-5.6-luna-medium",
+    )
+    assert not cursor_models_compatible(
+        "claude-fable-5-high",
+        "GPT-5.6 Luna Medium 272K",
+    )
+
+
+def _print_stream(model, usage=None):
+    return "\n".join([
+        json.dumps({
+            "type": "system",
+            "subtype": "init",
+            "session_id": "native-1",
+            "model": model,
+        }),
+        json.dumps({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "hi"}],
+            },
+        }),
+        json.dumps({
+            "type": "result",
+            "is_error": False,
+            "result": "hi",
+            "session_id": "native-1",
+            "usage": usage or {"inputTokens": 12, "outputTokens": 3},
+        }),
+        "",
+    ])
+
+
+class _PrintProc:
+    def __init__(self, stream):
+        self.returncode = 0
+        self.stdout = io.StringIO(stream)
+        self.stderr = io.StringIO("")
+
+    def wait(self, timeout=None):
+        return 0
+
+    def kill(self):
+        pass
+
+
+def test_print_path_accepts_fable_display_label(monkeypatch, tmp_path):
+    fake_bin = tmp_path / "agent"
+    fake_bin.write_text("x", encoding="utf-8")
+    monkeypatch.setattr(
+        "pmharness.drivers.cursor_cli.subprocess.Popen",
+        lambda *a, **k: _PrintProc(
+            _print_stream("Claude Fable 5 High (200K) No Thinking")
+        ),
+    )
+    d = CursorCliDriver(
+        name="cursor-cli:claude-fable-5-high",
+        model="claude-fable-5-high",
+        agent_binary=str(fake_bin),
+    )
+    resp = d.chat([{"role": "user", "content": "hi"}])
+    assert resp.error is None
+    assert resp.model == "cursor-cli:claude-fable-5-high"
+    assert resp.meta["requested_model"] == "claude-fable-5-high"
+    assert resp.meta["served_model"] == "Claude Fable 5 High (200K) No Thinking"
+    assert resp.meta["identity_status"] == "verified"
+
+
+def test_print_path_fails_closed_on_fable_vs_luna(monkeypatch, tmp_path):
+    fake_bin = tmp_path / "agent"
+    fake_bin.write_text("x", encoding="utf-8")
+    monkeypatch.setattr(
+        "pmharness.drivers.cursor_cli.subprocess.Popen",
+        lambda *a, **k: _PrintProc(_print_stream("gpt-5.6-luna-medium")),
+    )
+    d = CursorCliDriver(
+        name="cursor-cli:claude-fable-5-high",
+        model="claude-fable-5-high",
+        agent_binary=str(fake_bin),
+    )
+    resp = d.chat([{"role": "user", "content": "hi"}])
+    assert resp.error
+    assert "gpt-5.6-luna-medium" in resp.error
+    assert "claude-fable-5-high" in resp.error
+    assert resp.model == "gpt-5.6-luna-medium"
+    assert resp.meta["requested_model"] == "claude-fable-5-high"
+    assert resp.meta["served_model"] == "gpt-5.6-luna-medium"
+    assert resp.meta["identity_status"] == "mismatch"
+    assert d._native_chat_id is None

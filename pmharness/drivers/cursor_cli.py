@@ -20,6 +20,11 @@ from pathlib import Path
 from typing import Any, Callable, List, Optional, Tuple
 
 from .base import SYSTEM_PROMPT, DriverResponse
+from .cursor_identity import (
+    IDENTITY_MISMATCH,
+    cursor_identity_mismatch_message,
+    cursor_identity_status,
+)
 
 # CreateProcess cmdline budget is ~32k. We spawn node+index.js directly
 # (no agent.cmd→PowerShell), so short prompts stay on argv. Only spill to a
@@ -1132,6 +1137,17 @@ class CursorCliDriver:
                     f"{detail}"
                 )
 
+            requested = (self.model or "").strip()
+            served = ""
+            raw_served = parsed.get("model")
+            if isinstance(raw_served, str) and raw_served.strip():
+                served = raw_served.strip()
+            identity_status = cursor_identity_status(requested, served)
+            mismatch = cursor_identity_mismatch_message(requested, served)
+            if mismatch and not err:
+                err = mismatch
+                self._clear_native_chat()
+
             native_from_stream = str(parsed.get("session_id") or "").strip()
             if not err and native_from_stream:
                 self._remember_native_chat(
@@ -1144,6 +1160,7 @@ class CursorCliDriver:
                 for tc in (parsed.get("tool_calls") or [])
                 if isinstance(tc, dict)
             ]
+
             meta = {
                 # Critical: Cursor Agent already executed these internally.
                 # Returning them as OpenAI tool_calls makes Marionette try
@@ -1159,12 +1176,17 @@ class CursorCliDriver:
                 "host_tools_ignored": True,
                 "billing": "plan",
                 "reasoning": str(parsed.get("reasoning") or ""),
+                "requested_model": requested,
+                "identity_status": identity_status,
+                "token_basis": (
+                    "provider" if isinstance(usage_blob, dict) and usage_blob
+                    else "unknown"
+                ),
             }
             if provider_cost is not None:
                 meta["provider_cost_usd"] = provider_cost
-            served = parsed.get("model")
-            if isinstance(served, str) and served.strip():
-                meta["served_model"] = served.strip()
+            if served:
+                meta["served_model"] = served
             if isinstance(usage_blob, dict) and usage_blob:
                 meta["raw_usage"] = usage_blob
             # Preserve explicit zeros only when usage actually reports the field.
@@ -1174,12 +1196,18 @@ class CursorCliDriver:
                 meta["cache_write_tokens"] = int(cache_write)
             attach_modality_fields(meta, usage_detail)
 
+            # Verified exact requested model keeps the picker label. A true
+            # mismatch must not stamp that label as the served fact.
+            response_model = self.name
+            if identity_status == IDENTITY_MISMATCH:
+                response_model = served
+
             return DriverResponse(
                 text=parsed.get("text") or "",
                 tokens_in=tokens_in,
                 tokens_out=tokens_out,
                 latency_ms=latency,
-                model=self.name,
+                model=response_model,
                 error=err,
                 meta=meta,
             )

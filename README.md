@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.12` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.256, deliberately pre-1.0. Rides puppetmaster-ai==1.22.12. Session export uses authenticated download plus a copyable transcript ID; Settings can enable a Cursor-style glass window. Compact residual factory default remains catalog; summary and hybrid stay Settings opt-ins.
+> Status: v0.9.257, deliberately pre-1.0. Rides puppetmaster-ai==1.22.12. Cursor CLI pilots now verify requested-versus-served identity and use bounded `--model` sessions; macOS glass uses a crash-safe transparent vibrancy surface shared by the shell panels. Compact residual factory default remains catalog; summary and hybrid stay Settings opt-ins.
 
 ## Documentation
 

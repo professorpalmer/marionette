@@ -170,9 +170,45 @@ class _FakeProc:
 
 def test_cursor_acp_enabled_default(monkeypatch):
     monkeypatch.delenv("HARNESS_CURSOR_ACP", raising=False)
+    assert cursor_acp_enabled() is False
+    assert cursor_acp_enabled("auto") is False
+    monkeypatch.setenv("HARNESS_CURSOR_ACP", "1")
     assert cursor_acp_enabled() is True
+    assert cursor_acp_enabled("auto") is True
+    assert cursor_acp_enabled("") is True
+    assert cursor_acp_enabled("claude-fable-5-high") is False
     monkeypatch.setenv("HARNESS_CURSOR_ACP", "0")
     assert cursor_acp_enabled() is False
+    assert cursor_acp_enabled("auto") is False
+
+
+def test_cursor_acp_refuses_explicit_model_even_when_opted_in(monkeypatch):
+    """Opt-in ACP is only for auto/empty — explicit pins must use --print."""
+    monkeypatch.setenv("HARNESS_CURSOR_ACP", "1")
+    assert cursor_acp_enabled("claude-fable-5-high") is False
+    assert cursor_acp_enabled("gpt-5.6-luna-medium") is False
+    assert cursor_acp_enabled("auto") is True
+
+    class Fallback:
+        def _run_stream(self, *a, **k):
+            from pmharness.drivers.base import DriverResponse
+            return DriverResponse(text="print-path", model="cursor-cli:fable")
+
+    class MustNotPrompt(WarmAcpSession):
+        def prompt(self, *a, **k):
+            raise AssertionError("ACP must not run for explicit picker models")
+
+    drv = CursorAcpDriver(
+        name="cursor-cli:claude-fable-5-high",
+        model="claude-fable-5-high",
+        session=MustNotPrompt(model="claude-fable-5-high", cwd=None),
+        fallback=Fallback(),  # type: ignore[arg-type]
+    )
+    resp = drv.chat_stream(
+        [{"role": "user", "content": "hi"}],
+        on_delta=lambda _t: None,
+    )
+    assert resp.text == "print-path"
 
 
 def test_extract_update_text_chunk():
@@ -284,9 +320,9 @@ def test_driver_falls_back_to_print_when_acp_handshake_fails(monkeypatch):
 
     fb = Fallback()
     drv = CursorAcpDriver(
-        name="cursor-cli:x",
-        model="x",
-        session=BoomSession(model="x", cwd=None),
+        name="cursor-cli:auto",
+        model="auto",
+        session=BoomSession(model="auto", cwd=None),
         fallback=fb,  # type: ignore[arg-type]
     )
     monkeypatch.setenv("HARNESS_CURSOR_ACP", "1")
@@ -304,7 +340,7 @@ def test_driver_uses_acp_when_session_works(monkeypatch):
     proc = _FakeProc()
     transport = AcpTransport(proc)
     session = WarmAcpSession(
-        model="m",
+        model="auto",
         cwd="C:\\ws",
         transport_factory=lambda: transport,
     )
@@ -314,8 +350,8 @@ def test_driver_uses_acp_when_session_works(monkeypatch):
             raise AssertionError("must not fall back")
 
     drv = CursorAcpDriver(
-        name="cursor-cli:m",
-        model="m",
+        name="cursor-cli:auto",
+        model="auto",
         session=session,
         fallback=NoFallback(),  # type: ignore[arg-type]
     )
@@ -328,6 +364,8 @@ def test_driver_uses_acp_when_session_works(monkeypatch):
     assert resp.text == "pong-ok"
     assert resp.meta.get("cursor_acp") is True
     assert resp.meta.get("billing") == "plan"
+    assert resp.meta.get("requested_model") == "auto"
+    assert resp.meta.get("identity_status") == "auto"
     assert resp.meta.get("tool_calls") == []
     assert resp.tokens_in == 120
     assert resp.tokens_out == 8

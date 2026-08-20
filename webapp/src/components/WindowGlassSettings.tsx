@@ -2,12 +2,9 @@ import { useEffect, useState } from "react";
 import {
   ENABLE_INTENSITY,
   FROST_LABELS,
-  beginTranslucencyPeek,
   defaultTranslucencyState,
-  endTranslucencyPeek,
   hydrateWindowGlass,
   loadTranslucencyCapabilities,
-  pulseTranslucencyPeek,
   resetTranslucencyPeek,
   setWindowGlass,
   type GlassMaterial,
@@ -46,7 +43,6 @@ export default function WindowGlassSettings() {
             mode: "glass",
             intensity: on ? 0 : Math.max(state.intensity, ENABLE_INTENSITY),
           });
-          pulseTranslucencyPeek();
         }}
         className={`w-full flex items-center justify-between px-3 py-2 rounded border transition text-left ${
           on ? "bg-accent/10 border-accent/30 text-accent" : "bg-panel2 border-edge text-muted"
@@ -65,9 +61,6 @@ export default function WindowGlassSettings() {
               max={100}
               value={state.intensity}
               aria-label="Glass tint"
-              onPointerDown={() => beginTranslucencyPeek()}
-              onPointerUp={() => endTranslucencyPeek()}
-              onPointerCancel={() => endTranslucencyPeek()}
               onChange={(e) => {
                 void commit({ intensity: Number(e.target.value) });
               }}
@@ -85,7 +78,6 @@ export default function WindowGlassSettings() {
                   type="button"
                   onClick={() => {
                     void commit({ material: material as GlassMaterial });
-                    pulseTranslucencyPeek();
                   }}
                   className={`px-2 py-1 rounded border text-[10px] uppercase tracking-wider font-semibold transition ${
                     active

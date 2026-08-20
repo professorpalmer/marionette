@@ -45,6 +45,10 @@ from .stream_performance import (
 RECEIPT_SCHEMA_VERSION = 1
 MAX_RECEIPTS_PER_SESSION = 200
 RECEIPT_STATUSES = frozenset({"success", "error", "context_overflow"})
+RECEIPT_IDENTITY_STATUSES = frozenset({
+    "verified", "mismatch", "unreported", "auto",
+})
+RECEIPT_TOKEN_BASES = frozenset({"provider", "unknown"})
 PERFORMANCE_SUBDIR = "stream_performance"
 _LOAD_MAX_BYTES = 2 * 1024 * 1024
 _MAX_LABEL_CHARS = 128
@@ -442,6 +446,14 @@ def build_receipt(
     model: Any = "",
     status: Any = "success",
     captured_at: Any = None,
+    requested_model: Any = "",
+    served_model: Any = "",
+    identity_status: Any = "",
+    tokens_in: Any = None,
+    tokens_out: Any = None,
+    cache_read_tokens: Any = None,
+    cache_write_tokens: Any = None,
+    token_basis: Any = "",
 ) -> Dict[str, Any]:
     """Fixed JSON-safe receipt. Unknown / unsafe fields are dropped."""
     sid = safe_session_id(str(session_id or ""))
@@ -478,6 +490,30 @@ def build_receipt(
             ordinal = None
         if ordinal is not None and 0 <= ordinal <= _MAX_NONNEG_INT:
             receipt["user_ordinal"] = ordinal
+    requested_s = _safe_label(requested_model)
+    if requested_s:
+        receipt["requested_model"] = requested_s
+    served_s = _safe_label(served_model)
+    if served_s:
+        receipt["served_model"] = served_s
+    ident = str(identity_status or "").strip().lower()
+    if ident in RECEIPT_IDENTITY_STATUSES:
+        receipt["identity_status"] = ident
+    for key, value in (
+        ("tokens_in", tokens_in),
+        ("tokens_out", tokens_out),
+        ("cache_read_tokens", cache_read_tokens),
+        ("cache_write_tokens", cache_write_tokens),
+    ):
+        if value is None:
+            continue
+        number = _bounded_nonneg_int(value)
+        if number is None:
+            continue
+        receipt[key] = number
+    basis = str(token_basis or "").strip().lower()
+    if basis in RECEIPT_TOKEN_BASES:
+        receipt["token_basis"] = basis
     return receipt
 
 
@@ -498,6 +534,14 @@ def sanitize_receipt(raw: Any) -> Optional[Dict[str, Any]]:
         model=raw.get("model", ""),
         status=raw.get("status", "success"),
         captured_at=raw.get("captured_at"),
+        requested_model=raw.get("requested_model", ""),
+        served_model=raw.get("served_model", ""),
+        identity_status=raw.get("identity_status", ""),
+        tokens_in=raw.get("tokens_in"),
+        tokens_out=raw.get("tokens_out"),
+        cache_read_tokens=raw.get("cache_read_tokens"),
+        cache_write_tokens=raw.get("cache_write_tokens"),
+        token_basis=raw.get("token_basis", ""),
     )
 
 
@@ -721,6 +765,8 @@ __all__ = (
     "MAX_RECEIPTS_PER_SESSION",
     "RECEIPT_SCHEMA_VERSION",
     "RECEIPT_STATUSES",
+    "RECEIPT_IDENTITY_STATUSES",
+    "RECEIPT_TOKEN_BASES",
     "STREAM_PERFORMANCE_KEY",
     "StreamPerformanceReceiptStore",
     "build_receipt",

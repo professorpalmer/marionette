@@ -280,6 +280,60 @@ def test_record_helper_does_not_mutate_resp_meta(tmp_path):
     assert not hasattr(session, "StreamTimingAccumulator")
 
 
+def test_receipt_persists_requested_served_identity_and_tokens(tmp_path):
+    from harness.send_loop_phases import record_provider_stream_receipt
+    from harness.stream_performance_store import sanitize_receipt
+
+    meta = {
+        STREAM_PERFORMANCE_KEY: {PROVIDER_CALL_TOTAL_MS: 8.0},
+        "requested_model": "claude-fable-5-high",
+        "served_model": "Claude Fable 5 High (200K)",
+        "identity_status": "verified",
+        "token_basis": "provider",
+        "cache_read_tokens": 40,
+        "cache_write_tokens": 2,
+        "secret_prompt": "do-not-persist",
+    }
+    resp = DriverResponse(
+        text="ok",
+        tokens_in=120,
+        tokens_out=9,
+        latency_ms=1.0,
+        meta=meta,
+    )
+    session = SimpleNamespace(
+        harness_session_id="sess-id",
+        state_dir=str(tmp_path),
+        config=SimpleNamespace(driver="cursor-cli:claude-fable-5-high"),
+        _current_user_ordinal=lambda: 0,
+    )
+    record_provider_stream_receipt(session, resp, provider_step=1, provider_attempt=0)
+    rows = StreamPerformanceReceiptStore(str(tmp_path)).list_receipts("sess-id")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["requested_model"] == "claude-fable-5-high"
+    assert row["served_model"] == "Claude Fable 5 High (200K)"
+    assert row["identity_status"] == "verified"
+    assert row["tokens_in"] == 120
+    assert row["tokens_out"] == 9
+    assert row["cache_read_tokens"] == 40
+    assert row["cache_write_tokens"] == 2
+    assert row["token_basis"] == "provider"
+    assert "secret_prompt" not in row
+    cleaned = sanitize_receipt({
+        **row,
+        "identity_status": "forged",
+        "token_basis": "invented",
+        "nested": {"leak": 1},
+    })
+    assert cleaned is not None
+    assert "identity_status" not in cleaned
+    assert "token_basis" not in cleaned
+    assert "nested" not in cleaned
+    assert cleaned["requested_model"] == "claude-fable-5-high"
+    assert cleaned["tokens_in"] == 120
+
+
 def test_record_helper_swallows_sink_failure(tmp_path, monkeypatch):
     from harness.send_loop_phases import record_provider_stream_receipt
 

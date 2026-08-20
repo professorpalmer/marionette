@@ -5,6 +5,7 @@ import urllib.request
 import urllib.error
 import urllib.parse
 import os
+import time
 from http.server import ThreadingHTTPServer
 
 import pytest
@@ -125,7 +126,15 @@ def test_first_message_auto_titles(tmp_path):
             # We don't care if the actual stream fails (e.g. key/preflight issues)
             # because the auto-titling logic runs first
             pass
-            
+
+        # urlopen returns as soon as the SSE headers arrive; the handler updates
+        # the title immediately after those headers on another thread.
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if srv._sessions.list()[0]["title"] != "New session":
+                break
+            time.sleep(0.01)
+
         # Check if the title was updated
         get_resp = _get(port, "/api/sessions")
         sessions = json.loads(get_resp.read().decode())

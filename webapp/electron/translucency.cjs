@@ -8,10 +8,14 @@
  * full contrast.
  *
  * One lever, 0–100 (0 = off). Main persists ~/.pmharness/translucency.json so
- * a cold launch can apply the backing at BrowserWindow construction. Runtime
- * setBackgroundColor('#00000000') is silently lost on a fresh compositor
- * (measured by Hermes on macOS 26 / Electron 40), so creation must not rely
- * on a post-create fixup.
+ * a cold launch can apply the backing at BrowserWindow construction.
+ *
+ * Marionette ships Electron 33. On darwin the window is born transparent and
+ * vibrancy-backed, then stays that way: CSS paints the opaque theme when glass
+ * is off. `transparent: true` is safe and is what lets WebContents alpha reach
+ * the native material. Do not also stamp backgroundColor '#00000000' at create
+ * or call setBackgroundColor / setVibrancy(null) on that path — those
+ * combinations crash Electron 33 on macOS 26.
  */
 
 const fs = require("node:fs");
@@ -172,14 +176,17 @@ function windowSurfaceOptions(state, opts) {
   const isWindows = platform === "win32";
   const options = {
     opacity: windowOpacityFor(state),
-    ...windowBackingOptions(state, themed),
   };
   if (isMac) {
-    const material = vibrancyFor(state);
-    if (material) {
-      options.vibrancy = material;
-      options.visualEffectState = "active";
-    }
+    // Born transparent + vibrancy-backed so WebContents alpha reaches the
+    // NSVisualEffectView and a live toggle only thins CSS. Electron 33 accepts
+    // this pairing; the crashing combination is vibrancy plus an explicit
+    // transparent backgroundColor (or later setVibrancy(null)).
+    options.transparent = true;
+    options.vibrancy = vibrancyFor(state) || normalizeMaterial(state.material);
+    options.visualEffectState = "active";
+  } else {
+    Object.assign(options, windowBackingOptions(state, themed));
   }
   if (isWindows && glassSupported) {
     // Win11 DWM materials only reach the client area on a transparent window
@@ -196,14 +203,13 @@ function applyWindowTranslucency(win, state, changed, opts) {
   const glassSupported = !!(opts && opts.glassSupported);
   const themed = (opts && opts.themedColor) || THEMED_BACKGROUND;
   const patch = changed || { backing: true, material: true, opacity: true };
-  if (patch.backing && typeof win.setBackgroundColor === "function") {
+  if (patch.backing && typeof win.setBackgroundColor === "function" && platform !== "darwin") {
     win.setBackgroundColor(glassActive(state) ? "#00000000" : themed);
   }
   if (patch.material) {
     if (platform === "darwin" && typeof win.setVibrancy === "function") {
-      const material = vibrancyFor(state);
-      if (material) win.setVibrancy(material, { animationDuration: 150 });
-      else win.setVibrancy(null);
+      const material = vibrancyFor(state) || normalizeMaterial(state.material);
+      win.setVibrancy(material);
     }
     if (
       platform === "win32" &&

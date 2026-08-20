@@ -1244,6 +1244,55 @@ def _receipt_model_label(session: Any, resp: Any, driver: str) -> str:
     return driver
 
 
+def _receipt_meta_label(meta: Any, key: str) -> str:
+    if not isinstance(meta, dict):
+        return ""
+    raw = meta.get(key)
+    if not isinstance(raw, str):
+        return ""
+    text = raw.strip()
+    if not text or "\n" in text or "\x00" in text or len(text) > 128:
+        return ""
+    return text
+
+
+def _receipt_identity_kwargs(resp: Any, driver: str) -> Dict[str, Any]:
+    """Pull requested/served identity + token totals off a driver response."""
+    meta = getattr(resp, "meta", None) if resp is not None else None
+    if not isinstance(meta, dict):
+        meta = {}
+    requested = _receipt_meta_label(meta, "requested_model")
+    if not requested and ":" in driver:
+        requested = driver.split(":", 1)[-1].strip()
+    served = _receipt_meta_label(meta, "served_model")
+    identity = _receipt_meta_label(meta, "identity_status").lower()
+    token_basis = _receipt_meta_label(meta, "token_basis").lower()
+    out: Dict[str, Any] = {}
+    if requested:
+        out["requested_model"] = requested
+    if served:
+        out["served_model"] = served
+    if identity:
+        out["identity_status"] = identity
+    if token_basis:
+        out["token_basis"] = token_basis
+    elif meta.get("raw_usage") or served or requested:
+        out["token_basis"] = (
+            "provider" if isinstance(meta.get("raw_usage"), dict) else "unknown"
+        )
+    if resp is not None:
+        for attr, key in (("tokens_in", "tokens_in"), ("tokens_out", "tokens_out")):
+            value = getattr(resp, attr, None)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                out[key] = value
+    for key in ("cache_read_tokens", "cache_write_tokens"):
+        if key in meta:
+            value = meta.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                out[key] = value
+    return out
+
+
 def record_provider_stream_receipt(
     session: Any,
     resp: Any = None,
@@ -1307,6 +1356,7 @@ def record_provider_stream_receipt(
             driver=driver,
             model=_receipt_model_label(session, resp, driver),
             status=status,
+            **_receipt_identity_kwargs(resp, driver),
         )
         StreamPerformanceReceiptStore(state_dir).record(sid, receipt)
     except Exception:

@@ -100,8 +100,14 @@ def test_curated_enabled_drops_compiled_in_default(monkeypatch):
         "harness.model_visibility.enabled_pilots",
         lambda: ["openrouter:deepseek/deepseek-v4-pro"],
     )
+    enabled_spec = "openrouter:deepseek/deepseek-v4-pro"
+    monkeypatch.setattr(
+        srv,
+        "_driver_provider_available",
+        lambda spec: spec == enabled_spec,
+    )
     srv._resolve_available_driver()
-    assert srv._cfg.driver == "openrouter:deepseek/deepseek-v4-pro"
+    assert srv._cfg.driver == enabled_spec
 
 
 def test_available_pilots_does_not_inject_stale_default(monkeypatch):
