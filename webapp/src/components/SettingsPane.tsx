@@ -20,6 +20,7 @@ import {
 } from "./settingsSnapshot";
 import { usePanelNotice } from "../lib/useOperationalDiagnostic";
 import { SettingsCollapse } from "./SettingsCollapse";
+import WindowGlassSettings from "./WindowGlassSettings";
 
 export type SettingsSection = "general" | "safety" | "providers" | "notifications" | "plugins" | "advanced";
 
@@ -986,6 +987,9 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
+        {gate("general", "transparent background glass vibrancy acrylic mica frost window") && (
+          <WindowGlassSettings />
+        )}
         {gate("general", "driver model select") && settings && (<>
         {/* Driver Select */}
         <div className="space-y-1.5">

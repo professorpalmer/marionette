@@ -54,11 +54,13 @@ def test_export_json_and_md(tmp_path):
         assert "application/json" in content_type_json
         
         content_disp_json = resp_json.headers.get("Content-Disposition")
-        assert content_disp_json == 'attachment; filename="My_Export_Test_Session.json"'
+        assert content_disp_json == 'attachment; filename="My_Export_Test_Session-%s.json"' % sid
         
         # Check Body JSON
         data_json = json.loads(resp_json.read().decode("utf-8"))
+        assert data_json["transcript_id"] == sid
         assert data_json["session_id"] == sid
+        assert data_json["transcript_relpath"] == "transcripts/%s.json" % sid
         assert data_json["title"] == "My Export Test Session!"
         assert data_json["created"] == sess_meta["created"]
         assert "exported_at" in data_json
@@ -74,12 +76,14 @@ def test_export_json_and_md(tmp_path):
         assert "text/markdown" in content_type_md
         
         content_disp_md = resp_md.headers.get("Content-Disposition")
-        assert content_disp_md == 'attachment; filename="My_Export_Test_Session.md"'
+        assert content_disp_md == 'attachment; filename="My_Export_Test_Session-%s.md"' % sid
         
         # Check Body MD
         body_md = resp_md.read().decode("utf-8")
         assert "# My Export Test Session!" in body_md
+        assert f"**Transcript ID:** {sid}" in body_md
         assert f"**Session ID:** {sid}" in body_md
+        assert f"**On disk:** `transcripts/{sid}.json`" in body_md
         assert "## User" in body_md
         assert "hello pilot" in body_md
         assert "## Assistant" in body_md
@@ -101,10 +105,12 @@ def test_export_unknown_session_does_not_500(tmp_path):
         assert resp.status == 200
         
         content_disp = resp.headers.get("Content-Disposition")
-        assert content_disp == 'attachment; filename="unknown-id.json"'
+        assert content_disp == 'attachment; filename="Unknown_Session-unknown-id.json"'
         
         data = json.loads(resp.read().decode("utf-8"))
+        assert data["transcript_id"] == "unknown-id"
         assert data["session_id"] == "unknown-id"
+        assert data["transcript_relpath"] == "transcripts/unknown-id.json"
         assert data["title"] == "Unknown Session"
         assert data["messages"] == []
         
@@ -150,6 +156,17 @@ def test_export_requires_header_auth_not_query_string(tmp_path):
         assert resp.status == 200
         data = json.loads(resp.read().decode("utf-8"))
         assert data["session_id"] == sid
+        assert data["transcript_id"] == sid
         
     finally:
         httpd.shutdown()
+
+
+def test_session_export_filename_includes_transcript_id():
+    from harness.api.sessions import session_export_filename, session_transcript_relpath
+
+    assert session_export_filename("My Export Test Session!", "a1b2c3d4e5f6", "json") == (
+        "My_Export_Test_Session-a1b2c3d4e5f6.json"
+    )
+    assert session_export_filename("unknown-id", "unknown-id", "md") == "unknown-id.md"
+    assert session_transcript_relpath("a1b2c3d4e5f6") == "transcripts/a1b2c3d4e5f6.json"

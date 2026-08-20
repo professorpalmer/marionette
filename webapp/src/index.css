@@ -74,6 +74,25 @@ body {
   --shell-panel-radius: 12px;
 }
 
+/* Window glass (Settings → General → Transparent background).
+   Native vibrancy / DWM acrylic composites BELOW the page. Field tokens go
+   transparent so <body> is the only painter; inset panels and cards keep
+   their own fills for contrast. Tint is --translucency-glass-keep. */
+:root[data-marionette-glass] {
+  background-color: transparent !important;
+  --shell-chrome: transparent;
+  --shell-chat: transparent;
+}
+
+:root[data-marionette-glass] body {
+  background: color-mix(in srgb, #0f1113 var(--translucency-glass-keep, 100%), transparent);
+}
+
+:root[data-marionette-glass-peek] [data-testid="settings-shell"] {
+  background: color-mix(in srgb, #0f1113 22%, transparent) !important;
+  opacity: 0.22;
+}
+
 /* Side rails + footer sit "within" the window: rounded, lightly bordered,
    with gutter from the window edge instead of flush hard dividers. */
 .shell-inset-panel {

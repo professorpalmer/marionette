@@ -17,6 +17,7 @@ import {
   normalizeSessionSearchHits,
   type SessionSearchHit,
 } from "./sessionSearch";
+import type { SessionExportPayload } from "./sessionExport";
 
 export type { ChatEventFrame, StoreEvent } from "./transport";
 export type { SessionSearchHit } from "./sessionSearch";
@@ -1404,8 +1405,11 @@ export const api = {
       cancelStream?.();
     };
   },
-  exportUrl: (sessionId: string, format: "md" | "json") =>
-    withToken(`/api/sessions/export?session=${encodeURIComponent(sessionId)}&format=${format}`),
+  /** Authenticated JSON envelope. The desktop must not navigate to /api/sessions/export. */
+  exportSession: (sessionId: string) =>
+    getJSON<SessionExportPayload>(
+      `/api/sessions/export?session=${encodeURIComponent(sessionId)}&format=json`,
+    ),
 
   getWorktrees: () => getJSON<{ worktrees: Worktree[]; max: number }>("/api/worktrees"),
   addWorktree: (branch: string, base?: string) => postJSON<Worktree>("/api/worktrees/add", { branch, base }),

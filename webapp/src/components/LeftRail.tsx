@@ -7,6 +7,13 @@ import { repoPathsEqual } from "../lib/pathNormalize";
 import { mapSessionSearchHits, type SessionSearchRow } from "../lib/sessionSearch";
 import { usePolling } from "../lib/usePolling";
 import { readSWRCache, writeSWRCache, useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
+import {
+  copyTranscriptId,
+  downloadTextFile,
+  formatSessionExportMarkdown,
+  sessionExportFilename,
+  transcriptIdOf,
+} from "../lib/sessionExport";
 import { writeTranscriptCache } from "./Conversation";
 import { sharedReadinessNotice } from "../lib/operationalDiagnostic";
 import { useOperationalDiagnostic } from "../lib/useOperationalDiagnostic";
@@ -866,14 +873,34 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     }
   };
 
-  const handleExport = (sid: string, format: "md" | "json") => {
-    const url = api.exportUrl(sid, format);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+  const handleExport = async (sid: string, format: "md" | "json") => {
+    try {
+      const payload = await api.exportSession(sid);
+      const id = transcriptIdOf(payload, sid);
+      const title = payload.title || "session";
+      if (format === "json") {
+        downloadTextFile(
+          sessionExportFilename(title, id, "json"),
+          JSON.stringify(payload, null, 2),
+          "application/json",
+        );
+      } else {
+        downloadTextFile(
+          sessionExportFilename(title, id, "md"),
+          formatSessionExportMarkdown(payload, sid),
+          "text/markdown",
+        );
+      }
+      toast(`Exported ${format.toUpperCase()} · ${id}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Export failed";
+      toast(msg);
+    }
+  };
+
+  const handleCopyTranscriptId = async (sid: string) => {
+    const ok = await copyTranscriptId(sid);
+    toast(ok ? `Copied transcript ID ${sid}` : "Could not copy transcript ID");
   };
 
   const handleContextMenu = (e: React.MouseEvent, s: Session, allowSettle: boolean) => {
@@ -2010,7 +2037,16 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           <div className="border-t border-edge my-1" />
           <button
             onClick={() => {
-              handleExport(contextMenu.sessionId, "md");
+              void handleCopyTranscriptId(contextMenu.sessionId);
+              setContextMenu(null);
+            }}
+            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
+          >
+            Copy transcript ID
+          </button>
+          <button
+            onClick={() => {
+              void handleExport(contextMenu.sessionId, "md");
               setContextMenu(null);
             }}
             className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
@@ -2019,7 +2055,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           </button>
           <button
             onClick={() => {
-              handleExport(contextMenu.sessionId, "json");
+              void handleExport(contextMenu.sessionId, "json");
               setContextMenu(null);
             }}
             className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"

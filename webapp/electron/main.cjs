@@ -7,7 +7,7 @@
 // The renderer is the SAME React app as the web build; only the transport
 // implementation differs (IPC here vs fetch/SSE on the web).
 
-const { app, BrowserWindow, ipcMain, dialog, shell, session } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, shell, session, nativeTheme } = require("electron");
 app.name = "Marionette";
 const { spawn } = require("node:child_process");
 const http = require("node:http");
@@ -39,6 +39,7 @@ const {
   shouldRetryFailedRendererLoad,
   resolveClassicDevRendererSource,
 } = require("./renderer-fallback.cjs");
+const { createTranslucencyController } = require("./translucency.cjs");
 
 // Must run before any git/npm/uv child spawns: on Windows the portable tools
 // installed by first-run bootstrap are only on PATH in-memory, per process.
@@ -389,6 +390,14 @@ let backendPort = 8799;
 /** True when this Electron process spawned the live backend (vs adopted via marker). */
 let backendOwned = false;
 let win = null;
+// Marionette is dark-only. Pin the native appearance so macOS vibrancy does
+// not flash a light NSVisualEffectView on a light-mode Mac before the page
+// covers it.
+try { nativeTheme.themeSource = "dark"; } catch { /* older Electron */ }
+const translucency = createTranslucencyController({
+  getWindow: () => win,
+  log: (msg) => { try { logMain(msg); } catch { /* logging must never throw */ } },
+});
 let quitting = false;
 // Self-dev Vite dev server: when Live Self-Editing is on, we serve the React UI
 // from a Vite dev server (real HMR) instead of the prebuilt dist/, so edits to
@@ -1057,6 +1066,12 @@ async function restartBackend() {
 ipcMain.handle("harness:restart", () => restartBackend());
 ipcMain.handle("harness:selfDev:get", () => ({ enabled: selfDevEnabled(), viable: viteDevViable(resolveRepoRoot()) }));
 ipcMain.handle("harness:selfDev:set", (_e, enabled) => ({ ok: setSelfDevEnabled(!!enabled), enabled: selfDevEnabled() }));
+ipcMain.handle("translucency:get", () => ({
+  state: translucency.getState(),
+  capabilities: translucency.capabilities(),
+}));
+ipcMain.handle("translucency:set", (_e, payload) => translucency.setState(payload));
+ipcMain.handle("translucency:capabilities", () => translucency.capabilities());
 
 // Image upload bridge: the renderer hands us raw bytes (File over IPC can't carry
 // a browser File object), we POST a multipart body to the backend's /api/upload on
@@ -1444,7 +1459,7 @@ function createWindow() {
     width: saved ? saved.width : 1440,
     height: saved ? saved.height : 900,
     ...(saved && Number.isFinite(saved.x) ? { x: saved.x, y: saved.y } : {}),
-    backgroundColor: "#0f1113",
+    ...translucency.surfaceOptions(),
     titleBarStyle: "hiddenInset",
     // Windows/Linux render an in-window "File Edit View..." menu bar that
     // stacks a second ugly strip under the title bar (macOS puts the menu in
@@ -2083,6 +2098,7 @@ app.on("window-all-closed", () => {
 let quitFinalized = false;
 app.on("before-quit", (e) => {
   quitting = true;
+  try { translucency.flush(); } catch { /* persist must not block quit */ }
   if (quitFinalized) return;
   // Hold quit open until the awaited graceful->force shutdown finishes. The
   // previous fire-and-forget setTimeout race let relaunches start while the old
