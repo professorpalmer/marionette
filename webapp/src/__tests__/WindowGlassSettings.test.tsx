@@ -17,6 +17,35 @@ describe("WindowGlassSettings", () => {
     });
   });
 
+  it("explains when Windows is below the glass floor", async () => {
+    (window as { harnessIPC?: unknown }).harnessIPC = {
+      translucency: {
+        get: async () => ({
+          state: { intensity: 0, fade: 0, mode: "clear", material: "popover" },
+          capabilities: {
+            translucencySupported: true,
+            glassSupported: false,
+            isWindows: true,
+            windowsBuild: 19045,
+            materials: ["under-window", "popover", "titlebar"],
+          },
+        }),
+        capabilities: async () => ({
+          translucencySupported: true,
+          glassSupported: false,
+          isWindows: true,
+          windowsBuild: 19045,
+          materials: ["under-window", "popover", "titlebar"],
+        }),
+      },
+    };
+    render(<WindowGlassSettings />);
+    expect(await screen.findByTestId("window-glass-settings")).toBeInTheDocument();
+    expect(screen.getByText(/Windows 11 22H2/i)).toBeInTheDocument();
+    expect(screen.getByText(/build 19045/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /glass window/i })).toBeNull();
+  });
+
   it("toggles glass on and paints the root attribute", async () => {
     const setCalls: unknown[] = [];
     (window as { harnessIPC?: unknown }).harnessIPC = {

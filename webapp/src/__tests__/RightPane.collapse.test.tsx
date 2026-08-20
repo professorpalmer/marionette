@@ -86,6 +86,11 @@ describe("RightPane collapse placement", () => {
     seedBoardTabOrder();
   });
 
+  it("paints the floating pill with the left-rail panel glass", () => {
+    render(<RightDock onOpenTab={vi.fn()} onExpand={vi.fn()} onCollapse={baseProps.onCollapse} />);
+    expect(screen.getByTestId("floating-dock-pill")).toHaveClass("shell-inset-glass");
+  });
+
   it("places collapse in the dock action cluster and invokes onCollapse", () => {
     render(<RightDock onOpenTab={vi.fn()} onExpand={vi.fn()} onCollapse={baseProps.onCollapse} />);
 

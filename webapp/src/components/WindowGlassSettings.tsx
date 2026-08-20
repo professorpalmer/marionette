@@ -22,7 +22,22 @@ export default function WindowGlassSettings() {
     return () => resetTranslucencyPeek();
   }, []);
 
-  if (!caps?.translucencySupported || !caps.glassSupported) return null;
+  if (!caps?.translucencySupported) return null;
+
+  if (!caps.glassSupported) {
+    const build = caps.windowsBuild && caps.windowsBuild > 0 ? ` (build ${caps.windowsBuild})` : "";
+    return (
+      <div className="space-y-1.5" data-testid="window-glass-settings">
+        <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
+          Transparent background
+        </label>
+        <p className="text-[10px] text-muted">
+          Glass needs Windows 11 22H2 or later{build}. This PC is below that
+          floor, so frost is unavailable here.
+        </p>
+      </div>
+    );
+  }
 
   const on = state.mode === "glass" && state.intensity > 0;
 
