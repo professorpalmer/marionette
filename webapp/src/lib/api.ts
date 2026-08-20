@@ -779,6 +779,76 @@ export type UsageData = {
   }[];
 };
 
+export type EconomicsScope = "repo" | "window30" | "all_projects" | "conversation";
+
+export type EconomicsJobRow = {
+  job_id?: string;
+  status?: string;
+  source?: string;
+  accounting_owned?: boolean;
+  accounting_scope?: "marionette" | "visibility_only" | string;
+  models?: Array<{
+    model_id?: string;
+    billing?: string;
+    calls?: number;
+    tokens_in?: number;
+    tokens_out?: number;
+  }>;
+  billing?: string[];
+  tokens?: number | null;
+  actual_marginal_usd?: number | null;
+  measured_cost_usd?: number | null;
+  estimated_cost_usd?: number | null;
+  cost_basis?: string | null;
+  counterfactual?: {
+    reference_model_id?: string;
+    reference_priced?: boolean;
+    naive_cost_usd?: number | null;
+    actual_cost_usd?: number | null;
+    avoided_usd?: number | null;
+  } | null;
+  typed_artifacts?: number | null;
+  tokens_per_typed_artifact?: number | null;
+  degraded_rate?: number | null;
+  degraded_tasks?: number | null;
+};
+
+export type EconomicsData = {
+  scope?: EconomicsScope | string;
+  window_days?: number | null;
+  all_projects?: boolean;
+  available?: boolean;
+  error?: string;
+  savings?: {
+    routing?: {
+      saved_usd?: number;
+      baseline_usd?: number;
+      plan_routed_tasks?: number;
+    };
+    routing_pct_cheaper?: number;
+    codegraph?: {
+      dollars_saved_est?: number;
+    };
+    counterfactual?: {
+      reference_model_id?: string;
+      avoided_usd?: number | null;
+    } | null;
+  } | null;
+  counterfactual?: {
+    reference_model_id?: string;
+    reference_priced?: boolean;
+    naive_cost_usd?: number | null;
+    actual_cost_usd?: number | null;
+    avoided_usd?: number | null;
+    label?: string;
+  } | null;
+  recent_jobs?: EconomicsJobRow[];
+  owned_jobs_considered?: number;
+  owned_actual_marginal_usd?: number | null;
+  owned_avoided_usd?: number | null;
+  labels?: Record<string, string>;
+};
+
 export type Checkpoint = {
   id: string;
   label: string;
@@ -1028,6 +1098,8 @@ export const api = {
 
   config: () => getJSON<Config>("/api/config"),
   getUsage: () => getJSON<UsageData>("/api/usage"),
+  getEconomics: (scope: EconomicsScope | string = "repo") =>
+    getJSONSoft<EconomicsData>(`/api/economics?scope=${encodeURIComponent(scope)}`),
   settings: () => getJSON<Settings>("/api/settings"),
   updateSettings: (partial: Partial<Settings> & { api_key?: string; clear_api_key?: boolean }) => postJSON<Settings>("/api/settings", partial),
   jobs: (repoRoot?: string) => {
