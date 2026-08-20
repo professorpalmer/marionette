@@ -405,6 +405,7 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
     from .api import checkpoints as _ckpt_api
     from .api import codegraph as _cg_api
     from .api import commands as _cmd_api
+    from .api import economics as _econ_api
     from .api import environment as _env_api
     from .api import files as _files_api
     from .api import git as _git_api
@@ -671,6 +672,8 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
         "/api/jobs": _get_jobs,
         "/api/usage": get_json(
             _usage_api.get_usage, services=svc.usage_services, qs_arg="repo"),
+        "/api/economics": get_json(
+            _econ_api.get_economics, services=svc.economics_services, pass_qs=True),
         "/api/artifacts": get_json(
             _jobs_api.get_artifacts, services=svc.job_services, qs_arg="job_id"),
         "/api/swarm/live": _get_swarm_live,

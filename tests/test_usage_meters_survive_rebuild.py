@@ -47,6 +47,13 @@ def _restore_meters(pilot, snap):
         setattr(pilot, attr, val)
 
 
+def _pin_offline_driver(srv):
+    """Rebuild/attach must not inherit a leaked catalog-unknown driver."""
+    previous = srv._cfg.driver
+    srv._cfg.driver = "stub-oracle-v2"
+    return previous
+
+
 def _zero_boot_carry(srv):
     for attr in _METER_ATTRS:
         srv._BOOT_METER_CARRY[attr] = 0.0
@@ -62,6 +69,7 @@ def test_rebuild_pilot_preserves_usage_meters():
     saved = _snapshot_meters(srv._pilot)
     saved_carry = dict(srv._BOOT_METER_CARRY)
     saved_cost = float(getattr(srv, "_BOOT_CARRY_COST_USD", 0.0) or 0.0)
+    saved_driver = _pin_offline_driver(srv)
     try:
         _zero_boot_carry(srv)
         srv._pilot._tokens_used = 12_000
@@ -105,6 +113,7 @@ def test_rebuild_pilot_preserves_usage_meters():
     finally:
         # Global singleton -- restore so later /api/usage tests see a clean pilot.
         _restore_meters(srv._pilot, saved)
+        srv._cfg.driver = saved_driver
         srv._BOOT_METER_CARRY.clear()
         srv._BOOT_METER_CARRY.update(saved_carry)
         srv._BOOT_CARRY_COST_USD = saved_cost
@@ -120,6 +129,7 @@ def test_usage_sums_across_sessions_and_survives_reattach(tmp_path):
     saved_carry = dict(srv._BOOT_METER_CARRY)
     saved_cost = float(getattr(srv, "_BOOT_CARRY_COST_USD", 0.0) or 0.0)
     saved_repos = set(srv._BOOT_REPOS)
+    saved_driver = _pin_offline_driver(srv)
     try:
         _zero_boot_carry(srv)
         srv._BOOT_REPOS.clear()
@@ -192,6 +202,7 @@ def test_usage_sums_across_sessions_and_survives_reattach(tmp_path):
     finally:
         srv._runners = old_runners
         srv._pilot = old_pilot
+        srv._cfg.driver = saved_driver
         srv._cfg.repo = old_repo
         if old_env is None:
             os.environ.pop("HARNESS_REPO", None)
@@ -217,6 +228,7 @@ def test_tool_output_savings_survive_attach_to_other_session(tmp_path):
     saved_carry = dict(srv._BOOT_METER_CARRY)
     saved_cost = float(getattr(srv, "_BOOT_CARRY_COST_USD", 0.0) or 0.0)
     saved_repos = set(srv._BOOT_REPOS)
+    saved_driver = _pin_offline_driver(srv)
     try:
         _zero_boot_carry(srv)
         srv._BOOT_REPOS.clear()
@@ -290,6 +302,7 @@ def test_tool_output_savings_survive_attach_to_other_session(tmp_path):
             srv._pilot.harness_session_id = old_sid
         except Exception:
             pass
+        srv._cfg.driver = saved_driver
         srv._cfg.repo = old_repo
         if old_env is None:
             os.environ.pop("HARNESS_REPO", None)
@@ -310,6 +323,7 @@ def test_drop_folds_meters_into_boot_carry():
     old_pilot = srv._pilot
     saved_carry = dict(srv._BOOT_METER_CARRY)
     saved_cost = float(getattr(srv, "_BOOT_CARRY_COST_USD", 0.0) or 0.0)
+    saved_driver = _pin_offline_driver(srv)
     try:
         _zero_boot_carry(srv)
         reg = SessionRunnerRegistry(
@@ -339,6 +353,7 @@ def test_drop_folds_meters_into_boot_carry():
     finally:
         srv._runners = old_runners
         srv._pilot = old_pilot
+        srv._cfg.driver = saved_driver
         srv._BOOT_METER_CARRY.clear()
         srv._BOOT_METER_CARRY.update(saved_carry)
         srv._BOOT_CARRY_COST_USD = saved_cost
@@ -414,6 +429,7 @@ def test_idle_swap_snapshots_cost_survives_model_reprice():
     saved_cost = float(getattr(srv, "_BOOT_CARRY_COST_USD", 0.0) or 0.0)
     saved_history = getattr(srv._pilot, "_history", None)
     saved_auto = getattr(srv._pilot, "_auto_distill", False)
+    saved_driver = _pin_offline_driver(srv)
     try:
         _zero_boot_carry(srv)
         expensive_in, expensive_out = 5.0, 25.0
@@ -462,6 +478,7 @@ def test_idle_swap_snapshots_cost_survives_model_reprice():
             srv._pilot._auto_distill = saved_auto
         except Exception:
             pass
+        srv._cfg.driver = saved_driver
         srv._BOOT_METER_CARRY.clear()
         srv._BOOT_METER_CARRY.update(saved_carry)
         srv._BOOT_CARRY_COST_USD = saved_cost
@@ -474,7 +491,7 @@ def test_idle_perform_pilot_swap_freezes_meters():
     saved = _snapshot_meters(srv._pilot)
     saved_carry = dict(srv._BOOT_METER_CARRY)
     saved_cost = float(getattr(srv, "_BOOT_CARRY_COST_USD", 0.0) or 0.0)
-    saved_driver = srv._cfg.driver
+    saved_driver = _pin_offline_driver(srv)
     try:
         _zero_boot_carry(srv)
         expensive_in, expensive_out = 5.0, 25.0

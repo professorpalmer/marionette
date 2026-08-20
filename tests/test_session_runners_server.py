@@ -356,6 +356,8 @@ def test_pilot_config_repo_frozen_when_workspace_view_mutates(tmp_path):
     old_repo = srv._cfg.repo
     old_env = os.environ.get("HARNESS_REPO")
     old_pilot = srv._pilot
+    old_driver = srv._cfg.driver
+    srv._cfg.driver = "stub-oracle-v2"
     try:
         repo_a = tmp_path / "frozen-a"
         repo_b = tmp_path / "view-b"
@@ -376,6 +378,7 @@ def test_pilot_config_repo_frozen_when_workspace_view_mutates(tmp_path):
         assert srv._cfg.repo == str(repo_b)
     finally:
         srv._pilot = old_pilot
+        srv._cfg.driver = old_driver
         srv._cfg.repo = old_repo
         if old_env is None:
             os.environ.pop("HARNESS_REPO", None)

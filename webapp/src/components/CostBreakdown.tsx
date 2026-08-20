@@ -1,4 +1,4 @@
-// CostBreakdown -- a compact, presentational cost popover for the StatusBar.
+// CostBreakdown -- the Economics pane body (process / this-app-run meters).
 //
 // It turns Marionette's per-task model routing into a visible value prop:
 // "why this model / what it saved". It consumes ONLY fields already served by
@@ -7,7 +7,7 @@
 // absent or zero simply renders nothing rather than "$0.000000" noise or NaN.
 
 import { useState } from "react";
-import { api } from "../lib/api";
+import { api, type UsageData } from "../lib/api";
 
 export type CostBreakdownData = {
   tokens_used: number;
@@ -90,6 +90,68 @@ export type CostBreakdownData = {
     tokens_cached?: number;
   }>;
 };
+
+/** Map GET /api/usage session meters into the Economics panel body. */
+export function usageToCostBreakdownData(
+  session: UsageData["session"],
+): CostBreakdownData {
+  return {
+    tokens_used: session.tokens_used,
+    est_cost_usd: session.est_cost_usd,
+    cost_source: session.cost_source,
+    price_source: session.price_source,
+    estimated: session.estimated,
+    tokens_cached: session.tokens_cached,
+    pilot_input_tokens: session.pilot_input_tokens,
+    pilot_cache_read_tokens: session.pilot_cache_read_tokens,
+    pilot_cache_hit_ratio: session.pilot_cache_hit_ratio,
+    swarm_input_tokens: session.swarm_input_tokens,
+    swarm_cache_read_tokens: session.swarm_cache_read_tokens,
+    swarm_cache_hit_ratio: session.swarm_cache_hit_ratio,
+    prompt_input_tokens: session.prompt_input_tokens,
+    prompt_cache_read_tokens: session.prompt_cache_read_tokens,
+    prompt_cache_hit_ratio: session.prompt_cache_hit_ratio,
+    cache_savings_usd: session.cache_savings_usd,
+    cache_savings_gross_usd: session.cache_savings_gross_usd,
+    cache_savings_basis: session.cache_savings_basis,
+    routing_saved_usd: session.routing_saved_usd,
+    routing_savings_basis: session.routing_savings_basis,
+    routing_tokens_compared: session.routing_tokens_compared,
+    delegation_saved_usd: session.delegation_saved_usd,
+    delegation_savings_basis: session.delegation_savings_basis,
+    delegation_tokens_compared: session.delegation_tokens_compared,
+    cache_saved_usd_swarm: session.cache_saved_usd_swarm,
+    swarm_cache_savings_basis: session.swarm_cache_savings_basis,
+    swarm_cache_unpriced_tokens: session.swarm_cache_unpriced_tokens,
+    tool_output_tokens_saved: session.tool_output_tokens_saved,
+    tool_output_savings_usd: session.tool_output_savings_usd,
+    history_compactions: session.history_compactions,
+    history_tokens_saved: session.history_tokens_saved,
+    history_cache_bust_tokens: session.history_cache_bust_tokens,
+    history_thrash_events: session.history_thrash_events,
+    history_compaction_cost_usd: session.history_compaction_cost_usd,
+    spill_count: session.spill_count,
+    spill_chars: session.spill_chars,
+    evals_recorded: session.evals_recorded,
+    evals_failed: session.evals_failed,
+    memory_layers: session.memory_layers,
+    compaction_advice: session.compaction_advice,
+    history_compaction_ran: session.history_compaction_ran,
+    standing_economics_basis: session.standing_economics_basis,
+    standing_system_tokens: session.standing_system_tokens,
+    standing_tool_tokens: session.standing_tool_tokens,
+    standing_floor_tokens: session.standing_floor_tokens,
+    standing_floor_cost_usd: session.standing_floor_cost_usd,
+    standing_floor_cost_cached_usd: session.standing_floor_cost_cached_usd,
+    prompt_cache_ttl_ms: session.prompt_cache_ttl_ms,
+    prompt_cache_age_ms: session.prompt_cache_age_ms,
+    prompt_cache_expires_in_ms: session.prompt_cache_expires_in_ms,
+    prompt_cache_state: session.prompt_cache_state,
+    price_in: session.price_in,
+    price_out: session.price_out,
+    pilot_by_model: session.pilot_by_model,
+  };
+}
 
 /** Credit routing USD only when basis is actual or estimated — never unknown. */
 export function routingSavingsCredited(
@@ -269,6 +331,112 @@ export function listPriceValueTotal(
   );
 }
 
+export type ListPriceEvidenceBasis = "measured" | "estimated" | "partial" | "unknown";
+
+const EVIDENCE_RANK: Record<ListPriceEvidenceBasis, number> = {
+  measured: 0,
+  estimated: 1,
+  partial: 2,
+  unknown: 3,
+};
+
+function weakerEvidence(
+  current: ListPriceEvidenceBasis | null,
+  next: ListPriceEvidenceBasis,
+): ListPriceEvidenceBasis {
+  if (!current) return next;
+  return EVIDENCE_RANK[next] > EVIDENCE_RANK[current] ? next : current;
+}
+
+/** Weakest evidence basis among lines credited into listPriceValueTotal.
+ *
+ * Unknown / partial / estimated beat measured. Does not change the dollar math.
+ */
+export function listPriceValueWeakestBasis(
+  data: Pick<
+    CostBreakdownData,
+    | "cache_savings_gross_usd"
+    | "cache_savings_usd"
+    | "cache_savings_basis"
+    | "cache_saved_usd_swarm"
+    | "swarm_cache_savings_basis"
+    | "swarm_cache_unpriced_tokens"
+    | "delegation_saved_usd"
+    | "delegation_savings_basis"
+    | "routing_saved_usd"
+    | "routing_savings_basis"
+    | "tool_output_savings_usd"
+  >,
+): ListPriceEvidenceBasis | null {
+  const positive = (value: unknown) =>
+    typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+  const pilotCache =
+    typeof data.cache_savings_gross_usd === "number" &&
+    Number.isFinite(data.cache_savings_gross_usd)
+      ? positive(data.cache_savings_gross_usd)
+      : positive(data.cache_savings_usd);
+  const swarm = positive(data.cache_saved_usd_swarm);
+  const delegationMeasured = data.delegation_savings_basis === "actual_usage";
+  const delegation = delegationSavingsCredited(
+    data.delegation_savings_basis,
+    data.delegation_saved_usd,
+  );
+  const routing = routingSavingsCredited(
+    data.routing_savings_basis,
+    data.routing_saved_usd,
+  );
+  const modelSelection = delegationMeasured
+    ? delegation
+    : (delegation > 0 ? delegation : routing);
+  const compact = positive(data.tool_output_savings_usd);
+
+  let weakest: ListPriceEvidenceBasis | null = null;
+  if (pilotCache > 0) {
+    weakest = weakerEvidence(
+      weakest,
+      data.cache_savings_basis === "unknown"
+        ? "unknown"
+        : data.cache_savings_basis === "capped"
+          ? "estimated"
+          : "measured",
+    );
+  }
+  if (swarm > 0) {
+    const unpriced =
+      typeof data.swarm_cache_unpriced_tokens === "number"
+      && Number.isFinite(data.swarm_cache_unpriced_tokens)
+      && data.swarm_cache_unpriced_tokens > 0;
+    weakest = weakerEvidence(
+      weakest,
+      data.swarm_cache_savings_basis === "unknown" || unpriced
+        ? "partial"
+        : data.swarm_cache_savings_basis === "estimated"
+          ? "estimated"
+          : "measured",
+    );
+  }
+  if (modelSelection > 0) {
+    const modelBasis: ListPriceEvidenceBasis =
+      delegationMeasured || (delegation > 0 && data.delegation_savings_basis !== "estimated")
+        ? "measured"
+        : data.routing_savings_basis === "estimated" || data.routing_savings_basis == null
+          ? "estimated"
+          : "measured";
+    weakest = weakerEvidence(weakest, modelBasis);
+  }
+  if (compact > 0) weakest = weakerEvidence(weakest, "estimated");
+  return weakest;
+}
+
+export function listPriceValueHeading(
+  basis: ListPriceEvidenceBasis | null,
+): string {
+  if (basis === "unknown") return "List-price value (unknown basis)";
+  if (basis === "partial") return "List-price value (partial)";
+  if (basis === "estimated") return "List-price value (est.)";
+  return "List-price value";
+}
+
 function fmtDurationMs(ms: number): string {
   if (ms > 0 && ms < 60_000) return "<1m";
   const mins = Math.max(0, Math.round(ms / 60_000));
@@ -407,6 +575,8 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
       ? data.tool_output_savings_usd
       : 0;
   const valueTotal = listPriceValueTotal(data);
+  const valueBasis = listPriceValueWeakestBasis(data);
+  const valueHeading = listPriceValueHeading(valueBasis);
   const compactTokens =
     typeof data.tool_output_tokens_saved === "number" && isFinite(data.tool_output_tokens_saved) && data.tool_output_tokens_saved > 0
       ? data.tool_output_tokens_saved
@@ -508,6 +678,14 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
           (data.history_compaction_ran ? "history compaction ran under context pressure" : ""))
       : "";
   const adviceCopy = compactionAdvicePresentation(compactionAdviceLevel);
+  const showContextHealth =
+    historyCompactions > 0
+    || standingFloorCost > 0
+    || (cacheTtlMs > 0 && Boolean(cacheState))
+    || spillCount > 0
+    || evalsRecorded > 0
+    || l1Bytes > 0
+    || showCompactionAdvice;
 
   const layerLabel = (id: string) => {
     const layer = data.memory_layers?.[id];
@@ -555,10 +733,13 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
   };
 
   return (
-    <div className="w-[260px] rounded-md border border-edge bg-panel shadow-lg p-3 text-[11px] text-txt">
-      <div className="text-[10px] uppercase tracking-wide text-faint mb-2">Session cost</div>
+    <div className="w-full min-h-0 overflow-auto px-3 py-3 text-[11px] text-txt">
+      <div className="text-[10px] uppercase tracking-wide text-faint">This app run</div>
+      <p className="text-[10px] text-muted mb-2 leading-snug">
+        Process spend since launch. Resets on full quit — not Swarm pane repo-session spend, not conversation lifetime.
+      </p>
 
-      {/* (a) Session spend. Provider-billed when OpenRouter (etc.) returned usage.cost. */}
+      {/* (a) App-run spend. Provider-billed when OpenRouter (etc.) returned usage.cost. */}
       {est > 0 ? (
         <div className="flex items-center justify-between mb-1">
           <span className="text-muted">{spendLabel}</span>
@@ -666,13 +847,15 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
         </div>
       ) : null}
 
-      {valueTotal > 0 ? (
+      {valueTotal > 0 || valueBasis === "unknown" ? (
         <div
           className="mt-1.5 pt-1.5 border-t border-edge/50 flex items-center justify-between font-medium"
-          title="Prompt-cache value + model-selection value + compact-output value. Additive list-price value, not a cash refund or billed-spend subtraction."
+          title="Prompt-cache value + model-selection value + compact-output value. Additive list-price value, not a cash refund or billed-spend subtraction. Label follows the weakest included evidence basis."
         >
-          <span className="text-txt">Total value saved</span>
-          <span className="text-good tabular-nums">~{fmtCost(valueTotal)}</span>
+          <span className="text-txt">{valueHeading}</span>
+          <span className="text-good tabular-nums">
+            {valueTotal > 0 ? `~${fmtCost(valueTotal)}` : (valueBasis === "unknown" ? "unknown basis" : "—")}
+          </span>
         </div>
       ) : null}
 
@@ -683,6 +866,9 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
         </div>
       ) : null}
 
+      {showContextHealth ? (
+      <div className="mt-3 pt-2 border-t border-edge/60">
+        <div className="text-[10px] uppercase tracking-wide text-faint mb-2">Context health</div>
       {historyCompactions > 0 ? (
         <div
           className="flex items-center justify-between mb-1 text-faint"
@@ -701,7 +887,7 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
       {standingFloorCost > 0 ? (
         <div
           className="flex items-center justify-between mb-1 text-faint"
-          title="Estimated per-turn cost of the standing system+tools prefix at current list rates. Not billed spend and not part of Total value saved."
+          title="Estimated per-turn cost of the standing system+tools prefix at current list rates. Not billed spend and not part of list-price value."
         >
           <span>Standing context floor (est.)</span>
           <span className="tabular-nums">
@@ -788,6 +974,8 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
               : adviceCopy.message}
           </p>
         </div>
+      ) : null}
+      </div>
       ) : null}
 
       {/* (c) Additive value framing — routing list-price + cache + compact
