@@ -1,0 +1,515 @@
+"""Read-only Economics projection of Puppetmaster savings / cost / receipt.
+
+Owns ``GET /api/economics``. Auth stays on ``server.Handler``; this module
+never imports ``harness.server``.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from typing import Any, Callable, Optional, Union
+
+from harness.job_scoping import apply_job_economics_policy, filter_accountable_jobs
+
+
+SCOPES = ("repo", "window30", "all_projects", "conversation")
+RECENT_JOB_LIMIT = 12
+COST_BASIS = "measured_usage_x_registry_price"
+COUNTERFACTUAL_LABEL = (
+    "list-price vs the named reference model, not a cash refund"
+)
+LABELS = {
+    "routing_saved_usd": "measured when the router snapshotted a baseline",
+    "codegraph_dollars_saved_est": "estimated",
+    "plan_routed": "$0 marginal, not measured cash",
+    "counterfactual": COUNTERFACTUAL_LABEL,
+    "unknown": "unknown stays unknown; never measured $0",
+}
+
+
+@dataclass
+class EconomicsServices:
+    """Explicit deps for the economics HTTP handler (injected by ``server.py``)."""
+
+    cfg: Any
+    scoped_jobs_with_stores: Callable[..., tuple]
+    diag: Callable[..., Any]
+    active_session_id: Callable[[], str]
+
+
+JsonPayload = Union[dict, list]
+
+
+def get_economics(qs: dict, svc: EconomicsServices) -> tuple[int, JsonPayload]:
+    """GET /api/economics?scope=repo|window30|all_projects|conversation."""
+    scope = _qs_scope(qs)
+    if scope not in SCOPES:
+        return 400, {
+            "error": "scope must be repo, window30, all_projects, or conversation",
+        }
+    try:
+        return 200, _project_economics(scope, svc)
+    except Exception as exc:
+        try:
+            svc.diag("server.economics", exc)
+        except Exception:
+            pass
+        return 200, _unavailable_payload(scope, exc)
+
+
+def _qs_scope(qs: Optional[dict]) -> str:
+    if not qs:
+        return "repo"
+    values = qs.get("scope") or [""]
+    raw = (values[0] if values else "") or ""
+    return str(raw).strip() or "repo"
+
+
+def _workspace_root(svc: EconomicsServices) -> str:
+    repo = str(getattr(svc.cfg, "repo", None) or "").strip()
+    return repo or os.getcwd()
+
+
+def _short_error(exc: BaseException) -> str:
+    text = str(exc).strip() or type(exc).__name__
+    if len(text) > 200:
+        return text[:197] + "..."
+    return text
+
+
+def _scope_window_days(scope: str) -> Optional[float]:
+    if scope == "window30":
+        return 30.0
+    return None
+
+
+def _unavailable_payload(scope: str, exc: BaseException) -> dict:
+    return {
+        "scope": scope,
+        "window_days": _scope_window_days(scope),
+        "all_projects": scope == "all_projects",
+        "available": False,
+        "error": _short_error(exc),
+        "savings": None,
+        "counterfactual": None,
+        "recent_jobs": [],
+        "owned_jobs_considered": 0,
+        "owned_actual_marginal_usd": None,
+        "owned_avoided_usd": None,
+        "labels": dict(LABELS),
+    }
+
+
+def _as_dict(value: Any) -> Optional[dict]:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return dict(value)
+    try:
+        return asdict(value)
+    except TypeError:
+        raw = getattr(value, "__dict__", None)
+        if isinstance(raw, dict):
+            return {k: v for k, v in raw.items() if not str(k).startswith("_")}
+        return None
+
+
+def _routing_pct_cheaper(routing: Any) -> float:
+    if routing is None:
+        return 0.0
+    pct = getattr(routing, "pct_cheaper", None)
+    if pct is not None:
+        try:
+            return round(float(pct), 1)
+        except (TypeError, ValueError):
+            return 0.0
+    if isinstance(routing, dict):
+        if routing.get("pct_cheaper") is not None:
+            try:
+                return round(float(routing.get("pct_cheaper") or 0.0), 1)
+            except (TypeError, ValueError):
+                return 0.0
+        try:
+            baseline = float(routing.get("baseline_usd") or 0.0)
+            saved = float(routing.get("saved_usd") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+        return round((saved / baseline * 100.0) if baseline else 0.0, 1)
+    return 0.0
+
+
+def _serialize_savings(report: Optional[dict]) -> Optional[dict]:
+    if not report:
+        return None
+    routing = report.get("routing")
+    heal = report.get("self_heal")
+    cf = report.get("counterfactual")
+    return {
+        "window_days": report.get("window_days"),
+        "jobs_considered": report.get("jobs_considered"),
+        "routing": _as_dict(routing) or {},
+        "routing_pct_cheaper": _routing_pct_cheaper(routing),
+        "self_heal": _as_dict(heal) or {},
+        "codegraph": report.get("codegraph"),
+        "reads": report.get("reads"),
+        "memory_cost": report.get("memory_cost"),
+        "tool_offload": report.get("tool_offload")
+        or {"offloads": 0, "tokens_saved": 0, "chars_saved": 0},
+        "metrics": report.get("metrics"),
+        "counterfactual": _as_dict(cf),
+    }
+
+
+def _with_counterfactual_label(cf: Optional[dict]) -> Optional[dict]:
+    if not cf:
+        return None
+    out = dict(cf)
+    out["label"] = COUNTERFACTUAL_LABEL
+    return out
+
+
+def _path_exists(path: Any) -> bool:
+    try:
+        exists = getattr(path, "exists", None)
+        if callable(exists):
+            return bool(exists())
+        return os.path.isdir(str(path))
+    except Exception:
+        return False
+
+
+def _path_resolved(path: Any) -> str:
+    try:
+        resolve = getattr(path, "resolve", None)
+        if callable(resolve):
+            return str(resolve())
+        return os.path.abspath(os.path.expanduser(str(path)))
+    except Exception:
+        return str(path)
+
+
+def _savings_state_dirs(scope: str, workspace: str) -> list:
+    from harness.cli_job_merge import (
+        is_marionette_host_scratch_dir,
+        resolve_cli_state_dir,
+    )
+
+    dirs: list = []
+    seen: set = set()
+
+    primary = resolve_cli_state_dir(workspace)
+    if primary and not is_marionette_host_scratch_dir(primary):
+        key = _path_resolved(primary)
+        seen.add(key)
+        dirs.append(primary)
+
+    if scope == "all_projects":
+        from puppetmaster.state import list_project_state_dirs
+
+        for extra in list_project_state_dirs() or []:
+            if extra is None:
+                continue
+            if not _path_exists(extra):
+                continue
+            if is_marionette_host_scratch_dir(extra):
+                continue
+            key = _path_resolved(extra)
+            if key in seen:
+                continue
+            seen.add(key)
+            dirs.append(extra)
+    return dirs
+
+
+def _open_savings_stores(dirs: list) -> list:
+    from puppetmaster.store_factory import create_store
+
+    stores = []
+    for state_dir in dirs:
+        try:
+            stores.append(create_store("sqlite", state_dir))
+        except Exception as exc:
+            if "locked" in str(exc).lower():
+                raise
+            continue
+    return stores
+
+
+def _build_savings(scope: str, workspace: str) -> Optional[dict]:
+    from puppetmaster.savings import build_report
+
+    dirs = _savings_state_dirs(scope, workspace)
+    stores = _open_savings_stores(dirs)
+    return build_report(stores, window_days=_scope_window_days(scope))
+
+
+def _created_at_key(job: dict) -> float:
+    raw = job.get("created_at") if isinstance(job, dict) else None
+    if raw is None:
+        return 0.0
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    text = str(raw).strip()
+    if not text:
+        return 0.0
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    try:
+        ts = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return ts.timestamp()
+    except Exception:
+        return 0.0
+
+
+def _owning_store(job: dict, harness_store: Any, cli_store: Any) -> Any:
+    if str(job.get("source") or "").strip().lower() == "cli":
+        return cli_store or harness_store
+    return harness_store or cli_store
+
+
+def _conversation_jobs(jobs: list, active_session_id: str) -> list:
+    active = (active_session_id or "").strip()
+    owned = filter_accountable_jobs(jobs)
+    if not active:
+        return owned
+    out = []
+    for job in owned:
+        sid = str(job.get("session_id") or "").strip()
+        if sid and sid != active:
+            continue
+        out.append(job)
+    return out
+
+
+def _serialize_job_counterfactual(cf: Any) -> Optional[dict]:
+    data = _as_dict(cf)
+    if not data:
+        return None
+    return {
+        "reference_model_id": data.get("reference_model_id"),
+        "reference_priced": data.get("reference_priced"),
+        "naive_cost_usd": data.get("naive_cost_usd"),
+        "actual_cost_usd": data.get("actual_cost_usd"),
+        "avoided_usd": data.get("avoided_usd"),
+    }
+
+
+def _models_from_job_cost(job_cost: Any) -> list:
+    by_model = getattr(job_cost, "by_model", None) or {}
+    rows = []
+    for model_id, bucket in by_model.items():
+        info = bucket if isinstance(bucket, dict) else {}
+        rows.append({
+            "model_id": model_id,
+            "billing": info.get("billing"),
+            "calls": info.get("calls"),
+            "tokens_in": info.get("tokens_in"),
+            "tokens_out": info.get("tokens_out"),
+        })
+    return rows
+
+
+def _receipt_tokens(receipt: dict) -> Optional[int]:
+    tokens = receipt.get("tokens") if isinstance(receipt, dict) else None
+    if isinstance(tokens, dict) and tokens.get("total_tokens") is not None:
+        try:
+            return int(tokens.get("total_tokens") or 0)
+        except (TypeError, ValueError):
+            return None
+    if isinstance(tokens, dict):
+        parts = (
+            tokens.get("measured_tokens_in"),
+            tokens.get("measured_tokens_out"),
+            tokens.get("estimated_tokens_in"),
+            tokens.get("estimated_tokens_out"),
+        )
+        if any(p is not None for p in parts):
+            try:
+                return int(sum(int(p or 0) for p in parts))
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _project_job_row(
+    job: dict,
+    store: Any,
+    registry: list,
+) -> dict:
+    from puppetmaster.cost import job_counterfactual, price_job
+    from puppetmaster.receipt import build_job_receipt
+
+    jid = job.get("id")
+    gated = apply_job_economics_policy(job)
+    owned = bool(gated.get("accounting_owned"))
+    artifacts: list = []
+    receipt: dict = {}
+    job_cost = None
+    cf = None
+    if store is not None and jid:
+        try:
+            artifacts = store.list_artifacts(jid) or []
+        except Exception:
+            artifacts = []
+        try:
+            receipt = build_job_receipt(store, jid) or {}
+        except Exception:
+            receipt = {}
+        try:
+            job_cost = price_job(artifacts, registry)
+            cf = job_counterfactual(job_cost, registry)
+        except Exception:
+            job_cost = None
+            cf = None
+
+    models = _models_from_job_cost(job_cost) if job_cost is not None else []
+    arts = receipt.get("artifacts") if isinstance(receipt, dict) else None
+    efficiency = receipt.get("efficiency") if isinstance(receipt, dict) else None
+    tasks = receipt.get("tasks") if isinstance(receipt, dict) else None
+    typed = arts.get("typed_total") if isinstance(arts, dict) else None
+    tokens_per = (
+        efficiency.get("tokens_per_typed_artifact")
+        if isinstance(efficiency, dict)
+        else None
+    )
+    degraded_rate = (
+        efficiency.get("degraded_rate") if isinstance(efficiency, dict) else None
+    )
+    degraded_tasks = tasks.get("degraded") if isinstance(tasks, dict) else None
+
+    row = {
+        "job_id": jid,
+        "status": job.get("status"),
+        "source": job.get("source"),
+        "accounting_owned": owned,
+        "accounting_scope": job.get("accounting_scope"),
+        "models": models,
+        "billing": [m.get("billing") for m in models if m.get("billing") is not None],
+        "tokens": _receipt_tokens(receipt),
+        "actual_marginal_usd": None,
+        "measured_cost_usd": None,
+        "estimated_cost_usd": None,
+        "cost_basis": None,
+        "counterfactual": None,
+        "typed_artifacts": typed,
+        "tokens_per_typed_artifact": tokens_per,
+        "degraded_rate": degraded_rate,
+        "degraded_tasks": degraded_tasks,
+    }
+    # Visibility-only / unstamped CLI jobs stay listed but cannot be summed.
+    if owned and job_cost is not None:
+        row["actual_marginal_usd"] = getattr(job_cost, "total_marginal_cost_usd", None)
+        row["measured_cost_usd"] = getattr(job_cost, "measured_cost_usd", None)
+        row["estimated_cost_usd"] = getattr(job_cost, "estimated_cost_usd", None)
+        row["cost_basis"] = COST_BASIS
+        row["counterfactual"] = _serialize_job_counterfactual(cf)
+    return row
+
+
+def _sum_known(values: list) -> Optional[float]:
+    known = []
+    for value in values:
+        if value is None:
+            continue
+        try:
+            known.append(float(value))
+        except (TypeError, ValueError):
+            continue
+    if not known:
+        return None
+    return round(sum(known), 6)
+
+
+def _owned_totals(recent_jobs: list) -> dict:
+    owned = filter_accountable_jobs(recent_jobs)
+    actuals = [row.get("actual_marginal_usd") for row in owned]
+    avoided = []
+    for row in owned:
+        cf = row.get("counterfactual") or {}
+        if isinstance(cf, dict):
+            avoided.append(cf.get("avoided_usd"))
+        else:
+            avoided.append(None)
+    return {
+        "owned_jobs_considered": len(owned),
+        "owned_actual_marginal_usd": _sum_known(actuals),
+        "owned_avoided_usd": _sum_known(avoided),
+    }
+
+
+def _recent_job_rows(scope: str, svc: EconomicsServices) -> list:
+    repo = str(getattr(svc.cfg, "repo", None) or "").strip()
+    jobs, harness_store, cli_store = svc.scoped_jobs_with_stores(
+        repo_root=repo or None
+    )
+    jobs = list(jobs or [])
+    if scope == "conversation":
+        jobs = _conversation_jobs(jobs, svc.active_session_id())
+    jobs.sort(key=_created_at_key, reverse=True)
+    jobs = jobs[:RECENT_JOB_LIMIT]
+    registry: list = []
+    if jobs:
+        from puppetmaster.model_registry import load_registry
+
+        try:
+            registry = load_registry() or []
+        except Exception:
+            registry = []
+    rows = []
+    for job in jobs:
+        store = _owning_store(job, harness_store, cli_store)
+        try:
+            rows.append(_project_job_row(job, store, registry))
+        except Exception as exc:
+            try:
+                svc.diag("server.economics_job", exc, msg="job=%s" % job.get("id"))
+            except Exception:
+                pass
+            rows.append({
+                "job_id": job.get("id"),
+                "status": job.get("status"),
+                "source": job.get("source"),
+                "accounting_owned": bool(job.get("accounting_owned")),
+                "accounting_scope": job.get("accounting_scope"),
+                "models": [],
+                "billing": [],
+                "tokens": None,
+                "actual_marginal_usd": None,
+                "measured_cost_usd": None,
+                "estimated_cost_usd": None,
+                "cost_basis": None,
+                "counterfactual": None,
+                "typed_artifacts": None,
+                "tokens_per_typed_artifact": None,
+                "degraded_rate": None,
+                "degraded_tasks": None,
+            })
+    return rows
+
+
+def _project_economics(scope: str, svc: EconomicsServices) -> dict:
+    workspace = _workspace_root(svc)
+    report = _build_savings(scope, workspace)
+    savings = _serialize_savings(report)
+    counterfactual = _with_counterfactual_label(
+        (savings or {}).get("counterfactual") if savings else None
+    )
+    recent_jobs = _recent_job_rows(scope, svc)
+    totals = _owned_totals(recent_jobs)
+    return {
+        "scope": scope,
+        "window_days": _scope_window_days(scope),
+        "all_projects": scope == "all_projects",
+        "available": True,
+        "savings": savings,
+        "counterfactual": counterfactual,
+        "recent_jobs": recent_jobs,
+        "labels": dict(LABELS),
+        **totals,
+    }

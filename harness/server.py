@@ -1868,6 +1868,30 @@ def _usage_services():
     )
 
 
+def _economics_services():
+    """Build EconomicsServices from live server module globals (call-time lookup)."""
+    from .api.economics import EconomicsServices
+
+    def _active_session_id():
+        try:
+            sid = (_sessions.active or "") if _sessions is not None else ""
+        except Exception:
+            sid = ""
+        if not sid:
+            try:
+                sid = getattr(_pilot, "harness_session_id", "") or ""
+            except Exception:
+                sid = ""
+        return sid or ""
+
+    return EconomicsServices(
+        cfg=_cfg,
+        scoped_jobs_with_stores=_scoped_jobs_with_stores,
+        diag=_diag,
+        active_session_id=_active_session_id,
+    )
+
+
 def _provider_services():
     """Build ProviderServices from live server module globals (call-time lookup)."""
     from .api.providers import ProviderServices
@@ -2465,6 +2489,7 @@ def _route_services():
         hooks_services=_hooks_services,
         git_services=_git_services,
         usage_services=_usage_services,
+        economics_services=_economics_services,
         sse_services=_sse_services,
         handle_session_relocate=_handle_session_relocate,
         host_ok=_host_ok,

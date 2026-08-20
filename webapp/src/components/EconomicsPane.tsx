@@ -1,12 +1,19 @@
 import { useEffect, useState } from "react";
-import { api, type UsageData } from "../lib/api";
+import { api, type EconomicsData, type EconomicsScope, type UsageData } from "../lib/api";
 import { usePolling } from "../lib/usePolling";
 import CostBreakdown, { usageToCostBreakdownData } from "./CostBreakdown";
+import EconomicsDurable from "./EconomicsDurable";
 
-/** Right-pane Economics card: live process / this-app-run spend and list-price value. */
+function isEconomicsPayload(data: unknown): data is EconomicsData {
+  return Boolean(data && typeof data === "object" && "available" in (data as object));
+}
+
+/** Right-pane Economics card: live process spend plus durable PM projection. */
 export default function EconomicsPane() {
   const [session, setSession] = useState<UsageData["session"] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [scope, setScope] = useState<EconomicsScope>("repo");
+  const [economics, setEconomics] = useState<EconomicsData | null>(null);
 
   const loadUsage = () =>
     api.getUsage()
@@ -21,17 +28,37 @@ export default function EconomicsPane() {
         setError("Couldn't load this app run's spend.");
       });
 
-  usePolling(loadUsage, 10000);
+  const loadEconomics = () =>
+    Promise.resolve(api.getEconomics(scope))
+      .then((data) => {
+        if (isEconomicsPayload(data)) {
+          setEconomics(data);
+        }
+      })
+      .catch(() => {
+        // Older harnesses omit GET /api/economics; keep CostBreakdown up.
+      });
+
+  const loadAll = () => {
+    void loadUsage();
+    void loadEconomics();
+  };
+
+  usePolling(loadAll, 10000);
 
   useEffect(() => {
-    const onRefresh = () => { void loadUsage(); };
+    const onRefresh = () => { void loadAll(); };
     window.addEventListener("harness-usage-refresh", onRefresh);
     window.addEventListener("harness-session-changed", onRefresh);
     return () => {
       window.removeEventListener("harness-usage-refresh", onRefresh);
       window.removeEventListener("harness-session-changed", onRefresh);
     };
-  }, []);
+  }, [scope]);
+
+  useEffect(() => {
+    void loadEconomics();
+  }, [scope]);
 
   if (!session && error) {
     return <p className="px-3 py-3 text-[11px] text-muted">{error}</p>;
@@ -39,5 +66,10 @@ export default function EconomicsPane() {
   if (!session) {
     return <p className="px-3 py-3 text-[11px] text-muted">Loading this app run…</p>;
   }
-  return <CostBreakdown data={usageToCostBreakdownData(session)} />;
+  return (
+    <div className="w-full min-h-0 overflow-auto">
+      <CostBreakdown data={usageToCostBreakdownData(session)} />
+      <EconomicsDurable data={economics} scope={scope} onScopeChange={setScope} />
+    </div>
+  );
 }
