@@ -21,7 +21,10 @@ export type TranslucencyCapabilities = {
 };
 
 export const TRANSLUCENCY_STORAGE_KEY = "pmharness.translucency.v1";
-export const ENABLE_INTENSITY = 60;
+export const DEFAULT_GLASS_MATERIAL: GlassMaterial = "popover";
+export const DEFAULT_INTENSITY = 40;
+export const ENABLE_INTENSITY = DEFAULT_INTENSITY;
+export const TRANSLUCENCY_DEFAULTS_VERSION = 2;
 export const FROST_LABELS: Record<GlassMaterial, string> = {
   "under-window": "Deep",
   popover: "Soft",
@@ -46,11 +49,18 @@ export function glassActive(state: TranslucencyState): boolean {
 }
 
 export function defaultTranslucencyState(): TranslucencyState {
-  return { intensity: 0, fade: 0, mode: "glass", material: "under-window" };
+  return { intensity: DEFAULT_INTENSITY, fade: 0, mode: "glass", material: DEFAULT_GLASS_MATERIAL };
+}
+
+function persistedDefaultsVersion(payload: unknown): number {
+  if (!payload || typeof payload !== "object") return 0;
+  const version = Number((payload as { defaultsVersion?: unknown }).defaultsVersion);
+  return Number.isFinite(version) ? version : 0;
 }
 
 export function normalizeRendererState(payload: unknown): TranslucencyState {
-  const record = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+  if (!payload || typeof payload !== "object") return defaultTranslucencyState();
+  const record = payload as Record<string, unknown>;
   const material = record.material;
   return {
     intensity: clampIntensity(record.intensity),
@@ -59,7 +69,7 @@ export function normalizeRendererState(payload: unknown): TranslucencyState {
     material:
       material === "popover" || material === "titlebar" || material === "header"
         ? material
-        : "under-window",
+        : DEFAULT_GLASS_MATERIAL,
   };
 }
 
@@ -76,7 +86,13 @@ function translucencyIpc(): {
 export function readStoredTranslucency(): TranslucencyState {
   try {
     const raw = localStorage.getItem(TRANSLUCENCY_STORAGE_KEY);
-    return normalizeRendererState(raw ? JSON.parse(raw) : null);
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (!parsed || persistedDefaultsVersion(parsed) < TRANSLUCENCY_DEFAULTS_VERSION) {
+      const next = defaultTranslucencyState();
+      writeStoredTranslucency(next);
+      return next;
+    }
+    return normalizeRendererState(parsed);
   } catch {
     return defaultTranslucencyState();
   }
@@ -84,7 +100,13 @@ export function readStoredTranslucency(): TranslucencyState {
 
 export function writeStoredTranslucency(state: TranslucencyState): void {
   try {
-    localStorage.setItem(TRANSLUCENCY_STORAGE_KEY, JSON.stringify(state));
+    localStorage.setItem(
+      TRANSLUCENCY_STORAGE_KEY,
+      JSON.stringify({
+        ...normalizeRendererState(state),
+        defaultsVersion: TRANSLUCENCY_DEFAULTS_VERSION,
+      }),
+    );
   } catch {
     /* storage pressure must not break Settings */
   }
@@ -138,7 +160,9 @@ export function pulseTranslucencyPeek(ms = 900): void {
   window.setTimeout(endTranslucencyPeek, ms);
 }
 
-export function hydrateWindowGlass(): TranslucencyState {
+export function hydrateWindowGlass(
+  onSync?: (state: TranslucencyState) => void,
+): TranslucencyState {
   const stored = readStoredTranslucency();
   applyGlassSurfaces(stored);
   const ipc = translucencyIpc();
@@ -147,6 +171,7 @@ export function hydrateWindowGlass(): TranslucencyState {
       const next = normalizeRendererState(payload?.state);
       writeStoredTranslucency(next);
       applyGlassSurfaces(next);
+      onSync?.(next);
     }).catch(() => {});
   }
   return stored;

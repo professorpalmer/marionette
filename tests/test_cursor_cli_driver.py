@@ -11,6 +11,7 @@ import pytest
 from pmharness.drivers.cursor_cli import (
     CursorCliDriver,
     consume_stream_json,
+    cursor_cli_mode_flags,
     resolve_agent_binary,
 )
 
@@ -302,10 +303,8 @@ def test_driver_chat_stream_mocked_subprocess(monkeypatch, tmp_path):
     assert "--stream-partial-output" in captured["cmd"]
     assert "--model" in captured["cmd"]
     assert "auto" in captured["cmd"]
-    assert "--mode" in captured["cmd"]
-    # Autopilot default is agent (Marionette owns host chrome).
-    mode_idx = captured["cmd"].index("--mode")
-    assert captured["cmd"][mode_idx + 1] == "agent"
+    # Autopilot is the CLI default — do not pass ``--mode agent`` (rejected).
+    assert "--mode" not in captured["cmd"]
     # Short prompts stay on argv (node+index.js spawn; no PowerShell 8k trap).
     joined = " ".join(str(x) for x in captured["cmd"])
     assert "hi" in joined
@@ -365,6 +364,28 @@ def test_agent_child_env_puts_harness_python_first(monkeypatch, tmp_path):
     assert captured.get("env") is not None
     path0 = (captured["env"].get("PATH") or "").split(os.pathsep)[0]
     assert path0 == scripts
+
+
+def test_agent_child_env_forwards_pasted_cursor_cli_login(monkeypatch):
+    from pmharness.drivers.cursor_cli import _agent_child_env
+
+    monkeypatch.delenv("CURSOR_API_KEY", raising=False)
+    monkeypatch.setenv("CURSOR_CLI_LOGIN", "key_live_pasted")
+    env = _agent_child_env()
+    assert env.get("CURSOR_API_KEY") == "key_live_pasted"
+
+    monkeypatch.setenv("CURSOR_CLI_LOGIN", "1")
+    env_sentinel = _agent_child_env()
+    assert not (env_sentinel.get("CURSOR_API_KEY") or "").strip()
+
+
+def test_agent_child_env_keeps_existing_cursor_api_key(monkeypatch):
+    from pmharness.drivers.cursor_cli import _agent_child_env
+
+    monkeypatch.setenv("CURSOR_API_KEY", "key_live_env")
+    monkeypatch.setenv("CURSOR_CLI_LOGIN", "key_live_pasted")
+    env = _agent_child_env()
+    assert env.get("CURSOR_API_KEY") == "key_live_env"
 
 
 def test_long_prompt_never_in_argv(monkeypatch, tmp_path):
@@ -530,6 +551,10 @@ def test_build_cmd_passes_trust_and_workspace(tmp_path):
     assert "--approve-mcps" in cmd
     assert "--workspace" in cmd
     assert str(ws.resolve()) in cmd
+    assert "--mode" not in cmd
+    d.apply_host_mode(plan=True)
+    plan_cmd = d._build_cmd("hi")
+    assert plan_cmd[plan_cmd.index("--mode") + 1] == "ask"
 
 
 def test_kernel_steers_mcp_before_shell_codegraph():
@@ -599,6 +624,15 @@ def test_host_mode_contract_survives_system_for_cursor_agent():
     assert "switch to Agent mode" in out  # negation clause in the contract
     lower = out.lower()
     assert "never tell the user" in lower or "never ask the user" in lower
+
+
+def test_cursor_cli_mode_flags_omit_agent():
+    assert cursor_cli_mode_flags("agent") == []
+    assert cursor_cli_mode_flags("AGENT") == []
+    assert cursor_cli_mode_flags("") == []
+    assert cursor_cli_mode_flags(None) == []
+    assert cursor_cli_mode_flags("ask") == ["--mode", "ask"]
+    assert cursor_cli_mode_flags("plan") == ["--mode", "plan"]
 
 
 def test_resolve_cursor_execution_mode_defaults_and_overrides(monkeypatch):

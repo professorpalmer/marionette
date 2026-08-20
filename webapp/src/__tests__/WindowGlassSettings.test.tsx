@@ -44,6 +44,9 @@ describe("WindowGlassSettings", () => {
     };
     render(<WindowGlassSettings />);
     const toggle = await screen.findByRole("button", { name: /glass window/i });
+    await waitFor(() => {
+      expect(toggle).toHaveTextContent(/off/i);
+    });
     fireEvent.click(toggle);
     await waitFor(() => {
       expect(setCalls.length).toBeGreaterThan(0);
