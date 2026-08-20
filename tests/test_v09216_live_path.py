@@ -123,7 +123,7 @@ def test_http_interrupt_empty_busy_turn_has_no_phantom_steer_drop():
 
         def _run_chat():
             try:
-                msg = urllib.parse.quote("audit the repository please")
+                msg = urllib.parse.quote("hello")
                 req = urllib.request.Request(
                     "http://127.0.0.1:%d/api/chat?message=%s" % (port, msg),
                     headers={"X-Harness-Token": srv._TOKEN},

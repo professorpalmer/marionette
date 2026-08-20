@@ -161,6 +161,15 @@ def test_context_usage_limit_follows_live_driver_when_unpinned(monkeypatch):
     monkeypatch.setenv("PMHARNESS_OR_LIVE_WINDOWS", "0")
     import pmharness.registry as reg
     monkeypatch.setattr(reg, "_CW_MEM", None, raising=False)
+    monkeypatch.setattr(
+        "harness.providers.build_pilot",
+        lambda driver: MockPilot(),
+    )
+    monkeypatch.setattr(
+        reg,
+        "context_window",
+        lambda driver, default=200000: 1_000_000 if driver == "glm-5.3" else default,
+    )
     cfg = HarnessConfig(driver="glm-5.3", max_context_tokens=128000)
     cfg.max_context_tokens_pinned = False
     s = ConversationalSession(cfg)
