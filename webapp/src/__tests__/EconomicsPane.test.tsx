@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import EconomicsPane from "../components/EconomicsPane";
 import { api } from "../lib/api";
@@ -128,6 +128,30 @@ describe("EconomicsPane", () => {
     expect(screen.getByText(/visible only/)).toBeInTheDocument();
     expect(screen.queryByText("$9.99")).not.toBeInTheDocument();
     expect(screen.queryByText("~$9.99")).not.toBeInTheDocument();
+  });
+
+  it("does not present repo savings as conversation spend", async () => {
+    mockGetUsage.mockResolvedValue({
+      session: usageSession,
+      jobs: [],
+    });
+    mockGetEconomics.mockResolvedValue({
+      ...durablePayload,
+      scope: "conversation",
+      savings_scope: "repo",
+    });
+
+    render(<EconomicsPane />);
+    expect(await screen.findByText("Durable")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Economics scope"), {
+      target: { value: "conversation" },
+    });
+    expect(
+      await screen.findByText(/Owned jobs for this conversation/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Routing saved (measured)")).not.toBeInTheDocument();
+    expect(screen.queryByText("CodeGraph (estimated)")).not.toBeInTheDocument();
   });
 
   it("refetches on harness-usage-refresh", async () => {

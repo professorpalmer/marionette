@@ -306,10 +306,29 @@ def test_conversation_scope_filters_to_owned_active_session(monkeypatch):
     code, payload = get_economics({"scope": ["conversation"]}, _svc(jobs=jobs))
     assert code == 200
     assert payload["scope"] == "conversation"
+    assert payload["savings_scope"] == "repo"
     assert payload["all_projects"] is False
     assert reports[0]["window_days"] is None
     assert [row["job_id"] for row in payload["recent_jobs"]] == ["here"]
     assert payload["owned_jobs_considered"] == 1
+
+
+def test_conversation_excludes_owned_jobs_without_session(monkeypatch):
+    jobs = [
+        {
+            "id": "unstamped",
+            "status": "complete",
+            "source": "harness",
+            "accounting_owned": True,
+            "accounting_scope": "marionette",
+            "created_at": "2026-08-20T00:05:00+00:00",
+        },
+    ]
+    _patch_pm(monkeypatch)
+    code, payload = get_economics({"scope": ["conversation"]}, _svc(jobs=jobs))
+    assert code == 200
+    assert payload["recent_jobs"] == []
+    assert payload["owned_jobs_considered"] == 0
 
 
 def test_invalid_scope_returns_400():

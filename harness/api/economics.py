@@ -90,6 +90,7 @@ def _unavailable_payload(scope: str, exc: BaseException) -> dict:
         "scope": scope,
         "window_days": _scope_window_days(scope),
         "all_projects": scope == "all_projects",
+        "savings_scope": "repo" if scope == "conversation" else scope,
         "available": False,
         "error": _short_error(exc),
         "savings": None,
@@ -230,9 +231,9 @@ def _open_savings_stores(dirs: list) -> list:
     for state_dir in dirs:
         try:
             stores.append(create_store("sqlite", state_dir))
-        except Exception as exc:
-            if "locked" in str(exc).lower():
-                raise
+        except Exception:
+            # Skip a locked or unreadable extra store. A total miss still
+            # yields an empty report rather than failing the pane.
             continue
     return stores
 
@@ -274,16 +275,20 @@ def _owning_store(job: dict, harness_store: Any, cli_store: Any) -> Any:
 
 
 def _conversation_jobs(jobs: list, active_session_id: str) -> list:
+    """Keep only Marionette-owned jobs stamped for the active session.
+
+    Fail closed when the session id is missing: unstamped owned jobs must not
+    leak other conversations into this scope.
+    """
     active = (active_session_id or "").strip()
-    owned = filter_accountable_jobs(jobs)
     if not active:
-        return owned
+        return []
+    owned = filter_accountable_jobs(jobs)
     out = []
     for job in owned:
         sid = str(job.get("session_id") or "").strip()
-        if sid and sid != active:
-            continue
-        out.append(job)
+        if sid == active:
+            out.append(job)
     return out
 
 
@@ -502,8 +507,12 @@ def _project_economics(scope: str, svc: EconomicsServices) -> dict:
     )
     recent_jobs = _recent_job_rows(scope, svc)
     totals = _owned_totals(recent_jobs)
+    # Conversation owns job rows only. PM savings is still this-repo
+    # lifetime — name that so the pane cannot present it as conversation spend.
+    savings_scope = "repo" if scope == "conversation" else scope
     return {
         "scope": scope,
+        "savings_scope": savings_scope,
         "window_days": _scope_window_days(scope),
         "all_projects": scope == "all_projects",
         "available": True,

@@ -66,7 +66,9 @@ export default function EconomicsDurable({
     <div className="w-full px-3 pb-3 text-[11px] text-txt">
       <div className="text-[10px] uppercase tracking-wide text-faint">Durable</div>
       <p className="text-[10px] text-muted mb-2 leading-snug">
-        Puppetmaster savings and job receipts for the selected scope. App-run spend stays above.
+        {scope === "conversation"
+          ? "Owned jobs for this conversation. Puppetmaster savings stay on This repo / Last 30 days / All projects."
+          : "Puppetmaster savings and job receipts for the selected scope. App-run spend stays above."}
       </p>
 
       <label className="flex items-center justify-between mb-2 text-faint">
@@ -91,6 +93,14 @@ export default function EconomicsDurable({
         </p>
       ) : null}
 
+      {scope === "conversation" ? (
+        jobs.length === 0 && data?.available !== false ? (
+          <p className="text-[10px] text-muted mb-2 leading-snug">
+            No owned jobs stamped for this conversation.
+          </p>
+        ) : null
+      ) : (
+      <>
       {referenceId ? (
         <div className="flex items-center justify-between mb-1 text-faint">
           <span>Reference model</span>
@@ -134,6 +144,8 @@ export default function EconomicsDurable({
           <span className="tabular-nums">{planRouted} tasks, not measured cash</span>
         </div>
       ) : null}
+      </>
+      )}
 
       {jobs.length > 0 ? (
         <div className="mt-3">

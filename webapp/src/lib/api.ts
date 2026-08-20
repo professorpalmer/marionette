@@ -815,6 +815,8 @@ export type EconomicsJobRow = {
 
 export type EconomicsData = {
   scope?: EconomicsScope | string;
+  /** Where PM savings were aggregated. Conversation jobs use repo-lifetime savings. */
+  savings_scope?: EconomicsScope | string;
   window_days?: number | null;
   all_projects?: boolean;
   available?: boolean;
