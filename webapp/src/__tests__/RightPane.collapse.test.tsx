@@ -42,6 +42,9 @@ vi.mock("../components/DiffReviewPane", () => ({
       : <div data-testid="diff-review-pane" />,
 }));
 vi.mock("../components/SwarmPane", () => ({ default: () => <div /> }));
+vi.mock("../components/EconomicsPane", () => ({
+  default: () => <div data-testid="economics-pane" />,
+}));
 vi.mock("../components/ErrorBoundary", () => ({
   default: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
@@ -656,6 +659,16 @@ describe("RightPane add-panel menu", () => {
     localStorage.setItem("pmharness.tabOrder.mcpMerged", "1");
   });
 
+  it("opens the Economics panel from harness-focus-tab", async () => {
+    render(<RightPane {...baseProps} />);
+    expect(screen.queryByRole("region", { name: "Economics panel" })).toBeNull();
+
+    window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: "economics" }));
+
+    expect(await screen.findByRole("region", { name: "Economics panel" })).toBeInTheDocument();
+    expect(screen.getByTestId("economics-pane")).toBeInTheDocument();
+  });
+
   it("adds a closed panel from the menu without an optional-panels gate", () => {
     const onOpenTab = (tab: string) => {
       window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: tab }));
@@ -665,6 +678,7 @@ describe("RightPane add-panel menu", () => {
     expect(screen.queryByRole("region", { name: "Worktrees panel" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Add panel" }));
     expect(screen.getByRole("menu", { name: "Add panel" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Economics" })).toBeInTheDocument();
     expect(screen.queryByText("Optional panels")).toBeNull();
     expect(screen.queryByRole("checkbox", { name: "Worktrees" })).toBeNull();
 

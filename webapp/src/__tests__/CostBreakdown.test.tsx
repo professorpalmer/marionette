@@ -5,7 +5,9 @@ import CostBreakdown, {
   compactionAdvicePresentation,
   delegationSavingsCredited,
   formatCacheHitPercent,
+  listPriceValueHeading,
   listPriceValueTotal,
+  listPriceValueWeakestBasis,
   routingSavingsCredited,
   shortPilotModel,
   spendIsEstimated,
@@ -102,7 +104,9 @@ describe("CostBreakdown", () => {
   it("renders the session cost fields it is given", () => {
     render(<CostBreakdown data={baseData} />);
 
-    expect(screen.getByText("Session cost")).toBeInTheDocument();
+    expect(screen.getByText("This app run")).toBeInTheDocument();
+    expect(screen.queryByText("Session cost")).not.toBeInTheDocument();
+    expect(screen.getByText(/Resets on full quit/i)).toBeInTheDocument();
     expect(screen.getByText("Estimated spend")).toBeInTheDocument();
     expect(screen.getByText("~$0.04")).toBeInTheDocument();
     expect(screen.getByText("Prompt-cache value")).toBeInTheDocument();
@@ -139,13 +143,55 @@ describe("CostBreakdown", () => {
       tool_output_savings_usd: 0.76,
     };
     expect(listPriceValueTotal(data)).toBeCloseTo(4.58, 8);
+    expect(listPriceValueWeakestBasis(data)).toBe("estimated");
     render(<CostBreakdown data={data} />);
-    const totalRow = screen.getByText("Total value saved").closest("div");
+    const totalRow = screen.getByText("List-price value (est.)").closest("div");
     expect(within(totalRow!).getByText("~$4.58")).toBeInTheDocument();
     expect(totalRow).toHaveAttribute(
       "title",
       expect.stringMatching(/not a cash refund/i),
     );
+    expect(screen.queryByText("Total value saved")).not.toBeInTheDocument();
+    expect(screen.queryByText("Session cost")).not.toBeInTheDocument();
+  });
+
+  it("labels the combined list-price total with the weakest included basis", () => {
+    const estimated: CostBreakdownData = {
+      tokens_used: 1000,
+      est_cost_usd: 0.10,
+      cache_savings_usd: 0.20,
+      cache_savings_basis: "catalog",
+      routing_saved_usd: 0.40,
+      routing_savings_basis: "estimated",
+    };
+    expect(listPriceValueWeakestBasis(estimated)).toBe("estimated");
+    expect(listPriceValueHeading("estimated")).toBe("List-price value (est.)");
+    const { rerender } = render(<CostBreakdown data={estimated} />);
+    expect(screen.getByText("List-price value (est.)")).toBeInTheDocument();
+
+    const partial: CostBreakdownData = {
+      tokens_used: 1000,
+      est_cost_usd: 0.10,
+      cache_saved_usd_swarm: 0.22,
+      swarm_cache_savings_basis: "unknown",
+      swarm_cache_unpriced_tokens: 12_500,
+    };
+    expect(listPriceValueWeakestBasis(partial)).toBe("partial");
+    rerender(<CostBreakdown data={partial} />);
+    expect(screen.getByText("List-price value (partial)")).toBeInTheDocument();
+
+    const unknown: CostBreakdownData = {
+      tokens_used: 1000,
+      est_cost_usd: 0.01,
+      routing_saved_usd: 1.25,
+      routing_savings_basis: "unknown",
+    };
+    expect(listPriceValueTotal(unknown)).toBe(0);
+    expect(listPriceValueWeakestBasis(unknown)).toBeNull();
+    rerender(<CostBreakdown data={unknown} />);
+    expect(screen.getByText("unknown basis")).toBeInTheDocument();
+    expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
+    expect(screen.queryByText("List-price value")).not.toBeInTheDocument();
   });
 
   it("labels swarm cache value as partial when some tokens are unpriced", () => {
@@ -578,7 +624,7 @@ describe("CostBreakdown", () => {
     );
     expect(screen.getByText("Standing context floor (est.)")).toBeInTheDocument();
     expect(screen.getByText("Prompt-cache TTL (est.)")).toBeInTheDocument();
-    expect(screen.getByText(/warm/)).toBeInTheDocument();
+    expect(screen.getByText(/warm ·/)).toBeInTheDocument();
   });
 
   it("hides standing economics when flag-off omits fields", () => {

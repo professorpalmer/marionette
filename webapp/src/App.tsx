@@ -444,7 +444,8 @@ export default function App() {
       <div className="shrink-0 px-px py-px">
         <StatusBar config={config} update={availableUpdate}
           leftOpen={leftOpen} rightOpen={rightOpen}
-          onToggleLeft={() => setLeftOpen((v) => !v)} onToggleRight={() => setRightOpen((v) => !v)} />
+          onToggleLeft={() => setLeftOpen((v) => !v)} onToggleRight={() => setRightOpen((v) => !v)}
+          onOpenEconomics={() => openRightTo("economics")} />
       </div>
 
       {showWizard && <RegistryWizard onClose={() => { localStorage.setItem("pmharness.wizardSeen", "1"); setShowWizard(false); }} />}

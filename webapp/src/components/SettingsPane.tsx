@@ -2384,11 +2384,19 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             <div className="space-y-2.5 bg-panel2 border border-edge/50 rounded p-2.5">
               <div className="space-y-1">
                 <div className="flex items-center justify-between text-[11px]">
-                  <span className="text-faint">Session Tokens:</span>
+                  <span className="text-faint">This app run tokens:</span>
                   <span className="text-txt font-mono font-medium">{usage.session.tokens_used.toLocaleString()}</span>
                 </div>
                 <div className="flex items-center justify-between text-[11px]">
-                  <span className="text-faint">Session Cost (estimated):</span>
+                  <span className="text-faint">
+                    {usage.session.cost_source === "provider" && usage.session.estimated !== true
+                      ? "This app run (provider-billed):"
+                      : usage.session.cost_source === "mixed"
+                        ? "This app run (mixed):"
+                        : usage.session.cost_source === "plan_estimated"
+                          ? "This app run (plan):"
+                          : "This app run (estimated):"}
+                  </span>
                   <span className="text-good font-mono font-medium">${usage.session.est_cost_usd.toFixed(6)}</span>
                 </div>
                 <div className="flex flex-wrap items-center justify-between gap-1 text-[11px] border-t border-edge/30 pt-1 mt-1">
@@ -2422,7 +2430,8 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             <p className="text-[10px] text-muted">Loading usage statistics...</p>
           )}
           <p className="text-[9px] text-muted font-mono">
-            All costs are estimated locally based on catalog rates. No live billing APIs are called.
+            This app run resets on full quit — not Swarm pane repo-session spend or conversation lifetime.
+            Spend basis may be provider-billed, mixed, estimated from catalog rates, or a plan-credit estimate.
           </p>
         </div>
 
