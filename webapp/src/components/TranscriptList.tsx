@@ -156,6 +156,43 @@ export type SwarmPendingItem = {
   terminal_job_ids?: string[];
 };
 
+type SwarmArtifact = {
+  id?: string;
+  task_id?: string;
+  sha256?: string;
+  type: string;
+  headline: string;
+};
+
+type SwarmArtifactDelivery = {
+  pm_artifacts: number;
+  available_to_inspect: number;
+  complete: boolean;
+  missing: { id: string; task_id?: string }[];
+};
+
+type SwarmResultItem = {
+  kind: "swarm_result";
+  job_id: string;
+  applied: boolean;
+  files: string[];
+  summary: string;
+  error: string | null;
+  objective?: string;
+  cwd?: string;
+  held_for_review?: boolean;
+  analysis_ok?: boolean;
+  reuse_status?: string;
+  source_job_id?: string;
+  reuse_reason?: string;
+  invalidated_paths?: string[];
+  validation_fingerprint?: string;
+  environment_fingerprint?: string;
+  acceptance_criteria?: string[];
+  artifacts?: SwarmArtifact[];
+  artifact_delivery?: SwarmArtifactDelivery;
+};
+
 export type CommandApprovalItem = {
   kind: "command_approval";
   id: string;
@@ -176,7 +213,7 @@ export type Item =
   | { kind: "thinking"; text: string; streaming?: boolean; id?: string; stream_id?: string }
   | { kind: "tool_prep"; name: string }
   | SwarmPendingItem
-  | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string; held_for_review?: boolean; analysis_ok?: boolean; reuse_status?: string; source_job_id?: string; reuse_reason?: string; invalidated_paths?: string[]; validation_fingerprint?: string; environment_fingerprint?: string; acceptance_criteria?: string[] }
+  | SwarmResultItem
   | { kind: "checkpoint"; id: string; label: string; trigger: string }
   | { kind: "pending_review"; id: string; summary: string }
   | {
@@ -223,7 +260,7 @@ export type GroupedItem =
   | { kind: "msg"; msg: Msg }
   | { kind: "thinking"; text: string; streaming?: boolean; id?: string; stream_id?: string }
   | SwarmPendingItem
-  | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string; held_for_review?: boolean; analysis_ok?: boolean; reuse_status?: string; source_job_id?: string; reuse_reason?: string; invalidated_paths?: string[]; validation_fingerprint?: string; environment_fingerprint?: string; acceptance_criteria?: string[] }
+  | SwarmResultItem
   | { kind: "checkpoint"; id: string; label: string; trigger: string }
   | { kind: "pending_review"; id: string; summary: string }
   | {
@@ -274,7 +311,7 @@ type ActivityItem =
   | { kind: "vault_cite"; route: string; snippets: string[]; query?: string }
   | { kind: "checkpoint"; id: string; label: string; trigger: string }
   | SwarmPendingItem
-  | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string; held_for_review?: boolean; analysis_ok?: boolean; reuse_status?: string; source_job_id?: string; reuse_reason?: string; invalidated_paths?: string[]; validation_fingerprint?: string; environment_fingerprint?: string; acceptance_criteria?: string[] }
+  | SwarmResultItem
   | { kind: "msg"; msg: Msg }
   | Extract<
       Item,
@@ -612,11 +649,10 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
       flush();
       grouped.push(item);
     } else if (item.kind === "swarm_result") {
-      // These are emitted by tool execution, so they belong inside the same
-      // collapsed investigation as the action card that produced them. Rendering
-      // them as standalone chips made the transcript vertically noisy.
-      // Keep terminal detail after any later tool rows in this investigation.
-      terminalSwarmItems.push(item);
+      // The durable swarm receipt is the terminal owner; never bury it under an
+      // activity fold now that run_swarm ActionCards are intentionally absent.
+      flush();
+      grouped.push(item);
     } else if (item.kind === "checkpoint") {
       currentGroup.push(item);
     } else if (item.kind === "pending_review") {
@@ -1192,12 +1228,15 @@ export const TranscriptList = memo(function TranscriptList({
           summary={it.summary}
           error={it.error}
           objective={it.objective}
+          cwd={it.cwd}
           heldForReview={it.held_for_review}
           analysisOk={it.analysis_ok}
           reuseStatus={it.reuse_status}
           sourceJobId={it.source_job_id}
           reuseReason={it.reuse_reason}
           invalidatedPaths={it.invalidated_paths}
+          artifacts={it.artifacts}
+          artifactDelivery={it.artifact_delivery}
         />
       );
     } else if (it.kind === "checkpoint") {
@@ -1622,6 +1661,7 @@ function getCardMeta(card: Card): string | null {
     parts.push(`${duration}ms`);
   }
 
+
   if (isGateSuppressed(card)) {
     // Swarm/delegate gate blocked this call -- not a tool failure. Label it
     // honestly so a broad-ask turn doesn't look like a wall of red errors.
@@ -1756,7 +1796,7 @@ function ActivityGroup({
   const cards = items.filter((it) => it.kind === "card") as { kind: "card"; card: Card }[];
   const cgItems = items.filter((it) => it.kind === "codegraph_context") as { kind: "codegraph_context"; symbols: number; query: string }[];
   const checkpointItems = items.filter((it) => it.kind === "checkpoint") as { kind: "checkpoint"; id: string; label: string; trigger: string }[];
-  const swarmResults = items.filter((it) => it.kind === "swarm_result") as { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string }[];
+  const swarmResults = items.filter((it) => it.kind === "swarm_result") as SwarmResultItem[];
   // Recount incrementally from visible top-level cards AND nested worker rows
   // so Explored / Investigating tracks the investigation timeline the user sees.
   const nestedRows = cards.flatMap((c) => c.card.actions || []);
@@ -1909,12 +1949,15 @@ function ActivityGroup({
           summary={it.summary}
           error={it.error}
           objective={it.objective}
+          cwd={it.cwd}
           heldForReview={it.held_for_review}
           analysisOk={it.analysis_ok}
           reuseStatus={it.reuse_status}
           sourceJobId={it.source_job_id}
           reuseReason={it.reuse_reason}
           invalidatedPaths={it.invalidated_paths}
+          artifacts={it.artifacts}
+          artifactDelivery={it.artifact_delivery}
           duplicateCount={dupCount}
         />
       );
@@ -3309,11 +3352,15 @@ function SwarmPendingPill({
 // label, and border so the body text stays readable instead of tinted.
 function reuseStatusLabel(status?: string): string | null {
   const s = (status || "").trim().toLowerCase();
-  if (s === "reused") return "reused";
-  if (s === "partial") return "partially reverified";
-  if (s === "invalidated") return "invalidated";
-  if (s === "fresh") return "fresh";
+  if (s === "reused") return "prior validation reused";
+  if (s === "partial") return "partially revalidated";
+  if (s === "invalidated") return "prior validation invalidated";
   return null;
+}
+
+function visibleReuseReason(reason?: string): string {
+  const value = (reason || "").trim();
+  return value === "first_pass" || value === "no_reusable_candidate" ? "" : value;
 }
 
 /** Bounded relative-path summary for partial reuse honesty (no secrets). */
@@ -3356,24 +3403,29 @@ function SwarmJobIdButton({
   );
 }
 
-function SwarmResultCard({ jobId, applied, files, summary, error, objective, heldForReview, analysisOk, reuseStatus, sourceJobId, reuseReason, invalidatedPaths, duplicateCount = 1 }: {
+function SwarmResultCard({ jobId, applied, files, summary, error, objective, cwd, heldForReview, analysisOk, reuseStatus, sourceJobId, reuseReason, invalidatedPaths, artifacts, artifactDelivery, duplicateCount = 1 }: {
   jobId?: string;
   applied: boolean;
   files: string[];
   summary: string;
   error: string | null;
   objective?: string;
+  cwd?: string;
   heldForReview?: boolean;
   analysisOk?: boolean;
   reuseStatus?: string;
   sourceJobId?: string;
   reuseReason?: string;
   invalidatedPaths?: string[];
+  artifacts?: SwarmArtifact[];
+  artifactDelivery?: SwarmArtifactDelivery;
   duplicateCount?: number;
 }) {
   const [open, setOpen] = useState(false);
+  const [artifactsOpen, setArtifactsOpen] = useState(false);
   const obj = objective ? (objective.length > 70 ? objective.slice(0, 70) + "..." : objective) : "swarm";
   const reuseLabel = reuseStatusLabel(reuseStatus);
+  const reuseReasonLabel = visibleReuseReason(reuseReason);
   const pathSummary = formatInvalidatedPaths(invalidatedPaths);
   const primaryJobId = (jobId || "").trim();
   // Operator honesty: held_for_review / analysis_ok are successful non-applies —
@@ -3421,9 +3473,10 @@ function SwarmResultCard({ jobId, applied, files, summary, error, objective, hel
     || tone === "analysis"
     || primaryJobId
     || sourceJobId
-    || reuseReason
+    || reuseReasonLabel
     || pathSummary
     || reuseLabel
+    || artifactDelivery
   );
 
   return (
@@ -3457,7 +3510,7 @@ function SwarmResultCard({ jobId, applied, files, summary, error, objective, hel
         {reuseLabel && (
           <span
             className="text-[9px] font-mono text-muted bg-panel2/70 border border-edge/50 px-1.5 py-0.5 rounded shrink-0"
-            title={pathSummary || reuseReason || sourceJobId || reuseLabel}
+            title={pathSummary || reuseReasonLabel || sourceJobId || reuseLabel}
           >
             {reuseLabel}
           </span>
@@ -3486,18 +3539,92 @@ function SwarmResultCard({ jobId, applied, files, summary, error, objective, hel
               <SwarmJobIdButton jobId={primaryJobId} />
             </div>
           ) : null}
-          {(reuseLabel || reuseReason || sourceJobId) && (
+          {objective ? (
+            <div className="text-[10px] leading-relaxed text-muted whitespace-normal break-words">
+              <span className="text-faint">goal </span>{objective}
+            </div>
+          ) : null}
+          {cwd ? (
+            <div className="text-[10px] leading-relaxed text-muted font-mono whitespace-normal break-words">
+              <span className="text-faint font-sans">cwd </span>{cwd}
+            </div>
+          ) : null}
+          {(reuseLabel || reuseReasonLabel || sourceJobId) && (
             <div className="text-[10px] text-muted font-mono leading-relaxed break-words inline-flex items-center gap-1 flex-wrap">
-              <span>{reuseLabel ? `validation ${reuseLabel}` : "validation"}</span>
+              <span>{reuseLabel || "validation"}</span>
               {sourceJobId ? (
                 <>
                   <span>from</span>
                   <SwarmJobIdButton jobId={sourceJobId} />
                 </>
               ) : null}
-              {reuseReason ? <span>({reuseReason})</span> : null}
+              {reuseReasonLabel ? <span>({reuseReasonLabel})</span> : null}
             </div>
           )}
+          {artifactDelivery ? (
+            <div
+              className={`rounded border p-2 space-y-2 ${
+                artifactDelivery.complete
+                  ? "border-edge/40 bg-panel2/20"
+                  : "border-warn/40 bg-warn/5"
+              }`}
+              data-testid="swarm-delivery-receipt"
+            >
+              <button
+                type="button"
+                data-testid="swarm-delivery-toggle"
+                aria-expanded={artifactsOpen}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setArtifactsOpen((value) => !value);
+                }}
+                className="flex w-full flex-wrap items-center gap-x-4 gap-y-1 text-left text-[10px] text-muted hover:text-txt"
+              >
+                {artifactsOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+                <span>Artifacts <strong className="text-txt font-medium">{artifactDelivery.pm_artifacts}</strong></span>
+                <span>
+                  Available to inspect{" "}
+                  <strong className="text-txt font-medium">
+                    {artifactDelivery.available_to_inspect}/{artifactDelivery.pm_artifacts}
+                  </strong>
+                </span>
+              </button>
+              {!artifactDelivery.complete ? (
+                <div className="text-[10px] text-warn space-y-0.5" data-testid="swarm-delivery-warning">
+                  <div>Synthesis continued with incomplete PM evidence.</div>
+                  {(artifactDelivery.missing || []).map((row) => (
+                    <div key={`${row.id}:${row.task_id || ""}`} className="font-mono break-words">
+                      {row.id} · {row.task_id || "unknown task"}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              {artifactsOpen && Array.isArray(artifacts) && artifacts.length > 0 ? (
+                <div className="max-h-72 overflow-auto space-y-1">
+                  {artifacts.map((artifact, index) => (
+                    <button
+                      key={artifact.id || index}
+                      type="button"
+                      data-testid="swarm-artifact-link"
+                      data-artifact-id={artifact.id || ""}
+                      data-artifact-sha256={artifact.sha256 || ""}
+                      onClick={() => primaryJobId && openAgentSwarmJob(primaryJobId, artifact.id)}
+                      className="block w-full rounded border border-edge/30 bg-panel/30 px-2 py-1.5 text-left hover:bg-panel2/35 transition-colors"
+                      title={artifact.id ? `Inspect ${artifact.id} in Swarm Tracker` : "Inspect swarm artifacts"}
+                    >
+                      <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[9px]">
+                        <span className="uppercase text-faint">{artifact.type}</span>
+                        {artifact.id ? <span className="font-mono text-accent/80 break-all">{artifact.id}</span> : null}
+                      </span>
+                      <span className="mt-1 block text-[10.5px] leading-relaxed text-muted whitespace-normal break-words">
+                        {artifact.headline}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           {Array.isArray(invalidatedPaths) && invalidatedPaths.length > 0 && (
             <div className="flex flex-col gap-1">
               <div className="text-[10px] text-muted font-mono">invalidated paths</div>

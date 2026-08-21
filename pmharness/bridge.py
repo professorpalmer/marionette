@@ -674,6 +674,7 @@ def _artifact_provenance(a: Any, payload: dict) -> dict:
         "id": str(getattr(a, "id", "") or "").strip()[:_MAX_ID_CHARS],
         "job_id": job_id,
         "task_id": task_id,
+        "sha256": str(getattr(a, "sha256", "") or "").strip(),
     }
     evidence = _bounded_text_list(
         getattr(a, "evidence", None),

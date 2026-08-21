@@ -355,6 +355,48 @@ describe("transcriptItems module", () => {
     expect(items[1]).toMatchObject({ kind: "msg", msg: { role: "assistant", text: "hi" } });
   });
 
+  it("drops run_swarm ActionCards and hydrates the SwarmResult owner", () => {
+    const items = transcriptResponseToItems({
+      display: [
+        {
+          type: "card",
+          id: "call-swarm",
+          kind: "run_swarm",
+          goal: "audit",
+          cwd: "/repo",
+          result: { job_id: "job_abcdef012345", status: "complete" },
+        },
+        {
+          type: "swarm_result",
+          job_id: "job_abcdef012345",
+          applied: true,
+          files: [],
+          summary: "one finding",
+          error: null,
+          objective: "audit",
+          cwd: "/repo",
+          artifacts: [{ id: "artifact-a", type: "finding", headline: "Evidence" }],
+          artifact_delivery: {
+            pm_artifacts: 1,
+            available_to_inspect: 1,
+            complete: true,
+            missing: [],
+          },
+        },
+      ],
+    });
+
+    expect(items.filter((item) => item.kind === "card")).toHaveLength(0);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      kind: "swarm_result",
+      job_id: "job_abcdef012345",
+      objective: "audit",
+      cwd: "/repo",
+      artifact_delivery: { pm_artifacts: 1, available_to_inspect: 1, complete: true },
+    });
+  });
+
   it("transcriptResponseToItems restores pending command_approval display rows", () => {
     const hash = "a".repeat(64);
     const items = transcriptResponseToItems({
@@ -1577,6 +1619,19 @@ describe("streamApply module", () => {
         source_job_id: "local-src",
         reuse_reason: "subset_invalidated",
         invalidated_paths: ["harness/auth.py"],
+        artifacts: [{
+          id: "artifact-a",
+          task_id: "task-a",
+          sha256: "sha-a",
+          type: "finding",
+          headline: "Evidence A",
+        }],
+        artifact_delivery: {
+          pm_artifacts: 1,
+          available_to_inspect: 1,
+          complete: true,
+          missing: [],
+        },
       },
     });
     expect(enriched.filter((it) => it.kind === "swarm_result")).toHaveLength(1);
@@ -1584,6 +1639,7 @@ describe("streamApply module", () => {
       reuse_status: "partial",
       source_job_id: "local-src",
       invalidated_paths: ["harness/auth.py"],
+      artifact_delivery: { pm_artifacts: 1, available_to_inspect: 1, complete: true },
     });
 
     // Later SSE correction: explicit false / fresh / [] must replace prior fields.
@@ -1624,6 +1680,7 @@ describe("streamApply module", () => {
       reuse_status: "fresh",
       source_job_id: "",
       files: ["a.ts"],
+      artifact_delivery: { pm_artifacts: 1, available_to_inspect: 1, complete: true },
     });
 
     // Files-only SSE correction; explicit [] clears, omitted files inherit.

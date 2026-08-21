@@ -1917,6 +1917,7 @@ function swarmResultItemFromPayload(
     summary: resObj?.summary || "",
     error: hasError ? (resObj.error ?? null) : (undefined as unknown as null),
     objective,
+    cwd: resObj?.cwd !== undefined && resObj?.cwd !== null ? String(resObj.cwd) : undefined,
     held_for_review: hasHeld ? Boolean(resObj.held_for_review) : undefined,
     analysis_ok: hasAnalysisOk ? Boolean(resObj.analysis_ok) : undefined,
     // Preserve explicit empty-string / present fields so corrections can clear
@@ -1942,6 +1943,11 @@ function swarmResultItemFromPayload(
     acceptance_criteria: Array.isArray(resObj?.acceptance_criteria)
       ? resObj.acceptance_criteria.map((c: unknown) => String(c || "").trim()).filter(Boolean)
       : undefined,
+    artifacts: Array.isArray(resObj?.artifacts) ? resObj.artifacts : undefined,
+    artifact_delivery:
+      resObj?.artifact_delivery && typeof resObj.artifact_delivery === "object"
+        ? resObj.artifact_delivery
+        : undefined,
   };
 }
 
@@ -1959,6 +1965,17 @@ export function applySwarmResultToItems(
 ): Item[] {
   const jobId = String(d.job_id || "").trim();
   if (!jobId) return items;
+  if (items.some((it) => (
+    it.kind === "card"
+    && it.card.kind === "run_swarm"
+    && String(it.card.result?.job_id || "").trim() === jobId
+  ))) {
+    items = items.filter((it) => !(
+      it.kind === "card"
+      && it.card.kind === "run_swarm"
+      && String(it.card.result?.job_id || "").trim() === jobId
+    ));
+  }
 
   const resObj = d.result || d;
   const resultFailed = swarmResultLooksFailed(resObj);
@@ -1987,6 +2004,7 @@ export function applySwarmResultToItems(
         && merged.validation_fingerprint === it.validation_fingerprint
         && merged.environment_fingerprint === it.environment_fingerprint
         && merged.summary === it.summary
+        && merged.cwd === it.cwd
         && merged.applied === it.applied
         && merged.error === it.error
         && merged.held_for_review === it.held_for_review
@@ -1996,7 +2014,10 @@ export function applySwarmResultToItems(
         && JSON.stringify(merged.invalidated_paths || [])
           === JSON.stringify(it.invalidated_paths || [])
         && JSON.stringify(merged.acceptance_criteria || [])
-          === JSON.stringify(it.acceptance_criteria || []);
+          === JSON.stringify(it.acceptance_criteria || [])
+        && JSON.stringify(merged.artifacts || []) === JSON.stringify(it.artifacts || [])
+        && JSON.stringify(merged.artifact_delivery || null)
+          === JSON.stringify(it.artifact_delivery || null);
       if (same) return it;
       changed = true;
       return merged;

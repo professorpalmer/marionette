@@ -77,6 +77,101 @@ def _stamp_local_job_agentic_pin(session, job_id: str, pin) -> None:
         return
 
 
+def _artifact_ref(row: Any) -> dict[str, str]:
+    if isinstance(row, dict):
+        get = row.get
+    else:
+        get = lambda key, default="": getattr(row, key, default)
+    return {
+        "id": str(get("id", "") or "").strip(),
+        "task_id": str(get("task_id", "") or "").strip(),
+        "sha256": str(get("sha256", "") or "").strip(),
+    }
+
+
+def _swarm_artifact_delivery(session, job_id: str, result_rows: list[dict]) -> tuple[list[dict], dict]:
+    """Reconcile the PM store with the result projection; never model-pull evidence."""
+
+    expected_refs = [_artifact_ref(row) for row in result_rows]
+    canonical_rows: list[dict] = []
+    try:
+        state = session.state()
+        raw_rows = list(state.store.list_artifacts(job_id))
+        if raw_rows:
+            expected_refs = [_artifact_ref(row) for row in raw_rows]
+            canonical_rows = list(state.format_artifacts(raw_rows))
+    except Exception:
+        canonical_rows = []
+
+    by_id: dict[str, dict] = {}
+    anonymous_rows: list[dict] = []
+    for row in [*result_rows, *canonical_rows]:
+        artifact_id = str(row.get("id") or "").strip()
+        if not artifact_id:
+            if row not in anonymous_rows:
+                anonymous_rows.append(row)
+            continue
+        prior = by_id.get(artifact_id)
+        by_id[artifact_id] = {**(prior or {}), **row}
+
+    ordered: list[dict] = []
+    missing: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for ref in expected_refs:
+        artifact_id = ref["id"]
+        if artifact_id and artifact_id in by_id:
+            row = dict(by_id[artifact_id])
+            row.setdefault("task_id", ref["task_id"] or None)
+            row.setdefault("sha256", ref["sha256"])
+            ordered.append(row)
+            seen.add(artifact_id)
+        else:
+            missing.append({"id": artifact_id or "unknown", "task_id": ref["task_id"]})
+    for artifact_id, row in by_id.items():
+        if artifact_id not in seen:
+            ordered.append(row)
+    ordered.extend(anonymous_rows)
+
+    pm_artifacts = len(expected_refs)
+    available = pm_artifacts - len(missing)
+    return ordered, {
+        "pm_artifacts": pm_artifacts,
+        "available_to_inspect": available,
+        "complete": not missing,
+        "missing": missing,
+    }
+
+
+def _render_swarm_delivery_manifest(job_id: str, rows: list[dict], delivery: dict) -> str:
+    expected = int(delivery.get("pm_artifacts") or 0)
+    available = int(delivery.get("available_to_inspect") or 0)
+    lines = [
+        "PM SWARM ARTIFACT MANIFEST:",
+        f"- PM artifacts: {expected}",
+        f"- Available to inspect: {available}/{expected}",
+    ]
+    missing = list(delivery.get("missing") or [])
+    if missing:
+        lines.append("- WARNING: Synthesis continued with incomplete PM evidence.")
+        for row in missing:
+            lines.append(
+                f"  - missing {row.get('id') or 'unknown'} task={row.get('task_id') or 'unknown'}"
+            )
+    for row in rows:
+        artifact_id = str(row.get("id") or "").strip()
+        lines.append(digest_line(row, job_id))
+        if not artifact_id:
+            continue
+        lines.append(
+            "    "
+            f"id={artifact_id} "
+            f"task={row.get('task_id') or 'unknown'} "
+            f"sha256={row.get('sha256') or 'unknown'} "
+            f"artifact://{job_id}/{artifact_id}"
+        )
+    return "\n".join(lines)
+
+
 def _non_git_workspace_error(repo: str) -> Optional[str]:
     """Calm refuse when the resolved workspace is not a git work tree.
 
@@ -655,14 +750,35 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         except Exception:
             pass
     ordered = _signal + _plumbing
-    digest_arts = _signal[:20] + _plumbing[:3] if _signal else _plumbing[:8]
     # Every user-visible count/label below describes the SURFACED artifacts, not
     # the raw bridge result. A refused demo surfaces nothing, so it must not
     # report a nonzero count or claim it ran "via demo".
     _ui_adapter = 'refused-demo' if _demo_refused else result.adapter
     _ui_num = len(_all_arts)
     _ui_types = sorted({str(a.get('type')) for a in _all_arts if a.get('type')})
-    yield ConvEvent('action_result', {'id': aid, 'job_id': result.job_id, 'num': _ui_num, 'types': _ui_types, 'artifacts': ordered[:12], 'adapter': _ui_adapter, 'mode': result.mode, 'auth_failure': auth_failure, 'error': ('demo substrate -- not real codebase analysis' if _demo_refused else None)})
+    if _demo_refused:
+        delivered_arts = []
+        artifact_delivery = {
+            "pm_artifacts": 0,
+            "available_to_inspect": 0,
+            "complete": True,
+            "missing": [],
+        }
+    else:
+        delivered_arts, artifact_delivery = _swarm_artifact_delivery(
+            session, _job_id_text, ordered,
+        )
+    yield ConvEvent('action_result', {
+        'id': aid,
+        'job_id': result.job_id,
+        'num': _ui_num,
+        'types': _ui_types,
+        'artifacts': ordered[:12],
+        'adapter': _ui_adapter,
+        'mode': result.mode,
+        'auth_failure': auth_failure,
+        'error': ('demo substrate -- not real codebase analysis' if _demo_refused else None),
+    })
     _has_signal = bool(_signal)
     # Quality gate: a "finding" with no substance (a one-liner with no file
     # reference) must not turn the badge green -- a swarm whose workers choked
@@ -690,7 +806,18 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             else 'swarm produced no FINDING/RISK/DECISION artifacts' if _ui_num
             else 'swarm produced no artifacts'))
     _store_jid = (result.job_id or '').strip() or _sync_local_id
-    _badge = {'job_id': _store_jid, 'applied': _swarm_ok, 'files': [], 'summary': _badge_summary, 'error': _badge_error, 'objective': act.goal, 'adapter': _ui_adapter}
+    _badge = {
+        'job_id': _store_jid,
+        'applied': _swarm_ok,
+        'files': [],
+        'summary': _badge_summary,
+        'error': _badge_error,
+        'objective': act.goal,
+        'cwd': _swarm_repo,
+        'adapter': _ui_adapter,
+        'artifacts': delivered_arts,
+        'artifact_delivery': artifact_delivery,
+    }
     _job_engine = _ui_adapter if _demo_refused else (result.adapter or 'agentic')
     # Best-effort routed model so finish cannot clobber a preview ROUTING stamp
     # with bare agentic/native.
@@ -827,24 +954,9 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         pass
     # Only surfaced artifacts become turn findings; a refused demo contributes none.
     turn_findings.extend((a for a in _all_arts if a.get('type') != 'verification'))
-    full_digest_raw = (getattr(act, 'arguments', None) or {}).get('full_digest')
-    if isinstance(full_digest_raw, bool):
-        want_full_digest = full_digest_raw
-    else:
-        want_full_digest = str(full_digest_raw or '').strip().lower() in (
-            '1', 'true', 'yes', 'on',
-        )
-    digest = '\n'.join(
-        digest_line(a, _job_id_text) for a in digest_arts
-    ) or '  (no artifacts)'
-    if auth_failure and not _has_signal and auth_failure not in digest:
-        digest = f"  - [auth] {auth_failure}\n{digest}"
-    from .worker_handles import format_handle_first_result
-    handle_body = format_handle_first_result(
-        _job_id_text,
-        digest_arts or _signal or _all_arts,
+    body = _render_swarm_delivery_manifest(
+        _job_id_text, delivered_arts, artifact_delivery,
     )
-    body = digest if want_full_digest else handle_body
     stall = ''
     if _demo_refused or counters['demo_swarms'] >= 1:
         stall = '\n(NOTE: swarm hit the DEMO substrate and was refused -- Marionette never treats demo findings as real analysis. Do NOT retry or cite those findings. Tell the user analysis needs HARNESS_SWARM_ADAPTER=agentic and a provider key, then stop.)'
@@ -871,19 +983,15 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         acceptance_criteria=_finish_criteria,
     ))
     _follow = (
-        'Explain these findings to the user and either run a narrowed follow-up '
-        'swarm or finish with no actions. FETCH full bodies with peek_artifact '
-        'or read_file on artifact:// URIs when needed.'
-        if not want_full_digest
-        else
-        'Explain these findings to the user and either run a narrowed follow-up '
-        'swarm or finish with no actions.'
+        'Synthesize the available PM evidence. Artifact discovery is complete '
+        'above; do not gather the result set with additional tools or rerun the swarm.'
     )
     session._append_action_result(
         act, aid,
         f"(swarm {aid} '{act.goal}' returned {_ui_num} artifacts {_pilot_via}:"
         f"{evidence_boundary}\n{body}\n{_follow}){stall}",
         is_native,
+        force_inline=True,
     )
     return None
 
