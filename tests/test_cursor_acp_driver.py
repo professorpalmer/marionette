@@ -867,7 +867,7 @@ def test_cursor_acp_prose_send_emits_natural_and_records_stream_wire(
     )
     drv = _acp_driver(monkeypatch)
     cfg = HarnessConfig(
-        driver="cursor-cli:auto",
+        driver="gemini-3.5-flash",
         state_dir=str(tmp_path),
         repo=str(tmp_path),
     )
@@ -908,7 +908,7 @@ def test_cursor_acp_incomplete_send_does_not_finalize_or_run_tools(
     monkeypatch.setattr("harness.send_loop.execute_turn_actions", boom)
     drv = _acp_driver(monkeypatch, stop_reason="max_tokens")
     cfg = HarnessConfig(
-        driver="cursor-cli:auto",
+        driver="gemini-3.5-flash",
         state_dir=str(tmp_path),
         repo=str(tmp_path),
     )
