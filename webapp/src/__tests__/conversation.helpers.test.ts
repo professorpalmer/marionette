@@ -256,6 +256,7 @@ import {
   classifySwarmPollEvent,
 } from "../components/conversation/swarmPoll";
 import {
+  STREAM_PAINT_MS,
   cancelTypewriterWithoutFlush,
   flushTypewriterBuffer,
   pumpTypewriterFrame,
@@ -807,7 +808,9 @@ describe("streamBubbles module", () => {
     expect(findStreamingBubbleIdx(items, { excludeWorkerStream: true })).toBe(-1);
     expect(typewriterCharsPerFrame(0, false)).toBe(0);
     expect(typewriterCharsPerFrame(3, false)).toBe(3);
-    expect(typewriterCharsPerFrame(40, true)).toBeGreaterThanOrEqual(12);
+    expect(typewriterCharsPerFrame(40, false)).toBe(40);
+    expect(typewriterCharsPerFrame(40, true)).toBe(40);
+    expect(STREAM_PAINT_MS).toBe(33);
   });
 
   it("finds an earlier pilot bubble when a trailing worker preview fails affinity", () => {
@@ -3423,8 +3426,9 @@ describe("streamTypewriter first reveal", () => {
     const chunks: string[] = [];
     let cancelled = 0;
     startTypewriterLoop(refs, (c) => chunks.push(c), () => 3);
-    const remaining = refs.typeBufRef.current;
-    expect(remaining.length).toBeGreaterThan(0);
+    // Codex/Hermes paint: first reveal drains the arrived chunk.
+    expect(refs.typeBufRef.current).toBe("");
+    expect(chunks.join("")).toBe(text);
     flushTypewriterBuffer(refs, (c) => chunks.push(c), () => {
       cancelled += 1;
     });
@@ -3445,24 +3449,16 @@ describe("streamTypewriter first reveal", () => {
     expect(cancelled).toBe(2);
   });
 
-  it("scheduled pump continues the same live cadence on leftover buffer", () => {
+  it("scheduled pump on leftover buffer drains the rest in one take", () => {
     const text = "Hello world, this is buffered prose.";
     const refs = makeRefs(text);
     const chunks: string[] = [];
-    let pump: (() => void) | null = null;
-    startTypewriterLoop(refs, (c) => chunks.push(c), (cb) => {
-      pump = cb;
-      return 11;
-    });
-    const first = text.slice(0, typewriterCharsPerFrame(text.length, false));
-    expect(chunks).toEqual([first]);
-    const leftover = text.slice(first.length);
-    expect(refs.typeBufRef.current).toBe(leftover);
-    expect(pump).not.toBeNull();
+    startTypewriterLoop(refs, (c) => chunks.push(c), () => 11);
+    expect(chunks).toEqual([text]);
+    expect(refs.typeBufRef.current).toBe("");
     pumpTypewriterFrame(refs, (c) => chunks.push(c), () => 12);
-    const second = leftover.slice(0, typewriterCharsPerFrame(leftover.length, false));
-    expect(chunks).toEqual([first, second]);
-    expect(refs.typeBufRef.current).toBe(leftover.slice(second.length));
+    expect(chunks).toEqual([text]);
+    expect(refs.typeBufRef.current).toBe("");
   });
 
   it("empty-buffer pump with typeDone false reschedules without appending", () => {

@@ -146,7 +146,8 @@ describe("Wave 5: long reasoning stays busy without idle blink", () => {
     expect(progress.label.toLowerCase()).toContain("still working");
     expect(progress.pill.toLowerCase()).toContain("still working");
     expect(progress.pill).not.toBe("idle");
-    expect(shouldShowBusyFooter(state.items, state.status)).toBe(true);
+    // Live thinking row already owns the signal — footer under it blinks.
+    expect(shouldShowBusyFooter(state.items, state.status)).toBe(false);
   });
 });
 

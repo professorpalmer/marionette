@@ -1,9 +1,26 @@
 /**
  * Typewriter pump helpers for streaming assistant deltas.
- * Conversation owns the rAF refs; this module owns the per-frame math.
+ * Conversation owns the timer handle; this module owns the per-tick math.
+ *
+ * Hermes measured 33ms as the floor that batches ~2 tokens per React
+ * commit at typical 60 tok/s without visible lag (30 fps of text growth).
+ * They use a timer, not rAF: Chromium parks rAF on hidden/minimized
+ * renderers, so a finished answer sits queued until refocus. Codex paints
+ * the arrived chunk — no char drip. We do both.
  */
 
 import { typewriterCharsPerFrame } from "./streamBubbles";
+
+/** Hermes ``STREAM_DELTA_FLUSH_MS`` — coalesce without a fake typewriter. */
+export const STREAM_PAINT_MS = 33;
+
+export function scheduleStreamPaint(cb: () => void): number {
+  return window.setTimeout(cb, STREAM_PAINT_MS);
+}
+
+export function cancelStreamPaint(id: number): void {
+  window.clearTimeout(id);
+}
 
 export type TypewriterRefs = {
   typeBufRef: { current: string };

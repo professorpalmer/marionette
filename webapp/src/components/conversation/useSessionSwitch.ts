@@ -33,7 +33,7 @@ import {
 } from "./composerAttachmentCache";
 import type { MemoryProposal } from "./streamEventHandler";
 import { createChatEventsReattach } from "./chatEventsReattach";
-import { cancelTypewriterWithoutFlush } from "./streamTypewriter";
+import { cancelStreamPaint, cancelTypewriterWithoutFlush } from "./streamTypewriter";
 import { gatherSessionArtifacts } from "./sessionArtifacts";
 import { releaseAllTranscriptPreviewBlobs } from "./transcriptImageBlobs";
 import {
@@ -286,7 +286,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
     // cache hydrate below). Authoritative text comes back via sessionTranscript.
     cancelTypewriterWithoutFlush(
       { typeBufRef, typeRafRef, typeDoneRef },
-      cancelAnimationFrame,
+      cancelStreamPaint,
     );
     // Default idle until getSessionState / runners poll resolve the target.
     if (shouldResetBusyChromeOnSwitch(switchedSession)) {

@@ -33,6 +33,7 @@ from harness.pilot_guards import (
     guards_active,
     is_backend_restart_command,
     is_broad_intent_user_message,
+    is_explicit_swarm_user_message,
     is_exploration_command,
     is_headless_chrome_file_smoke_command,
     is_local_handoff_command,
@@ -122,6 +123,76 @@ def test_broad_intent_classification_positives(message):
 )
 def test_broad_intent_classification_negatives(message):
     assert is_broad_intent_user_message(message) is False
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "yeah, puppetmaster swarm glm 5.3 multi-workers via openrouter",
+        "run_swarm on token streaming",
+        "spin up a swarm for the discord cards",
+        "launch a swarm via OpenRouter",
+        "multi-worker fan-out on the backend",
+    ],
+)
+def test_explicit_swarm_classification_positives(message):
+    assert is_explicit_swarm_user_message(message) is True
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "hi",
+        "Where is run_swarm defined?",
+        "what is a swarm",
+        "open the swarm tracker",
+        "don't swarm yet, just read backend.py",
+        "Find the class TurnGuardState",
+    ],
+)
+def test_explicit_swarm_classification_negatives(message):
+    assert is_explicit_swarm_user_message(message) is False
+
+
+def test_explicit_swarm_blocks_git_and_scripts_until_run_swarm():
+    prompt = "yeah, puppetmaster swarm glm 5.3 multi-workers via openrouter"
+    state = new_turn_guard_state(prompt)
+    assert state.explicit_swarm is True
+    assert state.broad_intent is False
+
+    git = check_swarm_gate(
+        state, "run_command", _Act(kind="run_command", command="git status"),
+    )
+    assert git.suppress is True
+    assert git.reason == "swarm_gate"
+    assert "run_implement is one worker" in git.message
+
+    script = check_swarm_gate(
+        state,
+        "run_command",
+        _Act(kind="run_command", command="node ./glm53/script.sh --n 10"),
+    )
+    assert script.suppress is True
+
+    implement = check_swarm_gate(
+        state, "run_implement", _Act(kind="run_implement", goal="wire streaming"),
+    )
+    assert implement.suppress is True
+    assert "run_swarm" in implement.message
+    assert "run_implement" in implement.message
+
+    swarm = check_swarm_gate(
+        state, "run_swarm", _Act(kind="run_swarm", goal="token streaming fan-out"),
+    )
+    assert swarm.suppress is False
+
+    record_action_execution(
+        state, "run_swarm", _Act(kind="run_swarm", goal="token streaming fan-out"),
+    )
+    after = check_swarm_gate(
+        state, "run_command", _Act(kind="run_command", command="git status"),
+    )
+    assert after.suppress is False
 
 
 def test_investigate_shaped_turn_swarm_gate_suppresses_exploration():

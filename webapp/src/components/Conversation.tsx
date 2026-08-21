@@ -184,7 +184,9 @@ import {
 } from "./conversation/swarmPoll";
 import { armResumeKick } from "./conversation/sessionResumeLatch";
 import {
+  cancelStreamPaint,
   flushTypewriterBuffer,
+  scheduleStreamPaint,
   startTypewriterLoop,
 } from "./conversation/streamTypewriter";
 import {
@@ -470,20 +472,18 @@ export default function Conversation({
   // Stable indirection so the always-on swarm-results poll (defined before the
   // trigger) can fire a keep-alive turn without a declaration-order dependency.
   const resumeTriggerRef = useRef<() => void>(() => {});
-  // Typewriter buffer: network deltas arrive in bursts (whole sentences at a
-  // time). To render smoothly like Cursor/Hermes we DON'T paint on arrival --
-  // we queue incoming text here and drain it at a steady per-frame cadence via
-  // requestAnimationFrame, so the user sees an even "typing" effect regardless
-  // of how chunky the underlying stream is.
+  // Typewriter buffer: network deltas arrive in bursts. Codex paints the
+  // arrived chunk (no char drip). Hermes coalesces on a 33ms timer — not rAF
+  // — so a hidden/minimized renderer cannot park the queue until refocus.
   const typeBufRef = useRef<string>("");          // undrained characters
-  const typeRafRef = useRef<number | null>(null); // active rAF handle
-  const typeDoneRef = useRef<boolean>(false);     // stream ended -> drain fast then stop
+  const typeRafRef = useRef<number | null>(null); // active paint-timer handle
+  const typeDoneRef = useRef<boolean>(false);     // stream ended -> drain then stop
 
-  // Cancel any in-flight typewriter rAF on unmount so the loop never leaks.
+  // Cancel any in-flight paint timer on unmount so the loop never leaks.
   useEffect(() => {
     return () => {
       if (typeRafRef.current != null) {
-        cancelAnimationFrame(typeRafRef.current);
+        cancelStreamPaint(typeRafRef.current);
         typeRafRef.current = null;
       }
     };
@@ -2356,14 +2356,12 @@ export default function Conversation({
     });
   };
 
-  // Drain the typewriter buffer at a steady cadence. While the stream is live we
-  // reveal a fixed number of chars per frame (smooths bursty network arrival);
-  // once the stream has ended we accelerate so we never lag behind the model.
+  // Drain the whole arrived chunk on a 33ms Hermes timer (Codex: no drip).
   const startTypewriter = () => {
     startTypewriterLoop(
       { typeBufRef, typeRafRef, typeDoneRef },
       appendStreamingText,
-      requestAnimationFrame,
+      scheduleStreamPaint,
     );
   };
 
@@ -2371,7 +2369,7 @@ export default function Conversation({
     flushTypewriterBuffer(
       { typeBufRef, typeRafRef, typeDoneRef },
       appendStreamingText,
-      cancelAnimationFrame,
+      cancelStreamPaint,
     );
   };
   flushTypewriterRef.current = flushTypewriter;

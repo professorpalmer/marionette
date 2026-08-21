@@ -275,6 +275,9 @@ export {
 } from "./swarmPoll";
 export { armResumeKick, scheduleResumeIfPending } from "./sessionResumeLatch";
 export {
+  STREAM_PAINT_MS,
+  scheduleStreamPaint,
+  cancelStreamPaint,
   pumpTypewriterFrame,
   startTypewriterLoop,
   flushTypewriterBuffer,

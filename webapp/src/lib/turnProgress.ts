@@ -488,7 +488,9 @@ export function turnLooksAnswerComplete(items: TurnItem[]): boolean {
 
 /**
  * Whether the transcript busy footer should render for this status + items.
- * False when the answer already looks complete despite a lagging busy status.
+ * False when the answer already looks complete despite a lagging busy status,
+ * or when a stream / running card already owns the live signal — stacking
+ * "Still working…" under growing text is the blink in the screenshot.
  */
 export function shouldShowBusyFooter(items: TurnItem[], status: BusyStatus): boolean {
   if (status === "awaiting_swarm") return true;
@@ -496,6 +498,7 @@ export function shouldShowBusyFooter(items: TurnItem[], status: BusyStatus): boo
     status === "thinking" || status === "executing" || status === "streaming";
   if (!busy) return false;
   if (turnLooksAnswerComplete(items)) return false;
+  if (turnHasVisibleBusySurface(items)) return false;
   return true;
 }
 
