@@ -50,4 +50,10 @@ describe("onboardingProviders", () => {
     expect(onboardingCopy("zai").keyUrl).toBe("https://z.ai/manage-apikey/apikey-list");
     expect(onboardingCopy("zai").tagline).toMatch(/coding plan/i);
   });
+
+  it("keeps OpenCode Zen distinct from Go", () => {
+    expect(onboardingCopy("opencode-zen").keyUrl).toBe("https://opencode.ai/docs/zen/");
+    expect(onboardingCopy("opencode-zen").tagline).toMatch(/ox alpha/i);
+    expect(isOnboardableProvider(provider("opencode-zen"))).toBe(true);
+  });
 });

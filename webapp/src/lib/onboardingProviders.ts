@@ -15,6 +15,7 @@ export const ONBOARDING_ORDER = [
   "xai",
   "deepseek",
   "opencode-go",
+  "opencode-zen",
   "openai-codex",
   "nous",
   "zai",
@@ -60,6 +61,11 @@ export const ONBOARDING_COPY: Record<string, OnboardingCopy> = {
     tagline: "one subscription, many models",
     blurb: "OpenCode Go subscription key. Reseller catalog for chat and workers.",
     keyUrl: "https://opencode.ai/docs/go/",
+  },
+  "opencode-zen": {
+    tagline: "pay-as-you-go, including Ox Alpha",
+    blurb: "OpenCode Zen catalog, including Ox Alpha Free. Separate from the Go subscription.",
+    keyUrl: "https://opencode.ai/docs/zen/",
   },
   "openai-codex": {
     tagline: "ChatGPT plan",

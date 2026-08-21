@@ -67,6 +67,7 @@ def test_micro_visible_tool_names_contract():
     names = micro_visible_tool_names()
     assert "search_tools" in names
     assert "search_files" in names
+    assert "view_image" in names
     assert "run_swarm" not in names
     assert "query_wiki" not in names
     assert "search_codegraph" not in names
@@ -74,16 +75,41 @@ def test_micro_visible_tool_names_contract():
     assert "run_parallel" not in names
 
 
+def test_glm53_explicit_swarm_is_not_micro_and_exposes_run_swarm(tmp_path):
+    """F: GLM 5.3 explicit swarm prompt resolves non-MICRO and sees run_swarm."""
+    from harness.pilot_guards import is_explicit_swarm_user_message
+    from harness.task_profile import classify_task_profile
+
+    prompt = "yeah, puppetmaster swarm glm 5.3 multi-workers via openrouter"
+    assert is_explicit_swarm_user_message(prompt) is True
+    assert classify_task_profile(prompt) == MICRO
+    assert classify_task_profile("typo in file 5.3") == MICRO
+
+    cfg = HarnessConfig(
+        driver="stub-oracle-v2",
+        state_dir=str(tmp_path),
+        repo=str(tmp_path / "repo"),
+    )
+    session = ConversationalSession(cfg)
+    profile = session._resolve_task_profile_for_turn(prompt)
+    assert profile == STANDARD
+    names = {t["function"]["name"] for t in session._build_visible_tools_schema()}
+    assert "run_swarm" in names
+    assert "run_parallel" in names
+
+
 def test_core_visible_names_micro_hides_orchestration():
     names = core_visible_names(profile=MICRO)
     assert "search_tools" in names
     assert "read_file" in names
+    assert "view_image" in names
     assert "run_swarm" not in names
     assert "query_wiki" not in names
     assert "run_implement" not in names
     standard = core_visible_names(profile=STANDARD)
     assert "run_swarm" in standard
     assert "query_wiki" in standard
+    assert "view_image" in standard
 
 
 def test_swarm_gate_allows_exploration_when_micro(monkeypatch):

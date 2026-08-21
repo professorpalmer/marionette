@@ -16,6 +16,7 @@ import TranscriptEmptyState from "./TranscriptEmptyState";
 
 export default function ConversationChatColumn({
   feedRef,
+  feedContentRef,
   transcriptStale,
   items,
   status,
@@ -38,6 +39,8 @@ export default function ConversationChatColumn({
   onJumpToBottom,
 }: {
   feedRef: RefObject<HTMLDivElement | null>;
+  /** Direct child of the feed scrollport — observed for height-driven stick. */
+  feedContentRef?: RefObject<HTMLDivElement | null>;
   transcriptStale: boolean;
   items: Item[];
   status: "idle" | "thinking" | "executing" | "done" | "error" | "streaming" | "awaiting_swarm";
@@ -73,7 +76,10 @@ export default function ConversationChatColumn({
             scrollbar-gutter avoids a 15px jump when the bar appears.
             overscroll-contain stops rubber-band from yanking the window.
             Composer sits outside this scrollport; do not move it inside. */}
-        <div className="max-w-3xl mx-auto px-6 py-6 flex flex-col gap-1">
+        <div
+          ref={feedContentRef}
+          className="max-w-3xl mx-auto px-6 py-6 flex flex-col gap-1"
+        >
           <TranscriptEmptyState transcriptStale={transcriptStale} itemCount={items.length} />
           {/*
             PERF: The transcript is rendered by TranscriptList, a React.memo

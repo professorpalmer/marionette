@@ -174,6 +174,7 @@ def pin_candidates(pin: str) -> list[str]:
             "agentic",
             "native",
             "opencode-go",
+            "opencode-zen",
         }:
             bare = rest.strip() or bare
             _add(bare)

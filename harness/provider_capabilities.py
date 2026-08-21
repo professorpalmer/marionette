@@ -21,6 +21,7 @@ FULL_STACK_AGENTIC = frozenset({
     "xai",
     "bedrock",
     "opencode-go",
+    "opencode-zen",
     "openai-codex",
     "nous",
     "minimax",

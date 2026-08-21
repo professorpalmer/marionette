@@ -64,6 +64,7 @@ API_KEY_PROVIDERS = frozenset({
     "deepseek",
     "mistral",
     "opencode-go",
+    "opencode-zen",
 })
 
 _PLAN_LIMIT_MARKERS = (
@@ -597,6 +598,8 @@ _ENV_TO_PROVIDER = {
     "DEEPSEEK_API_KEY": "deepseek",
     "MISTRAL_API_KEY": "mistral",
     "OPENCODE_GO_API_KEY": "opencode-go",
+    "OPENCODE_ZEN_API_KEY": "opencode-zen",
+    "OPENCODE_API_KEY": "opencode-zen",
     "GLM_API_KEY": "zai",
     "ZAI_API_KEY": "zai",
     "Z_AI_API_KEY": "zai",
@@ -619,6 +622,7 @@ _PROVIDER_TO_ENV = {
     "cursor": "CURSOR_API_KEY",
     "xai": "XAI_API_KEY",
     "opencode-go": "OPENCODE_GO_API_KEY",
+    "opencode-zen": "OPENCODE_ZEN_API_KEY",
     "zai": "GLM_API_KEY",
 }
 

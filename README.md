@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.15` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.265, deliberately pre-1.0. Rides puppetmaster-ai==1.22.15. Live chat paints Codex/Hermes-style (33ms timer, no char drip). Explicit "swarm / multi-worker" asks block git theater until run_swarm fires.
+> Status: v0.9.266, deliberately pre-1.0. Rides puppetmaster-ai==1.22.15. Provider/tool protocol hardening makes swarms reliable across OpenRouter and OpenCode, live catalogs surface OpenCode Zen and Ox Alpha, and stable bottom anchoring plus remembered Swarm Tracker cards remove chat/sidebar jumps.
 
 ## Documentation
 

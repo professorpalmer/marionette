@@ -2,6 +2,8 @@
  * Stick-to-bottom / session-switch settle helpers for the transcript feed.
  */
 
+import { isOccludedScrollParentSize } from "./transcriptVirtualWindow";
+
 export const FEED_PIN_THRESHOLD_PX = 120;
 /**
  * Re-attach stick-to-bottom only when the viewport is this close to the true
@@ -28,8 +30,8 @@ export function isPinnedToBottom(
 }
 
 /**
- * Pin state from live scroll geometry. Settling must never force-true — the
- * [items] effect keeps glue via scrollSettlingRef separately.
+ * Pin state from live scroll geometry. Settling glue is tracked separately via
+ * scrollSettlingRef and honored by scrollTopAfterFeedHeightChange.
  *
  * Prefer {@link nextFeedPinState} for the live feed: geometry alone re-pins
  * inside a large threshold and fights trackpad unpin + streaming stick.
@@ -100,9 +102,9 @@ export function shouldShowJumpToBottom(opts: {
   return !opts.pinned && !opts.settling;
 }
 
-/** Upward wheel should unpin (unless settle glue is active). */
-export function shouldUnpinOnWheel(deltaY: number, settling: boolean): boolean {
-  if (settling) return false;
+/** Upward wheel unpins even during session-switch settle glue. */
+export function shouldUnpinOnWheel(deltaY: number, _settling: boolean): boolean {
+  void _settling;
   return deltaY < 0;
 }
 
@@ -133,10 +135,140 @@ export function feedWheelUnpinListenerOptions(): AddEventListenerOptions {
 export function shouldUnpinOnTouchMove(
   startY: number | null,
   currentY: number | null,
-  settling: boolean,
+  _settling: boolean,
 ): boolean {
-  if (settling || startY == null || currentY == null) return false;
+  void _settling;
+  if (startY == null || currentY == null) return false;
   return currentY > startY + 2;
+}
+
+/**
+ * After a feed/content height change, derive the scrollTop Conversation should
+ * apply. Returns null when the viewport must stay put (released/unpinned growth).
+ *
+ * Gesture release wins over session-switch settling so manual scroll-up during
+ * settle glue is not overwritten by ResizeObserver follow.
+ */
+export function scrollTopAfterFeedHeightChange(opts: {
+  scrollHeight: number;
+  scrollTop: number;
+  clientHeight: number;
+  pinned: boolean;
+  settling: boolean;
+  releasedByGesture: boolean;
+}): number | null {
+  if (opts.releasedByGesture) {
+    return null;
+  }
+  if (!opts.pinned && !opts.settling) {
+    return null;
+  }
+  const maxScrollTop = Math.max(0, opts.scrollHeight - opts.clientHeight);
+  if (Math.abs(opts.scrollTop - maxScrollTop) < 0.5) {
+    return null;
+  }
+  return maxScrollTop;
+}
+
+export type FeedResizeFollowResult =
+  | { kind: "noop" }
+  | { kind: "follow"; scrollTop: number }
+  | { kind: "restore_pin_only" };
+
+/** Ignore sub-pixel scroll noise when comparing observation vs rAF geometry. */
+export const FEED_RESIZE_SCROLL_MOVEMENT_EPSILON_PX = 0.5;
+
+export type FeedResizeObservationSnapshot = {
+  pinned: boolean;
+  settling: boolean;
+  scrollTop: number;
+  scrollHeight: number;
+};
+
+/**
+ * Coalesce ResizeObserver callbacks scheduled into one rAF: pin/settling
+ * ownership merges monotonically, while scroll geometry stays at the earliest
+ * observation so keyboard/scrollbar scroll-up between callbacks is detectable.
+ */
+export function mergeFeedResizeObservationSnapshots(
+  existing: FeedResizeObservationSnapshot | null,
+  incoming: FeedResizeObservationSnapshot,
+): FeedResizeObservationSnapshot {
+  if (!existing) return incoming;
+  return {
+    pinned: existing.pinned || incoming.pinned,
+    settling: existing.settling || incoming.settling,
+    scrollTop: existing.scrollTop,
+    scrollHeight: existing.scrollHeight,
+  };
+}
+
+/**
+ * Manual scroll-away (keyboard, scrollbar, programmatic) between observation
+ * and rAF: scrollTop drops while content height is stable or grew. Content
+ * shrink clamp (both scrollHeight and scrollTop fall) is not manual release.
+ */
+export function shouldCancelFeedResizeFollowForManualScrollAway(opts: {
+  snapshotScrollTop: number;
+  snapshotScrollHeight: number;
+  liveScrollTop: number;
+  liveScrollHeight: number;
+  epsilonPx?: number;
+}): boolean {
+  const epsilon = opts.epsilonPx ?? FEED_RESIZE_SCROLL_MOVEMENT_EPSILON_PX;
+  const scrollTopDecreased =
+    opts.liveScrollTop < opts.snapshotScrollTop - epsilon;
+  const contentDidNotShrink =
+    opts.liveScrollHeight >= opts.snapshotScrollHeight - epsilon;
+  return scrollTopDecreased && contentDidNotShrink;
+}
+
+/**
+ * ResizeObserver rAF apply: honor pin ownership captured at observation time,
+ * skip occluded 0×0 parents, and let gesture release cancel follow.
+ */
+export function feedResizeScrollFollowDecision(opts: {
+  scrollHeight: number;
+  scrollTop: number;
+  clientHeight: number;
+  offsetHeight: number;
+  snapshotPinned: boolean;
+  snapshotSettling: boolean;
+  snapshotScrollTop: number;
+  snapshotScrollHeight: number;
+  releasedByGesture: boolean;
+}): FeedResizeFollowResult {
+  if (isOccludedScrollParentSize(opts.clientHeight, opts.offsetHeight)) {
+    return { kind: "noop" };
+  }
+  if (opts.releasedByGesture) {
+    return { kind: "noop" };
+  }
+  if (
+    shouldCancelFeedResizeFollowForManualScrollAway({
+      snapshotScrollTop: opts.snapshotScrollTop,
+      snapshotScrollHeight: opts.snapshotScrollHeight,
+      liveScrollTop: opts.scrollTop,
+      liveScrollHeight: opts.scrollHeight,
+    })
+  ) {
+    return { kind: "noop" };
+  }
+  if (!opts.snapshotPinned && !opts.snapshotSettling) {
+    return { kind: "noop" };
+  }
+  const top = scrollTopAfterFeedHeightChange({
+    scrollHeight: opts.scrollHeight,
+    scrollTop: opts.scrollTop,
+    clientHeight: opts.clientHeight,
+    pinned: opts.snapshotPinned,
+    settling: opts.snapshotSettling,
+    releasedByGesture: false,
+  });
+  if (top != null) {
+    return { kind: "follow", scrollTop: top };
+  }
+  return { kind: "restore_pin_only" };
 }
 
 export function settleFrameResult(opts: {

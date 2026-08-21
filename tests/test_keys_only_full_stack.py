@@ -39,7 +39,7 @@ def _only(*names):
 def test_full_stack_map_covers_settings_keys():
     for name in (
         "openrouter", "anthropic", "openai", "gemini", "openai-codex",
-        "opencode-go", "nous", "bedrock", "minimax", "nvidia",
+        "opencode-go", "opencode-zen", "nous", "bedrock", "minimax", "nvidia",
     ):
         assert worker_capability(name) == "full_stack", name
     assert worker_capability("cursor-cli") == "pilot_only"

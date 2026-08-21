@@ -679,6 +679,9 @@ def clear_api_key(reach: str):
         del keys[reach]
         _write_keys(keys)
     _scrub_provider_env(reach)
+    # Drop the pre-scrub cache so Settings stops treating this as env-backed
+    # and can show a paste field for a replacement key.
+    _ENV_KEY_CACHE.pop(reach, None)
     # Record the disconnect so it survives restarts even when the user's shell
     # exports this provider's key (which the login-shell env capture re-injects).
     mark_disconnected(reach)
@@ -696,6 +699,7 @@ _PERSISTABLE_ENV_PROVIDERS = (
     "zai",
     "xai",
     "opencode-go",
+    "opencode-zen",
     "cursor",
     "google",
     "groq",
@@ -728,6 +732,13 @@ def persist_env_api_keys() -> list[str]:
         if not env_var:
             continue
         value = (os.environ.get(env_var) or "").strip()
+        # Zen prefers its own key, then OPENCODE_API_KEY. The Go subscription
+        # key may authorize Zen at lookup time but must not be copied into
+        # Zen's stored Settings identity.
+        if name == "opencode-zen" and (
+            not value or is_placeholder_credential(value)
+        ):
+            value = (os.environ.get("OPENCODE_API_KEY") or "").strip()
         if not value or is_placeholder_credential(value):
             continue
         keys[name] = value

@@ -166,6 +166,7 @@ def agentic_available() -> bool:
             for k in (
                 "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY",
                 "GOOGLE_API_KEY", "OPENROUTER_API_KEY", "OPENCODE_GO_API_KEY",
+                "OPENCODE_ZEN_API_KEY", "OPENCODE_API_KEY",
                 "OPENAI_CODEX_TOKEN", "NOUS_API_KEY", "HERMES_API_KEY",
                 "MINIMAX_API_KEY", "NVIDIA_API_KEY", "ZAI_API_KEY", "GLM_API_KEY",
                 "XAI_API_KEY", "DEEPSEEK_API_KEY",
@@ -261,6 +262,8 @@ def pilot_keys_ready() -> bool:
                 "GOOGLE_API_KEY",
                 "OPENROUTER_API_KEY",
                 "OPENCODE_GO_API_KEY",
+                "OPENCODE_ZEN_API_KEY",
+                "OPENCODE_API_KEY",
                 "OPENAI_CODEX_TOKEN",
                 "AWS_BEARER_TOKEN_BEDROCK",
             )

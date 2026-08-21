@@ -174,9 +174,10 @@ def _is_substantive_artifact(a: dict) -> bool:
 
 
 # Puppetmaster MCP verbs that create jobs outside Marionette's local tracker.
-# Host pilots must use run_swarm / run_implement / run_parallel (or shell
-# ``python -m puppetmaster swarm`` which lands in the CLI durable store the
-# tracker merges). MCP start_* bypasses swarm_pending + _register_local_job.
+# Host pilots must use native run_swarm / run_implement / run_parallel so
+# the Swarm Tracker registers the job. MCP start_* bypasses swarm_pending
+# + _register_local_job. Do not recommend a shell CLI path — the native
+# CLI guard immediately bounces those commands.
 _UNTRACKED_PM_START_TOOLS = frozenset({
     "start_cursor_swarm",
     "start_swarm",
@@ -224,9 +225,8 @@ def is_untracked_pm_start_tool(tool: str) -> bool:
 
 _TRACKABLE_SWARM_REFUSAL = (
     "Untracked swarm/implement: do not call Puppetmaster MCP start_* tools. "
-    "Use host run_swarm / run_implement / run_parallel so the Swarm Tracker "
-    "registers the job, or shell `python -m puppetmaster swarm \"<goal>\"` "
-    "(CLI store is merged into the tracker for this workspace)."
+    "Use native run_swarm / run_implement / run_parallel so the Swarm Tracker "
+    "registers the job."
 )
 
 

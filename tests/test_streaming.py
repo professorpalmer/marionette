@@ -197,6 +197,116 @@ def test_driver_chat_stream_assembly():
         urllib.request.urlopen = original_urlopen
 
 
+def _sse_stream_driver(monkeypatch, sse_payloads):
+    driver = OpenAICompatDriver(
+        name="test-driver",
+        model="gpt-4o",
+        base_url="https://api.openai.com/v1",
+        api_key_env="OPENAI_API_KEY",
+    )
+    driver._key = lambda: "fake-key"
+
+    lines = [
+        b"data: " + json.dumps(payload).encode("utf-8") + b"\n"
+        for payload in sse_payloads
+    ]
+    lines.append(b"data: [DONE]\n")
+
+    class FakeResponse:
+        def __init__(self, chunks):
+            self.chunks = chunks
+
+        def __iter__(self):
+            return iter(self.chunks)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            return False
+
+    import urllib.request
+    monkeypatch.setattr(
+        urllib.request, "urlopen",
+        lambda req, timeout=None: FakeResponse(lines),
+    )
+    return driver
+
+
+def test_indexless_tool_call_assembles_across_chunks(monkeypatch):
+    driver = _sse_stream_driver(monkeypatch, [
+        {"choices": [{"delta": {"tool_calls": [
+            {"id": "call_a", "type": "function",
+             "function": {"name": "run_"}},
+        ]}}]},
+        {"choices": [{"delta": {"tool_calls": [
+            {"function": {"name": "command"}},
+        ]}}]},
+        {"choices": [{"delta": {"tool_calls": [
+            {"function": {"arguments": '{"x":'}},
+        ]}}]},
+        {"choices": [{"delta": {"tool_calls": [
+            {"id": "call_a", "function": {"arguments": "1}"}},
+        ]}}]},
+    ])
+    resp = driver.chat_stream(
+        [{"role": "user", "content": "hi"}],
+        on_delta=lambda _t: None,
+    )
+    tool_calls = resp.meta["tool_calls"]
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["id"] == "call_a"
+    assert tool_calls[0]["function"]["name"] == "run_command"
+    assert tool_calls[0]["function"]["arguments"] == '{"x":1}'
+
+
+def test_two_indexless_tool_calls_in_one_chunk_stay_distinct(monkeypatch):
+    driver = _sse_stream_driver(monkeypatch, [
+        {"choices": [{"delta": {"tool_calls": [
+            {"id": "c1", "function": {"name": "alpha"}},
+            {"id": "c2", "function": {"name": "beta"}},
+        ]}}]},
+        {"choices": [{"delta": {"tool_calls": [
+            {"function": {"arguments": '{"b":2}'}},
+        ]}}]},
+        {"choices": [{"delta": {"tool_calls": [
+            {"id": "c1", "function": {"arguments": '{"a":1}'}},
+        ]}}]},
+    ])
+    resp = driver.chat_stream(
+        [{"role": "user", "content": "hi"}],
+        on_delta=lambda _t: None,
+    )
+    tool_calls = resp.meta["tool_calls"]
+    assert [tc["id"] for tc in tool_calls] == ["c1", "c2"]
+    assert tool_calls[0]["function"]["name"] == "alpha"
+    assert tool_calls[0]["function"]["arguments"] == '{"a":1}'
+    assert tool_calls[1]["function"]["name"] == "beta"
+    assert tool_calls[1]["function"]["arguments"] == '{"b":2}'
+
+
+def test_two_indexless_nameless_calls_attach_later_fragment_to_most_recent(monkeypatch):
+    driver = _sse_stream_driver(monkeypatch, [
+        {"choices": [{"delta": {"tool_calls": [
+            {"function": {"name": "alpha"}},
+            {"function": {"name": "beta"}},
+        ]}}]},
+        {"choices": [{"delta": {"tool_calls": [
+            {"function": {"arguments": '{"n":1}'}},
+        ]}}]},
+    ])
+    resp = driver.chat_stream(
+        [{"role": "user", "content": "hi"}],
+        on_delta=lambda _t: None,
+    )
+    tool_calls = resp.meta["tool_calls"]
+    assert len(tool_calls) == 2
+    assert tool_calls[0]["function"]["name"] == "alpha"
+    assert tool_calls[0]["function"]["arguments"] == ""
+    assert tool_calls[1]["function"]["name"] == "beta"
+    assert tool_calls[1]["function"]["arguments"] == '{"n":1}'
+
+
 def test_conversational_loop_streaming():
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
     s = ConversationalSession(cfg)
@@ -246,6 +356,107 @@ def test_conversational_loop_worker_no_streaming():
 
     assert s.pilot.chat_called
     assert not s.pilot.chat_stream_called
+
+
+class _MissingIdStreamingPilot:
+    """Streaming native calls with empty/missing ids — two steps."""
+
+    supports_streaming = True
+    name = "missing-id-stream"
+
+    def __init__(self):
+        self.calls = 0
+        self.provider_payloads = []
+
+    def chat(self, messages, *, tools=None, system=None):
+        raise AssertionError("chat() must not be used when streaming is available")
+
+    def chat_stream(self, messages, *, tools=None, system=None, on_delta,
+                    on_reasoning_delta=None, on_tool_hint=None):
+        self.calls += 1
+        on_delta("step")
+        if self.calls == 1:
+            payload = [
+                {
+                    "id": "",
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": '{"path": "a.txt"}',
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": '{"path": "b.txt"}',
+                    },
+                },
+            ]
+            self.provider_payloads.append(payload)
+            return DriverResponse(
+                text="",
+                tokens_out=4,
+                meta={"tool_calls": payload, "reasoning": "read both"},
+            )
+        if self.calls == 2:
+            payload = [
+                {
+                    "id": "",
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": '{"path": "c.txt"}',
+                    },
+                },
+            ]
+            self.provider_payloads.append(payload)
+            return DriverResponse(
+                text="",
+                tokens_out=3,
+                meta={"tool_calls": payload, "reasoning": "read third"},
+            )
+        return DriverResponse(
+            text="Done.",
+            tokens_out=2,
+            meta={"tool_calls": [], "reasoning": ""},
+        )
+
+
+def test_streaming_missing_tool_call_ids_persist_unique_and_paired(tmp_path):
+    cfg = HarnessConfig(
+        driver="stub-oracle-v2",
+        state_dir=str(tmp_path / "state"),
+        repo=str(tmp_path / "repo"),
+    )
+    (tmp_path / "repo").mkdir()
+    (tmp_path / "state").mkdir()
+    (tmp_path / "repo" / "a.txt").write_text("A", encoding="utf-8")
+    (tmp_path / "repo" / "b.txt").write_text("B", encoding="utf-8")
+    (tmp_path / "repo" / "c.txt").write_text("C", encoding="utf-8")
+    session = ConversationalSession(cfg)
+    session.pilot = _MissingIdStreamingPilot()
+
+    list(session.send("read the notes"))
+
+    originals = session.pilot.provider_payloads
+    assert originals[0][0]["id"] == ""
+    assert "id" not in originals[0][1]
+    assert originals[1][0]["id"] == ""
+
+    assistants = [
+        m for m in session._history
+        if m.get("role") == "assistant" and m.get("tool_calls")
+    ]
+    assert len(assistants) == 2
+    ids1 = [tc["id"] for tc in assistants[0]["tool_calls"]]
+    ids2 = [tc["id"] for tc in assistants[1]["tool_calls"]]
+    all_ids = ids1 + ids2
+    assert len(all_ids) == 3
+    assert len(set(all_ids)) == 3
+    assert all(i and i.strip() for i in all_ids)
+    tools = [m for m in session._history if m.get("role") == "tool"]
+    assert [m.get("tool_call_id") for m in tools] == all_ids
 
 
 class _LiveReasoningPilot:

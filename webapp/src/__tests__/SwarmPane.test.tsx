@@ -2675,3 +2675,99 @@ describe("SwarmPane final-review blockers", () => {
     expect(container.querySelector('[style*="width: 220px"]')).toBeTruthy();
   });
 });
+
+describe("SwarmPane job-card expansion persistence", () => {
+  const REPO_A = "C:\\Users\\pwall\\Projects\\repo-a";
+  const REPO_B = "C:\\Users\\pwall\\Projects\\repo-b";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
+    clearSWRCache();
+    mockArtifacts.mockResolvedValue([]);
+  });
+
+  it("remembers collapsed in_progress job across remount", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({ id: "job-running", goal: "Running swarm", status: "running" }),
+    );
+
+    const { unmount } = render(<SwarmPane />);
+    const job = await screen.findByRole("button", { name: /Running swarm/ });
+    expect(job).toHaveAttribute("aria-expanded", "true");
+
+    fireEvent.click(job);
+    expect(job).toHaveAttribute("aria-expanded", "false");
+
+    unmount();
+    clearSWRCache();
+    render(<SwarmPane />);
+
+    const remounted = await screen.findByRole("button", { name: /Running swarm/ });
+    expect(remounted).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("remembers expanded terminal job across remount", async () => {
+    mockSwarmLive.mockResolvedValue(
+      finishedJob("job-done", "Finished swarm job"),
+    );
+
+    const { unmount } = render(<SwarmPane />);
+    await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Finished"));
+
+    const job = await screen.findByRole("button", { name: /Finished swarm job/ });
+    expect(job).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(job);
+    expect(job).toHaveAttribute("aria-expanded", "true");
+
+    unmount();
+    clearSWRCache();
+    render(<SwarmPane />);
+
+    await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Finished"));
+
+    const remounted = await screen.findByRole("button", { name: /Finished swarm job/ });
+    expect(remounted).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("scopes collapse preference per repo", async () => {
+    dispatchProjectSelected(REPO_A);
+    mockSwarmLive.mockImplementation(async (repo?: string) =>
+      liveJob({
+        id: "shared-job",
+        goal: repo === REPO_B ? "Repo B running" : "Repo A running",
+        status: "running",
+      }),
+    );
+
+    render(<SwarmPane />);
+    const jobA = await screen.findByRole("button", { name: /Repo A running/ });
+    fireEvent.click(jobA);
+    expect(jobA).toHaveAttribute("aria-expanded", "false");
+
+    dispatchProjectSelected(REPO_B);
+    clearSWRCache();
+
+    const jobB = await screen.findByRole("button", { name: /Repo B running/ });
+    expect(jobB).toHaveAttribute("aria-expanded", "true");
+
+    const stored = JSON.parse(localStorage.getItem("swarm.expanded.v1") || "{}");
+    expect(stored[REPO_A]?.["shared-job"]).toBe(false);
+    expect(stored[REPO_B]).toBeUndefined();
+  });
+
+  it("falls back to defaults when expansion storage is malformed", async () => {
+    localStorage.setItem("swarm.expanded.v1", "not-json{{{");
+    mockSwarmLive.mockResolvedValue(
+      liveJob({ id: "job-running", goal: "Running swarm", status: "running" }),
+    );
+
+    render(<SwarmPane />);
+    const job = await screen.findByRole("button", { name: /Running swarm/ });
+    expect(job).toHaveAttribute("aria-expanded", "true");
+  });
+});

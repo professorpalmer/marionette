@@ -8,13 +8,20 @@ dispatch), cancel-mid-tool-spree healing, and crash/resume stub-vs-real races.
 Wave 4: steer-mid-tool-spree must heal dangling pairs at the same tool-batch
 boundary as cancel (safe-boundary cancel/steer).
 """
+import copy
 import json
 import os
+import re
 import tempfile
 
 from harness.config import HarnessConfig
-from harness.conversation import ConversationalSession
+from harness.conversation import (
+    ConversationalSession,
+    canonicalize_outbound_tool_call_ids,
+)
 from harness.pilot import PilotAction
+
+_PORTABLE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def _session():
@@ -564,3 +571,128 @@ def test_run_stream_uses_messages_for_provider():
     assert seen["messages_for_provider"] == 1
     assert seen["chat_stream"] == 1
     assert q and q[-1][0] == "done"
+
+
+def _colon_dup_history():
+    """Two reused run_command:0 pairs plus a colon id and an unrelated user turn."""
+    return [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "do it"},
+        {"role": "assistant", "content": "step1", "tool_calls": [
+            {"id": "run_command:0", "type": "function",
+             "function": {"name": "run_command", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "run_command:0", "content": "ok1"},
+        {"role": "user", "content": "again"},
+        {"role": "assistant", "content": "step2", "tool_calls": [
+            {"id": "run_command:0", "type": "function",
+             "function": {"name": "run_command", "arguments": "{}"}},
+            {"id": "run_command:92", "type": "function",
+             "function": {"name": "run_command", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "run_command:0", "content": "ok2"},
+        {"role": "tool", "tool_call_id": "run_command:92", "content": "ok92"},
+        {"role": "user", "content": "unrelated"},
+    ]
+
+
+def _assistant_tool_ids(messages):
+    ids = []
+    for m in messages:
+        for tc in (m.get("tool_calls") or []):
+            if tc.get("id"):
+                ids.append(tc["id"])
+    return ids
+
+
+def _assert_adjacent_pairs_match(messages):
+    i = 0
+    n = len(messages)
+    while i < n:
+        m = messages[i]
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            expected = [tc.get("id") for tc in m["tool_calls"] if tc.get("id")]
+            seen = []
+            j = i + 1
+            while j < n and messages[j].get("role") == "tool":
+                tcid = messages[j].get("tool_call_id")
+                if tcid:
+                    seen.append(tcid)
+                j += 1
+            assert seen == expected, (expected, seen)
+            i = j
+            continue
+        i += 1
+
+
+def test_sanitize_leaves_colon_and_reused_tool_call_ids():
+    s = _session()
+    s._history = _colon_dup_history()
+    s._sanitize_tool_pairs()
+    ids = _assistant_tool_ids(s._history)
+    assert ids.count("run_command:0") == 2
+    assert "run_command:92" in ids
+
+
+def test_messages_for_provider_canonicalizes_tool_call_ids_without_mutating_history():
+    s = _session()
+    s._history = _colon_dup_history()
+    snapshot = copy.deepcopy(s._history)
+
+    outbound = s._messages_for_provider()
+    assert s._history == snapshot
+
+    out_ids = _assistant_tool_ids(outbound)
+    assert len(out_ids) == 3
+    assert len(set(out_ids)) == 3
+    assert all(_PORTABLE_ID.match(i) for i in out_ids)
+    assert "run_command:0" not in out_ids
+    assert "run_command:92" not in out_ids
+    _assert_adjacent_pairs_match(outbound)
+    assert any(m.get("role") == "user" and m.get("content") == "unrelated" for m in outbound)
+
+    again = s._messages_for_provider()
+    assert _assistant_tool_ids(again) == out_ids
+    assert s._history == snapshot
+
+
+def test_canonicalize_helper_does_not_mutate_input():
+    src = _colon_dup_history()
+    snapshot = copy.deepcopy(src)
+    outbound = canonicalize_outbound_tool_call_ids(src)
+    assert src == snapshot
+    assert _assistant_tool_ids(src) != _assistant_tool_ids(outbound)
+    _assert_adjacent_pairs_match(outbound)
+
+
+def test_canonicalize_synthesizes_empty_and_missing_tool_call_ids():
+    src = [
+        {"role": "user", "content": "x"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"type": "function",
+             "function": {"name": "run_command", "arguments": "{}"}},
+            {"id": "", "type": "function",
+             "function": {"name": "read_file", "arguments": "{}"}},
+            {"id": "keep_me", "type": "function",
+             "function": {"name": "list_dir", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "content": "a"},
+        {"role": "tool", "tool_call_id": "", "content": "b"},
+        {"role": "tool", "tool_call_id": "keep_me", "content": "c"},
+    ]
+    snapshot = copy.deepcopy(src)
+    outbound = canonicalize_outbound_tool_call_ids(src)
+    assert src == snapshot
+
+    ids = [tc["id"] for tc in outbound[1]["tool_calls"]]
+    assert len(ids) == 3
+    assert len(set(ids)) == 3
+    assert all(_PORTABLE_ID.match(i) for i in ids)
+    assert ids[2] == "keep_me"
+    assert outbound[2]["tool_call_id"] == ids[0]
+    assert outbound[3]["tool_call_id"] == ids[1]
+    assert outbound[4]["tool_call_id"] == "keep_me"
+
+    again = canonicalize_outbound_tool_call_ids(src)
+    assert [tc["id"] for tc in again[1]["tool_calls"]] == ids
+    assert src == snapshot

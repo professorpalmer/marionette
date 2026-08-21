@@ -41,6 +41,7 @@ remaining tools clamp to HARNESS_POST_IMPLEMENT_TOOL_ALLOWANCE (default 4).
 import json
 import os
 import re
+import shlex
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -188,6 +189,7 @@ _PUPPETMASTER_CLI_RE = re.compile(
 
 _CLI_SWARM_SUBCMDS = frozenset({"swarm", "analysis"})
 _CLI_IMPLEMENT_SUBCMDS = frozenset({"implement", "edit", "cursor", "agentic"})
+_CLI_LAUNCH_SUBCMDS = _CLI_SWARM_SUBCMDS | _CLI_IMPLEMENT_SUBCMDS
 _CLI_ROUTE_SUBCMDS = frozenset({"route", "should-delegate"})
 _CLI_STATUS_SUBCMDS = frozenset({"status", "artifacts"})
 
@@ -222,11 +224,27 @@ _BROAD_INTENT_RE = re.compile(
 _EXPLICIT_SWARM_RE = re.compile(
     r"(?:"
     r"\brun_swarm\b|"
-    r"\bpuppetmaster\s+swarm\b|"
-    r"\b(?:start|spin\s+up|launch|dispatch|run)\s+(?:a\s+)?swarm\b|"
+    r"\bpuppetmaster\s+(?:swarm|agentic)\b|"
+    r"\b(?:start|spin\s+up|launch|dispatch|run|do)\s+"
+    r"(?:(?:an?\s+)?(?:\w+\s+){0,3})?swarm\b|"
+    r"\b(?:please\s+)?swarm\s+(?:the\s+)?(?:repo|codebase|project|code)\b|"
     r"\bswarm\s+(?:glm|kimi|qwen|gpt|deepseek|claude|via|with|using|multi)|"
+    r"\bagentic\s+swarm\b|"
+    r"\b(?:spin\s+up|launch|start|run)\s+(?:an?\s+)?agentic\s+workers\b|"
+    r"\bagentic\s+workers\b|"
     r"\bmulti[- ]workers?\b|"
-    r"\bfan-?out\b"
+    r"\bfan-?out\b|"
+    # Model/provider/multi-qualified "use … workers" only — not
+    # "use the existing workers" / singular worker / discussion fillers.
+    r"\buse\s+(?:"
+    r"(?:the|a|an|this|that|these|those|our|your|their|my|"
+    r"existing|current|available|same|other|more|some|all|both|"
+    r"new|old|local|just|only|any)\s+"
+    r")*"
+    r"(?!(?:the|a|an|this|that|these|those|our|your|their|my|"
+    r"existing|current|available|same|other|more|some|all|both|"
+    r"new|old|local|just|only|any)\b)"
+    r"\S+(?:\s+\S+){0,7}\s+workers\b"
     r")",
     re.IGNORECASE,
 )
@@ -237,10 +255,41 @@ _EXPLICIT_SWARM_NEG_RE = re.compile(
     r"do\s+not\s+swarm|"
     r"swarm\s+tracker|"
     r"where\s+is\s+run_swarm|"
-    r"what\s+is\s+(?:a\s+)?swarm"
+    r"what\s+is\s+(?:an?\s+)?(?:agentic\s+)?swarm|"
+    r"use\s+(?:just\s+|only\s+)?one\s+worker"
     r")",
     re.IGNORECASE,
 )
+
+# Continuation of a prior explicit swarm after a provider error / interstitial.
+# Tight on purpose: "test" and new work must not reactivate the mandate.
+# "pick back up" / "pickback up" stay a strong substring (screenshot phrasing).
+# "continue" / "resume" match only when the whole message is a short
+# continuation, not "continue implementing …" / "resume parsing …".
+_SWARM_PICKBACK_RE = re.compile(
+    r"\bpick\s*back\s*up\b",
+    re.IGNORECASE,
+)
+
+_SWARM_SHORT_CONTINUE_RE = re.compile(
+    r"^(?:please\s+)?"
+    r"(?:"
+    r"continue(?:\s+(?:it|the\s+swarm|where\s+you\s+left\s+off))?"
+    r"|"
+    r"resume(?:\s+(?:it|the\s+swarm|where\s+you\s+left\s+off))?"
+    r")"
+    r"(?:\s*,?\s*please)?"
+    r"[.!]?"
+    r"$",
+    re.IGNORECASE,
+)
+
+# Bounds one simple command. Used to slice a single Puppetmaster invocation
+# out of a wrapper (cd … && puppetmaster … | tail) without running any shell.
+_CLI_SHELL_OPERATORS = frozenset({
+    "&&", "||", ";", "|",
+    ">", "<", ">>", "<<", ">&", "&>", ">|",
+})
 
 _NARROW_INTENT_RE = re.compile(
     r"(?:"
@@ -593,6 +642,14 @@ class TurnGuardState:
     kernel_recovery: bool = False
 
 
+@dataclass
+class PendingSwarmMandate:
+    """Session-level explicit swarm obligation (survives interstitial turns)."""
+
+    goal: str = ""
+    model: str = ""
+
+
 @dataclass(frozen=True)
 class GuardVerdict:
     suppress: bool
@@ -630,6 +687,69 @@ def is_explicit_swarm_user_message(message: str) -> bool:
     if _EXPLICIT_SWARM_NEG_RE.search(text):
         return False
     return bool(_EXPLICIT_SWARM_RE.search(text))
+
+
+def is_swarm_continuation_user_message(message: str) -> bool:
+    """True for clear resume/continue/pick-back-up phrases only."""
+    text = _norm_whitespace(message or "")
+    if not text:
+        return False
+    if _SWARM_PICKBACK_RE.search(text):
+        return True
+    return bool(_SWARM_SHORT_CONTINUE_RE.fullmatch(text))
+
+
+def apply_session_pending_swarm_mandate(session: Any, user_message: str) -> bool:
+    """Capture, reactivate, or leave dormant a session pending swarm mandate.
+
+    Returns True when this originating turn should treat explicit swarm as
+    active. Unrelated turns such as ``test`` leave a stored mandate in place
+    but do not activate it.
+    """
+    if session is None:
+        return False
+    text = user_message or ""
+    if is_explicit_swarm_user_message(text):
+        prior = getattr(session, "_pending_swarm_mandate", None)
+        prior_model = getattr(prior, "model", "") if prior is not None else ""
+        session._pending_swarm_mandate = PendingSwarmMandate(
+            goal=_norm_whitespace(text),
+            model=str(prior_model or ""),
+        )
+        session._pending_swarm_active = True
+        return True
+    pending = getattr(session, "_pending_swarm_mandate", None)
+    if pending and is_swarm_continuation_user_message(text):
+        session._pending_swarm_active = True
+        return True
+    session._pending_swarm_active = False
+    return False
+
+
+def session_pending_swarm_active(session: Any) -> bool:
+    return bool(getattr(session, "_pending_swarm_active", False))
+
+
+def session_pending_swarm_goal(session: Any) -> str:
+    pending = getattr(session, "_pending_swarm_mandate", None)
+    if pending is None:
+        return ""
+    return _norm_whitespace(getattr(pending, "goal", "") or "")
+
+
+def session_pending_swarm_model(session: Any) -> str:
+    pending = getattr(session, "_pending_swarm_mandate", None)
+    if pending is None:
+        return ""
+    return _norm_whitespace(getattr(pending, "model", "") or "")
+
+
+def clear_session_pending_swarm_mandate(session: Any) -> None:
+    """Drop the session mandate once native run_swarm / run_parallel starts."""
+    if session is None:
+        return
+    session._pending_swarm_mandate = None
+    session._pending_swarm_active = False
 
 
 def _norm_path(path: str) -> str:
@@ -863,9 +983,30 @@ def _extract_puppetmaster_subcommand(command: str) -> str:
     return subcmd
 
 
-def puppetmaster_cli_native_mapping(command: str) -> tuple[str, str]:
-    """Return (native_kind, one-line example) for a Puppetmaster CLI command."""
+def puppetmaster_cli_native_mapping(
+    command: str,
+    state: Optional[TurnGuardState] = None,
+) -> tuple[str, str]:
+    """Return (native_kind, one-line example) for a Puppetmaster CLI command.
+
+    An active explicit swarm mandate remaps every launch-shaped verb
+    (including ``agentic`` / ``implement``) to ``run_swarm``.
+    """
     subcmd = _extract_puppetmaster_subcommand(command)
+    explicit_pending = bool(
+        state is not None
+        and getattr(state, "explicit_swarm", False)
+        and not getattr(state, "swarm_dispatched", False)
+    )
+    if subcmd in _CLI_STATUS_SUBCMDS:
+        return ("action_result", "read prior action_result/swarm_result; or search_state")
+    if subcmd in _CLI_ROUTE_SUBCMDS:
+        return ("route_task", 'instruction="..."')
+    if explicit_pending and (subcmd in _CLI_LAUNCH_SUBCMDS or not subcmd):
+        return (
+            "run_swarm",
+            'goal="...", roles=["explore","pipeline-mapper"]',
+        )
     if subcmd in _CLI_SWARM_SUBCMDS or not subcmd:
         return (
             "run_swarm",
@@ -873,13 +1014,189 @@ def puppetmaster_cli_native_mapping(command: str) -> tuple[str, str]:
         )
     if subcmd in _CLI_IMPLEMENT_SUBCMDS:
         return ("run_implement", 'goal="..."')
-    if subcmd in _CLI_ROUTE_SUBCMDS:
-        return ("route_task", 'instruction="..."')
-    if subcmd in _CLI_STATUS_SUBCMDS:
-        return ("action_result", "read prior action_result/swarm_result; or search_state")
     return (
         "run_swarm",
         'goal="...", roles=["explore","pipeline-mapper"]',
+    )
+
+
+def is_puppetmaster_cli_launch_command(command: str) -> bool:
+    """True for swarm/implement/agentic launch verbs, not status/artifacts/route."""
+    return parse_puppetmaster_cli_launch(command) is not None
+
+
+def parse_puppetmaster_cli_launch(command: str) -> Optional[tuple[str, str, str]]:
+    """Best-effort ``(subcmd, goal, model)`` for a launch-shaped PM CLI.
+
+    Extracts exactly one ``puppetmaster`` / ``python -m puppetmaster``
+    invocation from a wrapper command via shlex tokenization. Wrapper
+    tokens and operators are ignored — none of the shell text is executed.
+    Returns None when quoting is malformed, zero or multiple invocations
+    exist, or the extracted subcommand is status/artifacts/route.
+    """
+    cmd = _norm_whitespace(command)
+    if not cmd:
+        return None
+    tokens = _tokenize_cli_shell(cmd)
+    if not tokens:
+        return None
+    rest = _extract_single_puppetmaster_cli_argv(tokens)
+    if rest is None:
+        return None
+    subcmd = ""
+    payload = rest
+    if rest:
+        head = rest[0].lower()
+        if head in _CLI_STATUS_SUBCMDS or head in _CLI_ROUTE_SUBCMDS:
+            return None
+        if head in _CLI_LAUNCH_SUBCMDS:
+            subcmd = head
+            payload = rest[1:]
+    goal, model = _parse_cli_goal_and_model(payload)
+    return (subcmd, goal, model)
+
+
+def _tokenize_cli_shell(command: str) -> Optional[list[str]]:
+    """shlex-split with operator punctuation. None if quoting is malformed."""
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        return [tok for tok in lexer if tok]
+    except ValueError:
+        return None
+
+
+def _cli_command_basename(token: str) -> str:
+    lead = token.rsplit("/", 1)[-1].rsplit("\\", 1)[-1].lower()
+    if lead.endswith(".exe"):
+        lead = lead[:-4]
+    return lead
+
+
+def _cli_argv_until_operator(tokens: list[str], start: int) -> list[str]:
+    out: list[str] = []
+    for tok in tokens[start:]:
+        if tok in _CLI_SHELL_OPERATORS:
+            break
+        out.append(tok)
+    return out
+
+
+def _extract_single_puppetmaster_cli_argv(tokens: list[str]) -> Optional[list[str]]:
+    """Rest argv of the sole PM invocation, stopped at the next operator.
+
+    Locates ``puppetmaster`` or ``python -m puppetmaster`` anywhere, including
+    after env-assign prefixes. None if zero or multiple invocations exist.
+    """
+    found: list[list[str]] = []
+    i = 0
+    n = len(tokens)
+    while i < n:
+        if tokens[i] in _CLI_SHELL_OPERATORS:
+            i += 1
+            continue
+        name = _cli_command_basename(tokens[i])
+        if (
+            name.startswith("python")
+            and i + 2 < n
+            and tokens[i + 1] == "-m"
+            and tokens[i + 2].lower() == "puppetmaster"
+        ):
+            rest = _cli_argv_until_operator(tokens, i + 3)
+            found.append(rest)
+            i = i + 3 + len(rest)
+            continue
+        if name == "puppetmaster":
+            rest = _cli_argv_until_operator(tokens, i + 1)
+            found.append(rest)
+            i = i + 1 + len(rest)
+            continue
+        i += 1
+    if len(found) != 1:
+        return None
+    return found[0]
+
+
+def _parse_cli_goal_and_model(tokens: list[str]) -> tuple[str, str]:
+    """Extract --goal / --model / first positional from launch argv."""
+    goal = ""
+    model = ""
+    positionals: list[str] = []
+    i = 0
+    n = len(tokens)
+    while i < n:
+        tok = tokens[i]
+        if tok.startswith("--goal="):
+            goal = tok.split("=", 1)[1].strip()
+            i += 1
+            continue
+        if tok in ("--goal", "-g"):
+            i += 1
+            parts: list[str] = []
+            while i < n and not tokens[i].startswith("-"):
+                parts.append(tokens[i])
+                i += 1
+            goal = " ".join(parts).strip()
+            continue
+        if tok.startswith("--model="):
+            model = tok.split("=", 1)[1].strip()
+            i += 1
+            continue
+        if tok == "--model":
+            i += 1
+            if i < n:
+                model = tokens[i].strip()
+                i += 1
+            continue
+        if tok.startswith("-"):
+            i += 1
+            if i < n and not tokens[i].startswith("-"):
+                i += 1
+            continue
+        positionals.append(tok)
+        i += 1
+    if not goal and positionals:
+        goal = positionals[0].strip()
+    return goal, model
+
+
+def translate_puppetmaster_cli_action(
+    act: Any,
+    state: Optional[TurnGuardState] = None,
+    *,
+    pending_goal: str = "",
+    pending_model: str = "",
+) -> Optional[Any]:
+    """Rewrite a launch-shaped PM ``run_command`` into a native PilotAction.
+
+    Status/artifacts/route and unsafe parses return None so the existing
+    REDIRECT refusal remains. Never executes the shell command.
+    """
+    if getattr(act, "kind", "") != "run_command":
+        return None
+    command = getattr(act, "command", "") or ""
+    parsed = parse_puppetmaster_cli_launch(command)
+    if parsed is None:
+        return None
+    _subcmd, parsed_goal, parsed_model = parsed
+    native_kind, _example = puppetmaster_cli_native_mapping(command, state)
+    if native_kind not in ("run_swarm", "run_implement"):
+        return None
+    goal = (parsed_goal or pending_goal or "").strip()
+    if not goal:
+        return None
+    model = (parsed_model or pending_model or "").strip()
+    try:
+        from .pilot import PilotAction
+    except Exception:
+        return None
+    tool_call_id = str(getattr(act, "tool_call_id", "") or "")
+    return PilotAction(
+        kind=native_kind,
+        goal=goal,
+        model=model,
+        tool_call_id=tool_call_id,
     )
 
 
@@ -1189,7 +1506,6 @@ def check_chrome_file_smoke(state: TurnGuardState, kind: str, act: Any) -> Guard
 
 
 def check_cli_redirect(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict:
-    del state
     if not cli_redirect_enabled():
         return GuardVerdict(False)
     if kind != "run_command":
@@ -1199,7 +1515,7 @@ def check_cli_redirect(state: TurnGuardState, kind: str, act: Any) -> GuardVerdi
     if not is_puppetmaster_cli_command(command):
         return GuardVerdict(False)
 
-    native_kind, example = puppetmaster_cli_native_mapping(command)
+    native_kind, example = puppetmaster_cli_native_mapping(command, state)
     return GuardVerdict(
         suppress=True,
         reason="cli_redirect",

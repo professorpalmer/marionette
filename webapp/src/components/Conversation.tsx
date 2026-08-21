@@ -83,6 +83,8 @@ import { runCommandPaletteAction } from "../lib/commandPalette";
 import { focusSettingsPage } from "./SettingsShell";
 import {
   FEED_REPIN_THRESHOLD_PX,
+  feedResizeScrollFollowDecision,
+  mergeFeedResizeObservationSnapshots,
   nextFeedPinState,
   settleFrameResult,
   shouldShowJumpToBottom,
@@ -90,6 +92,7 @@ import {
   FEED_UNPIN_BUBBLE_EVENT,
   feedWheelUnpinListenerOptions,
   shouldUnpinOnWheel,
+  type FeedResizeObservationSnapshot,
 } from "./conversation/feedScroll";
 import {
   ADD_TERMINAL_SELECTION_EVENT,
@@ -105,6 +108,7 @@ import {
 import {
   chatColumnMountClass,
   isChatColumnActive,
+  isOccludedScrollParentSize,
   restoreFeedScrollAfterFocus,
 } from "./conversation/transcriptVirtualWindow";
 import {
@@ -463,6 +467,7 @@ export default function Conversation({
   // with no answer (the "died mid-turn" hang).
   const turnSettledRef = useRef(false);
   const feedRef = useRef<HTMLDivElement>(null);
+  const feedContentRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const planTurnRef = useRef(false);
   // Keep-alive: set when a background swarm finishes (pilot_resume) while a turn
@@ -1060,12 +1065,11 @@ export default function Conversation({
   // "near bottom" band (that fight feels like scroll stutter while streaming).
   const scrollReleasedByGestureRef = useRef(false);
   const prevFeedScrollTopRef = useRef<number | null>(null);
-  // Hermes session-switch settle: while true, the [items] effect keeps scrolling
-  // to bottom until height stabilizes (or wall-clock timeout). onScroll still
-  // tracks real geometry so keyboard/scrollbar unpin is not swallowed.
+  // Hermes session-switch settle: while true, height-driven follow keeps
+  // scrolling to bottom until height stabilizes (or wall-clock timeout).
+  // onScroll still tracks real geometry so keyboard/scrollbar unpin is not swallowed.
   const scrollSettlingRef = useRef(false);
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
-  const [feedSettleEpoch, setFeedSettleEpoch] = useState(0);
   const scrollFeedToEndRef = useRef<(() => void) | null>(null);
   const publishJumpVisibilityRef = useRef(() => {});
   publishJumpVisibilityRef.current = () => {
@@ -1082,7 +1086,6 @@ export default function Conversation({
     const scrollToEnd = scrollFeedToEndRef.current;
     if (scrollToEnd) scrollToEnd();
     else if (feedRef.current) feedRef.current.scrollTop = feedRef.current.scrollHeight;
-    setFeedSettleEpoch((n) => n + 1);
   };
   useEffect(() => {
     const el = feedRef.current;
@@ -1111,17 +1114,17 @@ export default function Conversation({
     // the feed back to the end and the user cannot scroll the Thought block.
     const onWheel = (e: WheelEvent) => {
       if (shouldUnpinOnWheel(e.deltaY, scrollSettlingRef.current)) {
+        scrollSettlingRef.current = false;
         scrollReleasedByGestureRef.current = true;
         pinnedToBottomRef.current = false;
         publishJumpVisibilityRef.current();
       }
     };
     const onNestedFeedUnpin = () => {
-      if (!scrollSettlingRef.current) {
-        scrollReleasedByGestureRef.current = true;
-        pinnedToBottomRef.current = false;
-        publishJumpVisibilityRef.current();
-      }
+      scrollSettlingRef.current = false;
+      scrollReleasedByGestureRef.current = true;
+      pinnedToBottomRef.current = false;
+      publishJumpVisibilityRef.current();
     };
     let touchY: number | null = null;
     const onTouchStart = (e: TouchEvent) => {
@@ -1130,6 +1133,7 @@ export default function Conversation({
     const onTouchMove = (e: TouchEvent) => {
       const y = e.touches[0]?.clientY;
       if (shouldUnpinOnTouchMove(touchY, y ?? null, scrollSettlingRef.current)) {
+        scrollSettlingRef.current = false;
         scrollReleasedByGestureRef.current = true;
         pinnedToBottomRef.current = false;
         publishJumpVisibilityRef.current();
@@ -1151,14 +1155,76 @@ export default function Conversation({
       el.removeEventListener("touchmove", onTouchMove);
     };
   }, []);
+  const applyFeedResizeFollow = (
+    snapshot: FeedResizeObservationSnapshot | null,
+  ) => {
+    const el = feedRef.current;
+    if (!el || !snapshot) return;
+    const result = feedResizeScrollFollowDecision({
+      scrollHeight: el.scrollHeight,
+      scrollTop: el.scrollTop,
+      clientHeight: el.clientHeight,
+      offsetHeight: el.offsetHeight,
+      snapshotPinned: snapshot.pinned,
+      snapshotSettling: snapshot.settling,
+      snapshotScrollTop: snapshot.scrollTop,
+      snapshotScrollHeight: snapshot.scrollHeight,
+      releasedByGesture: scrollReleasedByGestureRef.current,
+    });
+    if (result.kind === "noop") return;
+    if (result.kind === "follow") {
+      el.scrollTop = result.scrollTop;
+    }
+    pinnedToBottomRef.current = true;
+    prevFeedScrollTopRef.current = el.scrollTop;
+    publishJumpVisibilityRef.current();
+  };
+  useLayoutEffect(() => {
+    const viewport = feedRef.current;
+    if (!viewport) return;
+    const content = feedContentRef.current;
+    let rafId = 0;
+    let pinnedSnapshot: FeedResizeObservationSnapshot | null = null;
+    const scheduleFollow = () => {
+      const el = feedRef.current;
+      if (!el) return;
+      if (isOccludedScrollParentSize(el.clientHeight, el.offsetHeight)) return;
+      pinnedSnapshot = mergeFeedResizeObservationSnapshots(pinnedSnapshot, {
+        pinned: pinnedToBottomRef.current,
+        settling: scrollSettlingRef.current,
+        scrollTop: el.scrollTop,
+        scrollHeight: el.scrollHeight,
+      });
+      if (rafId) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = 0;
+        const snapshot = pinnedSnapshot;
+        pinnedSnapshot = null;
+        applyFeedResizeFollow(snapshot);
+      });
+    };
+    const ro =
+      typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(scheduleFollow)
+        : null;
+    ro?.observe(viewport);
+    if (content) ro?.observe(content);
+    return () => {
+      cancelAnimationFrame(rafId);
+      ro?.disconnect();
+    };
+  }, []);
   useEffect(() => {
+    if (typeof ResizeObserver !== "undefined") return;
     const el = feedRef.current;
     if (!el) return;
-    if (pinnedToBottomRef.current || scrollSettlingRef.current) {
-      const scrollToEnd = scrollFeedToEndRef.current;
-      if (scrollToEnd) scrollToEnd();
-      else el.scrollTo(0, el.scrollHeight);
-    }
+    if (isOccludedScrollParentSize(el.clientHeight, el.offsetHeight)) return;
+    applyFeedResizeFollow({
+      pinned: pinnedToBottomRef.current,
+      settling: scrollSettlingRef.current,
+      scrollTop: el.scrollTop,
+      scrollHeight: el.scrollHeight,
+    });
   }, [items]);
 
   // On session switch: stop follow thrash, glue to true bottom until height is
@@ -1183,6 +1249,9 @@ export default function Conversation({
       const node = feedRef.current;
       if (!node) {
         scrollSettlingRef.current = false;
+        return;
+      }
+      if (!scrollSettlingRef.current || scrollReleasedByGestureRef.current) {
         return;
       }
       const height = node.scrollHeight;
@@ -1213,7 +1282,7 @@ export default function Conversation({
       cancelAnimationFrame(rafId);
       scrollSettlingRef.current = false;
     };
-  }, [activeSessionId, feedSettleEpoch]);
+  }, [activeSessionId]);
 
   // Alt-tab / blur can zero the feed height and reset scrollTop. Restore the
   // last offset (or re-stick to bottom if still pinned) after focus paints.
@@ -3152,6 +3221,7 @@ export default function Conversation({
       >
         <ConversationChatColumn
           feedRef={feedRef}
+          feedContentRef={feedContentRef}
           transcriptStale={transcriptStale}
           items={items}
           status={status}

@@ -13,8 +13,8 @@ coding models, not a vendor router. Two consequences shape this module:
    to the bare id before it goes on the wire.
 
 2. The WIRE PROTOCOL VARIES PER MODEL. The published endpoint table routes
-   MiniMax and Qwen to Anthropic Messages, GPT to OpenAI Responses, and
-   everything else to OpenAI Chat Completions. Every other profile in
+   MiniMax and Qwen to Anthropic Messages, GPT/Grok/Muse to OpenAI Responses,
+   and everything else to OpenAI Chat Completions. Every other profile in
    providers.py can name a single provider-wide ``api_mode``; Go cannot, so the
    driver is chosen per model here instead.
 
@@ -24,24 +24,29 @@ from the Hermes Agent OpenCode Go provider plugin
 Research. Transport stays Marionette's own pmharness drivers.
 """
 
-import urllib.parse
-from typing import Optional
+from typing import Any, Optional
+
+from .opencode_common import (
+    ANTHROPIC_MESSAGES,
+    CHAT_COMPLETIONS,
+    OPENAI_RESPONSES,
+    USER_AGENT,
+    build_opencode_driver,
+    display_name_for as _shared_display_name_for,
+    driver_base_url as _shared_driver_base_url,
+    normalize_model_id,
+    overlay_metadata as _shared_overlay_metadata,
+)
 
 PROVIDER_NAME = "opencode-go"
 API_KEY_ENV = "OPENCODE_GO_API_KEY"
 BASE_URL = "https://opencode.ai/zen/go/v1"
-USER_AGENT = "Marionette"
-
-CHAT_COMPLETIONS = "chat_completions"
-ANTHROPIC_MESSAGES = "anthropic_messages"
-OPENAI_RESPONSES = "openai_responses"
 
 # Curated fallback shown when the live /models endpoint is unreachable, in the
 # order the published Go catalog lists it. DeepSeek V4 Flash is the current
 # DeepSeek-V4-Flash-0731 build -- the older v3/v2 slugs were never Go models
 # and must not reappear as aliases here.
 CURATED_MODELS = (
-    "grok-4.6",
     "grok-4.5",
     "glm-5.3",
     "glm-5.2",
@@ -64,9 +69,10 @@ CURATED_MODELS = (
 
 # Endpoint table (https://opencode.ai/docs/go/). Prefix matching rather than an
 # exact allow-list so a newly added sibling (qwen3.8-plus, minimax-m4) routes
-# correctly before the curated list catches up.
+# correctly before the curated list catches up. Grok and Muse Spark use
+# /responses; unknown ids stay on chat/completions.
 _ANTHROPIC_MESSAGES_PREFIXES = ("minimax-", "qwen")
-_OPENAI_RESPONSES_PREFIXES = ("gpt-",)
+_OPENAI_RESPONSES_PREFIXES = ("gpt-", "grok-", "muse-spark-")
 
 # Per-model completion ceiling. The relay's default of 262144 exceeds what
 # Xiaomi actually serves for MiMo Pro (131072) and the request 400s, so the cap
@@ -79,18 +85,6 @@ _MODEL_MAX_TOKENS = {
 # levels these relays accept verbatim in ``reasoning_effort``.
 _MAXED_EFFORTS = frozenset({"xhigh", "max", "ultra"})
 _NATIVE_EFFORTS = frozenset({"low", "medium", "high"})
-
-
-def normalize_model_id(model: Optional[str]) -> str:
-    """The bare Go model id for *model*.
-
-    Strips an ``opencode-go/`` config prefix or a copied vendor namespace while
-    preserving dots, which are part of the id (``kimi-k2.7-code``).
-    """
-    text = str(model or "").strip()
-    if not text:
-        return ""
-    return text.rsplit("/", 1)[-1].strip()
 
 
 def is_retired_deepseek_go_model(model: Optional[str]) -> bool:
@@ -112,27 +106,8 @@ def api_mode_for_model(model: Optional[str]) -> str:
 
 
 def driver_base_url(base_url: Optional[str] = None) -> str:
-    """The ``/v1`` root every Marionette driver expects for Go.
-
-    All three drivers append only the endpoint segment (``/messages``,
-    ``/chat/completions``, ``/responses``), so all three want the same root.
-    Vendor SDKs do not: the Anthropic client adds its own ``/v1``, which is why
-    an OpenCode/Hermes config that was last written by an Anthropic-routed
-    model can carry a ``/v1``-stripped base. Re-append it so an inherited
-    stripped URL heals instead of POSTing to the marketing site.
-
-    Custom relay overrides on non-opencode.ai hosts are left exactly as given.
-    """
-    url = str(base_url or BASE_URL).strip().rstrip("/")
-    if not url or url.endswith("/v1"):
-        return url or BASE_URL
-    try:
-        host = urllib.parse.urlparse(url).netloc.lower()
-    except ValueError:
-        host = ""
-    if host == "opencode.ai" or host.endswith(".opencode.ai"):
-        return url + "/v1"
-    return url
+    """The ``/v1`` root every Marionette driver expects for Go."""
+    return _shared_driver_base_url(base_url, default=BASE_URL)
 
 
 def max_tokens_for_model(model: Optional[str], requested: Optional[int]) -> int:
@@ -256,33 +231,27 @@ def build_driver(
     reaches the relay.
     """
     bare = normalize_model_id(model)
-    api_mode = api_mode_for_model(bare)
-    url = driver_base_url(base_url)
-    ceiling = max_tokens_for_model(bare, max_tokens)
-
-    if api_mode == ANTHROPIC_MESSAGES:
-        from pmharness.drivers.anthropic import AnthropicDriver
-
-        return AnthropicDriver(
-            name=spec, model=bare, base_url=url,
-            api_key_env=api_key_env, max_tokens=ceiling,
-        )
-
-    if api_mode == OPENAI_RESPONSES:
-        from pmharness.drivers.codex_responses import CodexResponsesDriver
-
-        return CodexResponsesDriver(
-            name=spec, model=bare, base_url=url,
-            api_key_env=api_key_env, max_tokens=ceiling,
-            chatgpt_backend=False,
-        )
-
-    from pmharness.drivers.openai_compat import OpenAICompatDriver
-
-    return OpenAICompatDriver(
-        name=spec, model=bare, base_url=url,
-        api_key_env=api_key_env, max_tokens=ceiling,
+    return build_opencode_driver(
+        spec=spec,
+        model=bare,
+        api_mode=api_mode_for_model(bare),
+        api_key_env=api_key_env,
+        max_tokens=max_tokens_for_model(bare, max_tokens),
+        base_url=driver_base_url(base_url),
         temperature=temperature_for_model(bare),
         extra_body=reasoning_body_extras(bare),
-        extra_headers={"User-Agent": USER_AGENT},
+    )
+
+
+def display_name_for(model: Optional[str], metadata: Optional[dict] = None) -> str:
+    """Friendly label for Settings/picker; never replaces the wire id."""
+    return _shared_display_name_for(model, metadata)
+
+
+def overlay_metadata(
+    model: Optional[str], *, allow_network: bool = False,
+) -> dict[str, Any]:
+    """Best-effort models.dev overlay. Never raises; empty on any miss."""
+    return _shared_overlay_metadata(
+        PROVIDER_NAME, model, allow_network=allow_network,
     )

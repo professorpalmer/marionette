@@ -12,6 +12,7 @@ import pytest
 import harness.model_fetch as mf
 from harness import keys as hkeys
 from harness import model_visibility as mv
+from harness import opencode_common as oc
 from harness import opencode_go as go
 from harness import providers as prov
 
@@ -52,12 +53,18 @@ def test_deepseek_entry_is_v4_flash_not_a_stale_alias():
 
 def test_curated_catalog_covers_the_published_endpoint_table():
     for model in (
-        "grok-4.6", "grok-4.5", "gpt-5.6-luna", "glm-5.3", "glm-5.2", "glm-5.1", "kimi-k3",
+        "grok-4.5", "gpt-5.6-luna", "glm-5.3", "glm-5.2", "glm-5.1", "kimi-k3",
         "kimi-k2.7-code", "kimi-k2.6", "mimo-v2.5", "mimo-v2.5-pro",
         "minimax-m3", "minimax-m2.7", "qwen3.7-max", "qwen3.7-plus",
         "qwen3.6-plus", "deepseek-v4-pro", "deepseek-v4-flash", "hy3",
     ):
         assert model in go.CURATED_MODELS
+
+
+def test_grok_4_6_is_not_in_curated_fallback():
+    """Production Go /models exposes grok-4.5; grok-4.6 must not linger offline."""
+    assert "grok-4.6" not in go.CURATED_MODELS
+    assert "grok-4.5" in go.CURATED_MODELS
 
 
 # ── Flat-namespace normalization ───────────────────────────────────────────
@@ -86,9 +93,11 @@ def test_normalize_model_id_preserves_dots():
     ("kimi-k3", go.CHAT_COMPLETIONS),
     ("deepseek-v4-flash", go.CHAT_COMPLETIONS),
     ("mimo-v2.5-pro", go.CHAT_COMPLETIONS),
-    ("grok-4.6", go.CHAT_COMPLETIONS),
-    ("grok-4.5", go.CHAT_COMPLETIONS),
+    ("grok-4.6", go.OPENAI_RESPONSES),
+    ("grok-4.5", go.OPENAI_RESPONSES),
+    ("muse-spark-1.2-contributor", go.OPENAI_RESPONSES),
     ("hy3", go.CHAT_COMPLETIONS),
+    ("ox-alpha-free", go.CHAT_COMPLETIONS),
     ("minimax-m3", go.ANTHROPIC_MESSAGES),
     ("minimax-m2.7", go.ANTHROPIC_MESSAGES),
     ("qwen3.7-max", go.ANTHROPIC_MESSAGES),
@@ -260,6 +269,16 @@ def test_build_pilot_routes_openai_responses_models():
     assert driver.api_key_env == "OPENCODE_GO_API_KEY"
 
 
+@pytest.mark.parametrize("model", ["grok-4.5", "muse-spark-1.2-contributor"])
+def test_build_pilot_routes_grok_and_muse_through_responses(model):
+    from pmharness.drivers.codex_responses import CodexResponsesDriver
+
+    driver = prov.build_pilot(f"opencode-go:{model}")
+    assert isinstance(driver, CodexResponsesDriver)
+    assert driver.model == model
+    assert driver.chatgpt_backend is False
+
+
 def test_build_pilot_strips_a_namespaced_model_before_the_wire():
     driver = prov.build_pilot("opencode-go:moonshotai/kimi-k2.7-code")
     assert driver.model == "kimi-k2.7-code"
@@ -366,15 +385,27 @@ def test_empty_catalog_is_reported_rather_than_looking_like_no_models(monkeypatc
     assert "empty" in mf.last_fetch_error("opencode-go").lower()
 
 
-def test_a_working_live_catalog_leads_and_curated_backfills(monkeypatch):
+def test_a_working_live_catalog_is_authoritative_without_curated_backfill(monkeypatch):
+    """Successful Go /models returns live ids only — no stale curated union."""
     p = prov.get_provider("opencode-go")
     monkeypatch.setattr(
         mf, "fetch_models", lambda provider, key, **kw: ["hy3", "kimi-k3"],
     )
     models = mv.provider_models(p)
-    assert models[:2] == ["hy3", "kimi-k3"]
-    assert "deepseek-v4-flash" in models
-    assert models.count("kimi-k3") == 1
+    assert models == ["hy3", "kimi-k3"]
+    assert "deepseek-v4-flash" not in models
+    assert "grok-4.6" not in models
+
+
+def test_live_catalog_omits_curated_only_unavailable_ids(monkeypatch):
+    """Curated-only ids like grok-4.6 must not appear when live succeeds."""
+    p = prov.get_provider("opencode-go")
+    monkeypatch.setattr(
+        mf, "fetch_models", lambda provider, key, **kw: ["grok-4.5", "kimi-k3"],
+    )
+    models = mv.provider_models(p)
+    assert models == ["grok-4.5", "kimi-k3"]
+    assert "grok-4.6" not in models
 
 
 # ── Driver plumbing the routing depends on ─────────────────────────────────
@@ -429,3 +460,122 @@ def test_catalog_exposes_the_provider_for_model_curation():
     assert entries
     assert entries[0]["provider_display"] == "OpenCode Go"
     assert {c["model"] for c in entries} >= {"deepseek-v4-flash", "gpt-5.6-luna"}
+
+
+def test_go_display_name_uses_shared_ox_alpha_fallback():
+    assert go.display_name_for("ox-alpha-free") == "Ox Alpha Free"
+    assert go.display_name_for("x-preview-f-free") == "Ox Alpha Free"
+    assert go.display_name_for("deepseek-v4-flash") == "deepseek-v4-flash"
+
+
+def test_go_display_name_treats_wire_echo_as_uninformative():
+    assert go.display_name_for("ox-alpha-free", {"name": "ox-alpha-free"}) == "Ox Alpha Free"
+    assert go.display_name_for("ox-alpha-free", {"name": "OX-ALPHA-FREE"}) == "Ox Alpha Free"
+    assert go.display_name_for("ox-alpha-free", {"name": "Custom Ox"}) == "Custom Ox"
+
+
+def test_catalog_overlay_gating_treats_id_echo_as_uninformative():
+    assert oc.needs_catalog_overlay({"name": "ox-alpha-free"}, "ox-alpha-free")
+    assert oc.needs_catalog_overlay({"name": ""}, "ox-alpha-free")
+    assert not oc.needs_catalog_overlay({"name": "Ox Alpha Free"}, "ox-alpha-free")
+    merged = oc.merge_catalog_overlay(
+        {"name": "ox-alpha-free", "id": "ox-alpha-free"},
+        {"name": "Ox Alpha Free", "source": "models.dev"},
+        "ox-alpha-free",
+    )
+    assert merged["name"] == "Ox Alpha Free"
+    kept = oc.merge_catalog_overlay(
+        {"name": "Native Ox Label"},
+        {"name": "Overlay Must Not Win"},
+        "ox-alpha-free",
+    )
+    assert kept["name"] == "Native Ox Label"
+    assert oc.needs_catalog_overlay({"name": "x-preview-f-free"}, "x-preview-f-free")
+    assert oc.merge_catalog_overlay(
+        {"name": "x-preview-f-free"},
+        {"name": "Ox Alpha Free"},
+        "x-preview-f-free",
+    )["name"] == "Ox Alpha Free"
+
+
+def test_ox_alpha_free_is_not_in_curated_fallback():
+    assert "ox-alpha-free" not in go.CURATED_MODELS
+    assert "x-preview-f-free" not in go.CURATED_MODELS
+
+
+def test_catalog_exposes_ox_alpha_friendly_name_for_live_go(monkeypatch):
+    monkeypatch.setattr(
+        prov, "available_providers",
+        lambda: [prov.get_provider("opencode-go")],
+    )
+    monkeypatch.setattr(
+        mf, "fetch_models",
+        lambda provider, key, **kw: ["ox-alpha-free", "deepseek-v4-flash"],
+    )
+    monkeypatch.setattr(mf, "model_metadata", lambda provider, slug: {"id": slug})
+    entries = [
+        row for row in mv.catalog(available_only=True)
+        if row["provider"] == "opencode-go"
+    ]
+    ox = next(row for row in entries if row["model"] == "ox-alpha-free")
+    assert ox["spec"] == "opencode-go:ox-alpha-free"
+    assert ox["name"] == "Ox Alpha Free"
+
+
+def test_catalog_replaces_go_wire_echo_name_with_ox_label(monkeypatch):
+    monkeypatch.setattr(
+        prov, "available_providers",
+        lambda: [prov.get_provider("opencode-go")],
+    )
+    monkeypatch.setattr(
+        mf, "fetch_models",
+        lambda provider, key, **kw: ["ox-alpha-free"],
+    )
+    monkeypatch.setattr(
+        mf, "model_metadata",
+        lambda provider, slug: {"id": slug, "name": slug},
+    )
+    seen = {}
+
+    def fake_overlay(model, *, allow_network=False):
+        seen["called"] = True
+        seen["allow_network"] = allow_network
+        return {"name": "Ox Alpha Free", "source": "models.dev"}
+
+    monkeypatch.setattr(go, "overlay_metadata", fake_overlay)
+    entries = [
+        row for row in mv.catalog(available_only=True)
+        if row["provider"] == "opencode-go"
+    ]
+    ox = next(row for row in entries if row["model"] == "ox-alpha-free")
+    assert seen.get("called") is True
+    assert ox["name"] == "Ox Alpha Free"
+
+
+def test_catalog_keeps_informative_go_native_name(monkeypatch):
+    monkeypatch.setattr(
+        prov, "available_providers",
+        lambda: [prov.get_provider("opencode-go")],
+    )
+    monkeypatch.setattr(
+        mf, "fetch_models",
+        lambda provider, key, **kw: ["ox-alpha-free"],
+    )
+    monkeypatch.setattr(
+        mf, "model_metadata",
+        lambda provider, slug: {"id": slug, "name": "Native Ox Label"},
+    )
+    seen = []
+
+    def fake_overlay(model, *, allow_network=False):
+        seen.append(model)
+        return {"name": "Overlay Must Not Win"}
+
+    monkeypatch.setattr(go, "overlay_metadata", fake_overlay)
+    entries = [
+        row for row in mv.catalog(available_only=True)
+        if row["provider"] == "opencode-go"
+    ]
+    ox = next(row for row in entries if row["model"] == "ox-alpha-free")
+    assert ox["name"] == "Native Ox Label"
+    assert seen == []

@@ -22,6 +22,21 @@ def test_disconnect_persists_over_shell_env(monkeypatch):
     assert "OPENROUTER_API_KEY" not in os.environ
 
 
+def test_disconnect_clears_env_backed_cache(monkeypatch):
+    """Disconnect must drop the env cache so Settings can show a paste field."""
+    monkeypatch.setenv("HARNESS_STATE_DIR", tempfile.mkdtemp())
+    import importlib
+    from harness import keys as K
+    importlib.reload(K)
+
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "go-old-key-1234")
+    K.snapshot_env_keys()
+    assert K.provider_has_env("opencode-go") is True
+    K.clear_api_key("opencode-go")
+    assert K.provider_has_env("opencode-go") is False
+    assert "OPENCODE_GO_API_KEY" not in os.environ
+
+
 def test_reconnect_clears_disconnect(monkeypatch):
     monkeypatch.setenv("HARNESS_STATE_DIR", tempfile.mkdtemp())
     import importlib

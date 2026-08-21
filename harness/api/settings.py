@@ -50,12 +50,19 @@ def get_config(svc: SettingsServices) -> tuple[int, JsonPayload]:
     except Exception:
         reasoning_effort = "low"
     identity = _backend_source_identity()
+    models = svc.available_pilots()
+    try:
+        from ..model_visibility import picker_model_labels
+        model_labels = picker_model_labels(models, force=False)
+    except Exception:
+        model_labels = {}
     return 200, {
         "driver": cfg.driver,
         "reach": cfg.reach,
         "budget": cfg.budget,
         "state_dir": session.state_dir,
-        "models": svc.available_pilots(),
+        "models": models,
+        "model_labels": model_labels,
         "repo": cfg.repo,
         "swarm_adapter": cfg.swarm_adapter,
         "edit_engine": edit_engine,

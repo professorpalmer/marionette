@@ -204,14 +204,8 @@ def _cached_records(entry: Any) -> list[dict[str, Any]]:
     return records
 
 
-def _flat_catalog_ids(data: Any) -> list[str]:
-    """Model ids from a listing payload, whichever envelope it arrived in.
-
-    Resellers are inconsistent here: OpenAI-style ``{"data": [{"id": ...}]}``,
-    a ``{"models": ...}`` wrapper, a bare list, and an id-keyed object are all
-    in the wild, and an unrecognized envelope has to read as "no catalog" so
-    the caller falls back to curated rather than crashing.
-    """
+def _flat_catalog_records(data: Any) -> list[dict[str, Any]]:
+    """Id + leftover fields from a listing payload, whichever envelope it used."""
     items: Any = data
     if isinstance(items, dict):
         for envelope in ("data", "models"):
@@ -225,18 +219,68 @@ def _flat_catalog_ids(data: Any) -> list[str]:
         ]
     if not isinstance(items, list):
         return []
-    out = []
+    out: list[dict[str, Any]] = []
     for item in items:
         if isinstance(item, str):
-            model_id = item
+            model_id = item.strip()
+            extra: dict[str, Any] = {}
         elif isinstance(item, dict):
-            model_id = item.get("id") or item.get("name") or ""
+            model_id = str(item.get("id") or item.get("name") or "").strip()
+            extra = {
+                key: value for key, value in item.items()
+                if key not in ("id",) and value is not None
+            }
         else:
             continue
-        model_id = str(model_id).strip()
         if model_id:
-            out.append(model_id)
+            rec = {"id": model_id}
+            rec.update(extra)
+            out.append(rec)
     return out
+
+
+def _flat_catalog_ids(data: Any) -> list[str]:
+    """Model ids from a listing payload, whichever envelope it arrived in.
+
+    Resellers are inconsistent here: OpenAI-style ``{"data": [{"id": ...}]}``,
+    a ``{"models": ...}`` wrapper, a bare list, and an id-keyed object are all
+    in the wild, and an unrecognized envelope has to read as "no catalog" so
+    the caller falls back to curated rather than crashing.
+    """
+    return [record["id"] for record in _flat_catalog_records(data) if record.get("id")]
+
+
+def _fetch_opencode_records(provider, key: str) -> list[dict[str, Any]]:
+    """Live OpenCode Go/Zen listing with names preserved. Sets ``_LAST_ERROR``."""
+    name = provider.name
+    if name == "opencode-zen" or getattr(provider, "api_mode", "") == "opencode_zen":
+        from .opencode_zen import driver_base_url, normalize_model_id
+        label = "OpenCode Zen"
+        retired = lambda _bare: False
+    else:
+        from .opencode_go import (
+            driver_base_url,
+            is_retired_deepseek_go_model,
+            normalize_model_id,
+        )
+        label = "OpenCode Go"
+        retired = is_retired_deepseek_go_model
+
+    data = _get(
+        driver_base_url(provider.base_url) + "/models",
+        {"Authorization": f"Bearer {key}", "User-Agent": "pm-harness"},
+    )
+    records = []
+    for item in _flat_catalog_records(data):
+        bare = normalize_model_id(item.get("id"))
+        if not bare or retired(bare):
+            continue
+        record = dict(item)
+        record["id"] = bare
+        records.append(record)
+    if not records:
+        _LAST_ERROR[name] = f"{label} /models returned an empty or unusable catalog"
+    return records
 
 
 def _fetch_provider_models(provider, key: str) -> list[Any]:
@@ -275,28 +319,10 @@ def _fetch_provider_models(provider, key: str) -> list[Any]:
                     "OpenRouter /models returned an empty or unusable catalog"
                 )
             return records
-        if name == "opencode-go" or getattr(provider, "api_mode", "") == "opencode_go":
-            from .opencode_go import (
-                driver_base_url,
-                is_retired_deepseek_go_model,
-                normalize_model_id,
-            )
-
-            data = _get(
-                driver_base_url(provider.base_url) + "/models",
-                {"Authorization": f"Bearer {key}", "User-Agent": "pm-harness"},
-            )
-            ids = [
-                bare
-                for m in _flat_catalog_ids(data)
-                for bare in [normalize_model_id(m)]
-                if bare and not is_retired_deepseek_go_model(bare)
-            ]
-            if not ids:
-                _LAST_ERROR[name] = (
-                    "OpenCode Go /models returned an empty or unusable catalog"
-                )
-            return ids
+        if name in ("opencode-go", "opencode-zen") or getattr(
+            provider, "api_mode", "",
+        ) in ("opencode_go", "opencode_zen"):
+            return [record["id"] for record in _fetch_opencode_records(provider, key)]
         if name in ("openai", "deepseek", "zai", "xai", "nvidia"):
             # OpenAI-compatible /models listing. Accept id or name so a
             # vendor envelope that only stamps `name` still surfaces.
@@ -377,17 +403,37 @@ def fetch_model_records(provider, key: str, *, force: bool = False) -> list[dict
             _MEM[name] = [record["id"] for record in cached]
             _MEM_AT[name] = time.monotonic()
             return cached
-    raw = _fetch_provider_models(provider, key)
+    if name in ("opencode-go", "opencode-zen") or getattr(
+        provider, "api_mode", "",
+    ) in ("opencode_go", "opencode_zen"):
+        _LAST_ERROR.pop(name, None)
+        try:
+            raw = _fetch_opencode_records(provider, key)
+        except Exception as e:
+            _LAST_ERROR[name] = repr(e)
+            _diag("model_fetch.fetch", e, msg=f"provider={name}")
+            raw = []
+    else:
+        raw = _fetch_provider_models(provider, key)
     if name == "openrouter":
         fresh = [
             record for record in raw
             if isinstance(record, dict) and _is_chat_model(record["id"])
         ]
     else:
-        fresh = [
-            {"id": model_id, "source": "live", "status": "available"}
-            for model_id in raw if isinstance(model_id, str) and _is_chat_model(model_id)
-        ]
+        fresh = []
+        for item in raw:
+            if isinstance(item, dict) and isinstance(item.get("id"), str):
+                if not _is_chat_model(item["id"]):
+                    continue
+                record = dict(item)
+                record.setdefault("source", "live")
+                record.setdefault("status", "available")
+                fresh.append(record)
+            elif isinstance(item, str) and _is_chat_model(item):
+                fresh.append({
+                    "id": item, "source": "live", "status": "available",
+                })
     if fresh:
         disk[name] = {"fetched_at": now, "models": fresh}
         _write_cache(disk)

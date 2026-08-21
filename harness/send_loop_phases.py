@@ -134,6 +134,12 @@ def begin_turn_task_kernel(session: Any, user_message: str) -> None:
     session._verify_remind_count = 0
     session._turn_user_message = user_message or ""
     session._turn_verification = ""
+    try:
+        from .pilot_guards import apply_session_pending_swarm_mandate
+
+        apply_session_pending_swarm_mandate(session, user_message)
+    except Exception:
+        pass
 
 
 def _note_turn_command(session: Any, verification: str = "") -> None:
@@ -561,6 +567,10 @@ def dispatch_pilot_provider_call(
     thread; request-start is marked immediately before the provider call.
     """
     _clear_provider_dispatch_invoked(session)
+    try:
+        session._step_tools_schema = None
+    except Exception:
+        pass
     # Cursor CLI/ACP: Autopilot → agent tools; Marionette Plan → ask.
     # Env HARNESS_CURSOR_CLI_MODE still wins inside apply_host_mode.
     _apply_mode = getattr(session.pilot, "apply_host_mode", None)
@@ -578,6 +588,10 @@ def dispatch_pilot_provider_call(
             synthesis_nudge_active,
             session._build_visible_tools_schema,
         )
+        try:
+            session._step_tools_schema = tools_schema
+        except Exception:
+            pass
         is_interactive = not getattr(session.config, "no_delegation", False)
         # Gate on an EXPLICIT capability flag (is True) + a callable chat_stream.
         # Using `is True` avoids MagicMock test pilots (which fabricate any attr as a

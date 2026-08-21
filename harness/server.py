@@ -2936,11 +2936,18 @@ def _get_settings_dict():
     reach = _cfg.reach
     status = get_api_key_status(reach)
     preflight_ok = (_session.preflight() is None)
+    models = _available_pilots()
+    try:
+        from .model_visibility import picker_model_labels
+        model_labels = picker_model_labels(models, force=False)
+    except Exception:
+        model_labels = {}
     return {
         "driver": _cfg.driver,
         "reach": reach,
         "budget": _cfg.budget,
-        "models": _available_pilots(),
+        "models": models,
+        "model_labels": model_labels,
         "auto_distill": getattr(_pilot, "_auto_distill", False),
         "reviewEditsBeforeApply": getattr(_pilot, "_review_edits_before_apply", False),
         "wiki_auto": getattr(_cfg, "wiki_auto", False),

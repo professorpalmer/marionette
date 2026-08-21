@@ -35,7 +35,8 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Literal, Optional, Union, cast, get_args
+from difflib import SequenceMatcher
+from typing import Any, Iterable, Literal, Optional, Union, cast, get_args
 
 _log = logging.getLogger(__name__)
 
@@ -93,6 +94,20 @@ INVALID_ACTION_KIND = "__invalid__"
 InvalidActionKind = Literal["__invalid__"]
 # Carrier union: dispatchable ActionKind plus the InvalidAction sentinel.
 PilotActionKind = Union[ActionKind, InvalidActionKind]
+
+# Conservative name repair (Hermes-inspired). Fuzzy match is unique+margin
+# only; MCP names never invent a server/tool.
+_PROVIDER_TOOL_PREFIXES = ("functions.", "tool.", "harness.")
+_SWARM_ALIAS_KEYS = frozenset({
+    "puppetmaster",
+    "puppeteermaster",
+    "puppetmasterswarm",
+})
+_TOOL_NAME_FUZZY_THRESHOLD = 0.80
+_TOOL_NAME_FUZZY_MARGIN = 0.10
+_MISSING_NAME_LIST_CAP = 5
+_UNKNOWN_NAME_SUGGEST_CAP = 3
+INVALID_ONLY_HALT_AFTER = 3
 
 
 def _optional_int(value: Any) -> Any:
@@ -1861,6 +1876,198 @@ def _parse_mcp_wire_name(name: str) -> str:
     return rest
 
 
+def tool_names_from_schema(schema: Any) -> list[str]:
+    """Extract function names from the exact tools schema sent to the provider."""
+    names: list[str] = []
+    seen = set()
+    if not schema:
+        return names
+    for item in schema:
+        if not isinstance(item, dict):
+            continue
+        fn = item.get("function")
+        raw = None
+        if isinstance(fn, dict):
+            raw = fn.get("name")
+        elif item.get("name"):
+            raw = item.get("name")
+        name = str(raw or "").strip()
+        if name and name not in seen:
+            seen.add(name)
+            names.append(name)
+    return names
+
+
+def normalize_tool_name(name: str) -> str:
+    """Strip provider prefixes / ``()`` and fold camelCase + punctuation to snake_case."""
+    s = str(name or "").strip()
+    if s.endswith("()"):
+        s = s[:-2].rstrip()
+    lower = s.lower()
+    for prefix in _PROVIDER_TOOL_PREFIXES:
+        if lower.startswith(prefix):
+            s = s[len(prefix):]
+            break
+    s = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s)
+    s = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", s)
+    s = re.sub(r"[-.\s]+", "_", s)
+    return s.strip("_").lower()
+
+
+def _looks_like_mcp_tool_name(name: str) -> bool:
+    stripped = str(name or "").strip()
+    if stripped.lower().startswith("mcp_"):
+        return True
+    return normalize_tool_name(stripped).startswith("mcp_")
+
+
+def _resolved_repair_candidates(
+    allowed_names: Optional[Iterable[str]],
+) -> list[str]:
+    if allowed_names is None:
+        return sorted(VALID_ACTION_KINDS)
+    out: list[str] = []
+    seen = set()
+    for raw in allowed_names:
+        name = str(raw or "").strip()
+        if name and name not in seen:
+            seen.add(name)
+            out.append(name)
+    return out
+
+
+def _alias_key(name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", normalize_tool_name(name))
+
+
+def _score_tool_name(left: str, right: str) -> float:
+    return SequenceMatcher(
+        None, normalize_tool_name(left), normalize_tool_name(right)
+    ).ratio()
+
+
+def _closest_visible_names(
+    name: str, candidates: Iterable[str], limit: int
+) -> list[str]:
+    cand_list = [c for c in candidates if str(c or "").strip()]
+    if not cand_list or limit <= 0:
+        return []
+    scored = [(_score_tool_name(name, cand), cand) for cand in cand_list]
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [cand for _ratio, cand in scored[:limit]]
+
+
+def _fuzzy_unique_tool_name(name: str, candidates: list[str]) -> Optional[str]:
+    if not candidates:
+        return None
+    scored = [(_score_tool_name(name, cand), cand) for cand in candidates]
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    best_ratio, best = scored[0]
+    runner = scored[1][0] if len(scored) > 1 else 0.0
+    if (
+        best_ratio >= _TOOL_NAME_FUZZY_THRESHOLD
+        and (best_ratio - runner) >= _TOOL_NAME_FUZZY_MARGIN
+    ):
+        return best
+    return None
+
+
+def repair_tool_name(
+    name: str,
+    allowed_names: Optional[Iterable[str]] = None,
+) -> Optional[str]:
+    """Map a provider tool name onto a currently visible schema name.
+
+    When ``allowed_names`` is provided, candidates are exactly that set
+    (the live send loop's current tool schema). When omitted, candidates
+    are native ``VALID_ACTION_KINDS`` plus exact ``mcp_*`` passthrough so
+    direct/test callers keep current MCP parsing.
+
+    Returns the repaired visible name, or None when the name is empty,
+    ambiguous, or not uniquely repairable.
+    """
+    stripped = str(name or "").strip()
+    if not stripped:
+        return None
+    candidates = _resolved_repair_candidates(allowed_names)
+    if stripped in candidates:
+        return stripped
+    lower_hits = [c for c in candidates if c.lower() == stripped.lower()]
+    if len(set(lower_hits)) == 1:
+        return lower_hits[0]
+    if "run_swarm" in candidates and _alias_key(stripped) in _SWARM_ALIAS_KEYS:
+        return "run_swarm"
+    norm = normalize_tool_name(stripped)
+    if norm:
+        norm_hits = [c for c in candidates if normalize_tool_name(c) == norm]
+        unique = list(dict.fromkeys(norm_hits))
+        if len(unique) == 1:
+            return unique[0]
+    if _looks_like_mcp_tool_name(stripped):
+        # Casing/punctuation may unique-match a visible mcp_* name above.
+        # Never fuzzy-invent a server/tool. Compat: exact mcp_* passthrough
+        # when the caller did not supply an allowlist.
+        if allowed_names is None:
+            if norm.startswith("mcp_"):
+                return norm
+            if stripped.startswith("mcp_"):
+                return stripped
+        return None
+    return _fuzzy_unique_tool_name(stripped, candidates)
+
+
+def _format_visible_name_list(names: list[str]) -> str:
+    return ", ".join(names)
+
+
+def missing_tool_name_error(allowed_names: Optional[Iterable[str]] = None) -> str:
+    """Bounded missing-name error — never dump the full catalog."""
+    visible = _resolved_repair_candidates(allowed_names)
+    sample = sorted(visible)[:_MISSING_NAME_LIST_CAP]
+    if sample:
+        return (
+            "INVALID TOOL CALL: tool name is missing. "
+            "Use a visible tool name (e.g. "
+            f"{_format_visible_name_list(sample)})."
+        )
+    return (
+        "INVALID TOOL CALL: tool name is missing. "
+        "No tools are visible on this step; reply in plain text."
+    )
+
+
+def unknown_tool_name_error(
+    name: str,
+    allowed_names: Optional[Iterable[str]] = None,
+) -> str:
+    """Bounded unknown-name error — suggestions are currently visible only."""
+    visible = _resolved_repair_candidates(allowed_names)
+    suggestions = _closest_visible_names(name, visible, _UNKNOWN_NAME_SUGGEST_CAP)
+    preview = str(name or "").strip() or "(empty)"
+    if suggestions:
+        return (
+            f"INVALID TOOL CALL '{preview}': '{preview}' is not a visible tool. "
+            f"Closest visible: {_format_visible_name_list(suggestions)}."
+        )
+    return (
+        f"INVALID TOOL CALL '{preview}': '{preview}' is not a visible tool."
+    )
+
+
+def is_invalid_only_step(actions: Any) -> bool:
+    """True when a provider step produced at least one action, all invalid."""
+    if not actions:
+        return False
+    return all(is_invalid_action(act) for act in actions)
+
+
+def next_invalid_only_streak(streak: Any, actions: Any) -> int:
+    """Advance or reset the invalid-only provider-step streak."""
+    if is_invalid_only_step(actions):
+        return int(streak or 0) + 1
+    return 0
+
+
 def _tool_name_to_action(name: str, args: dict, tool_call_id: str = "") -> PilotAction:
     if not isinstance(args, dict):
         args = {}
@@ -1889,7 +2096,31 @@ def _parse_lenient_json(s: str) -> dict:
     raise ValueError("Failed to parse JSON")
 
 
-def parse_inline_tool_calls(content: str) -> list[PilotAction]:
+def _action_from_repaired_name(
+    name: str,
+    args: dict,
+    tool_call_id: str,
+    allowed_names: Optional[Iterable[str]],
+) -> PilotAction:
+    repaired = repair_tool_name(name, allowed_names)
+    if not repaired:
+        raise PilotError(unknown_tool_name_error(name, allowed_names))
+    action = _tool_name_to_action(repaired, args, tool_call_id=tool_call_id)
+    if str(name or "").strip() != repaired:
+        try:
+            action.provider_name = str(name or "")
+        except Exception:
+            pass
+        _log_arg_coercion(
+            repaired, [f"repaired tool name {name!r} -> {repaired!r}"]
+        )
+    return action
+
+
+def parse_inline_tool_calls(
+    content: str,
+    allowed_names: Optional[Iterable[str]] = None,
+) -> list[PilotAction]:
     actions = []
     if not content:
         return actions
@@ -1910,7 +2141,9 @@ def parse_inline_tool_calls(content: str) -> list[PilotAction]:
                         try:
                             idx += 1
                             tc_id = f"call_inline_{idx}"
-                            action = _tool_name_to_action(name, arguments, tool_call_id=tc_id)
+                            action = _action_from_repaired_name(
+                                name, arguments, tc_id, allowed_names,
+                            )
                             actions.append(action)
                         except Exception:
                             pass
@@ -1946,7 +2179,7 @@ def parse_inline_tool_calls(content: str) -> list[PilotAction]:
         try:
             idx += 1
             tc_id = f"call_inline_{idx}"
-            action = _tool_name_to_action(name, args, tool_call_id=tc_id)
+            action = _action_from_repaired_name(name, args, tc_id, allowed_names)
             actions.append(action)
         except Exception:
             pass
@@ -1963,7 +2196,10 @@ def strip_inline_tool_calls(content: str) -> str:
     return content.strip()
 
 
-def parse_tool_calls(tool_calls: list) -> list[PilotAction]:
+def parse_tool_calls(
+    tool_calls: list,
+    allowed_names: Optional[Iterable[str]] = None,
+) -> list[PilotAction]:
     actions = []
     if not tool_calls:
         return actions
@@ -1974,7 +2210,8 @@ def parse_tool_calls(tool_calls: list) -> list[PilotAction]:
         func = tc.get("function")
         if not func:
             continue
-        name = func.get("name") or ""
+        raw_name = func.get("name")
+        name = raw_name if isinstance(raw_name, str) else ("" if raw_name is None else str(raw_name))
         tc_id = tc.get("id") or ""
         raw_args = func.get("arguments") or {}
         
@@ -2002,21 +2239,38 @@ def parse_tool_calls(tool_calls: list) -> list[PilotAction]:
             ).validate())
             continue
 
+        if not str(name or "").strip():
+            actions.append(InvalidAction(
+                kind=INVALID_ACTION_KIND,
+                tool=name,
+                arguments=args if isinstance(args, dict) else {},
+                tool_call_id=tc_id,
+                content=missing_tool_name_error(allowed_names),
+            ).validate())
+            continue
+
         try:
-            action = _tool_name_to_action(name, args, tool_call_id=tc_id)
+            action = _action_from_repaired_name(name, args, tc_id, allowed_names)
             actions.append(action)
         except Exception as e:
             # A single malformed tool call (e.g. a truncated/streamed write_file missing
             # its path) must NOT abort the whole turn and discard the other valid actions.
             # Record it as a failed action carrying the error so the loop can feed the
             # message back to the model and let it retry, instead of silently halting.
+            err_text = str(e)
+            if "is not a visible tool" not in err_text and "tool name is missing" not in err_text:
+                err_text = (
+                    f"{e}. Re-issue the tool call with ALL required "
+                    f"arguments (write_file needs both 'path' and 'content'; "
+                    f"edit_file needs 'path', 'old_str', and 'new_str')."
+                )
+            prefix = "" if err_text.startswith("INVALID TOOL CALL") else f"INVALID TOOL CALL '{name}': "
             actions.append(InvalidAction(
                 kind=INVALID_ACTION_KIND,
                 tool=name,
                 arguments=args,
                 tool_call_id=tc_id,
-                content=(f"INVALID TOOL CALL '{name}': {e}. Re-issue the tool call with ALL required "
-                         f"arguments (write_file needs both 'path' and 'content'; edit_file needs 'path', 'old_str', and 'new_str')."),
+                content=f"{prefix}{err_text}",
             ).validate())
 
     return actions
@@ -2227,6 +2481,7 @@ You have direct access to a local CodeGraph-indexed workspace and can explore/ed
 - `edit_file`: make a targeted edit to an existing file by replacing an exact substring. Requires `path`, `old_str`, and `new_str`. STRONGLY PREFERRED over write_file for editing existing files.
 - `write_file`: write/create a file atomically. Requires `path` and `content`. Use ONLY to create brand-new files.
 - `run_command`: run a terminal shell command. Requires `command`.
+- `run_command_batch`: run 1-6 independent shell commands as one batch. Requires `commands`.
 - `run_ipython`: execute Python in a session-scoped persistent REPL (variables survive across turns). Prefer read_file/hash_edit/run_command/swarms for normal coding; use this for stateful probes. Requires `code`.
 - `wait`: stay on this turn while background jobs run (Cursor-style Await). Sleeps up to `seconds` (default 2, max 30) and returns whether jobs settled. After run_implement / run_parallel, call wait instead of ending the turn.
 - `list_dir`: list the files and folders inside a directory. `path` is optional.
@@ -2251,6 +2506,8 @@ You have direct access to a local CodeGraph-indexed workspace and can explore/ed
 - `peek_artifact`: bounded FETCH of an artifact:// payload (or job_id+artifact_id). Prefer this over pasting fat swarm digests.
 - `call_mcp`: call a connected MCP tool. Requires `tool` (the qualified server.tool name) and `arguments` (object). Connected MCP tools may be listed in a "Connected MCP tools" section appended below; use them when relevant.
 - `manage_mcp`: wire MCP servers (list/add/start/stop/remove). For Docker HTTP MCP after `docker run`, call manage_mcp add with name + url=http://localhost:PORT/mcp — localhost is supported. Do not shell-edit ~/.pmharness/mcp.json. Keep bot tokens in the container env, not in chat or mcp.json when the image already reads DISCORD_TOKEN.
+
+LATENCY (mandatory): Minimize provider roundtrips. Combine dependent shell/git checks in one `run_command`. Use `run_command_batch` for independent commands. Emit multiple independent tool calls in one response where the provider supports it.
 
 MATCH EFFORT TO THE REQUEST (read this first):
 Not every message is a task. Greetings ("hi", "hello", "hey"), thanks, small

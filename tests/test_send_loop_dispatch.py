@@ -18,6 +18,7 @@ from harness.pilot import PilotAction
 from harness.send_loop import SendLoopMixin
 from harness.send_loop_dispatch import (
     DISPATCH_ACTION_KINDS,
+    _TRACKABLE_SWARM_REFUSAL,
     dispatch_implement_action,
     dispatch_memory_action,
     dispatch_parallel_action,
@@ -713,3 +714,10 @@ def test_is_untracked_pm_start_tool():
     assert not is_untracked_pm_start_tool("puppetmaster_codegraph_search")
     assert not is_untracked_pm_start_tool("query_wiki")
     assert not is_untracked_pm_start_tool("")
+
+
+def test_untracked_pm_refusal_names_native_verbs_not_shell_cli():
+    assert "run_swarm" in _TRACKABLE_SWARM_REFUSAL
+    assert "run_implement" in _TRACKABLE_SWARM_REFUSAL
+    assert "python -m puppetmaster" not in _TRACKABLE_SWARM_REFUSAL
+    assert "puppetmaster swarm" not in _TRACKABLE_SWARM_REFUSAL

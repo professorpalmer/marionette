@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, useRef } from "react";
 import { ChevronDown, Check, Search } from "lucide-react";
 import { api, type Config, type ReasoningEffort } from "../lib/api";
-import { fallbackPilot, organizePilotModels } from "../lib/pilotPickerModels";
+import { fallbackPilot, modelLabelOf, organizePilotModels } from "../lib/pilotPickerModels";
 
 const REASONING_LEVELS: { value: ReasoningEffort; label: string }[] = [
   { value: "none", label: "None" },
@@ -126,6 +126,7 @@ export default function PilotPicker({ config }: {
     }
   };
 
+  const labels = config?.model_labels;
   const shortOf = (spec: string) => (spec ? spec.split(":").pop() || "" : "");
   const shortCounts = models.reduce<Record<string, number>>((acc, m) => {
     const s = shortOf(m);
@@ -135,15 +136,16 @@ export default function PilotPicker({ config }: {
   const labelOf = (spec: string) => {
     const short = shortOf(spec);
     if (!short) return "";
+    const friendly = modelLabelOf(spec, labels);
     if ((shortCounts[short] || 0) > 1 && spec.includes(":")) {
-      return `${short} (${spec.split(":")[0]})`;
+      return `${friendly} (${spec.split(":")[0]})`;
     }
-    return short;
+    return friendly;
   };
 
   const organized = useMemo(
-    () => organizePilotModels(models, current, query),
-    [models, current, query],
+    () => organizePilotModels(models, current, query, labels),
+    [models, current, query, labels],
   );
 
   if (!config) return null;

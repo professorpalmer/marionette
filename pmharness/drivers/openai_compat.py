@@ -11,8 +11,9 @@ Keys are read from the environment at call time and never logged.
 import json
 import os
 import time
-import urllib.request
 import urllib.error
+import urllib.parse
+import urllib.request
 from typing import Callable
 
 from .base import DriverResponse, SYSTEM_PROMPT
@@ -85,6 +86,125 @@ class OpenAICompatDriver:
             self.base_url == "https://api.openai.com/v1"
             and self.model.lower().startswith("gpt-5")
         )
+
+    def _is_openrouter_host(self) -> bool:
+        try:
+            host = (urllib.parse.urlparse(self.base_url or "").hostname or "").lower()
+        except Exception:
+            return False
+        return host == "openrouter.ai" or host.endswith(".openrouter.ai")
+
+    def _is_opencode_go_host(self) -> bool:
+        """True for the OpenCode Go relay (``https://opencode.ai/zen/go/v1``)."""
+        try:
+            parsed = urllib.parse.urlparse(self.base_url or "")
+        except Exception:
+            return False
+        host = (parsed.hostname or "").lower()
+        if host != "opencode.ai" and not host.endswith(".opencode.ai"):
+            return False
+        path = (parsed.path or "").lower()
+        return "/zen/go" in path
+
+    def _apply_openrouter_parallel_tool_calls(self, body: dict, tools) -> None:
+        """OpenRouter accepts parallel_tool_calls; OpenCode Go/unknown relays do not."""
+        if tools and self._is_openrouter_host():
+            body["parallel_tool_calls"] = True
+        else:
+            body.pop("parallel_tool_calls", None)
+
+    @staticmethod
+    def _is_empty_chat_completion_400_stub(code: int, detail: str) -> bool:
+        """True for the empty chat.completion HTTP 400 Muse/OpenCode Go returns.
+
+        That stub is a completion-shaped JSON body (object chat.completion /
+        chatcompletion) with no error message — not a real invalid_request
+        explanation. Match narrowly so actionable 400s still surface.
+        """
+        if code != 400:
+            return False
+        text = str(detail or "").strip()
+        start = text.find("{")
+        end = text.rfind("}")
+        if start < 0 or end <= start:
+            return False
+        try:
+            obj = json.loads(text[start : end + 1])
+        except Exception:
+            return False
+        if not isinstance(obj, dict):
+            return False
+        kind = str(obj.get("object") or "").lower()
+        if kind not in ("chat.completion", "chatcompletion"):
+            return False
+        err = obj.get("error")
+        if isinstance(err, dict) and str(err.get("message") or "").strip():
+            return False
+        if isinstance(err, str) and err.strip():
+            return False
+        choices = obj.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return False
+        first = choices[0]
+        if not isinstance(first, dict) or first.get("finish_reason") not in (None, ""):
+            return False
+        message = first.get("message")
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            return False
+        if str(message.get("content") or "").strip():
+            return False
+        if message.get("tool_calls"):
+            return False
+        return True
+
+    @staticmethod
+    def _next_stream_tool_call_index(assembled: dict) -> int:
+        ints = [idx for idx in assembled if isinstance(idx, int)]
+        return (max(ints) + 1) if ints else 0
+
+    @staticmethod
+    def _resolve_stream_tool_call_index(
+        tc: dict,
+        assembled: dict,
+        *,
+        chunk_pos: int,
+        chunk_count: int,
+        last_index: int | None,
+    ) -> int:
+        """Pick the assembled-tool-call slot for one streamed tool_call delta.
+
+        Explicit ``index`` wins. Otherwise a nonempty id joins an existing call.
+        Multiple indexless calls in one chunk stay distinct via chunk position.
+        Idless name/argument fragments continue the sole or most recent call.
+        New calls get the next deterministic index.
+        """
+        if not isinstance(tc, dict):
+            return OpenAICompatDriver._next_stream_tool_call_index(assembled)
+        raw_idx = tc.get("index")
+        if raw_idx is not None:
+            try:
+                return int(raw_idx)
+            except (TypeError, ValueError):
+                pass
+        call_id = tc.get("id") if isinstance(tc.get("id"), str) else ""
+        if call_id:
+            for idx, existing in assembled.items():
+                if isinstance(existing, dict) and existing.get("id") == call_id:
+                    return idx
+        if chunk_count > 1:
+            if chunk_pos not in assembled:
+                return chunk_pos
+            if not call_id:
+                return chunk_pos
+        if not call_id and assembled:
+            if len(assembled) == 1:
+                return next(iter(assembled))
+            if last_index is not None:
+                return last_index
+            ints = [idx for idx in assembled if isinstance(idx, int)]
+            if ints:
+                return max(ints)
+        return OpenAICompatDriver._next_stream_tool_call_index(assembled)
 
     def _output_token_limit_field(self) -> str:
         """Return the Chat Completions output-limit field for this endpoint/model."""
@@ -472,6 +592,7 @@ class OpenAICompatDriver:
             system=system,
             session_id=session_id,
         )
+        self._apply_openrouter_parallel_tool_calls(body, tools)
 
         data = json.dumps(body).encode("utf-8")
 
@@ -645,6 +766,9 @@ class OpenAICompatDriver:
             system=system,
             session_id=session_id,
         )
+        if self._is_opencode_go_host():
+            body.pop("stream_options", None)
+        self._apply_openrouter_parallel_tool_calls(body, tools)
 
         data = json.dumps(body).encode("utf-8")
 
@@ -658,6 +782,7 @@ class OpenAICompatDriver:
             full_text = ""
             reasoning_pieces = []
             assembled_tool_calls = {}
+            last_tool_call_index = None
             finish_reason = ""
             tokens_in = 0
             tokens_out = 0
@@ -740,12 +865,22 @@ class OpenAICompatDriver:
                                     if on_reasoning_delta is not None:
                                         on_reasoning_delta(reasoning_delta)
 
-                                # Tool calls delta
+                                # Tool calls delta. Receipt itself is stream
+                                # activity, even when a later HTTP error arrives.
                                 delta_tool_calls = delta.get("tool_calls") or []
-                                for tc in delta_tool_calls:
-                                    idx = tc.get("index")
-                                    if idx is None:
+                                if delta_tool_calls:
+                                    stream_started = True
+                                for chunk_pos, tc in enumerate(delta_tool_calls):
+                                    if not isinstance(tc, dict):
                                         continue
+                                    idx = self._resolve_stream_tool_call_index(
+                                        tc,
+                                        assembled_tool_calls,
+                                        chunk_pos=chunk_pos,
+                                        chunk_count=len(delta_tool_calls),
+                                        last_index=last_tool_call_index,
+                                    )
+                                    last_tool_call_index = idx
                                     tc_func = tc.get("function") or {}
                                     name_piece = tc_func.get("name") or ""
                                     if idx not in assembled_tool_calls:
@@ -787,6 +922,17 @@ class OpenAICompatDriver:
                 if (not stream_started and self._reasoning_unsupported(e.code, detail)
                         and body.get("reasoning") is not None):
                     self.enable_reasoning = False
+                    return self.chat(
+                        messages, tools=tools, system=system, session_id=session_id,
+                    )
+                # Muse/OpenCode Go sometimes 400s a stream with an empty
+                # chat.completion stub and no error text. Retry once via
+                # non-streaming chat() (drops stream-only fields) before any
+                # content/reasoning/tool delta. Never after stream activity;
+                # never for an actionable 400; never via chat_stream.
+                if not stream_started and self._is_empty_chat_completion_400_stub(
+                    e.code, detail,
+                ):
                     return self.chat(
                         messages, tools=tools, system=system, session_id=session_id,
                     )

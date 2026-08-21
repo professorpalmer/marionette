@@ -214,6 +214,51 @@ function saveDismissed(repo: string | undefined, ids: Set<string>): void {
   }
 }
 
+// Outer job-card expand/collapse is view state, scoped per repo like dismiss.
+// Explicit true/false overrides the in_progress default on remount; missing keys
+// keep active jobs open and terminal jobs closed. Soft-capped per repo.
+const EXPAND_KEY = "swarm.expanded.v1";
+const EXPAND_CAP = DISMISS_CAP;
+
+type ExpandStore = Record<string, Record<string, boolean>>;
+
+function readExpandStore(): ExpandStore {
+  try {
+    const raw = localStorage.getItem(EXPAND_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as ExpandStore;
+      }
+    }
+  } catch {
+    // Malformed/unavailable storage -- fail closed to defaults.
+  }
+  return {};
+}
+
+function loadExpanded(repo?: string): Record<string, boolean> {
+  const store = readExpandStore();
+  const raw = store[repoDismissKey(repo)];
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const result: Record<string, boolean> = {};
+  for (const [id, val] of Object.entries(raw)) {
+    if (typeof id === "string" && typeof val === "boolean") result[id] = val;
+  }
+  return result;
+}
+
+function saveExpanded(repo: string | undefined, expanded: Record<string, boolean>): void {
+  try {
+    const store = readExpandStore();
+    const entries = Object.entries(expanded).slice(-EXPAND_CAP);
+    store[repoDismissKey(repo)] = Object.fromEntries(entries);
+    localStorage.setItem(EXPAND_KEY, JSON.stringify(store));
+  } catch {
+    // localStorage full/unavailable -- expansion still works for this session.
+  }
+}
+
 // Cheap, render-relevant fingerprint of a live-swarm payload. During a big swarm
 // the payload can be ~1MB; JSON.stringify-diffing it (or blindly setData every
 // poll) re-renders the whole tree for no delta and blocks the main thread. We
@@ -944,7 +989,6 @@ export default function SwarmPane() {
   // to the same repo as its siblings instead of the unscoped default view.
   const [selectedProjectRoot, setSelectedProjectRoot] = useState(lastSelectedProjectRoot);
   const projectSwitching = useProjectSwitching();
-  const [expandedJobs, setExpandedJobs] = useState<Record<string, boolean>>({});
   const [expandedAlts, setExpandedAlts] = useState<Record<string, boolean>>({});
   const [expandedTasks, setExpandedTasks] = useState<Record<string, boolean>>({});
   const [expandedFindings, setExpandedFindings] = useState<Record<string, boolean>>({});
@@ -954,6 +998,7 @@ export default function SwarmPane() {
   const scopedRepoRef = useRef(scopedRepo);
   scopedRepoRef.current = scopedRepo;
 
+  const [expandedJobs, setExpandedJobs] = useState<Record<string, boolean>>(() => loadExpanded(scopedRepo));
   const [dismissed, setDismissed] = useState<Set<string>>(() => loadDismissed(scopedRepo));
   const [finishedOpen, setFinishedOpen] = useState(false);
   const [jobFilter, setJobFilter] = useState<JobFilter>("all");
@@ -973,6 +1018,7 @@ export default function SwarmPane() {
 
   useEffect(() => {
     setDismissed(loadDismissed(scopedRepo));
+    setExpandedJobs(loadExpanded(scopedRepo));
   }, [scopedRepo]);
 
   useEffect(() => {
@@ -1056,7 +1102,11 @@ export default function SwarmPane() {
       next.delete(id);
       return next;
     });
-    setExpandedJobs((prev) => ({ ...prev, [id]: true }));
+    setExpandedJobs((prev) => {
+      const updated = { ...prev, [id]: true };
+      saveExpanded(scopedRepoRef.current, updated);
+      return updated;
+    });
     setFinishedOpen(true);
     setJobFilter("all");
     const job = dataRef.current?.jobs?.find((j) => j.id === id);
@@ -1330,7 +1380,11 @@ export default function SwarmPane() {
 
     const toggle = () => {
       const next = !isExpanded;
-      setExpandedJobs((prev) => ({ ...prev, [j.id]: next }));
+      setExpandedJobs((prev) => {
+        const updated = { ...prev, [j.id]: next };
+        saveExpanded(scopedRepoRef.current, updated);
+        return updated;
+      });
       if (next) ensureFullArtifacts(j);
     };
 

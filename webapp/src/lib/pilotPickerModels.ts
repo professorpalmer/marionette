@@ -2,6 +2,12 @@
 
 export type PilotProviderGroup = { provider: string; items: string[] };
 
+/** Cold/offline Ox fallback. Prefer ``config.model_labels`` when present. */
+export const KNOWN_MODEL_LABELS: Record<string, string> = {
+  "ox-alpha-free": "Ox Alpha Free",
+  "x-preview-f-free": "Ox Alpha Free",
+};
+
 /** Provider prefix before ':' (or the whole id when unscoped). */
 export function providerOf(spec: string): string {
   if (!spec) return "other";
@@ -10,14 +16,19 @@ export function providerOf(spec: string): string {
   return spec.slice(0, idx);
 }
 
-/** Match model id and/or provider prefix (case-insensitive substring). */
-export function filterPilotModels(models: string[], query: string): string[] {
+/** Match model id, provider prefix, and/or friendly display name. */
+export function filterPilotModels(
+  models: string[],
+  query: string,
+  labels?: Record<string, string>,
+): string[] {
   const q = query.trim().toLowerCase();
   if (!q) return models.slice();
   return models.filter((m) => {
     const lower = m.toLowerCase();
     const provider = providerOf(m).toLowerCase();
-    return lower.includes(q) || provider.includes(q);
+    const label = modelLabelOf(m, labels).toLowerCase();
+    return lower.includes(q) || provider.includes(q) || label.includes(q);
   });
 }
 
@@ -26,6 +37,13 @@ export function modelIdOf(spec: string): string {
   if (!spec) return "";
   const idx = spec.indexOf(":");
   return idx <= 0 ? spec : spec.slice(idx + 1);
+}
+
+/** Friendly picker/Settings label; wire spec is unchanged. */
+export function modelLabelOf(spec: string, labels?: Record<string, string>): string {
+  const id = modelIdOf(spec);
+  const fromMap = labels?.[spec] || labels?.[id] || KNOWN_MODEL_LABELS[id];
+  return (fromMap || id || spec).trim();
 }
 
 /** Pin the current driver at the front when present; leave others in order. */
@@ -76,8 +94,9 @@ export function organizePilotModels(
   models: string[],
   current: string,
   query: string,
+  labels?: Record<string, string>,
 ): { current: string | null; groups: PilotProviderGroup[] } {
-  const filtered = filterPilotModels(models, query);
+  const filtered = filterPilotModels(models, query, labels);
   const pinned = pinCurrentPilot(filtered, current);
   const currentPinned =
     current && pinned[0] === current ? current : null;
