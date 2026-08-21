@@ -29,11 +29,15 @@ export function isAgentLoopOpen(
 /**
  * Composer mouth: Stop/Steer only while the pilot's short turn is open.
  * A flying PM job (awaiting_swarm) is running, not busy — Send stays Send.
+ * switchPending keeps the mouth busy during A→B so a running target never
+ * flashes Send before getSessionState resolves.
  */
 export function isPilotMouthBusy(
   turnOpen: boolean,
   status: BusyStatus | string,
+  switchPending: boolean = false,
 ): boolean {
+  if (switchPending) return true;
   return (
     turnOpen
     || status === "thinking"

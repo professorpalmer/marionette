@@ -552,3 +552,210 @@ def test_driver_none_omits_reasoning_block(pool_dir, monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     d.complete("ping")
     assert "reasoning" not in captured["body"]
+
+
+def test_chatgpt_build_body_omits_max_output_tokens():
+    d = CodexResponsesDriver(name="codex", model="gpt-5.5", max_tokens=2048)
+    body = d._build_body([{"role": "user", "content": "hi"}])
+    assert "max_output_tokens" not in body
+
+
+def test_non_chatgpt_build_body_sends_max_output_tokens():
+    d = CodexResponsesDriver(
+        name="muse",
+        model="muse-spark-1.2-contributor",
+        base_url="https://opencode.ai/zen/go/v1",
+        api_key_env="OPENCODE_GO_API_KEY",
+        max_tokens=2048,
+        chatgpt_backend=False,
+    )
+    body = d._build_body([{"role": "user", "content": "hi"}])
+    assert body["max_output_tokens"] == 2048
+
+
+def test_non_chatgpt_build_body_omits_nonpositive_max_output_tokens():
+    d = CodexResponsesDriver(
+        name="muse",
+        model="muse-spark-1.2-contributor",
+        chatgpt_backend=False,
+        max_tokens=0,
+    )
+    body = d._build_body([{"role": "user", "content": "hi"}])
+    assert "max_output_tokens" not in body
+
+
+def test_consume_sse_non_chatgpt_eof_without_terminal_is_incomplete():
+    lines = [
+        b'data: {"type":"response.output_text.delta","delta":"partial"}\n',
+        b"data: [DONE]\n",
+    ]
+    raw = _consume_codex_sse(lines, chatgpt_backend=False)
+    assert raw["status"] != "completed"
+    assert raw["status"] == "incomplete"
+    assert raw["output_text"] == "partial"
+    assert raw.get("error")
+    text, _, finish = _extract_text_and_tools(raw)
+    assert text == "partial"
+    assert finish == "incomplete"
+
+
+def test_consume_sse_chatgpt_still_seals_after_answer_timeout():
+    """ChatGPT anti-hang drain must not regress when chatgpt_backend defaults."""
+
+    def lines():
+        yield b'data: {"type":"response.output_item.added","item":{"type":"message","phase":"final_answer","id":"msg_f"}}\n'
+        yield b'data: {"type":"response.output_text.delta","item_id":"msg_f","delta":"Test received."}\n'
+        yield b'data: {"type":"response.output_item.done","item":{"type":"message","phase":"final_answer","id":"msg_f"}}\n'
+        raise TimeoutError("timed out")
+
+    raw = _consume_codex_sse(lines())
+    assert raw["status"] == "completed"
+    assert raw["output_text"] == "Test received."
+    assert not raw.get("error")
+
+
+class _IterResp:
+    def __init__(self, lines):
+        self._lines = lines
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def __iter__(self):
+        return iter(self._lines)
+
+
+def _muse_responses_driver():
+    d = CodexResponsesDriver(
+        name="opencode-go:muse-spark-1.2-contributor",
+        model="muse-spark-1.2-contributor",
+        base_url="https://opencode.ai/zen/go/v1",
+        api_key_env="OPENCODE_GO_API_KEY",
+        max_tokens=4096,
+        chatgpt_backend=False,
+    )
+    d._key = lambda: "sk-go-test"
+    return d
+
+
+def test_muse_production_driver_is_non_chatgpt_responses():
+    from pmharness.drivers.openai_compat import OpenAICompatDriver
+
+    d = _muse_responses_driver()
+    assert isinstance(d, CodexResponsesDriver)
+    assert not isinstance(d, OpenAICompatDriver)
+    assert d.chatgpt_backend is False
+
+
+def test_muse_slow_answer_deltas_reach_completed(monkeypatch):
+    """Slow Muse tokens spanning >2s plus a 400ms pause must not seal early."""
+    d = _muse_responses_driver()
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(
+        "pmharness.drivers.codex_responses.time.monotonic",
+        lambda: clock["now"],
+    )
+
+    def lines():
+        yield b'data: {"type":"response.output_item.added","item":{"type":"message","phase":"final_answer","id":"msg_f"}}\n'
+        yield b'data: {"type":"response.output_text.delta","item_id":"msg_f","delta":"Hel"}\n'
+        clock["now"] += 2.2
+        yield b'data: {"type":"response.output_text.delta","item_id":"msg_f","delta":"lo"}\n'
+        clock["now"] += 0.4
+        yield b'data: {"type":"response.output_text.delta","item_id":"msg_f","delta":"!"}\n'
+        yield b'data: {"type":"response.output_item.done","item":{"type":"message","phase":"final_answer","id":"msg_f","content":[{"type":"output_text","text":"Hello!"}]}}\n'
+        yield b'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":4,"output_tokens":3}}}\n'
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _IterResp(lines()))
+    deltas = []
+    resp = d.chat_stream(
+        [{"role": "user", "content": "hi"}],
+        on_delta=deltas.append,
+    )
+    assert resp.error is None
+    answer = "".join(
+        (p["text"] if isinstance(p, dict) else p) for p in deltas
+    )
+    assert answer == "Hello!"
+    assert resp.text == "Hello!"
+    assert resp.meta["finish_reason"] == "completed"
+    assert resp.tokens_out == 3
+    assert resp.meta.get("stream_started") is True
+    assert resp.meta.get("stream_terminal")
+    assert resp.meta.get("last_provider_event") == "response.completed"
+
+
+def test_muse_eof_without_terminal_preserves_partial_text(monkeypatch):
+    d = _muse_responses_driver()
+
+    def lines():
+        yield b'data: {"type":"response.output_text.delta","delta":"partial answer"}\n'
+        yield b'data: {"usage":{"input_tokens":2,"output_tokens":1}}\n'
+        yield b"data: [DONE]\n"
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _IterResp(lines()))
+    resp = d.chat_stream(
+        [{"role": "user", "content": "hi"}],
+        on_delta=lambda _t: None,
+    )
+    assert resp.error
+    assert "terminal" in resp.error.lower()
+    assert resp.text == "partial answer"
+    assert resp.meta["finish_reason"] != "completed"
+    assert resp.meta.get("stream_started") is True
+    assert resp.meta.get("stream_terminal")
+    assert resp.meta.get("last_provider_event")
+
+
+def test_muse_incomplete_max_output_tokens_does_not_continue(monkeypatch):
+    """Production-shaped Muse cap: one incomplete stream, no second POST."""
+    d = _muse_responses_driver()
+    posts = {"n": 0}
+    item = {
+        "type": "message",
+        "id": "msg_cap",
+        "phase": "final_answer",
+        "content": [{"type": "output_text", "text": "partial muse answer"}],
+    }
+    terminal = {
+        "type": "response.incomplete",
+        "response": {
+            "status": "incomplete",
+            "incomplete_details": {"reason": "max_output_tokens"},
+            "usage": {
+                "input_tokens": 40,
+                "output_tokens": 12,
+                "cost": 0.02,
+            },
+            "model": "muse-spark-1.2-contributor",
+        },
+    }
+
+    def lines():
+        yield f'data: {json.dumps({"type":"response.output_item.done","item":item})}\n'.encode()
+        yield f'data: {json.dumps(terminal)}\n'.encode()
+
+    def fake_urlopen(*_a, **_k):
+        posts["n"] += 1
+        return _IterResp(lines())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    resp = d.chat_stream(
+        [{"role": "user", "content": "write a long essay"}],
+        on_delta=lambda _t: None,
+    )
+    assert posts["n"] == 1
+    assert resp.error
+    assert "incomplete" in (resp.error or "").lower()
+    assert resp.text == "partial muse answer"
+    assert resp.meta["finish_reason"] == "incomplete"
+    assert resp.meta["incomplete_reason"] == "max_output_tokens"
+    assert resp.meta.get("stream_started") is True
+    assert resp.meta.get("stream_terminal")
+    assert resp.meta.get("last_provider_event") == "response.incomplete"
+    assert resp.tokens_in == 40
+    assert resp.tokens_out == 12
+    assert resp.meta.get("incomplete_retries") == 0

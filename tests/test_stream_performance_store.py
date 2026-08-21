@@ -384,6 +384,7 @@ def test_send_records_one_receipt_per_provider_call(monkeypatch, tmp_path):
                 text='{"say": "hi", "actions": []}',
                 tokens_out=2,
                 latency_ms=1.0,
+                meta={"finish_reason": "stop"},
             )
 
         def complete(self, prompt, system=None):
@@ -444,6 +445,7 @@ def test_overflow_failed_and_retry_are_separate_attempts(monkeypatch, tmp_path):
                 text='{"say": "recovered", "actions": []}',
                 tokens_out=2,
                 latency_ms=2.0,
+                meta={"finish_reason": "stop"},
             )
 
         def complete(self, prompt, system=None):
@@ -543,6 +545,7 @@ def test_sink_failure_does_not_change_send_hot_path(monkeypatch, tmp_path):
                 text='{"say": "still works", "actions": []}',
                 tokens_out=2,
                 latency_ms=1.0,
+                meta={"finish_reason": "stop"},
             )
 
         def complete(self, prompt, system=None):
@@ -567,6 +570,7 @@ def test_receipts_never_enter_history_display_or_transcript(monkeypatch, tmp_pat
                 text='{"say": "visible", "actions": []}',
                 tokens_out=2,
                 latency_ms=1.0,
+                meta={"finish_reason": "stop"},
             )
 
         def complete(self, prompt, system=None):
@@ -619,6 +623,7 @@ def test_malformed_tokens_out_records_one_receipt_and_hot_path_survives(monkeypa
                 text='{"say": "still honest", "actions": []}',
                 tokens_out="nope",
                 latency_ms=1.0,
+                meta={"finish_reason": "stop"},
             )
 
         def complete(self, prompt, system=None):
@@ -648,7 +653,10 @@ def test_account_provider_attempt_records_before_meter_raise(tmp_path, monkeypat
         text="ok",
         tokens_out="nope",
         latency_ms=1.0,
-        meta={STREAM_PERFORMANCE_KEY: {PROVIDER_CALL_TOTAL_MS: 9.0}},
+        meta={
+            STREAM_PERFORMANCE_KEY: {PROVIDER_CALL_TOTAL_MS: 9.0},
+            "finish_reason": "stop",
+        },
     )
     session = SimpleNamespace(
         harness_session_id="sess-order",
@@ -827,6 +835,7 @@ def test_stream_success_records_one_receipt(monkeypatch, tmp_path):
                 text='{"say": "streamed hi", "actions": []}',
                 tokens_out=4,
                 latency_ms=2.0,
+                meta={"finish_reason": "stop", "stream_started": True, "stream_terminal": "stop"},
             )
 
         def complete(self, prompt, system=None):
@@ -855,6 +864,7 @@ def test_complete_success_records_one_receipt(monkeypatch, tmp_path):
                 text='{"say": "from complete", "actions": []}',
                 tokens_out=2,
                 latency_ms=1.0,
+                meta={"finish_reason": "stop"},
             )
 
     session = _send_session(tmp_path, monkeypatch, CompleteOnly(), sid="sess-complete-ok")
@@ -880,6 +890,7 @@ def test_receipt_turn_index_and_user_ordinal(monkeypatch, tmp_path):
                 text='{"say": "turn", "actions": []}',
                 tokens_out=2,
                 latency_ms=1.0,
+                meta={"finish_reason": "stop"},
             )
 
         def complete(self, prompt, system=None):
@@ -921,6 +932,7 @@ def test_missing_session_id_skips_receipt_write(monkeypatch, tmp_path):
                 text='{"say": "ok", "actions": []}',
                 tokens_out=2,
                 latency_ms=1.0,
+                meta={"finish_reason": "stop"},
             )
 
         def complete(self, prompt, system=None):
@@ -1355,3 +1367,169 @@ def test_api_workspace_cross_session_denied(tmp_path):
     code, payload = get_session_performance({"session_id": ["sess-b"]}, current)
     assert code == 200
     assert payload["count"] == 1
+
+
+def test_receipt_schema_v2_fields_persist_and_old_v1_reads(tmp_path):
+    from harness.send_loop_phases import record_provider_stream_receipt
+    from harness.stream_performance_store import RECEIPT_SCHEMA_VERSION_V1
+
+    meta = {
+        STREAM_PERFORMANCE_KEY: {PROVIDER_CALL_TOTAL_MS: 9.0},
+        "finish_reason": "stop",
+        "stream_terminal": "stop",
+        "stream_started": True,
+        "incomplete_reason": "",
+        "api_mode": "chat_completions",
+        "malformed_sse_chunks": 2,
+        "max_tokens": 1500,
+        "requested_model": "gpt-test",
+        "served_model": "gpt-test",
+    }
+    resp = DriverResponse(
+        text="ok", tokens_in=14, tokens_out=3, latency_ms=1.0, meta=meta,
+    )
+    session = SimpleNamespace(
+        harness_session_id="sess-v2",
+        state_dir=str(tmp_path),
+        config=SimpleNamespace(driver="openai/gpt-test"),
+        _current_user_ordinal=lambda: 0,
+        pilot=SimpleNamespace(max_tokens=1500),
+    )
+    record_provider_stream_receipt(session, resp, provider_step=3, provider_attempt=1)
+    rows = StreamPerformanceReceiptStore(str(tmp_path)).list_receipts("sess-v2")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["schema_version"] == RECEIPT_SCHEMA_VERSION
+    assert row["terminal_cause"] == "natural"
+    assert row["finish_reason"] == "stop"
+    assert row["stream_terminal"] == "stop"
+    assert row["stream_started"] is True
+    assert row["malformed_chunk_count"] == 2
+    assert row["requested_output_cap"] == 1500
+    assert row["api_mode"] == "chat_completions"
+    assert row["provider_step"] == 3
+    assert row["provider_attempt"] == 1
+    assert row["requested_model"] == "gpt-test"
+    assert row["served_model"] == "gpt-test"
+    assert row["assistant_done_emitted"] is False
+
+    StreamPerformanceReceiptStore(str(tmp_path)).patch_latest_receipt(
+        "sess-v2", assistant_done_emitted=True, terminal_cause="natural",
+    )
+    patched = StreamPerformanceReceiptStore(str(tmp_path)).list_receipts("sess-v2")[0]
+    assert patched["assistant_done_emitted"] is True
+
+    old_path = Path(receipt_file_path(str(tmp_path), "sess-old"))
+    old_path.parent.mkdir(parents=True, exist_ok=True)
+    old_path.write_text(json.dumps({
+        "schema_version": RECEIPT_SCHEMA_VERSION_V1,
+        "session_id": "sess-old",
+        "receipts": [{
+            "schema_version": RECEIPT_SCHEMA_VERSION_V1,
+            "session_id": "sess-old",
+            "turn_index": 1,
+            "provider_step": 4,
+            "provider_attempt": 0,
+            "driver": "openai/gpt-test",
+            "model": "gpt-test",
+            "status": "success",
+            "captured_at": 1000.0,
+            "stream_performance": {"content_delta_count": 1},
+        }],
+    }), encoding="utf-8")
+    old_rows = StreamPerformanceReceiptStore(str(tmp_path)).list_receipts("sess-old")
+    assert len(old_rows) == 1
+    assert old_rows[0]["session_id"] == "sess-old"
+    assert old_rows[0]["provider_step"] == 4
+    assert old_rows[0]["status"] == "success"
+    assert old_rows[0]["stream_performance"]["content_delta_count"] == 1
+    assert "terminal_cause" not in old_rows[0] or old_rows[0].get("terminal_cause") in (
+        None, "",
+    )
+
+
+def test_usage_percent_does_not_become_receipt_terminal_cause(tmp_path):
+    from harness.send_loop_phases import record_provider_stream_receipt
+
+    resp = DriverResponse(
+        text="ok",
+        tokens_in=14000,
+        tokens_out=20,
+        latency_ms=1.0,
+        meta={
+            STREAM_PERFORMANCE_KEY: {PROVIDER_CALL_TOTAL_MS: 4.0},
+            "finish_reason": "stop",
+            "raw_usage": {"prompt_tokens": 14000, "completion_tokens": 20},
+            "context_used_pct": 14,
+        },
+    )
+    session = SimpleNamespace(
+        harness_session_id="sess-ctx",
+        state_dir=str(tmp_path),
+        config=SimpleNamespace(driver="openai/gpt-test"),
+        _current_user_ordinal=lambda: 0,
+    )
+    record_provider_stream_receipt(session, resp, provider_step=0, provider_attempt=0)
+    row = StreamPerformanceReceiptStore(str(tmp_path)).list_receipts("sess-ctx")[0]
+    assert row["terminal_cause"] == "natural"
+    assert row["finish_reason"] == "stop"
+    assert row["tokens_in"] == 14000
+
+
+def test_receipt_status_follows_terminal_cause_not_only_error(tmp_path):
+    from harness.send_loop_phases import (
+        classify_provider_receipt_status,
+        record_provider_stream_receipt,
+    )
+
+    length = DriverResponse(
+        text="cut",
+        tokens_out=4,
+        latency_ms=1.0,
+        meta={"finish_reason": "length", "stream_terminal": "length"},
+    )
+    assert classify_provider_receipt_status(length) == "error"
+    session = SimpleNamespace(
+        harness_session_id="sess-status",
+        state_dir=str(tmp_path),
+        config=SimpleNamespace(driver="openai/gpt-test"),
+        _current_user_ordinal=lambda: 0,
+    )
+    record_provider_stream_receipt(session, length, provider_step=0, provider_attempt=0)
+    row = StreamPerformanceReceiptStore(str(tmp_path)).list_receipts("sess-status")[0]
+    assert row["status"] == "error"
+    assert row["terminal_cause"] == "length"
+    assert row["finish_reason"] == "length"
+
+    truncated = DriverResponse(
+        text="",
+        tokens_out=2,
+        latency_ms=1.0,
+        meta={
+            "finish_reason": "tool_calls",
+            "stream_terminal": "tool_calls",
+            "tool_calls": [],
+            "incomplete_tool_calls": [{
+                "id": "c1",
+                "function": {"name": "read_file", "arguments": '{"path":'},
+            }],
+        },
+    )
+    assert classify_provider_receipt_status(truncated) == "error"
+    record_provider_stream_receipt(
+        SimpleNamespace(
+            harness_session_id="sess-trunc",
+            state_dir=str(tmp_path),
+            config=SimpleNamespace(driver="openai/gpt-test"),
+            _current_user_ordinal=lambda: 0,
+        ),
+        truncated,
+        provider_step=0,
+        provider_attempt=0,
+    )
+    trunc_row = StreamPerformanceReceiptStore(str(tmp_path)).list_receipts("sess-trunc")[0]
+    assert trunc_row["status"] == "error"
+    assert trunc_row["terminal_cause"] == "incomplete"
+
+    unspecified = DriverResponse(text="sync only", tokens_out=1, latency_ms=1.0, meta={})
+    assert classify_provider_receipt_status(unspecified) == "error"

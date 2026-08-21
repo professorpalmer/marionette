@@ -357,6 +357,63 @@ const BUCKET_ORDER: ExplorationBucket[] = [
   "other",
 ];
 
+/** Read / search / wiki / fetch cards may collapse into one activity shelf. */
+export function isExplorationShelfKind(kind: string): boolean {
+  const b = explorationBucket(kind);
+  return b === "files" || b === "searches" || b === "wiki" || b === "fetches";
+}
+
+export type ExplorationShelfRow<T> =
+  | { kind: "item"; item: T; index: number }
+  | { kind: "shelf"; items: T[]; indexes: number[] };
+
+/**
+ * Collapse consecutive exploration tool cards into one shelf. Commands and
+ * edits stay individual so a Run/Write never hides inside a Read group.
+ */
+/** First card id — appending more exploration cards must not remount the shelf. */
+export function explorationShelfAnchorId(
+  cardIds: Array<string | undefined | null>,
+): string {
+  for (const id of cardIds) {
+    const text = String(id || "").trim();
+    if (text) return `expl-shelf-${text}`;
+  }
+  return "expl-shelf";
+}
+
+export function partitionExplorationShelf<T>(
+  items: T[],
+  cardKind: (item: T) => string | null,
+): ExplorationShelfRow<T>[] {
+  const out: ExplorationShelfRow<T>[] = [];
+  let i = 0;
+  while (i < items.length) {
+    const kind = cardKind(items[i]);
+    if (kind && isExplorationShelfKind(kind)) {
+      const start = i;
+      const group: T[] = [];
+      const indexes: number[] = [];
+      while (i < items.length) {
+        const nextKind = cardKind(items[i]);
+        if (!nextKind || !isExplorationShelfKind(nextKind)) break;
+        group.push(items[i]);
+        indexes.push(i);
+        i += 1;
+      }
+      if (group.length >= 2) {
+        out.push({ kind: "shelf", items: group, indexes });
+      } else {
+        out.push({ kind: "item", item: group[0], index: start });
+      }
+      continue;
+    }
+    out.push({ kind: "item", item: items[i], index: i });
+    i += 1;
+  }
+  return out;
+}
+
 /** Aggregate card kinds into "3 files, 1 search" (Cursor explored summary). */
 export function aggregateExplorationSummary(kinds: string[]): string {
   const counts: Partial<Record<ExplorationBucket, number>> = {};

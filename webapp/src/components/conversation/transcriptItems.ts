@@ -426,6 +426,17 @@ export function transcriptResponseToItems(res: {
           status,
           ...(typeof m.error === "string" && m.error ? { error: m.error } : {}),
         }];
+      } else if (m.type === "turn_terminal") {
+        const text = String(m.text || "").trim();
+        if (!text) return [];
+        const id = String(m.id || "").trim();
+        return [{
+          kind: "turn_terminal" as const,
+          id: id || `turn-term-${String(m.cause || "unspecified")}-${String(m.state || "settled_incomplete")}-${text.length}`,
+          cause: String(m.cause || "unspecified"),
+          state: String(m.state || "settled_incomplete"),
+          text,
+        }];
       } else {
         const rawText = m.text || "";
         const role = m.role as "user" | "assistant";
@@ -634,11 +645,25 @@ function insertIndexForRemoteCard(
  * path, remote swarm_result / swarm_pending rows still reconcile by stable
  * identity (latest-explicit reuse merge + terminal pending merge).
  */
+/** Keep this session's terminal chip when disk/API hydrate omits client-only rows. */
+export function mergeLocalTurnTerminals(remote: Item[], local: Item[]): Item[] {
+  const remoteHas = remote.some((it) => it.kind === "turn_terminal");
+  if (remoteHas) return remote;
+  const localTerms = local.filter(
+    (it): it is Extract<Item, { kind: "turn_terminal" }> => it.kind === "turn_terminal",
+  );
+  if (localTerms.length === 0) return remote;
+  return [...remote, ...localTerms];
+}
+
 export function mergeTranscriptItems(local: Item[], remote: Item[]): Item[] {
   if (!shouldPreferLocalTranscript(local, remote)) {
     // Equal card counts take remote, but never drop a still-pending approval
     // the SSE stream already painted (ring_miss / cursor_gap hydrate).
-    return dedupeDisplayItems(appendMissingPendingApprovals(remote, local));
+    return dedupeDisplayItems(appendMissingPendingApprovals(
+      mergeLocalTurnTerminals(remote, local),
+      local,
+    ));
   }
   const remoteByCardId = new Map<string, Extract<Item, { kind: "card" }>>();
   for (const it of remote) {
@@ -823,6 +848,8 @@ export function transcriptFingerprint(items: Item[]): string {
       fp += `|t:${(it.text || "").length}:${(it as { streaming?: boolean }).streaming ? 1 : 0}`;
     } else if (it.kind === "tool_prep") {
       fp += `|p:${String((it as { name?: string }).name || "")}`;
+    } else if (it.kind === "turn_terminal") {
+      fp += `|tt:${it.id || ""}:${it.cause}:${it.state}:${(it.text || "").length}`;
     } else {
       fp += `|o:${it.kind}`;
     }

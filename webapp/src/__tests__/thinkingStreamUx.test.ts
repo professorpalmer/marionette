@@ -1372,7 +1372,7 @@ describe("createApplyStreamEvent waitHint lifecycle", () => {
   it("clears waitHint on terminal assistant_done with no live jobs", () => {
     const { state, apply } = makeWaitHintDeps();
     apply({ kind: "notice", data: { kind: "wait", message: "Provider still working — stream idle" } });
-    apply({ kind: "assistant_done", data: {} });
+    apply({ kind: "assistant_done", data: { stop_cause: "natural" } });
     expect(state.waitHint).toBeNull();
   });
 
@@ -1389,7 +1389,7 @@ describe("createApplyStreamEvent waitHint lifecycle", () => {
     deps.setStatus = ((value: any) => {
       hintState.status = typeof value === "function" ? value(hintState.status) : value;
     }) as typeof deps.setStatus;
-    createApplyStreamEvent(deps)({ kind: "assistant_done", data: {} });
+    createApplyStreamEvent(deps)({ kind: "assistant_done", data: { stop_cause: "natural" } });
     expect(hintState.waitHint).toBe("Still working…");
     expect(hintState.status).toBe("awaiting_swarm");
   });

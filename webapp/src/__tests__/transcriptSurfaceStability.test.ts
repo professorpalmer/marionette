@@ -259,10 +259,9 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
     ];
 
     const whileOpen = collectIntermediateAssistantItems(items, true);
-    // While open, fold mid-turn narration once investigation activity exists
-    // (avoids outside-stream → absorb blink). Pre-tool sealed text folds too.
-    expect(whileOpen.has(preTool)).toBe(true);
-    expect(whileOpen.has(postTool)).toBe(true);
+    // Live answer stays a top-level Bubble (no absorb → peel remount).
+    expect(whileOpen.has(preTool)).toBe(false);
+    expect(whileOpen.has(postTool)).toBe(false);
 
     const whenDone = collectIntermediateAssistantItems(items, false);
     expect(whenDone.has(preTool)).toBe(false);
@@ -430,8 +429,8 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
     // absorbing it shrinks the render window and makes Explored/swarm-done
     // rows vanish when the loop seals and finales peel back out.
     expect(whileOpen.has(priorFinale)).toBe(false);
-    // Current-turn streaming narration still folds (blink-free).
-    expect(whileOpen.has(liveStream)).toBe(true);
+    // Tool-free live answer stays outside the collapsed ActivityGroup.
+    expect(whileOpen.has(liveStream)).toBe(false);
 
     const whenDone = collectIntermediateAssistantItems(items, false);
     expect(whenDone.has(priorFinale)).toBe(false);
@@ -469,7 +468,7 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
       worker,
     ];
     const absorbed = collectIntermediateAssistantItems(items, true);
-    expect(absorbed.has(narration)).toBe(true);
+    expect(absorbed.has(narration)).toBe(false);
     // Absorbed into the fold; ActivityGroup renders via Bubble, not muted <pre>.
     expect(absorbed.has(worker)).toBe(true);
   });
@@ -968,7 +967,7 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
     state.itemsRef.current = state.items;
     const apply = createApplyStreamEvent(makeApplyDeps(state));
 
-    apply({ kind: "assistant_done", data: {} });
+    apply({ kind: "assistant_done", data: { stop_cause: "natural" } });
     expect(surfaceKinds(state.items)).toEqual(["msg:user", "msg:assistant"]);
     expect(assistantTexts(state.items)).toEqual(["almost done"]);
   });

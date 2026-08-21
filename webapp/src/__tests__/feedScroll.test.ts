@@ -141,6 +141,32 @@ describe("scrollTopAfterFeedHeightChange", () => {
     ).toBeNull();
   });
 
+  it("does not follow fold or tool-shelf expansion while unpinned", () => {
+    expect(
+      scrollTopAfterFeedHeightChange({
+        scrollHeight: 2400,
+        scrollTop: 200,
+        clientHeight: client,
+        pinned: false,
+        settling: false,
+        releasedByGesture: false,
+      }),
+    ).toBeNull();
+    expect(
+      feedResizeScrollFollowDecision({
+        scrollHeight: 2400,
+        scrollTop: 200,
+        clientHeight: client,
+        offsetHeight: client,
+        snapshotPinned: false,
+        snapshotSettling: false,
+        snapshotScrollTop: 200,
+        snapshotScrollHeight: 2000,
+        releasedByGesture: false,
+      }),
+    ).toEqual({ kind: "noop" });
+  });
+
   it("follows during settling when the user has not released", () => {
     expect(
       scrollTopAfterFeedHeightChange({

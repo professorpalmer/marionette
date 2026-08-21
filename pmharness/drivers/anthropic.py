@@ -136,6 +136,7 @@ def _anthropic_cache_meta(usage_fields: dict) -> dict:
 
 class AnthropicDriver:
     supports_streaming = True
+    requires_explicit_terminal = True
 
     def __init__(self, name: str, model: str, *,
                  base_url: str = "https://api.anthropic.com/v1",

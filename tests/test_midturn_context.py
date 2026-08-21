@@ -17,7 +17,7 @@ class MockDriverResponse:
         self.error = error
         self.tokens_out = tokens_out
         self.tokens_in = tokens_in
-        self.meta = {}
+        self.meta = {} if error else {"finish_reason": "stop"}
 
 
 class MockPilotWithOverflow:

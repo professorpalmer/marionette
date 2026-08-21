@@ -29,7 +29,7 @@ import {
   appendPendingReview,
   appendQualityGate,
   appendQueuedPromptUserBubble,
-  appendStreamError,
+  appendTurnTerminal,
   appendSwarmPending,
   appendVerification,
   appendVerifying,
@@ -59,6 +59,15 @@ import { turnHasLiveInvestigation } from "../../lib/turnProgress";
 import { notifyWorkspaceMutated } from "../../lib/workspaceMutationEvents";
 import { shouldRefreshBusyChrome } from "./streamTerminal";
 import { waitHintForAssistantDone } from "./swarmPoll";
+import {
+  hasPartialAssistantAnswer,
+  settleFromAssistantDone,
+  settleFromAutoHalt,
+  settleFromFramingDone,
+  settleFromInterrupted,
+  settleFromStreamError,
+  type TurnSettle,
+} from "../../lib/turnTerminal";
 
 export type StreamEvent = { kind: string; data?: any; turn?: number; cursor?: number };
 
@@ -102,6 +111,8 @@ export type ApplyStreamEventDeps = {
   handleSwarmResult: (d: any) => void;
   refreshQueue: () => void;
   fetchContextUsage: () => void;
+  /** Optional Wave 3 lifecycle hook — tests may omit it. */
+  recordTurnSettle?: (settle: TurnSettle) => void;
 };
 
 export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
@@ -132,6 +143,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
     handleSwarmResult,
     refreshQueue,
     fetchContextUsage,
+    recordTurnSettle,
   } = deps;
 
   const clearWaitHintOnProgress = () => setWaitHint(null);
@@ -140,6 +152,26 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       turnSettled: turnSettledRef.current,
       userStopped: userStoppedRef?.current,
     });
+  const paintTurnSettle = (settle: TurnSettle, awaitHint?: string | null) => {
+    turnSettledRef.current = true;
+    setTurnOpen(settle.turnOpen);
+    if (settle.lifecycle === "awaiting_swarm") {
+      setStatus("awaiting_swarm");
+      setWaitHint(awaitHint || "Still working…");
+    } else {
+      setStatus(settle.status);
+      setWaitHint(null);
+    }
+    recordTurnSettle?.(settle);
+  };
+  const withTerminalChip = (items: Item[], settle: TurnSettle): Item[] => {
+    if (!settle.explanation) return items;
+    return appendTurnTerminal(items, {
+      cause: settle.cause,
+      state: settle.lifecycle,
+      text: settle.explanation,
+    });
+  };
 
   return (ev: StreamEvent) => {
     const d = ev.data || {};
@@ -525,11 +557,9 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
         setSafeTimeout(() => setDistillNotice((cur) => (cur === notice ? null : cur)), 8000);
       }
     } else if (ev.kind === "auto_halt") {
-      turnSettledRef.current = true;
-      setTurnOpen(false);
-      setWaitHint(null);
-      setStatus("done");
-      setItems((p) => appendAutoHalt(p, d.reason || "", d.snapshot));
+      const settle = settleFromAutoHalt(d.reason);
+      paintTurnSettle(settle);
+      setItems((p) => withTerminalChip(appendAutoHalt(p, d.reason || "", d.snapshot), settle));
     } else if (ev.kind === "swarm_pending") {
       const job_ids = d.job_ids || [];
       // Set-union — replayed swarm_pending must not grow the tracker forever.
@@ -565,8 +595,6 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       }
       refreshQueue();
     } else if (ev.kind === "assistant_done") {
-      turnSettledRef.current = true;
-      setTurnOpen(false);
       // Sync local-swarm-* ids finish inside the turn; anything still spinning
       // for those is an orphan. Background job_*/local-* stay live so their
       // pills keep spinning until swarm_result arrives.
@@ -574,29 +602,29 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
         (id) => !id.startsWith("local-swarm-"),
       );
       setPendingJobIds(liveIds);
-      // Cursor-style pause: summary may already be on screen, but hold busy
-      // chrome ("Still working…") while background workers fly. Keep-alive
-      // resume clears this when the next model turn starts.
       const awaitHint = waitHintForAssistantDone(liveIds);
-      if (awaitHint) {
-        setStatus("awaiting_swarm");
-        setWaitHint(awaitHint);
-      } else {
-        setWaitHint(null);
-        setStatus("done");
-      }
+      const settle = settleFromAssistantDone({
+        stopCause: d.stop_cause,
+        finishReason: d.finish_reason,
+        incompleteReason: d.incomplete_reason,
+        liveJobs: Boolean(awaitHint),
+      });
+      paintTurnSettle(settle, awaitHint);
       // Drain + seal any remaining live surfaces so a turn cannot close with an
       // open typewriter / streaming bubble still painted as in-flight.
       flushTypewriter();
       setItems((p) =>
-        reconcileOrphanInvestigationCards(
-          finalizeOrphanSwarmPills(
-            // Cursor CLI often paints the finale before buffered tool_call
-            // events; hoist late cards/thinking under that readout into the fold.
-            hoistCardsBeforeTrailingFinals(sealOpenStreamSurfaces(p)),
+        withTerminalChip(
+          reconcileOrphanInvestigationCards(
+            finalizeOrphanSwarmPills(
+              // Cursor CLI often paints the finale before buffered tool_call
+              // events; hoist late cards/thinking under that readout into the fold.
+              hoistCardsBeforeTrailingFinals(sealOpenStreamSurfaces(p)),
+              liveIds,
+            ),
             liveIds,
           ),
-          liveIds,
+          settle,
         ),
       );
       fetchContextUsage();
@@ -607,73 +635,72 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       // optimistic first-send rename missed or the server derived a different slug.
       window.dispatchEvent(new Event("harness-config-changed"));
     } else if (ev.kind === "error") {
-      turnSettledRef.current = true;
-      setTurnOpen(false);
+      const settle = settleFromStreamError(d.error, d.terminal_cause);
+      paintTurnSettle(settle);
       setCompactingStatus(null);
-      setWaitHint(null);
-      setStatus("error");
       const liveIds = pendingJobIdsRef.current.filter(
         (id) => !id.startsWith("local-swarm-"),
       );
       setPendingJobIds(liveIds);
       setItems((p) =>
-        reconcileOrphanInvestigationCards(
-          finalizeOrphanSwarmPills(
-            hoistCardsBeforeTrailingFinals(appendStreamError(p, d.error || "")),
+        withTerminalChip(
+          reconcileOrphanInvestigationCards(
+            finalizeOrphanSwarmPills(
+              hoistCardsBeforeTrailingFinals(sealOpenStreamSurfaces(p)),
+              liveIds,
+            ),
             liveIds,
           ),
-          liveIds,
+          settle,
         ),
       );
     } else if (ev.kind === "interrupted") {
       // Harness cancel/steer interrupt — settle like Stop (no false abort bubble).
-      turnSettledRef.current = true;
-      setTurnOpen(false);
+      const settle = settleFromInterrupted();
+      paintTurnSettle(settle);
       setCompactingStatus(null);
-      setWaitHint(null);
-      setStatus("idle");
       const liveIds = pendingJobIdsRef.current.filter(
         (id) => !id.startsWith("local-swarm-"),
       );
       setPendingJobIds(liveIds);
       flushTypewriter();
       setItems((p) =>
-        reconcileOrphanInvestigationCards(
-          finalizeOrphanSwarmPills(
-            hoistCardsBeforeTrailingFinals(sealOpenStreamSurfaces(p)),
+        withTerminalChip(
+          reconcileOrphanInvestigationCards(
+            finalizeOrphanSwarmPills(
+              hoistCardsBeforeTrailingFinals(sealOpenStreamSurfaces(p)),
+              liveIds,
+            ),
             liveIds,
           ),
-          liveIds,
+          settle,
         ),
       );
     } else if (ev.kind === "done") {
-      // Framing-only sentinel (live transport settles via onDone; reattach
-      // applies retained frames). Must settle turn chrome when assistant_done
-      // was dropped so isTerminalStreamKind stop is not dishonest.
+      // Framing-only sentinel: transport, never proof of a completed turn.
       if (turnSettledRef.current) return;
-      turnSettledRef.current = true;
-      setTurnOpen(false);
-      setCompactingStatus(null);
+      flushTypewriter();
       const liveIds = pendingJobIdsRef.current.filter(
         (id) => !id.startsWith("local-swarm-"),
       );
       setPendingJobIds(liveIds);
-      const awaitHint = waitHintForAssistantDone(liveIds);
-      if (awaitHint) {
-        setStatus("awaiting_swarm");
-        setWaitHint(awaitHint);
-      } else {
-        setWaitHint(null);
-        setStatus("done");
-      }
-      flushTypewriter();
+      const settle = settleFromFramingDone({
+        turnSettled: false,
+        hasPartialAnswer: hasPartialAssistantAnswer(itemsRef.current),
+      });
+      if (settle.kind === "already_settled") return;
+      paintTurnSettle(settle);
+      setCompactingStatus(null);
       setItems((p) =>
-        reconcileOrphanInvestigationCards(
-          finalizeOrphanSwarmPills(
-            hoistCardsBeforeTrailingFinals(sealOpenStreamSurfaces(p)),
+        withTerminalChip(
+          reconcileOrphanInvestigationCards(
+            finalizeOrphanSwarmPills(
+              hoistCardsBeforeTrailingFinals(sealOpenStreamSurfaces(p)),
+              liveIds,
+            ),
             liveIds,
           ),
-          liveIds,
+          settle,
         ),
       );
     }

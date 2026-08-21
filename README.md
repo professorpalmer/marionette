@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.15` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.267, deliberately pre-1.0. Rides puppetmaster-ai==1.22.15. Strict agentic model pins now carry through implement and parallel work without silently falling back to another adapter, with truthful provider/model receipts and fail-closed routing.
+> Status: v0.9.268, deliberately pre-1.0. Rides puppetmaster-ai==1.22.15. Provider streams now preserve partial output and report authoritative terminal causes end to end, while incomplete turns expose isolated Continue/Retry recovery and stable activity grouping instead of silently stopping.
 
 ## Documentation
 

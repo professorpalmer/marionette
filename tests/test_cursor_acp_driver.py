@@ -13,6 +13,7 @@ from pmharness.drivers.cursor_acp import (
     AcpTransport,
     CursorAcpDriver,
     WarmAcpSession,
+    _cursor_acp_terminal_fields,
     _extract_tool_event,
     _extract_tool_hint,
     _extract_update_text,
@@ -77,6 +78,8 @@ class _FakeProc:
         self.set_mode_calls: list[str] = []
         # When set, session/set_mode replies with this JSON-RPC error payload.
         self.set_mode_error: Optional[dict] = None
+        # session/prompt result. None omits stopReason (protocol close only).
+        self.stop_reason: Optional[str] = "end_turn"
         self._agent.start()
 
     def poll(self) -> Optional[int]:
@@ -144,13 +147,12 @@ class _FakeProc:
                         },
                     },
                 )
-                self._reply(
-                    mid,
-                    {
-                        "stopReason": "end_turn",
-                        "usage": {"inputTokens": 120, "outputTokens": 8},
-                    },
-                )
+                result = {
+                    "usage": {"inputTokens": 120, "outputTokens": 8},
+                }
+                if self.stop_reason is not None:
+                    result["stopReason"] = self.stop_reason
+                self._reply(mid, result)
             elif method == "initialized":
                 continue
             elif mid is not None:
@@ -362,14 +364,23 @@ def test_driver_uses_acp_when_session_works(monkeypatch):
         on_delta=deltas.append,
     )
     assert resp.text == "pong-ok"
+    assert resp.error is None
     assert resp.meta.get("cursor_acp") is True
     assert resp.meta.get("billing") == "plan"
     assert resp.meta.get("requested_model") == "auto"
     assert resp.meta.get("identity_status") == "auto"
     assert resp.meta.get("tool_calls") == []
+    assert resp.meta.get("finish_reason") == "completed"
+    assert resp.meta.get("stream_terminal") == "stop"
+    assert resp.meta.get("stream_started") is True
+    assert resp.meta.get("api_mode") == "cursor_acp"
+    assert resp.meta.get("wire_mode") == "cursor_acp"
+    assert resp.meta.get("last_provider_event") == "session/prompt"
+    assert resp.meta.get("stop_reason") == "end_turn"
     assert resp.tokens_in == 120
     assert resp.tokens_out == 8
     assert deltas == ["pong", "-ok"]
+    assert drv.requires_explicit_terminal is True
     drv.close()
 
 
@@ -699,3 +710,218 @@ def test_acp_live_set_mode_failure_invalidates_session(monkeypatch):
     assert session.session_id is None
     assert session.transport is None
     assert fallback.mode == "ask"
+
+
+def _acp_driver(monkeypatch, *, stop_reason="end_turn"):
+    """Production-shaped warm ACP driver with a mocked stdio agent."""
+    proc = _FakeProc()
+    proc.stop_reason = stop_reason
+    transport = AcpTransport(proc)
+    session = WarmAcpSession(
+        model="auto",
+        cwd="C:\\ws",
+        transport_factory=lambda: transport,
+    )
+
+    class NoFallback:
+        def _run_stream(self, *a, **k):
+            raise AssertionError("must not fall back")
+
+    monkeypatch.setenv("HARNESS_CURSOR_ACP", "1")
+    drv = CursorAcpDriver(
+        name="cursor-cli:auto",
+        model="auto",
+        session=session,
+        fallback=NoFallback(),  # type: ignore[arg-type]
+    )
+    return drv
+
+
+@pytest.mark.parametrize(
+    "stop, finish, terminal, has_error",
+    [
+        ("end_turn", "completed", "stop", False),
+        ("end-turn", "completed", "stop", False),
+        ("stop", "completed", "stop", False),
+        ("completed", "completed", "stop", False),
+        ("", "completed", "stop", False),
+        (None, "completed", "stop", False),
+        ("max_tokens", "length", "length", True),
+        ("max-tokens", "length", "length", True),
+        ("length", "length", "length", True),
+        ("max_turn_requests", "incomplete", "incomplete", True),
+        ("incomplete", "incomplete", "incomplete", True),
+        ("refusal", "content_filter", "content_filter", True),
+        ("content_filter", "content_filter", "content_filter", True),
+        ("cancelled", "cancelled", "cancelled", True),
+        ("canceled", "cancelled", "cancelled", True),
+        ("error", "failed", "error", True),
+        ("failed", "failed", "error", True),
+        ("mystery_code", "mystery_code", "incomplete", True),
+    ],
+)
+def test_cursor_acp_terminal_fields_map_stop_reasons(stop, finish, terminal, has_error):
+    meta, err = _cursor_acp_terminal_fields(stop, stream_started=True)
+    assert meta["finish_reason"] == finish
+    assert meta["stream_terminal"] == terminal
+    assert meta["stream_started"] is True
+    assert meta["api_mode"] == "cursor_acp"
+    assert meta["wire_mode"] == "cursor_acp"
+    assert meta["last_provider_event"] == "session/prompt"
+    if has_error:
+        assert err
+        assert meta["finish_reason"] not in ("completed", "stop")
+        assert meta["stream_terminal"] != "stop"
+    else:
+        assert err is None
+        assert meta["finish_reason"] == "completed"
+        assert meta["stream_terminal"] == "stop"
+
+
+def test_cursor_acp_terminal_fields_reads_result_stop_reason():
+    meta, err = _cursor_acp_terminal_fields(
+        None, result={"stopReason": "end_turn"}, stream_started=True,
+    )
+    assert err is None
+    assert meta["finish_reason"] == "completed"
+    assert meta["stop_reason"] == "end_turn"
+
+
+def test_cursor_acp_missing_stop_reason_stamps_completed_not_text(monkeypatch):
+    """Successful session/prompt with no stopReason uses the protocol event."""
+    drv = _acp_driver(monkeypatch, stop_reason=None)
+    resp = drv.chat([{"role": "user", "content": "who are you?"}])
+    assert resp.error is None
+    assert resp.text == "pong-ok"
+    assert resp.meta["finish_reason"] == "completed"
+    assert resp.meta["stream_terminal"] == "stop"
+    assert resp.meta["stream_started"] is True
+    assert resp.meta["api_mode"] == "cursor_acp"
+    assert resp.meta["wire_mode"] == "cursor_acp"
+    assert resp.meta["last_provider_event"] == "session/prompt"
+    assert resp.meta["tool_calls"] == []
+    drv.close()
+
+
+def test_cursor_acp_max_tokens_is_length_not_natural(monkeypatch):
+    drv = _acp_driver(monkeypatch, stop_reason="max_tokens")
+    resp = drv.chat_stream(
+        [{"role": "user", "content": "write a lot"}],
+        on_delta=lambda _t: None,
+    )
+    assert resp.error
+    assert "max_tokens" in resp.error
+    assert resp.text == "pong-ok"
+    assert resp.meta["finish_reason"] == "length"
+    assert resp.meta["stream_terminal"] == "length"
+    assert resp.meta["stop_reason"] == "max_tokens"
+    assert resp.meta["wire_mode"] == "cursor_acp"
+    assert resp.meta["tool_calls"] == []
+    drv.close()
+
+
+def test_cursor_acp_cancelled_and_error_are_not_natural(monkeypatch):
+    cancelled = _acp_driver(monkeypatch, stop_reason="cancelled")
+    c_resp = cancelled.chat([{"role": "user", "content": "hi"}])
+    assert c_resp.error
+    assert c_resp.meta["finish_reason"] == "cancelled"
+    assert c_resp.meta["stream_terminal"] == "cancelled"
+    assert c_resp.meta["finish_reason"] not in ("completed", "stop")
+    assert c_resp.meta["tool_calls"] == []
+    cancelled.close()
+
+    failed = _acp_driver(monkeypatch, stop_reason="error")
+    e_resp = failed.chat([{"role": "user", "content": "hi"}])
+    assert e_resp.error
+    assert e_resp.meta["finish_reason"] == "failed"
+    assert e_resp.meta["stream_terminal"] == "error"
+    assert e_resp.meta["stream_terminal"] != "stop"
+    assert e_resp.meta["tool_calls"] == []
+    failed.close()
+
+
+def test_cursor_acp_unrecognized_stop_reason_fails_closed(monkeypatch):
+    drv = _acp_driver(monkeypatch, stop_reason="mystery_code")
+    resp = drv.chat([{"role": "user", "content": "hi"}])
+    assert resp.error
+    assert "unrecognized" in resp.error
+    assert resp.meta["finish_reason"] == "mystery_code"
+    assert resp.meta["stream_terminal"] == "incomplete"
+    assert resp.meta["finish_reason"] not in ("completed", "stop")
+    assert resp.meta["stream_terminal"] != "stop"
+    assert resp.meta["tool_calls"] == []
+    drv.close()
+
+
+def test_cursor_acp_prose_send_emits_natural_and_records_stream_wire(
+    tmp_path, monkeypatch,
+):
+    """Successful ACP prose finalizes and receipts record streamed ACP wire."""
+    from harness.config import HarnessConfig
+    from harness.conversation import ConversationalSession
+    from harness.stream_performance_store import StreamPerformanceReceiptStore
+
+    monkeypatch.setattr(
+        "harness.send_loop.profile_skips_auto_inject",
+        lambda session: (True, True),
+    )
+    drv = _acp_driver(monkeypatch)
+    cfg = HarnessConfig(
+        driver="cursor-cli:auto",
+        state_dir=str(tmp_path),
+        repo=str(tmp_path),
+    )
+    session = ConversationalSession(cfg)
+    session.harness_session_id = "sess-acp"
+    session.pilot = drv
+    monkeypatch.setattr(session, "_resolve_append_only", lambda: False)
+    monkeypatch.setattr(session, "_get_codegraph_context", lambda msg: "")
+    monkeypatch.setattr(session, "_maybe_compact_history", lambda **k: iter(()))
+    events = list(session.send("who are you?"))
+    done = next(e for e in events if e.kind == "assistant_done")
+    assert done.data.get("stop_cause") == "natural"
+    assert done.data.get("finish_reason") == "completed"
+    assert not any(e.kind == "error" for e in events)
+    rows = StreamPerformanceReceiptStore(str(tmp_path)).list_receipts("sess-acp")
+    assert rows
+    assert rows[0]["wire_mode"] == "cursor_acp"
+    assert rows[0]["api_mode"] == "cursor_acp"
+    assert rows[0]["stream_started"] is True
+    assert rows[0]["terminal_cause"] == "natural"
+    drv.close()
+
+
+def test_cursor_acp_incomplete_send_does_not_finalize_or_run_tools(
+    tmp_path, monkeypatch,
+):
+    from harness.config import HarnessConfig
+    from harness.conversation import ConversationalSession
+
+    monkeypatch.setattr(
+        "harness.send_loop.profile_skips_auto_inject",
+        lambda session: (True, True),
+    )
+
+    def boom(*_a, **_k):
+        raise AssertionError("execute_turn_actions must not run")
+
+    monkeypatch.setattr("harness.send_loop.execute_turn_actions", boom)
+    drv = _acp_driver(monkeypatch, stop_reason="max_tokens")
+    cfg = HarnessConfig(
+        driver="cursor-cli:auto",
+        state_dir=str(tmp_path),
+        repo=str(tmp_path),
+    )
+    session = ConversationalSession(cfg)
+    session.harness_session_id = "sess-acp-len"
+    session.pilot = drv
+    monkeypatch.setattr(session, "_resolve_append_only", lambda: False)
+    monkeypatch.setattr(session, "_get_codegraph_context", lambda msg: "")
+    monkeypatch.setattr(session, "_maybe_compact_history", lambda **k: iter(()))
+    events = list(session.send("write a long essay"))
+    kinds = [e.kind for e in events]
+    assert "assistant_done" not in kinds
+    err = next(e for e in events if e.kind == "error")
+    assert err.data.get("terminal_cause") == "length"
+    assert err.data.get("finish_reason") == "length"
+    drv.close()

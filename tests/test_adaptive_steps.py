@@ -22,7 +22,12 @@ class FakePilot:
             self.current_turn += 1
         else:
             txt = '{"say": "Done.", "actions": []}'
-        return DriverResponse(text=txt, tokens_out=10, latency_ms=1.0)
+        return DriverResponse(
+            text=txt,
+            tokens_out=10,
+            latency_ms=1.0,
+            meta={"finish_reason": "stop"},
+        )
 
 
 def test_adaptive_steps_productive_runs_past_10():
@@ -83,12 +88,15 @@ def test_adaptive_steps_stalls_halts_at_threshold(monkeypatch):
         
         events = list(session.send("Let's go!"))
         
-        # The loop should halt at consecutive_non_productive >= 3, which is exactly step 3 (0-indexed 0, 1, 2)
-        # It will yield "Reached the investigation step limit for this message." and assistant_done with turns=3.
+        # Empty non-productive turns must not be labeled as the investigation step cap.
         messages = [e.data.get("text") for e in events if e.kind == "message" and e.data.get("role") == "assistant"]
-        assert any("Reached the investigation step limit for this message" in m for m in messages if m)
+        assert any("No productive reply this turn" in m for m in messages if m)
+        assert not any(
+            m and "investigation step limit" in m for m in messages
+        )
         
         done_event = next(e for e in events if e.kind == "assistant_done")
         assert done_event.data["turns"] == 3
+        assert done_event.data.get("stop_cause") == "empty_loop"
     finally:
         shutil.rmtree(temp_dir)

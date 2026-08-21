@@ -90,6 +90,19 @@ test("2xx stream end without a done frame still emits :done", () => {
   assert.equal(calls.errors.length, 0);
 });
 
+test("2xx body end after partial frames without assistant_done is one :done, not :error", () => {
+  const res = fakeResponse(200);
+  const calls = wireWithRecorder(res);
+  res.emit("data", 'data: {"kind":"message_delta","data":{"text":"The handler should "}}\n\n');
+  res.emit("data", 'data: {"kind":"stream_item_done","data":{"stream_id":"a1"}}\n\n');
+  res.emit("end");
+  assert.equal(calls.done, 1, "raw 2xx body end must settle exactly once via onDone");
+  assert.equal(calls.errors.length, 0, "2xx body end is not onError-success");
+  assert.equal(calls.events.length, 2);
+  assert.equal(calls.events[0].kind, "message_delta");
+  assert.ok(!calls.events.some((ev) => ev.kind === "assistant_done"));
+});
+
 test("2xx response error maps to a sanitized connection :error", () => {
   const res = fakeResponse(200);
   const calls = wireWithRecorder(res);

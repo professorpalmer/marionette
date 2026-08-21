@@ -171,7 +171,7 @@ def _capturing_openai_response(monkeypatch, captured):
 
 def _capturing_openai_stream(monkeypatch, captured):
     sse = (
-        'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}\n\n'
+        'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n'
         'data: {"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}\n\n'
         "data: [DONE]\n\n"
     )
@@ -680,7 +680,7 @@ def test_openai_compat_chat_stream_omits_absent_cache_and_captures_served(
 
     sse = (
         'data: {"id":"1","model":"gpt-4o-mini","choices":[{"delta":{"content":"hi"},'
-        '"finish_reason":null}]}\n\n'
+        '"finish_reason":"stop"}]}\n\n'
         'data: {"id":"1","model":"gpt-4o-mini","choices":[],'
         '"usage":{"prompt_tokens":12,"completion_tokens":1}}\n\n'
         "data: [DONE]\n\n"

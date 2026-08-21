@@ -124,7 +124,7 @@ describe("web fetch SSE stream terminal settle", () => {
       "fetch",
       vi.fn(async () =>
         sseResponse([
-          'data: {"kind":"assistant_done","data":{}}\n\n',
+          'data: {"kind":"assistant_done","data":{"stop_cause":"natural"}}\n\n',
           'data: {"kind":"done"}\n\n',
         ]),
       ),

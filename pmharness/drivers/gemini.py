@@ -17,6 +17,7 @@ from .retry import with_retry
 
 class GeminiDriver:
     supports_streaming = True
+    requires_explicit_terminal = True
 
     def __init__(self, name: str, model: str, *,
                  base_url: str = "https://generativelanguage.googleapis.com/v1beta",

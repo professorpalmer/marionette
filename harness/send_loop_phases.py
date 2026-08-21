@@ -40,6 +40,25 @@ from .stream_performance_store import (
     build_receipt,
     copy_stream_performance,
 )
+from .terminal_cause import (
+    TERMINAL_CONTENT_FILTER,
+    TERMINAL_DRIVER_SWAP,
+    TERMINAL_EMPTY_LOOP,
+    TERMINAL_INCOMPLETE,
+    TERMINAL_LENGTH,
+    TERMINAL_NATURAL,
+    TERMINAL_PROVIDER_EOF,
+    TERMINAL_STAGNATION,
+    TERMINAL_STEP_CAP,
+    TERMINAL_TRANSPORT_ERROR,
+    TERMINAL_UNSPECIFIED,
+    blocking_terminal_message,
+    canonicalize_terminal_cause,
+    classify_provider_terminal,
+    finalize_stop_cause,
+    loop_exit_message,
+    provider_tools_are_executable,
+)
 from .tool_timeout import invoke_do, run_with_tool_deadline
 from .workspace_rules_refresh import maybe_refresh_workspace_rules
 from .url_safety import sanitize_url_for_display
@@ -230,18 +249,294 @@ def finalize_assistant_turn(
     turn_prose: list,
     turn_findings: list,
     extra: Optional[dict] = None,
+    stop_cause: str = "",
+    finish_reason: str = "",
+    incomplete_reason: str = "",
 ) -> Iterator[Any]:
     """Persist a compact receipt, emit assistant_done, then housekeeping."""
     from .conversation import ConvEvent
 
     persist_turn_receipt(session, user_message)
-    payload: Dict[str, Any] = {"turns": step + 1, "swarms": swarms}
+    cause = finalize_stop_cause(None, loop_cause=stop_cause)
+    payload: Dict[str, Any] = {
+        "turns": step + 1,
+        "swarms": swarms,
+        "stop_cause": cause,
+    }
+    raw_finish = str(finish_reason or "").strip()
+    if raw_finish:
+        payload["finish_reason"] = raw_finish
+    raw_incomplete = str(incomplete_reason or "").strip()
+    if raw_incomplete:
+        payload["incomplete_reason"] = raw_incomplete
     if extra:
         payload.update(extra)
+    try:
+        session._last_stop_cause = cause
+    except Exception:
+        pass
+    mark_latest_receipt_assistant_done(
+        session,
+        stop_cause=cause,
+        finish_reason=raw_finish,
+        incomplete_reason=raw_incomplete,
+    )
     yield ConvEvent("assistant_done", payload)
     session._submit_housekeeping(
         session._maybe_ingest,
         user_message, list(turn_prose), list(turn_findings),
+    )
+
+
+def classified_finish_kwargs(classified: Any) -> Dict[str, str]:
+    """``finish_reason`` / ``incomplete_reason`` for finalize helpers."""
+    if classified is None:
+        return {"finish_reason": "", "incomplete_reason": ""}
+    try:
+        return {
+            "finish_reason": classified.finish_reason or "",
+            "incomplete_reason": classified.incomplete_reason or "",
+        }
+    except Exception:
+        return {"finish_reason": "", "incomplete_reason": ""}
+
+
+def is_structurally_complete_envelope(resp: Any) -> bool:
+    """True when the body is a native JSON envelope (``say`` / ``actions``).
+
+    Bounded compatibility seam for synthetic / native pilots that return a
+    complete JSON envelope without provider finish metadata. Production
+    network drivers set ``requires_explicit_terminal = True`` and must not
+    use this implicit-natural upgrade — they stay fail-closed until the
+    driver stamps an explicit finish / stream terminal. Do not infer the
+    flag from class names.
+    """
+    try:
+        text = getattr(resp, "text", None) or ""
+    except Exception:
+        return False
+    if not isinstance(text, str) or not text.strip():
+        return False
+    try:
+        from .pilot import _extract_json_object
+        obj = _extract_json_object(text)
+    except Exception:
+        return False
+    return isinstance(obj, dict) and (
+        "say" in obj or "actions" in obj or "thinking" in obj
+    )
+
+
+def pilot_requires_explicit_terminal(session: Any) -> bool:
+    """True when the active pilot must stamp an explicit provider terminal."""
+    try:
+        return getattr(
+            getattr(session, "pilot", None),
+            "requires_explicit_terminal",
+            False,
+        ) is True
+    except Exception:
+        return False
+
+
+_NAMED_MODEL_ERROR_CAUSES = frozenset({
+    TERMINAL_LENGTH,
+    TERMINAL_INCOMPLETE,
+    TERMINAL_CONTENT_FILTER,
+    TERMINAL_PROVIDER_EOF,
+})
+
+
+def classified_terminal_error_payload(
+    session: Any,
+    resp: Any,
+    classified: Any,
+) -> Dict[str, Any]:
+    """Structured error ConvEvent data so the frontend maps the cause exactly."""
+    raw_error = _response_error_text(resp)
+    cause = ""
+    try:
+        cause = str(getattr(classified, "cause", "") or "")
+    except Exception:
+        cause = ""
+    try:
+        if cause in _NAMED_MODEL_ERROR_CAUSES:
+            msg = blocking_terminal_message(classified)
+        else:
+            msg = session._humanize_pilot_error(
+                raw_error or blocking_terminal_message(classified)
+            )
+    except Exception:
+        msg = (
+            blocking_terminal_message(classified)
+            if classified is not None
+            else "Provider transport failed before a clean stop."
+        )
+    payload: Dict[str, Any] = {"error": msg}
+    if classified is None:
+        return payload
+    try:
+        if classified.cause:
+            payload["terminal_cause"] = classified.cause
+        if classified.finish_reason:
+            payload["finish_reason"] = classified.finish_reason
+        if classified.incomplete_reason:
+            payload["incomplete_reason"] = classified.incomplete_reason
+        if classified.stream_terminal:
+            payload["stream_terminal"] = classified.stream_terminal
+    except Exception:
+        pass
+    return payload
+
+
+def emit_classified_provider_error(session: Any, resp: Any) -> Iterator[Any]:
+    """Classify ``resp.error`` before the generic send-loop early return."""
+    from .conversation import ConvEvent
+
+    classified = classify_provider_terminal(resp)
+    try:
+        session._last_provider_terminal = classified
+    except Exception:
+        pass
+    yield ConvEvent("error", classified_terminal_error_payload(
+        session, resp, classified,
+    ))
+
+
+def _response_error_text(resp: Any) -> str:
+    try:
+        error = getattr(resp, "error", None)
+    except Exception:
+        return ""
+    if isinstance(error, bool) or error is None:
+        return ""
+    if isinstance(error, str):
+        return error.strip()
+    try:
+        return str(error).strip()
+    except Exception:
+        return ""
+
+
+def native_tools_blocked(
+    classified: Any,
+    resp: Any,
+    tool_calls: Any,
+    *,
+    is_native: bool,
+    has_actions: bool,
+) -> bool:
+    """True only for an intermediate tool close whose args cannot execute."""
+    if not is_native or not has_actions:
+        return False
+    if classified is None or not classified.is_intermediate:
+        return False
+    return not provider_tools_are_executable(resp, tool_calls=tool_calls)
+
+
+def apply_provider_terminal(session: Any, resp: Any) -> Iterator[Any]:
+    """Classify the latest provider close and yield an error when blocked.
+
+    Generator return is ``(classified, blocked)``. Intermediate tool-call
+    closes are not blocked so parsed actions can still run.
+    """
+    from .conversation import ConvEvent
+
+    classified = classify_provider_terminal(resp)
+    if (
+        classified.cause == TERMINAL_UNSPECIFIED
+        and not classified.has_provider_signal
+        and not _response_error_text(resp)
+    ):
+        if (
+            is_structurally_complete_envelope(resp)
+            and not pilot_requires_explicit_terminal(session)
+        ):
+            classified = classified._replace(
+                cause=TERMINAL_NATURAL,
+                is_affirmative_natural=True,
+                blocks_clean_finalize=False,
+            )
+        else:
+            try:
+                text = getattr(resp, "text", None) or ""
+            except Exception:
+                text = ""
+            if not str(text).strip():
+                # Empty synthetic/stream body is not a provider close.
+                try:
+                    session._last_provider_terminal = classified
+                except Exception:
+                    pass
+                return classified, False
+    try:
+        session._last_provider_terminal = classified
+    except Exception:
+        pass
+    if not classified.blocks_clean_finalize or classified.is_intermediate:
+        return classified, False
+    yield ConvEvent(
+        "error",
+        classified_terminal_error_payload(session, resp, classified),
+    )
+    return classified, True
+
+
+def emit_stagnation_halt(
+    session: Any,
+    *,
+    last_classified: Any,
+    user_message: str,
+    step: int,
+    swarms: Any,
+    turn_prose: list,
+    turn_findings: list,
+) -> Iterator[Any]:
+    """Emit the stagnation auto-halt notice and close the turn."""
+    from .conversation import ConvEvent
+
+    halt_msg = loop_exit_message(TERMINAL_STAGNATION)
+    yield ConvEvent("notice", {"message": halt_msg, "kind": "stagnation"})
+    yield ConvEvent("message", {"role": "assistant", "text": halt_msg})
+    session._display_transcript.append({
+        "type": "message", "role": "assistant", "text": halt_msg,
+    })
+    yield from finalize_assistant_turn(
+        session, user_message=user_message, step=step,
+        swarms=swarms, turn_prose=turn_prose,
+        turn_findings=turn_findings,
+        extra={"stagnation_halt": True},
+        stop_cause=TERMINAL_STAGNATION,
+        **classified_finish_kwargs(last_classified),
+    )
+
+
+def emit_loop_exit_close(
+    session: Any,
+    *,
+    loop_exit_cause: Any,
+    last_classified: Any,
+    user_message: str,
+    step: int,
+    swarms: Any,
+    turn_prose: list,
+    turn_findings: list,
+) -> Iterator[Any]:
+    """Post-loop close: empty-loop, driver-swap, or true step cap."""
+    from .conversation import ConvEvent
+
+    if loop_exit_cause not in (TERMINAL_EMPTY_LOOP, TERMINAL_DRIVER_SWAP):
+        loop_exit_cause = TERMINAL_STEP_CAP
+    limit_msg = loop_exit_message(loop_exit_cause)
+    yield ConvEvent("message", {"role": "assistant", "text": limit_msg})
+    session._display_transcript.append({
+        "type": "message", "role": "assistant", "text": limit_msg,
+    })
+    yield from finalize_assistant_turn(
+        session, user_message=user_message, step=step, swarms=swarms,
+        turn_prose=turn_prose, turn_findings=turn_findings,
+        stop_cause=loop_exit_cause,
+        **classified_finish_kwargs(last_classified),
     )
 
 
@@ -550,6 +845,64 @@ def run_stream(
         q.put(("error", ex))
 
 
+SYNC_COMPLETE_WIRE_MODE = "sync_complete"
+SYNC_COMPLETE_FINISH_REASON = "completed"
+
+_EXPLICIT_COMPLETE_FINISH_KEYS = (
+    "finish_reason",
+    "stop_reason",
+    "finishReason",
+    "stream_terminal",
+    "incomplete_reason",
+)
+
+
+def stamp_sync_complete_terminal(resp: Any) -> Any:
+    """Authoritative application terminal for a successful ``complete()`` return.
+
+    Used only at the synchronous ``complete()`` dispatch seam. Never invents a
+    natural close when ``resp.error`` is set or explicit finish metadata is
+    already present. ``chat`` / ``chat_stream`` must keep fail-closed provider
+    rules unchanged.
+    """
+    if resp is None:
+        return resp
+    try:
+        error = getattr(resp, "error", None)
+    except Exception:
+        return resp
+    if isinstance(error, bool):
+        error = None
+    if isinstance(error, str) and not error.strip():
+        error = None
+    if error:
+        return resp
+    try:
+        meta = getattr(resp, "meta", None)
+    except Exception:
+        meta = None
+    if not isinstance(meta, dict):
+        meta = {}
+        try:
+            resp.meta = meta
+        except Exception:
+            return resp
+    has_explicit = False
+    for key in _EXPLICIT_COMPLETE_FINISH_KEYS:
+        raw = meta.get(key)
+        if isinstance(raw, str) and raw.strip():
+            has_explicit = True
+            break
+        if raw is not None and not isinstance(raw, (str, bool)) and str(raw).strip():
+            has_explicit = True
+            break
+    if not _receipt_meta_label(meta, "wire_mode"):
+        meta["wire_mode"] = SYNC_COMPLETE_WIRE_MODE
+    if not has_explicit:
+        meta["finish_reason"] = SYNC_COMPLETE_FINISH_REASON
+    return resp
+
+
 def dispatch_pilot_provider_call(
     session: Any,
     *,
@@ -645,6 +998,7 @@ def dispatch_pilot_provider_call(
             pass
     _mark_provider_dispatch_invoked(session)
     resp = session.pilot.complete(prompt, **complete_kwargs)
+    stamp_sync_complete_terminal(resp)
     _finish_and_attach_timing(accumulator, resp)
     return "", resp
 
@@ -1230,17 +1584,51 @@ def drain_stream_queue(q: Any, accumulator: Any = None) -> Iterator[Any]:
             raise val
 
 
+# Receipts stay success only for a clean natural / executable-tool close.
+# Incomplete, length, filter, EOF, unspecified, and transport closes are errors
+# even when DriverResponse.error is left unset.
+_RECEIPT_ERROR_CAUSES = frozenset({
+    TERMINAL_INCOMPLETE,
+    TERMINAL_LENGTH,
+    TERMINAL_CONTENT_FILTER,
+    TERMINAL_PROVIDER_EOF,
+    TERMINAL_UNSPECIFIED,
+    TERMINAL_TRANSPORT_ERROR,
+})
+
+
 def classify_provider_receipt_status(resp: Any) -> str:
-    """Map a driver response to a receipt terminal status. Never raises."""
+    """Map a driver response to a receipt terminal status. Never raises.
+
+    Status follows the normalized terminal cause, not only ``resp.error``.
+    Old v1 receipts that omit ``terminal_cause`` still read via
+    ``sanitize_receipt``.
+    """
     try:
         error = getattr(resp, "error", None) if resp is not None else None
-        if not error:
-            return "success"
-        from pmharness.drivers import error_classifier
-        err_cls = error_classifier.classify(None, error)
-        if err_cls == error_classifier.ErrorClass.CONTEXT_OVERFLOW:
-            return "context_overflow"
-        return "error"
+        if error:
+            from pmharness.drivers import error_classifier
+            err_cls = error_classifier.classify(None, error)
+            if err_cls == error_classifier.ErrorClass.CONTEXT_OVERFLOW:
+                return "context_overflow"
+        classified = classify_provider_terminal(resp)
+        if classified.cause in _RECEIPT_ERROR_CAUSES:
+            return "error"
+        if classified.cause == TERMINAL_INCOMPLETE:
+            return "error"
+        meta = getattr(resp, "meta", None) if resp is not None else None
+        if isinstance(meta, dict):
+            incomplete_tools = meta.get("incomplete_tool_calls")
+            if isinstance(incomplete_tools, list) and incomplete_tools:
+                return "error"
+            raw_tools = meta.get("tool_calls")
+            if isinstance(raw_tools, list) and raw_tools and not classified.allows_tool_execution:
+                return "error"
+        if error:
+            return "error"
+        if classified.blocks_clean_finalize and not classified.is_intermediate:
+            return "error"
+        return "success"
     except Exception:
         return "error"
 
@@ -1268,6 +1656,101 @@ def _receipt_meta_label(meta: Any, key: str) -> str:
     if not text or "\n" in text or "\x00" in text or len(text) > 128:
         return ""
     return text
+
+
+def _receipt_requested_output_cap(session: Any, meta: Dict[str, Any]) -> Any:
+    for key in (
+        "requested_output_cap", "max_output_tokens", "max_tokens",
+        "maxOutputTokens",
+    ):
+        if key in meta:
+            value = meta.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                return value
+    try:
+        cap = getattr(getattr(session, "pilot", None), "max_tokens", None)
+        if isinstance(cap, int) and not isinstance(cap, bool) and cap >= 0:
+            return cap
+    except Exception:
+        pass
+    return None
+
+
+def _receipt_terminal_kwargs(session: Any, resp: Any, status: Any = None) -> Dict[str, Any]:
+    """Sanitized provider-terminal fields for a stream receipt. Never raises."""
+    try:
+        classified = classify_provider_terminal(resp)
+        if resp is None and str(status or "").strip().lower() == "error":
+            classified = classify_provider_terminal(error="transport failed")
+        meta = getattr(resp, "meta", None) if resp is not None else None
+        if not isinstance(meta, dict):
+            meta = {}
+        out: Dict[str, Any] = {}
+        if classified.cause:
+            out["terminal_cause"] = classified.cause
+        if classified.finish_reason:
+            out["finish_reason"] = classified.finish_reason
+        if classified.incomplete_reason:
+            out["incomplete_reason"] = classified.incomplete_reason
+        api_mode = _receipt_meta_label(meta, "api_mode") or _receipt_meta_label(
+            meta, "wire_mode",
+        )
+        if api_mode:
+            out["api_mode"] = api_mode
+        if classified.stream_terminal:
+            out["stream_terminal"] = classified.stream_terminal
+            out["last_provider_event"] = classified.stream_terminal
+        last_event = _receipt_meta_label(meta, "last_provider_event")
+        if last_event:
+            out["last_provider_event"] = last_event
+        if "stream_started" in meta and isinstance(meta.get("stream_started"), bool):
+            out["stream_started"] = meta["stream_started"]
+        elif classified.has_provider_signal and classified.stream_terminal:
+            out["stream_started"] = True
+        malformed = meta.get("malformed_sse_chunks")
+        if isinstance(malformed, int) and not isinstance(malformed, bool) and malformed >= 0:
+            out["malformed_chunk_count"] = malformed
+        cap = _receipt_requested_output_cap(session, meta)
+        if cap is not None:
+            out["requested_output_cap"] = cap
+        wire = _receipt_meta_label(meta, "wire_mode")
+        if not wire:
+            if classified.stream_terminal or meta.get("stream_started") is True:
+                wire = "stream"
+            elif classified.has_provider_signal:
+                wire = "sync"
+        if wire:
+            out["wire_mode"] = wire
+        out["assistant_done_emitted"] = False
+        return out
+    except Exception:
+        return {}
+
+
+def mark_latest_receipt_assistant_done(
+    session: Any,
+    *,
+    stop_cause: str = "",
+    finish_reason: str = "",
+    incomplete_reason: str = "",
+) -> None:
+    """Patch the newest sidecar receipt after assistant_done. Never raises."""
+    try:
+        sid = str(getattr(session, "harness_session_id", "") or "").strip()
+        state_dir = str(getattr(session, "state_dir", "") or "").strip()
+        if not sid or not state_dir:
+            return
+        fields: Dict[str, Any] = {"assistant_done_emitted": True}
+        cause = canonicalize_terminal_cause(stop_cause)
+        if cause:
+            fields["terminal_cause"] = cause
+        if finish_reason:
+            fields["finish_reason"] = finish_reason
+        if incomplete_reason:
+            fields["incomplete_reason"] = incomplete_reason
+        StreamPerformanceReceiptStore(state_dir).patch_latest_receipt(sid, **fields)
+    except Exception:
+        return
 
 
 def _receipt_identity_kwargs(resp: Any, driver: str) -> Dict[str, Any]:
@@ -1371,6 +1854,7 @@ def record_provider_stream_receipt(
             model=_receipt_model_label(session, resp, driver),
             status=status,
             **_receipt_identity_kwargs(resp, driver),
+            **_receipt_terminal_kwargs(session, resp, status),
         )
         StreamPerformanceReceiptStore(state_dir).record(sid, receipt)
     except Exception:
@@ -1649,6 +2133,9 @@ def drain_idle_turn(
     swarms: Any,
     turn_prose: list,
     turn_findings: list,
+    stop_cause: str = "",
+    finish_reason: str = "",
+    incomplete_reason: str = "",
 ) -> Iterator[Any]:
     """No-actions path: deliver pending steers / queued prompts, or finalize.
 
@@ -1795,6 +2282,9 @@ def drain_idle_turn(
         swarms=swarms,
         turn_prose=turn_prose,
         turn_findings=turn_findings,
+        stop_cause=finalize_stop_cause(None, loop_cause=stop_cause),
+        finish_reason=finish_reason,
+        incomplete_reason=incomplete_reason,
     )
     return ("return", user_message)
 

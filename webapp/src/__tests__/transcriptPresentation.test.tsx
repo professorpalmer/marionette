@@ -922,4 +922,102 @@ describe("live command token clicks", () => {
     expect(clearance).toHaveClass("feed-bottom-clearance");
     expect(clearance.style.height).toBe("clamp(72px, 12vh, 144px)");
   });
+
+  it("keeps a tool-free live answer outside the collapsed ActivityGroup", () => {
+    const live: Item = {
+      kind: "msg",
+      msg: { role: "assistant", text: "I will patch auth next.", streaming: true },
+    };
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "fix auth" } },
+      live,
+    ];
+    expect(collectIntermediateAssistantItems(items, true).has(live)).toBe(false);
+    render(
+      <TranscriptList
+        {...listProps(items)}
+        status="streaming"
+        turnOpen
+      />,
+    );
+    expect(screen.getByText(/I will patch auth next/i)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Investigating|Explored/i })).toBeNull();
+  });
+
+  it("groups consecutive read/search cards into one exploration shelf", () => {
+    render(
+      <TranscriptList
+        {...listProps([
+          { kind: "msg", msg: { role: "user", text: "look around" } },
+          {
+            kind: "card",
+            card: {
+              id: "r1",
+              goal: "auth.ts",
+              cwd: null,
+              kind: "read_file",
+              running: false,
+              open: false,
+              result: { status: "ok" },
+            },
+          },
+          {
+            kind: "card",
+            card: {
+              id: "g1",
+              goal: "login",
+              cwd: null,
+              kind: "grep",
+              running: false,
+              open: false,
+              result: { status: "ok" },
+            },
+          },
+        ])}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Explored/i }));
+    expect(screen.getByTestId("exploration-shelf")).toBeTruthy();
+    expect(screen.getByTestId("exploration-shelf")).toHaveAttribute("data-count", "2");
+  });
+
+  it("does not remount the exploration shelf when a consecutive card appends", () => {
+    const card = (id: string, running = false): Item => ({
+      kind: "card",
+      card: {
+        id,
+        goal: `${id}.ts`,
+        cwd: null,
+        kind: "read_file",
+        running,
+        open: false,
+        result: running ? undefined : { status: "ok" },
+      },
+    });
+    const user: Item = { kind: "msg", msg: { role: "user", text: "look around" } };
+    const { rerender } = render(
+      <TranscriptList
+        {...listProps([user, card("r1", true), card("g1", true)])}
+        status="executing"
+        turnOpen
+      />,
+    );
+    if (!screen.queryByRole("button", { name: /^Exploration /i })) {
+      fireEvent.click(screen.getByRole("button", { name: /Investigating|Explored/i }));
+    }
+    const shelfToggle = screen.getByRole("button", { name: /^Exploration /i });
+    expect(shelfToggle).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(shelfToggle);
+    expect(shelfToggle).toHaveAttribute("aria-expanded", "false");
+    rerender(
+      <TranscriptList
+        {...listProps([user, card("r1", true), card("g1", true), card("r2", true)])}
+        status="executing"
+        turnOpen
+      />,
+    );
+    const shelfAfter = screen.getByRole("button", { name: /^Exploration /i });
+    expect(screen.getByTestId("exploration-shelf")).toHaveAttribute("data-count", "3");
+    expect(shelfAfter).toHaveAttribute("aria-expanded", "false");
+  });
 });

@@ -17,6 +17,7 @@ import {
 import {
   STREAM_ABORT_MESSAGE,
   resetCrossSessionLatchesOnSwitch,
+  resetTurnLifecycleOnSessionSwitch,
   resetTurnSettledOnSessionSwitch,
   shouldRefreshBusyChrome,
   streamOnDoneDecision,
@@ -220,14 +221,13 @@ describe("Wave 5: stream EOF without assistant_done stays honest", () => {
     expect(shouldRefreshBusyChrome({ turnSettled: true })).toBe(false);
   });
 
-  it("silently settles when the answer is already complete (no false abort)", () => {
+  it("does not silently settle from a sealed answer without assistant_done", () => {
     expect(
       streamOnDoneDecision({
         turnSettled: false,
         userStopped: false,
-        answerComplete: true,
       }).kind,
-    ).toBe("done");
+    ).toBe("abort_error");
   });
 });
 
@@ -262,7 +262,26 @@ describe("Wave 5: interrupted / done framing settle turn chrome", () => {
     apply({ kind: "done", data: {} });
     expect(state.turnSettledRef.current).toBe(true);
     expect(state.turnOpen).toBe(false);
-    expect(state.status).toBe("done");
+    expect(state.status).not.toBe("thinking");
+    expect(state.status).not.toBe("streaming");
+    expect(state.status).not.toBe("done");
+  });
+
+  it("resets recovery lifecycle so Continue from A cannot dispatch into B", () => {
+    const recoveryDispatchingRef = { current: true };
+    const recoveryContextRef = {
+      current: { sessionId: "sess-a", generation: 9 },
+    };
+    const lifecycle: { current: string } = { current: "settled_incomplete" };
+    resetTurnLifecycleOnSessionSwitch({
+      setTurnLifecycle: (next) => { lifecycle.current = next; },
+      setTerminalCause: () => {},
+      recoveryDispatchingRef,
+      recoveryContextRef,
+    });
+    expect(lifecycle.current).toBe("settled_complete");
+    expect(recoveryDispatchingRef.current).toBe(false);
+    expect(recoveryContextRef.current).toBeNull();
   });
 
   it("clears turnSettled on session switch so mid-turn B can refresh busy chrome", () => {
@@ -339,7 +358,7 @@ describe("Wave 5: command timeout settles the card and chrome", () => {
     expect(cardEffectivelyRunning(cardItem.card)).toBe(false);
     expect(state.status).toBe("thinking");
 
-    apply({ kind: "assistant_done", data: {} });
+    apply({ kind: "assistant_done", data: { stop_cause: "natural" } });
     expect(state.turnOpen).toBe(false);
     expect(state.status).toBe("done");
     expect(state.waitHint).toBeNull();

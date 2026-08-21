@@ -189,6 +189,7 @@ def _safe_callback(cb: Optional[Callable], *args) -> None:
 class BedrockDriver:
     # Real mid-invoke deltas via ConverseStream (or bedrock_chat_stream).
     supports_streaming = True
+    requires_explicit_terminal = True
 
     def __init__(
         self,

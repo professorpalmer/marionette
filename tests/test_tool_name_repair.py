@@ -363,6 +363,7 @@ def test_g_three_invalid_only_steps_halt_after_results(tmp_path, monkeypatch):
     assert "invalid tool" in (halt.data.get("reason") or "").lower()
     done = next(e for e in events if e.kind == "assistant_done")
     assert done.data.get("invalid_tool_halt") is True
+    assert done.data.get("stop_cause") == "invalid_tool"
     tool_msgs = [m for m in session._history if m.get("role") == "tool"]
     assert len(tool_msgs) == 3
     assert {m.get("tool_call_id") for m in tool_msgs} == {"tc_a", "tc_b", "tc_c"}

@@ -10,8 +10,22 @@ import {
 import {
   deriveBusyProgress,
   turnHasLiveInvestigation,
-  turnLooksAnswerComplete,
 } from "../lib/turnProgress";
+import {
+  CONTINUE_PROMPT,
+  hasPartialAssistantAnswer,
+  latestUserAsk,
+  recoveryControlsAvailable,
+  recoveryDispatchAllowed,
+  settleFromStaleLocalAbandon,
+  settleFromStreamError,
+  settleFromTransportEof,
+  settleFromUserStop,
+  type RecoveryContext,
+  type TerminalCause,
+  type TurnLifecycle,
+  type TurnSettle,
+} from "../lib/turnTerminal";
 import { renameDefaultSessionIfNeeded } from "../lib/sessionTitle";
 import { notifyWorkspaceMutated } from "../lib/workspaceMutationEvents";
 
@@ -45,6 +59,7 @@ import { isAgentLoopOpen, isPilotMouthBusy } from "./conversation/runnersBusy";
 import {
   appendPendingReview,
   appendStopHonestyNotice,
+  appendTurnTerminal,
   applySwarmResultToItems,
   finalizeOrphanSwarmPills,
   focusReviewTabAndRefresh,
@@ -112,7 +127,7 @@ import {
   restoreFeedScrollAfterFocus,
 } from "./conversation/transcriptVirtualWindow";
 import {
-  STREAM_ABORT_MESSAGE,
+  alreadySettledOnDoneStatus,
   streamErrorText,
   streamOnDoneDecision,
   streamOnErrorDecision,
@@ -437,6 +452,12 @@ export default function Conversation({
   // awaiting_swarm: model turn closed after background dispatch, but workers
   // still fly — Cursor-style "Still working…" until keep-alive resume.
   const [turnOpen, setTurnOpen] = useState(false);
+  const [turnLifecycle, setTurnLifecycle] = useState<TurnLifecycle>("settled_complete");
+  const [terminalCause, setTerminalCause] = useState<TerminalCause | null>(null);
+  const [sessionSwitchPending, setSessionSwitchPending] = useState(false);
+  const recoveryDispatchingRef = useRef(false);
+  const recoveryContextRef = useRef<RecoveryContext | null>(null);
+  const lastSettleRef = useRef<TurnSettle | null>(null);
   const [waitHint, setWaitHint] = useState<string | null>(null);
   // True while visible items belong to a prior session (or are awaiting hydrate).
   // Dims the feed and blocks send so stale A is never treated as B.
@@ -545,7 +566,7 @@ export default function Conversation({
     turnOpen,
   });
   // Mouth ≠ runner. awaiting_swarm / holdSwarmAwait keep the fold, not Stop.
-  const composerBusy = isPilotMouthBusy(turnOpen, status);
+  const composerBusy = isPilotMouthBusy(turnOpen, status, sessionSwitchPending);
   const derivedPillStatus: string = derivePillStatus({
     transcriptStale,
     answerChromeIdle: false,
@@ -1436,7 +1457,12 @@ export default function Conversation({
     setWaitHint,
     setPendingJobIds,
     setBackendPendingSwarms,
+    setSessionSwitchPending,
     clearSafeTimeouts,
+    setTurnLifecycle,
+    setTerminalCause,
+    recoveryDispatchingRef,
+    recoveryContextRef,
   });
 
 
@@ -2455,8 +2481,40 @@ export default function Conversation({
       liveIds,
     );
 
+  const applyLocalTurnSettle = (settle: TurnSettle, items: Item[], liveIds: string[]) => {
+    const sealed = sealTurnItems(items, liveIds);
+    if (!settle.explanation) return sealed;
+    return appendTurnTerminal(sealed, {
+      id: `turn-term-${streamGenRef.current}`,
+      cause: settle.cause,
+      state: settle.lifecycle,
+      text: settle.explanation,
+    });
+  };
+
+  const recordTurnSettle = (settle: TurnSettle) => {
+    lastSettleRef.current = settle;
+    setTurnLifecycle(settle.lifecycle);
+    setTerminalCause(settle.cause === "natural" ? null : settle.cause);
+    recoveryDispatchingRef.current = false;
+    if (recoveryControlsAvailable(settle.lifecycle)) {
+      const sessionId = cachedSessionIdRef.current || activeSessionId || "";
+      recoveryContextRef.current = sessionId
+        ? { sessionId, generation: streamGenRef.current }
+        : null;
+    } else {
+      recoveryContextRef.current = null;
+    }
+  };
+
   abandonStaleLocalStreamRef.current = () => {
     if (userStoppedRef.current) return;
+    const settle = settleFromStaleLocalAbandon({
+      turnSettled: turnSettledRef.current,
+      userStopped: userStoppedRef.current,
+      hasPartialAnswer: hasPartialAssistantAnswer(itemsRef.current),
+    });
+    if (settle.kind === "already_settled") return;
     turnSettledRef.current = true;
     resumeQueuedRef.current = false;
     detachedBusyRef.current = false;
@@ -2468,11 +2526,12 @@ export default function Conversation({
     flushTypewriter();
     setTurnOpen(false);
     setWaitHint(null);
-    setStatus("done");
+    setStatus(settle.status);
     setCompactingStatus(null);
+    recordTurnSettle(settle);
     const liveIds = liveNonLocalSwarmJobIds();
     setPendingJobIds(liveIds);
-    setItems((p) => sealTurnItems(p, liveIds));
+    setItems((p) => applyLocalTurnSettle(settle, p, liveIds));
     const sid = cachedSessionIdRef.current;
     if (!sid) return;
     void api.sessionTranscript(sid).then((tres) => {
@@ -2480,7 +2539,11 @@ export default function Conversation({
       const loadedItems = transcriptResponseToItems(tres);
       setItems((prev) => {
         if (cachedSessionIdRef.current !== sid) return prev;
-        const next = sealTurnItems(mergeTranscriptItems(prev, loadedItems), liveIds);
+        const next = applyLocalTurnSettle(
+          settle,
+          mergeTranscriptItems(prev, loadedItems),
+          liveIds,
+        );
         const fp = transcriptFingerprint(next);
         if (fp === transcriptFpRef.current) return prev;
         transcriptFpRef.current = fp;
@@ -2525,6 +2588,7 @@ export default function Conversation({
     handleSwarmResult,
     refreshQueue,
     fetchContextUsage,
+    recordTurnSettle,
   });
   applyStreamEventRef.current = applyStreamEvent;
 
@@ -2537,10 +2601,14 @@ export default function Conversation({
       resume,
       userStopped: userStoppedRef.current,
     });
-    if (gate === "stale") return;
+    if (gate === "stale") {
+      recoveryDispatchingRef.current = false;
+      return;
+    }
     if (gate === "stopped_resume") {
       // Keep-alive after Stop must not re-arm the turn.
       resumeQueuedRef.current = false;
+      recoveryDispatchingRef.current = false;
       return;
     }
     if (!resume) {
@@ -2549,6 +2617,10 @@ export default function Conversation({
     }
     planTurnRef.current = usePlan;
     turnSettledRef.current = false;
+    lastSettleRef.current = null;
+    recoveryContextRef.current = null;
+    setTurnLifecycle("running");
+    setTerminalCause(null);
     // imagesOverride lets the idle queue-drain path (maybeDrainQueue) carry a
     // queued prompt's image attachments even though they were never placed in
     // the live attachedImages composer state.
@@ -2603,39 +2675,54 @@ export default function Conversation({
          const doneDec = streamOnDoneDecision({
            turnSettled: turnSettledRef.current,
            userStopped: userStoppedRef.current,
-           answerComplete: turnLooksAnswerComplete(itemsRef.current),
          });
          if (doneDec.kind === "abort_error") {
+           const settle = settleFromTransportEof({
+             turnSettled: false,
+             userStopped: false,
+             hasPartialAnswer: hasPartialAssistantAnswer(itemsRef.current),
+           });
+           if (settle.kind === "already_settled") return;
            turnSettledRef.current = true;
            setTurnOpen(false);
            setWaitHint(null);
-           setStatus("error");
+           setStatus(settle.status);
+           recordTurnSettle(settle);
            const liveIds = liveNonLocalSwarmJobIds();
            setPendingJobIds(liveIds);
-           setItems((p) => [...sealTurnItems(p, liveIds), {
-             kind: "msg",
-             msg: {
-               role: "assistant",
-               text: STREAM_ABORT_MESSAGE,
-             },
-           }]);
+           setItems((p) => applyLocalTurnSettle(settle, p, liveIds));
          } else {
-           // Silent settle when assistant_done / Stop / sealed answer already won.
+           // Authoritative settle already won — preserve error/interrupted
+           // chrome and the terminal chip. Never reseal as success.
            turnSettledRef.current = true;
            setTurnOpen(false);
-           // Do not clobber awaiting_swarm / Still working… set by assistant_done
-           // when background jobs are still flying (Cursor-style pause point).
            const liveIds = liveNonLocalSwarmJobIds();
            const liveJobs = liveIds.some((id) => Boolean(id));
            setPendingJobIds(liveIds);
-           if (liveJobs && !userStoppedRef.current) {
-             setStatus("awaiting_swarm");
-             setWaitHint(SWARM_AWAIT_HINT);
+           const lastSettle = lastSettleRef.current;
+           const preserveInterrupt = lastSettle?.lifecycle === "error"
+             || lastSettle?.lifecycle === "interrupted"
+             || lastSettle?.lifecycle === "aborted";
+           setStatus((prev) => alreadySettledOnDoneStatus({
+             prev,
+             liveJobs,
+             userStopped: userStoppedRef.current,
+           }));
+           if (liveJobs && !userStoppedRef.current && !preserveInterrupt) {
+             setWaitHint((prev) => prev || SWARM_AWAIT_HINT);
            } else {
              setWaitHint(null);
-             setStatus("done");
            }
-           setItems((p) => sealTurnItems(p, liveIds));
+           setItems((p) => {
+             const sealed = sealTurnItems(p, liveIds);
+             if (!lastSettle?.explanation) return sealed;
+             return appendTurnTerminal(sealed, {
+               id: `turn-term-${streamGenRef.current}`,
+               cause: lastSettle.cause,
+               state: lastSettle.lifecycle,
+               text: lastSettle.explanation,
+             });
+           });
          }
          cancelRef.current = null;
          localStreamActiveRef.current = false;
@@ -2652,20 +2739,18 @@ export default function Conversation({
            userStopped: userStoppedRef.current,
          });
          if (errDec.kind === "abort_error") {
+           const namedCause = (streamErr as { terminal_cause?: unknown } | null)?.terminal_cause;
+           const settle = settleFromStreamError(
+             streamErrorText(streamErr, namedCause),
+             namedCause,
+           );
            turnSettledRef.current = true;
            setTurnOpen(false);
            setWaitHint(null);
+           recordTurnSettle(settle);
            const liveIds = liveNonLocalSwarmJobIds();
            setPendingJobIds(liveIds);
-           setItems((p) => [...sealTurnItems(p, liveIds), {
-             kind: "msg",
-             msg: {
-               role: "assistant",
-               // A real error (403 auth skew, backend down) renders its own
-               // meaningful text instead of the generic abort chrome.
-               text: streamErrorText(streamErr),
-             },
-           }]);
+           setItems((p) => applyLocalTurnSettle(settle, p, liveIds));
            setStatus("error");
          } else if (errDec.kind === "preserve_error_or_done") {
            // EventSource often fires onerror when the stream closes after a
@@ -2674,13 +2759,21 @@ export default function Conversation({
            const liveJobs = pendingJobIdsRef.current.some(
              (id) => id && !id.startsWith("local-swarm-"),
            );
-           if (liveJobs && !userStoppedRef.current) {
-             setStatus("awaiting_swarm");
-             setWaitHint(SWARM_AWAIT_HINT);
-           } else {
-             setWaitHint(null);
-             setStatus((prev) => (prev === "error" ? prev : "done"));
-           }
+          if (liveJobs && !userStoppedRef.current) {
+            setStatus((prev) => alreadySettledOnDoneStatus({
+              prev,
+              liveJobs: true,
+              userStopped: false,
+            }));
+            setWaitHint((prev) => prev || SWARM_AWAIT_HINT);
+          } else {
+            setWaitHint(null);
+            setStatus((prev) => alreadySettledOnDoneStatus({
+              prev,
+              liveJobs: false,
+              userStopped: userStoppedRef.current,
+            }));
+          }
          }
          cancelRef.current = null;
          localStreamActiveRef.current = false;
@@ -3052,15 +3145,17 @@ export default function Conversation({
     cancelRef.current = null;
     localStreamActiveRef.current = false;
     flushTypewriter();
+    const settle = settleFromUserStop();
     setTurnOpen(false);
     setWaitHint(null);
     setStatus("idle");
     setCompactingStatus(null);
+    recordTurnSettle(settle);
     const liveIds = liveNonLocalSwarmJobIds();
     setPendingJobIds(liveIds);
     // Same seal → orphan settle order as assistant_done: close any open
     // pilot/reasoning surface before folding orphan swarm/investigation cards.
-    setItems((p) => sealTurnItems(p, liveIds));
+    setItems((p) => applyLocalTurnSettle(settle, p, liveIds));
   };
 
   const stop = () => {
@@ -3072,8 +3167,13 @@ export default function Conversation({
         ? async () => {
             const tres = await api.sessionTranscript(sid);
             const loadedItems = transcriptResponseToItems(tres);
+            const settle = lastSettleRef.current;
+            const liveIds = liveNonLocalSwarmJobIds();
             setItems((prev) => {
-              const next = mergeTranscriptItems(prev, loadedItems);
+              const merged = mergeTranscriptItems(prev, loadedItems);
+              const next = settle
+                ? applyLocalTurnSettle(settle, merged, liveIds)
+                : merged;
               const fp = transcriptFingerprint(next);
               if (fp === transcriptFpRef.current) return prev;
               transcriptFpRef.current = fp;
@@ -3155,6 +3255,38 @@ export default function Conversation({
     [],
   );
   const handleTranscriptImageClick = useCallback((url: string) => setLightboxUrl(url), []);
+  const recoveryBound = recoveryContextRef.current;
+  const handleRecoveryContinue = () => {
+    if (!recoveryBound) return;
+    if (!recoveryDispatchAllowed({
+      composerBusy,
+      dispatching: recoveryDispatchingRef.current,
+      lifecycle: turnLifecycle,
+      boundSessionId: recoveryBound.sessionId,
+      activeSessionId,
+      boundGeneration: recoveryBound.generation,
+      activeGeneration: streamGenRef.current,
+    })) return;
+    recoveryDispatchingRef.current = true;
+    executeSendRef.current(CONTINUE_PROMPT, auto, plan);
+  };
+  const handleRecoveryRetry = () => {
+    if (!recoveryBound) return;
+    if (!recoveryDispatchAllowed({
+      composerBusy,
+      dispatching: recoveryDispatchingRef.current,
+      lifecycle: turnLifecycle,
+      boundSessionId: recoveryBound.sessionId,
+      activeSessionId,
+      boundGeneration: recoveryBound.generation,
+      activeGeneration: streamGenRef.current,
+    })) return;
+    const ask = latestUserAsk(itemsRef.current);
+    if (!ask) return;
+    recoveryDispatchingRef.current = true;
+    executeSendRef.current(ask, auto, plan);
+  };
+
   const handleTranscriptExecutePlan = useCallback((planText: string) => {
     setAuto(true);
     setPlan(false);
@@ -3327,6 +3459,19 @@ export default function Conversation({
         handleQueueAdd={handleQueueAdd}
         stop={stop}
         send={send}
+        recoveryAvailable={Boolean(recoveryBound) && recoveryDispatchAllowed({
+          composerBusy,
+          dispatching: recoveryDispatchingRef.current,
+          lifecycle: turnLifecycle,
+          boundSessionId: recoveryBound?.sessionId,
+          activeSessionId,
+          boundGeneration: recoveryBound?.generation,
+          activeGeneration: streamGenRef.current,
+        })}
+        recoveryRetryAvailable={Boolean(latestUserAsk(items))}
+        recoveryCause={terminalCause}
+        onContinue={handleRecoveryContinue}
+        onRetry={handleRecoveryRetry}
       />
       )}
         />
