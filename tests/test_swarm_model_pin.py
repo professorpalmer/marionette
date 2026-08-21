@@ -113,6 +113,65 @@ def test_resolve_unknown_pin_demotes_instead_of_raising(monkeypatch, tmp_path):
     assert out["resolved"] == ""
 
 
+def test_resolve_direct_openrouter_agentic_pin_strict(monkeypatch, tmp_path):
+    models_path = tmp_path / "models.json"
+    models_path.write_text(json.dumps({"models": []}), encoding="utf-8")
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setattr(
+        "harness.auto_registry.ensure_keyed_provider_registry_health",
+        lambda: {"ready": True},
+    )
+    monkeypatch.setattr(
+        "harness.auto_registry.keyed_agentic_providers",
+        lambda: {"openrouter"},
+    )
+    monkeypatch.setattr(
+        "puppetmaster.model_registry.apply_model_pin",
+        lambda payload, model, *, adapter, registry=None: {
+            **(payload or {}),
+            "model": model,
+        },
+    )
+
+    from harness.swarm_model_pin import resolve_agentic_model_pin
+
+    pin, error = resolve_agentic_model_pin("openrouter/stealth/ox-alpha")
+    assert error == ""
+    assert pin is not None
+    assert pin.provider == "openrouter"
+    assert pin.model == "stealth/ox-alpha"
+    assert pin.router_model_id == "agentic/openrouter/stealth/ox-alpha"
+    assert pin.payload_fields()["auto_route"] is False
+    assert pin.payload_fields()["allowed_adapters"] == ["agentic"]
+
+
+def test_resolve_direct_agentic_pin_requires_keyed_provider(monkeypatch, tmp_path):
+    models_path = tmp_path / "models.json"
+    models_path.write_text(json.dumps({"models": []}), encoding="utf-8")
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setattr(
+        "harness.auto_registry.ensure_keyed_provider_registry_health",
+        lambda: {"ready": False},
+    )
+    monkeypatch.setattr(
+        "harness.auto_registry.keyed_agentic_providers",
+        lambda: set(),
+    )
+    monkeypatch.setattr(
+        "puppetmaster.model_registry.apply_model_pin",
+        lambda payload, model, *, adapter, registry=None: {
+            **(payload or {}),
+            "model": model,
+        },
+    )
+
+    from harness.swarm_model_pin import resolve_agentic_model_pin
+
+    pin, error = resolve_agentic_model_pin("openrouter/stealth/ox-alpha")
+    assert pin is None
+    assert "not in keyed worker registry" in error
+
+
 def test_run_swarm_model_description_mentions_live_catalog(monkeypatch):
     monkeypatch.setattr(
         "harness.swarm_worker_allowlist.resolve_swarm_worker_allowlist",
@@ -133,6 +192,42 @@ def test_run_swarm_model_description_mentions_live_catalog(monkeypatch):
     text = _run_swarm_model_pin_description()
     assert "agentic/gpt-5.6-luna" in text
     assert "remap" in text.lower()
+
+
+def test_implement_and_parallel_tool_schemas_expose_model_pin():
+    from harness.pilot import build_tools_schema
+
+    tools = {
+        row["function"]["name"]: row["function"]
+        for row in build_tools_schema()
+    }
+    assert "model" in tools["run_implement"]["parameters"]["properties"]
+    assert "model" in tools["run_parallel"]["parameters"]["properties"]
+
+
+def test_implement_and_parallel_wire_model_pin_accept_nested_arguments():
+    from harness.pilot import from_wire
+
+    implement = from_wire(
+        "run_implement",
+        {
+            "arguments": {
+                "goal": "fix it",
+                "model": "openrouter/stealth/ox-alpha",
+            },
+        },
+    )
+    parallel = from_wire(
+        "run_parallel",
+        {
+            "arguments": {
+                "goals": ["one", "two"],
+                "model": "openrouter/stealth/ox-alpha",
+            },
+        },
+    )
+    assert implement.model == "openrouter/stealth/ox-alpha"
+    assert parallel.model == "openrouter/stealth/ox-alpha"
 
 
 def test_pin_candidates_include_openai_codex_colon_form():

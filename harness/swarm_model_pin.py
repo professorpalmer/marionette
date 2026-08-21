@@ -10,12 +10,73 @@ auto-route across the live union catalog instead of failing.
 """
 
 import re
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from .diag import note as _diag
 
 # Prefer agentic (API-billed) remaps before platform cursor when both match.
 _PIN_ADAPTER_ORDER = ("agentic", "cursor", "openai")
+
+
+@dataclass(frozen=True)
+class AgenticModelPin:
+    """Immutable provider/model constraint for one agentic dispatch."""
+
+    requested: str
+    provider: str
+    model: str
+    router_model_id: str
+    reason: str = "exact"
+    policy: str = "explicit_pin"
+
+    def payload_fields(self) -> dict[str, Any]:
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "auto_route": False,
+            "allowed_adapters": ["agentic"],
+            "pinned_adapter": "agentic",
+            "pinned_model": self.router_model_id,
+            "pinned_adapter_model_name": self.model,
+            "pin_policy": self.policy,
+            "requested_model": self.requested,
+        }
+
+
+def _direct_agentic_provider_model(pin: str) -> Optional[AgenticModelPin]:
+    """Resolve ``provider/model`` when a keyed live model is not in the registry."""
+
+    requested = (pin or "").strip()
+    body = requested
+    if body.lower().startswith("agentic/"):
+        body = body.split("/", 1)[1].strip()
+    if ":" in body:
+        provider, model = body.split(":", 1)
+    elif "/" in body:
+        provider, model = body.split("/", 1)
+    else:
+        return None
+    provider = provider.strip().lower()
+    model = model.strip()
+    if not provider or not model:
+        return None
+    try:
+        from .auto_registry import keyed_agentic_providers
+
+        keyed = {str(item).strip().lower() for item in keyed_agentic_providers()}
+    except Exception as exc:
+        _diag("swarm_model_pin.direct_keyed", exc)
+        keyed = set()
+    if provider not in keyed:
+        return None
+    return AgenticModelPin(
+        requested=requested,
+        provider=provider,
+        model=model,
+        router_model_id=f"agentic/{provider}/{model}",
+        reason="direct_provider_model",
+    )
 
 
 def _registry_rows(*, adapters: Optional[set[str]] = None) -> list[dict]:
@@ -323,3 +384,70 @@ def resolve_swarm_model_pin(
         "reason": reason,
         "adapter": "",
     }
+
+
+def resolve_agentic_model_pin(pin: str) -> tuple[Optional[AgenticModelPin], str]:
+    """Resolve an explicit agentic pin without swarm's auto-route demotion."""
+
+    requested = (pin or "").strip()
+    if not requested:
+        return None, ""
+
+    resolved = resolve_swarm_model_pin(
+        requested,
+        allowed_adapters=["agentic"],
+    )
+    if not resolved.get("demoted") and resolved.get("adapter") == "agentic":
+        fields = dict(resolved.get("pin_fields") or {})
+        provider = str(fields.get("provider") or "").strip().lower()
+        model = str(
+            fields.get("pinned_adapter_model_name")
+            or fields.get("model")
+            or ""
+        ).strip()
+        router_model_id = str(
+            fields.get("pinned_model") or resolved.get("resolved") or ""
+        ).strip()
+        if provider and model and router_model_id:
+            return AgenticModelPin(
+                requested=requested,
+                provider=provider,
+                model=model,
+                router_model_id=router_model_id,
+                reason=str(resolved.get("reason") or "exact"),
+            ), ""
+
+    direct = _direct_agentic_provider_model(requested)
+    if direct is not None:
+        return direct, ""
+
+    available = list_available_agentic_worker_models(limit=8)
+    reason = str(resolved.get("reason") or "").strip()
+    if not reason:
+        reason = f"pin {requested!r} is not available to the agentic adapter"
+    hints = ", ".join(available) if available else "(none keyed)"
+    return None, f"{reason}. Available agentic models: {hints}"
+
+
+def agentic_pin_matches_routed_model(
+    pin: Optional[AgenticModelPin],
+    routed_model: str,
+) -> bool:
+    """Fail closed only when the provider reports a different known model."""
+
+    if pin is None or not (routed_model or "").strip():
+        return True
+
+    def _normalized(value: str) -> str:
+        text = (value or "").strip().lower()
+        if text.startswith("agentic/"):
+            text = text.split("/", 1)[1]
+        return text
+
+    served = _normalized(routed_model)
+    accepted = {
+        _normalized(pin.router_model_id),
+        _normalized(f"{pin.provider}/{pin.model}"),
+        _normalized(pin.model),
+    }
+    return served in accepted

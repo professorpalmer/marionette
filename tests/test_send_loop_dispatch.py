@@ -522,6 +522,48 @@ def test_dispatch_parallel_uses_resolved_git_child_cwd(tmp_path, monkeypatch):
     )
 
 
+def test_model_pin_implies_strict_agentic_dispatch(monkeypatch):
+    from harness.send_loop_dispatch import _strict_agentic_dispatch
+    from harness.swarm_model_pin import AgenticModelPin
+
+    expected = AgenticModelPin(
+        requested="openrouter/stealth/ox-alpha",
+        provider="openrouter",
+        model="stealth/ox-alpha",
+        router_model_id="agentic/openrouter/stealth/ox-alpha",
+    )
+    monkeypatch.setattr(
+        "harness.swarm_model_pin.resolve_agentic_model_pin",
+        lambda _model: (expected, ""),
+    )
+
+    pin, strict, error = _strict_agentic_dispatch(
+        SimpleNamespace(
+            model="openrouter/stealth/ox-alpha",
+            adapter="",
+        ),
+    )
+
+    assert pin is expected
+    assert strict is True
+    assert error == ""
+
+
+def test_model_pin_rejects_conflicting_adapter():
+    from harness.send_loop_dispatch import _strict_agentic_dispatch
+
+    pin, strict, error = _strict_agentic_dispatch(
+        SimpleNamespace(
+            model="openrouter/stealth/ox-alpha",
+            adapter="cursor",
+        ),
+    )
+
+    assert pin is None
+    assert strict is True
+    assert "cannot be combined" in error
+
+
 # ---------------------------------------------------------------------------
 # Swarm quality gate: thin/generic findings must not read as a green success.
 

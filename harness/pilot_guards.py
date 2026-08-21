@@ -1122,6 +1122,7 @@ def _parse_cli_goal_and_model(tokens: list[str]) -> tuple[str, str]:
     """Extract --goal / --model / first positional from launch argv."""
     goal = ""
     model = ""
+    provider = ""
     positionals: list[str] = []
     i = 0
     n = len(tokens)
@@ -1149,6 +1150,16 @@ def _parse_cli_goal_and_model(tokens: list[str]) -> tuple[str, str]:
                 model = tokens[i].strip()
                 i += 1
             continue
+        if tok.startswith("--provider="):
+            provider = tok.split("=", 1)[1].strip()
+            i += 1
+            continue
+        if tok == "--provider":
+            i += 1
+            if i < n:
+                provider = tokens[i].strip()
+                i += 1
+            continue
         if tok.startswith("-"):
             i += 1
             if i < n and not tokens[i].startswith("-"):
@@ -1158,6 +1169,11 @@ def _parse_cli_goal_and_model(tokens: list[str]) -> tuple[str, str]:
         i += 1
     if not goal and positionals:
         goal = positionals[0].strip()
+    if provider and model:
+        lower_model = model.lower()
+        provider_prefix = provider.lower() + "/"
+        if not lower_model.startswith(provider_prefix):
+            model = f"{provider}/{model}"
     return goal, model
 
 
@@ -1179,7 +1195,7 @@ def translate_puppetmaster_cli_action(
     parsed = parse_puppetmaster_cli_launch(command)
     if parsed is None:
         return None
-    _subcmd, parsed_goal, parsed_model = parsed
+    subcmd, parsed_goal, parsed_model = parsed
     native_kind, _example = puppetmaster_cli_native_mapping(command, state)
     if native_kind not in ("run_swarm", "run_implement"):
         return None
@@ -1196,6 +1212,7 @@ def translate_puppetmaster_cli_action(
         kind=native_kind,
         goal=goal,
         model=model,
+        adapter="agentic" if subcmd == "agentic" else "",
         tool_call_id=tool_call_id,
     )
 

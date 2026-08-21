@@ -100,6 +100,11 @@ class WorkerResult:
     # panel never stamps the pilot slug as the worker when the engine is agentic.
     engine: str = ""
     model: str = ""
+    # Explicit agentic routing truth. ``model`` is the actually routed/served
+    # model; these fields preserve the immutable request for tracker receipts.
+    requested_model: str = ""
+    provider: str = ""
+    routing_policy: str = ""
     # Measured worker provenance. These are populated from git/worktree state,
     # never from provider prose, and remain optional for legacy callers.
     managed_worktree_path: str = ""

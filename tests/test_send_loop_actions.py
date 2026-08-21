@@ -380,7 +380,8 @@ def test_execute_translates_screenshot_agentic_cli_to_run_swarm(monkeypatch):
     translated, aid, _native = captured[0]
     assert translated.kind == "run_swarm"
     assert translated.goal == "Add token-level streaming"
-    assert translated.model == "deepseek/deepseek-v4-pro"
+    assert translated.model == "opencode-go/deepseek/deepseek-v4-pro"
+    assert translated.adapter == "agentic"
     assert translated.tool_call_id == "call_screenshot"
     assert aid == "call_screenshot"
     starts = [e for e in events if e.kind == "action_start"]
@@ -426,7 +427,8 @@ def test_execute_translates_wrapped_screenshot_agentic_cli_to_run_swarm(monkeypa
     translated, aid, _native = captured[0]
     assert translated.kind == "run_swarm"
     assert translated.goal == _SCREENSHOT_WRAPPED_GOAL
-    assert translated.model == "deepseek/deepseek-v4-pro"
+    assert translated.model == "opencode-go/deepseek/deepseek-v4-pro"
+    assert translated.adapter == "agentic"
     assert translated.tool_call_id == "call_wrapped_screenshot"
     assert aid == "call_wrapped_screenshot"
     starts = [e for e in events if e.kind == "action_start"]
@@ -479,7 +481,8 @@ def test_execute_translates_agentic_cli_to_run_implement_off_swarm(monkeypatch):
     translated, aid = captured[0]
     assert translated.kind == "run_implement"
     assert translated.goal == "Add token-level streaming"
-    assert translated.model == "deepseek/deepseek-v4-pro"
+    assert translated.model == "opencode-go/deepseek/deepseek-v4-pro"
+    assert translated.adapter == "agentic"
     assert translated.tool_call_id == "call_impl"
     assert aid == "call_impl"
     session._do_run_command.assert_not_called()
