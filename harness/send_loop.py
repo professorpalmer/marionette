@@ -54,12 +54,25 @@ from .send_loop_actions import execute_turn_actions
 from .repeat_tool_reminder import reset_repeat_chain
 from .send_loop_phases import (
     account_provider_attempt,
+    apply_provider_terminal,
+    classified_finish_kwargs,
     dispatch_pilot_provider_call,
+    emit_classified_provider_error,
     drain_idle_turn,
+    emit_loop_exit_close,
+    emit_stagnation_halt,
     finalize_assistant_turn,
+    native_tools_blocked,
     promote_trailing_reasoning_to_say,
     record_provider_dispatch_error_receipt,
     run_auto_verify,
+)
+from .terminal_cause import (
+    TERMINAL_DRIVER_SWAP,
+    TERMINAL_EMPTY_LOOP,
+    TERMINAL_INVALID_TOOL,
+    TERMINAL_TURN_BUDGET,
+    finalize_stop_cause,
 )
 from .stream_performance import (
     make_stream_timing_accumulator,
@@ -1003,6 +1016,8 @@ class SendLoopMixin:
         post_swarm_nudge_active = False
 
         consecutive_non_productive = 0
+        loop_exit_cause = None
+        last_classified = None
         # AUTO-VERIFY LOOP: after a turn that edited files, run a fast, scoped
         # project check and feed a FAILURE back as a tool observation IN THE SAME
         # user message so the pilot can self-correct. Bounded per user message so
@@ -1243,7 +1258,11 @@ class SendLoopMixin:
                 break
 
             if resp and resp.error:
-                yield ConvEvent("error", {"error": self._humanize_pilot_error(resp.error)})
+                yield from emit_classified_provider_error(self, resp)
+                return
+
+            last_classified, blocked = yield from apply_provider_terminal(self, resp)
+            if blocked:
                 return
 
             is_native = False
@@ -1374,6 +1393,8 @@ class SendLoopMixin:
                     self, user_message=user_message, step=step, swarms=swarms,
                     turn_prose=turn_prose, turn_findings=turn_findings,
                     extra={"turn_budget_exhausted": True},
+                    stop_cause=TERMINAL_TURN_BUDGET,
+                    **classified_finish_kwargs(last_classified),
                 )
                 return
 
@@ -1387,6 +1408,7 @@ class SendLoopMixin:
                 consecutive_non_productive += 1
 
             if consecutive_non_productive >= 3:
+                loop_exit_cause = TERMINAL_EMPTY_LOOP
                 break
 
             # Stagnation governor: repeated normalized assistant prose plus the
@@ -1425,32 +1447,14 @@ class SendLoopMixin:
                         self._stagnation_last_prose = prose_key
                         self._stagnation_last_actions = action_key
                         if self._stagnation_streak >= stagnation_streak_cap():
-                            halt_msg = (
-                                "Stopped: repeated the same response and actions "
-                                "with no new progress (auto-halt). Tell me how to "
-                                "continue, or try a narrower ask."
-                            )
                             # Heal any tool_call pairing from this assistant turn
                             # before exiting so history stays valid for the next send.
                             self._sanitize_tool_pairs()
-                            yield ConvEvent("notice", {
-                                "message": halt_msg,
-                                "kind": "stagnation",
-                            })
-                            yield ConvEvent("message", {
-                                "role": "assistant",
-                                "text": halt_msg,
-                            })
-                            self._display_transcript.append({
-                                "type": "message",
-                                "role": "assistant",
-                                "text": halt_msg,
-                            })
-                            yield from finalize_assistant_turn(
-                                self, user_message=user_message, step=step,
+                            yield from emit_stagnation_halt(
+                                self, last_classified=last_classified,
+                                user_message=user_message, step=step,
                                 swarms=swarms, turn_prose=turn_prose,
                                 turn_findings=turn_findings,
-                                extra={"stagnation_halt": True},
                             )
                             return
                 except Exception:
@@ -1498,14 +1502,22 @@ class SendLoopMixin:
                     swarms=swarms,
                     turn_prose=turn_prose,
                     turn_findings=turn_findings,
+                    stop_cause=finalize_stop_cause(last_classified),
+                    **classified_finish_kwargs(last_classified),
                 )
                 if disposition == "continue":
                     continue
                 if disposition == "break":
+                    loop_exit_cause = TERMINAL_DRIVER_SWAP
                     break
                 return
 
             # 4. Execute each action as a collapsible tool-call.
+            if native_tools_blocked(last_classified, resp, tool_calls, is_native=is_native, has_actions=turn.has_actions):
+                yield ConvEvent("error", {
+                    "error": "Incomplete tool arguments cannot be executed.",
+                })
+                return
             _action_counters = {
                 "action_seq": action_seq,
                 "swarms": swarms,
@@ -1542,6 +1554,8 @@ class SendLoopMixin:
                     swarms=swarms, turn_prose=turn_prose,
                     turn_findings=turn_findings,
                     extra={"invalid_tool_halt": True},
+                    stop_cause=TERMINAL_INVALID_TOOL,
+                    **classified_finish_kwargs(last_classified),
                 )
                 return
 
@@ -1562,12 +1576,15 @@ class SendLoopMixin:
             if _verify_again:
                 continue
 
-        # Hit the step cap -- close the turn gracefully.
-        limit_msg = "(Reached the investigation step limit for this message.)"
-        yield ConvEvent("message", {"role": "assistant", "text": limit_msg})
-        self._display_transcript.append({"type": "message", "role": "assistant", "text": limit_msg})
-        yield from finalize_assistant_turn(
-            self, user_message=user_message, step=step, swarms=swarms,
-            turn_prose=turn_prose, turn_findings=turn_findings,
+        # Distinct post-loop closes: empty-loop, driver-swap, or true step cap.
+        yield from emit_loop_exit_close(
+            self,
+            loop_exit_cause=loop_exit_cause,
+            last_classified=last_classified,
+            user_message=user_message,
+            step=step,
+            swarms=swarms,
+            turn_prose=turn_prose,
+            turn_findings=turn_findings,
         )
 

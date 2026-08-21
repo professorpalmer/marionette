@@ -72,7 +72,12 @@ class _BudgetPilot:
                 self.user_contents.append(str(m.get("content") or ""))
         txt = self.turns[min(self.step, len(self.turns) - 1)]
         self.step += 1
-        return DriverResponse(text=txt, tokens_out=self.tokens_out, latency_ms=1.0)
+        return DriverResponse(
+            text=txt,
+            tokens_out=self.tokens_out,
+            latency_ms=1.0,
+            meta={"finish_reason": "stop"},
+        )
 
     def complete(self, prompt, *, system=None):
         from pmharness.drivers.openai_compat import DriverResponse
@@ -80,7 +85,12 @@ class _BudgetPilot:
         self.system_prompts.append(system or "")
         txt = self.turns[min(self.step, len(self.turns) - 1)]
         self.step += 1
-        return DriverResponse(text=txt, tokens_out=self.tokens_out, latency_ms=1.0)
+        return DriverResponse(
+            text=txt,
+            tokens_out=self.tokens_out,
+            latency_ms=1.0,
+            meta={"finish_reason": "stop"},
+        )
 
 
 def test_hard_turn_budget_stops_loop_early():
@@ -98,6 +108,7 @@ def test_hard_turn_budget_stops_loop_early():
         events = list(session.send("Work on this +100!"))
         done = next(e for e in events if e.kind == "assistant_done")
         assert done.data.get("turn_budget_exhausted") is True
+        assert done.data.get("stop_cause") == "turn_budget"
         assert done.data["turns"] == 2
         usage = session.get_context_usage()
         assert usage.get("turn_budget_exhausted") is True

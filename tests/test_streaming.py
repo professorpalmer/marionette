@@ -35,14 +35,19 @@ class FakeStreamingDriver:
                             }
                         }
                     ],
-                    "reasoning": "Let me read the file first."
+                    "reasoning": "Let me read the file first.",
+                    "finish_reason": "tool_calls",
+                    "stream_terminal": "tool_calls",
                 }
                 return DriverResponse(text="Reading...", meta=meta)
             else:
                 text = '{"say":"Reading...","actions":[{"kind":"read_file","path":"test.txt"}]}'
-                return DriverResponse(text=text)
+                return DriverResponse(text=text, meta={"finish_reason": "stop"})
         else:
-            return DriverResponse(text="Done.", meta={"tool_calls": [], "reasoning": ""})
+            return DriverResponse(
+                text="Done.",
+                meta={"tool_calls": [], "reasoning": "", "finish_reason": "stop"},
+            )
 
     def chat_stream(self, messages, *, tools=None, system=None, on_delta,
                     on_reasoning_delta=None, on_tool_hint=None):
@@ -67,14 +72,29 @@ class FakeStreamingDriver:
                             }
                         }
                     ],
-                    "reasoning": "Let me read the file first."
+                    "reasoning": "Let me read the file first.",
+                    "finish_reason": "tool_calls",
+                    "stream_terminal": "tool_calls",
+                    "stream_started": True,
                 }
                 return DriverResponse(text="Reading...", meta=meta)
             else:
                 text = '{"say":"Reading...","actions":[{"kind":"read_file","path":"test.txt"}]}'
-                return DriverResponse(text=text)
+                return DriverResponse(
+                    text=text,
+                    meta={"finish_reason": "stop", "stream_started": True, "stream_terminal": "stop"},
+                )
         else:
-            return DriverResponse(text="Done.", meta={"tool_calls": [], "reasoning": ""})
+            return DriverResponse(
+                text="Done.",
+                meta={
+                    "tool_calls": [],
+                    "reasoning": "",
+                    "finish_reason": "stop",
+                    "stream_started": True,
+                    "stream_terminal": "stop",
+                },
+            )
 
 
 def test_driver_chat_stream_assembly():
@@ -126,7 +146,8 @@ def test_driver_chat_stream_assembly():
                             "arguments": 'th": "foo"}'
                         }
                     }]
-                }
+                },
+                "finish_reason": "tool_calls",
             }]
         }).encode("utf-8") + b"\n",
         b"data: " + json.dumps({
@@ -192,6 +213,8 @@ def test_driver_chat_stream_assembly():
         assert tool_calls[0]["id"] == "call_99"
         assert tool_calls[0]["function"]["name"] == "read_file"
         assert tool_calls[0]["function"]["arguments"] == '{"path": "foo"}'
+        assert resp.error is None
+        assert resp.meta["finish_reason"] == "tool_calls"
 
     finally:
         urllib.request.urlopen = original_urlopen
@@ -210,6 +233,9 @@ def _sse_stream_driver(monkeypatch, sse_payloads):
         b"data: " + json.dumps(payload).encode("utf-8") + b"\n"
         for payload in sse_payloads
     ]
+    lines.append(
+        b'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n'
+    )
     lines.append(b"data: [DONE]\n")
 
     class FakeResponse:
@@ -397,7 +423,13 @@ class _MissingIdStreamingPilot:
             return DriverResponse(
                 text="",
                 tokens_out=4,
-                meta={"tool_calls": payload, "reasoning": "read both"},
+                meta={
+                    "tool_calls": payload,
+                    "reasoning": "read both",
+                    "finish_reason": "tool_calls",
+                    "stream_terminal": "tool_calls",
+                    "stream_started": True,
+                },
             )
         if self.calls == 2:
             payload = [
@@ -414,12 +446,24 @@ class _MissingIdStreamingPilot:
             return DriverResponse(
                 text="",
                 tokens_out=3,
-                meta={"tool_calls": payload, "reasoning": "read third"},
+                meta={
+                    "tool_calls": payload,
+                    "reasoning": "read third",
+                    "finish_reason": "tool_calls",
+                    "stream_terminal": "tool_calls",
+                    "stream_started": True,
+                },
             )
         return DriverResponse(
             text="Done.",
             tokens_out=2,
-            meta={"tool_calls": [], "reasoning": ""},
+            meta={
+                "tool_calls": [],
+                "reasoning": "",
+                "finish_reason": "stop",
+                "stream_terminal": "stop",
+                "stream_started": True,
+            },
         )
 
 
@@ -483,7 +527,13 @@ class _LiveReasoningPilot:
         return DriverResponse(
             text="Here is the summary.",
             tokens_out=12,
-            meta={"tool_calls": [], "reasoning": "Let me pull the latest from GitHub and check the wiki."},
+            meta={
+                "tool_calls": [],
+                "reasoning": "Let me pull the latest from GitHub and check the wiki.",
+                "finish_reason": "stop",
+                "stream_terminal": "stop",
+                "stream_started": True,
+            },
         )
 
 

@@ -810,7 +810,7 @@ describe("Wave 4 command-job reattach fences", () => {
           {
             id: 4,
             kind: "stream",
-            data: { cursor: 4, kind: "assistant_done", data: {}, generation: 1 },
+            data: { cursor: 4, kind: "assistant_done", data: { stop_cause: "natural" }, generation: 1 },
           },
         ],
       } as any;
@@ -1081,7 +1081,7 @@ describe("mid-turn store-event cursor reattach", () => {
       events: [{
         id: 5,
         kind: "stream",
-        data: { cursor: 5, kind: "assistant_done", data: {}, generation: 1 },
+        data: { cursor: 5, kind: "assistant_done", data: { stop_cause: "natural" }, generation: 1 },
       }],
     } as any);
 

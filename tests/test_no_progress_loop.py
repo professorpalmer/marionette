@@ -153,7 +153,7 @@ def test_stagnation_governor_halts_on_repeated_prose_and_actions(monkeypatch):
         call_count["n"] += 1
         resp = MagicMock()
         resp.text = payload
-        resp.meta = {}
+        resp.meta = {"finish_reason": "stop"}
         resp.error = None
         return resp
 
@@ -180,6 +180,7 @@ def test_stagnation_governor_halts_on_repeated_prose_and_actions(monkeypatch):
     assert "no new progress" in (notice.data.get("message") or "").lower()
     done = [e for e in events if e.kind == "assistant_done"]
     assert done and done[-1].data.get("stagnation_halt") is True
+    assert done[-1].data.get("stop_cause") == "stagnation"
     # Cap=3 means three identical fingerprints; model asked at most a few times.
     assert call_count["n"] <= 5
 

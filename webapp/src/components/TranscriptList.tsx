@@ -40,7 +40,9 @@ import {
   cardEffectivelyRunning,
   cardHasDurableJob,
   deriveBusyProgress,
+  explorationShelfAnchorId,
   investigatingHeadline,
+  partitionExplorationShelf,
   resolveCardCliInput,
   shortenGoal,
   quietWorkingCueVisible,
@@ -214,7 +216,8 @@ export type Item =
       command?: string;
       output_excerpt?: string;
     }
-  | { kind: "verification"; passed: boolean; output?: string; cmd?: string };
+  | { kind: "verification"; passed: boolean; output?: string; cmd?: string }
+  | { kind: "turn_terminal"; id?: string; cause: string; state: string; text: string };
 
 export type GroupedItem =
   | { kind: "msg"; msg: Msg }
@@ -261,6 +264,7 @@ export type GroupedItem =
       output_excerpt?: string;
     }
   | { kind: "verification"; passed: boolean; output?: string; cmd?: string }
+  | { kind: "turn_terminal"; id?: string; cause: string; state: string; text: string }
   | { kind: "activity_group"; items: ActivityItem[] };
 
 type ActivityItem =
@@ -437,12 +441,20 @@ function VaultCiteChip({
  * every historical finale into its Explored group, then peel those finales
  * back out on seal (row remount churn / flicker in the virtualized feed).
  *
- * Current turn while open: fold streaming + sealed narration once there is
- * investigation activity (or while streaming before the first tool).
+ * Current turn while open: fold worker/progress/plan narration and sealed
+ * mid-turn text that still has later tools. Live answers stay top-level.
  * Current turn when closed / any prior turn: trailing final stands alone.
  */
 function isPlanOrProgressAssistant(msg: Msg): boolean {
   return Boolean(msg.isPlan) || msg.channel === "progress";
+}
+
+/** Live/final answer stays a top-level Bubble — never absorbed into ActivityGroup. */
+export function isLiveAnswerAssistant(msg: Msg): boolean {
+  if (msg.workerStream) return false;
+  if (isPlanOrProgressAssistant(msg)) return false;
+  if (msg.channel === "answer") return true;
+  return msg.streaming === true;
 }
 
 function turnHasInvestigationActivity(items: Item[], turnStart: number): boolean {
@@ -515,14 +527,20 @@ export function collectIntermediateAssistantItems(
     // Open-loop absorption is current-turn only (see docstring).
     const openAbsorb = agentLoopOpen && i >= currentTurnStart;
     if (openAbsorb) {
-      // Mid-turn: keep streaming + sealed narration inside the fold from the
-      // first token once the turn is investigative, and while streaming even
-      // before the first tool (avoids outside→absorb blink). Pure chat still
-      // peels to a standalone finale when the loop closes (no card after).
-      if (foldActivity || item.msg.streaming === true) {
+      if (item.msg.workerStream) {
         intermediateItems.add(item);
+        continue;
       }
-      continue;
+      // Live answer / unmarked streaming stays a top-level Bubble so it
+      // cannot hide behind a collapsed fold or remount on terminal peel.
+      if (isLiveAnswerAssistant(item.msg)) {
+        continue;
+      }
+      if (isPlanOrProgressAssistant(item.msg) && (foldActivity || item.msg.streaming === true)) {
+        intermediateItems.add(item);
+        continue;
+      }
+      // Sealed mid-turn narration still uses the sealed rule below.
     }
 
     const later = laterInvestigationActivity(items, i);
@@ -590,6 +608,9 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
         flush();
         grouped.push(item);
       }
+    } else if (item.kind === "turn_terminal") {
+      flush();
+      grouped.push(item);
     } else if (item.kind === "swarm_result") {
       // These are emitted by tool execution, so they belong inside the same
       // collapsed investigation as the action card that produced them. Rendering
@@ -847,7 +868,7 @@ export function activityGroupStableId(items: ActivityItem[], fallbackIndex: numb
   return canon;
 }
 
-function stableItemKey(it: GroupedItem, i: number): string {
+export function stableItemKey(it: GroupedItem, i: number): string {
   switch (it.kind) {
     case "msg":
       return `msg-${objKey(it.msg)}`;
@@ -881,6 +902,8 @@ function stableItemKey(it: GroupedItem, i: number): string {
       return `auth-${it.id || i}`;
     case "steer":
       return `steer-${i}`;
+    case "turn_terminal":
+      return it.id ? `turn-term-${it.id}` : `turn-term-${i}-${it.cause}-${it.state}`;
     case "quality_gate":
       return `qg-${i}-${it.outcome}-${it.passed ? "ok" : "fail"}`;
     case "verifying":
@@ -1416,6 +1439,19 @@ export const TranscriptList = memo(function TranscriptList({
           live={Boolean(it.streaming)}
         />
       );
+    } else if (it.kind === "turn_terminal") {
+      return (
+        <div
+          key={key}
+          role="status"
+          data-testid="turn-terminal-chip"
+          data-cause={it.cause}
+          data-state={it.state}
+          className="flex items-center gap-1.5 py-1 px-3 rounded-md border border-edge/50 text-[10.5px] w-fit my-1 select-none font-mono text-muted"
+        >
+          <span>{it.text}</span>
+        </div>
+      );
     } else if (it.kind === "activity_group") {
       const openId = activityGroupStableId(it.items, i);
       return (
@@ -1616,6 +1652,65 @@ function getCardMeta(card: Card): string | null {
   }
 
   return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+function ExplorationShelf({
+  items,
+  duplicateCounts,
+  onToggleCard,
+  activityGroupOpen,
+}: {
+  items: Array<{ kind: "card"; card: Card }>;
+  duplicateCounts: number[];
+  onToggleCard: (card: Card) => void;
+  activityGroupOpen: boolean;
+}) {
+  const anyRunning = items.some((it) => cardEffectivelyRunning(it.card));
+  const [open, setOpen] = useState(anyRunning);
+  const userCollapsedRef = useRef(false);
+  useEffect(() => {
+    if (anyRunning && !userCollapsedRef.current) {
+      setOpen(true);
+    }
+  }, [anyRunning]);
+  const kinds = items.map((it) => it.card.kind || "action");
+  const summary = aggregateExplorationSummary(kinds) || `${items.length} steps`;
+  const headline = anyRunning ? `Exploring · ${summary}` : summary;
+  const shelfId = explorationShelfAnchorId(items.map((it) => it.card.id));
+  return (
+    <div className="w-full" data-testid="exploration-shelf" data-count={items.length}>
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-label={`Exploration ${summary}`}
+        onClick={() => {
+          setOpen((v) => {
+            const next = !v;
+            userCollapsedRef.current = !next;
+            return next;
+          });
+        }}
+        className="flex items-center gap-1.5 py-0.5 text-[11px] font-sans font-normal text-faint/80 hover:text-muted transition w-fit max-w-full select-none bg-transparent border-0 p-0 cursor-pointer text-left"
+      >
+        {open ? <ChevronDown size={10} className="text-faint/55 shrink-0" /> : <ChevronRight size={10} className="text-faint/55 shrink-0" />}
+        {anyRunning ? <Loader2 size={10} className="animate-spin text-faint/60 shrink-0" /> : null}
+        <span className="truncate">{headline}</span>
+      </button>
+      {open && (
+        <div className="flex flex-col gap-0.5 pl-2 mt-0.5">
+          {items.map((it, idx) => (
+            <ActionCard
+              key={it.card.id || `${shelfId}-${idx}`}
+              card={it.card}
+              onToggle={() => onToggleCard(it.card)}
+              duplicateCount={duplicateCounts[idx] || 1}
+              activityGroupOpen={activityGroupOpen}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function ActivityGroup({
@@ -1964,7 +2059,25 @@ function ActivityGroup({
       </button>
       {open && (
         <div className="flex flex-col gap-0.5 pl-3 mt-1 border-l border-edge/30 w-full">
-          {displayItems.map(renderInner)}
+          {partitionExplorationShelf(displayItems, (row) => (
+            row.kind === "card" ? String(row.card.kind || "") : null
+          )).map((row) => {
+            if (row.kind === "shelf") {
+              const cards = row.items.filter(
+                (it): it is { kind: "card"; card: Card } => it.kind === "card",
+              );
+              return (
+                <ExplorationShelf
+                  key={explorationShelfAnchorId(cards.map((c) => c.card.id))}
+                  items={cards}
+                  duplicateCounts={row.indexes.map((idx) => duplicateCounts[idx] || 1)}
+                  onToggleCard={onToggleCard}
+                  activityGroupOpen={open}
+                />
+              );
+            }
+            return renderInner(row.item, row.index);
+          })}
         </div>
       )}
     </div>

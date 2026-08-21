@@ -312,6 +312,13 @@ def test_driver_chat_stream_mocked_subprocess(monkeypatch, tmp_path):
     # Kernel system — not Marionette's skills dump.
     assert "CodeGraph" in joined or "puppetmaster codegraph" in joined
     assert "HOST MODE CONTRACT" in joined
+    assert resp.meta.get("finish_reason") == "completed"
+    assert resp.meta.get("stream_terminal") == "stop"
+    assert resp.meta.get("stream_started") is True
+    assert resp.meta.get("api_mode") == "cursor_cli"
+    assert resp.meta.get("wire_mode") == "cursor_cli_stream"
+    assert resp.meta.get("last_provider_event") == "result"
+    assert d.requires_explicit_terminal is True
 
 
 def test_agent_child_env_puts_harness_python_first(monkeypatch, tmp_path):
@@ -1318,3 +1325,153 @@ def test_print_path_fails_closed_on_fable_vs_luna(monkeypatch, tmp_path):
     assert resp.meta["served_model"] == "gpt-5.6-luna-medium"
     assert resp.meta["identity_status"] == "mismatch"
     assert d._native_chat_id is None
+    assert resp.meta.get("finish_reason") not in ("completed", "stop")
+    assert resp.meta.get("stream_terminal") != "stop"
+
+
+def _fake_cursor_proc(stream, *, returncode=0):
+    class FakeProc:
+        def __init__(self):
+            self.returncode = returncode
+            self.stdout = io.StringIO(stream)
+            self.stderr = io.StringIO("")
+
+        def wait(self, timeout=None):
+            if returncode != 0:
+                self.returncode = returncode
+            return returncode
+
+        def kill(self):
+            pass
+
+    return FakeProc()
+
+
+def test_driver_chat_stamps_natural_terminal_on_success(monkeypatch, tmp_path):
+    fake_bin = tmp_path / "agent"
+    fake_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+    stream = "\n".join([
+        json.dumps({
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
+            "timestamp_ms": 1,
+        }),
+        json.dumps({
+            "type": "result",
+            "is_error": False,
+            "result": "ok",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }),
+        "",
+    ])
+    monkeypatch.setattr(
+        "pmharness.drivers.cursor_cli.subprocess.Popen",
+        lambda *a, **k: _fake_cursor_proc(stream),
+    )
+    d = CursorCliDriver(
+        name="cursor-cli:m", model="composer-2.5", agent_binary=str(fake_bin),
+    )
+    resp = d.chat([{"role": "user", "content": "hi"}])
+    assert resp.error is None
+    assert resp.text == "ok"
+    assert resp.meta["finish_reason"] == "completed"
+    assert resp.meta["stream_terminal"] == "stop"
+    assert resp.meta["stream_started"] is True
+    assert resp.meta["api_mode"] == "cursor_cli"
+    assert resp.meta["wire_mode"] == "cursor_cli_stream"
+    assert resp.meta["last_provider_event"] == "result"
+
+
+def test_driver_nonzero_exit_does_not_stamp_natural(monkeypatch, tmp_path):
+    fake_bin = tmp_path / "agent"
+    fake_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+    stream = "\n".join([
+        json.dumps({
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "partial"}]},
+            "timestamp_ms": 1,
+        }),
+        "",
+    ])
+    monkeypatch.setattr(
+        "pmharness.drivers.cursor_cli.subprocess.Popen",
+        lambda *a, **k: _fake_cursor_proc(stream, returncode=1),
+    )
+    d = CursorCliDriver(
+        name="cursor-cli:m", model="composer-2.5", agent_binary=str(fake_bin),
+    )
+    resp = d.chat_stream(
+        [{"role": "user", "content": "hi"}],
+        on_delta=lambda _t: None,
+    )
+    assert resp.meta.get("finish_reason") not in ("completed", "stop")
+    assert resp.meta.get("stream_terminal") != "stop"
+
+
+def test_driver_result_error_does_not_stamp_natural(monkeypatch, tmp_path):
+    fake_bin = tmp_path / "agent"
+    fake_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+    stream = "\n".join([
+        json.dumps({
+            "type": "result",
+            "is_error": True,
+            "result": "agent exploded",
+        }),
+        "",
+    ])
+    monkeypatch.setattr(
+        "pmharness.drivers.cursor_cli.subprocess.Popen",
+        lambda *a, **k: _fake_cursor_proc(stream),
+    )
+    d = CursorCliDriver(
+        name="cursor-cli:m", model="composer-2.5", agent_binary=str(fake_bin),
+    )
+    resp = d.chat([{"role": "user", "content": "hi"}])
+    assert resp.error
+    assert resp.meta.get("finish_reason") not in ("completed", "stop")
+    assert resp.meta.get("stream_terminal") != "stop"
+
+
+def test_driver_timeout_does_not_stamp_natural(monkeypatch, tmp_path):
+    import subprocess
+
+    fake_bin = tmp_path / "agent"
+    fake_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+    stream = "\n".join([
+        json.dumps({
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "partial"}]},
+            "timestamp_ms": 1,
+        }),
+        "",
+    ])
+
+    class TimeoutProc:
+        returncode = None
+        stdout = io.StringIO(stream)
+        stderr = io.StringIO("")
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired(cmd="agent", timeout=timeout or 1)
+
+        def kill(self):
+            self.returncode = -9
+
+    monkeypatch.setattr(
+        "pmharness.drivers.cursor_cli.subprocess.Popen",
+        lambda *a, **k: TimeoutProc(),
+    )
+    d = CursorCliDriver(
+        name="cursor-cli:m",
+        model="composer-2.5",
+        agent_binary=str(fake_bin),
+        timeout=1,
+    )
+    resp = d.chat_stream(
+        [{"role": "user", "content": "hi"}],
+        on_delta=lambda _t: None,
+    )
+    assert resp.error
+    assert "timed out" in resp.error
+    assert resp.meta.get("finish_reason") not in ("completed", "stop")
+    assert resp.meta.get("stream_terminal") != "stop"

@@ -8,7 +8,9 @@
 import { describe, expect, it } from "vitest";
 import {
   STREAM_ABORT_MESSAGE,
+  alreadySettledOnDoneStatus,
   resetCrossSessionLatchesOnSwitch,
+  resetTurnLifecycleOnSessionSwitch,
   resetTurnSettledOnSessionSwitch,
   shouldRefreshBusyChrome,
   streamErrorText,
@@ -59,6 +61,18 @@ describe("streamErrorText", () => {
     expect(streamErrorText("something odd")).toBe(STREAM_ABORT_MESSAGE);
   });
 
+  it("named model terminals are not connection-lost chrome", () => {
+    expect(streamErrorText({ message: "boom" }, "length")).toMatch(/length/i);
+    expect(streamErrorText({ message: "boom" }, "length")).not.toMatch(
+      /connection|closed before/i,
+    );
+    expect(streamErrorText({ message: "boom" }, "content_filter")).toMatch(/refused/i);
+    expect(streamErrorText({ message: "boom" }, "incomplete")).toMatch(/incomplete/i);
+    expect(streamErrorText({ message: "boom" }, "provider_eof")).not.toMatch(
+      /connection lost/i,
+    );
+  });
+
   it("never echoes raw error payload text (no token/body leakage)", () => {
     for (const err of [
       { status: 403, code: "auth", message: `rejected token ${SECRET}` },
@@ -79,14 +93,13 @@ describe("Wave 5 stream terminal chrome gates", () => {
     expect(streamOnDoneDecision({ turnSettled: true, userStopped: false }).kind).toBe("done");
   });
 
-  it("does not paint abort when the answer is already complete", () => {
+  it("does not treat a sealed answer as authority for stream EOF", () => {
     expect(
       streamOnDoneDecision({
         turnSettled: false,
         userStopped: false,
-        answerComplete: true,
       }).kind,
-    ).toBe("done");
+    ).toBe("abort_error");
   });
 
   it("blocks busy-chrome refresh after settle or Stop", () => {
@@ -99,6 +112,38 @@ describe("Wave 5 stream terminal chrome gates", () => {
     const ref = { current: true };
     resetTurnSettledOnSessionSwitch(ref);
     expect(ref.current).toBe(false);
+  });
+
+  it("resets turn lifecycle and recovery context on session switch", () => {
+    const lifecycle: { current: string } = { current: "settled_incomplete" };
+    const cause: { current: string | null } = { current: "provider_eof" };
+    const recoveryDispatchingRef = { current: true };
+    const recoveryContextRef = {
+      current: { sessionId: "sess-a", generation: 2 },
+    };
+    resetTurnLifecycleOnSessionSwitch({
+      setTurnLifecycle: (next) => { lifecycle.current = next; },
+      setTerminalCause: (next) => { cause.current = next; },
+      recoveryDispatchingRef,
+      recoveryContextRef,
+    });
+    expect(lifecycle.current).toBe("settled_complete");
+    expect(cause.current).toBeNull();
+    expect(recoveryDispatchingRef.current).toBe(false);
+    expect(recoveryContextRef.current).toBeNull();
+  });
+
+  it("already-settled onDone never upgrades error/idle to done", () => {
+    expect(alreadySettledOnDoneStatus({
+      prev: "error",
+      liveJobs: false,
+      userStopped: false,
+    })).toBe("error");
+    expect(alreadySettledOnDoneStatus({
+      prev: "idle",
+      liveJobs: false,
+      userStopped: true,
+    })).toBe("idle");
   });
 
   it("clears userStopped / resume / approved-retry latches on session switch", () => {

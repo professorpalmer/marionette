@@ -13,6 +13,7 @@ export {
   transcriptResponseToItems,
   shouldPreferLocalTranscript,
   mergeTranscriptItems,
+  mergeLocalTurnTerminals,
   transcriptFingerprint,
   mergeSwarmResultReuse,
 } from "./transcriptItems";
@@ -123,6 +124,7 @@ export {
   appendVerification,
   appendVerifying,
   appendStreamError,
+  appendTurnTerminal,
   appendNonStreamingThinking,
   applySwarmResultToItems,
   failSwarmPendingForActionError,
@@ -309,7 +311,9 @@ export {
   streamOnErrorDecision,
   shouldRefreshBusyChrome,
   resetTurnSettledOnSessionSwitch,
+  resetTurnLifecycleOnSessionSwitch,
   resetCrossSessionLatchesOnSwitch,
+  alreadySettledOnDoneStatus,
 } from "./streamTerminal";
 export { default as TranscriptEmptyState } from "./TranscriptEmptyState";
 export { createChatEventsReattach } from "./chatEventsReattach";

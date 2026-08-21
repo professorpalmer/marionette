@@ -1072,6 +1072,7 @@ describe("pillStatus + workspaceDisplay + StatusPill chrome", () => {
     expect(isPilotMouthBusy(false, "thinking")).toBe(true);
     expect(isPilotMouthBusy(false, "streaming")).toBe(true);
     expect(isPilotMouthBusy(false, "idle")).toBe(false);
+    expect(isPilotMouthBusy(false, "idle", true)).toBe(true);
   });
 
   it("workspaceLeafName and StatusPill helpers stay calm Cursor chrome", () => {

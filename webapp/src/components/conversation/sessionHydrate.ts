@@ -107,6 +107,7 @@ export const SESSION_STATE_FAIL_NOTICE =
 /**
  * On activeSessionId change: default idle/turnOpen=false until runners resolve
  * for the target session. Prevents busy A's Stop/thinking chrome sticking on B.
+ * Conversation overlays sessionSwitchPending so running B never flashes Send.
  */
 export function shouldResetBusyChromeOnSwitch(switchedSession: boolean): boolean {
   return switchedSession;

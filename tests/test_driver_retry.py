@@ -174,9 +174,11 @@ def test_openai_driver_chat_stream_no_retry_after_delta(monkeypatch):
 
     assert calls_to_urlopen == 1
     assert deltas == ["Hello"]
+    assert resp.text == "Hello"
     assert resp.error is not None
     assert "HTTP 503" in resp.error
     assert resp.meta.get("retry_attempts") == 1
+    assert resp.meta.get("stream_started") is True
 
 
 def test_pool_rotate_backoff_honors_retry_after_and_classifier():

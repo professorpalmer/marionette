@@ -18,7 +18,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .base import SYSTEM_PROMPT, DriverResponse
 from .cursor_cli import (
@@ -905,10 +905,135 @@ class WarmAcpSession:
         return out
 
 
+# session/prompt JSON-RPC success is the ACP completed event. Known stopReason
+# variants map onto the shared terminal vocabulary; missing stopReason stamps
+# completed from that event (not text shape). Unrecognized reasons fail closed.
+_ACP_API_MODE = "cursor_acp"
+_ACP_WIRE_MODE = "cursor_acp"
+_ACP_LAST_PROVIDER_EVENT = "session/prompt"
+
+_ACP_NATURAL_STOPS = frozenset({
+    "end_turn",
+    "stop",
+    "completed",
+    "complete",
+    "stop_sequence",
+})
+_ACP_LENGTH_STOPS = frozenset({
+    "max_tokens",
+    "length",
+    "max_output_tokens",
+})
+_ACP_INCOMPLETE_STOPS = frozenset({
+    "incomplete",
+    "empty",
+    "max_turn_requests",
+})
+_ACP_FILTER_STOPS = frozenset({
+    "refusal",
+    "content_filter",
+    "content_filtered",
+})
+_ACP_CANCEL_STOPS = frozenset({
+    "cancelled",
+    "canceled",
+    "user_cancelled",
+    "user_canceled",
+    "interrupted",
+})
+_ACP_ERROR_STOPS = frozenset({
+    "error",
+    "failed",
+})
+
+
+def _as_acp_stop_text(value: Any) -> str:
+    if value is None or isinstance(value, bool):
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    try:
+        return str(value).strip()
+    except Exception:
+        return ""
+
+
+def _acp_stop_key(value: Any) -> str:
+    return _as_acp_stop_text(value).lower().replace("-", "_")
+
+
+def _cursor_acp_terminal_fields(
+    stop_reason: Any,
+    *,
+    result: Any = None,
+    stream_started: bool = True,
+) -> Tuple[Dict[str, Any], Optional[str]]:
+    """Authoritative stamps for a successful ACP ``session/prompt`` close.
+
+    Returns ``(meta, error)``. Natural stops and a missing ``stopReason`` on
+    the JSON-RPC completed event stamp ``completed`` + ``stop``. Length,
+    incomplete, filter, cancel, and error stay truthful and never look like
+    a clean finish. Unrecognized ``stopReason`` fails closed. Never infers
+    completion from assistant text shape.
+    """
+    raw = _as_acp_stop_text(stop_reason)
+    if not raw and isinstance(result, dict):
+        raw = _as_acp_stop_text(
+            result.get("stopReason") or result.get("stop_reason")
+        )
+    key = _acp_stop_key(raw)
+    finish = ""
+    terminal = "incomplete"
+    err: Optional[str] = None
+    if not key:
+        # JSON-RPC success of session/prompt is the completed event.
+        finish = "completed"
+        terminal = "stop"
+    elif key in _ACP_NATURAL_STOPS:
+        finish = "completed"
+        terminal = "stop"
+    elif key in _ACP_LENGTH_STOPS:
+        finish = "length"
+        terminal = "length"
+        err = f"ACP prompt finished with stopReason={raw}"
+    elif key in _ACP_INCOMPLETE_STOPS:
+        finish = "incomplete"
+        terminal = "incomplete"
+        err = f"ACP prompt finished with stopReason={raw}"
+    elif key in _ACP_FILTER_STOPS:
+        finish = "content_filter"
+        terminal = "content_filter"
+        err = f"ACP prompt finished with stopReason={raw}"
+    elif key in _ACP_CANCEL_STOPS:
+        finish = "cancelled"
+        terminal = "cancelled"
+        err = f"ACP prompt finished with stopReason={raw}"
+    elif key in _ACP_ERROR_STOPS:
+        finish = "failed"
+        terminal = "error"
+        err = f"ACP prompt finished with stopReason={raw}"
+    else:
+        finish = raw
+        terminal = "incomplete"
+        err = f"ACP prompt finished with unrecognized stopReason={raw}"
+    meta = {
+        "finish_reason": finish,
+        "stream_terminal": terminal,
+        "stream_started": bool(stream_started),
+        "api_mode": _ACP_API_MODE,
+        "wire_mode": _ACP_WIRE_MODE,
+        "last_provider_event": _ACP_LAST_PROVIDER_EVENT,
+        "stop_reason": raw,
+    }
+    return meta, err
+
+
 class CursorAcpDriver:
     """Warm ACP pilot with automatic --print fallback."""
 
     supports_streaming = True
+    # Production Cursor path: fail closed without an explicit provider terminal.
+    requires_explicit_terminal = True
 
     def __init__(
         self,
@@ -1051,6 +1176,13 @@ class CursorAcpDriver:
         tin = int(out.get("tokens_in") or 0)
         tout = int(out.get("tokens_out") or 0)
         requested = (self.model or "").strip()
+        # session/prompt JSON-RPC success is the stream close. Host tools stay
+        # empty so incomplete/error terminals cannot execute truncated calls.
+        terminal_meta, terminal_error = _cursor_acp_terminal_fields(
+            out.get("stop_reason"),
+            result=out.get("result"),
+            stream_started=True,
+        )
         meta = {
             "tool_calls": [],
             "session_id": out.get("session_id") or "",
@@ -1058,7 +1190,6 @@ class CursorAcpDriver:
             "cursor_acp": True,
             "cursor_cli_internal_tools": [],
             "host_tools_ignored": True,
-            "stop_reason": out.get("stop_reason"),
             # Plan credits — $ meter is estimate-only unless agent returns cost.
             "billing": "plan",
             "reasoning": str(out.get("reasoning") or ""),
@@ -1068,6 +1199,7 @@ class CursorAcpDriver:
             "identity_status": IDENTITY_AUTO,
             "token_basis": "provider" if (tin or tout) else "unknown",
         }
+        meta.update(terminal_meta)
         cost = out.get("provider_cost_usd")
         if cost is not None:
             try:
@@ -1086,6 +1218,7 @@ class CursorAcpDriver:
             tokens_out=tout,
             latency_ms=(time.time() - t0) * 1000.0,
             model=self.name,
+            error=terminal_error,
             meta=meta,
         )
 

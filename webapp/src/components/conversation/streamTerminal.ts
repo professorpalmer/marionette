@@ -2,6 +2,19 @@
  * Pure helpers for stream onDone / onError terminal chrome.
  */
 
+import {
+  CAUSE_CONTENT_FILTER,
+  CAUSE_INCOMPLETE,
+  CAUSE_LENGTH,
+  CAUSE_PROVIDER_EOF,
+  TURN_SETTLED_COMPLETE,
+  canonicalizeTerminalCause,
+  terminalCauseCopy,
+  type RecoveryContext,
+  type TerminalCause,
+  type TurnLifecycle,
+} from "../../lib/turnTerminal";
+
 export const STREAM_ABORT_MESSAGE =
   "[aborted] Connection closed before the turn finished. Send again to retry.";
 
@@ -30,7 +43,19 @@ function streamErrorHttpStatus(err: StreamErrorLike): number | null {
  * raw error payload (it crossed a process boundary and must stay secret-free);
  * only the HTTP status / connection class picks the message.
  */
-export function streamErrorText(err: StreamErrorLike): string {
+export function streamErrorText(
+  err: StreamErrorLike,
+  terminalCause?: unknown,
+): string {
+  const named = canonicalizeTerminalCause(terminalCause);
+  if (
+    named === CAUSE_LENGTH
+    || named === CAUSE_INCOMPLETE
+    || named === CAUSE_CONTENT_FILTER
+    || named === CAUSE_PROVIDER_EOF
+  ) {
+    return terminalCauseCopy(named);
+  }
   const status = streamErrorHttpStatus(err);
   if (status === 401 || status === 403) {
     return (
@@ -64,18 +89,17 @@ export type StreamTerminalDecision =
   | { kind: "noop" };
 
 /**
- * Live SSE onDone after flush — abort if the turn never settled.
- * When the transcript already shows a sealed answer (SSE lag / missing
- * assistant_done), settle silently instead of painting a false abort bubble.
+ * Live SSE onDone after flush — abort unless an authoritative terminal
+ * already settled the turn (assistant_done / user Stop).
+ *
+ * Transcript shape (`answerComplete` / turnLooksAnswerComplete) is never
+ * authority: a sealed mid-sentence bubble + EOF is incomplete, not done.
  */
 export function streamOnDoneDecision(opts: {
   turnSettled: boolean;
   userStopped: boolean;
-  /** Pure-chat answer already sealed on screen (see turnLooksAnswerComplete). */
-  answerComplete?: boolean;
 }): StreamTerminalDecision {
   if (opts.turnSettled || opts.userStopped) return { kind: "done" };
-  if (opts.answerComplete) return { kind: "done" };
   return { kind: "abort_error" };
 }
 
@@ -84,6 +108,40 @@ export function resetTurnSettledOnSessionSwitch(
   turnSettledRef: { current: boolean },
 ): void {
   turnSettledRef.current = false;
+}
+
+/**
+ * Idle/settled baseline after A→B. Incomplete recovery chrome and Continue/Retry
+ * context from A must not linger on B.
+ */
+export function resetTurnLifecycleOnSessionSwitch(opts: {
+  setTurnLifecycle: (lifecycle: TurnLifecycle) => void;
+  setTerminalCause: (cause: TerminalCause | null) => void;
+  recoveryDispatchingRef: { current: boolean };
+  recoveryContextRef: { current: RecoveryContext | null };
+}): void {
+  opts.setTurnLifecycle(TURN_SETTLED_COMPLETE);
+  opts.setTerminalCause(null);
+  opts.recoveryDispatchingRef.current = false;
+  opts.recoveryContextRef.current = null;
+}
+
+/**
+ * Live SSE onDone after an authoritative settle: never overwrite error /
+ * interrupted / idle chrome with a success pill.
+ */
+export function alreadySettledOnDoneStatus(opts: {
+  prev: "idle" | "thinking" | "executing" | "done" | "error" | "streaming" | "awaiting_swarm";
+  liveJobs: boolean;
+  userStopped: boolean;
+}): typeof opts.prev {
+  if (opts.liveJobs && !opts.userStopped) {
+    if (opts.prev === "error" || opts.prev === "idle") return opts.prev;
+    return "awaiting_swarm";
+  }
+  if (opts.prev === "error" || opts.prev === "idle") return opts.prev;
+  if (opts.prev === "awaiting_swarm") return "idle";
+  return opts.prev;
 }
 
 /**

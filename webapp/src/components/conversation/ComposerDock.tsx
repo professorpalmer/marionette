@@ -23,6 +23,7 @@ import {
   X,
   Zap,
   Brain,
+  RefreshCw,
 } from "lucide-react";
 import { api, type Config, type ContextUsageResponse } from "../../lib/api";
 import PilotPicker from "../PilotPicker";
@@ -135,6 +136,11 @@ export default function ComposerDock({
   handleQueueAdd,
   stop,
   send,
+  recoveryAvailable = false,
+  recoveryRetryAvailable = false,
+  recoveryCause = null,
+  onContinue,
+  onRetry,
 }: {
   config: Config | null;
   taRef: RefObject<HTMLTextAreaElement | null>;
@@ -228,6 +234,11 @@ export default function ComposerDock({
   handleQueueAdd: () => void;
   stop: () => void;
   send: (mode?: "interrupt") => void;
+  recoveryAvailable?: boolean;
+  recoveryRetryAvailable?: boolean;
+  recoveryCause?: string | null;
+  onContinue?: () => void;
+  onRetry?: () => void;
 }) {
   const queueNotice = usePanelNotice(queueLoadError);
   const matchingSlash =
@@ -1022,6 +1033,30 @@ export default function ComposerDock({
               >
                 <span className="composer-toolbar-send-label">Interrupt</span>
               </button>
+            )}
+            {!composerBusy && recoveryAvailable && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => onContinue?.()}
+                  disabled={editBusy || transcriptStale || !onContinue}
+                  title={recoveryCause ? `Continue the incomplete reply (${recoveryCause})` : "Continue from the preserved partial answer"}
+                  aria-label="Continue"
+                  className="px-2 h-[20px] rounded-md bg-panel2/60 border border-edge/60 text-faint hover:text-muted hover:border-edge2 text-[10.5px] font-medium flex items-center gap-1 transition disabled:opacity-40 disabled:cursor-default"
+                >
+                  <span className="composer-toolbar-send-label">Continue</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onRetry?.()}
+                  disabled={editBusy || transcriptStale || !recoveryRetryAvailable || !onRetry}
+                  title="Retry the latest user ask"
+                  aria-label="Retry"
+                  className="px-2 h-[20px] rounded-md bg-panel2/60 border border-edge/60 text-faint hover:text-muted hover:border-edge2 text-[10.5px] font-medium flex items-center gap-1 transition disabled:opacity-40 disabled:cursor-default"
+                >
+                  <RefreshCw size={9} /><span className="composer-toolbar-send-label">Retry</span>
+                </button>
+              </>
             )}
             {composerBusy
               ? <>

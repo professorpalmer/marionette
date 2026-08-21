@@ -234,7 +234,7 @@ def test_openai_compat_chat_stream_prompt_caching(monkeypatch):
     def mock_urlopen(req, timeout=None):
         chunks = [
             {"choices": [{"delta": {"content": "Hello "}}]},
-            {"choices": [{"delta": {"content": "world!"}}]},
+            {"choices": [{"delta": {"content": "world!"}, "finish_reason": "stop"}]},
             {
                 "choices": [],
                 "usage": {

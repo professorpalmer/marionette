@@ -48,10 +48,12 @@ _CODEX_LENGTH_CONTINUE = (
     "prior text. Finish the answer directly.]"
 )
 _CODEX_MAX_INCOMPLETE_RETRIES = 3
-# After a visible final_answer with no tools, do not wait forever for
-# response.completed. Codex keepalives reset a long socket timeout, which
-# left Electron on Still working until Stop sealed the already-buffered
-# summary. Drain a short idle for in-flight summary tokens, then finish.
+# ChatGPT Codex only: after a visible final_answer with no tools, do not
+# wait forever for response.completed. Codex keepalives reset a long socket
+# timeout, which left Electron on Still working until Stop sealed the
+# already-buffered summary. Drain a short idle for in-flight summary tokens,
+# then finish. Non-ChatGPT Responses hosts (OpenCode Go Muse, etc.) must
+# wait for an authoritative terminal instead of forging completed.
 _POST_ANSWER_SLICE_SECONDS = 0.25
 _POST_ANSWER_IDLE_SECONDS = 0.5
 _POST_ANSWER_MAX_SECONDS = 2.0
@@ -244,6 +246,34 @@ def _tools_to_responses(tools: Optional[list]) -> Optional[List[dict]]:
                 "parameters": t.get("parameters") or {"type": "object", "properties": {}},
             })
     return out or None
+
+
+def _codex_stream_terminal_fields(raw: dict, finish: str, err_msg: Optional[str]) -> dict:
+    """Authoritative stream stamps so receipts do not infer wire_mode=sync."""
+    status = str(raw.get("status") or "")
+    last_event = str(raw.get("last_provider_event") or "").strip()
+    if finish == "content_filter":
+        terminal = "content_filter"
+        last_event = last_event or "response.incomplete"
+    elif err_msg or status == "failed" or finish == "failed":
+        terminal = "error"
+        last_event = last_event or "response.failed"
+    elif status == "incomplete" or finish == "incomplete":
+        terminal = "incomplete"
+        last_event = last_event or "response.incomplete"
+    elif status == "completed" or finish in ("completed", "stop"):
+        terminal = "stop"
+        last_event = last_event or "response.completed"
+    else:
+        terminal = "incomplete"
+        last_event = last_event or "response.incomplete"
+    out = {
+        "stream_started": True,
+        "stream_terminal": terminal,
+    }
+    if last_event:
+        out["last_provider_event"] = last_event
+    return out
 
 
 def _incomplete_reason(raw: dict) -> str:
@@ -490,6 +520,7 @@ def _consume_codex_sse(
     on_delta: Optional[Callable[..., None]] = None,
     on_reasoning_delta: Optional[Callable[..., None]] = None,
     on_stream_item_done: Optional[Callable[..., None]] = None,
+    chatgpt_backend: bool = True,
 ) -> dict:
     """Consume Codex Responses SSE; return a synthetic Responses-shaped dict.
 
@@ -499,6 +530,11 @@ def _consume_codex_sse(
     Channel ownership is keyed by ``item_id`` / ``output_index`` — never by the
     most-recently-added item. Commentary is visible progress; analysis/reasoning
     stay on the reasoning stream; final_answer is the answer stream.
+
+    The post-answer idle drain (forge ``completed`` after 0.5s idle / 2.0s
+    total) is ChatGPT-only. Non-ChatGPT Responses hosts wait for
+    ``response.completed`` / ``incomplete`` / ``failed``; EOF or ``[DONE]``
+    without that terminal is incomplete/error and keeps partial text.
     """
     collected_items: List[dict] = []
     text_deltas: List[str] = []
@@ -519,6 +555,7 @@ def _consume_codex_sse(
     saw_terminal = False
     stream_error: Optional[str] = None
     answer_item_done = False
+    last_provider_event = ""
 
     def _remember_item(
         item: dict,
@@ -586,6 +623,8 @@ def _consume_codex_sse(
 
     def _finish_tool_free_answer():
         nonlocal saw_terminal, terminal_status
+        if not chatgpt_backend:
+            return
         saw_terminal = True
         terminal_status = "completed"
         _seal_open_channels(("progress", "reasoning", "answer"), "")
@@ -597,7 +636,7 @@ def _consume_codex_sse(
         keepalive_streak = 0
 
     def _should_finish_drain():
-        if not post_answer_drain or has_tool_calls:
+        if not chatgpt_backend or not post_answer_drain or has_tool_calls:
             return False
         now = time.monotonic()
         if now - last_meaningful >= _POST_ANSWER_IDLE_SECONDS:
@@ -616,6 +655,8 @@ def _consume_codex_sse(
         """Start the short post-answer drain. False means caller should stop."""
         nonlocal post_answer_drain, drain_started, last_meaningful
         nonlocal keepalive_streak
+        if not chatgpt_backend:
+            return True
         if has_tool_calls:
             return True
         if post_answer_drain:
@@ -639,7 +680,8 @@ def _consume_codex_sse(
             break
         except (TimeoutError, socket.timeout):
             if (
-                not has_tool_calls
+                chatgpt_backend
+                and not has_tool_calls
                 and (answer_item_done or text_deltas or collected_items)
             ):
                 _finish_tool_free_answer()
@@ -679,6 +721,8 @@ def _consume_codex_sse(
         if not isinstance(event, dict):
             continue
         event_type = str(event.get("type") or "")
+        if event_type:
+            last_provider_event = event_type
 
         if event_type == "error":
             stream_error = str(
@@ -850,6 +894,7 @@ def _consume_codex_sse(
             "output_text": "",
             "usage": {},
             "error": stream_error,
+            "last_provider_event": last_provider_event or "error",
         }
 
     if collected_items:
@@ -871,6 +916,7 @@ def _consume_codex_sse(
             "output_text": "",
             "usage": {},
             "error": "Codex Responses stream did not emit a terminal response",
+            "last_provider_event": last_provider_event,
         }
 
     assembled_text = "".join(text_deltas)
@@ -886,6 +932,10 @@ def _consume_codex_sse(
             err_msg = str(terminal_error)[:800]
         else:
             err_msg = "Codex response failed"
+    if not saw_terminal and not chatgpt_backend:
+        terminal_status = "incomplete"
+        if not err_msg:
+            err_msg = "Codex Responses stream ended without a terminal response"
 
     out = {
         "status": terminal_status,
@@ -895,6 +945,7 @@ def _consume_codex_sse(
         "usage": terminal_usage if isinstance(terminal_usage, dict) else {},
         "error": err_msg,
         "model": terminal_model,
+        "last_provider_event": last_provider_event,
     }
     if terminal_incomplete_details is not None:
         out["incomplete_details"] = terminal_incomplete_details
@@ -904,6 +955,8 @@ def _consume_codex_sse(
 class CodexResponsesDriver:
     # ChatGPT Codex backend requires stream=true; expose real SSE to the pilot.
     supports_streaming = True
+    # Network driver: never accept implicit JSON-envelope natural.
+    requires_explicit_terminal = True
 
     def __init__(
         self,
@@ -998,6 +1051,7 @@ class CodexResponsesDriver:
             payload_messages = payload_messages[1:]
         # ChatGPT Codex backend rejects max_output_tokens (HTTP 400
         # "Unsupported parameter"); Hermes omits it when is_codex_backend.
+        # Non-ChatGPT Responses hosts (OpenCode Go) honor the stored cap.
         #
         # Request a reasoning summary so the pilot UI can leave
         # "Waiting on provider…" and paint Thought while gpt-5.x thinks.
@@ -1013,6 +1067,12 @@ class CodexResponsesDriver:
             "store": False,
             "stream": True,  # required by chatgpt.com/backend-api/codex
         }
+        if (
+            not self.chatgpt_backend
+            and isinstance(self.max_tokens, int)
+            and self.max_tokens > 0
+        ):
+            body["max_output_tokens"] = int(self.max_tokens)
         if api_effort:
             body["reasoning"] = {"effort": api_effort, "summary": "auto"}
         resp_tools = _tools_to_responses(tools)
@@ -1092,6 +1152,7 @@ class CodexResponsesDriver:
                         on_delta=on_delta,
                         on_reasoning_delta=on_reasoning_delta,
                         on_stream_item_done=on_stream_item_done,
+                        chatgpt_backend=self.chatgpt_backend,
                     )
                 return raw, None, data
             except urllib.error.HTTPError as e:
@@ -1158,30 +1219,23 @@ class CodexResponsesDriver:
         t0: float,
         incomplete_retries: int = 0,
     ) -> DriverResponse:
-        if raw.get("error"):
-            return DriverResponse(
-                text="", model=self.name, error=str(raw["error"]),
-                latency_ms=(time.time() - t0) * 1000.0,
-                meta={
-                    "api_mode": "codex_responses",
-                    "finish_reason": raw.get("status"),
-                },
-            )
         text, tool_calls, finish = _extract_text_and_tools(raw)
         if not text and isinstance(raw.get("output_text"), str):
             text = raw["output_text"]
         if finish == "content_filter":
+            meta = {
+                "api_mode": "codex_responses",
+                "finish_reason": "content_filter",
+                "billing": "plan",
+                "requested_model": self.model,
+            }
+            meta.update(_codex_stream_terminal_fields(raw, finish, _CONTENT_FILTER_MSG))
             return DriverResponse(
                 text="",
                 model=self.name,
                 error=_CONTENT_FILTER_MSG,
                 latency_ms=(time.time() - t0) * 1000.0,
-                meta={
-                    "api_mode": "codex_responses",
-                    "finish_reason": "content_filter",
-                    "billing": "plan",
-                    "requested_model": self.model,
-                },
+                meta=meta,
             )
         usage = raw.get("usage") or {}
         tin, tout = _usage_ints(usage)
@@ -1217,12 +1271,16 @@ class CodexResponsesDriver:
         served = raw.get("model")
         if isinstance(served, str) and served.strip():
             meta["served_model"] = served.strip()
+        raw_error = raw.get("error")
+        err_msg = str(raw_error) if raw_error else None
+        meta.update(_codex_stream_terminal_fields(raw, finish, err_msg))
         return DriverResponse(
             text=text,
             tokens_in=tin,
             tokens_out=tout,
             latency_ms=(time.time() - t0) * 1000.0,
             model=self.name,
+            error=err_msg,
             meta=meta,
         )
 
@@ -1427,6 +1485,30 @@ class CodexResponsesDriver:
                 tool_calls = (resp.meta or {}).get("tool_calls") or []
                 finish = str((resp.meta or {}).get("finish_reason") or "")
                 kind = _codex_continuation_kind(finish, text, tool_calls)
+                # ChatGPT-only: incomplete continuation re-POSTs a nudge.
+                # Non-ChatGPT Muse (and other Responses hosts) must return the
+                # first preserved partial and never auto-POST a second stream.
+                if kind is not None and not self.chatgpt_backend:
+                    meta = _final_meta(resp.meta or {})
+                    reason = str(meta.get("incomplete_reason") or finish or "incomplete")
+                    err = resp.error or (
+                        f"Codex response incomplete ({reason})"
+                    )
+                    if "stream_started" not in meta:
+                        meta["stream_started"] = True
+                    if "stream_terminal" not in meta:
+                        meta["stream_terminal"] = "incomplete"
+                    return _attach_request_cache_diagnostics(
+                        DriverResponse(
+                            text=text,
+                            tokens_in=acc_tin,
+                            tokens_out=acc_tout,
+                            latency_ms=resp.latency_ms,
+                            model=self.name,
+                            error=err,
+                            meta=meta,
+                        )
+                    )
                 if kind is None:
                     final_text = "".join(length_parts) + text if length_parts else text
                     if incomplete_retries == 0 and final_text == text:

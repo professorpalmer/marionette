@@ -272,11 +272,65 @@ def test_build_pilot_routes_openai_responses_models():
 @pytest.mark.parametrize("model", ["grok-4.5", "muse-spark-1.2-contributor"])
 def test_build_pilot_routes_grok_and_muse_through_responses(model):
     from pmharness.drivers.codex_responses import CodexResponsesDriver
+    from pmharness.drivers.openai_compat import OpenAICompatDriver
 
     driver = prov.build_pilot(f"opencode-go:{model}")
     assert isinstance(driver, CodexResponsesDriver)
+    assert not isinstance(driver, OpenAICompatDriver)
     assert driver.model == model
     assert driver.chatgpt_backend is False
+
+
+def test_muse_build_pilot_stream_waits_for_completed(monkeypatch):
+    """Production-shaped Muse Spark 1.2: CodexResponses, not OpenAI chat."""
+    import urllib.request
+
+    from pmharness.drivers.codex_responses import CodexResponsesDriver
+    from pmharness.drivers.openai_compat import OpenAICompatDriver
+
+    driver = prov.build_pilot("opencode-go:muse-spark-1.2-contributor")
+    assert isinstance(driver, CodexResponsesDriver)
+    assert not isinstance(driver, OpenAICompatDriver)
+    assert driver.chatgpt_backend is False
+
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(
+        "pmharness.drivers.codex_responses.time.monotonic",
+        lambda: clock["now"],
+    )
+
+    def lines():
+        yield b'data: {"type":"response.output_item.added","item":{"type":"message","phase":"final_answer","id":"msg_f"}}\n'
+        yield b'data: {"type":"response.output_text.delta","item_id":"msg_f","delta":"Hel"}\n'
+        clock["now"] += 2.2
+        yield b'data: {"type":"response.output_text.delta","item_id":"msg_f","delta":"lo"}\n'
+        clock["now"] += 0.4
+        yield b'data: {"type":"response.output_text.delta","item_id":"msg_f","delta":"!"}\n'
+        yield b'data: {"type":"response.completed","response":{"status":"completed","usage":{}}}\n'
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def __iter__(self):
+            return iter(lines())
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _Resp())
+    deltas = []
+    resp = driver.chat_stream(
+        [{"role": "user", "content": "hi"}],
+        on_delta=deltas.append,
+    )
+    assert resp.error is None
+    answer = "".join(
+        (p["text"] if isinstance(p, dict) else p) for p in deltas
+    )
+    assert answer == "Hello!"
+    assert resp.text == "Hello!"
+    assert resp.meta["finish_reason"] == "completed"
 
 
 def test_build_pilot_strips_a_namespaced_model_before_the_wire():
@@ -437,6 +491,7 @@ def test_codex_responses_drops_chatgpt_only_wire_bits_for_other_hosts():
         [{"role": "user", "content": "hi"}], session_id="chat-1",
     )
     assert "client_metadata" not in body
+    assert body["max_output_tokens"] == driver.max_tokens
 
 
 def test_codex_responses_keeps_chatgpt_headers_by_default():

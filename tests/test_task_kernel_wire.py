@@ -172,10 +172,12 @@ def test_finalize_assistant_turn_emits_done_and_persists(tmp_path: Path):
         turn_prose=["p"],
         turn_findings=[],
         extra={"stagnation_halt": True},
+        stop_cause="stagnation",
     ))
     assert events[0].kind == "assistant_done"
     assert events[0].data["turns"] == 2
     assert events[0].data["stagnation_halt"] is True
+    assert events[0].data["stop_cause"] == "stagnation"
     assert submitted == [("ingest", ("hi", ["p"], []))]
     rows = load_receipts(str(tmp_path), limit=1)
     assert rows[0]["task_id"] == "s"

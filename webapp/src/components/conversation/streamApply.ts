@@ -1776,6 +1776,44 @@ export function appendStreamError(items: Item[], error: string): Item[] {
   ];
 }
 
+let turnTerminalSeq = 0;
+
+function nextTurnTerminalId(preferred?: string, existing?: string): string {
+  const chosen = String(preferred || existing || "").trim();
+  if (chosen) return chosen;
+  turnTerminalSeq += 1;
+  return `turn-term-${turnTerminalSeq}`;
+}
+
+/** Durable terminal chip. Replaces a trailing chip so EOF + framing cannot stack. */
+export function appendTurnTerminal(
+  items: Item[],
+  data: {
+    id?: string;
+    cause: string;
+    state: string;
+    text: string;
+  },
+): Item[] {
+  const text = String(data.text || "").trim();
+  if (!text) return items;
+  const last = items[items.length - 1];
+  const next: Extract<Item, { kind: "turn_terminal" }> = {
+    kind: "turn_terminal",
+    id: nextTurnTerminalId(
+      data.id,
+      last?.kind === "turn_terminal" ? last.id : undefined,
+    ),
+    cause: String(data.cause || "unspecified"),
+    state: String(data.state || "settled_incomplete"),
+    text,
+  };
+  if (last?.kind === "turn_terminal") {
+    return [...items.slice(0, -1), next];
+  }
+  return [...items, next];
+}
+
 export function appendNonStreamingThinking(items: Item[], text: string): Item[] {
   // Ring/replay often delivers thinking without delta:true — sometimes as
   // cumulative snapshots. Opt into snapshot de-duplication here only; live

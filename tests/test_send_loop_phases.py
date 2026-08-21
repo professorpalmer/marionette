@@ -61,6 +61,13 @@ PHASE_HELPERS = (
     "dispatch_readonly_action",
     "dispatch_local_action",
     "run_auto_verify",
+    "apply_provider_terminal",
+    "classified_finish_kwargs",
+    "emit_classified_provider_error",
+    "emit_loop_exit_close",
+    "emit_stagnation_halt",
+    "stamp_sync_complete_terminal",
+    "native_tools_blocked",
 )
 
 
@@ -111,6 +118,15 @@ def test_mixin_calls_new_phase_helpers():
     assert "account_provider_attempt(" in src
     assert "record_provider_dispatch_error_receipt(" in src
     assert "drain_idle_turn(" in src
+    assert "apply_provider_terminal(" in src
+    assert "emit_classified_provider_error(" in src
+    assert "emit_loop_exit_close(" in src
+    assert "emit_stagnation_halt(" in src
+    assert "classified_finish_kwargs(" in src
+    assert "native_tools_blocked(" in src
+    assert "classify_provider_terminal(" not in src
+    assert "blocking_terminal_message(" not in src
+    assert "loop_exit_message(" not in src
     assert "run_auto_verify(" in src
     assert "execute_turn_actions(" in src
     assert "reset_timing_before_step(" in src
@@ -1340,6 +1356,7 @@ def test_drain_idle_turn_finalizes_when_idle():
         swarms=1,
         turn_prose=["p"],
         turn_findings=["f"],
+        stop_cause="natural",
     )
     try:
         while True:
@@ -1349,8 +1366,38 @@ def test_drain_idle_turn_finalizes_when_idle():
     assert disposition == "return"
     assert user_message == "hi"
     assert events[0].kind == "assistant_done"
-    assert events[0].data == {"turns": 3, "swarms": 1}
+    assert events[0].data["turns"] == 3
+    assert events[0].data["swarms"] == 1
+    assert events[0].data["stop_cause"] == "natural"
     assert submitted == [("ingest", ("hi", ["p"], ["f"]))]
+
+
+def test_drain_idle_turn_blank_stop_cause_is_unspecified():
+    session = SimpleNamespace(
+        drain_steer=lambda: [],
+        _history=[],
+        _steer_pending=False,
+        _next_queued_needs_driver_swap=lambda: False,
+        _pop_next_prompt=lambda: None,
+        _submit_housekeeping=lambda *_a: None,
+        _maybe_ingest="ingest",
+    )
+    events = []
+    gen = drain_idle_turn(
+        session,
+        user_message="hi",
+        step=0,
+        swarms=0,
+        turn_prose=[],
+        turn_findings=[],
+    )
+    try:
+        while True:
+            events.append(next(gen))
+    except StopIteration:
+        pass
+    assert events[0].kind == "assistant_done"
+    assert events[0].data["stop_cause"] == "unspecified"
 
 
 def test_drain_idle_turn_breaks_on_driver_swap():

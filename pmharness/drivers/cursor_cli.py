@@ -534,6 +534,8 @@ def consume_stream_json(
     final_result_text = ""
     usage: dict = {}
     saw_partial = False
+    last_event_type = ""
+    stream_started = False
 
     for raw in lines:
         if isinstance(raw, bytes):
@@ -558,6 +560,9 @@ def consume_stream_json(
             usage = usage_blob
 
         etype = event.get("type")
+        if etype:
+            last_event_type = str(etype)
+            stream_started = True
         if etype == "system" and event.get("subtype") == "init":
             session_id = str(event.get("session_id") or session_id)
             model = str(event.get("model") or model)
@@ -651,6 +656,8 @@ def consume_stream_json(
         "session_id": session_id,
         "model": model,
         "raw_result": final_result_text,
+        "last_event_type": last_event_type,
+        "stream_started": stream_started,
     }
 
 
@@ -880,10 +887,46 @@ def _looks_like_resume_failure(text: str) -> bool:
     return any(marker in lower for marker in _RESUME_FAILURE_MARKERS)
 
 
+def _cursor_cli_success_terminal_meta(parsed: dict) -> dict:
+    """Authoritative terminal stamps for a successful Cursor Agent process close.
+
+    chat / chat_stream share ``_run_stream``. Do not invent a natural close
+    on cancelled, nonzero, error, or partial process failure — callers must
+    only merge this after a clean wait + exit 0 and no ``err``.
+    """
+    last = ""
+    try:
+        last = str(parsed.get("last_event_type") or "").strip()
+    except Exception:
+        last = ""
+    started = False
+    try:
+        started = bool(
+            parsed.get("stream_started")
+            or parsed.get("text")
+            or last
+        )
+    except Exception:
+        started = bool(last)
+    out = {
+        "finish_reason": "completed",
+        "stream_terminal": "stop",
+        "stream_started": started,
+        "api_mode": "cursor_cli",
+        "wire_mode": "cursor_cli_stream",
+    }
+    if last:
+        out["last_provider_event"] = last
+    return out
+
+
 class CursorCliDriver:
     """Pilot driver backed by the Cursor Agent CLI subprocess."""
 
     supports_streaming = True
+    # Local subprocess, but still a production chat path: never accept an
+    # implicit JSON-envelope natural. Stamp finish/stream_terminal on success.
+    requires_explicit_terminal = True
 
     def __init__(
         self,
@@ -1220,6 +1263,11 @@ class CursorCliDriver:
             if _cursor_usage_reports_cache_write(usage_blob):
                 meta["cache_write_tokens"] = int(cache_write)
             attach_modality_fields(meta, usage_detail)
+
+            # Successful process close only. Timeout / nonzero / identity /
+            # resume / parsed-error paths keep fail-closed (no natural stamp).
+            if not err and proc.returncode in (0, None):
+                meta.update(_cursor_cli_success_terminal_meta(parsed))
 
             # Verified exact requested model keeps the picker label. A true
             # mismatch must not stamp that label as the served fact.

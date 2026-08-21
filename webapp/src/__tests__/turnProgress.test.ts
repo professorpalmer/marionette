@@ -18,6 +18,9 @@ import {
   turnHasVisibleBusySurface,
   turnHasLiveInvestigation,
   turnLooksAnswerComplete,
+  explorationShelfAnchorId,
+  isExplorationShelfKind,
+  partitionExplorationShelf,
 } from "../lib/turnProgress";
 import {
   clearToolPrepPlaceholders,
@@ -982,5 +985,26 @@ describe("tool card CLI input + stale running", () => {
     const p = deriveBusyProgress(items, "executing", 5_000);
     // Answer not complete, but no effectively-running card — not "running read file".
     expect(p.label.toLowerCase()).not.toContain("read file");
+  });
+});
+
+describe("exploration shelf grouping", () => {
+  it("groups consecutive read/search cards and leaves commands alone", () => {
+    expect(isExplorationShelfKind("read_file")).toBe(true);
+    expect(isExplorationShelfKind("grep")).toBe(true);
+    expect(isExplorationShelfKind("run_command")).toBe(false);
+    const rows = partitionExplorationShelf(
+      ["read_file", "grep", "run_command", "read_file"],
+      (k) => k,
+    );
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toMatchObject({ kind: "shelf", items: ["read_file", "grep"] });
+    expect(rows[1]).toMatchObject({ kind: "item", item: "run_command" });
+    expect(rows[2]).toMatchObject({ kind: "item", item: "read_file" });
+  });
+
+  it("anchors shelf identity on the first card so appends do not remount", () => {
+    expect(explorationShelfAnchorId(["r1", "g1"])).toBe("expl-shelf-r1");
+    expect(explorationShelfAnchorId(["r1", "g1", "r2"])).toBe("expl-shelf-r1");
   });
 });

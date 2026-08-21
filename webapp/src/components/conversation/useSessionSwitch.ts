@@ -47,8 +47,10 @@ import {
 } from "./swarmPoll";
 import {
   resetCrossSessionLatchesOnSwitch,
+  resetTurnLifecycleOnSessionSwitch,
   resetTurnSettledOnSessionSwitch,
 } from "./streamTerminal";
+import type { RecoveryContext, TerminalCause, TurnLifecycle } from "../../lib/turnTerminal";
 
 export type SessionStatus =
   | "idle"
@@ -124,8 +126,14 @@ export type UseSessionSwitchDeps = {
    * after idle finalize with no pending swarms.
    */
   setBackendPendingSwarms: Dispatch<SetStateAction<boolean>>;
+  /** Hide Send until B's runner state is known (no flash onto a running session). */
+  setSessionSwitchPending: Dispatch<SetStateAction<boolean>>;
   /** Clear pending setSafeTimeout kicks so A→B cannot executeSend into B. */
   clearSafeTimeouts: () => void;
+  setTurnLifecycle: Dispatch<SetStateAction<TurnLifecycle>>;
+  setTerminalCause: Dispatch<SetStateAction<TerminalCause | null>>;
+  recoveryDispatchingRef: MutableRefObject<boolean>;
+  recoveryContextRef: MutableRefObject<RecoveryContext | null>;
 };
 
 /** Warm-cache switch + chatEvents reattach arming for the active session id. */
@@ -182,7 +190,12 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
     setWaitHint,
     setPendingJobIds,
     setBackendPendingSwarms,
+    setSessionSwitchPending,
     clearSafeTimeouts,
+    setTurnLifecycle,
+    setTerminalCause,
+    recoveryDispatchingRef,
+    recoveryContextRef,
   } = deps;
 
   // Warm-cache session switch: save outgoing transcript, hydrate incoming from
@@ -277,6 +290,12 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
         resumeQueuedRef,
         approvedCommandRetryRef,
       });
+      resetTurnLifecycleOnSessionSwitch({
+        setTurnLifecycle,
+        setTerminalCause,
+        recoveryDispatchingRef,
+        recoveryContextRef,
+      });
     }
     // Reset mid-turn reattach cursor/poll so the next session starts clean.
     clearChatEventsPoll();
@@ -289,7 +308,9 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
       cancelStreamPaint,
     );
     // Default idle until getSessionState / runners poll resolve the target.
+    // Keep the mouth busy via sessionSwitchPending so running B never flashes Send.
     if (shouldResetBusyChromeOnSwitch(switchedSession)) {
+      setSessionSwitchPending(true);
       setTurnOpen(false);
       setStatus("idle");
       setCompactingStatus(null);
@@ -307,6 +328,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
         setItems([]);
       }
       setTranscriptStale(emptySwitch.stale);
+      setSessionSwitchPending(false);
       setTurnOpen(false);
       setStatus("idle");
       setCompactingStatus(null);
@@ -337,9 +359,16 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
       sessionState?: string | null,
       pendingSwarms?: boolean,
     ) => {
-      if (cancelled || localStreamActiveRef.current) return;
+      if (cancelled) return;
+      if (localStreamActiveRef.current) {
+        setSessionSwitchPending(false);
+        return;
+      }
       if (!activeSessionId) return;
-      if (userStoppedRef.current) return;
+      if (userStoppedRef.current) {
+        setSessionSwitchPending(false);
+        return;
+      }
       const decision = runnerBusySwitchDecision({
         runnerState: runners?.[activeSessionId],
         localStreamActive: false,
@@ -347,6 +376,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
         sessionState,
         pendingSwarms,
       });
+      setSessionSwitchPending(false);
       if (decision.kind === "awaiting") {
         // Pause-point: Still working… with Steer/Stop via awaiting_swarm latch
         // (turnOpen stays false; isAgentLoopOpen covers awaiting_swarm).
@@ -408,6 +438,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
         // Idle until useRunnersBusyPoll re-arms; never leave A's chrome stuck.
         const failure = sessionStateFailureSwitchDecision();
         detachedBusyRef.current = false;
+        setSessionSwitchPending(false);
         setTurnOpen(false);
         setStatus("idle");
         setCompactingStatus(null);

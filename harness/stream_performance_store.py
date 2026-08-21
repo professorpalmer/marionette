@@ -28,6 +28,8 @@ import threading
 import time
 from typing import Any, Dict, Iterator, List, Optional
 
+from .terminal_cause import TERMINAL_CAUSES, canonicalize_terminal_cause
+
 from .paths import _resolve, path_within
 from .stream_performance import (
     BACKEND_READY_TOTAL_MS,
@@ -42,13 +44,19 @@ from .stream_performance import (
     THROUGHPUT_BASIS_KEY,
 )
 
-RECEIPT_SCHEMA_VERSION = 1
+RECEIPT_SCHEMA_VERSION = 2
+RECEIPT_SCHEMA_VERSION_V1 = 1
 MAX_RECEIPTS_PER_SESSION = 200
 RECEIPT_STATUSES = frozenset({"success", "error", "context_overflow"})
 RECEIPT_IDENTITY_STATUSES = frozenset({
     "verified", "mismatch", "unreported", "auto",
 })
 RECEIPT_TOKEN_BASES = frozenset({"provider", "unknown"})
+RECEIPT_WIRE_MODES = frozenset({
+    "chat_completions", "responses", "codex_responses",
+    "messages", "generate_content", "converse", "stream", "sync",
+    "sync_complete",
+})
 PERFORMANCE_SUBDIR = "stream_performance"
 _LOAD_MAX_BYTES = 2 * 1024 * 1024
 _MAX_LABEL_CHARS = 128
@@ -434,6 +442,23 @@ def _model_from_driver(driver: str) -> str:
     return text
 
 
+def _safe_bool(value: Any) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    return None
+
+
+def _receipt_schema_version(value: Any) -> int:
+    """Accept v1 reads; new writes use the current schema."""
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return RECEIPT_SCHEMA_VERSION
+    if number == RECEIPT_SCHEMA_VERSION_V1:
+        return RECEIPT_SCHEMA_VERSION_V1
+    return RECEIPT_SCHEMA_VERSION
+
+
 def build_receipt(
     *,
     session_id: str,
@@ -454,6 +479,18 @@ def build_receipt(
     cache_read_tokens: Any = None,
     cache_write_tokens: Any = None,
     token_basis: Any = "",
+    terminal_cause: Any = "",
+    finish_reason: Any = "",
+    incomplete_reason: Any = "",
+    api_mode: Any = "",
+    wire_mode: Any = "",
+    requested_output_cap: Any = None,
+    stream_started: Any = None,
+    stream_terminal: Any = "",
+    last_provider_event: Any = "",
+    malformed_chunk_count: Any = None,
+    assistant_done_emitted: Any = None,
+    schema_version: Any = None,
 ) -> Dict[str, Any]:
     """Fixed JSON-safe receipt. Unknown / unsafe fields are dropped."""
     sid = safe_session_id(str(session_id or ""))
@@ -466,7 +503,7 @@ def build_receipt(
     driver_s = _safe_label(driver)
     model_s = _safe_label(model) or _model_from_driver(driver_s)
     receipt: Dict[str, Any] = {
-        "schema_version": RECEIPT_SCHEMA_VERSION,
+        "schema_version": _receipt_schema_version(schema_version),
         "session_id": sid,
         "turn_index": _safe_int(
             turn_index, default=0, minimum=0, maximum=_MAX_NONNEG_INT,
@@ -514,6 +551,39 @@ def build_receipt(
     basis = str(token_basis or "").strip().lower()
     if basis in RECEIPT_TOKEN_BASES:
         receipt["token_basis"] = basis
+    cause = canonicalize_terminal_cause(terminal_cause)
+    if cause and cause in TERMINAL_CAUSES:
+        receipt["terminal_cause"] = cause
+    finish_s = _safe_label(finish_reason)
+    if finish_s:
+        receipt["finish_reason"] = finish_s
+    incomplete_s = _safe_label(incomplete_reason)
+    if incomplete_s:
+        receipt["incomplete_reason"] = incomplete_s
+    api_s = _safe_label(api_mode)
+    if api_s:
+        receipt["api_mode"] = api_s
+    wire_s = _safe_label(wire_mode)
+    if wire_s and (wire_s in RECEIPT_WIRE_MODES or len(wire_s) <= _MAX_LABEL_CHARS):
+        receipt["wire_mode"] = wire_s
+    cap = _bounded_nonneg_int(requested_output_cap)
+    if cap is not None:
+        receipt["requested_output_cap"] = cap
+    started = _safe_bool(stream_started)
+    if started is not None:
+        receipt["stream_started"] = started
+    stream_term = _safe_label(stream_terminal)
+    if stream_term:
+        receipt["stream_terminal"] = stream_term
+    last_event = _safe_label(last_provider_event)
+    if last_event:
+        receipt["last_provider_event"] = last_event
+    malformed = _bounded_nonneg_int(malformed_chunk_count)
+    if malformed is not None:
+        receipt["malformed_chunk_count"] = malformed
+    done_flag = _safe_bool(assistant_done_emitted)
+    if done_flag is not None:
+        receipt["assistant_done_emitted"] = done_flag
     return receipt
 
 
@@ -542,6 +612,18 @@ def sanitize_receipt(raw: Any) -> Optional[Dict[str, Any]]:
         cache_read_tokens=raw.get("cache_read_tokens"),
         cache_write_tokens=raw.get("cache_write_tokens"),
         token_basis=raw.get("token_basis", ""),
+        terminal_cause=raw.get("terminal_cause", ""),
+        finish_reason=raw.get("finish_reason", ""),
+        incomplete_reason=raw.get("incomplete_reason", ""),
+        api_mode=raw.get("api_mode", ""),
+        wire_mode=raw.get("wire_mode", ""),
+        requested_output_cap=raw.get("requested_output_cap"),
+        stream_started=raw.get("stream_started"),
+        stream_terminal=raw.get("stream_terminal", ""),
+        last_provider_event=raw.get("last_provider_event", ""),
+        malformed_chunk_count=raw.get("malformed_chunk_count"),
+        assistant_done_emitted=raw.get("assistant_done_emitted"),
+        schema_version=raw.get("schema_version"),
     )
 
 
@@ -742,6 +824,34 @@ class StreamPerformanceReceiptStore:
         except Exception:
             return
 
+    def patch_latest_receipt(self, session_id: str, **fields: Any) -> None:
+        """Best-effort in-place update of the newest receipt. Never raises."""
+        try:
+            path = _usable_receipt_path(self.state_dir, session_id, create_dir=False)
+            if not path:
+                return
+            with _receipt_lock(path):
+                if _is_symlink(path) or _is_symlink(os.path.dirname(path)):
+                    return
+                rows = _load_document(path)
+                if not rows:
+                    return
+                latest = dict(rows[-1])
+                latest.update(fields)
+                cleaned = sanitize_receipt(latest)
+                if cleaned is None:
+                    return
+                cleaned["session_id"] = safe_session_id(session_id) or cleaned["session_id"]
+                rows[-1] = cleaned
+                payload = {
+                    "schema_version": RECEIPT_SCHEMA_VERSION,
+                    "session_id": cleaned["session_id"],
+                    "receipts": rows,
+                }
+                _atomic_write_json(path, payload)
+        except Exception:
+            return
+
     def delete_session(self, session_id: str) -> None:
         try:
             path = _usable_receipt_path(self.state_dir, session_id)
@@ -764,6 +874,7 @@ def remove_session_performance_receipts(state_dir: str, session_id: str) -> None
 __all__ = (
     "MAX_RECEIPTS_PER_SESSION",
     "RECEIPT_SCHEMA_VERSION",
+    "RECEIPT_SCHEMA_VERSION_V1",
     "RECEIPT_STATUSES",
     "RECEIPT_IDENTITY_STATUSES",
     "RECEIPT_TOKEN_BASES",
