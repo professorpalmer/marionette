@@ -29,7 +29,7 @@ def test_format_handle_first_empty_arts():
     assert "FETCH" in text
 
 
-def test_sync_swarm_default_is_handle_first(monkeypatch):
+def test_sync_swarm_pushes_every_artifact_into_receipt_and_synthesis(monkeypatch):
     from types import SimpleNamespace
     from unittest.mock import MagicMock
 
@@ -42,11 +42,15 @@ def test_sync_swarm_default_is_handle_first(monkeypatch):
     findings = [
         {
             "type": "finding",
+            "id": f"artifact-{i}",
+            "job_id": "job_hf",
+            "task_id": f"task-{i % 5}",
+            "sha256": f"sha-{i}",
             "headline": f"Finding number {i} with evidence in harness/foo.py:{i}",
             "body": ("DETAIL " * 80) + f" #{i}",
             "evidence": [{"path": f"harness/foo.py", "line": i}],
         }
-        for i in range(6)
+        for i in range(17)
     ]
     result = SimpleNamespace(
         job_id="job_hf",
@@ -71,42 +75,93 @@ def test_sync_swarm_default_is_handle_first(monkeypatch):
         _append_action_result=MagicMock(),
         _display_transcript=[],
     )
-    list(dispatch_swarm_action(
+    events = list(dispatch_swarm_action(
         session,
-        PilotAction(kind="run_swarm", goal="audit", roles=["explore"], arguments={}),
+        PilotAction(
+            kind="run_swarm",
+            goal="audit",
+            roles=[
+                "explore",
+                "pipeline-mapper",
+                "decision-explainer",
+                "conflict-auditor",
+                "test-coverage-reviewer",
+            ],
+            arguments={},
+        ),
         "a-1",
         True,
         counters={"swarms": 0, "demo_swarms": 0},
         turn_findings=[],
     ))
-    text = session._append_action_result.call_args.args[2]
-    assert "job_id=" in text
-    assert "FETCH" in text
-    assert "peek_artifact" in text
-    # Default must be much shorter than a full digest paste of all bodies.
-    assert len(text) < 2500
-    assert "DETAIL DETAIL" not in text
 
-    # full_digest=true restores verbose digest lines.
+    action_result = next(event.data for event in events if event.kind == "action_result")
+    assert len(action_result["artifacts"]) == 12
+    assert "artifact_delivery" not in action_result
+    swarm_result = next(event.data["result"] for event in events if event.kind == "swarm_result")
+    assert [row["id"] for row in swarm_result["artifacts"]] == [
+        f"artifact-{i}" for i in range(17)
+    ]
+    assert swarm_result["artifact_delivery"] == {
+        "pm_artifacts": 17,
+        "available_to_inspect": 17,
+        "complete": True,
+        "missing": [],
+    }
+    assert swarm_result["cwd"] == "/repo"
+
+    text = session._append_action_result.call_args.args[2]
+    assert "PM artifacts: 17" in text
+    assert "Available to inspect: 17/17" in text
+    assert "peek_artifact" not in text
+    for i in range(17):
+        assert f"artifact://job_hf/artifact-{i}" in text
+        assert f"sha-{i}" in text
+    assert "DETAIL DETAIL" not in text
+    raw_rows = [
+        SimpleNamespace(
+            id=f"artifact-{i}",
+            task_id=f"task-{i % 5}",
+            sha256=f"sha-{i}",
+            type="finding",
+        )
+        for i in range(17)
+    ]
+    state = SimpleNamespace(
+        store=SimpleNamespace(list_artifacts=lambda _job_id: raw_rows),
+        # Simulate one PM row that could not be projected into Mari's inspectable ledger.
+        format_artifacts=lambda _rows: findings[:16],
+    )
+    session.state = lambda: state
+    result.artifacts = findings[:16]
+    result.num_artifacts = 16
     session._append_action_result.reset_mock()
-    list(dispatch_swarm_action(
+
+    partial_events = list(dispatch_swarm_action(
         session,
-        PilotAction(
-            kind="run_swarm",
-            goal="audit",
-            roles=["explore"],
-            arguments={"full_digest": True},
-        ),
+        PilotAction(kind="run_swarm", goal="partial audit", roles=["explore"], arguments={}),
         "a-2",
         True,
         counters={"swarms": 0, "demo_swarms": 0},
         turn_findings=[],
     ))
-    full = session._append_action_result.call_args.args[2]
-    assert "[finding]" in full
-    assert "job_id=" in full or "job=" in full
-    # Verbose path still keeps safety notes available; body includes digest rows.
-    assert len(full) > len(text)
+    partial_action_result = next(event.data for event in partial_events if event.kind == "action_result")
+    assert len(partial_action_result["artifacts"]) == 12
+    assert "artifact_delivery" not in partial_action_result
+    partial_result = next(
+        event.data["result"] for event in partial_events if event.kind == "swarm_result"
+    )
+    assert len(partial_result["artifacts"]) == 16
+    assert partial_result["artifact_delivery"] == {
+        "pm_artifacts": 17,
+        "available_to_inspect": 16,
+        "complete": False,
+        "missing": [{"id": "artifact-16", "task_id": "task-1"}],
+    }
+    partial_manifest = session._append_action_result.call_args.args[2]
+    assert "Synthesis continued with incomplete PM evidence" in partial_manifest
+    assert "missing artifact-16 task=task-1" in partial_manifest
+    assert session._append_action_result.call_args.kwargs["force_inline"] is True
 
 
 def test_drain_swarm_results_history_is_handle_first(monkeypatch, tmp_path):

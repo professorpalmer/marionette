@@ -248,6 +248,7 @@ class DurableState:
                     detail = redact_secret_text(str(source_reason).strip())[:500] or None
             row = {
                 "id": getattr(a, "id", ""),
+                "sha256": getattr(a, "sha256", ""),
                 "type": art_type,
                 "headline": str(headline)[:300],
                 "confidence": getattr(a, "confidence", None),

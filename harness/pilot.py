@@ -1306,14 +1306,6 @@ def build_tools_schema(
                                 "the open session workspace."
                             ),
                         },
-                        "full_digest": {
-                            "type": "boolean",
-                            "description": (
-                                "When true, inline the verbose per-artifact digest in the "
-                                "action_result. Default is handle-first (job_id + headlines + "
-                                "artifact:// URIs); FETCH bodies with peek_artifact/read_file."
-                            ),
-                        },
                     },
                     "required": ["goal"]
                 }
