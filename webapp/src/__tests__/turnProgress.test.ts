@@ -339,7 +339,7 @@ describe("turnLooksAnswerComplete / shouldShowBusyFooter (T5)", () => {
       msg("assistant", "partial…", true),
     ];
     expect(turnLooksAnswerComplete(items)).toBe(false);
-    expect(shouldShowBusyFooter(items, "streaming")).toBe(true);
+    expect(shouldShowBusyFooter(items, "streaming")).toBe(false);
   });
 
   it("is false while a card is running", () => {
@@ -349,7 +349,7 @@ describe("turnLooksAnswerComplete / shouldShowBusyFooter (T5)", () => {
       card("1", "a.ts", "read_file", true),
     ];
     expect(turnLooksAnswerComplete(items)).toBe(false);
-    expect(shouldShowBusyFooter(items, "executing")).toBe(true);
+    expect(shouldShowBusyFooter(items, "executing")).toBe(false);
   });
 
   it("is false between tool steps after mid-turn narration (no idle blink)", () => {
@@ -375,7 +375,7 @@ describe("turnLooksAnswerComplete / shouldShowBusyFooter (T5)", () => {
       { kind: "thinking", text: "more", streaming: true },
     ];
     expect(turnLooksAnswerComplete(items)).toBe(false);
-    expect(shouldShowBusyFooter(items, "thinking")).toBe(true);
+    expect(shouldShowBusyFooter(items, "thinking")).toBe(false);
   });
 
   it("is false while tool_prep is active", () => {
@@ -385,7 +385,7 @@ describe("turnLooksAnswerComplete / shouldShowBusyFooter (T5)", () => {
       { kind: "tool_prep", name: "grep" },
     ];
     expect(turnLooksAnswerComplete(items)).toBe(false);
-    expect(shouldShowBusyFooter(items, "thinking")).toBe(true);
+    expect(shouldShowBusyFooter(items, "thinking")).toBe(false);
   });
 
   it("is false with no assistant text yet (T3 waiting still shows)", () => {

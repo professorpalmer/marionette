@@ -171,8 +171,9 @@ describe("holdSwarmAwait transcript latch + awaiting_swarm pause-point", () => {
       />,
     );
     expect(screen.getByText(/Investigating/i)).toBeTruthy();
-    // Investigating fold owns the status surface — no flat Still working footer.
-    expect(screen.queryByText(/Still working/i)).toBeNull();
+    // Finished cards + open loop: fold stays Investigating and the footer
+    // keeps Still working… so tool-batch gaps are not a dead log dump.
+    expect(screen.getByText(/Still working/i)).toBeTruthy();
   });
 
   it("holdSwarmAwait with active pilot turn keeps mid-turn Investigating, not sealed Explored", () => {

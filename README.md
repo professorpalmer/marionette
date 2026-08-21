@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.15` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.264, deliberately pre-1.0. Rides puppetmaster-ai==1.22.15. React Compiler is on for the Vite tree (Hermes-scoped JSX / `from 'react'` filter). Command tokens still light up only after a run_command card registers. Composer stays a solid `panel2` island.
+> Status: v0.9.265, deliberately pre-1.0. Rides puppetmaster-ai==1.22.15. Live chat paints Codex/Hermes-style (33ms timer, no char drip). Explicit "swarm / multi-worker" asks block git theater until run_swarm fires.
 
 ## Documentation
 

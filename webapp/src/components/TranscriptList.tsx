@@ -48,7 +48,7 @@ import {
   toolFocusPhrase,
   toolInputFieldKey,
   toolRowLabel,
-  turnHasLiveInvestigation,
+  turnHasVisibleBusySurface,
 } from "../lib/turnProgress";
 import { isAgentLoopOpen } from "./conversation/runnersBusy";
 import {
@@ -1479,10 +1479,10 @@ export const TranscriptList = memo(function TranscriptList({
   );
 
   const busyProgress = deriveBusyProgress(items, status, busyElapsedMs);
-  const hideBusyFooter = turnHasLiveInvestigation(
-    items,
-    pausePoint ? false : agentLoopOpen,
-  );
+  // Hide the under-fold line only while a card / prep / stream already
+  // shows work. A sticky Investigating fold of *finished* tools used to
+  // own chrome and swallow "Still working…" between Kimi-style batches.
+  const hideBusyFooter = turnHasVisibleBusySurface(items);
   const showBusyFooter =
     (shouldShowBusyFooter(items, status) || pausePoint) && !hideBusyFooter;
   const showStall = quietWorkingCueVisible(
@@ -2404,16 +2404,12 @@ const PrettyMarkdown = memo(function PrettyMarkdown({ text }: { text: string }) 
 function StreamingMarkdown({ text }: { text: string }) {
   const buf = splitStreamingMarkdown(text || "");
   const deferredFlushed = useDeferredValue(buf.flushed);
-  const lag = deferredFlushed !== buf.flushed
-    ? buf.flushed.slice(deferredFlushed.length)
-    : "";
-  return (
-    <>
-      <PrettyMarkdown text={deferredFlushed} />
-      {lag ? (
-        <span data-md-lag className="whitespace-pre-wrap">{lag}</span>
-      ) : null}
-      {buf.open ? (
+  // Never paint flushed-as-markdown plus a sibling lag <span>. That remounts
+  // the trailing sentence as <p> then <span> then <p> again — the blink.
+  if (buf.open) {
+    return (
+      <>
+        {buf.flushed ? <PrettyMarkdown text={deferredFlushed} /> : null}
         <pre
           data-md-pending
           data-lang={buf.open.lang || undefined}
@@ -2421,7 +2417,13 @@ function StreamingMarkdown({ text }: { text: string }) {
         >
           {buf.open.body + buf.hold}
         </pre>
-      ) : buf.hold ? (
+      </>
+    );
+  }
+  return (
+    <>
+      <PrettyMarkdown text={buf.flushed} />
+      {buf.hold ? (
         <span data-md-hold className="font-mono">{buf.hold}</span>
       ) : null}
     </>

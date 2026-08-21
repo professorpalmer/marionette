@@ -12,7 +12,10 @@ import time
 from typing import Any, Dict, Optional, Tuple
 
 # Coalesce same-(channel, stream_id) deltas until either threshold trips.
-STREAM_DELTA_BATCH_MS = 40.0
+# 16ms is one paint frame — enough to protect the 512-frame SSE ring from
+# word tokens without stacking a second visible wave on the client's 33ms
+# Hermes-style paint timer. Keep the 80-char cap for bursty providers.
+STREAM_DELTA_BATCH_MS = 16.0
 STREAM_DELTA_BATCH_CHARS = 80
 
 

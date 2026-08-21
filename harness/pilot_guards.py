@@ -6,7 +6,9 @@ Per-turn guards wired before native tool dispatch:
 
 1. LOOP BREAKER — suppress repeated (tool, normalized-args) calls within a turn.
 2. SWARM GATE — on broad-intent user messages, block native exploration until
-   run_swarm / run_parallel / run_implement is dispatched. After a healthy
+   run_swarm / run_parallel / run_implement is dispatched. Explicit "swarm" /
+   "multi-worker" asks also block git, launch scripts, and run_implement until
+   run_swarm / run_parallel actually fire. After a healthy
    dispatch, list_dir / search_files / exploration run_command stay blocked on
    broad turns (read_file + search_codegraph remain allowed to validate
    concrete findings); thin swarm results require re-dispatch, not an inline
@@ -213,6 +215,29 @@ _BROAD_INTENT_RE = re.compile(
     r"comprehensive\s+(?:review|audit|analysis)|"
     r"across\s+the\s+(?:codebase|repo|project|directory)|"
     r"whole\s+(?:codebase|repo|project|directory)"
+    r")",
+    re.IGNORECASE,
+)
+
+_EXPLICIT_SWARM_RE = re.compile(
+    r"(?:"
+    r"\brun_swarm\b|"
+    r"\bpuppetmaster\s+swarm\b|"
+    r"\b(?:start|spin\s+up|launch|dispatch|run)\s+(?:a\s+)?swarm\b|"
+    r"\bswarm\s+(?:glm|kimi|qwen|gpt|deepseek|claude|via|with|using|multi)|"
+    r"\bmulti[- ]workers?\b|"
+    r"\bfan-?out\b"
+    r")",
+    re.IGNORECASE,
+)
+
+_EXPLICIT_SWARM_NEG_RE = re.compile(
+    r"(?:"
+    r"don'?t\s+swarm|"
+    r"do\s+not\s+swarm|"
+    r"swarm\s+tracker|"
+    r"where\s+is\s+run_swarm|"
+    r"what\s+is\s+(?:a\s+)?swarm"
     r")",
     re.IGNORECASE,
 )
@@ -536,6 +561,10 @@ class TurnGuardState:
     delegation_seen: bool = False
     user_message: str = ""
     broad_intent: bool = False
+    # User named a swarm (run_swarm / puppetmaster swarm / multi-workers).
+    # Stronger than broad_intent: git/scripts/run_implement stay blocked
+    # until run_swarm / run_parallel actually dispatch.
+    explicit_swarm: bool = False
     swarm_dispatched: bool = False
     read_file_count: int = 0
     # Count of swarm-gate suppressions this turn (full redirect + short replays).
@@ -589,6 +618,18 @@ def is_broad_intent_user_message(message: str) -> bool:
     if _BROAD_INTENT_RE.search(text):
         return True
     return _is_cross_platform_compare(text)
+
+
+def is_explicit_swarm_user_message(message: str) -> bool:
+    """True when the user asked to launch a swarm, not merely mentioned one."""
+    text = _norm_whitespace(message or "")
+    if not text:
+        return False
+    if _NARROW_INTENT_RE.search(text):
+        return False
+    if _EXPLICIT_SWARM_NEG_RE.search(text):
+        return False
+    return bool(_EXPLICIT_SWARM_RE.search(text))
 
 
 def _norm_path(path: str) -> str:
@@ -879,6 +920,20 @@ def _is_durable_recall_read(act: Any) -> bool:
 
 
 def is_swarm_gate_blocked_exploration(state: TurnGuardState, kind: str, act: Any) -> bool:
+    if getattr(state, "explicit_swarm", False):
+        if state.kernel_recovery:
+            return False
+        if not state.swarm_dispatched:
+            if kind in ("run_swarm", "run_parallel"):
+                return False
+            if kind in ("search_codegraph", "search_state", "route_task", "query_wiki"):
+                return False
+            if kind == "read_file" and _is_durable_recall_read(act):
+                return False
+            return True
+        if not state.broad_intent:
+            return False
+
     if not state.broad_intent:
         return False
 
@@ -925,8 +980,20 @@ def _loop_suppress_message(kind: str, repeat_count: int) -> str:
     )
 
 
-def _swarm_gate_suppress_message(kind: str, *, swarm_dispatched: bool = False) -> str:
+def _swarm_gate_suppress_message(
+    kind: str,
+    *,
+    swarm_dispatched: bool = False,
+    explicit_swarm: bool = False,
+) -> str:
     roles = ", ".join(BROAD_SWARM_ROLES)
+    if explicit_swarm and not swarm_dispatched:
+        return (
+            f"(SUPPRESSED: {kind} — this turn asked for a swarm. Do not git, "
+            f"write launch scripts, or shell the Puppetmaster CLI. Call run_swarm "
+            f"now with MULTIPLE roles ({roles}) and auto-routed OpenRouter/"
+            f"agentic models. run_implement is one worker, not a swarm.)"
+        )
     if swarm_dispatched:
         return (
             f"(SUPPRESSED: native exploration {kind} — a swarm already ran this turn and "
@@ -955,8 +1022,19 @@ def _swarm_gate_suppress_message(kind: str, *, swarm_dispatched: bool = False) -
     )
 
 
-def _swarm_gate_replay_message(kind: str, *, swarm_dispatched: bool = False) -> str:
+def _swarm_gate_replay_message(
+    kind: str,
+    *,
+    swarm_dispatched: bool = False,
+    explicit_swarm: bool = False,
+) -> str:
     """Short cached redirect after the first full swarm-gate suppress this turn."""
+    if explicit_swarm and not swarm_dispatched:
+        return (
+            f"[swarm_gate redirect already issued this turn — stop {kind}. "
+            f"Call run_swarm or run_parallel now. Do not git or shell "
+            f"Puppetmaster CLI.]"
+        )
     if swarm_dispatched:
         return (
             f"[swarm_gate redirect already issued this turn — stop broad native "
@@ -1372,7 +1450,9 @@ def check_swarm_gate(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict
         from .task_profile import profile_disables_swarm_gate
 
         profile = getattr(state, "task_profile", "") or ""
-        if profile_disables_swarm_gate(profile):
+        if profile_disables_swarm_gate(profile) and not getattr(
+            state, "explicit_swarm", False
+        ):
             return GuardVerdict(False)
     except Exception:
         pass
@@ -1383,6 +1463,7 @@ def check_swarm_gate(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict
     prior = state.swarm_gate_suppress_count
     state.swarm_gate_suppress_count = prior + 1
     dispatched = bool(state.swarm_dispatched)
+    explicit = bool(getattr(state, "explicit_swarm", False))
 
     # First suppression(s) this turn get the full redirect so the model sees a
     # clear "stop exploring, call run_swarm now" signal. Further identical-class
@@ -1392,13 +1473,17 @@ def check_swarm_gate(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict
         return GuardVerdict(
             suppress=True,
             reason="swarm_gate",
-            message=_swarm_gate_suppress_message(kind, swarm_dispatched=dispatched),
+            message=_swarm_gate_suppress_message(
+                kind, swarm_dispatched=dispatched, explicit_swarm=explicit,
+            ),
         )
 
     return GuardVerdict(
         suppress=True,
         reason="swarm_gate_replay",
-        message=_swarm_gate_replay_message(kind, swarm_dispatched=dispatched),
+        message=_swarm_gate_replay_message(
+            kind, swarm_dispatched=dispatched, explicit_swarm=explicit,
+        ),
         replay=True,
     )
 
@@ -1595,6 +1680,7 @@ def new_turn_guard_state(
     return TurnGuardState(
         user_message=user_message or "",
         broad_intent=is_broad_intent_user_message(user_message or ""),
+        explicit_swarm=is_explicit_swarm_user_message(user_message or ""),
         iteration_budget=IterationBudget(cap) if cap > 0 else None,
         tiny_workspace=tiny,
         nested_implement=bool(nested_implement),

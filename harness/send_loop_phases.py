@@ -880,7 +880,7 @@ def drain_stream_queue(q: Any, accumulator: Any = None) -> Iterator[Any]:
     ``streamed_reasoning`` / ``stream_ended_on_reasoning`` so the send loop
     can promote a thought-only finale into an assistant message.
 
-    Same-(channel, stream_id) deltas are batched (~40ms / 80 chars) before
+    Same-(channel, stream_id) deltas are batched (~16ms / 80 chars) before
     becoming SSE frames so word-sized tokens cannot exhaust the replay ring.
     Each new contentful (channel, stream_id) answer/reasoning identity yields
     its first frame immediately so perceived TTFT is not gated on the batch

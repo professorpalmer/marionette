@@ -50,9 +50,9 @@ const configuredDevServerLatch = createDevServerFallbackLatch();
 const isPackaged = app.isPackaged;
 
 // Keep the renderer at full speed while the window is blurred or occluded
-// (pattern lifted from Hermes desktop). The transcript streams to screen
-// through a requestAnimationFrame-gated typewriter pump, and Chromium pauses
-// rAF (and clamps timers) for backgrounded/occluded renderers -- without
+// (pattern lifted from Hermes desktop). The transcript streams through a
+// 33ms paint timer (Hermes STREAM_DELTA_FLUSH_MS; not rAF). Chromium still
+// parks rAF and clamps timers for backgrounded/occluded renderers -- without
 // these, a live answer freezes the moment focus moves to another window and
 // only paints on refocus. `backgroundThrottling: false` on the BrowserWindow
 // covers the blurred case; these process-level switches additionally stop

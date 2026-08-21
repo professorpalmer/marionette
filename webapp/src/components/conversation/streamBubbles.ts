@@ -234,12 +234,12 @@ export function finalizeOpenPilotBubble(items: Item[]): Item[] {
 }
 
 /**
- * Typewriter drain rate: scale with backlog so live streams never lag
- * arbitrarily far behind; accelerate when the stream has ended.
+ * Paint whatever arrived this tick. Codex and Hermes flush the queued
+ * chunk in one commit — a /8 drip on top of SSE coalescing is what made
+ * Kimi (and every other bursty provider) look like spurts.
+ *
+ * ``done`` stays in the signature so callers and tests keep a stable API.
  */
-export function typewriterCharsPerFrame(bufLen: number, done: boolean): number {
-  if (bufLen <= 0) return 0;
-  return done
-    ? Math.max(12, Math.ceil(bufLen / 4))
-    : Math.max(3, Math.ceil(bufLen / 8));
+export function typewriterCharsPerFrame(bufLen: number, _done: boolean): number {
+  return bufLen > 0 ? bufLen : 0;
 }
