@@ -550,12 +550,12 @@ export default function ComposerDock({
           onDragOver={handleComposerDragOver}
           onDragLeave={handleComposerDragLeave}
           onDrop={handleComposerDrop}
-          className={`composer-dock relative bg-panel2/80 border rounded-2xl focus-within:border-edge2 shadow-lg shadow-black/20 transition ${
-            isDragOver ? "border-accent ring-1 ring-accent" : "border-edge"
+          className={`composer-dock shell-inset-glass relative rounded-2xl focus-within:border-edge2 transition ${
+            isDragOver ? "border-accent ring-1 ring-accent" : ""
           }`}
         >
           {(editingIndex !== null || canRevertEdit || editNotice) && (
-            <div className="flex items-center justify-between gap-2 px-3.5 py-1.5 bg-panel border-b border-edge text-[11.5px] text-accent select-none rounded-t-2xl">
+            <div className="flex items-center justify-between gap-2 px-3.5 py-1.5 border-b border-[var(--shell-panel-border)] text-[11.5px] text-accent select-none rounded-t-2xl">
               <span className="flex items-center gap-1.5 min-w-0">
                 <Pencil size={11} className="shrink-0" />
                 <span className="truncate">
@@ -623,7 +623,7 @@ export default function ComposerDock({
           )}
 
           {showContextPanel && !contextUsage && (
-            <div className="flex items-center justify-between p-3.5 bg-panel border-b border-edge text-[11.5px] select-none rounded-t-2xl animate-in slide-in-from-bottom duration-150">
+            <div className="flex items-center justify-between p-3.5 border-b border-[var(--shell-panel-border)] text-[11.5px] select-none rounded-t-2xl animate-in slide-in-from-bottom duration-150">
               <div className="flex items-center gap-2 text-faint">
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
                 <span className="font-semibold text-txt">Context Usage</span>
@@ -635,7 +635,7 @@ export default function ComposerDock({
             </div>
           )}
           {showContextPanel && contextUsage && (
-            <div className="flex flex-col p-3.5 bg-panel border-b border-edge text-[11.5px] select-none rounded-t-2xl animate-in slide-in-from-bottom duration-150">
+            <div className="flex flex-col p-3.5 border-b border-[var(--shell-panel-border)] text-[11.5px] select-none rounded-t-2xl animate-in slide-in-from-bottom duration-150">
               <div className="flex items-center justify-between font-medium mb-2.5">
                 <div className="flex items-center gap-1.5">
                   <span className="font-semibold text-txt">Context Usage</span>

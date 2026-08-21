@@ -6,6 +6,11 @@ instead of a raw OS navigation. Never throws.
 
 import { normalizeRepoPath } from "./pathNormalize";
 import {
+  lookupAgentCommandSession,
+  lookupAgentCommandSessionById,
+  registerAgentCommandSession,
+} from "./agentCommandIndex";
+import {
   seedAgentTerminalCommand,
   syncAgentTerminalSnapshot,
 } from "./agentTerminalStream";
@@ -15,6 +20,8 @@ export type OpenFileDetail = {
   path: string;
   line?: number;
   col?: number;
+  /** File-tree / known-good paths may open even if resolve is unavailable. */
+  trusted?: boolean;
 };
 
 export type ParsedFileHref = {
@@ -113,7 +120,7 @@ function hasFilesystemPrefix(clean: string): boolean {
  * Letter-start extensions reject version tails (`.1` in `tar@6.2.1`).
  */
 function hasFilenameExtension(clean: string): boolean {
-  const withoutLine = clean.replace(/(?::\d+){0,2}$/, "");
+  const withoutLine = clean.replace(/(?::\d+(?:-\d+)?)(?::\d+)?$/, "");
   const base = withoutLine.split(/[\\/]/).pop() || "";
   return /\.([A-Za-z][\w]{0,7}|7z)$/.test(base);
 }
@@ -210,7 +217,7 @@ export function parseFileHref(href: string): ParsedFileHref | null {
   let line: number | undefined;
   let col: number | undefined;
   // path.ext:12 or path.ext:12:3 — require a dotted extension before :line
-  const m = raw.match(/^(.+\.\w{1,8}):(\d+)(?::(\d+))?$/);
+  const m = raw.match(/^(.+\.\w{1,8}):(\d+)(?:-\d+)?(?::(\d+))?$/);
   if (m) {
     raw = m[1];
     line = parseInt(m[2], 10);
@@ -224,17 +231,94 @@ export function parseFileHref(href: string): ParsedFileHref | null {
   return { path: raw, line, col };
 }
 
-/** Inline `` `path` `` that should open as a file — not a package or command. */
+/**
+ * Transcript / markdown href that should open as a file.
+ * Bare `` `backend.py` `` is not enough — models backtick identifiers constantly.
+ * Require a filesystem prefix or a directory separator plus a filename extension.
+ */
 export function looksLikePathInlineCode(text: string): boolean {
   const t = (text || "").trim();
   if (!t || t.includes("\n") || t.length > 260) return false;
-  // Reject obvious non-paths (commands, flags, pure identifiers).
   if (/^[-+]/.test(t)) return false;
-  // Whitespace usually means a command — except conservative spaced paths
-  // (`/Users/me/My Projects/app.ts`), matching PATH_IN_TEXT / looksLikeSpacedFilePath.
   if (/\s/.test(t)) return looksLikeSpacedFilePath(t);
   if (looksLikeShellCommand(t)) return false;
-  return looksLikeFilePath(t);
+  if (!looksLikeFilePath(t)) return false;
+  const clean = t
+    .replace(/^file:\/\//i, "")
+    .replace(/^["']|["']$/g, "");
+  return hasFilesystemPrefix(clean) || /[\\/]/.test(clean);
+}
+
+/**
+ * Hermes `#session/` / `#preview/` style: identity-bound destinations that
+ * survive markdown sanitization. Never invent these from prose.
+ */
+export function commandMarkdownHref(id: string): string {
+  return `#command/${encodeURIComponent(id)}`;
+}
+
+export function commandRefFromMarkdownHref(href?: string): string | null {
+  if (!href?.startsWith("#command/")) return null;
+  try {
+    return decodeURIComponent(href.slice("#command/".length)) || null;
+  } catch {
+    return null;
+  }
+}
+
+export function fileMarkdownHref(path: string): string {
+  return `#file/${encodeURIComponent(path)}`;
+}
+
+export function fileRefFromMarkdownHref(href?: string): string | null {
+  if (!href?.startsWith("#file/")) return null;
+  try {
+    return decodeURIComponent(href.slice("#file/".length)) || null;
+  } catch {
+    return null;
+  }
+}
+
+export type TranscriptTarget =
+  | { kind: "url"; href: string }
+  | { kind: "spill"; href: string }
+  | { kind: "job"; href: string }
+  | { kind: "file"; href: string }
+  | { kind: "command"; command: string; id: string; output: string }
+  | { kind: "none" };
+
+/**
+ * Classify a markdown href / autolink target for transcript clicks.
+ * Commands light up only when a live/completed agent session is registered
+ * (Hermes `procId` / Codex trusted-destination rule).
+ */
+export function classifyTranscriptTarget(href: string): TranscriptTarget {
+  const h = (href || "").trim();
+  if (!h) return { kind: "none" };
+  if (isExternalUrl(h)) return { kind: "url", href: h };
+  if (looksLikeSpillUri(h)) return { kind: "spill", href: h };
+  if (looksLikeJobId(h)) return { kind: "job", href: h };
+  const commandId = commandRefFromMarkdownHref(h);
+  if (commandId) {
+    const live = lookupAgentCommandSessionById(commandId);
+    return live
+      ? { kind: "command", command: live.command, id: live.id, output: live.output }
+      : { kind: "none" };
+  }
+  const fileRef = fileRefFromMarkdownHref(h);
+  if (fileRef && looksLikeFilePath(fileRef)) {
+    return { kind: "file", href: fileRef };
+  }
+  if (looksLikePathInlineCode(h)) return { kind: "file", href: h };
+  const live = lookupAgentCommandSession(h);
+  if (live) {
+    return { kind: "command", command: live.command, id: live.id, output: live.output };
+  }
+  return { kind: "none" };
+}
+
+export function classifyTranscriptHref(href: string): AgentLinkKind {
+  return classifyTranscriptTarget(href).kind;
 }
 
 export type AgentLinkKind =
@@ -440,6 +524,13 @@ export type OpenAgentCommandOpts = {
 export function openAgentCommand(command: string, opts?: OpenAgentCommandOpts): void {
   const cmd = (command || "").trim();
   if (!cmd) return;
+  const live = !opts?.id ? lookupAgentCommandSession(cmd) : null;
+  const id = String(opts?.id || live?.id || "").trim();
+  const output = String(opts?.output || live?.output || "");
+  // Speculative transcript clicks used to mint a blank agent-terminal
+  // mirror. Fail closed unless this is an interactive inject or a real
+  // registered / tool-card reveal (Hermes openAgentTerminal(procId)).
+  if (!opts?.run && !id && !output) return;
   try {
     window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: "terminal" }));
     if (opts?.run) {
@@ -448,13 +539,13 @@ export function openAgentCommand(command: string, opts?: OpenAgentCommandOpts): 
       );
       return;
     }
-    const id = String(opts?.id || stableCommandId(cmd)).trim() || stableCommandId(cmd);
-    const output = String(opts?.output || "");
-    seedAgentTerminalCommand(id, cmd);
-    if (output) syncAgentTerminalSnapshot(id, output);
+    const revealId = id || stableCommandId(cmd);
+    registerAgentCommandSession({ id: revealId, command: cmd, output });
+    seedAgentTerminalCommand(revealId, cmd);
+    if (output) syncAgentTerminalSnapshot(revealId, output);
     window.dispatchEvent(
       new CustomEvent("harness-open-agent-terminal", {
-        detail: { id, command: cmd, output },
+        detail: { id: revealId, command: cmd, output },
       })
     );
   } catch {
@@ -467,6 +558,10 @@ export function syncAgentCommandOutput(id: string, output: string): void {
   const procId = String(id || "").trim();
   const snap = String(output || "");
   if (!procId || !snap) return;
+  const known = lookupAgentCommandSessionById(procId);
+  if (known) {
+    registerAgentCommandSession({ id: procId, command: known.command, output: snap });
+  }
   try {
     syncAgentTerminalSnapshot(procId, snap);
     window.dispatchEvent(
@@ -482,32 +577,35 @@ export function syncAgentCommandOutput(id: string, output: string): void {
 /** Route a markdown href click (or synthetic open). */
 export function openAgentLink(href: string, e?: { preventDefault(): void }): void {
   if (!href) return;
-  if (isExternalUrl(href)) {
+  const target = classifyTranscriptTarget(href);
+  if (target.kind === "none") {
     e?.preventDefault();
-    openAgentUrl(href);
-    return;
-  }
-  if (looksLikeSpillUri(href)) {
-    e?.preventDefault();
-    openAgentSpill(href);
-    return;
-  }
-  if (looksLikeJobId(href)) {
-    e?.preventDefault();
-    openAgentSwarmJob(href);
-    return;
-  }
-  if (looksLikeShellCommand(href)) {
-    e?.preventDefault();
-    openAgentCommand(href, { run: false });
-    return;
-  }
-  if (looksLikeFilePath(href)) {
-    e?.preventDefault();
-    openAgentFile(href);
     return;
   }
   e?.preventDefault();
+  if (target.kind === "url") {
+    openAgentUrl(target.href);
+    return;
+  }
+  if (target.kind === "spill") {
+    openAgentSpill(target.href);
+    return;
+  }
+  if (target.kind === "job") {
+    openAgentSwarmJob(target.href);
+    return;
+  }
+  if (target.kind === "file") {
+    openAgentFile(target.href);
+    return;
+  }
+  if (target.kind === "command") {
+    openAgentCommand(target.command, {
+      id: target.id,
+      output: target.output,
+      run: false,
+    });
+  }
 }
 
 /**

@@ -17,83 +17,14 @@ import {
   resolveDroppedOsPath,
 } from "./components/conversation/composerInput";
 import { openAgentWorkspace } from "./lib/agentLinks";
+import { reclampRailWidths } from "./lib/railLayout";
 
 const LS = {
   left: "pmharness.leftW",
   leftOpen: "pmharness.leftOpen", rightOpen: "pmharness.rightOpen", rightW: "pmharness.rightW",
 };
-const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
 const num = (k: string, d: number) => { const v = Number(localStorage.getItem(k)); return Number.isFinite(v) && v > 0 ? v : d; };
-const bool = (k: string, d: boolean) => { const v = localStorage.getItem(k); return v === null ? d : v === "1"; };
-
-const MIN_CENTER_W = 360;
-const LEFT_MIN_W = 180;
-const LEFT_MAX_W = 420;
-const RIGHT_MIN_W = 320;
-const RIGHT_COMPACT_MIN_W = 220;
-
-/** Flex chrome around the center column: shell padding and rail gutters. */
-const RAIL_GUTTER_W = 6;
-
-function layoutChrome(leftOpen: boolean, rightOpen: boolean): number {
-  let gutters = 0;
-  if (leftOpen) gutters += 1;
-  if (rightOpen) gutters += 1;
-  return 2 + gutters * RAIL_GUTTER_W;
-}
-
-/** Keep open rails within min/window budget while preserving MIN_CENTER_W for the chat column. */
-function reclampRailWidths(
-  leftW: number,
-  rightW: number,
-  leftOpen: boolean,
-  rightOpen: boolean,
-  innerWidth: number,
-): { leftW: number; rightW: number } {
-  const chrome = layoutChrome(leftOpen, rightOpen);
-  const availableWidth = Math.max(0, innerWidth - chrome);
-  const preferredLeft = leftOpen ? clamp(leftW, LEFT_MIN_W, LEFT_MAX_W) : 0;
-  const preferredRight = rightOpen ? Math.max(RIGHT_MIN_W, rightW) : 0;
-  const requiredRails = (leftOpen ? LEFT_MIN_W : 0) + (rightOpen ? RIGHT_MIN_W : 0);
-  const centerWidth = Math.min(MIN_CENTER_W, Math.max(0, availableWidth - requiredRails));
-  const railBudget = Math.max(0, availableWidth - centerWidth);
-
-  if (!leftOpen && !rightOpen) return { leftW, rightW };
-
-  if (leftOpen && rightOpen) {
-    // At normal widths both rails keep their full minimums. If the window
-    // cannot hold those minimums plus the chat column, compact the right board
-    // first so the left rail remains useful and the cards stay inside the shell.
-    const compactRightMin = Math.min(RIGHT_MIN_W, RIGHT_COMPACT_MIN_W, railBudget);
-    const compactLeftMin = Math.min(LEFT_MIN_W, Math.max(0, railBudget - compactRightMin));
-    const leftMax = Math.max(compactLeftMin, railBudget - compactRightMin);
-    const left = clamp(
-      Math.min(preferredLeft, Math.max(compactLeftMin, railBudget - preferredRight)),
-      compactLeftMin,
-      Math.min(LEFT_MAX_W, leftMax),
-    );
-    const right = clamp(
-      Math.min(preferredRight, Math.max(0, railBudget - left)),
-      compactRightMin,
-      Math.max(compactRightMin, railBudget - left),
-    );
-    return { leftW: left, rightW: right };
-  }
-
-  if (leftOpen) {
-    const leftMin = Math.min(LEFT_MIN_W, railBudget);
-    return {
-      leftW: clamp(preferredLeft, leftMin, Math.min(LEFT_MAX_W, railBudget)),
-      rightW,
-    };
-  }
-
-  const rightMin = Math.min(RIGHT_MIN_W, railBudget);
-  return {
-    leftW,
-    rightW: clamp(preferredRight, rightMin, railBudget),
-  };
-}
+const bool = (k: string, d: boolean) => { const v = localStorage.getItem(k); return v === null ? d : v === "1"; }
 
 function lastRightTab(): string {
   try {
@@ -167,6 +98,18 @@ export default function App() {
     });
   };
   const closeEmptyRightPane = useCallback(() => setRightOpen(false), []);
+  const toggleRight = useCallback(() => {
+    setRightOpen((open) => {
+      if (open) return false;
+      // First open (or re-open after every card was closed) must seed a tab.
+      // Bare setRightOpen(true) mounts an empty board that immediately
+      // onEmpty-closes — the Ctrl+J flash.
+      if (!hasStoredRightPaneCards()) {
+        pendingRightTab.current = lastRightTab();
+      }
+      return true;
+    });
+  }, []);
   const requestRightMinWidth = useCallback((minPx: number) => {
     const next = reclampRailWidths(
       leftWRef.current,
@@ -321,7 +264,7 @@ export default function App() {
       }
       switch (k) {
         case "b": e.preventDefault(); setLeftOpen((v) => !v); break;        // toggle sessions panel
-        case "j": e.preventDefault(); setRightOpen((v) => !v); break;       // toggle right pane
+        case "j": e.preventDefault(); toggleRight(); break;       // toggle right pane
         case "i":                                                          // focus chat input (Cursor: toggle sidepanel)
         // Cmd/Ctrl+L focuses the composer. TerminalPane capture steals this
         // when the live xterm has a selection (Add to chat).
@@ -333,7 +276,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [toggleRight]);
 
   return (
     <div className="h-full flex flex-col bg-[var(--shell-chrome)]">
@@ -444,7 +387,7 @@ export default function App() {
       <div className="shrink-0 px-px py-px">
         <StatusBar config={config} update={availableUpdate}
           leftOpen={leftOpen} rightOpen={rightOpen}
-          onToggleLeft={() => setLeftOpen((v) => !v)} onToggleRight={() => setRightOpen((v) => !v)}
+          onToggleLeft={() => setLeftOpen((v) => !v)} onToggleRight={toggleRight}
           onOpenEconomics={() => openRightTo("economics")} />
       </div>
 
@@ -452,7 +395,7 @@ export default function App() {
 
       <CommandPalette
         onToggleLeft={() => setLeftOpen((v) => !v)}
-        onToggleRight={() => setRightOpen((v) => !v)}
+        onToggleRight={toggleRight}
       />
     </div>
   );

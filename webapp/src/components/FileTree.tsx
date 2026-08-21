@@ -340,7 +340,7 @@ export default function FileTree() {
   const handleFileSelect = (path: string) => {
     setSelectedPath(path);
     // Dispatch custom event to let CenterPane/Conversation know we want to open this file
-    window.dispatchEvent(new CustomEvent("harness-open-file", { detail: { path } }));
+    window.dispatchEvent(new CustomEvent("harness-open-file", { detail: { path, trusted: true } }));
   };
 
   const openContextMenu = (e: React.MouseEvent, node: FileNode | null) => {

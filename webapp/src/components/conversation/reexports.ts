@@ -232,6 +232,7 @@ export {
   setTabDirty,
   tabHasDirty,
   otherTabsHaveDirty,
+  chooseResolvedFilePath,
 } from "./openFileTabs";
 export {
   userStoppedBusyChrome,

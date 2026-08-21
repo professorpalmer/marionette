@@ -10,7 +10,6 @@ import type { IDisposable, ILink, Terminal } from "@xterm/xterm";
 import {
   isExternalUrl,
   looksLikeFilePath,
-  looksLikePathInlineCode,
   looksLikeShellCommand,
   openAgentFile,
   openAgentUrl,
@@ -28,8 +27,8 @@ export type TerminalPathMatch = {
 function pathCandidateValid(raw: string): boolean {
   const bare = unwrapPathToken(raw).replace(/(?::\d+){1,2}$/, "");
   if (!bare || looksLikeShellCommand(bare)) return false;
-  if (looksLikePathInlineCode(bare) || looksLikeFilePath(bare)) return true;
-  return looksLikePathInlineCode(bare.split(/[\\/]/).pop() || "");
+  if (looksLikeFilePath(bare)) return true;
+  return false;
 }
 
 /** Match clickable path tokens on a single terminal line (testable pure helper). */

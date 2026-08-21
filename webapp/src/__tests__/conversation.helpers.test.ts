@@ -212,6 +212,7 @@ import {
   soundPrefEnabled,
 } from "../components/conversation/completionNotify";
 import {
+  chooseResolvedFilePath,
   closeTabResult,
   otherTabsHaveDirty,
   setTabDirty,
@@ -3025,6 +3026,18 @@ describe("queueOps / openFileTabs / runnersBusy", () => {
     expect(tabHasDirty([{ path: "a.ts", isDirty: true }], "a.ts")).toBe(true);
     expect(otherTabsHaveDirty([{ path: "a.ts", isDirty: true }, { path: "b.ts", isDirty: false }], "b.ts")).toBe(true);
     expect(setTabDirty([{ path: "a.ts", isDirty: false }], "a.ts", true)[0].isDirty).toBe(true);
+    expect(chooseResolvedFilePath("src/a.ts", { ok: true, path: "src/a.ts" })).toEqual({
+      path: "src/a.ts",
+    });
+    expect(chooseResolvedFilePath("backend.py", { ok: false, error: "File not found" })).toEqual({
+      toast: "Couldn't open backend.py.",
+    });
+    expect(chooseResolvedFilePath("same.py", { candidates: ["one/same.py", "two/same.py"] })).toEqual({
+      toast: "Multiple files match same.py; use a more specific path.",
+    });
+    expect(chooseResolvedFilePath("missing.py", null, { trusted: true })).toEqual({
+      path: "missing.py",
+    });
     expect(userStoppedBusyChrome("thinking")).toBe("idle");
     expect(preserveOrThinking("idle")).toBe("thinking");
     expect(
