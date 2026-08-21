@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.15` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.262, deliberately pre-1.0. Rides puppetmaster-ai==1.22.15. Composer uses the same `--shell-panel` glass as the left rail. Chat command tokens open the live agent terminal only when a run_command card is registered. Cmd+J no longer flash-closes an empty right board; column resize is pairwise, not a 12-col snap.
+> Status: v0.9.263, deliberately pre-1.0. Rides puppetmaster-ai==1.22.15. Composer is again a solid `panel2` island. Chat command tokens open the live agent terminal only when a run_command card is registered. Cmd+J no longer flash-closes an empty right board; column resize is pairwise, not a 12-col snap.
 
 ## Documentation
 
