@@ -48,7 +48,6 @@ import {
   toolFocusPhrase,
   toolInputFieldKey,
   toolRowLabel,
-  turnHasLiveInvestigation,
   turnHasVisibleBusySurface,
 } from "../lib/turnProgress";
 import { isAgentLoopOpen } from "./conversation/runnersBusy";
