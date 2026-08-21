@@ -3546,6 +3546,7 @@ class ConversationalSession(
     def _run_edit_worker_bounded(self, objective: str, requested_adapter: str,
                                  job_id: str = "", target_repo: str = "",
                                  expects_diff: bool = True, on_event=None,
+                                 agentic_pin=None, strict_adapter: bool = False,
                                  lifecycle_budget=None,
                                  deadline_seconds: Optional[float] = None):
         """Run the edit worker under a hard wall-clock deadline. The work runs in
@@ -3614,6 +3615,8 @@ class ConversationalSession(
                         session_id=self.harness_session_id or "",
                         cwd=effective_cwd,
                         expects_diff=expects_diff,
+                        agentic_pin=agentic_pin,
+                        strict_adapter=strict_adapter,
                         on_event=on_event,
                     )
             except Exception as exc:  # surfaced to the caller after join

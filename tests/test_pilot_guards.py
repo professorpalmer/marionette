@@ -64,6 +64,7 @@ from harness.pilot_guards import (
     swarm_gate_enabled,
     tiny_workspace_tool_budget,
     turn_tool_budget_cap,
+    translate_puppetmaster_cli_action,
     user_requests_browser_qa,
     workspace_source_stats,
 )
@@ -944,7 +945,7 @@ def test_parse_screenshot_agentic_cli_goal_and_model():
     subcmd, goal, model = parsed
     assert subcmd == "agentic"
     assert goal == "Add token-level streaming"
-    assert model == "deepseek/deepseek-v4-pro"
+    assert model == "opencode-go/deepseek/deepseek-v4-pro"
 
 
 def test_parse_wrapped_screenshot_agentic_cli_goal_and_model():
@@ -953,7 +954,17 @@ def test_parse_wrapped_screenshot_agentic_cli_goal_and_model():
     subcmd, goal, model = parsed
     assert subcmd == "agentic"
     assert goal == _SCREENSHOT_WRAPPED_GOAL
-    assert model == "deepseek/deepseek-v4-pro"
+    assert model == "opencode-go/deepseek/deepseek-v4-pro"
+
+
+def test_translate_agentic_cli_preserves_provider_model_and_adapter():
+    translated = translate_puppetmaster_cli_action(
+        _Act(kind="run_command", command=_SCREENSHOT_AGENTIC_CLI),
+    )
+    assert translated is not None
+    assert translated.kind == "run_implement"
+    assert translated.adapter == "agentic"
+    assert translated.model == "opencode-go/deepseek/deepseek-v4-pro"
 
 
 def test_parse_preserves_quoted_goal_containing_workers_flag_text():

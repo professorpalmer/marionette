@@ -26,6 +26,7 @@ from harness.edit_engines import (
     run_agentic_edit,
     run_edit_worker,
     run_native_edit,
+    run_parallel,
     select_edit_engine,
     _summarize_agentic_result,
 )
@@ -627,6 +628,82 @@ def test_agentic_payload_explicit_provider_and_model(monkeypatch):
         shutil.rmtree(repo_dir, ignore_errors=True)
 
 
+def test_agentic_payload_uses_immutable_per_action_pin(monkeypatch):
+    from harness.swarm_model_pin import AgenticModelPin
+
+    repo_dir = create_temp_git_repo()
+    try:
+        cfg = _cfg(repo_dir)
+        captured: list[dict] = []
+        _install_agentic_mocks(
+            monkeypatch,
+            capture_payload=captured,
+            orchestrator_result=_fake_pm_result([
+                _fake_artifact(model="stealth/ox-alpha", stdout="ok"),
+            ]),
+        )
+        monkeypatch.setenv("HARNESS_IMPLEMENT_PROVIDER", "openai")
+        monkeypatch.setenv("HARNESS_IMPLEMENT_MODEL", "wrong-model")
+        monkeypatch.setattr(
+            "harness.edit_engines.finalize_worktree_patch",
+            lambda _wt: ("patch", ["a.txt"]),
+        )
+        pin = AgenticModelPin(
+            requested="openrouter/stealth/ox-alpha",
+            provider="openrouter",
+            model="stealth/ox-alpha",
+            router_model_id="agentic/openrouter/stealth/ox-alpha",
+        )
+
+        result = run_agentic_edit(cfg, "goal", agentic_pin=pin)
+
+        assert result.ok is True
+        assert result.requested_model == pin.requested
+        assert result.provider == "openrouter"
+        assert result.routing_policy == "explicit_pin"
+        payload = captured[0]
+        assert payload["provider"] == "openrouter"
+        assert payload["model"] == "stealth/ox-alpha"
+        assert payload["auto_route"] is False
+        assert payload["allowed_adapters"] == ["agentic"]
+        assert payload["pinned_model"] == pin.router_model_id
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
+def test_agentic_payload_fails_closed_on_routed_model_mismatch(monkeypatch):
+    from harness.swarm_model_pin import AgenticModelPin
+
+    repo_dir = create_temp_git_repo()
+    try:
+        cfg = _cfg(repo_dir)
+        routed = _fake_artifact(model="other/model", stdout="wrong model")
+        routed.type = ""
+        _install_agentic_mocks(
+            monkeypatch,
+            orchestrator_result=_fake_pm_result([routed]),
+        )
+        monkeypatch.setattr(
+            "harness.edit_engines.finalize_worktree_patch",
+            lambda _wt: ("patch", ["a.txt"]),
+        )
+        pin = AgenticModelPin(
+            requested="openrouter/stealth/ox-alpha",
+            provider="openrouter",
+            model="stealth/ox-alpha",
+            router_model_id="agentic/openrouter/stealth/ox-alpha",
+        )
+
+        result = run_agentic_edit(cfg, "goal", agentic_pin=pin)
+
+        assert result.ok is False
+        assert result.error == AGENTIC_ROUTE_FAILED
+        assert "model mismatch" in result.summary.lower()
+        assert result.requested_model == pin.requested
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
 def test_agentic_analysis_uses_analyze_payload_not_implement(monkeypatch):
     """expects_diff=False must not stamp mode=implement (avoids 900s edit loop)."""
     repo_dir = create_temp_git_repo()
@@ -1212,6 +1289,104 @@ def test_run_edit_worker_falls_back_on_agentic_unavailable(monkeypatch):
         assert result is native_sentinel
     finally:
         shutil.rmtree(repo_dir, ignore_errors=True)
+
+
+def test_run_edit_worker_explicit_agentic_never_falls_back(monkeypatch):
+    repo_dir = create_temp_git_repo()
+    try:
+        cfg = _cfg(repo_dir)
+        monkeypatch.setattr(
+            "harness.edit_engines.agentic_available", lambda: True,
+        )
+        monkeypatch.setattr(
+            "harness.edit_engines.agentic_platform_enabled", lambda: True,
+        )
+        agentic_failure = WorkerResult(
+            ok=False,
+            error=AGENTIC_ROUTE_FAILED,
+            summary="route failed",
+        )
+        monkeypatch.setattr(
+            "harness.edit_engines.run_agentic_edit",
+            lambda *args, **kwargs: agentic_failure,
+        )
+        fallback_calls = []
+        monkeypatch.setattr(
+            "harness.edit_engines.run_cursor_edit",
+            lambda *args, **kwargs: fallback_calls.append("cursor"),
+        )
+        monkeypatch.setattr(
+            "harness.edit_engines.run_native_edit",
+            lambda *args, **kwargs: fallback_calls.append("native"),
+        )
+
+        result = run_edit_worker(
+            cfg,
+            "goal",
+            requested_adapter="agentic",
+        )
+
+        assert result is agentic_failure
+        assert fallback_calls == []
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
+def test_run_edit_worker_explicit_agentic_unavailable_fails_closed(monkeypatch):
+    cfg = HarnessConfig()
+    monkeypatch.setattr(
+        "harness.edit_engines.agentic_platform_enabled", lambda: True,
+    )
+    monkeypatch.setattr(
+        "harness.edit_engines.agentic_available", lambda: False,
+    )
+    fallback_calls = []
+    monkeypatch.setattr(
+        "harness.edit_engines.run_native_edit",
+        lambda *args, **kwargs: fallback_calls.append("native"),
+    )
+
+    result = run_edit_worker(
+        cfg,
+        "goal",
+        requested_adapter="agentic",
+    )
+
+    assert result.ok is False
+    assert result.error == AGENTIC_UNAVAILABLE
+    assert result.engine == "agentic"
+    assert fallback_calls == []
+
+
+def test_run_parallel_forwards_same_agentic_pin_to_every_child(monkeypatch):
+    from harness.swarm_model_pin import AgenticModelPin
+
+    pin = AgenticModelPin(
+        requested="openrouter/stealth/ox-alpha",
+        provider="openrouter",
+        model="stealth/ox-alpha",
+        router_model_id="agentic/openrouter/stealth/ox-alpha",
+    )
+    seen = []
+
+    def fake_implement(config, goal, **kwargs):
+        seen.append((goal, kwargs))
+        return WorkerResult(ok=True, patch="patch")
+
+    monkeypatch.setattr("harness.edit_engines.run_implement", fake_implement)
+
+    results = run_parallel(
+        HarnessConfig(),
+        ["one", "two"],
+        requested_adapter="agentic",
+        agentic_pin=pin,
+        strict_adapter=True,
+    )
+
+    assert len(results) == 2
+    assert [goal for goal, _kwargs in seen] == ["one", "two"]
+    assert all(kwargs["agentic_pin"] is pin for _goal, kwargs in seen)
+    assert all(kwargs["strict_adapter"] is True for _goal, kwargs in seen)
 
 
 def test_run_edit_worker_no_fallback_on_empty_agentic_result(monkeypatch):

@@ -32,6 +32,51 @@ DISPATCH_ACTION_KINDS: frozenset[str] = frozenset({
 })
 
 
+def _strict_agentic_dispatch(act) -> tuple[object, bool, str]:
+    """Resolve an explicit action model/agentic adapter before any fallback."""
+
+    requested_model = str(getattr(act, "model", "") or "").strip()
+    requested_adapter = str(getattr(act, "adapter", "") or "").strip().lower()
+    strict_agentic = bool(
+        requested_model or requested_adapter == "agentic"
+    )
+    if not strict_agentic:
+        return None, False, ""
+    if requested_model and requested_adapter not in ("", "agentic"):
+        return (
+            None,
+            True,
+            (
+                f"model={requested_model!r} is an agentic worker pin and "
+                f"cannot be combined with adapter={requested_adapter!r}"
+            ),
+        )
+    if not requested_model:
+        return None, True, ""
+    from harness.swarm_model_pin import resolve_agentic_model_pin
+
+    pin, error = resolve_agentic_model_pin(requested_model)
+    return pin, True, error
+
+
+def _stamp_local_job_agentic_pin(session, job_id: str, pin) -> None:
+    """Persist immutable requested identity alongside the selected model."""
+
+    if pin is None:
+        return
+    try:
+        with session._local_jobs_lock:
+            row = session._local_jobs.get(job_id)
+            if not isinstance(row, dict):
+                return
+            row["requested_model"] = pin.requested
+            row["provider"] = pin.provider
+            row["routing_policy"] = pin.policy
+            session._persist_local_jobs_locked()
+    except Exception:
+        return
+
+
 def _non_git_workspace_error(repo: str) -> Optional[str]:
     """Calm refuse when the resolved workspace is not a git work tree.
 
@@ -904,8 +949,23 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         return None
     claimed = True
     dispatched = False
+    agentic_pin, strict_adapter, pin_error = _strict_agentic_dispatch(act)
+    if pin_error:
+        session._release_objective(act.goal)
+        yield ConvEvent('action_start', {
+            'id': aid, 'kind': 'run_implement', 'goal': act.goal,
+            'cwd': effective_repo,
+        })
+        yield ConvEvent('action_result', {'id': aid, 'error': pin_error})
+        session._append_action_result(
+            act, aid, f'(run_implement {aid} failed: {pin_error})', is_native,
+        )
+        return None
     external_adapters = {'cursor', 'claude-code', 'codex', 'openai', 'hermes'}
     requested_adapter, adapter_remap_note = session._resolve_requested_implement_adapter(act.adapter or '')
+    if strict_adapter:
+        requested_adapter = 'agentic'
+        adapter_remap_note = ''
     use_external = requested_adapter in external_adapters and _puppetmaster_available() and session._external_adapter_available(requested_adapter)
     if requested_adapter in external_adapters and (not use_external):
         if not adapter_remap_note:
@@ -1005,7 +1065,11 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         return None
     else:
         from harness.edit_engines import select_edit_engine
-        engine = select_edit_engine(session.config, requested_adapter)
+        engine = (
+            'agentic'
+            if strict_adapter
+            else select_edit_engine(session.config, requested_adapter)
+        )
         _mode = _requested_mode
         if _force_analysis:
             _mode = 'analysis'
@@ -1018,8 +1082,22 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             try:
                 session._register_local_job(
                     job_id, act.goal, role=_mode, cwd=effective_repo, engine=engine,
-                    model=session.config.driver or '' if engine == 'native' else '',
+                    model=(
+                        agentic_pin.router_model_id
+                        if agentic_pin is not None
+                        else (
+                            session.config.driver or ''
+                            if engine == 'native'
+                            else ''
+                        )
+                    ),
+                    **(
+                        {"skip_routing_preview": True}
+                        if agentic_pin is not None
+                        else {}
+                    ),
                 )
+                _stamp_local_job_agentic_pin(session, job_id, agentic_pin)
             except Exception as e:
                 session._release_objective(act.goal)
                 err = f'tracker register failed: {e}'
@@ -1028,7 +1106,16 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                 return None
             session._session_job_ids.append(job_id)
             _prewarm_worker_imports()
-            if not session._submit_swarm(session._run_provider_worker_background, job_id, act.goal, requested_adapter, effective_repo, expects_diff):
+            if not session._submit_swarm(
+                session._run_provider_worker_background,
+                job_id,
+                act.goal,
+                requested_adapter,
+                effective_repo,
+                expects_diff,
+                agentic_pin,
+                strict_adapter,
+            ):
                 cap_msg = session._swarm_submit_reject_message()
                 session._release_objective(act.goal)
                 yield ConvEvent('action_result', {'id': aid, 'status': 'deferred', 'message': cap_msg})
@@ -1127,8 +1214,22 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             return None
     except Exception:
         pass
+    agentic_pin, strict_adapter, pin_error = _strict_agentic_dispatch(act)
+    if pin_error:
+        yield ConvEvent('action_start', {
+            'id': aid, 'kind': 'run_parallel', 'goals': goals,
+            'cwd': effective_repo,
+        })
+        yield ConvEvent('action_result', {'id': aid, 'error': pin_error})
+        session._append_action_result(
+            act, aid, f'(run_parallel {aid} failed: {pin_error})', is_native,
+        )
+        return None
     external_adapters = {'cursor', 'claude-code', 'codex', 'openai', 'hermes'}
     requested_adapter, adapter_remap_note = session._resolve_requested_implement_adapter(act.adapter or '')
+    if strict_adapter:
+        requested_adapter = 'agentic'
+        adapter_remap_note = ''
     use_external = requested_adapter in external_adapters and _puppetmaster_available() and session._external_adapter_available(requested_adapter)
     if requested_adapter in external_adapters and (not use_external):
         if not adapter_remap_note:
@@ -1298,7 +1399,11 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             return None
     else:
         from harness.edit_engines import select_edit_engine
-        engine = select_edit_engine(session.config, requested_adapter)
+        engine = (
+            'agentic'
+            if strict_adapter
+            else select_edit_engine(session.config, requested_adapter)
+        )
         try:
             _mode = (getattr(act, 'mode', None) or 'implement').strip().lower()
         except Exception:
@@ -1320,7 +1425,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             buffered_reuse_events = []
             _parallel_admission = f"parallel-{aid}"
             _reuse_mod = None
-            if _mode in ('analysis', 'review'):
+            if _mode in ('analysis', 'review') and agentic_pin is None:
                 try:
                     from harness import validation_reuse as _reuse_mod
                 except Exception:
@@ -1359,8 +1464,19 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                             session._register_local_job(
                                 job_id, sub_goal, role=_mode, cwd=effective_repo,
                                 engine=engine,
-                                model=session.config.driver or '' if engine == 'native' else '',
+                                model=(
+                                    agentic_pin.router_model_id
+                                    if agentic_pin is not None
+                                    else (
+                                        session.config.driver or ''
+                                        if engine == 'native'
+                                        else ''
+                                    )
+                                ),
                                 skip_routing_preview=True,
+                            )
+                            _stamp_local_job_agentic_pin(
+                                session, job_id, agentic_pin,
                             )
                             _reuse_registered = True
                             session._finish_local_job(
@@ -1464,7 +1580,23 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                             session._register_local_job(
                                 job_id, sub_goal, role=narrow_role,
                                 cwd=effective_repo, engine=engine,
-                                model=session.config.driver or '' if engine == 'native' else '',
+                                model=(
+                                    agentic_pin.router_model_id
+                                    if agentic_pin is not None
+                                    else (
+                                        session.config.driver or ''
+                                        if engine == 'native'
+                                        else ''
+                                    )
+                                ),
+                                **(
+                                    {"skip_routing_preview": True}
+                                    if agentic_pin is not None
+                                    else {}
+                                ),
+                            )
+                            _stamp_local_job_agentic_pin(
+                                session, job_id, agentic_pin,
                             )
                             # Pre-stamp partial reuse so background finish/drain
                             # keep invalidated_paths + source lineage.
@@ -1500,6 +1632,8 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                                 requested_adapter,
                                 effective_repo,
                                 expects_diff,
+                                agentic_pin,
+                                strict_adapter,
                                 admission_group=_parallel_admission,
                                 admission_size=len(goals),
                             )
@@ -1545,7 +1679,23 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                             session._register_local_job(
                                 job_id, sub_goal, role=_mode,
                                 cwd=effective_repo, engine=engine,
-                                model=session.config.driver or '' if engine == 'native' else '',
+                                model=(
+                                    agentic_pin.router_model_id
+                                    if agentic_pin is not None
+                                    else (
+                                        session.config.driver or ''
+                                        if engine == 'native'
+                                        else ''
+                                    )
+                                ),
+                                **(
+                                    {"skip_routing_preview": True}
+                                    if agentic_pin is not None
+                                    else {}
+                                ),
+                            )
+                            _stamp_local_job_agentic_pin(
+                                session, job_id, agentic_pin,
                             )
                             try:
                                 with session._local_jobs_lock:
@@ -1579,6 +1729,8 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                                 requested_adapter,
                                 effective_repo,
                                 expects_diff,
+                                agentic_pin,
+                                strict_adapter,
                                 admission_group=_parallel_admission,
                                 admission_size=len(goals),
                             )
@@ -1611,7 +1763,23 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                     session._register_local_job(
                         job_id, sub_goal, role=_mode, cwd=effective_repo,
                         engine=engine,
-                        model=session.config.driver or '' if engine == 'native' else '',
+                        model=(
+                            agentic_pin.router_model_id
+                            if agentic_pin is not None
+                            else (
+                                session.config.driver or ''
+                                if engine == 'native'
+                                else ''
+                            )
+                        ),
+                        **(
+                            {"skip_routing_preview": True}
+                            if agentic_pin is not None
+                            else {}
+                        ),
+                    )
+                    _stamp_local_job_agentic_pin(
+                        session, job_id, agentic_pin,
                     )
                     if _parallel_criteria and _mode in ('analysis', 'review'):
                         try:
@@ -1628,6 +1796,8 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                         requested_adapter,
                         effective_repo,
                         expects_diff,
+                        agentic_pin,
+                        strict_adapter,
                         admission_group=_parallel_admission,
                         admission_size=len(goals),
                     )

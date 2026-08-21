@@ -249,9 +249,10 @@ class PilotAction:
     # copy; run_swarm uses it as the read-only audit subject, never as a write
     # surface for the pilot's own tools.
     repo: str = ""
-    # run_swarm: optional registry id or adapter model name pin. Empty means
-    # auto-route. Unknown/pilot-session pins demote to auto-route at execute
-    # time against the keyed agentic catalog. Prompt text alone never pins.
+    # run_swarm / run_implement / run_parallel: optional registry id or adapter
+    # model name pin. Implement/parallel pins are strict agentic constraints;
+    # swarm retains its compatibility demotion for unknown pilot-session ids.
+    # Prompt text alone never pins.
     model: str = ""
     # Optional explicit acceptance criteria for swarm/parallel analysis.
     # Never inferred from goal prose — only an explicit list/string field.
@@ -661,7 +662,13 @@ def from_wire(
     if mode_note and kind in ("run_implement", "run_parallel"):
         coercion_notes.append(f"mode {mode_note}")
     _log_arg_coercion(kind, coercion_notes)
-    model = (raw.get("model") or "").strip() if kind == "run_swarm" else ""
+    model = ""
+    if kind in ("run_swarm", "run_implement", "run_parallel"):
+        model = str(
+            raw.get("model")
+            or arguments.get("model")
+            or ""
+        ).strip()
 
     memory_action = ""
     memory_content = ""
@@ -1460,6 +1467,7 @@ def build_tools_schema(
                     "properties": {
                         "goal": {"type": "string", "description": "The coding objective / task description to implement"},
                         "adapter": {"type": "string", "description": "Optional edit engine. Default is 'agentic' -- Puppetmaster's standalone keys-only worker (routes directly through your provider API, no external CLI). 'native' forces Marionette's own richer pilot loop. 'cursor'/'codex'/'claude-code' use those external agent CLIs when installed."},
+                        "model": {"type": "string", "description": "Optional strict agentic worker model pin (registry id or provider/model, for example openrouter/stealth/ox-alpha). A model pin implies adapter=agentic, never falls back, and must be omitted for normal auto-routing."},
                         "mode": {"type": "string", "enum": ["implement", "analysis", "review"], "description": "Worker execution mode: 'implement' (expects a patch; default) or 'analysis'/'review' (read-only report; empty diff is success)."},
                         "repo": {"type": "string", "description": "Optional absolute path to a DIFFERENT git repository to run this implementation in (defaults to the open workspace). Use when the task edits a repo other than the current one. Must be a git work tree."}
                     },
@@ -1494,6 +1502,7 @@ def build_tools_schema(
                             ),
                         },
                         "adapter": {"type": "string", "description": "Optional edit engine (default 'agentic' -- standalone keys-only; 'native' for the richer pilot; 'cursor'/'codex'/'claude-code' for external CLIs when installed)"},
+                        "model": {"type": "string", "description": "Optional strict agentic model pin shared by every child goal (registry id or provider/model). Implies adapter=agentic and disables fallback/auto-substitution."},
                         "mode": {"type": "string", "enum": ["implement", "analysis", "review"], "description": "Worker execution mode: 'implement' (can edit) or 'analysis'/'review' (read-only)"},
                         "repo": {"type": "string", "description": "Optional absolute path to a DIFFERENT git repository to run this implementation in (defaults to the open workspace). Use when the task edits a repo other than the current one. Must be a git work tree."},
                         "acceptance_criteria": {

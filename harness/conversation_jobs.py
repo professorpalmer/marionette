@@ -601,6 +601,7 @@ class ConversationJobsMixin:
     def _run_provider_worker_background(
         self, job_id: str, objective: str, requested_adapter: str = "",
         target_repo: str = "", expects_diff: bool = True,
+        agentic_pin=None, strict_adapter: bool = False,
     ) -> None:
         from .conversation import append_failed_declarative_checks_summary
 
@@ -652,6 +653,8 @@ class ConversationJobsMixin:
                 objective, requested_adapter, job_id=job_id,
                 target_repo=target_repo, expects_diff=expects_diff,
                 on_event=_on_worker_event,
+                agentic_pin=agentic_pin,
+                strict_adapter=strict_adapter,
                 lifecycle_budget=lifecycle_budget,
                 deadline_seconds=deadline_s if deadline_s > 0 else None,
             )
@@ -739,6 +742,8 @@ class ConversationJobsMixin:
                             recovery_objective, requested_adapter, job_id=job_id,
                             target_repo=target_repo, expects_diff=expects_diff,
                             on_event=_on_worker_event,
+                            agentic_pin=agentic_pin,
+                            strict_adapter=strict_adapter,
                             lifecycle_budget=lifecycle_budget,
                             deadline_seconds=remaining,
                         )
@@ -1123,6 +1128,16 @@ class ConversationJobsMixin:
                 }
 
             res_dict["worker_provenance"] = provenance
+            for routing_key, routing_value in (
+                ("adapter", getattr(res, "engine", "")),
+                ("model", getattr(res, "model", "")),
+                ("requested_model", getattr(res, "requested_model", "")),
+                ("provider", getattr(res, "provider", "")),
+                ("routing_policy", getattr(res, "routing_policy", "")),
+            ):
+                normalized_value = str(routing_value or "").strip()
+                if normalized_value:
+                    res_dict[routing_key] = normalized_value
 
             # Always fold completed WorkerResult.events into job['actions']
             # (progressive callback may have already recorded most of them).

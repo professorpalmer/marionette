@@ -34,6 +34,7 @@ from harness.diag import note as _diag
 
 if TYPE_CHECKING:
     from harness.config import HarnessConfig
+    from harness.swarm_model_pin import AgenticModelPin
     from harness.worker import WorkerResult
 
 
@@ -189,6 +190,19 @@ def cursor_platform_available() -> bool:
         return bool(os.environ.get("CURSOR_API_KEY", "").strip())
 
 
+def agentic_platform_enabled() -> bool:
+    """Whether the Puppetmaster platform lock permits agentic execution."""
+
+    try:
+        from puppetmaster.platform_lock import is_adapter_enabled
+
+        return bool(is_adapter_enabled("agentic"))
+    except Exception:
+        # Older Puppetmaster versions had no lock helper. Preserve the historical
+        # key-aware behavior rather than disabling agentic on an import mismatch.
+        return True
+
+
 def _provider_has_usable_key(provider) -> bool:
     """Stored / env / OAuth key present and not disconnected (``has_key`` truth)."""
     from harness.registry_wizard import get_provider_key
@@ -312,13 +326,51 @@ def run_edit_worker(
     config: "HarnessConfig", goal: str, requested_adapter: str = "",
     job_id: str = "", session_id: str = "", cwd: str = "",
     expects_diff: bool = True,
+    agentic_pin: Optional["AgenticModelPin"] = None,
+    strict_adapter: bool = False,
     on_event=None,
 ) -> "WorkerResult":
     """Run the selected in-process edit engine and return a normalized result.
 
     Falls back from agentic/cursor to native only when those could not run.
     """
-    engine = select_edit_engine(config, requested_adapter)
+    from harness.worker import WorkerResult
+
+    requested = (requested_adapter or "").strip().lower()
+    strict_agentic = bool(
+        strict_adapter or agentic_pin is not None or requested == "agentic"
+    )
+    if strict_agentic and requested not in ("", "agentic"):
+        return _stamp_agentic(
+            WorkerResult(
+                ok=False,
+                error=AGENTIC_ROUTE_FAILED,
+                summary=(
+                    f"Agentic model pin cannot run through adapter "
+                    f"{requested_adapter!r}; use adapter='agentic'."
+                ),
+            ),
+            execution_pin=agentic_pin,
+        )
+    if strict_agentic and (
+        not agentic_platform_enabled() or not agentic_available()
+    ):
+        reason = (
+            "Agentic adapter is disabled by the platform lock."
+            if not agentic_platform_enabled()
+            else "No usable provider key is available for the agentic adapter."
+        )
+        return _stamp_agentic(
+            WorkerResult(
+                ok=False,
+                error=AGENTIC_UNAVAILABLE,
+                summary=reason,
+            ),
+            execution_pin=agentic_pin,
+        )
+
+    effective_adapter = "agentic" if strict_agentic else requested_adapter
+    engine = select_edit_engine(config, effective_adapter)
     target_cwd = cwd or config.repo
     if engine == "cursor":
         result = run_cursor_edit(
@@ -337,7 +389,10 @@ def run_edit_worker(
         result = run_agentic_edit(
             config, goal, session_id=session_id, cwd=target_cwd,
             expects_diff=expects_diff, job_id=job_id,
+            agentic_pin=agentic_pin,
         )
+        if strict_agentic:
+            return result
         if result.error in _FALLBACK_REASONS:
             if cursor_platform_available():
                 _diag("edit_engines.run_edit_worker",
@@ -365,12 +420,16 @@ def run_implement(
     config: "HarnessConfig", goal: str, requested_adapter: str = "",
     job_id: str = "", session_id: str = "", cwd: str = "",
     expects_diff: bool = True,
+    agentic_pin: Optional["AgenticModelPin"] = None,
+    strict_adapter: bool = False,
 ) -> "WorkerResult":
     """Dispatch a single implement worker (agentic or native)."""
     return run_edit_worker(
         config, goal, requested_adapter=requested_adapter,
         job_id=job_id, session_id=session_id, cwd=cwd,
         expects_diff=expects_diff,
+        agentic_pin=agentic_pin,
+        strict_adapter=strict_adapter,
     )
 
 
@@ -378,6 +437,8 @@ def run_parallel(
     config: "HarnessConfig", goals: list[str], requested_adapter: str = "",
     session_id: str = "", cwd: str = "",
     expects_diff: bool = True,
+    agentic_pin: Optional["AgenticModelPin"] = None,
+    strict_adapter: bool = False,
 ) -> list["WorkerResult"]:
     """Run several implement workers sequentially (caller fans out concurrency)."""
     results = []
@@ -388,6 +449,8 @@ def run_parallel(
             config, goal, requested_adapter=requested_adapter,
             session_id=session_id, cwd=cwd,
             expects_diff=expects_diff,
+            agentic_pin=agentic_pin,
+            strict_adapter=strict_adapter,
         ))
     return results
 
@@ -557,6 +620,7 @@ def run_cursor_edit(
 def run_agentic_edit(
     config: "HarnessConfig", goal: str, *, session_id: str = "", cwd: str = "",
     expects_diff: bool = True, job_id: str = "",
+    agentic_pin: Optional["AgenticModelPin"] = None,
 ) -> "WorkerResult":
     """Puppetmaster agentic adapter in a managed worktree.
 
@@ -580,7 +644,7 @@ def run_agentic_edit(
         return _stamp_agentic(WorkerResult(
             ok=False, error=AGENTIC_UNAVAILABLE,
             summary="No provider key visible for the agentic engine.",
-        ))
+        ), execution_pin=agentic_pin)
 
     try:
         from puppetmaster.orchestrator import Orchestrator
@@ -591,10 +655,18 @@ def run_agentic_edit(
         return _stamp_agentic(WorkerResult(
             ok=False, error=AGENTIC_UNAVAILABLE,
             summary=f"Puppetmaster unavailable: {exc}",
-        ))
+        ), execution_pin=agentic_pin)
 
-    provider = (os.environ.get("HARNESS_IMPLEMENT_PROVIDER", "") or "").strip().lower()
-    model = (os.environ.get("HARNESS_IMPLEMENT_MODEL", "") or "").strip()
+    provider = (
+        agentic_pin.provider
+        if agentic_pin is not None
+        else (os.environ.get("HARNESS_IMPLEMENT_PROVIDER", "") or "").strip().lower()
+    )
+    model = (
+        agentic_pin.model
+        if agentic_pin is not None
+        else (os.environ.get("HARNESS_IMPLEMENT_MODEL", "") or "").strip()
+    )
 
     try:
         repo_root = cwd or config.repo
@@ -627,6 +699,8 @@ def run_agentic_edit(
                     "routing_policy": "balanced",
                     **_analysis_capability_payload(),
                 }
+                if agentic_pin is not None:
+                    base_payload.update(agentic_pin.payload_fields())
                 payload = stamp_task_payload(
                     base_payload, session_id=session_id, cwd=wt_path,
                 )
@@ -645,6 +719,7 @@ def run_agentic_edit(
                     "cwd": wt_path,
                     "prompt": goal,
                     "auto_route": not (provider and model),
+                    "allowed_adapters": ["agentic"],
                     "token_budget": worker_token_budget(),
                 }, session_id=session_id, cwd=wt_path)
                 if not (provider and model):
@@ -671,6 +746,8 @@ def run_agentic_edit(
                     payload["provider"] = provider
                 if model:
                     payload["model"] = model
+                if agentic_pin is not None:
+                    payload.update(agentic_pin.payload_fields())
 
                 spec = WorkerSpec(
                     role="implement",
@@ -702,6 +779,28 @@ def run_agentic_edit(
             worktree_diff_empty = not bool(patch.strip())
             tokens_out, tokens_in, failure, final_text = _summarize_agentic_result(result)
             routed_model = _routed_model_id(result)
+            if agentic_pin is not None:
+                from harness.swarm_model_pin import agentic_pin_matches_routed_model
+
+                if not agentic_pin_matches_routed_model(
+                    agentic_pin,
+                    routed_model,
+                ):
+                    return _stamp_agentic(WorkerResult(
+                        ok=False,
+                        error=AGENTIC_ROUTE_FAILED,
+                        summary=(
+                            f"Agentic model mismatch: requested "
+                            f"{agentic_pin.router_model_id!r}, routed "
+                            f"{routed_model!r}."
+                        ),
+                        model=routed_model,
+                        worktree=wt_path,
+                        managed_worktree_path=wt_path,
+                        managed_worktree_mode="managed",
+                        worktree_diff_empty=worktree_diff_empty,
+                        events=list(mapped_events),
+                    ), result, execution_pin=agentic_pin)
 
             # Analysis/review: never report seed leftovers as applied edits.
             if not expects_diff:
@@ -721,7 +820,7 @@ def run_agentic_edit(
                         managed_worktree_mode="managed",
                         worktree_diff_empty=worktree_diff_empty,
                         events=list(mapped_events),
-                    ), result)
+                    ), result, execution_pin=agentic_pin)
                 if not expects_diff:
                     # Gate on structured findings — never green unlabeled prose.
                     # Same rescue order as swarm/bridge: promote verification-
@@ -773,7 +872,7 @@ def run_agentic_edit(
                             worktree_diff_empty=worktree_diff_empty,
                             events=list(mapped_events),
                             findings=signal_rows,
-                        ), result)
+                        ), result, execution_pin=agentic_pin)
                     label = degrade_reason or "no structured findings"
                     summary_parts = [label]
                     if final_text:
@@ -790,7 +889,7 @@ def run_agentic_edit(
                         managed_worktree_mode="managed",
                         worktree_diff_empty=worktree_diff_empty,
                         events=list(mapped_events),
-                    ), result)
+                    ), result, execution_pin=agentic_pin)
                 return _stamp_agentic(WorkerResult(
                     ok=False, tokens_out=tokens_out, tokens_in=tokens_in,
                     summary=final_text or "no changes produced",
@@ -800,7 +899,7 @@ def run_agentic_edit(
                     managed_worktree_mode="managed",
                     worktree_diff_empty=worktree_diff_empty,
                     events=list(mapped_events),
-                ), result)
+                ), result, execution_pin=agentic_pin)
 
             return _stamp_agentic(WorkerResult(
                 ok=True, patch=patch, files_changed=files_changed,
@@ -812,12 +911,12 @@ def run_agentic_edit(
                 managed_worktree_mode="managed",
                 worktree_diff_empty=worktree_diff_empty,
                 events=list(mapped_events),
-            ), result)
+            ), result, execution_pin=agentic_pin)
     except Exception as exc:
         _diag("edit_engines.run_agentic_edit", exc)
         return _stamp_agentic(WorkerResult(
             ok=False, error=AGENTIC_ERROR, summary=f"Agentic engine error: {exc}",
-        ))
+        ), execution_pin=agentic_pin)
 
 
 # Store event names that already mean a tool/action boundary (not lifecycle).
@@ -1007,11 +1106,20 @@ def _routed_model_id(result) -> str:
     return model_id
 
 
-def _stamp_agentic(result: "WorkerResult", pm_result=None) -> "WorkerResult":
+def _stamp_agentic(
+    result: "WorkerResult",
+    pm_result=None,
+    *,
+    execution_pin: Optional["AgenticModelPin"] = None,
+) -> "WorkerResult":
     """Label a WorkerResult as the agentic engine + routed model (best-effort)."""
     result.engine = "agentic"
     if not (result.model or "").strip() and pm_result is not None:
         routed = _routed_model_id(pm_result)
         if routed:
             result.model = routed
+    if execution_pin is not None:
+        result.requested_model = execution_pin.requested
+        result.provider = execution_pin.provider
+        result.routing_policy = execution_pin.policy
     return result

@@ -144,6 +144,7 @@ def test_run_parallel_analysis_empty_diff_applied(monkeypatch):
         cfg.repo = repo_dir
         session = ConversationalSession(cfg)
         monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: False)
+        monkeypatch.setattr("harness.edit_engines.cursor_platform_available", lambda: False)
 
         expects_seen = []
         substantive = (
@@ -243,6 +244,7 @@ def test_run_parallel_analysis_discards_seed_patch_persists_findings(monkeypatch
         cfg.repo = repo_dir
         session = ConversationalSession(cfg)
         monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: False)
+        monkeypatch.setattr("harness.edit_engines.cursor_platform_available", lambda: False)
 
         finding_line = (
             "FINDING: harness/auth.py:42 token refresh never validates expiry"
@@ -350,6 +352,7 @@ def test_run_parallel_analysis_verification_only_degraded(monkeypatch):
         cfg.repo = repo_dir
         session = ConversationalSession(cfg)
         monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: False)
+        monkeypatch.setattr("harness.edit_engines.cursor_platform_available", lambda: False)
 
         def mock_worker_run(self):
             return WorkerResult(
@@ -414,6 +417,7 @@ def test_run_parallel_implement_empty_diff_not_applied(monkeypatch):
         cfg.repo = repo_dir
         session = ConversationalSession(cfg)
         monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: False)
+        monkeypatch.setattr("harness.edit_engines.cursor_platform_available", lambda: False)
 
         def mock_worker_run(self):
             assert getattr(self, "expects_diff", True) is True
