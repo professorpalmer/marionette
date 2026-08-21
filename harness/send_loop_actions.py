@@ -16,14 +16,20 @@ from typing import Any, Iterator
 from .diag import note as _diag_note
 from .pilot import is_invalid_action
 from .pilot_guards import (
+    apply_session_pending_swarm_mandate,
     check_backend_restart,
     check_cli_redirect,
     check_pilot_guards,
+    clear_session_pending_swarm_mandate,
     cli_redirect_enabled,
     dedupe_dispatch_actions,
     guards_active,
     record_action_execution,
     reuse_or_new_turn_guard_state,
+    session_pending_swarm_active,
+    session_pending_swarm_goal,
+    session_pending_swarm_model,
+    translate_puppetmaster_cli_action,
 )
 from .repo_resolve import resolve_effective_repo
 from .send_loop_dispatch import (
@@ -92,6 +98,8 @@ def execute_turn_actions(
         except Exception:
             pass
     nested_implement = bool(getattr(session, "_nested_implement_worker", False))
+    if prior_guard is None:
+        apply_session_pending_swarm_mandate(session, user_message)
     guard_state = reuse_or_new_turn_guard_state(
         prior_guard,
         user_message,
@@ -99,6 +107,8 @@ def execute_turn_actions(
         nested_implement=nested_implement,
         task_profile=getattr(session, "_task_profile", "") or "",
     )
+    if session_pending_swarm_active(session):
+        guard_state.explicit_swarm = True
     session._turn_guard_state = guard_state
     guard_suppressed: dict[int, Any] = {}
     guard_recorded_indices: set[int] = set()
@@ -212,6 +222,30 @@ def execute_turn_actions(
             session._append_action_result(act, aid, err, is_native)
             turn_had_invalid = True  # noqa: F841 — preserved from former inline block
             continue
+        # Kernel-translate launch-shaped Puppetmaster CLI before chrome so
+        # action_start names run_swarm / run_implement, not run_command.
+        if act.kind == "run_command" and cli_redirect_enabled():
+            pending_goal = (
+                session_pending_swarm_goal(session)
+                if session_pending_swarm_active(session)
+                else ""
+            )
+            pending_model = (
+                session_pending_swarm_model(session)
+                if session_pending_swarm_active(session)
+                else ""
+            )
+            translated = translate_puppetmaster_cli_action(
+                act,
+                guard_state,
+                pending_goal=pending_goal,
+                pending_model=pending_model,
+            )
+            if translated is not None:
+                act = translated
+                turn.actions[idx] = act
+                _tcid = str(getattr(act, "tool_call_id", None) or "").strip() or _tcid
+                aid = _tcid or aid
         act_goal = action_display_goal(act)
 
         # run_implement / run_parallel emit their own action_start after
@@ -399,6 +433,7 @@ def execute_turn_actions(
             disposition = None
             try:
                 if act.kind == "run_swarm":
+                    clear_session_pending_swarm_mandate(session)
                     synchronous_swarms += 1
                     _counters = {"swarms": swarms, "demo_swarms": demo_swarms}
                     disposition = yield from dispatch_swarm_action(
@@ -418,6 +453,7 @@ def execute_turn_actions(
                         swarms=swarms,
                     )
                 elif act.kind == "run_parallel":
+                    clear_session_pending_swarm_mandate(session)
                     disposition = yield from dispatch_parallel_action(
                         session, act, aid, is_native,
                         turn_actions=turn.actions,

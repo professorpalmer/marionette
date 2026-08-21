@@ -71,6 +71,11 @@ _AGENTIC_TEMPLATES = {
         "balanced": (80, 0.5, 1.5, 200000, ["balanced", "fast", "code"]),
         "cheap": (70, 0.1, 0.3, 200000, ["cheap", "fast", "code"]),
     },
+    "opencode-zen": {
+        "frontier": (90, 1.0, 3.0, 200000, ["frontier", "reasoning", "code"]),
+        "balanced": (80, 0.5, 1.5, 200000, ["balanced", "fast", "code"]),
+        "cheap": (70, 0.0, 0.0, 200000, ["cheap", "fast", "code"]),
+    },
     # ChatGPT Codex OAuth (plan); nominal rates for capability ranking only.
     "openai-codex": {
         "frontier": (92, 2.5, 10.0, 200000, ["frontier", "reasoning", "code"]),
@@ -187,6 +192,7 @@ _CURATED_MODELS = {
     # Populated below from harness.opencode_go.CURATED_MODELS so a Go-only
     # auth setup still has agentic worker rows when live /models is unreachable.
     "opencode-go": [],
+    "opencode-zen": [],
     # Populated below from Provider.pilot_models for openai-codex.
     "openai-codex": [],
 }
@@ -257,8 +263,27 @@ def _openai_codex_curated() -> list[tuple[str, str, str]]:
     return out
 
 
+def _opencode_zen_curated() -> list[tuple[str, str, str]]:
+    """Verified Zen free-model rows. Paid models come from live listing only."""
+    try:
+        from .opencode_zen import CURATED_FREE_MODELS
+    except Exception as e:
+        _diag("auto_registry.opencode_zen_curated", e)
+        return []
+    out: list[tuple[str, str, str]] = []
+    for name in CURATED_FREE_MODELS:
+        bare = str(name or "").strip()
+        if not bare:
+            continue
+        n = bare.lower()
+        tier = "frontier" if n == "x-preview-f-free" else "cheap"
+        out.append((bare, tier, bare))
+    return out
+
+
 # Bind at import so sync/discovery see curated without a second lookup path.
 _CURATED_MODELS["opencode-go"] = _opencode_go_curated()
+_CURATED_MODELS["opencode-zen"] = _opencode_zen_curated()
 _CURATED_MODELS["openai-codex"] = _openai_codex_curated()
 
 
@@ -277,6 +302,15 @@ def _enabled_picker_models(provider_name: str) -> list[str]:
 
 
 _DATED_SNAPSHOT_SUFFIX = re.compile(r"-\d{4,8}$")
+# Dated/noisy preview snapshots only — ``x-preview-f-free`` must survive.
+_DATED_PREVIEW_SNAPSHOT = re.compile(
+    r"-(?:preview|exp)-\d{2,8}(?:[-_]\d{2,8})*(?:[_-]|$)", re.I,
+)
+
+
+def is_dated_or_noisy_preview(name: str) -> bool:
+    """True for dated preview/exp snapshots, not every id containing '-preview'."""
+    return bool(_DATED_PREVIEW_SNAPSHOT.search(str(name or "")))
 
 
 def _strip_dated_suffix(name: str) -> str:
@@ -502,8 +536,10 @@ def _get_provider_models_from_discovery(
         # (...-0813) are promoted onto curated OpenRouter rows, not dumped.
         def _keep(name: str) -> bool:
             n = name.lower()
-            if any(x in n for x in ["gemini-2.0", "gemini-1", "gemma-3", "-preview",
-                                     "-exp", "vision", "embedding", "tts", "image",
+            if is_dated_or_noisy_preview(n):
+                return False
+            if any(x in n for x in ["gemini-2.0", "gemini-1", "gemma-3",
+                                     "vision", "embedding", "tts", "image",
                                      "upscale", "stability.", "twelvelabs", "pegasus"]):
                 return False
             # Bedrock context-window variants (…:24k / …:256k) duplicate the base id.
@@ -594,12 +630,24 @@ def _get_provider_models_from_discovery(
             result.extend(item for item in curated if item[2] not in seen_slugs)
         elif provider_name == "opencode-go":
             # Live listing is authoritative: do not keep MIMO (or anything
-            # else) that the Go workspace does not actually serve.
+            # else) that the Go workspace does not actually serve. After a
+            # successful live fetch, return curated∩live/promoted even when
+            # empty — never fall through to stale curated rows.
             result = [
                 item for item in curated
                 if _in_live_catalog(item[0], item[2], live_models)
             ]
-            result = _with_family_promotions(result, curated, live_models, _tier_of)
+            return _with_family_promotions(result, curated, live_models, _tier_of)
+        elif provider_name == "opencode-zen":
+            # Live is availability authority. Curated free rows that are
+            # actually served stay; paid models.dev ids never join. Newly
+            # discovered live ids appear in Models Settings, not Autopilot.
+            # Same as Go: an empty intersection is the answer, not curated.
+            result = [
+                item for item in curated
+                if _in_live_catalog(item[0], item[2], live_models)
+            ]
+            return _with_family_promotions(result, curated, live_models, _tier_of)
         else:
             result = _with_family_promotions(
                 result, curated, live_models, _tier_of,
@@ -706,6 +754,18 @@ def _build_agentic_spec(provider_name: str, model_name: str, tier: str, slug: st
     else:
         _LIVE_PRICE_FALLBACK += 1
 
+    # Verified Zen free ids: $0 measured rates even at frontier/balanced tiers.
+    # Capability score and billing=api stay honest — do not downgrade tier.
+    if provider_name == "opencode-zen":
+        try:
+            from .opencode_zen import is_curated_free_model
+
+            if is_curated_free_model(model_name) or is_curated_free_model(slug):
+                input_price = 0.0
+                output_price = 0.0
+        except Exception as e:
+            _diag("auto_registry.zen_free_price", e, msg=f"model={model_name}")
+
     # Puppetmaster's router soft-requires `tools` for agentic tool-loop roles
     # (audit/explore/implement). Without it, every agentic model is rejected and
     # routing falls through to $0-marginal plan adapters — so measured savings
@@ -749,6 +809,7 @@ _AGENTIC_PROVIDER_SLUGS = {
     "xai": "xai",
     "bedrock": "bedrock",
     "opencode-go": "opencode-go",
+    "opencode-zen": "opencode-zen",
     "openai-codex": "openai-codex",
     "nous": "nous",
     "minimax": "minimax",
@@ -1015,7 +1076,12 @@ def sync_agentic_registry(force: bool = False) -> dict:
                 provider_name, key, force=force,
             )
             if not models:
-                if _enabled_picker_models(provider_name):
+                if (
+                    _enabled_picker_models(provider_name)
+                    or provider_name in ("opencode-go", "opencode-zen")
+                ):
+                    # Go/Zen discovery already used curated only when live
+                    # itself was empty/failed. Do not re-seed stale rows.
                     models = []
                 else:
                     models = _CURATED_MODELS.get(agentic_name, [])

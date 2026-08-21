@@ -1524,6 +1524,12 @@ export const TranscriptList = memo(function TranscriptList({
           </span>
         </div>
       )}
+      <div
+        data-testid="feed-bottom-clearance"
+        aria-hidden
+        className="feed-bottom-clearance shrink-0 w-full pointer-events-none"
+        style={{ height: "clamp(72px, 12vh, 144px)" }}
+      />
     </>
   );
 });

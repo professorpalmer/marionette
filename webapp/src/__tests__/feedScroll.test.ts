@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   FEED_REPIN_THRESHOLD_PX,
+  feedResizeScrollFollowDecision,
+  mergeFeedResizeObservationSnapshots,
   nextFeedPinState,
+  scrollTopAfterFeedHeightChange,
   settleFrameResult,
+  shouldCancelFeedResizeFollowForManualScrollAway,
   shouldShowJumpToBottom,
+  shouldUnpinOnTouchMove,
   shouldUnpinOnWheel,
 } from "../components/conversation/feedScroll";
 
@@ -43,9 +48,10 @@ describe("feedScroll hysteresis", () => {
     ).toEqual({ pinned: true, releasedByGesture: false });
   });
 
-  it("settle glue must not force-true after a gesture release", () => {
+  it("upward wheel and touch unpins even during session-switch settle glue", () => {
     expect(shouldUnpinOnWheel(-12, false)).toBe(true);
-    expect(shouldUnpinOnWheel(-12, true)).toBe(false);
+    expect(shouldUnpinOnWheel(-12, true)).toBe(true);
+    expect(shouldUnpinOnTouchMove(10, 20, true)).toBe(true);
     const settle = settleFrameResult({
       height: 2000,
       lastHeight: 2000,
@@ -59,5 +65,329 @@ describe("feedScroll hysteresis", () => {
     expect(shouldShowJumpToBottom({ pinned: true, settling: false })).toBe(false);
     expect(shouldShowJumpToBottom({ pinned: false, settling: true })).toBe(false);
     expect(shouldShowJumpToBottom({ pinned: false, settling: false })).toBe(true);
+  });
+});
+
+describe("scrollTopAfterFeedHeightChange", () => {
+  const client = 400;
+
+  it("follows pinned expansion to the new max", () => {
+    const oldMax = 1600 - client;
+    expect(
+      scrollTopAfterFeedHeightChange({
+        scrollHeight: 2000,
+        scrollTop: oldMax,
+        clientHeight: client,
+        pinned: true,
+        settling: false,
+        releasedByGesture: false,
+      }),
+    ).toBe(2000 - client);
+  });
+
+  it("follows pinned expansion when growth leaves old scrollTop outside repin threshold", () => {
+    const oldMax = 1600 - client;
+    const newHeight = 2200;
+    const distanceFromBottom = newHeight - oldMax - client;
+    expect(distanceFromBottom).toBeGreaterThan(FEED_REPIN_THRESHOLD_PX);
+    // Geometry-based reclassification would drop pin before follow runs.
+    expect(
+      nextFeedPinState({
+        wasPinned: true,
+        releasedByGesture: false,
+        scrollHeight: newHeight,
+        scrollTop: oldMax,
+        clientHeight: client,
+        prevScrollTop: oldMax,
+        settling: false,
+        repinPx: FEED_REPIN_THRESHOLD_PX,
+      }),
+    ).toEqual({ pinned: false, releasedByGesture: false });
+    expect(
+      scrollTopAfterFeedHeightChange({
+        scrollHeight: newHeight,
+        scrollTop: oldMax,
+        clientHeight: client,
+        pinned: true,
+        settling: false,
+        releasedByGesture: false,
+      }),
+    ).toBe(newHeight - client);
+  });
+
+  it("follows pinned collapse to the new max", () => {
+    expect(
+      scrollTopAfterFeedHeightChange({
+        scrollHeight: 1200,
+        scrollTop: 1600,
+        clientHeight: client,
+        pinned: true,
+        settling: false,
+        releasedByGesture: false,
+      }),
+    ).toBe(800);
+  });
+
+  it("leaves scrollTop unchanged when released and content grows", () => {
+    expect(
+      scrollTopAfterFeedHeightChange({
+        scrollHeight: 2200,
+        scrollTop: 400,
+        clientHeight: client,
+        pinned: false,
+        settling: false,
+        releasedByGesture: true,
+      }),
+    ).toBeNull();
+  });
+
+  it("follows during settling when the user has not released", () => {
+    expect(
+      scrollTopAfterFeedHeightChange({
+        scrollHeight: 1800,
+        scrollTop: 1000,
+        clientHeight: client,
+        pinned: true,
+        settling: true,
+        releasedByGesture: false,
+      }),
+    ).toBe(1400);
+  });
+
+  it("gesture release wins over settling glue", () => {
+    expect(
+      scrollTopAfterFeedHeightChange({
+        scrollHeight: 1800,
+        scrollTop: 400,
+        clientHeight: client,
+        pinned: true,
+        settling: true,
+        releasedByGesture: true,
+      }),
+    ).toBeNull();
+  });
+
+  it("returns null when already at the max", () => {
+    const max = 2000 - client;
+    expect(
+      scrollTopAfterFeedHeightChange({
+        scrollHeight: 2000,
+        scrollTop: max,
+        clientHeight: client,
+        pinned: true,
+        settling: false,
+        releasedByGesture: false,
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("feedResizeScrollFollowDecision", () => {
+  const client = 400;
+  const offset = 400;
+
+  it("no-ops on occluded 0×0 scroll parent", () => {
+    expect(
+      feedResizeScrollFollowDecision({
+        scrollHeight: 2000,
+        scrollTop: 0,
+        clientHeight: 0,
+        offsetHeight: 0,
+        snapshotPinned: true,
+        snapshotSettling: false,
+        snapshotScrollTop: 0,
+        snapshotScrollHeight: 2000,
+        releasedByGesture: false,
+      }),
+    ).toEqual({ kind: "noop" });
+  });
+
+  it("follows large growth from pinned snapshot despite post-resize unpinned geometry", () => {
+    const oldMax = 1600 - client;
+    const newHeight = 2200;
+    expect(
+      feedResizeScrollFollowDecision({
+        scrollHeight: newHeight,
+        scrollTop: oldMax,
+        clientHeight: client,
+        offsetHeight: offset,
+        snapshotPinned: true,
+        snapshotSettling: false,
+        snapshotScrollTop: oldMax,
+        snapshotScrollHeight: 1600,
+        releasedByGesture: false,
+      }),
+    ).toEqual({ kind: "follow", scrollTop: newHeight - client });
+  });
+
+  it("cancels when gesture release lands between observation and rAF", () => {
+    expect(
+      feedResizeScrollFollowDecision({
+        scrollHeight: 2200,
+        scrollTop: 400,
+        clientHeight: client,
+        offsetHeight: offset,
+        snapshotPinned: true,
+        snapshotSettling: true,
+        snapshotScrollTop: 1600,
+        snapshotScrollHeight: 2200,
+        releasedByGesture: true,
+      }),
+    ).toEqual({ kind: "noop" });
+  });
+
+  it("no-ops when keyboard/scrollbar scroll-up occurs between observation and rAF with stable height", () => {
+    const oldMax = 1600 - client;
+    expect(
+      feedResizeScrollFollowDecision({
+        scrollHeight: 1600,
+        scrollTop: 400,
+        clientHeight: client,
+        offsetHeight: offset,
+        snapshotPinned: true,
+        snapshotSettling: false,
+        snapshotScrollTop: oldMax,
+        snapshotScrollHeight: 1600,
+        releasedByGesture: false,
+      }),
+    ).toEqual({ kind: "noop" });
+  });
+
+  it("no-ops when scrollTop drops between observation and rAF while content grew", () => {
+    const oldMax = 1600 - client;
+    const newHeight = 2200;
+    expect(
+      feedResizeScrollFollowDecision({
+        scrollHeight: newHeight,
+        scrollTop: 400,
+        clientHeight: client,
+        offsetHeight: offset,
+        snapshotPinned: true,
+        snapshotSettling: false,
+        snapshotScrollTop: oldMax,
+        snapshotScrollHeight: 1600,
+        releasedByGesture: false,
+      }),
+    ).toEqual({ kind: "noop" });
+  });
+
+  it("follows pinned collapse when content shrink clamps scrollTop and scrollHeight", () => {
+    const oldMax = 1600 - client;
+    const shrunkHeight = 1200;
+    const clampedTop = shrunkHeight - client;
+    expect(
+      feedResizeScrollFollowDecision({
+        scrollHeight: shrunkHeight,
+        scrollTop: clampedTop,
+        clientHeight: client,
+        offsetHeight: offset,
+        snapshotPinned: true,
+        snapshotSettling: false,
+        snapshotScrollTop: oldMax,
+        snapshotScrollHeight: 1600,
+        releasedByGesture: false,
+      }),
+    ).toEqual({ kind: "restore_pin_only" });
+  });
+
+  it("restores pin ownership when already at max with valid pinned snapshot", () => {
+    const max = 2000 - client;
+    expect(
+      feedResizeScrollFollowDecision({
+        scrollHeight: 2000,
+        scrollTop: max,
+        clientHeight: client,
+        offsetHeight: offset,
+        snapshotPinned: true,
+        snapshotSettling: false,
+        snapshotScrollTop: max,
+        snapshotScrollHeight: 2000,
+        releasedByGesture: false,
+      }),
+    ).toEqual({ kind: "restore_pin_only" });
+  });
+
+  it("no-ops when snapshot was unpinned and not settling", () => {
+    expect(
+      feedResizeScrollFollowDecision({
+        scrollHeight: 2200,
+        scrollTop: 400,
+        clientHeight: client,
+        offsetHeight: offset,
+        snapshotPinned: false,
+        snapshotSettling: false,
+        snapshotScrollTop: 400,
+        snapshotScrollHeight: 2200,
+        releasedByGesture: false,
+      }),
+    ).toEqual({ kind: "noop" });
+  });
+});
+
+describe("mergeFeedResizeObservationSnapshots", () => {
+  it("merges pinned/settling monotonically while preserving earliest scroll geometry", () => {
+    const first = {
+      pinned: false,
+      settling: false,
+      scrollTop: 400,
+      scrollHeight: 2000,
+    };
+    const second = {
+      pinned: true,
+      settling: true,
+      scrollTop: 1600,
+      scrollHeight: 2200,
+    };
+    expect(mergeFeedResizeObservationSnapshots(first, second)).toEqual({
+      pinned: true,
+      settling: true,
+      scrollTop: 400,
+      scrollHeight: 2000,
+    });
+  });
+
+  it("does not downgrade pinned ownership from a later unpinned callback", () => {
+    const first = {
+      pinned: true,
+      settling: false,
+      scrollTop: 1600,
+      scrollHeight: 2000,
+    };
+    const second = {
+      pinned: false,
+      settling: false,
+      scrollTop: 400,
+      scrollHeight: 2000,
+    };
+    expect(mergeFeedResizeObservationSnapshots(first, second)).toEqual({
+      pinned: true,
+      settling: false,
+      scrollTop: 1600,
+      scrollHeight: 2000,
+    });
+  });
+});
+
+describe("shouldCancelFeedResizeFollowForManualScrollAway", () => {
+  it("detects manual scroll-away when scrollTop drops with stable height", () => {
+    expect(
+      shouldCancelFeedResizeFollowForManualScrollAway({
+        snapshotScrollTop: 1200,
+        snapshotScrollHeight: 2000,
+        liveScrollTop: 400,
+        liveScrollHeight: 2000,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not treat content shrink clamp as manual scroll-away", () => {
+    expect(
+      shouldCancelFeedResizeFollowForManualScrollAway({
+        snapshotScrollTop: 1200,
+        snapshotScrollHeight: 1600,
+        liveScrollTop: 800,
+        liveScrollHeight: 1200,
+      }),
+    ).toBe(false);
   });
 });

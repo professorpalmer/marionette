@@ -37,6 +37,7 @@ CORE_ALWAYS: Set[str] = {
     "wait",
     "list_dir",
     "search_tools",
+    "view_image",
 }
 
 

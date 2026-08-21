@@ -32,6 +32,14 @@ def test_view_image_schema():
     worker_names = [s["function"]["name"] for s in schemas_worker]
     assert "view_image" in worker_names
 
+
+def test_view_image_visible_in_micro():
+    from harness.task_profile import MICRO, micro_visible_tool_names
+    from harness.tool_discovery import core_visible_names
+
+    assert "view_image" in micro_visible_tool_names()
+    assert "view_image" in core_visible_names(profile=MICRO)
+
 def test_view_image_execution(monkeypatch):
     canned_text = "This is a canned description of a 1x1 image."
     def mock_transcribe_images(paths, sidecar=None):

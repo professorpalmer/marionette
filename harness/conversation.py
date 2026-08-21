@@ -30,6 +30,8 @@ Events yielded (for GUI/CLI):
 - ("error", {error})
 """
 
+import copy
+import json
 import os
 import sys
 import hashlib
@@ -475,6 +477,124 @@ ConvEventKind = Literal[
 
 VALID_CONV_EVENT_KINDS: frozenset[str] = frozenset(get_args(ConvEventKind))
 
+_PORTABLE_TOOL_CALL_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_NONPORTABLE_TOOL_CALL_ID_RE = re.compile(r"[^A-Za-z0-9_-]+")
+
+
+def canonicalize_outbound_tool_call_ids(messages: list) -> list:
+    """Deep-copy *messages* and rewrite assistant tool_call ids for the wire.
+
+    Persisted history often carries provider-local ids (``run_command:0`` reused
+    on every step, colons that OpenCode Go / Muse reject). The outbound request
+    needs globally unique ``[A-Za-z0-9_-]`` ids, with each immediately adjacent
+    tool-role ``tool_call_id`` rewritten to the same canonical value. Missing or
+    empty assistant ids get a stable synthesized id; adjacent missing/empty
+    tool results are rewritten in that same order. Mapping is position-stable
+    so identical prefixes keep the same ids (prompt cache).
+    Never mutates the input list or its nested dicts.
+    """
+    out = copy.deepcopy(messages if isinstance(messages, list) else [])
+    used: set[str] = set()
+    i = 0
+    n = len(out)
+    while i < n:
+        msg = out[i]
+        tool_calls = msg.get("tool_calls") if isinstance(msg, dict) else None
+        if not (isinstance(msg, dict) and msg.get("role") == "assistant" and tool_calls):
+            i += 1
+            continue
+        orig_to_canonical: dict[str, list[str]] = {}
+        empty_synthesized: list[str] = []
+        for call_idx, tc in enumerate(tool_calls):
+            if not isinstance(tc, dict):
+                continue
+            orig = tc.get("id")
+            if orig is None or orig == "":
+                canonical = _canonical_tool_call_id("", used, i, call_idx)
+                used.add(canonical)
+                tc["id"] = canonical
+                empty_synthesized.append(canonical)
+                continue
+            orig_s = str(orig)
+            canonical = _canonical_tool_call_id(orig_s, used, i, call_idx)
+            used.add(canonical)
+            tc["id"] = canonical
+            orig_to_canonical.setdefault(orig_s, []).append(canonical)
+        j = i + 1
+        while j < n:
+            nxt = out[j]
+            if not (isinstance(nxt, dict) and nxt.get("role") == "tool"):
+                break
+            raw_id = nxt.get("tool_call_id")
+            if raw_id is None or raw_id == "":
+                if empty_synthesized:
+                    nxt["tool_call_id"] = empty_synthesized.pop(0)
+            else:
+                pending = orig_to_canonical.get(str(raw_id))
+                if pending:
+                    nxt["tool_call_id"] = pending.pop(0)
+            j += 1
+        i = j
+    return out
+
+
+def _canonical_tool_call_id(original: str, used: set[str], msg_idx: int, call_idx: int) -> str:
+    if _PORTABLE_TOOL_CALL_ID_RE.match(original) and original not in used:
+        return original
+    cleaned = _NONPORTABLE_TOOL_CALL_ID_RE.sub("_", original).strip("_")
+    if cleaned and cleaned not in used:
+        return cleaned
+    candidate = f"tc_{msg_idx}_{call_idx}"
+    extra = 0
+    while candidate in used:
+        extra += 1
+        candidate = f"tc_{msg_idx}_{call_idx}_{extra}"
+    return candidate
+
+
+def _is_empty_chat_completion_400_stub(raw: str) -> bool:
+    """True for the empty chat.completion HTTP 400 Muse/OpenCode Go returns.
+
+    That stub is a completion-shaped JSON body (object chat.completion /
+    chatcompletion) with no error message — not a real invalid_request
+    explanation. Match narrowly so actionable 400s still surface.
+    """
+    text = str(raw or "").strip()
+    if not re.search(r"\b400\b", text):
+        return False
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        return False
+    try:
+        obj = json.loads(text[start : end + 1])
+    except Exception:
+        return False
+    if not isinstance(obj, dict):
+        return False
+    kind = str(obj.get("object") or "").lower()
+    if kind not in ("chat.completion", "chatcompletion"):
+        return False
+    err = obj.get("error")
+    if isinstance(err, dict) and str(err.get("message") or "").strip():
+        return False
+    if isinstance(err, str) and err.strip():
+        return False
+    choices = obj.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return False
+    first = choices[0]
+    if not isinstance(first, dict) or first.get("finish_reason") not in (None, ""):
+        return False
+    message = first.get("message")
+    if not isinstance(message, dict) or message.get("role") != "assistant":
+        return False
+    if str(message.get("content") or "").strip():
+        return False
+    if message.get("tool_calls"):
+        return False
+    return True
+
 
 @dataclass
 class ConvEvent:
@@ -860,6 +980,10 @@ class ConversationalSession(
         self._task_profile: str = ""
         self._task_profile_source: str = ""
         self._task_profile_escalated_from: Optional[str] = None
+        # Session-level explicit swarm obligation (survives interstitial turns).
+        self._pending_swarm_mandate = None
+        self._pending_swarm_active = False
+        self._synthetic_tool_call_seq = 0
         self._task_tx = None
         self._turn_ran_command = False
         self._verify_remind_count = 0
@@ -2003,18 +2127,34 @@ class ConversationalSession(
             return {}
 
     def _resolve_task_profile_for_turn(self, user_message: str) -> str:
-        """Classify adaptive depth for a fresh user turn; store on session."""
-        from harness.task_profile import classify_task_profile, normalize_profile
+        """Classify adaptive depth for a fresh user turn; store on session.
+
+        An explicit swarm mandate (or a reactivated pending one) can never
+        remain MICRO — escalate to STANDARD before the tool schema is built
+        so run_swarm stays visible. Genuine trivial turns stay MICRO.
+        """
+        from harness.task_profile import MICRO, STANDARD, classify_task_profile, normalize_profile
+        from harness.pilot_guards import (
+            is_explicit_swarm_user_message,
+            session_pending_swarm_active,
+        )
 
         override = getattr(self.config, "task_profile", "auto") or "auto"
         profile = classify_task_profile(user_message, override=override)
-        self._task_profile = profile
         norm_override = normalize_profile(override)
-        if norm_override in ("MICRO", "STANDARD", "DEEP"):
-            self._task_profile_source = "override"
+        explicit = is_explicit_swarm_user_message(user_message) or session_pending_swarm_active(self)
+        if profile == MICRO and explicit:
+            self._task_profile = STANDARD
+            self._task_profile_source = "escalate"
+            self._task_profile_escalated_from = MICRO
+            profile = STANDARD
         else:
-            self._task_profile_source = "heuristic"
-        self._task_profile_escalated_from = None
+            self._task_profile = profile
+            if norm_override in ("MICRO", "STANDARD", "DEEP"):
+                self._task_profile_source = "override"
+            else:
+                self._task_profile_source = "heuristic"
+            self._task_profile_escalated_from = None
         try:
             self._tool_catalog.refresh(
                 mcp_tools=self._mcp.discovered_tools() if self._mcp else None,
@@ -2463,14 +2603,16 @@ class ConversationalSession(
         self._invalidate_ctx_cache()
 
     def _messages_for_provider(self) -> list:
-        """Heal tool_use/tool_result pairs, then return the elided non-system
-        history for an outbound provider chat/chat_stream call.
+        """Heal tool_use/tool_result pairs, then return a deep outbound copy.
 
         Call this immediately before every provider dispatch so interactive
         send, streaming, resume, and steer-after-interrupt share one seam.
+        The copy's tool_call ids are globally unique and portable; persisted
+        ``_history`` is not rewritten.
         """
         self._sanitize_tool_pairs()
-        return self._elide_stale_reads(self._history[1:])
+        outbound = self._elide_stale_reads(self._history[1:])
+        return canonicalize_outbound_tool_call_ids(outbound)
 
     def _grounded_wiki_answer(self, question: str, raw: str) -> str:
         """Grounded synthesis over a raw wiki query result.
@@ -2804,6 +2946,15 @@ class ConversationalSession(
             return ("pilot: the provider reports insufficient credit/quota on this "
                     "key. Top up or switch to a provider/model with available "
                     "budget." + tail)
+
+        # Empty chat.completion HTTP 400 stub (Muse / OpenCode Go): a
+        # completion-shaped body with no error message. Do not dump raw JSON.
+        if _is_empty_chat_completion_400_stub(s):
+            return (
+                "pilot: the selected pilot rejected this request or history "
+                "protocol. Start a fresh session, or retry after updating "
+                "Marionette."
+            )
 
         return f"pilot: {s}"
 

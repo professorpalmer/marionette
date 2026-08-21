@@ -73,6 +73,7 @@ _MICRO_VISIBLE: FrozenSet[str] = frozenset(
         "list_dir",
         "search_tools",
         "search_files",
+        "view_image",
     }
 )
 

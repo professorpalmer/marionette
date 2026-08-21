@@ -909,4 +909,17 @@ describe("live command token clicks", () => {
     expect(code.tagName).toBe("CODE");
     expect(code).toHaveClass("text-txt/90");
   });
+
+  it("renders dedicated trailing feed clearance after tail chrome", () => {
+    render(
+      <TranscriptList
+        {...listProps([{ kind: "msg", msg: { role: "user", text: "hello" } }])}
+      />,
+    );
+
+    const clearance = screen.getByTestId("feed-bottom-clearance");
+    expect(clearance).toHaveAttribute("aria-hidden", "true");
+    expect(clearance).toHaveClass("feed-bottom-clearance");
+    expect(clearance.style.height).toBe("clamp(72px, 12vh, 144px)");
+  });
 });

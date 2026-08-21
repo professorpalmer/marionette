@@ -71,7 +71,56 @@ def test_get_config_and_settings(monkeypatch):
     assert payload["workers_ready"] is False
     assert payload["pilot_ready"] is False
     assert payload["agentic_ready"] is False
+    assert isinstance(payload.get("model_labels"), dict)
     assert get_settings(svc)[1]["budget"] == 3
+
+
+def test_get_config_includes_dynamic_model_labels(monkeypatch):
+    monkeypatch.setattr(
+        "harness.edit_engines.select_edit_engine", lambda cfg: "native", raising=False
+    )
+    monkeypatch.setattr(
+        "harness.edit_engines.pilot_keys_ready", lambda: False, raising=False
+    )
+    monkeypatch.setattr(
+        "harness.edit_engines.workers_ready", lambda: False, raising=False
+    )
+    monkeypatch.setattr(
+        "harness.reasoning_effort.current_reasoning_effort",
+        lambda: "low",
+        raising=False,
+    )
+    seen = {}
+
+    def fake_labels(specs, force=False):
+        seen["specs"] = list(specs)
+        seen["force"] = force
+        return {
+            "opencode-zen:big-pickle": "Big Pickle",
+            "opencode-zen:mimo-v2.5-free": "MiMo-V2.5 Free",
+        }
+
+    monkeypatch.setattr(
+        "harness.model_visibility.picker_model_labels",
+        fake_labels,
+        raising=False,
+    )
+    svc, _, _, _ = _svc(
+        available_pilots=lambda: [
+            "opencode-zen:big-pickle",
+            "opencode-zen:mimo-v2.5-free",
+        ],
+    )
+    code, payload = get_config(svc)
+    assert code == 200
+    assert payload["models"] == [
+        "opencode-zen:big-pickle",
+        "opencode-zen:mimo-v2.5-free",
+    ]
+    assert payload["model_labels"]["opencode-zen:big-pickle"] == "Big Pickle"
+    assert payload["model_labels"]["opencode-zen:mimo-v2.5-free"] == "MiMo-V2.5 Free"
+    assert seen["force"] is False
+    assert seen["specs"] == payload["models"]
 
 
 def test_post_settings_budget_and_flags(monkeypatch):

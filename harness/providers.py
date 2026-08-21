@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from . import opencode_go as _opencode_go
+from . import opencode_zen as _opencode_zen
 
 # GLM Coding Plan (subscription credits) vs pay-as-you-go API. Official docs:
 # Coding Plan OpenAI Chat Completions must use /api/coding/paas/v4 — the
@@ -334,6 +335,15 @@ PROVIDERS = (
         api_mode="opencode_go", display_name="OpenCode Go",
         pilot_models=_opencode_go.CURATED_MODELS,
     ),
+    # OpenCode Zen: same account key can list both catalogs, but Settings
+    # identity and the live /models host stay separate from Go.
+    Provider(
+        name="opencode-zen", aliases=("opencode_zen", "zen"),
+        env_vars=_opencode_zen.API_KEY_ENVS,
+        base_url=_opencode_zen.BASE_URL,
+        api_mode="opencode_zen", display_name="OpenCode Zen",
+        pilot_models=_opencode_zen.CURATED_FREE_MODELS,
+    ),
     # AWS Bedrock: auth is multi-env (bearer OR access-key pair + region).
     # Interactive pilot uses BedrockDriver (puppetmaster.bedrock.bedrock_chat);
     # Marionette stores credentials and injects AWS_* / BEDROCK_* into the env.
@@ -535,6 +545,16 @@ def build_pilot(spec: str, *, max_tokens: int | None = None):
                 spec=spec,
                 model=model,
                 api_key_env=key_env or _opencode_go.API_KEY_ENV,
+                max_tokens=max_tokens,
+                base_url=provider.base_url,
+            )
+        )
+    if provider.api_mode == "opencode_zen":
+        return _finalize_driver(
+            _opencode_zen.build_driver(
+                spec=spec,
+                model=model,
+                api_key_env=key_env or _opencode_zen.API_KEY_ENV,
                 max_tokens=max_tokens,
                 base_url=provider.base_url,
             )

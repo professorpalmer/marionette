@@ -5,11 +5,13 @@ import { api, type ModelCatalogEntry } from "../lib/api";
 const COLLAPSE_THRESHOLD = 12;
 const CATALOG_SNAPSHOT_KEY = "pmharness.models.catalogSnapshot";
 let memoryCatalogSnapshot: ModelCatalogEntry[] | null = null;
+let didForceRefreshThisSession = false;
 
 type ProviderGroup = { provider: string; display: string; items: ModelCatalogEntry[] };
 
 export function clearCatalogSnapshot() {
   memoryCatalogSnapshot = null;
+  didForceRefreshThisSession = false;
   try {
     localStorage.removeItem(CATALOG_SNAPSHOT_KEY);
   } catch {
@@ -52,6 +54,7 @@ export default function ModelsSettingsPage() {
   const [catalog, setCatalog] = useState<ModelCatalogEntry[]>(readCatalogSnapshot);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(() => catalog.length === 0);
+  const [refreshing, setRefreshing] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   // Explicit user toggles win; otherwise large catalogs (OpenRouter) start
   // collapsed so Anthropic/OpenAI/xAI are reachable without endless scroll.
@@ -59,7 +62,9 @@ export default function ModelsSettingsPage() {
 
   const load = async (opts?: { refresh?: boolean }) => {
     const hadSnapshot = readCatalogSnapshot().length > 0;
-    if (opts?.refresh || !hadSnapshot) setLoading(true);
+    // Keep a stale snapshot visible while a live refresh runs.
+    if (!hadSnapshot) setLoading(true);
+    else if (opts?.refresh) setRefreshing(true);
     try {
       const res = await api.modelCatalog({ refresh: !!opts?.refresh });
       const next = res.catalog || [];
@@ -71,11 +76,14 @@ export default function ModelsSettingsPage() {
       setCatalog((prev) => (prev.length === 0 ? [] : prev));
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   };
 
   useEffect(() => {
-    load();
+    const force = !didForceRefreshThisSession;
+    didForceRefreshThisSession = true;
+    void load({ refresh: force });
   }, []);
 
   const toggle = async (entry: ModelCatalogEntry) => {
@@ -106,11 +114,14 @@ export default function ModelsSettingsPage() {
   const q = query.trim().toLowerCase();
   const groups = useMemo(() => {
     const filtered = q
-      ? catalog.filter(
-          (c) =>
+      ? catalog.filter((c) => {
+          const name = (c.name || "").toLowerCase();
+          return (
             c.model.toLowerCase().includes(q) ||
-            c.provider_display.toLowerCase().includes(q),
-        )
+            name.includes(q) ||
+            c.provider_display.toLowerCase().includes(q)
+          );
+        })
       : catalog;
     const out: ProviderGroup[] = [];
     for (const c of filtered) {
@@ -165,7 +176,7 @@ export default function ModelsSettingsPage() {
           title="Refresh live model catalogs (Cursor Agent CLI, Codex, …)"
           className="p-1.5 rounded-md border border-edge/40 text-muted hover:text-txt hover:bg-panel2 transition"
         >
-          <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
+          <RefreshCw size={13} className={loading || refreshing ? "animate-spin" : ""} />
         </button>
       </div>
 
@@ -222,7 +233,12 @@ export default function ModelsSettingsPage() {
                           disabled:opacity-50`}
                       >
                         <span className="min-w-0 flex-1">
-                          <span className="text-[12px] text-txt font-mono truncate block">{entry.model}</span>
+                          <span className="text-[12px] text-txt truncate block">
+                            {entry.name && entry.name !== entry.model ? entry.name : entry.model}
+                          </span>
+                          {entry.name && entry.name !== entry.model ? (
+                            <span className="text-[10px] text-faint font-mono truncate block">{entry.model}</span>
+                          ) : null}
                         </span>
                         <span
                           className={`shrink-0 ml-3 flex items-center justify-center w-9 h-5 rounded-full transition relative

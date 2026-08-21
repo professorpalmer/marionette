@@ -17,6 +17,7 @@ from harness.pilot_guards import (
     TINY_WORKSPACE_TOOL_BUDGET_DEFAULT,
     TURN_TOOL_BUDGET_DEFAULT,
     TurnGuardState,
+    apply_session_pending_swarm_mandate,
     check_backend_restart,
     check_chrome_file_smoke,
     check_cli_redirect,
@@ -28,6 +29,7 @@ from harness.pilot_guards import (
     check_pilot_guards,
     check_swarm_gate,
     clamp_post_implement_iteration_budget,
+    clear_session_pending_swarm_mandate,
     cli_redirect_enabled,
     delegate_gate_enabled,
     guards_active,
@@ -39,6 +41,7 @@ from harness.pilot_guards import (
     is_local_handoff_command,
     is_native_exploration,
     is_puppetmaster_cli_command,
+    is_swarm_continuation_user_message,
     is_swarm_gate_blocked_exploration,
     is_tiny_workspace,
     iteration_budget_enabled,
@@ -52,9 +55,12 @@ from harness.pilot_guards import (
     note_kernel_recovery,
     note_kernel_recovery_from_result,
     result_shows_kernel_failure,
+    parse_puppetmaster_cli_launch,
     post_implement_tool_allowance,
     puppetmaster_cli_native_mapping,
     record_action_execution,
+    session_pending_swarm_active,
+    session_pending_swarm_goal,
     swarm_gate_enabled,
     tiny_workspace_tool_budget,
     turn_tool_budget_cap,
@@ -133,6 +139,14 @@ def test_broad_intent_classification_negatives(message):
         "spin up a swarm for the discord cards",
         "launch a swarm via OpenRouter",
         "multi-worker fan-out on the backend",
+        "hey do a swarm",
+        "use deepseek v4 pro opencode go workers",
+        "use kimi k2 workers",
+        "use glm 5.3 via openrouter workers",
+        "run an agentic swarm",
+        "use puppetmaster agentic for this",
+        "please swarm the repo",
+        "spin up agentic workers",
     ],
 )
 def test_explicit_swarm_classification_positives(message):
@@ -147,6 +161,12 @@ def test_explicit_swarm_classification_positives(message):
         "what is a swarm",
         "open the swarm tracker",
         "don't swarm yet, just read backend.py",
+        "use one worker to fix it",
+        "use a worker",
+        "use the existing workers",
+        "use more workers",
+        "should we keep using the existing workers",
+        "what is an agentic swarm",
         "Find the class TurnGuardState",
     ],
 )
@@ -188,6 +208,26 @@ def test_explicit_swarm_blocks_git_and_scripts_until_run_swarm():
 
     record_action_execution(
         state, "run_swarm", _Act(kind="run_swarm", goal="token streaming fan-out"),
+    )
+    after = check_swarm_gate(
+        state, "run_command", _Act(kind="run_command", command="git status"),
+    )
+    assert after.suppress is False
+
+
+def test_hey_do_a_swarm_blocks_git_until_run_swarm():
+    prompt = "hey do a swarm"
+    state = new_turn_guard_state(prompt)
+    assert state.explicit_swarm is True
+
+    git = check_swarm_gate(
+        state, "run_command", _Act(kind="run_command", command="git status"),
+    )
+    assert git.suppress is True
+    assert git.reason == "swarm_gate"
+
+    record_action_execution(
+        state, "run_swarm", _Act(kind="run_swarm", goal="broad investigation"),
     )
     after = check_swarm_gate(
         state, "run_command", _Act(kind="run_command", command="git status"),
@@ -851,6 +891,180 @@ def test_cli_redirect_before_swarm_gate_on_broad_turn():
     verdict = check_pilot_guards(state, "run_command", act)
     assert verdict.suppress is True
     assert verdict.reason == "cli_redirect"
+
+
+_SCREENSHOT_AGENTIC_CLI = (
+    'puppetmaster agentic "Add token-level streaming" '
+    "--provider opencode-go --model deepseek/deepseek-v4-pro"
+)
+_SCREENSHOT_WRAPPED_AGENTIC_CLI = (
+    "cd /Users/carypalmer/Projects/agent-discord-deepseek && puppetmaster agentic "
+    '"Add token-level streaming to puppetmaster backend; parse NDJSON lines '
+    'and dispatch swarm workers" --provider opencode-go '
+    "--model deepseek/deepseek-v4-pro "
+    "--cwd /Users/carypalmer/Projects/agent-discord-deepseek | tail -n 30"
+)
+_SCREENSHOT_WRAPPED_GOAL = (
+    "Add token-level streaming to puppetmaster backend; "
+    "parse NDJSON lines and dispatch swarm workers"
+)
+
+
+def test_explicit_swarm_agentic_cli_names_run_swarm():
+    """D: check_pilot_guards on explicit swarm + agentic CLI names run_swarm."""
+    state = new_turn_guard_state(
+        "yeah, puppetmaster swarm glm 5.3 multi-workers via openrouter"
+    )
+    assert state.explicit_swarm is True
+    act = _Act(kind="run_command", command=_SCREENSHOT_AGENTIC_CLI)
+    native_kind, _example = puppetmaster_cli_native_mapping(_SCREENSHOT_AGENTIC_CLI, state)
+    assert native_kind == "run_swarm"
+    verdict = check_pilot_guards(state, "run_command", act)
+    assert verdict.suppress is True
+    assert verdict.reason == "cli_redirect"
+    assert "run_swarm" in verdict.message
+    assert "run_implement" not in verdict.message
+
+
+def test_agentic_cli_without_explicit_swarm_still_names_run_implement():
+    native_kind, _example = puppetmaster_cli_native_mapping(_SCREENSHOT_AGENTIC_CLI)
+    assert native_kind == "run_implement"
+    verdict = check_cli_redirect(
+        new_turn_guard_state("implement token-level streaming"),
+        "run_command",
+        _Act(command=_SCREENSHOT_AGENTIC_CLI),
+    )
+    assert verdict.suppress is True
+    assert "run_implement" in verdict.message
+
+
+def test_parse_screenshot_agentic_cli_goal_and_model():
+    parsed = parse_puppetmaster_cli_launch(_SCREENSHOT_AGENTIC_CLI)
+    assert parsed is not None
+    subcmd, goal, model = parsed
+    assert subcmd == "agentic"
+    assert goal == "Add token-level streaming"
+    assert model == "deepseek/deepseek-v4-pro"
+
+
+def test_parse_wrapped_screenshot_agentic_cli_goal_and_model():
+    parsed = parse_puppetmaster_cli_launch(_SCREENSHOT_WRAPPED_AGENTIC_CLI)
+    assert parsed is not None
+    subcmd, goal, model = parsed
+    assert subcmd == "agentic"
+    assert goal == _SCREENSHOT_WRAPPED_GOAL
+    assert model == "deepseek/deepseek-v4-pro"
+
+
+def test_parse_preserves_quoted_goal_containing_workers_flag_text():
+    parsed = parse_puppetmaster_cli_launch(
+        'FOO=1 BAR=2 puppetmaster agentic "enable --workers in the stream parser" '
+        "--model deepseek/x"
+    )
+    assert parsed == ("agentic", "enable --workers in the stream parser", "deepseek/x")
+
+
+def test_parse_wrapped_python_module_invocation_keeps_env_prefix():
+    parsed = parse_puppetmaster_cli_launch(
+        'cd /tmp && FOO=1 python -m puppetmaster agentic "mod goal" --model m | tail'
+    )
+    assert parsed == ("agentic", "mod goal", "m")
+
+
+def test_parse_malformed_quote_does_not_convert():
+    assert parse_puppetmaster_cli_launch('puppetmaster agentic "unclosed') is None
+    assert parse_puppetmaster_cli_launch(
+        'cd /tmp && puppetmaster agentic "unclosed | tail'
+    ) is None
+
+
+def test_parse_multiple_puppetmaster_launches_does_not_convert():
+    assert parse_puppetmaster_cli_launch(
+        'puppetmaster agentic "a" && puppetmaster swarm "b"'
+    ) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cd /tmp && puppetmaster status | tail -n 30",
+        "cd /tmp && python -m puppetmaster artifacts --recent",
+        "cd /tmp && puppetmaster route --instruction plan | cat",
+    ],
+)
+def test_parse_wrapped_status_artifacts_route_does_not_convert(command):
+    assert parse_puppetmaster_cli_launch(command) is None
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "commit it and pick back up please",
+        "pickback up",
+        "resume",
+        "continue",
+        "pick back up",
+        "sry, had work we finished. commit it and pickback up please",
+        "continue it",
+        "continue the swarm",
+        "continue where you left off",
+        "resume the swarm",
+        "please continue",
+        "continue please",
+        "please resume the swarm",
+        "resume please",
+    ],
+)
+def test_swarm_continuation_phrases(message):
+    assert is_swarm_continuation_user_message(message) is True
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "test",
+        "continue implementing this unrelated feature",
+        "resume parsing the new file",
+        "continue working on the new parser",
+        "please resume parsing the new file",
+    ],
+)
+def test_swarm_continuation_does_not_overmatch_unrelated_chat(message):
+    assert is_swarm_continuation_user_message(message) is False
+
+
+def test_test_is_not_a_swarm_continuation():
+    assert is_swarm_continuation_user_message("test") is False
+
+
+def test_pending_swarm_mandate_survives_interstitial_and_clears_on_dispatch():
+    """G: pending goal survives interstitial; pick-back-up reactivates; test does not."""
+    session = type("S", (), {})()
+    prompt = "yeah, puppetmaster swarm glm 5.3 multi-workers via openrouter"
+    assert apply_session_pending_swarm_mandate(session, prompt) is True
+    assert session_pending_swarm_active(session) is True
+    assert session_pending_swarm_goal(session) == prompt
+
+    assert apply_session_pending_swarm_mandate(session, "test") is False
+    assert session_pending_swarm_active(session) is False
+    assert session_pending_swarm_goal(session) == prompt
+
+    assert apply_session_pending_swarm_mandate(session, "pick back up") is True
+    assert session_pending_swarm_active(session) is True
+    assert session_pending_swarm_goal(session) == prompt
+
+    assert apply_session_pending_swarm_mandate(
+        session, "continue implementing this unrelated feature",
+    ) is False
+    assert session_pending_swarm_active(session) is False
+    assert session_pending_swarm_goal(session) == prompt
+
+    assert apply_session_pending_swarm_mandate(session, "resume the swarm") is True
+    assert session_pending_swarm_active(session) is True
+
+    clear_session_pending_swarm_mandate(session)
+    assert session_pending_swarm_active(session) is False
+    assert session_pending_swarm_goal(session) == ""
 
 
 @pytest.mark.parametrize(

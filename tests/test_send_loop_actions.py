@@ -303,3 +303,218 @@ def test_execute_turn_actions_counts_attempted_synchronous_swarm(monkeypatch):
 
     assert counters["swarms"] == 0
     assert counters["synchronous_swarms"] == 1
+
+
+_SCREENSHOT_AGENTIC_CLI = (
+    'puppetmaster agentic "Add token-level streaming" '
+    "--provider opencode-go --model deepseek/deepseek-v4-pro"
+)
+_SCREENSHOT_WRAPPED_AGENTIC_CLI = (
+    "cd /Users/carypalmer/Projects/agent-discord-deepseek && puppetmaster agentic "
+    '"Add token-level streaming to puppetmaster backend; parse NDJSON lines '
+    'and dispatch swarm workers" --provider opencode-go '
+    "--model deepseek/deepseek-v4-pro "
+    "--cwd /Users/carypalmer/Projects/agent-discord-deepseek | tail -n 30"
+)
+_SCREENSHOT_WRAPPED_GOAL = (
+    "Add token-level streaming to puppetmaster backend; "
+    "parse NDJSON lines and dispatch swarm workers"
+)
+_GLM53_SWARM_PROMPT = (
+    "yeah, puppetmaster swarm glm 5.3 multi-workers via openrouter"
+)
+
+
+def _action_session(*, no_delegation=False):
+    return SimpleNamespace(
+        _turn_guard_state=None,
+        _cancel=threading.Event(),
+        _steer_pending=False,
+        _history=[],
+        _pending_advisor_warnings=[],
+        _pending_swarm_mandate=None,
+        _pending_swarm_active=False,
+        _do_run_command=MagicMock(side_effect=AssertionError("must not shell CLI")),
+        _append_action_result=MagicMock(),
+        _check_and_inject_steer=MagicMock(return_value=iter(())),
+        _turn_economy=SimpleNamespace(enforce_tool_batch=lambda msgs: None),
+        config=SimpleNamespace(
+            repo="/tmp/r", swarm_adapter="local", no_delegation=no_delegation,
+        ),
+        pilot=MagicMock(),
+    )
+
+
+def test_execute_translates_screenshot_agentic_cli_to_run_swarm(monkeypatch):
+    """A: screenshot-style agentic CLI under explicit swarm becomes run_swarm."""
+    captured = []
+
+    def fake_dispatch(session, act, aid, is_native, *, counters, turn_findings):
+        captured.append((act, aid, is_native))
+        if False:
+            yield None
+        return None
+
+    monkeypatch.setattr(send_loop_actions, "dispatch_swarm_action", fake_dispatch)
+    local = MagicMock(side_effect=AssertionError("must not dispatch_local_action"))
+    monkeypatch.setattr(send_loop_actions, "dispatch_local_action", local)
+
+    act = PilotAction(
+        kind="run_command",
+        command=_SCREENSHOT_AGENTIC_CLI,
+        tool_call_id="call_screenshot",
+    )
+    session = _action_session()
+    events = list(execute_turn_actions(
+        session,
+        turn=PilotTurn(say="", thinking="", actions=[act]),
+        user_message=_GLM53_SWARM_PROMPT,
+        is_native=True,
+        plan=False,
+        counters={"action_seq": 0, "swarms": 0, "demo_swarms": 0},
+        step=0,
+        turn_findings=[],
+    ))
+
+    assert len(captured) == 1
+    translated, aid, _native = captured[0]
+    assert translated.kind == "run_swarm"
+    assert translated.goal == "Add token-level streaming"
+    assert translated.model == "deepseek/deepseek-v4-pro"
+    assert translated.tool_call_id == "call_screenshot"
+    assert aid == "call_screenshot"
+    starts = [e for e in events if e.kind == "action_start"]
+    assert starts and starts[0].data.get("kind") == "run_swarm"
+    assert "Add token-level streaming" in (starts[0].data.get("goal") or "")
+    session._do_run_command.assert_not_called()
+    local.assert_not_called()
+    assert session._pending_swarm_mandate is None
+
+
+def test_execute_translates_wrapped_screenshot_agentic_cli_to_run_swarm(monkeypatch):
+    """Wrapped screenshot CLI under explicit swarm becomes run_swarm, never shells."""
+    captured = []
+
+    def fake_dispatch(session, act, aid, is_native, *, counters, turn_findings):
+        captured.append((act, aid, is_native))
+        if False:
+            yield None
+        return None
+
+    monkeypatch.setattr(send_loop_actions, "dispatch_swarm_action", fake_dispatch)
+    local = MagicMock(side_effect=AssertionError("must not dispatch_local_action"))
+    monkeypatch.setattr(send_loop_actions, "dispatch_local_action", local)
+
+    act = PilotAction(
+        kind="run_command",
+        command=_SCREENSHOT_WRAPPED_AGENTIC_CLI,
+        tool_call_id="call_wrapped_screenshot",
+    )
+    session = _action_session()
+    events = list(execute_turn_actions(
+        session,
+        turn=PilotTurn(say="", thinking="", actions=[act]),
+        user_message=_GLM53_SWARM_PROMPT,
+        is_native=True,
+        plan=False,
+        counters={"action_seq": 0, "swarms": 0, "demo_swarms": 0},
+        step=0,
+        turn_findings=[],
+    ))
+
+    assert len(captured) == 1
+    translated, aid, _native = captured[0]
+    assert translated.kind == "run_swarm"
+    assert translated.goal == _SCREENSHOT_WRAPPED_GOAL
+    assert translated.model == "deepseek/deepseek-v4-pro"
+    assert translated.tool_call_id == "call_wrapped_screenshot"
+    assert aid == "call_wrapped_screenshot"
+    starts = [e for e in events if e.kind == "action_start"]
+    assert starts and starts[0].data.get("kind") == "run_swarm"
+    assert _SCREENSHOT_WRAPPED_GOAL in (starts[0].data.get("goal") or "")
+    session._do_run_command.assert_not_called()
+    local.assert_not_called()
+
+
+def test_execute_translates_agentic_cli_to_run_implement_off_swarm(monkeypatch):
+    """B: same agentic CLI on a non-swarm implement turn maps to run_implement."""
+    captured = []
+
+    def fake_implement(session, act, aid, is_native, **kwargs):
+        captured.append((act, aid))
+        if False:
+            yield None
+        return None
+
+    monkeypatch.setattr(send_loop_actions, "dispatch_implement_action", fake_implement)
+    monkeypatch.setattr(
+        send_loop_actions,
+        "dispatch_swarm_action",
+        MagicMock(side_effect=AssertionError("must not swarm")),
+    )
+    monkeypatch.setattr(
+        send_loop_actions,
+        "dispatch_local_action",
+        MagicMock(side_effect=AssertionError("must not shell")),
+    )
+
+    act = PilotAction(
+        kind="run_command",
+        command=_SCREENSHOT_AGENTIC_CLI,
+        tool_call_id="call_impl",
+    )
+    session = _action_session()
+    list(execute_turn_actions(
+        session,
+        turn=PilotTurn(say="", thinking="", actions=[act]),
+        user_message="implement token-level streaming",
+        is_native=True,
+        plan=False,
+        counters={"action_seq": 0, "swarms": 0, "demo_swarms": 0},
+        step=0,
+        turn_findings=[],
+    ))
+
+    assert len(captured) == 1
+    translated, aid = captured[0]
+    assert translated.kind == "run_implement"
+    assert translated.goal == "Add token-level streaming"
+    assert translated.model == "deepseek/deepseek-v4-pro"
+    assert translated.tool_call_id == "call_impl"
+    assert aid == "call_impl"
+    session._do_run_command.assert_not_called()
+
+
+def test_execute_does_not_auto_convert_status_or_artifacts(monkeypatch):
+    """C: status/artifacts stay history redirects and never run the shell."""
+    swarm = MagicMock(side_effect=AssertionError("must not swarm"))
+    implement = MagicMock(side_effect=AssertionError("must not implement"))
+    monkeypatch.setattr(send_loop_actions, "dispatch_swarm_action", swarm)
+    monkeypatch.setattr(send_loop_actions, "dispatch_implement_action", implement)
+    monkeypatch.setattr(
+        send_loop_actions,
+        "dispatch_local_action",
+        MagicMock(side_effect=AssertionError("must not shell")),
+    )
+
+    session = _action_session()
+    events = list(execute_turn_actions(
+        session,
+        turn=PilotTurn(say="", thinking="", actions=[
+            PilotAction(kind="run_command", command="puppetmaster status"),
+            PilotAction(kind="run_command", command="python -m puppetmaster artifacts"),
+        ]),
+        user_message=_GLM53_SWARM_PROMPT,
+        is_native=True,
+        plan=False,
+        counters={"action_seq": 0, "swarms": 0, "demo_swarms": 0},
+        step=0,
+        turn_findings=[],
+    ))
+    errors = [e.data.get("error", "") for e in events if e.kind == "action_result"]
+    assert len(errors) == 2
+    assert all("REDIRECT" in (err or "") for err in errors)
+    assert all("search_state" in (err or "") or "action_result" in (err or "") for err in errors)
+    session._do_run_command.assert_not_called()
+    swarm.assert_not_called()
+    implement.assert_not_called()

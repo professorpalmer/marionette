@@ -1712,6 +1712,7 @@ def test_dispatch_local_action_call_mcp_refuses_untracked_start():
     assert events
     err = events[0].data.get("error") or ""
     assert "Untracked swarm" in err or "run_swarm" in err
+    assert "python -m puppetmaster" not in err
     mcp.call.assert_not_called()
     session._append_action_result.assert_called_once()
 

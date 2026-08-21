@@ -44,6 +44,11 @@ from .pilot import (
     PilotError,
     parse_pilot_turn,
 )
+from .pilot_tool_recovery import (
+    apply_invalid_only_streak,
+    invalid_only_halt_reason,
+    parse_native_tool_turn,
+)
 from .send_image_prep import prepare_turn_images
 from .send_loop_actions import execute_turn_actions
 from .repeat_tool_reminder import reset_repeat_chain
@@ -906,6 +911,7 @@ class SendLoopMixin:
             self._stagnation_last_prose = None
             self._stagnation_last_actions = None
             self._stagnation_streak = 0
+            self._invalid_only_streak = 0
             self._failed_objective_resume_counts = {}
             self._keep_alive_waits = 0
             yield from yield_timed_phase(
@@ -1264,33 +1270,11 @@ class SendLoopMixin:
 
             if is_native:
                 try:
-                    from .pilot import parse_tool_calls, PilotTurn, parse_inline_tool_calls, strip_inline_tool_calls
-                    if not tool_calls and pure_content:
-                        inline_actions = parse_inline_tool_calls(pure_content)
-                        if inline_actions:
-                            import json
-                            synthetic_tool_calls = []
-                            for act in inline_actions:
-                                name = act.kind
-                                if act.kind == "call_mcp" and act.tool:
-                                    name = f"mcp_{act.tool.replace('.', '__')}"
-                                synthetic_tool_calls.append({
-                                    "id": act.tool_call_id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": name,
-                                        "arguments": json.dumps(act.arguments)
-                                    }
-                                })
-                            tool_calls = synthetic_tool_calls
-                            actions = inline_actions
-                            pure_content = strip_inline_tool_calls(pure_content)
-                        else:
-                            actions = parse_tool_calls(tool_calls)
-                    else:
-                        actions = parse_tool_calls(tool_calls)
-
-                    turn = PilotTurn(say=pure_content, thinking=reasoning, actions=actions)
+                    schema = getattr(self, "_step_tools_schema", None)
+                    turn, tool_calls, pure_content = parse_native_tool_turn(
+                        pure_content, tool_calls, reasoning, schema,
+                        session=self,
+                    )
                 except Exception as e:
                     yield ConvEvent("error", {"error": f"native tool parsing error: {e}"})
                     return
@@ -1311,6 +1295,7 @@ class SendLoopMixin:
             turn, tool_calls = _synthesis_only_turn(
                 synthesis_nudge_active, turn, tool_calls,
             )
+            apply_invalid_only_streak(self, turn)
 
             # 2. Emit the pilot's prose to the user.
             # Do not emit a post-answer "thinking"/reasoning ConvEvent — live
@@ -1407,65 +1392,69 @@ class SendLoopMixin:
             # Stagnation governor: repeated normalized assistant prose plus the
             # same action fingerprint with no new progress ends the turn calmly
             # (including when HARNESS_MAX_PILOT_STEPS=0). Distinct actions or
-            # real progress reset the streak.
-            try:
-                from .pilot_guards import (
-                    fingerprint_turn_actions,
-                    normalize_assistant_prose,
-                    stagnation_streak_cap,
-                )
-                prose_key = normalize_assistant_prose(_history_text or cleaned_say_text)
-                action_key = fingerprint_turn_actions(turn.actions)
-                # Empty turns (no prose, no actions) are handled by the
-                # consecutive_non_productive break above — skip fingerprinting.
-                if prose_key or action_key:
-                    prev_prose = getattr(self, "_stagnation_last_prose", None)
-                    prev_actions = getattr(self, "_stagnation_last_actions", None)
-                    if (
-                        prev_prose is not None
-                        and prev_actions is not None
-                        and prose_key == prev_prose
-                        and action_key == prev_actions
-                    ):
-                        self._stagnation_streak = int(
-                            getattr(self, "_stagnation_streak", 0) or 0
-                        ) + 1
-                    else:
-                        # First sighting of this fingerprint starts the streak.
-                        self._stagnation_streak = 1
-                    self._stagnation_last_prose = prose_key
-                    self._stagnation_last_actions = action_key
-                    if self._stagnation_streak >= stagnation_streak_cap():
-                        halt_msg = (
-                            "Stopped: repeated the same response and actions "
-                            "with no new progress (auto-halt). Tell me how to "
-                            "continue, or try a narrower ask."
-                        )
-                        # Heal any tool_call pairing from this assistant turn
-                        # before exiting so history stays valid for the next send.
-                        self._sanitize_tool_pairs()
-                        yield ConvEvent("notice", {
-                            "message": halt_msg,
-                            "kind": "stagnation",
-                        })
-                        yield ConvEvent("message", {
-                            "role": "assistant",
-                            "text": halt_msg,
-                        })
-                        self._display_transcript.append({
-                            "type": "message",
-                            "role": "assistant",
-                            "text": halt_msg,
-                        })
-                        yield from finalize_assistant_turn(
-                            self, user_message=user_message, step=step,
-                            swarms=swarms, turn_prose=turn_prose,
-                            turn_findings=turn_findings,
-                            extra={"stagnation_halt": True},
-                        )
-                        return
-            except Exception:
-                pass
+            # real progress reset the streak. Invalid-only steps have their
+            # own 3-strike guard after results are appended — skip them here
+            # so the third pair still closes before auto_halt.
+            from .pilot import is_invalid_only_step as _is_invalid_only_step
+            if not _is_invalid_only_step(getattr(turn, "actions", None)):
+                try:
+                    from .pilot_guards import (
+                        fingerprint_turn_actions,
+                        normalize_assistant_prose,
+                        stagnation_streak_cap,
+                    )
+                    prose_key = normalize_assistant_prose(_history_text or cleaned_say_text)
+                    action_key = fingerprint_turn_actions(turn.actions)
+                    # Empty turns (no prose, no actions) are handled by the
+                    # consecutive_non_productive break above — skip fingerprinting.
+                    if prose_key or action_key:
+                        prev_prose = getattr(self, "_stagnation_last_prose", None)
+                        prev_actions = getattr(self, "_stagnation_last_actions", None)
+                        if (
+                            prev_prose is not None
+                            and prev_actions is not None
+                            and prose_key == prev_prose
+                            and action_key == prev_actions
+                        ):
+                            self._stagnation_streak = int(
+                                getattr(self, "_stagnation_streak", 0) or 0
+                            ) + 1
+                        else:
+                            # First sighting of this fingerprint starts the streak.
+                            self._stagnation_streak = 1
+                        self._stagnation_last_prose = prose_key
+                        self._stagnation_last_actions = action_key
+                        if self._stagnation_streak >= stagnation_streak_cap():
+                            halt_msg = (
+                                "Stopped: repeated the same response and actions "
+                                "with no new progress (auto-halt). Tell me how to "
+                                "continue, or try a narrower ask."
+                            )
+                            # Heal any tool_call pairing from this assistant turn
+                            # before exiting so history stays valid for the next send.
+                            self._sanitize_tool_pairs()
+                            yield ConvEvent("notice", {
+                                "message": halt_msg,
+                                "kind": "stagnation",
+                            })
+                            yield ConvEvent("message", {
+                                "role": "assistant",
+                                "text": halt_msg,
+                            })
+                            self._display_transcript.append({
+                                "type": "message",
+                                "role": "assistant",
+                                "text": halt_msg,
+                            })
+                            yield from finalize_assistant_turn(
+                                self, user_message=user_message, step=step,
+                                swarms=swarms, turn_prose=turn_prose,
+                                turn_findings=turn_findings,
+                                extra={"stagnation_halt": True},
+                            )
+                            return
+                except Exception:
+                    pass
 
             # 3. No actions => the pilot is done talking unless a wait tool
             # kept the step productive. drain_idle_turn delivers pending
@@ -1541,6 +1530,19 @@ class SendLoopMixin:
                 # Cancel mid-spree: heal unanswered tool_calls before exit so
                 # the next send/resume/export never sees a dangling tool_use.
                 self._sanitize_tool_pairs()
+                return
+
+            halt_reason = invalid_only_halt_reason(self)
+            if halt_reason:
+                self._sanitize_tool_pairs()
+                yield ConvEvent("auto_halt", {"reason": halt_reason})
+                yield ConvEvent("error", {"error": halt_reason})
+                yield from finalize_assistant_turn(
+                    self, user_message=user_message, step=step,
+                    swarms=swarms, turn_prose=turn_prose,
+                    turn_findings=turn_findings,
+                    extra={"invalid_tool_halt": True},
+                )
                 return
 
             # ---- AUTO-VERIFY LOOP ----------------------------------------

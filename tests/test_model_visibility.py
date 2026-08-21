@@ -100,6 +100,58 @@ def test_inherit_family_spec_uses_older_sibling(mv):
     assert mv.inherit_family_spec("xiaomi/mimo-v2-flash", "xiaomi/mimo-v2-flash", specs) is None
 
 
+def test_picker_model_labels_uses_catalog_for_visible_specs_only(mv, monkeypatch):
+    seen = {}
+
+    def fake_catalog(*, available_only=True, force=False):
+        seen["force"] = force
+        seen["available_only"] = available_only
+        return [
+            {
+                "spec": "opencode-zen:big-pickle",
+                "model": "big-pickle",
+                "name": "Big Pickle",
+            },
+            {
+                "spec": "opencode-zen:mimo-v2.5-free",
+                "model": "mimo-v2.5-free",
+                "name": "MiMo-V2.5 Free",
+            },
+            {
+                "spec": "opencode-zen:x-preview-f-free",
+                "model": "x-preview-f-free",
+                "name": "Ox Alpha Free",
+            },
+        ]
+
+    monkeypatch.setattr(mv, "catalog", fake_catalog)
+    labels = mv.picker_model_labels(
+        ["opencode-zen:big-pickle", "opencode-zen:mimo-v2.5-free"],
+        force=False,
+    )
+    assert seen["force"] is False
+    assert labels == {
+        "opencode-zen:big-pickle": "Big Pickle",
+        "opencode-zen:mimo-v2.5-free": "MiMo-V2.5 Free",
+    }
+    assert "opencode-zen:x-preview-f-free" not in labels
+
+
+def test_picker_model_labels_skips_id_echo_names(mv, monkeypatch):
+    monkeypatch.setattr(
+        mv,
+        "catalog",
+        lambda **_kw: [
+            {
+                "spec": "opencode-go:deepseek-v4-flash",
+                "model": "deepseek-v4-flash",
+                "name": "deepseek-v4-flash",
+            },
+        ],
+    )
+    assert mv.picker_model_labels(["opencode-go:deepseek-v4-flash"]) == {}
+
+
 def test_enabled_pilots_falls_back_when_empty(mv, monkeypatch):
     import harness.providers as prov
     monkeypatch.setattr(prov, "available_providers", lambda: [prov.get_provider("openrouter")])

@@ -22,6 +22,7 @@ def test_openai_codex_and_nous_are_full_stack():
     from harness.provider_capabilities import worker_capability
 
     assert worker_capability("openai-codex") == "full_stack"
+    assert worker_capability("opencode-zen") == "full_stack"
     assert worker_capability("nous") == "full_stack"
     assert worker_capability("minimax") == "full_stack"
     assert worker_capability("nvidia") == "full_stack"

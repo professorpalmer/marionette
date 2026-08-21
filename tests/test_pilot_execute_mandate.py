@@ -23,3 +23,10 @@ def test_pilot_system_forbids_puppetmaster_cli_shell():
     assert "NEVER shell the Puppetmaster CLI" in PILOT_SYSTEM
     assert "run_swarm" in PILOT_SYSTEM
     assert "search_state" in PILOT_SYSTEM
+
+
+def test_pilot_system_has_command_batch_and_latency_rule():
+    assert "`run_command_batch`" in PILOT_SYSTEM
+    assert "LATENCY (mandatory)" in PILOT_SYSTEM
+    assert "roundtrips" in PILOT_SYSTEM
+    assert "run_command_batch" in PILOT_SYSTEM

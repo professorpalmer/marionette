@@ -3,6 +3,7 @@ import {
   filterPilotModels,
   groupPilotModelsByProvider,
   fallbackPilot,
+  modelLabelOf,
   organizePilotModels,
   pinCurrentPilot,
   providerOf,
@@ -42,6 +43,44 @@ describe("filterPilotModels", () => {
 
   it("returns all models when query is blank", () => {
     expect(filterPilotModels(MODELS, "  ")).toEqual(MODELS);
+  });
+
+  it("matches Ox Alpha friendly name to the wire id", () => {
+    const zen = ["opencode-zen:x-preview-f-free", "opencode-zen:big-pickle"];
+    expect(filterPilotModels(zen, "Ox Alpha")).toEqual([
+      "opencode-zen:x-preview-f-free",
+    ]);
+    expect(modelLabelOf("opencode-zen:x-preview-f-free")).toBe("Ox Alpha Free");
+  });
+
+  it("matches Ox Alpha friendly name for OpenCode Go specs", () => {
+    const goModels = [
+      "opencode-go:ox-alpha-free",
+      "opencode-go:deepseek-v4-flash",
+    ];
+    expect(filterPilotModels(goModels, "Ox Alpha")).toEqual([
+      "opencode-go:ox-alpha-free",
+    ]);
+    expect(modelLabelOf("opencode-go:ox-alpha-free")).toBe("Ox Alpha Free");
+  });
+
+  it("matches backend catalog labels for non-Ox models", () => {
+    const models = [
+      "opencode-zen:big-pickle",
+      "opencode-zen:mimo-v2.5-free",
+    ];
+    const labels = {
+      "opencode-zen:big-pickle": "Big Pickle",
+      "opencode-zen:mimo-v2.5-free": "MiMo-V2.5 Free",
+    };
+    expect(filterPilotModels(models, "pickle", labels)).toEqual([
+      "opencode-zen:big-pickle",
+    ]);
+    expect(filterPilotModels(models, "mimo", labels)).toEqual([
+      "opencode-zen:mimo-v2.5-free",
+    ]);
+    expect(modelLabelOf("opencode-zen:big-pickle", labels)).toBe("Big Pickle");
+    expect(modelLabelOf("opencode-zen:mimo-v2.5-free", labels)).toBe("MiMo-V2.5 Free");
   });
 });
 
@@ -117,5 +156,16 @@ describe("organizePilotModels", () => {
     expect(groups).toEqual([
       { provider: "anthropic", items: ["anthropic:claude-sonnet-4-6"] },
     ]);
+  });
+
+  it("keeps the wire spec selected when searching a catalog label", () => {
+    const { current, groups } = organizePilotModels(
+      ["opencode-zen:big-pickle", "opencode-zen:mimo-v2.5-free"],
+      "opencode-zen:big-pickle",
+      "pickle",
+      { "opencode-zen:big-pickle": "Big Pickle" },
+    );
+    expect(current).toBe("opencode-zen:big-pickle");
+    expect(groups).toEqual([]);
   });
 });

@@ -213,8 +213,10 @@ def provider_models(p, *, force: bool = False) -> list:
     Keyed providers are live-first: the vendor listing leads, then newer
     family versions discovered via live or an OpenRouter vendor overlay
     (``glm-5.2`` → ``glm-5.3``), then curated ids that listing has not
-    published yet. OpenRouter stays live-only once keyed — an empty or
-    failed fetch must not be disguised with the static list.
+    published yet. OpenRouter, OpenCode Go, and OpenCode Zen stay
+    live-authoritative once keyed — a successful native ``/models`` response
+    returns exactly those normalized ids (deduped); curated ids appear only
+    when live fetch/cache yields nothing.
     """
     curated = list(p.pilot_models)
     live = []
@@ -231,6 +233,13 @@ def provider_models(p, *, force: bool = False) -> list:
     # failed response must not be disguised with the curated static list.
     if p.name == "openrouter" and keyed:
         return list(dict.fromkeys(m for m in live if m))
+    # Go/Zen: live listing is availability authority. Curated survives only
+    # when listing fails or returns nothing — do not merge stale curated ids
+    # into a successful live catalog.
+    if p.name in ("opencode-go", "opencode-zen"):
+        if live:
+            return list(dict.fromkeys(m for m in live if m))
+        return list(dict.fromkeys(m for m in curated if m))
     extras = []
     if keyed:
         try:
@@ -266,7 +275,8 @@ def catalog(available_only: bool = True, *, force: bool = False) -> list:
 
     spec is the 'provider:model' string the picker uses. When available_only is
     True, only providers with a present key are included. Keyed providers are
-    live-first with curated backfill; keyed OpenRouter uses live data only.
+    live-first with curated backfill; keyed OpenRouter, OpenCode Go, and
+    OpenCode Zen use live data only when the native listing succeeds.
     """
     from . import providers as prov
     enabled = set(get_enabled())
@@ -285,25 +295,87 @@ def catalog(available_only: bool = True, *, force: bool = False) -> list:
         }
         for m in models:
             spec = f"{p.name}:{m}"
-            metadata = model_metadata(p.name, m) if p.name == "openrouter" else None
-            pricing = (metadata or {}).get("pricing") or {}
+            provider_metadata = dict(model_metadata(p.name, m) or {})
+            display_name = m
+            if p.name in ("opencode-go", "opencode-zen"):
+                try:
+                    from .opencode_common import (
+                        merge_catalog_overlay,
+                        needs_catalog_overlay,
+                    )
+                    if p.name == "opencode-go":
+                        from .opencode_go import display_name_for, overlay_metadata
+                    else:
+                        from .opencode_zen import display_name_for, overlay_metadata
+                    overlay = (
+                        overlay_metadata(m, allow_network=force)
+                        if needs_catalog_overlay(provider_metadata, m)
+                        else {}
+                    )
+                    provider_metadata = merge_catalog_overlay(
+                        provider_metadata, overlay, m,
+                    )
+                    display_name = display_name_for(m, provider_metadata)
+                except Exception:
+                    display_name = m
+            elif isinstance(provider_metadata.get("name"), str) and provider_metadata["name"].strip():
+                display_name = provider_metadata["name"].strip()
+            pricing = provider_metadata.get("pricing") or {}
             out.append({
                 "provider": p.name,
                 "provider_display": p.display_name,
                 "model": m,
+                "name": display_name,
                 "spec": spec,
                 "available": is_avail,
                 "enabled": spec in enabled,
-                "context_window": (metadata or {}).get("context_length"),
+                "context_window": provider_metadata.get("context_length"),
                 "pricing": pricing,
                 "price_in": pricing.get("prompt"),
                 "price_out": pricing.get("completion"),
-                "source": (metadata or {}).get("source", status.get("source")),
+                "source": provider_metadata.get("source", status.get("source")),
                 "status": status.get("status"),
-                "provider_metadata": metadata or {},
+                "provider_metadata": provider_metadata,
                 "error": status.get("error"),
             })
     return out
+
+
+def picker_model_labels(specs: Optional[list] = None, *, force: bool = False) -> dict:
+    """Friendly names for visible picker specs, keyed by ``provider:model``.
+
+    Reuses the enabled/visible pilot list. Catalog reads are cache-only unless
+    *force* is True so ``/api/config`` never refreshes vendor listings.
+    Only specs in *specs* (or ``enabled_pilots()``) are included.
+    """
+    visible: list[str] = []
+    seen: set[str] = set()
+    source = specs if specs is not None else enabled_pilots()
+    for spec in source or []:
+        text = str(spec or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            visible.append(text)
+    if not visible:
+        return {}
+    wanted = set(visible)
+    labels: dict[str, str] = {}
+    try:
+        rows = catalog(available_only=True, force=force)
+    except Exception:
+        return {}
+    for row in rows:
+        spec = row.get("spec")
+        if spec not in wanted:
+            continue
+        name = row.get("name")
+        model = str(row.get("model") or "").strip()
+        if not isinstance(name, str):
+            continue
+        text = name.strip()
+        if text and text.lower() != model.lower():
+            labels[spec] = text
+    return labels
 
 
 def enabled_pilots() -> list:

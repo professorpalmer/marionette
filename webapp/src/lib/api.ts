@@ -34,7 +34,10 @@ export type StoreEventsSince = TransportStoreEventsSince;
 
 export type Config = {
   driver: string; reach: string; budget: number;
-  models?: string[]; preflight?: string | null;
+  models?: string[];
+  /** Friendly names keyed by ``provider:model`` spec. Wire specs stay unchanged. */
+  model_labels?: Record<string, string>;
+  preflight?: string | null;
   repo?: string;
   swarm_adapter?: string;
   edit_engine?: "agentic" | "native";
@@ -51,6 +54,7 @@ export type Settings = {
   reach: string;
   budget: number;
   models: string[];
+  model_labels?: Record<string, string>;
   auto_distill: boolean;
   reviewEditsBeforeApply?: boolean;
   autoVerify?: boolean;
@@ -878,6 +882,7 @@ export type ModelCatalogEntry = {
   provider: string;
   provider_display: string;
   model: string;
+  name?: string;
   spec: string;
   available: boolean;
   enabled: boolean;
