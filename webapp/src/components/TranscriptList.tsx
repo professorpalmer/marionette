@@ -2147,7 +2147,14 @@ function nodeToText(node: any): string {
   return "";
 }
 
-function FencedCodeBlock({ className, children, ...props }: any) {
+function lookupLiveCommand(command: string, indexVersion: number) {
+  // indexVersion is the useSyncExternalStore snapshot. Naming it here keeps
+  // React Compiler from treating the module-Map lookup as a pure function of
+  // `command` alone (first paint is always miss; cards register in useEffect).
+  return indexVersion >= 0 ? lookupAgentCommandSession(command) : null;
+}
+
+function FencedCodeBlock({ className, children, commandIndexVersion = 0, ...props }: any) {
   const [copied, setCopied] = useState(false);
   const codeText = nodeToText(children).replace(/\n$/, "");
   const lines = codeText.split("\n");
@@ -2155,7 +2162,7 @@ function FencedCodeBlock({ className, children, ...props }: any) {
   // Directory trees / file lists: make paths open in the editor on click.
   const clickableTree = pathLines >= 2 || (lines.length <= 4 && pathLines >= 1);
   const liveCommand = !clickableTree && lines.length === 1
-    ? lookupAgentCommandSession(codeText)
+    ? lookupLiveCommand(codeText, commandIndexVersion)
     : null;
 
   const handleCopy = () => {
@@ -2243,7 +2250,7 @@ function openMarkdownHref(href: string, e: React.MouseEvent): void {
 // Pretty tree only. Streaming wrappers pass a deferred `flushed` string so
 // highlight.js never remounts on a fence the next token can still extend.
 const PrettyMarkdown = memo(function PrettyMarkdown({ text }: { text: string }) {
-  useSyncExternalStore(
+  const commandIndexVersion = useSyncExternalStore(
     subscribeAgentCommandIndex,
     getAgentCommandIndexVersion,
     getAgentCommandIndexVersion,
@@ -2349,7 +2356,7 @@ const PrettyMarkdown = memo(function PrettyMarkdown({ text }: { text: string }) 
                 </button>
               );
             }
-            const liveCommand = lookupAgentCommandSession(raw);
+            const liveCommand = lookupLiveCommand(raw, commandIndexVersion);
             if (liveCommand) {
               return (
                 <button
@@ -2377,7 +2384,11 @@ const PrettyMarkdown = memo(function PrettyMarkdown({ text }: { text: string }) 
             );
           }
           return (
-            <FencedCodeBlock className={className} {...props}>
+            <FencedCodeBlock
+              className={className}
+              commandIndexVersion={commandIndexVersion}
+              {...props}
+            >
               {children}
             </FencedCodeBlock>
           );
