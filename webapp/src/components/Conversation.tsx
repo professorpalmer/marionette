@@ -188,6 +188,7 @@ import {
   startTypewriterLoop,
 } from "./conversation/streamTypewriter";
 import {
+  chooseResolvedFilePath,
   closeTabResult,
   otherTabsHaveDirty,
   setTabDirty,
@@ -297,34 +298,33 @@ export default function Conversation({
   };
 
   useEffect(() => {
-    const handleOpenFile = (e: CustomEvent<{ path: string; line?: number; col?: number }>) => {
+    const handleOpenFile = (e: CustomEvent<{ path: string; line?: number; col?: number; trusted?: boolean }>) => {
       const filePath = e.detail.path;
       if (!filePath) return;
       const line = e.detail.line;
       const col = e.detail.col;
+      const trusted = !!e.detail.trusted;
       const openResolved = (resolvedPath: string) => {
         setOpenTabs((prev) => upsertOpenTab(prev, resolvedPath, line, col));
         setActiveTab(resolvedPath);
       };
-      // Agent prose often cites an unqualified basename (`routing_savings.py`).
-      // Resolve read-only hints before opening so a unique nested file works
-      // like Cursor; exact tree paths still return immediately. Older backends
-      // fall back to the original path.
+      const applyChoice = (choice: ReturnType<typeof chooseResolvedFilePath>) => {
+        if (!choice) return;
+        if ("toast" in choice) {
+          window.dispatchEvent(new CustomEvent("harness-toast", { detail: choice.toast }));
+          return;
+        }
+        openResolved(choice.path);
+      };
+      // Transcript clicks fail closed when resolve cannot find a unique file.
+      // File-tree clicks are trusted and may open the given path if resolve is down.
       void api.resolveFile(filePath)
         .then((resolved) => {
-          if (resolved?.ok && resolved.path) {
-            openResolved(resolved.path);
-            return;
-          }
-          if (Array.isArray(resolved?.candidates) && resolved.candidates.length > 1) {
-            window.dispatchEvent(new CustomEvent("harness-toast", {
-              detail: `Multiple files match ${filePath}; use a more specific path.`,
-            }));
-            return;
-          }
-          openResolved(filePath);
+          applyChoice(chooseResolvedFilePath(filePath, resolved, { trusted }));
         })
-        .catch(() => openResolved(filePath));
+        .catch(() => {
+          applyChoice(chooseResolvedFilePath(filePath, null, { trusted }));
+        });
     };
     window.addEventListener("harness-open-file", handleOpenFile as EventListener);
     return () => {

@@ -73,3 +73,51 @@ describe("openRightTo focus when pane already open", () => {
     dispatch.mockRestore();
   });
 });
+
+function toggleRightLikeApp(opts: {
+  rightOpen: boolean;
+  hasStoredCards: boolean;
+  lastTab: string;
+  setRightOpen: (updater: (open: boolean) => boolean) => void;
+  pendingRightTab: { current: string | null };
+}) {
+  opts.setRightOpen((open) => {
+    if (open) return false;
+    if (!opts.hasStoredCards) opts.pendingRightTab.current = opts.lastTab;
+    return true;
+  });
+}
+
+describe("Ctrl+J right pane toggle", () => {
+  it("seeds the last tab when opening an empty board so it cannot flash closed", () => {
+    const pendingRightTab = { current: null as string | null };
+    let rightOpen = false;
+    toggleRightLikeApp({
+      rightOpen,
+      hasStoredCards: false,
+      lastTab: "state",
+      pendingRightTab,
+      setRightOpen: (updater) => {
+        rightOpen = updater(rightOpen);
+      },
+    });
+    expect(rightOpen).toBe(true);
+    expect(pendingRightTab.current).toBe("state");
+  });
+
+  it("does not seed a tab when stored cards already exist", () => {
+    const pendingRightTab = { current: null as string | null };
+    let rightOpen = false;
+    toggleRightLikeApp({
+      rightOpen,
+      hasStoredCards: true,
+      lastTab: "state",
+      pendingRightTab,
+      setRightOpen: (updater) => {
+        rightOpen = updater(rightOpen);
+      },
+    });
+    expect(rightOpen).toBe(true);
+    expect(pendingRightTab.current).toBeNull();
+  });
+});

@@ -1,4 +1,4 @@
-import { useCallback, useState, useEffect, useRef } from "react";
+import { useCallback, useState, useEffect, useLayoutEffect, useRef } from "react";
 import { X, GripVertical } from "lucide-react";
 import StatePane from "./StatePane";
 import BrowserPane from "./BrowserPane";
@@ -44,6 +44,10 @@ import {
   MIN_CARD_COLUMN_SPAN,
   applyPairwiseColumnResize,
   clampCardColumnSpan,
+  columnSpanFromPointerDelta,
+  columnTrackTemplate,
+  groupGridColumn,
+  absorbShellResize,
   normalizeGroupWidths,
   showColumnResizeHandle,
 } from "../lib/boardColumnWidths";
@@ -145,16 +149,13 @@ function buildCardPlacements(
   );
   const groupWidths = normalizeGroupWidths(requestedWidths, preferredGroupIndex);
   const placements = new Map<Tab, CardPlacement>();
-  let rightmostColumn = GRID_COLUMN_COUNT;
 
   groups.forEach((group, groupIndex) => {
     const groupWidth = groupWidths[groupIndex];
-    const groupStart = rightmostColumn - groupWidth + 1;
-    rightmostColumn = groupStart - 1;
 
     group.forEach((tab, cardIndex) => {
       placements.set(tab, {
-        gridColumn: `${groupStart} / span ${groupWidth}`,
+        gridColumn: groupGridColumn(groupIndex, groupCount),
         gridRow: String(cardIndex + 1),
         // Left-edge splitter on every column except the leftmost. A single
         // column always fills the board; the shell Resizer owns that width.
@@ -262,6 +263,8 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
   const stackFractionsRef = useRef(stackFractions);
   stackFractionsRef.current = stackFractions;
   const boardRef = useRef<HTMLDivElement | null>(null);
+  const [boardWidth, setBoardWidth] = useState(0);
+  const prevBoardWidthRef = useRef(0);
   const preferredResizeGroupRef = useRef(-1);
   const [draggedTab, setDraggedTab] = useState<Tab | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(isSettingsOverlayOpen);
@@ -339,6 +342,40 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
     localStorage.setItem(CARD_LAYOUT_STORAGE_KEY, JSON.stringify(nextLayouts));
   }, []);
 
+  useLayoutEffect(() => {
+    const el = boardRef.current;
+    if (!el) {
+      prevBoardWidthRef.current = 0;
+      setBoardWidth(0);
+      return;
+    }
+    const applyWidth = () => {
+      const nextWidth = el.getBoundingClientRect().width;
+      const prevWidth = prevBoardWidthRef.current;
+      prevBoardWidthRef.current = nextWidth;
+      setBoardWidth(nextWidth);
+      if (!(prevWidth > 0 && nextWidth > 0) || Math.abs(prevWidth - nextWidth) < 0.5) return;
+      const groups = columnsRef.current.filter(group => group.length > 0);
+      if (groups.length <= 1) return;
+      const current = groups.map(group => Math.max(
+        ...group.map(tab => cardColumnSpan(tab, cardLayoutsRef.current, groups.length)),
+      ));
+      const absorbed = absorbShellResize(current, prevWidth, nextWidth);
+      const nextLayouts: CardLayouts = { ...cardLayoutsRef.current };
+      groups.forEach((group, index) => {
+        for (const tab of group) {
+          nextLayouts[tab] = { columnSpan: absorbed[index], customized: true };
+        }
+      });
+      persistCardLayouts(nextLayouts);
+    };
+    applyWidth();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(applyWidth);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [visible, openCards.length, persistCardLayouts]);
+
   const persistStackFractions = useCallback((nextFractions: Record<string, number[]>) => {
     stackFractionsRef.current = nextFractions;
     setStackFractions(nextFractions);
@@ -383,13 +420,19 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
     handle.setPointerCapture(event.pointerId);
     const startX = event.clientX;
     const startSpan = placement.columnSpan;
-    const pixelsPerColumn = boardWidth / GRID_COLUMN_COUNT;
     beginColumnResize();
 
     const onMove = (moveEvent: PointerEvent) => {
       if (!handle.hasPointerCapture(moveEvent.pointerId)) return;
-      const deltaColumns = Math.round((startX - moveEvent.clientX) / pixelsPerColumn);
-      setGroupColumnSpan(placement.groupIndex, startSpan + deltaColumns);
+      setGroupColumnSpan(
+        placement.groupIndex,
+        columnSpanFromPointerDelta({
+          startSpan,
+          startClientX: startX,
+          clientX: moveEvent.clientX,
+          boardWidth,
+        }),
+      );
     };
     const onUp = (upEvent: PointerEvent) => {
       if (handle.hasPointerCapture(upEvent.pointerId)) {
@@ -630,6 +673,9 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
     preferredResizeGroupRef.current,
   );
   const cardStacks = columns.filter((group) => group.length > 0);
+  const groupWidths = cardStacks.map((stack) => (
+    cardPlacements.get(stack[0])?.columnSpan ?? MIN_CARD_COLUMN_SPAN
+  ));
   const showNewColumnDrop = Boolean(draggedTab && canOpenLeftColumn(columns, draggedTab));
 
   return (
@@ -650,7 +696,7 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
             <div
               className="right-pane-board-grid"
               style={{
-                gridTemplateColumns: `repeat(${GRID_COLUMN_COUNT}, minmax(0, 1fr))`,
+                gridTemplateColumns: columnTrackTemplate(groupWidths, boardWidth),
                 gridTemplateRows: "minmax(0, 1fr)",
               }}
             >

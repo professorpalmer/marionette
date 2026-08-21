@@ -11,6 +11,7 @@ import {
   resolveActivityGroupOpen,
   type Item,
 } from "../components/TranscriptList";
+import { _resetAgentCommandIndexForTests } from "../lib/agentCommandIndex";
 
 afterEach(() => cleanup());
 
@@ -844,5 +845,68 @@ describe("job_id → Swarm Tracker deep-link chrome", () => {
         .some((e) => e.type === "harness-open-swarm-job" && e.detail?.jobId === "local-bf1b30f4"),
     ).toBe(true);
     spy.mockRestore();
+  });
+});
+
+describe("live command token clicks", () => {
+  afterEach(() => {
+    _resetAgentCommandIndexForTests();
+  });
+
+  it("clicks a registered `git pull` token into that agent terminal", () => {
+    const spy = vi.spyOn(window, "dispatchEvent");
+    render(
+      <TranscriptList
+        {...listProps([
+          { kind: "msg", msg: { role: "user", text: "pull latest" } },
+          {
+            kind: "card",
+            card: {
+              id: "card-git-pull",
+              goal: "git pull",
+              cwd: null,
+              kind: "run_command",
+              running: false,
+              open: false,
+              result: { status: "ok", command: "git pull", output: "Already up to date.\n" },
+            },
+          },
+          {
+            kind: "msg",
+            msg: { role: "assistant", text: "Ran `git pull` and it was already up to date." },
+          },
+        ])}
+      />,
+    );
+
+    const token = screen.getByRole("button", { name: "git pull" });
+    expect(token).toHaveAttribute("title", "Reveal running command");
+    fireEvent.click(token);
+
+    const opened = spy.mock.calls
+      .map((c) => c[0] as CustomEvent)
+      .find((e) => e.type === "harness-open-agent-terminal");
+    expect(opened?.detail).toEqual({
+      id: "card-git-pull",
+      command: "git pull",
+      output: "Already up to date.\n",
+    });
+    expect(spy.mock.calls.map((c) => (c[0] as CustomEvent).type)).not.toContain("harness-run-command");
+    spy.mockRestore();
+  });
+
+  it("leaves an unregistered command token as muted code", () => {
+    render(
+      <TranscriptList
+        {...listProps([
+          { kind: "msg", msg: { role: "assistant", text: "You can run `git status` next." } },
+        ])}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "git status" })).toBeNull();
+    const code = screen.getByText("git status");
+    expect(code.tagName).toBe("CODE");
+    expect(code).toHaveClass("text-txt/90");
   });
 });

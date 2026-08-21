@@ -8,6 +8,9 @@ import {
   parseFileHref,
   looksLikePathInlineCode,
   classifyActionGoal,
+  classifyTranscriptHref,
+  commandMarkdownHref,
+  fileMarkdownHref,
   autolinkAgentText,
   openAgentLink,
   openAgentFile,
@@ -17,9 +20,12 @@ import {
   openAgentWorkspace,
   openAgentSwarmJob,
   openAgentSpill,
-  stableCommandId,
 } from "../lib/agentLinks";
 import { _resetAgentTerminalStreamForTests } from "../lib/agentTerminalStream";
+import {
+  registerAgentCommandSession,
+  _resetAgentCommandIndexForTests,
+} from "../lib/agentCommandIndex";
 
 describe("agentLinks detection", () => {
   it("classifies urls and paths", () => {
@@ -72,6 +78,11 @@ describe("agentLinks detection", () => {
       line: 10,
       col: 4,
     });
+    expect(parseFileHref("src/main.py:165-210")).toEqual({
+      path: "src/main.py",
+      line: 165,
+      col: undefined,
+    });
     expect(parseFileHref("file:///C:/proj/a.ts")).toEqual({
       path: "C:/proj/a.ts",
       line: undefined,
@@ -81,11 +92,15 @@ describe("agentLinks detection", () => {
 
   it("detects path-like inline code", () => {
     expect(looksLikePathInlineCode("harness/server.py")).toBe(true);
-    expect(looksLikePathInlineCode("foo.py:3")).toBe(true);
+    expect(looksLikePathInlineCode("foo.py:3")).toBe(false);
+    expect(looksLikePathInlineCode("src/foo.py:3")).toBe(true);
     expect(looksLikePathInlineCode("--flag")).toBe(false);
     expect(looksLikePathInlineCode("npm install")).toBe(false);
     expect(looksLikePathInlineCode("/Users/me/My Projects/app.ts")).toBe(true);
     expect(looksLikePathInlineCode("/Users/me/My Projects/app.ts:12")).toBe(true);
+    expect(looksLikePathInlineCode("backend.py")).toBe(false);
+    expect(looksLikePathInlineCode("job_thread_id")).toBe(false);
+    expect(looksLikePathInlineCode("Starting")).toBe(false);
   });
 
   it("does not treat package specs as file editor links", () => {
@@ -107,6 +122,7 @@ describe("agentLinks detection", () => {
     expect(looksLikeFilePath("anysphere/ui")).toBe(false);
     expect(looksLikePathInlineCode("anysphere/ui")).toBe(false);
     expect(looksLikeFilePath("package.json")).toBe(true);
+    expect(looksLikePathInlineCode("package.json")).toBe(false);
     expect(looksLikeFilePath("~/Downloads/security-assessment-report.md")).toBe(true);
     expect(looksLikePathInlineCode("~/Downloads/security-assessment-report.md")).toBe(true);
     expect(looksLikeFilePath("/tmp/@scope/pkg/index.ts")).toBe(true);
@@ -242,16 +258,55 @@ describe("autolinkAgentText", () => {
     expect(out).toContain("[ok](src/a.ts)");
     expect(out).toContain("`keep/me.py`");
   });
+
+  it("does not autolink identifiers or bare filenames", () => {
+    const src = "Starting Plan Steps Done job_thread_id backend.py PROGRESS.";
+    expect(autolinkAgentText(src)).toBe(src);
+  });
+});
+
+describe("classifyTranscriptHref", () => {
+  it("accepts real urls, jobs, spills, and pathed files", () => {
+    expect(classifyTranscriptHref("https://example.com/a")).toBe("url");
+    expect(classifyTranscriptHref("spill://sess1/call_a")).toBe("spill");
+    expect(classifyTranscriptHref("job_abcdef012345")).toBe("job");
+    expect(classifyTranscriptHref("webapp/src/App.tsx")).toBe("file");
+    expect(classifyTranscriptHref("src/main.py:165-210")).toBe("file");
+  });
+
+  it("rejects model-spam identifiers, commands, and bare filenames", () => {
+    expect(classifyTranscriptHref("Starting")).toBe("none");
+    expect(classifyTranscriptHref("Plan")).toBe("none");
+    expect(classifyTranscriptHref("job_thread_id")).toBe("none");
+    expect(classifyTranscriptHref("backend.py")).toBe("none");
+    expect(classifyTranscriptHref("git status")).toBe("none");
+    expect(classifyTranscriptHref("Starting the job")).toBe("none");
+    expect(classifyTranscriptHref("PROGRESS")).toBe("none");
+  });
+
+  it("lights a command href only after a live session is registered", () => {
+    _resetAgentCommandIndexForTests();
+    expect(classifyTranscriptHref("git pull")).toBe("none");
+    expect(classifyTranscriptHref(commandMarkdownHref("card-9"))).toBe("none");
+    registerAgentCommandSession({ id: "card-9", command: "git pull", output: "ok\n" });
+    expect(classifyTranscriptHref("git pull")).toBe("command");
+    expect(classifyTranscriptHref("$ git pull")).toBe("command");
+    expect(classifyTranscriptHref(commandMarkdownHref("card-9"))).toBe("command");
+    expect(classifyTranscriptHref(fileMarkdownHref("webapp/src/App.tsx"))).toBe("file");
+    _resetAgentCommandIndexForTests();
+  });
 });
 
 describe("openAgentLink events", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     _resetAgentTerminalStreamForTests();
+    _resetAgentCommandIndexForTests();
   });
 
   afterEach(() => {
     _resetAgentTerminalStreamForTests();
+    _resetAgentCommandIndexForTests();
   });
 
   it("dispatches browser events for urls", () => {
@@ -298,27 +353,57 @@ describe("openAgentLink events", () => {
     });
   });
 
-  it("hashes command when reveal id is omitted", () => {
+  it("does not mint a blank terminal for speculative command clicks", () => {
     const spy = vi.spyOn(window, "dispatchEvent");
     openAgentCommand("echo hi");
+    openAgentCommand("Starting the job", { run: false });
+    const kinds = spy.mock.calls.map((c) => (c[0] as CustomEvent).type);
+    expect(kinds).not.toContain("harness-open-agent-terminal");
+    expect(kinds).not.toContain("harness-focus-tab");
+  });
+
+  it("opens the registered live session for a later chat command click", () => {
+    registerAgentCommandSession({ id: "card-live", command: "git pull", output: "Already up to date.\n" });
+    const spy = vi.spyOn(window, "dispatchEvent");
+    openAgentCommand("git pull");
     const ev = spy.mock.calls
       .map((c) => c[0] as CustomEvent)
       .find((e) => e.type === "harness-open-agent-terminal");
-    expect(ev?.detail?.id).toBe(stableCommandId("echo hi"));
-    expect(ev?.detail?.command).toBe("echo hi");
+    expect(ev?.detail).toEqual({
+      id: "card-live",
+      command: "git pull",
+      output: "Already up to date.\n",
+    });
   });
 
-  it("openAgentLink routes url vs file vs shell", () => {
+  it("openAgentLink routes a registered command href to that terminal", () => {
+    registerAgentCommandSession({ id: "card-live", command: "git pull", output: "ok\n" });
+    const spy = vi.spyOn(window, "dispatchEvent");
+    const prevent = vi.fn();
+    openAgentLink("git pull", { preventDefault: prevent });
+    expect(prevent).toHaveBeenCalled();
+    const ev = spy.mock.calls
+      .map((c) => c[0] as CustomEvent)
+      .find((e) => e.type === "harness-open-agent-terminal");
+    expect(ev?.detail?.id).toBe("card-live");
+    expect(spy.mock.calls.map((c) => (c[0] as CustomEvent).type)).not.toContain(
+      "harness-run-command",
+    );
+  });
+
+  it("openAgentLink routes url vs file and ignores dead command/file hrefs", () => {
     const spy = vi.spyOn(window, "dispatchEvent");
     const prevent = vi.fn();
     openAgentLink("https://x.com", { preventDefault: prevent });
     expect(prevent).toHaveBeenCalled();
     openAgentLink("foo/bar.ts", { preventDefault: prevent });
     openAgentLink("npm.cmd", { preventDefault: prevent });
+    openAgentLink("backend.py", { preventDefault: prevent });
+    openAgentLink("Starting the job", { preventDefault: prevent });
     const types = spy.mock.calls.map((c) => (c[0] as CustomEvent).type);
     expect(types).toContain("harness-open-url");
     expect(types).toContain("harness-open-file");
-    expect(types).toContain("harness-open-agent-terminal");
+    expect(types).not.toContain("harness-open-agent-terminal");
     expect(types).not.toContain("harness-run-command");
   });
 

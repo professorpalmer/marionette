@@ -126,6 +126,13 @@ describe("ComposerDock busy chrome", () => {
     expect(screen.getByRole("button", { name: /stop/i })).toBeInTheDocument();
   });
 
+  it("uses side-panel glass, not an opaque chat island", () => {
+    const { container } = renderBusyDock("");
+    const dock = container.querySelector(".composer-dock");
+    expect(dock).toHaveClass("shell-inset-glass");
+    expect(dock?.className).not.toMatch(/bg-panel2/);
+  });
+
   it("keeps send actions in a non-shrinking cluster so the picker can truncate", () => {
     const { container } = renderBusyDock("");
     expect(container.querySelector(".composer-toolbar")).toBeTruthy();

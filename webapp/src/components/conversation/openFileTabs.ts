@@ -55,3 +55,38 @@ export function tabHasDirty(tabs: EditorTab[], path?: string): boolean {
 export function otherTabsHaveDirty(tabs: EditorTab[], keepPath: string): boolean {
   return tabs.some((t) => t.path !== keepPath && t.isDirty);
 }
+
+export type FileResolvePayload = {
+  ok?: boolean;
+  path?: string;
+  exact?: boolean;
+  error?: string;
+  candidates?: string[];
+};
+
+export type FileResolveChoice =
+  | { path: string }
+  | { toast: string };
+
+/**
+ * Map /api/file/resolve onto an editor path. Transcript clicks fail closed
+ * when the file is missing; file-tree clicks may fall back to the given path.
+ */
+export function chooseResolvedFilePath(
+  requested: string,
+  resolved: FileResolvePayload | null | undefined,
+  opts?: { trusted?: boolean },
+): FileResolveChoice | null {
+  const hint = (requested || "").trim();
+  if (!hint) return null;
+  if (resolved?.ok && resolved.path) return { path: resolved.path };
+  const candidates = Array.isArray(resolved?.candidates)
+    ? resolved.candidates.map((c) => String(c || "").trim()).filter(Boolean)
+    : [];
+  if (candidates.length === 1) return { path: candidates[0] };
+  if (candidates.length > 1) {
+    return { toast: `Multiple files match ${hint}; use a more specific path.` };
+  }
+  if (opts?.trusted) return { path: hint };
+  return { toast: `Couldn't open ${hint}.` };
+}

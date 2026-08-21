@@ -123,7 +123,7 @@ describe("RightPane collapse placement", () => {
     expect(stateCard).toHaveClass("right-pane-card");
     expect(stateCard).not.toHaveClass("right-pane-floating-card");
     expect(stateCard.style.position).toBe("");
-    expectCardGridPlacement("State", "1 / span 12", "1");
+    expectCardGridPlacement("State", "1", "1");
     const board = stateCard.closest(".right-pane-board");
     expect(board).toHaveClass("h-full", "w-full");
     expect(board?.querySelector(".right-pane-board-grid")).toContainElement(stateCard);
@@ -153,8 +153,8 @@ describe("RightPane collapse placement", () => {
   it("fills a two-card stack with a height split and no inner width handles", () => {
     render(<><RightDock onOpenTab={vi.fn()} onExpand={vi.fn()} onCollapse={baseProps.onCollapse} /><RightPane {...baseProps} /></>);
 
-    expectCardGridPlacement("State", "1 / span 12", "1");
-    expectCardGridPlacement("Terminal", "1 / span 12", "2");
+    expectCardGridPlacement("State", "1", "1");
+    expectCardGridPlacement("Terminal", "1", "2");
     expect(screen.getByRole("region", { name: "State panel" }).style.width).toBe("");
     expect(screen.getByRole("region", { name: "Terminal panel" }).style.width).toBe("");
     expect(screen.queryByRole("separator", { name: "Resize tool columns" })).toBeNull();
@@ -238,9 +238,9 @@ describe("RightPane Claude-style card packing", () => {
       </>,
     );
 
-    expectCardGridPlacement("State", "1 / span 12", "1");
-    expectCardGridPlacement("Terminal", "1 / span 12", "2");
-    expectCardGridPlacement("Swarm", "1 / span 12", "3");
+    expectCardGridPlacement("State", "1", "1");
+    expectCardGridPlacement("Terminal", "1", "2");
+    expectCardGridPlacement("Swarm", "1", "3");
     expect(screen.queryAllByRole("separator", { name: "Resize stacked panel height" })).toHaveLength(2);
     expect(screen.queryByTestId("right-pane-toolbar")).toBeNull();
   });
@@ -258,10 +258,10 @@ describe("RightPane Claude-style card packing", () => {
       </>,
     );
 
-    expectCardGridPlacement("State", "1 / span 12", "1");
-    expectCardGridPlacement("Terminal", "1 / span 12", "2");
-    expectCardGridPlacement("Swarm", "1 / span 12", "3");
-    expectCardGridPlacement("Files", "1 / span 12", "4");
+    expectCardGridPlacement("State", "1", "1");
+    expectCardGridPlacement("Terminal", "1", "2");
+    expectCardGridPlacement("Swarm", "1", "3");
+    expectCardGridPlacement("Files", "1", "4");
     expect(screen.queryAllByRole("separator", { name: "Resize stacked panel height" })).toHaveLength(3);
     expect(screen.queryByTestId("right-pane-toolbar")).toBeNull();
   });
@@ -271,13 +271,13 @@ describe("RightPane Claude-style card packing", () => {
     { count: 2, cards: ["state", "terminal"] },
     { count: 3, cards: ["state", "terminal", "swarm"] },
     { count: 4, cards: ["state", "terminal", "swarm", "files"] },
-  ])("uses a bounded 12-column grid for $count cards", ({ cards }) => {
+  ])("uses a single flexible track for $count stacked cards", ({ cards }) => {
     localStorage.setItem("pmharness.board.openCards", JSON.stringify(cards));
     render(<RightPane {...baseProps} />);
 
     const grid = document.querySelector(".right-pane-board-grid");
     expect(grid).toHaveStyle({
-      gridTemplateColumns: "repeat(12, minmax(0, 1fr))",
+      gridTemplateColumns: "minmax(0, 1fr)",
       gridTemplateRows: "minmax(0, 1fr)",
     });
     expect(screen.getAllByRole("region")).toHaveLength(cards.length);
@@ -317,9 +317,9 @@ describe("RightPane Claude-style card packing", () => {
       terminal: { columnSpan: 7, customized: true },
       browser: { columnSpan: 5, customized: true },
     });
-    expectCardGridPlacement("State", "6 / span 7", "1");
-    expectCardGridPlacement("Terminal", "6 / span 7", "2");
-    expectCardGridPlacement("Browser", "1 / span 5", "1");
+    expectCardGridPlacement("State", "2", "1");
+    expectCardGridPlacement("Terminal", "2", "2");
+    expectCardGridPlacement("Browser", "1", "1");
   });
 
   it("gives the middle of three columns its own width handle", () => {
@@ -346,9 +346,9 @@ describe("RightPane Claude-style card packing", () => {
     expect(screen.getByTestId("column-resize-1")).toBeInTheDocument();
     expect(screen.queryByTestId("column-resize-2")).toBeNull();
     expect(screen.getAllByRole("separator", { name: "Resize tool columns" })).toHaveLength(2);
-    expectCardGridPlacement("Files", "9 / span 4", "1");
-    expectCardGridPlacement("Browser", "5 / span 4", "1");
-    expectCardGridPlacement("State", "1 / span 4", "1");
+    expectCardGridPlacement("Files", "3", "1");
+    expectCardGridPlacement("Browser", "2", "1");
+    expectCardGridPlacement("State", "1", "1");
   });
 
   it("resizes the middle column against its left neighbor only", () => {
@@ -378,9 +378,9 @@ describe("RightPane Claude-style card packing", () => {
       browser: { columnSpan: 5, customized: true },
       state: { columnSpan: 3, customized: true },
     });
-    expectCardGridPlacement("Files", "9 / span 4", "1");
-    expectCardGridPlacement("Browser", "4 / span 5", "1");
-    expectCardGridPlacement("State", "1 / span 3", "1");
+    expectCardGridPlacement("Files", "3", "1");
+    expectCardGridPlacement("Browser", "2", "1");
+    expectCardGridPlacement("State", "1", "1");
   });
 
   it("shrinks the top stacked card so the bottom card can fill the rest", () => {
@@ -426,9 +426,9 @@ describe("RightPane Claude-style card packing", () => {
     fireEvent.dragStart(screen.getByRole("button", { name: "Drag Browser panel" }), { dataTransfer });
     fireEvent.drop(screen.getByRole("region", { name: "Drop to open a column" }), { dataTransfer });
 
-    expectCardGridPlacement("Review", "7 / span 6", "1");
-    expectCardGridPlacement("Swarm", "7 / span 6", "2");
-    expectCardGridPlacement("Browser", "1 / span 6", "1");
+    expectCardGridPlacement("Review", "2", "1");
+    expectCardGridPlacement("Swarm", "2", "2");
+    expectCardGridPlacement("Browser", "1", "1");
     expect(onRequestMinWidth).toHaveBeenCalledWith(420);
     expect(JSON.parse(localStorage.getItem("pmharness.board.columns.v1") || "[]")).toEqual([
       ["review", "swarm"],
@@ -447,9 +447,9 @@ describe("RightPane Claude-style card packing", () => {
     fireEvent.dragStart(screen.getByRole("button", { name: "Drag Browser panel" }), { dataTransfer });
     fireEvent.drop(screen.getByRole("region", { name: "Review panel" }), { dataTransfer });
 
-    expectCardGridPlacement("Browser", "1 / span 12", "1");
-    expectCardGridPlacement("Review", "1 / span 12", "2");
-    expectCardGridPlacement("Swarm", "1 / span 12", "3");
+    expectCardGridPlacement("Browser", "1", "1");
+    expectCardGridPlacement("Review", "1", "2");
+    expectCardGridPlacement("Swarm", "1", "3");
     expect(JSON.parse(localStorage.getItem("pmharness.board.columns.v1") || "[]")).toEqual([
       ["browser", "review", "swarm"],
     ]);

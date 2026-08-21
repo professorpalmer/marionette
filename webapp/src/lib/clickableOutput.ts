@@ -7,7 +7,6 @@ same routing as markdown autolinks — without pulling in react-markdown.
 import {
   isExternalUrl,
   looksLikeFilePath,
-  looksLikePathInlineCode,
   looksLikeShellCommand,
   looksLikeSpillUri,
 } from "./agentLinks";
@@ -73,9 +72,7 @@ export function pathTokenInCodeLine(
   if (!m) return null;
   const path = m[2];
   const bare = path.replace(/(?::\d+){1,2}$/, "");
-  if (!looksLikePathInlineCode(bare) && !looksLikePathInlineCode(bare.split(/[\\/]/).pop() || "")) {
-    return null;
-  }
+  if (!looksLikeFilePath(bare)) return null;
   return { before: m[1], path, after: m[3] || "" };
 }
 
@@ -83,9 +80,8 @@ function pathCandidateValid(raw: string): boolean {
   const unwrapped = unwrapPathToken(raw);
   const bare = unwrapped.replace(/(?::\d+){1,2}$/, "");
   if (!bare || looksLikeShellCommand(bare)) return false;
-  if (looksLikePathInlineCode(bare) || looksLikeFilePath(bare)) return true;
-  // Bare basename.ext[:line] from stack frames.
-  return looksLikePathInlineCode(bare.split(/[\\/]/).pop() || "");
+  if (looksLikeFilePath(bare)) return true;
+  return false;
 }
 
 type Span = {

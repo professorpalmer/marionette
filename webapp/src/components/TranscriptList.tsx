@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, useCallback, useDeferredValue, memo } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useDeferredValue, useSyncExternalStore, memo } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ChevronRight, Loader2, ChevronDown, ChevronUp, Play, Copy, Check, Pencil, RefreshCw, History, Share2, CheckCircle2, XCircle, Eye } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -19,15 +19,20 @@ import {
   looksLikeJobId,
   looksLikeSpillUri,
   looksLikePathInlineCode,
-  looksLikeShellCommand,
   classifyActionGoal,
+  classifyTranscriptHref,
   autolinkAgentText,
   type AgentLinkKind,
 } from "../lib/agentLinks";
 import {
+  getAgentCommandIndexVersion,
+  lookupAgentCommandSession,
+  registerAgentCommandSession,
+  subscribeAgentCommandIndex,
+} from "../lib/agentCommandIndex";
+import {
   pathTokenInCodeLine,
   tokenizeClickableOutput,
-  isSingleShellCommandFence,
 } from "../lib/clickableOutput";
 import { splitStreamingMarkdown } from "../lib/streamMarkdown";
 import {
@@ -901,6 +906,29 @@ function stableItemKey(it: GroupedItem, i: number): string {
 const FEED_ROW_ESTIMATE_PX = 72;
 const FEED_VIRTUAL_OVERSCAN = 8;
 
+/** Bind run_command cards even when Investigating is collapsed (Hermes procId). */
+function indexCardCommandSession(card: Card): void {
+  const cliInput = resolveCardCliInput(card);
+  const resultCommand = String(card.result?.command || "").trim();
+  const inputKey = toolInputFieldKey(card.kind || "");
+  const commandKv = inputKey === "command" && resultCommand ? resultCommand : cliInput;
+  const rawGoal = commandKv || cliInput;
+  const { linkKind, value } = classifyActionGoal(card.kind || "", rawGoal);
+  const id = String(card.id || card.result?.job_id || "").trim();
+  if (linkKind !== "command" || !id || !value) return;
+  registerAgentCommandSession({
+    id,
+    command: value,
+    output: String(card.result?.output || ""),
+  });
+}
+
+function indexTranscriptCommandSessions(items: Item[]): void {
+  for (const it of items) {
+    if (it.kind === "card") indexCardCommandSession(it.card);
+  }
+}
+
 // PERF: Memoized transcript renderer. Its props are intentionally free of the
 // composer `input` (or any per-keystroke state), so React.memo lets typing skip
 // re-rendering the whole transcript. Only transcript-affecting state (items,
@@ -958,6 +986,10 @@ export const TranscriptList = memo(function TranscriptList({
 }: TranscriptListProps) {
   // Match Conversation's latch — awaiting_swarm plus holdSwarmAwait so
   // Investigating / mid-turn absorption / footer stay armed through idle flaps.
+  useEffect(() => {
+    indexTranscriptCommandSessions(items);
+  }, [items]);
+
   const agentLoopOpen = isAgentLoopOpen(turnOpen, status) || holdSwarmAwait;
   // Pause-point: StatusPill prefers Still working… — seal sticky Investigating
   // and keep the busy footer visible instead of hiding under fold chrome.
@@ -1192,7 +1224,7 @@ export const TranscriptList = memo(function TranscriptList({
                 onClick={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
-                  openAgentCommand(it.command, { run: false });
+                  openAgentCommand(it.command, { id: it.command, run: false });
                 }}
                 title="Reveal command"
                 className="block mt-0.5 max-w-full text-left text-[10px] text-accent/80 hover:underline underline-offset-2 font-mono truncate bg-transparent border-0 p-0 cursor-pointer"
@@ -1225,7 +1257,7 @@ export const TranscriptList = memo(function TranscriptList({
                 onClick={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
-                  openAgentCommand(it.command, { run: false });
+                  openAgentCommand(it.command, { id: it.command, run: false });
                 }}
                 title="Reveal command"
                 className="mt-2 block w-full max-h-28 overflow-auto rounded border border-edge bg-panel/60 p-2 font-mono text-[10.5px] text-accent/85 hover:underline underline-offset-2 whitespace-pre-wrap break-all select-text text-left cursor-pointer"
@@ -2122,7 +2154,9 @@ function FencedCodeBlock({ className, children, ...props }: any) {
   const pathLines = lines.filter((ln) => pathTokenInCodeLine(ln)).length;
   // Directory trees / file lists: make paths open in the editor on click.
   const clickableTree = pathLines >= 2 || (lines.length <= 4 && pathLines >= 1);
-  const shellCommand = !clickableTree && isSingleShellCommandFence(codeText, className);
+  const liveCommand = !clickableTree && lines.length === 1
+    ? lookupAgentCommandSession(codeText)
+    : null;
 
   const handleCopy = () => {
     navigator.clipboard.writeText(codeText);
@@ -2130,9 +2164,29 @@ function FencedCodeBlock({ className, children, ...props }: any) {
     setTimeout(() => setCopied(false), 1200);
   };
 
+  const revealLiveCommand = (e: React.MouseEvent) => {
+    if (!liveCommand) return;
+    e.preventDefault();
+    e.stopPropagation();
+    openAgentCommand(liveCommand.command, {
+      id: liveCommand.id,
+      output: liveCommand.output,
+      run: false,
+    });
+  };
+
   return (
     <div className="relative group/code my-2">
-      {clickableTree ? (
+      {liveCommand ? (
+        <button
+          type="button"
+          onClick={revealLiveCommand}
+          title="Reveal running command"
+          className={`${className || ""} block w-full text-left bg-panel/80 border border-accent/20 rounded-md p-3 pr-10 overflow-x-auto font-mono text-[0.719rem] leading-[1.55] text-accent/90 hover:underline underline-offset-2 cursor-pointer m-0 whitespace-pre`}
+        >
+          {children}
+        </button>
+      ) : clickableTree ? (
         <pre
           className={`${className || ""} block bg-panel/80 border border-accent/20 rounded-md p-3 pr-10 overflow-x-auto font-mono text-[0.719rem] leading-[1.55] text-txt/90 m-0 whitespace-pre`}
           {...props}
@@ -2163,20 +2217,6 @@ function FencedCodeBlock({ className, children, ...props }: any) {
             );
           })}
         </pre>
-      ) : shellCommand ? (
-        <button
-          type="button"
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            openAgentCommand(codeText.trim(), { run: false });
-          }}
-          title="Reveal command output"
-          className={`${className || ""} block w-full text-left bg-panel/80 border border-accent/20 rounded-md p-3 pr-10 overflow-x-auto font-mono text-[0.719rem] leading-[1.55] text-accent/90 hover:underline underline-offset-2 cursor-pointer m-0 whitespace-pre`}
-          {...props}
-        >
-          {codeText}
-        </button>
       ) : (
         <code className={`${className || ""} block bg-panel/80 border border-accent/20 rounded-md p-3 pr-10 overflow-x-auto font-mono text-[0.719rem] leading-[1.55] text-txt/90`} {...props}>
           {children}
@@ -2203,6 +2243,11 @@ function openMarkdownHref(href: string, e: React.MouseEvent): void {
 // Pretty tree only. Streaming wrappers pass a deferred `flushed` string so
 // highlight.js never remounts on a fence the next token can still extend.
 const PrettyMarkdown = memo(function PrettyMarkdown({ text }: { text: string }) {
+  useSyncExternalStore(
+    subscribeAgentCommandIndex,
+    getAgentCommandIndexVersion,
+    getAgentCommandIndexVersion,
+  );
   const linked = autolinkAgentText(text || "");
   return (
     <ReactMarkdown
@@ -2223,15 +2268,21 @@ const PrettyMarkdown = memo(function PrettyMarkdown({ text }: { text: string }) 
             {children}
           </blockquote>
         ),
-        a: ({ href, children }: any) => (
-          <a
-            href={href}
-            onClick={(e) => openMarkdownHref(href, e)}
-            className="text-accent/90 no-underline hover:underline underline-offset-2 decoration-accent/40 cursor-pointer break-words"
-          >
-            {children}
-          </a>
-        ),
+        a: ({ href, children }: any) => {
+          const kind = classifyTranscriptHref(href || "");
+          if (kind === "none") {
+            return <span>{children}</span>;
+          }
+          return (
+            <a
+              href={href}
+              onClick={(e) => openMarkdownHref(href, e)}
+              className="text-accent/90 no-underline hover:underline underline-offset-2 decoration-accent/40 cursor-pointer break-words"
+            >
+              {children}
+            </a>
+          );
+        },
         img: ({ src, alt }: any) => (
           <img
             src={src}
@@ -2266,22 +2317,6 @@ const PrettyMarkdown = memo(function PrettyMarkdown({ text }: { text: string }) 
           const isInline = !className;
           if (isInline) {
             const raw = nodeToText(children).trim();
-            if (looksLikeShellCommand(raw)) {
-              return (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    openAgentCommand(raw, { run: false });
-                  }}
-                  title="Reveal command"
-                  className="bg-accent/[0.08] px-1 py-[1px] rounded text-[0.9em] font-mono text-accent/90 hover:underline underline-offset-2 cursor-pointer"
-                >
-                  {children}
-                </button>
-              );
-            }
             if (looksLikePathInlineCode(raw)) {
               return (
                 <button
@@ -2314,8 +2349,29 @@ const PrettyMarkdown = memo(function PrettyMarkdown({ text }: { text: string }) 
                 </button>
               );
             }
+            const liveCommand = lookupAgentCommandSession(raw);
+            if (liveCommand) {
+              return (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    openAgentCommand(liveCommand.command, {
+                      id: liveCommand.id,
+                      output: liveCommand.output,
+                      run: false,
+                    });
+                  }}
+                  title="Reveal running command"
+                  className="bg-accent/[0.08] px-1 py-[1px] rounded text-[0.9em] font-mono text-accent/90 hover:underline underline-offset-2 cursor-pointer"
+                >
+                  {children}
+                </button>
+              );
+            }
             return (
-              <code className="bg-accent/[0.08] px-1 py-[1px] rounded text-[0.9em] font-mono text-accent/90" {...props}>
+              <code className="bg-panel2/60 px-1 py-[1px] rounded text-[0.9em] font-mono text-txt/90" {...props}>
                 {children}
               </code>
             );
@@ -2633,11 +2689,17 @@ function ActionCard({
   const commandRevealId = String(card.id || card.result?.job_id || goalValue || "").trim();
   const commandRevealOutput = String(card.result?.output || "");
 
-  // Keep an open agent-mirror tab in sync as run_command output grows.
+  // Bind this card's process id the way Hermes keys background terminals
+  // by procId, then keep an open mirror in sync as output grows.
   useEffect(() => {
-    if (linkKind !== "command" || !commandRevealId || !commandRevealOutput) return;
-    syncAgentCommandOutput(commandRevealId, commandRevealOutput);
-  }, [linkKind, commandRevealId, commandRevealOutput]);
+    if (linkKind !== "command" || !commandRevealId || !goalValue) return;
+    registerAgentCommandSession({
+      id: commandRevealId,
+      command: goalValue,
+      output: commandRevealOutput,
+    });
+    if (commandRevealOutput) syncAgentCommandOutput(commandRevealId, commandRevealOutput);
+  }, [linkKind, commandRevealId, goalValue, commandRevealOutput]);
 
   const openCommandReveal = (command: string) => {
     const cmd = (command || "").trim();
@@ -2783,7 +2845,7 @@ function ActionCard({
                       const v = nestedLink.value;
                       if (nestedLink.linkKind === "file") openAgentFile(v);
                       else if (nestedLink.linkKind === "url") openAgentUrl(v);
-                      else if (nestedLink.linkKind === "command") openAgentCommand(v, { run: false });
+                      else if (nestedLink.linkKind === "command") openAgentCommand(v, { id: v, run: false });
                       else if (nestedLink.linkKind === "image") openAgentImage(v);
                       else if (nestedLink.linkKind === "workspace") openAgentWorkspace(v);
                       else if (nestedLink.linkKind === "job") openAgentSwarmJob(v);
@@ -3017,7 +3079,7 @@ const KV = ({
             else if (linkKind === "job") openAgentSwarmJob(v);
             else if (linkKind === "spill") openAgentSpill(v);
             else if (onCommandClick) onCommandClick();
-            else openAgentCommand(v, { run: false });
+            else openAgentCommand(v, { id: v, run: false });
           }}
         >
           {v}
