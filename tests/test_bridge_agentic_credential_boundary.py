@@ -194,6 +194,9 @@ def test_prewalk_syncs_before_orchestrator(monkeypatch, tmp_path):
         sync_seen.append("sync")
 
     monkeypatch.setattr(bridge, "_sync_agentic_credential_env", _track_sync)
+    monkeypatch.setattr(
+        bridge, "_resolve_prewalk_implement_adapter", lambda *_a, **_k: "agentic",
+    )
     monkeypatch.setenv("HARNESS_REPO", str(tmp_path))
     monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _CapturingOrchestrator)
     monkeypatch.setattr(

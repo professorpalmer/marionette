@@ -56,6 +56,8 @@ def _probe_external_adapter_available(adapter: str) -> bool:
         return bool(os.environ.get("OPENAI_API_KEY"))
     if a == "hermes":
         return shutil.which("hermes") is not None
+    if a == "antigravity":
+        return shutil.which("agy") is not None
     # Unknown adapter name: let the external path try (it will report its own error).
     return True
 
@@ -164,7 +166,7 @@ class AdapterResolveMixin:
         requested = (requested or "").strip().lower()
         if not requested or requested in ("agentic", "native", "provider"):
             return requested, ""
-        external = {"cursor", "claude-code", "codex", "openai", "hermes"}
+        external = {"cursor", "claude-code", "codex", "openai", "hermes", "antigravity"}
         if requested not in external:
             return requested, ""
         if self._external_adapter_available(requested):
