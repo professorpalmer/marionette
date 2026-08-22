@@ -478,14 +478,17 @@ export function openAgentWorkspace(path: string): void {
  * expands/scrolls (harness-open-swarm-job is easy to miss when the pane
  * mounts only after harness-focus-tab opens the right rail).
  */
-export function openAgentSwarmJob(jobId: string): void {
+export function openAgentSwarmJob(jobId: string, artifactId?: string): void {
   const id = (jobId || "").trim();
+  const artifact = (artifactId || "").trim();
   if (!id || !looksLikeJobId(id)) return;
   try {
-    queuePendingSwarmOpenJob(id);
+    queuePendingSwarmOpenJob(id, artifact);
     window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: "swarm" }));
     window.dispatchEvent(
-      new CustomEvent("harness-open-swarm-job", { detail: { jobId: id } }),
+      new CustomEvent("harness-open-swarm-job", {
+        detail: { jobId: id, ...(artifact ? { artifactId: artifact } : {}) },
+      }),
     );
   } catch {
     /* ignore */

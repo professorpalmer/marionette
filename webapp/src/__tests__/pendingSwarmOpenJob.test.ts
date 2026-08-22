@@ -6,6 +6,7 @@ import {
   clearPendingSwarmOpenJob,
   peekPendingSwarmOpenJob,
   queuePendingSwarmOpenJob,
+  takePendingSwarmOpenArtifact,
   takePendingSwarmOpenJob,
 } from "../lib/pendingSwarmOpenJob";
 import { openAgentSwarmJob } from "../lib/agentLinks";
@@ -31,6 +32,12 @@ describe("pendingSwarmOpenJob queue", () => {
     queuePendingSwarmOpenJob("local-bf1b30f4");
     queuePendingSwarmOpenJob("job_abcdef012345");
     expect(takePendingSwarmOpenJob()).toBe("job_abcdef012345");
+  });
+
+  it("carries an exact artifact target through a late mount", () => {
+    openAgentSwarmJob("job_abcdef012345", "artifact-target");
+    expect(takePendingSwarmOpenJob()).toBe("job_abcdef012345");
+    expect(takePendingSwarmOpenArtifact()).toBe("artifact-target");
   });
 
   it("ignores blank ids", () => {

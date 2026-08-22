@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.15` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.269, deliberately pre-1.0. Rides puppetmaster-ai==1.22.15. OpenCode Go / Muse Responses stream deaths now name the selected host instead of Codex, and still fail-close with Continue/Retry.
+> Status: v0.9.270, deliberately pre-1.0. Rides puppetmaster-ai==1.22.15. Synchronous run_swarm now delivers a complete compact PM artifact manifest into synthesis, with a SwarmResultCard receipt, instead of a truncated handle-first subset.
 
 ## Documentation
 

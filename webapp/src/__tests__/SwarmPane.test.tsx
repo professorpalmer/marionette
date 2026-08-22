@@ -2332,6 +2332,39 @@ describe("SwarmPane harness-open-swarm-job deep-link", () => {
     });
   });
 
+  it("opens and scrolls to an exact artifact target", async () => {
+    mockSwarmLive.mockResolvedValue(
+      finishedJob("job_abcdef012345", "Artifact deep-link target", {
+        artifacts_complete: true,
+        artifacts: [{
+          id: "artifact-target",
+          type: "finding",
+          headline: "Exact target finding",
+          confidence: 0.99,
+        }],
+      }),
+    );
+
+    render(<SwarmPane />);
+    await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
+
+    window.dispatchEvent(
+      new CustomEvent("harness-open-swarm-job", {
+        detail: { jobId: "job_abcdef012345", artifactId: "artifact-target" },
+      }),
+    );
+
+    const finding = await waitFor(() => {
+      const row = document.querySelector('[data-artifact-ids~="artifact-target"]');
+      expect(row).toBeTruthy();
+      return row as HTMLElement;
+    });
+    expect(finding.dataset.findingId).toBe("artifact-target");
+    await waitFor(() => {
+      expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
+    });
+  });
+
   it("clears filters that hide a deep-link target", async () => {
     mockSwarmLive.mockResolvedValue(
       finishedJob("job_abcdef012345", "Deep-link target behind filter"),
@@ -2376,11 +2409,11 @@ describe("SwarmPane harness-open-swarm-job deep-link", () => {
     await waitFor(() => {
       expect(screen.getByText("Late-mount deep-link target")).toBeInTheDocument();
     });
-    expect(peekPendingSwarmOpenJob()).toBeNull();
     const row = document.querySelector('[data-job-id="job_abcdef012345"]');
     expect(row).toBeTruthy();
     await waitFor(() => {
       expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
+      expect(peekPendingSwarmOpenJob()).toBeNull();
     });
   });
 });

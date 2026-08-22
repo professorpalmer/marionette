@@ -456,14 +456,12 @@ describe("transcript presentation contract", () => {
     });
 
     render(<TranscriptList {...listProps(items)} />);
-    fireEvent.click(screen.getByRole("button", { name: /Explored|Swarm/i }));
 
-    expect(screen.getByText(/swarm failed ×5/i)).toBeTruthy();
     expect(screen.getByText(/worker timed out after 30s/i)).toBeTruthy();
-    // Routing failure once; distinct timeout remains a second failed row.
+    // ActionCards are no longer terminal owners; each durable job result remains distinct.
     const failedLabels = screen.getAllByText(/swarm failed/i);
-    expect(failedLabels).toHaveLength(2);
-    expect(screen.getAllByText(/No model in registry has all required tags/i)).toHaveLength(1);
+    expect(failedLabels).toHaveLength(3);
+    expect(screen.getAllByText(/No model in registry has all required tags/i)).toHaveLength(2);
   });
 
   it("paints held_for_review and analysis_ok badges without applied/failed chrome", () => {
@@ -507,8 +505,6 @@ describe("transcript presentation contract", () => {
         ])}
       />,
     );
-
-    fireEvent.click(screen.getByRole("button", { name: /Swarm/i }));
 
     const cards = screen.getAllByTestId("swarm-result-card");
     const byOutcome = Object.fromEntries(
@@ -575,7 +571,6 @@ describe("transcript presentation contract", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /Swarm/i }));
     const heldCard = screen.getByTestId("swarm-result-card");
     expect(heldCard).toHaveAttribute("data-outcome", "held");
     fireEvent.click(within(heldCard).getByRole("button", { name: /held for review/i }));
@@ -822,7 +817,7 @@ describe("job_id → Swarm Tracker deep-link chrome", () => {
         ])}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /Explored|Swarm/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Explored/i }));
 
     const kvLink = screen.getByTestId("job-id-link");
     expect(kvLink).toHaveTextContent("job_abcdef012345");
@@ -844,6 +839,90 @@ describe("job_id → Swarm Tracker deep-link chrome", () => {
         .map((c) => c[0] as CustomEvent)
         .some((e) => e.type === "harness-open-swarm-job" && e.detail?.jobId === "local-bf1b30f4"),
     ).toBe(true);
+    spy.mockRestore();
+  });
+
+  it("renders complete and partial machine-owned swarm delivery receipts", () => {
+    const spy = vi.spyOn(window, "dispatchEvent");
+    const completeArtifacts = Array.from({ length: 17 }, (_, i) => ({
+      id: `artifact-${i}`,
+      task_id: `task-${i % 5}`,
+      sha256: `sha-${i}`,
+      type: i % 2 ? "risk" : "finding",
+      headline: `Evidence ${i}`,
+    }));
+    const missing = [{ id: "artifact-16", task_id: "task-4" }];
+    const persistedItems: Item[] = [
+      {
+        kind: "swarm_result",
+        job_id: "job_111111111111",
+        applied: true,
+        files: [],
+        summary: "17 findings via agentic (17 artifacts)",
+        error: null,
+        objective: "complete audit",
+        cwd: "/repo/complete",
+        reuse_status: "fresh",
+        reuse_reason: "first_pass",
+        artifacts: completeArtifacts,
+        artifact_delivery: {
+          pm_artifacts: 17,
+          available_to_inspect: 17,
+          complete: true,
+          missing: [],
+        },
+      },
+      {
+        kind: "swarm_result",
+        job_id: "job_222222222222",
+        applied: true,
+        files: [],
+        summary: "16 findings via agentic (17 PM artifacts)",
+        error: null,
+        objective: "partial audit",
+        cwd: "/repo/partial",
+        reuse_status: "fresh",
+        artifacts: completeArtifacts.slice(0, 16),
+        artifact_delivery: {
+          pm_artifacts: 17,
+          available_to_inspect: 16,
+          complete: false,
+          missing,
+        },
+      },
+    ];
+    // Hydration/reload must retain the machine-owned receipt and warning.
+    const hydratedItems = JSON.parse(JSON.stringify(persistedItems)) as Item[];
+
+    render(<TranscriptList {...listProps(hydratedItems)} />);
+
+    screen.getAllByText("swarm done").forEach((label) => {
+      fireEvent.click(label.closest("button")!);
+    });
+    screen.getAllByTestId("swarm-delivery-toggle").forEach((toggle) => {
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+      fireEvent.click(toggle);
+    });
+    expect(screen.getAllByText("Artifacts").map((el) => el.parentElement?.textContent)).toEqual([
+      expect.stringContaining("17"),
+      expect.stringContaining("17"),
+    ]);
+    expect(screen.getByText("17/17")).toBeInTheDocument();
+    expect(screen.getByText("16/17")).toBeInTheDocument();
+    expect(screen.queryByText(/Delivered to Mari/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("fresh")).not.toBeInTheDocument();
+    expect(screen.queryByText(/first_pass/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Synthesis continued with incomplete PM evidence/i)).toBeInTheDocument();
+    expect(screen.getByText(/artifact-16.*task-4/i)).toBeInTheDocument();
+    const artifactLinks = screen.getAllByTestId("swarm-artifact-link");
+    expect(artifactLinks).toHaveLength(33);
+    expect(screen.getAllByText("complete audit").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("/repo/complete")).toBeInTheDocument();
+    fireEvent.click(artifactLinks[0]);
+    const openEvent = spy.mock.calls
+      .map((call) => call[0] as CustomEvent)
+      .find((event) => event.type === "harness-open-swarm-job");
+    expect(openEvent?.detail).toEqual({ jobId: "job_111111111111", artifactId: "artifact-0" });
     spy.mockRestore();
   });
 });
