@@ -100,6 +100,42 @@ def test_quota_exhaustion_is_explained():
     assert "credit" in out.lower() or "quota" in out.lower()
 
 
+def test_opencode_responses_stream_death_does_not_say_codex():
+    s = _s()
+    s.config.driver = "opencode-go:muse-spark-1.2-contributor"
+    raw = (
+        "OpenCode Responses stream did not emit a terminal response "
+        "(last event: response.output_item.added)"
+    )
+    out = s._humanize_pilot_error(raw)
+    assert out.startswith("pilot:")
+    assert "opencode go" in out.lower()
+    assert "continue" in out.lower()
+    assert "codex" not in out.lower()
+    assert "response.output_item.added" in out
+
+
+def test_legacy_codex_stream_death_on_muse_driver_is_rewritten():
+    s = _s()
+    s.config.driver = "opencode-go:muse-spark-1.2-contributor"
+    out = s._humanize_pilot_error(
+        "Codex Responses stream did not emit a terminal response"
+    )
+    assert "opencode go" in out.lower()
+    assert "continue" in out.lower()
+    assert "codex" not in out.lower()
+
+
+def test_codex_stream_death_on_codex_driver_keeps_codex_host():
+    s = _s()
+    s.config.driver = "openai-codex:gpt-5.5"
+    out = s._humanize_pilot_error(
+        "Codex Responses stream did not emit a terminal response"
+    )
+    assert "codex closed the stream" in out.lower()
+    assert "continue" in out.lower()
+
+
 def test_empty_error_has_message():
     s = _s()
     out = s._humanize_pilot_error("")

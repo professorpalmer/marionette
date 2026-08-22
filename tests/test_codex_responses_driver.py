@@ -15,6 +15,8 @@ from pmharness.drivers.codex_responses import (
     _consume_codex_sse,
     _extract_text_and_tools,
     _messages_to_responses_input,
+    responses_stream_error,
+    responses_stream_label,
 )
 
 
@@ -584,6 +586,26 @@ def test_non_chatgpt_build_body_omits_nonpositive_max_output_tokens():
     assert "max_output_tokens" not in body
 
 
+def test_responses_stream_label_names_host_not_driver_class():
+    assert responses_stream_label(chatgpt_backend=True) == "Codex Responses"
+    assert responses_stream_label(
+        chatgpt_backend=False,
+        base_url="https://opencode.ai/zen/go/v1",
+    ) == "OpenCode Responses"
+    assert responses_stream_label(
+        chatgpt_backend=False,
+        base_url="https://api.openai.com/v1",
+    ) == "OpenAI Responses"
+    err = responses_stream_error(
+        "OpenCode Responses",
+        "no_terminal",
+        "response.output_item.added",
+    )
+    assert err.startswith("OpenCode Responses")
+    assert "codex" not in err.lower()
+    assert "response.output_item.added" in err
+
+
 def test_consume_sse_non_chatgpt_eof_without_terminal_is_incomplete():
     lines = [
         b'data: {"type":"response.output_text.delta","delta":"partial"}\n',
@@ -594,9 +616,29 @@ def test_consume_sse_non_chatgpt_eof_without_terminal_is_incomplete():
     assert raw["status"] == "incomplete"
     assert raw["output_text"] == "partial"
     assert raw.get("error")
+    assert "openai responses" in str(raw["error"]).lower()
+    assert "codex" not in str(raw["error"]).lower()
     text, _, finish = _extract_text_and_tools(raw)
     assert text == "partial"
     assert finish == "incomplete"
+
+
+def test_consume_sse_opencode_empty_eof_after_item_added_names_host():
+    lines = [
+        b'data: {"type":"response.output_item.added","item":{"type":"message","id":"msg_x"}}\n',
+        b"data: [DONE]\n",
+    ]
+    raw = _consume_codex_sse(
+        lines,
+        chatgpt_backend=False,
+        stream_label="OpenCode Responses",
+    )
+    assert raw["status"] == "failed"
+    err = str(raw.get("error") or "").lower()
+    assert "opencode responses" in err
+    assert "did not emit a terminal response" in err
+    assert "response.output_item.added" in err
+    assert "codex" not in err
 
 
 def test_consume_sse_chatgpt_still_seals_after_answer_timeout():
@@ -703,6 +745,8 @@ def test_muse_eof_without_terminal_preserves_partial_text(monkeypatch):
     )
     assert resp.error
     assert "terminal" in resp.error.lower()
+    assert "opencode" in resp.error.lower()
+    assert "codex" not in resp.error.lower()
     assert resp.text == "partial answer"
     assert resp.meta["finish_reason"] != "completed"
     assert resp.meta.get("stream_started") is True
