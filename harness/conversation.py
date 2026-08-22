@@ -2717,9 +2717,10 @@ class ConversationalSession(
 
     def _append_action_result(
         self, act: Any, aid: str, content: str, is_native: bool, *, ok: bool = True,
+        force_inline: bool = False,
     ) -> None:
         tc_id = getattr(act, "tool_call_id", None) or aid
-        clamped_content = self._turn_economy.persist_tool_result(
+        clamped_content = content if force_inline else self._turn_economy.persist_tool_result(
             content, tc_id, tool_name=getattr(act, "kind", None),
         )
         # Tag full-file reads with their path so the pre-send pass can elide an

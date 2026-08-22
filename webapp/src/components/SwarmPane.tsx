@@ -5,8 +5,9 @@ import { api, jobArtifactList, type SwarmLive, type Job, type Artifact, type Tas
 import { displayModelId, isEngineOnlyModelId, modelIdsEqual } from "../lib/modelIdentity";
 import { lastSelectedProjectRoot, panelOpacityClass, useProjectSwitching } from "../lib/panelTransition";
 import {
+  clearPendingSwarmOpenJob,
+  peekPendingSwarmOpenArtifact,
   peekPendingSwarmOpenJob,
-  takePendingSwarmOpenJob,
 } from "../lib/pendingSwarmOpenJob";
 import { useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
 
@@ -280,6 +281,7 @@ function swarmSignature(res: SwarmLive | null): string {
       `:${j.swarm_cache_savings_basis ?? ""}:${j.swarm_cache_unpriced_tokens ?? 0}` +
       `:${(j.tool_output_savings_usd ?? 0).toFixed(4)}` +
       `:${j.source ?? "harness"}` +
+      `:${j.artifacts_complete ?? ""}` +
       `:${j.outcome?.quality ?? ""}:${j.outcome?.trustworthy ?? ""}` +
       `:${(j.outcome?.reasons || []).join("|")}:${j.updated_at ?? ""}`,
     );
@@ -298,7 +300,8 @@ function swarmSignature(res: SwarmLive | null): string {
       } else {
         const detail = typeof a.detail === "string" ? a.detail.slice(0, 500) : "";
         parts.push(
-          `A:${(a.type || "").slice(0, 8)}:${(a.headline || "").slice(0, 120)}:${a.result ?? ""}` +
+          `A:${a.id ?? ""}:${a.task_id ?? ""}:${(a.type || "").slice(0, 8)}` +
+          `:${(a.headline || "").slice(0, 120)}:${a.result ?? ""}` +
           `:${a.failure ?? ""}:${detail}`,
         );
       }
@@ -324,14 +327,18 @@ function swarmSignature(res: SwarmLive | null): string {
 // shows the identical line 5x. Collapse exact (type + headline) duplicates into a
 // single row with an xN badge, and sort real signal (RISK/BUG/DECISION) above
 // process noise (VERIFICATION) so substance reads first.
-type FindingRow = { art: Artifact; count: number };
+type FindingRow = { art: Artifact; count: number; artifactIds: string[] };
 function dedupeFindings(arts: Artifact[]): FindingRow[] {
   const rows = new Map<string, FindingRow>();
   for (const art of arts) {
     const key = `${(art.type || "").toUpperCase()}::${(art.headline || "").trim().toLowerCase()}`;
     const hit = rows.get(key);
-    if (hit) hit.count += 1;
-    else rows.set(key, { art, count: 1 });
+    if (hit) {
+      hit.count += 1;
+      if (art.id) hit.artifactIds.push(art.id);
+    } else {
+      rows.set(key, { art, count: 1, artifactIds: art.id ? [art.id] : [] });
+    }
   }
   const rank = (t?: string) => {
     const u = (t || "").toUpperCase();
@@ -1037,6 +1044,7 @@ export default function SwarmPane() {
   // Holds latest live payload so the SWR fetcher / poll can merge without
   // wiping artifacts hydrated via /api/artifacts on expand.
   const dataRef = useRef<SwarmLive | null | undefined>(undefined);
+  const pendingOpenRef = useRef<{ jobId: string; artifactId?: string } | null>(null);
 
   const {
     data,
@@ -1093,9 +1101,11 @@ export default function SwarmPane() {
   // Transcript chrome (job_id chips / ActionCard KV) deep-links here: undismiss,
   // expand, hydrate artifacts, scroll the row into view. Also drains any job id
   // queued before this pane mounted (openAgentSwarmJob races focus-tab mount).
-  const openSwarmJobById = useCallback((jobId: string) => {
+  const openSwarmJobById = useCallback((jobId: string, artifactId?: string) => {
     const id = (jobId || "").trim();
+    const artifact = (artifactId || "").trim();
     if (!id) return;
+    pendingOpenRef.current = { jobId: id, ...(artifact ? { artifactId: artifact } : {}) };
     setDismissed((prev) => {
       if (!prev.has(id)) return prev;
       const next = new Set(prev);
@@ -1109,33 +1119,68 @@ export default function SwarmPane() {
     });
     setFinishedOpen(true);
     setJobFilter("all");
+    if (artifact) {
+      setFindingsOpen((prev) => ({ ...prev, [id]: true }));
+    }
     const job = dataRef.current?.jobs?.find((j) => j.id === id);
     if (job) ensureFullArtifacts(job);
-    const scrollToJob = () => {
+    const scrollToTarget = () => {
       const escape =
         typeof CSS !== "undefined" && typeof CSS.escape === "function"
           ? CSS.escape
           : (s: string) => s.replace(/["\\]/g, "\\$&");
       const el = document.querySelector(`[data-job-id="${escape(id)}"]`);
+      if (artifact && el) {
+        const finding = el.querySelector<HTMLElement>(
+          `[data-artifact-ids~="${escape(artifact)}"]`,
+        );
+        if (finding) {
+          const findingId = finding.dataset.findingId;
+          if (findingId) {
+            setExpandedFindings((prev) => ({ ...prev, [findingId]: true }));
+          }
+          finding.scrollIntoView({ block: "center" });
+          pendingOpenRef.current = null;
+          clearPendingSwarmOpenJob();
+          return;
+        }
+      }
       el?.scrollIntoView({ block: "nearest" });
+      if (el && !artifact) {
+        pendingOpenRef.current = null;
+        clearPendingSwarmOpenJob();
+      }
     };
     requestAnimationFrame(() => {
-      requestAnimationFrame(scrollToJob);
+      requestAnimationFrame(scrollToTarget);
     });
-    window.setTimeout(scrollToJob, 80);
+    window.setTimeout(scrollToTarget, 80);
+    if (artifact) {
+      window.setTimeout(scrollToTarget, 250);
+      window.setTimeout(scrollToTarget, 600);
+    }
   }, [ensureFullArtifacts]);
 
   useEffect(() => {
-    const pending = takePendingSwarmOpenJob();
-    if (pending) openSwarmJobById(pending);
+    const pending = pendingOpenRef.current;
+    if (!pending) return;
+    if (!(data?.jobs || []).some((job) => job.id === pending.jobId)) return;
+    openSwarmJobById(pending.jobId, pending.artifactId);
+  }, [data, openSwarmJobById]);
+
+  useEffect(() => {
+    const pending = peekPendingSwarmOpenJob();
+    const pendingArtifact = peekPendingSwarmOpenArtifact();
+    if (pending) openSwarmJobById(pending, pendingArtifact || undefined);
 
     const onOpenSwarmJob = (e: Event) => {
-      const jobId = String((e as CustomEvent<{ jobId?: string }>).detail?.jobId || "").trim();
+      const detail = (e as CustomEvent<{ jobId?: string; artifactId?: string }>).detail;
+      const jobId = String(detail?.jobId || "").trim();
+      const artifactId = String(detail?.artifactId || "").trim();
       if (!jobId) return;
-      // Live listener won the race — drop the matching queued id so a later
-      // remount does not expand/scroll twice.
-      if (peekPendingSwarmOpenJob() === jobId) takePendingSwarmOpenJob();
-      openSwarmJobById(jobId);
+      // Keep the queue until the target DOM exists; the pane can remount while
+      // the right rail opens or before the scoped live payload arrives.
+      openSwarmJobById(jobId, artifactId || undefined);
     };
     window.addEventListener("harness-open-swarm-job", onOpenSwarmJob as EventListener);
     return () => {
@@ -1824,7 +1869,7 @@ export default function SwarmPane() {
                 </button>
                 {sectionOpen && (
                 <div className="pr-1 flex flex-col gap-1 border border-edge/40 rounded p-1.5 bg-panel2/20">
-                  {findingRows.map(({ art, count }, idx: number) => {
+                  {findingRows.map(({ art, count, artifactIds }, idx: number) => {
                     const fid = art.id || `f${idx}`;
                     const fExpanded = !!expandedFindings[fid];
                     const echoWarn = (art.type || "").toUpperCase() === "FINDING"
@@ -1835,7 +1880,12 @@ export default function SwarmPane() {
                           ? art.detail
                           : (() => { try { return JSON.stringify(art.detail, null, 2); } catch { return String(art.detail); } })());
                     return (
-                    <div key={fid} className="text-[9.5px] border-b border-edge/10 pb-1 last:border-0 last:pb-0 flex flex-col gap-0.5">
+                    <div
+                      key={fid}
+                      data-finding-id={fid}
+                      data-artifact-ids={artifactIds.join(" ")}
+                      className="text-[9.5px] border-b border-edge/10 pb-1 last:border-0 last:pb-0 flex flex-col gap-0.5"
+                    >
                       <div className="flex items-center justify-between gap-2">
                         <span className="font-bold text-accent uppercase tracking-wider text-[8px] flex items-center gap-1">
                           {art.type}

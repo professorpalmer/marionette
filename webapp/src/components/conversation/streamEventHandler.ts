@@ -455,7 +455,9 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       // stack another card (session-switch SSE race → infinite Investigated).
       // Default tool cards to collapsed always: they used to mount open while
       // running and snap shut on action_result, which read as a flicker.
-      setItems((p) => appendActionStartCard(p, d));
+      if (d.kind !== "run_swarm") {
+        setItems((p) => appendActionStartCard(p, d));
+      }
     } else if (ev.kind === "action_result") {
       clearWaitHintOnProgress();
       setCompactingStatus(null);
@@ -469,7 +471,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       // narration) is still finalized in place.
       flushTypewriter();
       setItems((p) => {
-        let next = applyActionResultCard(p, d);
+        let next = d.kind === "run_swarm" ? p : applyActionResultCard(p, d);
         // Sync run_swarm early failures emit action_result(error) without a
         // swarm_result — flip the matching local-swarm pill off the spinner.
         if (d.error) next = failSwarmPendingForActionError(next, d.id);

@@ -42,6 +42,7 @@ export function mergeSwarmResultReuse(
     summary: next.summary || prev.summary,
     error: next.error !== undefined ? next.error : prev.error,
     objective: next.objective || prev.objective,
+    cwd: next.cwd !== undefined ? next.cwd : prev.cwd,
     held_for_review: next.held_for_review !== undefined
       ? next.held_for_review
       : prev.held_for_review,
@@ -61,6 +62,10 @@ export function mergeSwarmResultReuse(
     acceptance_criteria: next.acceptance_criteria !== undefined
       ? next.acceptance_criteria
       : prev.acceptance_criteria,
+    artifacts: next.artifacts !== undefined ? next.artifacts : prev.artifacts,
+    artifact_delivery: next.artifact_delivery !== undefined
+      ? next.artifact_delivery
+      : prev.artifact_delivery,
   };
 }
 
@@ -298,6 +303,7 @@ export function transcriptResponseToItems(res: {
   if (res.display && res.display.length > 0) {
     loadedItems = res.display.flatMap((m: any): Item[] => {
       if (m.type === "card") {
+        if (m.kind === "run_swarm") return [];
         // result == null means still in flight (persisted at action_start).
         const pending = m.result == null;
         const goals = Array.isArray(m.goals)
@@ -368,6 +374,7 @@ export function transcriptResponseToItems(res: {
           summary: m.summary || "",
           error: m.error || null,
           objective: m.objective || "",
+          cwd: m.cwd !== undefined && m.cwd !== null ? String(m.cwd) : undefined,
           held_for_review: m.held_for_review !== undefined && m.held_for_review !== null
             ? Boolean(m.held_for_review)
             : undefined,
@@ -398,6 +405,10 @@ export function transcriptResponseToItems(res: {
             : undefined,
           acceptance_criteria: Array.isArray(m.acceptance_criteria)
             ? m.acceptance_criteria.map((c: unknown) => String(c || "").trim()).filter(Boolean)
+            : undefined,
+          artifacts: Array.isArray(m.artifacts) ? m.artifacts : undefined,
+          artifact_delivery: m.artifact_delivery && typeof m.artifact_delivery === "object"
+            ? m.artifact_delivery
             : undefined,
         }];
       } else if (m.type === "command_approval") {

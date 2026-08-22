@@ -939,7 +939,7 @@ class TestSynchronousBoundary:
             PilotAction(
                 kind="run_swarm", goal="audit routing",
                 acceptance_criteria=list(criteria or []),
-                arguments={"full_digest": True},
+                arguments={},
             ),
             "a-1", True,
             counters={"swarms": 0, "demo_swarms": 0},

@@ -87,17 +87,20 @@ from .tool_dispatch import _strip_ansi, is_safe_path
 
 POST_SWARM_SYNTHESIS_NUDGE = (
     "(system) The synchronous swarm has completed. "
-    "Summarize its completed findings for the user now from the handle-first "
-    "swarm result (job_id + headlines + artifact:// URIs). "
-    "If you need full bodies, FETCH via peek_artifact or read_file — do not "
-    "assume digests were inlined. "
+    "Summarize its completed findings from the complete PM swarm artifact "
+    "manifest already pushed into the result. Preserve any partial-delivery warning. "
     "Do not call tools, make plans, or emit progress updates; "
     "return only a concise user-facing synthesis."
 )
 POST_SWARM_SYNTHESIS_FALLBACK = (
     "The completed swarm did not return a user-facing synthesis. "
-    "Its findings are available via the job_id / artifact:// handles in the "
-    "swarm result above (peek_artifact or read_file to FETCH)."
+    "Its machine-owned PM artifact receipt and inspectable artifact links remain "
+    "available in the swarm result above."
+)
+
+_ACTION_RESULT_DISPLAY_FIELDS = (
+    "job_id", "num", "types", "adapter", "artifacts",
+    "error", "duration_ms", "chars", "status", "message",
 )
 
 
@@ -601,10 +604,7 @@ class SendLoopMixin:
                     if aid and aid in pending_cards:
                         card = pending_cards[aid]
                         res_data = {}
-                        for key in [
-                            "job_id", "num", "types", "adapter", "artifacts",
-                            "error", "duration_ms", "chars", "status", "message",
-                        ]:
+                        for key in _ACTION_RESULT_DISPLAY_FIELDS:
                             if key in ev.data:
                                 res_data[key] = ev.data[key]
                         # In-place update of the action_start row (already in display).
@@ -613,10 +613,7 @@ class SendLoopMixin:
                     elif aid:
                         # Result without a tracked start -- still persist a card.
                         res_data = {}
-                        for key in [
-                            "job_id", "num", "types", "adapter", "artifacts",
-                            "error", "duration_ms", "chars", "status", "message",
-                        ]:
+                        for key in _ACTION_RESULT_DISPLAY_FIELDS:
                             if key in ev.data:
                                 res_data[key] = ev.data[key]
                         card = {

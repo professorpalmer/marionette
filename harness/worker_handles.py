@@ -46,8 +46,7 @@ def format_handle_first_result(
     """Compact handle-first swarm/worker result for model-visible history.
 
     Always includes ``job_id`` and (when ``fetch_hint``) a FETCH reminder.
-    Headlines cite ``artifact://`` URIs; full digest lines stay available via
-    ``full_digest=true`` on run_swarm.
+    Headlines cite ``artifact://`` URIs so full bodies remain directly addressable.
     """
     jid = str(job_id or "").strip() or "unknown"
     lines = [f"job_id={jid}"]

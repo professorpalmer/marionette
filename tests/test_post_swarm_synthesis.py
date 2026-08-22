@@ -99,6 +99,38 @@ def _fake_failed_execute_turn_actions(
     return (None, [])
 
 
+def _fake_partial_delivery_execute_turn_actions(
+    session: ConversationalSession,
+    *,
+    turn: Any,
+    counters: dict[str, int],
+    turn_findings: list,
+    **_: Any,
+):
+    """A delivery warning is evidence for synthesis, never a completion block."""
+    assert [action.kind for action in turn.actions] == ["run_swarm"]
+    counters["swarms"] += 1
+    counters["synchronous_swarms"] = counters.get("synchronous_swarms", 0) + 1
+    turn_findings.append({"kind": "finding", "headline": "delivered finding"})
+    session._history.append({
+        "role": "user",
+        "content": (
+            "PM artifacts: 17\nAvailable to inspect: 16/17\n"
+            "WARNING: Synthesis continued with incomplete PM evidence.\n"
+            "missing artifact-16 task=task-4"
+        ),
+    })
+    yield ConvEvent("action_result", {
+        "artifact_delivery": {
+            "pm_artifacts": 17,
+            "available_to_inspect": 16,
+            "complete": False,
+            "missing": [{"id": "artifact-16", "task_id": "task-4"}],
+        },
+    })
+    return (None, [])
+
+
 def _fake_drain_idle_turn(
     _session: ConversationalSession,
     *,
@@ -177,6 +209,28 @@ def test_failed_post_swarm_action_still_gets_a_user_facing_fallback(monkeypatch)
     messages = [event for event in events if event.kind == "message"]
     assert [event.data["text"] for event in messages] == [POST_SWARM_SYNTHESIS_FALLBACK]
     assert len(pilot.calls) == 3
+
+
+def test_partial_delivery_warning_does_not_block_synthesis(monkeypatch):
+    pilot = _SequencePilot([
+        _pilot_envelope(actions=[{"kind": "run_swarm", "goal": "audit findings"}]),
+        _pilot_envelope(say="Synthesis from the 16 available artifacts."),
+    ])
+
+    session, events = _run_post_swarm_turn(
+        monkeypatch,
+        pilot,
+        execute_actions=_fake_partial_delivery_execute_turn_actions,
+    )
+
+    assert [
+        event.data["text"] for event in events if event.kind == "message"
+    ] == ["Synthesis from the 16 available artifacts."]
+    assert any(
+        "Available to inspect: 16/17" in str(message.get("content") or "")
+        for message in session._history
+    )
+    assert events[-1].kind == "assistant_done"
 
 
 def test_synthesis_nudge_never_dispatches_hallucinated_tools(monkeypatch):
