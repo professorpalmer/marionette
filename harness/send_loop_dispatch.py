@@ -89,19 +89,43 @@ def _artifact_ref(row: Any) -> dict[str, str]:
     }
 
 
+def _session_durable(session):
+    """Resolve the DurableState-like ledger used for PM artifact listing.
+
+    ConversationalSession.state() is the UI status string (thinking / idle /
+    awaiting_swarm). The artifact store lives on the ``durable`` property.
+    Tests may stub either ``durable`` or a store-bearing ``state()``.
+    """
+    durable = getattr(session, "durable", None)
+    if durable is not None:
+        if callable(durable) and not hasattr(durable, "store"):
+            durable = durable()
+        if hasattr(durable, "store") and hasattr(durable, "format_artifacts"):
+            return durable
+    state_fn = getattr(session, "state", None)
+    if callable(state_fn):
+        maybe = state_fn()
+        if hasattr(maybe, "store") and hasattr(maybe, "format_artifacts"):
+            return maybe
+    raise AttributeError("session has no durable artifact store")
+
+
 def _swarm_artifact_delivery(session, job_id: str, result_rows: list[dict]) -> tuple[list[dict], dict]:
     """Reconcile the PM store with the result projection; never model-pull evidence."""
 
     expected_refs = [_artifact_ref(row) for row in result_rows]
     canonical_rows: list[dict] = []
+    store_ok = False
     try:
-        state = session.state()
-        raw_rows = list(state.store.list_artifacts(job_id))
+        durable = _session_durable(session)
+        raw_rows = list(durable.store.list_artifacts(job_id))
+        store_ok = True
         if raw_rows:
             expected_refs = [_artifact_ref(row) for row in raw_rows]
-            canonical_rows = list(state.format_artifacts(raw_rows))
+            canonical_rows = list(durable.format_artifacts(raw_rows))
     except Exception:
         canonical_rows = []
+        store_ok = False
 
     by_id: dict[str, dict] = {}
     anonymous_rows: list[dict] = []
@@ -132,12 +156,15 @@ def _swarm_artifact_delivery(session, job_id: str, result_rows: list[dict]) -> t
             ordered.append(row)
     ordered.extend(anonymous_rows)
 
+    if not store_ok:
+        missing.insert(0, {"id": "pm-store", "task_id": "unavailable"})
     pm_artifacts = len(expected_refs)
-    available = pm_artifacts - len(missing)
+    artifact_missing = [row for row in missing if row.get("id") != "pm-store"]
+    available = max(0, pm_artifacts - len(artifact_missing))
     return ordered, {
         "pm_artifacts": pm_artifacts,
         "available_to_inspect": available,
-        "complete": not missing,
+        "complete": store_ok and not artifact_missing,
         "missing": missing,
     }
 
@@ -824,7 +851,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     _job_model = _resolved_swarm_model(result, _all_arts)
     # Substantive surfaced findings only: the sidecar must not carry plumbing or
     # refused-demo rows into artifact:// reads.
-    _job_findings = _substantive[:20]
+    _job_findings = _substantive
     _finish_reuse_status = 'fresh'
     _finish_source_job = ''
     _finish_invalidated: list = []
@@ -953,7 +980,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     except Exception:
         pass
     # Only surfaced artifacts become turn findings; a refused demo contributes none.
-    turn_findings.extend((a for a in _all_arts if a.get('type') != 'verification'))
+    turn_findings.extend((a for a in delivered_arts if a.get('type') != 'verification'))
     body = _render_swarm_delivery_manifest(
         _job_id_text, delivered_arts, artifact_delivery,
     )

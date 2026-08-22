@@ -66,6 +66,15 @@ def test_sync_swarm_pushes_every_artifact_into_receipt_and_synthesis(monkeypatch
     monkeypatch.setattr(
         dispatch, "stream_swarm", lambda session, intent, q, *_a: q.put(("done", result)),
     )
+    complete_rows = [
+        SimpleNamespace(
+            id=f"artifact-{i}",
+            task_id=f"task-{i % 5}",
+            sha256=f"sha-{i}",
+            type="finding",
+        )
+        for i in range(17)
+    ]
     session = SimpleNamespace(
         config=SimpleNamespace(repo="/repo"),
         state_dir="/tmp",
@@ -74,6 +83,13 @@ def test_sync_swarm_pushes_every_artifact_into_receipt_and_synthesis(monkeypatch
         _finish_local_job=MagicMock(),
         _append_action_result=MagicMock(),
         _display_transcript=[],
+        # ConversationalSession.state() is a UI status string; the ledger is
+        # session.durable. Tests must stub that property, not state().
+        state=lambda: "thinking",
+        durable=SimpleNamespace(
+            store=SimpleNamespace(list_artifacts=lambda _job_id: complete_rows),
+            format_artifacts=lambda _rows: findings,
+        ),
     )
     events = list(dispatch_swarm_action(
         session,
@@ -127,12 +143,11 @@ def test_sync_swarm_pushes_every_artifact_into_receipt_and_synthesis(monkeypatch
         )
         for i in range(17)
     ]
-    state = SimpleNamespace(
+    session.durable = SimpleNamespace(
         store=SimpleNamespace(list_artifacts=lambda _job_id: raw_rows),
         # Simulate one PM row that could not be projected into Mari's inspectable ledger.
         format_artifacts=lambda _rows: findings[:16],
     )
-    session.state = lambda: state
     result.artifacts = findings[:16]
     result.num_artifacts = 16
     session._append_action_result.reset_mock()
@@ -162,6 +177,92 @@ def test_sync_swarm_pushes_every_artifact_into_receipt_and_synthesis(monkeypatch
     assert "Synthesis continued with incomplete PM evidence" in partial_manifest
     assert "missing artifact-16 task=task-1" in partial_manifest
     assert session._append_action_result.call_args.kwargs["force_inline"] is True
+
+
+def test_sync_swarm_store_miss_does_not_claim_complete(monkeypatch):
+    """ConversationalSession.state() is a UI status string; missing durable must not green the receipt."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    import harness.send_loop_dispatch as dispatch
+    from harness.send_loop_dispatch import dispatch_swarm_action
+
+    monkeypatch.delenv("HARNESS_ALLOW_DEMO_SWARM", raising=False)
+    monkeypatch.setattr(dispatch, "_non_git_workspace_error", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        dispatch, "stream_swarm",
+        lambda session, intent, q, *_a: q.put(("done", SimpleNamespace(
+            job_id="job_miss",
+            adapter="agentic",
+            mode="swarm",
+            status="done",
+            num_artifacts=2,
+            artifact_types=["finding"],
+            artifacts=[
+                {
+                    "type": "finding",
+                    "id": "artifact-0",
+                    "job_id": "job_miss",
+                    "task_id": "task-0",
+                    "sha256": "sha-0",
+                    "headline": "Finding in harness/foo.py:1",
+                    "evidence": [{"path": "harness/foo.py", "line": 1}],
+                },
+                {
+                    "type": "finding",
+                    "id": "artifact-1",
+                    "job_id": "job_miss",
+                    "task_id": "task-1",
+                    "sha256": "sha-1",
+                    "headline": "Finding in harness/foo.py:2",
+                    "evidence": [{"path": "harness/foo.py", "line": 2}],
+                },
+            ],
+            auth_failure="",
+            summary="ok",
+        ))),
+    )
+    session = SimpleNamespace(
+        config=SimpleNamespace(repo="/repo"),
+        state_dir="/tmp",
+        _session_job_ids=[],
+        _register_local_job=MagicMock(),
+        _finish_local_job=MagicMock(),
+        _append_action_result=MagicMock(),
+        _display_transcript=[],
+        state=lambda: "thinking",
+    )
+    events = list(dispatch_swarm_action(
+        session,
+        PilotAction(kind="run_swarm", goal="audit", roles=["explore"], arguments={}),
+        "a-miss",
+        True,
+        counters={"swarms": 0, "demo_swarms": 0},
+        turn_findings=[],
+    ))
+    swarm_result = next(event.data["result"] for event in events if event.kind == "swarm_result")
+    assert swarm_result["artifact_delivery"]["complete"] is False
+    assert swarm_result["artifact_delivery"]["missing"] == [
+        {"id": "pm-store", "task_id": "unavailable"},
+    ]
+    manifest = session._append_action_result.call_args.args[2]
+    assert "Synthesis continued with incomplete PM evidence" in manifest
+    assert "missing pm-store task=unavailable" in manifest
+    assert "artifact://job_miss/artifact-0" in manifest
+    assert "artifact://job_miss/artifact-1" in manifest
+
+
+def test_session_durable_ignores_ui_status_string():
+    from types import SimpleNamespace
+
+    from harness.send_loop_dispatch import _session_durable
+
+    ledger = SimpleNamespace(
+        store=SimpleNamespace(list_artifacts=lambda _job_id: []),
+        format_artifacts=lambda _rows: [],
+    )
+    session = SimpleNamespace(state=lambda: "thinking", durable=ledger)
+    assert _session_durable(session) is ledger
 
 
 def test_drain_swarm_results_history_is_handle_first(monkeypatch, tmp_path):
