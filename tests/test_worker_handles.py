@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from harness.pilot import PilotAction
+from harness.repo_resolve import resolve_effective_repo
 from harness.worker_handles import format_handle_first_result
 
 
@@ -124,7 +125,7 @@ def test_sync_swarm_pushes_every_artifact_into_receipt_and_synthesis(monkeypatch
         "complete": True,
         "missing": [],
     }
-    assert swarm_result["cwd"] == "/repo"
+    assert swarm_result["cwd"] == resolve_effective_repo("/repo")
 
     text = session._append_action_result.call_args.args[2]
     assert "PM artifacts: 17" in text
