@@ -34,6 +34,42 @@ _TERMINAL_EVENT_TYPES = frozenset({
     "response.failed",
 })
 
+
+def responses_stream_label(*, chatgpt_backend: bool, base_url: str = "") -> str:
+    """User-facing host name for Responses SSE errors.
+
+    ChatGPT Codex and OpenCode Go share this driver. The error must name the
+    host the picker selected, not the class that implements the wire.
+    """
+    if chatgpt_backend:
+        return "Codex Responses"
+    host = str(base_url or "").lower()
+    if "opencode.ai" in host:
+        return "OpenCode Responses"
+    return "OpenAI Responses"
+
+
+def responses_stream_error(
+    label: str,
+    kind: str,
+    last_event: str = "",
+) -> str:
+    """Build a stream-death error that names the host, not the driver class."""
+    name = str(label or "").strip() or "OpenAI Responses"
+    if kind == "timeout":
+        msg = f"{name} stream timed out"
+    elif kind == "ended":
+        msg = f"{name} stream ended without a terminal response"
+    elif kind == "failed":
+        head = name[:-10] if name.endswith(" Responses") else name
+        msg = f"{head} response failed"
+    else:
+        msg = f"{name} stream did not emit a terminal response"
+    event = str(last_event or "").strip()
+    if event:
+        msg = f"{msg} (last event: {event})"
+    return msg
+
 # Hermes-aligned: reasoning-only incomplete turns need a distinct user nudge
 # or the retry is byte-identical and fails forever.
 _CODEX_INCOMPLETE_NUDGE = (
@@ -521,6 +557,7 @@ def _consume_codex_sse(
     on_reasoning_delta: Optional[Callable[..., None]] = None,
     on_stream_item_done: Optional[Callable[..., None]] = None,
     chatgpt_backend: bool = True,
+    stream_label: Optional[str] = None,
 ) -> dict:
     """Consume Codex Responses SSE; return a synthetic Responses-shaped dict.
 
@@ -536,6 +573,9 @@ def _consume_codex_sse(
     ``response.completed`` / ``incomplete`` / ``failed``; EOF or ``[DONE]``
     without that terminal is incomplete/error and keeps partial text.
     """
+    label = stream_label or responses_stream_label(
+        chatgpt_backend=chatgpt_backend,
+    )
     collected_items: List[dict] = []
     text_deltas: List[str] = []
     reasoning_deltas: List[str] = []
@@ -692,7 +732,9 @@ def _consume_codex_sse(
                     "output": [],
                     "output_text": "",
                     "usage": {},
-                    "error": "Codex Responses stream timed out",
+                    "error": responses_stream_error(
+                        label, "timeout", last_provider_event,
+                    ),
                 }
             break
 
@@ -915,7 +957,9 @@ def _consume_codex_sse(
             "output": [],
             "output_text": "",
             "usage": {},
-            "error": "Codex Responses stream did not emit a terminal response",
+            "error": responses_stream_error(
+                label, "no_terminal", last_provider_event,
+            ),
             "last_provider_event": last_provider_event,
         }
 
@@ -931,11 +975,13 @@ def _consume_codex_sse(
         elif terminal_error:
             err_msg = str(terminal_error)[:800]
         else:
-            err_msg = "Codex response failed"
+            err_msg = responses_stream_error(label, "failed")
     if not saw_terminal and not chatgpt_backend:
         terminal_status = "incomplete"
         if not err_msg:
-            err_msg = "Codex Responses stream ended without a terminal response"
+            err_msg = responses_stream_error(
+                label, "ended", last_provider_event,
+            )
 
     out = {
         "status": terminal_status,
@@ -1153,6 +1199,10 @@ class CodexResponsesDriver:
                         on_reasoning_delta=on_reasoning_delta,
                         on_stream_item_done=on_stream_item_done,
                         chatgpt_backend=self.chatgpt_backend,
+                        stream_label=responses_stream_label(
+                            chatgpt_backend=self.chatgpt_backend,
+                            base_url=self.base_url,
+                        ),
                     )
                 return raw, None, data
             except urllib.error.HTTPError as e:

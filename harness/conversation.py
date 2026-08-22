@@ -2956,6 +2956,44 @@ class ConversationalSession(
                 "Marionette."
             )
 
+        # Responses SSE died without completed/incomplete/failed. The shared
+        # driver class is CodexResponsesDriver even for OpenCode Go / Muse, so
+        # never leave a raw "Codex Responses" line on a non-Codex picker.
+        if (
+            "stream did not emit a terminal response" in low
+            or "stream ended without a terminal response" in low
+            or "stream timed out" in low
+        ) and (
+            "responses stream" in low
+            or "codex responses" in low
+            or "opencode responses" in low
+            or "openai responses" in low
+        ):
+            driver = str(model or "").lower()
+            if (
+                driver.startswith("opencode-go")
+                or driver.startswith("opencode-zen")
+                or "muse-spark" in driver
+                or "opencode" in low
+            ):
+                host = "OpenCode Go"
+            elif "codex" in driver or driver.startswith("openai-codex"):
+                host = "Codex"
+            else:
+                host = "the Responses host"
+            event_m = _re.search(r"last event:\s*([a-z0-9._-]+)", low)
+            event_bit = (
+                f" (last event: {event_m.group(1)})" if event_m else ""
+            )
+            if "timed out" in low:
+                what = f"{host} timed out waiting for a stream finish{event_bit}"
+            else:
+                what = f"{host} closed the stream before a finish{event_bit}"
+            return (
+                f"pilot: {what}. Press Continue to finish from tools already "
+                "run, or Retry the last step."
+            )
+
         return f"pilot: {s}"
 
     def _accumulate_session_meters(
