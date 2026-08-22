@@ -244,11 +244,13 @@ def _init_platform_lock() -> None:
         # is enabled. It runs its own tool-use loop directly against whatever
         # provider API the user has a key for (Anthropic, OpenAI, Gemini,
         # OpenRouter, ...), so a fresh install needs NOTHING but a provider key --
-        # no external agent CLI (cursor / claude / codex / hermes) installed or
-        # logged in. Every CLI adapter is left OFF so Marionette stays fully
+        # no external agent CLI (cursor / claude / codex / hermes / agy) installed
+        # or logged in. Every CLI adapter is left OFF so Marionette stays fully
         # self-contained and vendor-neutral; any of them can still be re-enabled
         # in Settings > Platform for users who have that tooling.
-        default_disabled = ["cursor", "claude-code", "codex", "openai", "hermes"]
+        default_disabled = [
+            "cursor", "claude-code", "codex", "openai", "hermes", "antigravity",
+        ]
         if "disabled" not in pdata or not isinstance(pdata["disabled"], list):
             pdata["disabled"] = default_disabled
         else:
@@ -348,6 +350,7 @@ def _get_platform_adapters() -> dict:
         {"name": "hermes", "implement_capable": True},
         {"name": "claude-code", "implement_capable": True},
         {"name": "codex", "implement_capable": True},
+        {"name": "antigravity", "implement_capable": True},
         {"name": "openai", "implement_capable": False}
     ]
 
@@ -384,6 +387,9 @@ def _get_platform_adapters() -> dict:
         elif name == "codex":
             available = shutil.which("codex") is not None
             note = "Codex agent CLI. Requires 'codex' command in path."
+        elif name == "antigravity":
+            available = shutil.which("agy") is not None
+            note = "Google Antigravity CLI. Requires 'agy' on PATH."
         else:
             available = True
             note = ""

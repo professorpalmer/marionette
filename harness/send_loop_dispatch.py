@@ -1096,7 +1096,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             act, aid, f'(run_implement {aid} failed: {pin_error})', is_native,
         )
         return None
-    external_adapters = {'cursor', 'claude-code', 'codex', 'openai', 'hermes'}
+    external_adapters = {'cursor', 'claude-code', 'codex', 'openai', 'hermes', 'antigravity'}
     requested_adapter, adapter_remap_note = session._resolve_requested_implement_adapter(act.adapter or '')
     if strict_adapter:
         requested_adapter = 'agentic'
@@ -1360,7 +1360,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             act, aid, f'(run_parallel {aid} failed: {pin_error})', is_native,
         )
         return None
-    external_adapters = {'cursor', 'claude-code', 'codex', 'openai', 'hermes'}
+    external_adapters = {'cursor', 'claude-code', 'codex', 'openai', 'hermes', 'antigravity'}
     requested_adapter, adapter_remap_note = session._resolve_requested_implement_adapter(act.adapter or '')
     if strict_adapter:
         requested_adapter = 'agentic'

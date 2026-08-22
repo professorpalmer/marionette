@@ -39,7 +39,7 @@ jobs:
       - name: Install (rig + dev extras + Puppetmaster from PyPI)
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]" "puppetmaster-ai==1.22.15"
+          pip install -e ".[dev]" "puppetmaster-ai==1.22.16"
 
       - name: Run the offline test suite
         if: matrix.os != 'ubuntu-latest' || matrix.python-version != '3.11'

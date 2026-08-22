@@ -176,6 +176,7 @@ _NATIVE_SLASH_NAMESPACES = frozenset({
     "cursor-agent",
     "cursor-cli",
     "hermes",
+    "antigravity",
     "openai-codex",
     "unknown",
 })

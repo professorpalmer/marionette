@@ -70,6 +70,7 @@ def test_first_run_sensible_default(temp_platform_json):
     assert "claude-code" in data["disabled"]
     assert "codex" in data["disabled"]
     assert "openai" in data["disabled"]
+    assert "antigravity" in data["disabled"]
 
 
 def test_init_respects_foreign_writer_without_marker(temp_platform_json):
@@ -111,7 +112,7 @@ def test_get_platform_adapters(temp_platform_json):
         data = json.loads(resp.read().decode())
         
         adapters = data["adapters"]
-        assert len(adapters) == 6
+        assert len(adapters) == 7
 
         # The standalone 'agentic' adapter is present and implement-capable.
         agentic = next(a for a in adapters if a["name"] == "agentic")

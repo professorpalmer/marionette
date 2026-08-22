@@ -26,6 +26,7 @@ _ALLOWED_ADAPTERS = (
     "hermes",
     "claude-code",
     "codex",
+    "antigravity",
     "openai",
 )
 
