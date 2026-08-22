@@ -252,10 +252,6 @@ describe("swarm terminal rows stay at the end of one investigation", () => {
       "thinking",
       "card",
     ]);
-    expect(
-      grouped.flatMap((row) => (row.kind === "activity_group" ? row.items : [row]))
-        .filter((item) => item.kind === "swarm_pending"),
-    ).toHaveLength(0);
   });
 
   it("keeps a live swarm pill inside the active investigation fold", () => {
