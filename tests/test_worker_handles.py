@@ -1,33 +1,8 @@
-"""Handle-first worker/swarm result formatting."""
+"""Complete swarm delivery receipts for model-visible history."""
 from __future__ import annotations
 
 from harness.pilot import PilotAction
 from harness.repo_resolve import resolve_effective_repo
-from harness.worker_handles import format_handle_first_result
-
-
-def test_format_handle_first_includes_job_id_and_fetch_hint():
-    arts = [
-        {"type": "finding", "id": "job1-finding-0", "headline": "Alpha risk in auth"},
-        {"type": "risk", "id": "job1-finding-1", "headline": "Beta race on writes"},
-        {"type": "decision", "id": "job1-finding-2", "headline": "Gamma keep gate"},
-        {"type": "finding", "id": "job1-finding-3", "headline": "Delta ignored"},
-    ]
-    text = format_handle_first_result("job1", arts, max_headlines=3)
-    assert "job_id=job1" in text
-    assert "artifact://job1/job1-finding-0" in text
-    assert "Alpha risk" in text
-    assert "FETCH" in text
-    assert "peek_artifact" in text
-    assert "Delta ignored" not in text
-    assert "+1 more" in text
-
-
-def test_format_handle_first_empty_arts():
-    text = format_handle_first_result("job_empty", [])
-    assert "job_id=job_empty" in text
-    assert "no artifacts" in text
-    assert "FETCH" in text
 
 
 def test_sync_swarm_pushes_every_artifact_into_receipt_and_synthesis(monkeypatch):
@@ -266,7 +241,7 @@ def test_session_durable_ignores_ui_status_string():
     assert _session_durable(session) is ledger
 
 
-def test_drain_swarm_results_history_is_handle_first(monkeypatch, tmp_path):
+def test_drain_swarm_results_history_is_complete_delivery(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "harness.conversation.RuleStore",
         lambda *a, **k: __import__("harness.rule_store", fromlist=["RuleStore"]).RuleStore(
@@ -306,11 +281,14 @@ def test_drain_swarm_results_history_is_handle_first(monkeypatch, tmp_path):
         if m.get("role") == "assistant" and "swarm result for" in (m.get("content") or "")
     ]
     assert hist
-    assert "job_id=job_drain_hf" in hist[0]
+    assert "PM SWARM ARTIFACT MANIFEST:" in hist[0]
+    assert "job_drain_hf-finding-0" in hist[0]
+    assert "artifact://job_drain_hf/job_drain_hf-finding-0" in hist[0]
     assert "Drain headline one" in hist[0]
-    assert "artifact://" in hist[0]
+    assert "peek_artifact" not in hist[0]
     assert fat_summary not in hist[0]
-    # UI/display still gets the full summary for cards.
     display = [d for d in session._display_transcript if d.get("type") == "swarm_result"]
     assert display
     assert display[0].get("summary") == fat_summary
+    assert display[0]["artifact_delivery"]["complete"] is True
+    assert [row["id"] for row in display[0]["artifacts"]] == ["job_drain_hf-finding-0"]

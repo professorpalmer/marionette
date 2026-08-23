@@ -1003,7 +1003,7 @@ class ToolDispatchMixin:
 
         Sidecar visibility filters can hide just-finished terminal locals when
         session/cwd stamps are empty; the live table is authoritative for this
-        process and matches the URIs handle-first swarm results emit.
+        process and matches the URIs the delivery receipt lists for known handles.
         """
         import json
 

@@ -410,6 +410,17 @@ def _project_job_row(
     receipt: dict = {}
     job_cost = None
     cf = None
+    pm_receipt = None
+    if store is not None and jid and str(jid).startswith("job_"):
+        try:
+            from harness.financial_receipt import (
+                load_pm_cost_report,
+                persistable_pm_receipt,
+            )
+            raw_report = load_pm_cost_report(store, jid, registry=registry)
+            pm_receipt = persistable_pm_receipt(raw_report)
+        except Exception:
+            pm_receipt = None
     if store is not None and jid:
         try:
             artifacts = store.list_artifacts(jid) or []
@@ -419,12 +430,13 @@ def _project_job_row(
             receipt = build_job_receipt(store, jid) or {}
         except Exception:
             receipt = {}
-        try:
-            job_cost = price_job(artifacts, registry)
-            cf = job_counterfactual(job_cost, registry)
-        except Exception:
-            job_cost = None
-            cf = None
+        if pm_receipt is None:
+            try:
+                job_cost = price_job(artifacts, registry)
+                cf = job_counterfactual(job_cost, registry)
+            except Exception:
+                job_cost = None
+                cf = None
 
     models = _models_from_job_cost(job_cost) if job_cost is not None else []
     arts = receipt.get("artifacts") if isinstance(receipt, dict) else None
@@ -462,7 +474,17 @@ def _project_job_row(
     }
     # Visibility-only / unstamped CLI jobs stay listed but cannot be summed.
     # Empty or unpriced JobCost objects are 0.0 — that is not measured cash.
-    if owned and job_cost is not None:
+    if owned and pm_receipt is not None:
+        row["financial_receipt"] = pm_receipt
+        row["actual_marginal_usd"] = pm_receipt.get("spend_usd")
+        actual = (pm_receipt.get("pm_report") or {}).get("actual_cost") or {}
+        row["measured_cost_usd"] = actual.get("measured_cost_usd")
+        row["estimated_cost_usd"] = actual.get("estimated_cost_usd")
+        row["cost_basis"] = pm_receipt.get("spend_basis")
+        row["counterfactual"] = _serialize_job_counterfactual(pm_receipt.get("counterfactual"))
+        if row["counterfactual"] is not None:
+            row["counterfactual"]["label"] = "Estimated savings"
+    elif owned and job_cost is not None:
         basis = _cost_basis_for_job(job_cost)
         if basis is None:
             row["cost_basis"] = "unknown"

@@ -141,8 +141,8 @@ export default function EconomicsDurable({
         <div className="flex items-center justify-between mb-1 text-faint">
           <span>
             {referenceId
-              ? `list-price vs ${referenceId}, not a refund`
-              : "list-price vs reference, not a refund"}
+              ? `Estimated savings vs ${referenceId}`
+              : "Estimated savings"}
           </span>
           <span className="tabular-nums">{fmtUnknownMoney(avoided)}</span>
         </div>
@@ -167,7 +167,7 @@ export default function EconomicsDurable({
             return (
               <div key={job.job_id || `${job.source}-${job.status}`} className="mb-2">
                 <div className="flex items-center justify-between text-faint">
-                  <span className="truncate pr-2">{job.job_id || "job"}</span>
+                  <span className="truncate pr-2">{job.job_id ? `Job ${job.job_id}` : "Job"}</span>
                   <span className="tabular-nums shrink-0">
                     {owned
                       ? `${fmtUnknownMoney(actual)} vs ${fmtUnknownMoney(jobAvoided)}${costBasisLabel(job.cost_basis)}`

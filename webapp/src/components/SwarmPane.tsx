@@ -655,6 +655,65 @@ function formatWorkerCost(
   return formatKnownCost(cost, estimated);
 }
 
+export type SpendBasis = "provider" | "measured" | "estimated" | "unavailable";
+
+export function namedSpend(cost: unknown, basis: SpendBasis): string {
+  if (basis === "unavailable" || typeof cost !== "number" || !isFinite(cost)) {
+    return "Cost unavailable";
+  }
+  if (basis === "provider") return `Provider-reported cost ${formatCost(cost, false)}`;
+  if (basis === "measured") return `Measured usage cost ${formatCost(cost, false)}`;
+  return `Estimated cost ${formatCost(cost, true)}`;
+}
+
+export function namedForecast(cost: unknown): string {
+  if (typeof cost !== "number" || !isFinite(cost) || !(cost > 0)) return "Cost unavailable";
+  return `Route forecast ${formatCost(cost, true)}`;
+}
+
+export function namedSavings(cost: unknown): string {
+  if (typeof cost !== "number" || !isFinite(cost) || !(cost > 0)) return "Cost unavailable";
+  return `Estimated savings ${formatCost(cost, true)}`;
+}
+
+export function jobIdentifier(id: string): string {
+  const jid = (id || "").trim();
+  return jid ? `Job ${jid}` : "Job";
+}
+
+export function spendBasisFor(jobOrTask: {
+  estimated?: boolean;
+  cost_provenance?: string;
+  est_cost_usd?: number;
+}): SpendBasis {
+  const estimated = jobOrTask.estimated !== false && jobOrTask.cost_provenance !== "provider";
+  const cost = jobOrTask.est_cost_usd;
+  if (typeof cost !== "number" || !isFinite(cost)) return "unavailable";
+  if (jobOrTask.cost_provenance === "unknown") return "unavailable";
+  if (jobOrTask.cost_provenance === "provider" && estimated === false) return "provider";
+  if (jobOrTask.cost_provenance === "live" && estimated === false) return "measured";
+  if (!(cost > 0) && estimated) return "unavailable";
+  if (estimated) return "estimated";
+  return "measured";
+}
+
+/** Worker spend never falls back to a ROUTING forecast. */
+export function workerSpend(
+  task: Task,
+  job: Job,
+): { cost: number | undefined; estimated: boolean; basis: SpendBasis } | null {
+  if (task.est_cost_usd != null) {
+    const estimated = task.estimated !== false && task.cost_provenance !== "provider";
+    return { cost: task.est_cost_usd, estimated, basis: spendBasisFor(task) };
+  }
+  const tasks = job.tasks || [];
+  if (tasks.length === 1 && hasMeaningfulJobCost(job)) {
+    const estimated = job.estimated !== false && job.cost_provenance !== "provider";
+    return { cost: job.est_cost_usd, estimated, basis: spendBasisFor(job) };
+  }
+  return null;
+}
+
 function positiveUsd(n?: number): number {
   return typeof n === "number" && isFinite(n) && n > 0 ? n : 0;
 }
@@ -800,7 +859,7 @@ export function SavingsChip({ parts, className }: { parts: SavingsParts; classNa
       title={`List-price value from model selection, prompt-cache, and compaction (additive, not billed): ${savingsDetail(parts)}`}
     >
       <span className="text-good/45" aria-hidden="true">{"\u2193"}</span>
-      {formatCost(parts.total, parts.modelSelectionEstimated || parts.cachePartial)} saved
+      {namedSavings(parts.total)}
     </span>
   );
 }
@@ -1490,6 +1549,18 @@ export default function SwarmPane() {
               <Tooltip label={j.goal} className="font-semibold text-[11px] text-txt truncate">
                 {j.goal}
               </Tooltip>
+              <button
+                type="button"
+                className="shrink-0 font-mono text-[9px] text-faint hover:text-muted"
+                title="Copy job identifier"
+                aria-label={jobIdentifier(j.id)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void navigator.clipboard?.writeText(jobIdentifier(j.id));
+                }}
+              >
+                {jobIdentifier(j.id)}
+              </button>
             </div>
             <div className="flex items-center gap-2 shrink-0 text-[10px]">
               {/* Kill: running jobs only. Best-effort cooperative cancel on the
@@ -1540,11 +1611,11 @@ export default function SwarmPane() {
                     <span className="text-accent/80">{jobCompactTokens(j).toLocaleString()} compact</span>
                   )}
                   {showJobCost && (
-                    <span className="text-good/85">
-                      {formatKnownCost(
-                        j.est_cost_usd,
-                        j.estimated !== false && j.cost_provenance !== "provider",
-                      )}
+                    <span
+                      className="text-good/85"
+                      title={namedSpend(j.est_cost_usd, spendBasisFor(j))}
+                    >
+                      {namedSpend(j.est_cost_usd, spendBasisFor(j))}
                     </span>
                   )}
                   {showJobSavings && <SavingsChip parts={savings} className="font-sans" />}
@@ -1691,13 +1762,14 @@ export default function SwarmPane() {
                     const hasRejected = !!(routing?.rejected && routing.rejected.length > 0);
                     const altKey = `${j.id}:${task.id}`;
                     const altsExpanded = !!expandedAlts[altKey];
-                    const costValue = task.est_cost_usd ?? routing?.est_cost_usd;
-                    const costEstimated = task.est_cost_usd != null
-                      ? task.estimated !== false && task.cost_provenance !== "provider"
-                      : true;
+                    const spend = workerSpend(task, j);
+                    const costValue = spend?.cost;
+                    const costEstimated = spend?.estimated ?? true;
                     const showTokens = (task.tokens ?? 0) > 0;
-                    const showCost = isKnownPositiveCost(costValue)
-                      || isProviderAttestedExactZero(costValue, costEstimated);
+                    const showCost = spend != null && (
+                      isKnownPositiveCost(costValue)
+                      || isProviderAttestedExactZero(costValue, costEstimated)
+                    );
                     const showSpend = showTokens || showCost;
                     const roleLabel = task.role || "Worker";
                     const detailsId = `swarm-worker-${task.id}`;
@@ -1753,11 +1825,13 @@ export default function SwarmPane() {
                                   )}
                                   {showCost && (
                                     <span className="text-good/85">
-                                      {formatWorkerCost(
-                                        costValue,
-                                        costEstimated,
-                                        isPlanBilledRouting(routing),
-                                      )}
+                                      {spend
+                                        ? namedSpend(costValue, spend.basis)
+                                        : formatWorkerCost(
+                                            costValue,
+                                            costEstimated,
+                                            isPlanBilledRouting(routing),
+                                          )}
                                     </span>
                                   )}
                                 </span>

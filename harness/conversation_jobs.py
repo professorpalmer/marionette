@@ -470,21 +470,31 @@ class ConversationJobsMixin:
         summary = "\n".join(summary_parts) if summary_parts else "Successfully completed implement task"
 
         ar_list = []
-        for a in artifacts[:8]:
+        for a in artifacts:
             if not isinstance(a, dict):
                 continue
             t = a.get("type", "finding")
             headline = ""
+            payload = a.get("payload") or {}
+            if not isinstance(payload, dict):
+                payload = {}
             if t == "patch":
-                files = (a.get("payload") or {}).get("files") or []
+                files = payload.get("files") or []
                 headline = f"Patch: modified {', '.join(files)}" if files else "Patch generated"
             elif t == "finding":
-                claim = (a.get("payload") or {}).get("claim") or ""
-                rep = (a.get("payload") or {}).get("report") or ""
+                claim = payload.get("claim") or ""
+                rep = payload.get("report") or ""
                 headline = claim or rep[:80] or "Finding"
             else:
                 headline = f"{t.capitalize()} artifact"
-            ar_list.append({"type": t, "headline": headline})
+            row = {"type": t, "headline": headline}
+            for key in ("id", "task_id", "sha256"):
+                val = a.get(key)
+                if val in (None, ""):
+                    val = payload.get(key)
+                if val not in (None, ""):
+                    row[key] = val
+            ar_list.append(row)
 
         # 5. Apply patch
         # CORRECTNESS (comment these in code): Guard the git apply operation with self._apply_lock
@@ -1198,6 +1208,7 @@ class ConversationJobsMixin:
                     "invalidated_paths",
                     "reuse_reason",
                     "acceptance_criteria",
+                    "financial_receipt",
                 ):
                     if stamped.get(_rk) not in (None, "", [], {}):
                         res_dict[_rk] = stamped[_rk]
@@ -1417,24 +1428,44 @@ class ConversationJobsMixin:
                         display_error = res_job.get("error") or err_bit or None
                     else:
                         err_bit = ""
-                        # Model-visible history is handle-first (job_id + headlines
-                        # + artifact://). Full summary stays on display/UI.
-                        try:
-                            from harness.worker_handles import format_handle_first_result
-                            arts = _background_artifacts(res_job, stamped)
-                            handle = format_handle_first_result(job_id, arts)
-                            msg_content = (
-                                f"[swarm result for: {objective}]\n{handle}"
-                            )
-                        except Exception:
-                            msg_content = f"[swarm result for: {objective}] {summary}"
+                        msg_content = f"[swarm result for: {objective}]"
                         if applied and applied_files:
                             msg_content += f"; applied {len(applied_files)} files"
                         elif held_for_review:
-                            msg_content += f"; held for review"
+                            msg_content += "; held for review"
                         elif res_job.get("has_patch_art") and not applied:
                             msg_content += f"; patch failed to apply: {res_job.get('apply_msg')}"
                         display_error = res_job.get("error") or None
+
+                    try:
+                        from harness.send_loop_dispatch import (
+                            _render_swarm_delivery_manifest,
+                            _swarm_artifact_delivery,
+                        )
+                        snapshot = list(_background_artifacts(res_job, stamped))
+                        delivered, delivery = _swarm_artifact_delivery(
+                            self, job_id, snapshot, require_store=False,
+                        )
+                        if isinstance(res_job, dict):
+                            res_job["artifacts"] = delivered
+                            res_job["artifact_delivery"] = delivery
+                        try:
+                            with self._local_jobs_lock:
+                                local = (getattr(self, "_local_jobs", {}) or {}).get(job_id)
+                                if isinstance(local, dict):
+                                    local["artifact_delivery"] = delivery
+                                    if delivered and not local.get("artifacts"):
+                                        local["artifacts"] = list(delivered)
+                        except Exception:
+                            pass
+                        manifest = _render_swarm_delivery_manifest(
+                            job_id, delivered, delivery,
+                        )
+                        if manifest:
+                            msg_content = f"{msg_content}\n{manifest}"
+                    except Exception:
+                        delivered = []
+                        delivery = None
 
                     boundary = _background_evidence_boundary(
                         self, job_id, res_job, stamped,
@@ -1460,6 +1491,9 @@ class ConversationJobsMixin:
                         "held_for_review": bool(held_for_review),
                         "analysis_ok": bool(analysis_ok),
                     }
+                    if delivery is not None:
+                        display_result["artifacts"] = delivered
+                        display_result["artifact_delivery"] = delivery
                     worker_provenance = res_job.get("worker_provenance") or {}
                     if worker_provenance:
                         display_result["worker_provenance"] = worker_provenance
@@ -1498,6 +1532,11 @@ class ConversationJobsMixin:
                             if isinstance(res_job, dict) and res_job.get(_rk) in (None, "", [], {}):
                                 res_job[_rk] = value
                     self._display_transcript.append(display_result)
+                    if delivery is not None:
+                        try:
+                            self._note_parallel_child_receipt(job_id)
+                        except Exception:
+                            pass
                     # Nested actions are progressive via /api/swarm/live; mirror
                     # onto display cards only here under _busy for reload durability.
                     try:

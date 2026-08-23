@@ -393,6 +393,240 @@ class LocalJobsMixin:
                 }]
             self._persist_local_jobs_locked()
 
+    def _register_parallel_wave(
+        self,
+        wave_id: str,
+        *,
+        child_job_ids: list,
+        objective: str = "",
+        action_id: str = "",
+    ) -> dict:
+        """Persist parent membership for a run_parallel wave.
+
+        The parent owns accepted-child membership and aggregate lifecycle
+        only. Each child keeps its own outcome, artifacts, and PR 1 delivery
+        receipt. No parent artifact aggregate is recorded.
+        """
+        import time
+        from harness.job_scoping import ACCOUNTING_SCOPE_MARIONETTE, job_label_for_session
+
+        ids = [str(x) for x in (child_job_ids or []) if str(x)]
+        now = time.time()
+        session_id = self.harness_session_id or ""
+        with self._local_jobs_lock:
+            existing = self._local_jobs.get(wave_id)
+            if isinstance(existing, dict) and existing.get("job_kind") == "parallel_wave":
+                existing["child_job_ids"] = ids
+                existing["child_count"] = len(ids)
+                existing["goal"] = objective or existing.get("goal") or ""
+                if action_id:
+                    existing["action_id"] = str(action_id)
+                existing["updated_at"] = now
+                for cid in ids:
+                    child = self._local_jobs.get(cid)
+                    if isinstance(child, dict):
+                        child["parent_wave_id"] = wave_id
+                self._sync_parallel_wave_locked(existing)
+                self._upsert_display_parallel_wave_locked(existing)
+                self._persist_local_jobs_locked()
+                return copy.deepcopy(existing)
+            row = {
+                "id": wave_id,
+                "goal": objective or f"Parallel wave ({len(ids)} jobs)",
+                "status": "running",
+                "role": "parallel_wave",
+                "adapter": "parallel_wave",
+                "model": "",
+                "job_kind": "parallel_wave",
+                "session_id": session_id,
+                "action_id": str(action_id or ""),
+                "cwd": self.config.repo or "",
+                "label": job_label_for_session(session_id),
+                "created_at": now,
+                "started_at": now,
+                "updated_at": now,
+                "task_count": len(ids),
+                "tokens": 0,
+                "est_cost_usd": 0.0,
+                "artifacts": [],
+                "tasks": [{
+                    "id": f"{wave_id}-w0",
+                    "role": "parallel_wave",
+                    "instruction": objective or f"Parallel wave ({len(ids)} jobs)",
+                    "status": "running",
+                    "adapter": "parallel_wave",
+                }],
+                "actions": [],
+                "source": "harness",
+                "accounting_owned": True,
+                "accounting_scope": ACCOUNTING_SCOPE_MARIONETTE,
+                "terminal_receipt": None,
+                "child_job_ids": ids,
+                "terminal_job_ids": [],
+                "child_count": len(ids),
+                "mixed_terminal": False,
+            }
+            self._local_jobs[wave_id] = row
+            for cid in ids:
+                child = self._local_jobs.get(cid)
+                if isinstance(child, dict):
+                    child["parent_wave_id"] = wave_id
+            self._upsert_display_parallel_wave_locked(row)
+            self._persist_local_jobs_locked()
+            return copy.deepcopy(row)
+
+    def _parallel_wave_id_for_child(self, child_id: str) -> str:
+        cid = str(child_id or "").strip()
+        if not cid:
+            return ""
+        with self._local_jobs_lock:
+            child = self._local_jobs.get(cid) or {}
+            wid = str(child.get("parent_wave_id") or "").strip()
+            if wid:
+                return wid
+            for job in self._local_jobs.values():
+                if not isinstance(job, dict):
+                    continue
+                if job.get("job_kind") != "parallel_wave":
+                    continue
+                if cid in [str(x) for x in (job.get("child_job_ids") or [])]:
+                    return str(job.get("id") or "")
+        return ""
+
+    def _note_parallel_child_receipt(self, child_id: str) -> None:
+        """Record that an accepted child produced a durable receipt."""
+        wave_id = self._parallel_wave_id_for_child(child_id)
+        if not wave_id:
+            return
+        cid = str(child_id or "").strip()
+        with self._local_jobs_lock:
+            parent = self._local_jobs.get(wave_id)
+            if not isinstance(parent, dict) or parent.get("job_kind") != "parallel_wave":
+                return
+            terminals = [str(x) for x in (parent.get("terminal_job_ids") or []) if str(x)]
+            if cid and cid not in terminals:
+                terminals.append(cid)
+            parent["terminal_job_ids"] = terminals
+            self._sync_parallel_wave_locked(parent)
+            self._upsert_display_parallel_wave_locked(parent)
+            self._persist_local_jobs_locked()
+
+    def _sync_parallel_wave_from_children(self, wave_id: str) -> None:
+        wid = str(wave_id or "").strip()
+        if not wid:
+            return
+        with self._local_jobs_lock:
+            parent = self._local_jobs.get(wid)
+            if not isinstance(parent, dict) or parent.get("job_kind") != "parallel_wave":
+                return
+            self._sync_parallel_wave_locked(parent)
+            self._upsert_display_parallel_wave_locked(parent)
+            self._persist_local_jobs_locked()
+
+    def _sync_parallel_wave_locked(self, parent: dict) -> None:
+        """Refresh aggregate lifecycle from accepted children. No artifact merge."""
+        import time
+
+        child_ids = [str(x) for x in (parent.get("child_job_ids") or []) if str(x)]
+        terminals = [str(x) for x in (parent.get("terminal_job_ids") or []) if str(x)]
+        statuses: list[str] = []
+        for cid in child_ids:
+            child = self._local_jobs.get(cid) or {}
+            st = str(child.get("status") or "")
+            if st in _TERMINAL_LOCAL_JOB_STATUSES and cid not in terminals:
+                terminals.append(cid)
+            if child.get("artifact_delivery") is not None and cid not in terminals:
+                terminals.append(cid)
+            if cid in terminals:
+                if st in _TERMINAL_LOCAL_JOB_STATUSES:
+                    statuses.append(st)
+                elif child.get("error") or (
+                    isinstance(child.get("artifact_delivery"), dict)
+                    and child.get("status") == "failed"
+                ):
+                    statuses.append("failed")
+                else:
+                    # Drain-stamped receipt without a local terminal status:
+                    # treat as completed unless the child row already failed.
+                    statuses.append("completed")
+            else:
+                statuses.append(st or "running")
+        parent["terminal_job_ids"] = terminals
+        parent["updated_at"] = time.time()
+        parent["child_count"] = len(child_ids)
+        parent["task_count"] = len(child_ids)
+        # Parent never owns child evidence.
+        parent["artifacts"] = []
+
+        all_settled = bool(child_ids) and all(cid in terminals for cid in child_ids)
+        if not all_settled:
+            parent["status"] = "running"
+            parent["terminal_receipt"] = None
+            parent["mixed_terminal"] = False
+            if parent.get("tasks"):
+                try:
+                    parent["tasks"][0]["status"] = "running"
+                except Exception:
+                    pass
+            return
+
+        mixed = len(set(statuses)) > 1
+        if any(s in ("failed", "timeout", "truncated") for s in statuses):
+            aggregate = "failed"
+        elif any(s == "cancelled" for s in statuses):
+            aggregate = "cancelled"
+        else:
+            aggregate = "completed"
+        parent["status"] = aggregate
+        parent["mixed_terminal"] = mixed
+        if parent.get("tasks"):
+            try:
+                parent["tasks"][0]["status"] = aggregate
+            except Exception:
+                pass
+        counts: dict[str, int] = {}
+        for s in statuses:
+            counts[s] = counts.get(s, 0) + 1
+        parent["terminal_receipt"] = {
+            "status": aggregate,
+            "summary": (
+                "wave " + aggregate + ": "
+                + ", ".join(f"{n} {name}" for name, n in sorted(counts.items()))
+            ),
+            "finished_at": parent["updated_at"],
+            "child_statuses": dict(counts),
+            "mixed_terminal": mixed,
+            "child_job_ids": list(child_ids),
+            "terminal_job_ids": list(terminals),
+        }
+
+    def _upsert_display_parallel_wave_locked(self, parent: dict) -> None:
+        display = getattr(self, "_display_transcript", None)
+        if not isinstance(display, list):
+            return
+        child_ids = [str(x) for x in (parent.get("child_job_ids") or []) if str(x)]
+        terminals = [str(x) for x in (parent.get("terminal_job_ids") or []) if str(x)]
+        wave_id = str(parent.get("id") or "")
+        settled = bool(child_ids) and all(cid in terminals for cid in child_ids)
+        row = {
+            "type": "swarm_pending",
+            "wave_id": wave_id,
+            "job_ids": list(child_ids),
+            "objective": str(parent.get("goal") or ""),
+            "terminal_job_ids": list(terminals),
+            "status": "done" if settled else "running",
+        }
+        for i, existing in enumerate(display):
+            if not isinstance(existing, dict) or existing.get("type") != "swarm_pending":
+                continue
+            same_wave = wave_id and existing.get("wave_id") == wave_id
+            same_members = set(str(x) for x in (existing.get("job_ids") or [])) == set(child_ids)
+            if same_wave or same_members:
+                existing.update(row)
+                display[i] = existing
+                return
+        display.append(row)
+
     def _checkpoint_command_job_launch(self, job_id: str) -> bool:
         """Persist a launch checkpoint *before* the child process can start.
 
@@ -886,6 +1120,28 @@ class LocalJobsMixin:
                 job["cost_provenance"] = "provider"
             if job.get("tasks"):
                 job["tasks"][0]["status"] = terminal
+            try:
+                from harness.financial_receipt import (
+                    apply_local_receipt,
+                    build_local_financial_receipt,
+                )
+                provider_cost = float(est_cost_usd or 0.0) if (
+                    real_cost and est_cost_usd and not cost_unsplit
+                ) else None
+                receipt = build_local_financial_receipt(
+                    job_id,
+                    spend_usd=float(job.get("est_cost_usd") or real_cost or 0.0),
+                    estimated=bool(job.get("estimated", True)),
+                    cost_provenance=str(job.get("cost_provenance") or "default"),
+                    tokens=int(job.get("tokens") or tokens or 0),
+                    artifacts=job.get("artifacts"),
+                    routing_saved_usd=float(job.get("routing_saved_usd") or 0.0),
+                    routing_savings_basis=str(job.get("routing_savings_basis") or "estimated"),
+                    provider_cost_usd=provider_cost,
+                )
+                apply_local_receipt(job, receipt)
+            except Exception:
+                pass
             if isinstance(worker_provenance, dict):
                 job["worker_provenance"] = copy.deepcopy(worker_provenance)
             summary_text = summary or ""
@@ -1102,6 +1358,10 @@ class LocalJobsMixin:
             export_local_job_terminal(**export_job)
         except Exception:
             pass
+        try:
+            self._note_parallel_child_receipt(job_id)
+        except Exception:
+            pass
 
     def _fail_or_drop_local_job(self, job_id: str, summary: str = "") -> None:
         """Best-effort settle a registered job after finish failure.
@@ -1174,7 +1434,27 @@ class LocalJobsMixin:
                 job["tokens"] = measured_tokens
             if measured_cost > 0:
                 job["est_cost_usd"] = round(measured_cost, 6)
+                job["estimated"] = False
+                job["cost_provenance"] = "provider"
             job["updated_at"] = time.time()
+            try:
+                from harness.financial_receipt import (
+                    apply_local_receipt,
+                    build_local_financial_receipt,
+                )
+                apply_local_receipt(job, build_local_financial_receipt(
+                    job_id,
+                    spend_usd=float(job.get("est_cost_usd") or 0.0),
+                    estimated=bool(job.get("estimated", measured_cost <= 0)),
+                    cost_provenance=str(job.get("cost_provenance") or "default"),
+                    tokens=int(job.get("tokens") or 0),
+                    artifacts=job.get("artifacts"),
+                    routing_saved_usd=float(job.get("routing_saved_usd") or 0.0),
+                    routing_savings_basis=str(job.get("routing_savings_basis") or "estimated"),
+                    provider_cost_usd=measured_cost if measured_cost > 0 else None,
+                ))
+            except Exception:
+                pass
             for artifact in job.get("artifacts") or []:
                 if not isinstance(artifact, dict):
                     continue
@@ -1258,6 +1538,11 @@ class LocalJobsMixin:
                     job.get("job_kind") == "run_command_batch"
                     or job.get("role") == "command_batch"
                 )
+                is_parallel_wave = job.get("job_kind") == "parallel_wave"
+                if is_parallel_wave:
+                    # Parent has no private execution; children own interrupt.
+                    self._local_jobs[jid] = job
+                    continue
                 # Durable terminal receipt is authoritative — never reopen.
                 prior_receipt = job.get("terminal_receipt")
                 receipt_status = (
@@ -1346,6 +1631,10 @@ class LocalJobsMixin:
                     reason="interrupted by restart",
                 )
                 self._local_jobs[jid] = job
+            for job in list(self._local_jobs.values()):
+                if isinstance(job, dict) and job.get("job_kind") == "parallel_wave":
+                    self._sync_parallel_wave_locked(job)
+                    self._upsert_display_parallel_wave_locked(job)
             # Rewrite so the healed statuses are the new on-disk baseline.
             self._persist_local_jobs_locked()
 

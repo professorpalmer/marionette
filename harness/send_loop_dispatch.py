@@ -89,6 +89,45 @@ def _artifact_ref(row: Any) -> dict[str, str]:
     }
 
 
+def _artifact_job_id(row: Any) -> str:
+    # Top-level job_id is store ownership. execution_ref is provenance of a
+    # surfaced row and must not hide foreign-attributed evidence on this job.
+    if isinstance(row, dict):
+        return str(row.get("job_id") or "").strip()
+    return str(getattr(row, "job_id", "") or "").strip()
+
+
+def _rows_for_job(rows, job_id: str) -> list:
+    """Drop rows that claim a different job — identical artifact ids may collide."""
+    current = str(job_id or "").strip()
+    out = []
+    for row in rows or []:
+        claimed = _artifact_job_id(row)
+        if claimed and current and claimed != current:
+            continue
+        out.append(row)
+    return out
+
+
+def _bind_parallel_wave(session, aid, job_ids, objective: str) -> None:
+    """Record accepted-child membership on the existing local-job owner."""
+    register = getattr(session, "_register_parallel_wave", None)
+    if not callable(register):
+        return
+    ids = [str(x) for x in (job_ids or []) if str(x)]
+    if not ids:
+        return
+    try:
+        register(
+            f"local-wave-{aid}",
+            child_job_ids=ids,
+            objective=objective,
+            action_id=str(aid or ""),
+        )
+    except Exception:
+        pass
+
+
 def _session_durable(session):
     """Resolve the DurableState-like ledger used for PM artifact listing.
 
@@ -110,26 +149,82 @@ def _session_durable(session):
     raise AttributeError("session has no durable artifact store")
 
 
-def _swarm_artifact_delivery(session, job_id: str, result_rows: list[dict]) -> tuple[list[dict], dict]:
-    """Reconcile the PM store with the result projection; never model-pull evidence."""
 
-    expected_refs = [_artifact_ref(row) for row in result_rows]
+def _reuse_source_rows(decision) -> list[dict]:
+    """Complete source evidence for reuse; compact_artifacts are not authority."""
+    from harness.local_job_artifacts import is_bookkeeping_artifact
+
+    cand = getattr(decision, "candidate", None)
+    if isinstance(cand, dict):
+        rows = [
+            a for a in (cand.get("artifacts") or [])
+            if isinstance(a, dict) and not is_bookkeeping_artifact(a)
+        ]
+        if rows:
+            return rows
+    return [
+        a for a in (getattr(decision, "compact_artifacts", None) or [])
+        if isinstance(a, dict)
+    ]
+
+
+def _reuse_findings(rows: list[dict]) -> list[dict]:
+    return [
+        {
+            "type": a.get("type") or "finding",
+            "headline": a.get("headline") or a.get("uri") or "",
+            "id": a.get("id"),
+            "task_id": a.get("task_id"),
+            "sha256": a.get("sha256"),
+        }
+        for a in rows
+        if isinstance(a, dict)
+    ]
+
+
+def _project_reused_delivery(session, decision):
+    source_job_id = str(getattr(decision, "source_job_id", "") or "")
+    source_rows = _reuse_source_rows(decision)
+    delivered, delivery = _swarm_artifact_delivery(
+        session, source_job_id, source_rows, require_store=False,
+    )
+    return source_job_id, source_rows, delivered, delivery
+
+
+def _swarm_artifact_delivery(
+    session,
+    job_id: str,
+    result_rows: list[dict],
+    *,
+    require_store: bool = True,
+) -> tuple[list[dict], dict]:
+    """Reconcile the PM store with the result projection; never model-pull evidence.
+
+    ``require_store=True`` (synchronous PM swarm): a missing ledger is incomplete.
+    ``require_store=False`` (background / local / snapshot): a durable result
+    snapshot is the accounting authority after ephemeral PM state is gone.
+    """
+
+    scoped_result = _rows_for_job(result_rows, job_id)
+    expected_refs = [_artifact_ref(row) for row in scoped_result]
     canonical_rows: list[dict] = []
     store_ok = False
     try:
         durable = _session_durable(session)
-        raw_rows = list(durable.store.list_artifacts(job_id))
+        raw_rows = _rows_for_job(list(durable.store.list_artifacts(job_id)), job_id)
         store_ok = True
         if raw_rows:
             expected_refs = [_artifact_ref(row) for row in raw_rows]
-            canonical_rows = list(durable.format_artifacts(raw_rows))
+            canonical_rows = _rows_for_job(
+                list(durable.format_artifacts(raw_rows)), job_id,
+            )
     except Exception:
         canonical_rows = []
         store_ok = False
 
     by_id: dict[str, dict] = {}
     anonymous_rows: list[dict] = []
-    for row in [*result_rows, *canonical_rows]:
+    for row in [*scoped_result, *canonical_rows]:
         artifact_id = str(row.get("id") or "").strip()
         if not artifact_id:
             if row not in anonymous_rows:
@@ -156,15 +251,16 @@ def _swarm_artifact_delivery(session, job_id: str, result_rows: list[dict]) -> t
             ordered.append(row)
     ordered.extend(anonymous_rows)
 
-    if not store_ok:
+    if not store_ok and require_store:
         missing.insert(0, {"id": "pm-store", "task_id": "unavailable"})
     pm_artifacts = len(expected_refs)
     artifact_missing = [row for row in missing if row.get("id") != "pm-store"]
     available = max(0, pm_artifacts - len(artifact_missing))
+    store_complete = store_ok if require_store else True
     return ordered, {
         "pm_artifacts": pm_artifacts,
         "available_to_inspect": available,
-        "complete": store_ok and not artifact_missing,
+        "complete": store_complete and not artifact_missing,
         "missing": missing,
     }
 
@@ -484,14 +580,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                 engine='agentic',
                 tokens=0,
                 est_cost_usd=0.0,
-                findings=[
-                    {
-                        'type': a.get('type') or 'finding',
-                        'headline': a.get('headline') or a.get('uri') or '',
-                        'id': a.get('id'),
-                    }
-                    for a in (_reuse_decision.compact_artifacts or [])
-                ],
+                findings=_reuse_findings(_reuse_source_rows(_reuse_decision)),
                 reuse_status='reused',
                 source_job_id=_reuse_decision.source_job_id,
                 validation_fingerprint=_reuse_decision.validation_fingerprint,
@@ -524,6 +613,11 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                 act, aid, f'(swarm {aid} failed: {err})', is_native,
             )
             return None
+        _source_job_id, _source_rows, _delivered_reuse, _delivery_reuse = (
+            _project_reused_delivery(session, _reuse_decision)
+        )
+        if not _source_job_id:
+            _source_job_id = _reuse_decision.source_job_id or _sync_local_id
         _badge = {
             'job_id': _sync_local_id,
             'applied': True,
@@ -532,17 +626,19 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             'error': None,
             'objective': act.goal,
             'adapter': 'reuse',
+            'artifacts': _delivered_reuse,
+            'artifact_delivery': _delivery_reuse,
             **_prov,
         }
         yield ConvEvent('action_result', {
             'id': aid,
             'job_id': _sync_local_id,
-            'num': len(_reuse_decision.compact_artifacts or []),
+            'num': len(_delivered_reuse),
             'types': sorted({
                 str(a.get('type') or 'finding')
-                for a in (_reuse_decision.compact_artifacts or [])
+                for a in _delivered_reuse
             }),
-            'artifacts': list(_reuse_decision.compact_artifacts or [])[:12],
+            'artifacts': list(_delivered_reuse),
             'adapter': 'reuse',
             'mode': 'reuse',
             'auth_failure': '',
@@ -555,13 +651,15 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             'objective': act.goal,
             'result': _badge,
         })
-        digest = _reuse_decision.digest_text or (
-            f"REUSED {_reuse_decision.source_job_id} ({_reuse_decision.reason})"
+        manifest = _render_swarm_delivery_manifest(
+            _source_job_id, _delivered_reuse, _delivery_reuse,
         )
         session._append_action_result(
             act, aid,
-            f"(swarm {aid} reused prior validation; zero new execution spend)\n{digest}",
+            f"(swarm {aid} reused prior validation from {_source_job_id}; "
+            f"zero new execution spend)\n{manifest}",
             is_native,
+            force_inline=True,
         )
         return None
     _sync_register_role = 'explore'
@@ -795,7 +893,23 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         delivered_arts, artifact_delivery = _swarm_artifact_delivery(
             session, _job_id_text, ordered,
         )
-    yield ConvEvent('action_result', {
+    _pm_receipt = None
+    _store_jid_early = str(getattr(result, "job_id", "") or "").strip()
+    if _store_jid_early.startswith("job_") and not _demo_refused:
+        try:
+            from harness.financial_receipt import (
+                load_pm_cost_report,
+                persistable_pm_receipt,
+            )
+            durable = session.state()
+            store = getattr(durable, "store", None)
+            if store is not None:
+                _pm_receipt = persistable_pm_receipt(
+                    load_pm_cost_report(store, _store_jid_early)
+                )
+        except Exception:
+            _pm_receipt = None
+    _action_result = {
         'id': aid,
         'job_id': result.job_id,
         'num': _ui_num,
@@ -805,7 +919,10 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         'mode': result.mode,
         'auth_failure': auth_failure,
         'error': ('demo substrate -- not real codebase analysis' if _demo_refused else None),
-    })
+    }
+    if _pm_receipt:
+        _action_result['financial_receipt'] = _pm_receipt
+    yield ConvEvent('action_result', _action_result)
     _has_signal = bool(_signal)
     # Quality gate: a "finding" with no substance (a one-liner with no file
     # reference) must not turn the badge green -- a swarm whose workers choked
@@ -845,6 +962,8 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         'artifacts': delivered_arts,
         'artifact_delivery': artifact_delivery,
     }
+    if _pm_receipt:
+        _badge['financial_receipt'] = _pm_receipt
     _job_engine = _ui_adapter if _demo_refused else (result.adapter or 'agentic')
     # Best-effort routed model so finish cannot clobber a preview ROUTING stamp
     # with bare agentic/native.
@@ -1519,6 +1638,10 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                 if sub_aid not in emitted_results:
                     yield _result({'id': sub_aid, 'error': 'No jobs successfully dispatched'})
             if job_ids_collected:
+                _bind_parallel_wave(
+                    session, aid, job_ids_collected,
+                    f"Parallel wave of goals: {', '.join(goals)}",
+                )
                 yield ConvEvent('swarm_pending', {'job_ids': job_ids_collected, 'objective': f"Parallel wave of goals: {', '.join(goals)}"})
                 yield _result({'id': aid, 'job_id': ','.join(job_ids_collected), 'status': 'pending', 'message': f"Dispatched parallel background swarm jobs: {', '.join(job_ids_collected)}"})
                 session._append_action_result(act, aid, f"(run_parallel dispatched {len(job_ids_collected)} jobs in background: {', '.join(job_ids_collected)})", is_native)
@@ -1614,6 +1737,9 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                                 session, job_id, agentic_pin,
                             )
                             _reuse_registered = True
+                            _src_id, _src_rows, _delivered_reuse, _delivery_reuse = (
+                                _project_reused_delivery(session, decision)
+                            )
                             session._finish_local_job(
                                 job_id,
                                 ok=True,
@@ -1625,14 +1751,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                                 engine=engine,
                                 tokens=0,
                                 est_cost_usd=0.0,
-                                findings=[
-                                    {
-                                        'type': a.get('type') or 'finding',
-                                        'headline': a.get('headline') or a.get('uri') or '',
-                                        'id': a.get('id'),
-                                    }
-                                    for a in (decision.compact_artifacts or [])
-                                ],
+                                findings=_reuse_findings(_src_rows or _delivered_reuse),
                                 reuse_status='reused',
                                 source_job_id=decision.source_job_id,
                                 validation_fingerprint=decision.validation_fingerprint,
@@ -1665,6 +1784,8 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                                 'error': None,
                                 'objective': sub_goal,
                                 'adapter': 'reuse',
+                                'artifacts': _delivered_reuse,
+                                'artifact_delivery': _delivery_reuse,
                                 **_prov,
                             }
                             session._display_transcript.append(
@@ -1960,6 +2081,10 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                 yield ConvEvent('action_result', {'id': aid, 'status': 'skipped', 'message': skip_msg})
                 session._append_action_result(act, aid, f'(run_parallel {aid} skipped -- all {len(goals)} objectives already in flight)', is_native)
                 return None
+            _bind_parallel_wave(
+                session, aid, job_ids_collected,
+                f"Parallel wave of goals: {', '.join(goals)}",
+            )
             yield ConvEvent('swarm_pending', {'job_ids': job_ids_collected, 'objective': f"Parallel wave of goals: {', '.join(goals)}"})
             for _reuse_ev in buffered_reuse_events:
                 yield _reuse_ev
