@@ -14,6 +14,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
+from harness.diag import note as _diag_note
+
 from .sse import StreamEventDict, _sse_ring_begin, sse_pump, sse_write
 
 # Event kinds that mean a tool result / action completion has just been appended
@@ -21,7 +23,17 @@ from .sse import StreamEventDict, _sse_ring_begin, sse_pump, sse_write
 # crash right after an action never loses that appended chunk of the transcript.
 # Wave 4: action_result also covers background command pending receipts (job_id)
 # so launch identity survives a crash before the child process settles.
-CHECKPOINT_KINDS = frozenset({"action_result", "swarm_result"})
+CHECKPOINT_KINDS = frozenset({
+    "action_result",
+    "swarm_result",
+    # Terminal kinds: a crash in the 2s throttle window must not lose the
+    # final assistant text / error / interrupt receipt.
+    "assistant_done",
+    "error",
+    "interrupted",
+    "auto_halt",
+    "final",
+})
 
 
 def should_force_transcript_checkpoint(ev: Any) -> bool:
@@ -631,8 +643,8 @@ def stream_chat(
             _maybe_checkpoint(ev)
             try:
                 ring.append(ev.kind, ev.data or {}, getattr(ev, "turn", None))
-            except Exception:
-                pass
+            except Exception as exc:
+                _diag_note("stream_chat.ring_append", exc)
             if detached:
                 continue
             if not sse_write(handler.wfile, _encode_chat_sse_frame(ev)):
@@ -641,7 +653,7 @@ def stream_chat(
             sse_write(handler.wfile, b"data: {\"kind\": \"done\"}\n\n")
         try:
             ring.append("done", {})
-        except Exception:
-            pass
+        except Exception as exc:
+            _diag_note("stream_chat.ring_append_done", exc)
     finally:
         svc.finalize_turn(ctx)

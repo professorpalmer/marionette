@@ -479,6 +479,22 @@ describe("Wave 3 last-mile: one terminal explanation", () => {
     expect(chips[0]?.text).not.toMatch(/connection lost|closed before/i);
     expect(state.settle?.cause).toBe("length");
   });
+
+  it("error then framing done keeps the error settle (done is not success)", () => {
+    const { state, apply } = makeApplyDeps();
+    apply({ kind: "message_delta", data: { text: "partial" } });
+    apply({
+      kind: "error",
+      data: { error: "mid-turn boom", terminal_cause: "transport_error" },
+    });
+    expect(state.status).toBe("error");
+    expect(state.turnSettledRef.current).toBe(true);
+    apply({ kind: "done" });
+    expect(state.status).toBe("error");
+    expect(state.settle?.lifecycle).toBe("error");
+    const chips = state.items.filter((it) => it.kind === "turn_terminal");
+    expect(chips).toHaveLength(1);
+  });
 });
 
 describe("Wave 3 last-mile: session switch isolates recovery", () => {

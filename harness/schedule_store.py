@@ -153,7 +153,9 @@ def default_db_path() -> Path:
     return new_default
 
 
-# Backward-compatible name; computed at call time via default_db_path().
+# Legacy import-time home path only. Production and tests must call
+# default_db_path() (HARNESS_STATE_DIR / pytest-temp / migrate). Do not open
+# this constant as the live DB — it ignores env and pytest isolation.
 DEFAULT_DB_PATH = Path(os.path.expanduser("~/.pmharness/state/schedules.sqlite"))
 
 # remove() outcomes (truthy when the schedule was found).

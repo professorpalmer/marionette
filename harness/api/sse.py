@@ -16,6 +16,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any, Callable, Deque, Dict, Optional, Tuple, TypedDict, Union
 
 from harness.diag import note as _diag_note
@@ -522,6 +523,32 @@ def sse_pump(
                 ring.append("done", {})
             except Exception as exc:
                 _diag_note("sse_pump.ring_append_done", exc)
+    except Exception as exc:
+        # Headers already sent. A generator crash must still yield a terminal
+        # SSE the UI trusts (kind=error). Socket close is not a turn result.
+        _diag_note("sse_pump.gen", exc)
+        err_data = {
+            "error": str(exc) or type(exc).__name__,
+            "terminal_cause": "transport_error",
+        }
+        if ring is not None:
+            try:
+                ring.append("error", err_data)
+            except Exception as ring_exc:
+                _diag_note("sse_pump.ring_append_error", ring_exc)
+        if not detached:
+            err_ev = SimpleNamespace(kind="error", turn=0, data=err_data)
+            try:
+                sse_write(wfile, frame_for_event(err_ev))
+            except Exception as write_exc:
+                _diag_note("sse_pump.error_frame", write_exc)
+            if write_done:
+                sse_write(wfile, b"data: {\"kind\": \"done\"}\n\n")
+        if write_done and ring is not None:
+            try:
+                ring.append("done", {})
+            except Exception as ring_exc:
+                _diag_note("sse_pump.ring_append_done", ring_exc)
     finally:
         if ring is not None:
             ring.pinned = False

@@ -682,8 +682,11 @@ class SchedulerDaemon:
         if sid:
             try:
                 self.store.request_cancel(sid)
-            except Exception:
-                pass
+            except Exception as exc:
+                print(
+                    f"scheduler stop: cancel {sid} failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
 
     def tick(self, now: Optional[datetime] = None) -> List[dict]:
         return run_due(

@@ -287,6 +287,10 @@ def test_should_force_transcript_checkpoint_for_command_jobs():
     assert should_force_transcript_checkpoint(start) is True
     delta = SimpleNamespace(kind="message_delta", data={"text": "hi"})
     assert should_force_transcript_checkpoint(delta) is False
+    for kind in ("assistant_done", "error", "interrupted", "auto_halt", "final"):
+        assert should_force_transcript_checkpoint(
+            SimpleNamespace(kind=kind, data={})
+        ) is True
 
 
 def test_live_recoverable_running_before_restart(session):
