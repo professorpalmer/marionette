@@ -1449,6 +1449,15 @@ class ConversationJobsMixin:
                         if isinstance(res_job, dict):
                             res_job["artifacts"] = delivered
                             res_job["artifact_delivery"] = delivery
+                        try:
+                            with self._local_jobs_lock:
+                                local = (getattr(self, "_local_jobs", {}) or {}).get(job_id)
+                                if isinstance(local, dict):
+                                    local["artifact_delivery"] = delivery
+                                    if delivered and not local.get("artifacts"):
+                                        local["artifacts"] = list(delivered)
+                        except Exception:
+                            pass
                         manifest = _render_swarm_delivery_manifest(
                             job_id, delivered, delivery,
                         )
@@ -1523,6 +1532,11 @@ class ConversationJobsMixin:
                             if isinstance(res_job, dict) and res_job.get(_rk) in (None, "", [], {}):
                                 res_job[_rk] = value
                     self._display_transcript.append(display_result)
+                    if delivery is not None:
+                        try:
+                            self._note_parallel_child_receipt(job_id)
+                        except Exception:
+                            pass
                     # Nested actions are progressive via /api/swarm/live; mirror
                     # onto display cards only here under _busy for reload durability.
                     try:
