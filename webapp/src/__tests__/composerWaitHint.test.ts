@@ -3,7 +3,7 @@ import {
   isProviderFailureWaitHint,
   waitHintForBusyProgress,
 } from "../lib/composerWaitHint";
-import { deriveBusyProgress } from "../lib/turnProgress";
+import { deriveBusyProgress, type BusyStatus } from "../lib/turnProgress";
 import { createApplyStreamEvent } from "../components/conversation/streamEventHandler";
 import type { Item } from "../components/TranscriptList";
 import { describe, expect, it } from "vitest";
@@ -66,7 +66,7 @@ function makeWaitHintApplyDeps() {
     itemsRef: { current: [] as Item[] },
     typeBufRef: { current: "" },
     waitHint: null as string | null,
-    status: "thinking" as string,
+    status: "thinking" as BusyStatus,
   };
   state.itemsRef.current = state.items;
   const pendingJobIdsRef = { current: [] as string[] };

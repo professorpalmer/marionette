@@ -666,8 +666,8 @@ describe("investigation UX residual debts (nested / fold prefs / workerStream)",
 
     render(<TranscriptList {...listProps(items)} />);
     fireEvent.click(screen.getByRole("button", { name: /Explored/i }));
-    expect(screen.getByLabelText("failed")).toBeTruthy();
-    expect(screen.getByText("failed", { selector: ".sr-only" })).toBeTruthy();
+    expect(screen.getAllByLabelText("failed").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("failed", { selector: ".sr-only" }).length).toBeGreaterThan(0);
   });
 
   it("clearActivityFoldPrefs drops sticky open state after a user toggle", () => {

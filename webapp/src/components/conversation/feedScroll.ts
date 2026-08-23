@@ -43,11 +43,9 @@ export function feedBottomClearancePx(chromeHeight: number): number {
   return Math.max(72, Math.min(Math.round(chromeHeight), 480));
 }
 
-import { scrollToFeedEnd as scrollToFeedEndImpl } from "../../../electron/feed-scroll.cjs";
-
 /** Authoritative scrollTop for stick-to-bottom (not scrollToIndex align:end). */
 export function scrollToFeedEnd(scrollHeight: number, clientHeight: number): number {
-  return scrollToFeedEndImpl(scrollHeight, clientHeight);
+  return Math.max(0, scrollHeight - clientHeight);
 }
 
 export function isPinnedToBottom(
