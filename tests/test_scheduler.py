@@ -384,6 +384,20 @@ def test_daemon_stop_cancels_and_interruptible_wait(tmp_path):
     assert time.time() - started < 2.0
 
 
+def test_daemon_stop_logs_cancel_failure(tmp_path, capsys):
+    class _BoomStore:
+        def request_cancel(self, schedule_id):
+            raise RuntimeError("cancel-unavailable")
+
+    daemon = SchedulerDaemon(_BoomStore())
+    daemon._active["schedule_id"] = "sched-boom"
+    daemon.stop()
+    assert daemon._stop is True
+    out = capsys.readouterr().out
+    assert "sched-boom" in out
+    assert "cancel-unavailable" in out
+
+
 def test_keyboard_interrupt_leaves_recoverable_state(tmp_path):
     store = _store(tmp_path)
     s = _add_due(store, tmp_path, "crash")
