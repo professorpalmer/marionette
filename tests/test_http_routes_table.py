@@ -1,15 +1,13 @@
 """Characterization: build_post_json_routes / build_get_routes membership.
 
 Locks path→handler presence for a sample of guarded GET/POST routes, that
-handlers are callable, and that the auth public-path set stays aligned with
-PUBLIC_GET_PATHS (static shell) rather than the JSON route tables.
+handlers are callable, and that there is no public static-shell allowlist.
 Zero wire/behavior changes — table shape only.
 """
 from __future__ import annotations
 
 import inspect
 
-import harness.api.static as static_api
 import harness.http_routes as http_routes
 import harness.server as srv
 
@@ -87,13 +85,11 @@ def test_get_routes_sample_membership_and_callable():
         assert len(sig.parameters) >= 3, f"GET handler {path} arity unexpected"
 
 
-def test_public_get_paths_stay_out_of_json_route_tables():
-    """Bootstrap shell paths are PUBLIC_GET_PATHS, not table-driven API routes."""
+def test_no_public_static_shell_paths():
+    """App-only: no unauthenticated browser-shell GET allowlist."""
     post, get = _fresh_route_tables()
-    public = static_api.PUBLIC_GET_PATHS
-    assert public == frozenset({"/", "/index.html", "/app.js", "/app.css"})
-    assert srv.Handler._PUBLIC_GET_PATHS is public
-    for path in public:
+    assert not getattr(srv.Handler, "_PUBLIC_GET_PATHS", None)
+    for path in ("/", "/index.html", "/app.js", "/app.css"):
         assert path not in get
         assert path not in post
 
@@ -105,9 +101,5 @@ def test_preauth_wiki_connect_not_in_get_table():
 
 
 def test_guarded_api_sample_not_in_public_allowlist():
-    """Paths that dispatch tests treat as token-gated stay off PUBLIC_GET_PATHS."""
-    public = static_api.PUBLIC_GET_PATHS
-    for path in _SAMPLE_GUARDED_GET:
-        assert path not in public
-    for path in _SAMPLE_GUARDED_POST:
-        assert path not in public
+    """No public GET allowlist remains on Handler."""
+    assert not getattr(srv.Handler, "_PUBLIC_GET_PATHS", None)

@@ -1033,14 +1033,12 @@ def test_api_limit_and_known_session_scope(tmp_path):
 
 
 def test_api_route_is_guarded_and_state_is_not_overloaded():
-    import harness.api.static as static_api
     import harness.server as srv
     from harness.api.session_control import get_session_state
 
     srv._GET_ROUTES = None
     routes = srv._get_routes()
     assert "/api/session/performance" in routes
-    assert "/api/session/performance" not in static_api.PUBLIC_GET_PATHS
     sessions = SimpleNamespace(active="sess-a", rows=lambda: [{"id": "sess-a"}])
     svc = _perf_svc(state_dir=os.path.join("unused"), sessions=sessions)
     svc.get_pilot = lambda: SimpleNamespace(

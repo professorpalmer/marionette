@@ -17,7 +17,6 @@ import queue
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import secrets as _secrets
-from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse, parse_qs
 import tempfile
@@ -404,8 +403,6 @@ def _get_platform_adapters() -> dict:
     return {"adapters": adapters}
 
 
-_WEB = Path(__file__).resolve().parent / "web"
-from .api.static import PUBLIC_GET_PATHS as _STATIC_PUBLIC_GET_PATHS  # noqa: E402
 from . import http_routes as _http_routes  # noqa: E402
 # One shared session per server process (single-user local app).
 _state_dir = os.environ.get("HARNESS_STATE_DIR", "")
@@ -2699,12 +2696,6 @@ class Handler(BaseHTTPRequestHandler):
         status, payload = _files_api.save_upload(body, ctype, _UPLOAD_DIR)
         return self._send(status, json.dumps(payload))
 
-    # GET endpoints that are intentionally public (the same-origin renderer
-    # bootstrap assets, which must load BEFORE the page has the token to make
-    # authenticated calls). Everything else under /api requires the token.
-    # Owned by harness.api.static; Handler keeps the auth gate.
-    _PUBLIC_GET_PATHS = _STATIC_PUBLIC_GET_PATHS
-
     def do_GET(self):
         global _codegraph_status, _codegraph_status_reason
         global _codegraph_preflight, _codegraph_suggested_action
@@ -2713,20 +2704,16 @@ class Handler(BaseHTTPRequestHandler):
         # (no harness token). Must run before the centralized auth gate.
         if u.path == "/api/wiki/connect":
             return self._handle_wiki_connect(u)
-        # CENTRALIZED AUTH GATE: every non-public path requires the token.
+        # CENTRALIZED AUTH GATE: every GET except wiki connect requires the
+        # token. Electron talks over the authenticated IPC/token path; there
+        # is no public browser-shell allowlist.
         # Route bodies assume auth already happened (no per-GET token copies).
         # The legacy-stream check is the ONLY query-token acceptance, scoped to
         # loopback GETs on the old Electron bridge's streaming routes.
-        if u.path not in self._PUBLIC_GET_PATHS:
-            if self._guard():
-                return
-            if not self._token_ok() and not self._legacy_stream_token_ok(u):
-                return self._send(403, json.dumps({"error": "missing or bad token"}))
-        from .api import static as _static_api
-        shell = _static_api.try_static_shell(u.path, web_root=_WEB, token=_TOKEN)
-        if shell is not None:
-            status, body, ctype = shell
-            return self._send(status, body, ctype)
+        if self._guard():
+            return
+        if not self._token_ok() and not self._legacy_stream_token_ok(u):
+            return self._send(403, json.dumps({"error": "missing or bad token"}))
         q = parse_qs(u.query)
         route = _get_routes().get(u.path)
         if route is None:
