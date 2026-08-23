@@ -1,0 +1,65 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  html, body { margin: 0; height: 100%; background: #111; }
+  #feed {
+    height: 400px;
+    overflow-y: auto;
+    position: relative;
+    background: #1a1a1a;
+    color: #eee;
+    font: 14px/20px ui-sans-serif, system-ui, sans-serif;
+  }
+  #virtual-head { height: 1600px; }
+  #live-tail {
+    padding: 8px 12px;
+    white-space: pre-wrap;
+    min-height: 40px;
+  }
+  #clearance { height: 96px; }
+</style>
+</head>
+<body>
+  <div id="feed" data-testid="transcript-log">
+    <div id="virtual-head" data-testid="transcript-virtual-list"></div>
+    <div id="live-tail" data-testid="transcript-live-tail">line\n</div>
+    <div id="clearance" data-testid="feed-bottom-clearance"></div>
+  </div>
+  <script>
+    function scrollToFeedEnd(scrollHeight, clientHeight) {
+      return Math.max(0, scrollHeight - clientHeight);
+    }
+    const feed = document.getElementById("feed");
+    const tail = document.getElementById("live-tail");
+    function sample() {
+      const last = tail.getBoundingClientRect();
+      const box = feed.getBoundingClientRect();
+      const distance = feed.scrollHeight - feed.clientHeight - feed.scrollTop;
+      return {
+        scrollTop: feed.scrollTop,
+        scrollHeight: feed.scrollHeight,
+        clientHeight: feed.clientHeight,
+        lastBottom: last.bottom,
+        feedBottom: box.bottom,
+        overflow: last.bottom - box.bottom,
+        distance,
+      };
+    }
+    window.__pinToEnd = function () {
+      feed.scrollTop = scrollToFeedEnd(feed.scrollHeight, feed.clientHeight);
+      return sample();
+    };
+    window.__growTail = function (lines) {
+      const before = sample();
+      tail.textContent += (Array(lines).fill("token line of streaming text\n").join(""));
+      // Same-layout follow, matching Conversation before-paint RO follow.
+      feed.scrollTop = scrollToFeedEnd(feed.scrollHeight, feed.clientHeight);
+      const after = sample();
+      return { before, after, deltaHeight: after.scrollHeight - before.scrollHeight };
+    };
+    window.__sample = sample;
+  </script>
+</body>
+</html>
