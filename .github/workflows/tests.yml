@@ -30,7 +30,7 @@ jobs:
       - name: Install (rig + dev extras + Puppetmaster from PyPI)
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]" "puppetmaster-ai==1.22.18"
+          pip install -e ".[dev]" "puppetmaster-ai==1.22.20"
 
       - name: Run the offline test suite
         run: python -m pytest -q -p no:cacheprovider -n 4 --dist loadscope
@@ -57,7 +57,7 @@ jobs:
       - name: Install (rig + dev extras + Puppetmaster from PyPI)
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]" "puppetmaster-ai==1.22.18"
+          pip install -e ".[dev]" "puppetmaster-ai==1.22.20"
 
       - name: Run the offline test suite (shard)
         env:

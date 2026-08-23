@@ -33,6 +33,12 @@ export function chooseFeedFollowFlush(): "before_paint" {
   return "before_paint";
 }
 
+/** Bottom spacer so the last stream line sits above the composer/status stack. */
+export function feedBottomClearancePx(chromeHeight: number): number {
+  if (!Number.isFinite(chromeHeight) || chromeHeight <= 0) return 96;
+  return Math.max(72, Math.min(Math.round(chromeHeight), 480));
+}
+
 export function isPinnedToBottom(
   scrollHeight: number,
   scrollTop: number,

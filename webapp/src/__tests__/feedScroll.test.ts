@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   FEED_REPIN_THRESHOLD_PX,
   chooseFeedFollowFlush,
+  feedBottomClearancePx,
   feedResizeScrollFollowDecision,
   mergeFeedResizeObservationSnapshots,
   nextFeedPinState,
@@ -454,5 +455,14 @@ describe("scrollTopAfterFeedHeightChange chrome shrink", () => {
         releasedByGesture: true,
       }),
     ).toBeNull();
+  });
+});
+
+describe("feedBottomClearancePx", () => {
+  it("matches measured chrome and ignores junk heights", () => {
+    expect(feedBottomClearancePx(180)).toBe(180);
+    expect(feedBottomClearancePx(0)).toBe(96);
+    expect(feedBottomClearancePx(12)).toBe(72);
+    expect(feedBottomClearancePx(800)).toBe(480);
   });
 });
