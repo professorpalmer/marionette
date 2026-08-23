@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach } from "vitest";
 import {
   getAgentCommandIndexVersion,
+  listAgentCommandSessions,
   lookupAgentCommandSession,
   lookupAgentCommandSessionById,
   normalizeCommandKey,
@@ -18,12 +19,23 @@ describe("agentCommandIndex", () => {
   });
 
   it("looks up the latest session for a command", () => {
-    registerAgentCommandSession({ id: "old", command: "git pull", output: "a" });
-    registerAgentCommandSession({ id: "live", command: "$ git pull", output: "b" });
+    registerAgentCommandSession({ id: "old", command: "git pull", output: "a", state: "done" });
+    registerAgentCommandSession({ id: "live", command: "$ git pull", output: "b", state: "running" });
     const found = lookupAgentCommandSession("git pull");
     expect(found?.id).toBe("live");
     expect(found?.output).toBe("b");
+    expect(found?.state).toBe("running");
     expect(lookupAgentCommandSessionById("old")?.command).toBe("git pull");
+  });
+
+  it("keeps the latest terminal state and lists sessions newest-first", () => {
+    registerAgentCommandSession({ id: "card-1", command: "pytest -q", state: "running" });
+    registerAgentCommandSession({ id: "card-2", command: "npm test", state: "failed" });
+    registerAgentCommandSession({ id: "card-1", command: "pytest -q", output: "ok\n", state: "done" });
+    const sessions = listAgentCommandSessions();
+    expect(sessions.map((s) => s.id)).toEqual(["card-1", "card-2"]);
+    expect(lookupAgentCommandSessionById("card-1")?.state).toBe("done");
+    expect(lookupAgentCommandSessionById("card-2")?.state).toBe("failed");
   });
 
   it("does not bump version on streaming output for the same id", () => {

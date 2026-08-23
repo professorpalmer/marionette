@@ -25,9 +25,10 @@ import {
   Brain,
   RefreshCw,
 } from "lucide-react";
-import { api, type Config, type ContextUsageResponse } from "../../lib/api";
+import { api, type Config, type ContextUsageResponse, type Job } from "../../lib/api";
 import PilotPicker from "../PilotPicker";
 import WorkspaceChip from "./WorkspaceChip";
+import ComposerStatusStack from "./ComposerStatusStack";
 import { formatMentionListingCapMessage, type MentionListingCap } from "./slashCommands";
 import { filterSlashCommands } from "./composerInput";
 import {
@@ -66,6 +67,7 @@ export default function ComposerDock({
   dragIndex,
   dragOverIndex,
   queueItems,
+  swarmLiveJobs = [],
   queueLoadError,
   queueDragIndex,
   queueDragOverIndex,
@@ -156,6 +158,7 @@ export default function ComposerDock({
   dragIndex: number | null;
   dragOverIndex: number | null;
   queueItems: ServerQueueItem[];
+  swarmLiveJobs?: Job[];
   queueLoadError?: string | null;
   queueDragIndex: number | null;
   queueDragOverIndex: number | null;
@@ -478,6 +481,7 @@ export default function ComposerDock({
             })}
           </div>
         )}
+        <ComposerStatusStack swarmJobs={swarmLiveJobs} />
         {/* Server-side PROMPT QUEUE, stacked ABOVE the composer (Cursor-style)
             so the "runs next" items are always visible right over the input.
             These prompts are drained by the backend one full turn at a time. */}
