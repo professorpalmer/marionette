@@ -58,7 +58,11 @@ def test_subprocess_twine_fixture_never_returns_token(tmp_path, monkeypatch):
     monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
     token = "pypi-fixture-token-ABCDEF"
     put_secret("sess-a", "pypi", "token", token)
-    env = subprocess_env("sess-a", {"PATH": os.environ.get("PATH", "")})
+    base = {"PATH": os.environ.get("PATH", "")}
+    for key in ("SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT"):
+        if key in os.environ:
+            base[key] = os.environ[key]
+    env = subprocess_env("sess-a", base)
     assert env["TWINE_USERNAME"] == "__token__"
     assert env["TWINE_PASSWORD"] == token
     script = (
