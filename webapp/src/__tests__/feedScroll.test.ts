@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  FEED_GESTURE_IDLE_MS,
   FEED_REPIN_THRESHOLD_PX,
   chooseFeedFollowFlush,
   feedBottomClearancePx,
@@ -9,6 +10,7 @@ import {
   scrollTopAfterFeedHeightChange,
   settleFrameResult,
   shouldCancelFeedResizeFollowForManualScrollAway,
+  shouldDeferFollowDuringUserGesture,
   shouldShowJumpToBottom,
   shouldUnpinOnTouchMove,
   shouldUnpinOnWheel,
@@ -92,7 +94,7 @@ describe("scrollTopAfterFeedHeightChange", () => {
     const newHeight = 2200;
     const distanceFromBottom = newHeight - oldMax - client;
     expect(distanceFromBottom).toBeGreaterThan(FEED_REPIN_THRESHOLD_PX);
-    // Geometry-based reclassification would drop pin before follow runs.
+    // Growth must keep pin so ResizeObserver follow can advance to the new max.
     expect(
       nextFeedPinState({
         wasPinned: true,
@@ -104,7 +106,7 @@ describe("scrollTopAfterFeedHeightChange", () => {
         settling: false,
         repinPx: FEED_REPIN_THRESHOLD_PX,
       }),
-    ).toEqual({ pinned: false, releasedByGesture: false });
+    ).toEqual({ pinned: true, releasedByGesture: false });
     expect(
       scrollTopAfterFeedHeightChange({
         scrollHeight: newHeight,
@@ -464,5 +466,185 @@ describe("feedBottomClearancePx", () => {
     expect(feedBottomClearancePx(0)).toBe(96);
     expect(feedBottomClearancePx(12)).toBe(72);
     expect(feedBottomClearancePx(800)).toBe(480);
+  });
+});
+
+describe("feedScroll user-gesture deferral", () => {
+  const height = 2000;
+  const client = 400;
+  const max = height - client;
+
+  it("defers follow while a user gesture is active", () => {
+    expect(shouldDeferFollowDuringUserGesture(true)).toBe(true);
+    expect(shouldDeferFollowDuringUserGesture(false)).toBe(false);
+    expect(FEED_GESTURE_IDLE_MS).toBe(150);
+  });
+
+  it("does not re-pin into the 28px band while the user gesture is still active", () => {
+    const lightUpTop = height - client - 40;
+    expect(
+      nextFeedPinState({
+        wasPinned: false,
+        releasedByGesture: true,
+        scrollHeight: height,
+        scrollTop: height - client - 10,
+        clientHeight: client,
+        prevScrollTop: lightUpTop,
+        settling: false,
+        repinPx: FEED_REPIN_THRESHOLD_PX,
+        userGestureActive: true,
+      }),
+    ).toEqual({ pinned: false, releasedByGesture: true });
+    expect(
+      scrollTopAfterFeedHeightChange({
+        scrollHeight: height + 80,
+        scrollTop: height - client - 10,
+        clientHeight: client,
+        pinned: false,
+        settling: false,
+        releasedByGesture: true,
+        userGestureActive: true,
+      }),
+    ).toBeNull();
+    expect(
+      feedResizeScrollFollowDecision({
+        scrollHeight: height + 80,
+        scrollTop: height - client - 10,
+        clientHeight: client,
+        offsetHeight: client,
+        snapshotPinned: false,
+        snapshotSettling: false,
+        snapshotScrollTop: height - client - 10,
+        snapshotScrollHeight: height,
+        releasedByGesture: true,
+        userGestureActive: true,
+      }),
+    ).toEqual({ kind: "noop" });
+  });
+
+  it("does not steal scrollTop mid-flick above the tail", () => {
+    expect(
+      scrollTopAfterFeedHeightChange({
+        scrollHeight: 2400,
+        scrollTop: 800,
+        clientHeight: client,
+        pinned: false,
+        settling: false,
+        releasedByGesture: true,
+        userGestureActive: true,
+      }),
+    ).toBeNull();
+    expect(
+      feedResizeScrollFollowDecision({
+        scrollHeight: 2400,
+        scrollTop: 800,
+        clientHeight: client,
+        offsetHeight: client,
+        snapshotPinned: true,
+        snapshotSettling: false,
+        snapshotScrollTop: max,
+        snapshotScrollHeight: height,
+        releasedByGesture: true,
+        userGestureActive: true,
+      }),
+    ).toEqual({ kind: "noop" });
+  });
+
+  it("re-pins after gesture idle when near the tight bottom band", () => {
+    const lightUpTop = height - client - 40;
+    expect(
+      nextFeedPinState({
+        wasPinned: false,
+        releasedByGesture: true,
+        scrollHeight: height,
+        scrollTop: height - client - 10,
+        clientHeight: client,
+        prevScrollTop: lightUpTop,
+        settling: false,
+        repinPx: FEED_REPIN_THRESHOLD_PX,
+        userGestureActive: false,
+      }),
+    ).toEqual({ pinned: true, releasedByGesture: false });
+    expect(
+      scrollTopAfterFeedHeightChange({
+        scrollHeight: height,
+        scrollTop: height - client - 10,
+        clientHeight: client,
+        pinned: true,
+        settling: false,
+        releasedByGesture: false,
+        userGestureActive: false,
+      }),
+    ).toBe(max);
+  });
+
+  it("keeps pin when growth leaves the old max outside the re-pin band", () => {
+    const oldMax = 1600 - client;
+    const newHeight = 2200;
+    expect(newHeight - oldMax - client).toBeGreaterThan(FEED_REPIN_THRESHOLD_PX);
+    expect(
+      nextFeedPinState({
+        wasPinned: true,
+        releasedByGesture: false,
+        scrollHeight: newHeight,
+        scrollTop: oldMax,
+        clientHeight: client,
+        prevScrollTop: oldMax,
+        settling: false,
+        userGestureActive: false,
+      }),
+    ).toEqual({ pinned: true, releasedByGesture: false });
+  });
+
+  it("follows to the new max after arriving at the tail plus immediate growth", () => {
+    const arrived = nextFeedPinState({
+      wasPinned: false,
+      releasedByGesture: true,
+      scrollHeight: height,
+      scrollTop: max,
+      clientHeight: client,
+      prevScrollTop: max - 20,
+      settling: false,
+      userGestureActive: true,
+    });
+    expect(arrived).toEqual({ pinned: true, releasedByGesture: false });
+    const newHeight = height + 120;
+    expect(
+      nextFeedPinState({
+        wasPinned: arrived.pinned,
+        releasedByGesture: arrived.releasedByGesture,
+        scrollHeight: newHeight,
+        scrollTop: max,
+        clientHeight: client,
+        prevScrollTop: max,
+        settling: false,
+        userGestureActive: true,
+      }),
+    ).toEqual({ pinned: true, releasedByGesture: false });
+    expect(
+      scrollTopAfterFeedHeightChange({
+        scrollHeight: newHeight,
+        scrollTop: max,
+        clientHeight: client,
+        pinned: true,
+        settling: false,
+        releasedByGesture: false,
+        userGestureActive: true,
+      }),
+    ).toBe(newHeight - client);
+    expect(
+      feedResizeScrollFollowDecision({
+        scrollHeight: newHeight,
+        scrollTop: max,
+        clientHeight: client,
+        offsetHeight: client,
+        snapshotPinned: true,
+        snapshotSettling: false,
+        snapshotScrollTop: max,
+        snapshotScrollHeight: height,
+        releasedByGesture: false,
+        userGestureActive: true,
+      }),
+    ).toEqual({ kind: "follow", scrollTop: newHeight - client });
   });
 });

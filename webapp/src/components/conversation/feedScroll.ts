@@ -11,6 +11,10 @@ export const FEED_PIN_THRESHOLD_PX = 120;
  * and fight streaming growth.
  */
 export const FEED_REPIN_THRESHOLD_PX = 28;
+/** After the last wheel/touch/user-scroll event, wait this long before re-pin. */
+export const FEED_GESTURE_IDLE_MS = 150;
+/** Treat the viewport as at the true tail (not merely the 28px re-pin band). */
+export const FEED_TAIL_EPSILON_PX = 0.5;
 /** Inner live-reasoning pane re-pin threshold (smaller than outer feed). */
 export const THINKING_INNER_PIN_THRESHOLD_PX = 48;
 export const FEED_SETTLE_STABLE_FRAMES = 5;
@@ -76,8 +80,28 @@ export function pinStateFromScrollGeometry(
  * Rules:
  * - Upward wheel/touch sets ``releasedByGesture``; stay unpinned until the user
  *   scrolls toward the bottom AND lands within ``repinPx`` of the end.
+ * - A still-active user gesture does not re-pin merely by entering the 28px
+ *   band (mid-flick). Hitting the true tail (distance ~ 0) latches pin.
+ * - ``wasPinned && !releasedByGesture`` survives content growth that pushes
+ *   distance past the re-pin band — follow still owns the new max.
  * - Without a gesture release, pin follows the tight re-pin threshold only.
  */
+export function shouldDeferFollowDuringUserGesture(
+  userGestureActive: boolean,
+): boolean {
+  return userGestureActive;
+}
+
+export function isAtFeedTail(
+  scrollHeight: number,
+  scrollTop: number,
+  clientHeight: number,
+  epsilonPx: number = FEED_TAIL_EPSILON_PX,
+): boolean {
+  const maxScrollTop = Math.max(0, scrollHeight - clientHeight);
+  return Math.abs(scrollTop - maxScrollTop) < epsilonPx;
+}
+
 export function nextFeedPinState(opts: {
   wasPinned: boolean;
   releasedByGesture: boolean;
@@ -88,26 +112,52 @@ export function nextFeedPinState(opts: {
   prevScrollTop: number | null;
   settling: boolean;
   repinPx?: number;
+  /** Wheel/touch/scrollbar/keyboard gesture still in flight. */
+  userGestureActive?: boolean;
 }): { pinned: boolean; releasedByGesture: boolean } {
   const repinPx = opts.repinPx ?? FEED_REPIN_THRESHOLD_PX;
+  const userGestureActive = opts.userGestureActive ?? false;
   const distance =
     opts.scrollHeight - opts.scrollTop - opts.clientHeight;
   const nearBottom = distance < repinPx;
+  const atTail = isAtFeedTail(
+    opts.scrollHeight,
+    opts.scrollTop,
+    opts.clientHeight,
+  );
   const scrolledTowardBottom =
     opts.prevScrollTop != null && opts.scrollTop > opts.prevScrollTop + 0.5;
+  const scrolledAway =
+    opts.prevScrollTop != null && opts.scrollTop < opts.prevScrollTop - 0.5;
 
   if (opts.settling) {
     return { pinned: true, releasedByGesture: false };
   }
 
   if (opts.releasedByGesture) {
-    if (scrolledTowardBottom && nearBottom) {
+    // Mid-flick above the tail: do not latch just because we entered 28px.
+    if (userGestureActive && !atTail) {
+      return { pinned: false, releasedByGesture: true };
+    }
+    if (atTail || (scrolledTowardBottom && nearBottom)) {
       return { pinned: true, releasedByGesture: false };
     }
     return { pinned: false, releasedByGesture: true };
   }
 
-  if (nearBottom) {
+  // Keep stick-to-bottom across token growth. Height can jump so the old
+  // max sits well outside the 28px band before follow writes the new max.
+  if (opts.wasPinned) {
+    if (scrolledAway && !nearBottom) {
+      return { pinned: false, releasedByGesture: false };
+    }
+    return { pinned: true, releasedByGesture: false };
+  }
+
+  if (nearBottom && !userGestureActive) {
+    return { pinned: true, releasedByGesture: false };
+  }
+  if (atTail) {
     return { pinned: true, releasedByGesture: false };
   }
   return { pinned: false, releasedByGesture: false };
@@ -175,8 +225,19 @@ export function scrollTopAfterFeedHeightChange(opts: {
   pinned: boolean;
   settling: boolean;
   releasedByGesture: boolean;
+  userGestureActive?: boolean;
 }): number | null {
   if (opts.releasedByGesture) {
+    return null;
+  }
+  // Mid-flick above the tail: do not steal scrollTop. Once pinned (they
+  // latched the end), keep following growth even if the downward gesture
+  // has not idled yet — otherwise new tokens walk out from under them.
+  if (
+    shouldDeferFollowDuringUserGesture(opts.userGestureActive ?? false) &&
+    !opts.pinned &&
+    !opts.settling
+  ) {
     return null;
   }
   if (!opts.pinned && !opts.settling) {
@@ -256,11 +317,19 @@ export function feedResizeScrollFollowDecision(opts: {
   snapshotScrollTop: number;
   snapshotScrollHeight: number;
   releasedByGesture: boolean;
+  userGestureActive?: boolean;
 }): FeedResizeFollowResult {
   if (isOccludedScrollParentSize(opts.clientHeight, opts.offsetHeight)) {
     return { kind: "noop" };
   }
   if (opts.releasedByGesture) {
+    return { kind: "noop" };
+  }
+  if (
+    shouldDeferFollowDuringUserGesture(opts.userGestureActive ?? false) &&
+    !opts.snapshotPinned &&
+    !opts.snapshotSettling
+  ) {
     return { kind: "noop" };
   }
   if (

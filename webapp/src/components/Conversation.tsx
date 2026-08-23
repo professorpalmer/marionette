@@ -99,6 +99,7 @@ import {
 import { runCommandPaletteAction } from "../lib/commandPalette";
 import { focusSettingsPage } from "./SettingsShell";
 import {
+  FEED_GESTURE_IDLE_MS,
   FEED_REPIN_THRESHOLD_PX,
   chooseFeedFollowFlush,
   feedResizeScrollFollowDecision,
@@ -1088,6 +1089,9 @@ export default function Conversation({
   // scrolls back toward the true bottom — do not re-pin from the soft
   // "near bottom" band (that fight feels like scroll stutter while streaming).
   const scrollReleasedByGestureRef = useRef(false);
+  const userScrollGestureRef = useRef(false);
+  const programmaticScrollRef = useRef(false);
+  const gestureIdleTimerRef = useRef<number | null>(null);
   const prevFeedScrollTopRef = useRef<number | null>(null);
   // Hermes session-switch settle: while true, height-driven follow keeps
   // scrolling to bottom until height stabilizes (or wall-clock timeout).
@@ -1108,12 +1112,50 @@ export default function Conversation({
     scrollReleasedByGestureRef.current = false;
     setShowJumpToBottom(false);
     const scrollToEnd = scrollFeedToEndRef.current;
-    if (scrollToEnd) scrollToEnd();
-    else if (feedRef.current) feedRef.current.scrollTop = feedRef.current.scrollHeight;
+    if (scrollToEnd) {
+      programmaticScrollRef.current = true;
+      scrollToEnd();
+    } else if (feedRef.current) {
+      programmaticScrollRef.current = true;
+      feedRef.current.scrollTop = feedRef.current.scrollHeight;
+    }
   };
   useEffect(() => {
     const el = feedRef.current;
     if (!el) return;
+    const clearGestureIdleTimer = () => {
+      if (gestureIdleTimerRef.current != null) {
+        window.clearTimeout(gestureIdleTimerRef.current);
+        gestureIdleTimerRef.current = null;
+      }
+    };
+    const snapToBottomIfNear = () => {
+      const node = feedRef.current;
+      if (!node) return;
+      const distance = node.scrollHeight - node.scrollTop - node.clientHeight;
+      if (distance >= FEED_REPIN_THRESHOLD_PX) return;
+      scrollReleasedByGestureRef.current = false;
+      pinnedToBottomRef.current = true;
+      const maxScrollTop = Math.max(0, node.scrollHeight - node.clientHeight);
+      if (Math.abs(node.scrollTop - maxScrollTop) >= 0.5) {
+        programmaticScrollRef.current = true;
+        node.scrollTop = maxScrollTop;
+      }
+      prevFeedScrollTopRef.current = node.scrollTop;
+      publishJumpVisibilityRef.current();
+    };
+    const endUserScrollGesture = () => {
+      userScrollGestureRef.current = false;
+      snapToBottomIfNear();
+    };
+    const markUserScrollGesture = () => {
+      userScrollGestureRef.current = true;
+      clearGestureIdleTimer();
+      gestureIdleTimerRef.current = window.setTimeout(() => {
+        gestureIdleTimerRef.current = null;
+        endUserScrollGesture();
+      }, FEED_GESTURE_IDLE_MS);
+    };
     const applyPinState = () => {
       const next = nextFeedPinState({
         wasPinned: pinnedToBottomRef.current,
@@ -1124,6 +1166,7 @@ export default function Conversation({
         prevScrollTop: prevFeedScrollTopRef.current,
         settling: scrollSettlingRef.current,
         repinPx: FEED_REPIN_THRESHOLD_PX,
+        userGestureActive: userScrollGestureRef.current,
       });
       pinnedToBottomRef.current = next.pinned;
       scrollReleasedByGestureRef.current = next.releasedByGesture;
@@ -1131,12 +1174,21 @@ export default function Conversation({
       publishJumpVisibilityRef.current();
     };
     const onScroll = () => {
+      if (programmaticScrollRef.current) {
+        programmaticScrollRef.current = false;
+        applyPinState();
+        return;
+      }
+      markUserScrollGesture();
       applyPinState();
     };
     // Fast-path unpin on upward wheel/touch before the next thinking token
     // re-runs stick-to-bottom -- otherwise long reasoning streams keep yanking
     // the feed back to the end and the user cannot scroll the Thought block.
     const onWheel = (e: WheelEvent) => {
+      if (e.deltaY !== 0) {
+        markUserScrollGesture();
+      }
       if (shouldUnpinOnWheel(e.deltaY, scrollSettlingRef.current)) {
         scrollSettlingRef.current = false;
         scrollReleasedByGestureRef.current = true;
@@ -1155,6 +1207,7 @@ export default function Conversation({
       touchY = e.touches[0]?.clientY ?? null;
     };
     const onTouchMove = (e: TouchEvent) => {
+      markUserScrollGesture();
       const y = e.touches[0]?.clientY;
       if (shouldUnpinOnTouchMove(touchY, y ?? null, scrollSettlingRef.current)) {
         scrollSettlingRef.current = false;
@@ -1164,6 +1217,9 @@ export default function Conversation({
       }
       touchY = y ?? touchY;
     };
+    const onTouchEnd = () => {
+      markUserScrollGesture();
+    };
     el.addEventListener("scroll", onScroll, { passive: true });
     // Capture phase: nested ThinkingBlock stops wheel bubble while scrolling
     // inside its pane — unpin must run first or stream tokens re-yank the feed.
@@ -1171,12 +1227,17 @@ export default function Conversation({
     el.addEventListener(FEED_UNPIN_BUBBLE_EVENT, onNestedFeedUnpin);
     el.addEventListener("touchstart", onTouchStart, { passive: true });
     el.addEventListener("touchmove", onTouchMove, { passive: true });
+    el.addEventListener("touchend", onTouchEnd, { passive: true });
+    el.addEventListener("touchcancel", onTouchEnd, { passive: true });
     return () => {
+      clearGestureIdleTimer();
       el.removeEventListener("scroll", onScroll);
       el.removeEventListener("wheel", onWheel, feedWheelUnpinListenerOptions().capture);
       el.removeEventListener(FEED_UNPIN_BUBBLE_EVENT, onNestedFeedUnpin);
       el.removeEventListener("touchstart", onTouchStart);
       el.removeEventListener("touchmove", onTouchMove);
+      el.removeEventListener("touchend", onTouchEnd);
+      el.removeEventListener("touchcancel", onTouchEnd);
     };
   }, []);
   const applyFeedResizeFollow = (
@@ -1194,9 +1255,11 @@ export default function Conversation({
       snapshotScrollTop: snapshot.scrollTop,
       snapshotScrollHeight: snapshot.scrollHeight,
       releasedByGesture: scrollReleasedByGestureRef.current,
+      userGestureActive: userScrollGestureRef.current,
     });
     if (result.kind === "noop") return;
     if (result.kind === "follow") {
+      programmaticScrollRef.current = true;
       el.scrollTop = result.scrollTop;
     }
     pinnedToBottomRef.current = true;
@@ -1256,8 +1319,13 @@ export default function Conversation({
     scrollSettlingRef.current = true;
     setShowJumpToBottom(false);
     const scrollToEnd = scrollFeedToEndRef.current;
-    if (scrollToEnd) scrollToEnd();
-    else el.scrollTop = el.scrollHeight;
+    if (scrollToEnd) {
+      programmaticScrollRef.current = true;
+      scrollToEnd();
+    } else {
+      programmaticScrollRef.current = true;
+      el.scrollTop = el.scrollHeight;
+    }
     let frame = 0;
     let stableFrames = 0;
     let lastHeight = el.scrollHeight;
@@ -1285,8 +1353,13 @@ export default function Conversation({
       frame = step.frame;
       lastHeight = height;
       const scrollToEnd = scrollFeedToEndRef.current;
-      if (scrollToEnd) scrollToEnd();
-      else node.scrollTop = height;
+      if (scrollToEnd) {
+        programmaticScrollRef.current = true;
+        scrollToEnd();
+      } else {
+        programmaticScrollRef.current = true;
+        node.scrollTop = height;
+      }
       pinnedToBottomRef.current = true;
       if (step.done) {
         scrollSettlingRef.current = false;
@@ -1319,6 +1392,7 @@ export default function Conversation({
         raf2 = window.requestAnimationFrame(() => {
           const node = feedRef.current;
           if (!node) return;
+          programmaticScrollRef.current = true;
           node.scrollTop = restoreFeedScrollAfterFocus({
             savedScrollTop: saved,
             pinned: pinnedToBottomRef.current,
@@ -1359,6 +1433,7 @@ export default function Conversation({
       return;
     }
     if (!isChatColumnActive(prev) && isChatColumnActive(activeTab)) {
+      programmaticScrollRef.current = true;
       node.scrollTop = restoreFeedScrollAfterFocus({
         savedScrollTop: fileTabScrollTopRef.current,
         pinned: pinnedToBottomRef.current,
