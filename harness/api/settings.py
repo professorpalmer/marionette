@@ -50,6 +50,11 @@ def get_config(svc: SettingsServices) -> tuple[int, JsonPayload]:
     except Exception:
         reasoning_effort = "low"
     identity = _backend_source_identity()
+    try:
+        from ..keys import get_key_bootstrap_issues
+        key_bootstrap_issues = get_key_bootstrap_issues()
+    except Exception:
+        key_bootstrap_issues = []
     models = svc.available_pilots()
     try:
         from ..model_visibility import picker_model_labels
@@ -74,6 +79,7 @@ def get_config(svc: SettingsServices) -> tuple[int, JsonPayload]:
         "package_version": identity.get("package_version", ""),
         "checkout_sha": identity.get("checkout_sha", ""),
         "app_root": identity.get("app_root", ""),
+        "key_bootstrap_issues": key_bootstrap_issues,
     }
 
 

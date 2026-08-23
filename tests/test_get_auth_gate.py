@@ -66,13 +66,14 @@ def test_protected_get_endpoints_reject_wrong_token():
         httpd.server_close()
 
 
-def test_public_assets_stay_open():
-    # The renderer bootstrap assets must load BEFORE the page has the token.
+def test_former_shell_paths_require_token():
+    # The legacy browser shell is gone; /, /index.html are not public.
     srv, httpd, port = _serve()
     try:
-        for path in ("/", "/index.html"):
-            resp = _get(port, path)  # no token
-            assert resp.status == 200, f"{path} should be public"
+        for path in ("/", "/index.html", "/app.js", "/app.css"):
+            with pytest.raises(urllib.error.HTTPError) as ei:
+                _get(port, path)  # no token
+            assert ei.value.code == 403, f"{path} must 403 without a token, got {ei.value.code}"
     finally:
         httpd.shutdown()
         httpd.server_close()

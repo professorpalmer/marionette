@@ -3,6 +3,7 @@
 import json
 import sqlite3
 import threading
+import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 
@@ -70,5 +71,26 @@ def test_api_artifacts_degrades_on_locked(monkeypatch):
         resp = urllib.request.urlopen(req, timeout=10)
         assert resp.status == 200
         assert json.loads(resp.read().decode()) == []
+    finally:
+        httpd.shutdown()
+
+
+
+def test_api_artifacts_empty_job_id_is_400(monkeypatch):
+    monkeypatch.setattr(server, "_session", _Session(_State(artifacts=[])))
+    httpd, port = _server()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/artifacts?job_id=",
+            method="GET",
+            headers={"X-Harness-Token": server._TOKEN},
+        )
+        try:
+            urllib.request.urlopen(req, timeout=10)
+            assert False, "expected 400"
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+            data = json.loads(e.read().decode())
+            assert data == {"error": "missing job id"}
     finally:
         httpd.shutdown()

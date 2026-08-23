@@ -29,7 +29,6 @@ Start here, then follow the map:
 | [NOTICE.md](NOTICE.md) | Third-party attributions. |
 | [Extractive Residuals After Compaction](https://professorpalmer.github.io/catalog-residual/) | Compaction residual lab and paper (separate repo). |
 | [docs/discord-mcp.md](docs/discord-mcp.md) | Optional recipe: wire a MIT Discord MCP (Docker + `manage_mcp`), not a first-party Discord product. |
-| [docs/LEGACY_FRONTEND.md](docs/LEGACY_FRONTEND.md) | Historical frontend notes (not the shipping Electron UI). |
 
 ## What it is
 

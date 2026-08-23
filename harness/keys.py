@@ -8,6 +8,24 @@ from typing import Optional
 from .secure_files import restrict_to_owner
 from .diag import note as _diag
 
+# Non-fatal key-bootstrap failures (server keeps running). Cleared at the
+# start of each load_api_keys_on_startup so a re-run does not pile stale rows.
+_KEY_BOOTSTRAP_ISSUES: list[dict[str, str]] = []
+
+
+def record_key_bootstrap_issue(step: str, exc: BaseException) -> None:
+    """Record a silent bootstrap failure and keep the existing diag trail."""
+    _KEY_BOOTSTRAP_ISSUES.append({
+        "step": str(step),
+        "message": f"{type(exc).__name__}: {exc}",
+    })
+    _diag(step if "." in str(step) else f"keys.{step}", exc)
+
+
+def get_key_bootstrap_issues() -> list[dict[str, str]]:
+    """Copy of recorded bootstrap issues for /api/config."""
+    return [dict(item) for item in _KEY_BOOTSTRAP_ISSUES]
+
 # Doctor / hermetic fixtures sometimes write obvious fake tokens into keys.json.
 # Those must never mark a provider "configured" for registry seeding or routing.
 _PLACEHOLDER_CREDENTIAL_RE = re.compile(
@@ -400,7 +418,7 @@ def migrate_legacy_keys_into_state() -> list:
     try:
         _write_keys(merged)
     except Exception as exc:
-        _diag("keys.migrate_legacy", exc)
+        record_key_bootstrap_issue("migrate_legacy", exc)
         return []
     _diag("keys.migrate_legacy", msg=f"migrated={','.join(migrated)}")
     return migrated
@@ -748,12 +766,13 @@ def persist_env_api_keys() -> list[str]:
             _write_keys(keys)
             _diag("keys.persist_env_api_keys", msg=f"imported={','.join(imported)}")
         except Exception as exc:
-            _diag("keys.persist_env_api_keys", exc)
+            record_key_bootstrap_issue("persist_env_api_keys", exc)
             return []
     return imported
 
 
 def load_api_keys_on_startup(reach: str):
+    _KEY_BOOTSTRAP_ISSUES.clear()
     _keyfile = os.environ.get("HARNESS_KEY_FILE", "")
     if _keyfile and os.path.exists(_keyfile):
         _envvar = get_env_var_for_reach(reach)
@@ -761,20 +780,20 @@ def load_api_keys_on_startup(reach: str):
             try:
                 with open(_keyfile, encoding="utf-8", errors="replace") as _kf:
                     os.environ[_envvar] = _kf.read().strip()
-            except Exception:
-                pass
+            except Exception as exc:
+                record_key_bootstrap_issue("load_keyfile", exc)
     # Fold pre-state-dir keys into the canonical file before anything reads it,
     # so an upgraded install stops depending on the legacy path to stay keyed.
     try:
         migrate_legacy_keys_into_state()
     except Exception as exc:
-        _diag("keys.migrate_legacy_on_startup", exc)
+        record_key_bootstrap_issue("migrate_legacy_on_startup", exc)
     # Capture login-shell / Electron-merged keys into durable store first so
     # agentic registry sync (and the next cold start) see them.
     try:
         persist_env_api_keys()
     except Exception as exc:
-        _diag("keys.persist_env_on_startup", exc)
+        record_key_bootstrap_issue("persist_env_on_startup", exc)
     keys = _read_keys()
     # Inject every stored provider credential so pilots/workers see them after
     # restart — not only the active reach. Skip obvious placeholders so a stale
@@ -799,8 +818,8 @@ def load_api_keys_on_startup(reach: str):
         try:
             from .providers import ensure_zai_worker_base_url
             ensure_zai_worker_base_url()
-        except Exception:
-            pass
+        except Exception as exc:
+            record_key_bootstrap_issue("ensure_zai_worker_base_url", exc)
     # Capture env-provided keys before scrubbing so a toggled-off provider can be
     # re-enabled later in the same session without re-pasting the key.
     snapshot_env_keys()

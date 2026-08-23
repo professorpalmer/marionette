@@ -169,9 +169,9 @@ objectives persist under the same state root as `schedules.sqlite` (see §9d).
 
 - **GUI** (`webapp/` + `harness/server.py`): the shipping UI is the Electron
   app in `webapp/` (React renderer, IPC bridges, three-pane layout). The stdlib
-  HTTP + SSE backend streams session events to the renderer. `harness/web/` is a
-  legacy browser fallback only (`docs/LEGACY_FRONTEND.md`); new UI work belongs
-  in `webapp/src`. Mid-turn SSE reattach: if the renderer drops the live stream,
+  HTTP + SSE backend streams session events to the renderer. There is one UI;
+  new UI work belongs in `webapp/src`. Mid-turn SSE reattach: if the renderer
+  drops the live stream,
   `GET /api/chat/events?since=<cursor>` replays from a bounded per-generation
   ring; `ring_miss`, `generation_mismatch`, or `cursor_gap` responses trigger a
   hydrate path instead of silently skipping events.
@@ -186,9 +186,8 @@ objectives persist under the same state root as `schedules.sqlite` (see §9d).
 The GUI server (`harness/server.py`) is local-first but not trust-open. A
 per-process auth token (`_TOKEN`, `HARNESS_TOKEN` override) is written chmod-600
 and checked by a CENTRALIZED gate in `do_GET`: every path is rejected unless the
-request carries the token, with a single public allowlist -- `_PUBLIC_GET_PATHS =
-{"/", "/index.html", "/app.js", "/app.css"}` (the static shell that bootstraps
-the authenticated client). Host and Origin are also validated. The API is
+request carries the token (wiki connect is the one pre-auth loopback exception).
+Host and Origin are also validated. The API is
 authenticated by default; there is no per-endpoint opt-in. After the gate,
 `do_GET` and `_handle_post_json` dispatch via path→handler tables in
 `harness/http_routes.py` (route bodies remain under `harness/api/*`); `do_POST`
@@ -309,7 +308,7 @@ harness/          the product (principal modules below; mixins compose the sessi
                     providers, files, attach, skills, auth, worktrees,
                     terminals, commands, hooks, checkpoints, git, reviews,
                     registry, platform, codegraph, workspace, settings,
-                    session_control, usage, cost, pilot, static) wired from
+                    session_control, usage, cost, pilot) wired from
                     server.Handler. Handler keeps auth/token gates; route
                     bodies live in api/* with *Services dataclasses. auth
                     re-exports providers' pool/OAuth/Cursor-CLI handlers
@@ -318,9 +317,7 @@ harness/          the product (principal modules below; mixins compose the sessi
                     reindex/apply-excludes and (via codegraph_index) the
                     background indexer/status/stale-refresh runtime;
                     workspace owns open/forget/get/symbols/workspaces CRUD
-                    plus recent-list persistence helpers; static owns the
-                    legacy browser-shell GET /, /index.html, /app.js,
-                    /app.css bodies (token meta injection); settings owns
+                    plus recent-list persistence helpers; settings owns
                     /api/settings and /api/config; session_control owns
                     stash/interrupt/rewind/steer/queue plus persist/compact/
                     state/context_at/swarm-results and restart-prepare

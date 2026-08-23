@@ -72,6 +72,7 @@ def test_get_config_and_settings(monkeypatch):
     assert payload["pilot_ready"] is False
     assert payload["agentic_ready"] is False
     assert isinstance(payload.get("model_labels"), dict)
+    assert isinstance(payload.get("key_bootstrap_issues"), list)
     assert get_settings(svc)[1]["budget"] == 3
 
 
@@ -233,3 +234,35 @@ def test_post_settings_unknown_driver(monkeypatch):
     code, payload = post_settings({"driver": "nope:model"}, svc)
     assert code == 400
     assert "Unknown" in payload["error"]
+
+
+
+def test_get_config_includes_recorded_key_bootstrap_issues(monkeypatch):
+    monkeypatch.setattr(
+        "harness.edit_engines.select_edit_engine", lambda cfg: "native", raising=False
+    )
+    monkeypatch.setattr(
+        "harness.edit_engines.pilot_keys_ready", lambda: False, raising=False
+    )
+    monkeypatch.setattr(
+        "harness.edit_engines.workers_ready", lambda: False, raising=False
+    )
+    monkeypatch.setattr(
+        "harness.reasoning_effort.current_reasoning_effort",
+        lambda: "low",
+        raising=False,
+    )
+    from harness.keys import record_key_bootstrap_issue, get_key_bootstrap_issues
+
+    # Isolate from other tests that may have recorded issues.
+    get_key_bootstrap_issues()
+    from harness import keys as K
+    K._KEY_BOOTSTRAP_ISSUES.clear()
+    record_key_bootstrap_issue("migrate_legacy", OSError("no space"))
+    svc, _, _, _ = _svc()
+    code, payload = get_config(svc)
+    assert code == 200
+    assert payload["key_bootstrap_issues"] == [
+        {"step": "migrate_legacy", "message": "OSError: no space"}
+    ]
+    K._KEY_BOOTSTRAP_ISSUES.clear()
