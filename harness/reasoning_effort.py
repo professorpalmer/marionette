@@ -36,6 +36,7 @@ _ALIASES = {
     "extra high": "xhigh",
     "extrahigh": "xhigh",
     "x-high": "xhigh",
+    "ultra": "xhigh",
 }
 
 

@@ -77,3 +77,76 @@ def test_product_worker_adapter_prefers_keyed_agentic(monkeypatch):
     from harness.swarm_worker_route import resolve_product_worker_adapter
 
     assert resolve_product_worker_adapter() == "agentic"
+
+
+# ---------------------------------------------------------------------------
+# Reasoning-effort support per model spec
+# ---------------------------------------------------------------------------
+
+
+def test_reasoning_support_codex_always():
+    from harness.provider_capabilities import model_supports_reasoning_effort
+
+    # canonical name
+    assert model_supports_reasoning_effort("openai-codex", "gpt-5.6-luna") is True
+    assert model_supports_reasoning_effort("openai-codex", "gpt-5.6-sol") is True
+    # aliases
+    assert model_supports_reasoning_effort("codex-plan", "gpt-5.6-luna") is True
+    assert model_supports_reasoning_effort("chatgpt-codex", "gpt-5.6-sol") is True
+
+
+def test_reasoning_support_anthropic_uses_model_check():
+    from harness.provider_capabilities import model_supports_reasoning_effort
+
+    # opus → True
+    assert model_supports_reasoning_effort("anthropic", "claude-opus-4-8") is True
+    # sonnet → True
+    assert model_supports_reasoning_effort("anthropic", "claude-sonnet-4-5") is True
+    # Bedrock sonnet → True
+    assert model_supports_reasoning_effort("bedrock", "us.anthropic.claude-sonnet-4-20250514-v1:0") is True
+    # haiku → False
+    assert model_supports_reasoning_effort("anthropic", "claude-haiku-4-5") is False
+    # non-claude → False
+    assert model_supports_reasoning_effort("anthropic", "gpt-5.6-luna") is False
+
+
+def test_reasoning_support_opencode_go_known_families():
+    from harness.provider_capabilities import model_supports_reasoning_effort
+
+    # GLM-5.3 has a dialect
+    assert model_supports_reasoning_effort("opencode-go", "glm-5.3") is True
+    # GLM-5.2 has a dialect
+    assert model_supports_reasoning_effort("opencode-go", "glm-5.2") is True
+    # Kimi K2 has a dialect
+    assert model_supports_reasoning_effort("opencode-go", "kimi-k2.7-code") is True
+    # DeepSeek-thinking has a dialect
+    assert model_supports_reasoning_effort("opencode-go", "deepseek-v4-flash") is True
+    # Unrecognised → False (reasoning_body_extras returns {})
+    assert model_supports_reasoning_effort("opencode-go", "mimo-v2.5") is False
+    assert model_supports_reasoning_effort("opencode-go", "grok-4.5") is False
+
+    # alias resolution for "opencode_go"
+    assert model_supports_reasoning_effort("opencode_go", "glm-5.3") is True
+
+
+def test_reasoning_support_opencode_zen_and_openrouter():
+    from harness.provider_capabilities import model_supports_reasoning_effort
+
+    # Always True: relay passes reasoning_effort through
+    assert model_supports_reasoning_effort("opencode-zen", "deepseek-v4-flash-free") is True
+    assert model_supports_reasoning_effort("opencode-zen", "mimo-v2.5-free") is True
+    assert model_supports_reasoning_effort("openrouter", "anthropic/claude-sonnet-4") is True
+    assert model_supports_reasoning_effort("openrouter", "openai/gpt-5.6-luna") is True
+
+    # alias resolution
+    assert model_supports_reasoning_effort("opencode_zen", "deepseek-v4-flash-free") is True
+
+
+def test_reasoning_support_unknown_provider_default_true():
+    """Where genuinely unknowable, the user wants the knob to appear."""
+    from harness.provider_capabilities import model_supports_reasoning_effort
+
+    assert model_supports_reasoning_effort("cursor-cli", "gpt-5.6-luna") is True
+    assert model_supports_reasoning_effort("nous", "model-x") is True
+    assert model_supports_reasoning_effort("", "") is True
+    assert model_supports_reasoning_effort("gemini", "gemini-2.5-pro") is True

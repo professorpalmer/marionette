@@ -47,6 +47,8 @@ export type Config = {
   /** Any keyed harness provider, including Pilot-only cursor-cli. */
   pilot_ready?: boolean;
   reasoning_effort?: ReasoningEffort;
+  /** Per-model-spec reasoning-effort support map (keyed by "provider:model"). */
+  reasoning_support?: Record<string, boolean>;
 };
 export type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh" | "max";
 export type Settings = {
