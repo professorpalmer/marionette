@@ -341,6 +341,35 @@ def catalog(available_only: bool = True, *, force: bool = False) -> list:
     return out
 
 
+def compute_reasoning_support(specs: Optional[list] = None) -> dict:
+    """Per-spec ``supports_reasoning_effort`` map for the frontend picker.
+
+    Returns ``{"provider:model": true|false, ...}`` for all specs in *specs*
+    (or ``enabled_pilots()``).  Uses
+    :func:`harness.provider_capabilities.model_supports_reasoning_effort` so
+    the backend's existing per-adapter logic is the single source of truth.
+    """
+    visible: list[str] = []
+    seen: set[str] = set()
+    source = specs if specs is not None else enabled_pilots()
+    for spec in source or []:
+        text = str(spec or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            visible.append(text)
+    if not visible:
+        return {}
+    from .provider_capabilities import model_supports_reasoning_effort
+
+    out: dict[str, bool] = {}
+    for spec in visible:
+        parts = spec.split(":", 1)
+        provider_name = parts[0] if len(parts) > 1 else ""
+        model_id = parts[1] if len(parts) > 1 else parts[0]
+        out[spec] = model_supports_reasoning_effort(provider_name, model_id)
+    return out
+
+
 def picker_model_labels(specs: Optional[list] = None, *, force: bool = False) -> dict:
     """Friendly names for visible picker specs, keyed by ``provider:model``.
 

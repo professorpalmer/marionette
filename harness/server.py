@@ -2944,10 +2944,12 @@ def _get_settings_dict():
     preflight_ok = (_session.preflight() is None)
     models = _available_pilots()
     try:
-        from .model_visibility import picker_model_labels
+        from .model_visibility import picker_model_labels, compute_reasoning_support
         model_labels = picker_model_labels(models, force=False)
+        reasoning_support = compute_reasoning_support(models)
     except Exception:
         model_labels = {}
+        reasoning_support = {}
     return {
         "driver": _cfg.driver,
         "reach": reach,
@@ -2970,6 +2972,7 @@ def _get_settings_dict():
             os.environ.get("HARNESS_WORKER_TOKEN_BUDGET", "").strip() or "250000"
         ),
         "reasoning_effort": current_reasoning_effort(),
+        "reasoning_support": reasoning_support,
         "compactionResidual": _settings_compaction_residual(),
         "state_dir": _session.state_dir,
         "repo": _cfg.repo,

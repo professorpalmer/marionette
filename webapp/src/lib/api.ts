@@ -47,6 +47,8 @@ export type Config = {
   /** Any keyed harness provider, including Pilot-only cursor-cli. */
   pilot_ready?: boolean;
   reasoning_effort?: ReasoningEffort;
+  /** Per-model-spec reasoning-effort support map (keyed by "provider:model"). */
+  reasoning_support?: Record<string, boolean>;
 };
 export type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh" | "max";
 export type Settings = {
@@ -201,6 +203,8 @@ export type Job = {
   id: string;
   goal: string;
   status: string;
+  /** Harness chat that dispatched this job, when stamped. */
+  session_id?: string;
   role?: string;
   adapter?: string;
   /** "harness" (Marionette-dispatched) or "cli" (Cursor MCP / terminal PM). */

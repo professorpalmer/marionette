@@ -22,6 +22,8 @@ from harness.reasoning_effort import (
     ("Medium", "medium"),
     ("EXTRA HIGH", "xhigh"),
     ("extra_high", "xhigh"),
+    ("ultra", "xhigh"),
+    ("ULtra", "xhigh"),
     ("none", "none"),
     ("off", "none"),
     ("", DEFAULT_CODEX_REASONING_EFFORT),

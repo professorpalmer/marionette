@@ -96,3 +96,61 @@ def cursor_platform_workers_ready(env: Optional[Any] = None) -> bool:
         return bool(str(mapping.get("CURSOR_API_KEY") or "").strip())
     except Exception:
         return False
+
+
+def model_supports_reasoning_effort(provider_name: str, model_id: str) -> bool:
+    """Return True when the given *provider_name*:*model_id* pair supports a
+    reasoning-effort knob over the wire.
+
+    Uses the existing per-adapter logic so no new model-family knowledge is
+    duplicated:
+
+    * ``openai-codex`` / ``codex-plan`` / ``chatgpt-codex`` — always True
+      (Codex Responses ``reasoning_effort``).
+    * ``anthropic`` / ``bedrock`` — delegates to
+      :func:`harness.reasoning_effort.model_supports_anthropic_thinking`.
+    * ``opencode-go`` — delegates to
+      :func:`harness.opencode_go.reasoning_body_extras`; True when the
+      function returns a non-empty dict (meaning it has a dialect for this
+      model).
+    * ``opencode-zen`` — always True (relay passes ``reasoning_effort``
+      through; backend degrades gracefully on unknown models).
+    * ``openrouter`` — always True (same relay-semantics reasoning).
+    * Everything else — defaults to True so the user-visible knob never
+      disappears (``None`` or unrecognized providers are treated
+      permissively).
+    """
+    from . import providers as prov
+    from .reasoning_effort import model_supports_anthropic_thinking
+
+    name = (provider_name or "").strip().lower()
+    mid = (model_id or "").strip().lower()
+
+    # Resolve aliases to canonical provider name.
+    p = prov.get_provider(name)
+    if p is not None:
+        name = p.name
+
+    # -- Codex family always supports reasoning_effort --
+    if name in ("openai-codex",):
+        return True
+
+    # -- Anthropic / Bedrock Claude (opus / sonnet, not haiku) --
+    if name in ("anthropic", "bedrock"):
+        return model_supports_anthropic_thinking(mid)
+
+    # -- OpenCode Go: ask the per-family adapter --
+    if name == "opencode-go":
+        try:
+            from .opencode_go import reasoning_body_extras
+            extras = reasoning_body_extras(mid, effort="high")
+            return bool(extras)
+        except Exception:
+            return True  # permissive fallback
+
+    # -- OpenCode Zen / OpenRouter: relay passes reasoning_effort through --
+    if name in ("opencode-zen", "openrouter"):
+        return True
+
+    # -- Default: show the knob --
+    return True

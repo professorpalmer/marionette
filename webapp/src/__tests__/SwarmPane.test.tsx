@@ -14,6 +14,7 @@ vi.mock("../lib/api", async (importOriginal) => {
       swarmLive: vi.fn(),
       swarmCancel: vi.fn(),
       artifacts: vi.fn(),
+      sessions: vi.fn().mockResolvedValue([]),
     },
   };
 });
@@ -49,6 +50,25 @@ function finishedJob(
 
 function expectBefore(first: HTMLElement, second: HTMLElement) {
   expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+}
+
+async function expandJob(name: string | RegExp) {
+  const job = await screen.findByRole("button", { name });
+  if (job.getAttribute("aria-expanded") === "false") {
+    fireEvent.click(job);
+  }
+  return job;
+}
+
+async function expandVisibleJobs() {
+  await waitFor(() => {
+    expect(screen.queryByText("Loading swarm jobs...")).not.toBeInTheDocument();
+  });
+  for (const btn of screen.getAllByRole("button")) {
+    if (btn.getAttribute("aria-expanded") === "false" && (btn.getAttribute("aria-label") || "").trim()) {
+      fireEvent.click(btn);
+    }
+  }
 }
 
 describe("SwarmPane sort and filter controls", () => {
@@ -209,6 +229,7 @@ describe("SwarmPane model badge", () => {
     );
 
     const { container } = render(<SwarmPane />);
+    await expandVisibleJobs();
     const worker = await screen.findByRole("button", { name: /Worker/ });
     const job = screen.getByRole("button", { name: /Audit auth flow/ });
     const aggregate = screen.getByText("1 running");
@@ -252,6 +273,7 @@ describe("SwarmPane model badge", () => {
     );
 
     render(<SwarmPane />);
+    await expandVisibleJobs();
 
     const worker = await screen.findByRole("button", { name: /Worker/ });
     expect(worker).toHaveTextContent("openrouter");
@@ -281,6 +303,7 @@ describe("SwarmPane model badge", () => {
     );
 
     render(<SwarmPane />);
+    await expandVisibleJobs();
 
     const worker = await screen.findByRole("button", { name: /implement \(agentic\)/ });
     expect(worker).toHaveTextContent("routing…");
@@ -304,6 +327,7 @@ describe("SwarmPane model badge", () => {
     );
 
     render(<SwarmPane />);
+    await expandVisibleJobs();
 
     await waitFor(() => {
       expect(screen.getByLabelText("Model: model-a")).toBeInTheDocument();
@@ -332,6 +356,7 @@ describe("SwarmPane model badge", () => {
       });
 
       render(<SwarmPane />);
+    await expandVisibleJobs();
       await waitFor(() => expect(screen.getByText("routing…")).toBeInTheDocument());
       expect(screen.queryByLabelText("Model: routed-model")).not.toBeInTheDocument();
       await vi.advanceTimersByTimeAsync(6000);
@@ -379,6 +404,7 @@ describe("SwarmPane model badge", () => {
     );
 
     render(<SwarmPane />);
+    await expandVisibleJobs();
 
     const queued = await screen.findByRole("button", { name: /queued-worker/ });
     const pending = screen.getByRole("button", { name: /pending-worker/ });
@@ -531,7 +557,7 @@ describe("SwarmPane worker details", () => {
 
     render(<SwarmPane />);
     mockSwarmCancel.mockResolvedValue({ ok: true, job_id: "job-keys" });
-    const job = await screen.findByRole("button", { name: /Keyboard disclosure/ });
+    const job = await expandJob(/Keyboard disclosure/);
     expect(job).toHaveAttribute("aria-expanded", "true");
     expect(job.className).toMatch(/focus-visible:outline/);
     expect(job.getAttribute("aria-label") || "").toMatch(/Keyboard disclosure/);
@@ -604,6 +630,7 @@ describe("SwarmPane pin attribution", () => {
     );
 
     render(<SwarmPane />);
+    await expandVisibleJobs();
 
     const worker = await screen.findByRole("button", { name: /Worker/ });
     expect(worker).toHaveTextContent("agentic/meta/muse-spark-1.1");
@@ -651,6 +678,7 @@ describe("SwarmPane pin attribution", () => {
     );
 
     render(<SwarmPane />);
+    await expandVisibleJobs();
 
     const worker = await screen.findByRole("button", { name: /Worker/ });
     expect(worker).not.toHaveTextContent("—");
@@ -685,6 +713,7 @@ describe("SwarmPane pin attribution", () => {
     );
 
     render(<SwarmPane />);
+    await expandVisibleJobs();
 
     const worker = await screen.findByRole("button", { name: /Worker/ });
     fireEvent.click(worker);
@@ -768,6 +797,7 @@ describe("SwarmPane routing dedupe", () => {
     );
 
     render(<SwarmPane />);
+    await expandVisibleJobs();
 
     await waitFor(() => {
       expect(screen.getByLabelText("Model: final-model-0")).toBeInTheDocument();
@@ -796,6 +826,7 @@ describe("SwarmPane routing dedupe", () => {
     );
 
     render(<SwarmPane />);
+    await expandVisibleJobs();
 
     await waitFor(() => {
       expect(screen.getByLabelText("Model: escalated-model")).toBeInTheDocument();
@@ -1062,6 +1093,7 @@ describe("SwarmPane mid-run job-row meters", () => {
     );
 
     render(<SwarmPane />);
+    await expandVisibleJobs();
     const worker = await screen.findByRole("button", { name: /implement \(agentic\)/ });
     expect(worker).toHaveTextContent("cheap-model");
     expect(screen.queryByText("initial-cheap")).not.toBeInTheDocument();
@@ -1471,6 +1503,7 @@ describe("SwarmPane worker-owned routing surface", () => {
     );
 
     render(<SwarmPane />);
+    await expandVisibleJobs();
 
     const worker = await screen.findByRole("button", { name: /test-coverage-reviewer/ });
     expect(worker).toHaveTextContent("test-coverage-reviewer");
@@ -1515,6 +1548,7 @@ describe("SwarmPane worker-owned routing surface", () => {
     );
 
     render(<SwarmPane />);
+    await expandVisibleJobs();
 
     await waitFor(() => {
       expect(screen.getByText("Workers (1)")).toBeInTheDocument();
@@ -1581,6 +1615,7 @@ describe("SwarmPane worker-owned routing surface", () => {
     );
 
     render(<SwarmPane />);
+    await expandVisibleJobs();
     const worker = await screen.findByRole("button", { name: /Worker/ });
     expect(screen.queryByText("2 alternatives")).not.toBeInTheDocument();
     fireEvent.click(worker);
@@ -1616,6 +1651,7 @@ describe("SwarmPane worker-owned routing surface", () => {
     );
 
     render(<SwarmPane />);
+    await expandVisibleJobs();
     const worker = await screen.findByRole("button", { name: /Worker/ });
     expect(worker).not.toHaveTextContent("—");
     expect(screen.queryByText("$0")).not.toBeInTheDocument();
@@ -1654,6 +1690,7 @@ describe("SwarmPane worker-owned routing surface", () => {
     );
 
     render(<SwarmPane />);
+    await expandVisibleJobs();
     const worker = await screen.findByRole("button", { name: /Worker/ });
     expect(worker).toHaveTextContent("$0");
     expect(worker).not.toHaveTextContent("—");
@@ -1680,6 +1717,7 @@ describe("SwarmPane worker-owned routing surface", () => {
     );
 
     render(<SwarmPane />);
+    await expandVisibleJobs();
     const worker = await screen.findByRole("button", { name: /Worker/ });
     expect(worker).toHaveTextContent("$0");
   });
@@ -1726,6 +1764,7 @@ describe("SwarmPane worker tokens and cost", () => {
     );
 
     render(<SwarmPane />);
+    await expandVisibleJobs();
 
     // Running jobs auto-expand; do not click the goal (that collapses the card).
     await waitFor(() => {
@@ -1766,6 +1805,7 @@ describe("SwarmPane worker progress", () => {
     );
 
     render(<SwarmPane />);
+    await expandVisibleJobs();
 
     await waitFor(() => {
       expect(screen.getByText("Workers (3)")).toBeInTheDocument();
@@ -1891,6 +1931,7 @@ describe("SwarmPane worker outcome hierarchy", () => {
     );
 
     render(<SwarmPane />);
+    await expandVisibleJobs();
     await waitFor(() => {
       expect(screen.getByText("2/3 · 1 failed")).toBeInTheDocument();
     });
@@ -1912,6 +1953,7 @@ describe("SwarmPane worker outcome hierarchy", () => {
     );
 
     render(<SwarmPane />);
+    await expandVisibleJobs();
     const progress = await screen.findByLabelText(/1 of 3 workers finished, 0 failed, 0 degraded/);
     expect(screen.getByText("Workers (3)")).toBeInTheDocument();
     expect(progress).toHaveTextContent("1/3");
@@ -2456,6 +2498,7 @@ describe("SwarmPane final-review blockers", () => {
     );
 
     render(<SwarmPane />);
+    await expandVisibleJobs();
 
     const worker = await screen.findByRole("button", { name: /Worker/ });
     expect(worker).toHaveTextContent("final-routed-model");
@@ -2521,6 +2564,7 @@ describe("SwarmPane final-review blockers", () => {
       });
 
       render(<SwarmPane />);
+    await expandVisibleJobs();
       await waitFor(() => expect(screen.getByText("routing…")).toBeInTheDocument());
 
       await vi.advanceTimersByTimeAsync(6000);
@@ -2563,6 +2607,7 @@ describe("SwarmPane final-review blockers", () => {
       });
 
       render(<SwarmPane />);
+    await expandVisibleJobs();
       const worker = await screen.findByRole("button", { name: /^worker, failed/i });
       fireEvent.click(worker);
       expect(screen.getByText("codex_turn_failed")).toBeInTheDocument();
@@ -2654,6 +2699,7 @@ describe("SwarmPane final-review blockers", () => {
     );
 
     renderInCompactRail(320);
+    await expandVisibleJobs();
 
     const worker = await screen.findByRole("button", { name: /test-coverage-reviewer/ });
     expect(worker).toHaveTextContent("test-coverage-reviewer");
@@ -2695,6 +2741,7 @@ describe("SwarmPane final-review blockers", () => {
     );
 
     const container = renderInCompactRail(220);
+    await expandVisibleJobs();
 
     const worker = await screen.findByRole("button", { name: /test-coverage-reviewer/ });
     expect(worker).toHaveTextContent("test-coverage-reviewer");
@@ -2728,8 +2775,10 @@ describe("SwarmPane job-card expansion persistence", () => {
 
     const { unmount } = render(<SwarmPane />);
     const job = await screen.findByRole("button", { name: /Running swarm/ });
-    expect(job).toHaveAttribute("aria-expanded", "true");
+    expect(job).toHaveAttribute("aria-expanded", "false");
 
+    fireEvent.click(job);
+    expect(job).toHaveAttribute("aria-expanded", "true");
     fireEvent.click(job);
     expect(job).toHaveAttribute("aria-expanded", "false");
 
@@ -2779,6 +2828,9 @@ describe("SwarmPane job-card expansion persistence", () => {
 
     render(<SwarmPane />);
     const jobA = await screen.findByRole("button", { name: /Repo A running/ });
+    expect(jobA).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(jobA);
+    expect(jobA).toHaveAttribute("aria-expanded", "true");
     fireEvent.click(jobA);
     expect(jobA).toHaveAttribute("aria-expanded", "false");
 
@@ -2786,7 +2838,7 @@ describe("SwarmPane job-card expansion persistence", () => {
     clearSWRCache();
 
     const jobB = await screen.findByRole("button", { name: /Repo B running/ });
-    expect(jobB).toHaveAttribute("aria-expanded", "true");
+    expect(jobB).toHaveAttribute("aria-expanded", "false");
 
     const stored = JSON.parse(localStorage.getItem("swarm.expanded.v1") || "{}");
     expect(stored[REPO_A]?.["shared-job"]).toBe(false);
@@ -2801,7 +2853,7 @@ describe("SwarmPane job-card expansion persistence", () => {
 
     render(<SwarmPane />);
     const job = await screen.findByRole("button", { name: /Running swarm/ });
-    expect(job).toHaveAttribute("aria-expanded", "true");
+    expect(job).toHaveAttribute("aria-expanded", "false");
   });
 });
 

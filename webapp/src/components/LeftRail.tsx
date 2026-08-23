@@ -17,6 +17,7 @@ import {
 import { writeTranscriptCache } from "./Conversation";
 import { sharedReadinessNotice } from "../lib/operationalDiagnostic";
 import { useOperationalDiagnostic } from "../lib/useOperationalDiagnostic";
+import { filterJobsByScope, loadJobScope, saveJobScope, type JobScope } from "../lib/jobScope";
 
 export {
   SESSION_LEASE_EXHAUSTED_MESSAGE,
@@ -104,6 +105,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     () => localStorage.getItem(SESSION_JOBS_COLLAPSED_KEY) === "1",
   );
   const [hiddenJobIds, setHiddenJobIds] = useState<Set<string>>(loadHiddenSessionJobs);
+  const [jobScope, setJobScope] = useState<JobScope>(() => loadJobScope());
   const [confirmClearJobs, setConfirmClearJobs] = useState(false);
   const [showAllJobs, setShowAllJobs] = useState(false);
   const [expandedJobs, setExpandedJobs] = useState<Record<string, boolean>>({});
@@ -1153,7 +1155,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     });
   };
 
-  const sortedJobs = jobs.slice().reverse();
+  const activeSessionId = sessions.find((session) => session.active)?.id || "";
+  const sortedJobs = filterJobsByScope(jobs.slice().reverse(), jobScope, activeSessionId);
   const visibleJobs = sortedJobs.filter(
     (j) => !hiddenJobIds.has(j.id) || !isTerminalJob(j),
   );
@@ -1853,7 +1856,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
             className="h-6 flex items-center gap-1 min-w-0 text-[11px] uppercase tracking-wider text-muted font-semibold hover:text-txt focus:outline-none"
           >
             {sessionJobsCollapsed ? <ChevronRight size={11} className="shrink-0" /> : <ChevronDown size={11} className="shrink-0" />}
-            <span className="truncate">Session Jobs</span>
+            <span className="truncate">Jobs</span>
             {jobsValidating && !sessionJobsCollapsed && (
               <Loader2 size={10} className="animate-spin text-muted shrink-0" />
             )}
@@ -1861,6 +1864,22 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
               <span className="text-faint/70 normal-case tracking-normal shrink-0">({visibleJobs.length})</span>
             )}
           </button>
+          {!sessionJobsCollapsed && (
+            <div className="flex h-5 overflow-hidden rounded border border-edge/70 shrink-0">
+              {(["session", "repo"] as const).map((scope) => (
+                <button
+                  key={scope}
+                  type="button"
+                  aria-pressed={jobScope === scope}
+                  aria-label={scope === "session" ? "This session" : "This repo, ever"}
+                  onClick={(e) => { e.stopPropagation(); setJobScope(scope); saveJobScope(scope); }}
+                  className={`px-1.5 text-[9px] uppercase tracking-wider ${jobScope === scope ? "bg-accent/15 text-txt" : "text-muted hover:text-txt"}`}
+                >
+                  {scope === "session" ? "Session" : "Repo"}
+                </button>
+              ))}
+            </div>
+          )}
           {!sessionJobsCollapsed && terminalVisibleJobs.length > 0 && (
             confirmClearJobs ? (
               <div className="flex items-center gap-2 text-[10px] shrink-0">
@@ -1899,7 +1918,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                   </div>
                 ) : (
                 <Empty>
-                  {hiddenJobCount > 0 ? "All session jobs cleared" : "No jobs yet"}
+                  {hiddenJobCount > 0 ? "All jobs in this view cleared" : "No jobs in this view"}
                 </Empty>
                 )}
                 {hiddenJobCount > 0 && (
