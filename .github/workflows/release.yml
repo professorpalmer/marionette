@@ -18,7 +18,7 @@ on:
 # Operational pin (installers inherit Puppetmaster from the checkout).
 # Kept here so desktop/CI pin-parity tests stay honest.
 env:
-  PUPPETMASTER_SPEC: puppetmaster-ai==1.22.22
+  PUPPETMASTER_SPEC: puppetmaster-ai==1.22.23
 
 permissions:
   contents: write
