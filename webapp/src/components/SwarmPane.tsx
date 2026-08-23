@@ -217,8 +217,8 @@ function saveDismissed(repo: string | undefined, ids: Set<string>): void {
 }
 
 // Outer job-card expand/collapse is view state, scoped per repo like dismiss.
-// Explicit true/false overrides the in_progress default on remount; missing keys
-// keep active jobs open and terminal jobs closed. Soft-capped per repo.
+// Missing keys stay closed (live and terminal). Explicit true/false is remembered
+// across remount. Soft-capped per repo.
 const EXPAND_KEY = "swarm.expanded.v1";
 const EXPAND_CAP = DISMISS_CAP;
 
@@ -1463,7 +1463,7 @@ export default function SwarmPane() {
     const st = jobStatus(j);
     const outcomeWarning = st === "completed" && j.outcome?.trustworthy === false;
     const manualExpanded = expandedJobs[j.id];
-    const isExpanded = manualExpanded !== undefined ? manualExpanded : (st === "in_progress");
+    const isExpanded = manualExpanded === true;
     const phase = jobPhase(j);
 
     const artifacts = jobArtifactList(j);
