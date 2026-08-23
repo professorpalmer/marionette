@@ -896,6 +896,8 @@ class SendLoopMixin:
     def _iter_invalid_tool_halt(
         self, *, user_message, step, swarms, turn_prose, turn_findings, last_classified,
     ):
+        from .conversation import ConvEvent
+        from .send_loop_phases import classified_finish_kwargs, finalize_assistant_turn
         halt_reason = invalid_only_halt_reason(self)
         if not halt_reason:
             return False
