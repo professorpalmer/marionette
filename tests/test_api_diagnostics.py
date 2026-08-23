@@ -29,8 +29,10 @@ def test_get_diagnostics_surfaces_hard_failures(monkeypatch):
         get_reach=lambda: "cloud",
         get_repo=lambda: "",
     )
-    status, payload = get_diagnostics(svc)
+    with __import__("harness.correlation", fromlist=["correlation_scope"]).correlation_scope("diag-fail"):
+        status, payload = get_diagnostics(svc)
     assert status == 200
     assert payload["diagnostic"] is not None
     assert payload["diagnostic"]["scope"] == "backend"
     assert payload["diagnostic"]["recovery"] == {"kind": "retry", "label": "Retry"}
+    assert payload["diagnostic"]["correlation_id"] == "diag-fail"

@@ -107,6 +107,7 @@ def _diagnostic_from_checks(checks: list[dict[str, str]]) -> Optional[dict[str, 
             "retryable": True,
             "recovery": {"kind": "retry", "label": "Retry"},
             "createdAt": int(time.time() * 1000),
+            "correlation_id": get_correlation_id(),
         }
 
     first = warned[0]
@@ -122,6 +123,7 @@ def _diagnostic_from_checks(checks: list[dict[str, str]]) -> Optional[dict[str, 
         "retryable": True,
         "recovery": {"kind": "retry", "label": "Retry"},
         "createdAt": int(time.time() * 1000),
+        "correlation_id": get_correlation_id(),
     }
 
 

@@ -1,5 +1,6 @@
 import type { CSSProperties } from "react";
 import StatusPill from "./StatusPill";
+import TraceCopy from "./TraceCopy";
 import {
   TITLEBAR_CHROME_PAD_X_PX,
   TITLEBAR_TRAFFIC_PAD_PX,
@@ -9,11 +10,13 @@ import {
 export default function ConversationHeader({
   pillStatus,
   detail,
+  correlationId,
   onBusyDetailClick,
   recoveryAction,
 }: {
   pillStatus: string;
   detail?: string;
+  correlationId?: string;
   onBusyDetailClick?: () => void;
   recoveryAction?: { label: string; onClick: () => void };
 }) {
@@ -50,6 +53,9 @@ export default function ConversationHeader({
           >
             {recoveryAction.label}
           </button>
+        ) : null}
+        {pillStatus === "error" && correlationId ? (
+          <TraceCopy correlationId={correlationId} />
         ) : null}
         <StatusPill
           status={pillStatus}

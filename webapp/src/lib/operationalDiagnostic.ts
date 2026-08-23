@@ -7,6 +7,8 @@
  * failure — not a second durable store, not form validation, not a PM taxonomy.
  */
 
+import { getCorrelationId } from "./correlationId";
+
 export type DiagnosticScope =
   | "desktop_bridge"
   | "transport"
@@ -45,6 +47,8 @@ export type OperationalDiagnostic = {
   repo?: string;
   jobId?: string;
   taskId?: string;
+  /** Request correlation id for support / log cross-reference. */
+  correlationId?: string;
   createdAt: number;
 };
 
@@ -128,6 +132,7 @@ export function createOperationalDiagnostic(
   },
 ): OperationalDiagnostic {
   const recovery = input.recovery || { kind: "none" };
+  const correlationId = input.correlationId ?? (getCorrelationId() || undefined);
   return {
     ...input,
     id: input.id || newDiagnosticId(),
@@ -135,6 +140,7 @@ export function createOperationalDiagnostic(
     summary: sanitizeDiagnosticText(input.summary, SUMMARY_MAX),
     detail: input.detail ? sanitizeDiagnosticText(input.detail, DETAIL_MAX) : undefined,
     recovery,
+    correlationId,
   };
 }
 
@@ -227,6 +233,7 @@ type BackendDiagnosticWire = {
   taskId?: string;
   id?: string;
   createdAt?: number;
+  correlation_id?: string;
 };
 
 /** Parse GET /api/diagnostics diagnostic payload into the renderer contract. */
@@ -252,6 +259,7 @@ export function fromBackendDiagnostic(
     jobId: wire.jobId,
     taskId: wire.taskId,
     createdAt: wire.createdAt,
+    correlationId: wire.correlation_id,
   });
 }
 

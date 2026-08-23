@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, useCallback, useDeferredValue, useSyncExternalStore, memo } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useDeferredValue, useSyncExternalStore, useMemo, memo } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ChevronRight, Loader2, ChevronDown, ChevronUp, Play, Copy, Check, Pencil, RefreshCw, History, Share2, CheckCircle2, XCircle, Eye, Shield } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -63,8 +63,10 @@ import {
   type AutoBudgetSnapshot,
 } from "../lib/autoReceipts";
 import { authFailureDiagnostic } from "../lib/operationalDiagnostic";
+import { getCorrelationId } from "../lib/correlationId";
 import { publishDiagnostic } from "../lib/operationalDiagnosticBus";
 import { executeDiagnosticRecovery } from "../lib/operationalRecovery";
+import TraceCopy from "./conversation/TraceCopy";
 import { focusSettingsPage } from "./SettingsShell";
 import { TranscriptImage } from "./conversation/TranscriptImage";
 import {
@@ -1037,16 +1039,22 @@ function AuthFailureBanner({
   id?: string;
   onRetry?: () => void;
 }) {
+  const diagnostic = useMemo(
+    () => authFailureDiagnostic(message, { jobId: id }),
+    [message, id],
+  );
+  const correlationId = diagnostic.correlationId || getCorrelationId();
+
   useEffect(() => {
-    publishDiagnostic(authFailureDiagnostic(message, { jobId: id }));
-  }, [message, id]);
+    publishDiagnostic(diagnostic);
+  }, [diagnostic]);
 
   const handleRetry = () => {
     focusSettingsPage("providers");
     window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: "settings" }));
     if (!onRetry) return;
     void executeDiagnosticRecovery(
-      authFailureDiagnostic(message, { jobId: id }),
+      diagnostic,
       onRetry,
     );
   };
@@ -1067,6 +1075,11 @@ function AuthFailureBanner({
           <code className="block mt-1 text-[10.5px] text-red-200/80 font-mono break-all whitespace-pre-wrap">
             {message}
           </code>
+        ) : null}
+        {correlationId ? (
+          <div className="mt-1.5">
+            <TraceCopy correlationId={correlationId} />
+          </div>
         ) : null}
         <div className="mt-2">
           <button

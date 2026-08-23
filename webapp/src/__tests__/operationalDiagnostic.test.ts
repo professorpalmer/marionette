@@ -238,4 +238,19 @@ describe("createOperationalDiagnostic", () => {
     expect(diag.detail).toBe("line1");
     expect(diag.recovery).toEqual({ kind: "none" });
   });
+
+  it("inherits the active client correlation id when none is supplied", async () => {
+    const { getCorrelationId, setCorrelationId } = await import("../lib/correlationId");
+    setCorrelationId("client-corr-abc");
+    const diag = createOperationalDiagnostic({
+      scope: "conversation",
+      operation: "send",
+      summary: "Turn failed",
+      severity: "error",
+      retryable: true,
+    });
+    expect(diag.correlationId).toBe("client-corr-abc");
+    expect(getCorrelationId()).toBe("client-corr-abc");
+    setCorrelationId("");
+  });
 });

@@ -3474,6 +3474,11 @@ export default function Conversation({
       {/* Brand + idle share equal inset so they line up with the floating dock. */}
       <ConversationHeader
         pillStatus={pillStatus}
+        correlationId={
+          pillStatus === "error" && operationalDiagnostic?.correlationId
+            ? operationalDiagnostic.correlationId
+            : undefined
+        }
         detail={
           pillStatus === "error" && operationalDiagnostic
             ? operationalDiagnostic.summary

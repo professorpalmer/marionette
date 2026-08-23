@@ -12,6 +12,7 @@ and keeps thin ``Handler`` wrappers so tests keep binding
 from __future__ import annotations
 
 import json
+import socket
 import threading
 import time
 from collections import deque
@@ -48,6 +49,8 @@ _SSE_RING_MAX_SESSIONS = 32
 # Soft cap prefers unpinned rings; hard cap force-evicts oldest (even pinned)
 # so a stuck-pin storm cannot grow the map without bound.
 _SSE_RING_HARD_MAX_SESSIONS = 64
+# Slow-client guard: a blocked write+flush must not stall the pump thread.
+_SSE_WRITE_TIMEOUT_S = 30.0
 
 
 # 3.9-safe optional fields via TypedDict inheritance (NotRequired is 3.11+;
@@ -453,7 +456,54 @@ def stream_chat_events(
         time.sleep(_CHAT_EVENTS_WATCH_POLL_S)
 
 
-def sse_write(wfile: Any, payload: bytes) -> bool:
+def _wfile_socket(wfile: Any) -> Any:
+    """Best-effort socket behind an HTTP wfile/buffer."""
+    sock = getattr(wfile, "socket", None)
+    if sock is not None:
+        return sock
+    raw = getattr(wfile, "raw", None)
+    if raw is not None:
+        return getattr(raw, "_sock", None) or getattr(raw, "socket", None)
+    return getattr(wfile, "_sock", None)
+
+
+def _write_flush_with_deadline(wfile: Any, payload: bytes, timeout_s: float) -> None:
+    """Write one SSE frame; raise TimeoutError when the client stops reading."""
+    sock = _wfile_socket(wfile)
+    if sock is not None and hasattr(sock, "settimeout"):
+        prev = sock.gettimeout()
+        try:
+            sock.settimeout(timeout_s)
+            wfile.write(payload)
+            wfile.flush()
+        finally:
+            try:
+                sock.settimeout(prev)
+            except OSError:
+                pass
+        return
+
+    exc_holder: list[BaseException] = []
+    done = threading.Event()
+
+    def _do_write() -> None:
+        try:
+            wfile.write(payload)
+            wfile.flush()
+        except BaseException as exc:
+            exc_holder.append(exc)
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=_do_write, daemon=True)
+    thread.start()
+    if not done.wait(timeout_s):
+        raise TimeoutError("sse write timed out")
+    if exc_holder:
+        raise exc_holder[0]
+
+
+def sse_write(wfile: Any, payload: bytes, *, timeout_s: Optional[float] = None) -> bool:
     """Write one SSE frame. Returns False if the client has detached.
 
     View detach (EventSource close / navigate away) must NOT cancel the
@@ -462,10 +512,13 @@ def sse_write(wfile: Any, payload: bytes) -> bool:
     generator's own finally.
     """
     try:
-        wfile.write(payload)
-        wfile.flush()
+        _write_flush_with_deadline(
+            wfile,
+            payload,
+            _SSE_WRITE_TIMEOUT_S if timeout_s is None else timeout_s,
+        )
         return True
-    except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+    except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError, socket.timeout):
         # ConnectionAbortedError is the common Windows EventSource/nav-close
         # path; it is not a subclass of BrokenPipe/Reset. Treat it as detach
         # so the pump can keep draining instead of gen.close()-aborting mid-yield.

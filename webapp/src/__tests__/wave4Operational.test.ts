@@ -19,9 +19,11 @@ describe("fromBackendDiagnostic", () => {
       retryable: true,
       recovery: { kind: "retry", label: "Retry" },
       createdAt: 1,
+      correlation_id: "diag-wire-1",
     });
     expect(diag?.scope).toBe("backend");
     expect(diag?.recovery).toEqual({ kind: "retry", label: "Retry" });
+    expect(diag?.correlationId).toBe("diag-wire-1");
   });
 
   it("returns null for incomplete wire payloads", () => {
