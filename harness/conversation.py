@@ -446,7 +446,6 @@ ConvEventKind = Literal[
     "codegraph_context",
     "command_blocked",
     "command_approval_pending",
-    "secret_request",
     "compacting",
     "compaction",
     "distilled",
@@ -910,7 +909,6 @@ class ConversationalSession(
 
         self._quality_gate = QualityGateRunner.from_config(config)
         self._pending_command_approvals = {}
-        self._pending_secret_requests = {}
         self._command_approval_lock = threading.Lock()
         self._approved_commands = set()  # command hashes the user one-click approved
         self._state = "idle"
@@ -1329,16 +1327,6 @@ class ConversationalSession(
                 status="approved" if approve else "rejected",
             )
             return dict(pending)
-
-    def register_pending_secret_request(self, payload: dict):
-        from .secret_request import register_pending_secret_request
-        return register_pending_secret_request(self, payload)
-
-    def decide_secret_request(self, *, connector: str, field: str, provided: bool):
-        from .secret_request import decide_secret_request
-        return decide_secret_request(
-            self, connector=connector, field=field, provided=provided,
-        )
 
     def consume_command_approval(self, command_hash: str) -> bool:
         """Consume one exact command-hash approval atomically."""

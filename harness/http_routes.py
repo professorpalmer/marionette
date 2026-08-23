@@ -86,7 +86,6 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
     from .api import checkpoints as _ckpt_api
     from .api import codegraph as _cg_api
     from .api import command_approvals as _command_approval_api
-    from .api import secrets as _secrets_api
     from .api import commands as _cmd_api
     from .api import files as _files_api
     from .api import git as _git_api
@@ -139,12 +138,6 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
             services=svc.command_approval_services),
         "/api/commands/reject": post_json(
             _command_approval_api.post_command_rejection,
-            services=svc.command_approval_services),
-        "/api/secrets/submit": post_json(
-            _secrets_api.post_secrets_submit,
-            services=svc.command_approval_services),
-        "/api/secrets/dismiss": post_json(
-            _secrets_api.post_secrets_dismiss,
             services=svc.command_approval_services),
         "/api/inline-edit": post_json(
             _rev_api.post_inline_edit, services=svc.review_services),
@@ -411,7 +404,6 @@ def _post_restart(handler: Any, body: dict) -> Any:
 
 def build_get_routes(svc: Any) -> dict[str, GetHandler]:
     """Build path → GET handler map. Auth is applied once in ``do_GET``."""
-    from .api import secrets as _secrets_api
     from .api import auth as _auth_api
     from .api import checkpoints as _ckpt_api
     from .api import codegraph as _cg_api
@@ -693,9 +685,6 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
             empty_as_none=True),
         "/api/swarm/live": _get_swarm_live,
         "/api/providers": get_json(_prov_api.get_providers),
-        "/api/secrets/presence": get_json(
-            _secrets_api.get_secrets_presence,
-            services=svc.command_approval_services, pass_qs=True),
         "/api/registry": _get_registry,
         "/api/roles": get_json(
             _reg_api.get_roles, services=svc.registry_services),

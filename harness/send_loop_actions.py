@@ -251,23 +251,6 @@ def execute_turn_actions(
         # run_implement / run_parallel emit their own action_start after
         # engine selection (includes mode=agentic|native). Emitting here
         # too produced twin "Investigated 2 run implements" chrome.
-        if act.kind == "request_secret":
-            ended = False
-            for ev in dispatch_local_action(
-                session, act, aid, is_native, turn_changed_files,
-                act_goal=act_goal, plan=plan,
-            ):
-                if getattr(ev, "kind", "") == "secret_request" and (ev.data or {}).get("ends_turn"):
-                    ended = True
-                yield ev
-            if ended:
-                counters["action_seq"] = action_seq
-                counters["swarms"] = swarms
-                counters["demo_swarms"] = demo_swarms
-                counters["synchronous_swarms"] = synchronous_swarms
-                return ("secret_request", turn_changed_files)
-            continue
-
         if act.kind not in ("run_implement", "run_parallel"):
             yield ConvEvent("action_start", {
                 "id": aid, "kind": act.kind, "goal": act_goal or act.tool,

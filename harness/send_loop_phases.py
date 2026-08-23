@@ -98,7 +98,6 @@ LOCAL_ACTION_KINDS: frozenset[str] = frozenset({
     "browser_type", "browser_scroll", "browser_back",
     "browser_get_text", "browser_screenshot",
     "query_wiki", "call_mcp", "manage_mcp",
-    "request_secret",
 })
 
 # Mutating / side-effecting kinds blocked in plan mode (same gate as write/edit
@@ -2678,7 +2677,6 @@ def dispatch_local_action(
     browser_* / write-edit / run_command) so a caller that forgets the
     actions-layer skip still cannot mutate or drive a live browser in plan mode.
     """
-    import json
     import os
 
     from .conversation import ConvEvent, _mcp_result_text
@@ -2690,41 +2688,6 @@ def dispatch_local_action(
     if act.kind == "wait":
         from .pilot_wait import dispatch_wait_action
         yield from dispatch_wait_action(session, act, aid, is_native)
-        return
-
-    if act.kind == "request_secret":
-        from .conversation import ConvEvent
-        from .secret_request import already_present, register_pending_secret_request
-        from .secret_vault import parse_secret_request_payload, presence_payload
-        args = act.arguments if isinstance(act.arguments, dict) else {}
-        payload = parse_secret_request_payload({
-            "label": args.get("label") or act.goal,
-            "connector": args.get("connector"),
-            "field": args.get("field"),
-            "description": args.get("description") or "",
-        })
-        if not payload:
-            err = "request_secret requires label, connector, and field"
-            yield ConvEvent("action_result", {"id": aid, "error": err})
-            session._append_action_result(act, aid, err, is_native, ok=False)
-            return
-        if already_present(session, payload["connector"], payload["field"]):
-            result = presence_payload(payload["connector"], payload["field"], True)
-            yield ConvEvent("action_result", {"id": aid, "kind": "request_secret", "result": result})
-            session._append_action_result(act, aid, json.dumps(result), is_native, ok=True)
-            return
-        pending = register_pending_secret_request(session, payload)
-        yield ConvEvent("secret_request", {
-            **(pending or payload),
-            "session_id": getattr(session, "harness_session_id", "") or "default",
-            "ends_turn": True,
-        })
-        awaiting = {
-            "status": "awaiting_host",
-            "connector": payload["connector"],
-            "field": payload["field"],
-        }
-        session._append_action_result(act, aid, json.dumps(awaiting), is_native, ok=True)
         return
 
     if plan and (

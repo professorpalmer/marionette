@@ -87,7 +87,6 @@ ActionKind = Literal[
     "browser_back",
     "browser_get_text",
     "browser_screenshot",
-    "request_secret",
 ]
 
 VALID_ACTION_KINDS: frozenset[str] = frozenset(get_args(ActionKind))
@@ -368,13 +367,6 @@ class PilotAction:
                     raise PilotError(
                         "manage_mcp add requires url (HTTP/Docker) or command (stdio)"
                     )
-        if self.kind == "request_secret":
-            args = self.arguments if isinstance(self.arguments, dict) else {}
-            label = str(args.get("label") or self.goal or "").strip()
-            connector = str(args.get("connector") or "").strip()
-            field = str(args.get("field") or "").strip()
-            if not label or not connector or not field:
-                raise PilotError("request_secret requires label, connector, and field")
         if self.kind in ("read_file", "write_file", "view_image", "open_project") and not (self.path or "").strip():
             raise PilotError(f"{self.kind} action requires a 'path'")
         if self.kind == "relocate_session":
@@ -1162,30 +1154,6 @@ def build_tools_schema(
                         "description": "Optional job id to watch; omit to watch all pending jobs.",
                     },
                 },
-            },
-        },
-    })
-
-    schema.append({
-        "type": "function",
-        "function": {
-            "name": "request_secret",
-            "description": (
-                "Ask the host to collect a token/key/password via a masked "
-                "secret-request card. Use this whenever a task needs a secret. "
-                "Never ask the user to paste a token into chat. Emitting this "
-                "card ends the turn; the host resumes with presence only "
-                "({provided, connector, field}), never the secret bytes."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "label": {"type": "string", "description": "Card title and input placeholder"},
-                    "connector": {"type": "string", "description": "Storage namespace (pypi, portable-llm-wiki, slack)"},
-                    "field": {"type": "string", "description": "Key name (token, WIKI_OWNER_TOKEN)"},
-                    "description": {"type": "string", "description": "One-line help under the title"},
-                },
-                "required": ["label", "connector", "field"],
             },
         },
     })
@@ -2596,9 +2564,6 @@ Only fall back to giving manual instructions when a command genuinely cannot run
 from this workspace (e.g. it requires credentials or a network path you have
 verified you do not have) -- and say specifically what you tried and why it
 failed before doing so. When in doubt, run it and find out.
-If a task needs a token, API key, or password, call `request_secret` and stop.
-Never write "paste the token here". The host shows a masked card; you are
-resumed with {provided, connector, field} only.
 
 You have search_codegraph (semantic/graph search over THIS repo's code -- prefer it over grep/read_file for 'where is X / what calls Y / how does Z work') and query_wiki (durable cross-session knowledge base -- consult it for prior decisions, architecture, and context). Use search_codegraph to explore code structure before reading whole files. These are first-class: you know the codebase via CodeGraph and your durable memory via the Wiki.
 

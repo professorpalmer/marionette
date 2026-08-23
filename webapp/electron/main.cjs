@@ -40,7 +40,6 @@ const {
   resolveClassicDevRendererSource,
 } = require("./renderer-fallback.cjs");
 const { createTranslucencyController } = require("./translucency.cjs");
-const secretVault = require("./secret-vault.cjs");
 
 // Must run before any git/npm/uv child spawns: on Windows the portable tools
 // installed by first-run bootstrap are only on PATH in-memory, per process.
@@ -847,17 +846,6 @@ async function _startBackendOnce() {
     PUPPETMASTER_MODELS_PATH:
       process.env.PUPPETMASTER_MODELS_PATH || marionetteModels,
   };
-  try {
-    const { safeStorage } = require("electron");
-    secretVault.injectEnv({
-      stateDir: customEnv.HARNESS_STATE_DIR,
-      safeStorage,
-      agentId: "default",
-      target: customEnv,
-    });
-  } catch (_) {
-    /* vault optional at spawn */
-  }
   // Packaged: never pass HARNESS_REPO — a process-level value (often the app
   // checkout on Windows) would skip workspace.json restore in the backend.
   // Dev: only omit when unset so an explicit dev-shell override still works.
@@ -1036,43 +1024,7 @@ ipcMain.on("harness:rendererError", (_e, payload) => {
   logMain(`[rendererError:${p.scope || "app"}] ${p.message || ""}\n${p.stack || ""}${p.componentStack ? `\ncomponentStack:${p.componentStack}` : ""}`);
 });
 ipcMain.handle("harness:getJSON", (_e, p) => backendRequest("GET", p));
-ipcMain.handle("harness:postJSON", (_e, p, body) => {
-  if (p === "/api/secrets/submit" && body && typeof body === "object") {
-    try {
-      const { safeStorage } = require("electron");
-      secretVault.putSecret({
-        stateDir: resolveHarnessStateDir(),
-        safeStorage,
-        agentId: body.session_id || body.agent_id || "default",
-        connector: body.connector,
-        field: body.field,
-        value: body.value,
-      });
-    } catch (_) {
-      /* Python vault is still authoritative for workers */
-    }
-  }
-  return backendRequest("POST", p, body);
-});
-ipcMain.handle("secrets:save", (_e, payload) => {
-  const { safeStorage } = require("electron");
-  return secretVault.putSecret({
-    stateDir: resolveHarnessStateDir(),
-    safeStorage,
-    agentId: payload && payload.agentId,
-    connector: payload && payload.connector,
-    field: payload && payload.field,
-    value: payload && payload.value,
-  });
-});
-ipcMain.handle("secrets:presence", (_e, payload) => {
-  return secretVault.presenceOf({
-    stateDir: resolveHarnessStateDir(),
-    agentId: payload && payload.agentId,
-    connector: payload && payload.connector,
-    field: payload && payload.field,
-  });
-});
+ipcMain.handle("harness:postJSON", (_e, p, body) => backendRequest("POST", p, body));
 
 // Guards against overlapping restarts (double-click / rapid toggle).
 let restarting = false;
