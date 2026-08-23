@@ -411,6 +411,26 @@ export function transcriptResponseToItems(res: {
             ? m.artifact_delivery
             : undefined,
         }];
+      } else if (m.type === "secret_request") {
+        const connector = String(m.connector || "").trim().toLowerCase();
+        const field = String(m.field || "").trim();
+        if (!connector || !field) return [];
+        const status = (
+          m.status === "saved"
+          || m.status === "declined"
+          || m.status === "saving"
+          || m.status === "error"
+        ) ? m.status : "pending";
+        return [{
+          kind: "secret_request" as const,
+          id: m.id || `${connector}::${field}`,
+          label: m.label || field,
+          connector,
+          field,
+          description: m.description || "",
+          sessionId: m.session_id || "",
+          status,
+        }];
       } else if (m.type === "command_approval") {
         // Reject empty/malformed hashes so hydrate cannot create colliding
         // keys or invalid cards that suppress a later valid approval.
@@ -855,6 +875,8 @@ export function transcriptFingerprint(items: Item[]): string {
       fp += `|sp:${ids}:${status}:${status === "running" ? 1 : 0}:${terminals}`;
     } else if (it.kind === "command_approval") {
       fp += `|ca:${it.commandHash}:${it.status}`;
+    } else if (it.kind === "secret_request") {
+      fp += `|sr:${it.connector}:${it.field}:${it.status}`;
     } else if (it.kind === "thinking") {
       fp += `|t:${(it.text || "").length}:${(it as { streaming?: boolean }).streaming ? 1 : 0}`;
     } else if (it.kind === "tool_prep") {

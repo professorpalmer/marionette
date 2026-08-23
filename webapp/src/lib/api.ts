@@ -1273,6 +1273,18 @@ export const api = {
   // getJSON/postJSON, so a DELETE falls through to an unroutable fetch.
   deleteSession: (id: string) =>
     postJSON<{ ok: boolean; active: string | null }>("/api/sessions/delete", { id }),
+  submitSecret: (body: { session_id: string; connector: string; field: string; value: string }) =>
+    postJSON<{ ok: boolean; provided: boolean; connector: string; field: string; resume?: boolean }>("/api/secrets/submit", body),
+  dismissSecret: (body: { session_id: string; connector: string; field: string }) =>
+    postJSON<{ ok: boolean; provided: boolean; connector: string; field: string; resume?: boolean }>("/api/secrets/dismiss", body),
+  secretPresence: (opts: { session_id?: string; connector?: string; field?: string }) => {
+    const qs = new URLSearchParams();
+    if (opts.session_id) qs.set("session_id", opts.session_id);
+    if (opts.connector) qs.set("connector", opts.connector);
+    if (opts.field) qs.set("field", opts.field);
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return getJSON<{ present?: boolean; state?: string; connectors?: Record<string, Record<string, string>> }>(`/api/secrets/presence${suffix}`);
+  },
   approveCommand: (sessionId: string, workspaceRoot: string, commandHash: string) =>
     postJSON<{
       ok: boolean;

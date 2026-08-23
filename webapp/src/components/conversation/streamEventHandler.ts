@@ -22,6 +22,7 @@ import {
   appendCheckpoint,
   appendCodegraphContext,
   appendCommandApproval,
+  appendSecretRequest,
   appendCommandBlocked,
   appendCompaction,
   appendVaultCite,
@@ -187,6 +188,8 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       setItems((p) => appendCommandBlocked(p, d));
     } else if (ev.kind === "command_approval_pending") {
       setItems((p) => appendCommandApproval(p, d));
+    } else if (ev.kind === "secret_request") {
+      setItems((p) => appendSecretRequest(p, d));
     } else if (ev.kind === "swarm_auth_failure") {
       // A provider rejected the API key. Surface it as a loud, persistent
       // banner so a dead/revoked key is never silently read as a generic

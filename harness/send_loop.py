@@ -71,6 +71,7 @@ from .terminal_cause import (
     TERMINAL_DRIVER_SWAP,
     TERMINAL_EMPTY_LOOP,
     TERMINAL_INVALID_TOOL,
+    TERMINAL_NATURAL,
     TERMINAL_TURN_BUDGET,
     finalize_stop_cause,
 )
@@ -83,6 +84,11 @@ from .stream_performance import (
 )
 from .text_clean import clean_say
 from .tool_dispatch import _strip_ansi, is_safe_path
+from .send_loop_secrets import (
+    iter_extracted_secret_turn,
+    iter_secret_action_turn,
+    peel_secret_request_message,
+)
 
 
 POST_SWARM_SYNTHESIS_NUDGE = (
@@ -887,6 +893,27 @@ class SendLoopMixin:
         if callable(flush_steer):
             yield from flush_steer()
 
+    def _iter_invalid_tool_halt(
+        self, *, user_message, step, swarms, turn_prose, turn_findings, last_classified,
+    ):
+        from .conversation import ConvEvent
+        from .send_loop_phases import classified_finish_kwargs, finalize_assistant_turn
+        halt_reason = invalid_only_halt_reason(self)
+        if not halt_reason:
+            return False
+        self._sanitize_tool_pairs()
+        yield ConvEvent("auto_halt", {"reason": halt_reason})
+        yield ConvEvent("error", {"error": halt_reason})
+        yield from finalize_assistant_turn(
+            self, user_message=user_message, step=step,
+            swarms=swarms, turn_prose=turn_prose,
+            turn_findings=turn_findings,
+            extra={"invalid_tool_halt": True},
+            stop_cause=TERMINAL_INVALID_TOOL,
+            **classified_finish_kwargs(last_classified),
+        )
+        return True
+
     def _send_locked_inner(self, user_message: str, images: Optional[list] = None, plan: bool = False, resume: bool = False) -> Iterator[ConvEvent]:
         from .conversation import (
             ConvEvent,
@@ -1322,7 +1349,8 @@ class SendLoopMixin:
             # real readout only on the thought channel. Promote that into a
             # message so the turn gets a finished summary bubble.
 
-            cleaned_say_text = clean_say(turn.say) if turn.say else ""
+            cleaned_say_text, _extracted_secret = peel_secret_request_message(
+                clean_say(turn.say) if turn.say else "")
             _resp_meta = getattr(resp, "meta", None) or {}
             if not isinstance(_resp_meta, dict):
                 _resp_meta = {}
@@ -1380,6 +1408,11 @@ class SendLoopMixin:
             else:
                 self._history.append({"role": "assistant", "content": _history_text or "(acting)"})
 
+            if (yield from iter_extracted_secret_turn(
+                self, _extracted_secret, turn, user_message=user_message, step=step,
+                swarms=swarms, turn_prose=turn_prose, turn_findings=turn_findings,
+                last_classified=last_classified)):
+                return
             if self._turn_budget_exhausted() and not (
                 synchronous_swarms
                 and not step_emitted_user_prose
@@ -1535,25 +1568,21 @@ class SendLoopMixin:
             swarms = _action_counters["swarms"]
             demo_swarms = _action_counters["demo_swarms"]
             synchronous_swarms = _action_counters["synchronous_swarms"]
+            if (yield from iter_secret_action_turn(
+                self, _action_disposition, user_message=user_message, step=step,
+                swarms=swarms, turn_prose=turn_prose, turn_findings=turn_findings,
+                last_classified=last_classified)):
+                return
             if _action_disposition == "return":
                 # Cancel mid-spree: heal unanswered tool_calls before exit so
                 # the next send/resume/export never sees a dangling tool_use.
                 self._sanitize_tool_pairs()
                 return
 
-            halt_reason = invalid_only_halt_reason(self)
-            if halt_reason:
-                self._sanitize_tool_pairs()
-                yield ConvEvent("auto_halt", {"reason": halt_reason})
-                yield ConvEvent("error", {"error": halt_reason})
-                yield from finalize_assistant_turn(
-                    self, user_message=user_message, step=step,
-                    swarms=swarms, turn_prose=turn_prose,
-                    turn_findings=turn_findings,
-                    extra={"invalid_tool_halt": True},
-                    stop_cause=TERMINAL_INVALID_TOOL,
-                    **classified_finish_kwargs(last_classified),
-                )
+            if (yield from self._iter_invalid_tool_halt(
+                user_message=user_message, step=step, swarms=swarms,
+                turn_prose=turn_prose, turn_findings=turn_findings,
+                last_classified=last_classified)):
                 return
 
             # ---- AUTO-VERIFY LOOP ----------------------------------------

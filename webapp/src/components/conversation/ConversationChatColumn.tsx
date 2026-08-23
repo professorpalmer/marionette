@@ -11,6 +11,7 @@ import {
   TranscriptList,
   type Card,
   type CommandApprovalItem,
+  type SecretRequestItem,
   type Item,
 } from "../TranscriptList";
 import TranscriptEmptyState from "./TranscriptEmptyState";
@@ -35,6 +36,7 @@ export default function ConversationChatColumn({
   onSetCard,
   onExecutePlan,
   onCommandApproval,
+  onSecretRequest,
   composerDock,
   showJumpToBottom = false,
   onJumpToBottom,
@@ -60,6 +62,7 @@ export default function ConversationChatColumn({
   onSetCard: (id: string, patch: Partial<Card>) => void;
   onExecutePlan: (planText: string) => void;
   onCommandApproval: (item: CommandApprovalItem, approve: boolean) => void;
+  onSecretRequest?: (item: SecretRequestItem, decision: { action: "save"; value: string } | { action: "dismiss" }) => void;
   composerDock: ReactNode;
   showJumpToBottom?: boolean;
   onJumpToBottom?: () => void;
@@ -127,6 +130,7 @@ export default function ConversationChatColumn({
             onSetCard={onSetCard}
             onExecutePlan={onExecutePlan}
             onCommandApproval={onCommandApproval}
+            onSecretRequest={onSecretRequest}
           />
         </div>
       </div>
