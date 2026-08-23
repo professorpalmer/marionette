@@ -1714,10 +1714,19 @@ def _doctor_services():
     """Build DoctorServices from live server module globals (call-time lookup)."""
     from .api.doctor import DoctorServices
 
+    def _build_driver(spec: str):
+        if spec.startswith("stub"):
+            from pmharness.registry import build
+
+            return build(spec)
+        from .providers import build_pilot
+
+        return build_pilot(spec)
+
     return DoctorServices(
         get_driver=lambda: getattr(_cfg, "driver", "") or "",
-        get_reach=lambda: getattr(_cfg, "reach", "") or "",
         get_repo=lambda: getattr(_cfg, "repo", "") or "",
+        build_driver=_build_driver,
     )
 
 

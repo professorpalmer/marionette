@@ -17,8 +17,8 @@ class DoctorServices:
     """Explicit deps for diagnostics HTTP handlers."""
 
     get_driver: Callable[[], str]
-    get_reach: Callable[[], str]
     get_repo: Callable[[], str]
+    build_driver: Callable[[str], Any]
 
 
 def _check_row(status: str, name: str, detail: str = "") -> dict[str, str]:
@@ -51,15 +51,8 @@ def _build_checks(svc: DoctorServices) -> list[dict[str, str]]:
         checks.append(_check_row("fail", "durable state", f"store error: {exc}"))
 
     driver = (svc.get_driver() or "").strip() or "unknown"
-    reach = (svc.get_reach() or "").strip()
     try:
-        from pmharness import registry as reg
-
-        built = (
-            reg.build(driver)
-            if driver.startswith("stub")
-            else reg.build(driver, reach=reach)
-        )
+        built = svc.build_driver(driver)
         env = getattr(built, "api_key_env", None)
         if env is None:
             checks.append(_check_row("ok", f"driver {driver}", "no key required (stub/offline)"))
