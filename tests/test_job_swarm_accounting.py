@@ -425,3 +425,23 @@ def test_task_zero_work_does_not_keep_routing_estimate():
     assert by_task["t1"]["tokens"] == 0
     assert by_task["t1"]["est_cost_usd"] == 0.0
     assert by_task["t1"]["estimated"] is False
+
+
+def test_by_model_rows_from_job_cost_uses_marginal_usd():
+    from harness.api.swarm_cost import _by_model_rows_from_job_cost
+
+    job_cost = SimpleNamespace(
+        by_model={
+            "z-ai/glm-5.3": {
+                "calls": 30,
+                "tokens_in": 297924,
+                "tokens_out": 5570,
+                "marginal_cost_usd": 0.15814,
+            }
+        },
+        tasks=[],
+    )
+    rows = _by_model_rows_from_job_cost(job_cost)
+    assert rows["z-ai/glm-5.3"]["est_cost_usd"] == 0.15814
+    assert rows["z-ai/glm-5.3"]["calls"] == 30
+    assert rows["z-ai/glm-5.3"]["tokens_used"] == 297924 + 5570

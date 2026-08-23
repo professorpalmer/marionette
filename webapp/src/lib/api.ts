@@ -695,6 +695,14 @@ export type UsageData = {
       tokens_out?: number;
       tokens_cached?: number;
     }>;
+    /** App-run swarm jobs, priced from store usage (not the locked pilot). */
+    swarm_by_model?: Array<{
+      model: string;
+      est_cost_usd: number;
+      tokens_used?: number;
+      calls?: number;
+    }>;
+    swarm_cost_usd?: number;
     tokens_cached?: number;
     /** Pilot prompt-input tokens (exclusive of worker-folded split). */
     pilot_input_tokens?: number;

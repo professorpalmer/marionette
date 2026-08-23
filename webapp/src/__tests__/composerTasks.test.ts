@@ -42,4 +42,20 @@ describe("buildComposerTasks + progress", () => {
     expect(taskProgress(tasks)).toEqual({ done: 2, total: 5 });
     expect(tasks[2].state).toBe("in_progress");
   });
+
+  it("collapses a multi-line worker prompt onto one line", () => {
+    const tasks = buildComposerTasks(job("j", "running", "sess-1", [
+      {
+        id: "1",
+        role: "reviewer",
+        instruction: "Audit the Marionette harness\n\nPython backend under harness/.\nReact UI under webapp/src/.",
+        status: "running",
+        adapter: "x",
+      },
+    ]));
+    expect(tasks[0].content).toBe(
+      "reviewer · Audit the Marionette harness Python backend under harness/. React UI under webapp/src/.",
+    );
+    expect(tasks[0].content.includes("\n")).toBe(false);
+  });
 });
