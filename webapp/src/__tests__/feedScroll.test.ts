@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   FEED_REPIN_THRESHOLD_PX,
+  chooseFeedFollowFlush,
   feedResizeScrollFollowDecision,
   mergeFeedResizeObservationSnapshots,
   nextFeedPinState,
@@ -415,5 +416,43 @@ describe("shouldCancelFeedResizeFollowForManualScrollAway", () => {
         liveScrollHeight: 1200,
       }),
     ).toBe(false);
+  });
+});
+
+describe("chooseFeedFollowFlush", () => {
+  it("applies stick-to-bottom before paint (not rAF)", () => {
+    expect(chooseFeedFollowFlush()).toBe("before_paint");
+  });
+});
+
+describe("scrollTopAfterFeedHeightChange chrome shrink", () => {
+  it("pins to the new max when composer/status chrome shrinks the viewport", () => {
+    const height = 2000;
+    const oldClient = 400;
+    const newClient = 320;
+    expect(
+      scrollTopAfterFeedHeightChange({
+        scrollHeight: height,
+        scrollTop: height - oldClient,
+        clientHeight: newClient,
+        pinned: true,
+        settling: false,
+        releasedByGesture: false,
+      }),
+    ).toBe(height - newClient);
+  });
+
+  it("does not fight an unpinned reader when chrome grows", () => {
+    const height = 2000;
+    expect(
+      scrollTopAfterFeedHeightChange({
+        scrollHeight: height,
+        scrollTop: 200,
+        clientHeight: 320,
+        pinned: false,
+        settling: false,
+        releasedByGesture: true,
+      }),
+    ).toBeNull();
   });
 });

@@ -1588,7 +1588,13 @@ export const TranscriptList = memo(function TranscriptList({
   );
 
   return (
-    <>
+    <div
+      role="log"
+      aria-live="polite"
+      aria-relevant="additions"
+      aria-atomic="false"
+      data-testid="transcript-log"
+    >
       {list}
       {compactingStatus && (
         <div className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/15 border border-edge/20 text-[11px] text-faint w-fit my-1 select-none animate-pulse">
@@ -1624,7 +1630,7 @@ export const TranscriptList = memo(function TranscriptList({
         className="feed-bottom-clearance shrink-0 w-full pointer-events-none"
         style={{ height: "clamp(72px, 12vh, 144px)" }}
       />
-    </>
+    </div>
   );
 });
 

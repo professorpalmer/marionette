@@ -184,3 +184,32 @@ def test_nested_read_allow_via_path_within():
         assert path_within(readme, nested, allow_equal=True) is False
         outside = os.path.realpath(os.path.join(root, "..", "escape-outside.txt"))
         assert path_within(outside, top, allow_equal=True) is False
+
+
+def test_resolve_workspace_path_nested_dotdot_escape():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.realpath(tmp)
+        os.makedirs(os.path.join(root, "sub"))
+        try:
+            resolve_workspace_path(root, "sub/../../escape-outside.txt")
+            assert False, "expected nested .. escape to raise"
+        except ValueError as e:
+            assert "escapes workspace" in str(e)
+
+
+def test_resolve_workspace_path_symlink_escape():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.realpath(tmp)
+        outside = os.path.realpath(os.path.join(root, "..", "outside-secret.txt"))
+        with open(outside, "w", encoding="utf-8") as f:
+            f.write("nope")
+        link = os.path.join(root, "leak")
+        try:
+            os.symlink(outside, link)
+        except (OSError, NotImplementedError):
+            return
+        try:
+            resolve_workspace_path(root, "leak")
+            assert False, "expected symlink escape to raise"
+        except ValueError as e:
+            assert "escapes workspace" in str(e)
