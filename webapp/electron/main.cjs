@@ -156,9 +156,10 @@ function tryRefreshBackendPortFromMarker() {
 // ~/.pmharness/electron.log so a death is always diagnosable after the fact.
 function logMain(msg) {
   try {
+    const safe = secretVault.redactText(String(msg == null ? "" : msg));
     fs.appendFileSync(
       path.join(os.homedir(), ".pmharness", "electron.log"),
-      `${new Date().toISOString()} ${msg}\n`
+      `${new Date().toISOString()} ${safe}\n`
     );
   } catch { /* logging must never throw */ }
 }

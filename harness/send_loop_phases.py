@@ -2694,7 +2694,7 @@ def dispatch_local_action(
 
     if act.kind == "request_secret":
         from .conversation import ConvEvent
-        from .secret_request import already_present, register_pending_secret_request
+        from .secret_request import already_present, declined_this_breath, register_pending_secret_request
         from .secret_vault import parse_secret_request_payload, presence_payload
         args = act.arguments if isinstance(act.arguments, dict) else {}
         payload = parse_secret_request_payload({
@@ -2710,6 +2710,11 @@ def dispatch_local_action(
             return
         if already_present(session, payload["connector"], payload["field"]):
             result = presence_payload(payload["connector"], payload["field"], True)
+            yield ConvEvent("action_result", {"id": aid, "kind": "request_secret", "result": result})
+            session._append_action_result(act, aid, json.dumps(result), is_native, ok=True)
+            return
+        if declined_this_breath(session, payload["connector"], payload["field"]):
+            result = presence_payload(payload["connector"], payload["field"], False)
             yield ConvEvent("action_result", {"id": aid, "kind": "request_secret", "result": result})
             session._append_action_result(act, aid, json.dumps(result), is_native, ok=True)
             return

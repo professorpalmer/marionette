@@ -1386,9 +1386,9 @@ class SendLoopMixin:
                 self._history.append({"role": "assistant", "content": _history_text or "(acting)"})
 
             if _extracted_secret:
-                from .secret_request import already_present, register_pending_secret_request
+                from .secret_request import already_present, declined_this_breath, register_pending_secret_request
                 if not any(getattr(a, "kind", "") == "request_secret" for a in turn.actions):
-                    if not already_present(self, _extracted_secret["connector"], _extracted_secret["field"]):
+                    if not already_present(self, _extracted_secret["connector"], _extracted_secret["field"]) and not declined_this_breath(self, _extracted_secret["connector"], _extracted_secret["field"]):
                         pending = register_pending_secret_request(self, _extracted_secret)
                         yield ConvEvent("secret_request", {
                             **(pending or _extracted_secret),

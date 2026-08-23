@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, useDeferredValue, useSyncExternalStore, memo } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ChevronRight, Loader2, ChevronDown, ChevronUp, Play, Copy, Check, Pencil, RefreshCw, History, Share2, CheckCircle2, XCircle, Eye } from "lucide-react";
+import { ChevronRight, Loader2, ChevronDown, ChevronUp, Play, Copy, Check, Pencil, RefreshCw, History, Share2, CheckCircle2, XCircle, Eye, Shield } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -1435,7 +1435,10 @@ export const TranscriptList = memo(function TranscriptList({
                   Dismiss
                 </button>
               </div>
-              <div className="text-[10.5px] text-muted">Stored securely, never shown to your Bot.</div>
+              <div className="flex items-center gap-1 text-[10.5px] text-muted">
+                <Shield className="h-3 w-3" aria-hidden="true" />
+                Stored securely, never shown to your Bot.
+              </div>
             </form>
           ) : (
             <div className="mt-2 text-faint">{it.status === "saved" ? "Stored securely" : it.status === "declined" ? "Declined" : it.status}</div>

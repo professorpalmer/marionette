@@ -92,6 +92,12 @@ def decide_secret_request(
         }
     pending_map.pop(key, None)
     session._pending_secret_requests = pending_map
+    if not provided:
+        declined = getattr(session, "_declined_secret_requests", None)
+        if declined is None:
+            declined = set()
+            session._declined_secret_requests = declined
+        declined.add(key)
     upsert_display_secret_request(
         session, pending, status="saved" if provided else "declined",
     )
@@ -104,6 +110,11 @@ def decide_secret_request(
             "secret_request_resume": True,
         })
     return pending
+
+
+def declined_this_breath(session: Any, connector: str, field: str) -> bool:
+    declined = getattr(session, "_declined_secret_requests", None) or set()
+    return secret_ref_key(connector, field) in declined
 
 
 def already_present(session: Any, connector: str, field: str) -> bool:
