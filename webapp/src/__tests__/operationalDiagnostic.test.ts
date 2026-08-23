@@ -3,14 +3,17 @@ import {
   DESKTOP_BRIDGE_MISSING,
   TRANSPORT_HTTP,
   TRANSPORT_UNCERTAIN,
+  CONVERSATION_TURN_FAILURE,
   belongsToActiveScope,
   classifyFailure,
   conversationLifecycleAfterFailure,
+  conversationTurnFailureDiagnostic,
   createOperationalDiagnostic,
   desktopBridgeMissing,
   desktopBridgeMissingDiagnostic,
   desktopShellExpected,
   fromTransportFailure,
+  isConversationTurnFailureDiagnostic,
   isOperationalDiagnostic,
   isUncertainTransport,
   nextDiagnostic,
@@ -221,6 +224,22 @@ describe("diagnostic bus", () => {
     publishDiagnostic(flap);
     expect(getActiveDiagnostic()?.code).toBe(DESKTOP_BRIDGE_MISSING);
     resetDiagnosticBus();
+  });
+});
+
+describe("conversationTurnFailureDiagnostic", () => {
+  it("is retryable conversation scope with Trace correlation", async () => {
+    const { setCorrelationId } = await import("../lib/correlationId");
+    setCorrelationId("trace-turn-1");
+    const diag = conversationTurnFailureDiagnostic("[error] provider rejected");
+    expect(diag.code).toBe(CONVERSATION_TURN_FAILURE);
+    expect(diag.scope).toBe("conversation");
+    expect(diag.operation).toBe("turn");
+    expect(diag.summary).toBe("provider rejected");
+    expect(diag.recovery).toEqual({ kind: "retry", label: "Retry" });
+    expect(diag.correlationId).toBe("trace-turn-1");
+    expect(isConversationTurnFailureDiagnostic(diag)).toBe(true);
+    setCorrelationId("");
   });
 });
 

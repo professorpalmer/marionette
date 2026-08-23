@@ -60,6 +60,7 @@ export const TRANSPORT_BUSY = "transport_busy";
 export const BACKEND_NOT_READY = "backend_not_ready";
 export const BACKEND_WARNING = "backend_warning";
 export const AUTH_FAILURE = "provider_auth_failure";
+export const CONVERSATION_TURN_FAILURE = "conversation_turn_failure";
 
 const SUMMARY_MAX = 160;
 const DETAIL_MAX = 280;
@@ -261,6 +262,39 @@ export function fromBackendDiagnostic(
     createdAt: wire.createdAt,
     correlationId: wire.correlation_id,
   });
+}
+
+/** Settled conversation turn failure — Trace + Retry in ConversationHeader. */
+export function conversationTurnFailureDiagnostic(
+  summary: string,
+  opts?: { sessionId?: string; detail?: string },
+): OperationalDiagnostic {
+  const text = sanitizeDiagnosticText(
+    String(summary || "").replace(/^\[(?:error|aborted)\]\s*/i, "").trim() || "Turn failed",
+    SUMMARY_MAX,
+  );
+  return createOperationalDiagnostic({
+    scope: "conversation",
+    operation: "turn",
+    code: CONVERSATION_TURN_FAILURE,
+    summary: text,
+    detail: opts?.detail,
+    severity: "error",
+    retryable: true,
+    recovery: { kind: "retry", label: "Retry" },
+    sessionId: opts?.sessionId,
+  });
+}
+
+export function isConversationTurnFailureDiagnostic(
+  diag: Pick<OperationalDiagnostic, "code" | "scope" | "operation"> | null | undefined,
+): boolean {
+  return Boolean(
+    diag
+    && diag.scope === "conversation"
+    && diag.operation === "turn"
+    && diag.code === CONVERSATION_TURN_FAILURE,
+  );
 }
 
 /** Loud provider auth rejection surfaced in the transcript. */

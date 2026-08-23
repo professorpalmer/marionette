@@ -497,6 +497,23 @@ function turnHasThinking(items: TurnItem[]): boolean {
   return false;
 }
 
+/** True once the turn shows reasoning, tools, or assistant text (not bare TTFT). */
+export function turnHasLiveProgressSignal(items: TurnItem[]): boolean {
+  let toolPrep = "";
+  for (const it of [...itemsInCurrentTurn(items)].reverse()) {
+    if (it.kind === "tool_prep") {
+      toolPrep = String((it as { name?: string }).name || "").trim();
+      break;
+    }
+  }
+  return (
+    cardsInTurn(items).length > 0
+    || Boolean(toolPrep)
+    || turnHasThinking(items)
+    || turnHasAssistantText(items)
+  );
+}
+
 /** True when the current turn already ran tools / tool_prep (agent loop). */
 export function turnHasInvestigationActivity(items: TurnItem[]): boolean {
   for (const it of itemsInCurrentTurn(items)) {

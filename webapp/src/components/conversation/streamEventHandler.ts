@@ -59,8 +59,10 @@ import {
 import {
   clearProviderFailureWaitHint,
   isProviderFailureWaitHint,
+  noticeShouldLatchWaitHint,
 } from "../../lib/composerWaitHint";
-import { turnHasLiveInvestigation } from "../../lib/turnProgress";
+import { turnHasLiveInvestigation, turnHasLiveProgressSignal } from "../../lib/turnProgress";
+import { clearDiagnostic } from "../../lib/operationalDiagnosticBus";
 import { notifyWorkspaceMutated } from "../../lib/workspaceMutationEvents";
 import { shouldRefreshBusyChrome } from "./streamTerminal";
 import { waitHintForAssistantDone } from "./swarmPoll";
@@ -174,6 +176,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
         setWaitHint((prev) => (isProviderFailureWaitHint(prev) ? prev : null));
       } else {
         setWaitHint(null);
+        clearDiagnostic();
       }
     }
     recordTurnSettle?.(settle);
@@ -280,7 +283,19 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       // permanent "Waiting on provider" footer.
       if (!refreshBusyChrome()) return;
       const hint = truncateWaitHint(d.message || "");
-      if (hint) setWaitHint(hint);
+      if (
+        !hint
+        || !noticeShouldLatchWaitHint(hint, {
+          hasLiveProgress:
+            Boolean(typeBufRef.current)
+            || hasPartialAssistantAnswer(itemsRef.current)
+            || turnHasLiveProgressSignal(itemsRef.current),
+          turnSettled: turnSettledRef.current,
+        })
+      ) {
+        return;
+      }
+      setWaitHint(hint);
     } else if (ev.kind === "thinking") {
       // Live reasoning deltas (delta:true) paint mid-turn so GLM/OR token
       // climbs are visible. Full post-answer reasoning dumps (no delta) stay
@@ -653,6 +668,29 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       // optimistic first-send rename missed or the server derived a different slug.
       window.dispatchEvent(new Event("harness-config-changed"));
     } else if (ev.kind === "error") {
+      const errText = String(d.error || d.message || "");
+      if (isProviderFailureWaitHint(errText)) {
+        const recovered =
+          turnSettledRef.current
+          || Boolean(typeBufRef.current)
+          || hasPartialAssistantAnswer(itemsRef.current)
+          || turnHasLiveProgressSignal(itemsRef.current);
+        if (recovered) {
+          clearWaitHintOnProgress();
+          return;
+        }
+        const hint = truncateWaitHint(errText);
+        if (
+          hint
+          && noticeShouldLatchWaitHint(hint, {
+            hasLiveProgress: false,
+            turnSettled: turnSettledRef.current,
+          })
+        ) {
+          setWaitHint(hint);
+        }
+        return;
+      }
       const settle = settleFromStreamError(d.error, d.terminal_cause);
       paintTurnSettle(settle);
       setCompactingStatus(null);
