@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import SwarmPane, { jobSavings, workerOutcome } from "../components/SwarmPane";
+import SwarmPane, { jobIdentifier, jobSavings, namedSavings, workerSpend, workerOutcome } from "../components/SwarmPane";
 import { api, type Job, type SwarmLive } from "../lib/api";
 import { dispatchProjectSelected } from "../lib/panelTransition";
 import { clearSWRCache, writeSWRCache } from "../lib/useStaleWhileRevalidate";
@@ -836,8 +836,8 @@ describe("SwarmPane mid-run job-row meters", () => {
     await waitFor(() => {
       expect(screen.getAllByText("12,000t").length).toBeGreaterThan(0);
       expect(screen.getByText("1,500 compact")).toBeInTheDocument();
-      expect(screen.getAllByText("~$0.0500").length).toBeGreaterThan(0);
-      expect(screen.getByText("~$0.0553 saved")).toBeInTheDocument();
+      expect(screen.getAllByText("Estimated cost ~$0.0500").length).toBeGreaterThan(0);
+      expect(screen.getByText("Estimated savings ~$0.0553")).toBeInTheDocument();
     });
     expect(screen.queryByText("8,000 cached")).not.toBeInTheDocument();
     expect(screen.getByTitle(/model selection value vs frontier-equivalent list price/)).toBeInTheDocument();
@@ -871,13 +871,13 @@ describe("SwarmPane mid-run job-row meters", () => {
       render(<SwarmPane />);
 
       await waitFor(() => {
-        expect(screen.getByText("$0.0200 saved")).toBeInTheDocument();
+        expect(screen.getByText("Estimated savings ~$0.0200")).toBeInTheDocument();
       });
 
       await vi.advanceTimersByTimeAsync(6000);
 
       await waitFor(() => {
-        expect(screen.getByText("$0.1100 saved")).toBeInTheDocument();
+        expect(screen.getByText("Estimated savings ~$0.1100")).toBeInTheDocument();
       });
     } finally {
       vi.useRealTimers();
@@ -1732,9 +1732,9 @@ describe("SwarmPane worker tokens and cost", () => {
       expect(screen.getByText("Workers (2)")).toBeInTheDocument();
     });
     expect(screen.getByText("120,000t")).toBeInTheDocument();
-    expect(screen.getByText("~$0.1400")).toBeInTheDocument();
+    expect(screen.getByText("Estimated cost ~$0.1400")).toBeInTheDocument();
     expect(screen.getByText("60,000t")).toBeInTheDocument();
-    expect(screen.getByText("~$0.0700")).toBeInTheDocument();
+    expect(screen.getByText("Estimated cost ~$0.0700")).toBeInTheDocument();
     expect(screen.queryByText("build it")).not.toBeInTheDocument();
     expect(screen.queryByText("check it")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /implement/ }));
@@ -2802,5 +2802,43 @@ describe("SwarmPane job-card expansion persistence", () => {
     render(<SwarmPane />);
     const job = await screen.findByRole("button", { name: /Running swarm/ });
     expect(job).toHaveAttribute("aria-expanded", "true");
+  });
+});
+
+
+describe("receipt-first spend (#102)", () => {
+  it("names job identifiers and never uses routing forecast as worker spend", () => {
+    expect(jobIdentifier("local-e0d790a9")).toBe("Job local-e0d790a9");
+    expect(jobIdentifier("job_41123fa7ff1b")).toBe("Job job_41123fa7ff1b");
+    expect(namedSavings(0.0278)).toBe("Estimated savings ~$0.0278");
+
+    const job = {
+      id: "local-e0d790a9",
+      goal: "x",
+      status: "complete",
+      est_cost_usd: 0.1095,
+      estimated: true,
+      tokens: 10948,
+      tasks: [{ id: "local-e0d790a9-w0", role: "implement", instruction: "", status: "done", adapter: "agentic" }],
+    } as Job;
+    const spend = workerSpend(job.tasks![0], job);
+    expect(spend?.cost).toBeCloseTo(0.1095, 6);
+    expect(spend?.basis).toBe("estimated");
+  });
+
+  it("does not invent a split for multi-worker jobs without task receipts", () => {
+    const job = {
+      id: "local-multi",
+      goal: "x",
+      status: "complete",
+      est_cost_usd: 0.40,
+      estimated: true,
+      tasks: [
+        { id: "w0", role: "a", instruction: "", status: "done", adapter: "agentic" },
+        { id: "w1", role: "b", instruction: "", status: "done", adapter: "agentic" },
+      ],
+    } as Job;
+    expect(workerSpend(job.tasks![0], job)).toBeNull();
+    expect(workerSpend(job.tasks![1], job)).toBeNull();
   });
 });

@@ -172,11 +172,7 @@ def test_job_swarm_accounting_uses_actual_usage_not_routing_estimate():
 
 
 def test_job_swarm_accounting_keeps_estimate_when_usage_unpriceable():
-    """Usage from a model the registry cannot price must not zero the cost.
-
-    Regression: a finished job showed the routing estimate while running, then
-    snapped to $0 on completion because price_job returned 0 for its unpriced
-    usage records and that 0 was treated as authoritative."""
+    """Unpriceable usage is Cost unavailable — never a routing forecast."""
     arts = [
         _artifact(
             task_id="t1",
@@ -195,7 +191,10 @@ def test_job_swarm_accounting_keeps_estimate_when_usage_unpriceable():
     ]
     tokens, cost = _job_swarm_accounting(arts, registry=[])
     assert tokens == 360_000
-    assert abs(cost - 0.0067) < 1e-9
+    assert cost == 0.0
+    detail = _job_swarm_accounting_detail(arts, registry=[])
+    assert abs(detail.get("route_forecast_usd") - 0.0067) < 1e-9
+    assert detail.get("spend_is_forecast") is False
 
 
 def test_job_swarm_accounting_prices_unknown_models_from_live_map(monkeypatch):
@@ -231,6 +230,7 @@ def test_job_swarm_accounting_prices_unknown_models_from_live_map(monkeypatch):
 
 
 def test_job_swarm_accounting_falls_back_to_routing_before_usage():
+    """Before usage lands, spend is unavailable; forecast stays separate."""
     registry = [_registry_spec("worker-model")]
     arts = [
         _artifact(
@@ -242,7 +242,9 @@ def test_job_swarm_accounting_falls_back_to_routing_before_usage():
     ]
     tokens, cost = _job_swarm_accounting(arts, registry)
     assert tokens == 0
-    assert abs(cost - 0.062) < 1e-6
+    assert cost == 0.0
+    detail = _job_swarm_accounting_detail(arts, registry)
+    assert abs(detail.get("route_forecast_usd") - 0.062) < 1e-6
 
 
 def test_job_swarm_accounting_prices_verification_without_routing():
@@ -324,9 +326,10 @@ def test_task_swarm_accounting_falls_back_to_routing_estimate():
     ]
     by_task = _task_swarm_accounting(arts, registry)
     assert by_task["t1"]["tokens"] == 0
-    assert abs(by_task["t1"]["est_cost_usd"] - 0.062) < 1e-9
+    assert "est_cost_usd" not in by_task["t1"]
+    assert abs(by_task["t1"]["route_forecast_usd"] - 0.062) < 1e-9
     assert by_task["t2"]["tokens"] == 0
-    assert abs(by_task["t2"]["est_cost_usd"] - 0.0048) < 1e-9
+    assert abs(by_task["t2"]["route_forecast_usd"] - 0.0048) < 1e-9
 
 
 def test_task_swarm_accounting_keeps_estimate_when_usage_unpriceable():
@@ -348,7 +351,8 @@ def test_task_swarm_accounting_keeps_estimate_when_usage_unpriceable():
     ]
     by_task = _task_swarm_accounting(arts, registry=[])
     assert by_task["t1"]["tokens"] == 360_000
-    assert abs(by_task["t1"]["est_cost_usd"] - 0.0067) < 1e-9
+    assert "est_cost_usd" not in by_task["t1"]
+    assert abs(by_task["t1"]["route_forecast_usd"] - 0.0067) < 1e-9
 
 
 def test_zero_work_job_does_not_inherit_routing_estimate():

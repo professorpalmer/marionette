@@ -1198,6 +1198,7 @@ class ConversationJobsMixin:
                     "invalidated_paths",
                     "reuse_reason",
                     "acceptance_criteria",
+                    "financial_receipt",
                 ):
                     if stamped.get(_rk) not in (None, "", [], {}):
                         res_dict[_rk] = stamped[_rk]

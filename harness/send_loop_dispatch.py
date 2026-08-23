@@ -795,7 +795,23 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         delivered_arts, artifact_delivery = _swarm_artifact_delivery(
             session, _job_id_text, ordered,
         )
-    yield ConvEvent('action_result', {
+    _pm_receipt = None
+    _store_jid_early = str(getattr(result, "job_id", "") or "").strip()
+    if _store_jid_early.startswith("job_") and not _demo_refused:
+        try:
+            from harness.financial_receipt import (
+                load_pm_cost_report,
+                persistable_pm_receipt,
+            )
+            durable = session.state()
+            store = getattr(durable, "store", None)
+            if store is not None:
+                _pm_receipt = persistable_pm_receipt(
+                    load_pm_cost_report(store, _store_jid_early)
+                )
+        except Exception:
+            _pm_receipt = None
+    _action_result = {
         'id': aid,
         'job_id': result.job_id,
         'num': _ui_num,
@@ -805,7 +821,10 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         'mode': result.mode,
         'auth_failure': auth_failure,
         'error': ('demo substrate -- not real codebase analysis' if _demo_refused else None),
-    })
+    }
+    if _pm_receipt:
+        _action_result['financial_receipt'] = _pm_receipt
+    yield ConvEvent('action_result', _action_result)
     _has_signal = bool(_signal)
     # Quality gate: a "finding" with no substance (a one-liner with no file
     # reference) must not turn the badge green -- a swarm whose workers choked
@@ -845,6 +864,8 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         'artifacts': delivered_arts,
         'artifact_delivery': artifact_delivery,
     }
+    if _pm_receipt:
+        _badge['financial_receipt'] = _pm_receipt
     _job_engine = _ui_adapter if _demo_refused else (result.adapter or 'agentic')
     # Best-effort routed model so finish cannot clobber a preview ROUTING stamp
     # with bare agentic/native.

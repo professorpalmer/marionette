@@ -886,6 +886,28 @@ class LocalJobsMixin:
                 job["cost_provenance"] = "provider"
             if job.get("tasks"):
                 job["tasks"][0]["status"] = terminal
+            try:
+                from harness.financial_receipt import (
+                    apply_local_receipt,
+                    build_local_financial_receipt,
+                )
+                provider_cost = float(est_cost_usd or 0.0) if (
+                    real_cost and est_cost_usd and not cost_unsplit
+                ) else None
+                receipt = build_local_financial_receipt(
+                    job_id,
+                    spend_usd=float(job.get("est_cost_usd") or real_cost or 0.0),
+                    estimated=bool(job.get("estimated", True)),
+                    cost_provenance=str(job.get("cost_provenance") or "default"),
+                    tokens=int(job.get("tokens") or tokens or 0),
+                    artifacts=job.get("artifacts"),
+                    routing_saved_usd=float(job.get("routing_saved_usd") or 0.0),
+                    routing_savings_basis=str(job.get("routing_savings_basis") or "estimated"),
+                    provider_cost_usd=provider_cost,
+                )
+                apply_local_receipt(job, receipt)
+            except Exception:
+                pass
             if isinstance(worker_provenance, dict):
                 job["worker_provenance"] = copy.deepcopy(worker_provenance)
             summary_text = summary or ""
@@ -1174,7 +1196,27 @@ class LocalJobsMixin:
                 job["tokens"] = measured_tokens
             if measured_cost > 0:
                 job["est_cost_usd"] = round(measured_cost, 6)
+                job["estimated"] = False
+                job["cost_provenance"] = "provider"
             job["updated_at"] = time.time()
+            try:
+                from harness.financial_receipt import (
+                    apply_local_receipt,
+                    build_local_financial_receipt,
+                )
+                apply_local_receipt(job, build_local_financial_receipt(
+                    job_id,
+                    spend_usd=float(job.get("est_cost_usd") or 0.0),
+                    estimated=bool(job.get("estimated", measured_cost <= 0)),
+                    cost_provenance=str(job.get("cost_provenance") or "default"),
+                    tokens=int(job.get("tokens") or 0),
+                    artifacts=job.get("artifacts"),
+                    routing_saved_usd=float(job.get("routing_saved_usd") or 0.0),
+                    routing_savings_basis=str(job.get("routing_savings_basis") or "estimated"),
+                    provider_cost_usd=measured_cost if measured_cost > 0 else None,
+                ))
+            except Exception:
+                pass
             for artifact in job.get("artifacts") or []:
                 if not isinstance(artifact, dict):
                     continue

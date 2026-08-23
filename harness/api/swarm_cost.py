@@ -216,19 +216,27 @@ def _job_swarm_accounting_detail(raw_arts, registry: list) -> dict:
                 provenance = "static"
                 estimated = True
         else:
-            est_cost_usd = _routing_estimate_cost(raw_arts)
-            provenance = "default"
+            # Usage present but unpriceable: Cost unavailable, not a forecast.
+            est_cost_usd = 0.0
+            provenance = "unknown"
             estimated = True
     except Exception:
-        est_cost_usd = _routing_estimate_cost(raw_arts)
-        provenance = "default"
+        est_cost_usd = 0.0
+        provenance = "unknown"
         estimated = True
 
+    forecast = 0.0
+    try:
+        forecast = float(_routing_estimate_cost(raw_arts) or 0.0)
+    except Exception:
+        forecast = 0.0
     return {
         "tokens": tokens,
         "est_cost_usd": round(float(est_cost_usd or 0.0), 6),
         "cost_provenance": provenance,
         "estimated": bool(estimated),
+        "route_forecast_usd": round(forecast, 6),
+        "spend_is_forecast": False,
     }
 
 
@@ -280,7 +288,11 @@ def _task_swarm_accounting(raw_arts, registry: list) -> dict:
 
     by_task: dict = {}
     for task_id, cost in _routing_estimate_by_task(raw_arts).items():
-        by_task[task_id] = {"tokens": 0, "est_cost_usd": round(float(cost or 0.0), 6)}
+        # Forecast is metadata only — never spend.
+        by_task[task_id] = {
+            "tokens": 0,
+            "route_forecast_usd": round(float(cost or 0.0), 6),
+        }
 
     arts_for_usage = _arts_for_swarm_usage(raw_arts)
     try:
@@ -332,12 +344,12 @@ def _task_swarm_accounting(raw_arts, registry: list) -> dict:
                     "estimated": estimated,
                 }
             else:
-                # Unpriceable usage with tokens: keep routing estimate.
+                # Unpriceable usage: Cost unavailable. Keep forecast separate.
                 by_task[task_id] = {
                     "tokens": tokens,
-                    "est_cost_usd": float(prev.get("est_cost_usd") or 0.0),
-                    "cost_provenance": "default",
+                    "cost_provenance": "unknown",
                     "estimated": True,
+                    "route_forecast_usd": prev.get("route_forecast_usd"),
                 }
     except Exception:
         pass
