@@ -56,6 +56,10 @@ import {
   finalizeOpenPilotBubble,
   sealedAssistantCoversDelta,
 } from "./streamBubbles";
+import {
+  clearProviderFailureWaitHint,
+  isProviderFailureWaitHint,
+} from "../../lib/composerWaitHint";
 import { turnHasLiveInvestigation } from "../../lib/turnProgress";
 import { notifyWorkspaceMutated } from "../../lib/workspaceMutationEvents";
 import { shouldRefreshBusyChrome } from "./streamTerminal";
@@ -147,7 +151,12 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
     recordTurnSettle,
   } = deps;
 
-  const clearWaitHintOnProgress = () => setWaitHint(null);
+  const clearWaitHintOnProgress = () =>
+    setWaitHint((prev) => {
+      if (!prev) return prev;
+      if (isProviderFailureWaitHint(prev)) return clearProviderFailureWaitHint(prev);
+      return null;
+    });
   const refreshBusyChrome = () =>
     shouldRefreshBusyChrome({
       turnSettled: turnSettledRef.current,
@@ -161,7 +170,11 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       setWaitHint(awaitHint || "Still working…");
     } else {
       setStatus(settle.status);
-      setWaitHint(null);
+      if (settle.status === "error") {
+        setWaitHint((prev) => (isProviderFailureWaitHint(prev) ? prev : null));
+      } else {
+        setWaitHint(null);
+      }
     }
     recordTurnSettle?.(settle);
   };

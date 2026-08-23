@@ -638,6 +638,38 @@ describe("investigation UX residual debts (nested / fold prefs / workerStream)",
     expect(nested[1]).toHaveAttribute("data-action-id", "nested-edit-1");
   });
 
+  it("marks failed nested worker rows with visible failed chrome", () => {
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "implement the fix" } },
+      {
+        kind: "card",
+        card: {
+          id: "run-impl-fail",
+          goal: "ship nested tools",
+          cwd: null,
+          kind: "run_implement",
+          running: false,
+          open: false,
+          actions: [
+            {
+              action_id: "nested-fail-1",
+              kind: "read_file",
+              goal: "missing.ts",
+              status: "failed",
+            },
+          ],
+          result: { status: "error", error: "worker failed" },
+        },
+      },
+      { kind: "msg", msg: { role: "assistant", text: "Stopped." } },
+    ];
+
+    render(<TranscriptList {...listProps(items)} />);
+    fireEvent.click(screen.getByRole("button", { name: /Explored/i }));
+    expect(screen.getByLabelText("failed")).toBeTruthy();
+    expect(screen.getByText("failed", { selector: ".sr-only" })).toBeTruthy();
+  });
+
   it("clearActivityFoldPrefs drops sticky open state after a user toggle", () => {
     const card: Extract<Item, { kind: "card" }> = {
       kind: "card",

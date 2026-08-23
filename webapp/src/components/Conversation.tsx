@@ -101,9 +101,12 @@ import { focusSettingsPage } from "./SettingsShell";
 import {
   FEED_GESTURE_IDLE_MS,
   FEED_REPIN_THRESHOLD_PX,
+  FEED_TAIL_EPSILON_PX,
   chooseFeedFollowFlush,
   feedResizeScrollFollowDecision,
+  isAtFeedTail,
   nextFeedPinState,
+  scrollToFeedEnd,
   settleFrameResult,
   shouldShowJumpToBottom,
   shouldUnpinOnTouchMove,
@@ -159,7 +162,7 @@ import {
   type DirectoryEntryLike,
 } from "./conversation/composerInput";
 import { openAgentWorkspace } from "../lib/agentLinks";
-import { sharedReadinessNotice, fromBackendDiagnostic } from "../lib/operationalDiagnostic";
+import { AUTH_FAILURE, sharedReadinessNotice, fromBackendDiagnostic } from "../lib/operationalDiagnostic";
 import { getActiveDiagnostic, publishDiagnostic } from "../lib/operationalDiagnosticBus";
 import { executeDiagnosticRecovery, clearDiagnosticAfterSuccess } from "../lib/operationalRecovery";
 import { useOperationalDiagnostic } from "../lib/useOperationalDiagnostic";
@@ -1118,7 +1121,8 @@ export default function Conversation({
       scrollToEnd();
     } else if (feedRef.current) {
       programmaticScrollRef.current = true;
-      feedRef.current.scrollTop = feedRef.current.scrollHeight;
+      const el = feedRef.current;
+      el.scrollTop = scrollToFeedEnd(el.scrollHeight, el.clientHeight);
     }
   };
   useEffect(() => {
@@ -1133,12 +1137,18 @@ export default function Conversation({
     const snapToBottomIfNear = () => {
       const node = feedRef.current;
       if (!node) return;
-      const distance = node.scrollHeight - node.scrollTop - node.clientHeight;
-      if (distance >= FEED_REPIN_THRESHOLD_PX) return;
+      if (!isAtFeedTail(
+        node.scrollHeight,
+        node.scrollTop,
+        node.clientHeight,
+        FEED_TAIL_EPSILON_PX,
+      )) {
+        return;
+      }
       scrollReleasedByGestureRef.current = false;
       pinnedToBottomRef.current = true;
-      const maxScrollTop = Math.max(0, node.scrollHeight - node.clientHeight);
-      if (Math.abs(node.scrollTop - maxScrollTop) >= 0.5) {
+      const maxScrollTop = scrollToFeedEnd(node.scrollHeight, node.clientHeight);
+      if (Math.abs(node.scrollTop - maxScrollTop) >= FEED_TAIL_EPSILON_PX) {
         programmaticScrollRef.current = true;
         node.scrollTop = maxScrollTop;
       }
@@ -1325,7 +1335,7 @@ export default function Conversation({
       scrollToEnd();
     } else {
       programmaticScrollRef.current = true;
-      el.scrollTop = el.scrollHeight;
+      el.scrollTop = scrollToFeedEnd(el.scrollHeight, el.clientHeight);
     }
     let frame = 0;
     let stableFrames = 0;
@@ -3420,6 +3430,16 @@ export default function Conversation({
   const handleOperationalRecovery = useCallback(async () => {
     if (!operationalDiagnostic) return;
     await executeDiagnosticRecovery(operationalDiagnostic, async () => {
+      if (operationalDiagnostic.code === AUTH_FAILURE) {
+        focusSettingsPage("providers");
+        window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: "settings" }));
+        const ask = latestUserAsk(itemsRef.current);
+        if (ask) {
+          recoveryDispatchingRef.current = true;
+          executeSendRef.current(ask, auto, plan);
+        }
+        return;
+      }
       try {
         const res = await api.diagnostics();
         const diag = fromBackendDiagnostic(res.diagnostic as Record<string, unknown> | null);
@@ -3430,7 +3450,14 @@ export default function Conversation({
         /* keep diagnostic visible */
       }
     });
-  }, [operationalDiagnostic]);
+  }, [operationalDiagnostic, auto, plan]);
+
+  const handleAuthFailureRetry = useCallback(() => {
+    const ask = latestUserAsk(itemsRef.current);
+    if (!ask) return;
+    recoveryDispatchingRef.current = true;
+    executeSendRef.current(ask, auto, plan);
+  }, [auto, plan]);
 
   const recoveryAction = (
     operationalDiagnostic
@@ -3516,6 +3543,7 @@ export default function Conversation({
           onExecutePlan={handleTranscriptExecutePlan}
           onCommandApproval={handleCommandApproval}
           onSecretRequest={handleSecretRequest}
+          onAuthFailureRetry={handleAuthFailureRetry}
           showJumpToBottom={showJumpToBottom}
           onJumpToBottom={jumpToLatest}
           composerDock={(

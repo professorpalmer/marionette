@@ -2,12 +2,15 @@ import { describe, expect, it } from "vitest";
 import {
   FEED_GESTURE_IDLE_MS,
   FEED_REPIN_THRESHOLD_PX,
+  FEED_TAIL_EPSILON_PX,
   chooseFeedFollowFlush,
   feedBottomClearancePx,
   feedResizeScrollFollowDecision,
+  isAtFeedTail,
   mergeFeedResizeObservationSnapshots,
   nextFeedPinState,
   scrollTopAfterFeedHeightChange,
+  scrollToFeedEnd,
   settleFrameResult,
   shouldCancelFeedResizeFollowForManualScrollAway,
   shouldDeferFollowDuringUserGesture,
@@ -646,5 +649,120 @@ describe("feedScroll user-gesture deferral", () => {
         userGestureActive: true,
       }),
     ).toEqual({ kind: "follow", scrollTop: newHeight - client });
+  });
+});
+
+describe("feedScroll layout contracts", () => {
+  const client = 400;
+
+  it("scrollToEnd lands at scrollHeight - clientHeight", () => {
+    expect(scrollToFeedEnd(2000, client)).toBe(1600);
+    expect(scrollToFeedEnd(350, client)).toBe(0);
+  });
+
+  it("last-row growth while pinned at first overflow follows in one write", () => {
+    const startHeight = 500;
+    const pinnedTop = scrollToFeedEnd(startHeight, client);
+    const grown = startHeight + 120;
+    const nextTop = scrollTopAfterFeedHeightChange({
+      scrollHeight: grown,
+      scrollTop: pinnedTop,
+      clientHeight: client,
+      pinned: true,
+      settling: false,
+      releasedByGesture: false,
+    });
+    expect(nextTop).toBe(scrollToFeedEnd(grown, client));
+  });
+
+  it("last-row taller than viewport while pinned follows growth", () => {
+    const tall = 1200;
+    const top = scrollToFeedEnd(tall, client);
+    const taller = 1800;
+    expect(
+      scrollTopAfterFeedHeightChange({
+        scrollHeight: taller,
+        scrollTop: top,
+        clientHeight: client,
+        pinned: true,
+        settling: false,
+        releasedByGesture: false,
+      }),
+    ).toBe(scrollToFeedEnd(taller, client));
+  });
+
+  it("overscan estimate remount does not unpin when wasPinned and growth follows", () => {
+    const estimateHeight = 2000;
+    const measuredHeight = 2120;
+    const oldTop = scrollToFeedEnd(estimateHeight, client);
+    expect(
+      nextFeedPinState({
+        wasPinned: true,
+        releasedByGesture: false,
+        scrollHeight: measuredHeight,
+        scrollTop: oldTop,
+        clientHeight: client,
+        prevScrollTop: oldTop,
+        settling: false,
+      }).pinned,
+    ).toBe(true);
+  });
+
+  it("chrome shrink applies clearance in one scrollTop write", () => {
+    const height = 2000;
+    const oldClient = 400;
+    const newClient = 320;
+    const top = scrollToFeedEnd(height, oldClient);
+    expect(
+      scrollTopAfterFeedHeightChange({
+        scrollHeight: height,
+        scrollTop: top,
+        clientHeight: newClient,
+        pinned: true,
+        settling: false,
+        releasedByGesture: false,
+      }),
+    ).toBe(scrollToFeedEnd(height, newClient));
+  });
+
+  it("idle after flick that never hits epsilon-tail does not snap", () => {
+    const height = 2000;
+    const nearButNotTail = height - client - 20;
+    expect(isAtFeedTail(height, nearButNotTail, client, FEED_TAIL_EPSILON_PX)).toBe(false);
+    expect(
+      nextFeedPinState({
+        wasPinned: false,
+        releasedByGesture: true,
+        scrollHeight: height,
+        scrollTop: nearButNotTail,
+        clientHeight: client,
+        prevScrollTop: nearButNotTail,
+        settling: false,
+        userGestureActive: false,
+      }),
+    ).toEqual({ pinned: false, releasedByGesture: true });
+  });
+
+  it("DOM scroller grows last row in normal flow while pinned at tail", () => {
+    const scroller = document.createElement("div");
+    scroller.style.height = "400px";
+    scroller.style.overflow = "auto";
+    const inner = document.createElement("div");
+    inner.style.height = "500px";
+    scroller.append(inner);
+    document.body.append(scroller);
+    scroller.scrollTop = scrollToFeedEnd(scroller.scrollHeight, scroller.clientHeight);
+    inner.style.height = "620px";
+    const nextTop = scrollTopAfterFeedHeightChange({
+      scrollHeight: scroller.scrollHeight,
+      scrollTop: scroller.scrollTop,
+      clientHeight: scroller.clientHeight,
+      pinned: true,
+      settling: false,
+      releasedByGesture: false,
+    });
+    if (nextTop != null) scroller.scrollTop = nextTop;
+    expect(scroller.scrollTop).toBe(scrollToFeedEnd(scroller.scrollHeight, scroller.clientHeight));
+    scroller.remove();
   });
 });

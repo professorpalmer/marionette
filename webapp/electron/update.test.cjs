@@ -160,6 +160,86 @@ test("isEditableInstall: matches only the editable marker line", () => {
   assert.equal(pm.isEditableInstall(""), false);
 });
 
+test("parseEditableProjectLocation: extracts the editable checkout path from pip show", () => {
+  const out = [
+    "Name: pm-harness",
+    "Version: 0.9.284",
+    "Editable project location: /Users/dev/Projects/marionette",
+    "Location: /Users/.marionette/marionette/.venv/lib/python3.11/site-packages",
+  ].join("\n");
+  assert.equal(pm.parseEditableProjectLocation(out), "/Users/dev/Projects/marionette");
+  assert.equal(pm.parseEditableProjectLocation("Name: pm-harness\nVersion: 0.9.284"), "");
+});
+
+test("planStaleHarnessEditable: aligned editable location is a no-op", () => {
+  const pip = "Name: pm-harness\nEditable project location: /app/marionette\n";
+  const plan = pm.planStaleHarnessEditable({
+    repoRootRealpath: "/app/marionette",
+    editableLocationRealpath: "/app/marionette",
+    pipShowOutput: pip,
+    sameRemote: true,
+    editableCanFf: true,
+  });
+  assert.equal(plan.skip, true);
+  assert.match(plan.reason, /aligned/);
+});
+
+test("planStaleHarnessEditable: mismatched path + clean same-remote plans fast-forward", () => {
+  const pip = "Name: pm-harness\nEditable project location: /Users/dev/Projects/marionette\n";
+  const plan = pm.planStaleHarnessEditable({
+    repoRootRealpath: "/Users/.marionette/marionette",
+    editableLocationRealpath: "/Users/dev/Projects/marionette",
+    pipShowOutput: pip,
+    sameRemote: true,
+    editableCanFf: true,
+  });
+  assert.equal(plan.skip, false);
+  assert.equal(plan.action, "ff");
+  assert.match(plan.notice, /Harness was an editable install at/);
+  assert.match(plan.notice, /stale checkout/);
+});
+
+test("planStaleHarnessEditable: dirty or diverged editable checkout plans rebind", () => {
+  const pip = "Name: pm-harness\nEditable project location: /Users/dev/Projects/marionette\n";
+  const dirty = pm.planStaleHarnessEditable({
+    repoRootRealpath: "/Users/.marionette/marionette",
+    editableLocationRealpath: "/Users/dev/Projects/marionette",
+    pipShowOutput: pip,
+    sameRemote: true,
+    editableCanFf: false,
+  });
+  assert.equal(dirty.skip, false);
+  assert.equal(dirty.action, "rebind");
+
+  const remote = pm.planStaleHarnessEditable({
+    repoRootRealpath: "/Users/.marionette/marionette",
+    editableLocationRealpath: "/Users/dev/fork/marionette",
+    pipShowOutput: "Name: pm-harness\nEditable project location: /Users/dev/fork/marionette\n",
+    sameRemote: false,
+    editableCanFf: true,
+  });
+  assert.equal(remote.action, "rebind");
+});
+
+test("planStaleHarnessEditable: after rebind alignment the plan is a no-op", () => {
+  const home = "/Users/.marionette/marionette";
+  const pip = `Name: pm-harness\nEditable project location: ${home}\n`;
+  const plan = pm.planStaleHarnessEditable({
+    repoRootRealpath: home,
+    editableLocationRealpath: home,
+    pipShowOutput: pip,
+    sameRemote: true,
+    editableCanFf: true,
+  });
+  assert.equal(plan.skip, true);
+});
+
+test("staleHarnessEditableNotice: names the old editable path", () => {
+  const notice = pm.staleHarnessEditableNotice("/Users/dev/Projects/marionette");
+  assert.match(notice, /\/Users\/dev\/Projects\/marionette/);
+  assert.match(notice, /cannot keep serving a stale checkout/);
+});
+
 test("buildUpdaterEnv: login-shell PATH is prepended so npm/uv resolve (fixes spawn ENOENT)", () => {
   // Join fixture PATHs with the platform delimiter -- hardcoded ":" would not
   // split on Windows and the assertions below would see one giant segment.

@@ -37,6 +37,7 @@ export default function ConversationChatColumn({
   onExecutePlan,
   onCommandApproval,
   onSecretRequest,
+  onAuthFailureRetry,
   composerDock,
   showJumpToBottom = false,
   onJumpToBottom,
@@ -63,6 +64,7 @@ export default function ConversationChatColumn({
   onExecutePlan: (planText: string) => void;
   onCommandApproval: (item: CommandApprovalItem, approve: boolean) => void;
   onSecretRequest?: (item: SecretRequestItem, decision: { action: "save"; value: string } | { action: "dismiss" }) => void;
+  onAuthFailureRetry?: () => void;
   composerDock: ReactNode;
   showJumpToBottom?: boolean;
   onJumpToBottom?: () => void;
@@ -131,6 +133,7 @@ export default function ConversationChatColumn({
             onExecutePlan={onExecutePlan}
             onCommandApproval={onCommandApproval}
             onSecretRequest={onSecretRequest}
+            onAuthFailureRetry={onAuthFailureRetry}
           />
         </div>
       </div>
