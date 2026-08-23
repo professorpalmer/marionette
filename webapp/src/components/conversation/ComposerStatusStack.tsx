@@ -11,12 +11,12 @@ import type { Job } from "../../lib/api";
 
 function statusIcon(row: ComposerStatusStackRow) {
   if (row.state === "running") {
-    return <Loader2 className="size-3.5 animate-spin text-muted-foreground/80" aria-hidden />;
+    return <Loader2 className="size-3 animate-spin text-muted-foreground/80" aria-hidden />;
   }
   if (row.state === "failed") {
-    return <XCircle className="size-3.5 text-rose-500/85" aria-hidden />;
+    return <XCircle className="size-3 text-rose-500/85" aria-hidden />;
   }
-  return <CheckCircle2 className="size-3.5 text-emerald-500/85" aria-hidden />;
+  return <CheckCircle2 className="size-3 text-emerald-500/85" aria-hidden />;
 }
 
 function rowKindLabel(kind: ComposerStatusStackRow["kind"]): string {
@@ -72,21 +72,21 @@ export default function ComposerStatusStack({ swarmJobs }: { swarmJobs: readonly
 
   return (
     <div
-      className="mx-2 mb-2 overflow-hidden rounded-2xl border border-edge/80 bg-panel2/80 shadow-lg shadow-black/15"
+      className="mx-2 mb-1 overflow-hidden rounded-lg border border-edge/70 bg-panel2/70"
       data-slot="composer-status-stack"
     >
-      <div className="divide-y divide-edge/60">
+      <div className="divide-y divide-edge/50">
         {grouped.map((group) => (
-          <div key={group.kind} className="px-2.5 py-2">
-            <div className="mb-1 flex items-center justify-between px-0.5">
-              <span className="text-[9px] font-semibold uppercase tracking-[0.22em] text-muted-foreground/70">
+          <div key={group.kind} className="px-2 py-1">
+            <div className="mb-0.5 flex items-center justify-between">
+              <span className="text-[9px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/65">
                 {groupLabel(group.kind)}
               </span>
-              <span className="text-[9px] font-mono text-muted-foreground/60">
+              <span className="text-[9px] font-mono text-muted-foreground/55">
                 {group.rows.length}
               </span>
             </div>
-            <div className="space-y-1">
+            <div className="space-y-0.5">
               {group.rows.map((row) => {
                 const onClick = () => {
                   if (row.kind === "swarm") {
@@ -105,17 +105,17 @@ export default function ComposerStatusStack({ swarmJobs }: { swarmJobs: readonly
                     type="button"
                     onClick={onClick}
                     title={row.title}
-                    className="flex w-full items-center gap-2 rounded-xl border border-edge/60 bg-panel/70 px-2.5 py-1.5 text-left text-[11px] leading-4 text-txt/90 transition hover:border-edge2 hover:bg-panel2/80 focus-visible:border-accent/60 focus-visible:outline-none"
+                    className="flex w-full items-center gap-1.5 rounded-md border border-edge/50 bg-panel/60 px-1.5 py-1 text-left text-[11px] leading-4 text-txt/85 transition hover:border-edge2 hover:bg-panel2/70 focus-visible:border-accent/60 focus-visible:outline-none"
                   >
-                    <span className="flex size-5 shrink-0 items-center justify-center rounded-full border border-edge/60 bg-panel text-[8px] font-semibold tracking-[0.18em] text-muted-foreground/70">
+                    <span className="flex size-4 shrink-0 items-center justify-center rounded-full border border-edge/50 bg-panel text-[7px] font-semibold tracking-[0.12em] text-muted-foreground/70">
                       {rowKindLabel(row.kind)}
                     </span>
                     <span className="min-w-0 flex-1 truncate">{row.label}</span>
-                    <span className="flex shrink-0 items-center gap-1 text-[9px] uppercase tracking-[0.18em] text-muted-foreground/70">
+                    <span className="flex shrink-0 items-center gap-1 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/65">
                       {statusIcon(row)}
                       <span>{rowActionLabel(row)}</span>
                     </span>
-                    <ChevronRight className="size-3.5 shrink-0 text-muted-foreground/50" aria-hidden />
+                    <ChevronRight className="size-3 shrink-0 text-muted-foreground/45" aria-hidden />
                   </button>
                 );
               })}

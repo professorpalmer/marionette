@@ -35,10 +35,19 @@ export function pickTaskSourceJob(jobs: readonly Job[], activeSessionId: string)
   })[0];
 }
 
+function oneLineLabel(task: Task): string {
+  const role = String(task.role || "").replace(/\s+/g, " ").trim();
+  const instruction = String(task.instruction || "").replace(/\s+/g, " ").trim();
+  if (role && instruction && !instruction.toLowerCase().startsWith(role.toLowerCase())) {
+    return `${role} · ${instruction}`;
+  }
+  return instruction || role || String(task.id || "Task");
+}
+
 export function buildComposerTasks(job: Job | null): ComposerTask[] {
   return (job?.tasks || []).map((task: Task, i) => ({
     id: String(task.id || `${job?.id || "job"}-${i}`),
-    content: String(task.instruction || task.role || task.id || "Task").trim(),
+    content: oneLineLabel(task),
     state: taskState(task.status),
   }));
 }
