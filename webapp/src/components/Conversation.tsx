@@ -3393,6 +3393,7 @@ export default function Conversation({
         dragOverIndex={dragOverIndex}
         queueItems={queueItems}
         swarmLiveJobs={swarmLiveJobs}
+        sessionId={activeSessionId || cachedSessionIdRef.current || ""}
         queueLoadError={queueLoadError}
         queueDragIndex={queueDragIndex}
         queueDragOverIndex={queueDragOverIndex}

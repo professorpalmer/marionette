@@ -29,6 +29,7 @@ import { api, type Config, type ContextUsageResponse, type Job } from "../../lib
 import PilotPicker from "../PilotPicker";
 import WorkspaceChip from "./WorkspaceChip";
 import ComposerStatusStack from "./ComposerStatusStack";
+import ComposerTasksPanel from "./ComposerTasksPanel";
 import { formatMentionListingCapMessage, type MentionListingCap } from "./slashCommands";
 import { filterSlashCommands } from "./composerInput";
 import {
@@ -68,6 +69,7 @@ export default function ComposerDock({
   dragOverIndex,
   queueItems,
   swarmLiveJobs = [],
+  sessionId = "",
   queueLoadError,
   queueDragIndex,
   queueDragOverIndex,
@@ -159,6 +161,7 @@ export default function ComposerDock({
   dragOverIndex: number | null;
   queueItems: ServerQueueItem[];
   swarmLiveJobs?: Job[];
+  sessionId?: string;
   queueLoadError?: string | null;
   queueDragIndex: number | null;
   queueDragOverIndex: number | null;
@@ -481,6 +484,7 @@ export default function ComposerDock({
             })}
           </div>
         )}
+        <ComposerTasksPanel jobs={swarmLiveJobs} sessionId={sessionId} />
         <ComposerStatusStack swarmJobs={swarmLiveJobs} />
         {/* Server-side PROMPT QUEUE, stacked ABOVE the composer (Cursor-style)
             so the "runs next" items are always visible right over the input.
