@@ -193,4 +193,11 @@ def test_drain_persists_swarm_badge_to_display_transcript():
         "objective": "fix the parser",
         "held_for_review": False,
         "analysis_ok": False,
+        "artifacts": [],
+        "artifact_delivery": {
+            "pm_artifacts": 0,
+            "available_to_inspect": 0,
+            "complete": True,
+            "missing": [],
+        },
     }]
