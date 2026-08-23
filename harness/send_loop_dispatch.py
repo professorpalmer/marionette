@@ -149,6 +149,48 @@ def _session_durable(session):
     raise AttributeError("session has no durable artifact store")
 
 
+
+def _reuse_source_rows(decision) -> list[dict]:
+    """Complete source evidence for reuse; compact_artifacts are not authority."""
+    from harness.local_job_artifacts import is_bookkeeping_artifact
+
+    cand = getattr(decision, "candidate", None)
+    if isinstance(cand, dict):
+        rows = [
+            a for a in (cand.get("artifacts") or [])
+            if isinstance(a, dict) and not is_bookkeeping_artifact(a)
+        ]
+        if rows:
+            return rows
+    return [
+        a for a in (getattr(decision, "compact_artifacts", None) or [])
+        if isinstance(a, dict)
+    ]
+
+
+def _reuse_findings(rows: list[dict]) -> list[dict]:
+    return [
+        {
+            "type": a.get("type") or "finding",
+            "headline": a.get("headline") or a.get("uri") or "",
+            "id": a.get("id"),
+            "task_id": a.get("task_id"),
+            "sha256": a.get("sha256"),
+        }
+        for a in rows
+        if isinstance(a, dict)
+    ]
+
+
+def _project_reused_delivery(session, decision):
+    source_job_id = str(getattr(decision, "source_job_id", "") or "")
+    source_rows = _reuse_source_rows(decision)
+    delivered, delivery = _swarm_artifact_delivery(
+        session, source_job_id, source_rows, require_store=False,
+    )
+    return source_job_id, source_rows, delivered, delivery
+
+
 def _swarm_artifact_delivery(
     session,
     job_id: str,
@@ -538,21 +580,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                 engine='agentic',
                 tokens=0,
                 est_cost_usd=0.0,
-                findings=[
-                    {
-                        'type': a.get('type') or 'finding',
-                        'headline': a.get('headline') or a.get('uri') or '',
-                        'id': a.get('id'),
-                        'task_id': a.get('task_id'),
-                        'sha256': a.get('sha256'),
-                    }
-                    for a in (
-                        (getattr(_reuse_decision, 'candidate', None) or {}).get('artifacts')
-                        if isinstance(getattr(_reuse_decision, 'candidate', None), dict)
-                        else None
-                    ) or (_reuse_decision.compact_artifacts or [])
-                    if isinstance(a, dict)
-                ],
+                findings=_reuse_findings(_reuse_source_rows(_reuse_decision)),
                 reuse_status='reused',
                 source_job_id=_reuse_decision.source_job_id,
                 validation_fingerprint=_reuse_decision.validation_fingerprint,
@@ -585,24 +613,11 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                 act, aid, f'(swarm {aid} failed: {err})', is_native,
             )
             return None
-        try:
-            from harness.local_job_artifacts import is_bookkeeping_artifact
-            _cand = getattr(_reuse_decision, 'candidate', None)
-            _source_job = _cand if isinstance(_cand, dict) else {}
-            _source_rows = [
-                a for a in (_source_job.get('artifacts') or [])
-                if isinstance(a, dict) and not is_bookkeeping_artifact(a)
-            ]
-        except Exception:
-            _source_rows = []
-        if not _source_rows:
-            _source_rows = list(_reuse_decision.compact_artifacts or [])
-        _delivered_reuse, _delivery_reuse = _swarm_artifact_delivery(
-            session,
-            _reuse_decision.source_job_id or _sync_local_id,
-            _source_rows,
-            require_store=False,
+        _source_job_id, _source_rows, _delivered_reuse, _delivery_reuse = (
+            _project_reused_delivery(session, _reuse_decision)
         )
+        if not _source_job_id:
+            _source_job_id = _reuse_decision.source_job_id or _sync_local_id
         _badge = {
             'job_id': _sync_local_id,
             'applied': True,
@@ -618,12 +633,12 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         yield ConvEvent('action_result', {
             'id': aid,
             'job_id': _sync_local_id,
-            'num': len(_reuse_decision.compact_artifacts or []),
+            'num': len(_delivered_reuse),
             'types': sorted({
                 str(a.get('type') or 'finding')
-                for a in (_reuse_decision.compact_artifacts or [])
+                for a in _delivered_reuse
             }),
-            'artifacts': list(_reuse_decision.compact_artifacts or [])[:12],
+            'artifacts': list(_delivered_reuse),
             'adapter': 'reuse',
             'mode': 'reuse',
             'auth_failure': '',
@@ -636,13 +651,15 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             'objective': act.goal,
             'result': _badge,
         })
-        digest = _reuse_decision.digest_text or (
-            f"REUSED {_reuse_decision.source_job_id} ({_reuse_decision.reason})"
+        manifest = _render_swarm_delivery_manifest(
+            _source_job_id, _delivered_reuse, _delivery_reuse,
         )
         session._append_action_result(
             act, aid,
-            f"(swarm {aid} reused prior validation; zero new execution spend)\n{digest}",
+            f"(swarm {aid} reused prior validation from {_source_job_id}; "
+            f"zero new execution spend)\n{manifest}",
             is_native,
+            force_inline=True,
         )
         return None
     _sync_register_role = 'explore'
@@ -1699,6 +1716,9 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                                 session, job_id, agentic_pin,
                             )
                             _reuse_registered = True
+                            _src_id, _src_rows, _delivered_reuse, _delivery_reuse = (
+                                _project_reused_delivery(session, decision)
+                            )
                             session._finish_local_job(
                                 job_id,
                                 ok=True,
@@ -1710,14 +1730,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                                 engine=engine,
                                 tokens=0,
                                 est_cost_usd=0.0,
-                                findings=[
-                                    {
-                                        'type': a.get('type') or 'finding',
-                                        'headline': a.get('headline') or a.get('uri') or '',
-                                        'id': a.get('id'),
-                                    }
-                                    for a in (decision.compact_artifacts or [])
-                                ],
+                                findings=_reuse_findings(_src_rows or _delivered_reuse),
                                 reuse_status='reused',
                                 source_job_id=decision.source_job_id,
                                 validation_fingerprint=decision.validation_fingerprint,
@@ -1750,6 +1763,8 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                                 'error': None,
                                 'objective': sub_goal,
                                 'adapter': 'reuse',
+                                'artifacts': _delivered_reuse,
+                                'artifact_delivery': _delivery_reuse,
                                 **_prov,
                             }
                             session._display_transcript.append(

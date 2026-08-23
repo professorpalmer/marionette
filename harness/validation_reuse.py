@@ -52,9 +52,7 @@ ANALYSIS_ROLE_CLASS = frozenset({
 # Narrow re-verify must not re-open broad explore / pipeline-mapper coverage.
 NARROW_VERIFY_ROLES = ("conflict-auditor",)
 
-_DIGEST_ARTIFACT_LIMIT = 8
 _DIGEST_HEADLINE_CHARS = 160
-_DIGEST_MAX_CHARS = 2400
 _PATH_TOKEN_RE = re.compile(
     r"(?P<path>[\w./\\-]+\.(?:py|ts|tsx|js|jsx|cjs|mjs|json|md|toml|yml|yaml|"
     r"css|html|rs|go|java|c|h|cpp|sh|ps1|bat))\b",
@@ -858,7 +856,7 @@ def compact_delta_digest(
     reason: str = "",
     acceptance_criteria: Optional[Sequence[str]] = None,
 ) -> tuple[str, list[dict[str, Any]]]:
-    """Build a bounded pilot digest citing ``artifact://`` ids (no large dumps)."""
+    """Cite the complete source evidence set (compact headlines, no bodies)."""
     refs: list[dict[str, Any]] = []
     lines = [
         f"REUSED validation from source_job_id={source_job_id} "
@@ -872,8 +870,7 @@ def compact_delta_digest(
     if criteria_block:
         lines.append(criteria_block)
     if invalidated_paths:
-        shown = ", ".join(list(invalidated_paths)[:12])
-        lines.append(f"invalidated_paths: {shown}")
+        lines.append("invalidated_paths: " + ", ".join(list(invalidated_paths)))
     if change_summary:
         lines.append(f"change_summary: {change_summary[:400]}")
     lines.append("artifact:// citations:")
@@ -887,23 +884,26 @@ def compact_delta_digest(
         headline = str(art.get("headline") or art.get("claim") or "").strip()
         headline = headline[:_DIGEST_HEADLINE_CHARS]
         uri = f"artifact://{source_job_id}/{art_id}"
+        task_id = str(art.get("task_id") or "").strip()
+        sha256 = str(art.get("sha256") or "").strip()
         refs.append({
             "id": art_id,
             "type": kind,
             "headline": headline,
             "uri": uri,
+            "task_id": task_id,
+            "sha256": sha256,
             "reuse_status": reuse_status,
             "source_job_id": source_job_id,
         })
         lines.append(f"  - [{kind}] {uri} — {headline}")
-        if len(refs) >= _DIGEST_ARTIFACT_LIMIT:
-            break
+        lines.append(
+            f"    id={art_id} task={task_id or 'unknown'} "
+            f"sha256={sha256 or 'unknown'}"
+        )
     if not refs:
         lines.append("  (no substantive artifact:// rows)")
-    text = "\n".join(lines)
-    if len(text) > _DIGEST_MAX_CHARS:
-        text = text[: _DIGEST_MAX_CHARS - 3] + "..."
-    return text, refs
+    return "\n".join(lines), refs
 
 
 def _invalidate_paths_for_candidate(
@@ -1407,7 +1407,7 @@ def stamp_validation_on_job(
             f"{source_job_id}/{str(a.get('id') or '')}"
             for a in (job.get("artifacts") or [])
             if isinstance(a, dict) and a.get("id")
-        ][:12]
+        ]
 
     # Stamp volatile environment fingerprint on complete validations. Preserve
     # an explicit override (reuse/narrow lineage); otherwise probe current env.

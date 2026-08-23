@@ -250,9 +250,9 @@ def test_compact_delta_digest_bounds_and_cites_artifact_uri():
     )
     assert "artifact://local-prior/" in text
     assert "REUSED" in text
-    assert len(text) <= 2400
     assert refs
     assert all(r["uri"].startswith("artifact://") for r in refs)
+    assert all(r.get("id") for r in refs)
 
 
 def test_evaluate_reuse_gate_reuses_matching_fingerprint(monkeypatch):
