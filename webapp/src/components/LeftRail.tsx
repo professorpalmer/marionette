@@ -17,6 +17,7 @@ import {
 import { writeTranscriptCache } from "./Conversation";
 import { sharedReadinessNotice } from "../lib/operationalDiagnostic";
 import { useOperationalDiagnostic } from "../lib/useOperationalDiagnostic";
+import { filterJobsByScope, loadJobScope, saveJobScope, type JobScope } from "../lib/jobScope";
 
 export {
   SESSION_LEASE_EXHAUSTED_MESSAGE,
