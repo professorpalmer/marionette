@@ -438,6 +438,27 @@ def _finalize_driver(driver):
     return maybe_wrap_cassette(driver)
 
 
+def resolve_bare_model(model: str) -> tuple:
+    """Deterministic provider for a BARE model id (no 'provider:' prefix).
+
+    Resolution is CANONICAL, not key-order-dependent: the first candidate in
+    PROVIDERS declaration order that serves the model wins, with one stable
+    preference (openai-codex over openai for a shared id). Transient key
+    presence never reroutes an id to a different backend across sessions --
+    when the canonical provider is not currently keyed we FAIL LOUDLY with the
+    provider to enable instead of silently falling back (e.g. to OpenRouter).
+    Returns (provider, model) and raises ProviderError when nothing serves it.
+    """
+    candidates = [p for p in PROVIDERS if model in p.pilot_models]
+    if not candidates:
+        return (None, model)
+    for preferred in ("openai-codex",):
+        for p in candidates:
+            if p.name == preferred:
+                return (p, model)
+    return (candidates[0], model)
+
+
 def build_pilot(spec: str, *, max_tokens: int | None = None):
     """Build a thin driver for a pilot spec.
 
@@ -484,19 +505,20 @@ def build_pilot(spec: str, *, max_tokens: int | None = None):
         pname, model = spec.split(":", 1)
         provider = get_provider(pname)
     if provider is None:
-        # Resolve a bare model name to a provider that lists it. Prefer
-        # openai-codex over openai when both advertise the same id so a
-        # ChatGPT plan OAuth burn isn't shadowed by OPENAI_API_KEY.
-        candidates = [p for p in available_providers() if model in p.pilot_models]
-        for preferred in ("openai-codex",):
-            for p in candidates:
-                if p.name == preferred:
-                    provider = p
-                    break
-            if provider is not None:
-                break
-        if provider is None and candidates:
-            provider = candidates[0]
+        # Resolve a bare model name against the CANONICAL provider table (see
+        # resolve_bare_model): stable winner independent of which keys happen
+        # to be present, so the same spec never silently lands on a different
+        # backend (or an OpenRouter fallback) between sessions.
+        canonical, model = resolve_bare_model(model)
+        if canonical is not None:
+            if not canonical.available:
+                raise ProviderError(
+                    f"pilot {spec!r} resolves to {canonical.display_name} "
+                    f"(canonical provider for model {model!r}), but no key is "
+                    f"configured. Set: {' or '.join(canonical.env_vars)}. "
+                    "Marionette does not silently reroute an explicit selection."
+                )
+            provider = canonical
     if provider is None:
         # last resort: OpenRouter (one key, whole field) if present.
         # Translate a catalog short-name (e.g. "qwen3-coder-30b") to its real

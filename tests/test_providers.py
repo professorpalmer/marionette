@@ -236,3 +236,37 @@ def test_build_pilot_selects_bedrock_driver(monkeypatch):
     d = prov.build_pilot(f"bedrock:{model}")
     assert isinstance(d, BedrockDriver)
     assert d.model == model
+
+
+def test_resolve_bare_model_is_canonical_not_key_dependent():
+    """The canonical winner for a bare id is stable regardless of keys."""
+    p, model = prov.resolve_bare_model("gpt-5.5")
+    assert p.name == "openai-codex" and model == "gpt-5.5"
+    p2, _ = prov.resolve_bare_model("glm-5.3")
+    assert p2.name == "zai"
+    p3, _ = prov.resolve_bare_model("claude-opus-4-8")
+    assert p3.name == "anthropic"
+
+
+def test_build_pilot_bare_model_fails_loudly_when_canonical_unkeyed(monkeypatch):
+    """A bare spec whose canonical provider has no key must raise, not
+    silently reroute to whichever keyed provider (e.g. OpenRouter) is up."""
+    from harness import credential_pool as cp
+
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-xxx")
+    cp.clear_pools_for_tests()
+    try:
+        with pytest.raises(prov.ProviderError) as exc:
+            prov.build_pilot("glm-5.2")
+        assert "zai" in str(exc.value).lower() or "GLM" in str(exc.value)
+    finally:
+        cp.clear_pools_for_tests()
+
+
+def test_build_pilot_bare_model_uses_canonical_provider_when_keyed(monkeypatch):
+    """With the canonical key present, the bare spec lands on that vendor."""
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("GLM_API_KEY", "glm-test")
+    driver = prov.build_pilot("glm-5.2")
+    assert driver.base_url.startswith("https://api.z.ai")

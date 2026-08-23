@@ -65,26 +65,47 @@ DISPLAY_NAMES = {
 MODELS_DEV_PROVIDER = "opencode"
 
 # Current Zen endpoint table (https://opencode.ai/docs/zen/). Conservative
-# default is chat/completions for unknown ids (including Ox Alpha).
+# default is chat/completions for unknown ids. The free variants are
+# chat-completions ONLY: the relay serves them on /chat/completions, and the
+# Responses dialect silently degrades their output (Ox Alpha Free /
+# muse-spark-*-free). Free ids win over the paid-family prefix table.
 _ANTHROPIC_MESSAGES_PREFIXES = ("claude-", "qwen")
 _OPENAI_RESPONSES_PREFIXES = ("gpt-", "grok-", "muse-spark-")
+_CHAT_COMPLETIONS_SUFFIXES = ("-free",)
+
+
+def is_free_variant(model: Optional[str]) -> bool:
+    """True for a Zen free-tier variant id (``...-free``, ``x-preview-f-free``)."""
+    bare = normalize_model_id(model).lower()
+    if not bare:
+        return False
+    return bare.endswith(_CHAT_COMPLETIONS_SUFFIXES) or bare in {
+        "x-preview-f-free", "big-pickle",
+    }
+
+
+def api_mode_for_model(model: Optional[str]) -> str:
+    """Which wire protocol the Zen endpoint table assigns to *model*.
+
+    Free variants are hard-routed to Chat Completions regardless of any paid
+    family prefix they share, so the free tier can never be dispatched through
+    the degraded Responses mode.
+    """
+    bare = normalize_model_id(model).lower()
+    if not bare:
+        return CHAT_COMPLETIONS
+    if bare.startswith(_ANTHROPIC_MESSAGES_PREFIXES) and not is_free_variant(bare):
+        return ANTHROPIC_MESSAGES
+    if is_free_variant(bare):
+        return CHAT_COMPLETIONS
+    if bare.startswith(_OPENAI_RESPONSES_PREFIXES):
+        return OPENAI_RESPONSES
+    return CHAT_COMPLETIONS
 
 
 def driver_base_url(base_url: Optional[str] = None) -> str:
     """The ``/v1`` root every Marionette driver expects for Zen."""
     return _shared_driver_base_url(base_url, default=BASE_URL)
-
-
-def api_mode_for_model(model: Optional[str]) -> str:
-    """Which wire protocol the Zen endpoint table assigns to *model*."""
-    bare = normalize_model_id(model).lower()
-    if not bare:
-        return CHAT_COMPLETIONS
-    if bare.startswith(_ANTHROPIC_MESSAGES_PREFIXES):
-        return ANTHROPIC_MESSAGES
-    if bare.startswith(_OPENAI_RESPONSES_PREFIXES):
-        return OPENAI_RESPONSES
-    return CHAT_COMPLETIONS
 
 
 def display_name_for(model: Optional[str], metadata: Optional[dict] = None) -> str:

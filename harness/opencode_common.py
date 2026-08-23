@@ -142,10 +142,16 @@ def build_opencode_driver(
     api_key_env: str,
     max_tokens: int,
     base_url: str,
-    temperature: float = 0.0,
+    temperature: Optional[float] = None,
     extra_body: Optional[dict] = None,
 ):
-    """Driver for one OpenCode model after the profile has chosen *api_mode*."""
+    """Driver for one OpenCode model after the profile has chosen *api_mode*.
+
+    ``temperature`` and ``extra_body`` are OPT-IN: only a model that genuinely
+    requires them on this relay gets them stamped into the driver. A profile
+    that omits them ships the user-selected defaults untouched, so the outbound
+    request shape does not silently vary as a side effect of family dispatch.
+    """
     bare = normalize_model_id(model)
     if api_mode == ANTHROPIC_MESSAGES:
         from pmharness.drivers.anthropic import AnthropicDriver
@@ -164,10 +170,13 @@ def build_opencode_driver(
         )
     from pmharness.drivers.openai_compat import OpenAICompatDriver
 
-    return OpenAICompatDriver(
-        name=spec, model=bare, base_url=base_url,
-        api_key_env=api_key_env, max_tokens=max_tokens,
-        temperature=temperature,
-        extra_body=extra_body or None,
-        extra_headers={"User-Agent": USER_AGENT},
-    )
+    driver_kwargs = {
+        "name": spec, "model": bare, "base_url": base_url,
+        "api_key_env": api_key_env, "max_tokens": max_tokens,
+        "extra_headers": {"User-Agent": USER_AGENT},
+    }
+    if temperature is not None:
+        driver_kwargs["temperature"] = temperature
+    if extra_body:
+        driver_kwargs["extra_body"] = extra_body
+    return OpenAICompatDriver(**driver_kwargs)
