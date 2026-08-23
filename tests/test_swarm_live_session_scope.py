@@ -111,6 +111,18 @@ def test_swarm_live_repo_scope_excludes_active_pilot_meters(monkeypatch):
             monkeypatch.setattr(
                 srv, "_job_swarm_accounting", lambda arts, registry: (2_000, 0.25)
             )
+            # Receipt-first live spend: tokens still come from the meter
+            # helper, dollars from persistable_pm_receipt.
+            monkeypatch.setattr(
+                "harness.financial_receipt.persistable_pm_receipt",
+                lambda report: {
+                    "job_id": "job_a1",
+                    "spend_usd": 0.25,
+                    "spend_basis": "measured",
+                    "estimated": False,
+                    "cost_provenance": "provider",
+                },
+            )
             monkeypatch.setattr(srv, "_job_savings_fields", lambda jid: {})
             monkeypatch.setattr(srv, "_slim_swarm_list_artifacts", lambda arts, state: [])
             monkeypatch.setattr(srv, "_task_swarm_accounting", lambda arts, registry: {})
@@ -145,7 +157,7 @@ def test_swarm_live_repo_scope_excludes_active_pilot_meters(monkeypatch):
                 .read()
                 .decode()
             )
-            # 0.11 stamped on A + 0.25 store job -- NOT pilot B meters.
+            # 0.11 stamped on A + 0.25 receipt spend -- NOT pilot B meters.
             assert abs(live["session"]["est_cost_usd"] - 0.36) < 1e-6
             assert live["session"]["tokens_used"] == 1000 + 200 + 2_000
             assert live["session"]["swarm_cache_read_tokens"] == 1_000

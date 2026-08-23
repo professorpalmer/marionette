@@ -118,9 +118,12 @@ def test_swarm_live_surfaces_local_provider_jobs():
 
 def test_session_total_includes_swarm_store_job_cost(monkeypatch):
     """Regression: swarm store jobs bill on their own adapters, but their cost
-    never rolled into the session total shown in the status bar. /api/usage and
-    /api/swarm/live must both add store-job spend (and only store-job spend --
-    local provider jobs are already inside _worker_cost_usd)."""
+    never rolled into the session total shown in the status bar. /api/usage
+    still prices via ``_job_swarm_accounting``. /api/swarm/live is
+    receipt-first: store-job dollars come from the PM cost receipt, not the
+    old artifact-meter helper. Local provider jobs stay inside
+    ``_worker_cost_usd``.
+    """
     tmp_dir = tempfile.mkdtemp()
     try:
         httpd, port, srv = _server(tmp_dir)
@@ -149,6 +152,17 @@ def test_session_total_includes_swarm_store_job_cost(monkeypatch):
             )
             monkeypatch.setattr(
                 srv, "_job_swarm_accounting", lambda arts, registry: (50_000, 0.37)
+            )
+            # Live session totals read persistable_pm_receipt.spend_usd.
+            monkeypatch.setattr(
+                "harness.financial_receipt.persistable_pm_receipt",
+                lambda report: {
+                    "job_id": "job_fake1",
+                    "spend_usd": 0.37,
+                    "spend_basis": "measured",
+                    "estimated": False,
+                    "cost_provenance": "provider",
+                },
             )
             # Bust the short-TTL /api/usage boot-pill cache so the monkeypatched
             # accounting is visible on the next GET (StatusBar polls ~10s apart).
