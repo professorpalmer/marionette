@@ -2,19 +2,7 @@ import { useEffect, useMemo, useState, useRef } from "react";
 import { ChevronDown, Check, Search } from "lucide-react";
 import { api, type Config, type ReasoningEffort } from "../lib/api";
 import { fallbackPilot, modelLabelOf, organizePilotModels } from "../lib/pilotPickerModels";
-
-const REASONING_LEVELS: { value: ReasoningEffort; label: string }[] = [
-  { value: "none", label: "None" },
-  { value: "low", label: "Low" },
-  { value: "medium", label: "Medium" },
-  { value: "high", label: "High" },
-  { value: "xhigh", label: "Extra High" },
-  { value: "max", label: "Max" },
-];
-
-function labelForEffort(value: ReasoningEffort): string {
-  return REASONING_LEVELS.find((l) => l.value === value)?.label || "Low";
-}
+import { REASONING_LEVELS, labelForEffort, showReasoningEffort } from "../lib/reasoningSupport";
 
 export default function PilotPicker({ config }: {
   config: Config | null;
@@ -137,7 +125,7 @@ export default function PilotPicker({ config }: {
   if (!config) return null;
 
   const currentLabel = labelOf(current);
-  const showReasoning = config?.reasoning_support?.[current] ?? true;
+  const showReasoning = showReasoningEffort(config?.reasoning_support, current);
   const hasRows = !!organized.current || organized.groups.some((g) => g.items.length > 0);
 
   const renderRow = (m: string) => {
