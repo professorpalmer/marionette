@@ -164,7 +164,11 @@ import {
 import { openAgentWorkspace } from "../lib/agentLinks";
 import { AUTH_FAILURE, sharedReadinessNotice, fromBackendDiagnostic } from "../lib/operationalDiagnostic";
 import { getActiveDiagnostic, publishDiagnostic } from "../lib/operationalDiagnosticBus";
-import { executeDiagnosticRecovery, clearDiagnosticAfterSuccess } from "../lib/operationalRecovery";
+import {
+  executeDiagnosticRecovery,
+  clearDiagnosticAfterSuccess,
+  syncConversationTurnFailureDiagnostic,
+} from "../lib/operationalRecovery";
 import { useOperationalDiagnostic } from "../lib/useOperationalDiagnostic";
 import {
   blankMsgQueueOnSessionSwitch,
@@ -2581,6 +2585,10 @@ export default function Conversation({
     lastSettleRef.current = settle;
     setTurnLifecycle(settle.lifecycle);
     setTerminalCause(settle.cause === "natural" ? null : settle.cause);
+    syncConversationTurnFailureDiagnostic(
+      settle,
+      cachedSessionIdRef.current || activeSessionId || undefined,
+    );
     recoveryDispatchingRef.current = false;
     if (recoveryControlsAvailable(settle.lifecycle)) {
       const sessionId = cachedSessionIdRef.current || activeSessionId || "";

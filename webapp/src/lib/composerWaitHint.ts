@@ -41,3 +41,20 @@ export function formatDriverFailureWaitHint(driver: string): string {
   const label = String(driver || "").trim() || "provider";
   return `driver ${label} failed`;
 }
+
+/**
+ * Whether a wait notice should latch composer/header wait chrome.
+ * Recovered driver-route failures after live progress must not re-open.
+ */
+export function noticeShouldLatchWaitHint(
+  message: string | null | undefined,
+  opts: { hasLiveProgress: boolean; turnSettled: boolean },
+): boolean {
+  const hint = String(message || "").trim();
+  if (!hint) return false;
+  if (isProviderFailureWaitHint(hint)) {
+    if (opts.turnSettled) return false;
+    if (opts.hasLiveProgress) return false;
+  }
+  return true;
+}

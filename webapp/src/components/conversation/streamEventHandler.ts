@@ -59,9 +59,10 @@ import {
 import {
   clearProviderFailureWaitHint,
   isProviderFailureWaitHint,
+  noticeShouldLatchWaitHint,
 } from "../../lib/composerWaitHint";
+import { turnHasLiveInvestigation, turnHasLiveProgressSignal } from "../../lib/turnProgress";
 import { clearDiagnostic } from "../../lib/operationalDiagnosticBus";
-import { turnHasLiveInvestigation } from "../../lib/turnProgress";
 import { notifyWorkspaceMutated } from "../../lib/workspaceMutationEvents";
 import { shouldRefreshBusyChrome } from "./streamTerminal";
 import { waitHintForAssistantDone } from "./swarmPoll";
@@ -175,7 +176,6 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
         setWaitHint((prev) => (isProviderFailureWaitHint(prev) ? prev : null));
       } else {
         setWaitHint(null);
-        // A recovered sidecar miss must not leave Error/Trace/Retry up.
         clearDiagnostic();
       }
     }
@@ -283,16 +283,17 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       // permanent "Waiting on provider" footer.
       if (!refreshBusyChrome()) return;
       const hint = truncateWaitHint(d.message || "");
-      if (!hint) return;
-      // Vision/sidecar driver misses are not a failed turn. Do not latch (or
-      // re-latch after tokens) a `driver … failed` wait-hint once the turn
-      // already has an answer or has settled.
-      if (isProviderFailureWaitHint(hint)) {
-        const recovered =
-          turnSettledRef.current
-          || Boolean(typeBufRef.current)
-          || hasPartialAssistantAnswer(itemsRef.current);
-        if (recovered) return;
+      if (
+        !hint
+        || !noticeShouldLatchWaitHint(hint, {
+          hasLiveProgress:
+            Boolean(typeBufRef.current)
+            || hasPartialAssistantAnswer(itemsRef.current)
+            || turnHasLiveProgressSignal(itemsRef.current),
+          turnSettled: turnSettledRef.current,
+        })
+      ) {
+        return;
       }
       setWaitHint(hint);
     } else if (ev.kind === "thinking") {
