@@ -4,6 +4,8 @@ import {
   waitHintForBusyProgress,
 } from "../lib/composerWaitHint";
 import { deriveBusyProgress } from "../lib/turnProgress";
+import { getActiveDiagnostic, publishDiagnostic, resetDiagnosticBus } from "../lib/operationalDiagnosticBus";
+import { createOperationalDiagnostic } from "../lib/operationalDiagnostic";
 
 type StreamStatus = "error" | "idle" | "done" | "thinking" | "awaiting_swarm" | "executing" | "streaming";
 import { createApplyStreamEvent } from "../components/conversation/streamEventHandler";
@@ -135,5 +137,34 @@ describe("createApplyStreamEvent provider failure wait hints", () => {
     apply({ kind: "error", data: { error: "provider rejected" } });
     expect(state.waitHint).toBe(failureNotice);
     expect(state.status).toBe("error");
+  });
+});
+
+describe("recovered vision sidecar driver miss is not a failed turn", () => {
+  const sidecar = "driver openrouter:deepseek/deepseek-v4-flash-vision-exp failed";
+
+  it("does not latch wait-hint or Error/Trace after a successful turn", () => {
+    resetDiagnosticBus();
+    publishDiagnostic(createOperationalDiagnostic({
+      scope: "conversation",
+      operation: "send",
+      code: "sidecar_noise",
+      summary: sidecar,
+      severity: "error",
+      retryable: true,
+      recovery: { kind: "retry", label: "Retry" },
+    }));
+    const { state, apply } = makeWaitHintApplyDeps();
+    apply({ kind: "notice", data: { kind: "wait", message: sidecar } });
+    apply({ kind: "message_delta", data: { text: "The turn worked.", stream_id: "a1", channel: "answer" } });
+    expect(state.waitHint).toBeNull();
+    apply({ kind: "notice", data: { kind: "wait", message: sidecar } });
+    expect(state.waitHint).toBeNull();
+    apply({ kind: "error", data: { error: sidecar } });
+    expect(state.status).not.toBe("error");
+    apply({ kind: "assistant_done", data: { stop_cause: "natural" } });
+    expect(state.waitHint).toBeNull();
+    expect(state.status).toBe("done");
+    expect(getActiveDiagnostic()).toBeNull();
   });
 });
