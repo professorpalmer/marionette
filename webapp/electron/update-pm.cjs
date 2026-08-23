@@ -23,11 +23,63 @@ const path = require("node:path");
 
 const DEFAULT_PUPPETMASTER_SPEC = "puppetmaster-ai==1.22.23";
 const PUPPETMASTER_DIST_NAME = "puppetmaster-ai";
+const HARNESS_DIST_NAME = "pm-harness";
 
 // True when `pip show` / `uv pip show` output describes an editable install
 // (a dev checkout linked with `-e`), which we must not overwrite from PyPI.
 function isEditableInstall(pipShowOutput) {
   return /^Editable project location:\s*\S/m.test(String(pipShowOutput || ""));
+}
+
+// Path from `pip show` / `uv pip show` for an editable install (`-e` checkout).
+function parseEditableProjectLocation(pipShowOutput) {
+  const m = String(pipShowOutput || "").match(/^Editable project location:\s*(.+)$/m);
+  return m ? m[1].trim() : "";
+}
+
+function staleHarnessEditableNotice(editablePath) {
+  return (
+    `Harness was an editable install at ${editablePath}; brought it to the pulled tree ` +
+    "so the server cannot keep serving a stale checkout."
+  );
+}
+
+// Decide how to reconcile a venv whose editable pm-harness points at a different
+// checkout than the tree we just pulled. Returns { skip: true } when aligned or
+// not editable; otherwise { skip: false, action: "ff"|"rebind", notice, ... }.
+function planStaleHarnessEditable({
+  repoRootRealpath,
+  editableLocationRealpath,
+  pipShowOutput,
+  sameRemote,
+  editableCanFf,
+} = {}) {
+  const editableLocation = parseEditableProjectLocation(pipShowOutput);
+  if (!isEditableInstall(pipShowOutput) || !editableLocation) {
+    return { skip: true, reason: "not an editable harness install" };
+  }
+  const editPath = String(editableLocationRealpath || editableLocation);
+  const repoPath = String(repoRootRealpath || "");
+  if (repoPath && editPath && repoPath === editPath) {
+    return { skip: true, reason: "editable already aligned with repo root" };
+  }
+  const notice = staleHarnessEditableNotice(editableLocation);
+  if (sameRemote && editableCanFf) {
+    return {
+      skip: false,
+      action: "ff",
+      notice,
+      editableLocation,
+      editableLocationRealpath: editPath,
+    };
+  }
+  return {
+    skip: false,
+    action: "rebind",
+    notice,
+    editableLocation,
+    editableLocationRealpath: editPath,
+  };
 }
 
 function pinnedVersionFromSpec(spec) {
@@ -93,7 +145,11 @@ function resolveCheckoutPin(repoRoot) {
 module.exports = {
   DEFAULT_PUPPETMASTER_SPEC,
   PUPPETMASTER_DIST_NAME,
+  HARNESS_DIST_NAME,
   isEditableInstall,
+  parseEditableProjectLocation,
+  staleHarnessEditableNotice,
+  planStaleHarnessEditable,
   pinnedVersionFromSpec,
   installedPuppetmasterVersion,
   planPuppetmasterUpgrade,

@@ -1399,6 +1399,36 @@ describe("createApplyStreamEvent waitHint lifecycle", () => {
     expect(hintState.waitHint).toBe("Still working…");
     expect(hintState.status).toBe("awaiting_swarm");
   });
+
+  it("clears driver failure wait hints on reasoning progress", () => {
+    const { state, apply } = makeWaitHintDeps();
+    apply({
+      kind: "notice",
+      data: { kind: "wait", message: "driver openrouter:deepseek failed" },
+    });
+    apply({ kind: "thinking", data: { text: "Retry route", delta: true, stream_id: "r1" } });
+    expect(state.waitHint).toBeNull();
+  });
+
+  it("clears driver failure wait hints on assistant_done success", () => {
+    const { state, apply } = makeWaitHintDeps();
+    apply({
+      kind: "notice",
+      data: { kind: "wait", message: "driver openrouter:deepseek failed" },
+    });
+    apply({ kind: "assistant_done", data: { stop_cause: "natural" } });
+    expect(state.waitHint).toBeNull();
+  });
+
+  it("keeps driver failure wait hints when the turn settles in error", () => {
+    const { state, apply } = makeWaitHintDeps();
+    apply({
+      kind: "notice",
+      data: { kind: "wait", message: "driver openrouter:deepseek failed" },
+    });
+    apply({ kind: "error", data: { error: "all routes failed" } });
+    expect(state.waitHint).toBe("driver openrouter:deepseek failed");
+  });
 });
 
 describe("message_delta cover gate without eager setState updaters", () => {

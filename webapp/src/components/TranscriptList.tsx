@@ -64,15 +64,18 @@ import {
 } from "../lib/autoReceipts";
 import { authFailureDiagnostic } from "../lib/operationalDiagnostic";
 import { publishDiagnostic } from "../lib/operationalDiagnosticBus";
+import { executeDiagnosticRecovery } from "../lib/operationalRecovery";
 import { focusSettingsPage } from "./SettingsShell";
 import { TranscriptImage } from "./conversation/TranscriptImage";
 import {
   FEED_UNPIN_BUBBLE_EVENT,
   nextFeedPinState,
+  scrollToFeedEnd,
   shouldStopNestedWheelBubble,
   shouldUnpinInnerOnWheel,
   THINKING_INNER_PIN_THRESHOLD_PX,
 } from "./conversation/feedScroll";
+import { partitionTranscriptLiveTail } from "./conversation/transcriptLiveTail";
 import {
   isOccludedScrollParentSize,
   shouldUseVirtualTranscriptWindow,
@@ -1025,10 +1028,28 @@ function indexTranscriptCommandSessions(items: Item[]): void {
   }
 }
 
-function AuthFailureBanner({ message, id }: { message: string; id?: string }) {
+function AuthFailureBanner({
+  message,
+  id,
+  onRetry,
+}: {
+  message: string;
+  id?: string;
+  onRetry?: () => void;
+}) {
   useEffect(() => {
     publishDiagnostic(authFailureDiagnostic(message, { jobId: id }));
   }, [message, id]);
+
+  const handleRetry = () => {
+    focusSettingsPage("providers");
+    window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: "settings" }));
+    if (!onRetry) return;
+    void executeDiagnosticRecovery(
+      authFailureDiagnostic(message, { jobId: id }),
+      onRetry,
+    );
+  };
 
   return (
     <div
@@ -1050,10 +1071,7 @@ function AuthFailureBanner({ message, id }: { message: string; id?: string }) {
         <div className="mt-2">
           <button
             type="button"
-            onClick={() => {
-              focusSettingsPage("providers");
-              window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: "settings" }));
-            }}
+            onClick={handleRetry}
             className="rounded-md border border-red-400/40 bg-red-500/10 px-2.5 py-1 text-[11px] font-medium text-red-100 hover:bg-red-500/20 transition"
           >
             Fix key and retry
@@ -1099,6 +1117,8 @@ export type TranscriptListProps = {
   onExecutePlan: (planText: string) => void;
   onCommandApproval: (item: CommandApprovalItem, approve: boolean) => void;
   onSecretRequest?: (item: SecretRequestItem, decision: { action: "save"; value: string } | { action: "dismiss" }) => void;
+  /** Relaunch the failed turn after provider auth recovery (Settings still opens). */
+  onAuthFailureRetry?: () => void;
 };
 
 export const TranscriptList = memo(function TranscriptList({
@@ -1120,6 +1140,7 @@ export const TranscriptList = memo(function TranscriptList({
   onExecutePlan,
   onCommandApproval,
   onSecretRequest,
+  onAuthFailureRetry,
 }: TranscriptListProps) {
   // Match Conversation's latch — awaiting_swarm plus holdSwarmAwait so
   // Investigating / mid-turn absorption / footer stay armed through idle flaps.
@@ -1141,6 +1162,12 @@ export const TranscriptList = memo(function TranscriptList({
 
   const intermediateItems = collectIntermediateAssistantItems(items, agentLoopOpen);
   const grouped = groupAgentActivity(items, intermediateItems);
+  const lastActivityGroupIdx = liveActivityGroupIndex(grouped);
+  const { head: virtualGrouped, tail: liveTailGrouped, tailStartIndex } =
+    partitionTranscriptLiveTail(grouped, {
+      lastLiveActivityIdx: lastActivityGroupIdx,
+      agentLoopOpen,
+    });
 
   // Virtualizer scroll parent is the feed column (composer is a sibling). The
   // list sits below empty-state / padding, so scrollMargin tracks that offset.
@@ -1185,12 +1212,12 @@ export const TranscriptList = memo(function TranscriptList({
   }, [scrollContainerRef, grouped.length, scrollEpoch]);
 
   const rowVirtualizer = useVirtualizer({
-    count: grouped.length,
+    count: virtualGrouped.length,
     getScrollElement: () => scrollContainerRef.current,
     estimateSize: () => FEED_ROW_ESTIMATE_PX,
     overscan: FEED_VIRTUAL_OVERSCAN,
     scrollMargin,
-    getItemKey: (index) => stableItemKey(grouped[index]!, index),
+    getItemKey: (index) => stableItemKey(virtualGrouped[index]!, index),
     measureElement:
       typeof window !== "undefined" &&
       !/firefox/i.test(window.navigator.userAgent)
@@ -1198,13 +1225,10 @@ export const TranscriptList = memo(function TranscriptList({
         : undefined,
   });
   const scrollToEnd = useCallback(() => {
-    const last = grouped.length - 1;
-    if (last >= 0) {
-      rowVirtualizer.scrollToIndex(last, { align: "end" });
-    }
     const el = scrollContainerRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [grouped.length, rowVirtualizer, scrollContainerRef]);
+    if (!el) return;
+    el.scrollTop = scrollToFeedEnd(el.scrollHeight, el.clientHeight);
+  }, [scrollContainerRef, grouped.length, liveTailGrouped.length]);
   useLayoutEffect(() => {
     if (!scrollToEndRef) return;
     scrollToEndRef.current = scrollToEnd;
@@ -1245,7 +1269,6 @@ export const TranscriptList = memo(function TranscriptList({
   // Only the newest fold AFTER the latest user message may be live. Prior
   // turns stay sealed even while turnOpen/busy — otherwise a new prompt
   // reactivates the previous Investigating pill until turn-2 tools land.
-  const lastActivityGroupIdx = liveActivityGroupIndex(grouped);
 
   const renderGroupedItem = (i: number) => {
     const it = grouped[i];
@@ -1521,7 +1544,14 @@ export const TranscriptList = memo(function TranscriptList({
         </div>
       );
     } else if (it.kind === "auth_failure") {
-      return <AuthFailureBanner key={key} message={it.message} id={it.id} />;
+      return (
+        <AuthFailureBanner
+          key={key}
+          message={it.message}
+          id={it.id}
+          onRetry={onAuthFailureRetry}
+        />
+      );
     } else if (it.kind === "compaction") {
       return <CompactionReceipt key={key} it={it} />;
     } else if (it.kind === "steer") {
@@ -1682,6 +1712,14 @@ export const TranscriptList = memo(function TranscriptList({
       {grouped.map((_, i) => renderGroupedItem(i))}
     </div>
   );
+  const liveTailList = useVirtualWindow && liveTailGrouped.length > 0 ? (
+    <div
+      data-testid="transcript-live-tail"
+      className="flex flex-col gap-1 w-full"
+    >
+      {liveTailGrouped.map((_, i) => renderGroupedItem(tailStartIndex + i))}
+    </div>
+  ) : null;
 
   const busyProgress = deriveBusyProgress(items, status, busyElapsedMs);
   // Hide the under-fold line only while a card / prep / stream already
@@ -1707,6 +1745,7 @@ export const TranscriptList = memo(function TranscriptList({
       data-testid="transcript-log"
     >
       {list}
+      {liveTailList}
       {compactingStatus && (
         <div className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/15 border border-edge/20 text-[11px] text-faint w-fit my-1 select-none animate-pulse">
           <Loader2 size={11} className="animate-spin text-accent" />
@@ -3146,7 +3185,9 @@ function ActionCard({
                   {action.status === "running" && effectivelyRunning ? (
                     <Loader2 size={10} className="animate-spin text-faint/60" />
                   ) : nestedErr ? (
-                    <span className="w-1 h-1 rounded-full bg-risk/70" />
+                    <span className="w-1 h-1 rounded-full bg-risk/70" aria-label="failed" title="failed">
+                      <span className="sr-only">failed</span>
+                    </span>
                   ) : null}
                 </div>
                 <span className={`shrink-0 ${nestedErr ? "text-risk/80" : "text-faint/75"}`}>

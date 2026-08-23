@@ -6,6 +6,8 @@
  * activity fold already knows about -- pure, so vitest can pin the contract.
  */
 
+import { waitHintForBusyProgress } from "./composerWaitHint";
+
 export type BusyStatus = "idle" | "thinking" | "executing" | "done" | "error" | "streaming" | string;
 
 export type TurnCard = {
@@ -633,6 +635,24 @@ export function deriveBusyProgress(
     };
   }
 
+  const hint = waitHintForBusyProgress(opts?.waitHint, {
+    hasSignal,
+    turnFailed: status === "error",
+  })?.trim() || "";
+
+  // Settled error still shows a leftover driver-failure hint. Recovered
+  // turns already cleared it in waitHintForBusyProgress.
+  if (status === "error" && hint) {
+    return {
+      phase: "error",
+      label: hint,
+      pill: hint,
+      step,
+      runningGoal,
+      runningKind,
+    };
+  }
+
   if (!busy) {
     return {
       phase,
@@ -646,7 +666,6 @@ export function deriveBusyProgress(
 
   // Background job pause: paint the await hint as the primary line (not
   // "Waiting on <pilot>" — the pilot turn already ended).
-  const hint = (opts?.waitHint || "").trim();
   if (awaitingSwarm) {
     const line = hint || "Still working…";
     const waiting = elapsed ? `${line} · ${elapsed}` : line;

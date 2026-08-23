@@ -20,12 +20,18 @@
 const { spawn, execFile } = require("node:child_process");
 const path = require("node:path");
 const os = require("node:os");
+const fs = require("node:fs");
 
-const { chooseFetchRemote } = require("./update-remote.cjs");
+const { chooseFetchRemote, canonicalGitHubRemote } = require("./update-remote.cjs");
 const { resolveBehindCount, shouldCountCommits } = require("./update-count.cjs");
 const { overallPercent } = require("./update-steps.cjs");
 const { runRebuildWithRetry } = require("./update-rebuild.cjs");
-const { resolveCheckoutPin: resolvePuppetmasterPin } = require("./update-pm.cjs");
+const {
+  resolveCheckoutPin: resolvePuppetmasterPin,
+  planStaleHarnessEditable,
+  parseEditableProjectLocation,
+  HARNESS_DIST_NAME,
+} = require("./update-pm.cjs");
 const { runtimeParityFields } = require("./puppetmaster-runtime.cjs");
 const marker = require("./update-marker.cjs");
 const {
@@ -277,6 +283,105 @@ async function inspectTree(repoRoot, branch) {
   const aheadRes = await gitCapture(repoRoot, ["rev-list", "--count", "FETCH_HEAD..HEAD"]);
   const ahead = aheadRes.ok ? (parseInt(aheadRes.out, 10) || 0) : 0;
   return { dirty, dirtyFiles, ahead };
+}
+
+// When the venv's editable pm-harness points at a different checkout than the
+// tree we just pulled, fast-forward that checkout (same remote, clean ff) or
+// rebind the venv to repoRoot so the backend cannot keep importing stale code.
+async function resolveStaleHarnessEditable({
+  repoRoot,
+  targetSha,
+  branch,
+  py,
+  hasUv,
+  childEnv,
+  progress,
+}) {
+  const harnessShow = hasUv
+    ? await execCapture("uv", ["pip", "show", "--python", py, HARNESS_DIST_NAME], { env: childEnv })
+    : await execCapture(py, ["-m", "pip", "show", HARNESS_DIST_NAME], { env: childEnv });
+
+  let repoRootRealpath;
+  try {
+    repoRootRealpath = fs.realpathSync(repoRoot);
+  } catch {
+    return { notice: null };
+  }
+
+  const editableLocation = parseEditableProjectLocation(harnessShow.out);
+  if (!editableLocation) return { notice: null };
+
+  let editableRealpath = editableLocation;
+  try {
+    editableRealpath = fs.realpathSync(editableLocation);
+  } catch {
+    // Missing editable tree — rebind the venv to repoRoot.
+  }
+
+  if (repoRootRealpath === editableRealpath) return { notice: null };
+
+  let sameRemote = false;
+  let editableCanFf = false;
+  const editGit = await gitCapture(editableLocation, ["rev-parse", "--git-dir"], 10000, childEnv);
+  if (editGit.ok) {
+    const repoOrigin = await gitCapture(repoRoot, ["config", "--get", "remote.origin.url"], 10000, childEnv);
+    await gitCapture(editableLocation, ["fetch", "--no-tags", "origin", branch], 45000, childEnv);
+    const editOrigin = await gitCapture(editableLocation, ["config", "--get", "remote.origin.url"], 10000, childEnv);
+    sameRemote = !!(
+      repoOrigin.ok &&
+      editOrigin.ok &&
+      canonicalGitHubRemote(repoOrigin.out) &&
+      canonicalGitHubRemote(repoOrigin.out) === canonicalGitHubRemote(editOrigin.out)
+    );
+    const { dirty, ahead } = await inspectTree(editableLocation, branch);
+    const ancestor = await gitCapture(
+      editableLocation,
+      ["merge-base", "--is-ancestor", "HEAD", targetSha],
+      10000,
+      childEnv
+    );
+    editableCanFf = ancestor.ok && ahead === 0 && !dirty;
+  }
+
+  const plan = planStaleHarnessEditable({
+    repoRootRealpath,
+    editableLocationRealpath: editableRealpath,
+    pipShowOutput: harnessShow.out,
+    sameRemote,
+    editableCanFf,
+  });
+  if (plan.skip) return { notice: null };
+
+  appendUpdateLog(
+    `[harness] stale editable at ${plan.editableLocation} (repo=${repoRootRealpath}); action=${plan.action}`
+  );
+  progress("deps", plan.notice, 0.15);
+
+  if (plan.action === "ff") {
+    const ff = await runStreamed(
+      "git",
+      ["-C", editableLocation, "merge", "--ff-only", targetSha],
+      { env: childEnv },
+      (l) => appendUpdateLog(`[harness] ${l}`)
+    );
+    if (ff.code === 0) {
+      appendUpdateLog(`[harness] fast-forwarded editable checkout to ${targetSha}`);
+      return { notice: plan.notice, action: "ff" };
+    }
+    appendUpdateLog(`[harness] fast-forward failed (${ff.tail || "unknown"}); rebinding venv`);
+  }
+
+  progress("deps", "Rebinding harness venv to updated checkout", 0.2);
+  const onRebindLine = (l) => { appendUpdateLog(`[harness] ${l}`); progress("deps", "Rebinding harness venv to updated checkout", 0.22); };
+  const rebind = hasUv
+    ? await runStreamed("uv", ["pip", "install", "--python", py, "-e", "."], { cwd: repoRoot, env: childEnv }, onRebindLine)
+    : await runStreamed(py, ["-m", "pip", "install", "-e", ".", "--quiet"], { cwd: repoRoot, env: childEnv }, onRebindLine);
+  if (rebind.code !== 0) {
+    appendUpdateLog(`[harness] venv rebind failed: ${rebind.tail || "unknown"}`);
+  } else {
+    appendUpdateLog(`[harness] venv rebound to ${repoRoot}`);
+  }
+  return { notice: plan.notice, action: "rebind" };
 }
 
 // Stream a child process, forwarding trimmed output lines to onLine, resolving
@@ -549,6 +654,20 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff",
     // venv. Detected once and reused for both the app and the Puppetmaster step.
     const hasUv = await detectUv(childEnv);
 
+    let harnessEditableNotice = null;
+    if (afterSha) {
+      const harnessResult = await resolveStaleHarnessEditable({
+        repoRoot,
+        targetSha: afterSha,
+        branch,
+        py,
+        hasUv,
+        childEnv,
+        progress,
+      });
+      harnessEditableNotice = harnessResult.notice || null;
+    }
+
     if (pyChanged) {
       progress("deps", "Updating Python dependencies", 0.3);
       const onDepLine = (l) => { appendUpdateLog(`[deps] ${l}`); progress("deps", "Updating Python dependencies", 0.4); };
@@ -627,7 +746,7 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff",
         : "Update ready -- relaunching",
       1
     );
-    return { ok: true, mainProcessChanged };
+    return { ok: true, mainProcessChanged, harnessEditableNotice };
   } catch (e) {
     return { ok: false, error: String(e && e.message ? e.message : e) };
   } finally {
@@ -922,4 +1041,5 @@ module.exports = {
   describeMainProcessUpdate,
   emptyApplyPlanResult,
   resolvePuppetmasterPin,
+  resolveStaleHarnessEditable,
 };

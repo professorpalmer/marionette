@@ -5,6 +5,7 @@ import {
   authFailureDiagnostic,
   fromBackendDiagnostic,
 } from "../lib/operationalDiagnostic";
+import { executeDiagnosticRecovery } from "../lib/operationalRecovery";
 
 describe("fromBackendDiagnostic", () => {
   it("parses GET /api/diagnostics wire payloads", () => {
@@ -39,12 +40,20 @@ describe("authFailureDiagnostic", () => {
 
 describe("executeDiagnosticRecovery", () => {
   it("invokes retry callback for retry recovery", async () => {
-    const { executeDiagnosticRecovery } = await import("../lib/operationalRecovery");
     const retry = vi.fn();
     await executeDiagnosticRecovery(
       authFailureDiagnostic("bad key"),
       retry,
     );
     expect(retry).toHaveBeenCalledTimes(1);
+  });
+
+  it("auth failure retry relaunches the failed turn instead of only refreshing diagnostics", async () => {
+    const retry = vi.fn();
+    const diag = authFailureDiagnostic("OPENAI_API_KEY rejected");
+    expect(diag.recovery.kind).toBe("retry");
+    await executeDiagnosticRecovery(diag, retry);
+    expect(retry).toHaveBeenCalledTimes(1);
+    expect(diag.code).toBe(AUTH_FAILURE);
   });
 });
