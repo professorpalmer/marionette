@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { X, Cpu, SlidersHorizontal, ShieldCheck, Zap, Bell, Wrench, Info, Puzzle } from "lucide-react";
 import ModelsSettingsPage from "./ModelsSettingsPage";
 import SettingsPane, { type SettingsSection } from "./SettingsPane";
 import PluginsPane from "./PluginsPane";
 import { TITLEBAR_TRAFFIC_PAD_SM_PX } from "../lib/titlebarSafe";
+import { useOverlayFocus } from "../lib/overlayFocus";
 
 type PageId = "models" | SettingsSection | "about";
 
@@ -52,6 +53,11 @@ export default function SettingsShell({
   const [page, setPage] = useState<PageId>(
     () => initialPage || takePendingSettingsPage() || "models",
   );
+  const shellRef = useRef<HTMLDivElement>(null);
+
+  useOverlayFocus(true, shellRef, {
+    onClose,
+  });
 
   // Escape always closes settings -- a keyboard escape hatch so a missed click
   // on the X (e.g. a busy main thread during a swarm) can never trap the user
@@ -78,7 +84,14 @@ export default function SettingsShell({
   }, []);
 
   return createPortal(
-    <div className="fixed inset-0 z-[80] bg-bg flex flex-col" data-testid="settings-shell">
+    <div
+      ref={shellRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Settings"
+      className="fixed inset-0 z-[80] bg-bg flex flex-col"
+      data-testid="settings-shell"
+    >
       {/* top bar -- fixed px pad clears macOS traffic lights (not rem) */}
       <div
         data-testid="settings-shell-titlebar"

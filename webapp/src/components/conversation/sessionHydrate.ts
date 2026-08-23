@@ -229,13 +229,13 @@ export function transcriptRefreshFailureDecision(hadCache: boolean): {
 }
 
 /**
- * Mid-turn reattach when getSessionState fails: retry, then optimistic busy so
- * Ready chrome cannot lie while a turn continues. Runners poll clears idle targets.
+ * Mid-turn reattach when getSessionState fails: retry, then poll the store
+ * cursor without fabricating a busy turn when the backend state is unknown.
  */
 export function reattachSessionStateFailureDecision(opts: {
   attempt: number;
   maxAttempts: number;
-}): "retry" | "optimistic_busy" {
+}): "retry" | "poll_only" {
   if (opts.attempt < opts.maxAttempts) return "retry";
-  return "optimistic_busy";
+  return "poll_only";
 }

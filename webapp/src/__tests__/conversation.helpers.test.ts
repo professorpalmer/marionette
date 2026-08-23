@@ -2111,7 +2111,7 @@ describe("sessionHydrate module", () => {
     });
     expect(reattachSessionStateFailureDecision({ attempt: 1, maxAttempts: 2 })).toBe("retry");
     expect(reattachSessionStateFailureDecision({ attempt: 2, maxAttempts: 2 })).toBe(
-      "optimistic_busy",
+      "poll_only",
     );
   });
 });

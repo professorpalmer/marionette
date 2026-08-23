@@ -6,6 +6,7 @@ import {
   runCommandPaletteAction,
   type CommandPaletteAction,
 } from "../lib/commandPalette";
+import { useOverlayFocus } from "../lib/overlayFocus";
 
 type CommandPaletteProps = {
   onToggleLeft: () => void;
@@ -32,6 +33,13 @@ export default function CommandPalette({
   const listRef = useRef<HTMLDivElement | null>(null);
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const listId = useId();
+
+  const close = () => setOpen(false);
+
+  useOverlayFocus(open, dialogRef, {
+    initialFocusRef: inputRef,
+    onClose: close,
+  });
 
   const actions = filterCommandPaletteActions(COMMAND_PALETTE_ACTIONS, query);
   const actionsRef = useRef(actions);
@@ -92,12 +100,6 @@ export default function CommandPalette({
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        setOpen(false);
-        return;
-      }
       const list = actionsRef.current;
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -130,19 +132,6 @@ export default function CommandPalette({
     );
     row?.scrollIntoView?.({ block: "nearest" });
   }, [activeIndex, open]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onFocusIn = (e: FocusEvent) => {
-      const root = dialogRef.current;
-      if (!root) return;
-      if (e.target instanceof Node && root.contains(e.target)) return;
-      e.stopPropagation();
-      inputRef.current?.focus();
-    };
-    document.addEventListener("focusin", onFocusIn);
-    return () => document.removeEventListener("focusin", onFocusIn);
-  }, [open]);
 
   if (!open) return null;
 

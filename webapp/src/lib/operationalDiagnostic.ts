@@ -53,6 +53,9 @@ export const TRANSPORT_HTTP = "transport_http";
 export const TRANSPORT_IPC = "transport_ipc";
 export const TRANSPORT_UNCERTAIN = "transport_uncertain";
 export const TRANSPORT_BUSY = "transport_busy";
+export const BACKEND_NOT_READY = "backend_not_ready";
+export const BACKEND_WARNING = "backend_warning";
+export const AUTH_FAILURE = "provider_auth_failure";
 
 const SUMMARY_MAX = 160;
 const DETAIL_MAX = 280;
@@ -205,6 +208,69 @@ export function fromTransportFailure(input: {
     recovery: { kind: "retry", label: "Retry" },
     sessionId: input.sessionId,
     repo: input.repo,
+  });
+}
+
+type BackendDiagnosticWire = {
+  scope?: DiagnosticScope;
+  operation?: string;
+  code?: string;
+  summary?: string;
+  detail?: string;
+  severity?: DiagnosticSeverity;
+  retryable?: boolean;
+  dataSafe?: boolean;
+  recovery?: DiagnosticRecovery;
+  sessionId?: string;
+  repo?: string;
+  jobId?: string;
+  taskId?: string;
+  id?: string;
+  createdAt?: number;
+};
+
+/** Parse GET /api/diagnostics diagnostic payload into the renderer contract. */
+export function fromBackendDiagnostic(
+  wire: BackendDiagnosticWire | null | undefined,
+): OperationalDiagnostic | null {
+  if (!wire || !wire.summary || !wire.scope || !wire.operation || !wire.severity) {
+    return null;
+  }
+  return createOperationalDiagnostic({
+    id: wire.id,
+    scope: wire.scope,
+    operation: wire.operation,
+    code: wire.code,
+    summary: wire.summary,
+    detail: wire.detail,
+    severity: wire.severity,
+    retryable: Boolean(wire.retryable),
+    dataSafe: wire.dataSafe,
+    recovery: wire.recovery,
+    sessionId: wire.sessionId,
+    repo: wire.repo,
+    jobId: wire.jobId,
+    taskId: wire.taskId,
+    createdAt: wire.createdAt,
+  });
+}
+
+/** Loud provider auth rejection surfaced in the transcript. */
+export function authFailureDiagnostic(message: string, opts?: {
+  sessionId?: string;
+  jobId?: string;
+}): OperationalDiagnostic {
+  return createOperationalDiagnostic({
+    scope: "conversation",
+    operation: "provider_auth",
+    code: AUTH_FAILURE,
+    summary: "Provider auth failure",
+    detail: sanitizeDiagnosticText(message, DETAIL_MAX),
+    severity: "error",
+    retryable: true,
+    recovery: { kind: "retry", label: "Fix key and retry" },
+    sessionId: opts?.sessionId,
+    jobId: opts?.jobId,
   });
 }
 

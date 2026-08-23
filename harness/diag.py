@@ -55,10 +55,14 @@ def note(where: str, exc: BaseException | None = None, msg: str = "") -> None:
     log is greppable; ``exc`` (if given) is rendered with repr for the real
     cause. Best-effort -- any failure here is itself swallowed."""
     try:
+        from .correlation import get_correlation_id
+
+        cid = get_correlation_id()
+        prefix = f"[{cid}] " if cid else ""
         logger = _get_logger()
         if exc is not None:
-            logger.warning("%s: %s%r", where, (msg + " " if msg else ""), exc)
+            logger.warning("%s%s: %s%r", prefix, where, (msg + " " if msg else ""), exc)
         elif msg:
-            logger.info("%s: %s", where, msg)
+            logger.info("%s%s: %s", prefix, where, msg)
     except Exception:
         pass

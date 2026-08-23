@@ -1092,7 +1092,7 @@ describe("mid-turn store-event cursor reattach", () => {
     expect(keep).toBe(true);
   });
 
-  it("on getSessionState failure optimistic-busy arms store poll", async () => {
+  it("on getSessionState failure arms store poll without fabricating busy", async () => {
     vi.useFakeTimers();
     const turnOpen = vi.fn();
     const setStatus = vi.fn();
@@ -1114,15 +1114,15 @@ describe("mid-turn store-event cursor reattach", () => {
 
     const { startChatEventsReattach } = createChatEventsReattach(deps as any);
     const done = startChatEventsReattach();
-    // Retry uses setTimeout(100); do not runAllTimers (store poll interval loops).
     await vi.advanceTimersByTimeAsync(250);
     await done;
     await Promise.resolve();
     await vi.advanceTimersByTimeAsync(0);
 
     expect(getSessionState.mock.calls.length).toBeGreaterThanOrEqual(2);
-    expect(deps.detachedBusyRef.current).toBe(true);
-    expect(turnOpen).toHaveBeenCalledWith(true);
+    expect(deps.detachedBusyRef.current).toBe(false);
+    expect(turnOpen).not.toHaveBeenCalled();
+    expect(setStatus).not.toHaveBeenCalled();
     expect(live).not.toHaveBeenCalled();
     expect(deps.chatEventsPollTimerRef.current).not.toBeNull();
   });

@@ -1710,6 +1710,17 @@ def _platform_services():
     )
 
 
+def _doctor_services():
+    """Build DoctorServices from live server module globals (call-time lookup)."""
+    from .api.doctor import DoctorServices
+
+    return DoctorServices(
+        get_driver=lambda: getattr(_cfg, "driver", "") or "",
+        get_reach=lambda: getattr(_cfg, "reach", "") or "",
+        get_repo=lambda: getattr(_cfg, "repo", "") or "",
+    )
+
+
 def _codegraph_services():
     """Build CodegraphServices from live server module globals (call-time lookup)."""
     from .api.codegraph import CodegraphServices
@@ -2486,6 +2497,7 @@ def _route_services():
         session_services=_session_services,
         terminal_services=_terminal_services,
         platform_services=_platform_services,
+        doctor_services=_doctor_services,
         settings_services=_settings_services,
         registry_services=_registry_services,
         worktree_services=_worktree_services,
@@ -2531,8 +2543,16 @@ class Handler(BaseHTTPRequestHandler):
         except (ConnectionError, TimeoutError):
             self.close_connection = True
 
-    def log_message(self, *a):  # quiet
-        pass
+    def log_message(self, fmt, *args):  # quiet but correlated
+        try:
+            from .correlation import get_correlation_id
+            from .diag import note
+
+            msg = fmt % args if args else str(fmt)
+            cid = get_correlation_id()
+            note("server.access", msg=f"{cid} {msg}" if cid else msg)
+        except Exception:
+            pass
 
     def _cors(self):
         # No wildcard. Reflect the Origin only when it is a loopback origin, so a
@@ -2540,12 +2560,20 @@ class Handler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin", "")
         if origin and origin != "null" and _origin_ok(origin):
             self.send_header("Access-Control-Allow-Origin", origin)
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Harness-Token")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Harness-Token, X-Correlation-Id")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+
+    def _bind_correlation(self) -> None:
+        from .correlation import resolve_correlation_id, set_correlation_id
+
+        headers = getattr(self, "headers", None)
+        incoming = headers.get("X-Correlation-Id") if headers is not None else None
+        set_correlation_id(resolve_correlation_id(incoming))
 
     def _guard(self) -> bool:
         """Reject cross-origin / rebound / unauthenticated requests. Returns True
         if the request should be BLOCKED (and sends the 403)."""
+        self._bind_correlation()
         if not _host_ok(self.headers.get("Host", "")):
             self._send(403, json.dumps({"error": "host not allowed"})); return True
         if not _origin_ok(self.headers.get("Origin", "")):
@@ -2574,6 +2602,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        try:
+            from .correlation import get_correlation_id
+
+            cid = get_correlation_id()
+            if cid:
+                self.send_header("X-Correlation-Id", cid)
+        except Exception:
+            pass
         self._cors()
         self.end_headers()
         self.wfile.write(data)
