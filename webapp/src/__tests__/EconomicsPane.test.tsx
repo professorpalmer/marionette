@@ -125,7 +125,7 @@ describe("EconomicsPane", () => {
 
     render(<EconomicsPane />);
 
-    expect(await screen.findByText("vis-1")).toBeInTheDocument();
+    expect(await screen.findByText("Job vis-1")).toBeInTheDocument();
     expect(screen.getByText(/visible only/)).toBeInTheDocument();
     expect(screen.queryByText("$9.99")).not.toBeInTheDocument();
     expect(screen.queryByText("~$9.99")).not.toBeInTheDocument();

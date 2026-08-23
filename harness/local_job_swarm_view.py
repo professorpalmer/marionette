@@ -172,6 +172,10 @@ def project_local_job_for_swarm_live(job: dict) -> dict:
         "source": str(job.get("source") or "harness"),
         "actions": _normalize_actions(job.get("actions")),
     }
+    if isinstance(job.get("financial_receipt"), dict):
+        row["financial_receipt"] = dict(job["financial_receipt"])
+    if job.get("route_forecast_usd") is not None:
+        row["route_forecast_usd"] = job.get("route_forecast_usd")
 
     # Preserve pre-merge accounting from annotate_job_accounting; stamp harness
     # locals when absent so /api/swarm/live session savings count them once.
@@ -229,7 +233,8 @@ def project_local_job_for_swarm_live(job: dict) -> dict:
             if job.get(key) not in (None, "", [], {}):
                 row[key] = job.get(key)
 
-    return row
+    from harness.financial_receipt import project_historical_one_worker_spend
+    return project_historical_one_worker_spend(row)
 
 
 def merge_local_jobs_into_swarm_live(

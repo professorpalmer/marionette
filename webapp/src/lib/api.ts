@@ -194,6 +194,8 @@ export type Task = {
   cost_provenance?: "provider" | "live" | "static" | "default";
   /** True when the dollar figure is not a full provider receipt. */
   estimated?: boolean;
+  /** Pre-run routing forecast — never spend. */
+  route_forecast_usd?: number;
 };
 export type Job = {
   id: string;
@@ -215,6 +217,9 @@ export type Job = {
   cost_provenance?: "provider" | "live" | "static" | "default";
   /** True when the dollar figure is not a full provider receipt. */
   estimated?: boolean;
+  /** Pre-run routing forecast — never spend. */
+  route_forecast_usd?: number;
+  financial_receipt?: Record<string, unknown>;
   model?: string;
   /** Prompt-cache hits on this job's usage-bearing artifacts. */
   tokens_cached?: number;

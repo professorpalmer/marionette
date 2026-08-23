@@ -567,6 +567,51 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
             ):
                 if j.get(_rk) not in (None, "", [], {}):
                     row[_rk] = j.get(_rk)
+            if str(jid).startswith("job_"):
+                try:
+                    from harness.financial_receipt import (
+                        load_pm_cost_report,
+                        persistable_pm_receipt,
+                    )
+                    raw_report = load_pm_cost_report(job_store, jid, registry=registry)
+                    receipt = persistable_pm_receipt(raw_report)
+                    row["financial_receipt"] = receipt
+                    if receipt.get("spend_usd") is not None:
+                        row["est_cost_usd"] = receipt["spend_usd"]
+                        row["estimated"] = bool(receipt.get("estimated"))
+                        row["cost_provenance"] = receipt.get("cost_provenance") or row.get("cost_provenance")
+                    elif receipt.get("spend_basis") == "unavailable":
+                        # Do not keep a routing forecast as spend.
+                        row["est_cost_usd"] = 0.0
+                        row["estimated"] = True
+                        row["cost_provenance"] = "unknown"
+                    if receipt.get("route_forecast_usd") is not None:
+                        row["route_forecast_usd"] = receipt.get("route_forecast_usd")
+                    tasks = row.get("tasks") or []
+                    actual_tasks = ((raw_report.get("actual_cost") or {}).get("tasks") or [])
+                    priced_by_id = {
+                        str(t.get("task_id")): t
+                        for t in actual_tasks
+                        if isinstance(t, dict) and t.get("task_id")
+                    }
+                    if len(tasks) == 1 and receipt.get("spend_usd") is not None:
+                        tasks[0]["est_cost_usd"] = receipt["spend_usd"]
+                        tasks[0]["estimated"] = bool(receipt.get("estimated"))
+                        tasks[0]["cost_provenance"] = receipt.get("cost_provenance")
+                    elif priced_by_id:
+                        for task in tasks:
+                            pt = priced_by_id.get(str(task.get("id") or ""))
+                            if not pt:
+                                continue
+                            if pt.get("priced") and pt.get("marginal_cost_usd") is not None:
+                                task["est_cost_usd"] = round(float(pt["marginal_cost_usd"]), 6)
+                                task["estimated"] = bool(pt.get("tokens_estimated"))
+                                task["cost_provenance"] = "static"
+                    elif len(tasks) > 1:
+                        for task in tasks:
+                            task.pop("est_cost_usd", None)
+                except Exception:
+                    pass
             res_jobs.append(apply_job_economics_policy(row))
     except Exception as e:
         svc.diag("server.jobs_list_aggregate", e)
