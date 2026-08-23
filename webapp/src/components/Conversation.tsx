@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
-import { api, type Config } from "../lib/api";
+import { api, type Config, type Job } from "../lib/api";
 import { usePolling } from "../lib/usePolling";
 import FileEditorPane from "./FileEditorPane";
 import {
@@ -539,6 +539,7 @@ export default function Conversation({
   useEffect(() => { pendingJobIdsRef.current = pendingJobIds; }, [pendingJobIds]);
   const processedSwarmJobIdsRef = useRef<string[]>([]);
   const [backendPendingSwarms, setBackendPendingSwarms] = useState(false);
+  const [swarmLiveJobs, setSwarmLiveJobs] = useState<Job[]>([]);
 
   // Hold investigation / Still working… after switch/hydrate while background
   // jobs fly, even if status briefly flaps idle before awaiting_swarm paints.
@@ -1495,6 +1496,7 @@ export default function Conversation({
     setPendingJobIds([]);
     processedSwarmJobIdsRef.current = [];
     setBackendPendingSwarms(false);
+    setSwarmLiveJobs([]);
     if (activeSessionId) {
       // Peek first for pending_swarms / latch visibility. Consume only once we
       // commit to scheduling resume so a mid-flight switch cannot steal it.
@@ -2302,6 +2304,7 @@ export default function Conversation({
               return null;
             }
             const jobs = Array.isArray(live?.jobs) ? live.jobs : [];
+            setSwarmLiveJobs(jobs);
             const hasActions = jobs.some(
               (j) => Array.isArray(j.actions) && j.actions.length > 0,
             );
@@ -3389,6 +3392,7 @@ export default function Conversation({
         dragIndex={dragIndex}
         dragOverIndex={dragOverIndex}
         queueItems={queueItems}
+        swarmLiveJobs={swarmLiveJobs}
         queueLoadError={queueLoadError}
         queueDragIndex={queueDragIndex}
         queueDragOverIndex={queueDragOverIndex}
@@ -3499,4 +3503,3 @@ export default function Conversation({
     </main>
   );
 }
-

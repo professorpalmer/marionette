@@ -120,16 +120,19 @@ def max_tokens_for_model(model: Optional[str], requested: Optional[int]) -> int:
     return min(int(requested), cap)
 
 
-def temperature_for_model(model: Optional[str], requested: float = 0.0) -> float:
-    """Temperature accepted by the Go relay for *model*.
+def temperature_for_model(model: Optional[str], requested: float = 0.0):
+    """Temperature override the Go relay requires for *model*, else None.
 
     Kimi's Go endpoints currently accept only ``1``; sending Marionette's
-    normal deterministic ``0`` is rejected as ``invalid temperature``.
+    normal deterministic ``0`` is rejected as ``invalid temperature``. Every
+    other family ships the caller's requested value untouched -- returning
+    None means "no override", so the request shape does not vary as a side
+    effect of family dispatch.
     """
     bare = normalize_model_id(model).lower()
     if bare.startswith("kimi-"):
         return 1.0
-    return float(requested)
+    return None
 
 
 def _is_glm_5_3(bare: str) -> bool:
@@ -172,15 +175,24 @@ def reasoning_body_extras(model: Optional[str], effort: Optional[str] = None) ->
       :func:`max_tokens_for_model`.
 
     An unrecognized model returns ``{}`` so the relay default stands.
+
+    The default effort (``low``, from :mod:`harness.reasoning_effort`) is NOT
+    injected as a side effect of family dispatch: a user who never touched
+    the reasoning setting gets the relay's own default request shape. Only
+    GLM-5.3 keeps an explicit ``low`` mapping, because omitting ``thinking``
+    fails that request outright.
     """
     from .reasoning_effort import current_reasoning_effort, normalize_reasoning_effort
 
     bare = normalize_model_id(model).lower()
     if not bare:
         return {}
+    requested_explicit = effort is not None
     level = normalize_reasoning_effort(
-        effort if effort is not None else current_reasoning_effort()
+        effort if requested_explicit else current_reasoning_effort()
     )
+    if not requested_explicit and level == "low" and not _is_glm_5_3(bare):
+        return {}
 
     if _is_glm_5_3(bare):
         if level in ("none", "low"):

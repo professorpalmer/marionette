@@ -2405,6 +2405,14 @@ class ConversationalSession(
             return message
 
     def _ensure_frozen_system_prompt(self, base_sys: str) -> str:
+        """Byte-stable system prompt for the life of the conversation.
+
+        The immutable base (identity + MCP catalog) is composed ONCE and then
+        reused verbatim every step and every turn; history[0] is re-synced to
+        it so no path (send's finally, compaction, resume) can swap in a
+        different prefix mid-conversation. Turn-varying context rides in the
+        user trailer / appended messages, never by mutating the base.
+        """
         if self._frozen_system_prompt is not None:
             # Re-sync history after send()'s finally may have briefly restored
             # the pre-freeze base between turns.

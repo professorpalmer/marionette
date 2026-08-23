@@ -439,6 +439,26 @@ body.is-row-resizing iframe {
   color: var(--text, #e4e7eb);
 }
 
+/* Swarm tracker "Finished" accordion header: keep the metric chips on ONE line
+   at any sidebar width. Each chip is an atomic whitespace-nowrap unit, so a
+   chip can never split mid-token ("39" / "failed" on separate rows) -- the
+   ragged double-row from before. When the pane narrows, container queries drop
+   the least-important chips (cancelled, then untrustworthy) so the row stays a
+   single clean line instead of wrapping. Risk (failed) always remains. */
+.swarm-finished-head {
+  container-type: inline-size;
+  min-width: 0;
+}
+.swarm-finished-chips {
+  gap: 0.375rem;
+}
+@container (max-width: 340px) {
+  .swarm-chip-cancel { display: none; }
+}
+@container (max-width: 250px) {
+  .swarm-chip-warn { display: none; }
+}
+
 .right-pane-badge {
   display: inline-flex;
   align-items: center;

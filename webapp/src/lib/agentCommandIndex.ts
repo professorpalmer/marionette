@@ -9,6 +9,7 @@ export type AgentCommandSession = {
   id: string;
   command: string;
   output: string;
+  state: "running" | "done" | "failed";
   updatedAt: number;
 };
 
@@ -52,23 +53,38 @@ export function registerAgentCommandSession(input: {
   id: string;
   command: string;
   output?: string;
+  state?: AgentCommandSession["state"];
 }): AgentCommandSession | null {
   const id = String(input.id || "").trim();
   const command = normalizeCommandKey(input.command);
   if (!id || !command || command.length > 500) return null;
   const output = String(input.output || "");
+  const state = input.state;
   const existing = byId.get(id);
   const now = Date.now();
   if (existing && existing.command === command) {
+    const prevState = existing.state;
     existing.output = output;
     existing.updatedAt = now;
+    if (state) existing.state = state;
+    if (state && state !== prevState) {
+      emit(true);
+      rememberCommandId(command, id);
+      return existing;
+    }
     rememberCommandId(command, id);
     return existing;
   }
   if (existing && existing.command !== command) {
     forgetCommandId(existing.command, id);
   }
-  const session: AgentCommandSession = { id, command, output, updatedAt: now };
+  const session: AgentCommandSession = {
+    id,
+    command,
+    output,
+    state: state || "running",
+    updatedAt: now,
+  };
   byId.set(id, session);
   rememberCommandId(command, id);
   emit(true);
@@ -98,6 +114,10 @@ export function subscribeAgentCommandIndex(onStoreChange: () => void): () => voi
 
 export function getAgentCommandIndexVersion(): number {
   return version;
+}
+
+export function listAgentCommandSessions(): AgentCommandSession[] {
+  return [...byId.values()].sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 /** Test helper: wipe the index between cases. */

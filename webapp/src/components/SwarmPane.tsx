@@ -2143,28 +2143,32 @@ export default function SwarmPane() {
                 stays a short list. Non-destructive: "Clear" only hides. */}
             {finished.length > 0 && (
               <div className="shrink-0 flex flex-col gap-2">
-                <div className="flex items-center justify-between px-1 pt-0.5">
+                <div className="swarm-finished-head flex items-center justify-between px-1 pt-0.5">
                   <button
                     onClick={() => setFinishedOpen((o) => !o)}
-                    className="flex items-center gap-1 text-[10px] uppercase tracking-wider text-faint font-semibold hover:text-muted focus:outline-none"
+                    className="flex items-center gap-1 min-w-0 text-[10px] uppercase tracking-wider text-faint font-semibold hover:text-muted focus:outline-none"
                   >
                     {finishedOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-                    Finished
-                    <span className="text-faint/60 normal-case tracking-normal">({finished.length})</span>
-                    {failedCount > 0 && (
-                      <span className="text-risk/70 normal-case tracking-normal">{"\u00b7"} {failedCount} failed</span>
-                    )}
-                    {warningCount > 0 && (
-                      <span className="text-warn/80 normal-case tracking-normal">{"\u00b7"} {warningCount} untrustworthy</span>
-                    )}
-                    {cancelledCount > 0 && (
-                      <span className="text-muted normal-case tracking-normal">{"\u00b7"} {cancelledCount} cancelled</span>
-                    )}
+                    <span className="whitespace-nowrap">
+                      Finished{" "}
+                      <span className="text-faint/60 normal-case tracking-normal">({finished.length})</span>
+                    </span>
+                    <span className="swarm-finished-chips flex flex-wrap items-center min-w-0">
+                      {failedCount > 0 && (
+                        <span className="swarm-chip swarm-chip-failed whitespace-nowrap text-risk/70 normal-case tracking-normal">{"\u00b7"} {failedCount} failed</span>
+                      )}
+                      {warningCount > 0 && (
+                        <span className="swarm-chip swarm-chip-warn whitespace-nowrap text-warn/80 normal-case tracking-normal">{"\u00b7"} {warningCount} untrustworthy</span>
+                      )}
+                      {cancelledCount > 0 && (
+                        <span className="swarm-chip swarm-chip-cancel whitespace-nowrap text-muted normal-case tracking-normal">{"\u00b7"} {cancelledCount} cancelled</span>
+                      )}
+                    </span>
                   </button>
                   <button
                     onClick={clearFinished}
                     title="Hide all finished runs from the tracker (stays in Puppetmaster history)"
-                    className="text-[9px] text-faint/70 hover:text-risk uppercase tracking-wider focus:outline-none"
+                    className="shrink-0 whitespace-nowrap text-[9px] text-faint/70 hover:text-risk uppercase tracking-wider focus:outline-none"
                   >
                     Clear
                   </button>

@@ -975,10 +975,29 @@ function indexCardCommandSession(card: Card): void {
   const { linkKind, value } = classifyActionGoal(card.kind || "", rawGoal);
   const id = String(card.id || card.result?.job_id || "").trim();
   if (linkKind !== "command" || !id || !value) return;
+  const rawStatus = String(card.result?.status || "").trim().toLowerCase();
+  const exitCode =
+    typeof card.result?.exit_code === "number"
+      ? card.result.exit_code
+      : typeof card.result?.exit_code === "string" && /^-?\d+$/.test(card.result.exit_code.trim())
+        ? Number(card.result.exit_code.trim())
+        : null;
+  const state =
+    rawStatus.includes("fail")
+    || rawStatus.includes("error")
+    || rawStatus.includes("cancel")
+    || rawStatus.includes("timeout")
+    || rawStatus.includes("truncat")
+    || (exitCode != null && exitCode !== 0)
+      ? "failed"
+      : card.running || rawStatus.includes("run") || rawStatus.includes("pend")
+        ? "running"
+        : "done";
   registerAgentCommandSession({
     id,
     command: value,
     output: String(card.result?.output || ""),
+    state,
   });
 }
 

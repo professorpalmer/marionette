@@ -142,7 +142,10 @@ def test_mimo_pro_output_ceiling_is_clamped_to_what_xiaomi_serves():
 def test_kimi_models_use_the_temperature_the_go_relay_accepts():
     assert go.temperature_for_model("kimi-k3") == 1.0
     assert go.temperature_for_model("opencode-go/kimi-k2.7-code") == 1.0
-    assert go.temperature_for_model("deepseek-v4-flash") == 0.0
+    # Non-Kimi families get NO override: the caller's temperature ships
+    # untouched instead of being silently rewritten to a family default.
+    assert go.temperature_for_model("deepseek-v4-flash") is None
+    assert go.temperature_for_model("glm-5.3") is None
 
 
 @pytest.mark.parametrize("effort,expected", [
