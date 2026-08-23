@@ -110,8 +110,19 @@ def _session_durable(session):
     raise AttributeError("session has no durable artifact store")
 
 
-def _swarm_artifact_delivery(session, job_id: str, result_rows: list[dict]) -> tuple[list[dict], dict]:
-    """Reconcile the PM store with the result projection; never model-pull evidence."""
+def _swarm_artifact_delivery(
+    session,
+    job_id: str,
+    result_rows: list[dict],
+    *,
+    require_store: bool = True,
+) -> tuple[list[dict], dict]:
+    """Reconcile the PM store with the result projection; never model-pull evidence.
+
+    ``require_store=True`` (synchronous PM swarm): a missing ledger is incomplete.
+    ``require_store=False`` (background / local / snapshot): a durable result
+    snapshot is the accounting authority after ephemeral PM state is gone.
+    """
 
     expected_refs = [_artifact_ref(row) for row in result_rows]
     canonical_rows: list[dict] = []
@@ -156,15 +167,16 @@ def _swarm_artifact_delivery(session, job_id: str, result_rows: list[dict]) -> t
             ordered.append(row)
     ordered.extend(anonymous_rows)
 
-    if not store_ok:
+    if not store_ok and require_store:
         missing.insert(0, {"id": "pm-store", "task_id": "unavailable"})
     pm_artifacts = len(expected_refs)
     artifact_missing = [row for row in missing if row.get("id") != "pm-store"]
     available = max(0, pm_artifacts - len(artifact_missing))
+    store_complete = store_ok if require_store else True
     return ordered, {
         "pm_artifacts": pm_artifacts,
         "available_to_inspect": available,
-        "complete": store_ok and not artifact_missing,
+        "complete": store_complete and not artifact_missing,
         "missing": missing,
     }
 
@@ -489,8 +501,15 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                         'type': a.get('type') or 'finding',
                         'headline': a.get('headline') or a.get('uri') or '',
                         'id': a.get('id'),
+                        'task_id': a.get('task_id'),
+                        'sha256': a.get('sha256'),
                     }
-                    for a in (_reuse_decision.compact_artifacts or [])
+                    for a in (
+                        (getattr(_reuse_decision, 'candidate', None) or {}).get('artifacts')
+                        if isinstance(getattr(_reuse_decision, 'candidate', None), dict)
+                        else None
+                    ) or (_reuse_decision.compact_artifacts or [])
+                    if isinstance(a, dict)
                 ],
                 reuse_status='reused',
                 source_job_id=_reuse_decision.source_job_id,
@@ -524,6 +543,24 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                 act, aid, f'(swarm {aid} failed: {err})', is_native,
             )
             return None
+        try:
+            from harness.local_job_artifacts import is_bookkeeping_artifact
+            _cand = getattr(_reuse_decision, 'candidate', None)
+            _source_job = _cand if isinstance(_cand, dict) else {}
+            _source_rows = [
+                a for a in (_source_job.get('artifacts') or [])
+                if isinstance(a, dict) and not is_bookkeeping_artifact(a)
+            ]
+        except Exception:
+            _source_rows = []
+        if not _source_rows:
+            _source_rows = list(_reuse_decision.compact_artifacts or [])
+        _delivered_reuse, _delivery_reuse = _swarm_artifact_delivery(
+            session,
+            _reuse_decision.source_job_id or _sync_local_id,
+            _source_rows,
+            require_store=False,
+        )
         _badge = {
             'job_id': _sync_local_id,
             'applied': True,
@@ -532,6 +569,8 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             'error': None,
             'objective': act.goal,
             'adapter': 'reuse',
+            'artifacts': _delivered_reuse,
+            'artifact_delivery': _delivery_reuse,
             **_prov,
         }
         yield ConvEvent('action_result', {
