@@ -62,7 +62,10 @@ def get_json(
             args.append(qs)
         elif qs_args:
             for key in qs_args:
-                args.append(qs.get(key, [""])[0])
+                val = qs.get(key, [""])[0]
+                if empty_as_none:
+                    val = val or None
+                args.append(val)
         elif qs_arg is not None:
             val = qs.get(qs_arg, [""])[0]
             if empty_as_none:
@@ -618,7 +621,7 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
             _ckpt_api.get_checkpoints, services=svc.checkpoint_services),
         "/api/checkpoints/diff": get_json(
             _ckpt_api.get_checkpoints_diff, services=svc.checkpoint_services,
-            qs_arg="id"),
+            qs_arg="id", empty_as_none=True),
         "/api/mcp": get_json(_mcp_api.get_mcp, services=svc.mcp_services),
         "/api/mcp/catalog": get_json(_mcp_api.get_mcp_catalog),
         "/api/plugins": get_json(
@@ -637,11 +640,14 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
         "/api/memory": get_json(
             _skills_api.get_memory, services=svc.skills_services),
         "/api/file/read": get_json(
-            _files_api.get_file_read, services=svc.file_services, qs_arg="path"),
+            _files_api.get_file_read, services=svc.file_services, qs_arg="path",
+            empty_as_none=True),
         "/api/spill/read": get_json(
-            _files_api.get_spill_read, services=svc.file_services, qs_arg="uri"),
+            _files_api.get_spill_read, services=svc.file_services, qs_arg="uri",
+            empty_as_none=True),
         "/api/file/resolve": get_json(
-            _files_api.get_file_resolve, services=svc.file_services, qs_arg="path"),
+            _files_api.get_file_resolve, services=svc.file_services, qs_arg="path",
+            empty_as_none=True),
         "/api/file/raw": _get_file_raw,
         "/api/image": _get_image,
         "/api/workspace/files": get_json(
@@ -675,7 +681,8 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
         "/api/economics": get_json(
             _econ_api.get_economics, services=svc.economics_services, pass_qs=True),
         "/api/artifacts": get_json(
-            _jobs_api.get_artifacts, services=svc.job_services, qs_arg="job_id"),
+            _jobs_api.get_artifacts, services=svc.job_services, qs_arg="job_id",
+            empty_as_none=True),
         "/api/swarm/live": _get_swarm_live,
         "/api/providers": get_json(_prov_api.get_providers),
         "/api/registry": _get_registry,
@@ -696,7 +703,8 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
         "/api/hooks": get_json(_hooks_api.get_hooks),
         "/api/schedules": get_json(_sched_api.get_schedules),
         "/api/schedules/history": get_json(
-            _sched_api.get_schedules_history, qs_args=("id", "limit")),
+            _sched_api.get_schedules_history, qs_args=("id", "limit"),
+            empty_as_none=True),
         "/api/sessions/transcript": get_json(
             _sessions_api.get_sessions_transcript, services=svc.session_services,
             pass_qs=True),

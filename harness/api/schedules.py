@@ -104,7 +104,7 @@ def get_schedules_history(
     if not sid:
         return 400, {"error": "missing schedule id"}
     try:
-        limit = int(limit_raw) if str(limit_raw).strip() else 50
+        limit = int(limit_raw) if str(limit_raw or "").strip() else 50
     except (TypeError, ValueError):
         return 400, {"error": "limit must be an integer"}
     limit = max(1, min(limit, 500))

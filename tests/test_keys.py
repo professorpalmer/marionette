@@ -727,3 +727,45 @@ def test_persist_env_api_keys_imports_openrouter_once(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-fresh-install-test-key-99")
     load_api_keys_on_startup("openrouter")
     assert os.environ.get("OPENROUTER_API_KEY") in (None, "")
+
+
+
+def test_record_and_get_key_bootstrap_issues_clears_on_startup(monkeypatch, tmp_path):
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    from harness import keys as K
+    from harness.keys import (
+        record_key_bootstrap_issue,
+        get_key_bootstrap_issues,
+        load_api_keys_on_startup,
+    )
+
+    K._KEY_BOOTSTRAP_ISSUES.clear()
+    record_key_bootstrap_issue("migrate_legacy", OSError("disk full"))
+    issues = get_key_bootstrap_issues()
+    assert issues == [{"step": "migrate_legacy", "message": "OSError: disk full"}]
+    copy = get_key_bootstrap_issues()
+    copy.append({"step": "mutated", "message": "no"})
+    assert get_key_bootstrap_issues() == issues
+
+    load_api_keys_on_startup("openrouter")
+    assert get_key_bootstrap_issues() == []
+
+
+def test_persist_write_failure_is_recorded(monkeypatch, tmp_path):
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-record-me-please")
+    from harness import keys as K
+
+    K._KEY_BOOTSTRAP_ISSUES.clear()
+
+    def boom(_keys):
+        raise PermissionError("keys.json locked")
+
+    monkeypatch.setattr(K, "_write_keys", boom)
+    imported = K.persist_env_api_keys()
+    assert imported == []
+    issues = K.get_key_bootstrap_issues()
+    assert issues == [{
+        "step": "persist_env_api_keys",
+        "message": "PermissionError: keys.json locked",
+    }]

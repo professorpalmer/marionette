@@ -171,8 +171,10 @@ def get_jobs(repo_override: str | None, svc: JobServices) -> tuple[int, list]:
     return 200, svc.scoped_jobs_snapshot(repo_root=repo_override or None)
 
 
-def get_artifacts(job_id: str, svc: JobServices) -> tuple[int, list]:
+def get_artifacts(job_id: str | None, svc: JobServices) -> tuple[int, Any]:
     """GET /api/artifacts — dual-store resolve (harness, then CLI durable)."""
+    if not (job_id or "").strip():
+        return 400, {"error": "missing job id"}
     artifacts: list = []
     state_obj = None
     try:

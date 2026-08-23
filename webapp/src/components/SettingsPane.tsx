@@ -3,6 +3,7 @@ import { ChevronRight, ChevronDown, Plus, Trash2, ExternalLink, Search, X } from
 import {
   api,
   type Settings,
+  type Config,
   type UsageData,
   type PlatformAdapter,
   type GitStatus,
@@ -85,6 +86,8 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
   // Per-provider key management states
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [providersLoaded, setProvidersLoaded] = useState(false);
+
+  const [keyBootstrapIssues, setKeyBootstrapIssues] = useState<NonNullable<Config["key_bootstrap_issues"]>>([]);
   const [provKeyInput, setProvKeyInput] = useState<Record<string, string>>({});
   const [provBusy, setProvBusy] = useState<string>("");
 
@@ -269,6 +272,11 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
 
     if (wantProviders) {
       loadProvidersList();
+      if (typeof api.config === "function") {
+        api.config()
+          .then((c) => setKeyBootstrapIssues(c.key_bootstrap_issues || []))
+          .catch((err) => console.error("Failed to load key bootstrap issues", err));
+      }
     }
   }, [section, searchActive]);
 
@@ -1317,6 +1325,22 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             return `${n}/${list.length} connected`;
           })()}
         >
+          {keyBootstrapIssues.length > 0 && (
+            <div
+              data-testid="settings-key-bootstrap-issues"
+              className="rounded-md border border-warn/40 bg-warn/10 px-2 py-1.5 text-[11px] text-txt space-y-1"
+            >
+              <div className="font-medium">Key store did not finish saving on startup.</div>
+              <div className="text-muted">
+                The app kept running. Re-save keys here if a provider looks missing.
+              </div>
+              {keyBootstrapIssues.map((issue, i) => (
+                <div key={`${issue.step}-${i}`} className="font-mono text-[10px] text-faint break-all">
+                  {issue.step}: {issue.message}
+                </div>
+              ))}
+            </div>
+          )}
           <div className="text-[10px] text-muted">
             One Full stack key (OpenRouter, Anthropic, OpenAI, Gemini, …) runs the chat
             pilot and agentic swarm/implement workers. No other platform install.

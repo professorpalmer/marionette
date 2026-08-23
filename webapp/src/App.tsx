@@ -8,6 +8,8 @@ import RightDock from "./components/RightDock";
 import StatusBar from "./components/StatusBar";
 import UpdateBanner, { type UpdateAvailability } from "./components/UpdateBanner";
 import ProviderKeyBanner from "./components/ProviderKeyBanner";
+import KeyBootstrapBanner from "./components/KeyBootstrapBanner";
+import { focusSettingsPage } from "./components/SettingsShell";
 import Resizer from "./components/Resizer";
 import RegistryWizard from "./components/RegistryWizard";
 import ErrorBoundary from "./components/ErrorBoundary";
@@ -292,6 +294,15 @@ export default function App() {
               : "keyless"
           }
           onAddKey={() => setShowWizard(true)}
+        />
+      )}
+      {config?.key_bootstrap_issues && config.key_bootstrap_issues.length > 0 && !showWizard && (
+        <KeyBootstrapBanner
+          issues={config.key_bootstrap_issues}
+          onOpenSettings={() => {
+            focusSettingsPage("providers");
+            openRightTo("settings");
+          }}
         />
       )}
       {/* Left rail and tool cards sit on the conversation surface. */}

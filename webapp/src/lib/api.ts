@@ -49,6 +49,8 @@ export type Config = {
   reasoning_effort?: ReasoningEffort;
   /** Per-model-spec reasoning-effort support map (keyed by "provider:model"). */
   reasoning_support?: Record<string, boolean>;
+  /** Silent key-bootstrap failures from startup (server kept running). */
+  key_bootstrap_issues?: { step: string; message: string }[];
 };
 export type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh" | "max";
 export type Settings = {
