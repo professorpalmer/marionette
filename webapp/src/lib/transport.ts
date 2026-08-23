@@ -11,6 +11,8 @@ import {
   desktopBridgeMissingDiagnostic,
 } from "./operationalDiagnostic";
 import { publishDiagnostic } from "./operationalDiagnosticBus";
+import { correlationHeaders, setCorrelationId } from "./correlationId";
+import { publishTransportFailure } from "./transportFailure";
 
 /**
  * Live SSE payload from /api/chat, /api/auto, /api/run.
@@ -123,6 +125,19 @@ function authToken(): string {
   return "";
 }
 
+function requestHeaders(extra?: Record<string, string>): Record<string, string> {
+  return {
+    "X-Harness-Token": authToken(),
+    ...correlationHeaders(),
+    ...extra,
+  };
+}
+
+function noteResponseCorrelation(response: Response): void {
+  const cid = response.headers.get("X-Correlation-Id");
+  if (cid) setCorrelationId(cid);
+}
+
 export function withToken(path: string): string {
   // Auth is supplied via the `X-Harness-Token` header; we never append auth
   // tokens to URLs.
@@ -150,49 +165,87 @@ export async function getJSONSoft<T = any>(path: string): Promise<T> {
   refuseIfDesktopBridgeMissing("getJSONSoft", path);
   const bridge = getHarnessIpc();
   if (bridge?.getJSON) return bridge.getJSON(path);
-  const r = await fetch(path, { headers: { "X-Harness-Token": authToken() } });
-  const body = await r.json().catch(() => ({}));
-  if (!r.ok && body && typeof body === "object" && !("ok" in body)) {
-    return { ok: false, error: (body as any).error || `${path} -> ${r.status}`, ...body } as T;
+  try {
+    const r = await fetch(path, { headers: requestHeaders() });
+    noteResponseCorrelation(r);
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      publishTransportFailure(new Error(`${path} -> ${r.status}`), {
+        operation: "getJSONSoft",
+        path,
+      });
+      if (body && typeof body === "object" && !("ok" in body)) {
+        return { ok: false, error: (body as any).error || `${path} -> ${r.status}`, ...body } as T;
+      }
+      if (body == null || typeof body !== "object") {
+        return { ok: false, error: `${path} -> ${r.status}` } as T;
+      }
+    }
+    return body as T;
+  } catch (err) {
+    publishTransportFailure(err, { operation: "getJSONSoft", path });
+    throw err;
   }
-  if (!r.ok && (body == null || typeof body !== "object")) {
-    return { ok: false, error: `${path} -> ${r.status}` } as T;
-  }
-  return body as T;
 }
 
 export async function getJSON<T = any>(path: string): Promise<T> {
   refuseIfDesktopBridgeMissing("getJSON", path);
   const bridge = getHarnessIpc();
   if (bridge?.getJSON) return bridge.getJSON(path);
-  const r = await fetch(path, { headers: { "X-Harness-Token": authToken() } });
-  if (!r.ok) throw new Error(`${path} -> ${r.status}`);
-  return r.json();
+  try {
+    const r = await fetch(path, { headers: requestHeaders() });
+    noteResponseCorrelation(r);
+    if (!r.ok) {
+      publishTransportFailure(new Error(`${path} -> ${r.status}`), {
+        operation: "getJSON",
+        path,
+      });
+      throw new Error(`${path} -> ${r.status}`);
+    }
+    return r.json();
+  } catch (err) {
+    if (!(err instanceof Error) || !String(err.message).includes("->")) {
+      publishTransportFailure(err, { operation: "getJSON", path });
+    }
+    throw err;
+  }
 }
 
 export async function postJSON<T = any>(path: string, body: any): Promise<T> {
   refuseIfDesktopBridgeMissing("postJSON", path);
   const bridge = getHarnessIpc();
   if (bridge?.postJSON) return bridge.postJSON(path, body);
-  const r = await fetch(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Harness-Token": authToken() },
-    body: JSON.stringify(body),
-  });
-  if (!r.ok) {
-    // Parse the body when present so callers (lease detectors) can require
-    // code===lease_exhausted instead of guessing from "... -> 409".
-    const parsed = await r.json().catch(() => null);
-    if (parsed && typeof parsed === "object") {
-      const err = new Error(
-        String((parsed as { error?: string }).error || `${path} -> ${r.status}`),
-      ) as Error & Record<string, unknown>;
-      Object.assign(err, parsed, { status: r.status });
-      throw err;
+  try {
+    const r = await fetch(path, {
+      method: "POST",
+      headers: requestHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify(body),
+    });
+    noteResponseCorrelation(r);
+    if (!r.ok) {
+      const parsed = await r.json().catch(() => null);
+      publishTransportFailure(
+        new Error(
+          String((parsed as { error?: string } | null)?.error || `${path} -> ${r.status}`),
+        ),
+        { operation: "postJSON", path },
+      );
+      if (parsed && typeof parsed === "object") {
+        const err = new Error(
+          String((parsed as { error?: string }).error || `${path} -> ${r.status}`),
+        ) as Error & Record<string, unknown>;
+        Object.assign(err, parsed, { status: r.status });
+        throw err;
+      }
+      throw new Error(`${path} -> ${r.status}`);
     }
-    throw new Error(`${path} -> ${r.status}`);
+    return r.json();
+  } catch (err) {
+    if (!(err instanceof Error) || !String(err.message).includes("->")) {
+      publishTransportFailure(err, { operation: "postJSON", path });
+    }
+    throw err;
   }
-  return r.json();
 }
 
 // NOTE: no deleteJSON here on purpose. The Electron preload bridge only routes
@@ -238,12 +291,13 @@ export function stream(
     try {
       resp = await fetch(path, {
         method: "GET",
-        headers: { "X-Harness-Token": authToken() },
+        headers: requestHeaders(),
         signal: controller.signal,
       });
       if (!resp.ok) {
         throw new Error(`stream ${path} -> ${resp.status}`);
       }
+      noteResponseCorrelation(resp);
       const body = resp.body;
       if (!body) throw new Error(`stream ${path}: missing response body`);
 
@@ -304,7 +358,7 @@ export async function uploadFile(file: File): Promise<{ path: string; name: stri
   }
   const fd = new FormData();
   fd.append("file", file);
-  const r = await fetch("/api/upload", { method: "POST", body: fd, headers: { "X-Harness-Token": authToken() } });
+  const r = await fetch("/api/upload", { method: "POST", body: fd, headers: requestHeaders() });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) {
     throw new Error((j && j.error) || `Upload failed (${r.status})`);

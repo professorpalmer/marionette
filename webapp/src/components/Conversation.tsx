@@ -159,8 +159,9 @@ import {
   type DirectoryEntryLike,
 } from "./conversation/composerInput";
 import { openAgentWorkspace } from "../lib/agentLinks";
-import { sharedReadinessNotice } from "../lib/operationalDiagnostic";
-import { getActiveDiagnostic } from "../lib/operationalDiagnosticBus";
+import { sharedReadinessNotice, fromBackendDiagnostic } from "../lib/operationalDiagnostic";
+import { getActiveDiagnostic, publishDiagnostic } from "../lib/operationalDiagnosticBus";
+import { executeDiagnosticRecovery, clearDiagnosticAfterSuccess } from "../lib/operationalRecovery";
 import { useOperationalDiagnostic } from "../lib/useOperationalDiagnostic";
 import {
   blankMsgQueueOnSessionSwitch,
@@ -3416,6 +3417,31 @@ export default function Conversation({
     );
   }, []);
 
+  const handleOperationalRecovery = useCallback(async () => {
+    if (!operationalDiagnostic) return;
+    await executeDiagnosticRecovery(operationalDiagnostic, async () => {
+      try {
+        const res = await api.diagnostics();
+        const diag = fromBackendDiagnostic(res.diagnostic as Record<string, unknown> | null);
+        if (!diag) clearDiagnosticAfterSuccess(operationalDiagnostic);
+        else publishDiagnostic(diag);
+        window.dispatchEvent(new Event("harness-config-changed"));
+      } catch {
+        /* keep diagnostic visible */
+      }
+    });
+  }, [operationalDiagnostic]);
+
+  const recoveryAction = (
+    operationalDiagnostic
+    && operationalDiagnostic.recovery.kind !== "none"
+      ? {
+          label: operationalDiagnostic.recovery.label,
+          onClick: () => { void handleOperationalRecovery(); },
+        }
+      : undefined
+  );
+
   return (
     <main className="flex flex-col h-full min-w-0 bg-transparent">
       {/* Brand + idle share equal inset so they line up with the floating dock. */}
@@ -3429,8 +3455,6 @@ export default function Conversation({
                 ? (
                   busyProgress.label
                     ? busyProgress.pill
-                    // Sticky busy without a footer line: pause-point Still working…
-                    // wins over hold-sticky liveInvestigation (matches Explored fold).
                     : derivePillBusyDetail({
                       liveInvestigation,
                       pillStatus,
@@ -3440,6 +3464,7 @@ export default function Conversation({
                 : undefined
             )
         }
+        recoveryAction={recoveryAction}
         onBusyDetailClick={() => {
           // Worker / shell busy chrome → terminal, never the file editor.
           try {

@@ -378,7 +378,10 @@ export default function CheckpointsPane() {
                                     <span className="font-mono text-[10px] text-muted truncate max-w-[180px]" title={file.path}>
                                       {file.path}
                                     </span>
-                                    <span className={`px-1 py-0.2 text-[8px] uppercase font-bold tracking-wider rounded border ${badgeColor}`}>
+                                    <span
+                                      className={`px-1 py-0.2 text-[8px] uppercase font-bold tracking-wider rounded border ${badgeColor}`}
+                                      aria-label={`${label}: ${file.path}`}
+                                    >
                                       {label}
                                     </span>
                                   </div>

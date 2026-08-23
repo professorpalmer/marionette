@@ -62,6 +62,9 @@ import {
   verificationReceiptPresentation,
   type AutoBudgetSnapshot,
 } from "../lib/autoReceipts";
+import { authFailureDiagnostic } from "../lib/operationalDiagnostic";
+import { publishDiagnostic } from "../lib/operationalDiagnosticBus";
+import { focusSettingsPage } from "./SettingsShell";
 import { TranscriptImage } from "./conversation/TranscriptImage";
 import {
   FEED_UNPIN_BUBBLE_EVENT,
@@ -1022,6 +1025,45 @@ function indexTranscriptCommandSessions(items: Item[]): void {
   }
 }
 
+function AuthFailureBanner({ message, id }: { message: string; id?: string }) {
+  useEffect(() => {
+    publishDiagnostic(authFailureDiagnostic(message, { jobId: id }));
+  }, [message, id]);
+
+  return (
+    <div
+      role="alert"
+      className="flex items-start gap-2 py-2.5 px-3.5 rounded-lg bg-red-500/12 border border-red-500/50 text-[12px] text-red-200 w-full max-w-full my-1.5 shadow-sm animate-in fade-in duration-200"
+    >
+      <XCircle size={15} className="text-red-400 shrink-0 mt-0.5" />
+      <span className="min-w-0 flex-1">
+        <span className="font-semibold text-red-300">Provider auth failure.</span>{" "}
+        <span className="text-red-200/90">
+          The API key was rejected -- this is a dead, revoked, or wrong key, not a weak model or bad prompt.
+          Fix the named credential (e.g. OPENAI_API_KEY), then re-run.
+        </span>
+        {message ? (
+          <code className="block mt-1 text-[10.5px] text-red-200/80 font-mono break-all whitespace-pre-wrap">
+            {message}
+          </code>
+        ) : null}
+        <div className="mt-2">
+          <button
+            type="button"
+            onClick={() => {
+              focusSettingsPage("providers");
+              window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: "settings" }));
+            }}
+            className="rounded-md border border-red-400/40 bg-red-500/10 px-2.5 py-1 text-[11px] font-medium text-red-100 hover:bg-red-500/20 transition"
+          >
+            Fix key and retry
+          </button>
+        </div>
+      </span>
+    </div>
+  );
+}
+
 // PERF: Memoized transcript renderer. Its props are intentionally free of the
 // composer `input` (or any per-keystroke state), so React.memo lets typing skip
 // re-rendering the whole transcript. Only transcript-affecting state (items,
@@ -1277,8 +1319,13 @@ export const TranscriptList = memo(function TranscriptList({
       );
     } else if (it.kind === "checkpoint") {
       return (
-        <div key={key} className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/15 border border-edge/20 text-[10px] text-faint w-fit my-1 select-none">
-          <History size={11} className="text-accent" />
+        <div
+          key={key}
+          className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/15 border border-edge/20 text-[10px] text-faint w-fit my-1 select-none"
+          role="status"
+          aria-label={`restore point created: ${it.label}`}
+        >
+          <History size={11} className="text-accent" aria-hidden />
           <span>restore point created: {it.label} ({it.id.slice(0, 8)})</span>
         </div>
       );
@@ -1474,16 +1521,7 @@ export const TranscriptList = memo(function TranscriptList({
         </div>
       );
     } else if (it.kind === "auth_failure") {
-      return (
-        <div key={key} role="alert" className="flex items-start gap-2 py-2.5 px-3.5 rounded-lg bg-red-500/12 border border-red-500/50 text-[12px] text-red-200 w-full max-w-full my-1.5 shadow-sm animate-in fade-in duration-200">
-          <XCircle size={15} className="text-red-400 shrink-0 mt-0.5" />
-          <span className="min-w-0">
-            <span className="font-semibold text-red-300">Provider auth failure.</span>{" "}
-            <span className="text-red-200/90">The API key was rejected -- this is a dead, revoked, or wrong key, not a weak model or bad prompt. Fix the named credential (e.g. OPENAI_API_KEY), then re-run.</span>
-            {it.message ? <code className="block mt-1 text-[10.5px] text-red-200/80 font-mono break-all whitespace-pre-wrap">{it.message}</code> : null}
-          </span>
-        </div>
-      );
+      return <AuthFailureBanner key={key} message={it.message} id={it.id} />;
     } else if (it.kind === "compaction") {
       return <CompactionReceipt key={key} it={it} />;
     } else if (it.kind === "steer") {
@@ -2030,8 +2068,13 @@ function ActivityGroup({
     }
     if (it.kind === "checkpoint") {
       return (
-        <div key={`ckpt-${it.id}`} className="flex items-center gap-1.5 py-0.5 text-[10px] text-faint/80 select-none">
-          <History size={10} className="text-faint/70" />
+        <div
+          key={`ckpt-${it.id}`}
+          className="flex items-center gap-1.5 py-0.5 text-[10px] text-faint/80 select-none"
+          role="status"
+          aria-label={`restore point created: ${it.label}`}
+        >
+          <History size={10} className="text-faint/70" aria-hidden />
           <span>restore point created: {it.label} ({it.id.slice(0, 8)})</span>
         </div>
       );
@@ -3014,11 +3057,11 @@ function ActionCard({
           >
             <div className="flex items-center justify-center w-3.5 h-3.5 shrink-0">
               {effectivelyRunning ? (
-                <Loader2 size={11} className="animate-spin text-faint/60" />
+                <Loader2 size={11} className="animate-spin text-faint/60" aria-label="running" />
               ) : isErr ? (
-                <span className="w-1.5 h-1.5 rounded-full bg-risk/70" />
+                <span className="w-1.5 h-1.5 rounded-full bg-risk/70" aria-label="failed" title="failed" />
               ) : suppressed ? (
-                <span className="w-1.5 h-1.5 rounded-full bg-faint/45" />
+                <span className="w-1.5 h-1.5 rounded-full bg-faint/45" aria-label="suppressed" title="suppressed" />
               ) : null}
             </div>
             <span className={`shrink-0 font-normal ${isErr ? "text-risk/80" : suppressed ? "text-faint/70" : "text-faint/80"}`}>

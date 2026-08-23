@@ -478,10 +478,8 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
             await new Promise((r) => setTimeout(r, 100 * attempt));
             continue;
           }
-          // Optimistic busy; store poll clears if idle.
-          detachedBusyRef.current = true;
-          setTurnOpen(true);
-          setStatus((prev: any) => preserveOrThinking(prev));
+          // Session state unknown — arm store poll without inventing a turn.
+          break;
         }
       }
     }

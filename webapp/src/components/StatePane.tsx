@@ -910,8 +910,15 @@ export default function StatePane({ artifacts }: {
                     ["TypeScript", envReady.typescript_analyzer, "tsc on PATH or workspace node_modules/.bin"],
                   ] as const).map(([label, item, hint]) => (
                     <div key={label} className="space-y-0.5">
-                      <div className="flex items-center gap-1.5 text-[10px]">
-                        <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${item?.available ? "bg-good" : "bg-faint"}`} />
+                      <div
+                        className="flex items-center gap-1.5 text-[10px]"
+                        role="status"
+                        aria-label={`${label}: ${item?.available ? "available" : "unavailable"}`}
+                      >
+                        <span
+                          className={`h-1.5 w-1.5 rounded-full shrink-0 ${item?.available ? "bg-good" : "bg-faint"}`}
+                          aria-hidden
+                        />
                         <span className="font-medium text-txt">{label}</span>
                         <span className="text-muted">{item?.available ? "available" : "unavailable"}</span>
                       </div>

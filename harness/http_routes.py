@@ -418,6 +418,7 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
     from .api import commands as _cmd_api
     from .api import economics as _econ_api
     from .api import environment as _env_api
+    from .api import doctor as _doctor_api
     from .api import files as _files_api
     from .api import git as _git_api
     from .api import hooks as _hooks_api
@@ -670,6 +671,8 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
             _cg_api.get_codegraph, services=svc.codegraph_services),
         "/api/config": get_json(
             _settings_api.get_config, services=svc.settings_services),
+        "/api/diagnostics": get_json(
+            _doctor_api.get_diagnostics, services=svc.doctor_services),
         "/api/wiki/config": get_json(_wiki_api.get_wiki_config_payload),
         "/api/bedrock": get_json(_plat_api.get_bedrock),
         "/api/auth/pools": _get_auth_pools,

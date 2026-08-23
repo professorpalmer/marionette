@@ -1123,6 +1123,12 @@ export const api = {
   recommend: () => getJSON<RecommendResult>("/api/registry/recommend"),
 
   config: () => getJSON<Config>("/api/config"),
+  diagnostics: () => getJSON<{
+    ok?: boolean;
+    correlation_id?: string;
+    checks?: { status: string; name: string; detail?: string }[];
+    diagnostic?: Record<string, unknown> | null;
+  }>("/api/diagnostics"),
   getUsage: () => getJSON<UsageData>("/api/usage"),
   getEconomics: (scope: EconomicsScope | string = "repo") =>
     getJSONSoft<EconomicsData>(`/api/economics?scope=${encodeURIComponent(scope)}`),

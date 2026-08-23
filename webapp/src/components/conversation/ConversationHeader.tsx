@@ -10,10 +10,12 @@ export default function ConversationHeader({
   pillStatus,
   detail,
   onBusyDetailClick,
+  recoveryAction,
 }: {
   pillStatus: string;
   detail?: string;
   onBusyDetailClick?: () => void;
+  recoveryAction?: { label: string; onClick: () => void };
 }) {
   const dragRegion = { WebkitAppRegion: "drag" } as CSSProperties;
   const noDrag = { WebkitAppRegion: "no-drag" } as CSSProperties;
@@ -39,7 +41,16 @@ export default function ConversationHeader({
           The Puppetmaster Harness
         </span>
       </span>
-      <div className="shrink-0" style={noDrag}>
+      <div className="shrink-0 flex items-center gap-2" style={noDrag}>
+        {recoveryAction ? (
+          <button
+            type="button"
+            onClick={recoveryAction.onClick}
+            className="text-[10px] px-2 py-0.5 rounded-md border border-edge/60 bg-panel2/60 text-muted hover:text-txt transition"
+          >
+            {recoveryAction.label}
+          </button>
+        ) : null}
         <StatusPill
           status={pillStatus}
           detail={detail}

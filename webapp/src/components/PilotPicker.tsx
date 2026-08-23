@@ -3,6 +3,7 @@ import { ChevronDown, Check, Search } from "lucide-react";
 import { api, type Config, type ReasoningEffort } from "../lib/api";
 import { fallbackPilot, modelLabelOf, organizePilotModels } from "../lib/pilotPickerModels";
 import { REASONING_LEVELS, labelForEffort, showReasoningEffort } from "../lib/reasoningSupport";
+import { useOverlayFocus } from "../lib/overlayFocus";
 
 export default function PilotPicker({ config }: {
   config: Config | null;
@@ -13,8 +14,20 @@ export default function PilotPicker({ config }: {
   const [modelOpen, setModelOpen] = useState(false);
   const [reasonOpen, setReasonOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [rerouteNotice, setRerouteNotice] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const modelMenuRef = useRef<HTMLDivElement>(null);
+  const reasonMenuRef = useRef<HTMLDivElement>(null);
   const filterRef = useRef<HTMLInputElement>(null);
+  const modelTriggerRef = useRef<HTMLButtonElement>(null);
+
+  useOverlayFocus(modelOpen, modelMenuRef, {
+    initialFocusRef: filterRef,
+    onClose: () => setModelOpen(false),
+  });
+  useOverlayFocus(reasonOpen, reasonMenuRef, {
+    onClose: () => setReasonOpen(false),
+  });
 
   useEffect(() => {
     if (!config) return;
@@ -24,11 +37,18 @@ export default function PilotPicker({ config }: {
     const next = fallbackPilot(nextModels, config.driver);
     setCurrent(next);
     if (next && next !== config.driver) {
+      const configuredLabel = modelLabelOf(config.driver, config.model_labels) || config.driver;
+      const fallbackLabel = modelLabelOf(next, config.model_labels) || next;
+      const notice = `Configured pilot ${configuredLabel} is unavailable — using ${fallbackLabel}.`;
+      setRerouteNotice(notice);
+      window.dispatchEvent(new CustomEvent("harness-toast", { detail: notice }));
       api.swapPilot(next).then(() => {
         window.dispatchEvent(new Event("harness-config-changed"));
       }).catch(() => {
         /* next config fetch retries; keep the local fallback label */
       });
+    } else {
+      setRerouteNotice(null);
     }
   }, [config]);
 
@@ -43,7 +63,6 @@ export default function PilotPicker({ config }: {
       setQuery("");
       return;
     }
-    // Focus search when the model menu opens.
     const t = window.setTimeout(() => filterRef.current?.focus(), 0);
     return () => window.clearTimeout(t);
   }, [modelOpen]);
@@ -56,24 +75,15 @@ export default function PilotPicker({ config }: {
         setReasonOpen(false);
       }
     };
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setModelOpen(false);
-        setReasonOpen(false);
-      }
-    };
     document.addEventListener("mousedown", handleOutsideClick);
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", handleOutsideClick);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
   }, [modelOpen, reasonOpen]);
 
   const swap = async (m: string) => {
     const prev = current;
     setCurrent(m);
     setModelOpen(false);
+    setRerouteNotice(null);
     try {
       await api.swapPilot(m);
       window.dispatchEvent(new Event("harness-config-changed"));
@@ -146,9 +156,20 @@ export default function PilotPicker({ config }: {
   };
 
   return (
-    <div className="relative flex items-center gap-1 min-w-0 w-full" ref={containerRef}>
+    <div className="relative flex flex-col gap-0.5 min-w-0 w-full" ref={containerRef}>
+      {rerouteNotice ? (
+        <div
+          role="status"
+          className="text-[9.5px] text-warn/90 leading-snug px-0.5"
+          data-testid="pilot-reroute-notice"
+        >
+          {rerouteNotice}
+        </div>
+      ) : null}
+      <div className="relative flex items-center gap-1 min-w-0 w-full">
       <div className="relative min-w-0 flex-1">
         <button
+          ref={modelTriggerRef}
           onClick={() => {
             setReasonOpen(false);
             setModelOpen((prev) => !prev);
@@ -161,7 +182,13 @@ export default function PilotPicker({ config }: {
         </button>
 
         {modelOpen && (
-          <div className="absolute left-0 bottom-full mb-1 z-50 min-w-[220px] max-w-[280px] bg-panel border border-edge rounded-lg shadow-lg py-1 overflow-hidden">
+          <div
+            ref={modelMenuRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Pilot model picker"
+            className="absolute left-0 bottom-full mb-1 z-50 min-w-[220px] max-w-[280px] bg-panel border border-edge rounded-lg shadow-lg py-1 overflow-hidden"
+          >
             <div className="flex items-center gap-1.5 px-2.5 py-1.5 mb-0.5 border-b border-edge/50">
               <Search size={12} className="text-faint shrink-0" />
               <input
@@ -209,7 +236,13 @@ export default function PilotPicker({ config }: {
           </button>
 
           {reasonOpen && (
-            <div className="absolute left-0 bottom-full mb-1 z-50 min-w-[140px] bg-panel border border-edge rounded-lg shadow-lg py-1 overflow-hidden">
+            <div
+              ref={reasonMenuRef}
+              role="dialog"
+              aria-modal="true"
+              aria-label="Reasoning effort picker"
+              className="absolute left-0 bottom-full mb-1 z-50 min-w-[140px] bg-panel border border-edge rounded-lg shadow-lg py-1 overflow-hidden"
+            >
               {REASONING_LEVELS.map(({ value, label }) => {
                 const isSelected = value === reasoning;
                 return (
@@ -229,6 +262,7 @@ export default function PilotPicker({ config }: {
           )}
         </div>
       )}
+      </div>
     </div>
   );
 }

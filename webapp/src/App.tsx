@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type Config } from "./lib/api";
 import { subscribeDocumentMotionPolicy } from "./lib/motionPolicy";
+import { fromBackendDiagnostic } from "./lib/operationalDiagnostic";
+import { clearDiagnostic, publishDiagnostic } from "./lib/operationalDiagnosticBus";
+import { setCorrelationId } from "./lib/correlationId";
 import LeftRail from "./components/LeftRail";
 import Conversation from "./components/Conversation";
 import RightPane from "./components/RightPane";
@@ -130,6 +133,17 @@ export default function App() {
     api.config().then(setConfig).catch(() => {});
   };
 
+  const fetchDiagnostics = () => {
+    api.diagnostics()
+      .then((res) => {
+        if (res.correlation_id) setCorrelationId(res.correlation_id);
+        const diag = fromBackendDiagnostic(res.diagnostic as Record<string, unknown> | null);
+        if (diag) publishDiagnostic(diag);
+        else clearDiagnostic();
+      })
+      .catch(() => {});
+  };
+
   // Prevent the Electron window from navigating to a file dropped anywhere
   // outside an explicit drop target (the default would replace the whole app
   // with the file). Composer + message drop zones stopPropagation, so they keep
@@ -159,11 +173,18 @@ export default function App() {
     };
   }, []);
 
-  useEffect(() => { fetchConfig(); }, []);
   useEffect(() => {
-    window.addEventListener("harness-config-changed", fetchConfig);
+    fetchConfig();
+    fetchDiagnostics();
+  }, []);
+  useEffect(() => {
+    const onRefresh = () => {
+      fetchConfig();
+      fetchDiagnostics();
+    };
+    window.addEventListener("harness-config-changed", onRefresh);
     return () => {
-      window.removeEventListener("harness-config-changed", fetchConfig);
+      window.removeEventListener("harness-config-changed", onRefresh);
     };
   }, []);
 
