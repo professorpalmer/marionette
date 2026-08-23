@@ -37,8 +37,6 @@ TERMINAL_EXECUTION_ARTIFACT_TYPES = frozenset({
     ANALYSIS_ARTIFACT_TYPE, PATCH_ARTIFACT_TYPE, ERROR_ARTIFACT_TYPE,
 })
 
-_MAX_FINDING_ARTIFACTS = 20
-
 
 def is_bookkeeping_artifact(artifact: Any) -> bool:
     """True for a ROUTING / placeholder / error / bookkeeping row."""
@@ -144,8 +142,9 @@ def normalize_finding_artifacts(
 ) -> List[Dict[str, Any]]:
     """Carry a worker's real structured findings onto the sidecar row.
 
-    Bounded and id-stamped so ``artifact://<job>/<id>`` stays resolvable, and
+    Id-stamped so ``artifact://<job>/<id>`` stays resolvable, and
     filtered to substantive rows so plumbing cannot inflate the count.
+    Every substantive finding is kept — first-N is not the accounting set.
 
     Finding / risk / decision rows receive an ``execution_ref`` pointing at the
     parent job (and terminal artifact) so readers can join spend/model without
@@ -176,8 +175,6 @@ def normalize_finding_artifacts(
             for key in _SPEND_FIELDS:
                 row.pop(key, None)
         out.append(row)
-        if len(out) >= _MAX_FINDING_ARTIFACTS:
-            break
     return out
 
 

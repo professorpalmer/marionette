@@ -3567,7 +3567,9 @@ class ConversationalSession(
         finally:
             # Free the objective claimed at run_implement dispatch (external path).
             self._release_objective(objective)
-            # Cleanup state_dir if present
+            # Ephemeral PM child state. The queued result already carries the
+            # complete artifact snapshot from _await_and_apply_job, so late
+            # drain / reload can reconcile without this directory.
             if state_dir:
                 import shutil
                 shutil.rmtree(state_dir, ignore_errors=True)
