@@ -14,6 +14,7 @@ vi.mock("../lib/api", async (importOriginal) => {
       swarmLive: vi.fn(),
       swarmCancel: vi.fn(),
       artifacts: vi.fn(),
+      sessions: vi.fn().mockResolvedValue([]),
     },
   };
 });

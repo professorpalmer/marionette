@@ -203,6 +203,8 @@ export type Job = {
   id: string;
   goal: string;
   status: string;
+  /** Harness chat that dispatched this job, when stamped. */
+  session_id?: string;
   role?: string;
   adapter?: string;
   /** "harness" (Marionette-dispatched) or "cli" (Cursor MCP / terminal PM). */

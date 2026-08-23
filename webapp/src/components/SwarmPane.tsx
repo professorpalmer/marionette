@@ -10,6 +10,7 @@ import {
   peekPendingSwarmOpenJob,
 } from "../lib/pendingSwarmOpenJob";
 import { useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
+import { filterJobsByScope, loadJobScope, saveJobScope, type JobScope } from "../lib/jobScope";
 
 // A clean, self-contained hover tooltip. The native `title=` tooltip renders as a
 // large unstyled OS box that covers the tracker and never wraps sensibly; this
@@ -1069,6 +1070,8 @@ export default function SwarmPane() {
   const [finishedOpen, setFinishedOpen] = useState(false);
   const [jobFilter, setJobFilter] = useState<JobFilter>("all");
   const [sortOrder, setSortOrder] = useState<SortOrder>("newest");
+  const [jobScope, setJobScope] = useState<JobScope>(() => loadJobScope());
+  const [activeSessionId, setActiveSessionId] = useState("");
   // Job ids we have asked the backend to cancel. Held in local view state so the
   // row can show a subtle 'cancelling...' affordance immediately, before the next
   // poll reflects the terminal 'cancelled' status from /api/swarm/live.
@@ -1078,6 +1081,22 @@ export default function SwarmPane() {
   // Bumped every second so relative "last activity" times re-render while a job
   // runs, making a live worker visibly move rather than freeze between polls.
   const [nowTick, setNowTick] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!scopedRepo) {
+      setActiveSessionId("");
+      return;
+    }
+    let cancelled = false;
+    api.sessions(scopedRepo).then((rows) => {
+      if (cancelled) return;
+      const active = (rows || []).find((s) => s.active);
+      setActiveSessionId(active?.id || "");
+    }).catch(() => {
+      if (!cancelled) setActiveSessionId("");
+    });
+    return () => { cancelled = true; };
+  }, [scopedRepo]);
 
   const toggleTask = (id: string) => setExpandedTasks((p) => ({ ...p, [id]: !p[id] }));
   const toggleFinding = (id: string) => setExpandedFindings((p) => ({ ...p, [id]: !p[id] }));
@@ -1363,7 +1382,7 @@ export default function SwarmPane() {
     };
   }, [scopedRepo, applyLive]);
 
-  const allJobs = data?.jobs || [];
+  const allJobs = filterJobsByScope(data?.jobs || [], jobScope, activeSessionId);
   // Clear/dismiss is archive chrome for finished runs only. Live (and pending)
   // jobs must stay visible even if their id was previously dismissed — otherwise
   // a CLI-started swarm looks "gone" while workers are still running, and pilots
@@ -2092,6 +2111,20 @@ export default function SwarmPane() {
           <option value="newest">Newest first</option>
           <option value="oldest">Oldest first</option>
         </select>
+        <div className="col-span-2 flex h-6 overflow-hidden rounded border border-edge">
+          {(["session", "repo"] as const).map((scope) => (
+            <button
+              key={scope}
+              type="button"
+              aria-pressed={jobScope === scope}
+              aria-label={scope === "session" ? "This session" : "This repo, ever"}
+              onClick={() => { setJobScope(scope); saveJobScope(scope); }}
+              className={`flex-1 text-[10px] ${jobScope === scope ? "bg-accent/15 text-txt" : "bg-panel2/40 text-muted hover:text-txt"}`}
+            >
+              {scope === "session" ? "This session" : "This repo"}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Scrollable Jobs list. min-h-0 is load-bearing: without it a flex-1 item
