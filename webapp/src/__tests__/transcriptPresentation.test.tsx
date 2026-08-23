@@ -999,7 +999,7 @@ describe("live command token clicks", () => {
     const clearance = screen.getByTestId("feed-bottom-clearance");
     expect(clearance).toHaveAttribute("aria-hidden", "true");
     expect(clearance).toHaveClass("feed-bottom-clearance");
-    expect(clearance.style.height).toBe("clamp(72px, 12vh, 144px)");
+    expect(clearance.style.height).toBe("var(--feed-chrome-clearance, clamp(72px, 12vh, 144px))");
   });
 
   it("keeps a tool-free live answer outside the collapsed ActivityGroup", () => {

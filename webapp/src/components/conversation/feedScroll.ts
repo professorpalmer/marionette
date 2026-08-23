@@ -20,6 +20,25 @@ export const FEED_SETTLE_TIMEOUT_MS = 1000;
 /** Bubbles from nested live-reasoning panes when the user reads away from the tail. */
 export const FEED_UNPIN_BUBBLE_EVENT = "pmharness-feed-unpin";
 
+/**
+ * Stick-to-bottom follow flush policy.
+ *
+ * ResizeObserver runs after layout and before paint. Applying scrollTop
+ * there keeps streaming tokens (and chrome-driven clientHeight shrink)
+ * in the same frame. requestAnimationFrame runs after paint, so deferring
+ * follow paints one frame of growth / composer-stack shrink then snaps —
+ * the stream-at-bottom viewport lurch.
+ */
+export function chooseFeedFollowFlush(): "before_paint" {
+  return "before_paint";
+}
+
+/** Bottom spacer so the last stream line sits above the composer/status stack. */
+export function feedBottomClearancePx(chromeHeight: number): number {
+  if (!Number.isFinite(chromeHeight) || chromeHeight <= 0) return 96;
+  return Math.max(72, Math.min(Math.round(chromeHeight), 480));
+}
+
 export function isPinnedToBottom(
   scrollHeight: number,
   scrollTop: number,

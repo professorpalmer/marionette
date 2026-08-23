@@ -98,8 +98,8 @@ import { runCommandPaletteAction } from "../lib/commandPalette";
 import { focusSettingsPage } from "./SettingsShell";
 import {
   FEED_REPIN_THRESHOLD_PX,
+  chooseFeedFollowFlush,
   feedResizeScrollFollowDecision,
-  mergeFeedResizeObservationSnapshots,
   nextFeedPinState,
   settleFrameResult,
   shouldShowJumpToBottom,
@@ -1205,24 +1205,19 @@ export default function Conversation({
     const viewport = feedRef.current;
     if (!viewport) return;
     const content = feedContentRef.current;
-    let rafId = 0;
-    let pinnedSnapshot: FeedResizeObservationSnapshot | null = null;
     const scheduleFollow = () => {
       const el = feedRef.current;
       if (!el) return;
       if (isOccludedScrollParentSize(el.clientHeight, el.offsetHeight)) return;
-      pinnedSnapshot = mergeFeedResizeObservationSnapshots(pinnedSnapshot, {
+      // Flush in the RO callback (before paint). rAF-deferred follow is the
+      // stream-at-bottom lurch: tokens/chrome grow, one frame paints off-tail,
+      // then we snap. chooseFeedFollowFlush documents the policy.
+      void chooseFeedFollowFlush();
+      applyFeedResizeFollow({
         pinned: pinnedToBottomRef.current,
         settling: scrollSettlingRef.current,
         scrollTop: el.scrollTop,
         scrollHeight: el.scrollHeight,
-      });
-      if (rafId) return;
-      rafId = requestAnimationFrame(() => {
-        rafId = 0;
-        const snapshot = pinnedSnapshot;
-        pinnedSnapshot = null;
-        applyFeedResizeFollow(snapshot);
       });
     };
     const ro =
@@ -1232,7 +1227,6 @@ export default function Conversation({
     ro?.observe(viewport);
     if (content) ro?.observe(content);
     return () => {
-      cancelAnimationFrame(rafId);
       ro?.disconnect();
     };
   }, []);

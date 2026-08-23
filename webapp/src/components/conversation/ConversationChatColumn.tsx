@@ -3,9 +3,10 @@
  * Conversation owns all state; this is a presentational peel.
  */
 
-import type { MutableRefObject, ReactNode, RefObject } from "react";
+import { useLayoutEffect, useRef, useState, type MutableRefObject, type ReactNode, type RefObject } from "react";
 import { ChevronDown } from "lucide-react";
 import { panelOpacityClass } from "../../lib/panelTransition";
+import { feedBottomClearancePx } from "./feedScroll";
 import {
   TranscriptList,
   type Card,
@@ -63,8 +64,25 @@ export default function ConversationChatColumn({
   showJumpToBottom?: boolean;
   onJumpToBottom?: () => void;
 }) {
+  const chromeRef = useRef<HTMLDivElement>(null);
+  const [clearancePx, setClearancePx] = useState(96);
+  useLayoutEffect(() => {
+    const node = chromeRef.current;
+    if (!node) return;
+    const sync = () => {
+      setClearancePx(feedBottomClearancePx(node.getBoundingClientRect().height));
+    };
+    sync();
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(sync) : null;
+    ro?.observe(node);
+    return () => ro?.disconnect();
+  }, []);
+
   return (
-    <div className="chat-column flex flex-col flex-1 min-h-0 min-w-0">
+    <div
+      className="chat-column flex flex-col flex-1 min-h-0 min-w-0"
+      style={{ ["--feed-chrome-clearance" as string]: `${clearancePx}px` }}
+    >
       <div className="relative flex-1 min-h-0 flex flex-col">
         <div
           ref={feedRef}
@@ -126,7 +144,9 @@ export default function ConversationChatColumn({
         </button>
       ) : null}
       </div>
-      {composerDock}
+      <div ref={chromeRef} className="shrink-0 min-w-0" data-testid="composer-chrome">
+        {composerDock}
+      </div>
     </div>
   );
 }
