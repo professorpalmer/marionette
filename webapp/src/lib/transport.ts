@@ -134,7 +134,9 @@ function requestHeaders(extra?: Record<string, string>): Record<string, string> 
 }
 
 function noteResponseCorrelation(response: Response): void {
-  const cid = response.headers.get("X-Correlation-Id");
+  const headers = response && response.headers;
+  if (!headers || typeof headers.get !== "function") return;
+  const cid = headers.get("X-Correlation-Id");
   if (cid) setCorrelationId(cid);
 }
 

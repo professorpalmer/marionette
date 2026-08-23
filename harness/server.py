@@ -2538,14 +2538,10 @@ class Handler(BaseHTTPRequestHandler):
         # escapes to socketserver's default handle_error and dumps a traceback to
         # stderr. Swallow only those transport errors so a disconnect never prints
         # noise; genuine handler bugs still surface unchanged.
-        from .correlation import correlation_scope, resolve_correlation_id
-
-        cid = resolve_correlation_id(self.headers.get("X-Correlation-Id"))
-        with correlation_scope(cid):
-            try:
-                super().handle_one_request()
-            except (ConnectionError, TimeoutError):
-                self.close_connection = True
+        try:
+            super().handle_one_request()
+        except (ConnectionError, TimeoutError):
+            self.close_connection = True
 
     def log_message(self, fmt, *args):  # quiet but correlated
         try:
@@ -2567,9 +2563,17 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Harness-Token, X-Correlation-Id")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 
+    def _bind_correlation(self) -> None:
+        from .correlation import resolve_correlation_id, set_correlation_id
+
+        headers = getattr(self, "headers", None)
+        incoming = headers.get("X-Correlation-Id") if headers is not None else None
+        set_correlation_id(resolve_correlation_id(incoming))
+
     def _guard(self) -> bool:
         """Reject cross-origin / rebound / unauthenticated requests. Returns True
         if the request should be BLOCKED (and sends the 403)."""
+        self._bind_correlation()
         if not _host_ok(self.headers.get("Host", "")):
             self._send(403, json.dumps({"error": "host not allowed"})); return True
         if not _origin_ok(self.headers.get("Origin", "")):
