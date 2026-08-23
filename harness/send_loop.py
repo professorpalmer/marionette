@@ -71,6 +71,7 @@ from .terminal_cause import (
     TERMINAL_DRIVER_SWAP,
     TERMINAL_EMPTY_LOOP,
     TERMINAL_INVALID_TOOL,
+    TERMINAL_NATURAL,
     TERMINAL_TURN_BUDGET,
     finalize_stop_cause,
 )
@@ -1323,6 +1324,10 @@ class SendLoopMixin:
             # message so the turn gets a finished summary bubble.
 
             cleaned_say_text = clean_say(turn.say) if turn.say else ""
+            _extracted_secret = None
+            if cleaned_say_text:
+                from .secret_vault import extract_secret_request_message
+                cleaned_say_text, _extracted_secret = extract_secret_request_message(cleaned_say_text)
             _resp_meta = getattr(resp, "meta", None) or {}
             if not isinstance(_resp_meta, dict):
                 _resp_meta = {}
@@ -1380,6 +1385,26 @@ class SendLoopMixin:
             else:
                 self._history.append({"role": "assistant", "content": _history_text or "(acting)"})
 
+            if _extracted_secret:
+                from .secret_request import already_present, register_pending_secret_request
+                if not any(getattr(a, "kind", "") == "request_secret" for a in turn.actions):
+                    if not already_present(self, _extracted_secret["connector"], _extracted_secret["field"]):
+                        pending = register_pending_secret_request(self, _extracted_secret)
+                        yield ConvEvent("secret_request", {
+                            **(pending or _extracted_secret),
+                            "session_id": getattr(self, "harness_session_id", "") or "default",
+                            "ends_turn": True,
+                        })
+                        self._sanitize_tool_pairs()
+                        yield from finalize_assistant_turn(
+                            self, user_message=user_message, step=step,
+                            swarms=swarms, turn_prose=turn_prose,
+                            turn_findings=turn_findings,
+                            extra={"secret_request": True},
+                            stop_cause=TERMINAL_NATURAL,
+                            **classified_finish_kwargs(last_classified),
+                        )
+                        return
             if self._turn_budget_exhausted() and not (
                 synchronous_swarms
                 and not step_emitted_user_prose
@@ -1535,6 +1560,17 @@ class SendLoopMixin:
             swarms = _action_counters["swarms"]
             demo_swarms = _action_counters["demo_swarms"]
             synchronous_swarms = _action_counters["synchronous_swarms"]
+            if _action_disposition == "secret_request":
+                self._sanitize_tool_pairs()
+                yield from finalize_assistant_turn(
+                    self, user_message=user_message, step=step,
+                    swarms=swarms, turn_prose=turn_prose,
+                    turn_findings=turn_findings,
+                    extra={"secret_request": True},
+                    stop_cause=TERMINAL_NATURAL,
+                    **classified_finish_kwargs(last_classified),
+                )
+                return
             if _action_disposition == "return":
                 # Cancel mid-spree: heal unanswered tool_calls before exit so
                 # the next send/resume/export never sees a dangling tool_use.

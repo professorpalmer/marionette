@@ -5,6 +5,7 @@ import FileEditorPane from "./FileEditorPane";
 import {
   type Card,
   type CommandApprovalItem,
+  type SecretRequestItem,
   type Item,
 } from "./TranscriptList";
 import {
@@ -70,6 +71,7 @@ import {
   sealOpenStreamSurfaces,
   shouldApplySwarmLiveMerge,
   updateCommandApproval,
+  updateSecretRequest,
 } from "./conversation/streamApply";
 import {
   classifyLocalSlashCommand,
@@ -3251,6 +3253,51 @@ export default function Conversation({
     },
     [],
   );
+  const handleSecretRequest = useCallback(
+    (item: SecretRequestItem, decision: { action: "save"; value: string } | { action: "dismiss" }) => {
+      setItems((current) => updateSecretRequest(
+        current,
+        item.connector,
+        item.field,
+        { status: decision.action === "save" ? "saving" : "declined", error: undefined },
+      ));
+      const sessionId = item.sessionId || activeSessionId || "";
+      const request = decision.action === "save"
+        ? api.submitSecret({
+            session_id: sessionId,
+            connector: item.connector,
+            field: item.field,
+            value: decision.value,
+          })
+        : api.dismissSecret({
+            session_id: sessionId,
+            connector: item.connector,
+            field: item.field,
+          });
+      void request.then((response) => {
+        setItems((current) => updateSecretRequest(
+          current,
+          item.connector,
+          item.field,
+          { status: decision.action === "save" ? "saved" : "declined" },
+        ));
+        if (decision.action === "save" && response && (response as { resume?: boolean }).resume) {
+          executeSendRef.current("", false, false, true);
+        }
+      }).catch((error) => {
+        setItems((current) => updateSecretRequest(
+          current,
+          item.connector,
+          item.field,
+          {
+            status: "error",
+            error: error instanceof Error ? error.message : String(error),
+          },
+        ));
+      });
+    },
+    [activeSessionId],
+  );
   const handleTranscriptImageClick = useCallback((url: string) => setLightboxUrl(url), []);
   const recoveryBound = recoveryContextRef.current;
   const handleRecoveryContinue = () => {
@@ -3368,6 +3415,7 @@ export default function Conversation({
           onSetCard={stableSetCard}
           onExecutePlan={handleTranscriptExecutePlan}
           onCommandApproval={handleCommandApproval}
+          onSecretRequest={handleSecretRequest}
           showJumpToBottom={showJumpToBottom}
           onJumpToBottom={jumpToLatest}
           composerDock={(

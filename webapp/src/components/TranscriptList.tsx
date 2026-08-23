@@ -193,6 +193,18 @@ type SwarmResultItem = {
   artifact_delivery?: SwarmArtifactDelivery;
 };
 
+export type SecretRequestItem = {
+  kind: "secret_request";
+  id: string;
+  label: string;
+  connector: string;
+  field: string;
+  description: string;
+  sessionId: string;
+  status: "pending" | "saving" | "saved" | "declined" | "error";
+  error?: string;
+};
+
 export type CommandApprovalItem = {
   kind: "command_approval";
   id: string;
@@ -233,6 +245,7 @@ export type Item =
   | { kind: "vault_cite"; route: string; snippets: string[]; query?: string }
   | { kind: "command_blocked"; command: string; category: string; reason: string; matched: string }
   | CommandApprovalItem
+  | SecretRequestItem
   | { kind: "auto_status"; cycle: number; snapshot: AutoBudgetSnapshot }
   | { kind: "auto_halt"; reason: string; snapshot: AutoBudgetSnapshot }
   | { kind: "auth_failure"; message: string; id?: string }
@@ -280,6 +293,7 @@ export type GroupedItem =
   | { kind: "vault_cite"; route: string; snippets: string[]; query?: string }
   | { kind: "command_blocked"; command: string; category: string; reason: string; matched: string }
   | CommandApprovalItem
+  | SecretRequestItem
   | { kind: "auto_status"; cycle: number; snapshot: AutoBudgetSnapshot }
   | { kind: "auto_halt"; reason: string; snapshot: AutoBudgetSnapshot }
   | { kind: "auth_failure"; message: string; id?: string }
@@ -681,6 +695,7 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
       currentGroup.push(item);
     } else if (
       item.kind === "command_approval"
+      || item.kind === "secret_request"
       || item.kind === "auth_failure"
       || item.kind === "steer"
     ) {
@@ -1041,6 +1056,7 @@ export type TranscriptListProps = {
   onSetCard: (id: string, patch: Partial<Card>) => void;
   onExecutePlan: (planText: string) => void;
   onCommandApproval: (item: CommandApprovalItem, approve: boolean) => void;
+  onSecretRequest?: (item: SecretRequestItem, decision: { action: "save"; value: string } | { action: "dismiss" }) => void;
 };
 
 export const TranscriptList = memo(function TranscriptList({
@@ -1061,6 +1077,7 @@ export const TranscriptList = memo(function TranscriptList({
   onSetCard,
   onExecutePlan,
   onCommandApproval,
+  onSecretRequest,
 }: TranscriptListProps) {
   // Match Conversation's latch — awaiting_swarm plus holdSwarmAwait so
   // Investigating / mid-turn absorption / footer stay armed through idle flaps.
@@ -1370,6 +1387,59 @@ export const TranscriptList = memo(function TranscriptList({
               </div>
             </div>
           </div>
+        </div>
+      );
+    } else if (it.kind === "secret_request") {
+      const pending = it.status === "pending" || it.status === "error";
+      return (
+        <div
+          key={key}
+          data-testid="secret-request-card"
+          className="w-full max-w-2xl rounded-md border border-edge bg-panel2/40 px-3.5 py-3 text-[11px] text-txt my-1.5"
+        >
+          <div className="font-medium text-txt">{it.label}</div>
+          {it.description ? <div className="mt-0.5 text-muted">{it.description}</div> : null}
+          {pending ? (
+            <form
+              className="mt-2 flex flex-col gap-2"
+              onSubmit={(e) => {
+                e.preventDefault();
+                const form = e.currentTarget;
+                const input = form.elements.namedItem("secret") as HTMLInputElement | null;
+                const value = input?.value || "";
+                if (!value.trim()) return;
+                onSecretRequest?.(it, { action: "save", value });
+                if (input) input.value = "";
+              }}
+            >
+              <input
+                name="secret"
+                type="password"
+                autoComplete="off"
+                placeholder={`Paste your ${it.label}`}
+                className="w-full rounded border border-edge bg-panel px-2 py-1.5 text-[12px] text-txt"
+              />
+              {it.error ? <div className="text-risk/90">{it.error}</div> : null}
+              <div className="flex items-center gap-2">
+                <button
+                  type="submit"
+                  className="rounded-md border border-edge bg-panel px-2.5 py-1 font-medium text-txt hover:border-accent/40"
+                >
+                  Save securely
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onSecretRequest?.(it, { action: "dismiss" })}
+                  className="rounded-md border border-edge bg-panel2/60 px-2.5 py-1 text-muted hover:text-txt"
+                >
+                  Dismiss
+                </button>
+              </div>
+              <div className="text-[10.5px] text-muted">Stored securely, never shown to your Bot.</div>
+            </form>
+          ) : (
+            <div className="mt-2 text-faint">{it.status === "saved" ? "Stored securely" : it.status === "declined" ? "Declined" : it.status}</div>
+          )}
         </div>
       );
     } else if (it.kind === "auto_status") {
