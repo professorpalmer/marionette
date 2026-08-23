@@ -89,6 +89,45 @@ def _artifact_ref(row: Any) -> dict[str, str]:
     }
 
 
+def _artifact_job_id(row: Any) -> str:
+    # Top-level job_id is store ownership. execution_ref is provenance of a
+    # surfaced row and must not hide foreign-attributed evidence on this job.
+    if isinstance(row, dict):
+        return str(row.get("job_id") or "").strip()
+    return str(getattr(row, "job_id", "") or "").strip()
+
+
+def _rows_for_job(rows, job_id: str) -> list:
+    """Drop rows that claim a different job — identical artifact ids may collide."""
+    current = str(job_id or "").strip()
+    out = []
+    for row in rows or []:
+        claimed = _artifact_job_id(row)
+        if claimed and current and claimed != current:
+            continue
+        out.append(row)
+    return out
+
+
+def _bind_parallel_wave(session, aid, job_ids, objective: str) -> None:
+    """Record accepted-child membership on the existing local-job owner."""
+    register = getattr(session, "_register_parallel_wave", None)
+    if not callable(register):
+        return
+    ids = [str(x) for x in (job_ids or []) if str(x)]
+    if not ids:
+        return
+    try:
+        register(
+            f"local-wave-{aid}",
+            child_job_ids=ids,
+            objective=objective,
+            action_id=str(aid or ""),
+        )
+    except Exception:
+        pass
+
+
 def _session_durable(session):
     """Resolve the DurableState-like ledger used for PM artifact listing.
 
@@ -124,23 +163,26 @@ def _swarm_artifact_delivery(
     snapshot is the accounting authority after ephemeral PM state is gone.
     """
 
-    expected_refs = [_artifact_ref(row) for row in result_rows]
+    scoped_result = _rows_for_job(result_rows, job_id)
+    expected_refs = [_artifact_ref(row) for row in scoped_result]
     canonical_rows: list[dict] = []
     store_ok = False
     try:
         durable = _session_durable(session)
-        raw_rows = list(durable.store.list_artifacts(job_id))
+        raw_rows = _rows_for_job(list(durable.store.list_artifacts(job_id)), job_id)
         store_ok = True
         if raw_rows:
             expected_refs = [_artifact_ref(row) for row in raw_rows]
-            canonical_rows = list(durable.format_artifacts(raw_rows))
+            canonical_rows = _rows_for_job(
+                list(durable.format_artifacts(raw_rows)), job_id,
+            )
     except Exception:
         canonical_rows = []
         store_ok = False
 
     by_id: dict[str, dict] = {}
     anonymous_rows: list[dict] = []
-    for row in [*result_rows, *canonical_rows]:
+    for row in [*scoped_result, *canonical_rows]:
         artifact_id = str(row.get("id") or "").strip()
         if not artifact_id:
             if row not in anonymous_rows:
@@ -1558,6 +1600,10 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                 if sub_aid not in emitted_results:
                     yield _result({'id': sub_aid, 'error': 'No jobs successfully dispatched'})
             if job_ids_collected:
+                _bind_parallel_wave(
+                    session, aid, job_ids_collected,
+                    f"Parallel wave of goals: {', '.join(goals)}",
+                )
                 yield ConvEvent('swarm_pending', {'job_ids': job_ids_collected, 'objective': f"Parallel wave of goals: {', '.join(goals)}"})
                 yield _result({'id': aid, 'job_id': ','.join(job_ids_collected), 'status': 'pending', 'message': f"Dispatched parallel background swarm jobs: {', '.join(job_ids_collected)}"})
                 session._append_action_result(act, aid, f"(run_parallel dispatched {len(job_ids_collected)} jobs in background: {', '.join(job_ids_collected)})", is_native)
@@ -1999,6 +2045,10 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                 yield ConvEvent('action_result', {'id': aid, 'status': 'skipped', 'message': skip_msg})
                 session._append_action_result(act, aid, f'(run_parallel {aid} skipped -- all {len(goals)} objectives already in flight)', is_native)
                 return None
+            _bind_parallel_wave(
+                session, aid, job_ids_collected,
+                f"Parallel wave of goals: {', '.join(goals)}",
+            )
             yield ConvEvent('swarm_pending', {'job_ids': job_ids_collected, 'objective': f"Parallel wave of goals: {', '.join(goals)}"})
             for _reuse_ev in buffered_reuse_events:
                 yield _reuse_ev
