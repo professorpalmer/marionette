@@ -799,7 +799,7 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
       {/* (b) List-price value -- not cash, not a refund. */}
       {(promptCacheSaved > 0 || modelSelectionSaved > 0 || showRoutingDecision || compactSavings > 0 || valueTotal > 0) ? (
       <div className="mt-2 pt-2 border-t border-edge/50">
-      <div className="text-[10px] uppercase tracking-wide text-faint mb-1">List-price value</div>
+      <div className="text-[10px] uppercase tracking-wide text-faint mb-1">Not billed</div>
       <p className="text-[10px] text-muted mb-1.5 leading-snug">
         Counterfactual vs catalog/frontier rates. Not an OpenRouter invoice and not a refund of the spend above.
       </p>
