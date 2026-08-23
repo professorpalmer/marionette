@@ -1,6 +1,6 @@
 """Characterization: table-driven Handler GET/POST dispatch + auth.
 
-Locks status codes and auth behavior for a sample of public vs guarded routes
+Locks status codes and auth behavior for a sample of guarded routes
 after compressing do_GET / _handle_post_json into path→handler maps.
 """
 from __future__ import annotations
@@ -67,11 +67,13 @@ def test_route_tables_cover_known_paths():
     assert len(get) >= 50
 
 
-def test_public_get_shell_stays_open_without_token():
+def test_former_shell_paths_require_token():
     srv, httpd, port = _serve()
     try:
-        resp = _get(port, "/")
-        assert resp.status == 200
+        for path in ("/", "/index.html", "/app.js", "/app.css"):
+            with pytest.raises(urllib.error.HTTPError) as ei:
+                _get(port, path)
+            assert ei.value.code == 403
     finally:
         httpd.shutdown()
         httpd.server_close()
