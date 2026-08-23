@@ -673,11 +673,23 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
         const recovered =
           turnSettledRef.current
           || Boolean(typeBufRef.current)
-          || hasPartialAssistantAnswer(itemsRef.current);
+          || hasPartialAssistantAnswer(itemsRef.current)
+          || turnHasLiveProgressSignal(itemsRef.current);
         if (recovered) {
           clearWaitHintOnProgress();
           return;
         }
+        const hint = truncateWaitHint(errText);
+        if (
+          hint
+          && noticeShouldLatchWaitHint(hint, {
+            hasLiveProgress: false,
+            turnSettled: turnSettledRef.current,
+          })
+        ) {
+          setWaitHint(hint);
+        }
+        return;
       }
       const settle = settleFromStreamError(d.error, d.terminal_cause);
       paintTurnSettle(settle);

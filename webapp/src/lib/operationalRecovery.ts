@@ -1,6 +1,8 @@
+import { isProviderFailureWaitHint } from "./composerWaitHint";
 import {
   conversationTurnFailureDiagnostic,
   isConversationTurnFailureDiagnostic,
+  isUncertainTransport,
   type OperationalDiagnostic,
 } from "./operationalDiagnostic";
 import {
@@ -46,15 +48,27 @@ export function syncConversationTurnFailureDiagnostic(
   settle: TurnSettle,
   sessionId?: string,
 ): void {
-  if (settle.lifecycle === TURN_ERROR || settle.lifecycle === TURN_ABORTED) {
-    const summary = String(settle.explanation || "Turn failed").trim();
-    publishDiagnostic(conversationTurnFailureDiagnostic(summary, { sessionId }));
+  const explanation = String(settle.explanation || "").trim();
+  // Sidecar driver miss is a wait notice, not Trace/Retry.
+  if (isProviderFailureWaitHint(explanation)) {
     return;
   }
-  if (settle.lifecycle === TURN_SETTLED_COMPLETE) {
+  const failed =
+    settle.status === "error"
+    || settle.lifecycle === TURN_ERROR
+    || settle.lifecycle === TURN_ABORTED;
+  if (failed) {
+    publishDiagnostic(conversationTurnFailureDiagnostic(explanation || "Turn failed", { sessionId }));
+    return;
+  }
+  if (settle.lifecycle === TURN_SETTLED_COMPLETE || settle.status === "done") {
     const active = getActiveDiagnostic();
     if (isConversationTurnFailureDiagnostic(active)) {
       clearDiagnostic(active!);
+      return;
+    }
+    if (active && isUncertainTransport(active)) {
+      clearDiagnostic(active);
     }
   }
 }

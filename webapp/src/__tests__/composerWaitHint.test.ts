@@ -1,16 +1,19 @@
 import {
   formatDriverFailureWaitHint,
   isProviderFailureWaitHint,
+  noticeShouldLatchWaitHint,
   waitHintForBusyProgress,
 } from "../lib/composerWaitHint";
 import { deriveBusyProgress } from "../lib/turnProgress";
-import { getActiveDiagnostic, publishDiagnostic, resetDiagnosticBus } from "../lib/operationalDiagnosticBus";
-import { createOperationalDiagnostic } from "../lib/operationalDiagnostic";
-
-type StreamStatus = "error" | "idle" | "done" | "thinking" | "awaiting_swarm" | "executing" | "streaming";
+import { CONVERSATION_TURN_FAILURE } from "../lib/operationalDiagnostic";
+import { getActiveDiagnostic, resetDiagnosticBus } from "../lib/operationalDiagnosticBus";
+import { syncConversationTurnFailureDiagnostic } from "../lib/operationalRecovery";
+import { setCorrelationId } from "../lib/correlationId";
 import { createApplyStreamEvent } from "../components/conversation/streamEventHandler";
 import type { Item } from "../components/TranscriptList";
 import { describe, expect, it } from "vitest";
+
+type StreamStatus = "error" | "idle" | "done" | "thinking" | "awaiting_swarm" | "executing" | "streaming";
 
 describe("composerWaitHint", () => {
   it("recognizes driver failure notices", () => {
@@ -31,6 +34,14 @@ describe("composerWaitHint", () => {
     expect(
       waitHintForBusyProgress(hint, { hasSignal: true, turnFailed: true }),
     ).toBe(hint);
+  });
+
+  it("does not latch provider failure notices after live progress", () => {
+    const sidecar = "driver openrouter:deepseek/deepseek-v4-flash-vision-exp failed";
+    expect(noticeShouldLatchWaitHint(sidecar, { hasLiveProgress: false, turnSettled: false })).toBe(true);
+    expect(noticeShouldLatchWaitHint(sidecar, { hasLiveProgress: true, turnSettled: false })).toBe(false);
+    expect(noticeShouldLatchWaitHint(sidecar, { hasLiveProgress: false, turnSettled: true })).toBe(false);
+    expect(noticeShouldLatchWaitHint("Provider still working", { hasLiveProgress: true, turnSettled: false })).toBe(true);
   });
 });
 
@@ -71,16 +82,24 @@ function makeWaitHintApplyDeps() {
     typeBufRef: { current: "" },
     waitHint: null as string | null,
     status: "thinking" as StreamStatus,
+    turnSettled: false,
   };
   state.itemsRef.current = state.items;
   const pendingJobIdsRef = { current: [] as string[] };
+  const turnSettledRef = { current: false };
   const setItems = (updater: Item[] | ((prev: Item[]) => Item[])) => {
     const next = typeof updater === "function" ? updater(state.items) : updater;
     state.items = next;
     state.itemsRef.current = next;
   };
+  const recordTurnSettle = (settle: Parameters<typeof syncConversationTurnFailureDiagnostic>[0]) => {
+    state.turnSettled = true;
+    turnSettledRef.current = true;
+    syncConversationTurnFailureDiagnostic(settle);
+  };
   return {
     state,
+    turnSettledRef,
     apply: createApplyStreamEvent({
       setCompactingStatus: () => {},
       setItems,
@@ -99,7 +118,7 @@ function makeWaitHintApplyDeps() {
       setSafeTimeout: () => {},
       itemsRef: state.itemsRef,
       planTurnRef: { current: false },
-      turnSettledRef: { current: false },
+      turnSettledRef,
       resumeQueuedRef: { current: false },
       typeBufRef: state.typeBufRef,
       flushTypewriter: () => {},
@@ -111,6 +130,7 @@ function makeWaitHintApplyDeps() {
       handleSwarmResult: () => {},
       refreshQueue: () => {},
       fetchContextUsage: () => {},
+      recordTurnSettle,
     }),
   };
 }
@@ -145,26 +165,53 @@ describe("recovered vision sidecar driver miss is not a failed turn", () => {
 
   it("does not latch wait-hint or Error/Trace after a successful turn", () => {
     resetDiagnosticBus();
-    publishDiagnostic(createOperationalDiagnostic({
-      scope: "conversation",
-      operation: "send",
-      code: "sidecar_noise",
-      summary: sidecar,
-      severity: "error",
-      retryable: true,
-      recovery: { kind: "retry", label: "Retry" },
-    }));
+    setCorrelationId("trace-sidecar-ok");
     const { state, apply } = makeWaitHintApplyDeps();
     apply({ kind: "notice", data: { kind: "wait", message: sidecar } });
+    expect(state.waitHint).toBe(sidecar);
     apply({ kind: "message_delta", data: { text: "The turn worked.", stream_id: "a1", channel: "answer" } });
     expect(state.waitHint).toBeNull();
     apply({ kind: "notice", data: { kind: "wait", message: sidecar } });
     expect(state.waitHint).toBeNull();
-    apply({ kind: "error", data: { error: sidecar } });
-    expect(state.status).not.toBe("error");
     apply({ kind: "assistant_done", data: { stop_cause: "natural" } });
     expect(state.waitHint).toBeNull();
     expect(state.status).toBe("done");
     expect(getActiveDiagnostic()).toBeNull();
+    const busy = deriveBusyProgress(state.items, state.status, null, {
+      modelLabel: "openrouter:deepseek/deepseek-v4-flash-vision-exp",
+      waitHint: state.waitHint,
+    });
+    expect(busy.label).not.toMatch(/failed/i);
+    setCorrelationId("");
+  });
+
+  it("does not publish Trace/Retry when the sidecar arrives as error then the turn succeeds", () => {
+    resetDiagnosticBus();
+    setCorrelationId("trace-sidecar-error-kind");
+    const { state, apply } = makeWaitHintApplyDeps();
+    apply({ kind: "error", data: { error: sidecar } });
+    expect(state.status).not.toBe("error");
+    expect(getActiveDiagnostic()).toBeNull();
+    apply({ kind: "message_delta", data: { text: "The turn worked.", stream_id: "a1", channel: "answer" } });
+    apply({ kind: "assistant_done", data: { stop_cause: "natural" } });
+    expect(state.waitHint).toBeNull();
+    expect(state.status).toBe("done");
+    expect(getActiveDiagnostic()).toBeNull();
+    setCorrelationId("");
+  });
+
+  it("still shows Trace+Retry on a genuinely failed turn", () => {
+    resetDiagnosticBus();
+    setCorrelationId("trace-turn-fail");
+    const { state, apply } = makeWaitHintApplyDeps();
+    apply({ kind: "notice", data: { kind: "wait", message: sidecar } });
+    apply({ kind: "error", data: { error: "all routes exhausted" } });
+    expect(state.waitHint).toBe(sidecar);
+    expect(state.status).toBe("error");
+    const diag = getActiveDiagnostic();
+    expect(diag?.code).toBe(CONVERSATION_TURN_FAILURE);
+    expect(diag?.recovery).toEqual({ kind: "retry", label: "Retry" });
+    expect(diag?.correlationId).toBe("trace-turn-fail");
+    setCorrelationId("");
   });
 });
