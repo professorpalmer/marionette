@@ -44,6 +44,37 @@ class UsageServices:
 JsonPayload = Union[dict, list]
 
 
+
+def _merge_swarm_by_model(acc: dict, by_model) -> None:
+    if not isinstance(by_model, dict):
+        return
+    for mid, bucket in by_model.items():
+        info = bucket if isinstance(bucket, dict) else {}
+        key = str(mid or "unknown")
+        row = acc.setdefault(
+            key,
+            {"model": key, "est_cost_usd": 0.0, "tokens_used": 0, "calls": 0},
+        )
+        try:
+            row["est_cost_usd"] = round(float(row["est_cost_usd"]) + float(info.get("est_cost_usd") or 0.0), 6)
+        except (TypeError, ValueError):
+            pass
+        try:
+            row["tokens_used"] += int(info.get("tokens_used") or 0)
+            row["calls"] += int(info.get("calls") or 0)
+        except (TypeError, ValueError):
+            pass
+
+
+def _usage_swarm_by_model_payload(acc: dict) -> list:
+    rows = [
+        r for r in acc.values()
+        if float(r.get("est_cost_usd") or 0.0) > 0 or int(r.get("tokens_used") or 0) > 0
+    ]
+    rows.sort(key=lambda r: (-float(r["est_cost_usd"]), str(r["model"])))
+    return rows
+
+
 def _usage_pilot_by_model() -> list:
     """Best-effort per-model rows; never fail the usage pill."""
     try:
@@ -121,6 +152,7 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
     # worker dollars stay at each worker's own model rate.
     est_session_cost = svc.boot_session_cost(price_in, price_out)
     jobs_list = []
+    swarm_by_model_acc: dict = {}
     session_total = None
     routing_saved_usd = 0.0
     delegation_saved_usd = 0.0
@@ -248,6 +280,7 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
                 tokens, est_cost_usd = svc.job_swarm_accounting(raw_arts, registry)
                 provenance = "default"
                 job_estimated = True
+                detail = {}
                 try:
                     from .cost import _server_attr
                     from .swarm_cost import _job_swarm_accounting_detail
@@ -258,16 +291,19 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
                     detail = detail_fn(raw_arts, registry)
                     # Only trust provenance when it agrees with the spend helper
                     # (detects monkeypatched stubs that return fixed dollars).
-                    if (
+                    detail_trusted = (
                         int(detail.get("tokens") or 0) == int(tokens or 0)
                         and abs(
                             float(detail.get("est_cost_usd") or 0.0)
                             - float(est_cost_usd or 0.0)
                         )
                         < 1e-9
-                    ):
+                    )
+                    if detail_trusted:
                         provenance = detail.get("cost_provenance") or "default"
                         job_estimated = bool(detail.get("estimated", True))
+                    else:
+                        detail = {}
                 except Exception:
                     pass
                 try:
@@ -288,6 +324,24 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
                     "estimated": bool(job_estimated),
                     **svc.job_savings_fields(jid),
                 })
+                detail_models = {}
+                try:
+                    detail_models = detail.get("by_model") or {}
+                except Exception:
+                    detail_models = {}
+                if detail_models:
+                    _merge_swarm_by_model(swarm_by_model_acc, detail_models)
+                elif float(est_cost_usd or 0.0) > 0:
+                    _merge_swarm_by_model(
+                        swarm_by_model_acc,
+                        {
+                            "unknown": {
+                                "est_cost_usd": float(est_cost_usd or 0.0),
+                                "tokens_used": int(tokens or 0),
+                                "calls": 1,
+                            }
+                        },
+                    )
             except Exception as e:
                 svc.diag("server.usage_job_cost", e, msg=f"job={jid}")
         session_total = svc.active_session_total(session_jids, _job_arts, registry)
@@ -452,6 +506,8 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
             # Locked cumulative spend per pilot that actually ran. Picker
             # swaps must not reprice these rows at the newly selected model.
             "pilot_by_model": _usage_pilot_by_model(),
+            "swarm_by_model": _usage_swarm_by_model_payload(swarm_by_model_acc),
+            "swarm_cost_usd": round(swarm_cost, 6),
             # Routing + delegation + swarm-cache savings over the boot-repo
             # epoch job set (additive to the pilot cache/compaction figures).
             "routing_saved_usd": round(routing_saved_usd, 6),

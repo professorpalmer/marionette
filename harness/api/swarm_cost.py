@@ -10,6 +10,50 @@ from __future__ import annotations
 from .cost_accounting import CACHE_READ_MULTIPLIER
 from .cost import _diag, _server_attr
 
+def _by_model_rows_from_job_cost(job_cost) -> dict:
+    """Normalize JobCost.by_model plus live-priced unpriced tasks."""
+    rows: dict = {}
+    by_model = getattr(job_cost, "by_model", None) or {}
+    for mid, bucket in by_model.items():
+        info = bucket if isinstance(bucket, dict) else {}
+        try:
+            cost = float(info.get("marginal_cost_usd") or info.get("cost") or 0.0)
+        except (TypeError, ValueError):
+            cost = 0.0
+        try:
+            tokens_in = int(info.get("tokens_in") or 0)
+            tokens_out = int(info.get("tokens_out") or 0)
+            calls = int(info.get("calls") or 0)
+        except (TypeError, ValueError):
+            tokens_in, tokens_out, calls = 0, 0, 0
+        key = str(mid or "unknown")
+        rows[key] = {
+            "est_cost_usd": round(cost, 6),
+            "tokens_used": tokens_in + tokens_out,
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
+            "calls": calls,
+        }
+    for task in getattr(job_cost, "tasks", None) or []:
+        extra = _live_price_task(task)
+        if extra <= 0:
+            continue
+        key = str(getattr(task, "model_id", None) or "unknown")
+        row = rows.setdefault(
+            key,
+            {"est_cost_usd": 0.0, "tokens_used": 0, "tokens_in": 0, "tokens_out": 0, "calls": 0},
+        )
+        tin = int(getattr(task, "tokens_in", 0) or 0)
+        tout = int(getattr(task, "tokens_out", 0) or 0)
+        row["est_cost_usd"] = round(float(row["est_cost_usd"]) + extra, 6)
+        row["tokens_in"] += tin
+        row["tokens_out"] += tout
+        row["tokens_used"] += tin + tout
+        row["calls"] += 1
+    return rows
+
+
+
 def _swarm_registry() -> list:
     """Load the model registry for per-job actual-cost pricing. Best-effort."""
     try:
@@ -163,19 +207,23 @@ def _job_swarm_accounting_detail(raw_arts, registry: list) -> dict:
                 "est_cost_usd": 0.0,
                 "cost_provenance": "provider",
                 "estimated": False,
+                "by_model": {},
             }
         return {
             "tokens": 0,
             "est_cost_usd": round(real_total, 6),
             "cost_provenance": "provider",
             "estimated": False,
+            "by_model": {},
         }
 
     est_cost_usd = 0.0
     provenance = "default"
     estimated = True
+    by_model = {}
     try:
         job_cost = price_job(arts_for_usage, registry)
+        by_model = _by_model_rows_from_job_cost(job_cost)
         registry_cost = float(getattr(job_cost, "total_marginal_cost_usd", 0.0) or 0.0)
         live_topup = float(_live_price_unpriced_tasks(job_cost) or 0.0)
         usage_cost = registry_cost + live_topup
@@ -230,6 +278,16 @@ def _job_swarm_accounting_detail(raw_arts, registry: list) -> dict:
         forecast = float(_routing_estimate_cost(raw_arts) or 0.0)
     except Exception:
         forecast = 0.0
+    if not by_model and float(est_cost_usd or 0.0) > 0:
+        by_model = {
+            "unknown": {
+                "est_cost_usd": round(float(est_cost_usd or 0.0), 6),
+                "tokens_used": int(tokens or 0),
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "calls": 1,
+            }
+        }
     return {
         "tokens": tokens,
         "est_cost_usd": round(float(est_cost_usd or 0.0), 6),
@@ -237,6 +295,7 @@ def _job_swarm_accounting_detail(raw_arts, registry: list) -> dict:
         "estimated": bool(estimated),
         "route_forecast_usd": round(forecast, 6),
         "spend_is_forecast": False,
+        "by_model": by_model,
     }
 
 

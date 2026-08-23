@@ -89,6 +89,13 @@ export type CostBreakdownData = {
     tokens_out?: number;
     tokens_cached?: number;
   }>;
+  swarm_by_model?: Array<{
+    model: string;
+    est_cost_usd: number;
+    tokens_used?: number;
+    calls?: number;
+  }>;
+  swarm_cost_usd?: number;
 };
 
 /** Map GET /api/usage session meters into the Economics panel body. */
@@ -150,6 +157,8 @@ export function usageToCostBreakdownData(
     price_in: session.price_in,
     price_out: session.price_out,
     pilot_by_model: session.pilot_by_model,
+    swarm_by_model: session.swarm_by_model,
+    swarm_cost_usd: session.swarm_cost_usd,
   };
 }
 
@@ -739,7 +748,7 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
         Process spend since launch. Resets on full quit — not Swarm pane repo-session spend, not conversation lifetime.
       </p>
 
-      {/* (a) App-run spend. Provider-billed when OpenRouter (etc.) returned usage.cost. */}
+      {/* (a) Cash this run. Provider-billed when OpenRouter returned usage.cost. */}
       {est > 0 ? (
         <div className="flex items-center justify-between mb-1">
           <span className="text-muted">{spendLabel}</span>
@@ -752,11 +761,14 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
             .filter((row) => typeof row?.est_cost_usd === "number" && isFinite(row.est_cost_usd) && row.est_cost_usd > 0)
             .map((row) => (
               <div
-                key={row.model}
+                key={`pilot:${row.model}`}
                 className="flex items-center justify-between mb-1 pl-2 text-faint"
-                title={`Locked to ${row.model} — swapping the pilot does not reprice this row.`}
+                title={`Pilot ${row.model} — swapping the picker does not reprice this row.`}
               >
-                <span className="truncate pr-2">{shortPilotModel(row.model)}</span>
+                <span className="min-w-0 truncate pr-2">
+                  <span className="mr-1.5 text-[9px] uppercase tracking-wide text-faint/80">pilot</span>
+                  {shortPilotModel(row.model)}
+                </span>
                 <span className="tabular-nums shrink-0">
                   {spendPrefix}{fmtCost(row.est_cost_usd)}
                 </span>
@@ -764,7 +776,33 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
             ))
         : null}
 
-      {/* (b) Prompt-cache value -- uncapped pilot gross + swarm store. */}
+      {Array.isArray(data.swarm_by_model)
+        ? data.swarm_by_model
+            .filter((row) => typeof row?.est_cost_usd === "number" && isFinite(row.est_cost_usd) && row.est_cost_usd > 0)
+            .map((row) => (
+              <div
+                key={`swarm:${row.model}`}
+                className="flex items-center justify-between mb-1 pl-2 text-faint"
+                title={`Swarm ${row.model}${row.calls ? ` · ${row.calls} task${row.calls === 1 ? "" : "s"}` : ""}`}
+              >
+                <span className="min-w-0 truncate pr-2">
+                  <span className="mr-1.5 text-[9px] uppercase tracking-wide text-faint/80">swarm</span>
+                  {shortPilotModel(row.model)}
+                </span>
+                <span className="tabular-nums shrink-0">
+                  {spendPrefix}{fmtCost(row.est_cost_usd)}
+                </span>
+              </div>
+            ))
+        : null}
+
+      {/* (b) List-price value -- not cash, not a refund. */}
+      {(promptCacheSaved > 0 || modelSelectionSaved > 0 || showRoutingDecision || compactSavings > 0 || valueTotal > 0) ? (
+      <div className="mt-2 pt-2 border-t border-edge/50">
+      <div className="text-[10px] uppercase tracking-wide text-faint mb-1">List-price value</div>
+      <p className="text-[10px] text-muted mb-1.5 leading-snug">
+        Counterfactual vs catalog/frontier rates. Not an OpenRouter invoice and not a refund of the spend above.
+      </p>
       {promptCacheSaved > 0 ? (
         <div
           className="flex items-center justify-between mb-1"
@@ -811,6 +849,27 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
         </div>
       ) : null}
 
+      {compactSavings > 0 ? (
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-muted">Compact tool outputs saved</span>
+          <span className="text-accent font-medium tabular-nums">~{fmtCost(compactSavings)}</span>
+        </div>
+      ) : null}
+
+      {valueTotal > 0 || valueBasis === "unknown" ? (
+        <div
+          className="mt-1.5 pt-1.5 border-t border-edge/50 flex items-center justify-between font-medium"
+          title="Prompt-cache value + model-selection value + compact-output value. Additive list-price value, not a cash refund or billed-spend subtraction. Label follows the weakest included evidence basis."
+        >
+          <span className="text-txt">{valueHeading}</span>
+          <span className="text-good tabular-nums">
+            {valueTotal > 0 ? `~${fmtCost(valueTotal)}` : (valueBasis === "unknown" ? "unknown basis" : "—")}
+          </span>
+        </div>
+      ) : null}
+      </div>
+      ) : null}
+
       {routingUnknown && typeof data.routing_saved_usd === "number" && data.routing_saved_usd > 0 ? (
         <div
           className="flex items-center justify-between mb-1 text-faint"
@@ -836,25 +895,6 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
             {pilotCached > 0 && swarmCached > 0
               ? ` (pilot ${fmtTokens(pilotCached)} · swarm ${fmtTokens(swarmCached)})`
               : ""}
-          </span>
-        </div>
-      ) : null}
-
-      {compactSavings > 0 ? (
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-muted">Compact tool outputs saved</span>
-          <span className="text-accent font-medium tabular-nums">~{fmtCost(compactSavings)}</span>
-        </div>
-      ) : null}
-
-      {valueTotal > 0 || valueBasis === "unknown" ? (
-        <div
-          className="mt-1.5 pt-1.5 border-t border-edge/50 flex items-center justify-between font-medium"
-          title="Prompt-cache value + model-selection value + compact-output value. Additive list-price value, not a cash refund or billed-spend subtraction. Label follows the weakest included evidence basis."
-        >
-          <span className="text-txt">{valueHeading}</span>
-          <span className="text-good tabular-nums">
-            {valueTotal > 0 ? `~${fmtCost(valueTotal)}` : (valueBasis === "unknown" ? "unknown basis" : "—")}
           </span>
         </div>
       ) : null}
@@ -981,37 +1021,10 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
       {/* (c) Additive value framing — routing list-price + cache + compact
           are separate mechanisms (not overlapping cash refunds). */}
       <div className="mt-2 pt-2 border-t border-edge/60 text-[10px] leading-snug text-muted/90">
-        {promptCacheSaved > 0 || compactSavings > 0 || modelSelectionSaved > 0 ? (
-          <span>
-            Routed per-step to the cheapest capable model
-            {modelSelectionSaved > 0 ? (
-              <>
-                , with{" "}
-                <span className="text-accent">~{fmtCost(modelSelectionSaved)}</span> model
-                selection value vs frontier-equivalent list price
-                {routingEstimated && delegationSaved <= 0 ? " (estimate)" : ""}
-              </>
-            ) : null}
-            {promptCacheSaved > 0 ? (
-              <>
-                , plus <span className="text-accent">~{fmtCost(promptCacheSaved)}</span>{" "}
-                prompt-cache value
-              </>
-            ) : null}
-            {compactSavings > 0 ? (
-              <>
-                , and <span className="text-accent">~{fmtCost(compactSavings)}</span>{" "}
-                avoided by compact tool outputs
-              </>
-            ) : null}
-            .
-          </span>
-        ) : (
-          <span>
-            Each task step is routed to the cheapest capable model instead of a
-            single frontier-equivalent list-price baseline.
-          </span>
-        )}
+        <span>
+          Cash is this app run. List-price value is what those same tokens would
+          have cost on a frontier-equivalent catalog rate, not money back.
+        </span>
       </div>
     </div>
   );

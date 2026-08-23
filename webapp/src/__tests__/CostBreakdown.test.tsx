@@ -101,6 +101,30 @@ describe("CostBreakdown", () => {
     expect(screen.getByText("~$0.52")).toBeInTheDocument();
   });
 
+  it("lists swarm models next to the locked pilot and separates list-price value", () => {
+    render(
+      <CostBreakdown
+        data={{
+          ...baseData,
+          est_cost_usd: 0.16,
+          cost_source: "mixed",
+          estimated: true,
+          pilot_by_model: [
+            { model: "openrouter:deepseek/deepseek-v4-flash-vision-exp", est_cost_usd: 0.01 },
+          ],
+          swarm_by_model: [
+            { model: "openrouter:z-ai/glm-5.3", est_cost_usd: 0.15, calls: 30 },
+          ],
+        }}
+      />,
+    );
+    expect(screen.getByText("Spend (mixed)")).toBeInTheDocument();
+    expect(screen.getByText("deepseek-v4-flash-vision-exp")).toBeInTheDocument();
+    expect(screen.getByText("glm-5.3")).toBeInTheDocument();
+    expect(screen.getByText("swarm")).toBeInTheDocument();
+    expect(screen.getByText(/Not an OpenRouter invoice/i)).toBeInTheDocument();
+  });
+
   it("renders the session cost fields it is given", () => {
     render(<CostBreakdown data={baseData} />);
 
@@ -419,7 +443,7 @@ describe("CostBreakdown", () => {
     // 0.02 pilot gross + 0.05 swarm = ~$0.07
     expect(within(cacheRow!).getByText("~$0.07")).toBeInTheDocument();
     expect(screen.getByText("Tokens from cache")).toBeInTheDocument();
-    expect(screen.getByText(/model selection value vs frontier-equivalent list price/)).toBeInTheDocument();
+    expect(screen.getByText(/Not an OpenRouter invoice/i)).toBeInTheDocument();
   });
 
   it("omits zero or absent savings rows", () => {
@@ -441,7 +465,7 @@ describe("CostBreakdown", () => {
     expect(screen.queryByText("Swarm cache saved")).not.toBeInTheDocument();
     expect(screen.queryByText("Compact tool outputs saved")).not.toBeInTheDocument();
     expect(
-      screen.getByText(/Each task step is routed to the cheapest capable model/),
+      screen.getByText(/Cash is this app run/i),
     ).toBeInTheDocument();
   });
 
