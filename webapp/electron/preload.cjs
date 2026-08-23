@@ -28,6 +28,10 @@ contextBridge.exposeInMainWorld("harnessIPC", {
   // Fire-and-forget: persist a caught renderer error to the Electron main log so
   // a UI crash is diagnosable from ~/.pmharness/electron.log without devtools.
   logError: (payload) => { try { ipcRenderer.send("harness:rendererError", payload); } catch (_) {} },
+  secrets: {
+    save: (payload) => ipcRenderer.invoke("secrets:save", payload),
+    presence: (payload) => ipcRenderer.invoke("secrets:presence", payload),
+  },
 
   // stream(path, onEvent, onDone, onError) -> cancel()
   stream: (path, onEvent, onDone, onError) => {
