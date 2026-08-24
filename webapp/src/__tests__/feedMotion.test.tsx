@@ -164,18 +164,19 @@ function parseTranslateY(transform: string): number | null {
   return match ? Number(match[1]) : null;
 }
 
-describe("feed Motion (v0.9.330)", () => {
-  it("declares the official motion package in webapp dependencies", () => {
+describe("feed Motion (v0.9.331)", () => {
+  it("declares the official motion package and 0.9.331 not 329", () => {
     const pkg = JSON.parse(pkgJson) as {
       dependencies?: Record<string, string>;
       version?: string;
     };
     expect(pkg.dependencies?.motion).toBeTruthy();
     expect(pkg.dependencies?.["framer-motion"]).toBeUndefined();
-    expect(pkg.version).toBe("0.9.330");
+    expect(pkg.version).toBe("0.9.331");
+    expect(pkg.version).not.toBe("0.9.329");
   });
 
-  it("mounts transcript rows inside motion layout shells", () => {
+  it("mounts transcript rows in plain in-flow divs", () => {
     render(
       <TranscriptList
         {...listProps([
@@ -195,27 +196,35 @@ describe("feed Motion (v0.9.330)", () => {
     expect(feedLayoutMotionEnabled(null)).toBe(true);
   });
 
-  it("keeps layoutScroll on the feed scrollport and popLayout on in-flow presence", () => {
+  it("drops Motion layout on live tail and fallback; keeps Pretext overflow-anchor", () => {
     expect(column).toContain("layoutScroll");
     expect(column).toContain("[overflow-anchor:auto]");
     expect(column).toContain("[scroll-padding-bottom:var(--feed-chrome-clearance");
     expect(column).not.toContain("overflow-anchor:none");
-    expect(helpers).toContain('mode="popLayout"');
     expect(helpers).toContain("VIRTUAL_ROW_LAYOUT_ENABLED = false");
     expect(VIRTUAL_ROW_LAYOUT_ENABLED).toBe(false);
-    expect(list).toContain("FeedMotionPresence");
-    expect(list).toContain("VIRTUAL_ROW_LAYOUT_ENABLED");
+    expect(helpers).not.toContain('mode="popLayout"');
+    expect(helpers).not.toContain("AnimatePresence");
+    expect(list).not.toContain("FeedMotionPresence");
+    expect(list).not.toContain("FeedMotionRow");
+    expect(list).not.toContain("useFeedLayoutMotion");
+    expect(list).not.toMatch(/from ["']motion\/react["']/);
+    expect(list).not.toContain("layout={true}");
+    expect(list).not.toContain("layoutEnabled={true}");
+    expect(list).not.toContain("layout={feedLayout}");
+    expect(list).not.toContain("layoutEnabled={feedLayout}");
+    const tailSrc = list.split("transcript-live-tail")[1] ?? "";
+    expect(tailSrc).not.toMatch(/layout(?:Enabled)?=\{(?:true|feedLayout)\}/);
     expect(list).toContain("useVirtualizer");
+    expect(list).toContain("FEED_ROW_REMEASURE_EVENT");
+    expect(list).toContain("requestFeedRowRemeasure");
     expect(list).toContain("transcript-live-tail");
-    expect(list).not.toMatch(
-      /useVirtualWindow[\s\S]*<FeedMotionPresence>[\s\S]*virtualItems\.map/,
-    );
     expect(list).not.toMatch(/from ["']node:/);
     expect(list).not.toMatch(/@stylexjs|create\(|stylex\./);
     expect(helpers).not.toMatch(/from ["']node:/);
   });
 
-  it("keeps distinct virtualizer translateY while feed layout is on", async () => {
+  it("keeps distinct virtualizer translateY", async () => {
     expect(feedLayoutMotionEnabled(false)).toBe(true);
     vi.stubGlobal("ResizeObserver", SizedResizeObserver);
     render(<VirtualFeedHarness items={longTranscript(40)} />);
