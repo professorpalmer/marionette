@@ -8,16 +8,17 @@ import {
   openOnboardingKeyUrl,
 } from "../lib/onboardingProviders";
 import { usePanelNotice } from "../lib/useOperationalDiagnostic";
+import { setConfigured, skipFirstRun } from "../state/onboardingStore";
 
 interface RegistryWizardProps {
   onClose: () => void;
 }
 
-function markWizardSeen(): void {
-  try {
-    localStorage.setItem("pmharness.wizardSeen", "1");
-  } catch {
-    // Private mode / quota — closing still works.
+function dismissWizard(configured = false): void {
+  if (configured) {
+    setConfigured(true);
+  } else {
+    skipFirstRun();
   }
 }
 
@@ -38,7 +39,7 @@ export default function RegistryWizard({ onClose }: RegistryWizardProps) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        markWizardSeen();
+        dismissWizard();
         onClose();
       }
     };
@@ -70,7 +71,7 @@ export default function RegistryWizard({ onClose }: RegistryWizardProps) {
   }, []);
 
   const skip = () => {
-    markWizardSeen();
+    dismissWizard();
     onClose();
   };
 
@@ -85,7 +86,7 @@ export default function RegistryWizard({ onClose }: RegistryWizardProps) {
         throw new Error("Could not save that key.");
       }
       window.dispatchEvent(new Event("harness-config-changed"));
-      markWizardSeen();
+      dismissWizard(true);
       onClose();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Could not save that key.";
