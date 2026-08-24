@@ -93,3 +93,51 @@ def get_checkpoints_diff(checkpoint_id: str, svc: CheckpointServices) -> tuple[i
     if result.get("ok"):
         return 200, result
     return 400, {"error": result.get("error", "Diff generation failed")}
+
+
+def get_checkpoints_hunks(svc: CheckpointServices) -> tuple[int, JsonPayload]:
+    """GET /api/checkpoints/hunks — live hunks with Agent vs External attribution."""
+    repo, err = _repo_or_error(svc)
+    if err is not None:
+        return err
+    from ..checkpoints import CheckpointStore
+    active_sid = svc.get_active_session_id() or ""
+    store = CheckpointStore(repo, session_id=active_sid or None)
+    result = store.hunk_tracker(session_id=active_sid or None).recompute()
+    if result.get("ok"):
+        return 200, result
+    return 400, {"error": result.get("error", "Hunk recompute failed")}
+
+
+def post_checkpoints_hunks_accept(body: dict, svc: CheckpointServices) -> tuple[int, JsonPayload]:
+    """POST /api/checkpoints/hunks/accept."""
+    repo, err = _repo_or_error(svc)
+    if err is not None:
+        return err
+    hunk_id = (body.get("hunk_id") or body.get("id") or "").strip()
+    if not hunk_id:
+        return 400, {"error": "Missing hunk id"}
+    from ..checkpoints import CheckpointStore
+    active_sid = svc.get_active_session_id() or ""
+    store = CheckpointStore(repo, session_id=active_sid or None)
+    result = store.hunk_tracker(session_id=active_sid or None).accept_hunk(hunk_id)
+    if result.get("ok"):
+        return 200, result
+    return 400, {"error": result.get("error", "Accept failed")}
+
+
+def post_checkpoints_hunks_revert(body: dict, svc: CheckpointServices) -> tuple[int, JsonPayload]:
+    """POST /api/checkpoints/hunks/revert."""
+    repo, err = _repo_or_error(svc)
+    if err is not None:
+        return err
+    hunk_id = (body.get("hunk_id") or body.get("id") or "").strip()
+    if not hunk_id:
+        return 400, {"error": "Missing hunk id"}
+    from ..checkpoints import CheckpointStore
+    active_sid = svc.get_active_session_id() or ""
+    store = CheckpointStore(repo, session_id=active_sid or None)
+    result = store.hunk_tracker(session_id=active_sid or None).revert_hunk(hunk_id)
+    if result.get("ok"):
+        return 200, result
+    return 400, {"error": result.get("error", "Revert failed")}

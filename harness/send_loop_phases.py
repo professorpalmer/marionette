@@ -2998,6 +2998,15 @@ def dispatch_local_action(
             })
             session._append_action_result(act, aid, f"(write_file {act.path} successfully wrote {bytes_written} bytes)", is_native)
             maybe_refresh_workspace_rules(session, act.path)
+            try:
+                from harness.checkpoint_hunks import record_agent_write
+                record_agent_write(
+                    session.config.repo,
+                    act.path,
+                    session_id=session.harness_session_id or None,
+                )
+            except Exception:
+                pass
             turn_changed_files.append(target_path)
             yield from _yield_task_profile_escalation(session, turn_changed_files)
         except Exception as e:
@@ -3057,6 +3066,15 @@ def dispatch_local_action(
             })
             session._append_action_result(act, aid, f"(edit_file {act.path} successfully edited: {headline})", is_native)
             maybe_refresh_workspace_rules(session, act.path)
+            try:
+                from harness.checkpoint_hunks import record_agent_write
+                record_agent_write(
+                    session.config.repo,
+                    act.path,
+                    session_id=session.harness_session_id or None,
+                )
+            except Exception:
+                pass
             turn_changed_files.append(target_path)
             yield from _yield_task_profile_escalation(session, turn_changed_files)
         except Exception as e:
@@ -3123,6 +3141,15 @@ def dispatch_local_action(
             yield ConvEvent("action_result", hash_edit_result)
             session._append_action_result(act, aid, f"(hash_edit {act.path} successfully applied: {headline})", is_native)
             maybe_refresh_workspace_rules(session, act.path)
+            try:
+                from harness.checkpoint_hunks import record_agent_write
+                record_agent_write(
+                    session.config.repo,
+                    act.path,
+                    session_id=session.harness_session_id or None,
+                )
+            except Exception:
+                pass
             turn_changed_files.append(target_path)
             yield from _yield_task_profile_escalation(session, turn_changed_files)
         except Exception as e:

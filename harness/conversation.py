@@ -3467,6 +3467,18 @@ class ConversationalSession(
 
         files = payload.get("files") or []
 
+        def _record_patch_agent_writes() -> None:
+            try:
+                from harness.checkpoint_hunks import record_agent_write
+                for rel_path in files:
+                    record_agent_write(
+                        repo_root,
+                        rel_path,
+                        session_id=self.harness_session_id or None,
+                    )
+            except Exception:
+                pass
+
         # Write diff to a temporary file. Binary mode: Windows text mode would
         # rewrite \n as \r\n, corrupting the unified diff before git apply sees it.
         fd, temp_path = tempfile.mkstemp(suffix=".patch")
@@ -3547,6 +3559,7 @@ class ConversationalSession(
                 )
                 if apply_p.returncode == 0:
                     self._last_checkpoint_id = checkpoint_id
+                    _record_patch_agent_writes()
                     return True, files, "applied cleanly"
                 else:
                     err_msg = apply_p.stderr.strip() or "git apply failed"
@@ -3578,6 +3591,7 @@ class ConversationalSession(
                 )
                 if three_way_p.returncode == 0:
                     self._last_checkpoint_id = checkpoint_id
+                    _record_patch_agent_writes()
                     return True, files, "applied with 3way merge"
 
                 # --3way failed: a genuine content conflict. Restore every target
