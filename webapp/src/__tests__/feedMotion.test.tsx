@@ -164,7 +164,7 @@ function parseTranslateY(transform: string): number | null {
   return match ? Number(match[1]) : null;
 }
 
-describe("feed Motion (v0.9.330)", () => {
+describe("feed Motion (v0.9.332)", () => {
   it("declares the official motion package in webapp dependencies", () => {
     const pkg = JSON.parse(pkgJson) as {
       dependencies?: Record<string, string>;
@@ -172,7 +172,7 @@ describe("feed Motion (v0.9.330)", () => {
     };
     expect(pkg.dependencies?.motion).toBeTruthy();
     expect(pkg.dependencies?.["framer-motion"]).toBeUndefined();
-    expect(pkg.version).toBe("0.9.330");
+    expect(pkg.version).toBe("0.9.332");
   });
 
   it("mounts transcript rows inside motion layout shells", () => {
