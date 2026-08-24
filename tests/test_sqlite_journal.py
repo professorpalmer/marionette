@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import sys
 from pathlib import Path
 
 import pytest
 
 from harness.sqlite_journal import (
+    _DARWIN_NETWORK_FSTYPES,
+    _LINUX_NETWORK_FSTYPES,
     configure_sqlite_connection,
     host_scoped_state_path,
     is_network_filesystem,
@@ -116,3 +120,89 @@ def test_host_scoped_paths_under_state_and_root(path_suffix, tmp_path, monkeypat
     scoped = host_scoped_state_path(base, statfs=_network_on)
     assert "hosts" in scoped.parts
     assert scoped.name == Path(path_suffix).name
+
+
+def test_darwin_network_fstypes_exclude_local_apfs():
+    """f_type 26 is APFS (local). 316 treated it as NETFS and forced TRUNCATE."""
+    assert 26 not in _DARWIN_NETWORK_FSTYPES
+    assert _DARWIN_NETWORK_FSTYPES == frozenset({6, 13, 28})
+
+
+def _fstype_from_proc_mounts(path: str):
+    target = os.path.realpath(path)
+    best_len = -1
+    best = None
+    with open("/proc/mounts", encoding="utf-8") as mounts:
+        for raw_line in mounts:
+            parts = raw_line.split()
+            if len(parts) < 3:
+                continue
+            mount_point = parts[1].replace("\\040", " ")
+            mount_point = mount_point.rstrip("/") or "/"
+            if target == mount_point or (
+                mount_point != "/" and target.startswith(mount_point + os.sep)
+            ):
+                if len(mount_point) > best_len:
+                    best_len = len(mount_point)
+                    best = parts[2]
+    return best
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="real Darwin APFS/HFS detector")
+def test_darwin_local_disk_is_not_network_uses_wal(tmp_path):
+    """Real detector (no injected statfs): local APFS/HFS is not network."""
+    assert is_network_filesystem(tmp_path) is False
+    db = tmp_path / "local.sqlite"
+    conn = sqlite3.connect(str(db))
+    try:
+        mode = configure_sqlite_connection(conn, db)
+        assert mode == "wal"
+        row = conn.execute("PRAGMA journal_mode").fetchone()
+        assert row is not None
+        assert row[0].lower() == "wal"
+    finally:
+        conn.close()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="real Linux /proc/mounts detector")
+def test_linux_real_proc_mounts_cwd_and_tmp(tmp_path):
+    """Real detector agrees with /proc/mounts for cwd and a temp dir."""
+    for probe in (os.getcwd(), str(tmp_path)):
+        fstype = _fstype_from_proc_mounts(probe)
+        expected_network = False
+        if fstype is not None:
+            base = fstype.split(".", 1)[0].lower()
+            expected_network = (
+                base in _LINUX_NETWORK_FSTYPES
+                or fstype.lower() in _LINUX_NETWORK_FSTYPES
+            )
+        assert is_network_filesystem(probe) is expected_network
+        mode = journal_mode_for(Path(probe) / "probe.sqlite")
+        assert mode == ("truncate" if expected_network else "wal")
+    if not is_network_filesystem(tmp_path):
+        db = tmp_path / "local.sqlite"
+        conn = sqlite3.connect(str(db))
+        try:
+            mode = configure_sqlite_connection(conn, db)
+            assert mode == "wal"
+            row = conn.execute("PRAGMA journal_mode").fetchone()
+            assert row is not None
+            assert row[0].lower() == "wal"
+        finally:
+            conn.close()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="real Win32 drive-type detector")
+def test_win32_local_temp_is_not_network(tmp_path):
+    """Real detector: a local temp dir is not DRIVE_REMOTE / UNC."""
+    assert is_network_filesystem(tmp_path) is False
+    db = tmp_path / "local.sqlite"
+    conn = sqlite3.connect(str(db))
+    try:
+        mode = configure_sqlite_connection(conn, db)
+        assert mode == "wal"
+        row = conn.execute("PRAGMA journal_mode").fetchone()
+        assert row is not None
+        assert row[0].lower() == "wal"
+    finally:
+        conn.close()

@@ -33,7 +33,8 @@ _LINUX_NETWORK_FSTYPES = frozenset(
     }
 )
 
-_DARWIN_NETWORK_FSTYPES = frozenset({6, 13, 26, 28})  # NFS, AFP, NETFS, SMBFS
+# 26 is APFS (local). Including it forced TRUNCATE on every Mac local DB (v0.9.316).
+_DARWIN_NETWORK_FSTYPES = frozenset({6, 13, 28})  # NFS, AFP, SMBFS
 
 
 def _linux_mount_is_network(path: str) -> bool:

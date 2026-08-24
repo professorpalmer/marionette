@@ -80,7 +80,7 @@ wheels = [
 
 [[package]]
 name = "pm-harness"
-version = "0.9.332"
+version = "0.9.333"
 source = { editable = "." }
 dependencies = [
     { name = "pypdf" },
