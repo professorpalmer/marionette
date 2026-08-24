@@ -19,6 +19,7 @@ Path traversal is refused. Sink failures never raise to the chat hot path.
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import math
 import os
@@ -198,6 +199,31 @@ def _lock_for(path: str) -> threading.Lock:
         return lock
 
 
+_LOCK_ACQUIRE_ATTEMPTS = 4
+_LOCK_ACQUIRE_RETRY_SEC = 0.05
+_REPLACE_ATTEMPTS = 8
+_REPLACE_RETRY_SEC = 0.05
+_WIN_SHARING_WINERRORS = frozenset({5, 32})  # ACCESS_DENIED, SHARING_VIOLATION
+
+
+def _is_windows_sharing_error(exc: BaseException) -> bool:
+    """True for replace/lock failures Windows raises while a file is still busy."""
+    if not isinstance(exc, OSError):
+        return False
+    winerror = getattr(exc, "winerror", None)
+    if winerror in _WIN_SHARING_WINERRORS:
+        return True
+    if isinstance(exc, PermissionError):
+        return True
+    return exc.errno in (
+        errno.EACCES,
+        errno.EPERM,
+        errno.EAGAIN,
+        getattr(errno, "EBUSY", errno.EACCES),
+        getattr(errno, "EWOULDBLOCK", errno.EAGAIN),
+    )
+
+
 def _acquire_os_lock(fd: int) -> str:
     try:
         import fcntl
@@ -207,16 +233,25 @@ def _acquire_os_lock(fd: int) -> str:
         pass
     try:
         import msvcrt
-        os.lseek(fd, 0, os.SEEK_SET)
-        try:
-            os.write(fd, b"\0")
-        except OSError:
-            pass
-        os.lseek(fd, 0, os.SEEK_SET)
-        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
-        return "msvcrt"
-    except (ImportError, OSError, AttributeError):
+    except ImportError:
         return ""
+    delay = _LOCK_ACQUIRE_RETRY_SEC
+    for attempt in range(_LOCK_ACQUIRE_ATTEMPTS):
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+            try:
+                os.write(fd, b"\0")
+            except OSError:
+                pass
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+            return "msvcrt"
+        except (OSError, AttributeError):
+            if attempt + 1 >= _LOCK_ACQUIRE_ATTEMPTS:
+                return ""
+            time.sleep(delay)
+            delay = min(delay * 2, 0.4)
+    return ""
 
 
 def _release_os_lock(fd: int, kind: str) -> None:
@@ -691,7 +726,7 @@ def _atomic_write_json(path: str, data: Dict[str, Any]) -> None:
             json.dump(data, handle, ensure_ascii=False, indent=2, allow_nan=False)
         if _is_symlink(path) or _is_symlink(parent):
             raise OSError("refusing to replace a symlinked receipt path")
-        os.replace(tmp, path)
+        _replace_atomic(tmp, path)
     except Exception:
         try:
             if os.path.lexists(tmp):
@@ -699,6 +734,31 @@ def _atomic_write_json(path: str, data: Dict[str, Any]) -> None:
         except OSError:
             pass
         raise
+
+
+
+def _replace_atomic(src: str, dest: str) -> None:
+    """``os.replace`` with retries for Windows sharing / access-denied flakes.
+
+    Destination handles can stay busy briefly after a sibling process closes
+    the receipt file (or a scanner opens it). ``record`` swallows write
+    failures, so a one-shot PermissionError / WinError 5 or 32 drops the
+    receipt. Retry under the existing RMW lock instead of losing the row.
+    """
+    delay = _REPLACE_RETRY_SEC
+    last: Optional[OSError] = None
+    for attempt in range(_REPLACE_ATTEMPTS):
+        try:
+            os.replace(src, dest)
+            return
+        except OSError as exc:
+            last = exc
+            if attempt + 1 >= _REPLACE_ATTEMPTS or not _is_windows_sharing_error(exc):
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 0.4)
+    if last is not None:
+        raise last
 
 
 def _load_document(path: str) -> List[Dict[str, Any]]:
