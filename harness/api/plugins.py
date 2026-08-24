@@ -10,7 +10,7 @@ from ..plugin_registry import (
     disable_plugin,
     enable_plugin,
     discover_plugins,
-    install_from_path,
+    install_from_source,
     namespaced_mcp_ids_for_plugin,
     plugin_record_to_dict,
 )
@@ -37,12 +37,20 @@ def get_plugins(svc: PluginServices) -> Tuple[int, JsonPayload]:
     return 200, {"plugins": [plugin_record_to_dict(r) for r in records]}
 
 
+def _install_source_from_body(body: dict) -> object:
+    """Accept path, source string, or a resolved source object."""
+    source = body.get("source")
+    if isinstance(source, dict) or (isinstance(source, str) and source.strip()):
+        return source
+    return (body.get("path") or "").strip()
+
+
 def post_plugins_install(body: dict, svc: PluginServices) -> Tuple[int, JsonPayload]:
-    """POST /api/plugins/install — copy absolute path; remains disabled."""
+    """POST /api/plugins/install — path or resolved git/https/github source."""
     del svc
-    path = (body.get("path") or "").strip()
+    source = _install_source_from_body(body)
     try:
-        record = install_from_path(path)
+        record = install_from_source(source)
     except AgentPluginError as exc:
         return 400, {"ok": False, "error": str(exc)}
     except Exception as exc:
