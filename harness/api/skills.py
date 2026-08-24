@@ -22,6 +22,7 @@ class SkillsServices:
     memory: Any
     get_pilot: Callable[[], Any]
     memory_char_limit: int
+    memory_graph: Any = None
 
 
 JsonPayload = Union[dict, list]
