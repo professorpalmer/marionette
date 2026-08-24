@@ -26,9 +26,14 @@ def test_get_diagnostics_returns_quotable_payload(monkeypatch):
 
 
 def test_get_diagnostics_surfaces_hard_failures(monkeypatch):
+    """Catalog-unknown slugs are not hard fails; a broken store still is."""
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("store down")
+
+    monkeypatch.setattr("puppetmaster.store_factory.create_store", explode)
     svc = DoctorServices(
-        get_driver=lambda: "definitely-not-a-real-driver-spec",
-        get_reach=lambda: "cloud",
+        get_driver=lambda: "stub-oracle",
+        get_reach=lambda: "local",
         get_repo=lambda: "",
     )
     with __import__("harness.correlation", fromlist=["correlation_scope"]).correlation_scope("diag-fail"):
