@@ -60,7 +60,8 @@ def test_route_tables_cover_known_paths():
     post = srv._post_json_routes()
     get = srv._get_routes()
     assert "/api/settings" in post
-    assert "/api/sessions/relocate" in post and "/api/sessions/move" in post
+    assert "/api/sessions/relocate" in post
+    assert "/api/sessions/move" not in post
     assert "/api/memory" in get
     assert "/api/wiki/connect" not in get  # pre-auth special case in do_GET
     assert len(post) >= 90

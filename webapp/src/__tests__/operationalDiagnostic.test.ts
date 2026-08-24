@@ -49,9 +49,32 @@ describe("sanitizeDiagnosticText", () => {
     expect(sanitizeDiagnosticText("Authorization: Bearer sk-abc123456789")).not.toMatch(/sk-abc/);
   });
 
-  it("keeps a single line and bounds length", () => {
-    expect(sanitizeDiagnosticText("first\nsecond stack")).toBe("first");
+  it("keeps a multi-line auth error inside the budget", () => {
+    const out = sanitizeDiagnosticText("Error:\nanthropic.AuthenticationError: invalid x-api-key");
+    expect(out).toContain("anthropic.AuthenticationError");
+    expect(out.length).toBeLessThanOrEqual(160);
+  });
+
+  it("bounds length", () => {
     expect(sanitizeDiagnosticText("x".repeat(200)).length).toBeLessThanOrEqual(160);
+  });
+
+  it("redacts AIza, GitHub token, and JWT shapes", () => {
+    const google = "AIzaSyD-abcdefghijklmnopqrstuvwxyz012345";
+    const ghp = "ghp_" + "A".repeat(36);
+    const pat = "github_pat_" + "B".repeat(36);
+    const jwt =
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjw46_OwfmRMV94B7vjYTbxqgVwOKCsAXEzXkOfBk";
+    expect(sanitizeDiagnosticText(`key ${google}`)).toContain("[redacted]");
+    expect(sanitizeDiagnosticText(`key ${google}`)).not.toContain(google);
+    expect(sanitizeDiagnosticText(`key ${google}`)).not.toMatch(/AIza/);
+    expect(sanitizeDiagnosticText(`tok ${ghp}`)).toContain("[redacted]");
+    expect(sanitizeDiagnosticText(`tok ${ghp}`)).not.toContain(ghp);
+    expect(sanitizeDiagnosticText(`tok ${pat}`)).toContain("[redacted]");
+    expect(sanitizeDiagnosticText(`tok ${pat}`)).not.toContain(pat);
+    expect(sanitizeDiagnosticText(`jwt ${jwt}`)).toContain("[redacted]");
+    expect(sanitizeDiagnosticText(`jwt ${jwt}`)).not.toContain(jwt);
+    expect(sanitizeDiagnosticText(`jwt ${jwt}`)).not.toMatch(/eyJ/);
   });
 });
 
@@ -254,7 +277,8 @@ describe("createOperationalDiagnostic", () => {
       retryable: true,
     });
     expect(diag.summary).not.toMatch(/sk-abcd/);
-    expect(diag.detail).toBe("line1");
+    expect(diag.detail).toContain("line1");
+    expect(diag.detail).not.toContain("supersecret");
     expect(diag.recovery).toEqual({ kind: "none" });
   });
 
