@@ -55,18 +55,22 @@ def _decide(
     if decide is None:
         return 409, {"error": "session runner cannot accept command approvals"}
 
+    from ..approval_identity import approval_turn
+
+    turn_raw = body.get("turn_id")
     try:
-        pending = decide(
-            command_hash=command_hash,
-            workspace_root=workspace_root,
-            approve=approve,
-        )
+        with approval_turn(turn_raw):
+            pending = decide(
+                command_hash=command_hash,
+                workspace_root=workspace_root,
+                approve=approve,
+            )
     except PermissionError as exc:
         return 403, {"error": str(exc)}
     if pending is None:
         return 404, {"error": "pending command approval not found"}
 
-    return 200, {
+    payload: dict[str, Any] = {
         "ok": True,
         "decision": "approved" if approve else "rejected",
         "session_id": session_id,
@@ -77,6 +81,9 @@ def _decide(
         # different hash and remains blocked.
         "retry_command": pending["command"] if approve else "",
     }
+    if pending.get("turn_id"):
+        payload["turn_id"] = pending["turn_id"]
+    return 200, payload
 
 
 def post_command_approval(
@@ -111,11 +118,14 @@ def post_command_approval_amendment(
     if decide is None:
         return 409, {"error": "session runner cannot accept command amendments"}
 
+    from ..approval_identity import approval_turn
+
     try:
-        pending = decide(
-            command_hash=command_hash,
-            workspace_root=workspace_root,
-        )
+        with approval_turn(body.get("turn_id")):
+            pending = decide(
+                command_hash=command_hash,
+                workspace_root=workspace_root,
+            )
     except PermissionError as exc:
         return 403, {"error": str(exc)}
     except ValueError as exc:

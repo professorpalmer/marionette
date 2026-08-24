@@ -3227,6 +3227,12 @@ def dispatch_local_action(
                         if pending.get("suggested_amendment")
                         else {}
                     ),
+                    **(
+                        {"smart_approve": pending["smart_approve"]}
+                        if isinstance(pending.get("smart_approve"), dict)
+                        and pending["smart_approve"].get("action")
+                        else {}
+                    ),
                 })
                 # Pair action_start so turn-end settle cannot invent opaque
                 # "missing action_result" while the approval card is open.

@@ -444,6 +444,9 @@ class SendLoopMixin:
                 yield ConvEvent("error", {"error": "session busy: another request is in flight"})
                 return
         busy_gen = self._mark_busy_acquired()
+        # Bind turn identity for allowlist attribution during this send.
+        from .turn_identity import new_turn_id, reset_turn_id, set_turn_id
+        _turn_token = set_turn_id(new_turn_id())
         # Stream any Stop-boundary honesty notices recorded by interrupt or
         # post-Stop late-steer cleanup.
         yield from self._yield_stop_boundary_notices()
@@ -811,6 +814,7 @@ class SendLoopMixin:
                 self._history[0]["content"] = self._frozen_system_prompt
             else:
                 self._history[0]["content"] = original_sys
+            reset_turn_id(_turn_token)
             self._release_busy(busy_gen)
 
     def _send_locked(self, user_message: str, images: Optional[list] = None, plan: bool = False, resume: bool = False) -> Iterator[ConvEvent]:

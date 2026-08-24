@@ -462,6 +462,27 @@ def suggested_amendment(command: str) -> str | None:
     return amended
 
 
+def smart_approve(
+    command: str,
+    *,
+    allowlist_hit: bool = False,
+    verdict: CommandVerdict | None = None,
+) -> dict[str, str]:
+    """Deterministic smart-approve verdict for a full-auto danger gate.
+
+    Delegates to :func:`harness.smart_approve.smart_approve` so there is one
+    precedence: allowlist hit → approve, suggested amendment → amend, else
+    pending. Never auto-executes on its own.
+    """
+    from .smart_approve import smart_approve as _smart_approve
+
+    return _smart_approve(
+        command,
+        allowlist_hit=allowlist_hit,
+        verdict=verdict,
+    )
+
+
 def run_cancellable(
     command: str,
     *,

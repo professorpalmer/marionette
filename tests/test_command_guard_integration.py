@@ -140,13 +140,15 @@ def test_approved_hash_is_one_shot_and_does_not_approve_other_command(
     assert approved[0] is True
     assert command_hash not in session._approved_commands
 
+    # Persistent allowlist (v0.9.306) remembers the exact command across retries;
+    # one-shot hash is still consumed. A different danger command stays gated.
     repeated = session._do_run_command(
         PilotAction(kind="run_command", command=command)
     )
     changed = session._do_run_command(
         PilotAction(kind="run_command", command=command + " --force")
     )
-    assert repeated[1] == "blocked"
+    assert repeated[0] is True
     assert changed[1] == "blocked"
 
 
