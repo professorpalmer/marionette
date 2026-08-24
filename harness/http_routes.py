@@ -126,7 +126,7 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
         "/api/session/persist": post_json(
             _sc_api.post_session_persist, services=svc.session_control_services,
             needs_body=False),
-        "/api/restart": _post_restart,
+        "/api/restart": _bind_post_restart(svc),
         "/api/session/compact": post_json(
             _sc_api.post_session_compact_routed, services=svc.session_control_services),
         "/api/session/snapcompact": post_json(
@@ -241,7 +241,7 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
             _skills_api.post_memory_propose_dismiss, services=svc.skills_services),
         "/api/sessions/create": post_json(
             _sessions_api.post_sessions_create, services=svc.session_services),
-        "/api/sessions/relocate": _post_session_relocate,
+        "/api/sessions/relocate": _bind_post_session_relocate(svc),
         "/api/sessions/switch": post_json(
             _sessions_api.post_sessions_switch, services=svc.session_services),
         "/api/sessions/delete": post_json(
@@ -257,7 +257,7 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
             _sessions_api.post_sessions_rename, services=svc.session_services),
         "/api/chat/stash": post_json(
             _sc_api.post_chat_stash, services=svc.session_control_services),
-        "/api/session/interrupt": _post_session_interrupt,
+        "/api/session/interrupt": _bind_post_session_interrupt(svc),
         "/api/session/rewind": post_json(
             _sc_api.post_session_rewind, services=svc.session_control_services),
         "/api/session/rewind/restore": post_json(
@@ -315,7 +315,7 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
             _auth_api.post_auth_cursor_cli_logout, needs_body=False),
         "/api/auth/cursor-cli/models": post_json(
             _auth_api.post_auth_cursor_cli_models, needs_body=False),
-        "/api/wiki/handoff": _post_wiki_handoff,
+        "/api/wiki/handoff": _bind_post_wiki_handoff(svc),
         "/api/git/connect": post_json(_git_api.post_git_connect),
         "/api/git/device/poll": post_json(_git_api.post_git_device_poll),
         "/api/git/disconnect": post_json(
@@ -357,57 +357,64 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
         "/api/metaharness/score": post_json(_mh_api.post_metaharness_score),
         "/api/metaharness/heartbeat": post_json(_mh_api.post_metaharness_heartbeat),
     }
-    # Attach relocate helper + host_ok/diag via closure attrs on module-level fns.
-    _post_session_relocate._svc = svc  # type: ignore[attr-defined]
-    _post_session_interrupt._svc = svc  # type: ignore[attr-defined]
-    _post_wiki_handoff._svc = svc  # type: ignore[attr-defined]
-    _post_restart._svc = svc  # type: ignore[attr-defined]
-    _post_restart._mcp = svc.mcp_services  # type: ignore[attr-defined]
     return routes
 
 
-def _post_session_relocate(handler: Any, body: dict) -> Any:
-    status, payload = _post_session_relocate._svc.handle_session_relocate(body)  # type: ignore[attr-defined]
-    return send_json(handler, status, payload)
+def _bind_post_session_relocate(svc: Any) -> PostHandler:
+    def handle(handler: Any, body: dict) -> Any:
+        status, payload = svc.handle_session_relocate(body)
+        return send_json(handler, status, payload)
+    return handle
 
 
-def _post_session_interrupt(handler: Any, body: dict) -> Any:
-    from .api import session_control as _sc_api
-    from . import server as _srv
-    sid = (body.get("session_id") or "").strip()
-    if not sid:
-        try:
-            qs = parse_qs(urlparse(handler.path).query)
-            sid = (qs.get("session_id") or [""])[0].strip()
-        except Exception:
-            sid = ""
-    # Resolve live session services at call time. Route-table rebuild tests
-    # (e.g. metaharness wiring) may overwrite _svc with stubs while the lazy
-    # POST table stays cached — Stop must still reach the real pilot.
-    status, payload = _sc_api.post_session_interrupt(
-        body, sid, _srv._session_control_services())
-    return send_json(handler, status, payload)
+def _bind_post_session_interrupt(svc: Any) -> PostHandler:
+    """Close over this table's svc. Never store it on a module-level fn.
+
+    ``build_post_json_routes`` is called from characterization tests with
+    mock factories that return None. Mutating ``_post_session_interrupt._svc``
+    used to clobber the live cached Stop handler (Windows shard shift after
+    v0.9.312 metaharness route wiring).
+    """
+    def handle(handler: Any, body: dict) -> Any:
+        from .api import session_control as _sc_api
+        sid = (body.get("session_id") or "").strip()
+        if not sid:
+            try:
+                qs = parse_qs(urlparse(handler.path).query)
+                sid = (qs.get("session_id") or [""])[0].strip()
+            except Exception:
+                sid = ""
+        status, payload = _sc_api.post_session_interrupt(
+            body, sid, svc.session_control_services())
+        return send_json(handler, status, payload)
+    return handle
 
 
-def _post_wiki_handoff(handler: Any, body: dict) -> Any:
-    from .api import wiki as _wiki_api
-    svc = _post_wiki_handoff._svc  # type: ignore[attr-defined]
-    host = handler.headers.get("Host", "") or ""
-    if not svc.host_ok(host):
-        return send_json(handler, 400, {"error": "bad host"})
-    status, payload = _wiki_api.post_wiki_handoff(host)
-    return send_json(handler, status, payload)
+def _bind_post_wiki_handoff(svc: Any) -> PostHandler:
+    def handle(handler: Any, body: dict) -> Any:
+        from .api import wiki as _wiki_api
+        host = handler.headers.get("Host", "") or ""
+        if not svc.host_ok(host):
+            return send_json(handler, 400, {"error": "bad host"})
+        status, payload = _wiki_api.post_wiki_handoff(host)
+        return send_json(handler, status, payload)
+    return handle
 
 
-def _post_restart(handler: Any, body: dict) -> Any:
+def _bind_post_restart(svc: Any) -> PostHandler:
+    def handle(handler: Any, body: dict) -> Any:
+        return _post_restart(handler, body, svc, svc.mcp_services)
+    return handle
+
+
+def _post_restart(handler: Any, body: dict, svc: Any, mcp_factory: Any) -> Any:
     from .api import session_control as _sc_api
     from .backend_restart_signal import write_intentional_restart_signal
-    svc = _post_restart._svc  # type: ignore[attr-defined]
     ok, err = _sc_api.prepare_session_restart(svc.session_control_services())
     if not ok:
         svc.diag("server.self_edit_restart_persist", Exception(err or "persist failed"))
     try:
-        mcp_svc = _post_restart._mcp()  # type: ignore[attr-defined]
+        mcp_svc = mcp_factory()
         mcp_svc.mcp.stop_all()
     except Exception as exc:
         svc.diag("server.self_edit_restart_mcp", exc)
