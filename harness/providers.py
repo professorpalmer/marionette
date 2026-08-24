@@ -71,7 +71,7 @@ class Provider:
     name: str
     env_vars: tuple              # candidate API-key env vars, first match wins
     base_url: str
-    api_mode: str = "chat_completions"   # chat_completions | anthropic_messages
+    api_mode: str = "chat_completions"   # chat_completions | responses | codex_responses | anthropic_messages
     aliases: tuple = ()
     display_name: str = ""
     # curated pilot-capable models shown when a live catalog fetch isn't done.
@@ -197,7 +197,7 @@ PROVIDERS = (
         name="openai", aliases=("oai",),
         env_vars=("OPENAI_API_KEY",),
         base_url="https://api.openai.com/v1",
-        api_mode="chat_completions", display_name="OpenAI",
+        api_mode="responses", display_name="OpenAI",
         # GPT-5.6 Sol/Terra/Luna (GA 2026-07-09). Some accounts still see
         # limited-preview 404 until OpenAI finishes rollout; live probe
         # via model_fetch still wins when /v1/models lists them.
@@ -586,15 +586,21 @@ def build_pilot(spec: str, *, max_tokens: int | None = None):
         return _finalize_driver(
             BedrockDriver(name=spec, model=model, max_tokens=max_tokens)
         )
-    if provider.api_mode == "codex_responses":
+    if provider.api_mode in ("codex_responses", "responses"):
         from pmharness.drivers.codex_responses import CodexResponsesDriver
+        default_key_env = (
+            "OPENAI_CODEX_TOKEN"
+            if provider.api_mode == "codex_responses"
+            else "OPENAI_API_KEY"
+        )
         return _finalize_driver(
             CodexResponsesDriver(
                 name=spec,
                 model=model,
                 base_url=provider.base_url,
-                api_key_env=key_env or "OPENAI_CODEX_TOKEN",
+                api_key_env=key_env or default_key_env,
                 max_tokens=max_tokens,
+                chatgpt_backend=(provider.api_mode == "codex_responses"),
             )
         )
     if provider.api_mode == "cursor_cli":

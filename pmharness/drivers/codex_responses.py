@@ -1029,6 +1029,12 @@ class CodexResponsesDriver:
         self._pool_provider: Optional[str] = None
         self._pool_entry_id: Optional[str] = None
 
+    def _billing_meta(self) -> Dict[str, str]:
+        """Receipt api_mode/billing derived from the host, not the driver class."""
+        if self.chatgpt_backend:
+            return {"api_mode": "codex_responses", "billing": "plan"}
+        return {"api_mode": "responses", "billing": "api"}
+
     def _key(self) -> str:
         self._pool_provider = None
         self._pool_entry_id = None
@@ -1274,9 +1280,8 @@ class CodexResponsesDriver:
             text = raw["output_text"]
         if finish == "content_filter":
             meta = {
-                "api_mode": "codex_responses",
+                **self._billing_meta(),
                 "finish_reason": "content_filter",
-                "billing": "plan",
                 "requested_model": self.model,
             }
             meta.update(_codex_stream_terminal_fields(raw, finish, _CONTENT_FILTER_MSG))
@@ -1297,8 +1302,7 @@ class CodexResponsesDriver:
             "tool_calls": tool_calls,
             "finish_reason": finish,
             "raw_usage": usage,
-            "api_mode": "codex_responses",
-            "billing": "plan",
+            **self._billing_meta(),
             "requested_model": self.model,
             "incomplete_retries": incomplete_retries,
         }
@@ -1459,8 +1463,7 @@ class CodexResponsesDriver:
                 base_meta: Optional[dict] = None,
             ) -> DriverResponse:
                 meta = {
-                    "api_mode": "codex_responses",
-                    "billing": "plan",
+                    **self._billing_meta(),
                     "requested_model": self.model,
                     # Prevent with_retry from replaying a body already mutated
                     # with continuation nudges as if it were the original turn.
@@ -1582,9 +1585,8 @@ class CodexResponsesDriver:
                     # post-increment sentinel that tripped exhaustion.
                     completed_retries = incomplete_retries - 1
                     meta = {
-                        "api_mode": "codex_responses",
+                        **self._billing_meta(),
                         "finish_reason": "incomplete",
-                        "billing": "plan",
                         "requested_model": self.model,
                     }
                     return _attach_request_cache_diagnostics(
