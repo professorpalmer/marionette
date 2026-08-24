@@ -79,7 +79,7 @@ describe("SettingsOptIns", () => {
     expect(src).not.toMatch(/hermes/i);
     expect(src).not.toMatch(/flag platform|featureFlag|feature_flag/i);
     expect(paneSrc).toMatch(/<SettingsOptIns /);
-    expect(paneSrc).toMatch(/onUpdate=\{update\}/);
+    expect(paneSrc).toMatch(/onUpdate=\{\(partial\) => \{ void update\(partial\); \}\}/);
     expect(shellSrc).not.toMatch(/SettingsOptIns|opt-ins|marketplace/i);
   });
 });
