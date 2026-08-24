@@ -642,10 +642,10 @@ export function collectIntermediateAssistantItems(
 }
 
 export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>): GroupedItem[] {
-  // The feed is a conversation, not an event log. Top-level rows are
-  // msg / steer, a question (command_approval), a file (pending_review),
-  // a loud auth failure, and one activity strip. Compaction, gates, verify,
-  // and auto receipts fold into that strip. Surfaces do not reclassify
+  // The feed is a conversation, not an event log. Top-level painted rows are
+  // msg / question (command_approval, secret_request) / file (pending_review) /
+  // activity strip. Thinking, tools, swarm, checkpoint, verify, compaction,
+  // gates, and auto receipts fold into that strip. Surfaces do not reclassify
   // after first paint.
   const grouped: GroupedItem[] = [];
   let currentGroup: ActivityItem[] = [];
@@ -684,10 +684,9 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
       flush();
       grouped.push(item);
     } else if (item.kind === "swarm_result") {
-      // The durable swarm receipt is the terminal owner; never bury it under an
-      // activity fold now that run_swarm ActionCards are intentionally absent.
-      flush();
-      grouped.push(item);
+      // Durable swarm receipts live inside the activity strip alongside tools
+      // and reasoning — same fold as swarm_pending / checkpoint / verify.
+      currentGroup.push(item);
     } else if (item.kind === "checkpoint") {
       currentGroup.push(item);
     } else if (item.kind === "pending_review") {

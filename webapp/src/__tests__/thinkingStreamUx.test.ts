@@ -207,8 +207,8 @@ describe("upsertStreamingThinking preserves durable id", () => {
   });
 });
 
-describe("swarm terminal rows stay at the end of one investigation", () => {
-  it("lifts the durable receipt out of the fold and suppresses a duplicate terminal pill", () => {
+describe("swarm terminal rows stay inside the activity strip", () => {
+  it("folds the durable receipt into the investigation and suppresses a duplicate terminal pill", () => {
     const items: Item[] = [
       {
         kind: "card",
@@ -237,18 +237,12 @@ describe("swarm terminal rows stay at the end of one investigation", () => {
 
     const grouped = groupAgentActivity(items, new Set());
 
-    expect(grouped.map((row) => row.kind)).toEqual([
-      "activity_group",
-      "swarm_result",
-      "activity_group",
-    ]);
+    expect(grouped.map((row) => row.kind)).toEqual(["activity_group"]);
     expect(grouped[0].kind).toBe("activity_group");
     if (grouped[0].kind !== "activity_group") return;
-    expect(grouped[0].items.map((item) => item.kind)).toEqual(["card"]);
-    expect(grouped[1]).toMatchObject({ kind: "swarm_result", job_id: "job-1" });
-    expect(grouped[2].kind).toBe("activity_group");
-    if (grouped[2].kind !== "activity_group") return;
-    expect(grouped[2].items.map((item) => item.kind)).toEqual([
+    expect(grouped[0].items.map((item) => item.kind)).toEqual([
+      "card",
+      "swarm_result",
       "thinking",
       "card",
     ]);
