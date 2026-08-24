@@ -1,12 +1,11 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import column from "../components/conversation/ConversationChatColumn.tsx?raw";
+import helpers from "../components/conversation/feedMotion.tsx?raw";
+import list from "../components/TranscriptList.tsx?raw";
+import pkgJson from "../../package.json?raw";
 import { TranscriptList, type Item } from "../components/TranscriptList";
 import { feedLayoutMotionEnabled } from "../components/conversation/feedMotion";
-
-const webappRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
 
 afterEach(() => {
   cleanup();
@@ -34,9 +33,9 @@ function listProps(items: Item[]) {
 
 describe("feed Motion (v0.9.318)", () => {
   it("declares the official motion package in webapp dependencies", () => {
-    const pkg = JSON.parse(
-      readFileSync(join(webappRoot, "package.json"), "utf8"),
-    ) as { dependencies?: Record<string, string> };
+    const pkg = JSON.parse(pkgJson) as {
+      dependencies?: Record<string, string>;
+    };
     expect(pkg.dependencies?.motion).toBeTruthy();
     expect(pkg.dependencies?.["framer-motion"]).toBeUndefined();
   });
@@ -62,18 +61,6 @@ describe("feed Motion (v0.9.318)", () => {
   });
 
   it("keeps layoutScroll on the feed scrollport and popLayout on list presence", () => {
-    const column = readFileSync(
-      join(webappRoot, "src/components/conversation/ConversationChatColumn.tsx"),
-      "utf8",
-    );
-    const helpers = readFileSync(
-      join(webappRoot, "src/components/conversation/feedMotion.tsx"),
-      "utf8",
-    );
-    const list = readFileSync(
-      join(webappRoot, "src/components/TranscriptList.tsx"),
-      "utf8",
-    );
     expect(column).toContain("layoutScroll");
     expect(column).toContain("[overflow-anchor:auto]");
     expect(column).toContain("[scroll-padding-bottom:var(--feed-chrome-clearance");
