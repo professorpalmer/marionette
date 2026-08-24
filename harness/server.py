@@ -2961,6 +2961,7 @@ def _settings_compaction_residual():
 def _get_settings_dict():
     from harness.hash_edit import hash_edit_enabled
     from harness.reasoning_effort import current_reasoning_effort
+    from harness.session_trace import session_trace_export_enabled
 
     reach = _cfg.reach
     status = get_api_key_status(reach)
@@ -2986,6 +2987,7 @@ def _get_settings_dict():
         "verifyCommand": getattr(_cfg, "verify_command", ""),
         "autoCommandGuard": getattr(_pilot, "_auto_command_guard", True),
         "hash_edit_enabled": hash_edit_enabled(),
+        "session_trace_export": session_trace_export_enabled(),
         "commandTimeout": (os.environ.get("HARNESS_COMMAND_TIMEOUT", "").strip() or "120"),
         "maxPilotSteps": (os.environ.get("HARNESS_MAX_PILOT_STEPS", "").strip() or "40"),
         "pilotToolBudget": (

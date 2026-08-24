@@ -202,6 +202,62 @@ def post_memory_propose_dismiss(body: dict, svc: SkillsServices) -> tuple[int, J
     return code, result
 
 
+def post_refine(body: dict, svc: SkillsServices) -> tuple[int, JsonPayload]:
+    """POST /api/refine — slash /refine or propose on HarnessRefineController."""
+    pilot = svc.get_pilot()
+    if not pilot or not hasattr(pilot, "handle_refine_slash"):
+        return 404, {"ok": False, "error": "no active session"}
+    command = (body.get("command") or "").strip()
+    text = (body.get("text") or "").strip()
+    if command or text.startswith("/refine"):
+        return 200, pilot.handle_refine_slash(command or text)
+    kind = (body.get("kind") or "memory").strip() or "memory"
+    scope = (body.get("scope") or "global").strip() or "global"
+    from ..harness_refine import get_refine_controller
+
+    prop = get_refine_controller(pilot).propose(kind=kind, text=text, scope=scope)
+    if prop is None:
+        return 400, {"ok": False, "error": "could not propose refine"}
+    return 200, {"ok": True, "proposed": prop.to_dict()}
+
+
+def get_refine_history(svc: SkillsServices) -> tuple[int, JsonPayload]:
+    """GET /api/refine/history."""
+    pilot = svc.get_pilot()
+    if not pilot or not hasattr(pilot, "refine_history"):
+        return 404, {"ok": False, "error": "no active session"}
+    return 200, {"ok": True, "history": pilot.refine_history()}
+
+
+def post_refine_propose(body: dict, svc: SkillsServices) -> tuple[int, JsonPayload]:
+    """POST /api/refine/propose — create a pending card on HarnessRefineController."""
+    text = (body.get("text") or "").strip()
+    if not text:
+        return 400, {"ok": False, "error": "missing text"}
+    kind = (body.get("kind") or "memory").strip().lower() or "memory"
+    # Allow "/refine rule Prefer X" style: leading kind token peels off.
+    parts = text.split(None, 1)
+    if len(parts) == 2 and parts[0].lower() in ("memory", "rule", "skill", "role"):
+        kind = parts[0].lower()
+        text = parts[1].strip()
+    if not text:
+        return 400, {"ok": False, "error": "missing text"}
+    scope = (body.get("scope") or "global").strip().lower() or "global"
+    pilot = svc.get_pilot()
+    if not pilot or not hasattr(pilot, "propose_refine"):
+        return 404, {"ok": False, "error": "no active session"}
+    result = pilot.propose_refine(
+        kind=kind,
+        text=text,
+        scope=scope,
+        category=str(body.get("category") or "general"),
+        name=str(body.get("name") or ""),
+        body=str(body.get("body") or ""),
+    )
+    code = 200 if result.get("ok") else 400
+    return code, result
+
+
 def post_refine_propose_accept(body: dict, svc: SkillsServices) -> tuple[int, JsonPayload]:
     """POST /api/refine/propose/accept."""
     proposal_id = (body.get("id") or "").strip()

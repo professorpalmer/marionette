@@ -743,15 +743,31 @@ class SendLoopMixin:
                                 )
                                 goal.record_turn_usage(tokens=tokens)
                                 self._persist_session_goal()
+                                if getattr(goal, "budget_exceeded", False):
+                                    yield ConvEvent("notice", {
+                                        "message": (
+                                            "Session goal paused: token_budget "
+                                            "reached (%s / %s)."
+                                            % (goal.token_count, goal.token_budget)
+                                        ),
+                                        "reason": "token_budget",
+                                    })
                                 auto_continue = bool(
                                     getattr(self.config, "goal_auto_continue", False)
                                 )
                                 if (
                                     auto_continue
                                     and not gate_blocks_idle
+                                    and not getattr(goal, "budget_exceeded", False)
                                     and hasattr(self, "enqueue_goal_continuation")
                                 ):
                                     self.enqueue_goal_continuation()
+                        except Exception:
+                            pass
+                        try:
+                            from .session_trace import maybe_export_session_trace
+
+                            maybe_export_session_trace(self)
                         except Exception:
                             pass
                         # Interactive mode: background the work to keep the UI

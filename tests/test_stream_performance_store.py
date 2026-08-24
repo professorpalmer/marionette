@@ -1235,6 +1235,31 @@ def test_multiprocess_rmw_preserves_all_receipts(tmp_path):
     assert sorted(r["provider_step"] for r in rows) == list(range(n))
 
 
+def test_atomic_replace_retries_windows_sharing_errors(tmp_path, monkeypatch):
+    """WinError 5/32 on os.replace must not drop a receipt (store retries)."""
+    import harness.stream_performance_store as store_mod
+
+    real_replace = store_mod.os.replace
+    calls = {"n": 0}
+
+    def flaky_replace(src, dest):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            err = PermissionError(13, "Access is denied")
+            err.winerror = 5
+            raise err
+        return real_replace(src, dest)
+
+    monkeypatch.setattr(store_mod.os, "replace", flaky_replace)
+    sid = "sess-win-replace"
+    store = StreamPerformanceReceiptStore(str(tmp_path))
+    store.record(sid, _receipt(sid, provider_step=1))
+    store.record(sid, _receipt(sid, provider_step=2))
+    rows = store.list_receipts(sid)
+    assert [r["provider_step"] for r in rows] == [1, 2]
+    assert calls["n"] >= 3
+
+
 def test_deep_json_and_recursion_error_fail_soft_then_repair(tmp_path, monkeypatch):
     store = StreamPerformanceReceiptStore(str(tmp_path))
     sid = "sess-deep"

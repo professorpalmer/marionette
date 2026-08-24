@@ -1433,10 +1433,17 @@ class ToolDispatchMixin:
         code = (act.content or "").strip()
         if not code:
             return False, "error", "run_ipython requires non-empty code"
-        from .ipython_kernel import get_or_create_kernel
+        from .ipython_kernel import MAX_IPYTHON_DEPTH, _ipython_depth, get_or_create_kernel
 
-        kernel = get_or_create_kernel(self)
-        result = kernel.execute(code)
+        depth = int(getattr(_ipython_depth, "n", 0) or 0)
+        if depth >= MAX_IPYTHON_DEPTH:
+            return False, "error", "run_ipython depth limit reached"
+        _ipython_depth.n = depth + 1
+        try:
+            kernel = get_or_create_kernel(self)
+            result = kernel.execute(code)
+        finally:
+            _ipython_depth.n = depth
         payload = {
             "output": result.output,
             "backend": result.backend,
