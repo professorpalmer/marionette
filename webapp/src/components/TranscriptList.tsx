@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, useState, useCallback, useDeferredValue, useSyncExternalStore, useMemo, memo, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useDeferredValue, useSyncExternalStore, useMemo, memo, forwardRef, type ReactNode } from "react";
+import { motion } from "motion/react";
 import { useVirtualizer, type VirtualItem } from "@tanstack/react-virtual";
 import { ChevronRight, Loader2, ChevronDown, ChevronUp, Play, Copy, Check, Pencil, RefreshCw, History, Share2, CheckCircle2, XCircle, Eye, Shield } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -94,6 +95,11 @@ import {
   focusReviewTabAndRefresh,
   vaultCiteChipLabel,
 } from "./conversation/streamApply";
+import {
+  FeedMotionPresence,
+  FeedMotionRow,
+  useFeedLayoutMotion,
+} from "./conversation/feedMotion";
 
 export type Msg = {
   role: "user" | "assistant";
@@ -996,23 +1002,29 @@ export function stableItemKey(it: GroupedItem, i: number): string {
 const FEED_VIRTUAL_OVERSCAN = 8;
 
 /** One virtual row: Pretext estimate always; DOM measure only after settle. */
-const VirtualTranscriptRow = memo(function VirtualTranscriptRow({
-  virtualRow,
-  scrollMargin,
-  item,
-  rowId,
-  feedSettled,
-  measureDom,
-  children,
-}: {
-  virtualRow: VirtualItem;
-  scrollMargin: number;
-  item: GroupedItem;
-  rowId: string;
-  feedSettled: boolean;
-  measureDom: (element: HTMLElement) => void;
-  children: ReactNode;
-}) {
+const VirtualTranscriptRow = memo(
+  forwardRef<HTMLDivElement, {
+    virtualRow: VirtualItem;
+    scrollMargin: number;
+    item: GroupedItem;
+    rowId: string;
+    feedSettled: boolean;
+    feedLayout: boolean;
+    measureDom: (element: HTMLElement) => void;
+    children: ReactNode;
+  }>(function VirtualTranscriptRow(
+    {
+      virtualRow,
+      scrollMargin,
+      item,
+      rowId,
+      feedSettled,
+      feedLayout,
+      measureDom,
+      children,
+    },
+    forwardedRef,
+  ) {
   const rowRef = useRef<HTMLDivElement>(null);
   const [mountSettled, setMountSettled] = useState(false);
   const attachDom = shouldAttachDomMeasure(item, feedSettled);
@@ -1042,10 +1054,20 @@ const VirtualTranscriptRow = memo(function VirtualTranscriptRow({
     if (el) measureDom(el);
   }, [attachDom, mountSettled, measureDom, rowId]);
 
+  const setRowRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      rowRef.current = el;
+      if (typeof forwardedRef === "function") forwardedRef(el);
+      else if (forwardedRef) forwardedRef.current = el;
+    },
+    [forwardedRef],
+  );
+
   return (
-    <div
+    <FeedMotionRow
+      ref={attachDom && mountSettled ? setRowRef : forwardedRef}
+      layoutEnabled={feedLayout}
       data-index={virtualRow.index}
-      ref={attachDom && mountSettled ? rowRef : undefined}
       data-testid="transcript-virtual-row"
       data-dom-measure={attachDom ? "1" : "0"}
       className="absolute top-0 left-0 w-full pb-1"
@@ -1054,9 +1076,10 @@ const VirtualTranscriptRow = memo(function VirtualTranscriptRow({
       }}
     >
       {children}
-    </div>
+    </FeedMotionRow>
   );
-});
+  }),
+);
 
 /** Bind run_command cards even when Investigating is collapsed (Hermes procId). */
 function indexCardCommandSession(card: Card): void {
@@ -1806,43 +1829,73 @@ export const TranscriptList = memo(function TranscriptList({
     scrollParentSized,
     alreadyVirtualized: virtualizedOnceRef.current,
   });
+  const feedLayout = useFeedLayoutMotion();
   const list = useVirtualWindow ? (
-    <div
+    <motion.div
       ref={listAnchorRef}
       data-testid="transcript-virtual-list"
       className="relative w-full"
       style={{ height: rowVirtualizer.getTotalSize() }}
+      layout={feedLayout}
     >
-      {virtualItems.map((virtualRow) => {
-        const item = virtualGrouped[virtualRow.index]!;
-        const rowId = stableItemKey(item, virtualRow.index);
-        return (
-          <VirtualTranscriptRow
-            key={virtualRow.key}
-            virtualRow={virtualRow}
-            scrollMargin={scrollMargin}
-            item={item}
-            rowId={rowId}
-            feedSettled={feedSettled}
-            measureDom={measureVirtualRowDom}
-          >
-            {renderGroupedItem(virtualRow.index)}
-          </VirtualTranscriptRow>
-        );
-      })}
-    </div>
+      <FeedMotionPresence>
+        {virtualItems.map((virtualRow) => {
+          const item = virtualGrouped[virtualRow.index]!;
+          const rowId = stableItemKey(item, virtualRow.index);
+          return (
+            <VirtualTranscriptRow
+              key={virtualRow.key}
+              virtualRow={virtualRow}
+              scrollMargin={scrollMargin}
+              item={item}
+              rowId={rowId}
+              feedSettled={feedSettled}
+              feedLayout={feedLayout}
+              measureDom={measureVirtualRowDom}
+            >
+              {renderGroupedItem(virtualRow.index)}
+            </VirtualTranscriptRow>
+          );
+        })}
+      </FeedMotionPresence>
+    </motion.div>
   ) : (
-    <div ref={listAnchorRef} data-testid="transcript-virtual-list" className="flex flex-col gap-1 w-full">
-      {grouped.map((_, i) => renderGroupedItem(i))}
-    </div>
+    <motion.div
+      ref={listAnchorRef}
+      data-testid="transcript-virtual-list"
+      className="relative flex flex-col gap-1 w-full"
+      layout={feedLayout}
+    >
+      <FeedMotionPresence>
+        {grouped.map((_, i) => {
+          const key = stableItemKey(grouped[i]!, i);
+          return (
+            <FeedMotionRow key={key} layoutEnabled={feedLayout} className="pb-1">
+              {renderGroupedItem(i)}
+            </FeedMotionRow>
+          );
+        })}
+      </FeedMotionPresence>
+    </motion.div>
   );
   const liveTailList = useVirtualWindow && liveTailGrouped.length > 0 ? (
-    <div
+    <motion.div
       data-testid="transcript-live-tail"
-      className="flex flex-col gap-1 w-full"
+      className="relative flex flex-col gap-1 w-full"
+      layout={feedLayout}
     >
-      {liveTailGrouped.map((_, i) => renderGroupedItem(tailStartIndex + i))}
-    </div>
+      <FeedMotionPresence>
+        {liveTailGrouped.map((_, i) => {
+          const idx = tailStartIndex + i;
+          const key = stableItemKey(grouped[idx]!, idx);
+          return (
+            <FeedMotionRow key={key} layoutEnabled={feedLayout} className="pb-1">
+              {renderGroupedItem(idx)}
+            </FeedMotionRow>
+          );
+        })}
+      </FeedMotionPresence>
+    </motion.div>
   ) : null;
 
   const busyProgress = deriveBusyProgress(items, status, busyElapsedMs);
