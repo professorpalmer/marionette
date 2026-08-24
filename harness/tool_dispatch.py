@@ -1337,10 +1337,10 @@ class ToolDispatchMixin:
         """
         if not self.config.repo:
             return False, "repo_not_open", "No workspace directory (config.repo) is open."
-        from .command_policy import classify_command, effective_command_timeout, run_cancellable
+        from .command_policy import guard_destructive_command, effective_command_timeout, run_cancellable
 
         if getattr(self, "_auto_mode", False) and getattr(self, "_auto_command_guard", None):
-            verdict = classify_command(act.command or "")
+            verdict = guard_destructive_command(act.command or "")
             cmd_hash = hashlib.sha256((act.command or "").encode()).hexdigest()
             approved_set = getattr(self, "_approved_commands", set())
             consume_approval = getattr(self, "consume_command_approval", None)

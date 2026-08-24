@@ -168,6 +168,8 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
             _ws_api.post_workspace_forget, services=svc.workspace_services),
         "/api/workspaces/switch": post_json(
             _ws_api.post_workspaces_switch, services=svc.workspace_services),
+        "/api/workspaces/confirm": post_json(
+            _ws_api.post_workspaces_confirm, services=svc.workspace_services),
         "/api/workspaces/create": post_json(
             _ws_api.post_workspaces_create, services=svc.workspace_services),
         "/api/mcp/add": post_json(

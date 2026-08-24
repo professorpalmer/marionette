@@ -407,6 +407,32 @@ def classify_command(command: str) -> CommandVerdict:
     return CommandVerdict(False, "", "", "")
 
 
+def guard_destructive_command(command: str) -> CommandVerdict:
+    """Classify, then block danger while a context-switch latch is armed.
+
+    Safe (non-danger) commands always pass through. When the latch is armed
+    after a session/repo/profile switch, danger verdicts are rewritten to
+    ``context-switch-unconfirmed`` so execution stays gated until confirm.
+    """
+    verdict = classify_command(command)
+    if not verdict.danger:
+        return verdict
+    try:
+        from .context_switch_guard import is_armed, snapshot
+    except Exception:
+        return verdict
+    if not is_armed():
+        return verdict
+    snap = snapshot()
+    pending = (snap.get("new") or snap.get("kind") or "new workspace").strip()
+    return CommandVerdict(
+        True,
+        "context-switch-unconfirmed",
+        f"destructive command blocked until the new workspace is confirmed ({pending})",
+        (verdict.matched or command or "")[:80],
+    )
+
+
 # Known rewrites only — not a general sanitizer. First rewrite: bare force-push
 # (`--force` / `-f`, but not `--force-with-lease`) → `--force-with-lease`.
 _FORCE_PUSH_LONG = re.compile(r"--force(?!-with-lease)\b", re.IGNORECASE)

@@ -252,8 +252,15 @@ def post_workspace_open(body: dict, svc: WorkspaceServices) -> tuple[int, JsonPa
     prev_active = svc.sessions.active if svc.sessions is not None else None
     prev_env_repo = os.environ.get("HARNESS_REPO")
 
+    old_repo = (prev_repo or "").strip()
     svc.cfg.repo = target_repo
     os.environ["HARNESS_REPO"] = target_repo
+    if old_repo != target_repo:
+        try:
+            from ..context_switch_guard import note_switch
+            note_switch("repo", old_repo, target_repo)
+        except Exception as e:
+            svc.diag("workspace.open_note_guard", e)
     # Boot often locked swarm_adapter=demo before workspace restore; promote.
     try:
         from ..swarm_adapter import ensure_repo_swarm_adapter
@@ -404,11 +411,35 @@ def post_workspace_forget(body: dict, svc: WorkspaceServices) -> tuple[int, Json
 
 def post_workspaces_switch(body: dict, svc: WorkspaceServices) -> tuple[int, JsonPayload]:
     """POST /api/workspaces/switch."""
-    return 200, svc.ws.switch_workspace(
+    name = body.get("name", "")
+    result = svc.ws.switch_workspace(
         svc.cfg.repo,
-        body.get("name", ""),
+        name,
         allow_dirty=svc.parse_bool(body.get("allow_dirty")),
     )
+    if isinstance(result, dict) and result.get("ok") is not False:
+        try:
+            from ..context_switch_guard import note_switch
+            note_switch(
+                "workspace",
+                getattr(svc.cfg, "repo", "") or "",
+                str(result.get("active") or name or getattr(svc.cfg, "repo", "") or ""),
+            )
+        except Exception as e:
+            svc.diag("workspace.switch_note_guard", e)
+    return 200, result
+
+
+def post_workspaces_confirm(body: dict, svc: WorkspaceServices) -> tuple[int, JsonPayload]:
+    """POST /api/workspaces/confirm — clear the context-switch latch."""
+    from ..context_switch_guard import confirm_workspace
+    root = (
+        body.get("workspace_root")
+        or body.get("path")
+        or getattr(svc.cfg, "repo", None)
+        or ""
+    )
+    return 200, confirm_workspace(str(root or ""))
 
 
 def post_workspaces_create(body: dict, svc: WorkspaceServices) -> tuple[int, JsonPayload]:
