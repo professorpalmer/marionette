@@ -994,7 +994,17 @@ export function stableItemKey(it: GroupedItem, i: number): string {
 // pin/unpin — this list only reports total height via the spacer.
 const FEED_VIRTUAL_OVERSCAN = 8;
 
-/** One virtual row: Pretext estimate always; DOM measure only after settle. */
+/** Fold/thought height changes bubble here so the virtualizer remmeasures. */
+export const FEED_ROW_REMEASURE_EVENT = "marionette:feed-row-remeasure";
+
+export function requestFeedRowRemeasure(from: EventTarget | null | undefined): void {
+  if (!from || typeof (from as Element).dispatchEvent !== "function") return;
+  (from as Element).dispatchEvent(
+    new CustomEvent(FEED_ROW_REMEASURE_EVENT, { bubbles: true }),
+  );
+}
+
+/** One virtual row: Pretext estimate always; DOM measure after settle + fold remmeasure. */
 const VirtualTranscriptRow = memo(
   forwardRef<HTMLDivElement, {
     virtualRow: VirtualItem;
@@ -1019,9 +1029,10 @@ const VirtualTranscriptRow = memo(
   const rowRef = useRef<HTMLDivElement>(null);
   const [mountSettled, setMountSettled] = useState(false);
   const attachDom = shouldAttachDomMeasure(item, feedSettled);
+  const keepMeasure = attachDom || item.kind === "activity_group";
 
   useLayoutEffect(() => {
-    if (!attachDom) {
+    if (!keepMeasure) {
       setMountSettled(false);
       return;
     }
@@ -1037,13 +1048,22 @@ const VirtualTranscriptRow = memo(
     };
     const outer = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(outer);
-  }, [attachDom, rowId]);
+  }, [keepMeasure, rowId]);
 
   useLayoutEffect(() => {
-    if (!attachDom || !mountSettled) return;
     const el = rowRef.current;
-    if (el) measureDom(el);
-  }, [attachDom, mountSettled, measureDom, rowId]);
+    if (!el) return;
+    const onRemeasure = () => {
+      measureDom(el);
+    };
+    el.addEventListener(FEED_ROW_REMEASURE_EVENT, onRemeasure);
+    if (keepMeasure && (mountSettled || item.kind === "activity_group")) {
+      measureDom(el);
+    }
+    return () => {
+      el.removeEventListener(FEED_ROW_REMEASURE_EVENT, onRemeasure);
+    };
+  }, [keepMeasure, mountSettled, measureDom, rowId, item.kind]);
 
   const setRowRef = useCallback(
     (el: HTMLDivElement | null) => {
@@ -1056,7 +1076,7 @@ const VirtualTranscriptRow = memo(
 
   return (
     <div
-      ref={attachDom && mountSettled ? setRowRef : forwardedRef}
+      ref={setRowRef}
       data-index={virtualRow.index}
       data-testid="transcript-virtual-row"
       data-dom-measure={attachDom ? "1" : "0"}
@@ -2116,6 +2136,7 @@ function ActivityGroup({
   });
 
   const [open, setOpen] = useState(() => resolveActivityGroupOpen(groupId));
+  const foldRootRef = useRef<HTMLDivElement>(null);
   const toggleOpen = () => {
     setOpen((v) => {
       const next = !v;
@@ -2123,6 +2144,9 @@ function ActivityGroup({
       return next;
     });
   };
+  useLayoutEffect(() => {
+    requestFeedRowRemeasure(foldRootRef.current);
+  }, [open]);
 
   const cards = items.filter((it) => it.kind === "card") as { kind: "card"; card: Card }[];
   const cgItems = items.filter((it) => it.kind === "codegraph_context") as { kind: "codegraph_context"; symbols: number; query: string }[];
@@ -2411,7 +2435,7 @@ function ActivityGroup({
     .join(" · ");
 
   return (
-    <div className="my-1 w-full">
+    <div className="my-1 w-full" ref={foldRootRef}>
       <button
         type="button"
         onClick={toggleOpen}
@@ -2533,6 +2557,10 @@ function ThinkingBlock({
   // tokens only while the user stays pinned near the bottom of an expanded box.
   const [expanded, setExpanded] = useState(() => resolveThinkingExpanded(blockId));
   const bodyRef = useRef<HTMLDivElement>(null);
+  const thoughtRootRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    requestFeedRowRemeasure(thoughtRootRef.current);
+  }, [expanded]);
   const pinnedInnerRef = useRef(true);
   const innerReleasedByGestureRef = useRef(false);
   const prevInnerScrollTopRef = useRef<number | null>(null);
@@ -2580,7 +2608,7 @@ function ThinkingBlock({
   const preview = normalizeReasoningPreview(text);
 
   return (
-    <div className="flex flex-col w-full py-0.5 min-w-0">
+    <div className="flex flex-col w-full py-0.5 min-w-0" ref={thoughtRootRef}>
       <button
         type="button"
         onClick={() => {

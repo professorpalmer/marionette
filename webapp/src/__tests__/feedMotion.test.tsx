@@ -216,6 +216,8 @@ describe("feed Motion (v0.9.331)", () => {
     const tailSrc = list.split("transcript-live-tail")[1] ?? "";
     expect(tailSrc).not.toMatch(/layout(?:Enabled)?=\{(?:true|feedLayout)\}/);
     expect(list).toContain("useVirtualizer");
+    expect(list).toContain("FEED_ROW_REMEASURE_EVENT");
+    expect(list).toContain("requestFeedRowRemeasure");
     expect(list).toContain("transcript-live-tail");
     expect(list).not.toMatch(/from ["']node:/);
     expect(list).not.toMatch(/@stylexjs|create\(|stylex\./);
