@@ -63,16 +63,21 @@ describe("CheckpointsPane diff badges", () => {
     render(<CheckpointsPane />);
 
     await screen.findByText("before edits");
-    fireEvent.click(screen.getByText("Diff"));
+    fireEvent.click(screen.getByTitle("View diff"));
 
     await waitFor(() => {
       expect(apiMocks.getCheckpointDiff).toHaveBeenCalledWith("cp-1");
     });
-    expect(await screen.findByText("src/new.ts")).toBeTruthy();
-    expect(screen.getByText("added")).toBeTruthy();
+
+    const addedBadge = await screen.findByLabelText("added: src/new.ts");
+    const modifiedBadge = await screen.findByLabelText("modified: src/old.ts");
+    const removedBadge = await screen.findByLabelText("removed: src/gone.ts");
+
+    expect(addedBadge).toHaveTextContent("added");
+    expect(modifiedBadge).toHaveTextContent("modified");
+    expect(removedBadge).toHaveTextContent("removed");
+    expect(screen.getByText("src/new.ts")).toBeTruthy();
     expect(screen.getByText("src/old.ts")).toBeTruthy();
-    expect(screen.getByText("modified")).toBeTruthy();
     expect(screen.getByText("src/gone.ts")).toBeTruthy();
-    expect(screen.getByText("removed")).toBeTruthy();
   });
 });
