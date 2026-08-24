@@ -30,7 +30,7 @@ export default function ImageLightbox({
   return createPortal(
     <div
       ref={mergeOverlayRootRef(overlay, rootRef)}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm overlay-root transition-opacity duration-200"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm pointer-events-auto"
       onClick={onClose}
       data-testid="image-lightbox"
       {...overlayDataAttrs(overlay)}
