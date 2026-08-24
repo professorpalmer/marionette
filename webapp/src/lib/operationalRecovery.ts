@@ -49,12 +49,8 @@ export function syncConversationTurnFailureDiagnostic(
   sessionId?: string,
 ): void {
   const explanation = String(settle.explanation || "").trim();
-  // Sidecar driver miss is a wait notice, not Trace/Retry — clear leftover chrome.
+  // Sidecar driver miss is a wait notice, not Trace/Retry.
   if (isProviderFailureWaitHint(explanation)) {
-    const active = getActiveDiagnostic();
-    if (active && isConversationTurnFailureDiagnostic(active)) {
-      clearDiagnostic(active);
-    }
     return;
   }
   const failed =

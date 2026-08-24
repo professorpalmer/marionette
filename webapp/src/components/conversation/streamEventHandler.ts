@@ -58,13 +58,11 @@ import {
 } from "./streamBubbles";
 import {
   clearProviderFailureWaitHint,
-  extractStreamErrorText,
   isProviderFailureWaitHint,
   noticeShouldLatchWaitHint,
 } from "../../lib/composerWaitHint";
 import { turnHasLiveInvestigation, turnHasLiveProgressSignal } from "../../lib/turnProgress";
-import { isConversationTurnFailureDiagnostic } from "../../lib/operationalDiagnostic";
-import { clearDiagnostic, getActiveDiagnostic } from "../../lib/operationalDiagnosticBus";
+import { clearDiagnostic } from "../../lib/operationalDiagnosticBus";
 import { notifyWorkspaceMutated } from "../../lib/workspaceMutationEvents";
 import { shouldRefreshBusyChrome } from "./streamTerminal";
 import { waitHintForAssistantDone } from "./swarmPoll";
@@ -161,26 +159,12 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       if (isProviderFailureWaitHint(prev)) return clearProviderFailureWaitHint(prev);
       return null;
     });
-  const clearLeftoverTurnFailureDiagnostic = () => {
-    const active = getActiveDiagnostic();
-    if (active && isConversationTurnFailureDiagnostic(active)) {
-      clearDiagnostic(active);
-    }
-  };
-  const recoverSidecarChromeOnLiveProgress = () => {
-    clearWaitHintOnProgress();
-    clearLeftoverTurnFailureDiagnostic();
-  };
   const refreshBusyChrome = () =>
     shouldRefreshBusyChrome({
       turnSettled: turnSettledRef.current,
       userStopped: userStoppedRef?.current,
     });
   const paintTurnSettle = (settle: TurnSettle, awaitHint?: string | null) => {
-    if (settle.status === "error" && isProviderFailureWaitHint(settle.explanation)) {
-      recoverSidecarChromeOnLiveProgress();
-      return;
-    }
     turnSettledRef.current = true;
     setTurnOpen(settle.turnOpen);
     if (settle.lifecycle === "awaiting_swarm") {
@@ -298,7 +282,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       // After the pilot has closed, a late wait notice must not resurrect the
       // permanent "Waiting on provider" footer.
       if (!refreshBusyChrome()) return;
-      const hint = truncateWaitHint(d.message || extractStreamErrorText(d.error));
+      const hint = truncateWaitHint(d.message || "");
       if (
         !hint
         || !noticeShouldLatchWaitHint(hint, {
@@ -374,9 +358,9 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
         })
       );
     } else if (ev.kind === "message_delta") {
-      recoverSidecarChromeOnLiveProgress();
+      clearWaitHintOnProgress();
       setCompactingStatus(null);
-      if (refreshBusyChrome() || turnSettledRef.current) setStatus("streaming");
+      if (refreshBusyChrome()) setStatus("streaming");
       // Ensure a streaming bubble exists. When the turn already has tool
       // cards (Cursor CLI / investigation), paint deltas instantly — the
       // typewriter over an open Investigating fold reads as chat "loading
@@ -644,7 +628,6 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       }
       refreshQueue();
     } else if (ev.kind === "assistant_done") {
-      recoverSidecarChromeOnLiveProgress();
       // Sync local-swarm-* ids finish inside the turn; anything still spinning
       // for those is an orphan. Background job_*/local-* stay live so their
       // pills keep spinning until swarm_result arrives.
@@ -685,7 +668,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       // optimistic first-send rename missed or the server derived a different slug.
       window.dispatchEvent(new Event("harness-config-changed"));
     } else if (ev.kind === "error") {
-      const errText = extractStreamErrorText(d.error ?? d.message);
+      const errText = String(d.error || d.message || "");
       if (isProviderFailureWaitHint(errText)) {
         const recovered =
           turnSettledRef.current
@@ -693,7 +676,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
           || hasPartialAssistantAnswer(itemsRef.current)
           || turnHasLiveProgressSignal(itemsRef.current);
         if (recovered) {
-          recoverSidecarChromeOnLiveProgress();
+          clearWaitHintOnProgress();
           return;
         }
         const hint = truncateWaitHint(errText);
@@ -751,17 +734,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       );
     } else if (ev.kind === "done") {
       // Framing-only sentinel: transport, never proof of a completed turn.
-      if (turnSettledRef.current) {
-        if (
-          hasPartialAssistantAnswer(itemsRef.current)
-          || Boolean(typeBufRef.current)
-          || turnHasLiveProgressSignal(itemsRef.current)
-        ) {
-          setStatus((prev) => (prev === "error" ? "done" : prev));
-          recoverSidecarChromeOnLiveProgress();
-        }
-        return;
-      }
+      if (turnSettledRef.current) return;
       flushTypewriter();
       const liveIds = pendingJobIdsRef.current.filter(
         (id) => !id.startsWith("local-swarm-"),
