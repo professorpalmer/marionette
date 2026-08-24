@@ -685,6 +685,19 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
             _settings_api.get_config, services=svc.settings_services),
         "/api/diagnostics": get_json(
             _doctor_api.get_diagnostics, services=svc.doctor_services),
+        "/api/diagnostics/bundle": get_json(
+            _doctor_api.get_diagnostics_bundle,
+            services=svc.doctor_services,
+            qs_arg="sessions",
+            empty_as_none=True,
+        ),
+        # Cheap alias — preferred path is /api/diagnostics/bundle.
+        "/api/diag/bundle": get_json(
+            _doctor_api.get_diagnostics_bundle,
+            services=svc.doctor_services,
+            qs_arg="sessions",
+            empty_as_none=True,
+        ),
         "/api/wiki/config": get_json(_wiki_api.get_wiki_config_payload),
         "/api/bedrock": get_json(_plat_api.get_bedrock),
         "/api/auth/pools": _get_auth_pools,
