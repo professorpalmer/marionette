@@ -29,6 +29,7 @@ export default function ConversationChatColumn({
   busyElapsedMs,
   turnOpen,
   holdSwarmAwait = false,
+  feedSettled = true,
   scrollToEndRef,
   onEditMessage,
   onExecuteSend,
@@ -56,6 +57,8 @@ export default function ConversationChatColumn({
   turnOpen: boolean;
   /** Same hold as Conversation — pending jobs keep transcript latch through idle flaps. */
   holdSwarmAwait?: boolean;
+  /** Defer DOM row measurement while session-switch settle glue runs. */
+  feedSettled?: boolean;
   scrollToEndRef?: MutableRefObject<(() => void) | null>;
   onEditMessage: (idx: number, text: string) => void;
   onExecuteSend: (msg: string, useAuto: boolean, usePlan?: boolean) => void;
@@ -91,7 +94,7 @@ export default function ConversationChatColumn({
       <div className="relative flex-1 min-h-0 flex flex-col">
         <div
           ref={feedRef}
-          className={`flex-1 min-h-0 overflow-y-auto overscroll-contain [overflow-anchor:none] [scrollbar-gutter:stable] ${panelOpacityClass(transcriptStale)}`}
+          className={`flex-1 min-h-0 overflow-y-auto overscroll-contain [overflow-anchor:none] [scrollbar-gutter:stable] [scroll-padding-bottom:var(--feed-chrome-clearance,clamp(72px,12vh,144px))] ${panelOpacityClass(transcriptStale)}`}
         >
         {/* overflow-anchor:none — the virtualizer unmounts off-screen rows, so
             auto-anchor would snap to the first remaining node (top of history)
@@ -124,6 +127,7 @@ export default function ConversationChatColumn({
             busyElapsedMs={busyElapsedMs}
             turnOpen={turnOpen}
             holdSwarmAwait={holdSwarmAwait}
+            feedSettled={feedSettled}
             scrollContainerRef={feedRef}
             scrollToEndRef={scrollToEndRef}
             onEditMessage={onEditMessage}

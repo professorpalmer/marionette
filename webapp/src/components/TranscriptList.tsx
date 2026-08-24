@@ -1,5 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, useState, useCallback, useDeferredValue, useSyncExternalStore, useMemo, memo } from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useDeferredValue, useSyncExternalStore, useMemo, memo, type ReactNode } from "react";
+import { useVirtualizer, type VirtualItem } from "@tanstack/react-virtual";
 import { ChevronRight, Loader2, ChevronDown, ChevronUp, Play, Copy, Check, Pencil, RefreshCw, History, Share2, CheckCircle2, XCircle, Eye, Shield } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -82,6 +82,12 @@ import {
   isOccludedScrollParentSize,
   shouldUseVirtualTranscriptWindow,
 } from "./conversation/transcriptVirtualWindow";
+import {
+  createTranscriptRowHeightCache,
+  shouldAttachDomMeasure,
+  transcriptFeedInnerWidth,
+  TRANSCRIPT_ROW_FALLBACK_PX,
+} from "./conversation/transcriptRowHeight";
 import {
   compactionKeptDroppedLine,
   compactionSuccessLabel,
@@ -982,12 +988,75 @@ export function stableItemKey(it: GroupedItem, i: number): string {
 // PERF: Long sessions grow the transcript without bound, and every displayed
 // group is an expensive subtree (markdown + syntax highlight + tool cards).
 // Virtualize the muted four-surface feed (msg / question / file / activity fold)
-// with @tanstack/react-virtual + measureElement so only the viewport (plus
-// overscan) stays mounted. Parent stick-to-bottom (nextFeedPinState hysteresis
-// in Conversation) still owns pin/unpin — this list only reports real total
-// height via the spacer; it never fakes a 40-row render cap.
-const FEED_ROW_ESTIMATE_PX = 72;
+// with @tanstack/react-virtual. Pretext (prepare once per row id+text+font,
+// layout per width) sizes prose without DOM reflow; measureElement runs only
+// after mount settle for code/images/mermaid Pretext cannot model. Parent
+// stick-to-bottom (nextFeedPinState hysteresis in Conversation) still owns
+// pin/unpin — this list only reports total height via the spacer.
 const FEED_VIRTUAL_OVERSCAN = 8;
+
+/** One virtual row: Pretext estimate always; DOM measure only after settle. */
+const VirtualTranscriptRow = memo(function VirtualTranscriptRow({
+  virtualRow,
+  scrollMargin,
+  item,
+  rowId,
+  feedSettled,
+  measureDom,
+  children,
+}: {
+  virtualRow: VirtualItem;
+  scrollMargin: number;
+  item: GroupedItem;
+  rowId: string;
+  feedSettled: boolean;
+  measureDom: (element: HTMLElement) => void;
+  children: ReactNode;
+}) {
+  const rowRef = useRef<HTMLDivElement>(null);
+  const [mountSettled, setMountSettled] = useState(false);
+  const attachDom = shouldAttachDomMeasure(item, feedSettled);
+
+  useLayoutEffect(() => {
+    if (!attachDom) {
+      setMountSettled(false);
+      return;
+    }
+    setMountSettled(false);
+    let inner = 0;
+    const tick = () => {
+      inner += 1;
+      if (inner >= 2) {
+        setMountSettled(true);
+        return;
+      }
+      requestAnimationFrame(tick);
+    };
+    const outer = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(outer);
+  }, [attachDom, rowId]);
+
+  useLayoutEffect(() => {
+    if (!attachDom || !mountSettled) return;
+    const el = rowRef.current;
+    if (el) measureDom(el);
+  }, [attachDom, mountSettled, measureDom, rowId]);
+
+  return (
+    <div
+      data-index={virtualRow.index}
+      ref={attachDom && mountSettled ? rowRef : undefined}
+      data-testid="transcript-virtual-row"
+      data-dom-measure={attachDom ? "1" : "0"}
+      className="absolute top-0 left-0 w-full pb-1"
+      style={{
+        transform: `translateY(${virtualRow.start - scrollMargin}px)`,
+      }}
+    >
+      {children}
+    </div>
+  );
+});
 
 /** Bind run_command cards even when Investigating is collapsed (Hermes procId). */
 function indexCardCommandSession(card: Card): void {
@@ -1121,6 +1190,8 @@ export type TranscriptListProps = {
    * absorption / footer match StatusPill through idle flaps / switch rearm.
    */
   holdSwarmAwait?: boolean;
+  /** When false, rich rows defer measureElement until session/scroll settle glue ends. */
+  feedSettled?: boolean;
   scrollContainerRef: React.RefObject<HTMLDivElement | null>;
   /** Conversation jump-to-latest / stick-to-bottom: virtualizer-aware end scroll. */
   scrollToEndRef?: React.MutableRefObject<(() => void) | null>;
@@ -1145,6 +1216,7 @@ export const TranscriptList = memo(function TranscriptList({
   busyElapsedMs = null,
   turnOpen = false,
   holdSwarmAwait = false,
+  feedSettled = true,
   scrollContainerRef,
   scrollToEndRef,
   onEditMessage,
@@ -1225,19 +1297,31 @@ export const TranscriptList = memo(function TranscriptList({
     return () => ro?.disconnect();
   }, [scrollContainerRef, grouped.length, scrollEpoch]);
 
+  const rowHeightCacheRef = useRef(createTranscriptRowHeightCache());
+  const feedInnerWidth = useMemo(() => {
+    const w = scrollContainerRef.current?.clientWidth ?? 600;
+    return transcriptFeedInnerWidth(w);
+  }, [scrollContainerRef, scrollEpoch]);
+
   const rowVirtualizer = useVirtualizer({
     count: virtualGrouped.length,
     getScrollElement: () => scrollContainerRef.current,
-    estimateSize: () => FEED_ROW_ESTIMATE_PX,
+    estimateSize: (index) => {
+      const item = virtualGrouped[index];
+      if (!item) return TRANSCRIPT_ROW_FALLBACK_PX;
+      const rowId = stableItemKey(item, index);
+      return rowHeightCacheRef.current.estimateRowHeight(item, rowId, feedInnerWidth);
+    },
     overscan: FEED_VIRTUAL_OVERSCAN,
     scrollMargin,
     getItemKey: (index) => stableItemKey(virtualGrouped[index]!, index),
-    measureElement:
-      typeof window !== "undefined" &&
-      !/firefox/i.test(window.navigator.userAgent)
-        ? (element) => element.getBoundingClientRect().height
-        : undefined,
   });
+  const measureVirtualRowDom = useCallback(
+    (element: HTMLElement) => {
+      rowVirtualizer.measureElement(element);
+    },
+    [rowVirtualizer],
+  );
   const scrollToEnd = useCallback(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
@@ -1729,20 +1813,23 @@ export const TranscriptList = memo(function TranscriptList({
       className="relative w-full"
       style={{ height: rowVirtualizer.getTotalSize() }}
     >
-      {virtualItems.map((virtualRow) => (
-        <div
-          key={virtualRow.key}
-          data-index={virtualRow.index}
-          ref={rowVirtualizer.measureElement}
-          data-testid="transcript-virtual-row"
-          className="absolute top-0 left-0 w-full pb-1"
-          style={{
-            transform: `translateY(${virtualRow.start - scrollMargin}px)`,
-          }}
-        >
-          {renderGroupedItem(virtualRow.index)}
-        </div>
-      ))}
+      {virtualItems.map((virtualRow) => {
+        const item = virtualGrouped[virtualRow.index]!;
+        const rowId = stableItemKey(item, virtualRow.index);
+        return (
+          <VirtualTranscriptRow
+            key={virtualRow.key}
+            virtualRow={virtualRow}
+            scrollMargin={scrollMargin}
+            item={item}
+            rowId={rowId}
+            feedSettled={feedSettled}
+            measureDom={measureVirtualRowDom}
+          >
+            {renderGroupedItem(virtualRow.index)}
+          </VirtualTranscriptRow>
+        );
+      })}
     </div>
   ) : (
     <div ref={listAnchorRef} data-testid="transcript-virtual-list" className="flex flex-col gap-1 w-full">

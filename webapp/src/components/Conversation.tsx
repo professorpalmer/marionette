@@ -1105,6 +1105,7 @@ export default function Conversation({
   // scrolling to bottom until height stabilizes (or wall-clock timeout).
   // onScroll still tracks real geometry so keyboard/scrollbar unpin is not swallowed.
   const scrollSettlingRef = useRef(false);
+  const [feedSettled, setFeedSettled] = useState(true);
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
   const scrollFeedToEndRef = useRef<(() => void) | null>(null);
   const publishJumpVisibilityRef = useRef(() => {});
@@ -1332,6 +1333,7 @@ export default function Conversation({
     scrollReleasedByGestureRef.current = false;
     prevFeedScrollTopRef.current = null;
     scrollSettlingRef.current = true;
+    setFeedSettled(false);
     setShowJumpToBottom(false);
     const scrollToEnd = scrollFeedToEndRef.current;
     if (scrollToEnd) {
@@ -1350,6 +1352,7 @@ export default function Conversation({
       const node = feedRef.current;
       if (!node) {
         scrollSettlingRef.current = false;
+        setFeedSettled(true);
         return;
       }
       if (!scrollSettlingRef.current || scrollReleasedByGestureRef.current) {
@@ -1378,6 +1381,7 @@ export default function Conversation({
       pinnedToBottomRef.current = true;
       if (step.done) {
         scrollSettlingRef.current = false;
+        setFeedSettled(true);
         publishJumpVisibilityRef.current();
         return;
       }
@@ -1387,6 +1391,7 @@ export default function Conversation({
     return () => {
       cancelAnimationFrame(rafId);
       scrollSettlingRef.current = false;
+      setFeedSettled(true);
     };
   }, [activeSessionId]);
 
@@ -3593,6 +3598,7 @@ export default function Conversation({
           busyElapsedMs={busyElapsedMs}
           turnOpen={turnOpen}
           holdSwarmAwait={holdSwarmAwait}
+          feedSettled={feedSettled}
           scrollToEndRef={scrollFeedToEndRef}
           onEditMessage={stableEditMessage}
           onExecuteSend={stableExecuteSend}
