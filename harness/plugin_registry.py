@@ -18,9 +18,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .agent_plugins import (
+    STAMP_FILENAME,
     AgentPluginDiagnostic,
     AgentPluginError,
     AgentPluginPackage,
+    compute_package_sha256,
     load_agent_plugin,
     read_agent_plugin_manifest,
 )
@@ -34,6 +36,44 @@ _lock = threading.RLock()
 
 def _pmharness_root() -> Path:
     return Path(os.path.expanduser("~/.pmharness"))
+
+
+def integrity_stamp_path(plugin_root: Path) -> Path:
+    return Path(plugin_root) / STAMP_FILENAME
+
+
+def write_integrity_stamp(plugin_root: Path) -> str:
+    digest = compute_package_sha256(plugin_root)
+    payload = {"sha256": digest}
+    path = integrity_stamp_path(plugin_root)
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    restrict_to_owner(str(path))
+    return digest
+
+
+def read_integrity_stamp(plugin_root: Path) -> Optional[str]:
+    path = integrity_stamp_path(plugin_root)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    value = data.get("sha256")
+    return value if isinstance(value, str) and value else None
+
+
+def verify_integrity_stamp(plugin_root: Path) -> str:
+    """Return current digest. Raise if stamp missing or mismatched."""
+    current = compute_package_sha256(plugin_root)
+    stamped = read_integrity_stamp(plugin_root)
+    if stamped is None:
+        raise AgentPluginError("plugin integrity stamp is missing")
+    if stamped != current:
+        raise AgentPluginError("plugin integrity stamp mismatch")
+    return current
 
 
 def plugins_dir() -> Path:
@@ -147,6 +187,10 @@ class PluginRecord:
     namespace: str
     skill_count: int = 0
     mcp_count: int = 0
+    permissions: List[str] = field(default_factory=list)
+    content_sha256: str = ""
+    sha256: str = ""
+    stamp_ok: bool = False
     diagnostics: List[Dict[str, str]] = field(default_factory=list)
     error: str = ""
 
@@ -155,6 +199,39 @@ def _diag_dicts(
     diagnostics: Tuple[AgentPluginDiagnostic, ...]
 ) -> List[Dict[str, str]]:
     return [{"scope": d.scope, "message": d.message} for d in diagnostics]
+
+
+def _record_from_package(
+    plugin_id: str,
+    package: AgentPluginPackage,
+    *,
+    enabled: bool,
+    extra_diagnostics: Tuple[AgentPluginDiagnostic, ...] = (),
+    error: str = "",
+    digest: str = "",
+    stamp_ok: bool = False,
+) -> PluginRecord:
+    namespace = portable_skill_namespace(plugin_id)
+    diagnostics = list(_diag_dicts(package.diagnostics))
+    diagnostics.extend(_diag_dicts(extra_diagnostics))
+    sha256 = digest or package.content_sha256
+    return PluginRecord(
+        id=plugin_id,
+        name=package.name,
+        version=package.version,
+        description=package.description,
+        path=str(package.root),
+        enabled=enabled,
+        namespace=namespace,
+        skill_count=len(package.skills),
+        mcp_count=len(package.mcp_servers),
+        permissions=list(package.permissions),
+        content_sha256=sha256,
+        sha256=sha256,
+        stamp_ok=stamp_ok,
+        diagnostics=diagnostics,
+        error=error,
+    )
 
 
 def discover_plugins() -> List[PluginRecord]:
@@ -180,23 +257,37 @@ def discover_plugins() -> List[PluginRecord]:
         namespace = portable_skill_namespace(plugin_id)
         try:
             package = load_agent_plugin(child, plugin_data_root() / namespace)
+            stamp_error = ""
+            stamp_ok = False
+            digest = package.content_sha256
+            try:
+                digest = verify_integrity_stamp(package.root)
+                stamp_ok = True
+            except AgentPluginError as stamp_exc:
+                stamp_error = str(stamp_exc)
+                _diag("agent_plugins.stamp", msg=f"{plugin_id}: {stamp_exc}")
+            extra: Tuple[AgentPluginDiagnostic, ...] = ()
+            if stamp_error:
+                extra = (AgentPluginDiagnostic("integrity", stamp_error),)
             records.append(
-                PluginRecord(
-                    id=plugin_id,
-                    name=package.name,
-                    version=package.version,
-                    description=package.description,
-                    path=str(package.root),
+                _record_from_package(
+                    plugin_id,
+                    package,
                     enabled=plugin_id in enabled,
-                    namespace=namespace,
-                    skill_count=len(package.skills),
-                    mcp_count=len(package.mcp_servers),
-                    diagnostics=_diag_dicts(package.diagnostics),
+                    extra_diagnostics=extra,
+                    error=stamp_error,
+                    digest=digest,
+                    stamp_ok=stamp_ok,
                 )
             )
         except AgentPluginError as exc:
             try:
                 manifest, diagnostics = read_agent_plugin_manifest(child)
+                perms = [
+                    value
+                    for value in (manifest.get("permissions") or [])
+                    if isinstance(value, str)
+                ]
                 records.append(
                     PluginRecord(
                         id=plugin_id,
@@ -206,6 +297,7 @@ def discover_plugins() -> List[PluginRecord]:
                         path=str(child.resolve(strict=False)),
                         enabled=plugin_id in enabled,
                         namespace=namespace,
+                        permissions=perms,
                         diagnostics=_diag_dicts(diagnostics),
                         error=str(exc),
                     )
@@ -262,22 +354,15 @@ def install_from_path(source: str) -> PluginRecord:
             shutil.copytree(str(src), str(dest), symlinks=False)
         except OSError as exc:
             raise AgentPluginError(f"failed to install plugin: {exc}") from exc
+        digest = write_integrity_stamp(dest)
         # Ensure default-disabled: remove from enabled if somehow present.
         enabled = [x for x in _read_enabled() if x != install_id]
         _write_enabled(enabled)
     namespace = portable_skill_namespace(install_id)
     loaded = load_agent_plugin(dest, plugin_data_root() / namespace)
-    return PluginRecord(
-        id=install_id,
-        name=loaded.name,
-        version=loaded.version,
-        description=loaded.description,
-        path=str(loaded.root),
-        enabled=False,
-        namespace=namespace,
-        skill_count=len(loaded.skills),
-        mcp_count=len(loaded.mcp_servers),
-        diagnostics=_diag_dicts(loaded.diagnostics),
+    digest = verify_integrity_stamp(dest)
+    return _record_from_package(
+        install_id, loaded, enabled=False, digest=digest, stamp_ok=True
     )
 
 
@@ -291,22 +376,14 @@ def enable_plugin(plugin_id: str) -> PluginRecord:
         raise AgentPluginError(f"plugin not found: {plugin_id}")
     namespace = portable_skill_namespace(plugin_id)
     package = load_agent_plugin(path, plugin_data_root() / namespace)
+    digest = verify_integrity_stamp(path)
     with _lock:
         enabled = _read_enabled()
         if plugin_id not in enabled:
             enabled.append(plugin_id)
             _write_enabled(enabled)
-    return PluginRecord(
-        id=plugin_id,
-        name=package.name,
-        version=package.version,
-        description=package.description,
-        path=str(package.root),
-        enabled=True,
-        namespace=namespace,
-        skill_count=len(package.skills),
-        mcp_count=len(package.mcp_servers),
-        diagnostics=_diag_dicts(package.diagnostics),
+    return _record_from_package(
+        plugin_id, package, enabled=True, digest=digest, stamp_ok=True
     )
 
 
@@ -328,18 +405,20 @@ def disable_plugin(plugin_id: str) -> PluginRecord:
         enabled = [x for x in _read_enabled() if x != plugin_id]
         _write_enabled(enabled)
     if package is not None:
-        return PluginRecord(
-            id=plugin_id,
-            name=package.name,
-            version=package.version,
-            description=package.description,
-            path=str(package.root),
+        digest = read_integrity_stamp(path) or package.content_sha256
+        stamp_ok = False
+        try:
+            digest = verify_integrity_stamp(path)
+            stamp_ok = True
+        except AgentPluginError:
+            pass
+        return _record_from_package(
+            plugin_id,
+            package,
             enabled=False,
-            namespace=namespace,
-            skill_count=len(package.skills),
-            mcp_count=len(package.mcp_servers),
-            diagnostics=_diag_dicts(package.diagnostics),
             error=record_error,
+            digest=digest,
+            stamp_ok=stamp_ok,
         )
     return PluginRecord(
         id=plugin_id,
@@ -364,6 +443,7 @@ def _load_enabled_packages() -> List[Tuple[str, str, AgentPluginPackage]]:
         namespace = portable_skill_namespace(plugin_id)
         try:
             package = load_agent_plugin(path, plugin_data_root() / namespace)
+            verify_integrity_stamp(path)
         except Exception as exc:
             _diag("agent_plugins.load_enabled", msg=f"{plugin_id}: {exc}")
             continue
@@ -425,6 +505,7 @@ def namespaced_mcp_ids_for_plugin(plugin_id: str) -> List[str]:
         return []
     namespace = portable_skill_namespace(plugin_id)
     try:
+        verify_integrity_stamp(path)
         package = load_agent_plugin(path, plugin_data_root() / namespace)
     except Exception:
         return []
@@ -442,6 +523,10 @@ def plugin_record_to_dict(record: PluginRecord) -> Dict[str, Any]:
         "namespace": record.namespace,
         "skill_count": record.skill_count,
         "mcp_count": record.mcp_count,
+        "permissions": list(record.permissions),
+        "content_sha256": record.content_sha256,
+        "sha256": record.sha256,
+        "stamp_ok": record.stamp_ok,
         "diagnostics": list(record.diagnostics),
         "error": record.error,
     }

@@ -11,15 +11,18 @@ from harness.agent_plugins import (
     MCP_SCHEMA_V1,
     PLUGIN_SCHEMA_V1,
     AgentPluginError,
+    compute_plugin_content_sha256,
     load_agent_plugin,
 )
 from harness.mcp_manager import McpManager
 from harness.plugin_registry import (
     disable_plugin,
+    discover_plugins,
     enable_plugin,
     install_from_path,
     list_enabled_mcp_servers,
     list_enabled_plugin_skills,
+    plugin_record_to_dict,
     portable_skill_namespace,
 )
 
@@ -270,3 +273,72 @@ def test_extensions_marionette_capabilities_survives_load(tmp_path: Path) -> Non
     marionette = package.manifest["extensions"]["marionette"]
     assert marionette["capabilities"] == ["adaptive-depth"]
     assert marionette["task_types"] == ["micro", "standard"]
+
+
+def test_manifest_permissions_surface_on_package(tmp_path: Path) -> None:
+    root = _valid_package(tmp_path / "plugin")
+    _write_json(
+        root / "plugin.json",
+        _manifest(permissions=["network", "filesystem"]),
+    )
+    package = load_agent_plugin(root, tmp_path / "data")
+    assert package.permissions == ("network", "filesystem")
+
+
+@pytest.mark.parametrize(
+    "permissions",
+    [
+        ["sudo"],
+        ["network", "sudo"],
+        ["network", "network"],
+    ],
+)
+def test_rejects_invalid_permissions(tmp_path: Path, permissions: list[str]) -> None:
+    root = _valid_package(tmp_path / "plugin")
+    _write_json(root / "plugin.json", _manifest(permissions=permissions))
+    with pytest.raises(AgentPluginError, match="permissions"):
+        load_agent_plugin(root, tmp_path / "data")
+
+
+def test_install_writes_content_stamp_and_enable_loads(
+    plugins_home: Path, tmp_path: Path
+) -> None:
+    source = _valid_package(tmp_path / "src-plugin")
+    record = install_from_path(str(source))
+    assert record.content_sha256
+    assert record.content_sha256 == compute_plugin_content_sha256(Path(record.path))
+
+    payload = plugin_record_to_dict(record)
+    assert payload["content_sha256"] == record.content_sha256
+    assert payload["permissions"] == []
+
+    enabled = enable_plugin(record.id)
+    assert enabled.enabled is True
+    assert list_enabled_plugin_skills()
+
+
+def test_stamp_mismatch_rejects_enable_and_warns_on_discover(
+    plugins_home: Path, tmp_path: Path
+) -> None:
+    source = _valid_package(tmp_path / "src-plugin")
+    record = install_from_path(str(source))
+    plugin_root = Path(record.path)
+    (plugin_root / "skills" / "summarize" / "SKILL.md").write_text(
+        (plugin_root / "skills" / "summarize" / "SKILL.md").read_text(encoding="utf-8")
+        + "\n# tampered\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AgentPluginError, match="integrity"):
+        enable_plugin(record.id)
+
+    assert list_enabled_plugin_skills() == []
+
+    discovered = discover_plugins()
+    assert len(discovered) == 1
+    row = discovered[0]
+    assert any(d["scope"] == "integrity" for d in row.diagnostics)
+    assert "integrity" in row.error or any(
+        "integrity" in d["message"] for d in row.diagnostics
+    )
+
