@@ -28,7 +28,10 @@ def test_arm_blocks_danger_until_confirm():
     assert is_armed() is True
     blocked = guard_destructive_command(DANGER)
     assert blocked.danger is True
-    assert blocked.category == "context-switch-unconfirmed"
+    # Classify category wins; latch must not rewrite remote-shell / rm / etc.
+    assert blocked.category == classify_command(DANGER).category
+    assert blocked.category != "context-switch-unconfirmed"
+    assert is_armed() is True
 
     confirm_workspace("/new/repo")
     assert is_armed() is False

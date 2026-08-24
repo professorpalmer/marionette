@@ -408,13 +408,16 @@ def classify_command(command: str) -> CommandVerdict:
 
 
 def guard_destructive_command(command: str) -> CommandVerdict:
-    """Classify, then block danger while a context-switch latch is armed.
+    """Classify, then keep an extra latch after a context switch.
 
-    Safe (non-danger) commands always pass through. When the latch is armed
-    after a session/repo/profile switch, danger verdicts are rewritten to
-    ``context-switch-unconfirmed`` so execution stays gated until confirm.
+    Safe (non-danger) commands always pass through. Classify categories
+    (remote-shell, force-push, ...) win over ``context-switch-unconfirmed``.
+    The latch only supplies that category when classify did not already
+    name a danger class — it must not rewrite ssh/systemctl to a switch miss.
     """
     verdict = classify_command(command)
+    if verdict.danger and verdict.category:
+        return verdict
     if not verdict.danger:
         return verdict
     try:
