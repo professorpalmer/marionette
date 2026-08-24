@@ -8,7 +8,6 @@
  */
 
 import { getCorrelationId } from "./correlationId";
-import { isProviderFailureWaitHint } from "./composerWaitHint";
 
 export type DiagnosticScope =
   | "desktop_bridge"
@@ -296,14 +295,6 @@ export function isConversationTurnFailureDiagnostic(
     && diag.operation === "turn"
     && diag.code === CONVERSATION_TURN_FAILURE,
   );
-}
-
-/** Vision-sidecar / driver-route retry — not a settled turn failure for header chrome. */
-export function isSidecarFailureDiagnostic(
-  diag: Pick<OperationalDiagnostic, "summary" | "detail"> | null | undefined,
-): boolean {
-  if (!diag) return false;
-  return isProviderFailureWaitHint(diag.summary) || isProviderFailureWaitHint(diag.detail);
 }
 
 /** Loud provider auth rejection surfaced in the transcript. */
