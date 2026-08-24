@@ -111,6 +111,7 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
     from .api import workspace as _ws_api
     from .api import worktrees as _wt_api
     from .api import collab_presence as _collab_presence_api
+    from .api import metaharness as _mh_api
 
     routes: dict[str, PostHandler] = {
         "/api/browser/relay": post_json(_browser_api.post_browser_relay),
@@ -353,6 +354,8 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
         "/api/schedules/disable": post_json(_sched_api.post_schedules_disable),
         "/api/schedules/remove": post_json(_sched_api.post_schedules_remove),
         "/api/schedules/run-now": post_json(_sched_api.post_schedules_run_now),
+        "/api/metaharness/score": post_json(_mh_api.post_metaharness_score),
+        "/api/metaharness/heartbeat": post_json(_mh_api.post_metaharness_heartbeat),
     }
     # Attach relocate helper + host_ok/diag via closure attrs on module-level fns.
     _post_session_relocate._svc = svc  # type: ignore[attr-defined]
@@ -462,6 +465,7 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
     from .api import workspace as _ws_api
     from .api import worktrees as _wt_api
     from .api import collab_presence as _collab_presence_api
+    from .api import metaharness as _mh_api
 
     def _get_git_diff(handler: Any, u: Any, qs: dict) -> Any:
         staged = qs.get("staged", ["0"])[0].strip().lower() in ("1", "true", "yes")
@@ -775,4 +779,5 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
         "/api/auto": _get_auto,
         "/api/collab/presence": get_json(
             _collab_presence_api.get_presence, pass_qs=True),
+        "/api/metaharness/status": get_json(_mh_api.get_metaharness_status),
     }
