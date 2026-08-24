@@ -23,6 +23,11 @@ import {
 } from "./components/conversation/composerInput";
 import { openAgentWorkspace } from "./lib/agentLinks";
 import { reclampRailWidths } from "./lib/railLayout";
+import {
+  setConfigured,
+  setManual,
+  shouldAutoOpenOnboardingWizard,
+} from "./state/onboardingStore";
 
 const LS = {
   left: "pmharness.leftW",
@@ -188,25 +193,19 @@ export default function App() {
     };
   }, []);
 
-  // First-run behavior checking
+  // First-run gate: onboarding store decides whether to auto-open RegistryWizard.
   useEffect(() => {
     const checkSetupStatus = async () => {
-      const seen = localStorage.getItem("pmharness.wizardSeen");
-      if (seen === "1") return;
+      if (!shouldAutoOpenOnboardingWizard()) return;
 
       try {
         const provs = await api.providers();
         const hasAnyKey = provs.some((p) => p.has_key);
-        // Only auto-open the setup wizard when there is genuinely NO provider key
-        // configured (real first-run onboarding). Previously `seen === null` also
-        // forced it open, so it popped up on EVERY launch even with keys already
-        // set, until the user manually dismissed it. If a key already exists,
-        // mark the wizard as seen so it never nags again.
-        if (!hasAnyKey) {
-          setShowWizard(true);
-        } else {
-          localStorage.setItem("pmharness.wizardSeen", "1");
+        if (hasAnyKey) {
+          setConfigured(true);
+          return;
         }
+        setShowWizard(true);
       } catch (err) {
         console.error("Failed to check provider setup", err);
         // On a status-check failure, do NOT force the wizard open -- an API hiccup
@@ -314,7 +313,10 @@ export default function App() {
               ? "workers"
               : "keyless"
           }
-          onAddKey={() => setShowWizard(true)}
+          onAddKey={() => {
+            setManual(true);
+            setShowWizard(true);
+          }}
         />
       )}
       {config?.key_bootstrap_issues && config.key_bootstrap_issues.length > 0 && !showWizard && (
@@ -407,7 +409,10 @@ export default function App() {
               <RightPane
                 visible={rightOpen}
                 artifacts={artifacts}
-                onOpenWizard={() => setShowWizard(true)}
+                onOpenWizard={() => {
+                  setManual(true);
+                  setShowWizard(true);
+                }}
                 initialTab={pendingRightTab.current}
                 onEmpty={closeEmptyRightPane}
                 onRequestMinWidth={requestRightMinWidth}
@@ -423,7 +428,7 @@ export default function App() {
           onOpenEconomics={() => openRightTo("economics")} />
       </div>
 
-      {showWizard && <RegistryWizard onClose={() => { localStorage.setItem("pmharness.wizardSeen", "1"); setShowWizard(false); }} />}
+      {showWizard && <RegistryWizard onClose={() => setShowWizard(false)} />}
 
       <CommandPalette
         onToggleLeft={() => setLeftOpen((v) => !v)}
