@@ -16,6 +16,7 @@ import atexit
 import json
 import os
 import re
+import signal
 import tempfile
 import threading
 import time
@@ -81,14 +82,42 @@ _preview_cache: dict[tuple[str, int], tuple[float, str]] = {}
 # Live stores flushed on process exit (weak so tests do not pin instances).
 _live_session_stores: weakref.WeakSet = weakref.WeakSet()
 _atexit_flush_registered = False
+_signal_flush_registered = False
+# Prior handlers restored after flush so SIGINT/SIGTERM still terminate.
+_prior_signal_handlers: dict[int, Any] = {}
+
+
+def _session_store_signal_handler(signum: int, frame: Any) -> None:
+    """Flush dirty SessionStores, then continue default / prior termination."""
+    try:
+        _flush_all_session_stores()
+    except Exception:
+        pass
+    previous = _prior_signal_handlers.get(signum, signal.SIG_DFL)
+    if previous is signal.SIG_IGN:
+        return
+    if callable(previous):
+        previous(signum, frame)
+        return
+    # Default disposition: do not swallow — exit so atexit still runs when possible.
+    raise SystemExit(128 + int(signum))
 
 
 def _register_session_store(store: "SessionStore") -> None:
-    global _atexit_flush_registered
+    global _atexit_flush_registered, _signal_flush_registered
     _live_session_stores.add(store)
     if not _atexit_flush_registered:
         atexit.register(_flush_all_session_stores)
         _atexit_flush_registered = True
+    if not _signal_flush_registered:
+        _signal_flush_registered = True
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                _prior_signal_handlers[sig] = signal.getsignal(sig)
+                signal.signal(sig, _session_store_signal_handler)
+            except ValueError:
+                # Not on the main thread (e.g. some test runners) — atexit still covers exit.
+                pass
 
 
 def _flush_all_session_stores() -> None:

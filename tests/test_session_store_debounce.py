@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import signal
 import time
 from unittest import mock
 
@@ -90,6 +91,40 @@ def test_flush_writes_pending_dirty_state(tmp_path, monkeypatch):
         assert wrapped.call_count == 1
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["sessions"][0]["title"] == "Pending"
+
+
+def test_dirty_store_flushes_on_signal_shutdown_path(tmp_path):
+    """SIGINT/SIGTERM handler path must persist dirty stores (not atexit-only).
+
+    Under pytest ``_save`` flushes immediately, so mark ``_dirty`` directly
+    instead of relying on debounce.
+    """
+    path = tmp_path / "harness_sessions.json"
+    store = SessionStore(str(path))
+    store.create(title="BeforeSignal", repo=str(tmp_path / "repo"))
+    with store._lock:
+        store._sessions[0]["title"] = "AfterSignal"
+        store._dirty = True
+
+    continued = {"n": 0}
+
+    def _continue(signum, frame):
+        continued["n"] += 1
+
+    prior = sessions._prior_signal_handlers.get(signal.SIGTERM)
+    sessions._prior_signal_handlers[signal.SIGTERM] = _continue
+    try:
+        sessions._session_store_signal_handler(signal.SIGTERM, None)
+    finally:
+        if prior is None:
+            sessions._prior_signal_handlers.pop(signal.SIGTERM, None)
+        else:
+            sessions._prior_signal_handlers[signal.SIGTERM] = prior
+
+    assert continued["n"] == 1
+    assert store._dirty is False
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["sessions"][0]["title"] == "AfterSignal"
 
 
 def test_list_snapshots_metadata_under_lock_before_preview_io(tmp_path, monkeypatch):
