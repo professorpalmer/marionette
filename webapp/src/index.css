@@ -544,6 +544,18 @@ body.is-row-resizing iframe {
   animation: onboarding-rise 320ms ease-out;
 }
 
+/* Body-portaled overlays (conversation lightbox/spill, command palette).
+   data-starting-style: first paint at starting opacity (no pop-in).
+   data-instant: skip transition on close. Attribute selectors only. */
+[data-starting-style] {
+  opacity: 0;
+}
+[data-instant] {
+  transition: none !important;
+  animation: none !important;
+  opacity: 1;
+}
+
 .scrollbar-none {
   scrollbar-width: none;
 }
