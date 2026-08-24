@@ -8,6 +8,28 @@
 
 const PROVIDER_FAILURE_HINT_RE = /^driver\s+.+\s+failed\b/i;
 
+/**
+ * Pull a human-readable error string from SSE / stream error payloads.
+ * Nested `{ error: { message } }` must not stringify to `[object Object]`.
+ */
+export function extractStreamErrorText(payload: unknown): string {
+  if (payload == null) return "";
+  if (typeof payload === "string") return payload.trim();
+  if (typeof payload === "number" || typeof payload === "boolean") return String(payload);
+  if (payload instanceof Error) return String(payload.message || "").trim();
+  if (typeof payload === "object") {
+    const record = payload as Record<string, unknown>;
+    for (const key of ["error", "message", "detail", "reason"]) {
+      const nested = record[key];
+      if (nested != null && nested !== payload) {
+        const inner = extractStreamErrorText(nested);
+        if (inner) return inner;
+      }
+    }
+  }
+  return "";
+}
+
 /** True for driver-route failure notices painted as composer wait hints. */
 export function isProviderFailureWaitHint(hint: string | null | undefined): boolean {
   const text = String(hint || "").trim();
