@@ -55,6 +55,7 @@ import {
   derivePillBusyDetail,
   derivePillStatus,
   isSwarmPausePoint,
+  shouldShowOperationalErrorPill,
 } from "./conversation/pillStatus";
 import { isAgentLoopOpen, isPilotMouthBusy } from "./conversation/runnersBusy";
 import {
@@ -590,9 +591,7 @@ export default function Conversation({
   });
   // Operational diagnostic is settled failure, not a live turn lifecycle.
   const pillStatus: string = (
-    operationalDiagnostic
-    && operationalDiagnostic.severity === "error"
-    && !composerBusy
+    shouldShowOperationalErrorPill(operationalDiagnostic, composerBusy)
       ? "error"
       : derivedPillStatus
   );

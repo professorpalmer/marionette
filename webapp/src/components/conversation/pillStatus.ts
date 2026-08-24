@@ -1,3 +1,4 @@
+import { isSidecarFailureDiagnostic, type OperationalDiagnostic } from "../../lib/operationalDiagnostic";
 import { isAgentLoopOpen } from "./runnersBusy";
 
 /**
@@ -54,6 +55,15 @@ export function derivePillBusyDetail(opts: {
   }
   if (opts.agentLoopOpen) return "Still working…";
   return undefined;
+}
+
+/** Trace/Retry header chrome only for real settled failures, not sidecar notices. */
+export function shouldShowOperationalErrorPill(
+  diag: OperationalDiagnostic | null | undefined,
+  composerBusy: boolean,
+): boolean {
+  if (!diag || diag.severity !== "error" || composerBusy) return false;
+  return !isSidecarFailureDiagnostic(diag);
 }
 
 export function derivePillStatus(opts: {

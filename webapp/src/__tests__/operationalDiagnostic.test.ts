@@ -14,6 +14,7 @@ import {
   desktopShellExpected,
   fromTransportFailure,
   isConversationTurnFailureDiagnostic,
+  isSidecarFailureDiagnostic,
   isOperationalDiagnostic,
   isUncertainTransport,
   nextDiagnostic,
@@ -271,5 +272,14 @@ describe("createOperationalDiagnostic", () => {
     expect(diag.correlationId).toBe("client-corr-abc");
     expect(getCorrelationId()).toBe("client-corr-abc");
     setCorrelationId("");
+  });
+});
+
+describe("isSidecarFailureDiagnostic", () => {
+  it("treats the live vision-sidecar driver string as header-inert", () => {
+    const sidecar = "driver openrouter:deepseek/deepseek-v4-flash-vision-exp failed";
+    const diag = conversationTurnFailureDiagnostic(sidecar);
+    expect(isSidecarFailureDiagnostic(diag)).toBe(true);
+    expect(isSidecarFailureDiagnostic(conversationTurnFailureDiagnostic("all routes exhausted"))).toBe(false);
   });
 });
