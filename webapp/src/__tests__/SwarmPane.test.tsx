@@ -2957,4 +2957,49 @@ describe("swarm tracker usage pills (0.9.300)", () => {
     expect(screen.getByText("Estimated")).toBeInTheDocument();
     expect(screen.getByText("$0.25")).toBeInTheDocument();
   });
+
+  it("keeps worker usage collapsed until the usage pill is clicked", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        status: "running",
+        goal: "Worker usage pill",
+        tasks: [
+          {
+            id: "t-usage",
+            role: "implement",
+            instruction: "hidden until row expand",
+            status: "completed",
+            adapter: "agentic",
+            tokens: 42_000,
+            est_cost_usd: 0.14,
+          },
+        ],
+      }),
+    );
+    render(<SwarmPane />);
+    await expandVisibleJobs();
+    expect(screen.queryByText("42,000t")).not.toBeInTheDocument();
+    expect(screen.queryByText("Estimated cost ~$0.1400")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Show tokens and cost" }));
+    expect(screen.getByText("42,000t")).toBeInTheDocument();
+    expect(screen.getByText("Estimated cost ~$0.1400")).toBeInTheDocument();
+  });
+
+  it("still shows grouped Findings count unchanged", async () => {
+    mockSwarmLive.mockResolvedValue(
+      finishedJob("job-findings-pills", "Grouped findings pill chrome", {
+        artifacts_complete: true,
+        artifacts: [
+          { type: "finding", headline: "one" },
+          { type: "finding", headline: "two" },
+          { type: "finding", headline: "one" },
+        ],
+      }),
+    );
+    render(<SwarmPane />);
+    fireEvent.click(await screen.findByText("Finished"));
+    fireEvent.click(await screen.findByText("Grouped findings pill chrome"));
+    expect(screen.getByText("Findings (2)")).toBeInTheDocument();
+    expect(screen.queryByText(/Findings \(2 of/)).toBeNull();
+  });
 });
