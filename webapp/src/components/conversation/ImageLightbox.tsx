@@ -1,8 +1,17 @@
 /**
  * Fullscreen image lightbox for transcript / attachment previews.
+ * Portaled with data-starting-style / data-instant.
  */
 
+import { useRef } from "react";
+import { createPortal } from "react-dom";
 import { X } from "lucide-react";
+import {
+  mergeOverlayRootRef,
+  overlayDataAttrs,
+  useOverlayEnterLeave,
+  useOverlayPortalHost,
+} from "../../lib/overlayPortal";
 
 export default function ImageLightbox({
   url,
@@ -11,12 +20,20 @@ export default function ImageLightbox({
   url: string | null;
   onClose: () => void;
 }) {
-  if (!url) return null;
+  const open = Boolean(url);
+  const overlay = useOverlayEnterLeave(open);
+  const host = useOverlayPortalHost();
+  const rootRef = useRef<HTMLDivElement>(null);
 
-  return (
+  if (!overlay.mounted || !url || !host) return null;
+
+  return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm transition-opacity animate-in fade-in duration-200"
+      ref={mergeOverlayRootRef(overlay, rootRef)}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm overlay-root transition-opacity duration-200"
       onClick={onClose}
+      data-testid="image-lightbox"
+      {...overlayDataAttrs(overlay)}
     >
       <div
         className="relative max-w-[90vw] max-h-[90vh] flex flex-col items-center justify-center"
@@ -35,6 +52,7 @@ export default function ImageLightbox({
           className="max-w-full max-h-[80vh] object-contain rounded-lg border border-edge shadow-2xl"
         />
       </div>
-    </div>
+    </div>,
+    host,
   );
 }

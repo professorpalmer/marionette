@@ -1,10 +1,17 @@
 /**
  * Thin read-only peek for spilled tool stdout (spill:// URIs).
- * No editor chrome — just the URI, size, and scrollable body.
+ * Portaled with data-starting-style / data-instant.
  */
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import { X } from "lucide-react";
+import {
+  mergeOverlayRootRef,
+  overlayDataAttrs,
+  useOverlayEnterLeave,
+  useOverlayPortalHost,
+} from "../../lib/overlayPortal";
 
 export type SpillPreviewState = {
   uri: string;
@@ -43,6 +50,11 @@ export default function SpillPreviewModal({
   preview: SpillPreviewState | null;
   onClose: () => void;
 }) {
+  const open = preview !== null;
+  const overlay = useOverlayEnterLeave(open);
+  const host = useOverlayPortalHost();
+  const rootRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     if (!preview) return;
     const onKey = (e: KeyboardEvent) => {
@@ -52,13 +64,15 @@ export default function SpillPreviewModal({
     return () => window.removeEventListener("keydown", onKey);
   }, [preview, onClose]);
 
-  if (!preview) return null;
+  if (!overlay.mounted || !preview || !host) return null;
 
-  return (
+  return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+      ref={mergeOverlayRootRef(overlay, rootRef)}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm overlay-root transition-opacity duration-200"
       onClick={onClose}
       data-testid="spill-preview-modal"
+      {...overlayDataAttrs(overlay)}
     >
       <div
         className="relative w-[min(920px,92vw)] max-h-[85vh] flex flex-col bg-panel border border-edge rounded-lg shadow-2xl"
@@ -90,6 +104,7 @@ export default function SpillPreviewModal({
           {preview.error || preview.content || "(empty)"}
         </pre>
       </div>
-    </div>
+    </div>,
+    host,
   );
 }

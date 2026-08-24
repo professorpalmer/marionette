@@ -16,6 +16,7 @@ import {
   type Item,
 } from "../TranscriptList";
 import TranscriptEmptyState from "./TranscriptEmptyState";
+import { FeedOverlayHost } from "../../lib/overlayPortal";
 
 export default function ConversationChatColumn({
   feedRef,
@@ -142,6 +143,7 @@ export default function ConversationChatColumn({
           />
         </div>
       </motion.div>
+      <FeedOverlayHost />
       {showJumpToBottom ? (
         <button
           type="button"

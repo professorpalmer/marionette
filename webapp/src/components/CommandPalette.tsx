@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { focusSettingsPage } from "./SettingsShell";
 import {
   COMMAND_PALETTE_ACTIONS,
@@ -7,6 +8,11 @@ import {
   type CommandPaletteAction,
 } from "../lib/commandPalette";
 import { useOverlayFocus } from "../lib/overlayFocus";
+import {
+  mergeOverlayRootRef,
+  overlayDataAttrs,
+  useOverlayEnterLeave,
+} from "../lib/overlayPortal";
 
 type CommandPaletteProps = {
   onToggleLeft: () => void;
@@ -19,8 +25,7 @@ function isPaletteShortcut(e: KeyboardEvent): boolean {
 }
 
 /**
- * Global Cmd/Ctrl-K operator palette. Mounted once near App so it works
- * even when the composer is unfocused.
+ * Global Cmd/Ctrl-K operator palette. Portaled with data-starting-style / data-instant.
  */
 export default function CommandPalette({
   onToggleLeft,
@@ -32,11 +37,13 @@ export default function CommandPalette({
   const inputRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const dialogRef = useRef<HTMLDivElement | null>(null);
+  const backdropRef = useRef<HTMLDivElement>(null);
   const listId = useId();
+  const overlay = useOverlayEnterLeave(open);
 
   const close = () => setOpen(false);
 
-  useOverlayFocus(open, dialogRef, {
+  useOverlayFocus(open && overlay.mounted, dialogRef, {
     initialFocusRef: inputRef,
     onClose: close,
   });
@@ -133,12 +140,14 @@ export default function CommandPalette({
     row?.scrollIntoView?.({ block: "nearest" });
   }, [activeIndex, open]);
 
-  if (!open) return null;
+  if (!overlay.mounted) return null;
 
-  return (
+  return createPortal(
     <div
-      className="fixed inset-0 z-[60] bg-black/55 flex items-start justify-center pt-[18vh] px-4"
+      ref={mergeOverlayRootRef(overlay, backdropRef)}
+      className="fixed inset-0 z-[60] bg-black/55 flex items-start justify-center pt-[18vh] px-4 overlay-root transition-opacity duration-200"
       data-testid="command-palette-backdrop"
+      {...overlayDataAttrs(overlay)}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) setOpen(false);
       }}
@@ -204,6 +213,7 @@ export default function CommandPalette({
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

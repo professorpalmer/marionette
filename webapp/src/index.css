@@ -550,3 +550,23 @@ body.is-row-resizing iframe {
 .scrollbar-none::-webkit-scrollbar {
   display: none;
 }
+
+
+/* v0.9.320: overlay enter via @starting-style. data-instant skips the transition. */
+[data-starting-style] {
+  transition: opacity 160ms ease, transform 160ms ease;
+  opacity: 1;
+  transform: none;
+}
+@starting-style {
+  [data-starting-style] {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+[data-starting-style][data-instant],
+[data-instant] {
+  transition: none !important;
+  opacity: 1;
+  transform: none;
+}

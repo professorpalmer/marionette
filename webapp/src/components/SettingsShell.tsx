@@ -6,6 +6,11 @@ import SettingsPane, { type SettingsSection } from "./SettingsPane";
 import PluginsPane from "./PluginsPane";
 import { TITLEBAR_TRAFFIC_PAD_SM_PX } from "../lib/titlebarSafe";
 import { useOverlayFocus } from "../lib/overlayFocus";
+import {
+  mergeOverlayRootRef,
+  overlayDataAttrs,
+  useOverlayEnterLeave,
+} from "../lib/overlayPortal";
 
 type PageId = "models" | SettingsSection | "about";
 
@@ -39,8 +44,9 @@ function takePendingSettingsPage(): PageId | null {
 }
 
 // Full-screen settings overlay: left sidebar nav + routed content area
-// (Cursor/Hermes pattern). The title bar reserves space on the left so the
-// "Settings" label clears the macOS traffic-light window controls.
+// (Cursor/Hermes pattern). Portaled with data-starting-style / data-instant.
+// The title bar reserves space on the left so the "Settings" label clears the
+// macOS traffic-light window controls.
 export default function SettingsShell({
   onClose,
   onOpenWizard,
@@ -53,10 +59,13 @@ export default function SettingsShell({
   const [page, setPage] = useState<PageId>(
     () => initialPage || takePendingSettingsPage() || "models",
   );
+  const [open, setOpen] = useState(true);
   const shellRef = useRef<HTMLDivElement>(null);
+  const overlay = useOverlayEnterLeave(open, { onExited: onClose });
+  const requestClose = () => setOpen(false);
 
-  useOverlayFocus(true, shellRef, {
-    onClose,
+  useOverlayFocus(open && overlay.mounted, shellRef, {
+    onClose: requestClose,
   });
 
   // Escape always closes settings -- a keyboard escape hatch so a missed click
@@ -64,11 +73,11 @@ export default function SettingsShell({
   // behind this full-window overlay. Capture phase so it wins over inner inputs.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.stopPropagation(); onClose(); }
+      if (e.key === "Escape") { e.stopPropagation(); requestClose(); }
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [onClose]);
+  }, []);
 
   // Add key / hotkeys can request Accounts & Keys while Settings is already open.
   useEffect(() => {
@@ -83,14 +92,17 @@ export default function SettingsShell({
     return () => window.removeEventListener("harness-settings-page", onPage as EventListener);
   }, []);
 
+  if (!overlay.mounted) return null;
+
   return createPortal(
     <div
-      ref={shellRef}
+      ref={mergeOverlayRootRef(overlay, shellRef)}
       role="dialog"
       aria-modal="true"
       aria-label="Settings"
-      className="fixed inset-0 z-[80] bg-bg flex flex-col"
+      className="fixed inset-0 z-[80] bg-bg flex flex-col overlay-root transition-opacity duration-200"
       data-testid="settings-shell"
+      {...overlayDataAttrs(overlay)}
     >
       {/* top bar -- fixed px pad clears macOS traffic lights (not rem) */}
       <div
@@ -101,7 +113,7 @@ export default function SettingsShell({
         <span className="text-[13px] font-semibold text-txt">Settings</span>
         <button
           type="button"
-          onClick={onClose}
+          onClick={requestClose}
           title="Close settings"
           className="p-1.5 rounded-md text-muted hover:text-txt hover:bg-panel2 transition"
         >
