@@ -136,6 +136,10 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
             _ckpt_api.post_checkpoints_restore, services=svc.checkpoint_services),
         "/api/checkpoints/snapshot": post_json(
             _ckpt_api.post_checkpoints_snapshot, services=svc.checkpoint_services),
+        "/api/checkpoints/hunks/accept": post_json(
+            _ckpt_api.post_checkpoints_hunks_accept, services=svc.checkpoint_services),
+        "/api/checkpoints/hunks/revert": post_json(
+            _ckpt_api.post_checkpoints_hunks_revert, services=svc.checkpoint_services),
         "/api/codegraph/reindex": post_json(
             _cg_api.post_codegraph_reindex, services=svc.codegraph_services,
             needs_body=False),
@@ -668,6 +672,8 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
         "/api/checkpoints/diff": get_json(
             _ckpt_api.get_checkpoints_diff, services=svc.checkpoint_services,
             qs_arg="id", empty_as_none=True),
+        "/api/checkpoints/hunks": get_json(
+            _ckpt_api.get_checkpoints_hunks, services=svc.checkpoint_services),
         "/api/mcp": get_json(_mcp_api.get_mcp, services=svc.mcp_services),
         "/api/mcp/catalog": get_json(_mcp_api.get_mcp_catalog),
         "/api/plugins": get_json(

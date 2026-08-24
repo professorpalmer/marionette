@@ -153,9 +153,9 @@ def post_file_write(body: dict, svc: FileServices) -> tuple[int, dict]:
         msg = str(e)
         return _mutate_path_error_status(msg), {"error": msg}
     try:
+        active_sid = svc.sessions.active or ""
         try:
             from ..checkpoints import CheckpointStore
-            active_sid = svc.sessions.active or ""
             store = CheckpointStore(repo, session_id=active_sid or None)
             store.snapshot(
                 label=f"before manual edit {rel_posix or rel_path}",
@@ -178,6 +178,11 @@ def post_file_write(body: dict, svc: FileServices) -> tuple[int, dict]:
                 os.remove(temp_path)
             raise e
         bytes_written = len(content.encode("utf-8"))
+        try:
+            from ..checkpoint_hunks import fs_notify
+            fs_notify(repo, rel_posix, session_id=active_sid or None)
+        except Exception:
+            pass
         return 200, {"ok": True, "bytes": bytes_written}
     except Exception as e:
         return 500, {"error": f"Failed to write file: {e}"}
@@ -208,6 +213,12 @@ def post_file_delete(body: dict, svc: FileServices) -> tuple[int, dict]:
             _shutil.rmtree(target_path)
         else:
             os.remove(target_path)
+        try:
+            active_sid = svc.sessions.active or ""
+            from ..checkpoint_hunks import fs_notify
+            fs_notify(repo, rel_posix, session_id=active_sid or None)
+        except Exception:
+            pass
         return 200, {"ok": True, "path": rel_posix}
     except Exception as e:
         return 500, {"error": f"Failed to delete: {e}"}

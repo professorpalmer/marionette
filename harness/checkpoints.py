@@ -627,3 +627,9 @@ class CheckpointStore:
                     break
             except Exception:
                 break
+
+    def hunk_tracker(self, session_id: Optional[str] = None) -> Any:
+        """Live per-hunk Agent vs External attribution for this store."""
+        from .checkpoint_hunks import CheckpointHunkTracker
+
+        return CheckpointHunkTracker(self, session_id=session_id)
