@@ -18,6 +18,7 @@ import {
   type SessionSearchHit,
 } from "./sessionSearch";
 import type { SessionExportPayload } from "./sessionExport";
+import { pluginInstallPayload } from "./pluginSourceUrls";
 
 export type { ChatEventFrame, StoreEvent } from "./transport";
 export type { SessionSearchHit } from "./sessionSearch";
@@ -1485,8 +1486,11 @@ export const api = {
   mcpRefresh: (name: string) =>
     postJSON<{ ok: boolean; tools?: number; error?: string }>("/api/mcp/refresh", { name }),
   plugins: () => getJSON<{ plugins: AgentPlugin[]; error?: string }>("/api/plugins"),
-  pluginInstall: (path: string) =>
-    postJSON<{ ok: boolean; plugin?: AgentPlugin; error?: string }>("/api/plugins/install", { path }),
+  pluginInstall: (source: string) =>
+    postJSON<{ ok: boolean; plugin?: AgentPlugin; error?: string }>(
+      "/api/plugins/install",
+      pluginInstallPayload(source),
+    ),
   pluginEnable: (id: string) =>
     postJSON<{ ok: boolean; plugin?: AgentPlugin; error?: string }>("/api/plugins/enable", { id }),
   pluginDisable: (id: string) =>

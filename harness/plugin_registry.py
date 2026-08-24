@@ -1,8 +1,9 @@
 """Installed Agent Plugins v1 packages under ~/.pmharness/plugins.
 
-Discover, install-from-path, and enable/disable portable packages. Default is
-disabled until explicitly enabled. Skills and MCP configs are namespaced so
-they never overwrite SkillStore files or collide with native mcp.json.
+Discover, install-from-path or resolved git/https/github sources, and
+enable/disable portable packages. Default is disabled until explicitly
+enabled. Skills and MCP configs are namespaced so they never overwrite
+SkillStore files or collide with native mcp.json.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import json
 import os
 import re
 import shutil
+import tempfile
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,6 +27,12 @@ from .agent_plugins import (
     compute_package_sha256,
     load_agent_plugin,
     read_agent_plugin_manifest,
+)
+from .plugin_source_urls import (
+    ResolvedPluginSource,
+    coerce_plugin_source,
+    git_clone_plugin_source,
+    resolve_plugin_source,
 )
 from .secure_files import restrict_to_owner
 from .diag import note as _diag
@@ -331,17 +339,44 @@ def discover_plugins() -> List[PluginRecord]:
     return records
 
 
-def install_from_path(source: str) -> PluginRecord:
-    """Copy an absolute plugin package path into the plugins dir (disabled)."""
-    raw = (source or "").strip()
-    if not raw:
-        raise AgentPluginError("install path is required")
-    src = Path(raw).expanduser()
-    if not src.is_absolute():
-        raise AgentPluginError("install path must be absolute")
-    if not src.exists() or not src.is_dir():
-        raise AgentPluginError("install path must be an existing directory")
-    # Validate before copying so a bad package never lands in the registry.
+def _clone_resolved_source(resolved: ResolvedPluginSource, dest: Path) -> None:
+    """Clone a remote plugin source into ``dest`` (git / https / github)."""
+    url = (resolved.clone_url or "").strip()
+    if not url:
+        raise AgentPluginError("plugin source clone URL is required")
+    git_clone_plugin_source(url, dest, ref=(resolved.ref or None))
+
+
+def _materialize_source(source: object, *, clone_fn=None) -> Tuple[Path, Optional[Path]]:
+    resolved = coerce_plugin_source(source)
+    if resolved.kind == "path":
+        src = Path(os.path.expanduser(resolved.path or resolved.raw)).expanduser()
+        if not src.is_absolute():
+            raise AgentPluginError("install path must be absolute")
+        if not src.exists() or not src.is_dir():
+            raise AgentPluginError("install path must be an existing directory")
+        return src, None
+    tmp = Path(tempfile.mkdtemp(prefix="marionette-plugin-src-"))
+    shutil.rmtree(tmp, ignore_errors=True)
+    try:
+        cloner = clone_fn or _clone_resolved_source
+        cloner(resolved, tmp)
+        root = tmp
+        if resolved.subdir:
+            root = tmp / resolved.subdir
+            try:
+                root.resolve().relative_to(tmp.resolve())
+            except ValueError as exc:
+                raise AgentPluginError("plugin subdir escapes source checkout") from exc
+            if not root.is_dir():
+                raise AgentPluginError("plugin subdir not found in source")
+        return root, tmp
+    except Exception:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+
+
+def _install_materialized(src: Path) -> PluginRecord:
     staging_ns = portable_skill_namespace("_install_probe")
     package = load_agent_plugin(src, plugin_data_root() / staging_ns)
     install_id = _sanitize_install_id(package.name)
@@ -355,7 +390,6 @@ def install_from_path(source: str) -> PluginRecord:
         except OSError as exc:
             raise AgentPluginError(f"failed to install plugin: {exc}") from exc
         digest = write_integrity_stamp(dest)
-        # Ensure default-disabled: remove from enabled if somehow present.
         enabled = [x for x in _read_enabled() if x != install_id]
         _write_enabled(enabled)
     namespace = portable_skill_namespace(install_id)
@@ -364,6 +398,26 @@ def install_from_path(source: str) -> PluginRecord:
     return _record_from_package(
         install_id, loaded, enabled=False, digest=digest, stamp_ok=True
     )
+
+
+def install_from_path(source: str, *, clone_fn=None) -> PluginRecord:
+    """Copy a local dir or git / https / github source into plugins (disabled)."""
+    src, cleanup = _materialize_source(source, clone_fn=clone_fn)
+    try:
+        return _install_materialized(src)
+    finally:
+        if cleanup is not None:
+            shutil.rmtree(cleanup, ignore_errors=True)
+
+
+def install_from_source(source: object, *, clone_fn=None) -> PluginRecord:
+    """Install from a path string, source URL, or resolved source mapping."""
+    src, cleanup = _materialize_source(source, clone_fn=clone_fn)
+    try:
+        return _install_materialized(src)
+    finally:
+        if cleanup is not None:
+            shutil.rmtree(cleanup, ignore_errors=True)
 
 
 def enable_plugin(plugin_id: str) -> PluginRecord:

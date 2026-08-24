@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { Puzzle, Power, PowerOff, FolderPlus } from "lucide-react";
 import { api, type AgentPlugin } from "../lib/api";
+import { PluginSourceError, resolvePluginSource } from "../lib/pluginSourceUrls";
 import { usePanelNotice } from "../lib/useOperationalDiagnostic";
 
-/** Minimal Agent Plugins v1 Settings pane: list, enable/disable, install path. */
+/** Minimal Agent Plugins v1 Settings pane: list, enable/disable, install path or URL. */
 export default function PluginsPane({ embedded = false }: { embedded?: boolean }) {
   const [plugins, setPlugins] = useState<AgentPlugin[]>([]);
   const [busy, setBusy] = useState("");
@@ -50,20 +51,23 @@ export default function PluginsPane({ embedded = false }: { embedded?: boolean }
   };
 
   const install = async () => {
-    const path = installPath.trim();
-    if (!path) {
-      setError("Absolute package path is required");
+    const raw = installPath.trim();
+    if (!raw) {
+      setError("Plugin source path, git URL, https URL, or GitHub repo is required");
       return;
     }
-    if (!path.startsWith("/") && !/^[A-Za-z]:[\\/]/.test(path)) {
-      setError("Install path must be absolute");
+    try {
+      resolvePluginSource(raw);
+    } catch (err) {
+      setError(err instanceof PluginSourceError ? err.message : "Invalid plugin source");
       return;
     }
     setBusy("install");
     setError("");
     setMsg("");
     try {
-      const res = await api.pluginInstall(path);
+      const res = await api.pluginInstall(raw);
+
       if (!res.ok) {
         setError(res.error || "install failed");
         return;
@@ -92,7 +96,7 @@ export default function PluginsPane({ embedded = false }: { embedded?: boolean }
           type="text"
           value={installPath}
           onChange={(e) => setInstallPath(e.target.value)}
-          placeholder="/absolute/path/to/plugin"
+          placeholder="/absolute/path or https://github.com/owner/repo"
           className="flex-1 min-w-0 px-2 py-1.5 rounded-md bg-panel2 border border-edge/50 text-[12px] text-txt placeholder:text-faint"
           data-testid="plugins-install-path"
         />
