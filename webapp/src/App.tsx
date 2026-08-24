@@ -15,6 +15,7 @@ import KeyBootstrapBanner from "./components/KeyBootstrapBanner";
 import { focusSettingsPage } from "./components/SettingsShell";
 import Resizer from "./components/Resizer";
 import RegistryWizard from "./components/RegistryWizard";
+import OnboardingOverlay from "./components/OnboardingOverlay";
 import ErrorBoundary from "./components/ErrorBoundary";
 import CommandPalette from "./components/CommandPalette";
 import {
@@ -133,6 +134,7 @@ export default function App() {
   }, [leftOpen]);
 
   const [showWizard, setShowWizard] = useState(false);
+  const [showOverlay, setShowOverlay] = useState(false);
 
   const fetchConfig = () => {
     api.config().then(setConfig).catch(() => {});
@@ -193,7 +195,7 @@ export default function App() {
     };
   }, []);
 
-  // First-run gate: onboarding store decides whether to auto-open RegistryWizard.
+  // First-run gate: onboarding store decides whether to auto-open OnboardingOverlay.
   useEffect(() => {
     const checkSetupStatus = async () => {
       if (!shouldAutoOpenOnboardingWizard()) return;
@@ -205,7 +207,7 @@ export default function App() {
           setConfigured(true);
           return;
         }
-        setShowWizard(true);
+        setShowOverlay(true);
       } catch (err) {
         console.error("Failed to check provider setup", err);
         // On a status-check failure, do NOT force the wizard open -- an API hiccup
@@ -306,7 +308,7 @@ export default function App() {
       {/* Keyless nudge: agentic is the shipped default, so instead of a demo run
           we tell the user to plug in a key. Suppressed while the first-run wizard
           is up (it already covers key setup) to avoid stacking two prompts. */}
-      {config && (config.workers_ready ?? config.agentic_ready) === false && !showWizard && (
+      {config && (config.workers_ready ?? config.agentic_ready) === false && !showWizard && !showOverlay && (
         <ProviderKeyBanner
           variant={
             config.pilot_ready && (config.workers_ready ?? config.agentic_ready) === false
@@ -319,7 +321,7 @@ export default function App() {
           }}
         />
       )}
-      {config?.key_bootstrap_issues && config.key_bootstrap_issues.length > 0 && !showWizard && (
+      {config?.key_bootstrap_issues && config.key_bootstrap_issues.length > 0 && !showWizard && !showOverlay && (
         <KeyBootstrapBanner
           issues={config.key_bootstrap_issues}
           onOpenSettings={() => {
@@ -428,6 +430,7 @@ export default function App() {
           onOpenEconomics={() => openRightTo("economics")} />
       </div>
 
+      {showOverlay && <OnboardingOverlay onClose={() => setShowOverlay(false)} />}
       {showWizard && <RegistryWizard onClose={() => setShowWizard(false)} />}
 
       <CommandPalette
