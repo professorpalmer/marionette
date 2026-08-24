@@ -66,7 +66,7 @@ const SUMMARY_MAX = 160;
 const DETAIL_MAX = 280;
 
 const SECRET_LIKE =
-  /(?:bearer\s+[a-z0-9._\-+=\/]+|sk-[a-z0-9]{8,}|api[_-]?key\s*[:=]\s*\S+|x-harness-token\s*[:=]\s*\S+|authorization\s*[:=]\s*\S+)/gi;
+  /(?:bearer\s+[a-z0-9._\-+=\/]+|sk-[a-z0-9]{8,}|api[_-]?key\s*[:=]\s*\S+|x-harness-token\s*[:=]\s*\S+|authorization\s*[:=]\s*\S+|AIza[0-9A-Za-z_\-]{10,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/gi;
 
 let nextId = 0;
 
@@ -96,8 +96,7 @@ export function isOperationalDiagnostic(value: unknown): value is OperationalDia
 }
 
 export function sanitizeDiagnosticText(text: string, max = SUMMARY_MAX): string {
-  const cut = String(text || "").replace(/\r/g, "").split("\n")[0] || "";
-  const redacted = cut.replace(SECRET_LIKE, "[redacted]").replace(SECRET_LIKE, "[redacted]");
+  const redacted = String(text || "").replace(/\r/g, "").replace(SECRET_LIKE, "[redacted]");
   if (redacted.length <= max) return redacted;
   return redacted.slice(0, Math.max(0, max - 1)).trimEnd() + "…";
 }

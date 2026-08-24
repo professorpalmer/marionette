@@ -226,7 +226,6 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
         "/api/sessions/create": post_json(
             _sessions_api.post_sessions_create, services=svc.session_services),
         "/api/sessions/relocate": _post_session_relocate,
-        "/api/sessions/move": _post_session_relocate,
         "/api/sessions/switch": post_json(
             _sessions_api.post_sessions_switch, services=svc.session_services),
         "/api/sessions/delete": post_json(
