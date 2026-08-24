@@ -219,6 +219,10 @@ export type Job = {
   updated_at?: number | string | null;
   tokens?: number;
   est_cost_usd?: number;
+  /** Measured provider/live spend when split from estimated (financial receipt). */
+  measured_cost_usd?: number | null;
+  /** Estimated/unpriced spend when split from measured (financial receipt). */
+  estimated_cost_usd?: number | null;
   /** provider | live | static | default — how this job's dollars were derived. */
   cost_provenance?: "provider" | "live" | "static" | "default";
   /** True when the dollar figure is not a full provider receipt. */

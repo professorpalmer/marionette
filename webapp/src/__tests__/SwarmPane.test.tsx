@@ -465,7 +465,7 @@ describe("SwarmPane worker details", () => {
     fireEvent.click(screen.getByText("Finished"));
     fireEvent.click(await screen.findByText("Inspect completed worker"));
 
-    const worker = screen.getByText("completed-worker").closest('[role="button"]');
+    const worker = screen.getAllByText("completed-worker")[0].closest('[role="button"]');
     expect(worker).not.toBeNull();
     expect(worker).toHaveAttribute("aria-expanded", "false");
     fireEvent.click(worker!);
@@ -889,10 +889,12 @@ describe("SwarmPane mid-run job-row meters", () => {
 
     await waitFor(() => {
       expect(screen.getAllByText("12,000t").length).toBeGreaterThan(0);
-      expect(screen.getByText("1,500 compact")).toBeInTheDocument();
-      expect(screen.getAllByText("Estimated cost ~$0.0500").length).toBeGreaterThan(0);
+      expect(screen.getByText(/1,500 compact/)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Job cost/ })).toHaveTextContent("$0.05");
       expect(screen.getByText("Estimated savings ~$0.0553")).toBeInTheDocument();
     });
+    fireEvent.click(screen.getByRole("button", { name: /Job cost/ }));
+    expect(screen.getByText("Estimated")).toBeInTheDocument();
     expect(screen.queryByText("8,000 cached")).not.toBeInTheDocument();
     expect(screen.getByTitle(/model selection value vs frontier-equivalent list price/)).toBeInTheDocument();
     expect(screen.getByTitle(/prompt-cache value/)).toBeInTheDocument();
@@ -1536,7 +1538,7 @@ describe("SwarmPane worker-owned routing surface", () => {
     expect(modelSlot.className).toMatch(/truncate/);
     expect(modelSlot.className).toMatch(/min-w-0/);
     expect(modelSlot).not.toHaveAttribute("title");
-    expect(screen.queryByText("running")).not.toBeInTheDocument();
+    expect(screen.getByText("running")).toBeInTheDocument();
     expect(worker).not.toHaveTextContent("—");
     expect(screen.queryByText("review every uncovered branch in the swarm tracker")).not.toBeInTheDocument();
     expect(screen.queryByText("Routing")).not.toBeInTheDocument();
@@ -1714,6 +1716,7 @@ describe("SwarmPane worker-owned routing surface", () => {
 
     render(<SwarmPane />);
     await expandVisibleJobs();
+    fireEvent.click(screen.getByRole("button", { name: "Show tokens and cost" }));
     const worker = await screen.findByRole("button", { name: /Worker/ });
     expect(worker).toHaveTextContent("$0");
     expect(worker).not.toHaveTextContent("—");
@@ -1741,6 +1744,7 @@ describe("SwarmPane worker-owned routing surface", () => {
 
     render(<SwarmPane />);
     await expandVisibleJobs();
+    fireEvent.click(screen.getByRole("button", { name: "Show tokens and cost" }));
     const worker = await screen.findByRole("button", { name: /Worker/ });
     expect(worker).toHaveTextContent("$0");
   });
@@ -1793,8 +1797,12 @@ describe("SwarmPane worker tokens and cost", () => {
     await waitFor(() => {
       expect(screen.getByText("Workers (2)")).toBeInTheDocument();
     });
+    expect(screen.queryByText("120,000t")).not.toBeInTheDocument();
+    expect(screen.queryByText("Estimated cost ~$0.1400")).not.toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: "Show tokens and cost" })[0]);
     expect(screen.getByText("120,000t")).toBeInTheDocument();
     expect(screen.getByText("Estimated cost ~$0.1400")).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: "Show tokens and cost" })[1]);
     expect(screen.getByText("60,000t")).toBeInTheDocument();
     expect(screen.getByText("Estimated cost ~$0.0700")).toBeInTheDocument();
     expect(screen.queryByText("build it")).not.toBeInTheDocument();
@@ -1935,7 +1943,7 @@ describe("SwarmPane worker outcome hierarchy", () => {
     fireEvent.click(await screen.findByText("Fully successful terminal"));
 
     expect(screen.getByText("Workers (3)")).toBeInTheDocument();
-    expect(screen.queryByText("3/3")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Workers")).toHaveTextContent("3/3");
     expect(screen.getByLabelText(/3 of 3 workers finished, 0 failed, 0 degraded/)).toBeInTheDocument();
   });
 
@@ -2017,7 +2025,7 @@ describe("SwarmPane worker outcome hierarchy", () => {
     expect(workerA).not.toHaveTextContent("degraded");
     expect(workerB).not.toHaveTextContent("degraded");
     expect(screen.queryByText(/degraded/)).not.toBeInTheDocument();
-    expect(screen.queryByText("2/2")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Workers")).toHaveTextContent("2/2");
   });
 
   it("does not paint workers failed or degraded from job-level degraded without task-scoped artifact", async () => {
@@ -2915,5 +2923,38 @@ describe("receipt-first spend (#102)", () => {
     } as Job;
     expect(workerSpend(job.tasks![0], job)).toBeNull();
     expect(workerSpend(job.tasks![1], job)).toBeNull();
+  });
+});
+
+
+describe("swarm tracker usage pills (0.9.300)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
+    clearSWRCache();
+    mockArtifacts.mockResolvedValue([]);
+  });
+
+  it("keeps header cost collapsed until click expands Measured / Estimated", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        status: "running",
+        tokens: 12_000,
+        est_cost_usd: 1.5,
+        measured_cost_usd: 1.25,
+        estimated_cost_usd: 0.25,
+      }),
+    );
+    render(<SwarmPane />);
+    const cost = await screen.findByRole("button", { name: /Job cost/ });
+    expect(cost).toHaveTextContent("$1.50");
+    expect(screen.queryByText("Measured")).not.toBeInTheDocument();
+    expect(screen.queryByText("Estimated")).not.toBeInTheDocument();
+    fireEvent.click(cost);
+    expect(screen.getByText("Measured")).toBeInTheDocument();
+    expect(screen.getByText("$1.25")).toBeInTheDocument();
+    expect(screen.getByText("Estimated")).toBeInTheDocument();
+    expect(screen.getByText("$0.25")).toBeInTheDocument();
   });
 });
