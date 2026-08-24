@@ -3315,15 +3315,20 @@ export default function Conversation({
     []
   );
   const handleCommandApproval = useCallback(
-    (item: CommandApprovalItem, approve: boolean) => {
+    (item: CommandApprovalItem, decision: boolean | "amendment") => {
+      const approveOriginal = decision === true;
+      const approveAmendment = decision === "amendment";
+      const approve = approveOriginal || approveAmendment;
       setItems((current) => updateCommandApproval(
         current,
         item.commandHash,
         { status: "approving", error: undefined },
       ));
-      const request = approve
-        ? api.approveCommand(item.sessionId, item.workspaceRoot, item.commandHash)
-        : api.rejectCommand(item.sessionId, item.workspaceRoot, item.commandHash);
+      const request = approveAmendment
+        ? api.approveCommandAmendment(item.sessionId, item.workspaceRoot, item.commandHash)
+        : approveOriginal
+          ? api.approveCommand(item.sessionId, item.workspaceRoot, item.commandHash)
+          : api.rejectCommand(item.sessionId, item.workspaceRoot, item.commandHash);
       void request.then((response) => {
         setItems((current) => updateCommandApproval(
           current,

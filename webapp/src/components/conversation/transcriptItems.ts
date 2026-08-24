@@ -454,6 +454,9 @@ export function transcriptResponseToItems(res: {
           category: m.category || "",
           reason: m.reason || "",
           matched: m.matched || "",
+          ...(typeof m.suggested_amendment === "string" && m.suggested_amendment.trim()
+            ? { suggestedAmendment: m.suggested_amendment.trim() }
+            : {}),
           status,
           ...(typeof m.error === "string" && m.error ? { error: m.error } : {}),
         }];

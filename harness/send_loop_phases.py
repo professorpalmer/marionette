@@ -3222,6 +3222,11 @@ def dispatch_local_action(
                     "category": pending.get("category") or block.get("category"),
                     "reason": pending.get("reason") or block.get("reason"),
                     "matched": pending.get("matched") or block.get("matched"),
+                    **(
+                        {"suggested_amendment": pending["suggested_amendment"]}
+                        if pending.get("suggested_amendment")
+                        else {}
+                    ),
                 })
                 # Pair action_start so turn-end settle cannot invent opaque
                 # "missing action_result" while the approval card is open.

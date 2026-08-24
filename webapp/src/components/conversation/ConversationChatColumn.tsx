@@ -62,7 +62,7 @@ export default function ConversationChatColumn({
   onImageClick: (url: string) => void;
   onSetCard: (id: string, patch: Partial<Card>) => void;
   onExecutePlan: (planText: string) => void;
-  onCommandApproval: (item: CommandApprovalItem, approve: boolean) => void;
+  onCommandApproval: (item: CommandApprovalItem, decision: boolean | "amendment") => void;
   onSecretRequest?: (item: SecretRequestItem, decision: { action: "save"; value: string } | { action: "dismiss" }) => void;
   onAuthFailureRetry?: () => void;
   composerDock: ReactNode;

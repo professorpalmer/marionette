@@ -223,6 +223,7 @@ export type CommandApprovalItem = {
   category: string;
   reason: string;
   matched: string;
+  suggestedAmendment?: string;
   status: "pending" | "approving" | "approved" | "rejected" | "error";
   error?: string;
 };
@@ -1128,7 +1129,7 @@ export type TranscriptListProps = {
   onImageClick: (url: string) => void;
   onSetCard: (id: string, patch: Partial<Card>) => void;
   onExecutePlan: (planText: string) => void;
-  onCommandApproval: (item: CommandApprovalItem, approve: boolean) => void;
+  onCommandApproval: (item: CommandApprovalItem, decision: boolean | "amendment") => void;
   onSecretRequest?: (item: SecretRequestItem, decision: { action: "save"; value: string } | { action: "dismiss" }) => void;
   /** Relaunch the failed turn after provider auth recovery (Settings still opens). */
   onAuthFailureRetry?: () => void;
@@ -1419,6 +1420,7 @@ export const TranscriptList = memo(function TranscriptList({
     } else if (it.kind === "command_approval") {
       const decisionPending = it.status === "pending" || it.status === "error";
       const statusCopy = commandApprovalStatusCopy(it.status);
+      const amendment = (it.suggestedAmendment || "").trim();
       return (
         <div
           key={key}
@@ -1433,6 +1435,13 @@ export const TranscriptList = memo(function TranscriptList({
                 Full-auto did not run this command.{" "}
                 {it.reason || it.category || "Safety policy requires an explicit decision."}
               </div>
+              {(it.category || it.matched) ? (
+                <div className="mt-1 text-[10px] text-faint font-mono">
+                  {it.category ? <span>category: {it.category}</span> : null}
+                  {it.category && it.matched ? <span> · </span> : null}
+                  {it.matched ? <span>matched: {it.matched}</span> : null}
+                </div>
+              ) : null}
               <button
                 type="button"
                 onClick={(e) => {
@@ -1445,8 +1454,14 @@ export const TranscriptList = memo(function TranscriptList({
               >
                 {it.command}
               </button>
+              {amendment ? (
+                <div className="mt-1.5 text-[10px] text-muted">
+                  Suggested safer rewrite:{" "}
+                  <span className="font-mono text-accent/85">{amendment}</span>
+                </div>
+              ) : null}
               {it.error ? <div className="mt-1.5 text-risk/90">{it.error}</div> : null}
-              <div className="mt-2 flex items-center gap-2">
+              <div className="mt-2 flex flex-wrap items-center gap-2">
                 {decisionPending ? (
                   <>
                     <button
@@ -1456,6 +1471,15 @@ export const TranscriptList = memo(function TranscriptList({
                     >
                       Approve once and retry
                     </button>
+                    {amendment ? (
+                      <button
+                        type="button"
+                        onClick={() => onCommandApproval(it, "amendment")}
+                        className="rounded-md border border-edge bg-panel px-2.5 py-1 font-medium text-txt hover:border-accent/40"
+                      >
+                        Approve suggested amendment
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       onClick={() => onCommandApproval(it, false)}

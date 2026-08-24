@@ -900,6 +900,7 @@ export function appendCommandApproval(
     category?: string;
     reason?: string;
     matched?: string;
+    suggested_amendment?: string;
   },
 ): Item[] {
   // Reject empty/malformed hashes so they cannot occupy the empty-string
@@ -913,6 +914,7 @@ export function appendCommandApproval(
   )) {
     return items;
   }
+  const suggestedAmendment = (data.suggested_amendment || "").trim();
   return [
     ...items,
     {
@@ -925,6 +927,7 @@ export function appendCommandApproval(
       category: data.category || "",
       reason: data.reason || "",
       matched: data.matched || "",
+      ...(suggestedAmendment ? { suggestedAmendment } : {}),
       status: "pending",
     },
   ];

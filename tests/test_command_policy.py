@@ -155,3 +155,33 @@ def test_verdict_shape():
     assert v.danger and v.category and v.reason and v.matched
     safe = classify_command("ls")
     assert not safe.danger and safe.category == "" and safe.matched == ""
+
+
+# ---- suggested_amendment: known rewrites only ---------------------------------
+
+from harness.command_policy import suggested_amendment
+
+
+@pytest.mark.parametrize("cmd,want", [
+    ("git push --force origin main", "git push --force-with-lease origin main"),
+    ("git push -f", "git push --force-with-lease"),
+    ("git push -f origin HEAD:main", "git push --force-with-lease origin HEAD:main"),
+    ("GIT push --Force origin main", "GIT push --force-with-lease origin main"),
+])
+def test_force_push_suggests_force_with_lease(cmd, want):
+    assert suggested_amendment(cmd) == want
+
+
+def test_force_with_lease_has_no_amendment():
+    assert suggested_amendment("git push --force-with-lease origin main") is None
+
+
+@pytest.mark.parametrize("cmd", [
+    "git push origin main",
+    "rm -rf /",
+    "ssh prod reboot",
+    "ls -la",
+    "",
+])
+def test_unknown_commands_have_no_amendment(cmd):
+    assert suggested_amendment(cmd) is None

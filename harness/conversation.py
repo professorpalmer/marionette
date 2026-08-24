@@ -1170,7 +1170,7 @@ class ConversationalSession(
         status: str,
     ) -> dict:
         """Serialize a durable display-transcript command-approval card."""
-        return {
+        row = {
             "type": "command_approval",
             "id": pending.get("action_id") or pending.get("command_hash") or "",
             "command": pending.get("command") or "",
@@ -1182,6 +1182,10 @@ class ConversationalSession(
             "matched": pending.get("matched") or "",
             "status": status,
         }
+        amendment = pending.get("suggested_amendment") or ""
+        if amendment:
+            row["suggested_amendment"] = amendment
+        return row
 
     def _pending_command_approval_from_display_row(self, row: Any) -> Optional[dict]:
         """Validate a durable pending approval card for decision-state restore.
@@ -1219,7 +1223,7 @@ class ConversationalSession(
         row_key = self._approval_workspace_key(workspace_root)
         if not canonical or not row_key or row_key != canonical:
             return None
-        return {
+        pending = {
             "session_id": session_id,
             "workspace_root": os.path.realpath(self.config.repo or ""),
             "command": command,
@@ -1229,6 +1233,15 @@ class ConversationalSession(
             "reason": str(row.get("reason") or ""),
             "matched": str(row.get("matched") or ""),
         }
+        amendment = row.get("suggested_amendment")
+        if isinstance(amendment, str) and amendment.strip():
+            pending["suggested_amendment"] = amendment
+        elif not pending.get("suggested_amendment"):
+            from .command_policy import suggested_amendment as _suggested_amendment
+            rewritten = _suggested_amendment(command)
+            if rewritten:
+                pending["suggested_amendment"] = rewritten
+        return pending
 
     def _restore_pending_command_approvals_from_display(self) -> None:
         """Rebuild in-memory pending decisions from durable display cards.
@@ -1277,6 +1290,7 @@ class ConversationalSession(
         category: str = "",
         reason: str = "",
         matched: str = "",
+        suggested_amendment: str = "",
     ) -> dict:
         """Retain one blocked full-auto command for an operator decision.
 
@@ -1284,6 +1298,12 @@ class ConversationalSession(
         transcript so ring-miss / cursor-gap hydrate can restore the card
         without depending on retained SSE frames.
         """
+        from .command_policy import suggested_amendment as _suggested_amendment
+
+        amendment = (suggested_amendment or "").strip()
+        if not amendment:
+            rewritten = _suggested_amendment(command)
+            amendment = rewritten or ""
         pending = {
             "session_id": self.harness_session_id,
             "workspace_root": os.path.realpath(self.config.repo or ""),
@@ -1294,6 +1314,8 @@ class ConversationalSession(
             "reason": reason or "",
             "matched": matched or "",
         }
+        if amendment:
+            pending["suggested_amendment"] = amendment
         with self._command_approval_lock_guard():
             self._pending_command_approvals[command_hash] = pending
             self._upsert_display_command_approval(pending, status="pending")
@@ -1329,6 +1351,52 @@ class ConversationalSession(
                 status="approved" if approve else "rejected",
             )
             return dict(pending)
+
+    def decide_command_approval_amendment(
+        self,
+        *,
+        command_hash: str,
+        workspace_root: str,
+    ) -> Optional[dict]:
+        """Approve the suggested amendment instead of the original command.
+
+        Consumes the original pending hash, registers a one-shot approval for
+        ``sha256(amendment)``, and returns a payload whose ``command`` /
+        ``command_hash`` refer to the amendment (for retry).
+        """
+        from .command_policy import suggested_amendment as _suggested_amendment
+
+        requested_workspace = self._approval_workspace_key(workspace_root)
+        with self._command_approval_lock_guard():
+            pending = self._pending_command_approvals.get(command_hash)
+            if pending is None:
+                return None
+            pending_workspace = self._approval_workspace_key(
+                pending.get("workspace_root") or ""
+            )
+            if not requested_workspace or requested_workspace != pending_workspace:
+                raise PermissionError("command approval workspace does not match")
+            if pending.get("session_id") != self.harness_session_id:
+                raise PermissionError("command approval session does not match")
+            amendment = str(pending.get("suggested_amendment") or "").strip()
+            if not amendment:
+                amendment = (_suggested_amendment(pending.get("command") or "") or "").strip()
+            if not amendment:
+                raise ValueError("pending command has no suggested amendment")
+            amendment_hash = hashlib.sha256(amendment.encode("utf-8")).hexdigest()
+            self._pending_command_approvals.pop(command_hash, None)
+            self._approved_commands.discard(command_hash)
+            self._approved_commands.add(amendment_hash)
+            self._upsert_display_command_approval(
+                pending,
+                status="approved",
+            )
+            result = dict(pending)
+            result["command"] = amendment
+            result["command_hash"] = amendment_hash
+            result["original_command_hash"] = command_hash
+            result["suggested_amendment"] = amendment
+            return result
 
     def register_pending_secret_request(self, payload: dict):
         from .secret_request import register_pending_secret_request
