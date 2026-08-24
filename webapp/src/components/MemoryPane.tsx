@@ -32,6 +32,8 @@ export default function MemoryPane({ embedded = false }: { embedded?: boolean })
   const [entries, setEntries] = useState<MemoryEntry[]>([]);
   const [totalChars, setTotalChars] = useState(0);
   const [limit, setLimit] = useState(4000);
+  const [graphNodes, setGraphNodes] = useState(0);
+  const [graphEdges, setGraphEdges] = useState(0);
   const [newText, setNewText] = useState("");
   const [newCategory, setNewCategory] = useState("general");
   const [busy, setBusy] = useState("");
@@ -44,6 +46,14 @@ export default function MemoryPane({ embedded = false }: { embedded?: boolean })
       setEntries(res.memory || []);
       setTotalChars(res.total_chars ?? 0);
       setLimit(res.limit ?? 4000);
+      try {
+        const g = await api.memoryGraph();
+        setGraphNodes((g.nodes || []).length);
+        setGraphEdges((g.edges || []).length);
+      } catch {
+        setGraphNodes(res.memory?.length ?? 0);
+        setGraphEdges(0);
+      }
     } catch (err: any) {
       setMsg(err?.error || "Failed to load memory");
     }
@@ -105,6 +115,8 @@ export default function MemoryPane({ embedded = false }: { embedded?: boolean })
           </span>
           <span className="text-[10px] text-muted">
             {totalChars} / {limit} chars
+            {" · "}
+            {graphNodes} nodes / {graphEdges} edges
           </span>
         </div>
 

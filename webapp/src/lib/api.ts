@@ -1520,6 +1520,17 @@ export const api = {
   skillApprove: (slug: string) => postJSON<{ ok: boolean }>("/api/skills/approve", { slug }),
   skillReject: (slug: string) => postJSON<{ ok: boolean }>("/api/skills/reject", { slug }),
   memory: () => getJSON<{ memory: { id: string; text: string; category: string; created_at: number; source: string }[]; total_chars: number; limit: number }>("/api/memory"),
+  memoryGraph: (q?: string) =>
+    getJSON<{ nodes: { id: string; text?: string; category?: string; created_at?: number; source?: string; kind?: string }[]; edges: { id: string; source: string; target: string; rel: string; created_at: number }[] }>(
+      q && q.trim()
+        ? `/api/memory/graph?q=${encodeURIComponent(q.trim())}`
+        : "/api/memory/graph",
+    ),
+  memoryGraphAddEdge: (source: string, target: string, rel: string) =>
+    postJSON<{ id: string; source: string; target: string; rel: string; created_at: number }>(
+      "/api/memory/graph/edge",
+      { source, target, rel },
+    ),
   memoryAdd: (text: string, category?: string) => postJSON<{ id: string; text: string; category: string }>("/api/memory/add", { text, category }),
   memoryRemove: (id: string) => postJSON<{ ok: boolean }>("/api/memory/remove", { id }),
   memoryProposeAccept: (id: string) =>
