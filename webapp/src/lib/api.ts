@@ -1308,6 +1308,21 @@ export const api = {
     postJSON<{ ok: boolean; provided: boolean; connector: string; field: string; resume?: boolean }>("/api/secrets/submit", body),
   dismissSecret: (body: { session_id: string; connector: string; field: string }) =>
     postJSON<{ ok: boolean; provided: boolean; connector: string; field: string; resume?: boolean }>("/api/secrets/dismiss", body),
+  collabHeartbeat: (body: { session_id: string; id: string; label?: string }) =>
+    postJSON<{
+      ok: boolean;
+      session_id: string;
+      peer: { id: string; label: string; last_seen: number };
+      ttl: number;
+      error?: string;
+    }>("/api/collab/presence/heartbeat", body),
+  collabPresence: (sessionId: string) =>
+    getJSON<{
+      session_id: string;
+      peers: { id: string; label: string; last_seen: number }[];
+      ttl: number;
+      error?: string;
+    }>(`/api/collab/presence?session_id=${encodeURIComponent(sessionId)}`),
   secretPresence: (opts: { session_id?: string; connector?: string; field?: string }) => {
     const qs = new URLSearchParams();
     if (opts.session_id) qs.set("session_id", opts.session_id);

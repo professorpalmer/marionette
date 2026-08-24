@@ -110,9 +110,12 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
     from .api import wiki as _wiki_api
     from .api import workspace as _ws_api
     from .api import worktrees as _wt_api
+    from .api import collab_presence as _collab_presence_api
 
     routes: dict[str, PostHandler] = {
         "/api/browser/relay": post_json(_browser_api.post_browser_relay),
+        "/api/collab/presence/heartbeat": post_json(
+            _collab_presence_api.post_presence_heartbeat),
         "/api/reviews/apply": post_json(
             _rev_api.post_reviews_apply, services=svc.review_services),
         "/api/reviews/dismiss": post_json(
@@ -458,6 +461,7 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
     from .api import wiki as _wiki_api
     from .api import workspace as _ws_api
     from .api import worktrees as _wt_api
+    from .api import collab_presence as _collab_presence_api
 
     def _get_git_diff(handler: Any, u: Any, qs: dict) -> Any:
         staged = qs.get("staged", ["0"])[0].strip().lower() in ("1", "true", "yes")
@@ -769,4 +773,6 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
             _sessions_api.get_sessions_search, services=svc.session_services,
             pass_qs=True),
         "/api/auto": _get_auto,
+        "/api/collab/presence": get_json(
+            _collab_presence_api.get_presence, pass_qs=True),
     }
