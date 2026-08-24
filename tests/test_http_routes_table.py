@@ -45,6 +45,7 @@ _SAMPLE_GUARDED_POST = (
     "/api/file/write",
     "/api/commands/approve",
     "/api/commands/reject",
+    "/api/commands/approve-amendment",
     "/api/restart",
     "/api/session/interrupt",
     "/api/session/compact",

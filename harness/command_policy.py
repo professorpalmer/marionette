@@ -407,6 +407,32 @@ def classify_command(command: str) -> CommandVerdict:
     return CommandVerdict(False, "", "", "")
 
 
+# Known rewrites only — not a general sanitizer. First rewrite: bare force-push
+# (`--force` / `-f`, but not `--force-with-lease`) → `--force-with-lease`.
+_FORCE_PUSH_LONG = re.compile(r"--force(?!-with-lease)\b", re.IGNORECASE)
+_FORCE_PUSH_SHORT = re.compile(r"(?<![\w-])-f(?![\w-])")
+_GIT_PUSH = re.compile(r"\bgit\s+push\b", re.IGNORECASE)
+
+
+def suggested_amendment(command: str) -> str | None:
+    """Return a safer rewrite for known patterns, else ``None``.
+
+    Only encodes curated substitutions (today: force-push → force-with-lease).
+    Does not invent a general command sanitizer.
+    """
+    cmd = command or ""
+    if not _GIT_PUSH.search(cmd):
+        return None
+    # Already the safe variant — never rewrite --force-with-lease.
+    if _FORCE_PUSH_LONG.search(cmd) is None and _FORCE_PUSH_SHORT.search(cmd) is None:
+        return None
+    amended = _FORCE_PUSH_LONG.sub("--force-with-lease", cmd)
+    amended = _FORCE_PUSH_SHORT.sub("--force-with-lease", amended)
+    if amended == cmd:
+        return None
+    return amended
+
+
 def run_cancellable(
     command: str,
     *,

@@ -1308,6 +1308,20 @@ export const api = {
       workspace_root: workspaceRoot,
       command_hash: commandHash,
     }),
+  approveCommandAmendment: (sessionId: string, workspaceRoot: string, commandHash: string) =>
+    postJSON<{
+      ok: boolean;
+      decision: "approved_amendment";
+      session_id: string;
+      workspace_root: string;
+      command_hash: string;
+      original_command_hash: string;
+      retry_command: string;
+    }>("/api/commands/approve-amendment", {
+      session_id: sessionId,
+      workspace_root: workspaceRoot,
+      command_hash: commandHash,
+    }),
   rejectCommand: (sessionId: string, workspaceRoot: string, commandHash: string) =>
     postJSON<{ ok: boolean; decision: "rejected"; command_hash: string }>(
       "/api/commands/reject",

@@ -140,6 +140,9 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
         "/api/commands/reject": post_json(
             _command_approval_api.post_command_rejection,
             services=svc.command_approval_services),
+        "/api/commands/approve-amendment": post_json(
+            _command_approval_api.post_command_approval_amendment,
+            services=svc.command_approval_services),
         "/api/secrets/submit": post_json(
             _secrets_api.post_secrets_submit,
             services=svc.command_approval_services),

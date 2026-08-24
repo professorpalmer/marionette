@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from harness.api.command_approvals import (
     CommandApprovalServices,
     post_command_approval,
+    post_command_approval_amendment,
     post_command_rejection,
 )
 from harness.config import HarnessConfig
@@ -218,3 +219,102 @@ def test_api_approve_after_export_load_history_roundtrip(tmp_path):
     assert wrong[0] == 403
     assert command_hash in restored2._pending_command_approvals
     assert os.path.realpath(str(tmp_path / "other")) != pending["workspace_root"]
+
+
+def test_approve_amendment_uses_new_hash(tmp_path):
+    """Approve-amendment registers sha256(amendment); original approve path unchanged."""
+    cfg = HarnessConfig(repo=str(tmp_path), state_dir=str(tmp_path / "st"))
+    session = ConversationalSession(cfg)
+    session.harness_session_id = "session-a"
+    command = "git push --force origin main"
+    command_hash = hashlib.sha256(command.encode()).hexdigest()
+    amendment = "git push --force-with-lease origin main"
+    amendment_hash = hashlib.sha256(amendment.encode()).hexdigest()
+    pending = session.register_pending_command_approval(
+        command=command,
+        command_hash=command_hash,
+        action_id="call-amend",
+        category="force-push",
+        reason="history-rewriting git push",
+        matched="git push --force",
+    )
+    assert pending.get("suggested_amendment") == amendment
+    services = _services({"session-a": session})
+
+    status, payload = post_command_approval_amendment(
+        {
+            "session_id": "session-a",
+            "workspace_root": pending["workspace_root"],
+            "command_hash": command_hash,
+        },
+        services,
+    )
+    assert status == 200
+    assert payload["decision"] == "approved_amendment"
+    assert payload["retry_command"] == amendment
+    assert payload["command_hash"] == amendment_hash
+    assert payload["original_command_hash"] == command_hash
+    assert command_hash not in session._pending_command_approvals
+    assert amendment_hash in session._approved_commands
+    assert command_hash not in session._approved_commands
+
+
+def test_original_approve_path_unchanged_for_force_push(tmp_path):
+    """Approving the original command still approves the original hash."""
+    cfg = HarnessConfig(repo=str(tmp_path), state_dir=str(tmp_path / "st"))
+    session = ConversationalSession(cfg)
+    session.harness_session_id = "session-a"
+    command = "git push -f"
+    command_hash = hashlib.sha256(command.encode()).hexdigest()
+    pending = session.register_pending_command_approval(
+        command=command,
+        command_hash=command_hash,
+        action_id="call-orig",
+        category="force-push",
+        reason="history-rewriting git push",
+        matched="git push -f",
+    )
+    assert pending.get("suggested_amendment") == "git push --force-with-lease"
+    services = _services({"session-a": session})
+
+    status, payload = post_command_approval(
+        {
+            "session_id": "session-a",
+            "workspace_root": pending["workspace_root"],
+            "command_hash": command_hash,
+        },
+        services,
+    )
+    assert status == 200
+    assert payload["decision"] == "approved"
+    assert payload["retry_command"] == command
+    assert payload["command_hash"] == command_hash
+    assert command_hash in session._approved_commands
+
+
+def test_approve_amendment_rejects_when_no_suggestion(tmp_path):
+    cfg = HarnessConfig(repo=str(tmp_path), state_dir=str(tmp_path / "st"))
+    session = ConversationalSession(cfg)
+    session.harness_session_id = "session-a"
+    command = "ssh prod reboot"
+    command_hash = hashlib.sha256(command.encode()).hexdigest()
+    pending = session.register_pending_command_approval(
+        command=command,
+        command_hash=command_hash,
+        action_id="call-no-amend",
+        category="remote-shell",
+        reason="ssh",
+        matched="ssh",
+    )
+    assert not pending.get("suggested_amendment")
+    status, payload = post_command_approval_amendment(
+        {
+            "session_id": "session-a",
+            "workspace_root": pending["workspace_root"],
+            "command_hash": command_hash,
+        },
+        _services({"session-a": session}),
+    )
+    assert status == 400
+    assert "amendment" in payload["error"].lower()
+    assert command_hash in session._pending_command_approvals

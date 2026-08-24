@@ -25,6 +25,7 @@ _POST_ROUTES_SAMPLE = (
     "/api/mcp/refresh",
     "/api/commands/approve",
     "/api/commands/reject",
+    "/api/commands/approve-amendment",
 )
 
 
