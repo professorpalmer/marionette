@@ -7,9 +7,11 @@ dump-and-query plane: compact writes the middle here, later turns retrieve
 matching slices the way wiki grounding retrieves pages. Never raises.
 """
 
+import hashlib
 import os
 import re
 import sqlite3
+import time
 from typing import Any, List
 
 from harness.api.redaction import redact_secret_text
@@ -496,3 +498,78 @@ def build_turn_vault_section(
 ) -> str:
     """Wiki-style inject for the current user ask. Never raises."""
     return str(build_turn_vault_cite(state_dir, session_id, user_message).get("section") or "")
+
+
+def snap_compact(
+    state_dir: str,
+    session_id: str,
+    messages: Any,
+    *,
+    snapshot_id: str = "",
+) -> dict:
+    """One-shot compact-to-snapshot via archive + vault + journal. Never raises.
+
+    Folds hot context into the existing compaction archive sidecar, FTS vault,
+    and history journal. Does not invent a second engine or rewrite live
+    history — Compact Now still owns the LLM residual path.
+    """
+    empty = {
+        "ok": False,
+        "snapshot_id": "",
+        "session_id": "",
+        "archived": False,
+        "archived_messages": 0,
+        "vault_chunks": 0,
+        "chars_before": 0,
+        "reason": "no_compactable_history",
+    }
+    try:
+        sid = _safe_session_id(session_id)
+        copied = [m for m in (messages or []) if isinstance(m, dict)]
+        if not state_dir or not sid or not copied:
+            empty["session_id"] = sid
+            return empty
+        chars_before = sum(len(str(m.get("content") or "")) for m in copied)
+        if not snapshot_id:
+            digest = hashlib.sha256()
+            digest.update(sid.encode("utf-8"))
+            digest.update(str(len(copied)).encode("ascii"))
+            digest.update(str(time.time()).encode("ascii"))
+            snapshot_id = "snap-" + digest.hexdigest()[:16]
+        from harness.compaction_archive import (
+            append_compaction_archive,
+            load_compaction_archive_messages,
+        )
+        from harness.history_compaction_journal import (
+            EVENT_COMPACT,
+            record_history_compaction,
+        )
+
+        archived = bool(append_compaction_archive(state_dir, sid, copied))
+        vault_chunks = int(index_elided_messages(state_dir, sid, copied) or 0)
+        record_history_compaction(
+            state_dir,
+            sid,
+            len(copied),
+            chars_before,
+            0,
+            f"snapcompact {snapshot_id}",
+            event_kind=EVENT_COMPACT,
+            compact_policy="snap",
+        )
+        archived_messages = (
+            len(load_compaction_archive_messages(state_dir, sid)) if archived else 0
+        )
+        return {
+            "ok": True,
+            "snapshot_id": snapshot_id,
+            "session_id": sid,
+            "archived": archived,
+            "archived_messages": archived_messages,
+            "vault_chunks": vault_chunks,
+            "chars_before": chars_before,
+            "reason": "ok",
+        }
+    except Exception:
+        return empty
+

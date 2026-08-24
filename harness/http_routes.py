@@ -122,8 +122,10 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
             needs_body=False),
         "/api/restart": _post_restart,
         "/api/session/compact": post_json(
-            _sc_api.post_session_compact, services=svc.session_control_services,
-            needs_body=False),
+            _sc_api.post_session_compact_routed, services=svc.session_control_services),
+        "/api/session/snapcompact": post_json(
+            _sc_api.post_session_snapcompact_routed,
+            services=svc.session_control_services),
         "/api/checkpoints/restore": post_json(
             _ckpt_api.post_checkpoints_restore, services=svc.checkpoint_services),
         "/api/checkpoints/snapshot": post_json(
