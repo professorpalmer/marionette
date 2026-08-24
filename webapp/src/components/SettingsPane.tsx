@@ -23,6 +23,7 @@ import { usePanelNotice } from "../lib/useOperationalDiagnostic";
 import { SettingsCollapse } from "./SettingsCollapse";
 import WindowGlassSettings from "./WindowGlassSettings";
 import ProviderConfigModal from "./ProviderConfigModal";
+import SettingsOptIns from "./SettingsOptIns";
 import type { ProviderConfigValues } from "../lib/providerConfig";
 
 export type SettingsSection = "general" | "safety" | "providers" | "notifications" | "plugins" | "advanced";
@@ -1078,58 +1079,9 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
-        {gate("general", "auto-distill distillation toggle") && settings && (<>
-        {/* Auto Distill Toggle */}
-        <div className="space-y-1.5">
-          <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
-            Auto-Distill
-          </label>
-          <button
-            onClick={() => update({ auto_distill: !settings.auto_distill })}
-            disabled={saving}
-            className={`w-full flex items-center justify-between px-3 py-2 rounded border transition text-left ${
-              settings.auto_distill
-                ? "bg-accent/10 border-accent/30 text-accent"
-                : "bg-panel2 border-edge text-muted"
-            } disabled:opacity-50`}
-          >
-            <span className="font-medium text-[11px]">Propose skills/rules after task</span>
-            <span className="text-[10px] uppercase font-bold tracking-wider">
-              {settings.auto_distill ? "on" : "off"}
-            </span>
-          </button>
-          <p className="text-[10px] text-muted">
-            When enabled, PM proposes pending skill/rule candidates automatically on task completion.
-          </p>
-        </div>
-
-        </>)}
-        {gate("general", "hash edit hash-anchored experimental") && settings && (<>
-        {/* Hash-anchored edits (experimental) */}
-        <div className="space-y-1.5">
-          <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
-            Hash-Anchored Edits
-          </label>
-          <button
-            onClick={() => update({ hash_edit_enabled: !(settings.hash_edit_enabled ?? false) })}
-            disabled={saving}
-            className={`w-full flex items-center justify-between px-3 py-2 rounded border transition text-left ${
-              (settings.hash_edit_enabled ?? false)
-                ? "bg-accent/10 border-accent/30 text-accent"
-                : "bg-panel2 border-edge text-muted"
-            } disabled:opacity-50`}
-          >
-            <span className="font-medium text-[11px]">Hash-anchored edits (experimental)</span>
-            <span className="text-[10px] uppercase font-bold tracking-wider">
-              {(settings.hash_edit_enabled ?? false) ? "on" : "off"}
-            </span>
-          </button>
-          <p className="text-[10px] text-muted">
-            When on, the agent may apply edits anchored by content hashes instead of line numbers.
-          </p>
-        </div>
-
-        </>)}
+        {gate("general", "opt-ins optin auto-distill distillation toggle hash edit hash-anchored experimental review edits diff review toggle auto-verify edits typecheck syntax check self-correct diagnostics") && settings && (
+          <SettingsOptIns settings={settings} onUpdate={(partial) => { void update(partial); }} saving={saving} />
+        )}
         {gate("general", "compaction residual hybrid summary catalog vault compact handle index") && settings && (<>
         <div className="space-y-1.5">
           <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
@@ -1172,59 +1124,6 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             story after compact, then retrieve matching slices later.
             Hybrid adds a paid LLM paragraph on top. Summary is the paid
             paragraph alone.
-          </p>
-        </div>
-
-        </>)}
-        {gate("general", "review edits diff review toggle") && settings && (<>
-        {/* Diff Review Toggle */}
-        <div className="space-y-1.5">
-          <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
-            Review Edits
-          </label>
-          <button
-            onClick={() => update({ reviewEditsBeforeApply: !settings.reviewEditsBeforeApply })}
-            disabled={saving}
-            className={`w-full flex items-center justify-between px-3 py-2 rounded border transition text-left ${
-              settings.reviewEditsBeforeApply
-                ? "bg-accent/10 border-accent/30 text-accent"
-                : "bg-panel2 border-edge text-muted"
-            } disabled:opacity-50`}
-          >
-            <span className="font-medium text-[11px]">Review edits before applying</span>
-            <span className="text-[10px] uppercase font-bold tracking-wider">
-              {settings.reviewEditsBeforeApply ? "on" : "off"}
-            </span>
-          </button>
-          <p className="text-[10px] text-muted">
-            When on, agent edits are held for your per-hunk approval instead of auto-applying.
-          </p>
-        </div>
-
-        </>)}
-        {gate("general", "auto-verify edits typecheck syntax check self-correct diagnostics") && settings && (<>
-        {/* Auto-Verify Edits Toggle */}
-        <div className="space-y-1.5">
-          <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
-            Auto-Verify Edits
-          </label>
-          <button
-            onClick={() => update({ autoVerify: !(settings.autoVerify ?? true) })}
-            disabled={saving}
-            className={`w-full flex items-center justify-between px-3 py-2 rounded border transition text-left ${
-              (settings.autoVerify ?? true)
-                ? "bg-accent/10 border-accent/30 text-accent"
-                : "bg-panel2 border-edge text-muted"
-            } disabled:opacity-50`}
-          >
-            <span className="font-medium text-[11px]">Check edits and self-correct</span>
-            <span className="text-[10px] uppercase font-bold tracking-wider">
-              {(settings.autoVerify ?? true) ? "on" : "off"}
-            </span>
-          </button>
-          <p className="text-[10px] text-muted">
-            After the agent edits files, run a fast project check (typecheck / syntax on the
-            changed files) and let it self-correct in the same turn before handing back.
           </p>
         </div>
 
