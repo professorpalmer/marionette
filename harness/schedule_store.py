@@ -826,6 +826,41 @@ class ScheduleStore:
                     pass
                 raise
 
+    def release_claim(self, schedule_id: str, run_id=None) -> bool:
+        """Clear this schedule live claim so another daemon can take over.
+
+        If run_id is set, only the matching claim_run_id is released.
+        """
+        with self._lock:
+            if run_id:
+                cur = self._conn.execute(
+                    """
+                    UPDATE schedules SET
+                        claim_owner = '',
+                        claim_at = 0,
+                        claim_lease_until = 0,
+                        claim_fire_at = 0,
+                        claim_run_id = ''
+                    WHERE id = ? AND claim_run_id = ? AND claim_owner != ''
+                    """,
+                    (schedule_id, run_id),
+                )
+            else:
+                cur = self._conn.execute(
+                    """
+                    UPDATE schedules SET
+                        claim_owner = '',
+                        claim_at = 0,
+                        claim_lease_until = 0,
+                        claim_fire_at = 0,
+                        claim_run_id = ''
+                    WHERE id = ? AND claim_owner != ''
+                    """,
+                    (schedule_id,),
+                )
+            self._conn.commit()
+            return cur.rowcount > 0
+
     def request_cancel(self, schedule_id: str) -> bool:
         """Ask an active claim to cancel cooperatively."""
         with self._lock:

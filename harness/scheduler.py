@@ -687,6 +687,17 @@ class SchedulerDaemon:
                     f"scheduler stop: cancel {sid} failed: "
                     f"{type(exc).__name__}: {exc}"
                 )
+            releaser = getattr(self.store, "release_claim", None)
+            if callable(releaser):
+                try:
+                    releaser(sid, run_id=self._active.get("run_id") or None)
+                except TypeError:
+                    try:
+                        releaser(sid)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
         closer = getattr(self.store, "close", None)
         if callable(closer):
             try:

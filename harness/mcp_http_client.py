@@ -289,7 +289,11 @@ class HttpMcpClient:
         except urllib.error.HTTPError as e:
             # Application HTTP errors (4xx/5xx) do not clear liveness; the
             # server answered. Redirect/SSRF blocks also arrive as HTTPError.
-            raise McpError(f"MCP server '{self.name}' HTTP {e.code}: {e.read()[:200].decode(errors='replace')}")
+            try:
+                e.read()
+            except Exception:
+                pass
+            raise McpError(f"MCP server '{self.name}' HTTP {e.code}")
         except urllib.error.URLError as e:
             # Transport failure → not alive (do not keep sticky init).
             self._initialized = False
@@ -312,7 +316,7 @@ class HttpMcpClient:
         try:
             return json.loads(raw)
         except json.JSONDecodeError:
-            raise McpError(f"MCP server '{self.name}': non-JSON response: {raw[:200]}")
+            raise McpError(f"MCP server '{self.name}': non-JSON response")
 
     def _notify(self, method: str, params: dict) -> None:
         self._post({"jsonrpc": "2.0", "method": method, "params": params}, self.timeout)

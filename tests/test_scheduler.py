@@ -809,3 +809,17 @@ def test_complete_claim_false_on_refusal_returns_superseded(tmp_path):
     assert run["status"] == "superseded"
     assert run["halt_reason"] == "ownership_lost"
     assert notifier.calls == []
+
+
+def test_daemon_stop_releases_live_claim(tmp_path):
+    store = _store(tmp_path)
+    s = _add_due(store, tmp_path, "release-claim")
+    store.try_claim(s.id, fire_at=1.0, owner="daemon-active", lease_seconds=600)
+    assert store.get(s.id).claim_owner
+    daemon = SchedulerDaemon(store)
+    daemon._active["schedule_id"] = s.id
+    daemon.stop()
+    got = ScheduleStore(str(tmp_path / "s.sqlite")).get(s.id)
+    assert not got.claim_owner
+    assert not got.claim_run_id
+    assert (got.claim_lease_until or 0) == 0
