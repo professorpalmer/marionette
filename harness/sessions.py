@@ -527,8 +527,15 @@ class SessionStore:
             for s in self._sessions:
                 if s["id"] != sid:
                     continue
+                old_root = session_stored_root(s)
                 s["workspace_root"] = ws_root
                 s["repo"] = (repo or ws_root).strip()
+                if old_root != ws_root:
+                    try:
+                        from .context_switch_guard import note_switch
+                        note_switch("relocate", old_root, ws_root)
+                    except Exception:
+                        pass
                 if branch:
                     s["branch"] = branch
                 if title is not None and str(title).strip():

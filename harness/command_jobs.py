@@ -309,9 +309,9 @@ def _run_registered_command_job(
     command = command or ""
     if getattr(session, "_auto_mode", False) and getattr(session, "_auto_command_guard", None):
         try:
-            from harness.command_policy import classify_command
+            from harness.command_policy import guard_destructive_command
 
-            verdict = classify_command(command)
+            verdict = guard_destructive_command(command)
             cmd_hash = hashlib.sha256(command.encode("utf-8")).hexdigest()
             approved = False
             consume = getattr(session, "consume_command_approval", None)

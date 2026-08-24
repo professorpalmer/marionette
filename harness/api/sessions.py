@@ -344,6 +344,11 @@ def post_sessions_switch(body: dict, svc: SessionServices) -> tuple[int, dict]:
             svc.cfg.repo = target_repo
             os.environ["HARNESS_REPO"] = target_repo
             try:
+                from ..context_switch_guard import note_switch
+                note_switch("session", prev_repo or "", target_repo)
+            except Exception as e:
+                svc.diag("server.session_switch_note_guard", e)
+            try:
                 from ..swarm_adapter import ensure_repo_swarm_adapter
                 ensure_repo_swarm_adapter(svc.cfg)
             except Exception as e:

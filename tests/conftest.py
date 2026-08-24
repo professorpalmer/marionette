@@ -290,6 +290,23 @@ def _clear_pm_resolver_cache():
 
 
 @pytest.fixture(autouse=True)
+def _clear_context_switch_latch():
+    # Process-wide latch from context_switch_guard; reset so a relocate/switch
+    # test cannot rewrite later danger verdicts to context-switch-unconfirmed.
+    try:
+        from harness.context_switch_guard import reset_for_tests
+        reset_for_tests()
+    except Exception:
+        pass
+    yield
+    try:
+        from harness.context_switch_guard import reset_for_tests
+        reset_for_tests()
+    except Exception:
+        pass
+
+
+@pytest.fixture(autouse=True)
 def _clear_wiki_env(monkeypatch):
     monkeypatch.delenv("WIKI_API_BASE", raising=False)
     monkeypatch.delenv("WIKI_OWNER_TOKEN", raising=False)
