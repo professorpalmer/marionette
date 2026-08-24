@@ -3042,6 +3042,27 @@ export default function Conversation({
       window.dispatchEvent(new Event("harness-new-session"));
       return;
     }
+    if (slash.kind === "refine") {
+      const refineText = slash.text || "";
+      setInput("");
+      setEditingIndex(null);
+      if (!refineText) {
+        setItems((p) => [
+          ...p,
+          { kind: "msg", msg: { role: "user", text: msg } },
+          { kind: "msg", msg: { role: "assistant", text: "Usage: /refine <memory|rule|skill|role text>. Accept/dismiss/rollback stay on the existing refine cards." } },
+        ]);
+        return;
+      }
+      api.refinePropose?.({ text: refineText, kind: "memory" })
+        .catch(() => undefined);
+      setItems((p) => [
+        ...p,
+        { kind: "msg", msg: { role: "user", text: msg } },
+        { kind: "msg", msg: { role: "assistant", text: "Queued refine proposal on the existing controller." } },
+      ]);
+      return;
+    }
     if (slash.kind === "compact") {
       // Local slash path: echo the command into the transcript so Send feels
       // like a normal prompt (compaction itself still bypasses the pilot loop).

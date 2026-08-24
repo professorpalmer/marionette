@@ -20,6 +20,7 @@ REFINE_SCOPES = ("local", "global")
 FORBIDDEN_KINDS = ("system_prompt", "system", "frozen_system_prompt")
 LOCAL_REFINE_FILENAME = "local_refine.json"
 SNAPSHOT_FILENAME = "refine_snapshot.json"
+HISTORY_FILENAME = "refinements.jsonl"
 
 
 def _now() -> float:
@@ -146,6 +147,76 @@ class HarnessRefineController:
         self._snapshot_path = (
             os.path.join(state_dir, SNAPSHOT_FILENAME) if state_dir else ""
         )
+
+
+    def _history_path(self) -> str:
+        state_dir = str(getattr(self.session, "state_dir", "") or "")
+        if not state_dir:
+            return ""
+        return os.path.join(state_dir, HISTORY_FILENAME)
+
+    def _append_history(self, event: str, payload: Dict[str, Any]) -> None:
+        path = self._history_path()
+        if not path:
+            return
+        rec = {"event": event, "ts": _now(), **dict(payload or {})}
+        try:
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
+    def list_history(self, *, limit: int = 50) -> List[dict]:
+        """Read append-only applied-refine history (newest last)."""
+        path = self._history_path()
+        if not path or not os.path.isfile(path):
+            return []
+        out: List[dict] = []
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except Exception:
+                        continue
+                    if isinstance(rec, dict):
+                        out.append(rec)
+        except Exception:
+            return out
+        if limit and len(out) > int(limit):
+            return out[-int(limit):]
+        return out
+
+    def handle_slash(self, raw: str) -> Dict[str, Any]:
+        """Slash /refine on this controller — list history or propose."""
+        text = (raw or "").strip()
+        if text.lower().startswith("/refine"):
+            text = text[7:].strip()
+        if not text:
+            return {
+                "ok": True,
+                "history": self.list_history(),
+                "usage": "/refine [kind] [scope] <text>",
+            }
+        parts = text.split()
+        kind = "memory"
+        scope = "global"
+        rest = text
+        if parts and parts[0].lower() in REFINE_KINDS:
+            kind = parts[0].lower()
+            rest = " ".join(parts[1:])
+            more = rest.split()
+            if more and more[0].lower() in REFINE_SCOPES:
+                scope = more[0].lower()
+                rest = " ".join(more[1:])
+        prop = self.propose(kind=kind, text=rest, scope=scope)
+        if prop is None:
+            return {"ok": False, "error": "could not propose refine"}
+        return {"ok": True, "proposed": prop.to_dict()}
 
     @property
     def pending(self) -> Dict[str, RefineProposal]:
@@ -314,6 +385,7 @@ class HarnessRefineController:
         applied["id"] = prop.id
         applied["kind"] = prop.kind
         applied["scope"] = prop.scope
+        self._append_history("accept", {"id": prop.id, "kind": prop.kind, "scope": prop.scope, "text": prop.text})
         return applied
 
     def dismiss(self, proposal_id: str) -> Dict[str, Any]:
@@ -339,6 +411,7 @@ class HarnessRefineController:
             self._restore_snapshot(snap)
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
+        self._append_history("rollback", {"ok": True})
         return {"ok": True, "rolled_back": True}
 
     def _apply(self, prop: RefineProposal) -> Dict[str, Any]:

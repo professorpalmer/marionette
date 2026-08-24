@@ -78,6 +78,7 @@ def get_config(svc: SettingsServices) -> tuple[int, JsonPayload]:
         "reasoning_effort": reasoning_effort,
         "package_version": identity.get("package_version", ""),
         "checkout_sha": identity.get("checkout_sha", ""),
+        "session_trace_export": (os.environ.get("HARNESS_SESSION_TRACE_EXPORT") or "").strip().lower() in ("1", "true", "yes", "on"),
         "app_root": identity.get("app_root", ""),
         "key_bootstrap_issues": key_bootstrap_issues,
     }

@@ -27,6 +27,7 @@ class SessionGoal:
     elapsed_seconds: float = 0.0
     continuation_count: int = 0
     token_budget: Optional[int] = None
+    budget_exceeded: bool = False
     # Wall-clock anchor for elapsed_seconds while status is active.
     _active_since: float = field(default=0.0, repr=False)
 
@@ -40,6 +41,7 @@ class SessionGoal:
             "elapsed_seconds": float(self.elapsed_seconds),
             "continuation_count": int(self.continuation_count),
             "token_budget": self.token_budget,
+            "budget_exceeded": bool(self.budget_exceeded),
         }
 
     @classmethod
@@ -67,6 +69,7 @@ class SessionGoal:
             elapsed_seconds=float(data.get("elapsed_seconds") or 0.0),
             continuation_count=int(data.get("continuation_count") or 0),
             token_budget=token_budget,
+            budget_exceeded=bool(data.get("budget_exceeded")),
             _active_since=float(data.get("_active_since") or 0.0),
         )
 
@@ -84,6 +87,7 @@ class SessionGoal:
             self.created_at = now
         self.updated_at = now
         self._active_since = now
+        self.budget_exceeded = False
         if token_budget is not None:
             try:
                 self.token_budget = int(token_budget)
@@ -145,6 +149,13 @@ class SessionGoal:
         if continuation:
             self.continuation_count = int(self.continuation_count) + 1
         self.updated_at = time.time()
+        if self.token_budget is not None:
+            try:
+                if int(self.token_count) >= int(self.token_budget):
+                    self.pause()
+                    self.budget_exceeded = True
+            except (TypeError, ValueError):
+                pass
         return self
 
     def continuation_prompt(self) -> str:

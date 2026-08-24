@@ -22,6 +22,8 @@ from typing import Any, Optional
 
 DEFAULT_TIMEOUT_SEC = 60.0
 DEFAULT_OUTPUT_CAP = 64 * 1024
+MAX_IPYTHON_DEPTH = 2
+_ipython_depth = threading.local()
 _INSTALL_HINT = (
     "IPython is not installed. For richer display/repr, run: "
     "pip install ipython  (stdlib fallback kernel is still active)"
