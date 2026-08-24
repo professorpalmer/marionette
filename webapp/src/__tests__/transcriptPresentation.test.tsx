@@ -457,11 +457,13 @@ describe("transcript presentation contract", () => {
 
     render(<TranscriptList {...listProps(items)} />);
 
+    fireEvent.click(screen.getByRole("button", { name: /Explored|Swarm/i }));
+
     expect(screen.getByText(/worker timed out after 30s/i)).toBeTruthy();
-    // ActionCards are no longer terminal owners; each durable job result remains distinct.
+    // Swarm receipts live in the activity strip; duplicate routing failures collapse inside it.
     const failedLabels = screen.getAllByText(/swarm failed/i);
-    expect(failedLabels).toHaveLength(3);
-    expect(screen.getAllByText(/No model in registry has all required tags/i)).toHaveLength(2);
+    expect(failedLabels).toHaveLength(2);
+    expect(screen.getAllByText(/No model in registry has all required tags/i)).toHaveLength(1);
   });
 
   it("paints held_for_review and analysis_ok badges without applied/failed chrome", () => {
@@ -506,6 +508,8 @@ describe("transcript presentation contract", () => {
       />,
     );
 
+    fireEvent.click(screen.getByRole("button", { name: /Swarm · 3 results/i }));
+
     const cards = screen.getAllByTestId("swarm-result-card");
     const byOutcome = Object.fromEntries(
       cards.map((el) => [el.getAttribute("data-outcome"), el]),
@@ -536,6 +540,8 @@ describe("transcript presentation contract", () => {
         }])}
       />,
     );
+
+    fireEvent.click(screen.getByRole("button", { name: /Swarm · 1 result/i }));
 
     const card = screen.getByTestId("swarm-result-card");
     fireEvent.click(within(card).getByRole("button", { name: /swarm done/i }));
@@ -591,6 +597,8 @@ describe("transcript presentation contract", () => {
         ])}
       />,
     );
+
+    fireEvent.click(screen.getByRole("button", { name: /Swarm · 1 result/i }));
 
     const heldCard = screen.getByTestId("swarm-result-card");
     expect(heldCard).toHaveAttribute("data-outcome", "held");
@@ -948,6 +956,8 @@ describe("job_id → Swarm Tracker deep-link chrome", () => {
     const hydratedItems = JSON.parse(JSON.stringify(persistedItems)) as Item[];
 
     render(<TranscriptList {...listProps(hydratedItems)} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Swarm · 2 results/i }));
 
     screen.getAllByText("swarm done").forEach((label) => {
       fireEvent.click(label.closest("button")!);
