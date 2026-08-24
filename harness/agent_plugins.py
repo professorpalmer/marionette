@@ -7,6 +7,7 @@ No remote schema fetch and no Python import from packages.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -28,7 +29,9 @@ _PLUGIN_FIELDS = {
     "license",
     "keywords",
     "extensions",
+    "permissions",
 }
+_PLUGIN_PERMISSIONS = frozenset({"network", "filesystem"})
 _AUTHOR_FIELDS = {"name", "email", "url"}
 _STDIO_FIELDS = {"type", "command", "args", "env", "cwd"}
 _REMOTE_FIELDS = {"type", "url", "headers"}
@@ -60,6 +63,9 @@ class AgentPluginSkill:
     frontmatter: Mapping[str, Any]
 
 
+STAMP_FILENAME = ".integrity.json"
+
+
 @dataclass(frozen=True)
 class AgentPluginPackage:
     name: str
@@ -70,7 +76,49 @@ class AgentPluginPackage:
     manifest: Mapping[str, Any]
     skills: Tuple[AgentPluginSkill, ...]
     mcp_servers: Mapping[str, Dict[str, Any]]
+    permissions: Tuple[str, ...]
+    content_sha256: str
     diagnostics: Tuple[AgentPluginDiagnostic, ...]
+
+
+def compute_plugin_content_sha256(plugin_root: Path) -> str:
+    """Canonical sha256 over regular files under the installed package root.
+
+    Skips the integrity stamp file itself and any path under ``.git``.
+    Volatile per-install data under ``plugin_data_root`` is outside the package
+    tree and is intentionally excluded.
+    """
+    root = Path(plugin_root).resolve(strict=False)
+    if not root.is_dir():
+        raise AgentPluginError("plugin root must be a directory")
+    hasher = hashlib.sha256()
+    try:
+        paths = sorted(
+            (
+                path
+                for path in root.rglob("*")
+                if path.is_file() and not path.is_symlink()
+            ),
+            key=lambda path: path.relative_to(root).as_posix(),
+        )
+    except OSError as exc:
+        raise AgentPluginError(f"cannot hash plugin contents: {exc}") from exc
+    for path in paths:
+        rel = path.relative_to(root).as_posix()
+        parts = rel.split("/")
+        if STAMP_FILENAME in parts or ".git" in parts:
+            continue
+        hasher.update(rel.encode("utf-8"))
+        hasher.update(b"\0")
+        try:
+            hasher.update(path.read_bytes())
+        except OSError as exc:
+            raise AgentPluginError(f"cannot hash plugin file {rel}: {exc}") from exc
+        hasher.update(b"\0")
+    return hasher.hexdigest()
+
+
+compute_package_sha256 = compute_plugin_content_sha256
 
 
 def _inside(path: Path, root: Path) -> bool:
@@ -249,6 +297,20 @@ def _validate_manifest(root: Path) -> Tuple[dict, List[AgentPluginDiagnostic]]:
                 "plugin.json author may contain only string name, email, and url fields"
             )
 
+    if "permissions" in manifest:
+        permissions = manifest["permissions"]
+        if not isinstance(permissions, list) or any(
+            not isinstance(value, str) for value in permissions
+        ):
+            raise AgentPluginError("plugin.json permissions must be an array of strings")
+        unknown = [value for value in permissions if value not in _PLUGIN_PERMISSIONS]
+        if unknown:
+            raise AgentPluginError(
+                "plugin.json permissions may only include network and filesystem"
+            )
+        if len(set(permissions)) != len(permissions):
+            raise AgentPluginError("plugin.json permissions must not contain duplicates")
+
     if "extensions" in manifest:
         extensions = manifest["extensions"]
         if not isinstance(extensions, dict):
@@ -279,6 +341,13 @@ def _validate_manifest(root: Path) -> Tuple[dict, List[AgentPluginDiagnostic]]:
                         )
 
     return manifest, diagnostics
+
+
+def _manifest_permissions(manifest: Mapping[str, Any]) -> Tuple[str, ...]:
+    raw = manifest.get("permissions")
+    if not isinstance(raw, list):
+        return ()
+    return tuple(value for value in raw if isinstance(value, str))
 
 
 def _valid_skill_frontmatter(
@@ -610,6 +679,8 @@ def load_agent_plugin(plugin_root: Path, data_root: Path) -> AgentPluginPackage:
         manifest=dict(manifest),
         skills=skills,
         mcp_servers=mcp_servers,
+        permissions=_manifest_permissions(manifest),
+        content_sha256=compute_plugin_content_sha256(root),
         diagnostics=tuple(diagnostics),
     )
 
