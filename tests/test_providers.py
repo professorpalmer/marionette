@@ -1,7 +1,9 @@
 """Provider registry: detection from env keys, driver selection by api_mode,
 spec resolution, and MIT attribution presence. Data adapted from Hermes (MIT)."""
+import json
 import os
 import tempfile
+import urllib.request
 import pytest
 from harness import providers as prov
 
@@ -180,6 +182,92 @@ def test_build_pilot_selects_anthropic_driver(monkeypatch):
     assert d.model == "claude-opus-4-8"
 
 
+def test_build_pilot_selects_openai_responses_driver(monkeypatch):
+    """First-party openai: routes through CodexResponsesDriver (api.openai.com)."""
+    from pmharness.drivers.codex_responses import CodexResponsesDriver
+
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-oai-test")
+    d = prov.build_pilot("openai:gpt-5.6-luna")
+    assert isinstance(d, CodexResponsesDriver)
+    assert d.base_url == "https://api.openai.com/v1"
+    assert d.api_key_env == "OPENAI_API_KEY"
+    assert d.chatgpt_backend is False
+    assert d.model == "gpt-5.6-luna"
+
+
+def test_build_pilot_openai_responses_wire(monkeypatch):
+    """openai:gpt-5.6-luna posts /v1/responses with reasoning + tools, not chat."""
+    from pmharness.drivers.codex_responses import CodexResponsesDriver
+
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-oai-test")
+    monkeypatch.setenv("HARNESS_CODEX_REASONING_EFFORT", "max")
+    d = prov.build_pilot("openai:gpt-5.6-luna", max_tokens=8000)
+    assert isinstance(d, CodexResponsesDriver)
+
+    captured = {}
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def __iter__(self):
+            return iter([
+                (
+                    b'data: {"type":"response.output_item.added","output_index":0,'
+                    b'"item":{"type":"function_call","id":"fc_1","name":"read_file",'
+                    b'"arguments":"{\\"path\\":\\"x\\"}"}}\n'
+                ),
+                (
+                    b'data: {"type":"response.output_item.done","output_index":0,'
+                    b'"item":{"type":"function_call","id":"fc_1","call_id":"fc_1",'
+                    b'"name":"read_file","arguments":"{\\"path\\":\\"x\\"}"}}\n'
+                ),
+                (
+                    b'data: {"type":"response.completed","response":{"status":"completed",'
+                    b'"usage":{"input_tokens":10,"output_tokens":5}}}\n'
+                ),
+            ])
+
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        captured["headers"] = {k.lower(): v for k, v in req.headers.items()}
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return _Resp()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    resp = d.chat(
+        [{"role": "user", "content": "hi"}],
+        tools=[{
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }],
+    )
+
+    assert captured["url"] == "https://api.openai.com/v1/responses"
+    body = captured["body"]
+    assert body["reasoning"]["effort"] == "max"
+    assert body["reasoning"]["summary"] == "auto"
+    assert body.get("tools")
+    assert body.get("tool_choice") == "auto"
+    assert body.get("parallel_tool_calls") is True
+    assert body.get("max_output_tokens", 0) > 0
+    assert "reasoning_effort" not in body
+    assert "messages" not in body
+    assert "originator" not in captured["headers"]
+    assert resp.meta.get("billing") == "api"
+    assert resp.meta.get("api_mode") == "responses"
+    assert resp.meta.get("tool_calls")
+
+
 def test_build_pilot_selects_openai_compat(monkeypatch):
     from pmharness.drivers.openai_compat import OpenAICompatDriver
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-xxx")
@@ -225,6 +313,8 @@ def test_build_pilot_bare_gpt55_prefers_openai_codex(monkeypatch):
         d = prov.build_pilot("gpt-5.5")
         assert isinstance(d, CodexResponsesDriver)
         assert d.model == "gpt-5.5"
+        assert d.chatgpt_backend is True
+        assert d.api_key_env == "OPENAI_CODEX_TOKEN"
     finally:
         cp.clear_pools_for_tests()
 

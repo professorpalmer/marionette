@@ -245,6 +245,7 @@ _NATIVE_IMAGE_API_MODES = frozenset({
     "chat_completions",
     "anthropic_messages",
     "codex_responses",
+    "responses",
     "gemini_native",
 })
 
@@ -371,7 +372,7 @@ def pilot_supports_native_images(
     # "fallback provider happens to declare a vision_model" as native — that
     # incorrectly skipped the sidecar for stub/fake pilots when
     # resolve_provider_for_spec fell through to openrouter.
-    if api_mode == "codex_responses":
+    if api_mode in ("codex_responses", "responses"):
         return True
     if api_mode in ("anthropic_messages", "gemini_generate") and model_id:
         return True
