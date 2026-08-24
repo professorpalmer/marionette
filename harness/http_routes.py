@@ -105,6 +105,7 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
     from .api import settings as _settings_api
     from .api import skills as _skills_api
     from .api import terminals as _term_api
+    from .api import usage as _usage_api
     from .api import wiki as _wiki_api
     from .api import workspace as _ws_api
     from .api import worktrees as _wt_api
@@ -307,6 +308,7 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
             _plat_api.post_platform, services=svc.platform_services),
         "/api/settings": post_json(
             _settings_api.post_settings, services=svc.settings_services),
+        "/api/usage": post_json(_usage_api.post_usage),
         "/api/providers/probe": post_json(_prov_api.post_providers_probe),
         "/api/providers/key": post_json(
             _prov_api.post_providers_key, services=svc.provider_services),
