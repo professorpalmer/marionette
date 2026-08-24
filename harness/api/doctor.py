@@ -135,3 +135,45 @@ def get_diagnostics(svc: DoctorServices) -> tuple[int, JsonPayload]:
         "checks": checks,
         "diagnostic": diagnostic,
     }
+
+
+def get_diagnostics_bundle(
+    sessions: Optional[str],
+    svc: DoctorServices,
+) -> tuple[int, JsonPayload]:
+    """GET /api/diagnostics/bundle — write redacted zip; return path + manifest."""
+    from ..diag_bundle import DEFAULT_SESSION_LIMIT, write_diag_bundle
+
+    limit = DEFAULT_SESSION_LIMIT
+    raw = (sessions or "").strip() if sessions is not None else ""
+    if raw:
+        try:
+            limit = max(0, int(raw))
+        except ValueError:
+            return 400, {
+                "ok": False,
+                "error": "sessions must be an integer",
+                "correlation_id": get_correlation_id(),
+            }
+
+    checks = _build_checks(svc)
+    try:
+        zip_path, manifest = write_diag_bundle(
+            session_limit=limit,
+            get_driver=svc.get_driver,
+            get_reach=svc.get_reach,
+            get_repo=svc.get_repo,
+            checks=checks,
+        )
+    except Exception as exc:
+        return 500, {
+            "ok": False,
+            "error": f"bundle write failed: {exc}",
+            "correlation_id": get_correlation_id(),
+        }
+    return 200, {
+        "ok": True,
+        "path": zip_path,
+        "manifest": manifest,
+        "correlation_id": get_correlation_id(),
+    }

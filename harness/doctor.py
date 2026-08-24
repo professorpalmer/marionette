@@ -25,6 +25,21 @@ def run_doctor(argv) -> int:
     ap = argparse.ArgumentParser(prog="harness doctor")
     ap.add_argument("--ping", action="store_true",
                     help="also make a live 1-token call to the driver (costs a fraction of a cent)")
+    ap.add_argument(
+        "--bundle",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="OUTDIR",
+        help="write a redacted diagnostics zip + manifest (default outdir: state/diag-bundles)",
+    )
+    ap.add_argument(
+        "--sessions",
+        type=int,
+        default=20,
+        metavar="N",
+        help="with --bundle, include last N session ids (default 20)",
+    )
     args = ap.parse_args(argv)
 
     from .config import HarnessConfig
@@ -207,6 +222,26 @@ def run_doctor(argv) -> int:
     print()
     if hard_fail:
         _line("fail", "result", "one or more hard failures -- fix before running tasks")
-        return 1
-    _line("ok", "result", "harness ready")
-    return 0
+    else:
+        _line("ok", "result", "harness ready")
+
+    if args.bundle is not None:
+        try:
+            from .diag_bundle import write_diag_bundle
+
+            outdir = (args.bundle or "").strip() or None
+            zip_path, _manifest = write_diag_bundle(
+                outdir,
+                session_limit=max(0, int(args.sessions)),
+                state_dir=cfg.state_dir or None,
+                get_driver=lambda: cfg.driver,
+                get_reach=lambda: cfg.reach,
+                get_repo=lambda: cfg.repo,
+            )
+            print(f"diagnostics bundle: {zip_path}")
+            return 0
+        except Exception as e:
+            _line("fail", "bundle", f"could not write diagnostics archive: {e}")
+            return 1
+
+    return 1 if hard_fail else 0
