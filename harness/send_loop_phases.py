@@ -1066,12 +1066,16 @@ def stream_swarm(
     intent: Any,
     delta_q: Any,
     dispatch_id: str = "",
+    worker_mode: Any = None,
 ) -> None:
     """Background target: execute_intent with on_delta → delta_q (delta/done/error).
 
     The intent's validated subject repo wins over the session workspace so an
     explicit ``run_swarm(repo=...)`` audit reads that checkout instead of the
     open project. Passed per call, never via the process-global env pointer.
+
+    ``worker_mode`` is the explicit tool-call override (subprocess/inline/daemon).
+    Omit it so execute_intent keeps the product inline default for LLM adapters.
     """
     try:
         from .repo_resolve import resolve_effective_repo
@@ -1087,6 +1091,7 @@ def stream_swarm(
             dispatch_id=dispatch_id,
             cwd=_cwd,
             repo=_cwd,
+            worker_mode=worker_mode,
             on_delta=lambda wid, kind, text: delta_q.put(
                 ("delta", (wid, kind, text))
             ),

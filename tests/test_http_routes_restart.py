@@ -36,12 +36,9 @@ def test_post_restart_stops_mcp_before_exit(monkeypatch, tmp_path):
     # Avoid spawning a real self-terminate thread against the test process.
     monkeypatch.setattr(routes.threading, "Thread", lambda *a, **k: SimpleNamespace(start=lambda: None))
 
-    routes._post_restart._svc = svc  # type: ignore[attr-defined]
-    routes._post_restart._mcp = svc.mcp_services  # type: ignore[attr-defined]
-
     handler = MagicMock()
 
-    routes._post_restart(handler, {})
+    routes._post_restart(handler, {}, svc, svc.mcp_services)
 
     assert stopped == ["yes"]
     assert written, "must write intentional restart signal for Electron"

@@ -255,6 +255,10 @@ class PilotAction:
     # swarm retains its compatibility demotion for unknown pilot-session ids.
     # Prompt text alone never pins.
     model: str = ""
+    # run_swarm only: explicit Orchestrator worker_mode. Empty means unspecified
+    # so the product path keeps its inline default (env key wiring). Never
+    # inferred from goal prose.
+    worker_mode: str = ""
     # Optional explicit acceptance criteria for swarm/parallel analysis.
     # Never inferred from goal prose — only an explicit list/string field.
     acceptance_criteria: list = field(default_factory=list)
@@ -481,6 +485,19 @@ class PilotError(ValueError):
     """Raised when a pilot envelope cannot be parsed/validated."""
 
 
+_SWARM_WORKER_MODES = ("subprocess", "inline", "daemon")
+
+
+def _coerce_swarm_worker_mode(raw: Optional[dict], arguments: Optional[dict]) -> str:
+    """Explicit run_swarm worker_mode only. Invalid or missing becomes empty."""
+    blob = raw if isinstance(raw, dict) else {}
+    args = arguments if isinstance(arguments, dict) else {}
+    cand = str(blob.get("worker_mode") or args.get("worker_mode") or "").strip().lower()
+    if cand in _SWARM_WORKER_MODES:
+        return cand
+    return ""
+
+
 def from_wire(
     kind: str,
     raw: Optional[dict] = None,
@@ -677,6 +694,9 @@ def from_wire(
             or arguments.get("model")
             or ""
         ).strip()
+    worker_mode = ""
+    if kind == "run_swarm":
+        worker_mode = _coerce_swarm_worker_mode(raw, arguments)
 
     memory_action = ""
     memory_content = ""
@@ -758,6 +778,7 @@ def from_wire(
         direction=(raw.get("direction") or "").strip(),
         repo=str(repo_arg),
         model=str(model),
+        worker_mode=str(worker_mode),
         acceptance_criteria=list(acceptance_criteria),
         start_line=_optional_int(raw.get("start_line")),
         limit=_optional_int(raw.get("limit")),
@@ -1312,7 +1333,11 @@ def build_tools_schema(
                         "worker_mode": {
                             "type": "string",
                             "enum": ["subprocess", "inline", "daemon"],
-                            "description": "Optional worker process mode"
+                            "description": (
+                                "Optional Orchestrator worker process mode. Omit for the "
+                                "product default (inline, so env keys wire). Pass "
+                                "subprocess only when isolated workers are required."
+                            ),
                         },
                         "model": {
                             "type": "string",

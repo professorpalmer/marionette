@@ -148,6 +148,29 @@ def test_auto_stream_client_disconnect_does_not_cancel_turn():
             httpd.shutdown()
 
 
+def test_explicit_interrupt_survives_mock_route_rebuild():
+    """Characterization rebuilds must not clobber the live Stop handler.
+
+    v0.9.312 ``test_routes_are_wired`` calls ``build_post_json_routes`` with a
+    mock whose factories return None. That used to mutate
+    ``_post_session_interrupt._svc`` and 500 the next /api/session/interrupt
+    (Windows shard 3 after 313 shifted collection order).
+    """
+    import harness.http_routes as http_routes
+    import harness.server as srv
+
+    srv._POST_JSON_ROUTES = None
+    srv._GET_ROUTES = None
+    srv._post_json_routes()
+
+    class _Svc:
+        def __getattr__(self, name):
+            return lambda: None
+
+    http_routes.build_post_json_routes(_Svc())
+    test_explicit_interrupt_still_cancels()
+
+
 def test_explicit_interrupt_still_cancels():
     """Stop button path: /api/session/interrupt must still cancel the pilot."""
     httpd, port, srv = _server()

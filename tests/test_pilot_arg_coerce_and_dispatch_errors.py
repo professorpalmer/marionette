@@ -445,6 +445,26 @@ def test_top_level_repo_wins_over_nested_arguments(tmp_path):
     assert act.repo == str(a.resolve())
 
 
+def test_run_swarm_from_wire_copies_worker_mode():
+    act = from_wire(
+        "run_swarm",
+        {"goal": "audit auth", "worker_mode": "subprocess"},
+    )
+    assert act.worker_mode == "subprocess"
+    nested = from_wire(
+        "run_swarm",
+        {"goal": "audit auth", "arguments": {"worker_mode": "inline"}},
+    )
+    assert nested.worker_mode == "inline"
+    bad = from_wire(
+        "run_swarm",
+        {"goal": "audit auth", "worker_mode": "threads"},
+    )
+    assert bad.worker_mode == ""
+    omitted = from_wire("run_swarm", {"goal": "audit auth"})
+    assert omitted.worker_mode == ""
+
+
 def test_run_parallel_schema_states_goals_array_contract():
     schema = build_tools_schema(no_delegation=False)
     parallel = next(

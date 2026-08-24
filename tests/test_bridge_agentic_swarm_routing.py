@@ -47,6 +47,7 @@ class _FakeOrchestrator:
         self.store = store
 
     def run(self, goal: str, specs=None, worker_mode=None, label=None):
+        type(self).last_worker_mode = worker_mode
         return _FakeResult()
 
 
@@ -88,6 +89,49 @@ def test_agentic_swarm_pins_allowed_adapters(monkeypatch, tmp_path):
     assert payload.get("prefer_plan_billed") is False
     assert payload.get("token_budget") == 250000
     assert _CapturingWorkerSpec._last_captured[0].adapter == "agentic"
+
+
+def test_execute_intent_explicit_subprocess_reaches_orchestrator(monkeypatch, tmp_path):
+    _CapturingWorkerSpec._last_captured = []
+    _FakeOrchestrator.last_worker_mode = "unset"
+    monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")
+    monkeypatch.setenv("HARNESS_REPO", str(tmp_path))
+    _pin_agentic_only_allowlist(monkeypatch)
+    monkeypatch.setattr("puppetmaster.workers.WorkerSpec", _CapturingWorkerSpec)
+    monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _FakeOrchestrator)
+    monkeypatch.setattr(bridge, "_warn_if_unindexed", lambda *_a, **_k: None)
+
+    intent = DriverIntent(
+        action="run_swarm",
+        goal="Trace the live scoring pipeline for a points flicker",
+        roles=["pipeline-mapper"],
+    )
+    result = bridge.execute_intent(
+        intent, state_dir=str(tmp_path / "state"), worker_mode="subprocess",
+    )
+    assert result is not None
+    assert _FakeOrchestrator.last_worker_mode == "subprocess"
+
+
+def test_execute_intent_omitted_worker_mode_stays_inline(monkeypatch, tmp_path):
+    _CapturingWorkerSpec._last_captured = []
+    _FakeOrchestrator.last_worker_mode = "unset"
+    monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")
+    monkeypatch.setenv("HARNESS_REPO", str(tmp_path))
+    _pin_agentic_only_allowlist(monkeypatch)
+    monkeypatch.setattr("puppetmaster.workers.WorkerSpec", _CapturingWorkerSpec)
+    monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _FakeOrchestrator)
+    monkeypatch.setattr(bridge, "_warn_if_unindexed", lambda *_a, **_k: None)
+
+    intent = DriverIntent(
+        action="run_swarm",
+        goal="Trace the live scoring pipeline for a points flicker",
+        roles=["pipeline-mapper"],
+        worker_mode="subprocess",
+    )
+    result = bridge.execute_intent(intent, state_dir=str(tmp_path / "state"))
+    assert result is not None
+    assert _FakeOrchestrator.last_worker_mode == "inline"
 
 
 def test_swarm_allowed_adapters_includes_cursor_when_settings_enable_it(
