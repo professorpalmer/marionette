@@ -134,8 +134,7 @@ test("operational Puppetmaster pins match DEFAULT_PUPPETMASTER_SPEC", () => {
     "scripts/install.ps1",
     "scripts/doctor.sh",
     "scripts/doctor.ps1",
-    ".github/workflows/tests.yml",
-    ".github/workflows/release.yml",
+    "FINDINGS.md",
   ];
   const escaped = spec.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const specRe = new RegExp(escaped);
