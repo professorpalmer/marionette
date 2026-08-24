@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import EconomicsPane from "../components/EconomicsPane";
 import { api } from "../lib/api";
@@ -131,11 +131,13 @@ describe("EconomicsPane", () => {
     expect(screen.queryByText("$9.99")).not.toBeInTheDocument();
     expect(screen.queryByText("~$9.99")).not.toBeInTheDocument();
     expect(screen.getByText("$1.25 vs $2.00 · measured")).toBeInTheDocument();
-    expect(screen.getByText("Measured")).toBeInTheDocument();
-    expect(screen.getByText("Estimated")).toBeInTheDocument();
-    const measuredLines = screen.getAllByText("$1.25");
-    expect(measuredLines.length).toBeGreaterThanOrEqual(2);
-    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(1);
+    const ownedRow = screen.getByText("Job owned-1").closest(".mb-2");
+    expect(ownedRow).toBeTruthy();
+    const ownedScope = within(ownedRow as HTMLElement);
+    expect(ownedScope.getByText("Measured")).toBeInTheDocument();
+    expect(ownedScope.getByText("Estimated")).toBeInTheDocument();
+    expect(ownedScope.getAllByText("$1.25").length).toBeGreaterThanOrEqual(1);
+    expect(ownedScope.getAllByText("—").length).toBeGreaterThanOrEqual(1);
   });
 
   it("shows headline sum and measured/estimated lines for mixed job cost", async () => {
@@ -186,7 +188,9 @@ describe("EconomicsPane", () => {
     render(<EconomicsPane />);
 
     expect(await screen.findByText("$2.00 vs — · measured")).toBeInTheDocument();
-    expect(screen.getAllByText("$2.00").length).toBeGreaterThanOrEqual(2);
+    const row = within(screen.getByText("Job meas-1").closest(".mb-2") as HTMLElement);
+    expect(row.getByText("Measured").parentElement).toHaveTextContent("Measured$2.00");
+    expect(row.getByText("Estimated").parentElement).toHaveTextContent("Estimated—");
     expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
   });
 
@@ -210,7 +214,9 @@ describe("EconomicsPane", () => {
     render(<EconomicsPane />);
 
     expect(await screen.findByText("$0.75 vs — · estimated")).toBeInTheDocument();
-    expect(screen.getAllByText("$0.75").length).toBeGreaterThanOrEqual(2);
+    const row = within(screen.getByText("Job est-1").closest(".mb-2") as HTMLElement);
+    expect(row.getByText("Measured").parentElement).toHaveTextContent("Measured—");
+    expect(row.getByText("Estimated").parentElement).toHaveTextContent("Estimated$0.75");
     expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
   });
 
