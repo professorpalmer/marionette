@@ -98,6 +98,7 @@ import {
 import {
   FeedMotionPresence,
   FeedMotionRow,
+  VIRTUAL_ROW_LAYOUT_ENABLED,
   useFeedLayoutMotion,
 } from "./conversation/feedMotion";
 
@@ -1008,7 +1009,6 @@ const VirtualTranscriptRow = memo(
     item: GroupedItem;
     rowId: string;
     feedSettled: boolean;
-    feedLayout: boolean;
     measureDom: (element: HTMLElement) => void;
     children: ReactNode;
   }>(function VirtualTranscriptRow(
@@ -1018,7 +1018,6 @@ const VirtualTranscriptRow = memo(
       item,
       rowId,
       feedSettled,
-      feedLayout,
       measureDom,
       children,
     },
@@ -1065,7 +1064,7 @@ const VirtualTranscriptRow = memo(
   return (
     <FeedMotionRow
       ref={attachDom && mountSettled ? setRowRef : forwardedRef}
-      layoutEnabled={feedLayout}
+      layoutEnabled={VIRTUAL_ROW_LAYOUT_ENABLED}
       data-index={virtualRow.index}
       data-testid="transcript-virtual-row"
       data-dom-measure={attachDom ? "1" : "0"}
@@ -1830,15 +1829,13 @@ export const TranscriptList = memo(function TranscriptList({
   });
   const feedLayout = useFeedLayoutMotion();
   const list = useVirtualWindow ? (
-    <motion.div
+    <div
       ref={listAnchorRef}
       data-testid="transcript-virtual-list"
       className="relative w-full"
       style={{ height: rowVirtualizer.getTotalSize() }}
-      layout={feedLayout}
     >
-      <FeedMotionPresence>
-        {virtualItems.map((virtualRow) => {
+      {virtualItems.map((virtualRow) => {
           const item = virtualGrouped[virtualRow.index]!;
           const rowId = stableItemKey(item, virtualRow.index);
           return (
@@ -1849,15 +1846,13 @@ export const TranscriptList = memo(function TranscriptList({
               item={item}
               rowId={rowId}
               feedSettled={feedSettled}
-              feedLayout={feedLayout}
               measureDom={measureVirtualRowDom}
             >
               {renderGroupedItem(virtualRow.index)}
             </VirtualTranscriptRow>
           );
         })}
-      </FeedMotionPresence>
-    </motion.div>
+    </div>
   ) : (
     <motion.div
       ref={listAnchorRef}
