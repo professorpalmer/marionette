@@ -672,13 +672,20 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
     swarm_input = 0
     job_tokens_sum = 0
     store_job_cost = 0.0
+    store_job_measured = 0.0
+    store_job_estimated = 0.0
     try:
         for j in res_jobs:
             if not j.get("accounting_owned"):
                 continue
             is_local = str(j.get("id") or "").startswith("local-")
             if not is_local:
-                store_job_cost += float(j.get("est_cost_usd") or 0.0)
+                _job_cost = float(j.get("est_cost_usd") or 0.0)
+                store_job_cost += _job_cost
+                if j.get("estimated") is False:
+                    store_job_measured += _job_cost
+                else:
+                    store_job_estimated += _job_cost
                 job_tokens_sum += int(j.get("tokens") or 0)
             # Savings meters: every visible row counts once (store + local).
             # merge_local_jobs_into_swarm_live already dedupes store ids.
@@ -864,10 +871,19 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
         _live_estimated = _spend_is_estimated(_live_cost_source, price_source)
     except Exception:
         _live_estimated = _live_cost_source != "provider"
+    session_measured = float(store_job_measured)
+    session_estimated = float(store_job_estimated)
+    pilot_portion = max(0.0, float(est_session_cost) - float(store_job_cost))
+    if _live_estimated:
+        session_estimated += pilot_portion
+    else:
+        session_measured += pilot_portion
     return 200, {
         "session": {
             "tokens_used": tokens_used,
             "est_cost_usd": round(est_session_cost, 6),
+            "measured_cost_usd": round(session_measured, 6),
+            "estimated_cost_usd": round(session_estimated, 6),
             "cost_source": _live_cost_source,
             "price_source": price_source,
             "estimated": bool(_live_estimated),

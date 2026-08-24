@@ -174,9 +174,13 @@ def test_session_total_includes_swarm_store_job_cost(monkeypatch):
             live = json.loads(
                 _get(port, "/api/swarm/live", headers=headers).read().decode()
             )
-            # Live is receipt-first. It does not add /api/usage boot carry
-            # (see _boot_usage_reset_for_tests). The store-job receipt is 0.37.
-            assert abs(live["session"]["est_cost_usd"] - 0.37) < 1e-6
+            # Live headline may include leftover estimated pilot; receipt is measured.
+            live_sess = live["session"]
+            assert abs(float(live_sess.get("measured_cost_usd") or 0.0) - 0.37) < 1e-6
+            headline = float(live_sess.get("est_cost_usd") or 0.0)
+            measured = float(live_sess.get("measured_cost_usd") or 0.0)
+            estimated = float(live_sess.get("estimated_cost_usd") or 0.0)
+            assert abs(headline - (measured + estimated)) < 1e-6
         finally:
             httpd.shutdown()
     finally:
