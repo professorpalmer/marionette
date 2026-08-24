@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.28` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.319, deliberately pre-1.0. Rides puppetmaster-ai==1.22.28. Pi TUI/pilot package (not a worker adapter).
+> Status: v0.9.321, deliberately pre-1.0. Rides puppetmaster-ai==1.22.28. Pi TUI/pilot package (not a worker adapter).
 
 ## Documentation
 
