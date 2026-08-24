@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.28` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.308, deliberately pre-1.0. Rides puppetmaster-ai==1.22.28. Pi TUI/pilot package (not a worker adapter).
+> Status: v0.9.310, deliberately pre-1.0. Rides puppetmaster-ai==1.22.28. Pi TUI/pilot package (not a worker adapter).
 
 ## Documentation
 
@@ -101,6 +101,7 @@ The cost thesis is measured, not asserted:
 | **Cost transparency** | The status bar shows **process-wide** spend (pilot plus every delegated swarm/worker job in this backend process), priced at each job's actual model rate when usage is known. Unknown models fall back to the live OpenRouter price map (public `/models` feed, disk-cached), then to the router's pre-flight estimate -- never silently $0. The Swarm pane shows **per-repo session** spend on each job card (scoped to the active workspace), not a second copy of the status-bar total. |
 | **Full-auto mode** | Unattended objective pursuit bounded by an AutoBudget governor (max swarms / tokens / seconds / idle), with a non-bypassable command safety guard. |
 | **Scheduled autonomy** | `harness schedule` provides cron-backed local unattended runs with transactional cross-process claims, restart recovery, cooperative cancellation, truthful run history, and workspace safety. Fire times are host-local. HTTP + Settings UI can list/mutate/run-now/history (poll-first); the local daemon is still required for unattended cron fire. Per-schedule IANA timezone and schedule SSE remain deferred. |
+| **Chrome browser relay** | Unpacked Chrome extension / native-host message posts tab URL, title, and optional page text to `POST /api/browser/relay`. Off by default (`PM_BROWSER_RELAY=1`). Extends the existing CDP browser stack; not a second engine, marketplace listing, or telemetry sink. |
 | **Command safety guard** | In full-auto, irreversible/remote/escalating shell commands (recursive deletes, ssh/scp, curl-pipe-to-shell, force-push, sudo, disk writes, key exfil) are screened and blocked; interactive co-working is untouched. Configurable per-command timeout (default 120s; 0/off = unbounded for long sessions). |
 
 ## Architecture

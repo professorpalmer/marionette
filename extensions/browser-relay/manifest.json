@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Marionette browser relay",
+  "version": "0.9.310",
+  "description": "Unpacked opt-in tab snapshot relay for the Marionette harness. Not a store listing.",
+  "permissions": ["tabs", "nativeMessaging"],
+  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
+  "background": {
+    "service_worker": "background.js"
+  }
+}

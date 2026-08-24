@@ -210,3 +210,18 @@ def browser_get_text() -> str:
 
 def browser_screenshot(out_dir: Optional[str] = None) -> str:
     return _call("screenshot", "screenshot", out_dir)
+
+
+def browser_relay_enabled() -> bool:
+    """True when the opt-in Chrome extension / native-host relay is on."""
+    from .browser_relay import relay_enabled
+
+    return relay_enabled()
+
+
+def browser_relay_snapshot():
+    """Last recorded relay snapshot, or None. Does not drive CDP."""
+    from .browser_relay import last_snapshot
+
+    return last_snapshot()
+

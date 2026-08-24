@@ -83,6 +83,7 @@ def get_json(
 def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
     """Build path → POST JSON handler map. ``svc`` holds service factories."""
     from .api import auth as _auth_api
+    from .api import browser as _browser_api
     from .api import checkpoints as _ckpt_api
     from .api import codegraph as _cg_api
     from .api import command_approvals as _command_approval_api
@@ -111,6 +112,7 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
     from .api import worktrees as _wt_api
 
     routes: dict[str, PostHandler] = {
+        "/api/browser/relay": post_json(_browser_api.post_browser_relay),
         "/api/reviews/apply": post_json(
             _rev_api.post_reviews_apply, services=svc.review_services),
         "/api/reviews/dismiss": post_json(
@@ -431,6 +433,7 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
     from .api import codegraph as _cg_api
     from .api import commands as _cmd_api
     from .api import economics as _econ_api
+    from .api import browser as _browser_api
     from .api import environment as _env_api
     from .api import doctor as _doctor_api
     from .api import files as _files_api
@@ -651,6 +654,7 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
         "/api/mcp/catalog": get_json(_mcp_api.get_mcp_catalog),
         "/api/plugins": get_json(
             _plugins_api.get_plugins, services=svc.plugin_services),
+        "/api/browser/relay": get_json(_browser_api.get_browser_relay),
         "/api/environment/readiness": get_json(
             _env_api.get_environment_readiness,
             services=svc.environment_services,
