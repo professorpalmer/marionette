@@ -67,11 +67,10 @@ describe("CheckpointsPane diff badges", () => {
 
     await waitFor(() => {
       expect(apiMocks.getCheckpointDiff).toHaveBeenCalledWith("cp-1");
+      for (const label of ["added", "modified", "removed"]) {
+        const badge = screen.getByLabelText(new RegExp(`^${label}:`, "i"));
+        expect(badge).toHaveTextContent(label);
+      }
     });
-
-    for (const label of ["added", "modified", "removed"]) {
-      const badge = screen.getByLabelText(new RegExp(`^${label}:`, "i"));
-      expect(badge).toHaveTextContent(label);
-    }
   });
 });
