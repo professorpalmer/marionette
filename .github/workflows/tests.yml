@@ -88,3 +88,23 @@ jobs:
           npm test
           xvfb-run -a npm run test:electron
           npm run build
+
+  pmharness-units:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.9"
+          cache: pip
+
+      - name: Install (rig + dev extras + Puppetmaster from PyPI)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]" "puppetmaster-ai==1.22.27"
+
+      - name: Run offline pmharness/intent/registry units
+        run: python -m pytest -q -p no:cacheprovider tests/test_intent.py tests/test_registry.py tests/test_registry_wizard.py tests/test_pilot_driver_templates.py
+
