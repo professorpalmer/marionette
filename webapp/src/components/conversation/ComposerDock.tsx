@@ -569,7 +569,7 @@ export default function ComposerDock({
           onDragOver={handleComposerDragOver}
           onDragLeave={handleComposerDragLeave}
           onDrop={handleComposerDrop}
-          className={`composer-dock relative bg-panel2/80 border rounded-2xl focus-within:border-edge2 shadow-lg shadow-black/20 transition ${
+          className={`composer-dock composer-family relative bg-panel2/80 border rounded-2xl focus-within:border-edge2 shadow-lg shadow-black/20 transition ${
             isDragOver ? "border-accent ring-1 ring-accent" : "border-edge"
           }`}
         >
