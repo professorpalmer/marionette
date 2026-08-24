@@ -632,5 +632,18 @@ def build_pilot(spec: str, *, max_tokens: int | None = None):
     )
 
 
+def build_doctor_driver(spec: str, *, reach: str = ""):
+    """Build a driver for doctor/diagnostics health checks.
+
+    Stub drivers stay on the eval registry; everything else uses build_pilot so
+    catalog-unknown OpenRouter slugs the live loop accepts are not KeyError'd.
+    """
+    if spec.startswith("stub"):
+        from pmharness import registry as reg
+
+        return reg.build(spec)
+    return build_pilot(spec)
+
+
 class ProviderError(RuntimeError):
     pass
