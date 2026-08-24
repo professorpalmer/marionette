@@ -687,6 +687,12 @@ class SchedulerDaemon:
                     f"scheduler stop: cancel {sid} failed: "
                     f"{type(exc).__name__}: {exc}"
                 )
+        closer = getattr(self.store, "close", None)
+        if callable(closer):
+            try:
+                closer()
+            except Exception:
+                pass
 
     def tick(self, now: Optional[datetime] = None) -> List[dict]:
         return run_due(
@@ -720,5 +726,6 @@ class SchedulerDaemon:
                     print(f"tick error (continuing): {type(exc).__name__}: {exc}")
                 self._interruptible_wait(tick_seconds)
         except KeyboardInterrupt:
-            self.stop()
             print("scheduler daemon stopped")
+        finally:
+            self.stop()

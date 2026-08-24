@@ -378,10 +378,23 @@ def test_daemon_stop_cancels_and_interruptible_wait(tmp_path):
     daemon._active["schedule_id"] = s.id
     started = time.time()
     # stop() should request cancel; interruptible wait should return quickly.
+    cancels = []
+    real_cancel = store.request_cancel
+    store.request_cancel = lambda sid: cancels.append(sid) or real_cancel(sid)
     daemon.stop()
-    assert store.cancel_requested(s.id)
+    assert cancels == [s.id]
     daemon._interruptible_wait(30)
     assert time.time() - started < 2.0
+
+
+def test_daemon_stop_closes_store(tmp_path):
+    store = _store(tmp_path)
+    closed = []
+    real_close = store.close
+    store.close = lambda: closed.append(True) or real_close()
+    daemon = SchedulerDaemon(store)
+    daemon.stop()
+    assert closed == [True]
 
 
 def test_daemon_stop_logs_cancel_failure(tmp_path, capsys):
