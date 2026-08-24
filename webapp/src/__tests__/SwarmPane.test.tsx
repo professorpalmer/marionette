@@ -836,6 +836,29 @@ describe("SwarmPane routing dedupe", () => {
     fireEvent.click(screen.getByRole("button", { name: /Worker/ }));
     expect(screen.getByText("escalation")).toBeInTheDocument();
   });
+
+  it("shows only the grouped Findings row count", async () => {
+    mockSwarmLive.mockResolvedValue(
+      finishedJob("job-findings-count", "Grouped findings", {
+        artifacts_complete: true,
+        artifacts: [
+          { id: "finding-1", type: "finding", headline: "One real finding" },
+          ...Array.from({ length: 4 }, (_, i) => ({
+            id: `verification-${i}`,
+            type: "verification",
+            headline: "Repeated verification",
+          })),
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+    fireEvent.click(await screen.findByText("Finished"));
+    fireEvent.click(await screen.findByText("Grouped findings"));
+
+    expect(screen.getByText("Findings (2)")).toBeInTheDocument();
+    expect(screen.queryByText(/Findings \(2 of 5\)/)).toBeNull();
+  });
 });
 
 describe("SwarmPane mid-run job-row meters", () => {

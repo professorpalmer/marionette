@@ -1945,7 +1945,7 @@ export default function SwarmPane() {
             {streamArts.length > 0 && (() => {
               const findingRows = dedupeFindings(streamArts);
               const sectionOpen = findingsOpen[j.id] !== false;
-              const countLabel = `${findingRows.length}${findingRows.length !== streamArts.length ? ` of ${streamArts.length}` : ""}`;
+              const countLabel = `${findingRows.length}`;
               return (
               <div className="border-t border-edge/20 pt-1.5 flex flex-col">
                 <button

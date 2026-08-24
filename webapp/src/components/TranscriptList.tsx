@@ -3558,6 +3558,13 @@ function visibleReuseReason(reason?: string): string {
   return value === "first_pass" || value === "no_reusable_candidate" ? "" : value;
 }
 
+function visibleSwarmSummary(summary: string): string {
+  const value = (summary || "").trim();
+  return /^\d+\s+findings\s+via\s+.+\(\d+\s+artifacts?\)$/i.test(value)
+    ? ""
+    : value;
+}
+
 /** Bounded relative-path summary for partial reuse honesty (no secrets). */
 function formatInvalidatedPaths(paths?: string[], limit = 6): string {
   const clean = (paths || [])
@@ -3623,6 +3630,7 @@ function SwarmResultCard({ jobId, applied, files, summary, error, objective, cwd
   const reuseReasonLabel = visibleReuseReason(reuseReason);
   const pathSummary = formatInvalidatedPaths(invalidatedPaths);
   const primaryJobId = (jobId || "").trim();
+  const displaySummary = visibleSwarmSummary(summary);
   // Operator honesty: held_for_review / analysis_ok are successful non-applies —
   // never paint them as "swarm done" (applied) or "swarm failed".
   const tone: "applied" | "held" | "analysis" | "failed" = applied
@@ -3661,7 +3669,7 @@ function SwarmResultCard({ jobId, applied, files, summary, error, objective, cwd
   // Full-swarm rejection reasons (e.g. environment_changed) must surface even
   // when the status is merely "fresh" — never drop the gate reason in the UI.
   const hasBody = !!(
-    summary
+    displaySummary
     || (tone === "failed" && error)
     || (applied && files.length > 0)
     || tone === "held"
@@ -3715,11 +3723,13 @@ function SwarmResultCard({ jobId, applied, files, summary, error, objective, cwd
         {tone === "applied"
           ? (files.length > 0
             ? <span className="text-faint shrink-0 tabular-nums">{files.length} file{files.length === 1 ? "" : "s"}</span>
-            : <span className="text-faint shrink-0 truncate max-w-[45%]">{summary}</span>)
+            : displaySummary
+              ? <span className="text-faint shrink-0 truncate max-w-[45%]">{displaySummary}</span>
+              : null)
           : tone === "held"
             ? <span className="text-accent/70 shrink-0 truncate max-w-[45%]">awaiting review</span>
             : tone === "analysis"
-              ? <span className="text-faint shrink-0 truncate max-w-[45%]">{summary || "findings"}</span>
+              ? <span className="text-faint shrink-0 truncate max-w-[45%]">{displaySummary || "findings"}</span>
               : <span className="text-risk/70 shrink-0 truncate max-w-[45%]">{error || "error"}</span>}
         {hasBody && (open
           ? <ChevronDown size={12} className="text-faint shrink-0" />
@@ -3864,8 +3874,8 @@ function SwarmResultCard({ jobId, applied, files, summary, error, objective, cwd
           {!applied && error && (
             <div className="text-[10px] text-risk/90 font-mono whitespace-pre-wrap leading-relaxed break-words">{error}</div>
           )}
-          {summary && (
-            <div className="text-[10.5px] text-muted whitespace-pre-wrap leading-relaxed break-words">{summary}</div>
+          {displaySummary && (
+            <div className="text-[10.5px] text-muted whitespace-pre-wrap leading-relaxed break-words">{displaySummary}</div>
           )}
         </div>
       )}

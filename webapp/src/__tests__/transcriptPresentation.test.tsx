@@ -521,6 +521,27 @@ describe("transcript presentation contract", () => {
     expect(screen.getByTestId("pending-review-receipt")).toHaveTextContent(/review ready/i);
   });
 
+  it("does not repeat findings and artifact counts in the chat result body", () => {
+    const summary = "8 findings via agentic (18 artifacts)";
+    render(
+      <TranscriptList
+        {...listProps([{
+          kind: "swarm_result",
+          job_id: "job_countcopy01",
+          applied: true,
+          files: [],
+          summary,
+          error: null,
+          objective: "review count semantics",
+        }])}
+      />,
+    );
+
+    const card = screen.getByTestId("swarm-result-card");
+    fireEvent.click(within(card).getByRole("button", { name: /swarm done/i }));
+    expect(screen.queryByText(summary)).toBeNull();
+  });
+
   it("pending_review receipt click focuses Review tab and refreshes", () => {
     const focusSpy = vi.fn();
     const refreshSpy = vi.fn();
