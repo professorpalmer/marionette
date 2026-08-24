@@ -22,6 +22,8 @@ import {
 import { usePanelNotice } from "../lib/useOperationalDiagnostic";
 import { SettingsCollapse } from "./SettingsCollapse";
 import WindowGlassSettings from "./WindowGlassSettings";
+import ProviderConfigModal from "./ProviderConfigModal";
+import type { ProviderConfigValues } from "../lib/providerConfig";
 
 export type SettingsSection = "general" | "safety" | "providers" | "notifications" | "plugins" | "advanced";
 
@@ -90,6 +92,9 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
   const [keyBootstrapIssues, setKeyBootstrapIssues] = useState<NonNullable<Config["key_bootstrap_issues"]>>([]);
   const [provKeyInput, setProvKeyInput] = useState<Record<string, string>>({});
   const [provBusy, setProvBusy] = useState<string>("");
+  const [providerConfig, setProviderConfig] = useState<
+    { manual: true } | { manual: false; provider: ProviderInfo } | null
+  >(null);
 
   // Hermes-style credential pools (multi-key / rotate on plan limit)
   const [authPools, setAuthPools] = useState<AuthPoolsResponse | null>(null);
@@ -835,6 +840,28 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
     }
   };
 
+  const handleProviderConfigSubmit = async (changed: Partial<ProviderConfigValues>) => {
+    const name = (
+      changed.name
+      || (providerConfig && !providerConfig.manual ? providerConfig.provider.name : "")
+      || ""
+    ).trim();
+    if (changed.api_key && name) {
+      setProvBusy(name);
+      try {
+        await api.setProviderKey(name, changed.api_key);
+        setProvKeyInput((p) => ({ ...p, [name]: "" }));
+        await refreshProviders();
+        window.dispatchEvent(new Event("harness-config-changed"));
+      } catch (e) {
+        console.error("Failed to set provider key", e);
+      } finally {
+        setProvBusy("");
+      }
+    }
+    setProviderConfig(null);
+  };
+
   const handleSetProviderKey = async (name: string) => {
     const val = (provKeyInput[name] || "").trim();
     if (!val) return;
@@ -1361,7 +1388,15 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2 min-w-0">
                     <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${connected ? "bg-good" : "bg-faint"}`} />
-                    <span className="text-txt font-medium text-[11px]">{p.display_name || p.name}</span>
+                    <button
+                      type="button"
+                      data-testid="provider-account-drilldown"
+                      data-provider={p.name}
+                      onClick={() => setProviderConfig({ manual: false, provider: p })}
+                      className="text-txt font-medium text-[11px] hover:text-accent text-left"
+                    >
+                      {p.display_name || p.name}
+                    </button>
                     {p.worker_capability_label ? (
                       <span
                         title={p.worker_capability_hint || undefined}
@@ -1440,7 +1475,26 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
               );
             })}
           </div>
+          <button
+            type="button"
+            data-testid="add-provider"
+            onClick={() => setProviderConfig({ manual: true })}
+            className="flex items-center gap-1 text-accent hover:text-accent/80 text-[11px] font-medium"
+          >
+            <Plus size={12} />
+            Add provider
+          </button>
         </SettingsCollapse>
+        {providerConfig ? (
+          <ProviderConfigModal
+            open
+            manual={providerConfig.manual}
+            provider={providerConfig.manual ? null : providerConfig.provider}
+            busy={!!provBusy}
+            onClose={() => setProviderConfig(null)}
+            onSubmit={handleProviderConfigSubmit}
+          />
+        ) : null}
 
         </>)}
 
