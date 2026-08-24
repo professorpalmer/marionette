@@ -1,7 +1,9 @@
 """Provider registry: detection from env keys, driver selection by api_mode,
 spec resolution, and MIT attribution presence. Data adapted from Hermes (MIT)."""
+import json
 import os
 import tempfile
+import urllib.request
 import pytest
 from harness import providers as prov
 
@@ -188,6 +190,82 @@ def test_build_pilot_selects_openai_compat(monkeypatch):
     assert "openrouter.ai" in d.base_url
 
 
+def test_openai_gpt56_api_key_uses_standard_responses_driver(monkeypatch):
+    from pmharness.drivers.codex_responses import CodexResponsesDriver
+
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-oai-test")
+
+    driver = prov.build_pilot("openai:gpt-5.6-luna")
+
+    assert isinstance(driver, CodexResponsesDriver)
+    assert driver.base_url == "https://api.openai.com/v1"
+    assert driver.api_key_env == "OPENAI_API_KEY"
+    assert driver.chatgpt_backend is False
+
+
+def test_openai_gpt56_api_key_sends_max_reasoning_with_tools(monkeypatch):
+    from pmharness.drivers.codex_responses import CodexResponsesDriver
+
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-oai-test")
+    monkeypatch.setenv("HARNESS_CODEX_REASONING_EFFORT", "max")
+    captured = {}
+
+    class SuccessfulResponsesStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def __iter__(self):
+            return iter([
+                b'data: {"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_1","name":"noop","arguments":"{}"}}\n',
+                b'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}\n',
+            ])
+
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        captured["headers"] = dict(req.header_items())
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        assert req.full_url == "https://api.openai.com/v1/responses"
+        return SuccessfulResponsesStream()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    driver = prov.build_pilot("openai:gpt-5.6-luna")
+    assert isinstance(driver, CodexResponsesDriver)
+    response = driver.chat_stream(
+        [{"role": "user", "content": "Call noop."}],
+        tools=[{
+            "type": "function",
+            "function": {
+                "name": "noop",
+                "description": "No operation",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }],
+        on_delta=lambda _event: None,
+        session_id="api-reasoning-red",
+    )
+
+    body = captured["body"]
+    assert response.error is None
+    assert response.meta["billing"] == "api"
+    assert response.meta["api_mode"] == "responses"
+    assert len(response.meta["tool_calls"]) == 1
+    assert body["reasoning"] == {"effort": "max", "summary": "auto"}
+    assert body["tools"]
+    assert body["tool_choice"] == "auto"
+    assert body["parallel_tool_calls"] is True
+    assert body["max_output_tokens"] > 0
+    assert "reasoning_effort" not in body
+    assert "messages" not in body
+    assert "originator" not in {
+        key.lower(): value for key, value in captured["headers"].items()
+    }
+
+
 def test_build_pilot_no_key_raises(monkeypatch):
     _clear_provider_env(monkeypatch)
     try:
@@ -225,6 +303,8 @@ def test_build_pilot_bare_gpt55_prefers_openai_codex(monkeypatch):
         d = prov.build_pilot("gpt-5.5")
         assert isinstance(d, CodexResponsesDriver)
         assert d.model == "gpt-5.5"
+        assert d.api_key_env == "OPENAI_CODEX_TOKEN"
+        assert d.chatgpt_backend is True
     finally:
         cp.clear_pools_for_tests()
 
