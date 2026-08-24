@@ -3,10 +3,10 @@
  * Conversation owns all state; this is a presentational peel.
  */
 
-import { useLayoutEffect, useRef, useState, type MutableRefObject, type ReactNode, type RefObject } from "react";
+import { useLayoutEffect, useRef, useState, type CSSProperties, type MutableRefObject, type ReactNode, type RefObject } from "react";
 import { ChevronDown } from "lucide-react";
 import { panelOpacityClass } from "../../lib/panelTransition";
-import { feedBottomClearancePx } from "./feedScroll";
+import { feedBottomClearancePx, FEED_CHROME_CLEARANCE_VAR } from "./feedScroll";
 import {
   TranscriptList,
   type Card,
@@ -89,18 +89,17 @@ export default function ConversationChatColumn({
   return (
     <div
       className="chat-column flex flex-col flex-1 min-h-0 min-w-0"
-      style={{ ["--feed-chrome-clearance" as string]: `${clearancePx}px` }}
+      style={{ [FEED_CHROME_CLEARANCE_VAR]: `${clearancePx}px` } as CSSProperties}
     >
       <div className="relative flex-1 min-h-0 flex flex-col">
         <div
           ref={feedRef}
-          className={`flex-1 min-h-0 overflow-y-auto overscroll-contain [overflow-anchor:none] [scrollbar-gutter:stable] [scroll-padding-bottom:var(--feed-chrome-clearance,clamp(72px,12vh,144px))] ${panelOpacityClass(transcriptStale)}`}
+          className={`flex-1 min-h-0 overflow-y-auto overscroll-contain [overflow-anchor:auto] [scrollbar-gutter:stable] [scroll-padding-bottom:var(--feed-chrome-clearance,clamp(72px,12vh,144px))] ${panelOpacityClass(transcriptStale)}`}
         >
-        {/* overflow-anchor:none — the virtualizer unmounts off-screen rows, so
-            auto-anchor would snap to the first remaining node (top of history)
-            on alt-tab / compositor restore. feedScroll pin/unpin owns stick.
-            scrollbar-gutter avoids a 15px jump when the bar appears.
-            overscroll-contain stops rubber-band from yanking the window.
+        {/* overflow-anchor:auto — browser tail anchoring during growth; scroll-padding-bottom
+            tracks composer chrome via --feed-chrome-clearance (ResizeObserver). nextFeedPinState
+            hysteresis still owns stick/unstick. scrollbar-gutter avoids a 15px jump when the bar
+            appears. overscroll-contain stops rubber-band from yanking the window.
             Composer sits outside this scrollport; do not move it inside. */}
         <div
           ref={feedContentRef}

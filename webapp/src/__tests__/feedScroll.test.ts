@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  FEED_CHROME_CLEARANCE_VAR,
   FEED_GESTURE_IDLE_MS,
   FEED_REPIN_THRESHOLD_PX,
+  FEED_SCROLLPORT_OVERFLOW_ANCHOR,
   FEED_TAIL_EPSILON_PX,
   chooseFeedFollowFlush,
   feedBottomClearancePx,
@@ -741,6 +743,24 @@ describe("feedScroll layout contracts", () => {
         userGestureActive: false,
       }),
     ).toEqual({ pinned: false, releasedByGesture: true });
+  });
+
+  it("feed scrollport uses overflow-anchor auto with scroll-padding clearance from composer chrome", () => {
+    expect(FEED_SCROLLPORT_OVERFLOW_ANCHOR).toBe("auto");
+    expect(FEED_SCROLLPORT_OVERFLOW_ANCHOR).not.toBe("none");
+    const composerHeight = 156;
+    const clearancePx = feedBottomClearancePx(composerHeight);
+    expect(clearancePx).toBe(composerHeight);
+    const scroller = document.createElement("div");
+    scroller.style.overflow = "auto";
+    scroller.style.overflowAnchor = FEED_SCROLLPORT_OVERFLOW_ANCHOR;
+    scroller.style.setProperty(FEED_CHROME_CLEARANCE_VAR, `${clearancePx}px`);
+    scroller.style.scrollPaddingBottom = `var(${FEED_CHROME_CLEARANCE_VAR}, clamp(72px, 12vh, 144px))`;
+    expect(scroller.style.overflowAnchor).toBe("auto");
+    expect(scroller.style.scrollPaddingBottom).toBe(
+      `var(${FEED_CHROME_CLEARANCE_VAR}, clamp(72px, 12vh, 144px))`,
+    );
+    expect(scroller.style.getPropertyValue(FEED_CHROME_CLEARANCE_VAR)).toBe(`${clearancePx}px`);
   });
 
   it("DOM scroller grows last row in normal flow while pinned at tail", () => {
