@@ -55,9 +55,9 @@ def run_doctor(argv) -> int:
 
     # 3. Driver build + key presence
     try:
-        from pmharness import registry as reg
-        driver = (reg.build(cfg.driver) if cfg.driver.startswith("stub")
-                  else reg.build(cfg.driver, reach=cfg.reach))
+        from .providers import ProviderError, build_doctor_driver
+
+        driver = build_doctor_driver(cfg.driver, reach=cfg.reach)
         env = getattr(driver, "api_key_env", None)
         if env is None:
             _line("ok", f"driver {cfg.driver}", "no key required (stub/offline)")
@@ -65,6 +65,8 @@ def run_doctor(argv) -> int:
             _line("ok", f"driver {cfg.driver}", f"{env} present")
         else:
             _line("warn", f"driver {cfg.driver}", f"{env} not set -- set it or use a stub driver")
+    except ProviderError as e:
+        _line("warn", f"driver {cfg.driver}", str(e))
     except Exception as e:
         _line("fail", f"driver {cfg.driver}", f"build failed: {e}")
         hard_fail = True
@@ -189,9 +191,9 @@ def run_doctor(argv) -> int:
     # 5. Optional live ping
     if args.ping and not hard_fail:
         try:
-            from pmharness import registry as reg
-            driver = (reg.build(cfg.driver) if cfg.driver.startswith("stub")
-                      else reg.build(cfg.driver, reach=cfg.reach))
+            from .providers import build_doctor_driver
+
+            driver = build_doctor_driver(cfg.driver, reach=cfg.reach)
             resp = driver.complete('Reply with exactly: {"action":"stop","rationale":"ok"}')
             if resp.error:
                 _line("fail", "driver ping", resp.error[:120])

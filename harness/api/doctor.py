@@ -53,13 +53,9 @@ def _build_checks(svc: DoctorServices) -> list[dict[str, str]]:
     driver = (svc.get_driver() or "").strip() or "unknown"
     reach = (svc.get_reach() or "").strip()
     try:
-        from pmharness import registry as reg
+        from ..providers import ProviderError, build_doctor_driver
 
-        built = (
-            reg.build(driver)
-            if driver.startswith("stub")
-            else reg.build(driver, reach=reach)
-        )
+        built = build_doctor_driver(driver, reach=reach)
         env = getattr(built, "api_key_env", None)
         if env is None:
             checks.append(_check_row("ok", f"driver {driver}", "no key required (stub/offline)"))
@@ -69,6 +65,8 @@ def _build_checks(svc: DoctorServices) -> list[dict[str, str]]:
             checks.append(
                 _check_row("warn", f"driver {driver}", f"{env} not set -- set it or use a stub driver"),
             )
+    except ProviderError as exc:
+        checks.append(_check_row("warn", f"driver {driver}", str(exc)))
     except Exception as exc:
         hard_fail = True
         checks.append(_check_row("fail", f"driver {driver}", f"build failed: {exc}"))
