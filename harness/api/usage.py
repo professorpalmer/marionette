@@ -44,6 +44,53 @@ class UsageServices:
 JsonPayload = Union[dict, list]
 
 
+def _usage_spent_usd(payload: dict) -> float:
+    """Reuse GET /api/usage session dollars — no second cost formula."""
+    session = payload.get("session") if isinstance(payload, dict) else None
+    if not isinstance(session, dict):
+        return 0.0
+    try:
+        return max(0.0, float(session.get("est_cost_usd") or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def attach_billing_envelope(payload: dict) -> dict:
+    """Fold monthly envelope onto a usage payload (works with no runner)."""
+    from harness.billing_envelope import observe_spend
+
+    out = dict(payload) if isinstance(payload, dict) else {"session": {}, "jobs": []}
+    try:
+        out["envelope"] = observe_spend(_usage_spent_usd(out))
+    except Exception:
+        from harness.billing_envelope import snapshot, load_envelope
+
+        try:
+            out["envelope"] = snapshot(load_envelope())
+        except Exception:
+            out["envelope"] = {
+                "month_key": "",
+                "spent_usd": 0.0,
+                "cap": None,
+                "remaining": None,
+                "blocked": False,
+                "auto_reload": {"enabled": False, "amount": 0.0},
+                "last_reload": None,
+            }
+    return out
+
+
+def post_usage(body: dict) -> tuple[int, JsonPayload]:
+    """POST /api/usage — set monthly cap and optional auto-reload intent."""
+    from harness.billing_envelope import apply_settings
+
+    try:
+        env = apply_settings(body if isinstance(body, dict) else {})
+    except ValueError as exc:
+        return 400, {"error": str(exc)}
+    return 200, {"envelope": env}
+
+
 
 def _merge_swarm_by_model(acc: dict, by_model) -> None:
     if not isinstance(by_model, dict):
@@ -95,6 +142,18 @@ def get_context_usage(svc: UsageServices) -> tuple[int, JsonPayload]:
 
 
 def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]:
+    """GET /api/usage — process-lifetime StatusBar cost pill.
+
+    Must succeed with no live turn / no session runner: meters default to
+    zero and the billing envelope is still returned.
+    """
+    try:
+        return _get_usage_body(repo_override, svc)
+    except Exception:
+        return 200, attach_billing_envelope({"session": {}, "jobs": []})
+
+
+def _get_usage_body(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]:
     """GET /api/usage — process-lifetime StatusBar cost pill."""
     # Resolve real per-Mtok pricing for the active driver via resolve_price
     # (historical seam: live → catalog → defaults). Surface price_source so
@@ -141,7 +200,7 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
     )
     cached_usage = svc.usage_cache_get(usage_cache_key)
     if cached_usage is not None:
-        return 200, cached_usage
+        return 200, attach_billing_envelope(cached_usage)
     tokens_used = int(boot_meters.get("_tokens_used", 0) or 0)
     t_in = int(boot_meters.get("_tokens_in", 0) or 0)
     t_cached = int(boot_meters.get("_tokens_cached", 0) or 0)
@@ -536,4 +595,4 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
         svc.usage_cache_put(usage_cache_key, response_data)
     except Exception:
         pass
-    return 200, response_data
+    return 200, attach_billing_envelope(response_data)
