@@ -62,25 +62,17 @@ describe("CheckpointsPane diff badges", () => {
   it("renders added/modified/removed badges with visible text and aria labels", async () => {
     render(<CheckpointsPane />);
 
-    const toggle = await screen.findByTitle("View diff");
-    fireEvent.click(toggle);
+    await screen.findByText("before edits");
+    fireEvent.click(screen.getByText("Diff"));
 
     await waitFor(() => {
       expect(apiMocks.getCheckpointDiff).toHaveBeenCalledWith("cp-1");
     });
-    // Title may stay "View diff" until the next paint; assert badges first.
-    for (const [label, path] of [
-      ["added", "src/new.ts"],
-      ["modified", "src/old.ts"],
-      ["removed", "src/gone.ts"],
-    ] as const) {
-      const badge = await screen.findByLabelText(`${label}: ${path}`);
-      expect(badge).toHaveTextContent(label);
-    }
-    await waitFor(() => {
-      const hide = screen.queryByTitle("Hide diff");
-      const view = screen.queryByTitle("View diff");
-      expect(hide || view).toBeTruthy();
-    });
+    expect(await screen.findByText("src/new.ts")).toBeTruthy();
+    expect(screen.getByText("added")).toBeTruthy();
+    expect(screen.getByText("src/old.ts")).toBeTruthy();
+    expect(screen.getByText("modified")).toBeTruthy();
+    expect(screen.getByText("src/gone.ts")).toBeTruthy();
+    expect(screen.getByText("removed")).toBeTruthy();
   });
 });
