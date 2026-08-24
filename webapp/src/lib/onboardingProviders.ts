@@ -52,6 +52,10 @@ export const ONBOARDING_COPY: Record<string, OnboardingCopy> = {
     blurb: "Direct xAI API. Grok for chat and agentic workers.",
     keyUrl: "https://console.x.ai/",
   },
+  "xai-oauth": {
+    tagline: "SuperGrok plan",
+    blurb: "Sign in with SuperGrok. Full stack Grok for chat and workers.",
+  },
   deepseek: {
     tagline: "DeepSeek models",
     blurb: "Direct DeepSeek API. Strong coding models at API rates.",
@@ -122,6 +126,93 @@ export function defaultOnboardingProvider(providers: ProviderInfo[]): string {
   const list = onboardableProviders(providers);
   if (list.some((p) => p.name === "openrouter")) return "openrouter";
   return list[0]?.name || "";
+}
+
+
+/** Wired OAuth start handlers in harness/api/providers.py. qwen/minimax stay out. */
+export const FEATURED_OAUTH_ORDER = [
+  "openai-codex",
+  "anthropic",
+  "xai-oauth",
+  "nous",
+] as const;
+
+export type FeaturedOAuthName = (typeof FEATURED_OAUTH_ORDER)[number];
+
+export const FEATURED_OAUTH = new Set<string>(FEATURED_OAUTH_ORDER);
+
+export const FEATURED_LABELS: Record<FeaturedOAuthName, string> = {
+  "openai-codex": "ChatGPT Codex",
+  anthropic: "Claude Max",
+  "xai-oauth": "xAI SuperGrok",
+  nous: "Nous Portal",
+};
+
+const FEATURED_SYNTH: Record<FeaturedOAuthName, Pick<ProviderInfo, "display_name" | "env_var" | "base_url" | "api_mode">> = {
+  "openai-codex": {
+    display_name: "ChatGPT Codex",
+    env_var: "OPENAI_CODEX_TOKEN",
+    base_url: "",
+    api_mode: "codex_responses",
+  },
+  anthropic: {
+    display_name: "Claude Max",
+    env_var: "ANTHROPIC_API_KEY",
+    base_url: "",
+    api_mode: "anthropic_messages",
+  },
+  "xai-oauth": {
+    display_name: "xAI SuperGrok",
+    env_var: "XAI_OAUTH_TOKEN",
+    base_url: "",
+    api_mode: "chat_completions",
+  },
+  nous: {
+    display_name: "Nous Portal",
+    env_var: "NOUS_API_KEY",
+    base_url: "",
+    api_mode: "chat_completions",
+  },
+};
+
+export function isFeaturedOAuth(name: string): name is FeaturedOAuthName {
+  return FEATURED_OAUTH.has(name);
+}
+
+export function featuredOAuthKind(name: string): "device" | "pkce" | null {
+  if (name === "anthropic") return "pkce";
+  if (isFeaturedOAuth(name)) return "device";
+  return null;
+}
+
+function syntheticFeatured(name: FeaturedOAuthName, providers: ProviderInfo[]): ProviderInfo {
+  const found = providers.find((p) => p.name === name);
+  if (found) {
+    return {
+      ...found,
+      display_name: FEATURED_LABELS[name] || found.display_name || found.name,
+    };
+  }
+  const meta = FEATURED_SYNTH[name];
+  return {
+    name,
+    display_name: meta.display_name,
+    env_var: meta.env_var,
+    base_url: meta.base_url,
+    has_key: false,
+    api_mode: meta.api_mode,
+    worker_capability: "full_stack",
+  };
+}
+
+/** Always the four wired OAuth providers. xai-oauth is a pool, not a GET /api/providers row. */
+export function featuredOnboardingProviders(providers: ProviderInfo[]): ProviderInfo[] {
+  return FEATURED_OAUTH_ORDER.map((name) => syntheticFeatured(name, providers));
+}
+
+/** Paste-key rows: onboardable providers that are not featured OAuth. */
+export function keyOnboardingProviders(providers: ProviderInfo[]): ProviderInfo[] {
+  return onboardableProviders(providers).filter((p) => !isFeaturedOAuth(p.name));
 }
 
 export function openOnboardingKeyUrl(url: string): void {
