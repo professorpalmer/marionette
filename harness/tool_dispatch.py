@@ -1345,14 +1345,24 @@ class ToolDispatchMixin:
             approved_set = getattr(self, "_approved_commands", set())
             consume_approval = getattr(self, "consume_command_approval", None)
             if verdict.danger:
+                from .command_allowlist import allowlist_contains
+                allowlisted = allowlist_contains(
+                    act.command or "",
+                    state_dir=getattr(self, "state_dir", None),
+                    workspace_root=str(self.config.repo or ""),
+                    command_hash=cmd_hash,
+                )
                 if consume_approval is not None:
-                    approved_for_retry = bool(consume_approval(cmd_hash))
+                    consumed = bool(consume_approval(cmd_hash))
                 elif cmd_hash in approved_set:
                     # Fallback one-shot when consume_command_approval is absent.
                     approved_set.discard(cmd_hash)
-                    approved_for_retry = True
+                    consumed = True
                 else:
-                    approved_for_retry = False
+                    consumed = False
+                # Allowlist remembers across sessions; one-shot still consumes so
+                # a fresh same-hash re-approval is required without an allowlist hit.
+                approved_for_retry = allowlisted or consumed
             else:
                 approved_for_retry = True
             if verdict.danger and not approved_for_retry:
