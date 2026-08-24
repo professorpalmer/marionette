@@ -49,8 +49,9 @@ def post_plugins_install(body: dict, svc: PluginServices) -> Tuple[int, JsonPayl
     """POST /api/plugins/install — path or resolved git/https/github source."""
     del svc
     source = _install_source_from_body(body)
+    force = bool(body.get("force") or body.get("force_reinstall"))
     try:
-        record = install_from_source(source)
+        record = install_from_source(source, force=force)
     except AgentPluginError as exc:
         return 400, {"ok": False, "error": str(exc)}
     except Exception as exc:

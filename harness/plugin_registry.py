@@ -376,7 +376,7 @@ def _materialize_source(source: object, *, clone_fn=None) -> Tuple[Path, Optiona
         raise
 
 
-def _install_materialized(src: Path) -> PluginRecord:
+def _install_materialized(src: Path, *, force: bool = False) -> PluginRecord:
     staging_ns = portable_skill_namespace("_install_probe")
     package = load_agent_plugin(src, plugin_data_root() / staging_ns)
     install_id = _sanitize_install_id(package.name)
@@ -384,7 +384,9 @@ def _install_materialized(src: Path) -> PluginRecord:
     with _lock:
         plugins_dir().mkdir(parents=True, exist_ok=True)
         if dest.exists():
-            raise AgentPluginError(f"plugin already installed: {install_id}")
+            if not force:
+                raise AgentPluginError(f"plugin already installed: {install_id}")
+            shutil.rmtree(dest)
         try:
             shutil.copytree(str(src), str(dest), symlinks=False)
         except OSError as exc:
@@ -400,21 +402,21 @@ def _install_materialized(src: Path) -> PluginRecord:
     )
 
 
-def install_from_path(source: str, *, clone_fn=None) -> PluginRecord:
+def install_from_path(source: str, *, clone_fn=None, force: bool = False) -> PluginRecord:
     """Copy a local dir or git / https / github source into plugins (disabled)."""
     src, cleanup = _materialize_source(source, clone_fn=clone_fn)
     try:
-        return _install_materialized(src)
+        return _install_materialized(src, force=force)
     finally:
         if cleanup is not None:
             shutil.rmtree(cleanup, ignore_errors=True)
 
 
-def install_from_source(source: object, *, clone_fn=None) -> PluginRecord:
+def install_from_source(source: object, *, clone_fn=None, force: bool = False) -> PluginRecord:
     """Install from a path string, source URL, or resolved source mapping."""
     src, cleanup = _materialize_source(source, clone_fn=clone_fn)
     try:
-        return _install_materialized(src)
+        return _install_materialized(src, force=force)
     finally:
         if cleanup is not None:
             shutil.rmtree(cleanup, ignore_errors=True)

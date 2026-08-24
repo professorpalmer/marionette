@@ -165,3 +165,36 @@ def test_post_install_still_accepts_path(
     status, payload = post_plugins_install({"path": str(package)}, PluginServices())
     assert status == 200, payload
     assert payload["ok"] is True
+
+
+
+def test_force_reinstall_replaces_existing(
+    plugins_home: Path, tmp_path: Path
+) -> None:
+    del plugins_home
+    first = _valid_package(tmp_path / "src-plugin")
+    record = install_from_path(str(first))
+    assert record.enabled is False
+    dest = plugins_dir() / record.id
+    assert dest.is_dir()
+
+    second = _valid_package(tmp_path / "src-plugin-v2")
+    (second / "plugin.json").write_text(
+        (second / "plugin.json").read_text(encoding="utf-8").replace(
+            '"version": "1.2.3"', '"version": "2.0.0"'
+        ),
+        encoding="utf-8",
+    )
+    # Without force, already-installed stays an error.
+    status, payload = post_plugins_install({"path": str(second)}, PluginServices())
+    assert status == 400
+    assert "already installed" in str(payload.get("error") or "")
+
+    status, payload = post_plugins_install(
+        {"path": str(second), "force": True}, PluginServices()
+    )
+    assert status == 200, payload
+    assert payload["ok"] is True
+    assert payload["plugin"]["id"] == record.id
+    assert payload["plugin"]["enabled"] is False
+    assert payload["plugin"]["version"] == "2.0.0"

@@ -1486,10 +1486,10 @@ export const api = {
   mcpRefresh: (name: string) =>
     postJSON<{ ok: boolean; tools?: number; error?: string }>("/api/mcp/refresh", { name }),
   plugins: () => getJSON<{ plugins: AgentPlugin[]; error?: string }>("/api/plugins"),
-  pluginInstall: (source: string) =>
+  pluginInstall: (source: string, opts?: { force?: boolean }) =>
     postJSON<{ ok: boolean; plugin?: AgentPlugin; error?: string }>(
       "/api/plugins/install",
-      pluginInstallPayload(source),
+      { ...pluginInstallPayload(source), force: Boolean(opts?.force) },
     ),
   pluginEnable: (id: string) =>
     postJSON<{ ok: boolean; plugin?: AgentPlugin; error?: string }>("/api/plugins/enable", { id }),
