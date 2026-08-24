@@ -11,6 +11,7 @@ import {
 } from "../lib/pendingSwarmOpenJob";
 import { useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
 import { filterJobsByScope, loadJobScope, saveJobScope, type JobScope } from "../lib/jobScope";
+import { jobHeadlineTotal } from "./EconomicsDurable";
 
 // A clean, self-contained hover tooltip. The native `title=` tooltip renders as a
 // large unstyled OS box that covers the tracker and never wraps sensibly; this
@@ -568,6 +569,29 @@ function workerModelView(task: Task, routing?: Artifact): WorkerModelView {
 const DISCLOSURE_FOCUS =
   "focus:outline-none focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-1 focus-visible:outline-accent";
 
+/** Composer-family meter pills — same chip language as dock / Tasks trackers. */
+const SWARM_METER_PILL =
+  "composer-family inline-flex items-center gap-1 px-1.5 py-px rounded-full bg-panel2/80 border border-edge/80 text-[9px] shrink-0";
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+/** Unknown stays em-dash — never a measured $0. */
+function fmtMeterMoney(value: number | null | undefined): string {
+  if (!isFiniteNumber(value)) return "—";
+  if (value < 0.001 && value !== 0) return `$${value.toFixed(4)}`;
+  if (value < 0.01 && value !== 0) return `$${value.toFixed(3)}`;
+  return `$${value.toFixed(2)}`;
+}
+
+function terminalWorkerCount(tasks: Task[]): number {
+  return tasks.filter((t) => {
+    const s = taskState(t);
+    return s === "done" || s === "fail";
+  }).length;
+}
+
 /** Merge a fresh /swarm/live poll into cached state without wiping expanded full artifacts. */
 function mergeSwarmLive(prev: SwarmLive | null | undefined, next: SwarmLive): SwarmLive {
   if (!prev?.jobs?.length) return next;
@@ -713,6 +737,74 @@ export function workerSpend(
     return { cost: job.est_cost_usd, estimated, basis: spendBasisFor(job) };
   }
   return null;
+}
+
+type JobSpendSplit = {
+  headline: number | null;
+  measured: number | null | undefined;
+  estimated: number | null | undefined;
+  showMeasured: boolean;
+  showEstimated: boolean;
+};
+
+/** Map swarm job spend onto Economics headline/split rules. */
+function jobSpendSplit(j: Job): JobSpendSplit {
+  const hasMeasuredField = isFiniteNumber(j.measured_cost_usd);
+  const hasEstimatedField = isFiniteNumber(j.estimated_cost_usd);
+  if (hasMeasuredField || hasEstimatedField) {
+    const headline = jobHeadlineTotal({
+      measured_cost_usd: j.measured_cost_usd,
+      estimated_cost_usd: j.estimated_cost_usd,
+      actual_marginal_usd: j.est_cost_usd,
+    });
+    return {
+      headline,
+      measured: hasMeasuredField ? j.measured_cost_usd : null,
+      estimated: hasEstimatedField ? j.estimated_cost_usd : null,
+      showMeasured: hasMeasuredField,
+      showEstimated: hasEstimatedField,
+    };
+  }
+  if (!hasMeaningfulJobCost(j)) {
+    return {
+      headline: null,
+      measured: null,
+      estimated: null,
+      showMeasured: false,
+      showEstimated: false,
+    };
+  }
+  const headline = jobHeadlineTotal({
+    measured_cost_usd: undefined,
+    estimated_cost_usd: undefined,
+    actual_marginal_usd: j.est_cost_usd,
+  });
+  const basis = spendBasisFor(j);
+  if (basis === "measured" || basis === "provider") {
+    return {
+      headline,
+      measured: j.est_cost_usd,
+      estimated: null,
+      showMeasured: true,
+      showEstimated: false,
+    };
+  }
+  if (basis === "estimated") {
+    return {
+      headline,
+      measured: null,
+      estimated: j.est_cost_usd,
+      showMeasured: false,
+      showEstimated: true,
+    };
+  }
+  return {
+    headline,
+    measured: null,
+    estimated: null,
+    showMeasured: false,
+    showEstimated: false,
+  };
 }
 
 function positiveUsd(n?: number): number {
@@ -1058,6 +1150,9 @@ export default function SwarmPane() {
   const projectSwitching = useProjectSwitching();
   const [expandedAlts, setExpandedAlts] = useState<Record<string, boolean>>({});
   const [expandedTasks, setExpandedTasks] = useState<Record<string, boolean>>({});
+  const [expandedJobCost, setExpandedJobCost] = useState<Record<string, boolean>>({});
+  const [expandedJobSavings, setExpandedJobSavings] = useState<Record<string, boolean>>({});
+  const [expandedWorkerUsage, setExpandedWorkerUsage] = useState<Record<string, boolean>>({});
   const [expandedFindings, setExpandedFindings] = useState<Record<string, boolean>>({});
   // Findings section open/closed per job. Default open (missing key); user toggle sticks.
   const [findingsOpen, setFindingsOpen] = useState<Record<string, boolean>>({});
@@ -1497,9 +1592,13 @@ export default function SwarmPane() {
     const savings = jobSavings(j);
     const showJobTokens = jobTokens(j) > 0;
     const showJobCompactTokens = jobCompactTokens(j) > 0;
-    const showJobCost = hasMeaningfulJobCost(j);
+    const spendSplit = jobSpendSplit(j);
+    const showJobCost = hasMeaningfulJobCost(j) || spendSplit.headline != null;
     const showJobSavings = savings.total > 0;
     const hasHeaderMeters = showJobTokens || showJobCompactTokens || showJobCost || showJobSavings;
+    const costExpanded = !!expandedJobCost[j.id];
+    const savingsExpanded = !!expandedJobSavings[j.id];
+    const finishedWorkers = terminalWorkerCount(tasks);
 
     const toggle = () => {
       const next = !isExpanded;
@@ -1618,29 +1717,93 @@ export default function SwarmPane() {
             </div>
           </div>
 
-          {/* One quiet receipt line: spend first, then execution identity.
-              Rare provenance remains textual so the header never becomes a
-              dashboard of pills. */}
+          {/* Usage meters: one row of stacking pills; identity/provenance stays textual. */}
           {(hasHeaderMeters || headerModel || showJobRoutingPlaceholder || workerCount > 0 || adapter || j.source === "cli" || (workerCount === 0 && attestedPolicy === "explicit_pin")) && (
             <div className="flex items-center gap-x-2 gap-y-1 pl-6 pr-1 mt-1.5 flex-wrap text-[9px]">
               {hasHeaderMeters && (
-                <span className="inline-flex items-center gap-1.5 min-w-0 flex-wrap font-mono text-muted tabular-nums">
-                  {showJobTokens && <span>{jobTokens(j).toLocaleString()}t</span>}
-                  {showJobCompactTokens && (
-                    <span className="text-accent/80">{jobCompactTokens(j).toLocaleString()} compact</span>
-                  )}
-                  {showJobCost && (
+                <div className="inline-flex items-center gap-1 min-w-0 flex-wrap">
+                  {(showJobTokens || showJobCompactTokens) && (
                     <span
-                      className="text-good/85"
-                      title={namedSpend(j.est_cost_usd, spendBasisFor(j))}
+                      className={`${SWARM_METER_PILL} font-mono text-muted tabular-nums`}
+                      title="Token usage"
                     >
-                      {namedSpend(j.est_cost_usd, spendBasisFor(j))}
+                      {showJobTokens && <span>{jobTokens(j).toLocaleString()}t</span>}
+                      {showJobCompactTokens && (
+                        <span className={showJobTokens ? "text-accent/80" : "text-muted"}>
+                          {showJobTokens ? " · " : ""}
+                          {jobCompactTokens(j).toLocaleString()} compact
+                        </span>
+                      )}
                     </span>
                   )}
-                  {showJobSavings && <SavingsChip parts={savings} className="font-sans" />}
+                  {showJobCost && spendSplit.headline != null && (
+                    <div className="inline-flex flex-col gap-0.5 min-w-0">
+                      <button
+                        type="button"
+                        aria-expanded={costExpanded}
+                        aria-label={`Job cost ${fmtMeterMoney(spendSplit.headline)}`}
+                        title={namedSpend(j.est_cost_usd, spendBasisFor(j))}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setExpandedJobCost((prev) => ({ ...prev, [j.id]: !costExpanded }));
+                        }}
+                        onKeyDown={(e) => e.stopPropagation()}
+                        className={`${SWARM_METER_PILL} font-mono text-good/85 tabular-nums hover:border-good/30 transition-colors ${DISCLOSURE_FOCUS}`}
+                      >
+                        {fmtMeterMoney(spendSplit.headline)}
+                        {costExpanded ? <ChevronDown size={8} className="shrink-0" /> : <ChevronRight size={8} className="shrink-0" />}
+                      </button>
+                      {costExpanded && (
+                        <div className="flex flex-col gap-px text-[8.5px] text-muted font-mono tabular-nums pl-1">
+                          <span>
+                            Measured{" "}
+                            <span className="text-txt/80">{fmtMeterMoney(spendSplit.measured)}</span>
+                          </span>
+                          <span>
+                            Estimated{" "}
+                            <span className="text-txt/80">{fmtMeterMoney(spendSplit.estimated)}</span>
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {showJobSavings && (
+                    <div className="inline-flex flex-col gap-0.5 min-w-0">
+                      <button
+                        type="button"
+                        aria-expanded={savingsExpanded}
+                        aria-label={namedSavings(savings.total)}
+                        title={savingsDetail(savings)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setExpandedJobSavings((prev) => ({ ...prev, [j.id]: !savingsExpanded }));
+                        }}
+                        onKeyDown={(e) => e.stopPropagation()}
+                        className={`${SWARM_METER_PILL} font-sans text-good/85 tabular-nums hover:border-good/30 transition-colors ${DISCLOSURE_FOCUS}`}
+                      >
+                        <span className="text-good/45" aria-hidden="true">{"\u2193"}</span>
+                        {namedSavings(savings.total)}
+                        {savingsExpanded ? <ChevronDown size={8} className="shrink-0" /> : <ChevronRight size={8} className="shrink-0" />}
+                      </button>
+                      {savingsExpanded && (
+                        <p className="text-[8.5px] text-good/75 leading-snug pl-1 max-w-xs">
+                          {savingsDetail(savings)}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+              {workerCount > 0 && (
+                <span
+                  className={`${SWARM_METER_PILL} text-muted tabular-nums`}
+                  aria-label="Workers"
+                  title={`${finishedWorkers} of ${workerCount} workers terminal`}
+                >
+                  {finishedWorkers}/{workerCount}
                 </span>
               )}
-              {hasHeaderMeters && (headerModel || showJobRoutingPlaceholder || workerCount > 0 || adapter) && (
+              {hasHeaderMeters && (headerModel || showJobRoutingPlaceholder || adapter) && (
                 <span className="h-2.5 w-px bg-edge/70" aria-hidden="true" />
               )}
               {headerModel ? (
@@ -1662,11 +1825,6 @@ export default function SwarmPane() {
                   title="explicit_pin · not auto-routed"
                 >
                   pin
-                </span>
-              )}
-              {workerCount > 0 && (
-                <span className="text-muted tabular-nums">
-                  {workerCount} worker{workerCount > 1 ? "s" : ""}
                 </span>
               )}
               {adapter && adapter.toLowerCase() !== displayModel.toLowerCase() && (
@@ -1835,26 +1993,67 @@ export default function SwarmPane() {
                                   : <ChevronRight size={9} />}
                               </span>
                             </div>
-                            <div className="mt-0.5 flex items-center gap-x-2 gap-y-0.5 min-w-0 flex-wrap">
-                              <WorkerModelSlot view={view} />
-                              {showSpend && (
-                                <span className="text-muted font-mono text-[8.5px] flex items-center gap-1 tabular-nums">
-                                  {showTokens && (
-                                    <span>{Number(task.tokens).toLocaleString()}t</span>
-                                  )}
-                                  {showCost && (
-                                    <span className="text-good/85">
-                                      {spend
-                                        ? namedSpend(costValue, spend.basis)
-                                        : formatWorkerCost(
-                                            costValue,
-                                            costEstimated,
-                                            isPlanBilledRouting(routing),
-                                          )}
-                                    </span>
-                                  )}
+                            <div className="mt-0.5 flex items-center gap-1 min-w-0 flex-wrap">
+                              <span className={`${SWARM_METER_PILL} font-semibold text-txt truncate max-w-[9rem]`}>
+                                {roleLabel}
+                              </span>
+                              {(rawStatus || outcome !== "ok") && (
+                                <span
+                                  className={`${SWARM_METER_PILL} ${
+                                    outcome === "failed"
+                                      ? "text-risk/90"
+                                      : outcome === "degraded"
+                                      ? "text-warn/90"
+                                      : "text-muted"
+                                  }`}
+                                >
+                                  {outcome !== "ok" ? outcome : rawStatus}
                                 </span>
                               )}
+                              {view.slot && (
+                                <span className={`${SWARM_METER_PILL} min-w-0 max-w-full`}>
+                                  <WorkerModelSlot view={view} />
+                                </span>
+                              )}
+                              {showSpend && (() => {
+                                const usageOpen = !!expandedWorkerUsage[task.id];
+                                return (
+                                  <div className="inline-flex flex-col gap-0.5 min-w-0">
+                                    <button
+                                      type="button"
+                                      aria-expanded={usageOpen}
+                                      aria-label="Show tokens and cost"
+                                      className={`${SWARM_METER_PILL} ${DISCLOSURE_FOCUS} font-mono text-muted tabular-nums hover:border-edge transition-colors`}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setExpandedWorkerUsage((prev) => ({ ...prev, [task.id]: !usageOpen }));
+                                      }}
+                                      onKeyDown={(e) => e.stopPropagation()}
+                                    >
+                                      Usage
+                                      {usageOpen ? <ChevronDown size={8} className="shrink-0" /> : <ChevronRight size={8} className="shrink-0" />}
+                                    </button>
+                                    {usageOpen && (
+                                      <span className="text-muted font-mono text-[8.5px] flex items-center gap-1 tabular-nums pl-1">
+                                        {showTokens && (
+                                          <span>{Number(task.tokens).toLocaleString()}t</span>
+                                        )}
+                                        {showCost && (
+                                          <span className="text-good/85">
+                                            {spend
+                                              ? namedSpend(costValue, spend.basis)
+                                              : formatWorkerCost(
+                                                  costValue,
+                                                  costEstimated,
+                                                  isPlanBilledRouting(routing),
+                                                )}
+                                          </span>
+                                        )}
+                                      </span>
+                                    )}
+                                  </div>
+                                );
+                              })()}
                             </div>
                           </div>
                         </div>
