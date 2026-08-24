@@ -164,15 +164,15 @@ function parseTranslateY(transform: string): number | null {
   return match ? Number(match[1]) : null;
 }
 
-describe("feed Motion (v0.9.331)", () => {
-  it("declares the official motion package and 0.9.331 not 329", () => {
+describe("feed Motion (v0.9.332)", () => {
+  it("declares the official motion package and 0.9.332 not 329", () => {
     const pkg = JSON.parse(pkgJson) as {
       dependencies?: Record<string, string>;
       version?: string;
     };
     expect(pkg.dependencies?.motion).toBeTruthy();
     expect(pkg.dependencies?.["framer-motion"]).toBeUndefined();
-    expect(pkg.version).toBe("0.9.331");
+    expect(pkg.version).toBe("0.9.332");
     expect(pkg.version).not.toBe("0.9.329");
   });
 
@@ -197,7 +197,9 @@ describe("feed Motion (v0.9.331)", () => {
   });
 
   it("drops Motion layout on live tail and fallback; keeps Pretext overflow-anchor", () => {
-    expect(column).toContain("layoutScroll");
+    expect(column).not.toContain("layoutScroll");
+    expect(column).not.toContain("motion.div");
+    expect(column).not.toContain('from "motion/react"');
     expect(column).toContain("[overflow-anchor:auto]");
     expect(column).toContain("[scroll-padding-bottom:var(--feed-chrome-clearance");
     expect(column).not.toContain("overflow-anchor:none");
@@ -218,6 +220,10 @@ describe("feed Motion (v0.9.331)", () => {
     expect(list).toContain("useVirtualizer");
     expect(list).toContain("FEED_ROW_REMEASURE_EVENT");
     expect(list).toContain("requestFeedRowRemeasure");
+    expect(list).toContain("rowMeasureSignal");
+    expect(list).toContain("shouldRemeasureImmediately");
+    expect(list).toContain("measureSignal");
+    expect(list).toMatch(/Collapse \/ expand must remasure/);
     expect(list).toContain("transcript-live-tail");
     expect(list).not.toMatch(/from ["']node:/);
     expect(list).not.toMatch(/@stylexjs|create\(|stylex\./);

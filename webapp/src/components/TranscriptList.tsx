@@ -84,7 +84,9 @@ import {
 } from "./conversation/transcriptVirtualWindow";
 import {
   createTranscriptRowHeightCache,
+  rowMeasureSignal,
   shouldAttachDomMeasure,
+  shouldRemeasureImmediately,
   transcriptFeedInnerWidth,
   TRANSCRIPT_ROW_FALLBACK_PX,
 } from "./conversation/transcriptRowHeight";
@@ -1029,11 +1031,18 @@ const VirtualTranscriptRow = memo(
   const rowRef = useRef<HTMLDivElement>(null);
   const [mountSettled, setMountSettled] = useState(false);
   const attachDom = shouldAttachDomMeasure(item, feedSettled);
-  const keepMeasure = attachDom || item.kind === "activity_group";
+  const remasureNow = shouldRemeasureImmediately(item);
+  const measureSignal = rowMeasureSignal(item);
+  const keepMeasure = attachDom || remasureNow || item.kind === "activity_group";
 
   useLayoutEffect(() => {
     if (!keepMeasure) {
       setMountSettled(false);
+      return;
+    }
+    // Stream tokens + Investigating collapse must remasure this frame.
+    if (remasureNow) {
+      setMountSettled(true);
       return;
     }
     setMountSettled(false);
@@ -1048,22 +1057,28 @@ const VirtualTranscriptRow = memo(
     };
     const outer = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(outer);
-  }, [keepMeasure, rowId]);
+  }, [keepMeasure, remasureNow, rowId]);
 
   useLayoutEffect(() => {
     const el = rowRef.current;
     if (!el) return;
+    // Collapse / expand must remasure so the fold pushes following rows
+    // (TanStack translateY uses the last measured height until remasure).
+    // Every stream token height change also remasures via measureSignal.
     const onRemeasure = () => {
       measureDom(el);
     };
     el.addEventListener(FEED_ROW_REMEASURE_EVENT, onRemeasure);
-    if (keepMeasure && (mountSettled || item.kind === "activity_group")) {
+    if (keepMeasure && (mountSettled || remasureNow)) {
       measureDom(el);
     }
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(onRemeasure) : null;
+    ro?.observe(el);
     return () => {
       el.removeEventListener(FEED_ROW_REMEASURE_EVENT, onRemeasure);
+      ro?.disconnect();
     };
-  }, [keepMeasure, mountSettled, measureDom, rowId, item.kind]);
+  }, [keepMeasure, remasureNow, mountSettled, measureDom, rowId, measureSignal]);
 
   const setRowRef = useCallback(
     (el: HTMLDivElement | null) => {

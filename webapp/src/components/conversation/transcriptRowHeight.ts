@@ -331,10 +331,35 @@ export function createTranscriptRowHeightCache(): TranscriptRowHeightCache {
   };
 }
 
+/** Signal that changes on every stream token / fold membership so rows remasure. */
+export function rowMeasureSignal(item: GroupedItem): string {
+  switch (item.kind) {
+    case "msg":
+      return `msg:${item.msg.streaming ? 1 : 0}:${item.msg.workerStream ? 1 : 0}:${item.msg.text.length}:${item.msg.text.slice(-32)}`;
+    case "thinking":
+      return `think:${item.streaming ? 1 : 0}:${item.text.length}:${item.text.slice(-32)}`;
+    case "activity_group":
+      return `fold:${item.items.length}`;
+    default:
+      return item.kind;
+  }
+}
+
+/** Immediate attach — skip the 2-rAF settle so tokens / folds remasure this frame. */
+export function shouldRemeasureImmediately(item: GroupedItem): boolean {
+  if (item.kind === "activity_group" || item.kind === "thinking") return true;
+  if (item.kind === "msg" && (item.msg.streaming || item.msg.workerStream)) return true;
+  return false;
+}
+
 /** Whether DOM measureElement may attach for this row (after mount settle). */
 export function shouldAttachDomMeasure(
   item: GroupedItem,
   feedSettled: boolean,
 ): boolean {
+  // Investigating / Explored folds and live stream rows change height in place.
+  // Attach measureElement even before feed settle so tokens / expand cannot
+  // paint over the next virtual row.
+  if (shouldRemeasureImmediately(item)) return true;
   return feedSettled && rowNeedsDomMeasure(item);
 }

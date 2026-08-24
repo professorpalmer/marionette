@@ -2,8 +2,8 @@
  * Feed Motion leftovers (v0.9.331). Live tail + fallback are plain divs —
  * no motion.div layout and no popLayout presence wrapper. Virtual window rows
  * never take a Motion layout transform — TanStack owns translateY.
- * ConversationChatColumn still uses layoutScroll on the Pretext / overflow-anchor
- * scrollport. prefers-reduced-motion stays off (animations run unless opted out).
+ * ConversationChatColumn scrollport is a plain div (no layoutScroll) with
+ * Pretext + overflow-anchor. prefers-reduced-motion stays off (animations run unless opted out).
  */
 
 import { useReducedMotion } from "motion/react";

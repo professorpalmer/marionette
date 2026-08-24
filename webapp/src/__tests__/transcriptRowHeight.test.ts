@@ -6,9 +6,11 @@ import {
   hasMarkdownCodeFence,
   hasMarkdownImage,
   hasMermaidFence,
+  rowMeasureSignal,
   rowNeedsDomMeasure,
   rowPretextSpec,
   shouldAttachDomMeasure,
+  shouldRemeasureImmediately,
   stripMarkdownForPretext,
   transcriptBubbleMaxWidth,
   transcriptFeedInnerWidth,
@@ -141,5 +143,21 @@ describe("transcriptRowHeight", () => {
     expect(shouldAttachDomMeasure(rich, false)).toBe(false);
     expect(shouldAttachDomMeasure(rich, true)).toBe(true);
     expect(shouldAttachDomMeasure(msg("user", "plain"), true)).toBe(false);
+    const fold: GroupedItem = { kind: "activity_group", items: [] };
+    expect(shouldAttachDomMeasure(fold, false)).toBe(true);
+    expect(shouldAttachDomMeasure(fold, true)).toBe(true);
+    expect(shouldRemeasureImmediately(fold)).toBe(true);
+    expect(shouldRemeasureImmediately(msg("user", "plain"))).toBe(false);
+    const streaming: GroupedItem = {
+      kind: "msg",
+      msg: { role: "assistant", text: "Hel", streaming: true },
+    };
+    const grown: GroupedItem = {
+      kind: "msg",
+      msg: { role: "assistant", text: "Hello there", streaming: true },
+    };
+    expect(shouldRemeasureImmediately(streaming)).toBe(true);
+    expect(shouldAttachDomMeasure(streaming, false)).toBe(true);
+    expect(rowMeasureSignal(streaming)).not.toBe(rowMeasureSignal(grown));
   });
 });
