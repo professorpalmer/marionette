@@ -3,7 +3,7 @@
  * Conversation owns all state; this is a presentational peel.
  */
 
-import { useLayoutEffect, useRef, useState, type MutableRefObject, type ReactNode, type RefObject } from "react";
+import { useLayoutEffect, useRef, useState, type CSSProperties, type MutableRefObject, type ReactNode, type RefObject } from "react";
 import { ChevronDown } from "lucide-react";
 import { panelOpacityClass } from "../../lib/panelTransition";
 import { feedBottomClearancePx, FEED_CHROME_CLEARANCE_VAR } from "./feedScroll";
@@ -89,7 +89,7 @@ export default function ConversationChatColumn({
   return (
     <div
       className="chat-column flex flex-col flex-1 min-h-0 min-w-0"
-      style={{ [FEED_CHROME_CLEARANCE_VAR]: `${clearancePx}px` }}
+      style={{ [FEED_CHROME_CLEARANCE_VAR]: `${clearancePx}px` } as CSSProperties}
     >
       <div className="relative flex-1 min-h-0 flex flex-col">
         <div
