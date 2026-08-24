@@ -63,6 +63,14 @@ describe("CheckpointsPane diff badges", () => {
     render(<CheckpointsPane />);
 
     await screen.findByText("before edits");
+    // refreshScope sets activeSessionId after first paint; that changes
+    // scopeKey and clearLocalState() wipes expanded diffs. Click Diff only
+    // after the second checkpoints fetch.
+    await waitFor(() => {
+      expect(apiMocks.sessions).toHaveBeenCalled();
+      expect(apiMocks.getCheckpoints.mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+    await screen.findByText("before edits");
     fireEvent.click(screen.getByTitle("View diff"));
 
     await waitFor(() => {
