@@ -4,7 +4,6 @@
  */
 
 import { useLayoutEffect, useRef, useState, type CSSProperties, type MutableRefObject, type ReactNode, type RefObject } from "react";
-import { motion } from "motion/react";
 import { ChevronDown } from "lucide-react";
 import { panelOpacityClass } from "../../lib/panelTransition";
 import { feedBottomClearancePx, FEED_CHROME_CLEARANCE_VAR } from "./feedScroll";
@@ -93,9 +92,8 @@ export default function ConversationChatColumn({
       style={{ [FEED_CHROME_CLEARANCE_VAR]: `${clearancePx}px` } as CSSProperties}
     >
       <div className="relative flex-1 min-h-0 flex flex-col">
-        <motion.div
+        <div
           ref={feedRef}
-          layoutScroll
           className={`flex-1 min-h-0 overflow-y-auto overscroll-contain [overflow-anchor:auto] [scrollbar-gutter:stable] [scroll-padding-bottom:var(--feed-chrome-clearance,clamp(72px,12vh,144px))] ${panelOpacityClass(transcriptStale)}`}
         >
         {/* overflow-anchor:auto — browser tail anchoring during growth; scroll-padding-bottom
@@ -141,7 +139,7 @@ export default function ConversationChatColumn({
             onAuthFailureRetry={onAuthFailureRetry}
           />
         </div>
-      </motion.div>
+      </div>
       {showJumpToBottom ? (
         <button
           type="button"
