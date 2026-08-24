@@ -31,7 +31,14 @@ def envelope_path() -> Path:
 
 def month_key(now: Optional[datetime] = None) -> str:
     stamp = now or datetime.now(timezone.utc)
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    else:
+        stamp = stamp.astimezone(timezone.utc)
     return stamp.strftime("%Y-%m")
+
+
+utc_month_key = month_key
 
 
 def _empty(month: str) -> Dict[str, Any]:
@@ -44,9 +51,9 @@ def _empty(month: str) -> Dict[str, Any]:
     }
 
 
-def load_envelope() -> Dict[str, Any]:
+def load_envelope(*, now: Optional[datetime] = None) -> Dict[str, Any]:
     path = envelope_path()
-    month = month_key()
+    month = month_key(now)
     if not path.is_file():
         return _empty(month)
     try:
@@ -57,7 +64,14 @@ def load_envelope() -> Dict[str, Any]:
         return _empty(month)
     stored_month = str(data.get("month") or "")
     if stored_month != month:
+        kept_cap = data.get("cap_usd")
+        kept_reload = data.get("auto_reload") if isinstance(data.get("auto_reload"), dict) else {}
         data = _empty(month)
+        data["cap_usd"] = kept_cap
+        data["auto_reload"] = {
+            "enabled": bool(kept_reload.get("enabled")),
+            "amount_usd": float(kept_reload.get("amount_usd") or 0.0),
+        }
     else:
         try:
             data["spent_usd"] = float(data.get("spent_usd") or 0.0)
@@ -84,20 +98,20 @@ def load_envelope() -> Dict[str, Any]:
     return data
 
 
-def save_envelope(data: Dict[str, Any]) -> Dict[str, Any]:
+def save_envelope(data: Dict[str, Any], *, now: Optional[datetime] = None) -> Dict[str, Any]:
     path = envelope_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = dict(data)
-    payload["month"] = str(payload.get("month") or month_key())
+    payload["month"] = str(payload.get("month") or month_key(now))
     with _lock:
         path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         restrict_to_owner(str(path))
     return payload
 
 
-def set_envelope(*, cap_usd: Any = None, auto_reload_enabled: Any = None, auto_reload_amount: Any = None) -> Dict[str, Any]:
+def set_envelope(*, cap_usd: Any = None, auto_reload_enabled: Any = None, auto_reload_amount: Any = None, now: Optional[datetime] = None) -> Dict[str, Any]:
     with _lock:
-        data = load_envelope()
+        data = load_envelope(now=now)
         if cap_usd is not None:
             if cap_usd == "" or cap_usd is False:
                 data["cap_usd"] = None
@@ -112,20 +126,50 @@ def set_envelope(*, cap_usd: Any = None, auto_reload_enabled: Any = None, auto_r
             "enabled": bool(reload_cfg.get("enabled")),
             "amount_usd": float(reload_cfg.get("amount_usd") or 0.0),
         }
-        if data["auto_reload"]["enabled"] and data["auto_reload"]["amount_usd"] > 0:
-            data["last_reload"] = {"intent": True, "amount_usd": data["auto_reload"]["amount_usd"]}
-        return save_envelope(data)
+        cap = data.get("cap_usd")
+        spent = float(data.get("spent_usd") or 0.0)
+        if data["auto_reload"]["enabled"] and cap is not None and spent >= float(cap):
+            amount = float(data["auto_reload"]["amount_usd"] or 0.0)
+            stamp = now or datetime.now(timezone.utc)
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            else:
+                stamp = stamp.astimezone(timezone.utc)
+            data["last_reload"] = {
+                "intent": True,
+                "charged": False,
+                "at": stamp.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "amount": amount,
+                "amount_usd": amount,
+            }
+        return save_envelope(data, now=now)
 
 
-def sync_spent(spent_usd: float) -> Dict[str, Any]:
+def sync_spent(spent_usd: float, *, now: Optional[datetime] = None) -> Dict[str, Any]:
     """Record caller-computed spend for the current month. No new cost math."""
     with _lock:
-        data = load_envelope()
+        data = load_envelope(now=now)
         try:
-            data["spent_usd"] = max(0.0, float(spent_usd))
+            data["spent_usd"] = max(float(data.get("spent_usd") or 0.0), max(0.0, float(spent_usd)))
         except (TypeError, ValueError):
             data["spent_usd"] = 0.0
-        return save_envelope(data)
+        cap = data.get("cap_usd")
+        reload_cfg = data.get("auto_reload") or {}
+        if reload_cfg.get("enabled") and cap is not None and float(data.get("spent_usd") or 0.0) >= float(cap):
+            amount = float(reload_cfg.get("amount_usd") or 0.0)
+            stamp = now or datetime.now(timezone.utc)
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            else:
+                stamp = stamp.astimezone(timezone.utc)
+            data["last_reload"] = {
+                "intent": True,
+                "charged": False,
+                "at": stamp.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "amount": amount,
+                "amount_usd": amount,
+            }
+        return save_envelope(data, now=now)
 
 
 def envelope_public(data: Optional[Dict[str, Any]] = None, *, spent_usd: Optional[float] = None) -> Dict[str, Any]:
@@ -174,11 +218,11 @@ def snapshot(data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     }
 
 
-def observe_spend(spent_usd: float) -> Dict[str, Any]:
-    return snapshot(sync_spent(spent_usd))
+def observe_spend(spent_usd: float, *, now: Optional[datetime] = None) -> Dict[str, Any]:
+    return snapshot(sync_spent(spent_usd, now=now))
 
 
-def apply_settings(body: Dict[str, Any]) -> Dict[str, Any]:
+def apply_settings(body: Optional[Dict[str, Any]] = None, *, now: Optional[datetime] = None) -> Dict[str, Any]:
     body = body or {}
     cap = body.get("cap_usd", body.get("cap"))
     enabled = body.get("auto_reload_enabled")
@@ -192,5 +236,5 @@ def apply_settings(body: Dict[str, Any]) -> Dict[str, Any]:
         elif raw is not None:
             enabled = raw
     amount = body.get("auto_reload_amount_usd", body.get("amount_usd"))
-    env = set_envelope(cap_usd=cap, auto_reload_enabled=enabled, auto_reload_amount=amount)
+    env = set_envelope(cap_usd=cap, auto_reload_enabled=enabled, auto_reload_amount=amount, now=now)
     return snapshot(env)

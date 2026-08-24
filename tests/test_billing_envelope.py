@@ -9,7 +9,7 @@ from harness.billing_envelope import (
     apply_settings,
     load_envelope,
     observe_spend,
-    utc_month_key,
+    month_key,
 )
 
 
@@ -62,7 +62,7 @@ def test_usage_without_runner_returns_envelope(tmp_path, monkeypatch):
     assert code == 200
     assert "session" in payload
     env = payload["envelope"]
-    assert env["month_key"] == utc_month_key()
+    assert env["month_key"] == month_key()
     assert env["month_key"] == datetime.now(timezone.utc).strftime("%Y-%m")
     assert env["spent_usd"] == 0.42
     assert env["cap"] is None
@@ -78,7 +78,7 @@ def test_usage_survives_missing_services(tmp_path, monkeypatch):
     svc.boot_usage_meters = lambda: (_ for _ in ()).throw(RuntimeError("no meters"))
     code, payload = get_usage("", svc)
     assert code == 200
-    assert payload["envelope"]["month_key"] == utc_month_key()
+    assert payload["envelope"]["month_key"] == month_key()
     assert payload["envelope"]["spent_usd"] == 0.0
 
 
@@ -137,11 +137,11 @@ def test_month_key_rolls_spent(tmp_path, monkeypatch):
     apply_settings({"cap": 20.0}, now=july)
     observe_spend(4.0, now=july)
     stored = load_envelope(now=july)
-    assert stored["month_key"] == "2026-07"
+    assert stored["month"] == "2026-07"
     assert stored["spent_usd"] == 4.0
 
     august = datetime(2026, 8, 1, 0, 1, tzinfo=timezone.utc)
     rolled = load_envelope(now=august)
-    assert rolled["month_key"] == "2026-08"
+    assert rolled["month"] == "2026-08"
     assert rolled["spent_usd"] == 0.0
-    assert rolled["cap"] == 20.0
+    assert rolled["cap_usd"] == 20.0
