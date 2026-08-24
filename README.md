@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.28` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.310, deliberately pre-1.0. Rides puppetmaster-ai==1.22.28. Pi TUI/pilot package (not a worker adapter).
+> Status: v0.9.311, deliberately pre-1.0. Rides puppetmaster-ai==1.22.28. Pi TUI/pilot package (not a worker adapter).
 
 ## Documentation
 
@@ -102,6 +102,7 @@ The cost thesis is measured, not asserted:
 | **Full-auto mode** | Unattended objective pursuit bounded by an AutoBudget governor (max swarms / tokens / seconds / idle), with a non-bypassable command safety guard. |
 | **Scheduled autonomy** | `harness schedule` provides cron-backed local unattended runs with transactional cross-process claims, restart recovery, cooperative cancellation, truthful run history, and workspace safety. Fire times are host-local. HTTP + Settings UI can list/mutate/run-now/history (poll-first); the local daemon is still required for unattended cron fire. Per-schedule IANA timezone and schedule SSE remain deferred. |
 | **Chrome browser relay** | Unpacked Chrome extension / native-host message posts tab URL, title, and optional page text to `POST /api/browser/relay`. Off by default (`PM_BROWSER_RELAY=1`). Extends the existing CDP browser stack; not a second engine, marketplace listing, or telemetry sink. |
+| **Collab web presence** | Who is in the session: peer id, label, and last_seen. Heartbeat POST refreshes a peer; GET lists live peers and expires stale ones. In-process stdlib store -- no marketplace, Sentry/Otel, or Guardian. |
 | **Command safety guard** | In full-auto, irreversible/remote/escalating shell commands (recursive deletes, ssh/scp, curl-pipe-to-shell, force-push, sudo, disk writes, key exfil) are screened and blocked; interactive co-working is untouched. Configurable per-command timeout (default 120s; 0/off = unbounded for long sessions). |
 
 ## Architecture

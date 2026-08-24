@@ -33,6 +33,7 @@ _SAMPLE_GUARDED_GET = (
     "/api/sessions",
     "/api/providers",
     "/api/chat/events",
+    "/api/collab/presence",
 )
 
 # Guarded POST paths (all POST JSON routes require the harness token).
@@ -51,6 +52,7 @@ _SAMPLE_GUARDED_POST = (
     "/api/session/compact",
     "/api/session/snapcompact",
     "/api/mcp/refresh",
+    "/api/collab/presence/heartbeat",
 )
 
 
