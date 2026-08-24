@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import EconomicsPane from "../components/EconomicsPane";
 import { api } from "../lib/api";
@@ -107,6 +107,7 @@ describe("EconomicsPane", () => {
           tokens_per_typed_artifact: 400,
           degraded_rate: 0,
           actual_marginal_usd: 1.25,
+          measured_cost_usd: 1.25,
           cost_basis: "measured_usage_x_registry_price",
           counterfactual: { avoided_usd: 2.0 },
         },
@@ -130,6 +131,115 @@ describe("EconomicsPane", () => {
     expect(screen.queryByText("$9.99")).not.toBeInTheDocument();
     expect(screen.queryByText("~$9.99")).not.toBeInTheDocument();
     expect(screen.getByText("$1.25 vs $2.00 · measured")).toBeInTheDocument();
+    const ownedRow = screen.getByText("Job owned-1").closest(".mb-2");
+    expect(ownedRow).toBeTruthy();
+    const ownedScope = within(ownedRow as HTMLElement);
+    expect(ownedScope.getByText("Measured")).toBeInTheDocument();
+    expect(ownedScope.getByText("Estimated")).toBeInTheDocument();
+    expect(ownedScope.getAllByText("$1.25").length).toBeGreaterThanOrEqual(1);
+    expect(ownedScope.getAllByText("—").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("shows headline sum and measured/estimated lines for mixed job cost", async () => {
+    mockGetUsage.mockResolvedValue({ session: usageSession, jobs: [] });
+    mockGetEconomics.mockResolvedValue({
+      ...durablePayload,
+      recent_jobs: [
+        {
+          job_id: "mixed-1",
+          accounting_owned: true,
+          models: [{ model_id: "composer-2" }],
+          tokens: 1200,
+          measured_cost_usd: 1.25,
+          estimated_cost_usd: 0.25,
+          actual_marginal_usd: 1.25,
+          cost_basis: "mixed",
+          counterfactual: { avoided_usd: 3.0 },
+        },
+      ],
+    });
+
+    render(<EconomicsPane />);
+
+    expect(await screen.findByText("$1.50 vs $3.00 · mixed basis")).toBeInTheDocument();
+    expect(screen.getByText("Measured")).toBeInTheDocument();
+    expect(screen.getByText("Estimated")).toBeInTheDocument();
+    expect(screen.getAllByText("$1.25").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("$0.25")).toBeInTheDocument();
+  });
+
+  it("shows measured-only headline without faking a zero estimated line", async () => {
+    mockGetUsage.mockResolvedValue({ session: usageSession, jobs: [] });
+    mockGetEconomics.mockResolvedValue({
+      ...durablePayload,
+      recent_jobs: [
+        {
+          job_id: "meas-1",
+          accounting_owned: true,
+          models: [{ model_id: "composer-2" }],
+          tokens: 800,
+          measured_cost_usd: 2.0,
+          actual_marginal_usd: 2.0,
+          cost_basis: "measured_usage_x_registry_price",
+        },
+      ],
+    });
+
+    render(<EconomicsPane />);
+
+    expect(await screen.findByText("$2.00 vs — · measured")).toBeInTheDocument();
+    const row = within(screen.getByText("Job meas-1").closest(".mb-2") as HTMLElement);
+    expect(row.getByText("Measured").parentElement).toHaveTextContent("Measured$2.00");
+    expect(row.getByText("Estimated").parentElement).toHaveTextContent("Estimated—");
+    expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
+  });
+
+  it("shows estimated-only headline without faking a zero measured line", async () => {
+    mockGetUsage.mockResolvedValue({ session: usageSession, jobs: [] });
+    mockGetEconomics.mockResolvedValue({
+      ...durablePayload,
+      recent_jobs: [
+        {
+          job_id: "est-1",
+          accounting_owned: true,
+          models: [{ model_id: "composer-2" }],
+          tokens: 500,
+          estimated_cost_usd: 0.75,
+          actual_marginal_usd: null,
+          cost_basis: "estimated",
+        },
+      ],
+    });
+
+    render(<EconomicsPane />);
+
+    expect(await screen.findByText("$0.75 vs — · estimated")).toBeInTheDocument();
+    const row = within(screen.getByText("Job est-1").closest(".mb-2") as HTMLElement);
+    expect(row.getByText("Measured").parentElement).toHaveTextContent("Measured—");
+    expect(row.getByText("Estimated").parentElement).toHaveTextContent("Estimated$0.75");
+    expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
+  });
+
+  it("falls back to actual_marginal_usd for headline when split fields are missing", async () => {
+    mockGetUsage.mockResolvedValue({ session: usageSession, jobs: [] });
+    mockGetEconomics.mockResolvedValue({
+      ...durablePayload,
+      recent_jobs: [
+        {
+          job_id: "legacy-1",
+          accounting_owned: true,
+          models: [{ model_id: "composer-2" }],
+          tokens: 600,
+          actual_marginal_usd: 1.1,
+          cost_basis: "measured",
+        },
+      ],
+    });
+
+    render(<EconomicsPane />);
+
+    expect(await screen.findByText("$1.10 vs — · measured")).toBeInTheDocument();
+    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(2);
   });
 
   it("clears durable state when getEconomics returns a soft 400", async () => {

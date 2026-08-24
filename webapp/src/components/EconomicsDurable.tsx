@@ -54,6 +54,18 @@ function costBasisLabel(basis: string | null | undefined): string {
   return "";
 }
 
+/** Headline total: measured + estimated when either is known; else legacy actual_marginal. */
+export function jobHeadlineTotal(job: Pick<EconomicsJobRow, "measured_cost_usd" | "estimated_cost_usd" | "actual_marginal_usd">): number | null {
+  const measured = job.measured_cost_usd;
+  const estimated = job.estimated_cost_usd;
+  const hasMeasured = isFiniteNumber(measured);
+  const hasEstimated = isFiniteNumber(estimated);
+  if (hasMeasured || hasEstimated) {
+    return (hasMeasured ? measured : 0) + (hasEstimated ? estimated : 0);
+  }
+  return isFiniteNumber(job.actual_marginal_usd) ? job.actual_marginal_usd : null;
+}
+
 export default function EconomicsDurable({
   data,
   scope,
@@ -162,7 +174,7 @@ export default function EconomicsDurable({
           <div className="text-[10px] uppercase tracking-wide text-faint mb-2">Recent jobs</div>
           {jobs.map((job) => {
             const owned = Boolean(job.accounting_owned);
-            const actual = owned ? job.actual_marginal_usd : null;
+            const headlineTotal = owned ? jobHeadlineTotal(job) : null;
             const jobAvoided = owned ? job.counterfactual?.avoided_usd : null;
             return (
               <div key={job.job_id || `${job.source}-${job.status}`} className="mb-2">
@@ -170,10 +182,22 @@ export default function EconomicsDurable({
                   <span className="truncate pr-2">{job.job_id ? `Job ${job.job_id}` : "Job"}</span>
                   <span className="tabular-nums shrink-0">
                     {owned
-                      ? `${fmtUnknownMoney(actual)} vs ${fmtUnknownMoney(jobAvoided)}${costBasisLabel(job.cost_basis)}`
+                      ? `${fmtUnknownMoney(headlineTotal)} vs ${fmtUnknownMoney(jobAvoided)}${costBasisLabel(job.cost_basis)}`
                       : "—"}
                   </span>
                 </div>
+                {owned ? (
+                  <>
+                    <div className="flex items-center justify-between text-faint pl-2">
+                      <span>Measured</span>
+                      <span className="tabular-nums shrink-0">{fmtUnknownMoney(job.measured_cost_usd)}</span>
+                    </div>
+                    <div className="flex items-center justify-between text-faint pl-2">
+                      <span>Estimated</span>
+                      <span className="tabular-nums shrink-0">{fmtUnknownMoney(job.estimated_cost_usd)}</span>
+                    </div>
+                  </>
+                ) : null}
                 <div className="flex items-center justify-between text-faint">
                   <span className="truncate pr-2">
                     {jobModel(job)}
