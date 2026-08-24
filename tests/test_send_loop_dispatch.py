@@ -745,6 +745,119 @@ def test_dispatch_swarm_does_not_register_durable_job_in_sidecar(monkeypatch):
     assert finished == ["local-swarm-call_abc"]
 
 
+def test_dispatch_swarm_forwards_explicit_worker_mode(monkeypatch):
+    """run_swarm(worker_mode=subprocess) must reach stream_swarm, not drop."""
+    act = PilotAction(
+        kind="run_swarm",
+        goal="audit routing",
+        roles=["explore"],
+        worker_mode="subprocess",
+    )
+    session = SimpleNamespace(
+        config=SimpleNamespace(repo="/repo"),
+        _session_job_ids=[],
+        _register_local_job=MagicMock(),
+        _finish_local_job=MagicMock(),
+        _append_action_result=MagicMock(),
+        _display_transcript=[],
+    )
+    import harness.send_loop_dispatch as dispatch
+
+    monkeypatch.delenv("HARNESS_ALLOW_DEMO_SWARM", raising=False)
+    monkeypatch.setattr(dispatch, "_non_git_workspace_error", lambda *_a, **_k: None)
+    captured = {}
+
+    result = SimpleNamespace(
+        job_id="job_wm",
+        adapter="agentic",
+        mode="swarm",
+        artifacts=[{
+            "type": "finding",
+            "headline": "CSRF missing in harness/auth.py:42",
+            "body": "Auth middleware does not check CSRF on POST /api/session.",
+        }],
+        artifact_types=["finding"],
+        num_artifacts=1,
+        auth_failure="",
+        summary="one finding",
+        applied=True,
+        files=[],
+        error=None,
+    )
+
+    def fake_stream(session, intent, q, dispatch_id, worker_mode=None):
+        captured["worker_mode"] = worker_mode
+        captured["intent_mode"] = getattr(intent, "worker_mode", None)
+        q.put(("done", result))
+
+    monkeypatch.setattr(dispatch, "stream_swarm", fake_stream)
+    list(
+        dispatch_swarm_action(
+            session,
+            act,
+            "call_wm",
+            True,
+            counters={"swarms": 0, "demo_swarms": 0},
+            turn_findings=[],
+        )
+    )
+    assert captured["worker_mode"] == "subprocess"
+    assert captured["intent_mode"] == "subprocess"
+
+
+def test_dispatch_swarm_omitted_worker_mode_does_not_force_subprocess(monkeypatch):
+    """Unspecified tool arg must not pass worker_mode, so product stays inline."""
+    act = PilotAction(kind="run_swarm", goal="audit routing", roles=["explore"])
+    session = SimpleNamespace(
+        config=SimpleNamespace(repo="/repo"),
+        _session_job_ids=[],
+        _register_local_job=MagicMock(),
+        _finish_local_job=MagicMock(),
+        _append_action_result=MagicMock(),
+        _display_transcript=[],
+    )
+    import harness.send_loop_dispatch as dispatch
+
+    monkeypatch.delenv("HARNESS_ALLOW_DEMO_SWARM", raising=False)
+    monkeypatch.setattr(dispatch, "_non_git_workspace_error", lambda *_a, **_k: None)
+    captured = {}
+
+    result = SimpleNamespace(
+        job_id="job_default",
+        adapter="agentic",
+        mode="swarm",
+        artifacts=[{
+            "type": "finding",
+            "headline": "CSRF missing in harness/auth.py:42",
+            "body": "Auth middleware does not check CSRF on POST /api/session.",
+        }],
+        artifact_types=["finding"],
+        num_artifacts=1,
+        auth_failure="",
+        summary="one finding",
+        applied=True,
+        files=[],
+        error=None,
+    )
+
+    def fake_stream(session, intent, q, dispatch_id, worker_mode=None):
+        captured["worker_mode"] = worker_mode
+        q.put(("done", result))
+
+    monkeypatch.setattr(dispatch, "stream_swarm", fake_stream)
+    list(
+        dispatch_swarm_action(
+            session,
+            act,
+            "call_default",
+            True,
+            counters={"swarms": 0, "demo_swarms": 0},
+            turn_findings=[],
+        )
+    )
+    assert captured["worker_mode"] is None
+
+
 def test_is_untracked_pm_start_tool():
     assert is_untracked_pm_start_tool("puppetmaster_start_cursor_swarm")
     assert is_untracked_pm_start_tool("user-puppetmaster/start_implement")

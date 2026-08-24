@@ -339,3 +339,74 @@ def test_pilot_result_is_bounded_to_current_job_evidence(monkeypatch):
     assert "not verified, never as a defect" in text
     assert "Never carry earlier issue examples forward" in text
     assert "blend prior findings" not in text
+
+
+def test_no_tool_calls_badge_names_the_fail_fast(monkeypatch):
+    """Reasoner-killed workers must not hide behind generic thin-findings copy."""
+    result = SimpleNamespace(
+        job_id="job_ntc",
+        adapter="agentic",
+        mode="swarm",
+        num_artifacts=1,
+        artifact_types=["verification"],
+        artifacts=[{
+            "type": "verification",
+            "headline": "no_tool_calls after 3 turns",
+            "body": "worker never called any tool",
+            "failure": "no_tool_calls",
+        }],
+        auth_failure="",
+        summary="no structured findings",
+    )
+
+    session, events = _run_dispatch(monkeypatch, result)
+    badge = next(e for e in events if e.kind == "swarm_result").data["result"]
+    assert badge["applied"] is False
+    summary = (badge.get("summary") or "").lower()
+    error = (badge.get("error") or "").lower()
+    assert "no_tool_calls" in summary
+    assert "failed to call tools" in summary or "no_tool_calls" in summary
+    assert "thin findings" not in summary
+    assert "no_tool_calls" in error
+    assert "thin/generic" not in error
+    stall = _pilot_text(session).lower()
+    assert "no_tool_calls" in stall
+    assert "thin swarm findings" not in stall
+    assert "reasoner-only pin" in stall
+
+
+def test_no_tool_calls_stall_wins_over_thin_finding_stubs(monkeypatch):
+    """Stub FINDING rows must not relabel a no_tool_calls fail-fast as thin."""
+    result = SimpleNamespace(
+        job_id="job_ntc_thin",
+        adapter="agentic",
+        mode="swarm",
+        num_artifacts=2,
+        artifact_types=["finding", "verification"],
+        artifacts=[
+            {
+                "type": "finding",
+                "headline": "Looks incomplete",
+                "body": "ok",
+            },
+            {
+                "type": "verification",
+                "headline": "never called any tool",
+                "body": "no_tool_calls after 3 turns",
+                "failure": "no_tool_calls",
+            },
+        ],
+        auth_failure="",
+        summary="thin findings",
+    )
+
+    session, events = _run_dispatch(monkeypatch, result)
+    badge = next(e for e in events if e.kind == "swarm_result").data["result"]
+    summary = (badge.get("summary") or "").lower()
+    error = (badge.get("error") or "").lower()
+    assert "no_tool_calls" in summary or "never called any tool" in summary
+    assert "thin findings" not in summary
+    assert "no_tool_calls" in error or "never called any tool" in error
+    stall = _pilot_text(session).lower()
+    assert "no_tool_calls" in stall
+    assert "thin swarm findings" not in stall

@@ -402,6 +402,59 @@ def _resolved_swarm_model(result: Any, arts: Optional[list] = None) -> str:
     return model_id
 
 
+_SWARM_WORKER_MODES = ("subprocess", "inline", "daemon")
+_DEFAULT_NO_TOOL_CALLS_NOTE = (
+    "worker failed to call tools (no_tool_calls after 3 turns)"
+)
+
+
+def _explicit_swarm_worker_mode(act) -> str:
+    """Return a valid run_swarm worker_mode, or empty when unspecified."""
+    wm = str(getattr(act, "worker_mode", "") or "").strip().lower()
+    if wm in _SWARM_WORKER_MODES:
+        return wm
+    args = getattr(act, "arguments", None)
+    if isinstance(args, dict):
+        wm = str(args.get("worker_mode") or "").strip().lower()
+        if wm in _SWARM_WORKER_MODES:
+            return wm
+    return ""
+
+
+def _intent_worker_kwargs(act) -> dict:
+    wm = _explicit_swarm_worker_mode(act)
+    return {"worker_mode": wm} if wm else {}
+
+
+def _no_tool_calls_degrade_note(arts) -> str:
+    """Human note when workers died on the no_tool_calls fail-fast.
+
+    Empty when the run is not a no_tool_calls degrade. Prefer an artifact
+    headline that already names the streak; otherwise the default copy.
+    """
+    for a in arts or []:
+        if not isinstance(a, dict):
+            continue
+        fail = str(a.get("failure") or "").strip().lower()
+        head = str(a.get("headline") or "").strip()
+        body = str(a.get("body") or "").strip()
+        blob = f"{head}\n{body}".lower()
+        tagged = fail.startswith("no_tool_calls") or "no_tool_calls" in blob or (
+            "never called any tool" in blob
+        )
+        if not tagged:
+            continue
+        if "no_tool_calls" in head.lower() or "never called any tool" in head.lower():
+            return head
+        if "no_tool_calls" in body.lower() or "never called any tool" in body.lower():
+            # Keep it one line for the badge.
+            line = body.splitlines()[0].strip() if body else ""
+            if line:
+                return line[:160]
+        return _DEFAULT_NO_TOOL_CALLS_NOTE
+    return ""
+
+
 def _is_substantive_artifact(a: dict) -> bool:
     """True when a FINDING/RISK/DECISION carries real analysis, not a stub.
 
@@ -533,6 +586,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         model=(act.model or '').strip() or None,
         acceptance_criteria=_acceptance_criteria or None,
         repo=_swarm_repo or None,
+        **_intent_worker_kwargs(act),
     )
     _non_git = _non_git_workspace_error(_swarm_repo)
     if _non_git:
@@ -689,6 +743,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             model=(act.model or '').strip() or None,
             acceptance_criteria=_narrow_criteria or None,
             repo=_swarm_repo or None,
+            **_intent_worker_kwargs(act),
         )
     elif (
         _reuse_decision is not None
@@ -705,6 +760,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             model=(act.model or '').strip() or None,
             acceptance_criteria=list(_acceptance_criteria) or None,
             repo=_swarm_repo or None,
+            **_intent_worker_kwargs(act),
         )
     try:
         session._register_local_job(
@@ -771,9 +827,11 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     import queue as _queue
     import threading as _threading
     _delta_q: '_queue.Queue' = _queue.Queue()
+    _explicit_wm = _explicit_swarm_worker_mode(act) or None
     _swarm_thread = _threading.Thread(
         target=stream_swarm,
         args=(session, intent, _delta_q, aid),
+        kwargs={"worker_mode": _explicit_wm} if _explicit_wm else {},
         daemon=True,
     )
     _swarm_thread.start()
@@ -929,11 +987,19 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     # on the goal used to read as a clean "N findings" success.
     _substantive = [a for a in _signal if _is_substantive_artifact(a)]
     _swarm_ok = bool(_substantive) and (not auth_failure) and (not _demo_refused)
+    _ntc_note = "" if _demo_refused or auth_failure else (
+        _no_tool_calls_degrade_note(ordered) or _no_tool_calls_degrade_note(_all_arts)
+    )
     if _demo_refused:
         _badge_summary = 'refused: demo substrate (not real codebase analysis)'
     elif auth_failure:
         # Lead with the provider/key note, never a generic "no findings" badge.
         _badge_summary = auth_failure[:160] if len(auth_failure) > 20 else 'auth failure'
+    elif _ntc_note and not _substantive:
+        _badge_summary = (
+            _ntc_note if _ntc_note.lower().startswith('degraded:')
+            else f'degraded: {_ntc_note}'
+        )
     elif _substantive:
         _badge_summary = f'{len(_signal)} findings via {_ui_adapter} ({_ui_num} artifacts)'
     elif _has_signal:
@@ -945,7 +1011,8 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     _badge_error = (
         'demo substrate -- not real codebase analysis' if _demo_refused
         else auth_failure or (
-            None if _swarm_ok
+            _ntc_note if (_ntc_note and not _swarm_ok)
+            else None if _swarm_ok
             else 'swarm findings are thin/generic (no file-backed substance)' if _has_signal
             else 'swarm produced no FINDING/RISK/DECISION artifacts' if _ui_num
             else 'swarm produced no artifacts'))
@@ -1108,6 +1175,14 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         stall = '\n(NOTE: swarm hit the DEMO substrate and was refused -- Marionette never treats demo findings as real analysis. Do NOT retry or cite those findings. Tell the user analysis needs HARNESS_SWARM_ADAPTER=agentic and a provider key, then stop.)'
     if auth_failure:
         stall = f'\n(PROVIDER AUTH FAILURE -- {auth_failure} This is a dead/revoked/wrong API key, NOT a weak model or bad prompt. Do NOT re-run the swarm; tell the user to fix the named key, then stop.)' + stall
+    elif _ntc_note:
+        stall = (
+            '\n(NO_TOOL_CALLS — workers reasoned but never called tools '
+            f'({_ntc_note}). This is the kernel fail-fast on a reasoner-only '
+            'pin, not a routing/provider outage and not thin findings. Do NOT '
+            're-dispatch the same pinned model expecting tools; auto-route or '
+            'pin a tool-using model, then stop.)'
+        ) + stall
     elif not _has_signal:
         stall = (
             '\n(DEGRADED SWARM — only routing/verification plumbing, no '
