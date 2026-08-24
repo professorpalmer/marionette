@@ -1080,7 +1080,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
 
         </>)}
         {gate("general", "opt-ins optin auto-distill distillation toggle hash edit hash-anchored experimental review edits diff review toggle auto-verify edits typecheck syntax check self-correct diagnostics") && settings && (
-          <SettingsOptIns settings={settings} onUpdate={update} saving={saving} />
+          <SettingsOptIns settings={settings} onUpdate={(partial) => { void update(partial); }} saving={saving} />
         )}
         {gate("general", "compaction residual hybrid summary catalog vault compact handle index") && settings && (<>
         <div className="space-y-1.5">
