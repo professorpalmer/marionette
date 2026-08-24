@@ -373,7 +373,7 @@ def _post_session_relocate(handler: Any, body: dict) -> Any:
 
 def _post_session_interrupt(handler: Any, body: dict) -> Any:
     from .api import session_control as _sc_api
-    svc = _post_session_interrupt._svc  # type: ignore[attr-defined]
+    from . import server as _srv
     sid = (body.get("session_id") or "").strip()
     if not sid:
         try:
@@ -381,8 +381,11 @@ def _post_session_interrupt(handler: Any, body: dict) -> Any:
             sid = (qs.get("session_id") or [""])[0].strip()
         except Exception:
             sid = ""
+    # Resolve live session services at call time. Route-table rebuild tests
+    # (e.g. metaharness wiring) may overwrite _svc with stubs while the lazy
+    # POST table stays cached — Stop must still reach the real pilot.
     status, payload = _sc_api.post_session_interrupt(
-        body, sid, svc.session_control_services())
+        body, sid, _srv._session_control_services())
     return send_json(handler, status, payload)
 
 

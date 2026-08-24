@@ -518,6 +518,11 @@ def post_session_interrupt(
     body: dict, session_id: str, svc: SessionControlServices
 ) -> tuple[int, JsonPayload]:
     """POST /api/session/interrupt."""
+    if svc is None:
+        # Route-table rebuild tests may pass None; Stop must still cancel the
+        # live server pilot instead of AttributeError on get_pilot().
+        from .. import server as _srv
+        svc = _srv._session_control_services()
     sid = (session_id or body.get("session_id") or "").strip()
     target = None
     if sid:
