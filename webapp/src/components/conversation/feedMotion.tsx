@@ -1,6 +1,8 @@
 /**
- * Feed-only Motion helpers (v0.9.318). Transcript enter/exit + layout polish;
- * not used app-wide. Respects prefers-reduced-motion via Motion's hook.
+ * Feed-only Motion helpers (v0.9.318 / v0.9.329). Transcript enter/exit +
+ * layout polish on in-flow rows; not used app-wide. Virtual window rows must
+ * never take a Motion layout transform — TanStack owns translateY.
+ * prefers-reduced-motion stays off (animations run unless the user opted out).
  */
 
 import { forwardRef, memo, type CSSProperties, type ReactNode } from "react";
@@ -16,11 +18,17 @@ export function useFeedLayoutMotion(): boolean {
   return feedLayoutMotionEnabled(useReducedMotion());
 }
 
+/**
+ * Virtual window rows are `absolute top-0` + virtualizer translateY.
+ * Motion `layout` / popLayout write `transform` and stack every row at y=0.
+ */
+export const VIRTUAL_ROW_LAYOUT_ENABLED = false;
+
 type FeedMotionPresenceProps = {
   children: ReactNode;
 };
 
-/** popLayout wrapper for transcript rows — virtual window, fallback, live tail. */
+/** popLayout wrapper for in-flow transcript rows (fallback list + live tail). */
 export const FeedMotionPresence = memo(function FeedMotionPresence({
   children,
 }: FeedMotionPresenceProps) {
@@ -41,7 +49,7 @@ type FeedMotionRowProps = {
   "data-dom-measure"?: string;
 };
 
-/** One feed row shell: motion.div layout for popLayout reflow. */
+/** One feed row shell: motion.div layout only when layoutEnabled. */
 export const FeedMotionRow = memo(
   forwardRef<HTMLDivElement, FeedMotionRowProps>(function FeedMotionRow(
     {

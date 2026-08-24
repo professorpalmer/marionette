@@ -19,7 +19,13 @@ import {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
+
+function parseTranslateY(transform: string): number | null {
+  const match = transform.match(/translateY\(([-\d.]+)px\)/);
+  return match ? Number(match[1]) : null;
+}
 
 function listProps(
   items: Item[],
@@ -179,6 +185,24 @@ describe("transcript feed virtualizer", () => {
 
     expect(screen.queryByRole("button", { name: /Show earlier messages/i })).toBeNull();
     expect(screen.getByTestId("transcript-virtual-list")).toBeTruthy();
+  });
+
+  it("keeps distinct translateY positions on virtual rows when feed layout motion is on", async () => {
+    vi.stubGlobal("ResizeObserver", SizedResizeObserver);
+
+    render(<VirtualFeedHarness items={longTranscript(60)} />);
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId("transcript-virtual-row").length).toBeGreaterThan(1);
+    });
+
+    const translateYs = screen
+      .getAllByTestId("transcript-virtual-row")
+      .map((row) => parseTranslateY(row.style.transform))
+      .filter((value): value is number => value !== null);
+
+    expect(translateYs.length).toBeGreaterThan(1);
+    expect(new Set(translateYs).size).toBeGreaterThan(1);
   });
 
   it("keeps the virtual window after the scroll parent reports 0 height", async () => {
