@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .memory_store import MemoryEntry, MemoryStore
+from .sqlite_journal import configure_sqlite_connection, host_scoped_state_path
 
 DEFAULT_SQLITE_PATH = Path(os.path.expanduser("~/.pmharness/memory_graph.sqlite"))
 DEFAULT_JOURNAL_PATH = Path(os.path.expanduser("~/.pmharness/memory_graph.jsonl"))
@@ -44,7 +45,9 @@ def default_graph_paths() -> Tuple[Path, Path]:
     if pytest_test:
         return _pytest_graph_paths(pytest_test)
 
-    return DEFAULT_SQLITE_PATH, DEFAULT_JOURNAL_PATH
+    sqlite_path = host_scoped_state_path(DEFAULT_SQLITE_PATH)
+    journal_path = host_scoped_state_path(DEFAULT_JOURNAL_PATH)
+    return sqlite_path, journal_path
 
 
 def _entry_to_node(entry: MemoryEntry) -> Dict[str, Any]:
@@ -100,8 +103,7 @@ class MemoryGraph:
         )
         self._conn.row_factory = sqlite3.Row
         with self._lock:
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA busy_timeout=5000")
+            configure_sqlite_connection(self._conn, self.sqlite_path)
             self._init_db()
 
     def _init_db(self) -> None:

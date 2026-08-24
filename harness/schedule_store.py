@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import List, Optional, Union
 
 from .schedule_core import SCHEDULE_FIELDS, Schedule
+from .sqlite_journal import configure_sqlite_connection, host_scoped_state_path
 
 DEFAULT_LEASE_SECONDS = 3600
 # Headroom beyond an explicit run ceiling so a short max_seconds cannot shrink
@@ -146,7 +147,9 @@ def default_db_path() -> Path:
     if pytest_test:
         return _pytest_test_db_path(pytest_test)
 
-    new_default = Path.home() / ".pmharness" / "state" / "schedules.sqlite"
+    new_default = host_scoped_state_path(
+        Path.home() / ".pmharness" / "state" / "schedules.sqlite",
+    )
     legacy = Path.home() / ".harness" / "schedules.sqlite"
     if not new_default.exists() and legacy.is_file():
         _migrate_legacy_db(legacy, new_default)
@@ -184,8 +187,7 @@ class ScheduleStore:
         )
         self._conn.row_factory = sqlite3.Row
         with self._lock:
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA busy_timeout=5000")
+            configure_sqlite_connection(self._conn, self.path)
             self._init_db()
 
     def _init_db(self) -> None:

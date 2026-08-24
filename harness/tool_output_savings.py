@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
+from .sqlite_journal import configure_sqlite_connection
+
 # Same crude chars→tokens ratio used by ConversationalSession context estimates.
 CHARS_PER_TOKEN = 4
 
@@ -194,7 +196,7 @@ class ToolOutputSavingsLedger:
             return
         os.makedirs(self.state_dir, exist_ok=True)
         self._conn = sqlite3.connect(self._db_path, timeout=30.0, check_same_thread=False)
-        self._conn.execute("PRAGMA journal_mode=WAL")
+        configure_sqlite_connection(self._conn, self._db_path)
         self._conn.executescript(_SCHEMA)
         self._migrate_schema()
         self._conn.commit()
