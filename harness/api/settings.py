@@ -29,6 +29,15 @@ class SettingsServices:
 JsonPayload = Union[dict, list]
 
 
+def _session_trace_export_enabled() -> bool:
+    try:
+        from ..session_trace import session_trace_export_enabled
+
+        return bool(session_trace_export_enabled())
+    except Exception:
+        return False
+
+
 def get_config(svc: SettingsServices) -> tuple[int, JsonPayload]:
     """GET /api/config."""
     cfg = svc.cfg
@@ -78,7 +87,7 @@ def get_config(svc: SettingsServices) -> tuple[int, JsonPayload]:
         "reasoning_effort": reasoning_effort,
         "package_version": identity.get("package_version", ""),
         "checkout_sha": identity.get("checkout_sha", ""),
-        "session_trace_export": (os.environ.get("HARNESS_SESSION_TRACE_EXPORT") or "").strip().lower() in ("1", "true", "yes", "on"),
+        "session_trace_export": _session_trace_export_enabled(),
         "app_root": identity.get("app_root", ""),
         "key_bootstrap_issues": key_bootstrap_issues,
     }
@@ -208,6 +217,9 @@ def post_settings(body: dict, svc: SettingsServices) -> tuple[int, JsonPayload]:
     if "hash_edit_enabled" in body:
         he_val = svc.parse_bool(body["hash_edit_enabled"])
         _set_env_setting("HARNESS_HASH_EDIT", "1" if he_val else "0")
+    if "session_trace_export" in body:
+        ste_val = svc.parse_bool(body["session_trace_export"])
+        _set_env_setting("HARNESS_SESSION_TRACE_EXPORT", "1" if ste_val else "0")
     if "verifyCommand" in body:
         vc_val = str(body["verifyCommand"]).strip()
         cfg.verify_command = vc_val

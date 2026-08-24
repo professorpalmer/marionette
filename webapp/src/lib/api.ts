@@ -1226,6 +1226,27 @@ export const api = {
     postJSON<{ ok: boolean; goal: SessionGoal }>("/api/session/goal", { action: "complete" }),
   clearSessionGoal: () =>
     postJSON<{ ok: boolean; goal: SessionGoal }>("/api/session/goal", { action: "clear" }),
+  refinePropose: (body: {
+    text?: string;
+    kind?: string;
+    scope?: string;
+    command?: string;
+  }) =>
+    postJSON<{
+      ok: boolean;
+      proposed?: {
+        id: string;
+        text?: string;
+        kind?: string;
+        scope?: string;
+        category?: string;
+      };
+      history?: unknown[];
+      usage?: string;
+      error?: string;
+    }>("/api/refine", body),
+  refineHistory: () =>
+    getJSON<{ ok: boolean; history: unknown[] }>(withToken("/api/refine/history")),
   refineProposeAccept: (id: string) =>
     postJSON<{ ok: boolean; error?: string }>("/api/refine/propose/accept", { id }),
   refineProposeDismiss: (id: string) =>

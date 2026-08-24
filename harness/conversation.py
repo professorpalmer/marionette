@@ -1114,6 +1114,33 @@ class ConversationalSession(
         self._persist_session_goal()
         return item if isinstance(item, dict) else {"ok": True}
 
+    def propose_refine(
+        self,
+        *,
+        kind: str = "memory",
+        text: str = "",
+        scope: str = "global",
+        category: str = "general",
+        name: str = "",
+        body: str = "",
+    ) -> dict:
+        """Slash /refine and API create a pending card on the existing controller."""
+        from .harness_refine import get_refine_controller
+
+        prop = get_refine_controller(self).propose(
+            kind=kind,
+            text=text,
+            scope=scope,
+            category=category,
+            name=name,
+            body=body,
+        )
+        if prop is None:
+            return {"ok": False, "error": "refine proposal rejected"}
+        out = prop.to_dict()
+        out["ok"] = True
+        return out
+
     def accept_refine_proposal(self, proposal_id: str) -> dict:
         from .harness_refine import get_refine_controller
 
@@ -1128,6 +1155,16 @@ class ConversationalSession(
         from .harness_refine import get_refine_controller
 
         return get_refine_controller(self).rollback()
+
+    def handle_refine_slash(self, raw: str) -> dict:
+        from .harness_refine import get_refine_controller
+
+        return get_refine_controller(self).handle_slash(raw)
+
+    def refine_history(self, *, limit: int = 50) -> list:
+        from .harness_refine import get_refine_controller
+
+        return get_refine_controller(self).list_history(limit=limit)
 
     def _command_approval_lock_guard(self) -> threading.Lock:
         """Return the approval lock, installing one on legacy/minimal sessions.

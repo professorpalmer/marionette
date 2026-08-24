@@ -3054,7 +3054,26 @@ export default function Conversation({
         ]);
         return;
       }
-      api.refinePropose?.({ text: refineText, kind: "memory" })
+      const command = msg.startsWith("/") ? msg : `/refine ${refineText}`;
+      void api.refinePropose({ command, text: refineText })
+        .then((res) => {
+          const prop = res?.proposed;
+          if (res?.ok && prop?.id && (prop.text || "").trim()) {
+            setMemoryProposals((prev) => (
+              prev.some((p) => p.id === prop.id)
+                ? prev
+                : [...prev, {
+                  id: prop.id,
+                  text: String(prop.text || "").trim(),
+                  category: prop.category || "general",
+                  refine: {
+                    kind: String(prop.kind || "memory"),
+                    scope: String(prop.scope || "global"),
+                  },
+                }]
+            ));
+          }
+        })
         .catch(() => undefined);
       setItems((p) => [
         ...p,
