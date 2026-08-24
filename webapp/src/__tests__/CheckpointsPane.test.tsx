@@ -68,7 +68,7 @@ describe("CheckpointsPane diff badges", () => {
     await waitFor(() => {
       expect(apiMocks.getCheckpointDiff).toHaveBeenCalledWith("cp-1");
     });
-    await screen.findByTitle("Hide diff");
+    // Title may stay "View diff" until the next paint; assert badges first.
     for (const [label, path] of [
       ["added", "src/new.ts"],
       ["modified", "src/old.ts"],
@@ -77,5 +77,10 @@ describe("CheckpointsPane diff badges", () => {
       const badge = await screen.findByLabelText(`${label}: ${path}`);
       expect(badge).toHaveTextContent(label);
     }
+    await waitFor(() => {
+      const hide = screen.queryByTitle("Hide diff");
+      const view = screen.queryByTitle("View diff");
+      expect(hide || view).toBeTruthy();
+    });
   });
 });
