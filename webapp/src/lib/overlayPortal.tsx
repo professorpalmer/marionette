@@ -9,18 +9,8 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
-const DEFAULT_EXIT_MS = 220;
-
 export const FEED_OVERLAY_PORTAL_ID = "feed-overlay-portal";
 export const FEED_OVERLAY_PORTAL_TESTID = "feed-overlay-portal";
-
-function prefersReducedMotion(): boolean {
-  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
-    return false;
-  }
-  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-}
-
 export function getFeedOverlayPortalHost(): HTMLElement | null {
   if (typeof document === "undefined") return null;
   return document.getElementById(FEED_OVERLAY_PORTAL_ID) ?? document.body;
@@ -41,8 +31,8 @@ export type OverlayEnterLeaveOptions = {
 
 /**
  * Overlay enter/leave: data-starting-style on first paint, cleared after a
- * frame so CSS @starting-style / transitions can run; data-instant when
- * reduced motion or requestInstantLeave skips the leave transition.
+ * frame so CSS @starting-style / transitions can run; data-instant on leave
+ * so unmount is not a pop (also requestInstantLeave).
  */
 export function useOverlayEnterLeave(
   open: boolean,
@@ -52,10 +42,9 @@ export function useOverlayEnterLeave(
   const [startingStyle, setStartingStyle] = useState(open);
   const [instant, setInstant] = useState(false);
   const rootRef = useRef<HTMLElement | null>(null);
-  const instantLeaveRef = useRef(false);
   const onExitedRef = useRef(opts?.onExited);
   onExitedRef.current = opts?.onExited;
-  const exitMs = opts?.exitMs ?? DEFAULT_EXIT_MS;
+  const instantLeaveRef = useRef(false);
 
   const requestInstantLeave = () => {
     instantLeaveRef.current = true;
@@ -80,37 +69,13 @@ export function useOverlayEnterLeave(
 
   useEffect(() => {
     if (open || !mounted) return;
-
-    const finish = () => {
-      setMounted(false);
-      onExitedRef.current?.();
-    };
-
-    if (instantLeaveRef.current || prefersReducedMotion()) {
-      setInstant(true);
-      setStartingStyle(false);
-      finish();
-      return;
-    }
-
-    setStartingStyle(true);
-    const root = rootRef.current;
-    if (!root) {
-      const t = window.setTimeout(finish, exitMs);
-      return () => window.clearTimeout(t);
-    }
-
-    const onEnd = (e: TransitionEvent) => {
-      if (e.target !== root) return;
-      finish();
-    };
-    root.addEventListener("transitionend", onEnd);
-    const fallback = window.setTimeout(finish, exitMs);
-    return () => {
-      root.removeEventListener("transitionend", onEnd);
-      window.clearTimeout(fallback);
-    };
-  }, [open, mounted, exitMs]);
+    // Leave is data-instant: skip transition so unmount is not a pop.
+    void opts?.exitMs;
+    setInstant(true);
+    setStartingStyle(false);
+    setMounted(false);
+    onExitedRef.current?.();
+  }, [open, mounted, opts?.exitMs]);
 
   return {
     mounted,
