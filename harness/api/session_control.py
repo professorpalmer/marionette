@@ -201,6 +201,91 @@ def _compaction_error_message(reason: str) -> str:
     return "no compaction occurred (history too small or summary rejected)"
 
 
+
+def _hot_context_messages(pilot: Any) -> list:
+    """User/tool/assistant turns from the live pilot. Fail closed to []."""
+    try:
+        data = pilot.export_transcript_data()
+    except Exception:
+        data = None
+    if isinstance(data, dict):
+        history = data.get("history")
+        if isinstance(history, list) and history:
+            return [m for m in history if isinstance(m, dict)]
+    raw = getattr(pilot, "_history", None) or []
+    msgs = [m for m in raw if isinstance(m, dict)]
+    if msgs and str(msgs[0].get("role") or "") == "system":
+        return msgs[1:]
+    return msgs
+
+
+def post_session_snapcompact(
+    svc: SessionControlServices,
+    body: Optional[dict] = None,
+) -> tuple[int, JsonPayload]:
+    """POST /api/session/snapcompact (also ``POST /api/session/compact`` op=snap).
+
+    One-shot compact-to-snapshot on the existing vault/archive/journal path.
+    """
+    not_ready = svc.gate_active_pilot_ready()
+    if not_ready is not None:
+        return 409, not_ready
+    body = body or {}
+    pilot = svc.get_pilot()
+    sessions = svc.get_sessions() if svc.get_sessions is not None else None
+    sid = (
+        str(body.get("session_id") or "").strip()
+        or getattr(sessions, "active", None)
+        or getattr(pilot, "harness_session_id", None)
+        or "default"
+    )
+    messages = _hot_context_messages(pilot)
+    state_dir = getattr(svc.cfg, "state_dir", None) or _tf.gettempdir()
+    from ..compaction_vault import snap_compact
+
+    result = snap_compact(state_dir, str(sid), messages)
+    if not result.get("ok"):
+        reason = str(result.get("reason") or "no_compactable_history")
+        return 409, {
+            **result,
+            "compacted": False,
+            "error": _compaction_error_message(reason),
+        }
+    if sessions is not None and sessions.active and svc.save_transcript is not None:
+        try:
+            svc.save_transcript(
+                state_dir,
+                sessions.active,
+                pilot.export_transcript_data(),
+            )
+        except Exception:
+            pass
+    return 200, {
+        **result,
+        "compacted": True,
+        "op": "snap",
+    }
+
+
+def post_session_compact_routed(
+    body: dict,
+    svc: SessionControlServices,
+) -> tuple[int, JsonPayload]:
+    """Route compact POSTs; ``op=snap`` is snapcompact, else Compact Now."""
+    op = str((body or {}).get("op") or "").strip().lower()
+    if op in ("snap", "snapcompact"):
+        return post_session_snapcompact(svc, body)
+    return post_session_compact(svc)
+
+
+def post_session_snapcompact_routed(
+    body: dict,
+    svc: SessionControlServices,
+) -> tuple[int, JsonPayload]:
+    """POST /api/session/snapcompact with optional JSON body."""
+    return post_session_snapcompact(svc, body)
+
+
 def post_session_compact(svc: SessionControlServices) -> tuple[int, JsonPayload]:
     """POST /api/session/compact.
 

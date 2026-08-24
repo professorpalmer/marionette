@@ -49,6 +49,7 @@ _SAMPLE_GUARDED_POST = (
     "/api/restart",
     "/api/session/interrupt",
     "/api/session/compact",
+    "/api/session/snapcompact",
     "/api/mcp/refresh",
 )
 
