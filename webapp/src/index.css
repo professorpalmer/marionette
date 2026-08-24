@@ -172,6 +172,23 @@ body {
   min-width: 0;
 }
 
+.composer-family {
+  /* Marker + shared chrome language for dock + stacked trackers. */
+}
+
+.composer-family-surface {
+  background-color: color-mix(in srgb, var(--panel2, #16181b) 80%, transparent);
+  border-color: var(--edge, #2a2d31);
+}
+
+.composer-family-label {
+  color: var(--faint, #8b919a);
+}
+
+.composer-family-hairline {
+  border-color: color-mix(in srgb, var(--edge, #2a2d31) 50%, transparent);
+}
+
 .composer-toolbar {
   display: flex;
   flex-wrap: wrap;

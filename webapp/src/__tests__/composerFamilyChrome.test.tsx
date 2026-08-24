@@ -1,0 +1,164 @@
+import { createRef } from "react";
+import { render } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import ComposerDock from "../components/conversation/ComposerDock";
+import ComposerStatusStack from "../components/conversation/ComposerStatusStack";
+import ComposerTasksPanel from "../components/conversation/ComposerTasksPanel";
+import { COMPOSER_FAMILY_CLASS } from "../components/conversation/composerFamily";
+import type { Job } from "../lib/api";
+
+vi.mock("../lib/api", () => ({
+  api: {},
+}));
+vi.mock("../components/PilotPicker", () => ({
+  default: () => <div data-testid="pilot-picker" />,
+}));
+vi.mock("../components/conversation/WorkspaceChip", () => ({
+  default: () => <div data-testid="workspace-chip" />,
+}));
+vi.mock("../lib/agentCommandIndex", () => ({
+  subscribeAgentCommandIndex: (cb: () => void) => {
+    void cb;
+    return () => {};
+  },
+  getAgentCommandIndexVersion: () => 1,
+  listAgentCommandSessions: () => [],
+}));
+
+const noop = () => {};
+
+function renderDock() {
+  return render(
+    <ComposerDock
+      config={null}
+      taRef={createRef<HTMLTextAreaElement>()}
+      input=""
+      auto={false}
+      plan={false}
+      composerBusy={false}
+      transcriptStale={false}
+      wikiPrepared={null}
+      memoryProposals={[]}
+      distillNotice={null}
+      msgQueue={[]}
+      dragIndex={null}
+      dragOverIndex={null}
+      queueItems={[]}
+      queueDragIndex={null}
+      queueDragOverIndex={null}
+      editingIndex={null}
+      canRevertEdit={false}
+      editNotice={null}
+      editBusy={false}
+      showContextPanel={false}
+      contextUsage={null}
+      mentionSearch={null}
+      filteredFiles={[]}
+      filteredFolders={[]}
+      symbolResults={[]}
+      mentionListingCap={null}
+      selectedFileIndex={0}
+      codegraphStatus={null}
+      slashSearch={null}
+      selectedSlashIndex={0}
+      allSlashCommands={[]}
+      attachedImages={[]}
+      isDragOver={false}
+      uploadError={null}
+      onSetWikiPrepared={noop}
+      onSetMemoryProposals={noop}
+      onSetDistillNotice={noop}
+      onSetMsgQueue={noop}
+      onSetInput={noop}
+      onSetAuto={noop}
+      onSetPlan={noop}
+      onSetCanRevertEdit={noop}
+      onSetEditNotice={noop}
+      onSetShowContextPanel={noop}
+      onSetSelectedFileIndex={noop}
+      onSetSelectedSlashIndex={noop}
+      onSetAttachedImages={noop}
+      onSetUploadError={noop}
+      onSetLightboxUrl={noop}
+      setSafeTimeout={noop}
+      fetchContextUsage={noop}
+      handleDragStart={noop}
+      handleDragOver={noop}
+      handleDragLeave={noop}
+      handleDrop={noop}
+      handleDragEnd={noop}
+      moveQueueItem={noop}
+      handleQueueClearAll={noop}
+      handleQueueDragStart={noop}
+      handleQueueDragOver={noop}
+      handleQueueDragLeave={noop}
+      handleQueueDrop={noop}
+      handleQueueDragEnd={noop}
+      handleQueueEdit={noop}
+      handleQueueRemove={noop}
+      handleComposerDragOver={noop}
+      handleComposerDragLeave={noop}
+      handleComposerDrop={noop}
+      handleRevertEdit={noop}
+      handleCancelEdit={noop}
+      handleInputChange={noop}
+      handleKeyDown={noop}
+      handlePaste={noop}
+      insertMention={noop}
+      insertFolder={noop}
+      insertSymbol={noop}
+      insertCodebase={noop}
+      showCodebaseMention={false}
+      insertSlashCommand={noop}
+      handleQueueAdd={noop}
+      stop={noop}
+      send={noop}
+    />,
+  );
+}
+
+const taskJob = {
+  id: "job_tasks",
+  goal: "Ship composer-family chrome",
+  status: "running",
+  session_id: "sess-1",
+  source: "harness",
+  tasks: [
+    { id: "t1", role: "impl", instruction: "Restyle trackers", status: "running", adapter: "x" },
+  ],
+} as Job;
+
+const swarmJob = {
+  id: "job_abc123def456",
+  goal: "Audit composer stack",
+  source: "harness",
+  status: "running",
+  updated_at: Date.now(),
+} as Job;
+
+describe("composer-family chrome", () => {
+  it("puts the same class family and tokens on dock, tasks, and PM tracker", () => {
+    const dock = renderDock();
+    const tasks = render(
+      <ComposerTasksPanel jobs={[taskJob]} sessionId="sess-1" />,
+    );
+    const stack = render(
+      <ComposerStatusStack swarmJobs={[swarmJob]} />,
+    );
+
+    const surfaces = [
+      dock.container.querySelector(".composer-dock"),
+      tasks.container.querySelector("[data-slot=composer-tasks-panel]"),
+      stack.container.querySelector("[data-slot=composer-status-stack]"),
+    ];
+
+    for (const el of surfaces) {
+      expect(el).toBeTruthy();
+      expect(el).toHaveClass(COMPOSER_FAMILY_CLASS);
+      expect(el).toHaveClass("bg-panel2/80");
+      expect(el).toHaveClass("rounded-2xl");
+      expect(el).toHaveClass("border-edge");
+      expect(el?.className).not.toMatch(/text-muted-foreground|rose-500|uppercase tracking-\[0\.16em\]/);
+    }
+  });
+});
