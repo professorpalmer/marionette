@@ -1,5 +1,4 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, useDeferredValue, useSyncExternalStore, useMemo, memo, forwardRef, type ReactNode } from "react";
-import { motion } from "motion/react";
 import { useVirtualizer, type VirtualItem } from "@tanstack/react-virtual";
 import { ChevronRight, Loader2, ChevronDown, ChevronUp, Play, Copy, Check, Pencil, RefreshCw, History, Share2, CheckCircle2, XCircle, Eye, Shield } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -95,12 +94,6 @@ import {
   focusReviewTabAndRefresh,
   vaultCiteChipLabel,
 } from "./conversation/streamApply";
-import {
-  FeedMotionPresence,
-  FeedMotionRow,
-  VIRTUAL_ROW_LAYOUT_ENABLED,
-  useFeedLayoutMotion,
-} from "./conversation/feedMotion";
 
 export type Msg = {
   role: "user" | "assistant";
@@ -1062,9 +1055,8 @@ const VirtualTranscriptRow = memo(
   );
 
   return (
-    <FeedMotionRow
+    <div
       ref={attachDom && mountSettled ? setRowRef : forwardedRef}
-      layoutEnabled={VIRTUAL_ROW_LAYOUT_ENABLED}
       data-index={virtualRow.index}
       data-testid="transcript-virtual-row"
       data-dom-measure={attachDom ? "1" : "0"}
@@ -1074,7 +1066,7 @@ const VirtualTranscriptRow = memo(
       }}
     >
       {children}
-    </FeedMotionRow>
+    </div>
   );
   }),
 );
@@ -1827,7 +1819,6 @@ export const TranscriptList = memo(function TranscriptList({
     scrollParentSized,
     alreadyVirtualized: virtualizedOnceRef.current,
   });
-  const feedLayout = useFeedLayoutMotion();
   const list = useVirtualWindow ? (
     <div
       ref={listAnchorRef}
@@ -1854,42 +1845,36 @@ export const TranscriptList = memo(function TranscriptList({
         })}
     </div>
   ) : (
-    <motion.div
+    <div
       ref={listAnchorRef}
       data-testid="transcript-virtual-list"
       className="relative flex flex-col gap-1 w-full"
-      layout={feedLayout}
     >
-      <FeedMotionPresence>
-        {grouped.map((_, i) => {
-          const key = stableItemKey(grouped[i]!, i);
-          return (
-            <FeedMotionRow key={key} layoutEnabled={feedLayout} className="pb-1">
-              {renderGroupedItem(i)}
-            </FeedMotionRow>
-          );
-        })}
-      </FeedMotionPresence>
-    </motion.div>
+      {grouped.map((_, i) => {
+        const key = stableItemKey(grouped[i]!, i);
+        return (
+          <div key={key} className="pb-1">
+            {renderGroupedItem(i)}
+          </div>
+        );
+      })}
+    </div>
   );
   const liveTailList = useVirtualWindow && liveTailGrouped.length > 0 ? (
-    <motion.div
+    <div
       data-testid="transcript-live-tail"
       className="relative flex flex-col gap-1 w-full"
-      layout={feedLayout}
     >
-      <FeedMotionPresence>
-        {liveTailGrouped.map((_, i) => {
-          const idx = tailStartIndex + i;
-          const key = stableItemKey(grouped[idx]!, idx);
-          return (
-            <FeedMotionRow key={key} layoutEnabled={feedLayout} className="pb-1">
-              {renderGroupedItem(idx)}
-            </FeedMotionRow>
-          );
-        })}
-      </FeedMotionPresence>
-    </motion.div>
+      {liveTailGrouped.map((_, i) => {
+        const idx = tailStartIndex + i;
+        const key = stableItemKey(grouped[idx]!, idx);
+        return (
+          <div key={key} className="pb-1">
+            {renderGroupedItem(idx)}
+          </div>
+        );
+      })}
+    </div>
   ) : null;
 
   const busyProgress = deriveBusyProgress(items, status, busyElapsedMs);
