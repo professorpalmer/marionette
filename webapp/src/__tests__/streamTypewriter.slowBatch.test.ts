@@ -14,7 +14,7 @@ describe("streamTypewriter slow-model batching", () => {
     const burst = "token ".repeat(40);
     const r = refs(burst);
     const painted: string[] = [];
-    pumpTypewriterFrame(r, (chunk) => painted.push(chunk), (cb) => {
+    pumpTypewriterFrame(r, (chunk) => painted.push(chunk), () => {
       return 1;
     });
     expect(painted.join("")).toBe(burst);
