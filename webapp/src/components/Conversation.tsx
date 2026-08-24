@@ -3726,9 +3726,7 @@ export default function Conversation({
       ) : null}
       </div>
 
-      {lightboxUrl && (
-        <ImageLightbox url={lightboxUrl} onClose={() => setLightboxUrl(null)} />
-      )}
+      <ImageLightbox url={lightboxUrl} onClose={() => setLightboxUrl(null)} />
 
       <SpillPreviewModal
         preview={spillPreview}

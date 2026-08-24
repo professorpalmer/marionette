@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import CommandPalette from "../components/CommandPalette";
 import {
@@ -102,7 +102,7 @@ describe("CommandPalette UI", () => {
     }
   });
 
-  it("opens on Cmd/Ctrl-K and closes on Escape", () => {
+  it("opens on Cmd/Ctrl-K and closes on Escape", async () => {
     render(
       <CommandPalette onToggleLeft={() => {}} onToggleRight={() => {}} />,
     );
@@ -110,7 +110,9 @@ describe("CommandPalette UI", () => {
     pressPaletteShortcut();
     expect(screen.getByTestId("command-palette")).toBeTruthy();
     fireEvent.keyDown(window, { key: "Escape" });
-    expect(screen.queryByTestId("command-palette")).toBeNull();
+    await waitFor(() => {
+      expect(screen.queryByTestId("command-palette")).toBeNull();
+    });
   });
 
   it("filters the list as the query narrows", () => {
@@ -124,7 +126,7 @@ describe("CommandPalette UI", () => {
     expect(screen.queryByTestId("command-palette-item-new-session")).toBeNull();
   });
 
-  it("selecting Clear does not createSession", () => {
+  it("selecting Clear does not createSession", async () => {
     const createSession = vi.fn();
     const onNew = () => {
       createSession();
@@ -144,20 +146,24 @@ describe("CommandPalette UI", () => {
       fireEvent.click(screen.getByTestId("command-palette-item-clear-transcript"));
       expect(cleared).toEqual(["clear"]);
       expect(createSession).not.toHaveBeenCalled();
-      expect(screen.queryByTestId("command-palette")).toBeNull();
+      await waitFor(() => {
+        expect(screen.queryByTestId("command-palette")).toBeNull();
+      });
     } finally {
       window.removeEventListener("harness-new-session", onNew);
       window.removeEventListener("harness-clear-transcript", onClear);
     }
   });
 
-  it("closes when clicking the backdrop", () => {
+  it("closes when clicking the backdrop", async () => {
     render(
       <CommandPalette onToggleLeft={() => {}} onToggleRight={() => {}} />,
     );
     pressPaletteShortcut();
     expect(screen.getByTestId("command-palette")).toBeTruthy();
     fireEvent.mouseDown(screen.getByTestId("command-palette-backdrop"));
-    expect(screen.queryByTestId("command-palette")).toBeNull();
+    await waitFor(() => {
+      expect(screen.queryByTestId("command-palette")).toBeNull();
+    });
   });
 });

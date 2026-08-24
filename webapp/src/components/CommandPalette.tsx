@@ -6,7 +6,7 @@ import {
   runCommandPaletteAction,
   type CommandPaletteAction,
 } from "../lib/commandPalette";
-import { useOverlayFocus } from "../lib/overlayFocus";
+import { OverlayPortal } from "../lib/overlayPortal";
 
 type CommandPaletteProps = {
   onToggleLeft: () => void;
@@ -35,11 +35,6 @@ export default function CommandPalette({
   const listId = useId();
 
   const close = () => setOpen(false);
-
-  useOverlayFocus(open, dialogRef, {
-    initialFocusRef: inputRef,
-    onClose: close,
-  });
 
   const actions = filterCommandPaletteActions(COMMAND_PALETTE_ACTIONS, query);
   const actionsRef = useRef(actions);
@@ -133,13 +128,15 @@ export default function CommandPalette({
     row?.scrollIntoView?.({ block: "nearest" });
   }, [activeIndex, open]);
 
-  if (!open) return null;
-
   return (
-    <div
-      className="fixed inset-0 z-[60] bg-black/55 flex items-start justify-center pt-[18vh] px-4"
-      data-testid="command-palette-backdrop"
-      onMouseDown={(e) => {
+    <OverlayPortal
+      open={open}
+      onClose={close}
+      focusRootRef={dialogRef}
+      initialFocusRef={inputRef}
+      testId="command-palette-backdrop"
+      className="fixed inset-0 z-[60] bg-black/55 flex items-start justify-center pt-[18vh] px-4 transition-opacity duration-150"
+      onBackdropMouseDown={(e) => {
         if (e.target === e.currentTarget) setOpen(false);
       }}
     >
@@ -204,6 +201,6 @@ export default function CommandPalette({
           )}
         </div>
       </div>
-    </div>
+    </OverlayPortal>
   );
 }
