@@ -70,7 +70,7 @@ export function formatHelpSlashReply(
   return (
     "Available Slash Commands:\n\n"
     + commands.map((s) => `* \`${s.cmd}\` - ${s.desc}`).join("\n")
-    + "\n\nLocal chrome (not sent to the model): `/swarm` `/terminal` `/settings` `/memory` `/mcp` `/files` `/state`."
+    + "\n\nLocal chrome (not sent to the model): `/swarm` `/terminal` `/settings` `/memory` `/mcp` `/files` `/state` `/refine`."
     + "\n\nType @ to list and mention files in your message context."
   );
 }
