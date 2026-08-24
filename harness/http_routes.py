@@ -227,6 +227,8 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
             _skills_api.post_memory_add, services=svc.skills_services),
         "/api/memory/remove": post_json(
             _skills_api.post_memory_remove, services=svc.skills_services),
+        "/api/memory/graph/edge": post_json(
+            _skills_api.post_memory_graph_edge, services=svc.skills_services),
         "/api/memory/propose/accept": post_json(
             _skills_api.post_memory_propose_accept, services=svc.skills_services),
         "/api/memory/propose/dismiss": post_json(
@@ -662,6 +664,9 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
             _skills_api.get_rules, services=svc.skills_services),
         "/api/memory": get_json(
             _skills_api.get_memory, services=svc.skills_services),
+        "/api/memory/graph": get_json(
+            _skills_api.get_memory_graph, services=svc.skills_services,
+            qs_arg="q"),
         "/api/file/read": get_json(
             _files_api.get_file_read, services=svc.file_services, qs_arg="path",
             empty_as_none=True),

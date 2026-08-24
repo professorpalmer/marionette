@@ -351,6 +351,7 @@ harness/          the product (principal modules below; mixins compose the sessi
   schedule_cli.py   `harness schedule` CLI (daemon-only surface)
   checkpoints.py    run checkpoints for resume/rollback
   memory_store.py   durable user facts and preferences
+  memory_graph.py   relations over memory entries (sqlite + jsonl; GET /api/memory/graph)
   providers.py      model provider/reach resolution
   vision.py         VLM sidecar (image -> text)
   cli.py            headless CLI

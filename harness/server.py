@@ -32,6 +32,7 @@ from .skill_store import SkillStore
 from .rule_store import RuleStore
 from .command_store import CommandStore
 from .memory_store import MemoryStore, MEMORY_CHAR_LIMIT
+from .memory_graph import MemoryGraph
 from . import workspaces as _ws
 from .sessions import (
     SessionStore,
@@ -1610,6 +1611,7 @@ def _skills_services():
         memory=_memory,
         get_pilot=lambda: _pilot,
         memory_char_limit=MEMORY_CHAR_LIMIT,
+        memory_graph=_memory_graph,
     )
 
 
@@ -2238,6 +2240,7 @@ _skills = SkillStore()
 _rules = RuleStore()
 _commands = CommandStore()
 _memory = MemoryStore()
+_memory_graph = MemoryGraph(memory=_memory)
 _UPLOAD_DIR = os.path.join(tempfile.gettempdir(), "harness-uploads")
 os.makedirs(_UPLOAD_DIR, mode=0o700, exist_ok=True)
 

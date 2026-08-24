@@ -342,3 +342,36 @@ def get_memory(svc: SkillsServices) -> tuple[int, JsonPayload]:
         "total_chars": svc.memory.total_chars(),
         "limit": svc.memory_char_limit,
     })
+
+
+def get_memory_graph(q: str, svc: SkillsServices) -> tuple[int, JsonPayload]:
+    """GET /api/memory/graph — nodes from MemoryStore, edges from MemoryGraph."""
+    graph = svc.memory_graph
+    if graph is None:
+        return 200, redact_api_secrets({"nodes": [], "edges": []})
+    query = (q or "").strip()
+    if query:
+        payload = graph.search(query)
+    else:
+        payload = graph.graph()
+    return 200, redact_api_secrets({
+        "nodes": list(payload.get("nodes") or []),
+        "edges": list(payload.get("edges") or []),
+    })
+
+
+def post_memory_graph_edge(body: dict, svc: SkillsServices) -> tuple[int, JsonPayload]:
+    """POST /api/memory/graph/edge — add a relation between memory ids."""
+    graph = svc.memory_graph
+    if graph is None:
+        return 503, {"error": "memory graph unavailable"}
+    source = (body.get("source") or "").strip()
+    target = (body.get("target") or "").strip()
+    rel = (body.get("rel") or "").strip()
+    if not source or not target or not rel:
+        return 400, {"error": "source, target, and rel are required"}
+    try:
+        edge = graph.add_edge(source, target, rel)
+    except ValueError as exc:
+        return 400, {"error": str(exc)}
+    return 200, redact_api_secrets(edge)
