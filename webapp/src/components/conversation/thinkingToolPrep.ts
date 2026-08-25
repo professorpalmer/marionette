@@ -10,16 +10,26 @@ export function newThinkingId(): string {
 
 /** Drop streaming:true from live reasoning rows once the phase ends. */
 export function finalizeStreamingThinking(items: Item[]): Item[] {
-  return items.map((it) =>
-    it.kind === "thinking" && it.streaming
-      ? {
-          kind: "thinking" as const,
-          text: it.text,
-          id: it.id || newThinkingId(),
-          ...(it.stream_id ? { stream_id: it.stream_id } : {}),
-        }
-      : it
-  );
+  const now = Date.now();
+  return items.map((it) => {
+    if (it.kind !== "thinking" || !it.streaming) return it;
+    const started =
+      typeof it.started_at_ms === "number" && Number.isFinite(it.started_at_ms)
+        ? it.started_at_ms
+        : now;
+    const duration_ms =
+      typeof it.duration_ms === "number" && Number.isFinite(it.duration_ms)
+        ? it.duration_ms
+        : Math.max(0, now - started);
+    return {
+      kind: "thinking" as const,
+      text: it.text,
+      id: it.id || newThinkingId(),
+      ...(it.stream_id ? { stream_id: it.stream_id } : {}),
+      started_at_ms: started,
+      duration_ms,
+    };
+  });
 }
 
 /**
@@ -88,6 +98,13 @@ function turnStartIndex(items: Item[]): number {
   return 0;
 }
 
+function thinkingStartedAt(it: { started_at_ms?: number } | undefined): number {
+  if (typeof it?.started_at_ms === "number" && Number.isFinite(it.started_at_ms)) {
+    return it.started_at_ms;
+  }
+  return Date.now();
+}
+
 /**
  * Append/update the open streaming reasoning row for the current turn.
  * When `streamId` is present, identity owns the surface — interleaved
@@ -120,6 +137,7 @@ export function upsertStreamingThinking(
           streaming: true,
           id: it.id || newThinkingId(),
           stream_id: streamId,
+          started_at_ms: thinkingStartedAt(it),
         };
         return copy;
       }
@@ -132,6 +150,7 @@ export function upsertStreamingThinking(
         streaming: true,
         id: newThinkingId(),
         stream_id: streamId,
+        started_at_ms: Date.now(),
       },
     ];
   }
@@ -156,7 +175,13 @@ export function upsertStreamingThinking(
       const sealed = finalizeStreamingThinking(items);
       return [
         ...sealed,
-        { kind: "thinking", text: chunk, streaming: true, id: newThinkingId() },
+        {
+          kind: "thinking",
+          text: chunk,
+          streaming: true,
+          id: newThinkingId(),
+          started_at_ms: Date.now(),
+        },
       ];
     }
     if (it.kind === "thinking") {
@@ -167,13 +192,20 @@ export function upsertStreamingThinking(
         streaming: true,
         id: it.id || newThinkingId(),
         ...(it.stream_id ? { stream_id: it.stream_id } : {}),
+        started_at_ms: thinkingStartedAt(it),
       };
       return copy;
     }
   }
   return [
     ...items,
-    { kind: "thinking", text: chunk, streaming: true, id: newThinkingId() },
+    {
+      kind: "thinking",
+      text: chunk,
+      streaming: true,
+      id: newThinkingId(),
+      started_at_ms: Date.now(),
+    },
   ];
 }
 
