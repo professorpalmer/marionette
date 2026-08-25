@@ -73,11 +73,16 @@ describe("EconomicsPane", () => {
     expect(await screen.findByText("This app run")).toBeInTheDocument();
     expect(screen.getByText("Economics")).toBeInTheDocument();
     expect(container.firstElementChild).toHaveClass("flex", "flex-col", "h-full", "overflow-hidden");
-    expect(screen.getByText("This app run").parentElement?.parentElement).toHaveClass(
+    const appRun = screen.getByText("This app run");
+    const econ = screen.getByText("Economics");
+    expect(appRun.compareDocumentPosition(econ) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(econ.closest(".shrink-0")).toBeTruthy();
+    expect(screen.getByText("Durable").closest(".overflow-y-auto")).toHaveClass(
       "flex-1",
       "min-h-0",
       "overflow-y-auto",
     );
+    expect(screen.getByText(/not Swarm Tracker receipt savings/)).toBeInTheDocument();
   });
 
   it("keeps the last Economics data visible across card remounts", async () => {
@@ -175,7 +180,7 @@ describe("EconomicsPane", () => {
     const ownedScope = within(ownedRow as HTMLElement);
     expect(ownedScope.getByText("Measured Cost")).toBeInTheDocument();
     expect(ownedScope.getByText("Estimated Cost")).toBeInTheDocument();
-    expect(ownedScope.getByText("Estimated Savings").parentElement).toHaveTextContent("Estimated Savings$2.00");
+    expect(ownedScope.getByText("Vs reference").parentElement).toHaveTextContent("Vs reference$2.00");
     expect(ownedScope.getAllByText("$1.25").length).toBeGreaterThanOrEqual(1);
     expect(ownedScope.getAllByText("—").length).toBeGreaterThanOrEqual(1);
   });
@@ -234,8 +239,8 @@ describe("EconomicsPane", () => {
     expect(screen.getByText("Estimated Cost")).toBeInTheDocument();
     expect(screen.getAllByText("$1.25").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("$0.25")).toBeInTheDocument();
-    expect(screen.getByText("Estimated Savings").parentElement).toHaveTextContent("Estimated Savings$3.00");
     const mixedRow = within(screen.getByText("mixed-1").closest(".mb-2") as HTMLElement);
+    expect(mixedRow.getByText("Vs reference").parentElement).toHaveTextContent("Vs reference$3.00");
     expect(mixedRow.getByText("$1.25")).toHaveClass("text-warn/90");
     expect(mixedRow.getByText("$0.25")).toHaveClass("text-warn/90");
     expect(mixedRow.getByText("$3.00")).toHaveClass("text-good/90");

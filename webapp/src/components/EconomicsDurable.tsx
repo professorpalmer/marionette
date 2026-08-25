@@ -57,7 +57,7 @@ export default function EconomicsDurable({
       <p className="text-[10px] text-muted mb-2 leading-snug">
         {scope === "conversation"
           ? "Owned jobs for this conversation. Puppetmaster savings stay on This repo / Last 30 days / All projects."
-          : "Puppetmaster savings for the selected scope. Recent jobs are this workspace tracker; Last 30 days keeps jobs created in that window. App-run spend stays above."}
+          : "Puppetmaster savings for the selected scope. Recent jobs are this workspace tracker; Last 30 days keeps jobs created in that window. App-run spend stays above. Vs reference is a list-price counterfactual, not Swarm Tracker receipt savings."}
       </p>
 
       <label className="flex items-center justify-between mb-2 text-faint">
@@ -118,10 +118,10 @@ export default function EconomicsDurable({
 
       {isFiniteNumber(avoided) ? (
         <div className="flex items-center justify-between mb-1 text-faint">
-          <span>
+          <span title="List-price counterfactual vs the named reference model, not Swarm Tracker receipt savings.">
             {referenceId
-              ? `Estimated savings vs ${referenceId}`
-              : "Estimated savings"}
+              ? `Vs reference (${referenceId})`
+              : "Vs reference"}
           </span>
           <span className="tabular-nums text-good/90">{fmtUnknownMoney(avoided)}</span>
         </div>
@@ -180,7 +180,7 @@ export default function EconomicsDurable({
                       <span className="tabular-nums shrink-0 text-warn/90">{fmtUnknownMoney(job.estimated_cost_usd)}</span>
                     </div>
                     <div className="flex items-center justify-between text-faint pl-2">
-                      <span>Estimated Savings</span>
+                      <span title="List-price counterfactual vs the pane reference, not Swarm Tracker receipt savings.">Vs reference</span>
                       <span className="tabular-nums shrink-0 text-good/90">{fmtUnknownMoney(jobAvoided)}</span>
                     </div>
                   </>

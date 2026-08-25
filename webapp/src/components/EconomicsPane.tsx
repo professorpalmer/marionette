@@ -82,14 +82,16 @@ export default function EconomicsPane() {
   }
   return (
     <div className="flex flex-col h-full overflow-hidden bg-transparent">
-      <div className="shrink-0 flex items-center px-3 py-2 border-b border-[var(--shell-panel-border)] select-none">
+      <div className="shrink-0 max-h-[45%] overflow-y-auto">
+        <CostBreakdown data={usageToCostBreakdownData(session)} />
+      </div>
+      <div className="shrink-0 flex items-center px-3 py-2 border-y border-[var(--shell-panel-border)] select-none">
         <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-faint font-semibold">
           <CircleDollarSign size={11} className="text-faint/70" />
           <span>Economics</span>
         </div>
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto">
-        <CostBreakdown data={usageToCostBreakdownData(session)} />
         <EconomicsDurable data={economics} scope={scope} onScopeChange={setScope} />
       </div>
     </div>

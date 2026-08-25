@@ -742,7 +742,7 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
   };
 
   return (
-    <div className="w-full min-h-0 overflow-auto px-3 py-3 text-[11px] text-txt">
+    <div className="w-full min-h-0 px-3 py-3 text-[11px] text-txt">
       <div className="text-[10px] uppercase tracking-wide text-faint">This app run</div>
       <p className="text-[10px] text-muted mb-2 leading-snug">
         Process spend since launch. Resets on full quit — not Swarm pane repo-session spend, not conversation lifetime.
@@ -908,7 +908,10 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
 
       {showContextHealth ? (
       <div className="mt-3 pt-2 border-t border-edge/60">
-        <div className="text-[10px] uppercase tracking-wide text-faint mb-2">Context health</div>
+        <div className="text-[10px] uppercase tracking-wide text-faint mb-1">Context health</div>
+        <p className="text-[10px] text-muted mb-2 leading-snug">
+          Process memory and spills for this app run — not job cash.
+        </p>
       {historyCompactions > 0 ? (
         <div
           className="flex items-center justify-between mb-1 text-faint"
