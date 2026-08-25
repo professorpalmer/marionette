@@ -163,8 +163,8 @@ def _is_stale_local_release(row: dict, remote: set[str]) -> bool:
     """True when BRANCHES should hide a leftover local release/v0.9.* head.
 
     Origin already deleted these. Keep main/dev (not this prefix), the current
-    checkout, any still-on-origin release, and a *live* worktree checkout.
-    Do not delete the worktree — only hide the row.
+    checkout, and any still-on-origin release. Dead leftover worktrees
+    (release/v0.9.318) are hidden, not deleted.
 
     When origin exists but only has non-release heads (typical main+dev), local
     release leftovers without a live worktree are stale. An empty remote picture
@@ -176,8 +176,8 @@ def _is_stale_local_release(row: dict, remote: set[str]) -> bool:
         return False
     if row.get("active"):
         return False
-    if _is_live_worktree_path(row.get("worktree_path")):
-        return False
+    # Leftover release/v0.9.* worktrees (e.g. 318) stay on disk but are not
+    # listed. Do not delete the directory; only hide the BRANCHES row.
     if name in remote:
         return False
     # Remote picture empty OR origin has no copy of this release → hide.

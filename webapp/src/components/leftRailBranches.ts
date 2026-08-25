@@ -4,7 +4,7 @@ import type { Workspace } from "../lib/api";
  * Client-side mirror of harness.workspaces._is_stale_local_release.
  * Hides leftover local-only release/v0.9.* even when a stale SWR cache or
  * older API payload still lists them. Keep main/dev, the active checkout,
- * origin-backed names (when known), and a live worktree path.
+ * origin-backed names (when known). Leftover release worktrees are hidden.
  */
 export function isStaleLocalReleaseBranch(
   row: Pick<Workspace, "name" | "active" | "worktree_path">,
@@ -13,9 +13,8 @@ export function isStaleLocalReleaseBranch(
   const name = String(row.name || "");
   if (!name.startsWith("release/v0.9.")) return false;
   if (row.active) return false;
-  const wt = String(row.worktree_path || "").trim();
-  // Live worktree path present → keep (dir check is best-effort in the UI).
-  if (wt) return false;
+  // Leftover release worktrees stay on disk; hide them on the rail unless
+  // they are the active checkout or still on origin.
   if (originBranches) {
     const remote = originBranches instanceof Set
       ? originBranches

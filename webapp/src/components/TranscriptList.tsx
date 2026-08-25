@@ -2512,8 +2512,12 @@ function ActivityGroup({
 
   const sealedWorkMs = (() => {
     const fromItems = activityWorkDurationMs(items);
-    if (fromItems != null) return fromItems;
-    if (isLiveFold && busyElapsedMs != null && busyElapsedMs >= 1000) return busyElapsedMs;
+    if (fromItems != null && fromItems > 0) return fromItems;
+    // Sealed or live: a real wall-clock timer seeds Worked for (clamped to 1s).
+    if (busyElapsedMs != null && busyElapsedMs > 0) return busyElapsedMs;
+    // Tools/thinking ran but no duration was recorded — chrome is visible, so
+    // show at least 1s instead of a bare "Worked for" label.
+    if (actionCount > 0 || thinkingItems.length > 0) return 1000;
     return null;
   })();
 
@@ -2573,6 +2577,11 @@ function ActivityGroup({
   ]
     .filter(Boolean)
     .join(" · ");
+
+  // No timer and no other sealed title → hide the Worked for row entirely.
+  if (!investigating && !String(quietSummary || "").trim()) {
+    return null;
+  }
 
   return (
     <div className="my-1 w-full" ref={foldRootRef} data-testid="activity-fold" data-worked-for={!investigating ? "1" : undefined}>

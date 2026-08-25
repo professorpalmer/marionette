@@ -16,6 +16,7 @@ import {
 import {
   clearToolPrepPlaceholders,
   coalesceThinkingChunk,
+  sanitizeThinkingStatusGlue,
   finalizeStreamingThinking,
   hoistCardsBeforeTrailingFinals,
   newThinkingId,
@@ -647,6 +648,8 @@ describe("thinkingToolPrep module", () => {
     expect(coalesceThinkingChunk("Planning…", "Validating…")).toBe("Validating…");
     expect(coalesceThinkingChunk("redesign", "****")).toBe("redesign");
     expect(coalesceThinkingChunk("redesign", "****Finalizing...")).toBe("redesign Finalizing...");
+    expect(coalesceThinkingChunk("Diagnosing…", "****Inspecting…")).toBe("Inspecting…");
+    expect(sanitizeThinkingStatusGlue("Diagnosing…****Inspecting…")).toBe("Inspecting…");
   });
 
   it("upsertStreamingThinking coalesceSnapshots uses coalesce; default strict-appends", () => {

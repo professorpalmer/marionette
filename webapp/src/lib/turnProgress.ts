@@ -452,15 +452,14 @@ export function formatFoldDuration(ms: number): string {
 
 /** Sealed outer activity fold — replaces Explored once the turn seals. */
 export function workedForLabel(durationMs?: number | null): string {
-  if (durationMs == null || !Number.isFinite(durationMs) || durationMs < 0) {
-    return "Worked for";
+  // No timer → hide the whole Worked for row (not a bare label).
+  if (durationMs == null || !Number.isFinite(durationMs) || durationMs <= 0) {
+    return "";
   }
-  // Empty / sub-second crumbs stay duration-less (never "Worked for 0s").
-  if (durationMs < 1000) {
-    return "Worked for";
-  }
-  const label = formatFoldDuration(durationMs);
-  return label ? `Worked for ${label}` : "Worked for";
+  // Visible chrome with a real elapsed always shows at least 1s (never 0s).
+  const shown = Math.max(durationMs, 1000);
+  const label = formatFoldDuration(shown);
+  return label ? `Worked for ${label}` : "";
 }
 
 /**

@@ -277,6 +277,7 @@ export function settleFromAssistantDone(opts: {
   liveJobs?: boolean;
 }): TurnSettle {
   const cause = canonicalizeTerminalCause(opts.stopCause);
+  const incomplete = String(opts.incompleteReason || "").trim();
   if (opts.liveJobs) {
     return {
       kind: "settle",
@@ -287,6 +288,21 @@ export function settleFromAssistantDone(opts: {
       explanation: isNaturalStopCause(cause)
         ? null
         : dirtyFinishExplanation({ cause, finishReason: opts.finishReason }),
+    };
+  }
+  // Model died mid-finale: backend may still send stop_cause=natural plus
+  // incomplete_reason. Use existing incomplete chrome; do not hang Investigating.
+  if (incomplete) {
+    return {
+      kind: "settle",
+      lifecycle: TURN_SETTLED_INCOMPLETE,
+      cause: isNaturalStopCause(cause) ? CAUSE_INCOMPLETE : cause,
+      status: "done",
+      turnOpen: false,
+      explanation: dirtyFinishExplanation({
+        cause: isNaturalStopCause(cause) ? CAUSE_INCOMPLETE : cause,
+        finishReason: opts.finishReason,
+      }) || terminalCauseCopy(CAUSE_INCOMPLETE),
     };
   }
   if (isNaturalStopCause(cause)) {

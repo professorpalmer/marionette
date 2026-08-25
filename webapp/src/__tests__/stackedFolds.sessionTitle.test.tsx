@@ -64,9 +64,11 @@ describe("stacked fold labels", () => {
   it("formats Worked for / Thought / Ran chrome", () => {
     expect(workedForLabel(23_000)).toBe("Worked for 23s");
     expect(workedForLabel(6 * 60_000)).toBe("Worked for 6m");
-    expect(workedForLabel(0)).toBe("Worked for");
-    expect(workedForLabel(500)).toBe("Worked for");
+    expect(workedForLabel(0)).toBe("");
+    expect(workedForLabel(null)).toBe("");
+    expect(workedForLabel(500)).toBe("Worked for 1s");
     expect(workedForLabel(0)).not.toMatch(/0s/);
+    expect(workedForLabel(500)).not.toMatch(/0s/);
     expect(thoughtFoldLabel({ live: true })).toBe("Thinking…");
     expect(thoughtFoldLabel({ durationMs: 8_000 })).toBe("Thought 8s");
     expect(ranCommandsLabel(1)).toBe("Ran 1 command");

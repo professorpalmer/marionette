@@ -49,7 +49,7 @@ export function isTrivialAssistantCrumb(text: string): boolean {
  * Discrete frames must replace each other — never glue with `****` or spaces.
  */
 const STATUS_HEADLINE_RE =
-  /^(Investigating|Explored|Diagnosing|Planning|Assessing|Searching|Looking|Thinking|Thought|Validating|Finalizing|Still working|Working)\b/i;
+  /^(Investigating|Explored|Diagnosing|Inspecting|Planning|Assessing|Searching|Looking|Thinking|Thought|Validating|Finalizing|Still working|Working)\b/i;
 
 /** Strip surrounding emphasis markers so `**Planning…**` compares as a title. */
 export function stripThinkingEmphasisChrome(text: string): string {

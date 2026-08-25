@@ -12,7 +12,7 @@ export function isActivityHeadlineText(text: string): boolean {
   if (/^Stopped\.?$/i.test(raw)) return true;
 
   const lineRe =
-    /^(Investigating|Explored|Diagnosing|Planning|Assessing|Still working|Looking|Thinking|Thought|Worked for|Ran\s+\d+\s+commands?|Working\.\.\.?)\b/i;
+    /^(Investigating|Explored|Diagnosing|Inspecting|Planning|Assessing|Still working|Looking|Thinking|Thought|Worked for|Ran\s+\d+\s+commands?|Working\.\.\.?)\b/i;
 
   const lines = raw
     .split(/\r?\n/)

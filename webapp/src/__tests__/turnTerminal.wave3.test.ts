@@ -421,6 +421,10 @@ describe("Wave 3: truthful cause copy", () => {
 
   it("maps assistant_done causes onto the lifecycle", () => {
     expect(settleFromAssistantDone({ stopCause: "natural" }).lifecycle).toBe("settled_complete");
+    expect(settleFromAssistantDone({
+      stopCause: "natural",
+      incompleteReason: "length",
+    }).lifecycle).toBe("settled_incomplete");
     expect(settleFromAssistantDone({ stopCause: "turn_budget" }).lifecycle).toBe("settled_incomplete");
     expect(settleFromTransportEof({
       turnSettled: false,
