@@ -30,7 +30,7 @@ Or set up a checkout by hand. Backend (uv provides Python per `.python-version`)
 
 ```bash
 uv venv .venv
-uv pip install --python .venv -e . "puppetmaster-ai==1.22.31"
+uv pip install --python .venv -e . "puppetmaster-ai==1.22.32"
 .venv/bin/python -m pytest -q          # full offline suite -- must be green
 ```
 
