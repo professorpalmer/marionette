@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
-import SwarmPane, { jobIdentifier, jobSavings, namedSavings, workerSpend, workerOutcome } from "../components/SwarmPane";
+import SwarmPane, { jobDegradedWorkerCount, jobIdentifier, jobSavings, namedSavings, workerSpend, workerOutcome } from "../components/SwarmPane";
 import { api, type Job, type SwarmLive } from "../lib/api";
 import { dispatchProjectSelected } from "../lib/panelTransition";
 import { clearSWRCache, writeSWRCache } from "../lib/useStaleWhileRevalidate";
@@ -3208,5 +3208,114 @@ describe("SwarmPane v0.9.350 collapsed chrome", () => {
     expect(first?.className || "").toMatch(/border-b/);
     expect(first?.className || "").not.toMatch(/rounded-md/);
     expect(second?.className || "").toMatch(/border-b/);
+  });
+});
+
+describe("SwarmPane 353 mixed chrome and routing", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
+    clearSWRCache();
+    mockArtifacts.mockResolvedValue([]);
+  });
+
+  it("counts degraded workers so parent chrome is not clean-green", () => {
+    const job = {
+      id: "job-mix",
+      goal: "audit",
+      status: "complete",
+      tasks: [
+        { id: "t1", status: "complete", adapter: "agentic", role: "impl", instruction: "" },
+        { id: "t2", status: "complete", adapter: "agentic", role: "review", instruction: "" },
+        { id: "t3", status: "complete", adapter: "agentic", role: "map", instruction: "" },
+        { id: "t4", status: "complete", adapter: "agentic", role: "conflict", instruction: "" },
+        { id: "t5", status: "complete", adapter: "agentic", role: "ok", instruction: "" },
+      ],
+      artifacts: [
+        { type: "verification", headline: "d", task_id: "t1", result: "degraded" },
+        { type: "verification", headline: "d", task_id: "t2", result: "degraded" },
+        { type: "verification", headline: "d", task_id: "t3", result: "degraded" },
+        { type: "verification", headline: "d", task_id: "t4", result: "degraded" },
+      ],
+    } as Job;
+    expect(jobDegradedWorkerCount(job)).toBe(4);
+  });
+
+  it("paints mixed complete chrome instead of clean-green done", async () => {
+    mockSwarmLive.mockResolvedValue(
+      finishedJob("job-mix", "Audit swarm", {
+        tasks: [
+          { id: "t1", status: "complete", adapter: "agentic", role: "review", instruction: "" },
+          { id: "t2", status: "complete", adapter: "agentic", role: "ok", instruction: "" },
+        ],
+        artifacts: [
+          { type: "verification", headline: "weak", task_id: "t1", result: "degraded" },
+        ],
+        outcome: { quality: "ok", trustworthy: true, reasons: [] },
+      }),
+    );
+    const { container } = render(<SwarmPane />);
+    await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Finished"));
+    const row = await screen.findByRole("button", { name: /Audit swarm/ });
+    await waitFor(() => {
+      expect(screen.getByLabelText("Workers")).toHaveTextContent("2/2 · 1 degraded");
+    });
+    // One-line chrome: warn glyph + done (not clean-green check).
+    expect(row.querySelector(".text-warn")).toBeTruthy();
+    expect(row.querySelector(".text-good")).toBeNull();
+    expect(screen.getByText(/^done$/)).toBeInTheDocument();
+    // 349 hold: hairline separators, not card boxes.
+    const card = container.querySelector('[data-job-id="job-mix"]');
+    expect(card?.className || "").toMatch(/border-b/);
+    expect(card?.className || "").not.toMatch(/rounded-md/);
+  });
+
+  it("shows a routed model as soon as ROUTING resolves by role", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        adapter: "agentic",
+        status: "running",
+        tasks: [
+          { id: "w1", status: "running", adapter: "agentic", role: "reviewer", instruction: "" },
+        ],
+        artifacts: [
+          { type: "ROUTING", headline: "routed", role: "reviewer", model: "openai/gpt-5.6" },
+        ],
+      }),
+    );
+    render(<SwarmPane />);
+    await expandVisibleJobs();
+    const worker = await screen.findByRole("button", { name: /reviewer/ });
+    expect(worker).toHaveTextContent("openai/gpt-5.6");
+    expect(worker).not.toHaveTextContent("routing…");
+  });
+
+  it("prefers task.model over an engine-only ROUTING stamp while live", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        adapter: "agentic",
+        status: "running",
+        tasks: [
+          {
+            id: "w1",
+            status: "running",
+            adapter: "agentic",
+            role: "impl",
+            instruction: "",
+            model: "gpt-5.3-codex",
+          },
+        ],
+        artifacts: [
+          { type: "ROUTING", headline: "routed", task_id: "w1", model: "agentic", created_by: "router" },
+        ],
+      }),
+    );
+    render(<SwarmPane />);
+    await expandVisibleJobs();
+    const worker = await screen.findByRole("button", { name: /impl/ });
+    expect(worker).toHaveTextContent("gpt-5.3-codex");
+    expect(worker).not.toHaveTextContent("routing…");
   });
 });

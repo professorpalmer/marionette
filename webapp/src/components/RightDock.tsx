@@ -18,6 +18,7 @@ import {
 import { api } from "../lib/api";
 import { lastSelectedProjectRoot } from "../lib/panelTransition";
 import { writeSWRCache } from "../lib/useStaleWhileRevalidate";
+import { countRunningTrackerJobs } from "../lib/jobClassification";
 
 /** Curated destinations for the floating tool windows — Cursor-style icon strip.
  *  Settings is pinned to the foot of the floating pill. */
@@ -135,11 +136,7 @@ export default function RightDock({
           // so expanding into the tracker after a collapsed session is warm too.
           writeSWRCache(`swarm:${swarmRepo || "__default__"}`, data);
           const jobs = Array.isArray(data?.jobs) ? data.jobs : [];
-          const n = jobs.filter((j) => {
-            const s = (j.status || "").toLowerCase();
-            return s.includes("run") || s.includes("progress") || s.includes("active");
-          }).length;
-          setSwarmRunning(n);
+          setSwarmRunning(countRunningTrackerJobs(jobs));
         })
         .catch(() => {
           /* keep last known; dot is best-effort */

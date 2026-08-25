@@ -542,8 +542,10 @@ export type OpenAgentCommandOpts = {
 export function openAgentCommand(command: string, opts?: OpenAgentCommandOpts): void {
   const cmd = (command || "").trim();
   if (!cmd) return;
-  const live = !opts?.id ? lookupAgentCommandSession(cmd) : null;
-  const id = String(opts?.id || live?.id || "").trim();
+  const byId = opts?.id ? lookupAgentCommandSessionById(opts.id) : null;
+  const byCmd = lookupAgentCommandSession(cmd);
+  const live = byId || byCmd;
+  const id = String(live?.id || "").trim();
   const output = String(opts?.output || live?.output || "");
   // Speculative transcript clicks used to mint a blank agent-terminal
   // mirror. Fail closed unless this is an interactive inject or a real
@@ -557,7 +559,8 @@ export function openAgentCommand(command: string, opts?: OpenAgentCommandOpts): 
       );
       return;
     }
-    const revealId = id || stableCommandId(cmd);
+    const revealId = id || (output ? (String(opts?.id || "").trim() || stableCommandId(cmd)) : "");
+    if (!revealId) return;
     registerAgentCommandSession({ id: revealId, command: cmd, output });
     seedAgentTerminalCommand(revealId, cmd);
     if (output) syncAgentTerminalSnapshot(revealId, output);

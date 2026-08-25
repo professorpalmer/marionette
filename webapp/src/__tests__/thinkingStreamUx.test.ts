@@ -274,6 +274,39 @@ describe("swarm terminal rows stay inside the activity strip", () => {
       "thinking",
     ]);
   });
+
+  it("one Worked-for fold after spoken prose plus a later sealed swarm", () => {
+    const items: Item[] = [
+      { kind: "thinking", id: "th-1", text: "Inspecting the repo." },
+      {
+        kind: "card",
+        card: { id: "ran-1", goal: "git status", running: false, open: false },
+      },
+      { kind: "msg", msg: { role: "assistant", text: "Here is the first look." } },
+      {
+        kind: "swarm_pending",
+        job_ids: ["job-later"],
+        objective: "audit",
+        status: "done",
+      },
+      {
+        kind: "swarm_result",
+        job_id: "job-later",
+        applied: true,
+        files: [],
+        summary: "complete",
+        error: null,
+      },
+    ];
+    const grouped = groupAgentActivity(items, new Set());
+    expect(grouped.map((row) => row.kind)).toEqual(["activity_group", "msg"]);
+    if (grouped[0].kind !== "activity_group") return;
+    expect(grouped[0].items.map((item) => item.kind)).toEqual([
+      "thinking",
+      "card",
+      "swarm_result",
+    ]);
+  });
 });
 
 describe("feed collapse: telemetry joins the activity strip", () => {
@@ -1846,5 +1879,46 @@ describe("worker_delta / message_delta stream isolation", () => {
     expect(workers[1].msg.worker_id).toBe("local-bb");
     expect(workers[1].msg.text).toBe("beta-1");
     expect(workers[1].msg.streaming).toBe(true);
+  });
+});
+
+describe("353 feed extras", () => {
+  it("folds swarm FAILED spoken text into the activity strip", () => {
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "audit" } },
+      { kind: "msg", msg: { role: "assistant", text: "[swarm FAILED for: audit the router] worker failed" } },
+    ];
+    const grouped = groupAgentActivity(items, new Set());
+    expect(grouped.map((row) => row.kind)).toEqual(["msg", "activity_group"]);
+    if (grouped[1].kind !== "activity_group") return;
+    expect(grouped[1].items.some((item) => item.kind === "msg")).toBe(true);
+  });
+
+  it("hides empty assistant crumbs after a wait", () => {
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "go" } },
+      { kind: "msg", msg: { role: "assistant", text: "" } },
+      { kind: "msg", msg: { role: "assistant", text: "***" } },
+      { kind: "msg", msg: { role: "assistant", text: "Done." } },
+    ];
+    const grouped = groupAgentActivity(items, new Set());
+    const msgs = grouped.filter((row) => row.kind === "msg");
+    expect(msgs).toHaveLength(2);
+    if (msgs[1].kind !== "msg") return;
+    expect(msgs[1].msg.text).toBe("Done.");
+  });
+
+  it("does not paint phantom done swarm_pending before the first user message", () => {
+    const items: Item[] = [
+      {
+        kind: "swarm_pending",
+        job_ids: ["job-phantom"],
+        objective: "stale leftover",
+        status: "done",
+      },
+      { kind: "msg", msg: { role: "user", text: "new turn" } },
+    ];
+    const grouped = groupAgentActivity(items, new Set());
+    expect(grouped.map((row) => row.kind)).toEqual(["msg"]);
   });
 });

@@ -66,6 +66,10 @@ function normalizeState(status: unknown): ComposerStatusStackState {
   return "running";
 }
 
+function oneLinePreview(text: string): string {
+  return String(text || "").replace(/\s+/g, " ").trim();
+}
+
 function jobAccountingOwned(job: Job): boolean {
   if (job.accounting_owned === true) return true;
   if (job.accounting_owned === false) return false;
@@ -113,7 +117,7 @@ export function visibleCommandJob(job: Job, nowMs: number): ComposerStatusStackR
   const id = String(job.id || "").trim();
   if (!id) return null;
   const command = String(job.command_preview || job.goal || "").trim();
-  const label = command || String(job.role || job.id || "").trim() || id;
+  const label = oneLinePreview(command) || String(job.role || job.id || "").trim() || id;
   const receipt = job.terminal_receipt;
   const output = receipt && typeof receipt.summary === "string" ? receipt.summary : undefined;
   return {
@@ -141,10 +145,10 @@ function visibleCommandSession(
   return {
     id,
     kind: "terminal",
-    label: command,
+    label: oneLinePreview(command),
     state,
     updatedAt: session.updatedAt,
-    title: command,
+    title: oneLinePreview(command),
     command,
     output: session.output,
   };

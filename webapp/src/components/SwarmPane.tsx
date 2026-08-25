@@ -425,6 +425,38 @@ function associateRoutingToTasks(
       }
     }
   }
+  // Role match: ROUTING often stamps role before task_id. Show the resolved
+  // model as soon as routing lands — do not wait for the card to finish.
+  const used = new Set(routingForTask.values());
+  for (const task of tasks) {
+    if (routingForTask.has(task.id)) continue;
+    const role = (task.role || "").trim().toLowerCase();
+    if (!role) continue;
+    const hit = arts.find((a) => {
+      if (used.has(a)) return false;
+      const tid = (a.task_id || "").trim();
+      // Never steal a ROUTING row already scoped to a different worker.
+      if (tid && tid !== task.id) return false;
+      const artRole = (a.role || "").trim().toLowerCase();
+      return artRole === role && !!(a.model || a.adapter_model_name || "").trim();
+    });
+    if (hit) {
+      routingForTask.set(task.id, hit);
+      used.add(hit);
+      if (isUnscopedRouting(hit)) consumedUnscoped.add(hit);
+    }
+  }
+  const unmatchedTasks = tasks.filter((t) => !routingForTask.has(t.id));
+  if (unmatchedTasks.length === 1) {
+    const best = bestUnscopedRouting(arts);
+    if (best && (best.model || "").trim() && !used.has(best)) {
+      routingForTask.set(unmatchedTasks[0].id, best);
+      used.add(best);
+      for (const art of arts) {
+        if (isUnscopedRouting(art)) consumedUnscoped.add(art);
+      }
+    }
+  }
   const ids = new Set(tasks.map((t) => t.id));
   const unmatched = arts.filter((a) => {
     if (consumedUnscoped.has(a)) return false;
@@ -456,6 +488,19 @@ export function workerOutcome(task: Task, failureArt?: Artifact | null): WorkerO
   if (unsuccessful && (life === "done" || life === "idle")) return "degraded";
   if (life === "done") return "ok";
   return "idle";
+}
+
+/** How many workers finished degraded or failed. Parent chrome must not paint these as clean-green. */
+export function jobDegradedWorkerCount(job: Job): number {
+  const tasks = job.tasks || [];
+  const arts = jobArtifactList(job);
+  const failureForTask = failureArtifactsByTaskId(arts);
+  let n = 0;
+  for (const t of tasks) {
+    const o = workerOutcome(t, failureForTask.get(t.id));
+    if (o === "degraded" || o === "failed") n += 1;
+  }
+  return n;
 }
 
 function WorkerOutcomeGlyph({ outcome }: { outcome: WorkerOutcome }) {
@@ -538,23 +583,49 @@ function isInFlightWorker(task: Task): boolean {
 
 function workerModelView(task: Task, routing?: Artifact): WorkerModelView {
   const adapterLabel = (task.adapter || "").trim();
-  // Associated final ROUTING wins over a stale task.model preview from an earlier poll.
-  const rawModel = (routing?.model || task.model || "").trim();
   const policy = routing ? routingPolicy(routing) : "";
-  const display = displayModelId(rawModel, {
-    policy,
-    adapterFallback: isEngineOnlyModelId(adapterLabel) ? "" : adapterLabel,
-  });
+  const adapterFallback = isEngineOnlyModelId(adapterLabel) ? "" : adapterLabel;
+  // Prefer a real routed id over an engine-only ROUTING stamp. PM may leave
+  // task.model empty until the card seals even after ROUTING resolves — paint
+  // the artifact model immediately; do not invent a Puppetmaster pin bump.
+  const candidates = [
+    routing?.model,
+    routing?.adapter_model_name,
+    task.model,
+  ];
+  let rawModel = "";
+  let display = "";
+  for (const candidate of candidates) {
+    const raw = String(candidate || "").trim();
+    if (!raw) continue;
+    const shown = displayModelId(raw, { policy, adapterFallback });
+    if (shown) {
+      rawModel = raw;
+      display = shown;
+      break;
+    }
+    if (!rawModel) rawModel = raw;
+  }
+  if (!display) {
+    // Empty candidates still surface a non-engine adapter chip (openrouter, …).
+    display = displayModelId(rawModel, { policy, adapterFallback });
+  }
   const ts = taskState(task);
   const pinned = policy === "explicit_pin";
   if (display) {
     return { rawModel, display, slot: display, pending: false, residual: false, pinned, policy, routing };
   }
-  if (isInFlightWorker(task)) {
+  // Associated ROUTING with a model stamp means routing finished — never keep
+  // the live "routing…" spinner just because displayModelId stripped engines.
+  const routingResolved = !!routing && !!(
+    String(routing.model || "").trim()
+    || String(routing.adapter_model_name || "").trim()
+  );
+  if (isInFlightWorker(task) && !routingResolved) {
     return { rawModel, display, slot: "routing…", pending: true, residual: false, pinned: false, policy, routing };
   }
   const meaningfulResidual =
-    ts === "fail" || isEngineOnlyModelId(adapterLabel) || isEngineOnlyModelId(rawModel);
+    ts === "fail" || isEngineOnlyModelId(adapterLabel) || isEngineOnlyModelId(rawModel) || routingResolved;
   return {
     rawModel,
     display,
@@ -972,6 +1043,8 @@ function jobPhase(j: Job): { key: string; label: string; index: number; failed: 
     return { key: label, label, index: reached, failed: true };
   }
   if (st === "completed") {
+    // Worker-level degraded paints on the one-line progress chip + warn glyph;
+    // keep phase as outcome quality / "done" (never invent a second row).
     const label = j.outcome?.trustworthy === false ? j.outcome.quality : "done";
     return { key: "done", label, index: 3, failed: false };
   }
@@ -1461,7 +1534,8 @@ export default function SwarmPane() {
   // instead of threading a dozen props.
   const renderJob = (j: Job) => {
     const st = jobStatus(j);
-    const outcomeWarning = st === "completed" && j.outcome?.trustworthy === false;
+    const degradedWorkers = jobDegradedWorkerCount(j);
+    const outcomeWarning = st === "completed" && (j.outcome?.trustworthy === false || degradedWorkers > 0);
     const manualExpanded = expandedJobs[j.id];
     const isExpanded = manualExpanded === true;
     const phase = jobPhase(j);
@@ -1534,7 +1608,7 @@ export default function SwarmPane() {
           role="button"
           tabIndex={0}
           aria-expanded={isExpanded}
-          aria-label={`${j.goal || "Swarm job"}, ${phase.label}`}
+          aria-label={`${j.goal || "Swarm job"}, ${phase.label}${degradedWorkers > 0 ? `, ${degradedWorkers} degraded` : ""}`}
           onClick={toggle}
           onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } }}
           className={`w-full flex items-center gap-2 py-1 px-1.5 hover:bg-panel2/25 text-left transition-colors select-none cursor-pointer min-h-[1.625rem] ${DISCLOSURE_FOCUS}`}
@@ -1548,7 +1622,7 @@ export default function SwarmPane() {
             ) : st === "failed" ? (
               <XCircle size={12} className="text-risk" />
             ) : outcomeWarning ? (
-              <Circle size={12} className="text-warn" />
+              <AlertTriangle size={12} className="text-warn" />
             ) : st === "completed" ? (
               <CheckCircle2 size={12} className="text-good" />
             ) : st === "cancelled" ? (
@@ -1560,11 +1634,16 @@ export default function SwarmPane() {
           <Tooltip label={j.goal} className="font-semibold text-[11px] text-txt truncate min-w-0 flex-1">
             {j.goal}
           </Tooltip>
-          {showWorkerProgress && (
+          {showWorkerProgress && (() => {
+            const progressText = [
+              `${finishedWorkers}/${workerCount}`,
+              degradedWorkers > 0 ? `${degradedWorkers} degraded` : "",
+            ].filter(Boolean).join(" · ");
+            return (
             <span
               className="inline-flex items-center gap-1 shrink-0"
               aria-label="Workers"
-              title={`${finishedWorkers} of ${workerCount} workers terminal`}
+              title={`${finishedWorkers} of ${workerCount} workers terminal${degradedWorkers > 0 ? `, ${degradedWorkers} degraded` : ""}`}
             >
               <span
                 className="h-0.5 w-8 rounded-full bg-edge/50 overflow-hidden"
@@ -1572,7 +1651,9 @@ export default function SwarmPane() {
               >
                 <span
                   className={`block h-full rounded-full transition-[width] ${
-                    workerProgressFull ? "bg-good/70 w-full" : "bg-accent/70"
+                    workerProgressFull
+                      ? (degradedWorkers > 0 ? "bg-warn/70 w-full" : "bg-good/70 w-full")
+                      : "bg-accent/70"
                   }`}
                   style={{
                     width: workerProgressFull
@@ -1581,11 +1662,14 @@ export default function SwarmPane() {
                   }}
                 />
               </span>
-              <span className="text-[9px] text-muted tabular-nums font-mono">
-                {finishedWorkers}/{workerCount}
+              <span className={`text-[9px] tabular-nums font-mono ${
+                degradedWorkers > 0 ? "text-warn/80" : "text-muted"
+              }`}>
+                {progressText}
               </span>
             </span>
-          )}
+            );
+          })()}
           <span className={`text-[9px] font-medium tabular-nums shrink-0 ${
             phase.key === "cancelled"
               ? "text-muted"

@@ -22,6 +22,7 @@ export type CommandJobSignals = {
   job_kind?: string | null;
   role?: string | null;
   adapter?: string | null;
+  status?: string | null;
 };
 
 function norm(value: unknown): string {
@@ -85,3 +86,12 @@ export function isSwarmTrackerJob(job: CommandJobSignals): boolean {
 
 /** Alias used by SwarmPane / composer stack. */
 export const isTrackerJob = isSwarmTrackerJob;
+
+export function isRunningJobStatus(status: unknown): boolean {
+  const s = String(status || "").toLowerCase();
+  return s.includes("run") || s.includes("progress") || s.includes("active");
+}
+
+export function countRunningTrackerJobs(jobs: readonly CommandJobSignals[]): number {
+  return jobs.filter((j) => isSwarmTrackerJob(j) && isRunningJobStatus(j.status)).length;
+}

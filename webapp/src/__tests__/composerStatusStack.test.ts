@@ -243,4 +243,20 @@ describe("composerStatusStack", () => {
       output: "still running",
     });
   });
+
+  it("collapses command preview whitespace so the task bar does not stair-step", () => {
+    const now = Date.parse("2026-08-23T12:00:00Z");
+    const job = {
+      id: "local-cmd-wrap",
+      goal: "git status",
+      source: "harness",
+      status: "running",
+      updated_at: now - 1000,
+      job_kind: "run_command",
+      command_preview: "git status\n  && echo ok",
+    } as any;
+    const row = visibleCommandJob(job, now);
+    expect(row?.label).toBe("git status && echo ok");
+    expect(row?.command).toContain("git status");
+  });
 });
