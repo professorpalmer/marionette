@@ -92,9 +92,9 @@ describe("transcript presentation contract", () => {
       />,
     );
 
-    // Reasoning-only turns fold into a quiet activity summary; open it to
-    // assert the inner Thought row presentation contract.
-    fireEvent.click(screen.getByRole("button", { name: /Plan: scan auth handlers/i }));
+    // Reasoning-only turns seal as Worked for; open it to assert the inner
+    // Thought row presentation contract.
+    fireEvent.click(screen.getByRole("button", { name: /Worked for/i }));
     const thought = screen.getByRole("button", { name: /Thought/i });
     const classes = thought.className;
     expect(classes).not.toMatch(/uppercase/);
@@ -249,7 +249,7 @@ describe("transcript presentation contract", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /Plan:/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Worked for/i }));
     const thought = screen.getByRole("button", { name: /Thought/i });
     fireEvent.click(thought);
 
@@ -651,16 +651,18 @@ describe("investigation UX residual debts (nested / fold prefs / workerStream)",
     ];
 
     render(<TranscriptList {...listProps(items)} />);
-    // Kind buckets count nested rows (file + command + edit) while the fold
-    // is closed — the lying-count bug was that those rows stayed invisible.
+    // Sealed chrome is Worked for, not Explored kind-buckets. Nested worker
+    // rows stay unmounted until Worked for and then Ran are opened.
     const foldBtn = screen.getByRole("button", { name: /Worked for/i });
-    expect(foldBtn.textContent || "").toMatch(/1 file.*1 command.*1 edit/);
-    // Nested rows must stay unmounted until the investigation fold opens.
+    expect(foldBtn.textContent || "").toMatch(/Worked for/i);
+    expect(foldBtn.textContent || "").not.toMatch(/Explored/i);
     expect(screen.queryAllByTestId("nested-worker-action")).toHaveLength(0);
 
     fireEvent.click(foldBtn);
-    // One expand level: opening Investigating reveals nested tools even though
-    // the parent run_implement card stays open:false.
+    const ranBtn = screen.getByRole("button", { name: /Ran 1 command/i });
+    fireEvent.click(ranBtn);
+    // Opening Ran reveals nested tools even though the parent run_implement
+    // card stays open:false.
     const nested = screen.getAllByTestId("nested-worker-action");
     expect(nested).toHaveLength(2);
     expect(nested[0]).toHaveAttribute("data-action-id", "nested-read-1");
@@ -695,6 +697,7 @@ describe("investigation UX residual debts (nested / fold prefs / workerStream)",
 
     render(<TranscriptList {...listProps(items)} />);
     fireEvent.click(screen.getByRole("button", { name: /Worked for/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Ran 1 command/i }));
     expect(screen.getAllByLabelText("failed").length).toBeGreaterThan(0);
     expect(screen.getAllByText("failed", { selector: ".sr-only" }).length).toBeGreaterThan(0);
   });
@@ -834,7 +837,8 @@ describe("job_id → Swarm Tracker deep-link chrome", () => {
         ])}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /Worked for|Command|pytest/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Worked for/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Ran 1 command/i }));
     const cta = screen.getByTestId("spill-output-peek");
     expect(cta).toHaveTextContent(/Full output \(9,?000 chars\)/);
     fireEvent.click(cta);
@@ -879,6 +883,7 @@ describe("job_id → Swarm Tracker deep-link chrome", () => {
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: /Worked for/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Ran 1 command/i }));
 
     const kvLink = screen.getByTestId("job-id-link");
     expect(kvLink).toHaveTextContent("job_abcdef012345");
