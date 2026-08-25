@@ -2,8 +2,8 @@
 
 Covers registration-before-start, terminal persistence, output caps/spill
 metadata, restart-safe lookup, accounting ownership, and secret-free command
-metadata. Foreground ``run_command`` must remain synchronous and must not
-create a local job unless ``background=True`` is explicit.
+metadata. Foreground ``run_command`` stays synchronous and also registers a
+``local-cmd-*`` tracker row so Stop / search_state can find it.
 """
 from __future__ import annotations
 
@@ -280,26 +280,28 @@ def test_projection_is_command_not_provider_swarm(session):
     assert "command" not in fields
 
 
-def test_foreground_dispatch_does_not_create_command_job(session):
+def test_foreground_dispatch_creates_command_job(session):
     sess, state_dir, repo = session
     act = PilotAction(kind="run_command", command="echo fg", background=False)
-    host = SimpleNamespace(
-        config=SimpleNamespace(repo=repo),
-        _do_run_command=MagicMock(
-            return_value=(
-                True,
-                "success",
-                {"output": "fg\n", "exit_code": 0, "status": "ok"},
-            ),
+    sess._do_run_command = MagicMock(
+        return_value=(
+            True,
+            "success",
+            {"output": "fg\n", "exit_code": 0, "status": "ok"},
         ),
-        _append_action_result=MagicMock(),
-        _register_command_job=MagicMock(),
     )
-    events = list(dispatch_local_action(host, act, "a-fg", True, []))
+    events = list(dispatch_local_action(sess, act, "a-fg", True, []))
     assert events[0].data["status"] == "ok"
-    assert "job_id" not in events[0].data
-    host._register_command_job.assert_not_called()
-    host._do_run_command.assert_called_once()
+    assert events[0].data["adapter"] == "local"
+    assert events[0].data["mode"] == "tool"
+    job_id = events[0].data["job_id"]
+    assert str(job_id).startswith("local-cmd-")
+    sess._do_run_command.assert_called_once()
+    job = sess.get_local_job(job_id)
+    assert job is not None
+    assert job["status"] == "completed"
+    assert job.get("job_kind") == COMMAND_JOB_KIND
+    assert "command" not in job
 
 
 def test_background_dispatch_returns_pending_receipt(session):
@@ -551,3 +553,89 @@ def test_auto_guard_classify_error_blocks_job(session):
     assert "BLOCKED: auto guard error:" in receipt.get("summary", "")
     assert "simulated classify failure" in receipt.get("summary", "")
     assert job.get("exit_code") == -1
+
+
+def test_cancelled_foreground_dispatch_reaps_tmp_marionette_worktree(session):
+    sess, state_dir, repo = session
+    script = (
+        "git worktree add /tmp/marionette-origin-main-audit.XXXXXX "
+        "origin/main"
+    )
+    act = PilotAction(kind="run_command", command=script, background=False)
+    sess._do_run_command = MagicMock(
+        return_value=(
+            False,
+            "cancelled",
+            {
+                "output": "",
+                "exit_code": 130,
+                "status": "cancelled",
+            },
+        ),
+    )
+    events = list(dispatch_local_action(sess, act, "a-cancel", True, []))
+    data = events[0].data
+    assert data["status"] == "cancelled"
+    assert data["adapter"] == "local"
+    assert data["mode"] == "tool"
+    job_id = data["job_id"]
+    assert str(job_id).startswith("local-cmd-")
+    job = sess.get_local_job(job_id)
+    assert job["status"] == "cancelled"
+
+
+def test_background_run_reaps_after_cancellable_returns(session):
+    from harness.command_jobs import _run_registered_command_job
+
+    sess, state_dir, repo = session
+    cmd = "echo /tmp/marionette-origin-main-audit.HbTUUR"
+    sess._register_command_job("local-cmd-reap", command=cmd, action_id="a-reap", cwd=repo)
+    with patch(
+        "harness.command_policy.run_cancellable",
+        return_value=("ok\n", 0, "ok"),
+    ), patch(
+        "harness.command_jobs.reap_tmp_marionette_worktrees",
+        return_value=[],
+    ) as reap:
+        _run_registered_command_job(sess, "local-cmd-reap", cmd, repo)
+    reap.assert_called()
+    assert "marionette-origin-main-audit" in str(reap.call_args[0][0])
+
+
+def test_load_local_jobs_does_not_upsert_foreign_parallel_wave(tmp_path):
+    from harness.config import HarnessConfig
+    from harness.conversation import ConversationalSession
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    cfg_a = HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path))
+    cfg_a.repo = str(repo)
+    sess_a = ConversationalSession(cfg_a)
+    sess_a.harness_session_id = "sess-a"
+    sess_a._register_parallel_wave(
+        "wave-foreign",
+        child_job_ids=["job_dugout"],
+        objective="Dugout swarm",
+        action_id="a-foreign",
+    )
+    pending_a = [
+        row for row in sess_a._display_transcript
+        if isinstance(row, dict) and row.get("type") == "swarm_pending"
+    ]
+    assert len(pending_a) == 1
+    assert pending_a[0].get("session_id") == "sess-a"
+
+    cfg_b = HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path))
+    cfg_b.repo = str(repo)
+    sess_b = ConversationalSession(cfg_b)
+    sess_b.harness_session_id = "sess-b"
+    pending_b = [
+        row for row in sess_b._display_transcript
+        if isinstance(row, dict) and row.get("type") == "swarm_pending"
+    ]
+    assert pending_b == []
+    exported = sess_b.export_display_transcript()
+    assert not any(
+        isinstance(row, dict) and row.get("type") == "swarm_pending"
+        for row in exported
+    )

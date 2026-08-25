@@ -66,6 +66,7 @@ from .send_loop_phases import (
     promote_trailing_reasoning_to_say,
     record_provider_dispatch_error_receipt,
     run_auto_verify,
+    yield_session_interrupted,
 )
 from .terminal_cause import (
     TERMINAL_DRIVER_SWAP,
@@ -1106,7 +1107,7 @@ class SendLoopMixin:
             self._sanitize_tool_pairs()
             if self._cancel.is_set():
                 yield from self._yield_stop_boundary_notices()
-                yield ConvEvent("interrupted", {"reason": "session interrupted"})
+                yield from yield_session_interrupted(self)
                 return
 
             # Consume any pending steer at the start of the step: it's now in

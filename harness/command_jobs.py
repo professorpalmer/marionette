@@ -1,9 +1,10 @@
-"""Opt-in durable background ``run_command`` jobs on the local-job seam.
+"""Durable ``run_command`` jobs on the local-job seam.
 
 Wave 2 of chat-loop resilience: an explicit ``PilotAction.background`` flag
 registers a Marionette-owned local command job *before* process launch and
 returns a pending receipt without holding the pilot turn open. Foreground
-``run_command`` stays on the synchronous ``_do_run_command`` path.
+``run_command`` stays on the synchronous ``_do_run_command`` path but also
+gets a ``local-cmd-*`` tracker row so Stop / search_state can find it.
 
 Never infers background from duration, timeout, or command text.
 """
@@ -337,6 +338,73 @@ def start_background_run_command(
     return receipt
 
 
+def register_foreground_command_job(session: Any, act: Any, action_id: str) -> str:
+    """Allocate a ``local-cmd-*`` row for a synchronous foreground command.
+
+    Best-effort: missing register helpers return ``\"\"`` so dispatch still
+    runs the command. Never persists the raw command string.
+    """
+    register = getattr(session, "_register_command_job", None)
+    if not callable(register):
+        return ""
+    command = str(getattr(act, "command", "") or "")
+    repo = str(getattr(getattr(session, "config", None), "repo", "") or "")
+    job_id = "local-cmd-" + uuid.uuid4().hex[:8]
+    register(
+        job_id,
+        command=command,
+        action_id=action_id,
+        command_fingerprint=command_fingerprint(command),
+        command_preview=secret_free_command_preview(command),
+        cwd=repo,
+    )
+    mark = getattr(session, "_mark_command_job_running", None)
+    if callable(mark):
+        mark(job_id)
+    return job_id
+
+
+def finish_foreground_command_job(
+    session: Any,
+    job_id: str,
+    ok: bool,
+    status: str,
+    val: Any,
+) -> None:
+    """Map a foreground ``_do_run_command`` outcome onto one terminal receipt."""
+    if not job_id:
+        return
+    finish = getattr(session, "_finish_command_job", None)
+    if not callable(finish):
+        return
+    run_status = str(status or "")
+    output = ""
+    exit_code = -1
+    if isinstance(val, dict):
+        run_status = str(val.get("status") or status or "")
+        output = str(val.get("output") or "")
+        try:
+            exit_code = int(val.get("exit_code"))
+        except (TypeError, ValueError):
+            exit_code = -1
+    if ok:
+        terminal = "truncated" if run_status == "truncated" else "completed"
+    elif status == "cancelled" or run_status == "cancelled":
+        terminal = "cancelled"
+    elif status == "timeout" or run_status == "timeout":
+        terminal = "timeout"
+    else:
+        terminal = "failed"
+    finish(
+        job_id,
+        status=terminal,
+        summary=_terminal_summary(terminal, exit_code, output),
+        exit_code=exit_code,
+        output=output[:_INLINE_OUTPUT_CAP] if output else "",
+        run_status=run_status or str(status or ""),
+    )
+
+
 def _run_registered_command_job(
     session: Any,
     job_id: str,
@@ -430,61 +498,69 @@ def _run_registered_command_job(
 
     from harness.command_policy import effective_command_timeout, run_cancellable
 
+    output = ""
+    exit_code = -1
+    run_status = "error"
     try:
-        output, exit_code, run_status = run_cancellable(
-            command,
-            cwd=cwd,
-            timeout=effective_command_timeout(),
-            cancel_event=cancel_event,
+        try:
+            output, exit_code, run_status = run_cancellable(
+                command,
+                cwd=cwd,
+                timeout=effective_command_timeout(),
+                cancel_event=cancel_event,
+            )
+        except Exception as exc:
+            finish = getattr(session, "_finish_command_job", None)
+            if callable(finish):
+                finish(
+                    job_id,
+                    status="failed",
+                    summary=f"Command execution error: {exc}",
+                    exit_code=-1,
+                    output="",
+                )
+            return
+
+        if run_status in ("success", None, ""):
+            run_status = "ok"
+        # Map run_cancellable status onto durable job states.
+        if run_status == "ok":
+            terminal = "completed"
+        elif run_status in COMMAND_TERMINAL_STATES:
+            terminal = run_status
+        elif run_status == "error":
+            terminal = "failed"
+        else:
+            terminal = "failed"
+
+        # Cooperative cancel may have already terminalized the row.
+        if getattr(session, "_local_job_cancelled", lambda _jid: False)(job_id):
+            terminal = "cancelled"
+
+        bounded_output, spill_meta = _bound_or_spill_output(
+            session,
+            job_id,
+            output if isinstance(output, str) else str(output or ""),
         )
-    except Exception as exc:
         finish = getattr(session, "_finish_command_job", None)
         if callable(finish):
             finish(
                 job_id,
-                status="failed",
-                summary=f"Command execution error: {exc}",
-                exit_code=-1,
-                output="",
+                status=terminal,
+                summary=_terminal_summary(terminal, exit_code, bounded_output),
+                exit_code=int(exit_code) if exit_code is not None else -1,
+                output=bounded_output,
+                spill_uri=spill_meta.get("spill_uri") or "",
+                spill_path=spill_meta.get("spill_path") or "",
+                output_chars=int(spill_meta.get("output_chars") or len(bounded_output)),
+                output_preview=spill_meta.get("output_preview") or "",
+                run_status=run_status,
             )
-        return
-
-    if run_status in ("success", None, ""):
-        run_status = "ok"
-    # Map run_cancellable status onto durable job states.
-    if run_status == "ok":
-        terminal = "completed"
-    elif run_status in COMMAND_TERMINAL_STATES:
-        terminal = run_status
-    elif run_status == "error":
-        terminal = "failed"
-    else:
-        terminal = "failed"
-
-    # Cooperative cancel may have already terminalized the row.
-    if getattr(session, "_local_job_cancelled", lambda _jid: False)(job_id):
-        terminal = "cancelled"
-
-    bounded_output, spill_meta = _bound_or_spill_output(
-        session,
-        job_id,
-        output if isinstance(output, str) else str(output or ""),
-    )
-    finish = getattr(session, "_finish_command_job", None)
-    if callable(finish):
-        finish(
-            job_id,
-            status=terminal,
-            summary=_terminal_summary(terminal, exit_code, bounded_output),
-            exit_code=int(exit_code) if exit_code is not None else -1,
-            output=bounded_output,
-            spill_uri=spill_meta.get("spill_uri") or "",
-            spill_path=spill_meta.get("spill_path") or "",
-            output_chars=int(spill_meta.get("output_chars") or len(bounded_output)),
-            output_preview=spill_meta.get("output_preview") or "",
-            run_status=run_status,
-        )
-    reap_tmp_marionette_worktrees(command)
+    finally:
+        try:
+            reap_tmp_marionette_worktrees(command)
+        except Exception:
+            pass
 
 
 def _terminal_summary(status: str, exit_code: int, output: str) -> str:

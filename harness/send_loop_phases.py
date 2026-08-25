@@ -1759,6 +1759,18 @@ def mark_latest_receipt_assistant_done(
         return
 
 
+def yield_session_interrupted(session: Any) -> Iterator[Any]:
+    """Stop unwind: keep ``interrupted`` for old tests, also emit assistant_done."""
+    from .conversation import ConvEvent
+
+    yield ConvEvent("interrupted", {"reason": "session interrupted"})
+    try:
+        mark_latest_receipt_assistant_done(session, stop_cause="cancelled")
+    except Exception:
+        pass
+    yield ConvEvent("assistant_done", {"stop_cause": "cancelled"})
+
+
 def _receipt_identity_kwargs(resp: Any, driver: str) -> Dict[str, Any]:
     """Pull requested/served identity + token totals off a driver response."""
     meta = getattr(resp, "meta", None) if resp is not None else None
@@ -3169,7 +3181,9 @@ def dispatch_local_action(
         # Wave 2: explicit background mode returns a durable pending receipt
         # and never holds the turn on run_cancellable. Opt-in only.
         from harness.command_jobs import (
+            finish_foreground_command_job,
             is_background_run_command,
+            register_foreground_command_job,
             secret_free_command_preview,
             start_background_run_command,
         )
@@ -3231,7 +3245,18 @@ def dispatch_local_action(
             return
         # FULL-AUTO safety + cancellable execution live in
         # ToolDispatchMixin._do_run_command; yield/append stay here.
+        # Foreground still holds the turn, but a local-cmd-* row makes Stop
+        # and search_state able to find the in-flight/cancelled command.
+        job_id = ""
+        try:
+            job_id = register_foreground_command_job(session, act, aid)
+        except Exception:
+            job_id = ""
         ok, status, val = session._do_run_command(act)
+        try:
+            finish_foreground_command_job(session, job_id, ok, status, val)
+        except Exception:
+            pass
         if not ok:
             if status == "blocked":
                 block = val if isinstance(val, dict) else {"message": str(val)}
@@ -3279,6 +3304,7 @@ def dispatch_local_action(
                     "retry_handle": block.get("retry_handle") or command_hash,
                     "command_preview": block.get("command_preview") or "",
                     "recovery": block.get("recovery") or "",
+                    **({"job_id": job_id} if job_id else {}),
                 })
                 session._append_action_result(act, aid, f"(run_command {aid} {block_msg})", is_native)
                 return
@@ -3309,6 +3335,8 @@ def dispatch_local_action(
                     "mode": "tool",
                     "artifacts": [{"type": "command", "headline": headline}],
                 }
+                if job_id:
+                    result["job_id"] = job_id
                 for key in ("hint", "spill_uri", "output_spilled", "output_chars"):
                     if val.get(key) not in (None, ""):
                         result[key] = val[key]
@@ -3331,6 +3359,7 @@ def dispatch_local_action(
                 return
             yield ConvEvent("action_result", {
                 "id": aid, "error": val, "kind": "run_command", "command": command,
+                **({"job_id": job_id} if job_id else {}),
             })
             session._append_action_result(act, aid, f"(run_command {aid} failed: {val})", is_native)
             return
@@ -3358,6 +3387,8 @@ def dispatch_local_action(
             "mode": "tool",
             "artifacts": [{"type": "command", "headline": headline}],
         }
+        if job_id:
+            result["job_id"] = job_id
         for key in ("hint", "spill_uri", "output_spilled", "output_chars"):
             if val.get(key) not in (None, ""):
                 result[key] = val[key]

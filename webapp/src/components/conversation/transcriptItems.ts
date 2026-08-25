@@ -461,6 +461,31 @@ export function transcriptResponseToItems(res: {
           status,
           ...(typeof m.error === "string" && m.error ? { error: m.error } : {}),
         }];
+      } else if (m.type === "swarm_pending") {
+        const jobIds = normalizeSwarmJobIds(
+          Array.isArray(m.job_ids) ? m.job_ids.map((id: unknown) => String(id || "")) : [],
+        );
+        if (jobIds.length === 0) return [];
+        const rawStatus = String(m.status || "").trim();
+        const status = (
+          rawStatus === "done"
+          || rawStatus === "failed"
+          || rawStatus === "ended"
+          || rawStatus === "running"
+        ) ? rawStatus as "done" | "failed" | "ended" | "running"
+          : (m.resolved ? "done" : "running");
+        return [{
+          kind: "swarm_pending" as const,
+          job_ids: jobIds,
+          objective: String(m.objective || ""),
+          status,
+          resolved: status !== "running",
+          terminal_job_ids: normalizeSwarmJobIds(
+            Array.isArray(m.terminal_job_ids)
+              ? m.terminal_job_ids.map((id: unknown) => String(id || ""))
+              : [],
+          ),
+        }];
       } else if (m.type === "turn_terminal") {
         const text = String(m.text || "").trim();
         if (!text) return [];

@@ -421,6 +421,26 @@ describe("transcriptFingerprint", () => {
 });
 
 describe("transcriptResponseToItems", () => {
+  it("hydrates swarm_pending display rows instead of falling through to msg", () => {
+    const items = transcriptResponseToItems({
+      display: [{
+        type: "swarm_pending",
+        job_ids: ["job_dugout"],
+        objective: "Dugout swarm",
+        status: "done",
+        session_id: "other-session",
+      }],
+    });
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      kind: "swarm_pending",
+      job_ids: ["job_dugout"],
+      objective: "Dugout swarm",
+      status: "done",
+      resolved: true,
+    });
+  });
+
   it("hydrates invalidated_paths onto swarm_result rows", () => {
     const items = transcriptResponseToItems({
       display: [{
