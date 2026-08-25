@@ -54,7 +54,6 @@ import {
   toolFocusPhrase,
   toolInputFieldKey,
   toolRowLabel,
-  turnHasVisibleBusySurface,
   workFoldLabel,
   ranGoalLine,
 } from "../lib/turnProgress";
@@ -2035,12 +2034,11 @@ export const TranscriptList = memo(function TranscriptList({
   ) : null;
 
   const busyProgress = deriveBusyProgress(items, status, busyElapsedMs);
-  // Hide the under-fold line only while a card / prep / stream already
-  // shows work. A sticky Investigating fold of *finished* tools used to
-  // own chrome and swallow "Still working…" between Kimi-style batches.
-  const hideBusyFooter = turnHasVisibleBusySurface(items);
+  // Latch the step/timer line to the open agent loop. Do not hide it just
+  // because a card or stream is already on screen — that gap is the flicker
+  // between tool calls (and while the current tool is still running).
   const showBusyFooter =
-    (shouldShowBusyFooter(items, status) || pausePoint) && !hideBusyFooter;
+    shouldShowBusyFooter(items, status, agentLoopOpen) || pausePoint;
   const showStall = quietWorkingCueVisible(
     items,
     status,

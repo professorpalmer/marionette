@@ -208,6 +208,8 @@ describe("holdSwarmAwait transcript latch + awaiting_swarm pause-point", () => {
 
     expect(screen.getByText(/Investigating/i)).toBeTruthy();
     expect(screen.queryByText(/Worked for/i)).toBeNull();
+    // Running tool used to swallow the under-fold timer line.
+    expect(screen.getByText(/step /i)).toBeTruthy();
 
     rerender(
       <TranscriptList
@@ -221,6 +223,7 @@ describe("holdSwarmAwait transcript latch + awaiting_swarm pause-point", () => {
 
     expect(screen.getByText(/Investigating/i)).toBeTruthy();
     expect(screen.queryByText(/Worked for/i)).toBeNull();
+    expect(screen.getByText(/step /i)).toBeTruthy();
 
     // Settled tools but pilot still busy — must not seal via hold alone.
     const settledMidTurn: Item[] = [
@@ -238,6 +241,8 @@ describe("holdSwarmAwait transcript latch + awaiting_swarm pause-point", () => {
     );
     expect(screen.getByText(/Investigating/i)).toBeTruthy();
     expect(screen.queryByText(/Worked for/i)).toBeNull();
+    // Finished cards, loop still open: Still working… · step N stays painted.
+    expect(screen.getByText(/Still working/i)).toBeTruthy();
   });
 
   it("awaiting_swarm pause-point does not keep Investigating spinner over settled tools", () => {

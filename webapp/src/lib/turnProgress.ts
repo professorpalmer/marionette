@@ -773,17 +773,34 @@ export function turnLooksAnswerComplete(items: TurnItem[]): boolean {
 
 /**
  * Whether the transcript busy footer should render for this status + items.
- * False when the answer already looks complete despite a lagging busy status,
- * or when a stream / running card already owns the live signal — stacking
- * "Still working…" under growing text is the blink in the screenshot.
+ *
+ * Tool loops keep the step/timer line for the whole open agent turn — including
+ * running cards, thinking, and the gap between tool calls. Hiding it whenever
+ * ``turnHasVisibleBusySurface`` was true made "Still working…" vanish while
+ * tools were still running and again in the silent beat before the next call.
+ *
+ * Pure-chat typewriter still owns the live signal (no investigation fold yet),
+ * so a streaming bubble/thinking row there does not also stack a footer.
+ *
+ * ``agentLoopOpen`` covers status flaps to idle while ``turnOpen`` / hold is
+ * still latched, so the footer does not drop between SSE tool events.
  */
-export function shouldShowBusyFooter(items: TurnItem[], status: BusyStatus): boolean {
+export function shouldShowBusyFooter(
+  items: TurnItem[],
+  status: BusyStatus,
+  agentLoopOpen: boolean = false,
+): boolean {
   if (status === "awaiting_swarm") return true;
   const busy =
-    status === "thinking" || status === "executing" || status === "streaming";
+    status === "thinking"
+    || status === "executing"
+    || status === "streaming"
+    || agentLoopOpen;
   if (!busy) return false;
   if (turnLooksAnswerComplete(items)) return false;
-  if (turnHasVisibleBusySurface(items)) return false;
+  if (!turnHasInvestigationActivity(items) && turnHasVisibleBusySurface(items)) {
+    return false;
+  }
   return true;
 }
 
