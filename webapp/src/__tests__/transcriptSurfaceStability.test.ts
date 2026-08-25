@@ -315,7 +315,7 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
     expect(whenDone.has(finale)).toBe(false);
   });
 
-  it("sealed: planning before Thought+finale stays inside the fold (no PILOT split)", () => {
+  it("sealed unmarked planning stays a top-level Bubble (spoken prose, not fold)", () => {
     const card: Item = {
       kind: "card",
       card: {
@@ -355,9 +355,87 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
       finale,
     ];
     const whenDone = collectIntermediateAssistantItems(items, false);
-    expect(whenDone.has(planning)).toBe(true);
-    // True trailing finale still peels even when late Thought preceded it.
+    // Unmarked spoken prose is not foldable — only workerStream / isPlan / progress.
+    expect(whenDone.has(planning)).toBe(false);
     expect(whenDone.has(finale)).toBe(false);
+  });
+
+  it("sealed spoken prose stays top-level when a later card or swarm arrives", () => {
+    const firstCard: Item = {
+      kind: "card",
+      card: {
+        id: "c-pre",
+        goal: "auth.ts",
+        cwd: null,
+        kind: "read_file",
+        running: false,
+        open: false,
+        result: { status: "ok" },
+      },
+    };
+    const spoken: Item = {
+      kind: "msg",
+      msg: { role: "assistant", text: "I will patch auth next.", streaming: false },
+    };
+    const laterCard: Item = {
+      kind: "card",
+      card: {
+        id: "c-post",
+        goal: "apply patch",
+        cwd: null,
+        kind: "edit_file",
+        running: false,
+        open: false,
+        result: { status: "ok" },
+      },
+    };
+    const laterSwarm: Item = {
+      kind: "swarm_pending",
+      job_ids: ["job_sealed_prose"],
+      objective: "implement patch",
+      status: "running",
+    };
+    const withCard: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "fix auth" } },
+      firstCard,
+      spoken,
+      laterCard,
+    ];
+    const withSwarm: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "fix auth" } },
+      firstCard,
+      spoken,
+      laterSwarm,
+    ];
+    for (const open of [true, false]) {
+      expect(collectIntermediateAssistantItems(withCard, open).has(spoken)).toBe(false);
+      expect(collectIntermediateAssistantItems(withSwarm, open).has(spoken)).toBe(false);
+    }
+
+    const planMsg: Item = {
+      kind: "msg",
+      msg: { role: "assistant", text: "Planning the patch.", isPlan: true },
+    };
+    const progressMsg: Item = {
+      kind: "msg",
+      msg: { role: "assistant", text: "Retrying after routing error", channel: "progress" },
+    };
+    const worker: Item = {
+      kind: "msg",
+      msg: { role: "assistant", text: "worker tokens…", workerStream: true },
+    };
+    const foldables: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "fix auth" } },
+      firstCard,
+      planMsg,
+      progressMsg,
+      worker,
+      laterCard,
+    ];
+    const folded = collectIntermediateAssistantItems(foldables, false);
+    expect(folded.has(planMsg)).toBe(true);
+    expect(folded.has(progressMsg)).toBe(true);
+    expect(folded.has(worker)).toBe(true);
   });
 
   it("sealed: true finale before late thinking does not bury the answer", () => {
