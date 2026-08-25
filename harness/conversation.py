@@ -653,6 +653,11 @@ class ConversationalSession(
         ensure_repo_swarm_adapter(config)
         if config.swarm_adapter:
             publish_swarm_adapter(config.swarm_adapter, repo=config.repo or "")
+        try:
+            from .browser_auth import ensure_shared_browser_env
+            ensure_shared_browser_env()
+        except Exception:
+            pass
         # self-learning: load ACTIVE skills into the pilot's system context so
         # the loop compounds (procedural memory). Pending skills are NOT loaded.
         # Enabled Agent Plugins v1 skills are appended alongside (namespaced);

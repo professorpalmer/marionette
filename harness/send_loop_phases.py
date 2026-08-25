@@ -96,7 +96,7 @@ LOCAL_ACTION_KINDS: frozenset[str] = frozenset({
     "store_scratch", "load_scratch", "list_scratch", "clear_scratch",
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
-    "browser_get_text", "browser_screenshot",
+    "browser_get_text", "browser_screenshot", "browser_auth_handoff",
     "query_wiki", "call_mcp", "manage_mcp",
     "request_secret",
 })
@@ -113,7 +113,7 @@ PLAN_SKIP_KINDS: frozenset[str] = frozenset({
     "call_mcp", "manage_mcp", "memory",
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
-    "browser_get_text", "browser_screenshot",
+    "browser_get_text", "browser_screenshot", "browser_auth_handoff",
 })
 
 # Cap for run_command SSE ``output`` so the UI card can show an excerpt without
@@ -3592,7 +3592,8 @@ def dispatch_local_action(
     # ---- native browser / computer-use tools ----------------------
     if act.kind in ("browser_navigate", "browser_snapshot", "browser_click",
                     "browser_type", "browser_scroll", "browser_back",
-                    "browser_get_text", "browser_screenshot"):
+                    "browser_get_text", "browser_screenshot",
+                    "browser_auth_handoff"):
         try:
             from . import browser as _browser
             bargs = act.arguments or {}
@@ -3610,6 +3611,9 @@ def dispatch_local_action(
                 res = _browser.browser_back()
             elif act.kind == "browser_get_text":
                 res = _browser.browser_get_text()
+            elif act.kind == "browser_auth_handoff":
+                from .browser_auth import browser_auth_handoff
+                res = browser_auth_handoff(bargs.get("url") or act.url or "")
             else:  # browser_screenshot
                 res = _browser.browser_screenshot()
         except Exception as e:

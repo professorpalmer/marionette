@@ -87,6 +87,7 @@ ActionKind = Literal[
     "browser_back",
     "browser_get_text",
     "browser_screenshot",
+    "browser_auth_handoff",
     "request_secret",
 ]
 
@@ -421,6 +422,10 @@ class PilotAction:
             raise PilotError("web_search action requires a 'query'")
         if self.kind == "web_fetch" and not (self.url or "").strip():
             raise PilotError("web_fetch action requires a 'url'")
+        if self.kind == "browser_auth_handoff" and not (
+            self.url or (self.arguments or {}).get("url") or ""
+        ).strip():
+            raise PilotError("browser_auth_handoff requires a 'url'")
         if self.kind == "read_pdf" and not (self.path or "").strip() and not (self.url or "").strip():
             raise PilotError("read_pdf action requires a 'path' or 'url'")
         if self.kind == "search_codegraph" and not (self.query or "").strip():
@@ -620,7 +625,7 @@ def from_wire(
             except (TypeError, ValueError):
                 max_concurrency = 0
     query = raw.get("query") or ""
-    url = raw.get("url") or ""
+    url = raw.get("url") or arguments.get("url") or ""
     instruction = (
         raw.get("instruction")
         or arguments.get("instruction")
@@ -1893,6 +1898,30 @@ def build_tools_schema(
                 "parameters": {"type": "object", "properties": {}}
             }
         })
+        schema.append({
+            "type": "function",
+            "function": {
+                "name": "browser_auth_handoff",
+                "description": (
+                    "Open a URL in the harness-controlled visible Chrome window "
+                    "using a durable profile so the user can complete login or "
+                    "Cloudflare. Call this instead of typing passwords. Never ask "
+                    "the user to paste cookies or credentials into chat. After they "
+                    "finish, call browser_snapshot; swarm workers attach to the "
+                    "same CDP session."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": "The URL that needs interactive login (http/https).",
+                        }
+                    },
+                    "required": ["url"],
+                },
+            },
+        })
 
     # MCP tools — use mcp_{server}__{tool} so underscores in either segment
     # round-trip (legacy mcp_{server}_{tool} still parses via fallback).
@@ -2625,6 +2654,10 @@ failed before doing so. When in doubt, run it and find out.
 If a task needs a token, API key, or password, call `request_secret` and stop.
 Never write "paste the token here". The host shows a masked card; you are
 resumed with {provided, connector, field} only.
+If a live site needs interactive login or Cloudflare, call `browser_auth_handoff`
+with the URL and tell the user to complete it in the Chrome window that opens.
+Do not type passwords into browser_type. Do not ask for cookies in chat. After
+the user finishes, continue with browser_snapshot on the same session.
 
 You have search_codegraph (semantic/graph search over THIS repo's code -- prefer it over grep/read_file for 'where is X / what calls Y / how does Z work') and query_wiki (durable cross-session knowledge base -- consult it for prior decisions, architecture, and context). Use search_codegraph to explore code structure before reading whole files. These are first-class: you know the codebase via CodeGraph and your durable memory via the Wiki.
 

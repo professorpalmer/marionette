@@ -29,6 +29,7 @@ def test_browser_instruction_mentions_browser_tools():
     inst = b._analysis_instruction("open https://x.com", "/repo", "explore", browser=True)
     assert "browser_navigate" in inst
     assert "browser_snapshot" in inst
+    assert "browser_auth_handoff" in inst
     # Still read-only: never edit files or submit credentials.
     assert "READ-ONLY" in inst
     assert "credentials" in inst
