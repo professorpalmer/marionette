@@ -345,14 +345,14 @@ describe("turnLooksAnswerComplete / shouldShowBusyFooter (T5)", () => {
     expect(shouldShowBusyFooter(items, "streaming")).toBe(false);
   });
 
-  it("is false while a card is running", () => {
+  it("keeps the footer while a card is running", () => {
     const items: Item[] = [
       msg("user", "go"),
       msg("assistant", "Working on it."),
       card("1", "a.ts", "read_file", true),
     ];
     expect(turnLooksAnswerComplete(items)).toBe(false);
-    expect(shouldShowBusyFooter(items, "executing")).toBe(false);
+    expect(shouldShowBusyFooter(items, "executing")).toBe(true);
   });
 
   it("is false between tool steps after mid-turn narration (no idle blink)", () => {
@@ -371,7 +371,18 @@ describe("turnLooksAnswerComplete / shouldShowBusyFooter (T5)", () => {
     expect(p.pill).not.toBe("idle");
   });
 
-  it("is false while thinking is streaming", () => {
+  it("keeps the footer while thinking streams after tools", () => {
+    const items: Item[] = [
+      msg("user", "go"),
+      card("1", "a.ts", "read_file", false),
+      msg("assistant", "Earlier note."),
+      { kind: "thinking", text: "more", streaming: true },
+    ];
+    expect(turnLooksAnswerComplete(items)).toBe(false);
+    expect(shouldShowBusyFooter(items, "thinking")).toBe(true);
+  });
+
+  it("hides the footer while pre-tool thinking streams (row owns the signal)", () => {
     const items: Item[] = [
       msg("user", "go"),
       msg("assistant", "Earlier note."),
@@ -381,14 +392,23 @@ describe("turnLooksAnswerComplete / shouldShowBusyFooter (T5)", () => {
     expect(shouldShowBusyFooter(items, "thinking")).toBe(false);
   });
 
-  it("is false while tool_prep is active", () => {
+  it("keeps the footer while tool_prep is active", () => {
     const items: Item[] = [
       msg("user", "go"),
       msg("assistant", "Next I will grep."),
       { kind: "tool_prep", name: "grep" },
     ];
     expect(turnLooksAnswerComplete(items)).toBe(false);
-    expect(shouldShowBusyFooter(items, "thinking")).toBe(false);
+    expect(shouldShowBusyFooter(items, "thinking")).toBe(true);
+  });
+
+  it("keeps the footer on idle status flaps while the agent loop is still open", () => {
+    const items: Item[] = [
+      msg("user", "go"),
+      card("1", "a.ts", "read_file", false),
+    ];
+    expect(shouldShowBusyFooter(items, "idle")).toBe(false);
+    expect(shouldShowBusyFooter(items, "idle", true)).toBe(true);
   });
 
   it("is false with no assistant text yet (T3 waiting still shows)", () => {
