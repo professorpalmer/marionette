@@ -171,6 +171,11 @@ def _call(op_name: str, method_name: str, *args, **kwargs) -> str:
     if err:
         return err
     try:
+        from .browser_auth import ensure_shared_browser_env
+        ensure_shared_browser_env()
+    except Exception:
+        pass
+    try:
         fn = getattr(_engine, method_name)
         result = fn(*args, **kwargs)
     except Exception as e:

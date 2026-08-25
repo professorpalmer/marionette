@@ -1800,6 +1800,7 @@ def test_dispatch_local_action_plan_mode_blocks_browser_tools():
         "browser_back",
         "browser_get_text",
         "browser_screenshot",
+        "browser_auth_handoff",
     )
     for kind in browser_kinds:
         assert kind in PLAN_SKIP_KINDS, kind
