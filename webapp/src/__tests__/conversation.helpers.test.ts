@@ -647,7 +647,7 @@ describe("thinkingToolPrep module", () => {
     ).toBe("Searching CodeGraph for branch logic");
     expect(coalesceThinkingChunk("Planning…", "Validating…")).toBe("Validating…");
     expect(coalesceThinkingChunk("redesign", "****")).toBe("redesign");
-    expect(coalesceThinkingChunk("redesign", "****Finalizing...")).toBe("redesign Finalizing...");
+    expect(coalesceThinkingChunk("redesign", "****Finalizing...")).toBe("Finalizing...");
     expect(coalesceThinkingChunk("Diagnosing…", "****Inspecting…")).toBe("Inspecting…");
     expect(sanitizeThinkingStatusGlue("Diagnosing…****Inspecting…")).toBe("Inspecting…");
     expect(sanitizeThinkingStatusGlue("hello****Inspecting…")).toBe("Inspecting…");

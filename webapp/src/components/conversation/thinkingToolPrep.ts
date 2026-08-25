@@ -84,8 +84,9 @@ export function sanitizeThinkingStatusGlue(text: string): string {
     .split(/\*{2,}|_{2,}/)
     .map((p) => p.trim())
     .filter(Boolean);
-  if (parts.length >= 2 && parts.every(looksLikeStatusHeadline)) {
-    return stripThinkingEmphasisChrome(parts[parts.length - 1]);
+  if (parts.length >= 2 && parts.some(looksLikeStatusHeadline)) {
+    const headlines = parts.filter(looksLikeStatusHeadline);
+    return stripThinkingEmphasisChrome(headlines[headlines.length - 1] || parts[parts.length - 1]);
   }
   // Marker-only crumbs already handled upstream; strip residual glue runs so
   // `redesign****Finalizing...` never paints literal asterisks.
