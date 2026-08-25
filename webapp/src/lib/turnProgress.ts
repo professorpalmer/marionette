@@ -459,6 +459,35 @@ export function workedForLabel(durationMs?: number | null): string {
   return label ? `Worked for ${label}` : "Worked for";
 }
 
+/**
+ * Spoken-prose empty fallback (`clean_say` / Bubble `cleanAssistantText`).
+ * Fold chrome must never adopt this string as a live/sealed title.
+ */
+export function isWorkingEllipsisFallback(text: string): boolean {
+  return /^Working\.\.\.?$/i.test(String(text || "").trim());
+}
+
+/**
+ * Outer work-fold chrome — live Investigating… / Still working…; sealed Worked for.
+ * Never returns the spoken-prose "Working..." fallback.
+ */
+export function workFoldLabel(opts: {
+  live?: boolean;
+  /** Swarm/hold pause — StatusPill-aligned cue instead of Investigating… */
+  pausePoint?: boolean;
+  durationMs?: number | null;
+  /** Live investigatingHeadline (focus / kind counts); ignored when empty or Working... */
+  headline?: string | null;
+}): string {
+  if (opts.live) {
+    if (opts.pausePoint) return "Still working…";
+    const headline = String(opts.headline || "").trim();
+    if (headline && !isWorkingEllipsisFallback(headline)) return headline;
+    return "Investigating…";
+  }
+  return workedForLabel(opts.durationMs);
+}
+
 /** Reasoning fold chrome — live pulses Thinking…; sealed tucks to Thought {Ns}. */
 export function thoughtFoldLabel(opts: {
   live?: boolean;

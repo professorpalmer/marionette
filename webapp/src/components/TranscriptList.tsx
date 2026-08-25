@@ -47,6 +47,7 @@ import {
   ranCommandsLabel,
   resolveCardCliInput,
   shortenGoal,
+  isWorkingEllipsisFallback,
   quietWorkingCueVisible,
   shouldShowBusyFooter,
   thoughtFoldLabel,
@@ -54,7 +55,7 @@ import {
   toolInputFieldKey,
   toolRowLabel,
   turnHasVisibleBusySurface,
-  workedForLabel,
+  workFoldLabel,
   ranGoalLine,
 } from "../lib/turnProgress";
 import { isAgentLoopOpen } from "./conversation/runnersBusy";
@@ -724,6 +725,11 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
     if (item.kind === "tool_prep") continue;
 
     if (item.kind === "msg") {
+      // Spoken-prose "Working..." fallback is not a message. Empty session
+      // used to paint three of these as stacked Bubbles.
+      if (item.msg.role === "assistant" && isWorkingEllipsisFallback(item.msg.text)) {
+        continue;
+      }
       // Post-tool micro-narration folds into the investigation box. Pre-tool
       // assistant bubbles stay standalone permanently (no look-ahead reparent).
       if (item.msg.role === "assistant" && intermediateItems.has(item)) {
@@ -2072,7 +2078,11 @@ function cleanAssistantText(text: string): string {
 
   let result = cleaned.join("\n").trim();
   result = result.replace(/\n{3,}/g, "\n\n");
-  return result || "Working...";
+  // Empty after strip, or the spoken-prose "Working..." placeholder itself —
+  // never paint that string (it leaked as three stacked Bubbles on a fresh
+  // idle session when crumbs already held the fallback).
+  if (!result || isWorkingEllipsisFallback(result)) return "";
+  return result;
 }
 
 function isGateSuppressed(card: Card): boolean {
@@ -2481,11 +2491,11 @@ function ActivityGroup({
 
   const quietSummary = (() => {
     if (investigating) {
-      if (actionCount > 0) return stepHeadline;
-      if (swarmPendingItems.length > 0) {
+      if (swarmPendingItems.length > 0 && actionCount === 0) {
         return swarmPendingRunning ? "Swarm · running" : `Swarm · ${swarmPendingItems.length} pending`;
       }
-      return stepHeadline || "Investigating…";
+      // Work-fold chrome owns Investigating… — never spoken-prose Working...
+      return workFoldLabel({ live: true, headline: stepHeadline });
     }
     if (!isLiveFold && durableJobRunning) return "job still running";
     // Sealed turn: Cursor-style Worked for {duration} — not Explored counts.
@@ -2496,7 +2506,7 @@ function ActivityGroup({
       if (swarmPendingItems.length > 0 && actionCount === 0 && thinkingItems.length === 0) {
         return `Swarm · ${swarmPendingItems.length} pending`;
       }
-      return workedForLabel(sealedWorkMs);
+      return workFoldLabel({ live: false, durationMs: sealedWorkMs });
     }
     if (telemetryItems.length > 0 && actionCount === 0 && thinkingItems.length === 0) {
       const first = telemetryItems[0];
@@ -2518,13 +2528,21 @@ function ActivityGroup({
       if (first.kind === "auto_status") return autoStatusPresentation(first.cycle, first.snapshot).label;
     }
     const preview = normalizeReasoningPreview(narrationPreview, 72);
-    return preview || workedForLabel(sealedWorkMs);
+    // Never let clean_say / Bubble "Working..." leach into fold chrome.
+    if (preview && !isWorkingEllipsisFallback(preview)) return preview;
+    return workFoldLabel({ live: false, durationMs: sealedWorkMs });
   })();
   const compactionHover = (() => {
     const compact = telemetryItems.find((row) => row.kind === "compaction");
     return compact && compact.kind === "compaction" ? compactionRowChrome(compact).title : "";
   })();
-  const foldTitle = [investigating ? (runningCard?.goal || quietSummary) : quietSummary, compactionHover]
+  const liveGoal = String(runningCard?.goal || "").trim();
+  const foldTitle = [
+    investigating
+      ? (liveGoal && !isWorkingEllipsisFallback(liveGoal) ? liveGoal : quietSummary)
+      : quietSummary,
+    compactionHover,
+  ]
     .filter(Boolean)
     .join(" · ");
 
@@ -2797,7 +2815,9 @@ function ThinkingBlock({
     return null;
   }
 
-  const preview = normalizeReasoningPreview(text);
+  const previewRaw = normalizeReasoningPreview(text);
+  // Spoken-prose Working... must never appear as Thought chrome or preview.
+  const preview = isWorkingEllipsisFallback(previewRaw) ? "" : previewRaw;
   const foldLabel = thoughtFoldLabel({ live, durationMs });
 
   return (
@@ -3309,6 +3329,9 @@ function Bubble({
   // `return null`) is exactly what made streamed text vanish the moment a tool
   // fired. We keep the full text -> tool -> text -> tool thought chain on screen;
   // `isIntermediate` now only tones styling down slightly, never hides.
+  // Empty / pollution-only assistant crumbs stay hidden — never "Working...".
+  if (!displayedText.trim()) return null;
+
   const showExecuteButton = msg.isPlan && !executed && onExecutePlan;
 
   return (

@@ -64,6 +64,11 @@ def is_pollution_line(line: str) -> bool:
         return True
     return False
 
+def is_working_ellipsis_fallback(text: str) -> bool:
+    """Spoken-prose empty fallback. Fold chrome must never adopt this string."""
+    return bool(re.match(r"^Working\.\.\.?$", (text or "").strip(), re.I))
+
+
 def get_first_sentence(text: str) -> str:
     for line in text.splitlines():
         if is_pollution_line(line):
@@ -75,7 +80,9 @@ def get_first_sentence(text: str) -> str:
             if match and match[0]:
                 return match[0]
             return s
-    return "Working..."
+    # Empty after pollution strip — never invent "Working...". That string
+    # poisoned live fold chrome when empty crumbs hit the transcript.
+    return ""
 
 def clean_say(text: str) -> str:
     if not text:
@@ -165,9 +172,15 @@ def clean_say(text: str) -> str:
     # Note: 3+ blank lines means 4+ consecutive newlines, we collapse to 2 newlines (1 blank line)
     result = re.sub(r'\n{3,}', '\n\n', result)
     
-    # 6. Fallback if empty or near-empty
+    # 6. Fallback if empty or near-empty — prefer a real first sentence, else
+    # leave empty. Never substitute "Working..." (fold chrome must stay
+    # Investigating… / Thinking… / Ran, not the spoken-prose placeholder).
+    if is_working_ellipsis_fallback(result):
+        return ""
     if len(result.strip()) < 5:
         fallback = get_first_sentence(text)
-        return fallback if len(fallback.strip()) >= 5 else "Working..."
+        if is_working_ellipsis_fallback(fallback):
+            return ""
+        return fallback if len(fallback.strip()) >= 5 else ""
         
     return result

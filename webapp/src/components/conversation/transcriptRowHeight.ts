@@ -9,6 +9,7 @@
 
 import { layout, prepare, type PreparedText } from "@chenglou/pretext";
 import type { GroupedItem, Msg } from "../TranscriptList";
+import { isWorkingEllipsisFallback } from "../../lib/turnProgress";
 
 /** Canvas font strings synced with TranscriptList bubble typography. */
 export const TRANSCRIPT_USER_FONT =
@@ -127,7 +128,10 @@ export function assistantTextForMeasure(raw: string): string {
 
   let result = cleaned.join("\n").trim();
   result = result.replace(/\n{3,}/g, "\n\n");
-  return result || "Working...";
+  // Match Bubble cleanAssistantText — empty after strip, or the Working...
+  // placeholder itself, stays empty (never leak into fold chrome / heights).
+  if (!result || isWorkingEllipsisFallback(result)) return "";
+  return result;
 }
 
 function isPlanOrProgressAssistant(msg: Msg): boolean {
