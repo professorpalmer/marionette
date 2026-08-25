@@ -697,6 +697,14 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
   const flush = () => {
     const activityItems = [...currentGroup, ...terminalSwarmItems];
     if (activityItems.length > 0) {
+      const prior = bridgeTarget || activityGroupAcrossSpokenProse(grouped);
+      if (prior) {
+        prior.push(...activityItems);
+        currentGroup = [];
+        terminalSwarmItems = [];
+        bridgeTarget = prior;
+        return;
+      }
       grouped.push({ kind: "activity_group", items: activityItems });
       currentGroup = [];
       terminalSwarmItems = [];
@@ -704,7 +712,7 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
     bridgeTarget = null;
   };
 
-  const pushActivity = (item: ActivityItem, live = false) => {
+  const pushActivity = (item: ActivityItem, _live = false) => {
     if (currentGroup.length > 0 || terminalSwarmItems.length > 0) {
       currentGroup.push(item);
       return;
@@ -713,17 +721,19 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
       bridgeTarget.push(item);
       return;
     }
-    if (live) {
-      const prior = activityGroupAcrossSpokenProse(grouped);
-      if (prior) {
-        prior.push(item);
-        bridgeTarget = prior;
-        return;
-      }
+    // One Worked-for / Investigating fold per turn. After spoken prose
+    // flushes the strip, later tools / swarm / thoughts rejoin that fold
+    // even when they are already sealed.
+    const prior = activityGroupAcrossSpokenProse(grouped);
+    if (prior) {
+      prior.push(item);
+      bridgeTarget = prior;
+      return;
     }
     currentGroup.push(item);
   };
 
+  let seenUser = false;
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     if (item.kind === "thinking" && (!item.text || !item.text.trim())) continue;
@@ -731,9 +741,18 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
     if (item.kind === "tool_prep") continue;
 
     if (item.kind === "msg") {
+      if (item.msg.role === "user") seenUser = true;
       // Spoken-prose "Working..." fallback is not a message. Empty session
       // used to paint three of these as stacked Bubbles.
       if (item.msg.role === "assistant" && isWorkingEllipsisFallback(item.msg.text)) {
+        continue;
+      }
+      if (item.msg.role === "assistant" && isTrivialAssistantCrumb(item.msg.text)) {
+        continue;
+      }
+      // [swarm FAILED for: ...] / [swarm result for: ...] stay swarm chrome.
+      if (item.msg.role === "assistant" && /^\[swarm (FAILED|result) for:/i.test(String(item.msg.text || "").trim())) {
+        pushActivity(item);
         continue;
       }
       // Post-tool micro-narration folds into the investigation box. Pre-tool
@@ -760,6 +779,8 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
       grouped.push(item);
     } else if (item.kind === "swarm_pending") {
       const status = item.status || (item.resolved ? "done" : "running");
+      // Phantom done rows that land before the first user message are leftovers.
+      if (!seenUser && status !== "running") continue;
       if (status === "running") {
         // Keep the live swarm pill inside the current Investigating fold with
         // surrounding tool cards / reasoning — including across a top-level

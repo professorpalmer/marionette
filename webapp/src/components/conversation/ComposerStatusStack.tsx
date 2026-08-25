@@ -4,6 +4,7 @@ import { openAgentCommand, openAgentSwarmJob } from "../../lib/agentLinks";
 import {
   getAgentCommandIndexVersion,
   listAgentCommandSessions,
+  registerAgentCommandSession,
   subscribeAgentCommandIndex,
 } from "../../lib/agentCommandIndex";
 import { buildComposerStatusStackRows, type ComposerStatusStackRow } from "./composerStatusStackData";
@@ -48,6 +49,18 @@ export default function ComposerStatusStack({ swarmJobs }: { swarmJobs: readonly
     () => buildComposerStatusStackRows({ swarmJobs, commandSessions, nowMs: nowTick }),
     [commandSessions, nowTick, swarmJobs],
   );
+
+  useEffect(() => {
+    for (const row of rows) {
+      if (row.kind !== "terminal" || !row.command) continue;
+      registerAgentCommandSession({
+        id: row.id,
+        command: row.command,
+        output: row.output || "",
+        state: row.state,
+      });
+    }
+  }, [rows]);
   const hasTerminalRows = rows.some((row) => row.state !== "running");
 
   useEffect(() => {

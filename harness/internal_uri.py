@@ -73,6 +73,7 @@ class InternalUriContext:
     state_dir: str
     repo: Optional[str] = None
     session_id: Optional[str] = None
+    live_jobs: Optional[list] = None
 
     def store(self):
         if not self.state_dir:
@@ -113,6 +114,10 @@ def _local_jobs(ctx: InternalUriContext) -> list[dict]:
         row for row in rows
         if isinstance(row, dict) and str(row.get("id") or "").startswith("local-")
     ]
+    for row in (ctx.live_jobs or []):
+        if isinstance(row, dict) and str(row.get("id") or "").startswith("local-"):
+            if not any(str(v.get("id") or "") == str(row.get("id") or "") for v in valid):
+                valid.append(row)
     try:
         from .job_scoping import cwd_under_repo, filter_local_jobs
         visible = filter_local_jobs(
@@ -343,8 +348,10 @@ def search_internal_uris(
             for job in _local_jobs(ctx):
                 jid = str(job.get("id") or "")
                 goal = str(job.get("goal") or "")
-                if needle in goal.lower() or needle in jid.lower():
-                    hits.append(f"job://{jid}\t{goal[:120]}")
+                preview = str(job.get("command_preview") or job.get("command") or "")
+                hay = f"{jid} {goal} {preview}".lower()
+                if needle in hay:
+                    hits.append(f"job://{jid}\t{(preview or goal)[:120]}")
                     if len(hits) >= max_results:
                         break
         elif sch == "artifact":

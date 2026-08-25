@@ -214,10 +214,18 @@ class ToolDispatchMixin:
     """
 
     def _internal_uri_context(self) -> InternalUriContext:
+        live = []
+        fn = getattr(self, "live_local_jobs", None)
+        if callable(fn):
+            try:
+                live = list(fn() or [])
+            except Exception:
+                live = []
         return InternalUriContext(
             state_dir=getattr(self, "state_dir", None) or self.config.state_dir or "",
             repo=self.config.repo or None,
             session_id=getattr(self, "harness_session_id", None) or None,
+            live_jobs=live,
         )
 
     def _do_read_file(self, act: PilotAction) -> tuple[bool, str, str]:

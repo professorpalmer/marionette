@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isCommandJob, isSwarmTrackerJob, isTrackerHire, isWaveCoordinator } from "../lib/jobClassification";
+import { countRunningTrackerJobs, isCommandJob, isRunningJobStatus, isSwarmTrackerJob, isTrackerHire, isWaveCoordinator } from "../lib/jobClassification";
 
 describe("isCommandJob", () => {
   it("matches job_kind and local-cmd id prefixes", () => {
@@ -83,5 +83,19 @@ describe("isSwarmTrackerJob allowlist", () => {
     expect(isSwarmTrackerJob({ id: "job-live", goal: "Live audit" } as any)).toBe(true);
     expect(isSwarmTrackerJob({ id: "job_par", goal: "run_parallel wave" })).toBe(true);
     expect(isTrackerHire({ job_kind: "run_swarm" })).toBe(true);
+  });
+});
+
+describe("countRunningTrackerJobs", () => {
+  it("pulses only real swarm hires, not run_command terminals", () => {
+    expect(isRunningJobStatus("running")).toBe(true);
+    expect(isRunningJobStatus("in_progress")).toBe(true);
+    expect(isRunningJobStatus("complete")).toBe(false);
+    expect(countRunningTrackerJobs([
+      { id: "local-cmd-1", job_kind: "run_command", status: "running" },
+      { id: "job_abc", job_kind: "run_swarm", status: "running" },
+      { id: "job_done", job_kind: "run_swarm", status: "complete" },
+      { id: "local-wave-1", job_kind: "parallel_wave", status: "running" },
+    ])).toBe(1);
   });
 });

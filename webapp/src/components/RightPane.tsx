@@ -16,6 +16,7 @@ import { api, type PendingReview } from "../lib/api";
 import { lastSelectedProjectRoot } from "../lib/panelTransition";
 import { usePolling } from "../lib/usePolling";
 import { writeSWRCache } from "../lib/useStaleWhileRevalidate";
+import { countRunningTrackerJobs } from "../lib/jobClassification";
 import {
   isSettingsOverlayOpen,
   setSettingsOverlayOpen,
@@ -595,11 +596,7 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
         // "Loading swarm jobs..." flash — the tab light already polls this payload.
         writeSWRCache(`swarm:${swarmRepo || "__default__"}`, data);
         const jobs = Array.isArray(data?.jobs) ? data.jobs : [];
-        const n = jobs.filter((j) => {
-          const s = (j.status || "").toLowerCase();
-          return s.includes("run") || s.includes("progress") || s.includes("active");
-        }).length;
-        setSwarmRunning(n);
+        setSwarmRunning(countRunningTrackerJobs(jobs));
       })
       .catch(() => {
         /* keep last known; tab light is best-effort */

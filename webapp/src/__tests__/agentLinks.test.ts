@@ -362,6 +362,17 @@ describe("openAgentLink events", () => {
     expect(kinds).not.toContain("harness-focus-tab");
   });
 
+  it("prefers the live session over an unregistered job id", () => {
+    registerAgentCommandSession({ id: "pty-live", command: "pytest -q", output: "....\\n" });
+    const spy = vi.spyOn(window, "dispatchEvent");
+    openAgentCommand("pytest -q", { id: "local-cmd-dead", output: "" });
+    const ev = spy.mock.calls
+      .map((c) => c[0] as CustomEvent)
+      .find((e) => e.type === "harness-open-agent-terminal");
+    expect(ev?.detail?.id).toBe("pty-live");
+    expect(ev?.detail?.id).not.toBe("local-cmd-dead");
+  });
+
   it("opens the registered live session for a later chat command click", () => {
     registerAgentCommandSession({ id: "card-live", command: "git pull", output: "Already up to date.\n" });
     const spy = vi.spyOn(window, "dispatchEvent");

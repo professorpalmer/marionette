@@ -9,7 +9,12 @@ Never infers background from duration, timeout, or command text.
 """
 from __future__ import annotations
 
+import glob
 import hashlib
+import os
+import re
+import shutil
+import subprocess
 import threading
 import uuid
 from typing import Any, Dict, Optional
@@ -38,6 +43,56 @@ COMMAND_TERMINAL_STATES = frozenset({
 # Adapter/role labels that must NOT read as provider-swarm workers.
 COMMAND_JOB_ROLE = "command"
 COMMAND_JOB_ADAPTER = "command"
+
+_TMP_MARIONETTE_RE = re.compile(r"/tmp/marionette[-_./A-Za-z0-9]+")
+
+
+def reap_tmp_marionette_worktrees(command: str) -> list[str]:
+    """Remove /tmp/marionette-* git worktrees named in a backgrounded command.
+
+    A script trap never runs when the job is backgrounded or killed, so
+    detached worktrees leak. Only paths under /tmp/marionette are touched.
+    """
+    removed: list[str] = []
+    candidates: set[str] = set()
+    for raw in _TMP_MARIONETTE_RE.findall(command or ""):
+        raw = raw.rstrip("\\'\"")
+        if "XXXX" in raw:
+            prefix = raw.split("XXXX")[0]
+            candidates.update(glob.glob(prefix + "*"))
+        else:
+            if os.path.isdir(raw):
+                candidates.add(raw)
+            parent = os.path.dirname(raw)
+            base = os.path.basename(raw)
+            if parent == "/tmp" and base:
+                candidates.update(glob.glob(os.path.join("/tmp", base + ".*")))
+                candidates.update(glob.glob(os.path.join("/tmp", base + "*")))
+    for path in sorted(candidates):
+        real = os.path.realpath(path)
+        if not real.startswith("/tmp/marionette"):
+            continue
+        if not os.path.isdir(real):
+            continue
+        gitdir = os.path.join(real, ".git")
+        if not os.path.exists(gitdir):
+            continue
+        try:
+            subprocess.run(
+                ["git", "worktree", "remove", "--force", real],
+                check=False,
+                capture_output=True,
+                timeout=20,
+            )
+        except Exception:
+            pass
+        if os.path.isdir(real):
+            shutil.rmtree(real, ignore_errors=True)
+        if not os.path.isdir(real):
+            removed.append(real)
+    return removed
+
+
 COMMAND_JOB_KIND = "run_command"
 
 # Inline output cap for pending/terminal receipts (matches foreground 50 KiB
@@ -429,6 +484,7 @@ def _run_registered_command_job(
             output_preview=spill_meta.get("output_preview") or "",
             run_status=run_status,
         )
+    reap_tmp_marionette_worktrees(command)
 
 
 def _terminal_summary(status: str, exit_code: int, output: str) -> str:

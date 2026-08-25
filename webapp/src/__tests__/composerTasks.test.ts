@@ -16,6 +16,7 @@ describe("taskState", () => {
     expect(taskState("running")).toBe("in_progress");
     expect(taskState("pending")).toBe("pending");
     expect(taskState("failed")).toBe("failed");
+    expect(taskState("degraded")).toBe("degraded");
   });
 });
 
@@ -57,5 +58,24 @@ describe("buildComposerTasks + progress", () => {
       "reviewer · Audit the Marionette harness Python backend under harness/. React UI under webapp/src/.",
     );
     expect(tasks[0].content.includes("\n")).toBe(false);
+  });
+
+  it("paints degraded workers instead of clean-green complete", () => {
+    const tasks = buildComposerTasks({
+      id: "j",
+      goal: "audit",
+      status: "complete",
+      session_id: "sess-1",
+      tasks: [
+        { id: "ok", role: "impl", instruction: "ship", status: "complete", adapter: "x" },
+        { id: "deg", role: "review", instruction: "review", status: "complete", adapter: "x" },
+      ],
+      artifacts: [
+        { type: "verification", headline: "review", task_id: "deg", result: "degraded", failure: "capability" },
+      ],
+    } as Job);
+    expect(tasks[0].state).toBe("completed");
+    expect(tasks[1].state).toBe("degraded");
+    expect(taskProgress(tasks)).toEqual({ done: 2, total: 2 });
   });
 });

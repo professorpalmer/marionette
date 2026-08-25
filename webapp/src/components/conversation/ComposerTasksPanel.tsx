@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { CheckCircle2, ChevronDown, ChevronRight, Circle, Loader2, ListChecks, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Circle, Loader2, ListChecks, XCircle } from "lucide-react";
 import type { Job } from "../../lib/api";
 import { buildComposerTasks, pickTaskSourceJob, taskProgress, type ComposerTask } from "../../lib/composerTasks";
 import { COMPOSER_FAMILY_SURFACE } from "./composerFamily";
 
 function TaskIcon({ state }: { state: ComposerTask["state"] }) {
   if (state === "completed") return <CheckCircle2 size={11} className="shrink-0 text-good" />;
+  if (state === "degraded") return <AlertTriangle size={11} className="shrink-0 text-warn" />;
   if (state === "failed") return <XCircle size={11} className="shrink-0 text-risk" />;
   if (state === "in_progress") return <Loader2 size={11} className="shrink-0 animate-spin text-accent" />;
   return <Circle size={11} className="shrink-0 text-faint" />;
