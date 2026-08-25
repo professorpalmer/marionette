@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
+import { CircleDollarSign } from "lucide-react";
 import { api, type EconomicsData, type EconomicsScope, type UsageData } from "../lib/api";
 import { usePolling } from "../lib/usePolling";
+import { readSWRCache, writeSWRCache } from "../lib/useStaleWhileRevalidate";
 import CostBreakdown, { usageToCostBreakdownData } from "./CostBreakdown";
 import EconomicsDurable from "./EconomicsDurable";
 
@@ -10,15 +12,20 @@ function isEconomicsPayload(data: unknown): data is EconomicsData {
 
 /** Right-pane Economics card: live process spend plus durable PM projection. */
 export default function EconomicsPane() {
-  const [session, setSession] = useState<UsageData["session"] | null>(null);
+  const [session, setSession] = useState<UsageData["session"] | null>(
+    () => readSWRCache<UsageData>("economics:usage")?.session ?? null,
+  );
   const [error, setError] = useState<string | null>(null);
   const [scope, setScope] = useState<EconomicsScope>("repo");
-  const [economics, setEconomics] = useState<EconomicsData | null>(null);
+  const [economics, setEconomics] = useState<EconomicsData | null>(
+    () => readSWRCache<EconomicsData>("economics:repo") ?? null,
+  );
 
   const loadUsage = () =>
     api.getUsage()
       .then((data) => {
         if (data?.session) {
+          writeSWRCache("economics:usage", data);
           setSession(data.session);
           setError(null);
         }
@@ -32,6 +39,7 @@ export default function EconomicsPane() {
     Promise.resolve(api.getEconomics(scope))
       .then((data) => {
         if (isEconomicsPayload(data) && (!data.scope || data.scope === scope)) {
+          writeSWRCache(`economics:${scope}`, data);
           setEconomics(data);
           return;
         }
@@ -65,6 +73,7 @@ export default function EconomicsPane() {
     void loadEconomics();
   }, [scope]);
 
+
   if (!session && error) {
     return <p className="px-3 py-3 text-[11px] text-muted">{error}</p>;
   }
@@ -72,9 +81,17 @@ export default function EconomicsPane() {
     return <p className="px-3 py-3 text-[11px] text-muted">Loading this app run…</p>;
   }
   return (
-    <div className="w-full min-h-0 overflow-auto">
-      <CostBreakdown data={usageToCostBreakdownData(session)} />
-      <EconomicsDurable data={economics} scope={scope} onScopeChange={setScope} />
+    <div className="flex flex-col h-full overflow-hidden bg-transparent">
+      <div className="shrink-0 flex items-center px-3 py-2 border-b border-[var(--shell-panel-border)] select-none">
+        <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-faint font-semibold">
+          <CircleDollarSign size={11} className="text-faint/70" />
+          <span>Economics</span>
+        </div>
+      </div>
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        <CostBreakdown data={usageToCostBreakdownData(session)} />
+        <EconomicsDurable data={economics} scope={scope} onScopeChange={setScope} />
+      </div>
     </div>
   );
 }

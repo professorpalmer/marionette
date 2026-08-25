@@ -752,7 +752,7 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
       {est > 0 ? (
         <div className="flex items-center justify-between mb-1">
           <span className="text-muted">{spendLabel}</span>
-          <span className="text-good font-medium tabular-nums">{spendPrefix}{fmtCost(est)}</span>
+          <span className="text-warn font-medium tabular-nums">{spendPrefix}{fmtCost(est)}</span>
         </div>
       ) : null}
 
@@ -817,7 +817,7 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
           <span className="text-muted">
             Prompt-cache value{swarmCachePartial ? " (partial)" : ""}
           </span>
-          <span className="text-accent font-medium tabular-nums">~{fmtCost(promptCacheSaved)}</span>
+          <span className="text-good font-medium tabular-nums">~{fmtCost(promptCacheSaved)}</span>
         </div>
       ) : null}
 
@@ -835,7 +835,7 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
           <span className="text-muted">
             Model selection value{routingEstimated && delegationSaved <= 0 ? " (est.)" : ""}
           </span>
-          <span className="text-accent font-medium tabular-nums">~{fmtCost(modelSelectionSaved)}</span>
+          <span className="text-good font-medium tabular-nums">~{fmtCost(modelSelectionSaved)}</span>
         </div>
       ) : null}
 
@@ -852,7 +852,7 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
       {compactSavings > 0 ? (
         <div className="flex items-center justify-between mb-1">
           <span className="text-muted">Compact tool outputs saved</span>
-          <span className="text-accent font-medium tabular-nums">~{fmtCost(compactSavings)}</span>
+          <span className="text-good font-medium tabular-nums">~{fmtCost(compactSavings)}</span>
         </div>
       ) : null}
 

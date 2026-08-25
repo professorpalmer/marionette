@@ -183,6 +183,49 @@ def test_get_economics_all_projects_opens_extra_dirs(tmp_path, monkeypatch):
     assert len(opened_paths) == 2
 
 
+def test_recent_job_keeps_model_from_pm_financial_report(monkeypatch):
+    _patch_pm(monkeypatch)
+    monkeypatch.setattr(
+        "harness.financial_receipt.load_pm_cost_report",
+        lambda store, job_id, registry=None: {
+            "job_id": job_id,
+            "actual_cost": {
+                "total_marginal_cost_usd": 1.25,
+                "measured_cost_usd": 1.25,
+                "estimated_cost_usd": 0.0,
+                "measured_runs": 1,
+                "estimated_runs": 0,
+                "priced_tasks": 1,
+                "unpriced_tasks": 0,
+                "by_model": {
+                    "composer-2": {
+                        "billing": "metered", "calls": 1,
+                        "tokens_in": 100, "tokens_out": 50,
+                    }
+                },
+            },
+            "counterfactual": None,
+        },
+    )
+    job = {
+        "id": "job_model_receipt",
+        "status": "complete",
+        "source": "harness",
+        "accounting_owned": True,
+        "accounting_scope": "marionette",
+        "created_at": "2026-08-20T00:00:00+00:00",
+    }
+
+    code, payload = get_economics({}, _svc(jobs=[job]))
+
+    assert code == 200
+    assert isinstance(payload, dict)
+    assert payload["recent_jobs"][0]["models"] == [{
+        "model_id": "composer-2", "billing": "metered", "calls": 1,
+        "tokens_in": 100, "tokens_out": 50,
+    }]
+
+
 def test_visibility_only_job_listed_but_omitted_from_owned_totals(monkeypatch):
     jobs = [
         {
