@@ -477,20 +477,27 @@ class SessionStore:
             return False
 
     def set_title_if_default(self, sid: str, title: str) -> None:
+        cleaned = (title or "").strip()
+        # Investigating / Explored / Diagnosing walls never become session.title.
+        if not cleaned or is_activity_headline_text(cleaned):
+            return
         with self._lock:
             for s in self._sessions:
                 if s["id"] == sid:
                     current = s.get("title", "")
                     if not current or current == "New session":
-                        s["title"] = title
+                        s["title"] = cleaned
                         self._save()
                     break
 
     def rename(self, sid: str, title: str) -> bool:
+        cleaned = (title or "").strip()
+        if not cleaned or is_activity_headline_text(cleaned):
+            return False
         with self._lock:
             for s in self._sessions:
                 if s["id"] == sid:
-                    s["title"] = title
+                    s["title"] = cleaned
                     self._save()
                     return True
             return False
@@ -539,7 +546,9 @@ class SessionStore:
                 if branch:
                     s["branch"] = branch
                 if title is not None and str(title).strip():
-                    s["title"] = str(title).strip()
+                    cleaned_title = str(title).strip()
+                    if not is_activity_headline_text(cleaned_title):
+                        s["title"] = cleaned_title
                 if make_active:
                     self._active = sid
                 self._save()
@@ -674,8 +683,43 @@ def session_visible_for_workspace(session: dict, workspace_root: str, state_dir:
     return True
 
 
+_ACTIVITY_HEADLINE_RE = None
+
+
+def is_activity_headline_text(text: str) -> bool:
+    """True for Investigating / Explored / Diagnosing / Ran / Stopped walls.
+
+    Those belong in the activity strip — never session.title or preferred list
+    preview over a spoken finale.
+    """
+    import re
+
+    global _ACTIVITY_HEADLINE_RE
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    if re.match(r"^Stopped\.?$", raw, flags=re.IGNORECASE):
+        return True
+    if _ACTIVITY_HEADLINE_RE is None:
+        _ACTIVITY_HEADLINE_RE = re.compile(
+            r"^(Investigating|Explored|Diagnosing|Planning|Assessing|"
+            r"Still working|Looking|Thinking|Thought|Worked for|"
+            r"Ran\s+\d+\s+commands?)\b",
+            re.IGNORECASE,
+        )
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+    if not lines:
+        return False
+    if len(lines) == 1:
+        return bool(_ACTIVITY_HEADLINE_RE.match(lines[0]))
+    hits = sum(1 for ln in lines if _ACTIVITY_HEADLINE_RE.match(ln))
+    return hits >= 2 or (hits == 1 and hits == len(lines))
+
+
 def derive_title(prompt: str) -> str:
     if not prompt:
+        return "New session"
+    if is_activity_headline_text(prompt):
         return "New session"
     import re
     lines = prompt.splitlines()
@@ -689,6 +733,8 @@ def derive_title(prompt: str) -> str:
             first_line = cleaned
             break
     if not first_line:
+        return "New session"
+    if is_activity_headline_text(first_line):
         return "New session"
     words = first_line.split()
     truncated_words = []
@@ -707,7 +753,9 @@ def derive_title(prompt: str) -> str:
     title = title.rstrip('.,;:?!- ')
     if title:
         title = title[0].upper() + title[1:]
-    return title or "New session"
+    if not title or is_activity_headline_text(title):
+        return "New session"
+    return title
 
 
 def save_transcript(state_dir: str, session_id: str, messages: Any) -> None:
@@ -759,7 +807,25 @@ def _unescape_json_string(raw: str) -> str:
         return raw.replace("\\n", " ").replace('\\"', '"')
 
 
+def _message_plain_text(msg: dict) -> str:
+    content = msg.get("content")
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(str(block.get("text") or ""))
+            elif isinstance(block, str):
+                parts.append(block)
+        content = " ".join(parts)
+    return " ".join(str(content or "").split())
+
+
 def _preview_from_messages(messages: Any, max_chars: int) -> str:
+    """Prefer the last spoken assistant finale; fall back to first user prompt.
+
+    Never prefer Investigating / Explored / Diagnosing activity walls or a bare
+    ``Stopped.`` status line as the Sessions/Home list snippet.
+    """
     history: List[Any]
     if isinstance(messages, dict):
         history = list(messages.get("history") or [])
@@ -767,24 +833,23 @@ def _preview_from_messages(messages: Any, max_chars: int) -> str:
         history = messages
     else:
         return ""
+    first_user = ""
+    last_finale = ""
     for msg in history:
         if not isinstance(msg, dict):
             continue
-        if msg.get("role") != "user":
+        role = msg.get("role")
+        text = _message_plain_text(msg)
+        if not text:
             continue
-        content = msg.get("content")
-        if isinstance(content, list):
-            parts = []
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    parts.append(str(block.get("text") or ""))
-                elif isinstance(block, str):
-                    parts.append(block)
-            content = " ".join(parts)
-        text = " ".join(str(content or "").split())
-        if text:
-            return text[:max_chars]
-    return ""
+        if role == "user" and not first_user:
+            if not is_activity_headline_text(text):
+                first_user = text
+            continue
+        if role == "assistant" and not is_activity_headline_text(text):
+            last_finale = text
+    chosen = last_finale or first_user
+    return chosen[:max_chars] if chosen else ""
 
 
 def transcript_preview(

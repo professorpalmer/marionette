@@ -433,6 +433,183 @@ export function aggregateExplorationSummary(kinds: string[]): string {
   return parts.join(", ");
 }
 
+/** Run / shell / terminal tool cards nest under a Ran N command fold.
+ *  Also treat edit/other actionable tools as Ran rows so nested Thought can
+ *  live between tool steps (Cursor stacked folds). Exploration shelves still
+ *  win for consecutive file/search reads via partition order.
+ */
+export function isCommandCardKind(kind: string): boolean {
+  const k = (kind || "").trim();
+  if (!k) return false;
+  if (isExplorationShelfKind(k)) return false;
+  return true;
+}
+
+/** Compact duration for Worked for / Thought chrome (`23s`, `6m`, `1m 5s`). */
+export function formatFoldDuration(ms: number): string {
+  return formatBusyElapsed(ms);
+}
+
+/** Sealed outer activity fold — replaces Explored once the turn seals. */
+export function workedForLabel(durationMs?: number | null): string {
+  if (durationMs == null || !Number.isFinite(durationMs) || durationMs < 0) {
+    return "Worked for";
+  }
+  const label = formatFoldDuration(durationMs);
+  return label ? `Worked for ${label}` : "Worked for";
+}
+
+/** Reasoning fold chrome — live pulses Thinking…; sealed tucks to Thought {Ns}. */
+export function thoughtFoldLabel(opts: {
+  live?: boolean;
+  durationMs?: number | null;
+}): string {
+  if (opts.live) return "Thinking…";
+  if (
+    opts.durationMs != null
+    && Number.isFinite(opts.durationMs)
+    && opts.durationMs >= 1000
+  ) {
+    const label = formatFoldDuration(opts.durationMs);
+    return label ? `Thought ${label}` : "Thought";
+  }
+  return "Thought";
+}
+
+/** Mid-summary command fold — expand shows specific Ran {goal} lines. */
+export function ranCommandsLabel(count: number): string {
+  const n = Math.max(0, Math.floor(count));
+  return n === 1 ? "Ran 1 command" : `Ran ${n} commands`;
+}
+
+/** One expanded command row under Ran N — `Ran {goal}`. */
+export function ranGoalLine(goal: string): string {
+  const g = String(goal || "").trim();
+  return g ? `Ran ${g}` : "Ran command";
+}
+
+/**
+ * Wall time for a sealed Worked for row: sum of known card / thinking /
+ * nested-action durations. Returns null when nothing recorded.
+ */
+export function activityWorkDurationMs(
+  items: Array<{
+    kind: string;
+    card?: {
+      result?: { duration_ms?: number | null } | null;
+      actions?: Array<{ duration_ms?: number | null }>;
+    };
+    duration_ms?: number | null;
+  }>,
+): number | null {
+  let total = 0;
+  let any = false;
+  for (const it of items) {
+    if (it.kind === "thinking" && typeof it.duration_ms === "number" && Number.isFinite(it.duration_ms)) {
+      total += Math.max(0, it.duration_ms);
+      any = true;
+    }
+    if (it.kind === "card" && it.card) {
+      const d = it.card.result?.duration_ms;
+      if (typeof d === "number" && Number.isFinite(d)) {
+        total += Math.max(0, d);
+        any = true;
+      }
+      for (const action of it.card.actions || []) {
+        if (typeof action.duration_ms === "number" && Number.isFinite(action.duration_ms)) {
+          total += Math.max(0, action.duration_ms);
+          any = true;
+        }
+      }
+    }
+  }
+  return any ? total : null;
+}
+
+export type StackedActivityRow<T> =
+  | { kind: "thought"; item: T; index: number }
+  | { kind: "commands"; items: T[]; indexes: number[] }
+  | { kind: "shelf"; items: T[]; indexes: number[] }
+  | { kind: "item"; item: T; index: number };
+
+/**
+ * Partition an open activity fold into Cursor-style stacked rows:
+ * leading Thought siblings, nestable Ran N command groups (with interleaved
+ * thoughts inside), exploration shelves, then other items.
+ */
+export function partitionStackedActivity<T>(
+  items: T[],
+  meta: (item: T) => { cardKind: string | null; isThinking: boolean },
+): StackedActivityRow<T>[] {
+  const out: StackedActivityRow<T>[] = [];
+  let i = 0;
+  let seenCommand = false;
+
+  while (i < items.length) {
+    const cur = meta(items[i]);
+
+    if (cur.isThinking && !seenCommand) {
+      out.push({ kind: "thought", item: items[i], index: i });
+      i += 1;
+      continue;
+    }
+
+    if (cur.cardKind && isCommandCardKind(cur.cardKind)) {
+      seenCommand = true;
+      const group: T[] = [];
+      const indexes: number[] = [];
+      while (i < items.length) {
+        const next = meta(items[i]);
+        if (next.cardKind && isCommandCardKind(next.cardKind)) {
+          group.push(items[i]);
+          indexes.push(i);
+          i += 1;
+          continue;
+        }
+        // Thoughts (and only thoughts) nest inside the Ran fold between commands.
+        if (next.isThinking) {
+          group.push(items[i]);
+          indexes.push(i);
+          i += 1;
+          continue;
+        }
+        break;
+      }
+      out.push({ kind: "commands", items: group, indexes });
+      continue;
+    }
+
+    if (cur.isThinking) {
+      out.push({ kind: "thought", item: items[i], index: i });
+      i += 1;
+      continue;
+    }
+
+    if (cur.cardKind && isExplorationShelfKind(cur.cardKind)) {
+      const start = i;
+      const group: T[] = [];
+      const indexes: number[] = [];
+      while (i < items.length) {
+        const nextKind = meta(items[i]).cardKind;
+        if (!nextKind || !isExplorationShelfKind(nextKind)) break;
+        group.push(items[i]);
+        indexes.push(i);
+        i += 1;
+      }
+      if (group.length >= 2) {
+        out.push({ kind: "shelf", items: group, indexes });
+      } else {
+        out.push({ kind: "item", item: group[0], index: start });
+      }
+      continue;
+    }
+
+    out.push({ kind: "item", item: items[i], index: i });
+    i += 1;
+  }
+  return out;
+}
+
 /** Items after the last user message (current turn), or all if none. */
 export function itemsInCurrentTurn(items: TurnItem[]): TurnItem[] {
   let lastUser = -1;

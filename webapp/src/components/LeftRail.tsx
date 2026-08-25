@@ -5,6 +5,7 @@ import { pickFolder } from "../lib/transport";
 import { dispatchProjectSelected, dispatchProjectSwitching, panelOpacityClass } from "../lib/panelTransition";
 import { repoPathsEqual } from "../lib/pathNormalize";
 import { mapSessionSearchHits, type SessionSearchRow } from "../lib/sessionSearch";
+import { displaySessionListTitle } from "../lib/sessionTitle";
 import { usePolling } from "../lib/usePolling";
 import { readSWRCache, writeSWRCache, useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
 import {
@@ -911,7 +912,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       x: e.clientX,
       y: e.clientY,
       sessionId: s.id,
-      title: s.title || "Untitled",
+      title: displaySessionListTitle(s.title),
       settled: !!s.settled,
       archived: !!s.archived,
       running: runners[s.id] === "running",
@@ -1323,14 +1324,14 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                     className={`w-full min-h-8 flex flex-col justify-center text-left px-2 rounded transition min-w-0 disabled:opacity-60 ${
                       switchingSessionId === row.id ? "bg-panel2/60 border-l-2 border-accent" : "hover:bg-panel2/30"
                     }`}
-                    title={row.snippet ? `${row.title}\n${row.snippet}` : row.title}
+                    title={row.snippet ? `${displaySessionListTitle(row.title)}\n${row.snippet}` : displaySessionListTitle(row.title)}
                   >
                     <div className="flex items-center gap-1.5 min-w-0">
                       {switchingSessionId === row.id
                         ? <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
                         : null}
                       <div className="text-[12.5px] truncate flex-1 text-muted">
-                        {row.title}
+                        {displaySessionListTitle(row.title)}
                       </div>
                       {row.settled ? (
                         <span className="shrink-0 text-[9px] uppercase tracking-wider text-faint font-medium">
@@ -1379,19 +1380,19 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                       type="button"
                       disabled={!!switchingSessionId || opening}
                       onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
-                      onDoubleClick={() => beginSessionRename(s.id, s.title || "Untitled")}
+                      onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title))}
                       onContextMenu={(e) => handleContextMenu(e, s, canSettleSessionsForProject(root, workspaceInfo?.repo))}
                       className={`w-full min-h-8 flex flex-col justify-center text-left px-2 rounded transition min-w-0 disabled:opacity-60 ${
                         isActive ? "bg-panel2/60 border-l-2 border-accent" : "hover:bg-panel2/30"
                       }`}
-                      title={`${s.title}${s.preview ? `\n${s.preview}` : ""}\n${root}`}
+                      title={`${displaySessionListTitle(s.title)}${s.preview ? `\n${s.preview}` : ""}\n${root}`}
                     >
                       <div className="flex items-center gap-1.5 min-w-0">
                         {switchingSessionId === s.id
                           ? <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
                           : null}
                         <div className={`text-[12.5px] truncate flex-1 ${isActive ? "text-txt font-semibold" : "text-muted"}`}>
-                          {s.title || "Untitled"}
+                          {displaySessionListTitle(s.title)}
                         </div>
                       </div>
                       <div className="text-[10px] text-faint truncate font-mono">{label}</div>
@@ -1552,8 +1553,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                               <button
                                 onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
                                 disabled={!!switchingSessionId || opening}
-                                title={s.preview ? `${s.title || "Untitled"}\n${s.preview}` : (s.title || "Untitled")}
-                                onDoubleClick={() => beginSessionRename(s.id, s.title || "Untitled")}
+                                title={s.preview ? `${displaySessionListTitle(s.title)}\n${s.preview}` : displaySessionListTitle(s.title)}
+                                onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title))}
                                 onContextMenu={(e) => handleContextMenu(e, s, isCurrentActive)}
                                 className={`flex-1 min-w-0 h-7 text-left rounded pl-2.5 pr-1.5 flex items-center gap-1.5 text-[12px] transition disabled:opacity-60
                                   ${s.active ? "text-txt font-medium" : "text-muted group-hover:text-txt"}
@@ -1561,7 +1562,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                                 {switchingSessionId === s.id
                                   ? <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
                                   : <MessageSquare size={11} className={`shrink-0 ${s.active ? "text-accent" : "text-faint"}`} />}
-                                <span className="flex-1 min-w-0 truncate">{s.title || "Untitled"}</span>
+                                <span className="flex-1 min-w-0 truncate">{displaySessionListTitle(s.title)}</span>
                               </button>
                               {confirmDeleteId === s.id ? (
                                 <div className="flex items-center gap-1 shrink-0 pr-0.5">
@@ -1656,15 +1657,15 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                                 <button
                                   onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
                                   disabled={!!switchingSessionId || opening}
-                                  onDoubleClick={() => beginSessionRename(s.id, s.title || "Untitled")}
+                                  onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title))}
                                   onContextMenu={(e) => handleContextMenu(e, s, isCurrentActive)}
                                   className={`flex-1 min-w-0 h-6 text-left rounded px-1.5 flex items-center gap-1.5 text-[11px] motion-safe:transition opacity-45 hover:opacity-90 disabled:opacity-40
                                     ${s.active ? "bg-accent/10 text-accent" : "text-faint hover:bg-panel2/50 hover:text-muted"}
                                     ${switchingSessionId === s.id ? "opacity-70" : ""}`}
-                                  title={s.title || "Untitled"}
+                                  title={displaySessionListTitle(s.title)}
                                 >
                                   <Square size={10} className="shrink-0" />
-                                  <span className="truncate">{s.title || "Untitled"}</span>
+                                  <span className="truncate">{displaySessionListTitle(s.title)}</span>
                                 </button>
                                 )}
                                 {isCurrentActive ? (
@@ -1732,7 +1733,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                       type="button"
                       onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
                       disabled={!!switchingSessionId || opening}
-                      onDoubleClick={() => beginSessionRename(s.id, s.title || "Untitled")}
+                      onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title))}
                       onContextMenu={(e) => handleContextMenu(e, s, true)}
                       className={`w-full h-7 text-left rounded px-2 flex items-center gap-1.5 text-[12.5px] transition opacity-60 hover:opacity-100 disabled:opacity-40
                         ${s.active ? "bg-accent/10 text-accent font-semibold" : "hover:bg-panel2/60 text-muted"}
@@ -1741,7 +1742,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                       {switchingSessionId === s.id
                         ? <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
                         : <MessageSquare size={11} />}
-                      <span className="flex-1 truncate">{s.title || "Untitled"}</span>
+                      <span className="flex-1 truncate">{displaySessionListTitle(s.title)}</span>
                     </button>
                   )}
                 </div>

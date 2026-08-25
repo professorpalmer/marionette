@@ -92,9 +92,9 @@ describe("transcript presentation contract", () => {
       />,
     );
 
-    // Reasoning-only turns fold into a quiet activity summary; open it to
-    // assert the inner Thought row presentation contract.
-    fireEvent.click(screen.getByRole("button", { name: /Plan: scan auth handlers/i }));
+    // Reasoning-only turns seal as Worked for; open it to assert the inner
+    // Thought row presentation contract.
+    fireEvent.click(screen.getByRole("button", { name: /Worked for/i }));
     const thought = screen.getByRole("button", { name: /Thought/i });
     const classes = thought.className;
     expect(classes).not.toMatch(/uppercase/);
@@ -150,7 +150,7 @@ describe("transcript presentation contract", () => {
       />,
     );
 
-    const summary = screen.getByRole("button", { name: /Explored/i });
+    const summary = screen.getByRole("button", { name: /Worked for/i });
     expect(summary.className).not.toMatch(/rounded-lg/);
     expect(summary.className).not.toMatch(/border-edge/);
     expect(summary.className).not.toMatch(/bg-panel2/);
@@ -184,7 +184,7 @@ describe("transcript presentation contract", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /Explored/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Worked for/i }));
     // Exactly one keyboard disclosure control per closed tool row.
     const toolDisclosures = screen
       .getAllByRole("button", { expanded: false })
@@ -228,7 +228,7 @@ describe("transcript presentation contract", () => {
 
     const text = container.textContent || "";
     const userAt = text.indexOf("check billing");
-    const exploredAt = text.search(/Explored/i);
+    const exploredAt = text.search(/Worked for/i);
     const answerAt = text.indexOf("Billing looks fine.");
     expect(userAt).toBeGreaterThanOrEqual(0);
     expect(exploredAt).toBeGreaterThan(userAt);
@@ -249,7 +249,7 @@ describe("transcript presentation contract", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /Plan:/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Worked for/i }));
     const thought = screen.getByRole("button", { name: /Thought/i });
     fireEvent.click(thought);
 
@@ -328,7 +328,7 @@ describe("transcript presentation contract", () => {
     );
     expect(intermediate.has(planMsg)).toBe(true);
 
-    fireEvent.click(screen.getByRole("button", { name: /Explored/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Worked for/i }));
     expect(document.querySelector("strong")).toBeNull();
     const folded = screen.getByText(/Plan: retry routing after vision fix/i);
     expect(folded.tagName.toLowerCase()).toBe("pre");
@@ -457,7 +457,7 @@ describe("transcript presentation contract", () => {
 
     render(<TranscriptList {...listProps(items)} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /Explored|Swarm/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Worked for|Swarm/i }));
 
     expect(screen.getByText(/worker timed out after 30s/i)).toBeTruthy();
     // Swarm receipts live in the activity strip; duplicate routing failures collapse inside it.
@@ -651,16 +651,18 @@ describe("investigation UX residual debts (nested / fold prefs / workerStream)",
     ];
 
     render(<TranscriptList {...listProps(items)} />);
-    // Kind buckets count nested rows (file + command + edit) while the fold
-    // is closed — the lying-count bug was that those rows stayed invisible.
-    const foldBtn = screen.getByRole("button", { name: /Explored/i });
-    expect(foldBtn.textContent || "").toMatch(/1 file.*1 command.*1 edit/);
-    // Nested rows must stay unmounted until the investigation fold opens.
+    // Sealed chrome is Worked for, not Explored kind-buckets. Nested worker
+    // rows stay unmounted until Worked for and then Ran are opened.
+    const foldBtn = screen.getByRole("button", { name: /Worked for/i });
+    expect(foldBtn.textContent || "").toMatch(/Worked for/i);
+    expect(foldBtn.textContent || "").not.toMatch(/Explored/i);
     expect(screen.queryAllByTestId("nested-worker-action")).toHaveLength(0);
 
     fireEvent.click(foldBtn);
-    // One expand level: opening Investigating reveals nested tools even though
-    // the parent run_implement card stays open:false.
+    const ranBtn = screen.getByRole("button", { name: /Ran 1 command/i });
+    fireEvent.click(ranBtn);
+    // Opening Ran reveals nested tools even though the parent run_implement
+    // card stays open:false.
     const nested = screen.getAllByTestId("nested-worker-action");
     expect(nested).toHaveLength(2);
     expect(nested[0]).toHaveAttribute("data-action-id", "nested-read-1");
@@ -694,7 +696,8 @@ describe("investigation UX residual debts (nested / fold prefs / workerStream)",
     ];
 
     render(<TranscriptList {...listProps(items)} />);
-    fireEvent.click(screen.getByRole("button", { name: /Explored/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Worked for/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Ran 1 command/i }));
     expect(screen.getAllByLabelText("failed").length).toBeGreaterThan(0);
     expect(screen.getAllByText("failed", { selector: ".sr-only" }).length).toBeGreaterThan(0);
   });
@@ -719,7 +722,7 @@ describe("investigation UX residual debts (nested / fold prefs / workerStream)",
     const groupId = activityGroupStableId([card], 0);
 
     render(<TranscriptList {...listProps(items)} />);
-    fireEvent.click(screen.getByRole("button", { name: /Explored/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Worked for/i }));
     expect(resolveActivityGroupOpen(groupId)).toBe(true);
 
     clearActivityFoldPrefs();
@@ -834,7 +837,8 @@ describe("job_id → Swarm Tracker deep-link chrome", () => {
         ])}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /Explored|Command|pytest/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Worked for/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Ran 1 command/i }));
     const cta = screen.getByTestId("spill-output-peek");
     expect(cta).toHaveTextContent(/Full output \(9,?000 chars\)/);
     fireEvent.click(cta);
@@ -878,7 +882,8 @@ describe("job_id → Swarm Tracker deep-link chrome", () => {
         ])}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /Explored/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Worked for/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Ran 1 command/i }));
 
     const kvLink = screen.getByTestId("job-id-link");
     expect(kvLink).toHaveTextContent("job_abcdef012345");
@@ -1083,7 +1088,7 @@ describe("live command token clicks", () => {
       />,
     );
     expect(screen.getByText(/I will patch auth next/i)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /Investigating|Explored/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Investigating|Worked for/i })).toBeNull();
   });
 
   it("keeps sealed spoken prose outside the collapsed Investigating fold", () => {
@@ -1123,7 +1128,7 @@ describe("live command token clicks", () => {
     render(<TranscriptList {...listProps(items)} />);
     // White streamed text stays a top-level Bubble, visible without opening either fold.
     expect(screen.getByText(/I will patch auth next/i)).toBeTruthy();
-    const folds = screen.getAllByRole("button", { name: /Explored|Investigating/i });
+    const folds = screen.getAllByRole("button", { name: /Worked for|Investigating/i });
     expect(folds.length).toBeGreaterThan(0);
     for (const fold of folds) {
       expect(fold).toHaveAttribute("aria-expanded", "false");
@@ -1162,7 +1167,7 @@ describe("live command token clicks", () => {
         ])}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /Explored/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Worked for/i }));
     expect(screen.getByTestId("exploration-shelf")).toBeTruthy();
     expect(screen.getByTestId("exploration-shelf")).toHaveAttribute("data-count", "2");
   });
@@ -1189,7 +1194,7 @@ describe("live command token clicks", () => {
       />,
     );
     if (!screen.queryByRole("button", { name: /^Exploration /i })) {
-      fireEvent.click(screen.getByRole("button", { name: /Investigating|Explored/i }));
+      fireEvent.click(screen.getByRole("button", { name: /Investigating|Worked for/i }));
     }
     const shelfToggle = screen.getByRole("button", { name: /^Exploration /i });
     expect(shelfToggle).toHaveAttribute("aria-expanded", "true");

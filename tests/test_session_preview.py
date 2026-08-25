@@ -13,7 +13,7 @@ from harness.sessions import (
 )
 
 
-def test_transcript_preview_first_user_turn(tmp_path):
+def test_transcript_preview_first_user_when_no_finale(tmp_path):
     state = str(tmp_path)
     sid = "abc123def456"
     save_transcript(
@@ -22,7 +22,7 @@ def test_transcript_preview_first_user_turn(tmp_path):
         {
             "history": [
                 {"role": "user", "content": "hello from preview wave"},
-                {"role": "assistant", "content": "ok"},
+                {"role": "assistant", "content": "Investigating…"},
             ],
             "display": [],
             "job_ids": [],
@@ -32,6 +32,27 @@ def test_transcript_preview_first_user_turn(tmp_path):
     assert transcript_preview(state, sid, max_chars=5) == "hello"
 
 
+def test_transcript_preview_prefers_spoken_finale(tmp_path):
+    state = str(tmp_path)
+    sid = "finaleprev0001"
+    save_transcript(
+        state,
+        sid,
+        {
+            "history": [
+                {"role": "user", "content": "debug flash builder redirect"},
+                {"role": "assistant", "content": "Investigating ActionForm redirect…"},
+                {"role": "assistant", "content": "Explored 1 search, 3 commands"},
+                {"role": "assistant", "content": "The redirect was missing a return."},
+                {"role": "assistant", "content": "Stopped."},
+            ],
+            "display": [],
+            "job_ids": [],
+        },
+    )
+    assert transcript_preview(state, sid) == "The redirect was missing a return."
+
+
 def test_transcript_preview_large_file_prefix_scan(tmp_path):
     state = str(tmp_path)
     sid = "bigfile000001"
@@ -39,22 +60,19 @@ def test_transcript_preview_large_file_prefix_scan(tmp_path):
     trans_dir.mkdir()
     # Build a large JSON prefix so size > _PREVIEW_READ_BYTES, then a user turn.
     pad = "x" * 9000
+    # Ensure file is large; if user turn falls outside first 8k, prefix scan may
+    # miss — place user first for the cheap-listing contract.
     payload = {
         "history": [
-            {"role": "assistant", "content": pad},
             {"role": "user", "content": "needle in large transcript"},
+            {"role": "assistant", "content": pad},
         ],
         "display": [],
         "job_ids": [],
     }
-    # Ensure file is large; if user turn falls outside first 8k, prefix scan may
-    # miss — place user first for the cheap-listing contract.
-    payload["history"] = [
-        {"role": "user", "content": "needle in large transcript"},
-        {"role": "assistant", "content": pad},
-    ]
     (trans_dir / f"{sid}.json").write_text(json.dumps(payload), encoding="utf-8")
     assert os.path.getsize(trans_dir / f"{sid}.json") > 8000
+    # Large-file cheap path still scans the first user turn (not full finale pass).
     assert "needle" in transcript_preview(state, sid)
 
 
