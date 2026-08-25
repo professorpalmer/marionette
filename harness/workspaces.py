@@ -150,34 +150,20 @@ def _origin_branch_names(repo: str) -> set[str]:
     return names
 
 
-def _is_live_worktree_path(path: str | None) -> bool:
-    if not path:
-        return False
-    try:
-        return os.path.isdir(path)
-    except Exception:
-        return False
-
-
 def _is_stale_local_release(row: dict, remote: set[str]) -> bool:
     """True when BRANCHES should hide a leftover local release/v0.9.* head.
 
     Origin already deleted these. Keep main/dev (not this prefix), the current
-    checkout, any still-on-origin release, and a *live* worktree checkout.
-    Do not delete the worktree — only hide the row.
-
-    When origin exists but only has non-release heads (typical main+dev), local
-    release leftovers without a live worktree are stale. An empty remote picture
-    (no origin / unread) still hides inactive local-only release rows that lack
-    a live worktree — leftover release/v0.9.* are never useful on the rail.
+    checkout, and any still-on-origin release. Leftover release worktrees
+    (e.g. release/v0.9.318) are hidden from the rail — the directory is not
+    deleted.
     """
     name = str(row.get("name") or "")
     if not name.startswith("release/v0.9."):
         return False
     if row.get("active"):
         return False
-    if _is_live_worktree_path(row.get("worktree_path")):
-        return False
+    # Leftover release/v0.9.* worktrees stay on disk but are not listed.
     if name in remote:
         return False
     # Remote picture empty OR origin has no copy of this release → hide.

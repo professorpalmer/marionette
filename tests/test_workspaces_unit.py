@@ -201,8 +201,8 @@ def test_switch_workspace_soft_refuses_branch_locked_in_worktree(tmp_path):
 def test_list_workspaces_hides_stale_local_release_keeps_live(tmp_path):
     """BRANCHES hides leftover local release/v0.9.* once origin deleted them.
 
-    Keep main, dev, the current checkout, origin-backed release heads, and a
-    live worktree. Do not delete the worktree.
+    Keep main, dev, the current checkout, and origin-backed release heads.
+    Hide leftover release worktrees (318); do not delete the directory.
     """
     repo = _init_repo(tmp_path, branch="main")
     _git(repo, "branch", "dev")
@@ -229,12 +229,9 @@ def test_list_workspaces_hides_stale_local_release_keeps_live(tmp_path):
     assert "dev" in names
     assert "feature" in names
     assert "release/v0.9.348" in names  # still on origin
-    assert "release/v0.9.318" in names  # live worktree
+    assert "release/v0.9.318" not in names  # leftover worktree hidden, dir stays
     assert "release/v0.9.286" not in names  # stale local-only leftover
-
-    listed = {r["name"]: r for r in list_workspaces(str(repo))}
-    assert listed["release/v0.9.318"].get("worktree_path")
-    assert Path(listed["release/v0.9.318"]["worktree_path"]).is_dir()
+    assert Path(wt).is_dir()  # do not delete the worktree directory
 
 
 def test_list_workspaces_keeps_current_release_checkout_even_if_local_only(tmp_path):

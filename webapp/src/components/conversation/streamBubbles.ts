@@ -203,7 +203,7 @@ export function appendStreamingTextToItems(
       kind: "msg",
       msg: {
         role: "assistant",
-        text: chunk,
+        text: sanitizeThinkingStatusGlue(chunk),
         streaming: true,
         isPlan: opts?.isPlan,
         ...(workerStream ? { workerStream: true } : {}),

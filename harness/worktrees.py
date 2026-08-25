@@ -712,11 +712,10 @@ def delete_branch(repo: str, branch: str) -> None:
 def prune_orphan_edit_branches(repo: str) -> dict:
     """Delete unused local edit/worker and leftover release/v0.9.* branches.
 
-    Skips the current checkout, protected main/dev, and any branch still
-    attached to a *live* worktree directory. Stale local-only release heads
-    (origin already dropped them) are removed so Prune actually clears the
-    BRANCHES rail leftovers that ``git fetch --prune`` cannot.
-    Returns ``{"deleted": [...], "count": N}``.
+    Skips the current checkout, protected main/dev, and live pmedit-/pmworker-
+    worktrees. Leftover local release/v0.9.* heads are pruned even when a
+    leftover worktree directory still exists (``git worktree remove`` then
+    delete the branch). Returns ``{"deleted": [...], "count": N}``.
     """
     if not repo or not _is_repo(repo):
         return {"deleted": [], "count": 0}
@@ -769,8 +768,25 @@ def prune_orphan_edit_branches(repo: str) -> dict:
     for branch in candidates:
         if branch in _PROTECTED_BRANCHES:
             continue
-        if branch == current or branch in attached_live:
+        if branch == current:
             continue
+        if branch in attached_live:
+            if not _is_stale_release_branch_name(branch):
+                continue
+            wt_path = attached_paths.get(branch) or ""
+            if wt_path:
+                try:
+                    remove_worktree(repo, wt_path, force=True)
+                except Exception:
+                    subprocess.run(
+                        ["git", "-C", repo, "worktree", "remove", "--force", wt_path],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=15,
+                    )
+                    _git(repo, "worktree", "prune")
         before = _branch_exists(repo, branch)
         if not before:
             continue

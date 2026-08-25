@@ -421,12 +421,51 @@ describe("Wave 3: truthful cause copy", () => {
 
   it("maps assistant_done causes onto the lifecycle", () => {
     expect(settleFromAssistantDone({ stopCause: "natural" }).lifecycle).toBe("settled_complete");
+    expect(settleFromAssistantDone({
+      stopCause: "natural",
+      incompleteReason: "length",
+    }).lifecycle).toBe("settled_incomplete");
+    expect(settleFromAssistantDone({
+      stopCause: "natural",
+      incompleteReason: "length",
+    }).cause).toBe("length");
+    expect(settleFromAssistantDone({
+      stopCause: "natural",
+      incompleteReason: "max_output_tokens",
+    }).cause).toBe("length");
     expect(settleFromAssistantDone({ stopCause: "turn_budget" }).lifecycle).toBe("settled_incomplete");
     expect(settleFromTransportEof({
       turnSettled: false,
       userStopped: false,
       hasPartialAnswer: false,
     })).toMatchObject({ lifecycle: "aborted" });
+  });
+
+  it("incomplete_reason mid-finale seals Investigating chrome (turnOpen false, done)", () => {
+    const { state, apply } = makeApplyDeps();
+    apply({
+      kind: "thinking",
+      data: { text: "Investigating…", delta: true, stream_id: "rs_finale" },
+    });
+    apply({ kind: "message_delta", data: { text: "The fix should " } });
+    expect(state.turnOpen).toBe(true);
+    apply({
+      kind: "assistant_done",
+      data: {
+        stop_cause: "natural",
+        finish_reason: "incomplete",
+        incomplete_reason: "max_output_tokens",
+      },
+    });
+    expect(state.settle?.lifecycle).toBe("settled_incomplete");
+    expect(state.settle?.cause).toBe("length");
+    expect(state.turnOpen).toBe(false);
+    expect(state.status).toBe("done");
+    expect(state.turnSettledRef.current).toBe(true);
+    const thinking = state.items.find((it) => it.kind === "thinking") as
+      | Extract<Item, { kind: "thinking" }>
+      | undefined;
+    expect(thinking?.streaming).toBeFalsy();
   });
 });
 

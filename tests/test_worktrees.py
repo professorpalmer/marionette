@@ -323,7 +323,7 @@ def test_prune_orphan_edit_branches_skips_active_and_attached_worktree():
 
 
 def test_prune_orphan_edit_branches_deletes_stale_local_release():
-    """Prune must delete leftover local-only release/v0.9.* (not live worktrees)."""
+    """Prune deletes leftover local-only release/v0.9.* including leftover worktrees."""
     repo = create_temp_git_repo()
     parent = os.path.dirname(repo)
     managed_dir = os.path.abspath(os.path.join(parent, ".pmharness-worktrees"))
@@ -357,7 +357,7 @@ def test_prune_orphan_edit_branches_deletes_stale_local_release():
         result = _wt.prune_orphan_edit_branches(repo)
         deleted = set(result["deleted"])
         assert "release/v0.9.308" in deleted
-        assert "release/v0.9.318" not in deleted  # live worktree
+        assert "release/v0.9.318" in deleted  # leftover worktree removed
         assert "release/v0.9.348" not in deleted  # still on origin
         assert "feature-keep" not in deleted
         assert "main" not in deleted
@@ -365,9 +365,10 @@ def test_prune_orphan_edit_branches_deletes_stale_local_release():
 
         branches = _branch_list(repo)
         assert "release/v0.9.308" not in branches
-        assert "release/v0.9.318" in branches
+        assert "release/v0.9.318" not in branches
         assert "release/v0.9.348" in branches
         assert "feature-keep" in branches
+        assert not os.path.isdir(wt)
     finally:
         subprocess.run(
             ["git", "-C", repo, "worktree", "remove", "--force", wt],

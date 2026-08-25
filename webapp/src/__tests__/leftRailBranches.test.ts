@@ -29,8 +29,9 @@ describe("leftRailBranches stale release filter", () => {
     ];
     const origin = new Set(["main", "dev", "release/v0.9.348"]);
     const names = filterBranchWorkspaces(rows, origin).map((r) => r.name);
-    expect(names).toEqual(["main", "dev", "release/v0.9.318", "release/v0.9.348", "feature"]);
+    expect(names).toEqual(["main", "dev", "release/v0.9.348", "feature"]);
     expect(names).not.toContain("release/v0.9.308");
+    expect(names).not.toContain("release/v0.9.318");
   });
 
   it("keeps the active release checkout even when local-only", () => {
@@ -46,11 +47,11 @@ describe("leftRailBranches stale release filter", () => {
     expect(isStaleLocalReleaseBranch(row("dev"))).toBe(false);
   });
 
-  it("keeps a release that still has a worktree_path even without origin", () => {
+  it("hides a leftover release worktree the user no longer wants", () => {
     expect(
       isStaleLocalReleaseBranch(
         row("release/v0.9.318", { worktree_path: "C:\\wt\\318" }),
       ),
-    ).toBe(false);
+    ).toBe(true);
   });
 });
