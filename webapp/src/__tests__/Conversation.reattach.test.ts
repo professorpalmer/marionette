@@ -1092,6 +1092,34 @@ describe("mid-turn store-event cursor reattach", () => {
     expect(keep).toBe(true);
   });
 
+  it("settles stale Investigating when the store sees the terminal missed by live SSE", async () => {
+    const applied: string[] = [];
+    const turnSettledRef = { current: false };
+    const deps = reattachDeps({
+      localStreamActiveRef: { current: true },
+      turnSettledRef,
+      applyStreamEventRef: {
+        current: (event: { kind: string }) => {
+          applied.push(event.kind);
+          if (event.kind === "assistant_done") turnSettledRef.current = true;
+        },
+      },
+    });
+    vi.spyOn(api, "readEventsSince").mockResolvedValue({
+      events: [
+        { kind: "runners", data: { state: "idle", runners: { "sess-live": "idle" } } },
+        { kind: "stream", data: { kind: "message_delta", data: { text: "already painted" } } },
+        { kind: "stream", data: { kind: "assistant_done", data: { stop_cause: "natural" } } },
+        { kind: "stream", data: { kind: "done", data: {} } },
+      ],
+    } as any);
+
+    const { pullChatEvents } = createChatEventsReattach(deps as any);
+    await pullChatEvents();
+
+    expect(applied).toEqual(["assistant_done"]);
+  });
+
   it("on getSessionState failure arms store poll without fabricating busy", async () => {
     vi.useFakeTimers();
     const turnOpen = vi.fn();
