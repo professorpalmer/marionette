@@ -3,8 +3,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   TranscriptList,
   clearActivityFoldPrefs,
+  countPaintableTranscriptItems,
   type Item,
 } from "../components/TranscriptList";
+import TranscriptEmptyState from "../components/conversation/TranscriptEmptyState";
 
 afterEach(() => {
   cleanup();
@@ -61,5 +63,34 @@ describe("empty session folds", () => {
     ];
     render(<TranscriptList {...listProps(items)} />);
     expectEmptyFeed();
+  });
+
+  it("countPaintableTranscriptItems treats Working... crumbs as empty", () => {
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "assistant", text: "Working..." } },
+      { kind: "msg", msg: { role: "assistant", text: "Working.." } },
+    ];
+    expect(countPaintableTranscriptItems(items)).toBe(0);
+    expect(countPaintableTranscriptItems([])).toBe(0);
+    expect(
+      countPaintableTranscriptItems([
+        { kind: "msg", msg: { role: "user", text: "hello" } },
+      ]),
+    ).toBe(1);
+  });
+
+  it("TranscriptEmptyState shows pilot copy when crumbs are paint-invisible", () => {
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "assistant", text: "Working..." } },
+    ];
+    render(
+      <TranscriptEmptyState
+        transcriptStale={false}
+        itemCount={countPaintableTranscriptItems(items)}
+      />,
+    );
+    expect(
+      screen.getByText("Message the pilot. It plans, investigates via swarms, and explains."),
+    ).toBeTruthy();
   });
 });

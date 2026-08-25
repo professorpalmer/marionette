@@ -90,7 +90,56 @@ def list_workspaces(repo: str) -> list[dict]:
         if not row.get("worktree_path"):
             row.pop("worktree_path", None)
         rows.append(row)
-    return rows
+    remote = _origin_branch_names(repo)
+    return [row for row in rows if not _is_stale_local_release(row, remote)]
+
+
+def _origin_branch_names(repo: str) -> set[str]:
+    """Short names of origin/* heads (empty when origin is missing or unread)."""
+    rc, out, _ = _git(repo, "branch", "-r", "--format=%(refname:short)")
+    if rc != 0:
+        return set()
+    names: set[str] = set()
+    for line in out.splitlines():
+        name = line.strip()
+        if not name.startswith("origin/"):
+            continue
+        short = name[len("origin/"):]
+        if not short or short == "HEAD" or short.startswith("HEAD "):
+            continue
+        names.add(short)
+    return names
+
+
+def _is_live_worktree_path(path: str | None) -> bool:
+    if not path:
+        return False
+    try:
+        return os.path.isdir(path)
+    except Exception:
+        return False
+
+
+def _is_stale_local_release(row: dict, remote: set[str]) -> bool:
+    """True when BRANCHES should hide a leftover local release/v0.9.* head.
+
+    Origin already deleted these. Keep main/dev (not this prefix), the current
+    checkout, any still-on-origin release, and a *live* worktree checkout.
+    Do not delete the worktree — only hide the row.
+    """
+    name = str(row.get("name") or "")
+    if not name.startswith("release/v0.9."):
+        return False
+    if row.get("active"):
+        return False
+    if _is_live_worktree_path(row.get("worktree_path")):
+        return False
+    if name in remote:
+        return False
+    # No origin picture: do not hide (offline / no-remote test repos).
+    if not remote:
+        return False
+    return True
 
 
 def _worktree_holding_branch(repo: str, branch: str) -> Optional[str]:

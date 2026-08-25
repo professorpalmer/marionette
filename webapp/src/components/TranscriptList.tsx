@@ -89,6 +89,7 @@ import {
   shouldUseVirtualTranscriptWindow,
 } from "./conversation/transcriptVirtualWindow";
 import {
+  assistantTextForMeasure,
   createTranscriptRowHeightCache,
   rowMeasureSignal,
   shouldAttachDomMeasure,
@@ -789,6 +790,33 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
 
   flush();
   return grouped;
+}
+
+/** Items that groupAgentActivity skips or Bubble would not paint. */
+function msgItemPaints(msg: Msg): boolean {
+  if (msg.role === "user") {
+    return msg.text.trim().length > 0 || Boolean(msg.images?.length);
+  }
+  const text = assistantTextForMeasure(msg.text);
+  return text.trim().length > 0;
+}
+
+function groupedItemPaints(it: GroupedItem): boolean {
+  if (it.kind === "msg") return msgItemPaints(it.msg);
+  if (it.kind === "activity_group") return it.items.length > 0;
+  return true;
+}
+
+/** Count transcript rows that would actually mount — excludes Working... crumbs
+ *  and empty assistant pollution so TranscriptEmptyState matches the feed. */
+export function countPaintableTranscriptItems(items: Item[]): number {
+  const intermediateItems = collectIntermediateAssistantItems(items, false);
+  const grouped = groupAgentActivity(items, intermediateItems);
+  let count = 0;
+  for (const row of grouped) {
+    if (groupedItemPaints(row)) count += 1;
+  }
+  return count;
 }
 
 /** Fingerprint for exact-duplicate failed run_swarm / swarm_result routing chrome.

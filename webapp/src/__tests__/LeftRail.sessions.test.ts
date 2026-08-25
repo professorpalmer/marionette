@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { clearSWRCache, readSWRCache, writeSWRCache } from "../lib/useStaleWhileRevalidate";
 import { repoPathsEqual } from "../lib/pathNormalize";
-import { buildProjectsList, canSettleSessionsForProject, collectUnreadFinishedSessionIds, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, jobsCacheKey, partitionProjectSessions, patchSessionArchivedInCaches, patchSessionSettledInCaches, patchSessionTitleInCaches, projectSessionsEmptyState, purgeSessionFromRootCaches, readSessionSettledFromCaches, SESSION_LEASE_EXHAUSTED_MESSAGE, shouldOfferBackgroundStop, workspacesCacheKey } from "../components/LeftRail";
+import {
+  clearTranscriptCache,
+  peekTranscriptCacheEntry,
+  writeTranscriptCache,
+} from "../components/conversation/transcriptCache";
+import { buildProjectsList, canSettleSessionsForProject, collectUnreadFinishedSessionIds, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, jobsCacheKey, partitionProjectSessions, patchSessionArchivedInCaches, patchSessionSettledInCaches, patchSessionTitleInCaches, pickFallbackProjectAfterForget, projectSessionsEmptyState, purgeSessionFromRootCaches, readSessionSettledFromCaches, SESSION_LEASE_EXHAUSTED_MESSAGE, shouldOfferBackgroundStop, workspacesCacheKey } from "../components/LeftRail";
 import type { Session } from "../lib/api";
 
 /**
@@ -11,6 +16,7 @@ import type { Session } from "../lib/api";
 describe("LeftRail session list contracts", () => {
   afterEach(() => {
     clearSWRCache();
+    clearTranscriptCache();
   });
 
   it("purgeSessionFromRootCaches removes id from every root cache", () => {
@@ -100,17 +106,19 @@ describe("LeftRail session list contracts", () => {
   });
 
   it("maps runners statuses to session badge visibility", () => {
-    // Mirrors LeftRail RunnerStatusDot: only render when status is known.
-    const runners: Record<string, "running" | "idle"> = {
+    // Mirrors LeftRail RunnerStatusDot: unknown/missing default to idle dot.
+    const runners: Record<string, "running" | "idle" | "missing"> = {
       "sess-a": "running",
       "sess-b": "idle",
     };
-    const badgeFor = (sessionId: string): "running" | "idle" | null =>
-      runners[sessionId] ?? null;
+    const badgeFor = (sessionId: string): "running" | "idle" =>
+      runners[sessionId] && runners[sessionId] !== "missing"
+        ? runners[sessionId] as "running" | "idle"
+        : "idle";
 
     expect(badgeFor("sess-a")).toBe("running");
     expect(badgeFor("sess-b")).toBe("idle");
-    expect(badgeFor("sess-unknown")).toBeNull();
+    expect(badgeFor("sess-unknown")).toBe("idle");
   });
 
   it("project browsing toggles expansion without changing the active work target", () => {
@@ -306,6 +314,57 @@ describe("LeftRail session list contracts", () => {
     expect(createCalls).toBe(1);
   });
 
+  it("newSession seeds seededEmpty cache for workspace-created sessions", async () => {
+    // Mirrors LeftRail newSession: workspace/open auto-create must still seed
+    // [] + seededEmpty so Conversation never paints stale crumbs under the id.
+    const workspaceSid = "sess-workspace-new";
+    const createdSid = "sess-created-new";
+    const currentRepo = "C:\\Projects\\active";
+    const otherRepo = "C:\\Projects\\empty";
+
+    const handleOpenProject = async () => ({
+      ok: true,
+      created_session: true,
+      active_session: workspaceSid,
+    });
+    const createSession = async () => ({ id: createdSid });
+
+    const newSession = async (
+      inProjectPath: string | undefined,
+      selectedProjectPath: string,
+      current: string,
+    ) => {
+      const target = (inProjectPath || selectedProjectPath || "").trim();
+      let workspaceCreatedSession = false;
+      let newSessionId = "";
+      if (target && (!current || !repoPathsEqual(target, current))) {
+        const opened = await handleOpenProject();
+        if (!opened.ok) return;
+        workspaceCreatedSession = !!opened.created_session;
+        newSessionId = (opened.active_session || "").trim();
+      }
+      if (!workspaceCreatedSession) {
+        const created = await createSession();
+        newSessionId = (created?.id || "").trim();
+      }
+      if (newSessionId) {
+        writeTranscriptCache(newSessionId, [], { seededEmpty: true });
+      }
+    };
+
+    await newSession(otherRepo, otherRepo, currentRepo);
+    expect(peekTranscriptCacheEntry(workspaceSid)).toEqual({
+      items: [],
+      seededEmpty: true,
+    });
+
+    await newSession(undefined, currentRepo, currentRepo);
+    expect(peekTranscriptCacheEntry(createdSid)).toEqual({
+      items: [],
+      seededEmpty: true,
+    });
+  });
+
   it("openWorkspace does not reorder projects to put current first", () => {
     const recents = ["C:\\Projects\\alpha", "C:\\Projects\\beta", "C:\\Projects\\gamma"];
     // Opening beta (already in recents) must keep recents order -- beta stays
@@ -335,6 +394,19 @@ describe("LeftRail session list contracts", () => {
     expect(buildProjectsList("", filterForgottenRecent(recents, "C:\\Ashita\\Ashita"))).toEqual([
       "C:\\Projects\\other",
     ]);
+  });
+
+  it("pickFallbackProjectAfterForget lands on Home or the first remaining recent", () => {
+    const home = "C:\\Users\\me\\.pmharness\\home";
+    const active = "C:\\Projects\\authority-spoof-lab";
+    const other = "C:\\Projects\\marionette";
+    const recents = [active, other];
+
+    expect(pickFallbackProjectAfterForget(recents, active, home)).toBe(home);
+    expect(pickFallbackProjectAfterForget(recents, other, home)).toBe(home);
+    expect(pickFallbackProjectAfterForget([active], active, home)).toBe(home);
+    expect(pickFallbackProjectAfterForget([active, other], active)).toBe(other);
+    expect(pickFallbackProjectAfterForget([active], active)).toBe("");
   });
 
   it("buildProjectsList pins Home first and dedupes it from recents", () => {

@@ -195,3 +195,58 @@ def test_switch_workspace_soft_refuses_branch_locked_in_worktree(tmp_path):
     listed = {r["name"]: r for r in list_workspaces(str(repo))}
     assert listed["pmedit-deadbeef"].get("worktree_path")
     assert "worktree_path" not in listed["main"]
+
+
+
+def test_list_workspaces_hides_stale_local_release_keeps_live(tmp_path):
+    """BRANCHES hides leftover local release/v0.9.* once origin deleted them.
+
+    Keep main, dev, the current checkout, origin-backed release heads, and a
+    live worktree. Do not delete the worktree.
+    """
+    repo = _init_repo(tmp_path, branch="main")
+    _git(repo, "branch", "dev")
+    _git(repo, "branch", "release/v0.9.286")
+    _git(repo, "branch", "release/v0.9.318")
+    _git(repo, "branch", "release/v0.9.348")
+    _git(repo, "branch", "feature")
+
+    remote = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True, capture_output=True)
+    _git(repo, "remote", "add", "origin", str(remote))
+    _git(repo, "push", "-q", "origin", "main", "dev", "release/v0.9.348")
+
+    wt = tmp_path / "wt-318"
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", str(wt), "release/v0.9.318"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    names = {r["name"] for r in list_workspaces(str(repo))}
+    assert "main" in names
+    assert "dev" in names
+    assert "feature" in names
+    assert "release/v0.9.348" in names  # still on origin
+    assert "release/v0.9.318" in names  # live worktree
+    assert "release/v0.9.286" not in names  # stale local-only leftover
+
+    listed = {r["name"]: r for r in list_workspaces(str(repo))}
+    assert listed["release/v0.9.318"].get("worktree_path")
+    assert Path(listed["release/v0.9.318"]["worktree_path"]).is_dir()
+
+
+def test_list_workspaces_keeps_current_release_checkout_even_if_local_only(tmp_path):
+    repo = _init_repo(tmp_path, branch="main")
+    _git(repo, "branch", "release/v0.9.331")
+    _git(repo, "checkout", "-q", "release/v0.9.331")
+    remote = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True, capture_output=True)
+    _git(repo, "remote", "add", "origin", str(remote))
+    _git(repo, "push", "-q", "origin", "main")
+
+    names = {r["name"] for r in list_workspaces(str(repo))}
+    assert "release/v0.9.331" in names
+    active = [r for r in list_workspaces(str(repo)) if r["active"]]
+    assert active and active[0]["name"] == "release/v0.9.331"

@@ -27,6 +27,7 @@ export {
   formatLeaseExhaustedMessage,
   buildProjectsList,
   filterForgottenRecent,
+  pickFallbackProjectAfterForget,
   canSettleSessionsForProject,
   partitionProjectSessions,
   readSessionSettledFromCaches,
@@ -47,6 +48,7 @@ import {
   formatLeaseExhaustedMessage,
   buildProjectsList,
   filterForgottenRecent,
+  pickFallbackProjectAfterForget,
   canSettleSessionsForProject,
   partitionProjectSessions,
   readSessionSettledFromCaches,
@@ -412,16 +414,92 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     dispatchProjectSwitching(panelSwitching);
   }, [panelSwitching]);
 
+  const toast = (msg: string) => {
+    window.dispatchEvent(new CustomEvent("harness-toast", { detail: msg }));
+  };
+
+  const notifySessionActivationBlocked = (err: unknown): boolean => {
+    if (!isLeaseExhaustedError(err)) return false;
+    const msg = formatLeaseExhaustedMessage(err);
+    setSessionActivationNotice(msg);
+    toast(msg);
+    return true;
+  };
+
+  const openProjectWorkspace = useCallback(async (
+    path: string,
+    options?: { quiet?: boolean },
+  ): Promise<{ ok: boolean; created_session?: boolean; active_session?: string }> => {
+    if (!options?.quiet) setOpening(true);
+    try {
+      const res = await api.openWorkspace(path);
+      if (res.ok) {
+        if (res.codegraph) codegraphByRepoRef.current[res.repo] = res.codegraph;
+        mutateWorkspace({
+          repo: res.repo,
+          branch: res.branch,
+          is_git: res.is_git,
+          codegraph_status: res.codegraph,
+          recents: workspaceInfo?.recents,
+        });
+        // Hermes-style: land inside the opened project — expand + select so
+        // sessions are visible without an extra click.
+        setExpandedProjects((prev) => ({ ...prev, [res.repo]: true }));
+        setSelectedProjectPath(res.repo);
+        dispatchProjectSelected(res.repo);
+        await Promise.all([revalidateWorkspace(), revalidateWorkspaces(), revalidateSessions()]);
+        window.dispatchEvent(new Event("harness-config-changed"));
+        return {
+          ok: true,
+          created_session: res.created_session,
+          active_session: res.active_session,
+        };
+      }
+      if ((res as { code?: string }).code === "lease_exhausted") {
+        notifySessionActivationBlocked(res);
+      } else if (!options?.quiet) {
+        alert("Failed to open directory: " + (res as any).error);
+      }
+      return { ok: false };
+    } catch (err: any) {
+      if (!notifySessionActivationBlocked(err) && !options?.quiet) {
+        alert("Error opening directory: " + (err?.error || err?.message || err));
+      }
+      return { ok: false };
+    } finally {
+      if (!options?.quiet) setOpening(false);
+    }
+  }, [
+    mutateWorkspace,
+    notifySessionActivationBlocked,
+    revalidateSessions,
+    revalidateWorkspace,
+    revalidateWorkspaces,
+    workspaceInfo?.recents,
+  ]);
+
   const handleForgetProject = async (path: string) => {
     const previous = workspaceInfo;
     const forgettingActive = !!(previous?.repo && repoPathsEqual(previous.repo, path));
+    const nextRecents = previous ? filterForgottenRecent(previous.recents || [], path) : [];
+    const fallback = forgettingActive
+      ? pickFallbackProjectAfterForget(nextRecents, path, previous?.home)
+      : "";
     mutateWorkspace(previous
       ? {
           ...previous,
-          recents: filterForgottenRecent(previous.recents || [], path),
+          recents: nextRecents,
           // Drop active repo immediately so buildProjectsList cannot re-append
-          // the forgotten path as a phantom row.
-          ...(forgettingActive ? { repo: "", branch: "", is_git: false, codegraph_status: "none" } : {}),
+          // the forgotten path as a phantom row. When another project remains,
+          // land there optimistically so the rail never greys out on a stale cwd.
+          ...(forgettingActive
+            ? {
+                repo: fallback || "",
+                branch: "",
+                is_git: false,
+                codegraph_status: "none",
+              }
+            : {}),
         }
       : undefined);
     setExpandedProjects((prev) => {
@@ -438,7 +516,14 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       setSessionsCacheEpoch((n) => n + 1);
     } catch { /* best-effort */ }
     if (forgettingActive) {
-      setSelectedProjectPath("");
+      if (fallback) {
+        setExpandedProjects((prev) => ({ ...prev, [fallback]: true }));
+        setSelectedProjectPath(fallback);
+        dispatchProjectSelected(fallback);
+      } else {
+        setSelectedProjectPath("");
+        dispatchProjectSelected("");
+      }
     }
     try {
       const res = await api.forgetWorkspace(path);
@@ -446,13 +531,24 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
         ? {
             ...previous,
             recents: res.recents,
-            repo: res.cleared_active ? (res.repo || "") : previous.repo,
-            ...(res.cleared_active
-              ? { branch: "", is_git: false, codegraph_status: "none" }
-              : {}),
+            ...(forgettingActive
+              ? {
+                  repo: fallback || (res.cleared_active ? (res.repo || "") : previous.repo),
+                  branch: "",
+                  is_git: false,
+                  codegraph_status: "none",
+                }
+              : {
+                  repo: res.cleared_active ? (res.repo || "") : previous.repo,
+                  ...(res.cleared_active
+                    ? { branch: "", is_git: false, codegraph_status: "none" }
+                    : {}),
+                }),
           }
         : undefined);
-      if (res.cleared_active) {
+      if (forgettingActive && fallback) {
+        await openProjectWorkspace(fallback, { quiet: true });
+      } else if (res.cleared_active) {
         window.dispatchEvent(new Event("harness-config-changed"));
       }
     } catch (err) {
@@ -496,43 +592,10 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     return () => window.removeEventListener("focus", onFocus);
   }, [workspaceInfo?.codegraph_status, revalidateWorkspace]);
 
-  const handleOpenProject = async (path: string): Promise<{ ok: boolean; created_session?: boolean }> => {
-    setOpening(true);
-    try {
-      const res = await api.openWorkspace(path);
-      if (res.ok) {
-        if (res.codegraph) codegraphByRepoRef.current[res.repo] = res.codegraph;
-        mutateWorkspace({
-          repo: res.repo,
-          branch: res.branch,
-          is_git: res.is_git,
-          codegraph_status: res.codegraph,
-          recents: workspaceInfo?.recents,
-        });
-        // Hermes-style: land inside the opened project — expand + select so
-        // sessions are visible without an extra click.
-        setExpandedProjects((prev) => ({ ...prev, [res.repo]: true }));
-        setSelectedProjectPath(res.repo);
-        dispatchProjectSelected(res.repo);
-        await Promise.all([revalidateWorkspace(), revalidateWorkspaces(), revalidateSessions()]);
-        window.dispatchEvent(new Event("harness-config-changed"));
-        return { ok: true, created_session: res.created_session };
-      }
-      if ((res as { code?: string }).code === "lease_exhausted") {
-        notifySessionActivationBlocked(res);
-      } else {
-        alert("Failed to open directory: " + (res as any).error);
-      }
-      return { ok: false };
-    } catch (err: any) {
-      if (!notifySessionActivationBlocked(err)) {
-        alert("Error opening directory: " + (err?.error || err?.message || err));
-      }
-      return { ok: false };
-    } finally {
-      setOpening(false);
-    }
-  };
+  const handleOpenProject = async (
+    path: string,
+  ): Promise<{ ok: boolean; created_session?: boolean; active_session?: string }> =>
+    openProjectWorkspace(path);
 
   const handleOpenFolder = async () => {
     const picked = await pickFolder();
@@ -579,18 +642,6 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [projectContextMenu]);
-
-  const toast = (msg: string) => {
-    window.dispatchEvent(new CustomEvent("harness-toast", { detail: msg }));
-  };
-
-  const notifySessionActivationBlocked = (err: unknown): boolean => {
-    if (!isLeaseExhaustedError(err)) return false;
-    const msg = formatLeaseExhaustedMessage(err);
-    setSessionActivationNotice(msg);
-    toast(msg);
-    return true;
-  };
 
   const openWorktreeBranch = async (name: string, worktreePath: string) => {
     setSwapping(name);
@@ -830,21 +881,24 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       const target = (inProjectPath || selectedProjectPath || "").trim();
       const current = (workspaceInfo?.repo || "").trim();
       let workspaceCreatedSession = false;
+      let newSessionId = "";
       if (target && (!current || !repoPathsEqual(target, current))) {
         const opened = await handleOpenProject(target);
         if (!opened.ok) return;
         workspaceCreatedSession = !!opened.created_session;
+        newSessionId = (opened.active_session || "").trim();
       } else if (target) {
         setExpandedProjects((prev) => ({ ...prev, [target]: true }));
       }
       if (!workspaceCreatedSession) {
         const created = await api.createSession();
-        // Seed an empty warm-cache entry before Conversation's switch effect runs
-        // so it never paints the previous session's transcript under this id.
-        // seededEmpty marks this as New Session (not an ambiguous zero-row cache).
-        if (created?.id) {
-          writeTranscriptCache(created.id, [], { seededEmpty: true });
-        }
+        newSessionId = (created?.id || "").trim();
+      }
+      // Seed an empty warm-cache entry before Conversation's switch effect runs
+      // so it never paints the previous session's transcript under this id.
+      // seededEmpty marks this as New Session (not an ambiguous zero-row cache).
+      if (newSessionId) {
+        writeTranscriptCache(newSessionId, [], { seededEmpty: true });
       }
       await refreshSessionsRef.current();
     } catch (err) {
@@ -1544,7 +1598,11 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                                   />
                                 ) : (
                                   <RunnerStatusDot
-                                    status={runners[s.id]}
+                                    status={
+                                      runners[s.id] && runners[s.id] !== "missing"
+                                        ? runners[s.id]
+                                        : "idle"
+                                    }
                                     stoppable={shouldOfferBackgroundStop(runners[s.id], !!s.active)}
                                     onStop={() => { void stopBackgroundSession(s.id); }}
                                   />
