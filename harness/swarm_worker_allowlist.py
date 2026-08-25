@@ -156,11 +156,36 @@ def adapters_from_visibility(specs: Optional[list[str]] = None) -> set[str]:
     return out
 
 
+def allowed_model_ids_from_specs(
+    specs: Optional[list[str]] = None,
+) -> list[str]:
+    """Map Models-enabled specs to Puppetmaster ``allowed_model_ids``.
+
+    Uses the same alias expansion as ``run_swarm`` pins so
+    ``openai-codex:gpt-5.6-luna`` matches ``agentic/openai-codex/gpt-5.6-luna``.
+    An empty result must be omitted from the worker payload (empty array
+    fails closed in Puppetmaster).
+    """
+    from .swarm_model_pin import pin_candidates
+
+    rows = list(specs) if specs is not None else _enabled_or_visible_specs()
+    out = []
+    seen = set()
+    for spec in rows:
+        for cand in pin_candidates(spec):
+            key = cand.strip().lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            out.append(cand.strip())
+    return out
+
+
 def resolve_swarm_worker_allowlist(
     *,
     specs: Optional[list[str]] = None,
 ) -> dict[str, Any]:
-    """Compute payload ``allowed_adapters`` + ``prefer_plan_billed`` for swarms.
+    """Compute payload ``allowed_adapters`` + model-id allowlist for swarms.
 
     Returns:
       {
@@ -169,6 +194,7 @@ def resolve_swarm_worker_allowlist(
         "primary_adapter": str,         # WorkerSpec.adapter default
         "visibility_adapters": list[str],
         "platform_lock": list[str] | None,
+        "allowed_model_ids": list[str], # empty => do not constrain catalog
       }
     """
     visibility = adapters_from_visibility(specs)
@@ -238,6 +264,11 @@ def resolve_swarm_worker_allowlist(
         "primary_adapter": primary,
         "visibility_adapters": sorted(visibility),
         "platform_lock": sorted(lock) if lock is not None else None,
+        # Empty means "do not constrain the live catalog" (two-tier among
+        # keyed rows). Non-empty is fail-closed to Models toggles so a
+        # disabled gpt-5-3-codex cannot win auto-route while Luna is the
+        # only enabled picker row.
+        "allowed_model_ids": allowed_model_ids_from_specs(specs),
     }
 
 

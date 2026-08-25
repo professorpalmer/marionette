@@ -815,8 +815,9 @@ def _run_swarm_model_pin_description() -> str:
     """Tool-schema text for run_swarm.model, including live agentic catalog."""
     base = (
         "Optional worker model pin (agentic registry id or adapter model name). "
-        "Use only when the user names a specific swarm worker model; omit for "
-        "auto-route. Prompt text alone does not pin a model. "
+        "Pass it when the user names a swarm worker model. Omitting auto-routes "
+        "only among Models-enabled workers, not the full agentic catalog. "
+        "Prompt text alone does not pin a model. "
     )
     try:
         from .swarm_model_pin import swarm_model_pin_hint
@@ -824,7 +825,7 @@ def _run_swarm_model_pin_description() -> str:
         return base + swarm_model_pin_hint()
     except Exception:
         return base + (
-            "Omit model for auto-route among keyed agentic providers. Session "
+            "Omit model to auto-route among Models-enabled workers. Session "
             "pilot ids remap when a matching worker row exists."
         )
 

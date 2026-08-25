@@ -186,16 +186,16 @@ def swarm_model_pin_hint(*, limit: int = 16) -> str:
     available = list_available_worker_models(limit=limit, adapters=allow or None)
     if not available:
         return (
-            "Omit model for auto-route among currently keyed worker adapters "
+            "Omit model to auto-route among Models-enabled workers "
             "(OpenCode Go, OpenRouter, ChatGPT Codex OAuth, Cursor API, …). "
-            "Session pilot ids are remapped when a matching worker row exists; "
-            "otherwise the harness auto-routes."
+            "Session pilot ids are remapped when a matching worker row exists."
         )
     shown = ", ".join(available)
     return (
-        "Omit model for auto-route (preferred). Live worker catalog: "
+        "Omit model to auto-route among Models-enabled workers. Live catalog: "
         f"{shown}. Session pilot ids (openai-codex:…, cursor/…, codex/…) remap "
-        "to a matching row when present; unknown pins demote to auto-route."
+        "to a matching row when present; unknown pins demote to auto-route "
+        "inside the enabled set."
     )
 
 

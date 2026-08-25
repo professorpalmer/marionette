@@ -1082,14 +1082,6 @@ function WorkerModelSlot({
           {view.slot}
         </span>
       </Tooltip>
-      {view.pinned && (
-        <span
-          className="text-[7.5px] text-faint uppercase tracking-[0.12em] shrink-0"
-          title="explicit_pin · not auto-routed"
-        >
-          pinned
-        </span>
-      )}
     </span>
   );
 }

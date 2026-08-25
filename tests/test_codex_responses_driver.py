@@ -15,6 +15,8 @@ from pmharness.drivers.codex_responses import (
     _consume_codex_sse,
     _extract_text_and_tools,
     _messages_to_responses_input,
+    answer_looks_incomplete,
+    responses_input_has_tool_results,
     responses_stream_error,
     responses_stream_label,
 )
@@ -272,6 +274,45 @@ def test_consume_sse_answer_done_timeout_completes():
     assert raw["status"] == "completed"
     assert raw["output_text"] == "Test received."
     assert not raw.get("error")
+
+
+def test_consume_sse_hanging_colon_timeout_stays_incomplete():
+    """A mid-clause stop like 'Cloudflare's:' must not forge completed."""
+
+    def lines():
+        yield b'data: {"type":"response.output_item.added","item":{"type":"message","phase":"final_answer","id":"msg_f"}}\n'
+        yield b'data: {"type":"response.output_text.delta","item_id":"msg_f","delta":"Cloudflare\'s:"}\n'
+        yield b'data: {"type":"response.output_item.done","item":{"type":"message","phase":"final_answer","id":"msg_f"}}\n'
+        raise TimeoutError("timed out")
+
+    raw = _consume_codex_sse(lines())
+    assert raw["status"] == "incomplete"
+    assert raw["output_text"].endswith(":")
+
+
+def test_consume_sse_tool_followup_timeout_does_not_forge_completed():
+    """Post-swarm synthesis is a tool-result follow-up; idle-drain must not seal it."""
+
+    def lines():
+        yield b'data: {"type":"response.output_item.added","item":{"type":"message","phase":"final_answer","id":"msg_f"}}\n'
+        yield b'data: {"type":"response.output_text.delta","item_id":"msg_f","delta":"Workers launched Chrome."}\n'
+        yield b'data: {"type":"response.output_item.done","item":{"type":"message","phase":"final_answer","id":"msg_f"}}\n'
+        raise TimeoutError("timed out")
+
+    raw = _consume_codex_sse(lines(), allow_post_answer_idle=False)
+    assert raw["status"] == "incomplete"
+    assert "Chrome" in raw["output_text"]
+
+
+def test_answer_looks_incomplete_and_tool_result_input():
+    assert answer_looks_incomplete("Cloudflare's:") is True
+    assert answer_looks_incomplete("Test received.") is False
+    assert responses_input_has_tool_results({
+        "input": [{"type": "function_call_output", "call_id": "c1", "output": "ok"}],
+    }) is True
+    assert responses_input_has_tool_results({
+        "input": [{"type": "message", "role": "user", "content": []}],
+    }) is False
 
 
 def test_consume_sse_keepalives_after_answer_complete():

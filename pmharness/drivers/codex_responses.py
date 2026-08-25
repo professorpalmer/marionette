@@ -94,10 +94,37 @@ _POST_ANSWER_SLICE_SECONDS = 0.25
 _POST_ANSWER_IDLE_SECONDS = 0.5
 _POST_ANSWER_MAX_SECONDS = 2.0
 _POST_ANSWER_KEEPALIVE_LIMIT = 3
+_INCOMPLETE_ANSWER_SUFFIXES = (":", ",", ";", "—", "–", "-", "/", "(", "[", "{")
 _CONTENT_FILTER_MSG = (
     "Model declined to respond (content filter). Try rephrasing the request "
     "or narrowing the context."
 )
+
+
+def answer_looks_incomplete(text: str) -> bool:
+    """True when idle-drain would cut a clause still being written."""
+    t = (text or "").rstrip()
+    if not t:
+        return False
+    if t.endswith(_INCOMPLETE_ANSWER_SUFFIXES):
+        return True
+    if t.count("```") % 2 == 1:
+        return True
+    return False
+
+
+def responses_input_has_tool_results(body: Optional[dict]) -> bool:
+    """True when this POST is a tool-result follow-up, not a first-shot chat."""
+    items = (body or {}).get("input") if isinstance(body, dict) else None
+    if not isinstance(items, list):
+        return False
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("type") or "")
+        if kind in ("function_call_output", "function_call"):
+            return True
+    return False
 
 
 def _codex_cloudflare_headers(access_token: str, *, streaming: bool = True) -> Dict[str, str]:
@@ -558,6 +585,7 @@ def _consume_codex_sse(
     on_stream_item_done: Optional[Callable[..., None]] = None,
     chatgpt_backend: bool = True,
     stream_label: Optional[str] = None,
+    allow_post_answer_idle: bool = True,
 ) -> dict:
     """Consume Codex Responses SSE; return a synthetic Responses-shaped dict.
 
@@ -569,9 +597,10 @@ def _consume_codex_sse(
     stay on the reasoning stream; final_answer is the answer stream.
 
     The post-answer idle drain (forge ``completed`` after 0.5s idle / 2.0s
-    total) is ChatGPT-only. Non-ChatGPT Responses hosts wait for
-    ``response.completed`` / ``incomplete`` / ``failed``; EOF or ``[DONE]``
-    without that terminal is incomplete/error and keeps partial text.
+    total) is ChatGPT-only and only for a tool-free first-shot answer that
+    already looks finished. Tool-result follow-ups and hanging clauses
+    (``Cloudflare's:``) wait for ``response.completed`` / ``incomplete`` /
+    ``failed``. Non-ChatGPT Responses hosts never idle-drain.
     """
     label = stream_label or responses_stream_label(
         chatgpt_backend=chatgpt_backend,
@@ -669,6 +698,15 @@ def _consume_codex_sse(
         terminal_status = "completed"
         _seal_open_channels(("progress", "reasoning", "answer"), "")
 
+    def _idle_drain_allowed():
+        if not chatgpt_backend or not allow_post_answer_idle:
+            return False
+        if has_tool_calls:
+            return False
+        if answer_looks_incomplete("".join(text_deltas)):
+            return False
+        return True
+
     def _note_answer_text():
         """Only answer tokens extend the idle clock. Trailing summary must not."""
         nonlocal last_meaningful, keepalive_streak
@@ -676,7 +714,7 @@ def _consume_codex_sse(
         keepalive_streak = 0
 
     def _should_finish_drain():
-        if not chatgpt_backend or not post_answer_drain or has_tool_calls:
+        if not _idle_drain_allowed() or not post_answer_drain:
             return False
         now = time.monotonic()
         if now - last_meaningful >= _POST_ANSWER_IDLE_SECONDS:
@@ -697,7 +735,7 @@ def _consume_codex_sse(
         nonlocal keepalive_streak
         if not chatgpt_backend:
             return True
-        if has_tool_calls:
+        if not _idle_drain_allowed():
             return True
         if post_answer_drain:
             return True
@@ -720,8 +758,7 @@ def _consume_codex_sse(
             break
         except (TimeoutError, socket.timeout):
             if (
-                chatgpt_backend
-                and not has_tool_calls
+                _idle_drain_allowed()
                 and (answer_item_done or text_deltas or collected_items)
             ):
                 _finish_tool_free_answer()
@@ -740,7 +777,7 @@ def _consume_codex_sse(
 
         line = raw_line.decode("utf-8", "replace").strip() if isinstance(raw_line, bytes) else str(raw_line).strip()
         if not line or not line.startswith("data:"):
-            if post_answer_drain and not has_tool_calls:
+            if post_answer_drain and _idle_drain_allowed():
                 keepalive_streak += 1
                 if keepalive_streak >= _POST_ANSWER_KEEPALIVE_LIMIT or _should_finish_drain():
                     _finish_tool_free_answer()
@@ -750,7 +787,7 @@ def _consume_codex_sse(
         if not data_str or data_str == "[DONE]":
             if data_str == "[DONE]":
                 break
-            if post_answer_drain and not has_tool_calls:
+            if post_answer_drain and _idle_drain_allowed():
                 keepalive_streak += 1
                 if keepalive_streak >= _POST_ANSWER_KEEPALIVE_LIMIT or _should_finish_drain():
                     _finish_tool_free_answer()
@@ -982,6 +1019,13 @@ def _consume_codex_sse(
             err_msg = responses_stream_error(
                 label, "ended", last_provider_event,
             )
+    elif not saw_terminal and chatgpt_backend:
+        assembled_preview = "".join(text_deltas)
+        if (
+            not allow_post_answer_idle
+            or answer_looks_incomplete(assembled_preview)
+        ) and (assembled_preview or output):
+            terminal_status = "incomplete"
 
     out = {
         "status": terminal_status,
@@ -1209,6 +1253,7 @@ class CodexResponsesDriver:
                             chatgpt_backend=self.chatgpt_backend,
                             base_url=self.base_url,
                         ),
+                        allow_post_answer_idle=not responses_input_has_tool_results(body),
                     )
                 return raw, None, data
             except urllib.error.HTTPError as e:

@@ -135,6 +135,16 @@ def test_enabled_specs_keep_cursor_cli_intent_when_pilots_drop_it(monkeypatch):
     assert out["prefer_plan_billed"] is False
 
 
+def test_singleton_enabled_spec_maps_luna_not_gpt53():
+    from harness.swarm_worker_allowlist import allowed_model_ids_from_specs
+
+    ids = allowed_model_ids_from_specs(["openai-codex:gpt-5.6-luna"])
+    blob = " ".join(ids).lower()
+    assert "gpt-5.6-luna" in blob
+    assert "gpt-5-3" not in blob
+    assert "gpt-5.3" not in blob
+
+
 def test_prefer_plan_billed_true_only_when_cursor_only(monkeypatch):
     monkeypatch.setattr(
         "harness.swarm_worker_allowlist._enabled_or_visible_specs",
