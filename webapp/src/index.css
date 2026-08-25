@@ -564,9 +564,11 @@ body.is-row-resizing iframe {
 }
 
 
-/* Feed selection: highlight a clean text range, not fold chrome. */
+/* Feed selection: highlight a clean text range, not fold chrome.
+   Spoken body stays regular weight (400); fold chrome / labels / strong keep their own. */
 .transcript-msg-body {
   user-select: text;
+  font-weight: 400;
 }
 [data-testid="transcript-virtual-row"],
 .transcript-virtual-row,

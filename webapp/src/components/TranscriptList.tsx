@@ -2858,12 +2858,12 @@ const PrettyMarkdown = memo(function PrettyMarkdown({ text }: { text: string }) 
         h1: ({ children }: any) => <h1 className="text-sm font-semibold text-txt mt-3 mb-1.5 border-b border-edge pb-0.5">{children}</h1>,
         h2: ({ children }: any) => <h2 className="text-[0.8125rem] font-semibold text-txt mt-3 mb-1.5">{children}</h2>,
         h3: ({ children }: any) => <h3 className="text-[0.75rem] font-semibold text-muted mt-2 mb-1">{children}</h3>,
-        p: ({ children }: any) => <p className="text-[0.8125rem] leading-[1.7] my-2 first:mt-0 last:mb-0">{children}</p>,
+        p: ({ children }: any) => <p className="font-normal text-[0.8125rem] leading-[1.7] my-2 first:mt-0 last:mb-0">{children}</p>,
         strong: ({ children }: any) => <strong className="font-semibold text-txt">{children}</strong>,
         em: ({ children }: any) => <em className="italic text-txt/90">{children}</em>,
-        ul: ({ children }: any) => <ul className="list-disc pl-4 my-2 space-y-1 text-txt/90">{children}</ul>,
-        ol: ({ children }: any) => <ol className="list-decimal pl-4 my-2 space-y-1 text-txt/90">{children}</ol>,
-        li: ({ children }: any) => <li className="text-[0.8125rem] leading-[1.65]">{children}</li>,
+        ul: ({ children }: any) => <ul className="list-disc pl-4 my-2 space-y-1 text-txt/90 font-normal">{children}</ul>,
+        ol: ({ children }: any) => <ol className="list-decimal pl-4 my-2 space-y-1 text-txt/90 font-normal">{children}</ol>,
+        li: ({ children }: any) => <li className="font-normal text-[0.8125rem] leading-[1.65]">{children}</li>,
         blockquote: ({ children }: any) => (
           <blockquote className="border-l-2 border-edge pl-2.5 my-2 text-muted italic bg-panel2/30 rounded-r-sm py-1">
             {children}
@@ -3132,7 +3132,7 @@ function Bubble({
               <Pencil size={12} />
             </button>
           )}
-          <div className={`transcript-msg-body select-text rounded-xl px-3 py-1 text-[13px] leading-relaxed whitespace-pre-wrap break-words border transition-all ${
+          <div className={`transcript-msg-body select-text font-normal rounded-xl px-3 py-1 text-[13px] leading-relaxed whitespace-pre-wrap break-words border transition-all ${
             isEditing
               ? "bg-accent/10 text-txt border-accent"
               : "bg-accent2 text-txt border-edge/30"
@@ -3191,9 +3191,10 @@ function Bubble({
       {showLabel && (
         <span className="text-[10px] uppercase tracking-wider text-faint px-0.5 select-none font-semibold mt-1">pilot</span>
       )}
-      <div className={`transcript-msg-body select-text text-[0.8125rem] leading-[1.7] break-words max-w-[95%] py-0.5 w-full relative pr-14 ${isIntermediate ? "text-txt/75" : "text-txt/95"}`}>
+      <div className={`transcript-msg-body select-text font-normal text-[0.8125rem] leading-[1.7] break-words max-w-[95%] py-0.5 w-full relative pr-14 ${isIntermediate ? "text-txt/75" : "text-txt/95"}`}>
         {/* Plan/progress stays ordinary text; final answers keep Markdown
-            so code fences / lists render for the user-facing reply. */}
+            so code fences / lists render for the user-facing reply.
+            Explicit font-normal: spoken body must not inherit semibold from chrome. */}
         {isPlanOrProgressAssistant(msg) ? (
           <pre className="whitespace-pre-wrap font-sans font-normal text-[0.8125rem] leading-[1.7] m-0">
             {normalizePlainTextNarration(displayedText)}
