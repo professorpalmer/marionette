@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildComposerStatusStackRows } from "../components/conversation/composerStatusStackData";
+import {
+  buildComposerStatusStackRows,
+  visibleCommandJob,
+  visibleSwarmJob,
+} from "../components/conversation/composerStatusStackData";
 
 describe("composerStatusStack", () => {
   it("filters to owned jobs and hides stale terminal rows", () => {
@@ -64,6 +68,151 @@ describe("composerStatusStack", () => {
       kind: "terminal",
       state: "running",
       label: "pytest -q",
+    });
+  });
+
+
+  it("reclassifies run_command live jobs as terminal, not swarm", () => {
+    const now = Date.parse("2026-08-23T12:00:00Z");
+    const commandJob = {
+      id: "local-cmd-e35cf193",
+      goal: "sleep 999",
+      source: "harness",
+      status: "running",
+      updated_at: now - 1000,
+      job_kind: "run_command",
+      role: "command",
+      adapter: "command",
+      command_preview: "sleep 999",
+    } as any;
+    const swarmJob = {
+      id: "job_abc123def456",
+      goal: "Audit composer stack",
+      source: "harness",
+      status: "running",
+      updated_at: now - 1000,
+    } as any;
+    expect(visibleSwarmJob(commandJob, now)).toBeNull();
+    expect(visibleCommandJob(commandJob, now)).toMatchObject({
+      id: "local-cmd-e35cf193",
+      kind: "terminal",
+      command: "sleep 999",
+      state: "running",
+    });
+    const rows = buildComposerStatusStackRows({
+      nowMs: now,
+      swarmJobs: [commandJob, swarmJob],
+      commandSessions: [],
+    });
+    expect(rows.map((row) => ({ id: row.id, kind: row.kind }))).toEqual([
+      { id: "job_abc123def456", kind: "swarm" },
+      { id: "local-cmd-e35cf193", kind: "terminal" },
+    ]);
+  });
+
+
+  it("classifies run_command_batch and local-cmd* ids as terminal", () => {
+    const now = Date.parse("2026-08-23T12:00:00Z");
+    const cases = [
+      {
+        id: "job_batch",
+        goal: "echo a",
+        source: "harness",
+        status: "running",
+        updated_at: now - 1000,
+        job_kind: "run_command_batch",
+        role: "command_batch",
+        adapter: "command_batch",
+        command_preview: "echo a",
+      },
+      {
+        id: "job_role_only",
+        goal: "sleep 1",
+        source: "harness",
+        status: "running",
+        updated_at: now - 1000,
+        job_kind: "run_command",
+        role: "command",
+        adapter: "command",
+      },
+      {
+        id: "local-cmd-deadbeef",
+        goal: "sleep 1",
+        source: "harness",
+        status: "running",
+        updated_at: now - 1000,
+      },
+      {
+        id: "local-cmdbatch-aa11bb22",
+        goal: "echo batch",
+        source: "harness",
+        status: "running",
+        updated_at: now - 1000,
+        command_preview: "echo batch",
+      },
+    ] as any[];
+    for (const job of cases) {
+      expect(visibleSwarmJob(job, now), job.id).toBeNull();
+      expect(visibleCommandJob(job, now)?.kind, job.id).toBe("terminal");
+    }
+  });
+
+  it("keeps command-adapter swarm workers without job_kind as swarm", () => {
+    const now = Date.parse("2026-08-23T12:00:00Z");
+    const job = {
+      id: "job-timeout",
+      goal: "Timed-out command",
+      source: "harness",
+      status: "timeout",
+      updated_at: now - 1000,
+      adapter: "command",
+      role: "command",
+    } as any;
+    expect(visibleSwarmJob(job, now)?.kind).toBe("swarm");
+    expect(visibleCommandJob(job, now)).toBeNull();
+  });
+
+  it("keeps run_swarm / run_implement / run_parallel as swarm", () => {
+    const now = Date.parse("2026-08-23T12:00:00Z");
+    const jobs = [
+      { id: "job_swarm", goal: "run_swarm audit", source: "harness", status: "running", updated_at: now - 1000 },
+      { id: "job_impl", goal: "run_implement fix", source: "harness", status: "running", updated_at: now - 1000, role: "implementer", adapter: "agentic" },
+      { id: "job_par", goal: "run_parallel wave", source: "harness", status: "running", updated_at: now - 1000 },
+    ] as any[];
+    for (const job of jobs) {
+      expect(visibleSwarmJob(job, now)?.kind, job.id).toBe("swarm");
+      expect(visibleCommandJob(job, now), job.id).toBeNull();
+    }
+  });
+
+  it("dedupes a live command job against the same command-session id", () => {
+    const now = Date.parse("2026-08-23T12:00:00Z");
+    const rows = buildComposerStatusStackRows({
+      nowMs: now,
+      swarmJobs: [{
+        id: "local-cmd-e35cf193",
+        goal: "sleep 999",
+        source: "harness",
+        status: "running",
+        updated_at: now - 1000,
+        job_kind: "run_command",
+        role: "command",
+        adapter: "command",
+        command_preview: "sleep 999",
+      } as any],
+      commandSessions: [{
+        id: "local-cmd-e35cf193",
+        command: "sleep 999",
+        output: "still running",
+        state: "running",
+        updatedAt: now - 200,
+      }],
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: "local-cmd-e35cf193",
+      kind: "terminal",
+      output: "still running",
     });
   });
 });

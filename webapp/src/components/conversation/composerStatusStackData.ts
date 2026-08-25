@@ -1,5 +1,6 @@
 import type { Job } from "../../lib/api";
 import type { AgentCommandSession } from "../../lib/agentCommandIndex";
+import { isCommandJob } from "../../lib/jobClassification";
 
 export type ComposerStatusStackKind = "swarm" | "terminal";
 export type ComposerStatusStackState = "running" | "done" | "failed";
@@ -75,13 +76,20 @@ function jobUpdatedAt(job: Job): number | null {
   return timestampMs(job.updated_at ?? job.created_at ?? null);
 }
 
-function visibleSwarmJob(job: Job, nowMs: number): ComposerStatusStackRow | null {
+function lingerAllows(state: ComposerStatusStackState, updatedAt: number | null, nowMs: number, successMs: number, failureMs: number): boolean {
+  if (state !== "running" && updatedAt == null) return false;
+  if (state === "done" && updatedAt != null && nowMs - updatedAt > successMs) return false;
+  if (state === "failed" && updatedAt != null && nowMs - updatedAt > failureMs) return false;
+  return true;
+}
+
+/** Accounting-owned provider swarm only. Command jobs return null (reclassify as terminal). */
+export function visibleSwarmJob(job: Job, nowMs: number): ComposerStatusStackRow | null {
   if (!jobAccountingOwned(job)) return null;
+  if (isCommandJob(job)) return null;
   const state = normalizeState(job.status);
   const updatedAt = jobUpdatedAt(job);
-  if (state !== "running" && updatedAt == null) return null;
-  if (state === "done" && updatedAt != null && nowMs - updatedAt > SWARM_SUCCESS_LINGER_MS) return null;
-  if (state === "failed" && updatedAt != null && nowMs - updatedAt > SWARM_FAILURE_LINGER_MS) return null;
+  if (!lingerAllows(state, updatedAt, nowMs, SWARM_SUCCESS_LINGER_MS, SWARM_FAILURE_LINGER_MS)) return null;
   const id = String(job.id || "").trim();
   if (!id) return null;
   const label = String(job.goal || job.role || job.id || "").trim() || id;
@@ -92,6 +100,31 @@ function visibleSwarmJob(job: Job, nowMs: number): ComposerStatusStackRow | null
     state,
     updatedAt: updatedAt ?? nowMs,
     title: label,
+  };
+}
+
+/** Live command / command-batch rows from /api/swarm/live, painted as terminal. */
+export function visibleCommandJob(job: Job, nowMs: number): ComposerStatusStackRow | null {
+  if (!jobAccountingOwned(job)) return null;
+  if (!isCommandJob(job)) return null;
+  const state = normalizeState(job.status);
+  const updatedAt = jobUpdatedAt(job);
+  if (!lingerAllows(state, updatedAt, nowMs, COMMAND_SUCCESS_LINGER_MS, COMMAND_FAILURE_LINGER_MS)) return null;
+  const id = String(job.id || "").trim();
+  if (!id) return null;
+  const command = String(job.command_preview || job.goal || "").trim();
+  const label = command || String(job.role || job.id || "").trim() || id;
+  const receipt = job.terminal_receipt;
+  const output = receipt && typeof receipt.summary === "string" ? receipt.summary : undefined;
+  return {
+    id,
+    kind: "terminal",
+    label,
+    state,
+    updatedAt: updatedAt ?? nowMs,
+    title: label,
+    command: command || label,
+    output,
   };
 }
 
@@ -122,15 +155,25 @@ export function buildComposerStatusStackRows(
 ): ComposerStatusStackRow[] {
   const nowMs = source.nowMs ?? Date.now();
   const rows: ComposerStatusStackRow[] = [];
+  const seen = new Set<string>();
 
-  for (const job of source.swarmJobs) {
-    const row = visibleSwarmJob(job, nowMs);
-    if (row) rows.push(row);
-  }
-
+  // Sessions first: they carry live stdout for the existing openAgentCommand path.
   for (const session of source.commandSessions) {
     const row = visibleCommandSession(session, nowMs);
-    if (row) rows.push(row);
+    if (row) {
+      rows.push(row);
+      seen.add(row.id);
+    }
+  }
+
+  for (const job of source.swarmJobs) {
+    const id = String(job.id || "").trim();
+    if (id && seen.has(id)) continue;
+    const row = visibleSwarmJob(job, nowMs) ?? visibleCommandJob(job, nowMs);
+    if (row) {
+      rows.push(row);
+      seen.add(row.id);
+    }
   }
 
   return rows.sort((a, b) => {
