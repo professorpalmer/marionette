@@ -1,4 +1,5 @@
 import { api } from "./api";
+import { isActivityHeadlineText } from "./sessionTitleLock";
 
 /** Matches harness/sessions.py derive_title default. */
 export const DEFAULT_SESSION_TITLE = "New session";
@@ -6,6 +7,8 @@ export const DEFAULT_SESSION_TITLE = "New session";
 /**
  * Derive a short session title from the first user prompt.
  * Mirrors harness.sessions.derive_title so optimistic UI renames match backend.
+ * Never accepts Investigating / Explored / Diagnosing / Planning walls —
+ * those belong in the activity strip, not session.title.
  */
 export function deriveSessionTitle(prompt: string): string {
   if (!prompt) return DEFAULT_SESSION_TITLE;
@@ -23,6 +26,9 @@ export function deriveSessionTitle(prompt: string): string {
     }
   }
   if (!firstLine) return DEFAULT_SESSION_TITLE;
+  if (isActivityHeadlineText(firstLine) || isActivityHeadlineText(prompt)) {
+    return DEFAULT_SESSION_TITLE;
+  }
 
   const words = firstLine.split(/\s+/);
   const truncatedWords: string[] = [];
@@ -43,12 +49,23 @@ export function deriveSessionTitle(prompt: string): string {
   if (title) {
     title = title[0].toUpperCase() + title.slice(1);
   }
-  return title || DEFAULT_SESSION_TITLE;
+  if (!title || isActivityHeadlineText(title)) return DEFAULT_SESSION_TITLE;
+  return title;
 }
 
 export function isDefaultSessionTitle(title: string | undefined | null): boolean {
   const trimmed = (title || "").trim();
   return !trimmed || trimmed === DEFAULT_SESSION_TITLE;
+}
+
+/**
+ * One session row = one human title. Activity headlines / Stopped. never
+ * paint as the list title (fall back to Untitled).
+ */
+export function displaySessionListTitle(title: string | undefined | null): string {
+  const trimmed = (title || "").trim();
+  if (!trimmed || isActivityHeadlineText(trimmed)) return "Untitled";
+  return trimmed;
 }
 
 /**
@@ -68,6 +85,9 @@ export async function renameDefaultSessionIfNeeded(
     const sessions = await api.sessions(repoRoot || undefined);
     const sess = sessions.find((s) => s.id === sessionId);
     if (!sess || !isDefaultSessionTitle(sess.title)) return;
+    // Refuse to stamp an activity-headline wall even if the stored title is
+    // still default (guard against bad prompts / mid-turn leakage).
+    if (isActivityHeadlineText(title)) return;
     await api.renameSession(sessionId, title);
     window.dispatchEvent(new Event("harness-config-changed"));
   } catch {

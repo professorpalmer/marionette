@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_SESSION_TITLE,
   deriveSessionTitle,
+  displaySessionListTitle,
   isDefaultSessionTitle,
 } from "../lib/sessionTitle";
 
@@ -34,6 +35,19 @@ describe("deriveSessionTitle", () => {
 
   it("collapses whitespace", () => {
     expect(deriveSessionTitle("   hello    world   ")).toBe("Hello world");
+  });
+
+  it("rejects investigating / Explored activity headlines", () => {
+    expect(deriveSessionTitle("Investigating · read config")).toBe(DEFAULT_SESSION_TITLE);
+    expect(deriveSessionTitle("Explored 3 files, 1 search")).toBe(DEFAULT_SESSION_TITLE);
+  });
+});
+
+describe("displaySessionListTitle", () => {
+  it("hides activity headlines and Stopped. from the session list", () => {
+    expect(displaySessionListTitle("Explored 1 search")).toBe("Untitled");
+    expect(displaySessionListTitle("Stopped.")).toBe("Untitled");
+    expect(displaySessionListTitle("Fix the bug")).toBe("Fix the bug");
   });
 });
 

@@ -64,7 +64,7 @@ describe("prior investigation fold stays sealed on new prompt", () => {
       <TranscriptList {...listProps(turn1, { turnOpen: false, status: "idle" })} />,
     );
 
-    expect(screen.getByText(/Explored/i)).toBeTruthy();
+    expect(screen.getByText(/Worked for/i)).toBeTruthy();
     expect(screen.queryByText(/Investigating/i)).toBeNull();
     // Sealed fold starts collapsed — inner thinking is not mounted.
     expect(screen.queryByText(/looking at auth handlers/i)).toBeNull();
@@ -79,8 +79,8 @@ describe("prior investigation fold stays sealed on new prompt", () => {
       />,
     );
 
-    // Prior fold must stay Explored / collapsed while busy with no turn-2 tools.
-    expect(screen.getByText(/Explored/i)).toBeTruthy();
+    // Prior fold must stay Worked for / collapsed while busy with no turn-2 tools.
+    expect(screen.getByText(/Worked for/i)).toBeTruthy();
     expect(screen.queryByText(/Investigating/i)).toBeNull();
     expect(screen.queryByText(/looking at auth handlers/i)).toBeNull();
 
@@ -106,7 +106,7 @@ describe("prior investigation fold stays sealed on new prompt", () => {
     );
 
     expect(screen.getByText(/Investigating/i)).toBeTruthy();
-    expect(screen.getByText(/Explored/i)).toBeTruthy();
+    expect(screen.getByText(/Worked for/i)).toBeTruthy();
     // Prior fold still sealed (collapsed); only the live fold is active.
     expect(screen.queryByText(/looking at auth handlers/i)).toBeNull();
   });
@@ -141,8 +141,8 @@ describe("holdSwarmAwait transcript latch + awaiting_swarm pause-point", () => {
       />,
     );
 
-    // Pause-point: Explored fold + Still working footer (not Investigating spinner).
-    expect(screen.getByText(/Explored/i)).toBeTruthy();
+    // Pause-point: Worked for fold + Still working footer (not Investigating spinner).
+    expect(screen.getByText(/Worked for/i)).toBeTruthy();
     expect(screen.queryByText(/Investigating/i)).toBeNull();
     expect(screen.getByText(/Still working/i)).toBeTruthy();
 
@@ -156,7 +156,7 @@ describe("holdSwarmAwait transcript latch + awaiting_swarm pause-point", () => {
         })}
       />,
     );
-    expect(screen.getByText(/Explored/i)).toBeTruthy();
+    expect(screen.getByText(/Worked for/i)).toBeTruthy();
     expect(screen.queryByText(/Investigating/i)).toBeNull();
     expect(screen.getByText(/Still working/i)).toBeTruthy();
 
@@ -178,7 +178,7 @@ describe("holdSwarmAwait transcript latch + awaiting_swarm pause-point", () => {
     expect(screen.getByText(/Workers flying — validating when they land/i)).toBeTruthy();
   });
 
-  it("holdSwarmAwait with active pilot turn keeps mid-turn Investigating, not sealed Explored", () => {
+  it("holdSwarmAwait with active pilot turn keeps mid-turn Investigating, not sealed Worked for", () => {
     const midTurnItems: Item[] = [
       { kind: "msg", msg: { role: "user", text: "check auth while workers run" } },
       { kind: "thinking", text: "reading auth handlers", id: "th-mid" },
@@ -207,7 +207,7 @@ describe("holdSwarmAwait transcript latch + awaiting_swarm pause-point", () => {
     );
 
     expect(screen.getByText(/Investigating/i)).toBeTruthy();
-    expect(screen.queryByText(/Explored/i)).toBeNull();
+    expect(screen.queryByText(/Worked for/i)).toBeNull();
 
     rerender(
       <TranscriptList
@@ -220,7 +220,7 @@ describe("holdSwarmAwait transcript latch + awaiting_swarm pause-point", () => {
     );
 
     expect(screen.getByText(/Investigating/i)).toBeTruthy();
-    expect(screen.queryByText(/Explored/i)).toBeNull();
+    expect(screen.queryByText(/Worked for/i)).toBeNull();
 
     // Settled tools but pilot still busy — must not seal via hold alone.
     const settledMidTurn: Item[] = [
@@ -237,7 +237,7 @@ describe("holdSwarmAwait transcript latch + awaiting_swarm pause-point", () => {
       />,
     );
     expect(screen.getByText(/Investigating/i)).toBeTruthy();
-    expect(screen.queryByText(/Explored/i)).toBeNull();
+    expect(screen.queryByText(/Worked for/i)).toBeNull();
   });
 
   it("awaiting_swarm pause-point does not keep Investigating spinner over settled tools", () => {
@@ -251,7 +251,7 @@ describe("holdSwarmAwait transcript latch + awaiting_swarm pause-point", () => {
       />,
     );
 
-    expect(screen.getByText(/Explored/i)).toBeTruthy();
+    expect(screen.getByText(/Worked for/i)).toBeTruthy();
     expect(screen.queryByText(/Investigating/i)).toBeNull();
     // Busy footer owns Still working… (matches StatusPill), not sticky Investigating.
     expect(screen.getByText(/Still working/i)).toBeTruthy();
@@ -273,7 +273,7 @@ describe("prior fold does not stay Investigating after steer flush", () => {
     };
   }
 
-  it("stale running / swarm_pending in the prior fold stay Explored while the live fold investigates", () => {
+  it("stale running / swarm_pending in the prior fold stay Worked for while the live fold investigates", () => {
     const items: Item[] = [
       { kind: "msg", msg: { role: "user", text: "do the work" } },
       runningCard("stale-card", "auth.ts"),
@@ -294,9 +294,9 @@ describe("prior fold does not stay Investigating after steer flush", () => {
     );
 
     const investigating = screen.getAllByText(/Investigating/i);
-    const explored = screen.getAllByText(/Explored/i);
+    const worked = screen.getAllByText(/Worked for/i);
     expect(investigating).toHaveLength(1);
-    expect(explored).toHaveLength(1);
+    expect(worked).toHaveLength(1);
   });
 
   it("sealed prior cards never spin even when a later fold is live", () => {
@@ -315,7 +315,7 @@ describe("prior fold does not stay Investigating after steer flush", () => {
     );
 
     expect(screen.getAllByText(/Investigating/i)).toHaveLength(1);
-    expect(screen.getAllByText(/Explored/i)).toHaveLength(1);
+    expect(screen.getAllByText(/Worked for/i)).toHaveLength(1);
   });
 
   it("prior-fold durable job shows quiet job still running, not a second Investigating", () => {
@@ -345,7 +345,7 @@ describe("prior fold does not stay Investigating after steer flush", () => {
 
     expect(screen.getAllByText(/Investigating/i)).toHaveLength(1);
     expect(screen.getByText(/job still running/i)).toBeTruthy();
-    expect(screen.queryByText(/Explored/i)).toBeNull();
+    expect(screen.queryByText(/Worked for/i)).toBeNull();
   });
 
   it("prior-fold swarm_pending only shows Swarm pending, not a second Investigating", () => {
@@ -369,7 +369,7 @@ describe("prior fold does not stay Investigating after steer flush", () => {
 
     expect(screen.getAllByText(/Investigating/i)).toHaveLength(1);
     expect(screen.getByText(/Swarm · 1 pending/i)).toBeTruthy();
-    expect(screen.queryByText(/Explored/i)).toBeNull();
+    expect(screen.queryByText(/Worked for/i)).toBeNull();
   });
 
   it("holdSwarmAwait cannot keep a prior swarm_pending fold Investigating", () => {

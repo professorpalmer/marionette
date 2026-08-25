@@ -51,6 +51,23 @@ def test_derive_title():
     assert derive_title("   \n   \n") == "New session"
     # Collapses whitespace
     assert derive_title("   hello    world   ") == "Hello world"
+    # Activity headlines never become session titles
+    assert derive_title("Investigating ActionForm redirect…") == "New session"
+    assert derive_title("Explored 1 search, 3 commands") == "New session"
+    assert derive_title("Diagnosing production error…") == "New session"
+    assert derive_title("Stopped.") == "New session"
+
+
+def test_set_title_if_default_rejects_activity_headlines(tmp_path):
+    store = SessionStore(str(tmp_path / "sessions.json"))
+    sess = store.create()
+    sid = sess["id"]
+    store.set_title_if_default(sid, "Explored 3 files, 1 search")
+    assert store.list()[0]["title"] == "New session"
+    store.set_title_if_default(sid, "Fix the redirect bug")
+    assert store.list()[0]["title"] == "Fix the redirect bug"
+    assert store.rename(sid, "Investigating…") is False
+    assert store.list()[0]["title"] == "Fix the redirect bug"
 
 
 def test_set_title_if_default(tmp_path):
