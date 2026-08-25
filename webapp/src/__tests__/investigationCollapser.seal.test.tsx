@@ -174,6 +174,8 @@ describe("holdSwarmAwait transcript latch + awaiting_swarm pause-point", () => {
     // Finished cards + open loop: fold stays Investigating and the footer
     // keeps Still working… so tool-batch gaps are not a dead log dump.
     expect(screen.getByText(/Still working/i)).toBeTruthy();
+    // Spoken assistant prose stays a top-level Bubble after the fold.
+    expect(screen.getByText(/Workers flying — validating when they land/i)).toBeTruthy();
   });
 
   it("holdSwarmAwait with active pilot turn keeps mid-turn Investigating, not sealed Explored", () => {

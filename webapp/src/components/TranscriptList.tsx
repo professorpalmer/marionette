@@ -502,25 +502,29 @@ function VaultCiteChip({
 /**
  * Assistants that belong inside the investigation fold for this turn.
  *
- * Open-loop absorption (fold mid-turn narration once the turn has tools /
- * thinking) applies ONLY to the current turn — the span after the last user
- * message. Prior turns always use the sealed rule: fold only assistants that
- * still have a later tool card. Without that scope, a live turn would re-fold
- * every historical finale into its Explored group, then peel those finales
- * back out on seal (row remount churn / flicker in the virtualized feed).
+ * Fold only workerStream / isPlan / channel=progress. Spoken assistant
+ * prose (the white streamed answer) stays a top-level Bubble after seal —
+ * never reparented into the collapsed Investigating/tool fold once a later
+ * card or swarm exists.
  *
- * Current turn while open: fold worker/progress/plan narration and sealed
- * mid-turn text that still has later tools. Live answers stay top-level.
- * Current turn when closed / any prior turn: trailing final stands alone.
+ * Open-loop absorption applies ONLY to the current turn — the span after
+ * the last user message. Prior turns use the sealed rule for foldable
+ * narration that still has later investigation activity. Without that
+ * scope, a live turn would re-fold every historical finale into its
+ * Explored group, then peel those finales back out on seal.
  */
 function isPlanOrProgressAssistant(msg: Msg): boolean {
   return Boolean(msg.isPlan) || msg.channel === "progress";
 }
 
+/** Activity-strip narration only — never spoken assistant prose. */
+function isFoldableAssistantNarration(msg: Msg): boolean {
+  return Boolean(msg.workerStream) || isPlanOrProgressAssistant(msg);
+}
+
 /** Live/final answer stays a top-level Bubble — never absorbed into ActivityGroup. */
 export function isLiveAnswerAssistant(msg: Msg): boolean {
-  if (msg.workerStream) return false;
-  if (isPlanOrProgressAssistant(msg)) return false;
+  if (isFoldableAssistantNarration(msg)) return false;
   if (msg.channel === "answer") return true;
   return msg.streaming === true;
 }
@@ -583,9 +587,21 @@ export function collectIntermediateAssistantItems(
       continue;
     }
     if (item.kind !== "msg" || item.msg.role !== "assistant") continue;
-    // workerStream assistants fold into Investigating with other mid-turn
-    // narration. ActivityGroup renders them via Bubble's capped ticker (not
-    // muted <pre>) when the fold is open — never force-open for them.
+
+    // Spoken assistant prose stays a top-level Bubble after seal. The leak
+    // was the sealed rule reparenting white streamed text into Investigating
+    // once streaming=false and a later card/swarm existed.
+    if (!isFoldableAssistantNarration(item.msg)) {
+      continue;
+    }
+
+    // workerStream always belongs in the activity strip (open or sealed).
+    // ActivityGroup renders them via Bubble's capped ticker (not muted
+    // <pre>) when the fold is open — never force-open for them.
+    if (item.msg.workerStream) {
+      intermediateItems.add(item);
+      continue;
+    }
 
     const seenCardBefore = items
       .slice(turnStart, i)
@@ -594,21 +610,9 @@ export function collectIntermediateAssistantItems(
 
     // Open-loop absorption is current-turn only (see docstring).
     const openAbsorb = agentLoopOpen && i >= currentTurnStart;
-    if (openAbsorb) {
-      if (item.msg.workerStream) {
-        intermediateItems.add(item);
-        continue;
-      }
-      // Live answer / unmarked streaming stays a top-level Bubble so it
-      // cannot hide behind a collapsed fold or remount on terminal peel.
-      if (isLiveAnswerAssistant(item.msg)) {
-        continue;
-      }
-      if (isPlanOrProgressAssistant(item.msg) && (foldActivity || item.msg.streaming === true)) {
-        intermediateItems.add(item);
-        continue;
-      }
-      // Sealed mid-turn narration still uses the sealed rule below.
+    if (openAbsorb && (foldActivity || item.msg.streaming === true)) {
+      intermediateItems.add(item);
+      continue;
     }
 
     const later = laterInvestigationActivity(items, i);
@@ -617,15 +621,12 @@ export function collectIntermediateAssistantItems(
       // Sealed pre-tool sticky outside — except explicit plan/progress
       // narration, which folds into the investigation when tools/swarm/
       // thinking follow (Cursor-like chrome; final answers stay standalone).
-      if (
-        isPlanOrProgressAssistant(item.msg)
-        && (later.laterCardOrSwarm || later.laterThinking)
-      ) {
+      if (later.laterCardOrSwarm || later.laterThinking) {
         intermediateItems.add(item);
       }
       continue;
     }
-    // Sealed / prior turns: fold mid-turn narration when investigation still
+    // Sealed / prior turns: fold plan/progress when investigation still
     // continues after it. A later tool/swarm_result always counts. Later
     // thinking alone is not enough (Cursor late-reasoning after a true finale
     // must not bury the answer inside Explored) — but thinking PLUS a later
@@ -637,6 +638,31 @@ export function collectIntermediateAssistantItems(
   return intermediateItems;
 }
 
+/**
+ * Spoken assistant prose stays a top-level Bubble and flushes the activity
+ * strip so it is never reparented into Investigating. Walk back across those
+ * bubbles to the same-turn fold they split — user / steer / questions are
+ * hard boundaries and must not resume a prior investigation.
+ */
+function activityGroupAcrossSpokenProse(grouped: GroupedItem[]): ActivityItem[] | null {
+  for (let k = grouped.length - 1; k >= 0; k--) {
+    const g = grouped[k];
+    if (g.kind === "msg" && g.msg.role === "assistant") continue;
+    if (g.kind === "activity_group") return g.items;
+    return null;
+  }
+  return null;
+}
+
+function isLiveInvestigationContinuity(item: Item): boolean {
+  if (item.kind === "card") return cardEffectivelyRunning(item.card);
+  if (item.kind === "swarm_pending") {
+    const status = item.status || (item.resolved ? "done" : "running");
+    return status === "running";
+  }
+  return false;
+}
+
 export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>): GroupedItem[] {
   // The feed is a conversation, not an event log. Top-level painted rows are
   // msg / question (command_approval, secret_request) / file (pending_review) /
@@ -646,6 +672,10 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
   const grouped: GroupedItem[] = [];
   let currentGroup: ActivityItem[] = [];
   let terminalSwarmItems: ActivityItem[] = [];
+  // After spoken prose flushes the strip, a later live swarm/card appends
+  // back onto the fold it split so Investigating cannot seal as Explored
+  // while that work is still running.
+  let bridgeTarget: ActivityItem[] | null = null;
   const resultJobIds = new Set(
     items
       .filter((item): item is Extract<Item, { kind: "swarm_result" }> => item.kind === "swarm_result")
@@ -659,6 +689,27 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
       currentGroup = [];
       terminalSwarmItems = [];
     }
+    bridgeTarget = null;
+  };
+
+  const pushActivity = (item: ActivityItem, live = false) => {
+    if (currentGroup.length > 0 || terminalSwarmItems.length > 0) {
+      currentGroup.push(item);
+      return;
+    }
+    if (bridgeTarget) {
+      bridgeTarget.push(item);
+      return;
+    }
+    if (live) {
+      const prior = activityGroupAcrossSpokenProse(grouped);
+      if (prior) {
+        prior.push(item);
+        bridgeTarget = prior;
+        return;
+      }
+    }
+    currentGroup.push(item);
   };
 
   for (let i = 0; i < items.length; i++) {
@@ -671,7 +722,7 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
       // Post-tool micro-narration folds into the investigation box. Pre-tool
       // assistant bubbles stay standalone permanently (no look-ahead reparent).
       if (item.msg.role === "assistant" && intermediateItems.has(item)) {
-        currentGroup.push(item);
+        pushActivity(item);
       } else {
         flush();
         grouped.push(item);
@@ -682,9 +733,9 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
     } else if (item.kind === "swarm_result") {
       // Durable swarm receipts live inside the activity strip alongside tools
       // and reasoning — same fold as swarm_pending / checkpoint / verify.
-      currentGroup.push(item);
+      pushActivity(item);
     } else if (item.kind === "checkpoint") {
-      currentGroup.push(item);
+      pushActivity(item);
     } else if (item.kind === "pending_review") {
       // Operator receipt for DiffReview hold — keep top-level so it is not
       // buried inside a collapsed investigation fold.
@@ -694,8 +745,9 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
       const status = item.status || (item.resolved ? "done" : "running");
       if (status === "running") {
         // Keep the live swarm pill inside the current Investigating fold with
-        // surrounding tool cards / reasoning — do not flush it top-level.
-        currentGroup.push(item);
+        // surrounding tool cards / reasoning — including across a top-level
+        // spoken Bubble that flushed the strip.
+        pushActivity(item, true);
         continue;
       }
       const uncoveredJobIds = (item.job_ids || []).filter((jobId) => !resultJobIds.has(jobId));
@@ -708,7 +760,7 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
           : { ...item, job_ids: uncoveredJobIds },
       );
     } else if (isActivityTelemetry(item)) {
-      currentGroup.push(item);
+      pushActivity(item);
     } else if (
       item.kind === "command_approval"
       || item.kind === "secret_request"
@@ -719,7 +771,8 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
       grouped.push(item);
     } else if (item.kind === "card" || item.kind === "thinking" || item.kind === "codegraph_context" || item.kind === "vault_cite") {
       // Cards, reasoning, codegraph/vault chips: all collect into the one box.
-      currentGroup.push(item);
+      // A later running card across spoken prose resumes the same fold.
+      pushActivity(item, isLiveInvestigationContinuity(item));
     }
   }
 

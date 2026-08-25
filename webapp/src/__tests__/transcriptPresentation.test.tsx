@@ -1086,6 +1086,50 @@ describe("live command token clicks", () => {
     expect(screen.queryByRole("button", { name: /Investigating|Explored/i })).toBeNull();
   });
 
+  it("keeps sealed spoken prose outside the collapsed Investigating fold", () => {
+    const spoken: Item = {
+      kind: "msg",
+      msg: { role: "assistant", text: "I will patch auth next." },
+    };
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "fix auth" } },
+      {
+        kind: "card",
+        card: {
+          id: "c-pre",
+          goal: "auth.ts",
+          cwd: null,
+          kind: "read_file",
+          running: false,
+          open: false,
+          result: { status: "ok" },
+        },
+      },
+      spoken,
+      {
+        kind: "card",
+        card: {
+          id: "c-post",
+          goal: "apply patch",
+          cwd: null,
+          kind: "edit_file",
+          running: false,
+          open: false,
+          result: { status: "ok" },
+        },
+      },
+    ];
+    expect(collectIntermediateAssistantItems(items, false).has(spoken)).toBe(false);
+    render(<TranscriptList {...listProps(items)} />);
+    // White streamed text stays a top-level Bubble, visible without opening either fold.
+    expect(screen.getByText(/I will patch auth next/i)).toBeTruthy();
+    const folds = screen.getAllByRole("button", { name: /Explored|Investigating/i });
+    expect(folds.length).toBeGreaterThan(0);
+    for (const fold of folds) {
+      expect(fold).toHaveAttribute("aria-expanded", "false");
+    }
+  });
+
   it("groups consecutive read/search cards into one exploration shelf", () => {
     render(
       <TranscriptList
