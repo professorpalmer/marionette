@@ -1120,6 +1120,30 @@ describe("mid-turn store-event cursor reattach", () => {
     expect(applied).toEqual(["assistant_done"]);
   });
 
+  it("does not re-apply a stored terminal after live SSE already settled the turn", async () => {
+    const applied: string[] = [];
+    const deps = reattachDeps({
+      localStreamActiveRef: { current: true },
+      turnSettledRef: { current: true },
+      applyStreamEventRef: {
+        current: (event: { kind: string }) => {
+          applied.push(event.kind);
+        },
+      },
+    });
+    vi.spyOn(api, "readEventsSince").mockResolvedValue({
+      events: [
+        { kind: "stream", data: { kind: "assistant_done", data: { stop_cause: "natural" } } },
+        { kind: "stream", data: { kind: "done", data: {} } },
+      ],
+    } as any);
+
+    const { pullChatEvents } = createChatEventsReattach(deps as any);
+    await pullChatEvents();
+
+    expect(applied).toEqual([]);
+  });
+
   it("on getSessionState failure arms store poll without fabricating busy", async () => {
     vi.useFakeTimers();
     const turnOpen = vi.fn();
