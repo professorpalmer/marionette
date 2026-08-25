@@ -98,16 +98,16 @@ def test_clean_say_keeps_backticks_intact():
     assert clean_say(polluted) == polluted
 
 def test_clean_say_fallback():
-    # If the text has only pollution
+    # If the text has only pollution — empty after strip (never "Working...")
     polluted = "USER: (run_command 'x' completed with exit code 1)"
-    assert clean_say(polluted) == "Working..."
+    assert clean_say(polluted) == ""
     
     polluted_with_traceback = (
         "Traceback (most recent call last):\n"
         "  File \"harness/server.py\", line 12\n"
         "IndexError: list index out of range"
     )
-    assert clean_say(polluted_with_traceback) == "Working..."
+    assert clean_say(polluted_with_traceback) == ""
 
 def test_clean_say_collapses_newlines():
     text = "Line 1\n\n\n\nLine 2\n\n\nLine 3"

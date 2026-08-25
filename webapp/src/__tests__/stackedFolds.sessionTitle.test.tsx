@@ -9,7 +9,9 @@ import {
   partitionStackedActivity,
   ranCommandsLabel,
   thoughtFoldLabel,
+  workFoldLabel,
   workedForLabel,
+  isWorkingEllipsisFallback,
 } from "../lib/turnProgress";
 import {
   DEFAULT_SESSION_TITLE,
@@ -68,6 +70,18 @@ describe("stacked fold labels", () => {
     expect(ranCommandsLabel(3)).toBe("Ran 3 commands");
   });
 
+  it("work fold never falls through to spoken-prose Working...", () => {
+    expect(isWorkingEllipsisFallback("Working...")).toBe(true);
+    expect(isWorkingEllipsisFallback("Working..")).toBe(true);
+    expect(workFoldLabel({ live: true })).toBe("Investigating…");
+    expect(workFoldLabel({ live: true, headline: "Working..." })).toBe("Investigating…");
+    expect(workFoldLabel({ live: true, headline: "Investigating · git status" })).toBe(
+      "Investigating · git status",
+    );
+    expect(workFoldLabel({ live: true, pausePoint: true })).toBe("Still working…");
+    expect(workFoldLabel({ live: false, durationMs: 12_000 })).toBe("Worked for 12s");
+  });
+
   it("nests Thought inside a Ran commands partition", () => {
     const items = [
       { kind: "thinking" as const },
@@ -84,6 +98,75 @@ describe("stacked fold labels", () => {
     if (rows[1]?.kind !== "commands") return;
     expect(rows[1].items).toHaveLength(3);
     expect(rows[1].items.filter((it) => it.kind === "thinking")).toHaveLength(1);
+  });
+});
+
+describe("live stacked folds (Investigating + Thinking + Ran)", () => {
+  it("shows three distinct live labels and never Working...", () => {
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "debug the redirect" } },
+      {
+        kind: "thinking",
+        text: "Working...", // spoken-prose fallback must not become Thought chrome
+        id: "th-live",
+        streaming: true,
+      },
+      {
+        kind: "card",
+        card: {
+          id: "c-live-1",
+          goal: "git status",
+          cwd: null,
+          kind: "run_command",
+          running: true,
+          open: false,
+        },
+      },
+      {
+        kind: "card",
+        card: {
+          id: "c-live-2",
+          goal: "rg ActionForm",
+          cwd: null,
+          kind: "run_command",
+          running: true,
+          open: false,
+        },
+      },
+    ];
+
+    render(
+      <TranscriptList
+        {...listProps(items)}
+        status="executing"
+        turnOpen
+      />,
+    );
+
+    // Outer work fold is live Investigating (not Working...).
+    const workChrome = screen.getByRole("button", { name: /Investigating/i });
+    expect(workChrome.textContent || "").not.toMatch(/Working\.\.\./i);
+    expect(screen.queryByText("Working...")).toBeNull();
+
+    fireEvent.click(workChrome);
+
+    const thought = screen.getByTestId("thought-fold");
+    const ran = screen.getByTestId("ran-commands-fold");
+    const thoughtLabel = thought.querySelector(".transcript-fold-chrome")?.textContent || "";
+    const ranLabel = ran.querySelector(".transcript-fold-chrome")?.textContent || "";
+    const workLabel = workChrome.textContent || "";
+
+    expect(thoughtLabel).toMatch(/Thinking/);
+    expect(ranLabel).toMatch(/Ran 2 commands/i);
+    expect(workLabel).toMatch(/Investigating/);
+
+    const labels = [workLabel, thoughtLabel, ranLabel].map((l) => l.trim());
+    // Three distinct chrome strings; none equal the spoken-prose fallback.
+    expect(new Set(labels).size).toBe(3);
+    for (const label of labels) {
+      expect(label).not.toBe("Working...");
+      expect(label).not.toMatch(/^Working\.\.\.?$/i);
+    }
   });
 });
 

@@ -75,7 +75,9 @@ def get_first_sentence(text: str) -> str:
             if match and match[0]:
                 return match[0]
             return s
-    return "Working..."
+    # Empty after pollution strip — never invent "Working...". That string
+    # poisoned live fold chrome when empty crumbs hit the transcript.
+    return ""
 
 def clean_say(text: str) -> str:
     if not text:
@@ -165,9 +167,11 @@ def clean_say(text: str) -> str:
     # Note: 3+ blank lines means 4+ consecutive newlines, we collapse to 2 newlines (1 blank line)
     result = re.sub(r'\n{3,}', '\n\n', result)
     
-    # 6. Fallback if empty or near-empty
+    # 6. Fallback if empty or near-empty — prefer a real first sentence, else
+    # leave empty. Never substitute "Working..." (fold chrome must stay
+    # Investigating… / Thinking… / Ran, not the spoken-prose placeholder).
     if len(result.strip()) < 5:
         fallback = get_first_sentence(text)
-        return fallback if len(fallback.strip()) >= 5 else "Working..."
+        return fallback if len(fallback.strip()) >= 5 else ""
         
     return result

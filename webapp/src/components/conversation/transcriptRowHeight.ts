@@ -127,7 +127,9 @@ export function assistantTextForMeasure(raw: string): string {
 
   let result = cleaned.join("\n").trim();
   result = result.replace(/\n{3,}/g, "\n\n");
-  return result || "Working...";
+  // Match Bubble cleanAssistantText — empty after strip stays empty (never
+  // "Working...", which must not leak into fold chrome or height placeholders).
+  return result;
 }
 
 function isPlanOrProgressAssistant(msg: Msg): boolean {
