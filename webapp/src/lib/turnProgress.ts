@@ -455,6 +455,10 @@ export function workedForLabel(durationMs?: number | null): string {
   if (durationMs == null || !Number.isFinite(durationMs) || durationMs < 0) {
     return "Worked for";
   }
+  // Empty / sub-second crumbs stay duration-less (never "Worked for 0s").
+  if (durationMs < 1000) {
+    return "Worked for";
+  }
   const label = formatFoldDuration(durationMs);
   return label ? `Worked for ${label}` : "Worked for";
 }

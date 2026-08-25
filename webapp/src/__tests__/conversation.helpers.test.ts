@@ -637,6 +637,18 @@ describe("thinkingToolPrep module", () => {
     expect(coalesceThinkingChunk("alpha", "beta")).toBe("alphabeta");
   });
 
+  it("coalesceThinkingChunk never glues status headlines with ****", () => {
+    expect(
+      coalesceThinkingChunk(
+        "Investigating branch list UI issue",
+        "****Searching CodeGraph for branch logic",
+      ),
+    ).toBe("Searching CodeGraph for branch logic");
+    expect(coalesceThinkingChunk("Planning…", "Validating…")).toBe("Validating…");
+    expect(coalesceThinkingChunk("redesign", "****")).toBe("redesign");
+    expect(coalesceThinkingChunk("redesign", "****Finalizing...")).toBe("redesign Finalizing...");
+  });
+
   it("upsertStreamingThinking coalesceSnapshots uses coalesce; default strict-appends", () => {
     let snap: Item[] = [{ kind: "msg", msg: { role: "user", text: "go" } }];
     snap = upsertStreamingThinking(snap, "hello world", { coalesceSnapshots: true });

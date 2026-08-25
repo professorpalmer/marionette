@@ -3144,7 +3144,7 @@ describe("SwarmPane command vs swarm split", () => {
   });
 });
 
-describe("SwarmPane v0.9.349 collapsed chrome", () => {
+describe("SwarmPane v0.9.350 collapsed chrome", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();

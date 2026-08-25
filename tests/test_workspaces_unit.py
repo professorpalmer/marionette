@@ -250,3 +250,44 @@ def test_list_workspaces_keeps_current_release_checkout_even_if_local_only(tmp_p
     assert "release/v0.9.331" in names
     active = [r for r in list_workspaces(str(repo)) if r["active"]]
     assert active and active[0]["name"] == "release/v0.9.331"
+
+
+def test_switch_workspace_ignores_untracked_noise(tmp_path):
+    """Untracked / ignored files must not trip the dirty stash block."""
+    repo = _init_repo(tmp_path)
+    _git(repo, "branch", "feature")
+    (repo / "scratch.local").write_text("noise\n", encoding="utf-8")
+    (repo / ".gitignore").write_text("scratch.local\nignored.tmp\n", encoding="utf-8")
+    _git(repo, "add", ".gitignore")
+    _git(repo, "commit", "-qm", "ignore scratch")
+    (repo / "ignored.tmp").write_text("also noise\n", encoding="utf-8")
+    (repo / "untracked.txt").write_text("untracked\n", encoding="utf-8")
+
+    result = switch_workspace(str(repo), "feature")
+    assert result == {"ok": True, "active": "feature"}
+
+
+def test_switch_workspace_reports_tracked_dirty_paths(tmp_path):
+    repo = _init_repo(tmp_path)
+    _git(repo, "branch", "feature")
+    (repo / "README.md").write_text("tracked dirty\n", encoding="utf-8")
+
+    result = switch_workspace(str(repo), "feature")
+    assert result["ok"] is False
+    assert result.get("dirty") is True
+    assert "README.md" in (result.get("dirty_paths") or [])
+    assert "README.md" in result["error"]
+
+
+def test_list_workspaces_hides_stale_release_even_without_origin_picture(tmp_path):
+    """Empty remote picture must not resurrect leftover release/v0.9.* on BRANCHES."""
+    repo = _init_repo(tmp_path, branch="main")
+    _git(repo, "branch", "dev")
+    _git(repo, "branch", "release/v0.9.308")
+    _git(repo, "branch", "feature")
+
+    names = {r["name"] for r in list_workspaces(str(repo))}
+    assert "main" in names
+    assert "dev" in names
+    assert "feature" in names
+    assert "release/v0.9.308" not in names

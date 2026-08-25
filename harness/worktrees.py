@@ -661,11 +661,15 @@ def reap_stale_managed_worktrees(repo: str, max_age_seconds: float = 0) -> dict:
 
 
 _MANAGED_BRANCH_PREFIXES = ("pmedit-", "pmworker-")
-_PROTECTED_BRANCHES = frozenset({"main", "master"})
+_PROTECTED_BRANCHES = frozenset({"main", "master", "dev"})
 
 
 def _is_managed_branch_name(branch: str) -> bool:
     return bool(branch) and branch.startswith(_MANAGED_BRANCH_PREFIXES)
+
+
+def _is_stale_release_branch_name(branch: str) -> bool:
+    return bool(branch) and branch.startswith("release/v0.9.")
 
 
 def _current_branch(repo: str) -> str:
@@ -677,13 +681,17 @@ def _current_branch(repo: str) -> str:
 
 
 def delete_branch(repo: str, branch: str) -> None:
-    """Force-delete a managed edit/worker branch.
+    """Force-delete a managed edit/worker branch or a stale local release head.
 
-    Only ``pmedit-*`` and ``pmworker-*`` names are eligible. Current checkout,
-    ``main``, and ``master`` are never deleted; unrelated names are refused
-    (no-op) so callers cannot scrub arbitrary local branches.
+    ``pmedit-*`` / ``pmworker-*`` and leftover ``release/v0.9.*`` are eligible.
+    Current checkout, ``main`` / ``master`` / ``dev`` are never deleted;
+    unrelated names are refused (no-op).
     """
-    if not branch or not _is_managed_branch_name(branch):
+    if not branch:
+        return
+    managed = _is_managed_branch_name(branch)
+    stale_release = _is_stale_release_branch_name(branch)
+    if not managed and not stale_release:
         return
     if branch in _PROTECTED_BRANCHES:
         return
@@ -702,9 +710,12 @@ def delete_branch(repo: str, branch: str) -> None:
 
 
 def prune_orphan_edit_branches(repo: str) -> dict:
-    """Delete local ``pmedit-*`` / ``pmworker-*`` branches that are not in use.
+    """Delete unused local edit/worker and leftover release/v0.9.* branches.
 
-    Skips the current checkout and any branch still attached to a worktree.
+    Skips the current checkout, protected main/dev, and any branch still
+    attached to a *live* worktree directory. Stale local-only release heads
+    (origin already dropped them) are removed so Prune actually clears the
+    BRANCHES rail leftovers that ``git fetch --prune`` cannot.
     Returns ``{"deleted": [...], "count": N}``.
     """
     if not repo or not _is_repo(repo):
@@ -714,26 +725,51 @@ def prune_orphan_edit_branches(repo: str) -> dict:
     if rc != 0:
         return {"deleted": [], "count": 0}
 
-    candidates = [
-        line.strip()
-        for line in (out or "").splitlines()
-        if _is_managed_branch_name(line.strip())
-    ]
+    current = _current_branch(repo)
+    attached_live: set[str] = set()
+    attached_paths: dict[str, str] = {}
+    for wt in list_worktrees(repo):
+        wt_branch = (wt.get("branch") or "").strip()
+        wt_path = (wt.get("path") or "").strip()
+        if not wt_branch:
+            continue
+        if wt_path and os.path.isdir(wt_path):
+            attached_live.add(wt_branch)
+            attached_paths[wt_branch] = wt_path
+
+    try:
+        from .workspaces import _origin_branch_names, is_stale_local_release_branch
+    except Exception:
+        _origin_branch_names = lambda _r: set()  # type: ignore[assignment]
+        is_stale_local_release_branch = None  # type: ignore[assignment]
+
+    remote = _origin_branch_names(repo) if callable(_origin_branch_names) else set()
+
+    candidates: list[str] = []
+    for line in (out or "").splitlines():
+        name = line.strip()
+        if not name:
+            continue
+        if _is_managed_branch_name(name):
+            candidates.append(name)
+            continue
+        if _is_stale_release_branch_name(name) and is_stale_local_release_branch:
+            if is_stale_local_release_branch(
+                name,
+                active=(name == current),
+                worktree_path=attached_paths.get(name),
+                remote=remote,
+            ):
+                candidates.append(name)
+
     if not candidates:
         return {"deleted": [], "count": 0}
-
-    current = _current_branch(repo)
-    attached = {
-        (wt.get("branch") or "").strip()
-        for wt in list_worktrees(repo)
-        if (wt.get("branch") or "").strip()
-    }
 
     deleted: list[str] = []
     for branch in candidates:
         if branch in _PROTECTED_BRANCHES:
             continue
-        if branch == current or branch in attached:
+        if branch == current or branch in attached_live:
             continue
         before = _branch_exists(repo, branch)
         if not before:

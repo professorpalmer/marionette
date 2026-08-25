@@ -1162,6 +1162,7 @@ export const api = {
       active?: string;
       error?: string;
       dirty?: boolean;
+      dirty_paths?: string[];
       worktree_busy?: boolean;
       worktree_path?: string;
     }>(
