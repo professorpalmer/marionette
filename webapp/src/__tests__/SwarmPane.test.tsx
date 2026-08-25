@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import SwarmPane, { jobIdentifier, jobSavings, namedSavings, workerSpend, workerOutcome } from "../components/SwarmPane";
 import { api, type Job, type SwarmLive } from "../lib/api";
 import { dispatchProjectSelected } from "../lib/panelTransition";
@@ -212,6 +212,7 @@ describe("SwarmPane model badge", () => {
     );
 
     render(<SwarmPane />);
+    await expandJob(/Audit auth flow/);
 
     await waitFor(() => {
       expect(screen.getByTitle("Model: anthropic/claude-sonnet-4")).toHaveTextContent(
@@ -427,6 +428,7 @@ describe("SwarmPane model badge", () => {
     );
 
     render(<SwarmPane />);
+    await expandJob(/Audit auth flow/);
 
     await waitFor(() => {
       expect(screen.getByTitle("Model routing in progress")).toHaveTextContent("routing…");
@@ -886,6 +888,7 @@ describe("SwarmPane mid-run job-row meters", () => {
     );
 
     render(<SwarmPane />);
+    await expandJob(/Audit auth flow/);
 
     await waitFor(() => {
       expect(screen.getAllByText("12,000t").length).toBeGreaterThan(0);
@@ -925,6 +928,7 @@ describe("SwarmPane mid-run job-row meters", () => {
       });
 
       render(<SwarmPane />);
+      await expandJob(/Audit auth flow/);
 
       await waitFor(() => {
         expect(screen.getByText("Estimated savings ~$0.0200")).toBeInTheDocument();
@@ -1254,6 +1258,7 @@ describe("SwarmPane truthful failed vs cancelled chrome", () => {
     await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
     expect(screen.getByText(/1 untrustworthy/)).toBeInTheDocument();
     fireEvent.click(screen.getByText("Finished"));
+    fireEvent.click(await screen.findByText("Provider failed before analysis"));
     await waitFor(() => {
       expect(screen.getByText("degraded")).toBeInTheDocument();
       expect(screen.getByText(/only verification artifacts/)).toBeInTheDocument();
@@ -1611,6 +1616,7 @@ describe("SwarmPane worker-owned routing surface", () => {
     );
 
     render(<SwarmPane />);
+    await expandJob(/Audit auth flow/);
 
     await waitFor(() => {
       expect(screen.getByTitle("Model: glm-5.2")).toBeInTheDocument();
@@ -2139,6 +2145,7 @@ describe("SwarmPane external (CLI) source badge", () => {
     );
 
     render(<SwarmPane />);
+    await expandJob(/Cursor MCP implement/);
 
     await waitFor(() => {
       expect(
@@ -2159,6 +2166,7 @@ describe("SwarmPane external (CLI) source badge", () => {
     );
 
     render(<SwarmPane />);
+    await expandJob(/Audit auth flow/);
 
     await waitFor(() => {
       expect(screen.getByTitle("Model: grok-4-5")).toBeInTheDocument();
@@ -2559,6 +2567,7 @@ describe("SwarmPane final-review blockers", () => {
     );
 
     render(<SwarmPane />);
+    await expandJob(/Audit auth flow/);
 
     await waitFor(() => {
       expect(screen.getByTitle("Model: escalated-model")).toBeInTheDocument();
@@ -2694,9 +2703,10 @@ describe("SwarmPane final-review blockers", () => {
     await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
     fireEvent.click(screen.getByText("Finished"));
 
-    const job = await screen.findByRole("button", { name: /Terminal with attested zero/ });
-    expect(job).toHaveTextContent("$0");
-    expect(job).not.toHaveTextContent("—");
+    fireEvent.click(await screen.findByText("Terminal with attested zero"));
+    const cost = await screen.findByRole("button", { name: /Job cost/ });
+    expect(cost).toHaveTextContent("$0");
+    expect(cost).not.toHaveTextContent("—");
   });
 
   function renderInCompactRail(widthPx: number) {
@@ -2953,6 +2963,7 @@ describe("swarm tracker usage pills (0.9.300)", () => {
       }),
     );
     render(<SwarmPane />);
+    await expandJob(/Audit auth flow/);
     const cost = await screen.findByRole("button", { name: /Job cost/ });
     expect(cost).toHaveTextContent("$1.50");
     expect(screen.queryByText("Measured")).not.toBeInTheDocument();
@@ -3133,44 +3144,69 @@ describe("SwarmPane command vs swarm split", () => {
   });
 });
 
-describe("SwarmPane v0.9.344 density", () => {
+describe("SwarmPane v0.9.349 collapsed chrome", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
     sessionStorage.clear();
     clearSWRCache();
     mockArtifacts.mockResolvedValue([]);
-    mockSwarmLive.mockResolvedValue({
-      session: { tokens_used: 12, est_cost_usd: 0.01 },
-      jobs: [
-        {
-          id: "job-live",
-          goal: "Live audit",
-          status: "running",
-          tokens: 12,
-          est_cost_usd: 0.01,
-          created_at: "2026-03-01T00:00:00Z",
-        },
-        {
-          id: "job-done",
-          goal: "Finished review",
-          status: "complete",
-          tokens: 8,
-          est_cost_usd: 0.002,
-          created_at: "2026-02-01T00:00:00Z",
-        },
-      ],
-    });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-08-25T12:00:00Z"));
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        id: "job-live",
+        goal: "Live audit",
+        status: "running",
+        updated_at: "2026-08-25T11:58:30Z",
+        tokens: 12,
+        est_cost_usd: 0.01,
+        tasks: [
+          { id: "t1", role: "a", instruction: "", status: "complete", adapter: "agentic" },
+          { id: "t2", role: "b", instruction: "", status: "running", adapter: "agentic" },
+        ],
+      }),
+    );
   });
 
-  it("keeps status, title, and spend without per-card progress bars or card borders", async () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("keeps collapsed rows to one line without meters, job id, or ago", async () => {
     render(<SwarmPane />);
-    expect(await screen.findByText("Live audit")).toBeInTheDocument();
-    fireEvent.click(screen.getByText("Finished"));
-    expect(await screen.findByText("Finished review")).toBeInTheDocument();
+    const row = await screen.findByRole("button", { name: /Live audit/ });
+    expect(row.className).toMatch(/items-center/);
+    expect(row.className).not.toMatch(/flex-col/);
+    expect(screen.queryByRole("button", { name: /Job cost/ })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Job job-live")).not.toBeInTheDocument();
+    expect(screen.queryByText(/m ago/)).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Workers")).toHaveTextContent("1/2");
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
-    const live = screen.getByText("Live audit").closest("[data-job-id]");
-    expect(live?.className || "").not.toMatch(/rounded-md/);
-    expect(live?.className || "").not.toMatch(/\bborder\b/);
+  });
+
+  it("shows meters, job id copy, and ago only after expand", async () => {
+    render(<SwarmPane />);
+    await expandJob(/Live audit/);
+    expect(screen.getByLabelText("Job job-live")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Job cost/ })).toHaveTextContent("$0.01");
+    expect(screen.getByText(/1m ago/)).toBeInTheDocument();
+  });
+
+  it("uses hairline separators between job rows, not card borders", async () => {
+    mockSwarmLive.mockResolvedValue({
+      session: { tokens_used: 0, est_cost_usd: 0 },
+      jobs: [
+        { id: "job-a", goal: "First job", status: "running" },
+        { id: "job-b", goal: "Second job", status: "running" },
+      ],
+    });
+    render(<SwarmPane />);
+    await screen.findByText("First job");
+    const first = screen.getByText("First job").closest("[data-job-id]");
+    const second = screen.getByText("Second job").closest("[data-job-id]");
+    expect(first?.className || "").toMatch(/border-b/);
+    expect(first?.className || "").not.toMatch(/rounded-md/);
+    expect(second?.className || "").toMatch(/border-b/);
   });
 });
