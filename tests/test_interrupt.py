@@ -159,3 +159,48 @@ def test_send_loop_with_cancel_preset_halts_quickly():
     # The action must not have executed (the action result event should not exist)
     action_result_events = [ev for ev in events if ev.kind == "action_result"]
     assert len(action_result_events) == 0
+    assert any(ev.kind == "assistant_done" for ev in events)
+
+
+def test_interrupt_appends_assistant_done_to_live_sse_ring(tmp_path):
+    from pmharness.drivers.base import DriverResponse
+
+    from harness.api.sse import (
+        _sse_ring_begin,
+        _sse_ring_clear_for_tests,
+        _sse_ring_lookup,
+    )
+    from harness.config import HarnessConfig
+    from harness.send_loop_phases import record_provider_stream_receipt
+    from harness.stream_performance_store import StreamPerformanceReceiptStore
+
+    _sse_ring_clear_for_tests()
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path))
+    cfg.repo = str(tmp_path)
+    session = ConversationalSession(cfg)
+    sid = "sess-stop-354"
+    session.harness_session_id = sid
+    resp = DriverResponse(
+        text="ok",
+        tokens_in=4,
+        tokens_out=2,
+        latency_ms=1.0,
+        meta={"finish_reason": "stop", "stream_terminal": "stop", "stream_started": True},
+    )
+    record_provider_stream_receipt(session, resp, provider_step=1, provider_attempt=1)
+    before = StreamPerformanceReceiptStore(str(tmp_path)).list_receipts(sid)
+    assert before
+    assert before[-1].get("assistant_done_emitted") is False
+
+    ring = _sse_ring_begin(sid)
+    gen = ring.generation
+    session.interrupt()
+
+    live = _sse_ring_lookup(sid)
+    assert live is ring
+    assert live.generation == gen
+    kinds = [ev["kind"] for ev in ring.since(0)["events"]]
+    assert "assistant_done" in kinds
+    after = StreamPerformanceReceiptStore(str(tmp_path)).list_receipts(sid)
+    assert after[-1].get("assistant_done_emitted") is True
+    assert after[-1].get("terminal_cause") == "cancelled"

@@ -187,6 +187,35 @@ class BusyControlMixin:
                 release(reason="interrupt")
         except Exception:
             pass
+        try:
+            self._emit_stop_assistant_done()
+        except Exception:
+            pass
+
+    def _emit_stop_assistant_done(self) -> None:
+        """Stop must settle the receipt and SSE ring even if the generator is blocked.
+
+        Does not start a new ring generation. Best-effort; never raises.
+        """
+        try:
+            from harness.send_loop_phases import mark_latest_receipt_assistant_done
+            mark_latest_receipt_assistant_done(self, stop_cause="cancelled")
+        except Exception:
+            pass
+        try:
+            from harness.api.sse import _sse_ring_lookup
+            sid = str(getattr(self, "harness_session_id", "") or "").strip()
+            if not sid:
+                return
+            ring = _sse_ring_lookup(sid)
+            if ring is None:
+                return
+            ring.append(
+                "assistant_done",
+                {"stop_cause": "cancelled", "reason": "user_stop"},
+            )
+        except Exception:
+            return
 
     def _interrupt_owner_tokens(self) -> list:
         """Cancel Events that own in-flight run_cancellable trees for this session."""

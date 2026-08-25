@@ -1409,12 +1409,22 @@ class ToolDispatchMixin:
         effective_cwd = preflight.get("cwd") or self.config.repo
 
         cmd_timeout = effective_command_timeout()
-        output, exit_code, run_status = run_cancellable(
-            effective_command,
-            cwd=effective_cwd,
-            timeout=cmd_timeout,
-            cancel_event=getattr(self, "_cancel", None),
-        )
+        from .command_jobs import reap_tmp_marionette_worktrees
+        try:
+            output, exit_code, run_status = run_cancellable(
+                effective_command,
+                cwd=effective_cwd,
+                timeout=cmd_timeout,
+                cancel_event=getattr(self, "_cancel", None),
+            )
+        finally:
+            try:
+                reap_tmp_marionette_worktrees(effective_command)
+                original = act.command or ""
+                if original and original != effective_command:
+                    reap_tmp_marionette_worktrees(original)
+            except Exception:
+                pass
         # Normalize legacy aliases used by older mocks / callers.
         if run_status in ("success", None, ""):
             run_status = "ok"

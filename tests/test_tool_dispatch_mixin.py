@@ -118,6 +118,27 @@ def test_do_run_command_cancelled_is_not_success():
     assert "interrupted by user" in val["output"]
 
 
+def test_do_run_command_reaps_tmp_marionette_worktrees_on_cancel():
+    session = _dispatch_session()
+    act = PilotAction(
+        kind="run_command",
+        command="git worktree add /tmp/marionette-origin-main-audit.XXXXXX x",
+    )
+    with patch(
+        "harness.command_policy.run_cancellable",
+        return_value=("", 130, "cancelled"),
+    ), patch(
+        "harness.command_jobs.reap_tmp_marionette_worktrees",
+        return_value=[],
+    ) as reap:
+        ok, status, val = ToolDispatchMixin._do_run_command(session, act)
+    assert ok is False
+    assert status == "cancelled"
+    reap.assert_called()
+    texts = [str(call.args[0]) for call in reap.call_args_list]
+    assert any("marionette-origin-main-audit" in text for text in texts)
+
+
 def test_do_run_command_timeout_is_not_success():
     session = _dispatch_session()
     act = PilotAction(kind="run_command", command="sleep 30")

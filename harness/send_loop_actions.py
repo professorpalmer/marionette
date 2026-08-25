@@ -48,6 +48,7 @@ from .send_loop_phases import (
     dispatch_local_action,
     dispatch_readonly_action,
     run_parallel_prefetch,
+    yield_session_interrupted,
 )
 
 
@@ -177,7 +178,7 @@ def execute_turn_actions(
                     flush_steer = getattr(session, "_flush_steer_drop_notice", None)
                     if callable(flush_steer):
                         yield from flush_steer()
-                yield ConvEvent("interrupted", {"reason": "session interrupted"})
+                yield from yield_session_interrupted(session)
                 counters["action_seq"] = action_seq
                 counters["swarms"] = swarms
                 counters["demo_swarms"] = demo_swarms
@@ -202,7 +203,7 @@ def execute_turn_actions(
                 flush_steer = getattr(session, "_flush_steer_drop_notice", None)
                 if callable(flush_steer):
                     yield from flush_steer()
-            yield ConvEvent("interrupted", {"reason": "session interrupted"})
+            yield from yield_session_interrupted(session)
             counters["action_seq"] = action_seq
             counters["swarms"] = swarms
             counters["demo_swarms"] = demo_swarms

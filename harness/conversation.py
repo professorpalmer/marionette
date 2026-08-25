@@ -1681,6 +1681,33 @@ class ConversationalSession(
             return []
         return [dict(m) for m in self._history[1:]]
 
+    def _display_swarm_pending_allowed(self, row: Any) -> bool:
+        """True when a persisted swarm_pending row belongs to this session."""
+        if not isinstance(row, dict) or row.get("type") != "swarm_pending":
+            return True
+        mine = str(getattr(self, "harness_session_id", "") or "")
+        theirs = str(row.get("session_id") or "")
+        if theirs:
+            return theirs == mine
+        if not mine:
+            return True
+        jobs = getattr(self, "_local_jobs", None) or {}
+        wave_id = str(row.get("wave_id") or "")
+        if wave_id:
+            parent = jobs.get(wave_id)
+            if isinstance(parent, dict):
+                return str(parent.get("session_id") or "") == mine
+        job_ids = [str(x) for x in (row.get("job_ids") or []) if str(x)]
+        if not job_ids:
+            return False
+        for jid in job_ids:
+            job = jobs.get(jid)
+            if not isinstance(job, dict):
+                return False
+            if str(job.get("session_id") or "") != mine:
+                return False
+        return True
+
     def export_display_transcript(self) -> list:
         """Return the display transcript, restoring any still-pending approvals.
 
@@ -1693,6 +1720,8 @@ class ConversationalSession(
         """
         display: list = []
         for row in self._display_transcript:
+            if not self._display_swarm_pending_allowed(row):
+                continue
             if (
                 isinstance(row, dict)
                 and (row.get("type") or "message") == "message"
@@ -1747,6 +1776,11 @@ class ConversationalSession(
             history_list = messages.get("history", [])
             self._display_transcript = messages.get("display", [])
             self._session_job_ids = messages.get("job_ids", [])
+            if isinstance(self._display_transcript, list):
+                self._display_transcript = [
+                    row for row in self._display_transcript
+                    if self._display_swarm_pending_allowed(row)
+                ]
         else:
             history_list = messages
             self._display_transcript = []

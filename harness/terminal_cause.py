@@ -57,6 +57,8 @@ _CAUSE_ALIASES = {
     "eof": TERMINAL_PROVIDER_EOF,
     "error": TERMINAL_TRANSPORT_ERROR,
     "transport": TERMINAL_TRANSPORT_ERROR,
+    "user_stop": TERMINAL_CANCELLED,
+    "user-stop": TERMINAL_CANCELLED,
 }
 
 # Provider dialects that mean an affirmative natural stop (no tools).

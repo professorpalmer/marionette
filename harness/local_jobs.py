@@ -604,6 +604,10 @@ class LocalJobsMixin:
         display = getattr(self, "_display_transcript", None)
         if not isinstance(display, list):
             return
+        mine = str(getattr(self, "harness_session_id", "") or "")
+        theirs = str((parent or {}).get("session_id") or "")
+        if theirs != mine:
+            return
         child_ids = [str(x) for x in (parent.get("child_job_ids") or []) if str(x)]
         terminals = [str(x) for x in (parent.get("terminal_job_ids") or []) if str(x)]
         wave_id = str(parent.get("id") or "")
@@ -615,6 +619,7 @@ class LocalJobsMixin:
             "objective": str(parent.get("goal") or ""),
             "terminal_job_ids": list(terminals),
             "status": "done" if settled else "running",
+            "session_id": mine,
         }
         for i, existing in enumerate(display):
             if not isinstance(existing, dict) or existing.get("type") != "swarm_pending":
@@ -1634,7 +1639,10 @@ class LocalJobsMixin:
             for job in list(self._local_jobs.values()):
                 if isinstance(job, dict) and job.get("job_kind") == "parallel_wave":
                     self._sync_parallel_wave_locked(job)
-                    self._upsert_display_parallel_wave_locked(job)
+                    mine = str(getattr(self, "harness_session_id", "") or "")
+                    theirs = str(job.get("session_id") or "")
+                    if theirs == mine:
+                        self._upsert_display_parallel_wave_locked(job)
             # Rewrite so the healed statuses are the new on-disk baseline.
             self._persist_local_jobs_locked()
 
