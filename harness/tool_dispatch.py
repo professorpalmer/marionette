@@ -1112,6 +1112,8 @@ class ToolDispatchMixin:
         if isinstance(activate, str):
             activate = [activate]
         try:
+            # Always run activate on this catalog. Never treat search_tools
+            # activate as a cached no-op even when the query repeats.
             text = catalog.format_search_response(query, limit=limit, activate=activate)
             self._tool_catalog = catalog
             return True, "success", text

@@ -21,6 +21,7 @@ from .pilot import (
     strip_inline_tool_calls,
     tool_names_from_schema,
 )
+from .tool_discovery import is_lazy_activatable_name
 
 INVALID_ONLY_HALT_REASON = (
     "Stopped: 3 consecutive provider steps produced only "
@@ -111,6 +112,58 @@ def assign_missing_native_tool_call_ids(
     return copied
 
 
+
+def _tool_call_names(tool_calls: Any, content: str = "") -> list[str]:
+    names: list[str] = []
+    if isinstance(tool_calls, list):
+        for tc in tool_calls:
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function") or {}
+            raw = fn.get("name") if isinstance(fn, dict) else None
+            if isinstance(raw, str) and raw.strip():
+                names.append(raw.strip())
+    text = content or ""
+    if text:
+        import re
+        for match in re.finditer(
+            r"<(?:function|tool_call)\s*=\s*([A-Za-z0-9_]+)", text
+        ):
+            names.append(match.group(1))
+        for match in re.finditer(r'"name"\s*:\s*"([A-Za-z0-9_]+)"', text):
+            names.append(match.group(1))
+    out: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        if name not in seen:
+            seen.add(name)
+            out.append(name)
+    return out
+
+
+def expand_allowed_names_for_lazy_activate(
+    allowed_names: Optional[list],
+    called_names: Any,
+    catalog: Any = None,
+) -> Optional[list]:
+    """Allow first-call web_search / web_fetch / browser_* without schema exposure.
+
+    Hidden tools stay out of the schema. search_tools activate is applied on
+    the catalog (never cached as a no-op). ``allowed_names is None`` already
+    means the full native set.
+    """
+    called = [str(n).strip() for n in (called_names or []) if str(n).strip()]
+    lazy = [n for n in called if is_lazy_activatable_name(n)]
+    if catalog is not None and lazy:
+        catalog.try_lazy_activate(lazy)
+    if allowed_names is None or not lazy:
+        return allowed_names
+    extra = [n for n in lazy if n not in allowed_names]
+    if not extra:
+        return allowed_names
+    return list(allowed_names) + extra
+
+
 def parse_native_tool_turn(
     pure_content: str,
     tool_calls: list,
@@ -132,6 +185,12 @@ def parse_native_tool_turn(
         tool_names_from_schema(schema)
         if schema is not None
         else None
+    )
+    catalog = getattr(session, "_tool_catalog", None) if session is not None else None
+    allowed_names = expand_allowed_names_for_lazy_activate(
+        allowed_names,
+        _tool_call_names(tool_calls, pure_content),
+        catalog,
     )
     used = _history_tool_call_ids(
         getattr(session, "_history", None) if session is not None else None

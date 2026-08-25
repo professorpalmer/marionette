@@ -128,6 +128,8 @@ export function canonicalizeTerminalCause(raw: unknown): TerminalCause {
  * Truthful chip copy. Never mentions context % unless the backend named
  * context overflow as the cause.
  */
+export const DIRTY_FINISH_BANNER = "Turn ended without a clean finish.";
+
 export function terminalCauseCopy(cause: TerminalCause): string {
   switch (cause) {
     case CAUSE_NATURAL:
@@ -164,8 +166,40 @@ export function terminalCauseCopy(cause: TerminalCause): string {
       return "Turn ended during tool use.";
     case CAUSE_UNSPECIFIED:
     default:
-      return "Turn ended without a clean finish.";
+      return DIRTY_FINISH_BANNER;
   }
+}
+
+const QUIET_UNSPECIFIED_WIRE = new Set(["stop", "tool_calls"]);
+
+export function lastWireFinishReason(raw: unknown): string {
+  return String(raw || "").trim().toLowerCase();
+}
+
+/**
+ * Chrome decision for a settled turn. Fail-closed internally (caller keeps
+ * CAUSE_UNSPECIFIED). If the last wire reason was stop or tool_calls, stay
+ * quiet so Continue can show without a dirty-finish banner.
+ */
+export function dirtyFinishExplanation(opts: {
+  cause: TerminalCause;
+  finishReason?: unknown;
+}): string | null {
+  if (opts.cause !== CAUSE_UNSPECIFIED) {
+    const copy = terminalCauseCopy(opts.cause);
+    return copy || null;
+  }
+  // Fail-closed internally (caller keeps unspecified). Never paint the crash
+  // banner for stop / tool_calls / blank wire — stay quiet so Continue shows.
+  const wire = lastWireFinishReason(opts.finishReason);
+  if (QUIET_UNSPECIFIED_WIRE.has(wire) || !wire) return null;
+  return null;
+}
+
+/** Gate boxed turn_terminal chrome: unspecified crash copy stays unpainted. */
+export function suppressUnspecifiedDirtyFinish(cause: unknown, text: unknown): boolean {
+  if (canonicalizeTerminalCause(cause) !== CAUSE_UNSPECIFIED) return false;
+  return String(text || "").trim() === DIRTY_FINISH_BANNER;
 }
 
 export function isNaturalStopCause(cause: TerminalCause): boolean {
@@ -250,7 +284,9 @@ export function settleFromAssistantDone(opts: {
       cause: isNaturalStopCause(cause) ? CAUSE_NATURAL : cause,
       status: "awaiting_swarm",
       turnOpen: false,
-      explanation: isNaturalStopCause(cause) ? null : terminalCauseCopy(cause),
+      explanation: isNaturalStopCause(cause)
+        ? null
+        : dirtyFinishExplanation({ cause, finishReason: opts.finishReason }),
     };
   }
   if (isNaturalStopCause(cause)) {
@@ -269,7 +305,7 @@ export function settleFromAssistantDone(opts: {
     cause,
     status: "done",
     turnOpen: false,
-    explanation: terminalCauseCopy(cause),
+    explanation: dirtyFinishExplanation({ cause, finishReason: opts.finishReason }),
   };
 }
 

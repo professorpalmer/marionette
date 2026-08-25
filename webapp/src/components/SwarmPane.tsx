@@ -11,7 +11,7 @@ import {
 } from "../lib/pendingSwarmOpenJob";
 import { useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
 import { filterJobsByScope, loadJobScope, saveJobScope, type JobScope } from "../lib/jobScope";
-import { isCommandJob } from "../lib/jobClassification";
+import { isTrackerJob } from "../lib/jobClassification";
 import { jobHeadlineTotal } from "./EconomicsDurable";
 
 // A clean, self-contained hover tooltip. The native `title=` tooltip renders as a
@@ -1381,7 +1381,7 @@ export default function SwarmPane() {
   }, [scopedRepo, applyLive]);
 
   const allJobs = filterJobsByScope(data?.jobs || [], jobScope, activeSessionId).filter(
-    (job) => !isCommandJob(job),
+    (job) => isTrackerJob(job),
   );
   // Clear/dismiss is archive chrome for finished runs only. Live (and pending)
   // jobs must stay visible even if their id was previously dismissed — otherwise

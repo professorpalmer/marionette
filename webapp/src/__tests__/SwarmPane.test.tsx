@@ -1080,7 +1080,7 @@ describe("SwarmPane mid-run job-row meters", () => {
     // over router) so the worker owns model/policy and no unmatched note.
     mockSwarmLive.mockResolvedValue(
       liveJob({
-        id: "local-1",
+        id: "local-swarm-1",
         status: "running",
         artifacts_complete: true,
         artifacts: [
@@ -1107,7 +1107,7 @@ describe("SwarmPane mid-run job-row meters", () => {
         ],
         tasks: [
           {
-            id: "local-1-w0",
+            id: "local-swarm-1-w0",
             status: "running",
             role: "implement (agentic)",
             instruction: "",
@@ -1174,14 +1174,14 @@ describe("SwarmPane truthful failed vs cancelled chrome", () => {
         id: "job-timeout",
         goal: "Timed-out command",
         status: "timeout",
-        adapter: "command",
+        adapter: "agentic",
         tasks: [
           {
             id: "job-timeout-w0",
             status: "timeout",
-            role: "command",
+            role: "worker",
             instruction: "pytest",
-            adapter: "command",
+            adapter: "agentic",
           },
         ],
       }),
@@ -1203,6 +1203,7 @@ describe("SwarmPane truthful failed vs cancelled chrome", () => {
       id: "job-truncated",
       goal: "Truncated command",
       status: "truncated",
+      job_kind: "run_swarm",
       adapter: "command",
       tasks: [
         { id: "job-truncated-w0", status: "truncated", role: "command", instruction: "cat", adapter: "command" },
@@ -1212,6 +1213,7 @@ describe("SwarmPane truthful failed vs cancelled chrome", () => {
       id: "job-interrupted",
       goal: "Interrupted command",
       status: "interrupted",
+      job_kind: "run_swarm",
       adapter: "command",
       tasks: [
         { id: "job-interrupted-w0", status: "interrupted", role: "command", instruction: "sleep", adapter: "command" },
@@ -3092,6 +3094,42 @@ describe("SwarmPane command vs swarm split", () => {
     expect(await screen.findByText("No swarm jobs yet")).toBeInTheDocument();
     expect(screen.queryByText("sleep 999")).not.toBeInTheDocument();
     expect(screen.getByText("Swarm Tracker").parentElement).not.toHaveTextContent("(1)");
+  });
+
+  it("hides the wave parent and still shows hired children", async () => {
+    mockSwarmLive.mockResolvedValue({
+      session: { tokens_used: 0, est_cost_usd: 0 },
+      jobs: [
+        {
+          id: "local-wave-call_00_ET_S8G91HzE94famGY0TK0Q8637",
+          goal: "Parallel wave (2 jobs)",
+          status: "running",
+          job_kind: "parallel_wave",
+          role: "parallel_wave",
+          adapter: "parallel_wave",
+          source: "harness",
+        },
+        {
+          id: "job_abc123def456",
+          goal: "run_swarm audit",
+          status: "running",
+          job_kind: "run_swarm",
+          source: "harness",
+        },
+        {
+          id: "local-impl-1",
+          goal: "run_implement fix",
+          status: "running",
+          job_kind: "run_implement",
+          source: "harness",
+        },
+      ],
+    });
+    render(<SwarmPane />);
+    expect(await screen.findByText("run_swarm audit")).toBeInTheDocument();
+    expect(screen.getByText("run_implement fix")).toBeInTheDocument();
+    expect(screen.queryByText("Parallel wave (2 jobs)")).not.toBeInTheDocument();
+    expect(screen.getByText("Swarm Tracker").parentElement).toHaveTextContent("(2)");
   });
 });
 

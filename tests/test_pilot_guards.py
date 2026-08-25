@@ -538,6 +538,25 @@ def test_normalize_near_identical_paths():
     assert normalize_action_args("read_file", a) == normalize_action_args("read_file", b)
 
 
+def test_search_tools_activate_is_not_a_repeat_of_search_only():
+    """Query-only search_tools must not cache-replay a later activate of the same query."""
+    search_only = _Act(kind="search_tools", query="web", arguments={"query": "web"})
+    activate = _Act(
+        kind="search_tools",
+        query="web",
+        arguments={"query": "web", "activate": ["web_search", "web_fetch"]},
+    )
+    assert normalize_action_args("search_tools", search_only) != normalize_action_args(
+        "search_tools", activate
+    )
+    state = new_turn_guard_state()
+    record_action_execution(state, "search_tools", search_only)
+    from harness.pilot_guards import record_successful_result
+    record_successful_result(state, "search_tools", search_only, '{"query":"web","activated":[]}')
+    verdict = check_loop_guard(state, "search_tools", activate)
+    assert verdict.suppress is False
+
+
 def test_loop_suppresses_identical_repeat():
     """Without a cached successful result, an identical repeat still hard-suppresses.
 

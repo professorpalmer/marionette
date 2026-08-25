@@ -15,6 +15,7 @@ import {
   normalizeNestedActionStatus,
 } from "./nestedActionBounds";
 import { hoistCardsBeforeTrailingFinals } from "./thinkingToolPrep";
+import { suppressUnspecifiedDirtyFinish } from "../../lib/turnTerminal";
 
 /** Same SHA-256 hex gate as SSE ``appendCommandApproval`` (streamApply). */
 const COMMAND_HASH_HEX = /^[0-9a-f]{64}$/;
@@ -463,6 +464,7 @@ export function transcriptResponseToItems(res: {
       } else if (m.type === "turn_terminal") {
         const text = String(m.text || "").trim();
         if (!text) return [];
+        if (suppressUnspecifiedDirtyFinish(m.cause, text)) return [];
         const id = String(m.id || "").trim();
         return [{
           kind: "turn_terminal" as const,
