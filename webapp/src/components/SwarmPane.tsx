@@ -1515,6 +1515,9 @@ export default function SwarmPane() {
       if (next) ensureFullArtifacts(j);
     };
 
+    const showWorkerProgress = workerCount > 0;
+    const workerProgressFull = terminal || finishedWorkers >= workerCount;
+
     return (
       <div
         key={j.id}
@@ -1524,10 +1527,9 @@ export default function SwarmPane() {
         // collapsed and clipped its own findings instead of pushing the list into
         // overflow. Pinning shrink-0 keeps the card at full content height so the
         // list actually scrolls.
-        className="shrink-0 flex flex-col"
+        className="shrink-0 flex flex-col border-b border-edge/25 last:border-b-0"
       >
-        {/* Header row. A div (not a button) so the dismiss control can be a real
-            nested button without invalid button-in-button markup. */}
+        {/* Collapsed chrome: one line — chevron, status, title, worker progress, phase, actions. */}
         <div
           role="button"
           tabIndex={0}
@@ -1535,34 +1537,107 @@ export default function SwarmPane() {
           aria-label={`${j.goal || "Swarm job"}, ${phase.label}`}
           onClick={toggle}
           onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } }}
-          className={`w-full flex flex-col gap-0 py-1 px-1.5 hover:bg-panel2/25 text-left transition-colors select-none cursor-pointer ${DISCLOSURE_FOCUS}`}
+          className={`w-full flex items-center gap-2 py-1 px-1.5 hover:bg-panel2/25 text-left transition-colors select-none cursor-pointer min-h-[1.625rem] ${DISCLOSURE_FOCUS}`}
         >
-          <div className="flex items-center justify-between w-full gap-2">
-            <div className="flex items-center gap-2 min-w-0 flex-1">
-              <span className="shrink-0 text-faint">
-                {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          <span className="shrink-0 text-faint">
+            {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          </span>
+          <span className="shrink-0">
+            {st === "in_progress" ? (
+              <Loader2 size={12} className="animate-spin semantic-activity-spinner text-accent" />
+            ) : st === "failed" ? (
+              <XCircle size={12} className="text-risk" />
+            ) : outcomeWarning ? (
+              <Circle size={12} className="text-warn" />
+            ) : st === "completed" ? (
+              <CheckCircle2 size={12} className="text-good" />
+            ) : st === "cancelled" ? (
+              <XCircle size={12} className="text-muted" />
+            ) : (
+              <Circle size={12} className="text-muted" />
+            )}
+          </span>
+          <Tooltip label={j.goal} className="font-semibold text-[11px] text-txt truncate min-w-0 flex-1">
+            {j.goal}
+          </Tooltip>
+          {showWorkerProgress && (
+            <span
+              className="inline-flex items-center gap-1 shrink-0"
+              aria-label="Workers"
+              title={`${finishedWorkers} of ${workerCount} workers terminal`}
+            >
+              <span
+                className="h-0.5 w-8 rounded-full bg-edge/50 overflow-hidden"
+                aria-hidden="true"
+              >
+                <span
+                  className={`block h-full rounded-full transition-[width] ${
+                    workerProgressFull ? "bg-good/70 w-full" : "bg-accent/70"
+                  }`}
+                  style={{
+                    width: workerProgressFull
+                      ? "100%"
+                      : `${Math.max(8, Math.round((finishedWorkers / workerCount) * 100))}%`,
+                  }}
+                />
               </span>
-              <span className="shrink-0">
-                {st === "in_progress" ? (
-                  <Loader2 size={12} className="animate-spin semantic-activity-spinner text-accent" />
-                ) : st === "failed" ? (
-                  <XCircle size={12} className="text-risk" />
-                ) : outcomeWarning ? (
-                  <Circle size={12} className="text-warn" />
-                ) : st === "completed" ? (
-                  <CheckCircle2 size={12} className="text-good" />
-                ) : st === "cancelled" ? (
-                  <XCircle size={12} className="text-muted" />
-                ) : (
-                  <Circle size={12} className="text-muted" />
-                )}
+              <span className="text-[9px] text-muted tabular-nums font-mono">
+                {finishedWorkers}/{workerCount}
               </span>
-              <Tooltip label={j.goal} className="font-semibold text-[11px] text-txt truncate">
-                {j.goal}
-              </Tooltip>
+            </span>
+          )}
+          <span className={`text-[9px] font-medium tabular-nums shrink-0 ${
+            phase.key === "cancelled"
+              ? "text-muted"
+              : phase.failed
+              ? "text-risk/80"
+              : outcomeWarning
+              ? "text-warn/80"
+              : phase.key === "done"
+              ? "text-faint"
+              : "text-accent/80"
+          }`}>
+            {phase.label}
+          </span>
+          <div className="flex items-center gap-1 shrink-0 text-[10px]">
+            {st === "in_progress" && (
+              cancelling.has(j.id) ? (
+                <span className="text-[9px] text-risk/70 italic tabular-nums">cancelling...</span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); void cancelJob(j.id); }}
+                  onKeyDown={(e) => e.stopPropagation()}
+                  title="Cancel this job"
+                  aria-label="Cancel this job"
+                  className={`text-faint/50 hover:text-risk transition-colors ${DISCLOSURE_FOCUS}`}
+                >
+                  <X size={12} />
+                </button>
+              )
+            )}
+            {terminal && (
               <button
                 type="button"
-                className="shrink-0 font-mono text-[9px] text-faint hover:text-muted"
+                onClick={(e) => { e.stopPropagation(); dismissJob(j.id); }}
+                onKeyDown={(e) => e.stopPropagation()}
+                title="Dismiss from tracker (stays in Puppetmaster history)"
+                aria-label="Dismiss from tracker (stays in Puppetmaster history)"
+                className={`text-faint/50 hover:text-risk transition-colors ${DISCLOSURE_FOCUS}`}
+              >
+                <X size={12} />
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Expanded details */}
+        {isExpanded && (
+          <div className="px-2 pb-2 pt-1 flex flex-col gap-2 bg-panel2/10">
+            <div className="flex flex-col gap-1.5 border-b border-edge/20 pb-2">
+              <button
+                type="button"
+                className="self-start font-mono text-[9px] text-faint hover:text-muted"
                 title="Copy job identifier"
                 aria-label={jobIdentifier(j.id)}
                 onClick={(e) => {
@@ -1572,241 +1647,175 @@ export default function SwarmPane() {
               >
                 {jobIdentifier(j.id)}
               </button>
-            </div>
-            <span className={`text-[9px] font-medium tabular-nums shrink-0 ${
-              phase.key === "cancelled"
-                ? "text-muted"
-                : phase.failed
-                ? "text-risk/80"
-                : outcomeWarning
-                ? "text-warn/80"
-                : phase.key === "done"
-                ? "text-faint"
-                : "text-accent/80"
-            }`}>
-              {phase.label}
-            </span>
-            <div className="flex items-center gap-2 shrink-0 text-[10px]">
-              {/* Kill: running jobs only. Best-effort cooperative cancel on the
-                  backend. Shows 'cancelling...' until the next poll flips the job
-                  to a terminal state. */}
-              {st === "in_progress" && (
-                cancelling.has(j.id) ? (
-                  <span className="text-[9px] text-risk/70 italic tabular-nums">cancelling...</span>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); void cancelJob(j.id); }}
-                    onKeyDown={(e) => e.stopPropagation()}
-                    title="Cancel this job"
-                    aria-label="Cancel this job"
-                    className={`text-faint/50 hover:text-risk transition-colors ${DISCLOSURE_FOCUS}`}
-                  >
-                    <X size={12} />
-                  </button>
-                )
-              )}
-              {/* Dismiss: terminal runs only -- hiding a live worker would be
-                  confusing. Non-destructive; the run stays in PM history. */}
-              {terminal && (
-                <button
-                  type="button"
-                  onClick={(e) => { e.stopPropagation(); dismissJob(j.id); }}
-                  onKeyDown={(e) => e.stopPropagation()}
-                  title="Dismiss from tracker (stays in Puppetmaster history)"
-                  aria-label="Dismiss from tracker (stays in Puppetmaster history)"
-                  className={`text-faint/50 hover:text-risk transition-colors ${DISCLOSURE_FOCUS}`}
-                >
-                  <X size={12} />
-                </button>
-              )}
-            </div>
-          </div>
 
-          {/* Usage meters: one row of stacking pills; identity/provenance stays textual. */}
-          {(hasHeaderMeters || headerModel || showJobRoutingPlaceholder || workerCount > 0 || adapter || j.source === "cli" || (workerCount === 0 && attestedPolicy === "explicit_pin")) && (
-            <div className="flex items-center gap-x-2 gap-y-1 pl-6 pr-1 mt-1.5 flex-wrap text-[9px]">
-              {hasHeaderMeters && (
-                <div className="inline-flex items-center gap-1 min-w-0 flex-wrap">
-                  {(showJobTokens || showJobCompactTokens) && (
-                    <span
-                      className={`${SWARM_METER_PILL} font-mono text-muted tabular-nums`}
-                      title="Token usage"
-                    >
-                      {showJobTokens && <span>{jobTokens(j).toLocaleString()}t</span>}
-                      {showJobCompactTokens && (
-                        <span className={showJobTokens ? "text-accent/80" : "text-muted"}>
-                          {showJobTokens ? " · " : ""}
-                          {jobCompactTokens(j).toLocaleString()} compact
+              {(hasHeaderMeters || headerModel || showJobRoutingPlaceholder || adapter || j.source === "cli" || (workerCount === 0 && attestedPolicy === "explicit_pin")) && (
+                <div className="flex items-center gap-x-2 gap-y-1 flex-wrap text-[9px]">
+                  {hasHeaderMeters && (
+                    <div className="inline-flex items-center gap-1 min-w-0 flex-wrap">
+                      {(showJobTokens || showJobCompactTokens) && (
+                        <span
+                          className={`${SWARM_METER_PILL} font-mono text-muted tabular-nums`}
+                          title="Token usage"
+                        >
+                          {showJobTokens && <span>{jobTokens(j).toLocaleString()}t</span>}
+                          {showJobCompactTokens && (
+                            <span className={showJobTokens ? "text-accent/80" : "text-muted"}>
+                              {showJobTokens ? " · " : ""}
+                              {jobCompactTokens(j).toLocaleString()} compact
+                            </span>
+                          )}
                         </span>
                       )}
-                    </span>
-                  )}
-                  {showJobCost && spendSplit.headline != null && (
-                    <div className="inline-flex flex-col gap-0.5 min-w-0">
-                      <button
-                        type="button"
-                        aria-expanded={costExpanded}
-                        aria-label={`Job cost ${fmtMeterMoney(spendSplit.headline)}`}
-                        title={namedSpend(j.est_cost_usd, spendBasisFor(j))}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setExpandedJobCost((prev) => ({ ...prev, [j.id]: !costExpanded }));
-                        }}
-                        onKeyDown={(e) => e.stopPropagation()}
-                        className={`${SWARM_METER_PILL} font-mono text-good/85 tabular-nums hover:border-good/30 transition-colors ${DISCLOSURE_FOCUS}`}
-                      >
-                        {fmtMeterMoney(spendSplit.headline)}
-                        {costExpanded ? <ChevronDown size={8} className="shrink-0" /> : <ChevronRight size={8} className="shrink-0" />}
-                      </button>
-                      {costExpanded && (
-                        <div className="flex flex-col gap-px text-[8.5px] text-muted font-mono tabular-nums pl-1">
-                          <span>
-                            Measured{" "}
-                            <span className="text-txt/80">{fmtMeterMoney(spendSplit.measured)}</span>
-                          </span>
-                          <span>
-                            Estimated{" "}
-                            <span className="text-txt/80">{fmtMeterMoney(spendSplit.estimated)}</span>
-                          </span>
+                      {showJobCost && spendSplit.headline != null && (
+                        <div className="inline-flex flex-col gap-0.5 min-w-0">
+                          <button
+                            type="button"
+                            aria-expanded={costExpanded}
+                            aria-label={`Job cost ${fmtMeterMoney(spendSplit.headline)}`}
+                            title={namedSpend(j.est_cost_usd, spendBasisFor(j))}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setExpandedJobCost((prev) => ({ ...prev, [j.id]: !costExpanded }));
+                            }}
+                            onKeyDown={(e) => e.stopPropagation()}
+                            className={`${SWARM_METER_PILL} font-mono text-good/85 tabular-nums hover:border-good/30 transition-colors ${DISCLOSURE_FOCUS}`}
+                          >
+                            {fmtMeterMoney(spendSplit.headline)}
+                            {costExpanded ? <ChevronDown size={8} className="shrink-0" /> : <ChevronRight size={8} className="shrink-0" />}
+                          </button>
+                          {costExpanded && (
+                            <div className="flex flex-col gap-px text-[8.5px] text-muted font-mono tabular-nums pl-1">
+                              <span>
+                                Measured{" "}
+                                <span className="text-txt/80">{fmtMeterMoney(spendSplit.measured)}</span>
+                              </span>
+                              <span>
+                                Estimated{" "}
+                                <span className="text-txt/80">{fmtMeterMoney(spendSplit.estimated)}</span>
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {showJobSavings && (
+                        <div className="inline-flex flex-col gap-0.5 min-w-0">
+                          <button
+                            type="button"
+                            aria-expanded={savingsExpanded}
+                            aria-label={namedSavings(savings.total)}
+                            title={savingsDetail(savings)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setExpandedJobSavings((prev) => ({ ...prev, [j.id]: !savingsExpanded }));
+                            }}
+                            onKeyDown={(e) => e.stopPropagation()}
+                            className={`${SWARM_METER_PILL} font-sans text-good/85 tabular-nums hover:border-good/30 transition-colors ${DISCLOSURE_FOCUS}`}
+                          >
+                            <span className="text-good/45" aria-hidden="true">{"\u2193"}</span>
+                            {namedSavings(savings.total)}
+                            {savingsExpanded ? <ChevronDown size={8} className="shrink-0" /> : <ChevronRight size={8} className="shrink-0" />}
+                          </button>
+                          {savingsExpanded && (
+                            <p className="text-[8.5px] text-good/75 leading-snug pl-1 max-w-xs">
+                              {savingsDetail(savings)}
+                            </p>
+                          )}
                         </div>
                       )}
                     </div>
                   )}
-                  {showJobSavings && (
-                    <div className="inline-flex flex-col gap-0.5 min-w-0">
-                      <button
-                        type="button"
-                        aria-expanded={savingsExpanded}
-                        aria-label={namedSavings(savings.total)}
-                        title={savingsDetail(savings)}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setExpandedJobSavings((prev) => ({ ...prev, [j.id]: !savingsExpanded }));
-                        }}
-                        onKeyDown={(e) => e.stopPropagation()}
-                        className={`${SWARM_METER_PILL} font-sans text-good/85 tabular-nums hover:border-good/30 transition-colors ${DISCLOSURE_FOCUS}`}
-                      >
-                        <span className="text-good/45" aria-hidden="true">{"\u2193"}</span>
-                        {namedSavings(savings.total)}
-                        {savingsExpanded ? <ChevronDown size={8} className="shrink-0" /> : <ChevronRight size={8} className="shrink-0" />}
-                      </button>
-                      {savingsExpanded && (
-                        <p className="text-[8.5px] text-good/75 leading-snug pl-1 max-w-xs">
-                          {savingsDetail(savings)}
-                        </p>
-                      )}
-                    </div>
+                  {hasHeaderMeters && (headerModel || showJobRoutingPlaceholder || adapter) && (
+                    <span className="h-2.5 w-px bg-edge/70" aria-hidden="true" />
+                  )}
+                  {headerModel ? (
+                    <span className="inline-flex items-center gap-1 min-w-0 max-w-full font-mono text-accent/85" title={`Model: ${headerModel}`}>
+                      <Cpu size={9} className="shrink-0" />
+                      <span className="truncate min-w-0">{headerModel}</span>
+                    </span>
+                  ) : showJobRoutingPlaceholder ? (
+                    <span
+                      className="flex items-center gap-1 font-mono text-faint italic"
+                      title="Model routing in progress"
+                    >
+                      <Cpu size={9} /> routing…
+                    </span>
+                  ) : null}
+                  {workerCount === 0 && attestedPolicy === "explicit_pin" && (
+                    <span
+                      className="text-[8px] text-faint uppercase tracking-wide"
+                      title="explicit_pin · not auto-routed"
+                    >
+                      pin
+                    </span>
+                  )}
+                  {adapter && adapter.toLowerCase() !== displayModel.toLowerCase() && (
+                    <span className="text-faint lowercase">{adapter}</span>
+                  )}
+                  {j.source === "cli" && (
+                    <span
+                      className="text-muted uppercase tracking-[0.1em]"
+                      title="Started outside Marionette (Cursor MCP or terminal Puppetmaster) for this workspace"
+                    >
+                      external
+                    </span>
+                  )}
+                  {j.reuse_status && ["reused", "partial", "invalidated", "fresh"].includes(
+                    String(j.reuse_status).toLowerCase(),
+                  ) && (
+                    <span
+                      className="text-[9px] text-muted bg-panel2/40 border border-edge/50 px-1.5 py-0.5 rounded font-mono"
+                      title={
+                        (Array.isArray(j.invalidated_paths) && j.invalidated_paths.length
+                          ? `invalidated: ${j.invalidated_paths.slice(0, 6).join(", ")}${j.invalidated_paths.length > 6 ? ` (+${j.invalidated_paths.length - 6} more)` : ""}`
+                          : "")
+                        || j.reuse_reason
+                        || (j.source_job_id ? `Source job ${j.source_job_id}` : "Validation reuse status")
+                      }
+                    >
+                      {String(j.reuse_status).toLowerCase() === "partial"
+                        ? "partially reverified"
+                        : String(j.reuse_status).toLowerCase()}
+                    </span>
+                  )}
+                  {Array.isArray(j.invalidated_paths) && j.invalidated_paths.length > 0 && (
+                    <span
+                      className="text-[9px] text-faint font-mono truncate max-w-[40%]"
+                      title={j.invalidated_paths.join(", ")}
+                    >
+                      {j.invalidated_paths.slice(0, 2).join(", ")}
+                      {j.invalidated_paths.length > 2 ? ` +${j.invalidated_paths.length - 2}` : ""}
+                    </span>
+                  )}
+                  {!jobAccountingOwned(j) && (
+                    <span
+                      className="text-[9px] text-faint bg-panel2/30 border border-edge/40 px-1.5 py-0.5 rounded"
+                      title="Visible for cancellation only — does not affect Marionette session cost or savings"
+                    >
+                      visibility only
+                    </span>
                   )}
                 </div>
               )}
-              {workerCount > 0 && (
-                <span
-                  className={`${SWARM_METER_PILL} text-muted tabular-nums`}
-                  aria-label="Workers"
-                  title={`${finishedWorkers} of ${workerCount} workers terminal`}
-                >
-                  {finishedWorkers}/{workerCount}
-                </span>
-              )}
-              {hasHeaderMeters && (headerModel || showJobRoutingPlaceholder || adapter) && (
-                <span className="h-2.5 w-px bg-edge/70" aria-hidden="true" />
-              )}
-              {headerModel ? (
-                <span className="inline-flex items-center gap-1 min-w-0 max-w-full font-mono text-accent/85" title={`Model: ${headerModel}`}>
-                  <Cpu size={9} className="shrink-0" />
-                  <span className="truncate min-w-0">{headerModel}</span>
-                </span>
-              ) : showJobRoutingPlaceholder ? (
-                <span
-                  className="flex items-center gap-1 font-mono text-faint italic"
-                  title="Model routing in progress"
-                >
-                  <Cpu size={9} /> routing…
-                </span>
+
+              {outcomeWarning && j.outcome?.reasons?.length ? (
+                <div className="text-[9.5px] text-warn/90">
+                  {j.outcome.reasons[0]}
+                </div>
               ) : null}
-              {workerCount === 0 && attestedPolicy === "explicit_pin" && (
-                <span
-                  className="text-[8px] text-faint uppercase tracking-wide"
-                  title="explicit_pin · not auto-routed"
-                >
-                  pin
-                </span>
-              )}
-              {adapter && adapter.toLowerCase() !== displayModel.toLowerCase() && (
-                <span className="text-faint lowercase">{adapter}</span>
-              )}
-              {j.source === "cli" && (
-                <span
-                  className="text-muted uppercase tracking-[0.1em]"
-                  title="Started outside Marionette (Cursor MCP or terminal Puppetmaster) for this workspace"
-                >
-                  external
-                </span>
-              )}
-              {j.reuse_status && ["reused", "partial", "invalidated", "fresh"].includes(
-                String(j.reuse_status).toLowerCase(),
-              ) && (
-                <span
-                  className="text-[9px] text-muted bg-panel2/40 border border-edge/50 px-1.5 py-0.5 rounded font-mono"
-                  title={
-                    (Array.isArray(j.invalidated_paths) && j.invalidated_paths.length
-                      ? `invalidated: ${j.invalidated_paths.slice(0, 6).join(", ")}${j.invalidated_paths.length > 6 ? ` (+${j.invalidated_paths.length - 6} more)` : ""}`
-                      : "")
-                    || j.reuse_reason
-                    || (j.source_job_id ? `Source job ${j.source_job_id}` : "Validation reuse status")
-                  }
-                >
-                  {String(j.reuse_status).toLowerCase() === "partial"
-                    ? "partially reverified"
-                    : String(j.reuse_status).toLowerCase()}
-                </span>
-              )}
-              {Array.isArray(j.invalidated_paths) && j.invalidated_paths.length > 0 && (
-                <span
-                  className="text-[9px] text-faint font-mono truncate max-w-[40%]"
-                  title={j.invalidated_paths.join(", ")}
-                >
-                  {j.invalidated_paths.slice(0, 2).join(", ")}
-                  {j.invalidated_paths.length > 2 ? ` +${j.invalidated_paths.length - 2}` : ""}
-                </span>
-              )}
-              {!jobAccountingOwned(j) && (
-                <span
-                  className="text-[9px] text-faint bg-panel2/30 border border-edge/40 px-1.5 py-0.5 rounded"
-                  title="Visible for cancellation only — does not affect Marionette session cost or savings"
-                >
-                  visibility only
-                </span>
-              )}
+
+              {st === "in_progress" && (() => {
+                const since = relativeSince(j.updated_at ?? j.created_at, nowTick);
+                if (!since) return null;
+                return (
+                  <div className="flex items-center gap-2 text-[9px] text-faint tabular-nums">
+                    <span className="flex items-center gap-1">
+                      <Activity size={9} className="text-accent/60 animate-pulse" />
+                      {since}
+                    </span>
+                  </div>
+                );
+              })()}
             </div>
-          )}
-
-          {outcomeWarning && j.outcome?.reasons?.length ? (
-            <div className="pl-6 pr-1 mt-1 text-[9.5px] text-warn/90">
-              {j.outcome.reasons[0]}
-            </div>
-          ) : null}
-
-
-          {/* Last activity supplies motion without repeating the receipt. */}
-          {st === "in_progress" && (() => {
-            const since = relativeSince(j.updated_at ?? j.created_at, nowTick);
-            if (!since) return null;
-            return (
-              <div className="flex items-center gap-2 pl-6 pr-1 mt-1 text-[9px] text-faint tabular-nums">
-                <span className="flex items-center gap-1">
-                  <Activity size={9} className="text-accent/60 animate-pulse" />
-                  {since}
-                </span>
-              </div>
-            );
-          })()}
-        </div>
-
-        {/* Expanded details */}
-        {isExpanded && (
-          <div className="px-2 pb-2 pt-1 flex flex-col gap-2 bg-panel2/10">
             {/* Workers first -- never a standalone Routing card stack. */}
             {tasks.length > 0 && (
               <div className="border-t border-edge/25 pt-2 flex flex-col gap-1.5">
