@@ -10,6 +10,11 @@
 import { layout, prepare, type PreparedText } from "@chenglou/pretext";
 import type { GroupedItem, Msg } from "../TranscriptList";
 import { isWorkingEllipsisFallback } from "../../lib/turnProgress";
+import {
+  isTrivialAssistantCrumb,
+  looksLikeStatusHeadline,
+  sanitizeThinkingStatusGlue,
+} from "./thinkingToolPrep";
 
 /** Canvas font strings synced with TranscriptList bubble typography. */
 export const TRANSCRIPT_USER_FONT =
@@ -131,6 +136,13 @@ export function assistantTextForMeasure(raw: string): string {
   // Match Bubble cleanAssistantText — empty after strip, or the Working...
   // placeholder itself, stays empty (never leak into fold chrome / heights).
   if (!result || isWorkingEllipsisFallback(result)) return "";
+  if (isTrivialAssistantCrumb(result) || looksLikeStatusHeadline(result)) return "";
+  if (/\*{2,}|_{2,}/.test(result)) {
+    const glued = sanitizeThinkingStatusGlue(result);
+    if (!glued || isTrivialAssistantCrumb(glued) || looksLikeStatusHeadline(glued)) {
+      return "";
+    }
+  }
   return result;
 }
 

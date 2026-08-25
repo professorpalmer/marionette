@@ -78,7 +78,7 @@ export function looksLikeStatusHeadline(text: string): boolean {
 export function sanitizeThinkingStatusGlue(text: string): string {
   const raw = String(text || "");
   if (!raw.includes("*") && !raw.includes("_")) return raw;
-  // Split on emphasis glue runs; if every non-empty part is a status headline,
+  // Split on emphasis glue runs; if ANY non-empty part is a status headline,
   // keep only the latest (Codex bold-title frames).
   const parts = raw
     .split(/\*{2,}|_{2,}/)
@@ -311,6 +311,8 @@ export type ToolPrepOpts = {
 export function looksLikeFinalAnswer(text: string): boolean {
   const t = (text || "").trim();
   if (!t) return false;
+  // Status headlines are fold chrome, not a 343 spoken finale.
+  if (looksLikeStatusHeadline(t)) return false;
   if (t.length >= 240) return true;
   if ((t.match(/\n/g) || []).length >= 3) return true;
   // Markdown table (audit validation summaries).

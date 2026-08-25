@@ -650,6 +650,7 @@ describe("thinkingToolPrep module", () => {
     expect(coalesceThinkingChunk("redesign", "****Finalizing...")).toBe("redesign Finalizing...");
     expect(coalesceThinkingChunk("Diagnosing…", "****Inspecting…")).toBe("Inspecting…");
     expect(sanitizeThinkingStatusGlue("Diagnosing…****Inspecting…")).toBe("Inspecting…");
+    expect(sanitizeThinkingStatusGlue("hello****Inspecting…")).toBe("Inspecting…");
   });
 
   it("upsertStreamingThinking coalesceSnapshots uses coalesce; default strict-appends", () => {

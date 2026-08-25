@@ -571,10 +571,6 @@ body.is-row-resizing iframe {
   user-select: text;
   font-weight: 400;
 }
-.transcript-msg-body strong,
-.transcript-msg-body b {
-  font-weight: 400;
-}
 .transcript-fold-chrome {
   font-weight: 400;
 }

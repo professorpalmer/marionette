@@ -468,6 +468,12 @@ export default function Conversation({
     return () => window.clearInterval(id);
   }, [busyStartedAt]);
   const busyElapsedMs = busyStartedAt != null ? Math.max(0, busyNow - busyStartedAt) : null;
+  // status idle/done/error clears busyStartedAt; keep the last tick so a
+  // just-sealed Worked for row still has a real duration.
+  const [lastBusyElapsedMs, setLastBusyElapsedMs] = useState<number | null>(null);
+  useEffect(() => {
+    if (busyElapsedMs != null && busyElapsedMs > 0) setLastBusyElapsedMs(busyElapsedMs);
+  }, [busyElapsedMs]);
   // Sticky until assistant_done / error / Stop — never infer end-of-turn from
   // transcript shape (mid-turn narration after tools looks like a final answer).
   // awaiting_swarm: model turn closed after background dispatch, but workers
@@ -3605,7 +3611,7 @@ export default function Conversation({
           editingIndex={editingIndex}
           auto={auto}
           plan={plan}
-          busyElapsedMs={busyElapsedMs}
+          busyElapsedMs={busyElapsedMs ?? lastBusyElapsedMs}
           turnOpen={turnOpen}
           holdSwarmAwait={holdSwarmAwait}
           feedSettled={feedSettled}

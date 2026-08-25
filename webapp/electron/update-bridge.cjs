@@ -114,7 +114,7 @@ function statusPath(line) {
 }
 
 function isTrackedSelfEditLine(line) {
-  if (!line.trim() || line.startsWith("??")) return false;
+  if (!line.trim() || line.startsWith("??") || line.startsWith("!!")) return false;
   const file = statusPath(line);
   return !(
     file.startsWith("results/") ||
@@ -270,7 +270,7 @@ async function recoverInterruptedMerge(repoRoot) {
 // a dirty tree can be stashed + reapplied, but an ahead/diverged tree needs the
 // user to rebase or reset -- we never rewrite their commits silently.
 async function inspectTree(repoRoot, branch) {
-  const status = await gitCapture(repoRoot, ["status", "--porcelain"]);
+  const status = await gitCapture(repoRoot, ["status", "--porcelain", "-uno"]);
   // Only TRACKED modifications count as dirty. Untracked files ("?? ") cannot
   // block a fast-forward merge, and the pilot routinely drops scratch files
   // (analysis scripts, result dumps) into the checkout -- counting those made

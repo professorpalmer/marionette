@@ -406,6 +406,8 @@ describe("turnLooksAnswerComplete / shouldShowBusyFooter (T5)", () => {
 describe("looksLikeFinalAnswer / late Cursor tool insert", () => {
   it("treats short preambles as non-final and long/table answers as final", () => {
     expect(looksLikeFinalAnswer("I'll validate the schedule fixes.")).toBe(false);
+    expect(looksLikeFinalAnswer("Inspecting…")).toBe(false);
+    expect(looksLikeFinalAnswer("Investigating…")).toBe(false);
     expect(looksLikeFinalAnswer("x".repeat(240))).toBe(true);
     expect(
       looksLikeFinalAnswer(

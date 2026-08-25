@@ -60,6 +60,11 @@ import {
 } from "../lib/turnProgress";
 import { isAgentLoopOpen } from "./conversation/runnersBusy";
 import {
+  isTrivialAssistantCrumb,
+  looksLikeStatusHeadline,
+  sanitizeThinkingStatusGlue,
+} from "./conversation/thinkingToolPrep";
+import {
   autoHaltPresentation,
   autoStatusPresentation,
   commandApprovalStatusCopy,
@@ -2110,6 +2115,15 @@ function cleanAssistantText(text: string): string {
   // never paint that string (it leaked as three stacked Bubbles on a fresh
   // idle session when crumbs already held the fallback).
   if (!result || isWorkingEllipsisFallback(result)) return "";
+  // Status headlines / ****-glued title frames belong in fold chrome — never as
+  // a spoken Bubble. Keep intentional markdown (**emphasis**) in real prose.
+  if (isTrivialAssistantCrumb(result) || looksLikeStatusHeadline(result)) return "";
+  if (/\*{2,}|_{2,}/.test(result)) {
+    const glued = sanitizeThinkingStatusGlue(result);
+    if (!glued || isTrivialAssistantCrumb(glued) || looksLikeStatusHeadline(glued)) {
+      return "";
+    }
+  }
   return result;
 }
 
@@ -2513,8 +2527,9 @@ function ActivityGroup({
   const sealedWorkMs = (() => {
     const fromItems = activityWorkDurationMs(items);
     if (fromItems != null && fromItems > 0) return fromItems;
-    // Sealed or live: a real wall-clock timer seeds Worked for (clamped to 1s).
-    if (busyElapsedMs != null && busyElapsedMs > 0) return busyElapsedMs;
+    // Live fold only: wall-clock busy timer seeds Worked for (label clamps to 1s).
+    // Prior folds must not inherit the current turn's busyElapsedMs.
+    if (isLiveFold && busyElapsedMs != null && busyElapsedMs > 0) return busyElapsedMs;
     // Tools/thinking ran but no duration was recorded — chrome is visible, so
     // show at least 1s instead of a bare "Worked for" label.
     if (actionCount > 0 || thinkingItems.length > 0) return 1000;

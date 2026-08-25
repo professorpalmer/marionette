@@ -206,6 +206,25 @@ export function isNaturalStopCause(cause: TerminalCause): boolean {
   return cause === CAUSE_NATURAL;
 }
 
+/**
+ * Map provider ``incomplete_reason`` onto a terminal cause.
+ * Empty → null (no incomplete signal). Unknown non-empty → incomplete.
+ */
+export function causeFromIncompleteReason(raw: unknown): TerminalCause | null {
+  const text = String(raw || "").trim();
+  if (!text) return null;
+  const lower = text.toLowerCase();
+  if (lower === "max_output_tokens" || lower === "length" || lower === "max_tokens") {
+    return CAUSE_LENGTH;
+  }
+  if (lower === "content_filter" || lower === "content_filtered") {
+    return CAUSE_CONTENT_FILTER;
+  }
+  const mapped = canonicalizeTerminalCause(text);
+  if (mapped !== CAUSE_UNSPECIFIED && mapped !== CAUSE_NATURAL) return mapped;
+  return CAUSE_INCOMPLETE;
+}
+
 export function isAuthoritativeComplete(opts: {
   stopCause?: unknown;
   userStopped?: boolean;
@@ -277,7 +296,7 @@ export function settleFromAssistantDone(opts: {
   liveJobs?: boolean;
 }): TurnSettle {
   const cause = canonicalizeTerminalCause(opts.stopCause);
-  const incomplete = String(opts.incompleteReason || "").trim();
+  const incompleteCause = causeFromIncompleteReason(opts.incompleteReason);
   if (opts.liveJobs) {
     return {
       kind: "settle",
@@ -292,17 +311,20 @@ export function settleFromAssistantDone(opts: {
   }
   // Model died mid-finale: backend may still send stop_cause=natural plus
   // incomplete_reason. Use existing incomplete chrome; do not hang Investigating.
-  if (incomplete) {
+  if (incompleteCause) {
+    const settledCause = isNaturalStopCause(cause) || cause === CAUSE_UNSPECIFIED
+      ? incompleteCause
+      : cause;
     return {
       kind: "settle",
       lifecycle: TURN_SETTLED_INCOMPLETE,
-      cause: isNaturalStopCause(cause) ? CAUSE_INCOMPLETE : cause,
+      cause: settledCause,
       status: "done",
       turnOpen: false,
       explanation: dirtyFinishExplanation({
-        cause: isNaturalStopCause(cause) ? CAUSE_INCOMPLETE : cause,
+        cause: settledCause,
         finishReason: opts.finishReason,
-      }) || terminalCauseCopy(CAUSE_INCOMPLETE),
+      }) || terminalCauseCopy(settledCause),
     };
   }
   if (isNaturalStopCause(cause)) {
