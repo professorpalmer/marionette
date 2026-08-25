@@ -382,13 +382,22 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
           continue;
         }
         if (ev.kind === "stream") {
-          if (localStreamActiveRef.current) continue;
           const frame = ev.data || {};
+          const terminal = isTerminalStreamKind(String(frame.kind || ""));
+          // The durable cursor is the recovery path when a live SSE remains open
+          // but misses its terminal frame. Ignore duplicate progress, not an
+          // authoritative terminal the live path has not settled.
+          if (
+            localStreamActiveRef.current
+            && (!terminal || (turnSettledRef?.current ?? false))
+          ) {
+            continue;
+          }
           if (typeof frame.generation === "number" && frame.generation > 0) {
             ringGenerationRef.current = frame.generation;
           }
           applyStreamEventRef.current(storeStreamToStreamEvent(frame));
-          if (isTerminalStreamKind(String(frame.kind || ""))) sawTerminal = true;
+          if (terminal) sawTerminal = true;
         }
       }
 
