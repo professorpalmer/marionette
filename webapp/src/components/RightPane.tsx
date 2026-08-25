@@ -336,6 +336,20 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
     persistBoard(tabOrder, nextOpenCards);
   };
 
+  useEffect(() => {
+    const onClose = (e: Event) => {
+      const tab = (e as CustomEvent<{ tab?: Tab }>).detail?.tab;
+      if (!tab) return;
+      if (tab === PINNED_LAST) {
+        closeSettings();
+        return;
+      }
+      if (openCards.includes(tab)) removeCard(tab);
+    };
+    window.addEventListener("harness-close-right-card", onClose as EventListener);
+    return () => window.removeEventListener("harness-close-right-card", onClose as EventListener);
+  }, [closeSettings, openCards, tabOrder]);
+
   const persistCardLayouts = useCallback((nextLayouts: CardLayouts) => {
     cardLayoutsRef.current = nextLayouts;
     setCardLayouts(nextLayouts);

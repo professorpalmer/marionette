@@ -491,7 +491,7 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
 
   if (loading) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center bg-bg">
+      <div data-close-surface="editor" className="flex-1 flex flex-col items-center justify-center bg-bg">
         <Loader2 className="animate-spin text-accent mb-2" size={24} />
         <span className="text-[12px] text-muted">Reading file...</span>
       </div>
@@ -500,7 +500,7 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
 
   if (notice && kind !== "binary" && kind !== "pdf" && kind !== "image") {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center bg-bg px-6 text-center">
+      <div data-close-surface="editor" className="flex-1 flex flex-col items-center justify-center bg-bg px-6 text-center">
         <span className="text-risk font-semibold text-[13px] mb-2">{notice}</span>
         <button
           onClick={onClose}

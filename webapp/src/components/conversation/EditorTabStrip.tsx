@@ -46,7 +46,7 @@ export default function EditorTabStrip({
   return (
     <>
       {openTabs.length > 0 && (
-        <div className="flex items-center gap-1 px-4 bg-panel border-b border-edge h-9 shrink-0 overflow-x-auto scrollbar-none select-none">
+        <div data-close-surface="editor" className="flex items-center gap-1 px-4 bg-panel border-b border-edge h-9 shrink-0 overflow-x-auto scrollbar-none select-none">
           <button
             onClick={() => onSelectTab("chat")}
             className={`flex items-center h-full px-3 text-[12px] font-medium transition-colors border-b-2 ${

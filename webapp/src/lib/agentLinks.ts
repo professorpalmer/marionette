@@ -422,6 +422,21 @@ export function openAgentUrl(url: string): void {
   }
 }
 
+/** Cmd/Ctrl+click or middle-click: system browser, not the in-app pane. */
+export function openAgentUrlExternal(url: string): void {
+  if (!url || !isExternalUrl(url)) return;
+  const ipc = (window as unknown as { harnessIPC?: { openExternal?: (href: string) => void } }).harnessIPC;
+  if (ipc && typeof ipc.openExternal === "function") {
+    try { ipc.openExternal(url); return; } catch { /* fall through */ }
+  }
+  try { window.open(url, "_blank", "noopener,noreferrer"); } catch { /* ignore */ }
+}
+
+function wantsSystemBrowser(e?: { metaKey?: boolean; ctrlKey?: boolean; button?: number }): boolean {
+  if (!e) return false;
+  return Boolean(e.metaKey || e.ctrlKey || e.button === 1);
+}
+
 export function openAgentFile(pathOrHref: string, line?: number, col?: number): void {
   const parsed = parseFileHref(pathOrHref) || (looksLikeFilePath(pathOrHref)
     ? { path: pathOrHref.trim(), line, col }
@@ -578,7 +593,7 @@ export function syncAgentCommandOutput(id: string, output: string): void {
 }
 
 /** Route a markdown href click (or synthetic open). */
-export function openAgentLink(href: string, e?: { preventDefault(): void }): void {
+export function openAgentLink(href: string, e?: { preventDefault(): void; metaKey?: boolean; ctrlKey?: boolean; button?: number }): void {
   if (!href) return;
   const target = classifyTranscriptTarget(href);
   if (target.kind === "none") {
@@ -587,7 +602,8 @@ export function openAgentLink(href: string, e?: { preventDefault(): void }): voi
   }
   e?.preventDefault();
   if (target.kind === "url") {
-    openAgentUrl(target.href);
+    if (wantsSystemBrowser(e)) openAgentUrlExternal(target.href);
+    else openAgentUrl(target.href);
     return;
   }
   if (target.kind === "spill") {

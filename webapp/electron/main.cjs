@@ -7,7 +7,7 @@
 // The renderer is the SAME React app as the web build; only the transport
 // implementation differs (IPC here vs fetch/SSE on the web).
 
-const { app, BrowserWindow, ipcMain, dialog, shell, session, nativeTheme } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, shell, session, nativeTheme, Menu, clipboard } = require("electron");
 app.name = "Marionette";
 const { spawn } = require("node:child_process");
 const http = require("node:http");
@@ -1502,6 +1502,63 @@ function setupRequestInterception() {
   );
 }
 
+
+function linkContextMenuTemplate(url) {
+  return [
+    {
+      label: "Open in system browser",
+      click: () => {
+        if (!isAllowedBrowserUrl(url)) return;
+        Promise.resolve(shell.openExternal(url)).catch(() => {});
+      },
+    },
+    {
+      label: "Open in-app browser",
+      click: () => {
+        if (win && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
+          win.webContents.send("browser:openInApp", url);
+        }
+      },
+    },
+    {
+      label: "Copy link",
+      click: () => {
+        try { clipboard.writeText(url); } catch {}
+      },
+    },
+  ];
+}
+
+function wireLinkContextMenu(contents) {
+  if (!contents || contents.isDestroyed()) return;
+  contents.on("context-menu", (_e, params) => {
+    const url = params && params.linkURL;
+    if (!url || !isAllowedBrowserUrl(url)) return;
+    const owner = (win && !win.isDestroyed()) ? win : BrowserWindow.fromWebContents(contents);
+    try {
+      Menu.buildFromTemplate(linkContextMenuTemplate(url)).popup({ window: owner || undefined });
+    } catch (err) {
+      logMain(`link context-menu failed: ${err && err.message ? err.message : err}`);
+    }
+  });
+}
+
+function wireCloseTabShortcut(contents) {
+  if (!contents || contents.isDestroyed()) return;
+  contents.on("before-input-event", (event, input) => {
+    try {
+      if (!input || input.type !== "keyDown") return;
+      const mod = process.platform === "darwin" ? input.meta : input.control;
+      if (!mod || input.shift || input.alt) return;
+      if (String(input.key).toLowerCase() !== "w") return;
+      event.preventDefault();
+      if (win && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
+        win.webContents.send("app:closeTab");
+      }
+    } catch {}
+  });
+}
+
 function createWindow() {
   const saved = loadWindowState();
   win = new BrowserWindow({
@@ -1551,6 +1608,8 @@ function createWindow() {
   }
   trackWindowState(win);
   loadRenderer();
+  wireLinkContextMenu(win.webContents);
+  wireCloseTabShortcut(win.webContents);
 
   // Drop the reference when the window is closed so a reopen builds a clean one
   // (and a failed renderer load doesn't leave a half-dead window bound to `win`).
@@ -1901,6 +1960,8 @@ app.on("web-contents-created", (_e, contents) => {
   if (type === "webview") {
     applyChromeFingerprint(contents);
     wireWikiConnectNavigation(contents);
+    wireLinkContextMenu(contents);
+    wireCloseTabShortcut(contents);
     logMain(`[browser] webview contents created; UA applied`);
     contents.setWindowOpenHandler(() => {
       return {
@@ -2032,6 +2093,12 @@ ipcMain.handle("browser:openExternal", async (_e, url) => {
     return { ok: false, error: String(e && e.message ? e.message : e) };
   }
 });
+
+ipcMain.handle("window:close", () => {
+  if (win && !win.isDestroyed()) win.close();
+  return { ok: true };
+});
+
 
 app.whenReady().then(async () => {
   if (!gotSingleInstanceLock) return; // a prior instance owns the backend

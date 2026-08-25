@@ -1193,7 +1193,8 @@ describe("SwarmPane truthful failed vs cancelled chrome", () => {
     expect(screen.getByText(/1 failed/)).toBeInTheDocument();
     fireEvent.click(screen.getByText("Finished"));
     fireEvent.click(await screen.findByText("Timed-out command"));
-    expect(screen.getByText("1/1 · 1 failed")).toBeInTheDocument();
+    expect(screen.getByLabelText("Workers")).toHaveTextContent("1/1");
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
     expect(screen.getByTitle("Dismiss from tracker (stays in Puppetmaster history)")).toBeInTheDocument();
   });
 
@@ -1840,8 +1841,10 @@ describe("SwarmPane worker progress", () => {
 
     await waitFor(() => {
       expect(screen.getByText("Workers (3)")).toBeInTheDocument();
-      expect(screen.getByText("2/3 · 1 failed")).toBeInTheDocument();
+      expect(screen.getByLabelText("Workers")).toHaveTextContent("2/3");
     });
+    expect(screen.getByRole("button", { name: /b, failed/i })).toBeInTheDocument();
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
   });
 });
 
@@ -1912,8 +1915,8 @@ describe("SwarmPane worker outcome hierarchy", () => {
     expect(worker.getAttribute("aria-label") || "").toMatch(/degraded/i);
     expect(worker).toHaveTextContent("degraded");
     expect(worker.querySelector(".text-good")).toBeNull();
-    expect(screen.getByText("1/1 · 1 degraded")).toBeInTheDocument();
-    expect(screen.getByLabelText(/1 of 1 workers finished, 0 failed, 1 degraded/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Workers")).toHaveTextContent("1/1");
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
     expect(container.querySelector('[style*="width: 220px"]')).toBeTruthy();
 
     fireEvent.click(worker);
@@ -1944,7 +1947,7 @@ describe("SwarmPane worker outcome hierarchy", () => {
 
     expect(screen.getByText("Workers (3)")).toBeInTheDocument();
     expect(screen.getByLabelText("Workers")).toHaveTextContent("3/3");
-    expect(screen.getByLabelText(/3 of 3 workers finished, 0 failed, 0 degraded/)).toBeInTheDocument();
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
   });
 
   it("keeps x/N and failed count on mixed 2/3 terminal progress", async () => {
@@ -1964,9 +1967,10 @@ describe("SwarmPane worker outcome hierarchy", () => {
     render(<SwarmPane />);
     await expandVisibleJobs();
     await waitFor(() => {
-      expect(screen.getByText("2/3 · 1 failed")).toBeInTheDocument();
+      expect(screen.getByLabelText("Workers")).toHaveTextContent("2/3");
     });
-    expect(screen.getByLabelText(/2 of 3 workers finished, 1 failed, 0 degraded/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /fail-b/ }).getAttribute("aria-label") || "").toMatch(/failed/i);
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
   });
 
   it("keeps x/N during active 1/3 progress", async () => {
@@ -1985,9 +1989,9 @@ describe("SwarmPane worker outcome hierarchy", () => {
 
     render(<SwarmPane />);
     await expandVisibleJobs();
-    const progress = await screen.findByLabelText(/1 of 3 workers finished, 0 failed, 0 degraded/);
+    await waitFor(() => expect(screen.getByLabelText("Workers")).toHaveTextContent("1/3"));
     expect(screen.getByText("Workers (3)")).toBeInTheDocument();
-    expect(progress).toHaveTextContent("1/3");
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
   });
 
   it("does not mark any worker degraded from unmatched verification without task_id", async () => {
@@ -3088,5 +3092,47 @@ describe("SwarmPane command vs swarm split", () => {
     expect(await screen.findByText("No swarm jobs yet")).toBeInTheDocument();
     expect(screen.queryByText("sleep 999")).not.toBeInTheDocument();
     expect(screen.getByText("Swarm Tracker").parentElement).not.toHaveTextContent("(1)");
+  });
+});
+
+describe("SwarmPane v0.9.344 density", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
+    clearSWRCache();
+    mockArtifacts.mockResolvedValue([]);
+    mockSwarmLive.mockResolvedValue({
+      session: { tokens_used: 12, est_cost_usd: 0.01 },
+      jobs: [
+        {
+          id: "job-live",
+          goal: "Live audit",
+          status: "running",
+          tokens: 12,
+          est_cost_usd: 0.01,
+          created_at: "2026-03-01T00:00:00Z",
+        },
+        {
+          id: "job-done",
+          goal: "Finished review",
+          status: "complete",
+          tokens: 8,
+          est_cost_usd: 0.002,
+          created_at: "2026-02-01T00:00:00Z",
+        },
+      ],
+    });
+  });
+
+  it("keeps status, title, and spend without per-card progress bars or card borders", async () => {
+    render(<SwarmPane />);
+    expect(await screen.findByText("Live audit")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Finished"));
+    expect(await screen.findByText("Finished review")).toBeInTheDocument();
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+    const live = screen.getByText("Live audit").closest("[data-job-id]");
+    expect(live?.className || "").not.toMatch(/rounded-md/);
+    expect(live?.className || "").not.toMatch(/\bborder\b/);
   });
 });

@@ -958,11 +958,6 @@ export function SavingsChip({ parts, className }: { parts: SavingsParts; classNa
   );
 }
 
-// The four visible phases of a swarm's life. A job advances left-to-right; the
-// strip fills behind the active phase so a running swarm reads as *moving*
-// instead of a static spinner. "failed" paints the reached phase red.
-const PHASES = ["dispatched", "routing", "workers", "done"] as const;
-
 function jobPhase(j: Job): { key: string; label: string; index: number; failed: boolean } {
   const st = jobStatus(j);
   const tasks = j.tasks || [];
@@ -984,99 +979,6 @@ function jobPhase(j: Job): { key: string; label: string; index: number; failed: 
   if (total > 0) return { key: "workers", label: `${total} worker${total > 1 ? "s" : ""}`, index: 2, failed: false };
   if (hasRouting) return { key: "routing", label: "routing", index: 1, failed: false };
   return { key: "dispatched", label: "dispatched", index: 0, failed: false };
-}
-
-function PhaseStrip({ job, phase }: { job: Job; phase?: ReturnType<typeof jobPhase> }) {
-  const { index, failed, key } = phase ?? jobPhase(job);
-  const warning = jobStatus(job) === "completed" && job.outcome?.trustworthy === false;
-  const active = key !== "done" && !failed;
-  return (
-    <div
-      className="flex items-center gap-0.5"
-      role="progressbar"
-      aria-label={`Swarm phase: ${key}`}
-      aria-valuemin={0}
-      aria-valuemax={PHASES.length - 1}
-      aria-valuenow={index}
-    >
-      {PHASES.map((_, i) => {
-        const reached = i <= index;
-        const isActiveSeg = i === index && active;
-        const color = failed && i === index
-          ? (key === "cancelled" ? "bg-muted" : "bg-risk")
-          : warning && reached
-          ? "bg-warn"
-          : reached
-          ? (key === "done" ? "bg-good" : "bg-accent")
-          : "bg-edge/60";
-        return (
-          <div
-            key={i}
-            className={`h-px flex-1 transition-all ${color} ${isActiveSeg ? "animate-pulse" : ""}`}
-          />
-        );
-      })}
-    </div>
-  );
-}
-
-function WorkerProgress({
-  tasks,
-  failureForTask,
-}: {
-  tasks: Task[];
-  failureForTask: Map<string, Artifact>;
-}) {
-  const total = tasks.length;
-  if (total === 0) return null;
-  let ok = 0;
-  let degraded = 0;
-  let failed = 0;
-  for (const t of tasks) {
-    const outcome = workerOutcome(t, failureForTask.get(t.id));
-    if (outcome === "ok") ok += 1;
-    else if (outcome === "degraded") degraded += 1;
-    else if (outcome === "failed") failed += 1;
-  }
-  const finished = ok + degraded + failed;
-  const okPct = Math.round((ok / total) * 100);
-  const degradedPct = Math.round((degraded / total) * 100);
-  const failedPct = Math.round((failed / total) * 100);
-  const allOk = ok === total;
-  const countText = [
-    `${finished}/${total}`,
-    failed > 0 ? `${failed} failed` : "",
-    degraded > 0 ? `${degraded} degraded` : "",
-  ].filter(Boolean).join(" · ");
-  return (
-    <div
-      className="flex items-center gap-2"
-      role="progressbar"
-      aria-label={`${finished} of ${total} workers finished, ${failed} failed, ${degraded} degraded`}
-      aria-valuemin={0}
-      aria-valuemax={total}
-      aria-valuenow={finished}
-    >
-      <div className="flex-1 h-px bg-edge/50 overflow-hidden flex">
-        {okPct > 0 && (
-          <div className="h-full bg-good transition-all duration-500" style={{ width: `${okPct}%` }} />
-        )}
-        {degradedPct > 0 && (
-          <div className="h-full bg-warn transition-all duration-500" style={{ width: `${degradedPct}%` }} />
-        )}
-        {failedPct > 0 && (
-          <div className="h-full bg-risk transition-all duration-500" style={{ width: `${failedPct}%` }} />
-        )}
-      </div>
-      {!allOk && (
-        <span className={`text-[9px] tabular-nums shrink-0 ${
-          failed > 0 ? "text-risk/80" : degraded > 0 ? "text-warn/80" : "text-faint"
-        }`}>
-          {countText}
-        </span>
-      )}
-    </div>
-  );
 }
 
 function WorkerModelSlot({
@@ -1622,19 +1524,7 @@ export default function SwarmPane() {
         // collapsed and clipped its own findings instead of pushing the list into
         // overflow. Pinning shrink-0 keeps the card at full content height so the
         // list actually scrolls.
-        className={`shrink-0 rounded-md border bg-panel2/20 flex flex-col overflow-hidden transition-colors ${
-          st === "in_progress"
-            ? "border-accent/30"
-            : st === "failed"
-            ? "border-risk/25"
-            : outcomeWarning
-            ? "border-warn/35"
-            : st === "completed"
-            ? "border-good/25"
-            : st === "cancelled"
-            ? "border-muted/40"
-            : "border-edge"
-        }`}
+        className="shrink-0 flex flex-col"
       >
         {/* Header row. A div (not a button) so the dismiss control can be a real
             nested button without invalid button-in-button markup. */}
@@ -1645,7 +1535,7 @@ export default function SwarmPane() {
           aria-label={`${j.goal || "Swarm job"}, ${phase.label}`}
           onClick={toggle}
           onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } }}
-          className={`w-full flex flex-col gap-0 p-2 hover:bg-panel2/35 text-left transition-colors select-none cursor-pointer ${DISCLOSURE_FOCUS}`}
+          className={`w-full flex flex-col gap-0 py-1 px-1.5 hover:bg-panel2/25 text-left transition-colors select-none cursor-pointer ${DISCLOSURE_FOCUS}`}
         >
           <div className="flex items-center justify-between w-full gap-2">
             <div className="flex items-center gap-2 min-w-0 flex-1">
@@ -1683,6 +1573,19 @@ export default function SwarmPane() {
                 {jobIdentifier(j.id)}
               </button>
             </div>
+            <span className={`text-[9px] font-medium tabular-nums shrink-0 ${
+              phase.key === "cancelled"
+                ? "text-muted"
+                : phase.failed
+                ? "text-risk/80"
+                : outcomeWarning
+                ? "text-warn/80"
+                : phase.key === "done"
+                ? "text-faint"
+                : "text-accent/80"
+            }`}>
+              {phase.label}
+            </span>
             <div className="flex items-center gap-2 shrink-0 text-[10px]">
               {/* Kill: running jobs only. Best-effort cooperative cancel on the
                   backend. Shows 'cancelling...' until the next poll flips the job
@@ -1885,23 +1788,6 @@ export default function SwarmPane() {
             </div>
           ) : null}
 
-          {/* Phase strip + label -- the at-a-glance "where is this swarm". */}
-          <div className="flex items-center gap-2 pl-6 pr-1 mt-2">
-            <div className="flex-1"><PhaseStrip job={j} phase={phase} /></div>
-            <span className={`text-[9px] font-medium tabular-nums shrink-0 ${
-              phase.key === "cancelled"
-                ? "text-muted"
-                : phase.failed
-                ? "text-risk/80"
-                : outcomeWarning
-                ? "text-warn/80"
-                : phase.key === "done"
-                ? "text-good/80"
-                : "text-accent/80"
-            }`}>
-              {phase.label}
-            </span>
-          </div>
 
           {/* Last activity supplies motion without repeating the receipt. */}
           {st === "in_progress" && (() => {
@@ -1927,7 +1813,6 @@ export default function SwarmPane() {
                 <div className="flex items-center justify-between">
                   <span className="text-[8.5px] uppercase tracking-[0.14em] text-faint font-medium">Workers ({tasks.length})</span>
                 </div>
-                <WorkerProgress tasks={tasks} failureForTask={failureForTask} />
                 <div className="flex flex-col divide-y divide-edge/20 mt-0.5">
                   {tasks.map((task) => {
                     const tExpanded = !!expandedTasks[task.id];
@@ -2163,7 +2048,7 @@ export default function SwarmPane() {
                   Findings ({countLabel})
                 </button>
                 {sectionOpen && (
-                <div className="pr-1 flex flex-col gap-1 border border-edge/40 rounded p-1.5 bg-panel2/20">
+                <div className="pr-1 flex flex-col gap-1">
                   {findingRows.map(({ art, count, artifactIds }, idx: number) => {
                     const fid = art.id || `f${idx}`;
                     const fExpanded = !!expandedFindings[fid];
@@ -2333,7 +2218,7 @@ export default function SwarmPane() {
           in a flex-col defaults to min-height:auto, refuses to shrink below its
           content, grows past the panel, and the root's overflow-hidden clips it
           -- so overflow-y-auto never engages and the list can't scroll. */}
-      <div className="flex-1 min-h-0 overflow-y-auto p-2 flex flex-col gap-2">
+      <div className="flex-1 min-h-0 overflow-y-auto px-2 py-1 flex flex-col gap-0.5">
         {visibleJobs.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-48 text-center px-6 gap-2">
             <Network size={20} className="text-faint/50" />
@@ -2377,7 +2262,7 @@ export default function SwarmPane() {
             {/* Finished runs folded into a collapsible section so a long session
                 stays a short list. Non-destructive: "Clear" only hides. */}
             {finished.length > 0 && (
-              <div className="shrink-0 flex flex-col gap-2">
+              <div className="shrink-0 flex flex-col gap-0">
                 <div className="swarm-finished-head flex items-center justify-between px-1 pt-0.5">
                   <button
                     onClick={() => setFinishedOpen((o) => !o)}

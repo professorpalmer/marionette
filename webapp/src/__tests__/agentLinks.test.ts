@@ -490,4 +490,20 @@ describe("openAgentLink events", () => {
     expect(out).not.toContain("](job_");
     expect(out).not.toContain("](local-");
   });
+
+  it("Cmd/middle-click opens the system browser instead of the in-app pane", () => {
+    const openExternal = vi.fn();
+    const prev = (window as any).harnessIPC;
+    (window as any).harnessIPC = { openExternal };
+    const spy = vi.spyOn(window, "dispatchEvent");
+    openAgentLink("https://example.com/cmd", { preventDefault: vi.fn(), metaKey: true });
+    openAgentLink("https://example.com/mid", { preventDefault: vi.fn(), button: 1 });
+    const types = spy.mock.calls.map((c) => (c[0] as CustomEvent).type);
+    expect(types).not.toContain("harness-open-url");
+    expect(openExternal).toHaveBeenCalledWith("https://example.com/cmd");
+    expect(openExternal).toHaveBeenCalledWith("https://example.com/mid");
+    if (prev === undefined) delete (window as any).harnessIPC;
+    else (window as any).harnessIPC = prev;
+  });
 });
+
