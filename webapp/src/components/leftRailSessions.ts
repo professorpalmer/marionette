@@ -88,6 +88,19 @@ export function filterForgottenRecent(recents: string[], path: string): string[]
 }
 
 /**
+ * After removing the active project, land on Home (when pinned) or the first
+ * remaining recent. Never leave a stale cwd selected once the row is gone.
+ */
+export function pickFallbackProjectAfterForget(
+  recents: string[],
+  forgottenPath: string,
+  home?: string,
+): string {
+  const remaining = filterForgottenRecent(recents, forgottenPath);
+  return buildProjectsList("", remaining, home)[0] || "";
+}
+
+/**
  * Settle/Unsettle only work for sessions under the active workspace
  * (POST /api/sessions/settle 403s foreign roots). Hide affordances elsewhere.
  */

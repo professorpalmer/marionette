@@ -9,6 +9,7 @@ import { panelOpacityClass } from "../../lib/panelTransition";
 import { feedBottomClearancePx, FEED_CHROME_CLEARANCE_VAR } from "./feedScroll";
 import {
   TranscriptList,
+  countPaintableTranscriptItems,
   type Card,
   type CommandApprovalItem,
   type SecretRequestItem,
@@ -105,7 +106,10 @@ export default function ConversationChatColumn({
           ref={feedContentRef}
           className="max-w-3xl mx-auto px-6 py-6 flex flex-col gap-1"
         >
-          <TranscriptEmptyState transcriptStale={transcriptStale} itemCount={items.length} />
+          <TranscriptEmptyState
+            transcriptStale={transcriptStale}
+            itemCount={countPaintableTranscriptItems(items)}
+          />
           {/*
             PERF: The transcript is rendered by TranscriptList, a React.memo
             component whose props are deliberately independent of the composer
