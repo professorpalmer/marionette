@@ -3003,3 +3003,90 @@ describe("swarm tracker usage pills (0.9.300)", () => {
     expect(screen.queryByText(/Findings \(2 of/)).toBeNull();
   });
 });
+
+
+describe("SwarmPane command vs swarm split", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
+    clearSWRCache();
+    mockArtifacts.mockResolvedValue([]);
+    mockSwarmCancel.mockResolvedValue({ ok: true } as any);
+  });
+
+  it("excludes run_command jobs from tracker count and cards", async () => {
+    mockSwarmLive.mockResolvedValue({
+      session: { tokens_used: 0, est_cost_usd: 0 },
+      jobs: [
+        {
+          id: "local-cmd-e35cf193",
+          goal: "sleep 999",
+          status: "running",
+          job_kind: "run_command",
+          role: "command",
+          adapter: "command",
+          command_preview: "sleep 999",
+          source: "harness",
+        },
+        {
+          id: "job_abc123def456",
+          goal: "Audit auth flow",
+          status: "running",
+          source: "harness",
+        },
+      ],
+    });
+    render(<SwarmPane />);
+    expect(await screen.findByText("Audit auth flow")).toBeInTheDocument();
+    expect(screen.queryByText("sleep 999")).not.toBeInTheDocument();
+    expect(screen.getByText("Swarm Tracker").parentElement).toHaveTextContent("(1)");
+  });
+
+  it("still shows run_swarm / run_implement / run_parallel cards", async () => {
+    mockSwarmLive.mockResolvedValue({
+      session: { tokens_used: 0, est_cost_usd: 0 },
+      jobs: [
+        { id: "job_swarm", goal: "run_swarm audit", status: "running", source: "harness" },
+        { id: "job_impl", goal: "run_implement fix", status: "running", source: "harness", role: "implementer", adapter: "agentic" },
+        { id: "job_par", goal: "run_parallel wave", status: "running", source: "harness" },
+        {
+          id: "local-cmdbatch-aa11bb22",
+          goal: "echo batch",
+          status: "running",
+          job_kind: "run_command_batch",
+          role: "command_batch",
+          adapter: "command_batch",
+          source: "harness",
+        },
+      ],
+    });
+    render(<SwarmPane />);
+    expect(await screen.findByText("run_swarm audit")).toBeInTheDocument();
+    expect(screen.getByText("run_implement fix")).toBeInTheDocument();
+    expect(screen.getByText("run_parallel wave")).toBeInTheDocument();
+    expect(screen.queryByText("echo batch")).not.toBeInTheDocument();
+    expect(screen.getByText("Swarm Tracker").parentElement).toHaveTextContent("(3)");
+  });
+
+  it("does not count a lone command job as Swarm Tracker (1)", async () => {
+    mockSwarmLive.mockResolvedValue({
+      session: { tokens_used: 0, est_cost_usd: 0 },
+      jobs: [
+        {
+          id: "local-cmd-e35cf193",
+          goal: "sleep 999",
+          status: "running",
+          job_kind: "run_command",
+          role: "command",
+          adapter: "command",
+          source: "harness",
+        },
+      ],
+    });
+    render(<SwarmPane />);
+    expect(await screen.findByText("No swarm jobs yet")).toBeInTheDocument();
+    expect(screen.queryByText("sleep 999")).not.toBeInTheDocument();
+    expect(screen.getByText("Swarm Tracker").parentElement).not.toHaveTextContent("(1)");
+  });
+});
