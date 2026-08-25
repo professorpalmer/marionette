@@ -28,6 +28,7 @@ describe("feed selection chrome", () => {
   it("CSS keeps message body selectable and fold/virtual chrome unselectable", () => {
     expect(css).toMatch(/\.transcript-msg-body\s*\{[^}]*user-select:\s*text/);
     expect(css).toMatch(/\.transcript-msg-body\s*\{[^}]*font-weight:\s*400/);
+    expect(css).toMatch(/\.transcript-fold-chrome\s*\{[^}]*font-weight:\s*400/);
     expect(css).toMatch(/\[data-testid="transcript-virtual-row"\][^{]*\{[^}]*user-select:\s*none/);
     expect(css).toMatch(/\.transcript-fold-chrome[^{]*\{[^}]*user-select:\s*none/);
     expect(column).toMatch(/data-testid="composer-chrome"/);
@@ -82,5 +83,33 @@ describe("feed selection chrome", () => {
     const strong = spoken!.querySelector("strong");
     expect(strong).toBeTruthy();
     expect(strong!.className).toMatch(/font-semibold/);
+  });
+
+  it("fold chrome stays regular weight (no bold Investigating / Worked for)", () => {
+    render(
+      <TranscriptList
+        {...listProps([
+          { kind: "msg", msg: { role: "user", text: "ask" } },
+          {
+            kind: "card",
+            card: {
+              id: "c1",
+              goal: "a.ts",
+              cwd: null,
+              kind: "read_file",
+              running: false,
+              open: false,
+              result: { status: "ok", duration_ms: 2000 },
+            },
+          },
+        ])}
+      />,
+    );
+    const fold = document.querySelector(".transcript-fold-chrome");
+    expect(fold).toBeTruthy();
+    expect(fold!.className).toMatch(/font-normal/);
+    expect(fold!.className).not.toMatch(/font-semibold/);
+    expect(fold!.className).not.toMatch(/font-bold/);
+    expect(fold!.className).not.toMatch(/font-medium/);
   });
 });

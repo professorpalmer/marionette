@@ -28,6 +28,9 @@ export {
   looksLikeFinalAnswer,
   hoistCardsBeforeTrailingFinals,
   isTrivialAssistantCrumb,
+  looksLikeStatusHeadline,
+  sanitizeThinkingStatusGlue,
+  stripThinkingEmphasisChrome,
   sealStreamById,
 } from "./thinkingToolPrep";
 export {

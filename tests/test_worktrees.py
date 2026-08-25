@@ -322,6 +322,63 @@ def test_prune_orphan_edit_branches_skips_active_and_attached_worktree():
         shutil.rmtree(managed_dir, ignore_errors=True)
 
 
+def test_prune_orphan_edit_branches_deletes_stale_local_release():
+    """Prune must delete leftover local-only release/v0.9.* (not live worktrees)."""
+    repo = create_temp_git_repo()
+    parent = os.path.dirname(repo)
+    managed_dir = os.path.abspath(os.path.join(parent, ".pmharness-worktrees"))
+    remote = os.path.join(parent, "origin-prune.git")
+    wt = os.path.join(parent, "wt-318")
+    try:
+        _create_branch(repo, "dev")
+        _create_branch(repo, "release/v0.9.308")
+        _create_branch(repo, "release/v0.9.318")
+        _create_branch(repo, "release/v0.9.348")
+        _create_branch(repo, "feature-keep")
+
+        subprocess.run(["git", "init", "-q", "--bare", remote], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", repo, "remote", "add", "origin", remote],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", repo, "push", "-q", "origin", "main", "dev", "release/v0.9.348"],
+            check=True,
+            capture_output=True,
+        )
+
+        subprocess.run(
+            ["git", "-C", repo, "worktree", "add", wt, "release/v0.9.318"],
+            check=True,
+            capture_output=True,
+        )
+
+        result = _wt.prune_orphan_edit_branches(repo)
+        deleted = set(result["deleted"])
+        assert "release/v0.9.308" in deleted
+        assert "release/v0.9.318" not in deleted  # live worktree
+        assert "release/v0.9.348" not in deleted  # still on origin
+        assert "feature-keep" not in deleted
+        assert "main" not in deleted
+        assert "dev" not in deleted
+
+        branches = _branch_list(repo)
+        assert "release/v0.9.308" not in branches
+        assert "release/v0.9.318" in branches
+        assert "release/v0.9.348" in branches
+        assert "feature-keep" in branches
+    finally:
+        subprocess.run(
+            ["git", "-C", repo, "worktree", "remove", "--force", wt],
+            capture_output=True,
+        )
+        shutil.rmtree(wt, ignore_errors=True)
+        shutil.rmtree(repo, ignore_errors=True)
+        shutil.rmtree(managed_dir, ignore_errors=True)
+        shutil.rmtree(remote, ignore_errors=True)
+
+
 def test_prune_edit_branches_endpoint():
     repo = create_temp_git_repo()
     httpd, port, srv = _server(repo)

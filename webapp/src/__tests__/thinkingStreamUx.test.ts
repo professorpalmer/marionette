@@ -454,7 +454,7 @@ describe("createApplyStreamEvent Sol reasoning coalescing", () => {
     expect(thinking[0].streaming).toBe(true);
   });
 
-  it("coalesces markdown markers split across thinking deltas", () => {
+  it("drops markdown **** glue between thinking deltas (never redesign****Finalizing)", () => {
     const state = {
       items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],
       itemsRef: { current: [] as Item[] },
@@ -467,7 +467,46 @@ describe("createApplyStreamEvent Sol reasoning coalescing", () => {
     apply({ kind: "thinking", data: { text: "Finalizing...", delta: true } });
     const thinking = thinkingRows(state.items);
     expect(thinking).toHaveLength(1);
-    expect(thinking[0].text).toBe("redesign****Finalizing...");
+    expect(thinking[0].text).toBe("redesign Finalizing...");
+    expect(thinking[0].text).not.toContain("****");
+    expect(thinking[0].text).not.toMatch(/\*{2,}/);
+  });
+
+  it("replaces Codex status headlines instead of gluing with ****", () => {
+    const state = {
+      items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    state.itemsRef.current = state.items;
+    const apply = createApplyStreamEvent(makeApplyDeps(state));
+    apply({
+      kind: "thinking",
+      data: { text: "Investigating branch list UI issue", delta: true, stream_id: "rs_1" },
+    });
+    apply({
+      kind: "thinking",
+      data: { text: "****", delta: true, stream_id: "rs_1" },
+    });
+    apply({
+      kind: "thinking",
+      data: { text: "Searching CodeGraph for branch logic", delta: true, stream_id: "rs_1" },
+    });
+    const thinking = thinkingRows(state.items);
+    expect(thinking).toHaveLength(1);
+    expect(thinking[0].text).toBe("Searching CodeGraph for branch logic");
+    expect(thinking[0].text).not.toContain("****");
+    expect(thinking[0].text).not.toContain("Investigating");
+  });
+
+  it("coalesceSnapshots replaces Planning… with Validating… (no **** joiner)", () => {
+    let items: Item[] = [{ kind: "msg", msg: { role: "user", text: "go" } }];
+    items = upsertStreamingThinking(items, "Planning…", { coalesceSnapshots: true });
+    items = upsertStreamingThinking(items, "****Validating…", { coalesceSnapshots: true });
+    const thinking = items.find((i) => i.kind === "thinking") as Extract<Item, { kind: "thinking" }>;
+    expect(thinking.text).toBe("Validating…");
+    expect(thinking.text).not.toContain("****");
+    expect(thinking.text).not.toContain("Planning");
   });
 
   it("ignores interleaved trivial message_delta crumbs between word deltas", () => {

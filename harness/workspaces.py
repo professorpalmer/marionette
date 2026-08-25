@@ -40,9 +40,48 @@ def _is_repo(repo: str) -> bool:
     return rc == 0 and out == "true"
 
 
+def _dirty_tracked_paths(repo: str) -> list[str]:
+    """Paths with real tracked dirt (M/A/D/R/C/U) — not untracked or ignored.
+
+    ``git status --porcelain`` treats ``??`` untracked (and ignored noise when
+    shown) as dirty; those must not block branch switch / stash prompts.
+
+    Do not go through ``_git``: that helper ``.strip()``s stdout and eats the
+    leading porcelain space (`` M README.md`` becomes ``M README.md``).
+    """
+    p = subprocess.run(
+        ["git", "-C", repo, "status", "--porcelain", "-uno"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=15,
+    )
+    if p.returncode != 0 or not (p.stdout or "").strip():
+        return []
+    paths: list[str] = []
+    for raw in p.stdout.splitlines():
+        line = raw.rstrip('\n\r')
+        if len(line) < 4:
+            continue
+        code = line[:2]
+        # Untracked / ignored are never a stash block.
+        if code in ("??", "!!"):
+            continue
+        # Skip blank xy (should not appear with -uno, but be safe).
+        if code.strip() == "":
+            continue
+        path = line[3:].strip()
+        # Rename lines: "R  old -> new" — report the new path.
+        if " -> " in path:
+            path = path.split(" -> ", 1)[-1].strip()
+        if path:
+            paths.append(path)
+    return paths
+
+
 def _dirty(repo: str) -> bool:
-    rc, out, _ = _git(repo, "status", "--porcelain")
-    return rc == 0 and bool(out.strip())
+    return bool(_dirty_tracked_paths(repo))
 
 
 def list_workspaces(repo: str) -> list[dict]:
@@ -126,6 +165,11 @@ def _is_stale_local_release(row: dict, remote: set[str]) -> bool:
     Origin already deleted these. Keep main/dev (not this prefix), the current
     checkout, any still-on-origin release, and a *live* worktree checkout.
     Do not delete the worktree — only hide the row.
+
+    When origin exists but only has non-release heads (typical main+dev), local
+    release leftovers without a live worktree are stale. An empty remote picture
+    (no origin / unread) still hides inactive local-only release rows that lack
+    a live worktree — leftover release/v0.9.* are never useful on the rail.
     """
     name = str(row.get("name") or "")
     if not name.startswith("release/v0.9."):
@@ -136,10 +180,22 @@ def _is_stale_local_release(row: dict, remote: set[str]) -> bool:
         return False
     if name in remote:
         return False
-    # No origin picture: do not hide (offline / no-remote test repos).
-    if not remote:
-        return False
+    # Remote picture empty OR origin has no copy of this release → hide.
     return True
+
+
+def is_stale_local_release_branch(
+    name: str,
+    *,
+    active: bool = False,
+    worktree_path: str | None = None,
+    remote: set[str] | None = None,
+) -> bool:
+    """Public predicate shared with prune — same rules as list filter."""
+    return _is_stale_local_release(
+        {"name": name, "active": active, "worktree_path": worktree_path},
+        remote if remote is not None else set(),
+    )
 
 
 def _worktree_holding_branch(repo: str, branch: str) -> Optional[str]:
@@ -192,13 +248,27 @@ def _friendly_worktree_busy_error(branch: str, wt_path: str) -> dict:
 
 
 def switch_workspace(repo: str, name: str, *, allow_dirty: bool = False) -> dict:
-    """Check out the workspace's branch. Refuses over uncommitted changes unless
-    allow_dirty (git itself also refuses if the checkout would clobber)."""
+    """Check out the workspace's branch. Refuses over tracked dirty paths unless
+    allow_dirty (git itself also refuses if the checkout would clobber).
+
+    Untracked / gitignored noise is not a stash block. When refusing, returns
+    ``dirty_paths`` so the UI can show what actually needs stash/commit.
+    """
     if not _is_repo(repo):
         return {"ok": False, "error": "no git repo configured"}
-    if _dirty(repo) and not allow_dirty:
-        return {"ok": False, "error": f"uncommitted changes in {repo}; commit/stash first "
-                f"or allow_dirty", "dirty": True}
+    dirty_paths = _dirty_tracked_paths(repo)
+    if dirty_paths and not allow_dirty:
+        shown = ", ".join(dirty_paths[:8])
+        extra = f" (+{len(dirty_paths) - 8} more)" if len(dirty_paths) > 8 else ""
+        return {
+            "ok": False,
+            "error": (
+                f"uncommitted changes in {repo}: {shown}{extra}; "
+                f"commit/stash first or allow_dirty"
+            ),
+            "dirty": True,
+            "dirty_paths": dirty_paths,
+        }
     if name.startswith("-"):
         return {"ok": False, "error": "invalid workspace name (cannot start with '-')"}
     held = _worktree_holding_branch(repo, name)

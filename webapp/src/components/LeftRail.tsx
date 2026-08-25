@@ -19,6 +19,7 @@ import { writeTranscriptCache } from "./Conversation";
 import { sharedReadinessNotice } from "../lib/operationalDiagnostic";
 import { useOperationalDiagnostic } from "../lib/useOperationalDiagnostic";
 import { filterJobsByScope, loadJobScope, saveJobScope, type JobScope } from "../lib/jobScope";
+import { filterBranchWorkspaces } from "./leftRailBranches";
 
 export {
   SESSION_LEASE_EXHAUSTED_MESSAGE,
@@ -673,8 +674,14 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     try {
       let res = await api.switchWorkspace(name);
       if (!res.ok && res.dirty) {
+        const paths = Array.isArray((res as { dirty_paths?: string[] }).dirty_paths)
+          ? (res as { dirty_paths?: string[] }).dirty_paths!
+          : [];
+        const pathHint = paths.length
+          ? `\n\nTracked changes:\n${paths.slice(0, 8).join("\n")}${paths.length > 8 ? `\n(+${paths.length - 8} more)` : ""}`
+          : "";
         const proceed = window.confirm(
-          "Uncommitted changes in this repo. Switch branch anyway? (may fail if checkout would overwrite files)",
+          `Uncommitted tracked changes in this repo. Switch branch anyway? (may fail if checkout would overwrite files)${pathHint}`,
         );
         if (!proceed) return;
         res = await api.switchWorkspace(name, { allow_dirty: true });
@@ -715,7 +722,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   const pruneEditBranches = async () => {
     if (pruningBranches) return;
     const proceed = window.confirm(
-      "Delete unused local edit/worker branches (pmedit-*, pmworker-*)? Active checkout and worktree-attached branches are kept.",
+      "Delete unused local edit/worker branches (pmedit-*, pmworker-*) and leftover release/v0.9.* branches that origin already dropped? Active checkout and live worktree-attached branches are kept.",
     );
     if (!proceed) return;
     setPruningBranches(true);
@@ -724,8 +731,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       await revalidateWorkspaces();
       const count = typeof res.count === "number" ? res.count : (res.deleted?.length ?? 0);
       toast(count > 0
-        ? `Pruned ${count} unused edit branch${count === 1 ? "" : "es"}`
-        : "No unused edit branches to prune");
+        ? `Pruned ${count} unused branch${count === 1 ? "" : "es"}`
+        : "No unused edit or leftover release branches to prune");
     } catch (err: any) {
       toast(err?.error || err?.message || "Could not prune edit branches");
     } finally {
@@ -1819,7 +1826,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
             <div className="flex items-center gap-0.5">
               <IconBtn
                 onClick={() => { void pruneEditBranches(); }}
-                title="Prune unused edit/worker branches"
+                title="Prune unused edit/worker and leftover release branches"
                 disabled={pruningBranches}
               >
                 {pruningBranches ? <Loader2 size={13} className="animate-spin" /> : <Brush size={13} />}
@@ -1828,11 +1835,11 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
             </div>
           }
         >
-          {workspaces.length === 0 && (
+          {filterBranchWorkspaces(workspaces).length === 0 && (
             <Empty>{workspaceInfo?.head_unborn ? "No commits yet" : "No branches"}</Empty>
           )}
           <div className="space-y-0.5 overflow-y-auto" style={{ height: branchesHeight }}>
-            {workspaces.map((w) => {
+            {filterBranchWorkspaces(workspaces).map((w) => {
               const linked = !!w.worktree_path;
               const linkKind = w.name.startsWith("pmworker-")
                 ? "worker"

@@ -2731,7 +2731,8 @@ function CommandFold({
 export function normalizeReasoningPreview(text: string, maxLen = 160): string {
   const first = String(text || "").trim().split("\n", 1)[0] || "";
   // Strip Markdown chrome for collapsed previews — keep ordinary * math/globs
-  // (2*3*4, a*b*c) and snake_case identifiers intact.
+  // (2*3*4, a*b*c) and snake_case identifiers intact. Also collapse Codex
+  // `title****title` bold-glue so two headlines never leak literal asterisks.
   const cleaned = first
     .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")

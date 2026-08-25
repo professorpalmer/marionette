@@ -45,27 +45,94 @@ export function isTrivialAssistantCrumb(text: string): boolean {
 }
 
 /**
+ * Codex / Luna Max status headlines (Investigating / Planning / Searching…).
+ * Discrete frames must replace each other — never glue with `****` or spaces.
+ */
+const STATUS_HEADLINE_RE =
+  /^(Investigating|Explored|Diagnosing|Planning|Assessing|Searching|Looking|Thinking|Thought|Validating|Finalizing|Still working|Working)\b/i;
+
+/** Strip surrounding emphasis markers so `**Planning…**` compares as a title. */
+export function stripThinkingEmphasisChrome(text: string): string {
+  let t = String(text || "").trim();
+  // Peel paired wrappers and leftover glue runs (`****` between titles).
+  for (let i = 0; i < 4; i++) {
+    const next = t
+      .replace(/^\*{1,}|_{1,}|`{1,}|~{1,}/g, "")
+      .replace(/\*{1,}$|_{1,}$|`{1,}$|~{1,}$/g, "")
+      .trim();
+    if (next === t) break;
+    t = next;
+  }
+  return t;
+}
+
+export function looksLikeStatusHeadline(text: string): boolean {
+  const core = stripThinkingEmphasisChrome(text);
+  return Boolean(core) && STATUS_HEADLINE_RE.test(core);
+}
+
+/**
+ * Drop `****` / `**` glue between status headlines. Keeps the latest title when
+ * two headlines were concatenated; otherwise strips marker runs only.
+ */
+export function sanitizeThinkingStatusGlue(text: string): string {
+  const raw = String(text || "");
+  if (!raw.includes("*") && !raw.includes("_")) return raw;
+  // Split on emphasis glue runs; if every non-empty part is a status headline,
+  // keep only the latest (Codex bold-title frames).
+  const parts = raw
+    .split(/\*{2,}|_{2,}/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (parts.length >= 2 && parts.every(looksLikeStatusHeadline)) {
+    return stripThinkingEmphasisChrome(parts[parts.length - 1]);
+  }
+  // Marker-only crumbs already handled upstream; strip residual glue runs so
+  // `redesign****Finalizing...` never paints literal asterisks.
+  if (/\*{2,}|_{2,}/.test(raw)) {
+    return raw
+      .split(/\*{2,}|_{2,}/)
+      .map((p) => p.trim())
+      .filter(Boolean)
+      .join(" ")
+      .trim();
+  }
+  return raw;
+}
+
+/**
  * Merge a cumulative snapshot frame into an existing thinking row.
  * Identical / stale-prefix / strict-extension snapshots replace once;
- * non-overlapping fragments still append. Used only by non-delta
- * (`appendNonStreamingThinking`) paths — never for provider `delta:true`
- * chunks, which must keep strict append semantics.
+ * status headlines replace (never concatenate); other non-overlapping
+ * fragments still append. Used by non-delta (`appendNonStreamingThinking`)
+ * paths and shared with delta merge so `****` glue cannot leak.
  */
 export function coalesceThinkingChunk(existing: string, chunk: string): string {
   if (!chunk) return existing;
-  if (!existing) return chunk;
+  if (isTrivialAssistantCrumb(chunk)) return existing;
+  if (!existing || isTrivialAssistantCrumb(existing)) {
+    return sanitizeThinkingStatusGlue(chunk);
+  }
   if (chunk === existing) return existing;
-  if (existing.startsWith(chunk)) return existing;
-  if (chunk.startsWith(existing)) return chunk;
+  if (existing.startsWith(chunk)) return sanitizeThinkingStatusGlue(existing);
+  if (chunk.startsWith(existing)) return sanitizeThinkingStatusGlue(chunk);
+
+  const existingCore = stripThinkingEmphasisChrome(existing);
+  const chunkCore = stripThinkingEmphasisChrome(chunk);
+  // Two investigating / planning / searching titles → keep the latest only.
+  if (looksLikeStatusHeadline(existingCore) && looksLikeStatusHeadline(chunkCore)) {
+    return chunkCore;
+  }
+
   // Partial overlap: longest suffix of existing that is a prefix of chunk
   // (avoids "world"+"world foo" style duplication on snapshot frames).
   const maxOverlap = Math.min(existing.length, chunk.length);
   for (let n = maxOverlap; n > 0; n--) {
     if (chunk.startsWith(existing.slice(-n))) {
-      return existing + chunk.slice(n);
+      return sanitizeThinkingStatusGlue(existing + chunk.slice(n));
     }
   }
-  return existing + chunk;
+  return sanitizeThinkingStatusGlue(existing + chunk);
 }
 
 export type UpsertStreamingThinkingOpts = {
@@ -84,10 +151,25 @@ function mergeThinkingText(
   chunk: string,
   coalesceSnapshots: boolean,
 ): string {
+  // Shared sanitize for both snapshot coalesce and live deltas so Codex/Luna
+  // bold-title frames (`****` between Investigating / Searching) never paint.
   if (coalesceSnapshots) return coalesceThinkingChunk(existing, chunk);
   if (!chunk) return existing;
-  if (!existing) return chunk;
-  return existing + chunk;
+  if (isTrivialAssistantCrumb(chunk)) return existing;
+  if (!existing || isTrivialAssistantCrumb(existing)) {
+    return sanitizeThinkingStatusGlue(chunk);
+  }
+  const existingCore = stripThinkingEmphasisChrome(existing);
+  const chunkCore = stripThinkingEmphasisChrome(chunk);
+  if (looksLikeStatusHeadline(existingCore) && looksLikeStatusHeadline(chunkCore)) {
+    return chunkCore;
+  }
+  if (looksLikeStatusHeadline(chunkCore) && !looksLikeStatusHeadline(existingCore)) {
+    // Dropped `****` crumbs would otherwise smash "redesign"+"Finalizing...".
+    const sep = /\s$/.test(existing) ? "" : " ";
+    return sanitizeThinkingStatusGlue(existing + sep + chunkCore);
+  }
+  return sanitizeThinkingStatusGlue(existing + chunk);
 }
 
 function turnStartIndex(items: Item[]): number {
@@ -146,7 +228,7 @@ export function upsertStreamingThinking(
       ...items,
       {
         kind: "thinking",
-        text: chunk,
+        text: sanitizeThinkingStatusGlue(chunk),
         streaming: true,
         id: newThinkingId(),
         stream_id: streamId,
@@ -177,7 +259,7 @@ export function upsertStreamingThinking(
         ...sealed,
         {
           kind: "thinking",
-          text: chunk,
+          text: sanitizeThinkingStatusGlue(chunk),
           streaming: true,
           id: newThinkingId(),
           started_at_ms: Date.now(),
@@ -201,7 +283,7 @@ export function upsertStreamingThinking(
     ...items,
     {
       kind: "thinking",
-      text: chunk,
+      text: sanitizeThinkingStatusGlue(chunk),
       streaming: true,
       id: newThinkingId(),
       started_at_ms: Date.now(),

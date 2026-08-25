@@ -1,5 +1,5 @@
 import type { Item, Msg } from "../TranscriptList";
-import { isTrivialAssistantCrumb } from "./thinkingToolPrep";
+import { isTrivialAssistantCrumb, sanitizeThinkingStatusGlue } from "./thinkingToolPrep";
 
 /**
  * Short shared prefixes ("I will") must never suppress a distinct post-tool
@@ -178,11 +178,14 @@ export function appendStreamingTextToItems(
     const updated = [...items];
     const stampWorkerId =
       workerStream && workerId && !(bubble.msg.worker_id || "").trim();
+    const nextText = isTrivialAssistantCrumb(chunk)
+      ? bubble.msg.text
+      : sanitizeThinkingStatusGlue(bubble.msg.text + chunk);
     updated[idx] = {
       kind: "msg",
       msg: {
         ...bubble.msg,
-        text: bubble.msg.text + chunk,
+        text: nextText,
         ...(stampWorkerId ? { worker_id: workerId } : {}),
       },
     };

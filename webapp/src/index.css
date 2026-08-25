@@ -565,9 +565,13 @@ body.is-row-resizing iframe {
 
 
 /* Feed selection: highlight a clean text range, not fold chrome.
-   Spoken body stays regular weight (400); fold chrome / labels / strong keep their own. */
+   Spoken body stays regular weight (400); fold chrome / labels stay regular
+   too (345 hold) — never inherit semibold from rail/header ancestors. */
 .transcript-msg-body {
   user-select: text;
+  font-weight: 400;
+}
+.transcript-fold-chrome {
   font-weight: 400;
 }
 [data-testid="transcript-virtual-row"],
