@@ -1,8 +1,8 @@
 /** Display-side model identity helpers for SwarmPane badges.
 
 Mirrors the *display* half of `harness/model_identity.py` without re-implementing
-envelope stamping: collapse repeated `agentic/` / `native/` prefixes, and strip
-one engine segment for auto-routed badges. Explicit pins keep the full registry id.
+envelope stamping: collapse repeated `agentic/` / `native/` prefixes, then always
+strip engine segments so pin and auto-route badges show the same worker model.
 */
 
 const ENGINE_LABELS = new Set(["agentic", "native"]);
@@ -47,9 +47,9 @@ export function isEngineOnlyModelId(modelId: string): boolean {
 
 /**
  * Badge text for a routed/job model id.
- * - explicit_pin: keep full collapsed registry id (`agentic/meta/...`)
- * - otherwise: strip engine prefixes for scannability next to the adapter chip
- * - never surfaces bare agentic/native (adapter chip stays separate)
+ * Always strip engine prefixes so the same worker model looks the same
+ * whether ROUTING stamped explicit_pin or balanced. Adapter chip stays
+ * separate; never surface bare agentic/native.
  */
 export function displayModelId(
   modelId: string,
@@ -59,11 +59,7 @@ export function displayModelId(
   const adapter = (opts?.adapterFallback || "").trim();
   const safeAdapter = isEngineOnlyModelId(adapter) ? "" : adapter;
   if (!raw || isEngineOnlyModelId(raw)) return safeAdapter;
-  const collapsed = collapseEnginePrefixes(raw);
-  if ((opts?.policy || "").trim() === "explicit_pin") {
-    return collapsed || safeAdapter;
-  }
-  return stripEnginePrefixes(collapsed).trim() || safeAdapter;
+  return stripEnginePrefixes(collapseEnginePrefixes(raw)).trim() || safeAdapter;
 }
 
 /** Identity equality after stripping engine prefixes (case-insensitive). */

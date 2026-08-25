@@ -1,4 +1,5 @@
 import type { EconomicsData, EconomicsJobRow, EconomicsScope } from "../lib/api";
+import { openAgentSwarmJob } from "../lib/agentLinks";
 
 const SCOPES: Array<{ value: EconomicsScope; label: string }> = [
   { value: "repo", label: "This repo" },
@@ -19,40 +20,6 @@ function fmtUnknownMoney(value: number | null | undefined): string {
   return `$${value.toFixed(2)}`;
 }
 
-function fmtTokens(value: number | null | undefined): string {
-  if (!isFiniteNumber(value)) return "—";
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
-  if (value >= 1000) return `${(value / 1000).toFixed(1).replace(/\.0$/, "")}k`;
-  return String(value);
-}
-
-function fmtRate(value: number | null | undefined): string {
-  if (!isFiniteNumber(value)) return "—";
-  return `${Math.round(value * 100)}%`;
-}
-
-function shortModel(model: string | undefined): string {
-  const text = (model || "").trim();
-  if (!text) return "unknown";
-  const afterColon = text.includes(":") ? text.slice(text.lastIndexOf(":") + 1) : text;
-  const slash = afterColon.lastIndexOf("/");
-  return slash >= 0 ? afterColon.slice(slash + 1) : afterColon;
-}
-
-function jobModel(row: EconomicsJobRow): string {
-  const id = row.models?.[0]?.model_id;
-  return shortModel(id);
-}
-
-function costBasisLabel(basis: string | null | undefined): string {
-  const value = (basis || "").trim().toLowerCase();
-  if (value === "plan") return " · plan $0-marginal";
-  if (value === "estimated") return " · estimated";
-  if (value === "mixed") return " · mixed basis";
-  if (value === "unknown") return " · unknown basis";
-  if (value.includes("measured")) return " · measured";
-  return "";
-}
 
 /** Headline total: measured + estimated when either is known; else legacy actual_marginal. */
 export function jobHeadlineTotal(job: Pick<EconomicsJobRow, "measured_cost_usd" | "estimated_cost_usd" | "actual_marginal_usd">): number | null {
@@ -90,7 +57,7 @@ export default function EconomicsDurable({
       <p className="text-[10px] text-muted mb-2 leading-snug">
         {scope === "conversation"
           ? "Owned jobs for this conversation. Puppetmaster savings stay on This repo / Last 30 days / All projects."
-          : "Puppetmaster savings for the selected scope. Recent jobs are this workspace tracker; Last 30 days keeps jobs created in that window. App-run spend stays above."}
+          : "Puppetmaster savings for the selected scope. Recent jobs are this workspace tracker; Last 30 days keeps jobs created in that window. App-run spend stays above. Vs reference is a list-price counterfactual, not Swarm Tracker receipt savings."}
       </p>
 
       <label className="flex items-center justify-between mb-2 text-faint">
@@ -133,7 +100,7 @@ export default function EconomicsDurable({
       {isFiniteNumber(routingSaved) && routingSaved > 0 ? (
         <div className="flex items-center justify-between mb-1 text-faint">
           <span>Routing saved (measured)</span>
-          <span className="tabular-nums">{fmtUnknownMoney(routingSaved)}</span>
+          <span className="tabular-nums text-good/90">{fmtUnknownMoney(routingSaved)}</span>
         </div>
       ) : data?.available !== false && data?.savings && !isFiniteNumber(routingSaved) ? (
         <div className="flex items-center justify-between mb-1 text-faint">
@@ -145,18 +112,18 @@ export default function EconomicsDurable({
       {isFiniteNumber(codegraphEst) ? (
         <div className="flex items-center justify-between mb-1 text-faint">
           <span>CodeGraph (estimated)</span>
-          <span className="tabular-nums">{fmtUnknownMoney(codegraphEst)}</span>
+          <span className="tabular-nums text-good/90">{fmtUnknownMoney(codegraphEst)}</span>
         </div>
       ) : null}
 
       {isFiniteNumber(avoided) ? (
         <div className="flex items-center justify-between mb-1 text-faint">
-          <span>
+          <span title="List-price counterfactual vs the named reference model, not Swarm Tracker receipt savings.">
             {referenceId
-              ? `Estimated savings vs ${referenceId}`
-              : "Estimated savings"}
+              ? `Vs reference (${referenceId})`
+              : "Vs reference"}
           </span>
-          <span className="tabular-nums">{fmtUnknownMoney(avoided)}</span>
+          <span className="tabular-nums text-good/90">{fmtUnknownMoney(avoided)}</span>
         </div>
       ) : null}
 
@@ -174,41 +141,51 @@ export default function EconomicsDurable({
           <div className="text-[10px] uppercase tracking-wide text-faint mb-2">Recent jobs</div>
           {jobs.map((job) => {
             const owned = Boolean(job.accounting_owned);
-            const headlineTotal = owned ? jobHeadlineTotal(job) : null;
+            const modelIds = (job.models || []).map((model) => model.model_id || "").filter(Boolean);
+            const measuredCost = isFiniteNumber(job.measured_cost_usd)
+              ? job.measured_cost_usd
+              : (!isFiniteNumber(job.estimated_cost_usd) && isFiniteNumber(job.actual_marginal_usd)
+                ? job.actual_marginal_usd
+                : null);
             const jobAvoided = owned ? job.counterfactual?.avoided_usd : null;
             return (
               <div key={job.job_id || `${job.source}-${job.status}`} className="mb-2">
                 <div className="flex items-center justify-between text-faint">
-                  <span className="truncate pr-2">{job.job_id ? `Job ${job.job_id}` : "Job"}</span>
-                  <span className="tabular-nums shrink-0">
-                    {owned
-                      ? `${fmtUnknownMoney(headlineTotal)} vs ${fmtUnknownMoney(jobAvoided)}${costBasisLabel(job.cost_basis)}`
-                      : "—"}
-                  </span>
+                  {job.job_id ? (
+                    <button
+                      type="button"
+                      className="truncate pr-2 font-mono text-accent/85 hover:underline underline-offset-2 cursor-pointer bg-transparent border-0 p-0 text-left"
+                      onClick={() => openAgentSwarmJob(job.job_id || "")}
+                    >
+                      {job.job_id}
+                    </button>
+                  ) : (
+                    <span className="truncate pr-2">Job</span>
+                  )}
                 </div>
+                {modelIds.length > 0 ? (
+                  <div className="flex items-start justify-between gap-2 text-faint pl-2">
+                    <span>{modelIds.length === 1 ? "Model" : "Models"}</span>
+                    <span className="font-mono text-right break-words min-w-0">{modelIds.join(", ")}</span>
+                  </div>
+                ) : null}
                 {owned ? (
                   <>
                     <div className="flex items-center justify-between text-faint pl-2">
-                      <span>Measured</span>
-                      <span className="tabular-nums shrink-0">{fmtUnknownMoney(job.measured_cost_usd)}</span>
+                      <span>Measured Cost</span>
+                      <span className="tabular-nums shrink-0 text-warn/90">{fmtUnknownMoney(measuredCost)}</span>
                     </div>
                     <div className="flex items-center justify-between text-faint pl-2">
-                      <span>Estimated</span>
-                      <span className="tabular-nums shrink-0">{fmtUnknownMoney(job.estimated_cost_usd)}</span>
+                      <span>Estimated Cost</span>
+                      <span className="tabular-nums shrink-0 text-warn/90">{fmtUnknownMoney(job.estimated_cost_usd)}</span>
+                    </div>
+                    <div className="flex items-center justify-between text-faint pl-2">
+                      <span title="List-price counterfactual vs the pane reference, not Swarm Tracker receipt savings.">Vs reference</span>
+                      <span className="tabular-nums shrink-0 text-good/90">{fmtUnknownMoney(jobAvoided)}</span>
                     </div>
                   </>
                 ) : null}
-                <div className="flex items-center justify-between text-faint">
-                  <span className="truncate pr-2">
-                    {jobModel(job)}
-                    {!owned ? " · visible only" : ""}
-                  </span>
-                  <span className="tabular-nums shrink-0">
-                    {fmtTokens(job.tokens)} · {isFiniteNumber(job.typed_artifacts) ? job.typed_artifacts : "—"} typed
-                    {isFiniteNumber(job.tokens_per_typed_artifact) ? ` · ${fmtTokens(job.tokens_per_typed_artifact)}/typed` : ""}
-                    {` · ${fmtRate(job.degraded_rate)} degraded`}
-                  </span>
-                </div>
+                {!owned ? <div className="text-faint pl-2">visible only</div> : null}
               </div>
             );
           })}

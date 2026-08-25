@@ -600,7 +600,7 @@ describe("SwarmPane pin attribution", () => {
     mockArtifacts.mockResolvedValue([]);
   });
 
-  it("keeps explicit_pin full registry id and a pin marker on the worker", async () => {
+  it("keeps a scannable model id and pin policy in worker details", async () => {
     mockSwarmLive.mockResolvedValue(
       liveJob({
         status: "running",
@@ -635,8 +635,8 @@ describe("SwarmPane pin attribution", () => {
     await expandVisibleJobs();
 
     const worker = await screen.findByRole("button", { name: /Worker/ });
-    expect(worker).toHaveTextContent("agentic/meta/muse-spark-1.1");
-    expect(screen.getByTitle("explicit_pin · not auto-routed")).toHaveTextContent("pin");
+    expect(worker).toHaveTextContent("meta/muse-spark-1.1");
+    expect(screen.queryByTitle("explicit_pin · not auto-routed")).not.toBeInTheDocument();
     expect(screen.queryByText("Router pick")).not.toBeInTheDocument();
     expect(screen.queryByText("Explicit pin · not auto-routed")).not.toBeInTheDocument();
 
@@ -1541,7 +1541,7 @@ describe("SwarmPane worker-owned routing surface", () => {
     const worker = await screen.findByRole("button", { name: /test-coverage-reviewer/ });
     expect(worker).toHaveTextContent("test-coverage-reviewer");
     expect(worker.textContent || "").not.toMatch(/test-coverage-reviewer \(/);
-    const modelSlot = screen.getByLabelText("Model: agentic/meta/muse-spark-1.1");
+    const modelSlot = screen.getByLabelText("Model: meta/muse-spark-1.1");
     expect(modelSlot).toBeInTheDocument();
     expect(modelSlot.className).toMatch(/truncate/);
     expect(modelSlot.className).toMatch(/min-w-0/);
@@ -2751,7 +2751,7 @@ describe("SwarmPane final-review blockers", () => {
     const worker = await screen.findByRole("button", { name: /test-coverage-reviewer/ });
     expect(worker).toHaveTextContent("test-coverage-reviewer");
     expect(worker.textContent || "").not.toMatch(/test-coverage-reviewer \(/);
-    const modelSlot = screen.getByLabelText("Model: agentic/meta/muse-spark-1.1");
+    const modelSlot = screen.getByLabelText("Model: meta/muse-spark-1.1");
     expect(modelSlot).toBeInTheDocument();
     expect(modelSlot.className).toMatch(/truncate/);
     expect(modelSlot.className).toMatch(/min-w-0/);
@@ -2792,7 +2792,7 @@ describe("SwarmPane final-review blockers", () => {
 
     const worker = await screen.findByRole("button", { name: /test-coverage-reviewer/ });
     expect(worker).toHaveTextContent("test-coverage-reviewer");
-    const modelSlot = screen.getByLabelText("Model: agentic/meta/muse-spark-1.1");
+    const modelSlot = screen.getByLabelText("Model: meta/muse-spark-1.1");
     expect(modelSlot).toBeInTheDocument();
     expect(modelSlot.className).toMatch(/truncate/);
     expect(modelSlot.className).toMatch(/min-w-0/);

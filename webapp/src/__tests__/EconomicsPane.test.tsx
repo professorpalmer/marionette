@@ -2,6 +2,8 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import EconomicsPane from "../components/EconomicsPane";
 import { api } from "../lib/api";
+import { openAgentSwarmJob } from "../lib/agentLinks";
+import { clearSWRCache } from "../lib/useStaleWhileRevalidate";
 
 vi.mock("../lib/api", () => ({
   api: {
@@ -17,8 +19,13 @@ vi.mock("../lib/usePolling", () => ({
   },
 }));
 
+vi.mock("../lib/agentLinks", () => ({
+  openAgentSwarmJob: vi.fn(),
+}));
+
 const mockGetUsage = vi.mocked(api.getUsage);
 const mockGetEconomics = vi.mocked(api.getEconomics);
+const mockOpenAgentSwarmJob = vi.mocked(openAgentSwarmJob);
 
 const usageSession = {
   tokens_used: 8000,
@@ -51,7 +58,45 @@ const durablePayload = {
 describe("EconomicsPane", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    clearSWRCache();
     mockGetEconomics.mockResolvedValue(durablePayload);
+  });
+
+  it("owns a persistent header and height-constrained scroll viewport", async () => {
+    mockGetUsage.mockResolvedValue({
+      session: usageSession,
+      jobs: [],
+    });
+
+    const { container } = render(<EconomicsPane />);
+
+    expect(await screen.findByText("This app run")).toBeInTheDocument();
+    expect(screen.getByText("Economics")).toBeInTheDocument();
+    expect(container.firstElementChild).toHaveClass("flex", "flex-col", "h-full", "overflow-hidden");
+    const appRun = screen.getByText("This app run");
+    const econ = screen.getByText("Economics");
+    expect(appRun.compareDocumentPosition(econ) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(econ.closest(".shrink-0")).toBeTruthy();
+    expect(screen.getByText("Durable").closest(".overflow-y-auto")).toHaveClass(
+      "flex-1",
+      "min-h-0",
+      "overflow-y-auto",
+    );
+    expect(screen.getByText(/not Swarm Tracker receipt savings/)).toBeInTheDocument();
+  });
+
+  it("keeps the last Economics data visible across card remounts", async () => {
+    mockGetUsage.mockResolvedValue({ session: usageSession, jobs: [] });
+
+    const first = render(<EconomicsPane />);
+    expect(await screen.findByText("This app run")).toBeInTheDocument();
+    first.unmount();
+    mockGetUsage.mockImplementation(() => new Promise(() => {}));
+
+    render(<EconomicsPane />);
+
+    expect(screen.getByText("This app run")).toBeInTheDocument();
+    expect(screen.queryByText("Loading this app run…")).not.toBeInTheDocument();
   });
 
   it("shows spend and list-price value from getUsage", async () => {
@@ -126,18 +171,46 @@ describe("EconomicsPane", () => {
 
     render(<EconomicsPane />);
 
-    expect(await screen.findByText("Job vis-1")).toBeInTheDocument();
+    expect(await screen.findByText("vis-1")).toBeInTheDocument();
     expect(screen.getByText(/visible only/)).toBeInTheDocument();
     expect(screen.queryByText("$9.99")).not.toBeInTheDocument();
     expect(screen.queryByText("~$9.99")).not.toBeInTheDocument();
-    expect(screen.getByText("$1.25 vs $2.00 · measured")).toBeInTheDocument();
-    const ownedRow = screen.getByText("Job owned-1").closest(".mb-2");
+    const ownedRow = screen.getByText("owned-1").closest(".mb-2");
     expect(ownedRow).toBeTruthy();
     const ownedScope = within(ownedRow as HTMLElement);
-    expect(ownedScope.getByText("Measured")).toBeInTheDocument();
-    expect(ownedScope.getByText("Estimated")).toBeInTheDocument();
+    expect(ownedScope.getByText("Measured Cost")).toBeInTheDocument();
+    expect(ownedScope.getByText("Estimated Cost")).toBeInTheDocument();
+    expect(ownedScope.getByText("Vs reference").parentElement).toHaveTextContent("Vs reference$2.00");
     expect(ownedScope.getAllByText("$1.25").length).toBeGreaterThanOrEqual(1);
     expect(ownedScope.getAllByText("—").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("opens a recent PM job in the Swarm Tracker", async () => {
+    mockGetUsage.mockResolvedValue({ session: usageSession, jobs: [] });
+    mockGetEconomics.mockResolvedValue({
+      ...durablePayload,
+      recent_jobs: [
+        {
+          job_id: "job_abcdef012345",
+          accounting_owned: true,
+          models: [{ model_id: "agentic/gpt-5.6-luna" }],
+          tokens: 800,
+          typed_artifacts: 4,
+          tokens_per_typed_artifact: 200,
+          degraded_rate: 0,
+          actual_marginal_usd: 1.25,
+          counterfactual: { avoided_usd: 2.0 },
+        },
+      ],
+    });
+
+    render(<EconomicsPane />);
+    fireEvent.click(await screen.findByRole("button", { name: "job_abcdef012345" }));
+
+    expect(mockOpenAgentSwarmJob).toHaveBeenCalledWith("job_abcdef012345");
+    expect(screen.getByText("agentic/gpt-5.6-luna")).toBeInTheDocument();
+    expect(screen.queryByText(/typed/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/degraded/)).not.toBeInTheDocument();
   });
 
   it("shows headline sum and measured/estimated lines for mixed job cost", async () => {
@@ -161,11 +234,16 @@ describe("EconomicsPane", () => {
 
     render(<EconomicsPane />);
 
-    expect(await screen.findByText("$1.50 vs $3.00 · mixed basis")).toBeInTheDocument();
-    expect(screen.getByText("Measured")).toBeInTheDocument();
-    expect(screen.getByText("Estimated")).toBeInTheDocument();
+    expect(await screen.findByText("mixed-1")).toBeInTheDocument();
+    expect(screen.getByText("Measured Cost")).toBeInTheDocument();
+    expect(screen.getByText("Estimated Cost")).toBeInTheDocument();
     expect(screen.getAllByText("$1.25").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("$0.25")).toBeInTheDocument();
+    const mixedRow = within(screen.getByText("mixed-1").closest(".mb-2") as HTMLElement);
+    expect(mixedRow.getByText("Vs reference").parentElement).toHaveTextContent("Vs reference$3.00");
+    expect(mixedRow.getByText("$1.25")).toHaveClass("text-warn/90");
+    expect(mixedRow.getByText("$0.25")).toHaveClass("text-warn/90");
+    expect(mixedRow.getByText("$3.00")).toHaveClass("text-good/90");
   });
 
   it("shows measured-only headline without faking a zero estimated line", async () => {
@@ -187,10 +265,10 @@ describe("EconomicsPane", () => {
 
     render(<EconomicsPane />);
 
-    expect(await screen.findByText("$2.00 vs — · measured")).toBeInTheDocument();
-    const row = within(screen.getByText("Job meas-1").closest(".mb-2") as HTMLElement);
-    expect(row.getByText("Measured").parentElement).toHaveTextContent("Measured$2.00");
-    expect(row.getByText("Estimated").parentElement).toHaveTextContent("Estimated—");
+    expect(await screen.findByText("meas-1")).toBeInTheDocument();
+    const row = within(screen.getByText("meas-1").closest(".mb-2") as HTMLElement);
+    expect(row.getByText("Measured Cost").parentElement).toHaveTextContent("Measured Cost$2.00");
+    expect(row.getByText("Estimated Cost").parentElement).toHaveTextContent("Estimated Cost—");
     expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
   });
 
@@ -213,10 +291,10 @@ describe("EconomicsPane", () => {
 
     render(<EconomicsPane />);
 
-    expect(await screen.findByText("$0.75 vs — · estimated")).toBeInTheDocument();
-    const row = within(screen.getByText("Job est-1").closest(".mb-2") as HTMLElement);
-    expect(row.getByText("Measured").parentElement).toHaveTextContent("Measured—");
-    expect(row.getByText("Estimated").parentElement).toHaveTextContent("Estimated$0.75");
+    expect(await screen.findByText("est-1")).toBeInTheDocument();
+    const row = within(screen.getByText("est-1").closest(".mb-2") as HTMLElement);
+    expect(row.getByText("Measured Cost").parentElement).toHaveTextContent("Measured Cost—");
+    expect(row.getByText("Estimated Cost").parentElement).toHaveTextContent("Estimated Cost$0.75");
     expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
   });
 
@@ -238,7 +316,7 @@ describe("EconomicsPane", () => {
 
     render(<EconomicsPane />);
 
-    expect(await screen.findByText("$1.10 vs — · measured")).toBeInTheDocument();
+    expect(await screen.findByText("legacy-1")).toBeInTheDocument();
     expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(2);
   });
 

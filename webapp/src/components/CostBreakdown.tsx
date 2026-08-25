@@ -742,7 +742,7 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
   };
 
   return (
-    <div className="w-full min-h-0 overflow-auto px-3 py-3 text-[11px] text-txt">
+    <div className="w-full min-h-0 px-3 py-3 text-[11px] text-txt">
       <div className="text-[10px] uppercase tracking-wide text-faint">This app run</div>
       <p className="text-[10px] text-muted mb-2 leading-snug">
         Process spend since launch. Resets on full quit — not Swarm pane repo-session spend, not conversation lifetime.
@@ -752,7 +752,7 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
       {est > 0 ? (
         <div className="flex items-center justify-between mb-1">
           <span className="text-muted">{spendLabel}</span>
-          <span className="text-good font-medium tabular-nums">{spendPrefix}{fmtCost(est)}</span>
+          <span className="text-warn font-medium tabular-nums">{spendPrefix}{fmtCost(est)}</span>
         </div>
       ) : null}
 
@@ -817,7 +817,7 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
           <span className="text-muted">
             Prompt-cache value{swarmCachePartial ? " (partial)" : ""}
           </span>
-          <span className="text-accent font-medium tabular-nums">~{fmtCost(promptCacheSaved)}</span>
+          <span className="text-good font-medium tabular-nums">~{fmtCost(promptCacheSaved)}</span>
         </div>
       ) : null}
 
@@ -835,7 +835,7 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
           <span className="text-muted">
             Model selection value{routingEstimated && delegationSaved <= 0 ? " (est.)" : ""}
           </span>
-          <span className="text-accent font-medium tabular-nums">~{fmtCost(modelSelectionSaved)}</span>
+          <span className="text-good font-medium tabular-nums">~{fmtCost(modelSelectionSaved)}</span>
         </div>
       ) : null}
 
@@ -852,7 +852,7 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
       {compactSavings > 0 ? (
         <div className="flex items-center justify-between mb-1">
           <span className="text-muted">Compact tool outputs saved</span>
-          <span className="text-accent font-medium tabular-nums">~{fmtCost(compactSavings)}</span>
+          <span className="text-good font-medium tabular-nums">~{fmtCost(compactSavings)}</span>
         </div>
       ) : null}
 
@@ -908,7 +908,10 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
 
       {showContextHealth ? (
       <div className="mt-3 pt-2 border-t border-edge/60">
-        <div className="text-[10px] uppercase tracking-wide text-faint mb-2">Context health</div>
+        <div className="text-[10px] uppercase tracking-wide text-faint mb-1">Context health</div>
+        <p className="text-[10px] text-muted mb-2 leading-snug">
+          Process memory and spills for this app run — not job cash.
+        </p>
       {historyCompactions > 0 ? (
         <div
           className="flex items-center justify-between mb-1 text-faint"

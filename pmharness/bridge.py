@@ -1565,6 +1565,11 @@ def execute_intent(
             primary_adapter = str(
                 _allow.get("primary_adapter") or "agentic"
             ).strip().lower() or "agentic"
+            allowed_model_ids = [
+                str(item).strip()
+                for item in (_allow.get("allowed_model_ids") or [])
+                if str(item).strip()
+            ]
             roles = intent.roles or infer_roles(intent.goal)
             _browser = _browser_swarm_enabled(intent.goal)
             pinned_model = (getattr(intent, "model", None) or "").strip()
@@ -1628,6 +1633,10 @@ def execute_intent(
                     "routing_policy": "balanced",
                     **_analysis_capability_payload(),
                 }
+                if allowed_model_ids and not pin_fields:
+                    # Fail-closed to Settings Models toggles. A global
+                    # intent.model pin still wins via pin_fields below.
+                    base_payload["allowed_model_ids"] = list(allowed_model_ids)
                 if pin_fields:
                     base_payload.update(pin_fields)
                 base_payload = _payload_with_acceptance_criteria(

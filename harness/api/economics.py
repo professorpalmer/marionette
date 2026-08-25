@@ -315,7 +315,11 @@ def _serialize_job_counterfactual(cf: Any) -> Optional[dict]:
 
 
 def _models_from_job_cost(job_cost: Any) -> list:
-    by_model = getattr(job_cost, "by_model", None) or {}
+    by_model = (
+        job_cost.get("by_model")
+        if isinstance(job_cost, dict)
+        else getattr(job_cost, "by_model", None)
+    ) or {}
     rows = []
     for model_id, bucket in by_model.items():
         info = bucket if isinstance(bucket, dict) else {}
@@ -438,7 +442,12 @@ def _project_job_row(
                 job_cost = None
                 cf = None
 
-    models = _models_from_job_cost(job_cost) if job_cost is not None else []
+    if pm_receipt is not None:
+        models = _models_from_job_cost(
+            ((pm_receipt.get("pm_report") or {}).get("actual_cost") or {})
+        )
+    else:
+        models = _models_from_job_cost(job_cost) if job_cost is not None else []
     arts = receipt.get("artifacts") if isinstance(receipt, dict) else None
     efficiency = receipt.get("efficiency") if isinstance(receipt, dict) else None
     tasks = receipt.get("tasks") if isinstance(receipt, dict) else None

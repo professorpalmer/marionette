@@ -14,6 +14,9 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import pmharness.bridge as bridge
+from harness.swarm_worker_allowlist import (
+    resolve_swarm_worker_allowlist as _real_resolve_swarm_worker_allowlist,
+)
 from pmharness.intent import DriverIntent
 
 
@@ -621,5 +624,46 @@ def test_run_swarm_global_pin_applies_to_every_role(monkeypatch, tmp_path):
     for spec in _CapturingWorkerSpec._last_captured:
         assert spec.payload.get("auto_route") is False
         assert spec.payload.get("pinned_model") == "agentic/openai-codex/gpt-5.6-luna"
+    selected = {model_id for _role, model_id, _payload in _RoutingOrchestrator.last_decisions}
+    assert selected == {"agentic/openai-codex/gpt-5.6-luna"}
+
+
+def test_run_swarm_settings_singleton_blocks_disabled_catalog_peer(monkeypatch, tmp_path):
+    """Only Luna on in Settings: conflict-auditor must not leap to Sol / gpt-5-3."""
+    import harness.swarm_worker_allowlist as swa
+
+    _install_two_tier_product_path(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        swa,
+        "_enabled_or_visible_specs",
+        lambda: ["openai-codex:gpt-5.6-luna"],
+    )
+    monkeypatch.setattr(swa, "_agentic_eligible", lambda: True)
+    monkeypatch.setattr(swa, "_cursor_platform_ready", lambda: False)
+    monkeypatch.setattr(
+        swa,
+        "_platform_locked_adapters",
+        lambda: frozenset({"agentic", "cursor"}),
+    )
+    # _install_two_tier stubs resolve_swarm_worker_allowlist (empty model ids
+    # so two-tier can pick Sol). Restore the real resolver captured at import.
+    monkeypatch.setattr(
+        "harness.swarm_worker_allowlist.resolve_swarm_worker_allowlist",
+        _real_resolve_swarm_worker_allowlist,
+    )
+    intent = DriverIntent(
+        action="run_swarm",
+        goal="Map the auth middleware",
+        roles=["explore", "conflict-auditor"],
+    )
+    result = bridge.execute_intent(intent, state_dir=str(tmp_path / "state"))
+    assert result is not None
+    captured = {spec.role: spec.payload for spec in _CapturingWorkerSpec._last_captured}
+    for payload in captured.values():
+        ids = [str(item).lower() for item in (payload.get("allowed_model_ids") or [])]
+        blob = " ".join(ids)
+        assert "gpt-5.6-luna" in blob
+        assert "gpt-5.6-sol" not in blob
+        assert "gpt-5-3" not in blob
     selected = {model_id for _role, model_id, _payload in _RoutingOrchestrator.last_decisions}
     assert selected == {"agentic/openai-codex/gpt-5.6-luna"}

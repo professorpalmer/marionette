@@ -17,10 +17,15 @@ describe("modelIdentity display helpers", () => {
     );
   });
 
-  it("keeps full registry id for explicit pins", () => {
+  it("strips engine prefixes for pinned and auto-routed badges alike", () => {
     expect(
       displayModelId("agentic/meta/muse-spark-1.1", { policy: "explicit_pin" }),
-    ).toBe("agentic/meta/muse-spark-1.1");
+    ).toBe("meta/muse-spark-1.1");
+    expect(
+      displayModelId("agentic/openai-codex/gpt-5.6-luna", { policy: "explicit_pin" }),
+    ).toBe(
+      displayModelId("agentic/openai-codex/gpt-5.6-luna", { policy: "balanced" }),
+    );
   });
 
   it("strips engine prefixes for auto-routed badges including doubles", () => {
