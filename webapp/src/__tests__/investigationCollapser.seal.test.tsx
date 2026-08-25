@@ -160,9 +160,7 @@ describe("holdSwarmAwait transcript latch + awaiting_swarm pause-point", () => {
     expect(screen.queryByText(/Investigating/i)).toBeNull();
     expect(screen.getByText(/Still working/i)).toBeTruthy();
 
-    // Pilot busy (thinking): holdSwarmAwait must not seal. Live chrome is
-    // Swarm · running + Still working… (not Investigating). Sealed cards
-    // stay Explored 2 files; spoken assistant prose stays a top-level Bubble.
+    // Pilot busy (thinking): holdSwarmAwait must not seal — live swarm keeps Investigating.
     rerender(
       <TranscriptList
         {...listProps(pauseItems, {
@@ -172,11 +170,12 @@ describe("holdSwarmAwait transcript latch + awaiting_swarm pause-point", () => {
         })}
       />,
     );
-    expect(screen.getByText(/Swarm · running/i)).toBeTruthy();
-    expect(screen.getByText(/Explored/i)).toBeTruthy();
-    expect(screen.queryByText(/Investigating/i)).toBeNull();
-    // Footer keeps Still working… so tool-batch gaps are not a dead log dump.
+    expect(screen.getByText(/Investigating/i)).toBeTruthy();
+    // Finished cards + open loop: fold stays Investigating and the footer
+    // keeps Still working… so tool-batch gaps are not a dead log dump.
     expect(screen.getByText(/Still working/i)).toBeTruthy();
+    // Spoken assistant prose stays a top-level Bubble after the fold.
+    expect(screen.getByText(/Workers flying — validating when they land/i)).toBeTruthy();
   });
 
   it("holdSwarmAwait with active pilot turn keeps mid-turn Investigating, not sealed Explored", () => {
