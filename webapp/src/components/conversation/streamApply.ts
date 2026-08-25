@@ -38,6 +38,7 @@ import {
   normalizeNestedActionStatus,
 } from "./nestedActionBounds";
 import { normalizeToolKind } from "../../lib/turnProgress";
+import { suppressUnspecifiedDirtyFinish } from "../../lib/turnTerminal";
 
 export {
   boundActionField,
@@ -1800,6 +1801,7 @@ export function appendTurnTerminal(
 ): Item[] {
   const text = String(data.text || "").trim();
   if (!text) return items;
+  if (suppressUnspecifiedDirtyFinish(data.cause, text)) return items;
   const last = items[items.length - 1];
   const next: Extract<Item, { kind: "turn_terminal" }> = {
     kind: "turn_terminal",

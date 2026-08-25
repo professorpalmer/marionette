@@ -22,7 +22,8 @@ import {
   droppedPathIsDirectory,
   resolveDroppedOsPath,
 } from "./components/conversation/composerInput";
-import { openAgentWorkspace } from "./lib/agentLinks";
+import { openAgentUrl, openAgentWorkspace } from "./lib/agentLinks";
+import { isCloseTabKey, requestCloseFocusedTab } from "./lib/closeTabShortcut";
 import { reclampRailWidths } from "./lib/railLayout";
 import {
   setConfigured,
@@ -286,6 +287,15 @@ export default function App() {
         if (k === "j") { e.preventDefault(); openRightTo("settings"); }
         return;
       }
+      if (isCloseTabKey(e)) {
+        e.preventDefault();
+        const closed = requestCloseFocusedTab();
+        if (closed === "none") {
+          const ipc = (window as unknown as { harnessIPC?: { closeWindow?: () => void } }).harnessIPC;
+          if (ipc && typeof ipc.closeWindow === "function") ipc.closeWindow();
+        }
+        return;
+      }
       switch (k) {
         case "b": e.preventDefault(); setLeftOpen((v) => !v); break;        // toggle sessions panel
         case "j": e.preventDefault(); toggleRight(); break;       // toggle right pane
@@ -301,6 +311,27 @@ export default function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [toggleRight]);
+
+  useEffect(() => {
+    const ipc = (window as unknown as {
+      harnessIPC?: {
+        onCloseTab?: (cb: () => void) => () => void;
+        onOpenInApp?: (cb: (url: string) => void) => () => void;
+        closeWindow?: () => void;
+      };
+    }).harnessIPC;
+    const unsubs: Array<() => void> = [];
+    if (ipc && typeof ipc.onCloseTab === "function") {
+      unsubs.push(ipc.onCloseTab(() => {
+        const closed = requestCloseFocusedTab();
+        if (closed === "none" && typeof ipc.closeWindow === "function") ipc.closeWindow();
+      }));
+    }
+    if (ipc && typeof ipc.onOpenInApp === "function") {
+      unsubs.push(ipc.onOpenInApp((url) => { if (url) openAgentUrl(url); }));
+    }
+    return () => { for (const u of unsubs) u(); };
+  }, []);
 
   return (
     <div className="h-full flex flex-col bg-[var(--shell-chrome)]">

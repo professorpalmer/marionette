@@ -121,6 +121,24 @@ def core_visible_names(
 CORE_PILOT: Set[str] = CORE_ALWAYS | _PILOT_EXTRAS
 CORE_WORKER: Set[str] = CORE_ALWAYS | _WORKER_EXTRAS
 
+# Hidden built-ins the model may still name on the first call. Activate then
+# dispatch instead of INVALID TOOL CALL. They must not appear in the schema
+# until activated (search_tools or this first-call path).
+LAZY_ACTIVATE_NAMES: Set[str] = {
+    "web_search",
+    "web_fetch",
+}
+
+
+def is_lazy_activatable_name(name: str) -> bool:
+    """True for web_search / web_fetch / browser_* first-call activation."""
+    key = (name or "").strip()
+    if not key:
+        return False
+    if key in LAZY_ACTIVATE_NAMES:
+        return True
+    return key.startswith("browser_")
+
 
 def discovery_enabled() -> bool:
     """Return False when ``HARNESS_TOOL_DISCOVERY=0|false|no``."""
@@ -350,26 +368,62 @@ class ToolCatalog:
         return hits[:limit]
 
     def resolve_activation_keys(self, keys: Iterable[str]) -> List[str]:
-        """Map user-supplied names/ids to canonical tool_ids."""
+        """Map user-supplied names/ids to canonical tool_ids.
+
+        Materialize ``keys`` first so a one-shot iterator cannot be consumed
+        as an empty repeat. Refresh if the catalog is empty so a real first
+        key (web_search / web_fetch / browser_*) does not resolve to [].
+        """
+        materialized = [str(raw or "").strip() for raw in keys]
+        if not self._entries:
+            try:
+                self.refresh()
+            except Exception as exc:
+                _diag_note("tool_discovery.resolve_refresh", exc)
         resolved: List[str] = []
         by_name = {e.name: e.tool_id for e in self._entries.values()}
+        by_name_l = {e.name.lower(): e.tool_id for e in self._entries.values()}
         by_qualified = {e.qualified: e.tool_id for e in self._entries.values()}
-        for raw in keys:
-            key = (raw or "").strip()
+        by_qualified_l = {e.qualified.lower(): e.tool_id for e in self._entries.values()}
+        for key in materialized:
             if not key:
                 continue
             if key in self._entries:
                 resolved.append(key)
                 continue
+            bare = key[8:] if key.startswith("builtin:") else key
             if key in by_name:
                 resolved.append(by_name[key])
+                continue
+            if bare in by_name:
+                resolved.append(by_name[bare])
                 continue
             if key in by_qualified:
                 resolved.append(by_qualified[key])
                 continue
+            if bare in by_qualified:
+                resolved.append(by_qualified[bare])
+                continue
+            low = key.lower()
+            bare_l = bare.lower()
+            if low in by_name_l:
+                resolved.append(by_name_l[low])
+                continue
+            if bare_l in by_name_l:
+                resolved.append(by_name_l[bare_l])
+                continue
+            if low in by_qualified_l:
+                resolved.append(by_qualified_l[low])
+                continue
+            if bare_l in by_qualified_l:
+                resolved.append(by_qualified_l[bare_l])
+                continue
             # Accept mcp_server_tool without prefix.
             if key.startswith("mcp_") and key in by_name:
                 resolved.append(by_name[key])
+                continue
+            if is_lazy_activatable_name(bare):
+                resolved.append(f"builtin:{bare}")
         # Stable dedupe
         out: List[str] = []
         seen: Set[str] = set()
@@ -380,9 +434,42 @@ class ToolCatalog:
         return out
 
     def activate(self, keys: Iterable[str]) -> List[str]:
-        activated = self.resolve_activation_keys(keys)
+        """Mark tools visible. Never a cached no-op: every call updates the set
+        and returns the resolved ids, including already-activated keys.
+        """
+        activated = self.resolve_activation_keys(list(keys or []))
         self._activated.update(activated)
         return activated
+
+    def try_lazy_activate(self, keys: Iterable[str]) -> List[str]:
+        """Activate hidden web/browser built-ins on first call.
+
+        Unknown names are ignored. Known lazy names that are not yet in the
+        catalog (browser off) are still marked activated so parse can dispatch
+        instead of INVALID TOOL CALL; they stay out of the schema until an
+        entry exists.
+        """
+        newly: List[str] = []
+        for raw in keys:
+            name = (raw or "").strip()
+            if not is_lazy_activatable_name(name):
+                continue
+            resolved = self.resolve_activation_keys([name])
+            if resolved:
+                self._activated.update(resolved)
+                newly.extend(resolved)
+                continue
+            tid = f"builtin:{name}"
+            self._activated.add(tid)
+            newly.append(tid)
+        # Stable dedupe
+        out: List[str] = []
+        seen: Set[str] = set()
+        for tid in newly:
+            if tid not in seen:
+                seen.add(tid)
+                out.append(tid)
+        return out
 
     def is_visible(self, tool_id: str) -> bool:
         if not discovery_enabled():
@@ -435,7 +522,9 @@ class ToolCatalog:
         activate: Optional[Sequence[str]] = None,
     ) -> str:
         """Stable-size JSON payload for ``search_tools`` results."""
-        newly = self.activate(activate or [])
+        if not self._entries:
+            self.refresh()
+        newly = self.activate(list(activate or []))
         hits = self.search(query, limit=limit)
         rows = []
         for hit in hits:

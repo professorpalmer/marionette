@@ -28,8 +28,10 @@ import { staleLocalStreamTickDecision } from "../components/conversation/runners
 import { isTerminalStreamKind } from "../components/conversation/chatEvents";
 import {
   CONTINUE_PROMPT,
+  DIRTY_FINISH_BANNER,
   canonicalizeTerminalCause,
   composerBusyDuringSwitch,
+  dirtyFinishExplanation,
   hasPartialAssistantAnswer,
   latestUserAsk,
   recoveryControlsAvailable,
@@ -454,7 +456,8 @@ describe("Wave 3 last-mile: fail-closed empty assistant_done", () => {
     expect(state.settle?.lifecycle).toBe("settled_incomplete");
     expect(state.settle?.cause).toBe("unspecified");
     expect(state.settle?.lifecycle).not.toBe("settled_complete");
-    expect(terminalChip(state.items)?.cause).toBe("unspecified");
+    expect(state.settle?.explanation).toBeNull();
+    expect(terminalChip(state.items)).toBeUndefined();
   });
 });
 
@@ -712,3 +715,47 @@ describe("Wave 3 last-mile: auto_halt and onDone-after-error", () => {
   });
 });
 
+
+describe("dirty-finish chrome decision", () => {
+  it("does not paint CAUSE_UNSPECIFIED as the dirty-finish banner", () => {
+    expect(terminalCauseCopy("unspecified")).toBe(DIRTY_FINISH_BANNER);
+    expect(dirtyFinishExplanation({ cause: "unspecified" })).toBeNull();
+    expect(dirtyFinishExplanation({ cause: "unspecified", finishReason: "stop" })).toBeNull();
+    expect(dirtyFinishExplanation({ cause: "unspecified", finishReason: "tool_calls" })).toBeNull();
+    expect(dirtyFinishExplanation({ cause: "length" })).toMatch(/length/i);
+  });
+
+  it("keeps unspecified fail-closed and stays quiet or Continue on stop/tool_calls", () => {
+    for (const wire of ["stop", "tool_calls"] as const) {
+      const settle = settleFromAssistantDone({
+        stopCause: "unspecified",
+        finishReason: wire,
+      });
+      expect(settle.cause).toBe("unspecified");
+      expect(settle.lifecycle).toBe("settled_incomplete");
+      expect(settle.lifecycle).not.toBe("settled_complete");
+      expect(settle.explanation).toBeNull();
+      expect(settle.explanation).not.toBe(DIRTY_FINISH_BANNER);
+      expect(recoveryControlsAvailable(settle.lifecycle)).toBe(true);
+    }
+    const blank = settleFromAssistantDone({ stopCause: "", finishReason: "stop" });
+    expect(blank.cause).toBe("unspecified");
+    expect(blank.explanation).toBeNull();
+    expect(recoveryControlsAvailable(blank.lifecycle)).toBe(true);
+  });
+
+  it("assistant_done with wire stop/tool_calls does not paint the banner", () => {
+    const { state, apply } = makeApplyDeps();
+    apply({ kind: "message_delta", data: { text: "Working" } });
+    apply({
+      kind: "assistant_done",
+      data: { stop_cause: "unspecified", finish_reason: "stop" },
+    });
+    expect(state.settle?.cause).toBe("unspecified");
+    expect(state.settle?.lifecycle).toBe("settled_incomplete");
+    expect(state.settle?.explanation).toBeNull();
+    expect(terminalChip(state.items)).toBeUndefined();
+    const itemsText = state.items.map((it) => ("text" in it ? String(it.text || "") : "")).join(" ");
+    expect(itemsText).not.toContain(DIRTY_FINISH_BANNER);
+  });
+});

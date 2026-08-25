@@ -562,3 +562,16 @@ body.is-row-resizing iframe {
 .scrollbar-none::-webkit-scrollbar {
   display: none;
 }
+
+
+/* Feed selection: highlight a clean text range, not fold chrome. */
+.transcript-msg-body {
+  user-select: text;
+}
+[data-testid="transcript-virtual-row"],
+.transcript-virtual-row,
+.transcript-fold-chrome,
+.chat-column [data-testid="jump-to-latest"],
+.chat-column [data-testid="composer-chrome"] {
+  user-select: none;
+}

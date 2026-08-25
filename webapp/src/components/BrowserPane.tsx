@@ -246,8 +246,14 @@ export default function BrowserPane() {
     });
   };
 
+  useEffect(() => {
+    const onClose = () => { closeTab(activeTabId); };
+    window.addEventListener("harness-close-browser-tab", onClose);
+    return () => window.removeEventListener("harness-close-browser-tab", onClose);
+  }, [activeTabId, tabs]);
+
   return (
-    <div className="flex flex-col h-full bg-transparent">
+    <div data-close-surface="browser" data-browser-tab-count={tabs.length} className="flex flex-col h-full bg-transparent">
       {/* Tab strip */}
       <div className="flex items-center gap-1 px-2 pt-1.5 bg-transparent border-b border-[var(--shell-panel-border)] select-none overflow-x-auto scrollbar-none">
         {tabs.map((tab) => {

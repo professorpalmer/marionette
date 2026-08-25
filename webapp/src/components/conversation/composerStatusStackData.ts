@@ -1,6 +1,6 @@
 import type { Job } from "../../lib/api";
 import type { AgentCommandSession } from "../../lib/agentCommandIndex";
-import { isCommandJob } from "../../lib/jobClassification";
+import { isCommandJob, isTrackerJob } from "../../lib/jobClassification";
 
 export type ComposerStatusStackKind = "swarm" | "terminal";
 export type ComposerStatusStackState = "running" | "done" | "failed";
@@ -86,7 +86,7 @@ function lingerAllows(state: ComposerStatusStackState, updatedAt: number | null,
 /** Accounting-owned provider swarm only. Command jobs return null (reclassify as terminal). */
 export function visibleSwarmJob(job: Job, nowMs: number): ComposerStatusStackRow | null {
   if (!jobAccountingOwned(job)) return null;
-  if (isCommandJob(job)) return null;
+  if (!isTrackerJob(job)) return null;
   const state = normalizeState(job.status);
   const updatedAt = jobUpdatedAt(job);
   if (!lingerAllows(state, updatedAt, nowMs, SWARM_SUCCESS_LINGER_MS, SWARM_FAILURE_LINGER_MS)) return null;

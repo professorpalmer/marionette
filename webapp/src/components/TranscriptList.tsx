@@ -1148,7 +1148,7 @@ const VirtualTranscriptRow = memo(
       data-index={virtualRow.index}
       data-testid="transcript-virtual-row"
       data-dom-measure={attachDom ? "1" : "0"}
-      className="absolute top-0 left-0 w-full pb-1"
+      className="transcript-virtual-row absolute top-0 left-0 w-full pb-1 select-none"
       style={{
         transform: `translateY(${virtualRow.start - scrollMargin}px)`,
       }}
@@ -1941,7 +1941,7 @@ export const TranscriptList = memo(function TranscriptList({
       {grouped.map((_, i) => {
         const key = stableItemKey(grouped[i]!, i);
         return (
-          <div key={key} className="pb-1">
+          <div key={key} className="transcript-virtual-row pb-1 select-none">
             {renderGroupedItem(i)}
           </div>
         );
@@ -2508,7 +2508,7 @@ function ActivityGroup({
         type="button"
         onClick={toggleOpen}
         aria-expanded={open}
-        className="flex items-center gap-1.5 py-0.5 text-[12px] font-sans font-normal text-faint/75 hover:text-muted transition w-fit max-w-full select-none"
+        className="transcript-fold-chrome flex items-center gap-1.5 py-0.5 text-[12px] font-sans font-normal text-faint/75 hover:text-muted transition w-fit max-w-full select-none"
       >
         {open ? <ChevronDown size={11} className="text-faint/55 shrink-0" /> : <ChevronRight size={11} className="text-faint/55 shrink-0" />}
         {investigating ? <Loader2 size={11} className="animate-spin text-faint/60 shrink-0" /> : null}
@@ -2686,7 +2686,7 @@ function ThinkingBlock({
             return next;
           });
         }}
-        className="flex items-center gap-1.5 text-faint/65 hover:text-muted/90 transition font-sans font-normal text-[12px] text-left w-full min-w-0 select-none"
+        className="transcript-fold-chrome flex items-center gap-1.5 text-faint/65 hover:text-muted/90 transition font-sans font-normal text-[12px] text-left w-full min-w-0 select-none"
         aria-expanded={expanded}
         title={expanded ? "Collapse reasoning" : "Expand reasoning"}
       >
@@ -2878,6 +2878,7 @@ const PrettyMarkdown = memo(function PrettyMarkdown({ text }: { text: string }) 
             <a
               href={href}
               onClick={(e) => openMarkdownHref(href, e)}
+              onAuxClick={(e) => { if (e.button === 1) openMarkdownHref(href, e); }}
               className="text-accent/90 no-underline hover:underline underline-offset-2 decoration-accent/40 cursor-pointer break-words"
             >
               {children}
@@ -3131,7 +3132,7 @@ function Bubble({
               <Pencil size={12} />
             </button>
           )}
-          <div className={`rounded-xl px-3 py-1 text-[13px] leading-relaxed whitespace-pre-wrap break-words border transition-all ${
+          <div className={`transcript-msg-body select-text rounded-xl px-3 py-1 text-[13px] leading-relaxed whitespace-pre-wrap break-words border transition-all ${
             isEditing
               ? "bg-accent/10 text-txt border-accent"
               : "bg-accent2 text-txt border-edge/30"
@@ -3190,7 +3191,7 @@ function Bubble({
       {showLabel && (
         <span className="text-[10px] uppercase tracking-wider text-faint px-0.5 select-none font-semibold mt-1">pilot</span>
       )}
-      <div className={`text-[0.8125rem] leading-[1.7] break-words max-w-[95%] py-0.5 w-full relative pr-14 ${isIntermediate ? "text-txt/75" : "text-txt/95"}`}>
+      <div className={`transcript-msg-body select-text text-[0.8125rem] leading-[1.7] break-words max-w-[95%] py-0.5 w-full relative pr-14 ${isIntermediate ? "text-txt/75" : "text-txt/95"}`}>
         {/* Plan/progress stays ordinary text; final answers keep Markdown
             so code fences / lists render for the user-facing reply. */}
         {isPlanOrProgressAssistant(msg) ? (

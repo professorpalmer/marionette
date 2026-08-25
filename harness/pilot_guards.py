@@ -890,6 +890,13 @@ def normalize_action_args(kind: str, act: Any) -> str:
             payload["max_results"] = _norm_optional_int(args.get("max_results"))
         if kind == "search_codegraph":
             payload["kind_arg"] = (args.get("kind") or "search").strip().lower()
+        if kind == "search_tools":
+            activate = args.get("activate") or []
+            if isinstance(activate, str):
+                activate = [activate]
+            payload["activate"] = sorted(
+                str(x).strip() for x in activate if str(x or "").strip()
+            )
     elif kind == "query_wiki":
         payload["question"] = _norm_whitespace(args.get("question", "") or "")
     elif kind in ("run_swarm", "run_implement"):

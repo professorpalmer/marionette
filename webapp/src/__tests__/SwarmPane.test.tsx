@@ -1080,7 +1080,7 @@ describe("SwarmPane mid-run job-row meters", () => {
     // over router) so the worker owns model/policy and no unmatched note.
     mockSwarmLive.mockResolvedValue(
       liveJob({
-        id: "local-1",
+        id: "local-swarm-1",
         status: "running",
         artifacts_complete: true,
         artifacts: [
@@ -1107,7 +1107,7 @@ describe("SwarmPane mid-run job-row meters", () => {
         ],
         tasks: [
           {
-            id: "local-1-w0",
+            id: "local-swarm-1-w0",
             status: "running",
             role: "implement (agentic)",
             instruction: "",
@@ -1174,14 +1174,14 @@ describe("SwarmPane truthful failed vs cancelled chrome", () => {
         id: "job-timeout",
         goal: "Timed-out command",
         status: "timeout",
-        adapter: "command",
+        adapter: "agentic",
         tasks: [
           {
             id: "job-timeout-w0",
             status: "timeout",
-            role: "command",
+            role: "worker",
             instruction: "pytest",
-            adapter: "command",
+            adapter: "agentic",
           },
         ],
       }),
@@ -1193,7 +1193,8 @@ describe("SwarmPane truthful failed vs cancelled chrome", () => {
     expect(screen.getByText(/1 failed/)).toBeInTheDocument();
     fireEvent.click(screen.getByText("Finished"));
     fireEvent.click(await screen.findByText("Timed-out command"));
-    expect(screen.getByText("1/1 · 1 failed")).toBeInTheDocument();
+    expect(screen.getByLabelText("Workers")).toHaveTextContent("1/1");
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
     expect(screen.getByTitle("Dismiss from tracker (stays in Puppetmaster history)")).toBeInTheDocument();
   });
 
@@ -1202,6 +1203,7 @@ describe("SwarmPane truthful failed vs cancelled chrome", () => {
       id: "job-truncated",
       goal: "Truncated command",
       status: "truncated",
+      job_kind: "run_swarm",
       adapter: "command",
       tasks: [
         { id: "job-truncated-w0", status: "truncated", role: "command", instruction: "cat", adapter: "command" },
@@ -1211,6 +1213,7 @@ describe("SwarmPane truthful failed vs cancelled chrome", () => {
       id: "job-interrupted",
       goal: "Interrupted command",
       status: "interrupted",
+      job_kind: "run_swarm",
       adapter: "command",
       tasks: [
         { id: "job-interrupted-w0", status: "interrupted", role: "command", instruction: "sleep", adapter: "command" },
@@ -1840,8 +1843,10 @@ describe("SwarmPane worker progress", () => {
 
     await waitFor(() => {
       expect(screen.getByText("Workers (3)")).toBeInTheDocument();
-      expect(screen.getByText("2/3 · 1 failed")).toBeInTheDocument();
+      expect(screen.getByLabelText("Workers")).toHaveTextContent("2/3");
     });
+    expect(screen.getByRole("button", { name: /b, failed/i })).toBeInTheDocument();
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
   });
 });
 
@@ -1912,8 +1917,8 @@ describe("SwarmPane worker outcome hierarchy", () => {
     expect(worker.getAttribute("aria-label") || "").toMatch(/degraded/i);
     expect(worker).toHaveTextContent("degraded");
     expect(worker.querySelector(".text-good")).toBeNull();
-    expect(screen.getByText("1/1 · 1 degraded")).toBeInTheDocument();
-    expect(screen.getByLabelText(/1 of 1 workers finished, 0 failed, 1 degraded/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Workers")).toHaveTextContent("1/1");
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
     expect(container.querySelector('[style*="width: 220px"]')).toBeTruthy();
 
     fireEvent.click(worker);
@@ -1944,7 +1949,7 @@ describe("SwarmPane worker outcome hierarchy", () => {
 
     expect(screen.getByText("Workers (3)")).toBeInTheDocument();
     expect(screen.getByLabelText("Workers")).toHaveTextContent("3/3");
-    expect(screen.getByLabelText(/3 of 3 workers finished, 0 failed, 0 degraded/)).toBeInTheDocument();
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
   });
 
   it("keeps x/N and failed count on mixed 2/3 terminal progress", async () => {
@@ -1964,9 +1969,10 @@ describe("SwarmPane worker outcome hierarchy", () => {
     render(<SwarmPane />);
     await expandVisibleJobs();
     await waitFor(() => {
-      expect(screen.getByText("2/3 · 1 failed")).toBeInTheDocument();
+      expect(screen.getByLabelText("Workers")).toHaveTextContent("2/3");
     });
-    expect(screen.getByLabelText(/2 of 3 workers finished, 1 failed, 0 degraded/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /fail-b/ }).getAttribute("aria-label") || "").toMatch(/failed/i);
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
   });
 
   it("keeps x/N during active 1/3 progress", async () => {
@@ -1985,9 +1991,9 @@ describe("SwarmPane worker outcome hierarchy", () => {
 
     render(<SwarmPane />);
     await expandVisibleJobs();
-    const progress = await screen.findByLabelText(/1 of 3 workers finished, 0 failed, 0 degraded/);
+    await waitFor(() => expect(screen.getByLabelText("Workers")).toHaveTextContent("1/3"));
     expect(screen.getByText("Workers (3)")).toBeInTheDocument();
-    expect(progress).toHaveTextContent("1/3");
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
   });
 
   it("does not mark any worker degraded from unmatched verification without task_id", async () => {
@@ -3088,5 +3094,83 @@ describe("SwarmPane command vs swarm split", () => {
     expect(await screen.findByText("No swarm jobs yet")).toBeInTheDocument();
     expect(screen.queryByText("sleep 999")).not.toBeInTheDocument();
     expect(screen.getByText("Swarm Tracker").parentElement).not.toHaveTextContent("(1)");
+  });
+
+  it("hides the wave parent and still shows hired children", async () => {
+    mockSwarmLive.mockResolvedValue({
+      session: { tokens_used: 0, est_cost_usd: 0 },
+      jobs: [
+        {
+          id: "local-wave-call_00_ET_S8G91HzE94famGY0TK0Q8637",
+          goal: "Parallel wave (2 jobs)",
+          status: "running",
+          job_kind: "parallel_wave",
+          role: "parallel_wave",
+          adapter: "parallel_wave",
+          source: "harness",
+        },
+        {
+          id: "job_abc123def456",
+          goal: "run_swarm audit",
+          status: "running",
+          job_kind: "run_swarm",
+          source: "harness",
+        },
+        {
+          id: "local-impl-1",
+          goal: "run_implement fix",
+          status: "running",
+          job_kind: "run_implement",
+          source: "harness",
+        },
+      ],
+    });
+    render(<SwarmPane />);
+    expect(await screen.findByText("run_swarm audit")).toBeInTheDocument();
+    expect(screen.getByText("run_implement fix")).toBeInTheDocument();
+    expect(screen.queryByText("Parallel wave (2 jobs)")).not.toBeInTheDocument();
+    expect(screen.getByText("Swarm Tracker").parentElement).toHaveTextContent("(2)");
+  });
+});
+
+describe("SwarmPane v0.9.344 density", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
+    clearSWRCache();
+    mockArtifacts.mockResolvedValue([]);
+    mockSwarmLive.mockResolvedValue({
+      session: { tokens_used: 12, est_cost_usd: 0.01 },
+      jobs: [
+        {
+          id: "job-live",
+          goal: "Live audit",
+          status: "running",
+          tokens: 12,
+          est_cost_usd: 0.01,
+          created_at: "2026-03-01T00:00:00Z",
+        },
+        {
+          id: "job-done",
+          goal: "Finished review",
+          status: "complete",
+          tokens: 8,
+          est_cost_usd: 0.002,
+          created_at: "2026-02-01T00:00:00Z",
+        },
+      ],
+    });
+  });
+
+  it("keeps status, title, and spend without per-card progress bars or card borders", async () => {
+    render(<SwarmPane />);
+    expect(await screen.findByText("Live audit")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Finished"));
+    expect(await screen.findByText("Finished review")).toBeInTheDocument();
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+    const live = screen.getByText("Live audit").closest("[data-job-id]");
+    expect(live?.className || "").not.toMatch(/rounded-md/);
+    expect(live?.className || "").not.toMatch(/\bborder\b/);
   });
 });

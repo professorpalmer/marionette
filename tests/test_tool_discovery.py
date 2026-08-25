@@ -11,13 +11,15 @@ import pytest
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession, ConvEvent
 from harness.mcp_client import McpTool
-from harness.pilot import build_tools_schema, parse_tool_calls
+from harness.pilot import build_tools_schema, is_invalid_action, parse_tool_calls
+from harness.pilot_tool_recovery import parse_native_tool_turn
 from harness.tool_discovery import (
     ToolCatalog,
     CORE_PILOT,
     CORE_WORKER,
     _normalize_path_text,
     discovery_enabled,
+    is_lazy_activatable_name,
 )
 
 
@@ -311,3 +313,136 @@ def test_core_always_survives_hash_edit_import_failure(monkeypatch):
     core = td._core_always()
     assert "read_file" in core
     assert "hash_edit" not in core
+
+
+def _fn_names(schema):
+    return {t["function"]["name"] for t in schema}
+
+
+def _tc(name, args=None, tc_id="tc_lazy"):
+    return {
+        "id": tc_id,
+        "type": "function",
+        "function": {
+            "name": name,
+            "arguments": json.dumps(args if args is not None else {"query": "marionette"}),
+        },
+    }
+
+
+class _CatalogSession:
+    def __init__(self, catalog):
+        self._tool_catalog = catalog
+        self._history = []
+        self._synthetic_tool_call_seq = 0
+
+
+def test_hidden_web_and_browser_not_in_visible_schema(monkeypatch):
+    monkeypatch.setattr(
+        "harness.browser.standalone_browser_available", lambda **_k: True,
+    )
+    catalog = ToolCatalog()
+    catalog.refresh(browser_enabled=True)
+    names = _fn_names(catalog.visible_schema(browser_enabled=True))
+    assert "web_search" not in names
+    assert "web_fetch" not in names
+    assert not any(n.startswith("browser_") for n in names)
+    assert is_lazy_activatable_name("web_search")
+    assert is_lazy_activatable_name("web_fetch")
+    assert is_lazy_activatable_name("browser_navigate")
+    assert not is_lazy_activatable_name("read_file")
+
+
+def test_first_activate_resolves_on_empty_catalog(monkeypatch):
+    """A real first key must not resolve to [] before refresh (repeat no-op bug)."""
+    monkeypatch.setattr(
+        "harness.browser.standalone_browser_available", lambda **_k: True,
+    )
+    catalog = ToolCatalog()
+    activated = catalog.activate(["web_search"])
+    assert "builtin:web_search" in activated
+    assert "web_search" in _fn_names(catalog.visible_schema())
+
+
+def test_search_tools_activate_is_not_a_noop(monkeypatch):
+    monkeypatch.setattr(
+        "harness.browser.standalone_browser_available", lambda **_k: True,
+    )
+    catalog = ToolCatalog()
+    catalog.refresh(browser_enabled=True)
+    assert "web_search" not in _fn_names(catalog.visible_schema())
+    first = catalog.format_search_response("", activate=["web_search"])
+    payload = json.loads(first)
+    assert "builtin:web_search" in payload["activated"]
+    assert "web_search" in _fn_names(catalog.visible_schema())
+    # Second activate must still resolve and keep the tool visible (not a cache no-op).
+    second = catalog.activate(["web_search"])
+    assert "builtin:web_search" in second
+    assert "web_search" in _fn_names(catalog.visible_schema())
+    third = catalog.format_search_response("web", activate=["web_fetch"])
+    payload3 = json.loads(third)
+    assert "builtin:web_fetch" in payload3["activated"]
+    assert "web_fetch" in _fn_names(catalog.visible_schema())
+
+
+def test_lazy_activate_first_call_is_not_invalid_tool(monkeypatch):
+    monkeypatch.setattr(
+        "harness.browser.standalone_browser_available", lambda **_k: True,
+    )
+    catalog = ToolCatalog()
+    catalog.refresh(browser_enabled=True)
+    schema = catalog.visible_schema(browser_enabled=True)
+    assert "web_search" not in _fn_names(schema)
+    session = _CatalogSession(catalog)
+    turn, _calls, _content = parse_native_tool_turn(
+        "",
+        [_tc("web_search", {"query": "marionette tracker"}, tc_id="tc_web")],
+        "",
+        schema,
+        session=session,
+    )
+    assert len(turn.actions) == 1
+    assert turn.actions[0].kind == "web_search"
+    assert not is_invalid_action(turn.actions[0])
+    assert "web_search" in _fn_names(catalog.visible_schema())
+
+    schema2 = catalog.visible_schema()
+    # web_fetch still hidden until first call / activate
+    assert "web_fetch" not in _fn_names(schema2)
+    turn2, _, _ = parse_native_tool_turn(
+        "",
+        [_tc("web_fetch", {"url": "https://example.com"}, tc_id="tc_fetch")],
+        "",
+        schema2,
+        session=session,
+    )
+    assert turn2.actions[0].kind == "web_fetch"
+    assert not is_invalid_action(turn2.actions[0])
+
+    schema3 = catalog.visible_schema(browser_enabled=True)
+    assert "browser_navigate" not in _fn_names(schema3)
+    turn3, _, _ = parse_native_tool_turn(
+        "",
+        [_tc("browser_navigate", {"url": "https://example.com"}, tc_id="tc_b")],
+        "",
+        schema3,
+        session=session,
+    )
+    assert turn3.actions[0].kind == "browser_navigate"
+    assert not is_invalid_action(turn3.actions[0])
+
+
+def test_unknown_hidden_name_stays_invalid_tool():
+    catalog = ToolCatalog()
+    catalog.refresh()
+    schema = catalog.visible_schema()
+    session = _CatalogSession(catalog)
+    turn, _, _ = parse_native_tool_turn(
+        "",
+        [_tc("not_a_real_tool", {"q": 1}, tc_id="tc_bad")],
+        "",
+        schema,
+        session=session,
+    )
+    assert is_invalid_action(turn.actions[0])
+    assert "INVALID TOOL CALL" in (turn.actions[0].content or "")

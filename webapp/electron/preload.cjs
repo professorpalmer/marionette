@@ -12,6 +12,17 @@ contextBridge.exposeInMainWorld("harnessIPC", {
   popoutBrowser: (url) => ipcRenderer.invoke("browser:popout", url),
   // Open a URL in the OS default browser (escape hatch when in-app Google OAuth rejects).
   openExternal: (url) => ipcRenderer.invoke("browser:openExternal", url),
+  closeWindow: () => ipcRenderer.invoke("window:close"),
+  onCloseTab: (cb) => {
+    const handler = () => { try { cb(); } catch (_) {} };
+    ipcRenderer.on("app:closeTab", handler);
+    return () => ipcRenderer.removeListener("app:closeTab", handler);
+  },
+  onOpenInApp: (cb) => {
+    const handler = (_e, url) => { try { cb(url); } catch (_) {} };
+    ipcRenderer.on("browser:openInApp", handler);
+    return () => ipcRenderer.removeListener("browser:openInApp", handler);
+  },
   uploadFile: (payload) => ipcRenderer.invoke("harness:uploadFile", payload),
   // Electron no longer sets File.path; this is the supported drop-path API.
   pathForFile: (file) => {

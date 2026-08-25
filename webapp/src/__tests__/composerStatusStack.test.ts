@@ -157,9 +157,9 @@ describe("composerStatusStack", () => {
     }
   });
 
-  it("keeps command-adapter swarm workers without job_kind as swarm", () => {
+  it("hides command-stamped non-hires and wave parents from the swarm stack", () => {
     const now = Date.parse("2026-08-23T12:00:00Z");
-    const job = {
+    const commandStamp = {
       id: "job-timeout",
       goal: "Timed-out command",
       source: "harness",
@@ -168,8 +168,36 @@ describe("composerStatusStack", () => {
       adapter: "command",
       role: "command",
     } as any;
-    expect(visibleSwarmJob(job, now)?.kind).toBe("swarm");
-    expect(visibleCommandJob(job, now)).toBeNull();
+    expect(visibleSwarmJob(commandStamp, now)).toBeNull();
+    expect(visibleCommandJob(commandStamp, now)).toBeNull();
+    const wave = {
+      id: "local-wave-call_00_ET_S8G91HzE94famGY0TK0Q8637",
+      goal: "Parallel wave (2 jobs)",
+      source: "harness",
+      status: "running",
+      updated_at: now - 1000,
+      role: "parallel_wave",
+      adapter: "parallel_wave",
+      job_kind: "parallel_wave",
+    } as any;
+    expect(visibleSwarmJob(wave, now)).toBeNull();
+    expect(visibleCommandJob(wave, now)).toBeNull();
+  });
+
+  it("keeps a command-adapter hire on the swarm stack", () => {
+    const now = Date.parse("2026-08-23T12:00:00Z");
+    const hire = {
+      id: "job_abc123def456",
+      goal: "run_implement fix",
+      source: "harness",
+      status: "running",
+      updated_at: now - 1000,
+      job_kind: "run_implement",
+      adapter: "command",
+      role: "command",
+    } as any;
+    expect(visibleSwarmJob(hire, now)?.kind).toBe("swarm");
+    expect(visibleCommandJob(hire, now)).toBeNull();
   });
 
   it("keeps run_swarm / run_implement / run_parallel as swarm", () => {

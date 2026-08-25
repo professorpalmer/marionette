@@ -147,14 +147,14 @@ export default function ConversationChatColumn({
           title="Jump to latest"
           aria-label="Jump to latest"
           onClick={onJumpToBottom}
-          className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full border border-edge2 text-muted hover:text-txt hover:bg-panel2/80 transition-colors"
+          className="transcript-fold-chrome select-none absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full border border-edge2 text-muted hover:text-txt hover:bg-panel2/80 transition-colors"
           style={{ backgroundColor: "#0f1113" }}
         >
           <ChevronDown size={16} />
         </button>
       ) : null}
       </div>
-      <div ref={chromeRef} className="shrink-0 min-w-0" data-testid="composer-chrome">
+      <div ref={chromeRef} className="transcript-fold-chrome select-none shrink-0 min-w-0" data-testid="composer-chrome">
         {composerDock}
       </div>
     </div>

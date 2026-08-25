@@ -420,6 +420,16 @@ export default function Conversation({
     };
   }, [tabContextMenu]);
 
+  useEffect(() => {
+    const onClose = (e: Event) => {
+      const path = (e as CustomEvent<{ path?: string }>).detail?.path;
+      if (!path) return;
+      handleCloseTab(path);
+    };
+    window.addEventListener("harness-close-editor-tab", onClose as EventListener);
+    return () => window.removeEventListener("harness-close-editor-tab", onClose as EventListener);
+  }, [openTabs, activeTab]);
+
   const [input, setInput] = useState("");
   // Live composer text for per-session draft cache across useSessionSwitch.
   const composerInputRef = useRef("");
@@ -3528,7 +3538,7 @@ export default function Conversation({
   );
 
   return (
-    <main className="flex flex-col h-full min-w-0 bg-transparent">
+    <main className="flex flex-col h-full min-w-0 bg-transparent" data-active-editor-tab={activeTab}>
       {/* Brand + idle share equal inset so they line up with the floating dock. */}
       <ConversationHeader
         pillStatus={pillStatus}
@@ -3716,6 +3726,7 @@ export default function Conversation({
         />
       </div>
       {!isChatColumnActive(activeTab) ? (
+    <div data-close-surface="editor" className="flex-1 min-h-0 min-w-0 flex flex-col">
     <FileEditorPane
       path={activeTab}
       line={openTabs.find((t) => t.path === activeTab)?.line}
@@ -3723,6 +3734,7 @@ export default function Conversation({
       onClose={() => handleCloseTab(activeTab)}
       onDirtyChange={(dirty) => handleTabDirtyChange(activeTab, dirty)}
     />
+    </div>
       ) : null}
       </div>
 
