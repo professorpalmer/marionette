@@ -113,3 +113,10 @@ def test_clean_say_collapses_newlines():
     text = "Line 1\n\n\n\nLine 2\n\n\nLine 3"
     expected = "Line 1\n\nLine 2\n\nLine 3"
     assert clean_say(text) == expected
+
+
+def test_clean_say_working_ellipsis_is_empty():
+    # The old empty fallback was stored as transcript text. It is not spoken prose.
+    assert clean_say("Working...") == ""
+    assert clean_say("Working..") == ""
+    assert clean_say("working...") == ""

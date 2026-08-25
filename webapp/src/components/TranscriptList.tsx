@@ -56,7 +56,6 @@ import {
   toolRowLabel,
   turnHasVisibleBusySurface,
   workFoldLabel,
-  workedForLabel,
   ranGoalLine,
 } from "../lib/turnProgress";
 import { isAgentLoopOpen } from "./conversation/runnersBusy";
@@ -726,6 +725,11 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
     if (item.kind === "tool_prep") continue;
 
     if (item.kind === "msg") {
+      // Spoken-prose "Working..." fallback is not a message. Empty session
+      // used to paint three of these as stacked Bubbles.
+      if (item.msg.role === "assistant" && isWorkingEllipsisFallback(item.msg.text)) {
+        continue;
+      }
       // Post-tool micro-narration folds into the investigation box. Pre-tool
       // assistant bubbles stay standalone permanently (no look-ahead reparent).
       if (item.msg.role === "assistant" && intermediateItems.has(item)) {
@@ -2074,8 +2078,10 @@ function cleanAssistantText(text: string): string {
 
   let result = cleaned.join("\n").trim();
   result = result.replace(/\n{3,}/g, "\n\n");
-  // Empty after strip — never paint the spoken-prose "Working..." fallback
-  // (that string poisoned fold chrome when empty crumbs landed in the feed).
+  // Empty after strip, or the spoken-prose "Working..." placeholder itself —
+  // never paint that string (it leaked as three stacked Bubbles on a fresh
+  // idle session when crumbs already held the fallback).
+  if (!result || isWorkingEllipsisFallback(result)) return "";
   return result;
 }
 
