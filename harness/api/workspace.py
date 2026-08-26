@@ -241,6 +241,34 @@ def post_workspace_open(body: dict, svc: WorkspaceServices) -> tuple[int, JsonPa
     if not target_repo or not os.path.isdir(target_repo):
         return 400, {"error": "Path is not an existing directory"}
 
+    is_git = False
+    branch = ""
+    try:
+        from ..paths import git_toplevel
+        canonical_repo = git_toplevel(target_repo)
+        if canonical_repo:
+            is_git = True
+            if os.path.isdir(canonical_repo):
+                try:
+                    # Case aliases (macOS/Windows) share an inode with Git's
+                    # toplevel; nested dirs such as webapp do not.
+                    if os.path.samefile(target_repo, canonical_repo):
+                        target_repo = canonical_repo
+                except OSError:
+                    pass
+            proc_branch = subprocess.run(
+                ["git", "-C", target_repo, "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
+            )
+            if proc_branch.returncode == 0:
+                branch = proc_branch.stdout.strip()
+    except Exception:
+        pass
+
     # Save outgoing conversation transcript for the current active runner
     if svc.save_active_transcript is not None:
         svc.save_active_transcript()
@@ -290,24 +318,6 @@ def post_workspace_open(body: dict, svc: WorkspaceServices) -> tuple[int, JsonPa
             svc.record_recent_workspace(target_repo)
     except Exception as e:
         svc.diag("server.record_recent_workspace", e)
-
-    is_git = False
-    branch = ""
-    try:
-        proc = subprocess.run(
-            ["git", "-C", target_repo, "rev-parse", "--is-inside-work-tree"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if proc.returncode == 0:
-            is_git = True
-            proc_branch = subprocess.run(
-                ["git", "-C", target_repo, "rev-parse", "--abbrev-ref", "HEAD"],
-                capture_output=True, text=True, timeout=5,
-            )
-            if proc_branch.returncode == 0:
-                branch = proc_branch.stdout.strip()
-    except Exception:
-        pass
 
     # Select/create the target project's session, then attach via registry
     # (do not rebuild in a way that orphans busy runners).
