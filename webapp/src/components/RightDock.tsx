@@ -19,6 +19,7 @@ import { api } from "../lib/api";
 import { lastSelectedProjectRoot } from "../lib/panelTransition";
 import { writeSWRCache } from "../lib/useStaleWhileRevalidate";
 import { countRunningTrackerJobs } from "../lib/jobClassification";
+import { filterJobsByScope, JOB_SCOPE_CHANGED_EVENT, loadJobScope } from "../lib/jobScope";
 
 /** Curated destinations for the floating tool windows — Cursor-style icon strip.
  *  Settings is pinned to the foot of the floating pill. */
@@ -98,6 +99,22 @@ export default function RightDock({
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [menuVersion, setMenuVersion] = useState(0);
   const addMenuRef = useRef<HTMLDivElement | null>(null);
+  const [activitySessionId, setActivitySessionId] = useState("");
+  const [scopeEpoch, setScopeEpoch] = useState(0);
+
+  useEffect(() => {
+    const onSession = (e: Event) => {
+      const id = String((e as CustomEvent<{ sessionId?: string | null }>).detail?.sessionId || "");
+      setActivitySessionId(id);
+    };
+    const onScope = () => setScopeEpoch((n) => n + 1);
+    window.addEventListener("harness-session-changed", onSession);
+    window.addEventListener(JOB_SCOPE_CHANGED_EVENT, onScope);
+    return () => {
+      window.removeEventListener("harness-session-changed", onSession);
+      window.removeEventListener(JOB_SCOPE_CHANGED_EVENT, onScope);
+    };
+  }, []);
 
   useEffect(() => {
     if (!addMenuOpen) return;
@@ -136,7 +153,11 @@ export default function RightDock({
           // so expanding into the tracker after a collapsed session is warm too.
           writeSWRCache(`swarm:${swarmRepo || "__default__"}`, data);
           const jobs = Array.isArray(data?.jobs) ? data.jobs : [];
-          setSwarmRunning(countRunningTrackerJobs(jobs));
+          setSwarmRunning(
+            countRunningTrackerJobs(
+              filterJobsByScope(jobs, loadJobScope(), activitySessionId),
+            ),
+          );
         })
         .catch(() => {
           /* keep last known; dot is best-effort */
@@ -149,7 +170,7 @@ export default function RightDock({
       clearInterval(t);
       window.removeEventListener("harness-reviews-refresh", load);
     };
-  }, [swarmRepo]);
+  }, [swarmRepo, activitySessionId, scopeEpoch]);
 
   return (
     <aside

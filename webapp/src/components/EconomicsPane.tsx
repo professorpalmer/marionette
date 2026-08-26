@@ -17,8 +17,9 @@ export default function EconomicsPane() {
   );
   const [error, setError] = useState<string | null>(null);
   const [scope, setScope] = useState<EconomicsScope>("repo");
+  const [periodDays, setPeriodDays] = useState<30 | null>(null);
   const [economics, setEconomics] = useState<EconomicsData | null>(
-    () => readSWRCache<EconomicsData>("economics:repo") ?? null,
+    () => readSWRCache<EconomicsData>("economics:repo:all") ?? null,
   );
 
   const loadUsage = () =>
@@ -36,10 +37,10 @@ export default function EconomicsPane() {
       });
 
   const loadEconomics = () =>
-    Promise.resolve(api.getEconomics(scope))
+    Promise.resolve(api.getEconomics(scope, periodDays ?? "all"))
       .then((data) => {
         if (isEconomicsPayload(data) && (!data.scope || data.scope === scope)) {
-          writeSWRCache(`economics:${scope}`, data);
+          writeSWRCache(`economics:${scope}:${periodDays || "all"}`, data);
           setEconomics(data);
           return;
         }
@@ -67,11 +68,11 @@ export default function EconomicsPane() {
       window.removeEventListener("harness-usage-refresh", onRefresh);
       window.removeEventListener("harness-session-changed", onRefresh);
     };
-  }, [scope]);
+  }, [scope, periodDays]);
 
   useEffect(() => {
     void loadEconomics();
-  }, [scope]);
+  }, [scope, periodDays]);
 
 
   if (!session && error) {
@@ -92,7 +93,13 @@ export default function EconomicsPane() {
         </div>
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto">
-        <EconomicsDurable data={economics} scope={scope} onScopeChange={setScope} />
+        <EconomicsDurable
+          data={economics}
+          scope={scope}
+          onScopeChange={setScope}
+          periodDays={periodDays}
+          onPeriodChange={setPeriodDays}
+        />
       </div>
     </div>
   );

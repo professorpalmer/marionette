@@ -110,6 +110,11 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   );
   const [hiddenJobIds, setHiddenJobIds] = useState<Set<string>>(loadHiddenSessionJobs);
   const [jobScope, setJobScope] = useState<JobScope>(() => loadJobScope());
+  useEffect(() => {
+    const onScope = () => setJobScope(loadJobScope());
+    window.addEventListener("harness-job-scope-changed", onScope);
+    return () => window.removeEventListener("harness-job-scope-changed", onScope);
+  }, []);
   const [confirmClearJobs, setConfirmClearJobs] = useState(false);
   const [showAllJobs, setShowAllJobs] = useState(false);
   const [expandedJobs, setExpandedJobs] = useState<Record<string, boolean>>({});
@@ -1932,16 +1937,16 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           </button>
           {!sessionJobsCollapsed && (
             <div className="flex h-5 overflow-hidden rounded border border-edge/70 shrink-0">
-              {(["session", "repo"] as const).map((scope) => (
+              {(["session", "repo", "all"] as const).map((scope) => (
                 <button
                   key={scope}
                   type="button"
                   aria-pressed={jobScope === scope}
-                  aria-label={scope === "session" ? "This session" : "This repo, ever"}
+                  aria-label={scope === "session" ? "This session" : scope === "repo" ? "This repo" : "All projects"}
                   onClick={(e) => { e.stopPropagation(); setJobScope(scope); saveJobScope(scope); }}
                   className={`px-1.5 text-[9px] uppercase tracking-wider ${jobScope === scope ? "bg-accent/15 text-txt" : "text-muted hover:text-txt"}`}
                 >
-                  {scope === "session" ? "Session" : "Repo"}
+                  {scope === "session" ? "Session" : scope === "repo" ? "Repo" : "All"}
                 </button>
               ))}
             </div>

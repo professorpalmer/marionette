@@ -1,11 +1,15 @@
 import type { EconomicsData, EconomicsJobRow, EconomicsScope } from "../lib/api";
 import { openAgentSwarmJob } from "../lib/agentLinks";
 
-const SCOPES: Array<{ value: EconomicsScope; label: string }> = [
-  { value: "repo", label: "This repo" },
-  { value: "window30", label: "Last 30 days" },
-  { value: "all_projects", label: "All projects" },
+const OWNERSHIP: Array<{ value: EconomicsScope; label: string }> = [
   { value: "conversation", label: "This conversation" },
+  { value: "repo", label: "This repo" },
+  { value: "all_projects", label: "All projects" },
+];
+
+const PERIODS: Array<{ value: "all" | "30"; label: string }> = [
+  { value: "all", label: "All time" },
+  { value: "30", label: "Last 30 days" },
 ];
 
 function isFiniteNumber(value: unknown): value is number {
@@ -37,10 +41,14 @@ export default function EconomicsDurable({
   data,
   scope,
   onScopeChange,
+  periodDays,
+  onPeriodChange,
 }: {
   data: EconomicsData | null;
   scope: EconomicsScope;
   onScopeChange: (scope: EconomicsScope) => void;
+  periodDays: 30 | null;
+  onPeriodChange: (periodDays: 30 | null) => void;
 }) {
   const referenceId = data?.counterfactual?.reference_model_id
     || data?.savings?.counterfactual?.reference_model_id
@@ -56,19 +64,35 @@ export default function EconomicsDurable({
       <div className="text-[10px] uppercase tracking-wide text-faint">Durable</div>
       <p className="text-[10px] text-muted mb-2 leading-snug">
         {scope === "conversation"
-          ? "Owned jobs for this conversation. Puppetmaster savings stay on This repo / Last 30 days / All projects."
-          : "Puppetmaster savings for the selected scope. Recent jobs are this workspace tracker; Last 30 days keeps jobs created in that window. App-run spend stays above. Vs reference is a list-price counterfactual, not Swarm Tracker receipt savings."}
+          ? "Owned jobs for this conversation. Puppetmaster savings stay on This repo / All projects."
+          : "Puppetmaster savings for the selected ownership. Last 30 days is a date cutoff on the selected ownership, not a different project set. App-run spend stays above. Vs reference is a list-price counterfactual, not Swarm Tracker receipt savings. $0 route estimates stay forecasts, not cash."}
       </p>
 
       <label className="flex items-center justify-between mb-2 text-faint">
-        <span className="text-[10px] uppercase tracking-wide">Scope</span>
+        <span className="text-[10px] uppercase tracking-wide">Ownership</span>
         <select
           className="bg-transparent text-[11px] text-txt"
-          value={scope}
+          value={scope === "window30" ? "repo" : scope}
           onChange={(event) => onScopeChange(event.target.value as EconomicsScope)}
-          aria-label="Economics scope"
+          aria-label="Economics ownership"
         >
-          {SCOPES.map((option) => (
+          {OWNERSHIP.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <label className="flex items-center justify-between mb-2 text-faint">
+        <span className="text-[10px] uppercase tracking-wide">Period</span>
+        <select
+          className="bg-transparent text-[11px] text-txt"
+          value={periodDays === 30 ? "30" : "all"}
+          onChange={(event) => onPeriodChange(event.target.value === "30" ? 30 : null)}
+          aria-label="Economics period"
+        >
+          {PERIODS.map((option) => (
             <option key={option.value} value={option.value}>
               {option.label}
             </option>

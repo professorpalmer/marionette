@@ -215,6 +215,7 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
         apply_job_economics_policy,
         annotate_job_accounting,
         filter_local_jobs,
+        job_repo_cwd,
         parse_job_dispatch_id,
         parse_job_session_id,
         resolve_job_model,
@@ -472,9 +473,14 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
             outcome = canonical_job_outcome(raw_arts)
 
             tasks_list = []
+            raw_tasks = []
             try:
                 raw_tasks = (tasks_by_job.get(jid, []) if tasks_by_job is not None
                              else svc.retry_on_locked(lambda: job_store.list_tasks(jid)))
+            except Exception:
+                raw_tasks = []
+            job_cwd = job_repo_cwd(raw_tasks)
+            try:
                 for t in raw_tasks:
                     # Finished cards only need role/status/adapter for the
                     # worker strip; skip long instructions until expand.
@@ -557,8 +563,13 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
                 "session_id": j.get("session_id") or parse_job_session_id(j.get("label"), []),
                 "accounting_scope": j.get("accounting_scope", "visibility_only"),
                 "accounting_owned": bool(j.get("accounting_owned")),
+                "cross_project": bool(j.get("cross_project")),
                 **savings_fields,
             }
+            if j.get("cli_state_dir"):
+                row["cli_state_dir"] = j.get("cli_state_dir")
+            if job_cwd:
+                row["cwd"] = job_cwd
             # Optional validation-reuse provenance (absent on legacy rows).
             for _rk in (
                 "reuse_status",

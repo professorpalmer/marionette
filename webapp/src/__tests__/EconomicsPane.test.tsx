@@ -125,11 +125,34 @@ describe("EconomicsPane", () => {
 
     expect(await screen.findByText("Durable")).toBeInTheDocument();
     expect(screen.getAllByText(/anthropic\/claude-opus-4/).length).toBeGreaterThan(0);
-    expect(screen.getByLabelText("Economics scope")).toBeInTheDocument();
-    expect(screen.getByText("This repo")).toBeInTheDocument();
+    expect(screen.getByLabelText("Economics ownership")).toBeInTheDocument();
+    expect(screen.getByLabelText("Economics period")).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "This repo" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Last 30 days" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Last 30 days" }).closest("select")).toHaveAttribute(
+      "aria-label",
+      "Economics period",
+    );
     expect(screen.getByText("Routing saved (measured)")).toBeInTheDocument();
     expect(screen.getByText("CodeGraph (estimated)")).toBeInTheDocument();
     expect(screen.queryByText("Session cost")).not.toBeInTheDocument();
+  });
+
+  it("requests Last 30 days as a period on the selected ownership", async () => {
+    mockGetUsage.mockResolvedValue({
+      session: usageSession,
+      jobs: [],
+    });
+
+    render(<EconomicsPane />);
+    expect(await screen.findByText("Durable")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Economics period"), {
+      target: { value: "30" },
+    });
+    await waitFor(() => {
+      expect(mockGetEconomics).toHaveBeenCalledWith("repo", 30);
+    });
   });
 
   it("labels visibility-only jobs without treating their dollars as owned spend", async () => {
@@ -335,12 +358,15 @@ describe("EconomicsPane", () => {
     render(<EconomicsPane />);
     expect(await screen.findByText("Routing saved (measured)")).toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText("Economics scope"), {
+    fireEvent.change(screen.getByLabelText("Economics ownership"), {
       target: { value: "conversation" },
     });
     await waitFor(() => {
       expect(screen.queryByText("Routing saved (measured)")).not.toBeInTheDocument();
     });
+    expect(
+      mockGetEconomics.mock.calls.some((call) => call[0] === "conversation"),
+    ).toBe(true);
   });
 
   it("does not present repo savings as conversation spend", async () => {
@@ -357,7 +383,7 @@ describe("EconomicsPane", () => {
     render(<EconomicsPane />);
     expect(await screen.findByText("Durable")).toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText("Economics scope"), {
+    fireEvent.change(screen.getByLabelText("Economics ownership"), {
       target: { value: "conversation" },
     });
     expect(
