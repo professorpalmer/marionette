@@ -920,6 +920,22 @@ function creditDelegationSavings(
   return 0;
 }
 
+function cliOriginCaption(job: Job): { text: string; title: string } {
+  if (job.cross_project) {
+    const cwd = String(job.cwd || "").trim();
+    const stateDir = String(job.cli_state_dir || "").trim();
+    const shown = cwd || (stateDir.replace(/[\\/]+$/, "").split(/[/\\]/).pop() || stateDir);
+    return {
+      text: shown || "other project",
+      title: cwd || stateDir || "Started in another project",
+    };
+  }
+  return {
+    text: "external",
+    title: "Started outside Marionette (Cursor MCP or terminal Puppetmaster) for this workspace",
+  };
+}
+
 /** Missing ownership is owned for harness/local rows; CLI/external fail closed. */
 export function jobAccountingOwned(j: Job): boolean {
   if (j.accounting_owned === true) return true;
@@ -1135,6 +1151,11 @@ export default function SwarmPane() {
   const [sortOrder, setSortOrder] = useState<SortOrder>("newest");
   const [jobScope, setJobScope] = useState<JobScope>(() => loadJobScope());
   const [activeSessionId, setActiveSessionId] = useState("");
+  useEffect(() => {
+    const onScope = () => setJobScope(loadJobScope());
+    window.addEventListener("harness-job-scope-changed", onScope);
+    return () => window.removeEventListener("harness-job-scope-changed", onScope);
+  }, []);
   // Job ids we have asked the backend to cancel. Held in local view state so the
   // row can show a subtle 'cancelling...' affordance immediately, before the next
   // poll reflects the terminal 'cancelled' status from /api/swarm/live.
@@ -1445,7 +1466,10 @@ export default function SwarmPane() {
     };
   }, [scopedRepo, applyLive]);
 
-  const allJobs = filterJobsByScope(data?.jobs || [], jobScope, activeSessionId).filter(
+  const pendingOpenId = peekPendingSwarmOpenJob();
+  const allJobs = filterJobsByScope(data?.jobs || [], jobScope, activeSessionId, {
+    includeJobIds: pendingOpenId ? [pendingOpenId] : undefined,
+  }).filter(
     (job) => isTrackerJob(job),
   );
   // Clear/dismiss is archive chrome for finished runs only. Live (and pending)
@@ -1830,9 +1854,9 @@ export default function SwarmPane() {
                   {j.source === "cli" && (
                     <span
                       className="text-muted uppercase tracking-[0.1em]"
-                      title="Started outside Marionette (Cursor MCP or terminal Puppetmaster) for this workspace"
+                      title={cliOriginCaption(j).title}
                     >
-                      external
+                      {cliOriginCaption(j).text}
                     </span>
                   )}
                   {j.reuse_status && ["reused", "partial", "invalidated", "fresh"].includes(
@@ -2284,16 +2308,16 @@ export default function SwarmPane() {
           <option value="oldest">Oldest first</option>
         </select>
         <div className="col-span-2 flex h-6 overflow-hidden rounded border border-edge">
-          {(["session", "repo"] as const).map((scope) => (
+          {(["session", "repo", "all"] as const).map((scope) => (
             <button
               key={scope}
               type="button"
               aria-pressed={jobScope === scope}
-              aria-label={scope === "session" ? "This session" : "This repo, ever"}
+              aria-label={scope === "session" ? "This session" : scope === "repo" ? "This repo" : "All projects"}
               onClick={() => { setJobScope(scope); saveJobScope(scope); }}
               className={`flex-1 text-[10px] ${jobScope === scope ? "bg-accent/15 text-txt" : "bg-panel2/40 text-muted hover:text-txt"}`}
             >
-              {scope === "session" ? "This session" : "This repo"}
+              {scope === "session" ? "Session" : scope === "repo" ? "Repo" : "All"}
             </button>
           ))}
         </div>

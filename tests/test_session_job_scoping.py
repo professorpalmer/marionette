@@ -379,6 +379,10 @@ def test_cwd_under_repo_longest_prefix():
         SimpleNamespace(payload={"cwd": "/work/a"}),
         SimpleNamespace(payload={"cwd": "/work/a/deep/nested"}),
     ]) == os.path.normcase(os.path.abspath("/work/a/deep/nested"))
+    assert job_repo_cwd([
+        {"payload": {"cwd": "/work/a"}},
+        {"payload": {"cwd": "/work/a/deep/nested"}},
+    ]) == os.path.normcase(os.path.abspath("/work/a/deep/nested"))
 
 
 def _api_server(tmp_state_dir):

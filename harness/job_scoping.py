@@ -170,7 +170,10 @@ def job_repo_cwd(tasks: list) -> str:
     """Longest normalized ``cwd`` found on task payloads (deepest wins)."""
     cwds: list[str] = []
     for task in tasks or []:
-        payload = getattr(task, "payload", None) or {}
+        if isinstance(task, dict):
+            payload = task.get("payload") or {}
+        else:
+            payload = getattr(task, "payload", None) or {}
         if not isinstance(payload, dict):
             continue
         cwd = (payload.get("cwd") or "").strip()
@@ -358,6 +361,9 @@ def annotate_job_accounting(
         cli_cost_merge=cli_cost_merge,
     )
     row.update(acct)
+    cwd = job_repo_cwd(tasks or [])
+    if cwd:
+        row["cwd"] = cwd
     return row
 
 
