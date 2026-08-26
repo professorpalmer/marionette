@@ -18,6 +18,7 @@ import {
   openAgentCommand,
   openAgentImage,
   openAgentWorkspace,
+  openAgentBusyDetail,
   openAgentSwarmJob,
   openAgentSpill,
 } from "../lib/agentLinks";
@@ -472,6 +473,21 @@ describe("openAgentLink events", () => {
     expect(kinds).toEqual(["harness-focus-tab", "harness-open-swarm-job"]);
     expect(events[0]?.detail).toBe("swarm");
     expect(events[1]?.detail).toEqual({ jobId: "job_abcdef012345" });
+  });
+
+  it("awaiting-swarm busy chrome opens its exact job instead of Terminal", () => {
+    const spy = vi.spyOn(window, "dispatchEvent");
+
+    openAgentBusyDetail("awaiting_swarm", ["job_abcdef012345"]);
+
+    const events = spy.mock.calls.map((c) => c[0] as CustomEvent);
+    expect(events.map((event) => event.type)).toEqual([
+      "harness-focus-tab",
+      "harness-open-swarm-job",
+    ]);
+    expect(events[0]?.detail).toBe("swarm");
+    expect(events[1]?.detail).toEqual({ jobId: "job_abcdef012345" });
+    expect(events.some((event) => event.detail === "terminal")).toBe(false);
   });
 
   it("openAgentSwarmJob queues the job id before dispatch for late SwarmPane mount", async () => {
