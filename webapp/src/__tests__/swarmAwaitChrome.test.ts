@@ -193,6 +193,78 @@ describe("swarm await chrome", () => {
     ).toBe(false);
   });
 
+  it("session peek idle revokes stale awaiting_swarm chrome without clobbering other status", () => {
+    // Mirror Conversation getSessionState peek: authoritative idle must drop
+    // Still working… / Looking…, but leave thinking/error alone.
+    const applyPeek = (opts: {
+      prevStatus: string;
+      prevWaitHint: string | null;
+      state: string;
+      pendingSwarms: boolean;
+      userStopped: boolean;
+    }) => {
+      const awaiting = sessionStateShowsAwaitingSwarm({
+        state: opts.state,
+        pendingSwarms: opts.pendingSwarms,
+        userStopped: opts.userStopped,
+      });
+      const backendPendingSwarms = awaiting;
+      let status = opts.prevStatus;
+      let waitHint = opts.prevWaitHint;
+      if (awaiting) {
+        status = "awaiting_swarm";
+        waitHint = SWARM_AWAIT_HINT;
+      } else {
+        status = status === "awaiting_swarm" ? "idle" : status;
+        waitHint = clearSwarmAwaitWaitHint(waitHint);
+      }
+      return { awaiting, backendPendingSwarms, status, waitHint };
+    };
+
+    expect(
+      applyPeek({
+        prevStatus: "awaiting_swarm",
+        prevWaitHint: SWARM_AWAIT_HINT,
+        state: "idle",
+        pendingSwarms: false,
+        userStopped: false,
+      }),
+    ).toEqual({
+      awaiting: false,
+      backendPendingSwarms: false,
+      status: "idle",
+      waitHint: null,
+    });
+    expect(
+      applyPeek({
+        prevStatus: "thinking",
+        prevWaitHint: "Compacting…",
+        state: "idle",
+        pendingSwarms: false,
+        userStopped: false,
+      }),
+    ).toEqual({
+      awaiting: false,
+      backendPendingSwarms: false,
+      status: "thinking",
+      waitHint: "Compacting…",
+    });
+    expect(
+      applyPeek({
+        prevStatus: "awaiting_swarm",
+        prevWaitHint: PILOT_LOOKING_HINT,
+        state: "awaiting_swarm",
+        pendingSwarms: true,
+        userStopped: true,
+      }),
+    ).toEqual({
+      awaiting: false,
+      backendPendingSwarms: false,
+      status: "idle",
+      waitHint: null,
+    });
+  });
+
   it("seeds pendingJobIds from unresolved swarm_pending cards only", () => {
     const items: Item[] = [
       {

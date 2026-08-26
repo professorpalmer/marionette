@@ -18,6 +18,7 @@ import {
   openAgentCommand,
   openAgentImage,
   openAgentWorkspace,
+  openAgentBusyDetail,
   openAgentSwarmJob,
   openAgentSpill,
 } from "../lib/agentLinks";
@@ -472,6 +473,58 @@ describe("openAgentLink events", () => {
     expect(kinds).toEqual(["harness-focus-tab", "harness-open-swarm-job"]);
     expect(events[0]?.detail).toBe("swarm");
     expect(events[1]?.detail).toEqual({ jobId: "job_abcdef012345" });
+  });
+
+  it("awaiting-swarm busy chrome opens its exact job instead of Terminal", () => {
+    const spy = vi.spyOn(window, "dispatchEvent");
+
+    openAgentBusyDetail("awaiting_swarm", ["job_abcdef012345"]);
+
+    const events = spy.mock.calls.map((c) => c[0] as CustomEvent);
+    expect(events.map((event) => event.type)).toEqual([
+      "harness-focus-tab",
+      "harness-open-swarm-job",
+    ]);
+    expect(events[0]?.detail).toBe("swarm");
+    expect(events[1]?.detail).toEqual({ jobId: "job_abcdef012345" });
+    expect(events.some((event) => event.detail === "terminal")).toBe(false);
+  });
+
+  it("awaiting-swarm busy chrome skips invalid ids then opens the real job", () => {
+    const spy = vi.spyOn(window, "dispatchEvent");
+
+    openAgentBusyDetail("awaiting_swarm", ["not-a-job", "job_abcdef012345"]);
+
+    const events = spy.mock.calls.map((c) => c[0] as CustomEvent);
+    expect(events.map((event) => event.type)).toEqual([
+      "harness-focus-tab",
+      "harness-open-swarm-job",
+    ]);
+    expect(events[1]?.detail).toEqual({ jobId: "job_abcdef012345" });
+    expect(events.some((event) => event.detail === "terminal")).toBe(false);
+  });
+
+  it("awaiting-swarm busy chrome without a job id opens Swarm Tracker, not Terminal", () => {
+    const spy = vi.spyOn(window, "dispatchEvent");
+
+    openAgentBusyDetail("awaiting_swarm", ["nope"]);
+
+    const events = spy.mock.calls.map((c) => c[0] as CustomEvent);
+    expect(events.map((event) => event.type)).toEqual(["harness-focus-tab"]);
+    expect(events[0]?.detail).toBe("swarm");
+    expect(events.some((event) => event.detail === "terminal")).toBe(false);
+    expect(events.some((event) => event.type === "harness-open-swarm-job")).toBe(false);
+  });
+
+  it("non-swarm busy chrome still opens Terminal", () => {
+    const spy = vi.spyOn(window, "dispatchEvent");
+
+    openAgentBusyDetail("thinking", ["job_abcdef012345"]);
+
+    const events = spy.mock.calls.map((c) => c[0] as CustomEvent);
+    expect(events.map((event) => event.type)).toEqual(["harness-focus-tab"]);
+    expect(events[0]?.detail).toBe("terminal");
+    expect(events.some((event) => event.type === "harness-open-swarm-job")).toBe(false);
   });
 
   it("openAgentSwarmJob queues the job id before dispatch for late SwarmPane mount", async () => {

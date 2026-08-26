@@ -510,6 +510,24 @@ export function openAgentSwarmJob(jobId: string, artifactId?: string): void {
   }
 }
 
+/** Awaiting swarms own tracker navigation; other live work owns Terminal. */
+export function openAgentBusyDetail(status: string, jobIds: readonly string[]): void {
+  if (status === "awaiting_swarm") {
+    const jobId = jobIds.find((id) => looksLikeJobId(String(id || "").trim()));
+    if (jobId) {
+      openAgentSwarmJob(jobId);
+      return;
+    }
+  }
+  try {
+    window.dispatchEvent(new CustomEvent("harness-focus-tab", {
+      detail: status === "awaiting_swarm" ? "swarm" : "terminal",
+    }));
+  } catch {
+    /* ignore */
+  }
+}
+
 /**
  * Open a spilled tool-output URI in the operator peek surface.
  * Conversation fetches ``/api/spill/read`` and paints a read-only modal.
