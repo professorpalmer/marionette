@@ -173,10 +173,19 @@ def test_workspace_open_requires_dir(tmp_path):
     assert post_workspace_open({"path": str(tmp_path / "missing")}, svc)[0] == 400
 
 
-def test_workspace_open_switches(tmp_path):
-    repo = tmp_path / "proj"
+def test_workspace_open_uses_canonical_git_root(monkeypatch, tmp_path):
+    repo = tmp_path / "RepoAlias"
+    canonical = tmp_path / "repo"
     repo.mkdir()
+    canonical.mkdir()
     cfg = SimpleNamespace(repo="", driver="m1")
+
+    def git_run(args, **kwargs):
+        stdout = "main\n" if "--abbrev-ref" in args else f"{canonical}\n"
+        return SimpleNamespace(returncode=0, stdout=stdout)
+
+    monkeypatch.setattr("harness.api.workspace.subprocess.run", git_run)
+    monkeypatch.setattr("harness.api.workspace.os.path.samefile", lambda a, b: True)
 
     class _Sessions:
         active = None
@@ -216,10 +225,10 @@ def test_workspace_open_switches(tmp_path):
     svc.get_codegraph_status = lambda r: cg_status["v"]
 
     code, payload = post_workspace_open({"path": str(repo)}, svc)
-    assert code == 200 and payload["ok"] is True
-    assert payload["repo"] == str(repo)
+    assert code == 200 and isinstance(payload, dict) and payload["ok"] is True
+    assert payload["repo"] == str(canonical)
     assert payload["created_session"] is True
-    assert cfg.repo == str(repo)
+    assert cfg.repo == str(canonical)
     assert sessions.active == "s1"
     assert attached["n"] == 1
 
