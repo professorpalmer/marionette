@@ -161,7 +161,7 @@ import {
   uploadErrorMessage,
   type DirectoryEntryLike,
 } from "./conversation/composerInput";
-import { openAgentWorkspace } from "../lib/agentLinks";
+import { openAgentBusyDetail, openAgentWorkspace } from "../lib/agentLinks";
 import { AUTH_FAILURE, sharedReadinessNotice, fromBackendDiagnostic } from "../lib/operationalDiagnostic";
 import { getActiveDiagnostic, publishDiagnostic } from "../lib/operationalDiagnosticBus";
 import {
@@ -1616,19 +1616,19 @@ export default function Conversation({
       api.getSessionState({ sessionId: requestSid })
         .then((res) => {
           if (!stillCurrent() || !res) return;
-          setBackendPendingSwarms(!!res.pending_swarms);
-          // Restore Still working… when switching into a pause-point session
-          // (pending_swarms / state===awaiting_swarm). Stop suppresses restore.
-          if (
-            sessionStateShowsAwaitingSwarm({
-              state: res.state,
-              pendingSwarms: !!res.pending_swarms,
-              userStopped: userStoppedRef.current,
-            })
-          ) {
+          const awaitingSwarm = sessionStateShowsAwaitingSwarm({
+            state: res.state,
+            pendingSwarms: !!res.pending_swarms,
+            userStopped: userStoppedRef.current,
+          });
+          setBackendPendingSwarms(awaitingSwarm);
+          if (awaitingSwarm) {
             setTurnOpen(false);
             setStatus("awaiting_swarm");
             setWaitHint(SWARM_AWAIT_HINT);
+          } else {
+            setStatus((prev) => (prev === "awaiting_swarm" ? "idle" : prev));
+            setWaitHint((prev) => clearSwarmAwaitWaitHint(prev));
           }
           // resume_pending is an EXPLICIT one-shot latch from the self-edit
           // restart path (backend /api/session/persist or /api/restart) -- NOT
@@ -3572,14 +3572,7 @@ export default function Conversation({
         }
         recoveryAction={recoveryAction}
         onBusyDetailClick={() => {
-          // Worker / shell busy chrome → terminal, never the file editor.
-          try {
-            window.dispatchEvent(
-              new CustomEvent("harness-focus-tab", { detail: "terminal" }),
-            );
-          } catch {
-            /* ignore */
-          }
+          openAgentBusyDetail(pillStatus, pendingJobIdsRef.current);
         }}
       />
 

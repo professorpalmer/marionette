@@ -30,7 +30,7 @@ const BUSY_PILL_STATUSES = new Set([
   "awaiting_swarm",
 ]);
 
-/** True when the pill may focus the live terminal via onDetailClick. */
+/** True when the pill may focus its source-backed live surface. */
 export function statusPillClickable(
   status: string,
   detail: string | undefined,
@@ -77,7 +77,7 @@ export default function StatusPill({
 }: {
   status: string;
   detail?: string;
-  /** When set, the busy detail (e.g. "Investigating…") focuses the live surface. */
+  /** When set, the busy detail focuses its source-backed live surface. */
   onDetailClick?: () => void;
 }) {
   const label = statusPillLabel(status, detail);
@@ -92,7 +92,7 @@ export default function StatusPill({
         type="button"
         onClick={onDetailClick}
         className={className}
-        title="Open terminal for live worker output"
+        title="Open live activity"
       >
         <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusPillDotClass(status)}`} />
         <span className="truncate">{label}</span>
