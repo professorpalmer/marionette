@@ -244,22 +244,25 @@ def post_workspace_open(body: dict, svc: WorkspaceServices) -> tuple[int, JsonPa
     is_git = False
     branch = ""
     try:
-        proc = subprocess.run(
-            ["git", "-C", target_repo, "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if proc.returncode == 0:
-            canonical_repo = proc.stdout.strip()
-            if canonical_repo and os.path.isdir(canonical_repo):
+        from ..paths import git_toplevel
+        canonical_repo = git_toplevel(target_repo)
+        if canonical_repo:
+            is_git = True
+            if os.path.isdir(canonical_repo):
                 try:
+                    # Case aliases (macOS/Windows) share an inode with Git's
+                    # toplevel; nested dirs such as webapp do not.
                     if os.path.samefile(target_repo, canonical_repo):
                         target_repo = canonical_repo
                 except OSError:
                     pass
-            is_git = True
             proc_branch = subprocess.run(
                 ["git", "-C", target_repo, "rev-parse", "--abbrev-ref", "HEAD"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
             )
             if proc_branch.returncode == 0:
                 branch = proc_branch.stdout.strip()

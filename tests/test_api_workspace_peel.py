@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from types import SimpleNamespace
+
+import pytest
 
 from harness.api.workspace import (
     WorkspaceServices,
@@ -80,8 +84,6 @@ def test_workspace_forget_clears_active(tmp_path):
 
 
 def test_get_workspace_reports_unborn_head(tmp_path):
-    import subprocess
-
     repo = tmp_path / "unborn"
     repo.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True, capture_output=True)
@@ -173,20 +175,7 @@ def test_workspace_open_requires_dir(tmp_path):
     assert post_workspace_open({"path": str(tmp_path / "missing")}, svc)[0] == 400
 
 
-def test_workspace_open_uses_canonical_git_root(monkeypatch, tmp_path):
-    repo = tmp_path / "RepoAlias"
-    canonical = tmp_path / "repo"
-    repo.mkdir()
-    canonical.mkdir()
-    cfg = SimpleNamespace(repo="", driver="m1")
-
-    def git_run(args, **kwargs):
-        stdout = "main\n" if "--abbrev-ref" in args else f"{canonical}\n"
-        return SimpleNamespace(returncode=0, stdout=stdout)
-
-    monkeypatch.setattr("harness.api.workspace.subprocess.run", git_run)
-    monkeypatch.setattr("harness.api.workspace.os.path.samefile", lambda a, b: True)
-
+def _fresh_sessions():
     class _Sessions:
         active = None
 
@@ -200,11 +189,12 @@ def test_workspace_open_uses_canonical_git_root(monkeypatch, tmp_path):
         def switch(self, sid):
             self.active = sid
 
-    sessions = _Sessions()
+    return _Sessions()
+
+
+def _bind_workspace_open(svc, sessions, tmp_path):
     attached = {"n": 0}
     cg_status = {"v": "none"}
-
-    svc, _, _, _ = _svc(cfg, tmp_path)
     svc.sessions = sessions
     svc.save_active_transcript = lambda: None
     svc.note_boot_repo = lambda r: None
@@ -223,6 +213,44 @@ def test_workspace_open_uses_canonical_git_root(monkeypatch, tmp_path):
     svc.index_codegraph_bg = lambda r: None
     svc.maybe_refresh_codegraph = lambda r: None
     svc.get_codegraph_status = lambda r: cg_status["v"]
+    return attached, cg_status
+
+
+def test_workspace_open_switches(tmp_path):
+    repo = tmp_path / "proj"
+    repo.mkdir()
+    cfg = SimpleNamespace(repo="", driver="m1")
+    sessions = _fresh_sessions()
+    svc, _, _, _ = _svc(cfg, tmp_path)
+    attached, _ = _bind_workspace_open(svc, sessions, tmp_path)
+
+    code, payload = post_workspace_open({"path": str(repo)}, svc)
+    assert code == 200 and payload["ok"] is True
+    assert payload["repo"] == str(repo)
+    assert payload["created_session"] is True
+    assert cfg.repo == str(repo)
+    assert sessions.active == "s1"
+    assert attached["n"] == 1
+
+
+def test_workspace_open_uses_canonical_git_root(monkeypatch, tmp_path):
+    repo = tmp_path / "RepoAlias"
+    canonical = tmp_path / "repo"
+    repo.mkdir()
+    canonical.mkdir()
+    cfg = SimpleNamespace(repo="", driver="m1")
+    monkeypatch.setattr(
+        "harness.paths.git_toplevel",
+        lambda path: str(canonical),
+    )
+    monkeypatch.setattr("harness.api.workspace.os.path.samefile", lambda a, b: True)
+    monkeypatch.setattr(
+        "harness.api.workspace.subprocess.run",
+        lambda args, **kwargs: SimpleNamespace(returncode=0, stdout="main\n"),
+    )
+    sessions = _fresh_sessions()
+    svc, _, _, _ = _svc(cfg, tmp_path)
+    attached, _ = _bind_workspace_open(svc, sessions, tmp_path)
 
     code, payload = post_workspace_open({"path": str(repo)}, svc)
     assert code == 200 and isinstance(payload, dict) and payload["ok"] is True
@@ -231,6 +259,68 @@ def test_workspace_open_uses_canonical_git_root(monkeypatch, tmp_path):
     assert cfg.repo == str(canonical)
     assert sessions.active == "s1"
     assert attached["n"] == 1
+
+
+def test_workspace_open_keeps_nested_dir_when_not_samefile(monkeypatch, tmp_path):
+    root = tmp_path / "marionette"
+    nested = root / "webapp"
+    nested.mkdir(parents=True)
+    cfg = SimpleNamespace(repo="", driver="m1")
+    monkeypatch.setattr("harness.paths.git_toplevel", lambda path: str(root))
+    monkeypatch.setattr(
+        "harness.api.workspace.subprocess.run",
+        lambda args, **kwargs: SimpleNamespace(returncode=0, stdout="dev\n"),
+    )
+    sessions = _fresh_sessions()
+    svc, _, _, _ = _svc(cfg, tmp_path)
+    _bind_workspace_open(svc, sessions, tmp_path)
+
+    code, payload = post_workspace_open({"path": str(nested)}, svc)
+    assert code == 200 and isinstance(payload, dict)
+    assert payload["repo"] == str(nested)
+    assert payload["is_git"] is True
+    assert cfg.repo == str(nested)
+
+
+def test_workspace_open_case_alias_adopts_real_git_toplevel(tmp_path):
+    repo = tmp_path / "marionette"
+    repo.mkdir()
+    subprocess.run(
+        ["git", "init", "-q"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    alias = tmp_path / "Marionette"
+    if not os.path.isdir(alias):
+        pytest.skip("filesystem is case-sensitive")
+    try:
+        if not os.path.samefile(repo, alias):
+            pytest.skip("entered spelling is not a case alias of the git root")
+    except OSError:
+        pytest.skip("samefile failed for case alias")
+    top = subprocess.run(
+        ["git", "-C", str(alias), "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=True,
+    ).stdout.strip()
+    cfg = SimpleNamespace(repo="", driver="m1")
+    sessions = _fresh_sessions()
+    svc, _, _, _ = _svc(cfg, tmp_path)
+    _bind_workspace_open(svc, sessions, tmp_path)
+
+    code, payload = post_workspace_open({"path": str(alias)}, svc)
+    assert code == 200 and isinstance(payload, dict)
+    assert payload["is_git"] is True
+    assert os.path.samefile(payload["repo"], top)
+    assert os.path.samefile(cfg.repo, alias)
+    if os.path.normcase(str(alias)) != os.path.normcase(top):
+        assert payload["repo"] != str(alias)
 
 
 def test_workspace_open_existing_sessions_does_not_create(tmp_path):
