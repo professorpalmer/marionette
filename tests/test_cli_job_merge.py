@@ -121,6 +121,8 @@ def test_merge_dedupes_ids_and_sets_source(tmp_path, monkeypatch):
     by_id = {row["id"]: row for row in merged}
     assert by_id[harness_job.id]["source"] == "harness"
     assert by_id["cli-only"]["source"] == "cli"
+    assert not by_id[harness_job.id].get("cross_project")
+    assert not by_id["cli-only"].get("cross_project")
     assert len(merged) == 2
 
 
@@ -182,6 +184,7 @@ def test_merge_running_cli_jobs_all_projects_surfaces_foreign_live(tmp_path, mon
     assert rows[0]["id"] == job.id
     assert rows[0]["source"] == "cli"
     assert rows[0]["cli_state_dir"]
+    assert rows[0]["cross_project"] is True
     assert job.id in seen
 
 

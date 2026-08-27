@@ -212,6 +212,12 @@ export type Job = {
   adapter?: string;
   /** "harness" (Marionette-dispatched) or "cli" (Cursor MCP / terminal PM). */
   source?: "harness" | "cli" | string;
+  /** True when this live row was merged from a foreign Puppetmaster store. */
+  cross_project?: boolean;
+  /** Puppetmaster project store that owns a CLI-merged row. */
+  cli_state_dir?: string;
+  /** Deepest task-payload cwd (workspace the job actually ran in). */
+  cwd?: string;
   /** marionette | visibility_only — whether Marionette owns economic totals. */
   accounting_scope?: "marionette" | "visibility_only" | string;
   /** False for external/CLI jobs that are visible but must not bill Marionette meters. */
@@ -1135,8 +1141,15 @@ export const api = {
     diagnostic?: Record<string, unknown> | null;
   }>("/api/diagnostics"),
   getUsage: () => getJSON<UsageData>("/api/usage"),
-  getEconomics: (scope: EconomicsScope | string = "repo") =>
-    getJSONSoft<EconomicsData>(`/api/economics?scope=${encodeURIComponent(scope)}`),
+  getEconomics: (
+    scope: EconomicsScope | string = "repo",
+    period?: 30 | "30" | "all",
+  ) => {
+    const params = new URLSearchParams();
+    params.set("scope", String(scope));
+    if (period === 30 || period === "30") params.set("period", "30");
+    return getJSONSoft<EconomicsData>(`/api/economics?${params.toString()}`);
+  },
   settings: () => getJSON<Settings>("/api/settings"),
   updateSettings: (partial: Partial<Settings> & { api_key?: string; clear_api_key?: boolean }) => postJSON<Settings>("/api/settings", partial),
   jobs: (repoRoot?: string) => {
@@ -1288,6 +1301,20 @@ export const api = {
   getSwarmResults: () => getJSON<SwarmResultsResponse>(withToken("/api/session/swarm-results")),
   createSession: (title?: string) => postJSON<Session>("/api/sessions/create", { title }),
   switchSession: (id: string) => postJSON("/api/sessions/switch", { id }),
+  attachSession: (id: string) =>
+    postJSON<{ ok: boolean; id?: string; active?: string; runners?: Record<string, string> }>(
+      "/api/sessions/attach",
+      { id },
+    ),
+  detachSession: (id: string) =>
+    postJSON<{ ok: boolean; detached?: string; was_active_view?: boolean; runners?: Record<string, string> }>(
+      "/api/sessions/detach",
+      { id },
+    ),
+  listSessionRunners: () =>
+    getJSON<{ ok: boolean; active_view_id?: string | null; runners?: { session_id: string; status: string; title?: string; active_view?: boolean }[] }>(
+      withToken("/api/sessions/runners"),
+    ),
   relocateSession: (workspaceRoot: string, opts?: { sessionId?: string; title?: string }) =>
     postJSON<{
       ok: boolean;

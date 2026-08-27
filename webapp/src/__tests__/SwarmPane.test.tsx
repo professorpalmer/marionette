@@ -75,6 +75,7 @@ describe("SwarmPane sort and filter controls", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
     clearSWRCache();
     mockArtifacts.mockResolvedValue([]);
@@ -164,6 +165,7 @@ describe("SwarmPane SWR cache first-open", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
     clearSWRCache();
     mockArtifacts.mockResolvedValue([]);
@@ -200,6 +202,7 @@ describe("SwarmPane model badge", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
     clearSWRCache();
     mockSwarmLive.mockResolvedValue(liveJob());
@@ -441,6 +444,7 @@ describe("SwarmPane worker details", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
     clearSWRCache();
     mockArtifacts.mockResolvedValue([]);
@@ -595,6 +599,7 @@ describe("SwarmPane pin attribution", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
     clearSWRCache();
     mockArtifacts.mockResolvedValue([]);
@@ -756,6 +761,7 @@ describe("SwarmPane routing dedupe", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
     clearSWRCache();
     mockArtifacts.mockResolvedValue([]);
@@ -867,6 +873,7 @@ describe("SwarmPane mid-run job-row meters", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
     clearSWRCache();
     mockArtifacts.mockResolvedValue([]);
@@ -1145,6 +1152,7 @@ describe("SwarmPane truthful failed vs cancelled chrome", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
     clearSWRCache();
     mockArtifacts.mockResolvedValue([]);
@@ -1293,6 +1301,7 @@ describe("SwarmPane cancel Kill contract", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
     clearSWRCache();
     mockArtifacts.mockResolvedValue([]);
@@ -1390,6 +1399,7 @@ describe("SwarmPane canonical outcome", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
     clearSWRCache();
     mockArtifacts.mockResolvedValue([]);
@@ -1424,6 +1434,7 @@ describe("SwarmPane findings section collapse", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
     clearSWRCache();
     mockArtifacts.mockResolvedValue([]);
@@ -1503,6 +1514,7 @@ describe("SwarmPane worker-owned routing surface", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
     clearSWRCache();
     mockArtifacts.mockResolvedValue([]);
@@ -1763,6 +1775,7 @@ describe("SwarmPane worker tokens and cost", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
     clearSWRCache();
     mockArtifacts.mockResolvedValue([]);
@@ -1825,6 +1838,7 @@ describe("SwarmPane worker progress", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
     clearSWRCache();
     mockArtifacts.mockResolvedValue([]);
@@ -1860,6 +1874,7 @@ describe("SwarmPane worker outcome hierarchy", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
     clearSWRCache();
     mockArtifacts.mockResolvedValue([]);
@@ -2082,6 +2097,7 @@ describe("SwarmPane tracker header", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
     clearSWRCache();
     mockArtifacts.mockResolvedValue([]);
@@ -2119,6 +2135,7 @@ describe("SwarmPane external (CLI) source badge", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
     clearSWRCache();
     mockArtifacts.mockResolvedValue([]);
@@ -2177,6 +2194,44 @@ describe("SwarmPane external (CLI) source badge", () => {
       ),
     ).toBeNull();
   });
+
+  it("discloses cwd for cross-project CLI jobs instead of only external", async () => {
+    localStorage.setItem("marionette.jobScope.v1", "all");
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        id: "job-foreign",
+        goal: "Foreign swarm",
+        status: "running",
+        adapter: "cursor",
+        source: "cli",
+        cross_project: true,
+        cwd: "/Users/x/other-repo",
+        cli_state_dir: "/tmp/pm-other",
+        tasks: [
+          {
+            id: "t1",
+            role: "cursor",
+            instruction: "do the thing",
+            status: "running",
+            adapter: "cursor",
+          },
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+    fireEvent.click(screen.getByRole("button", { name: "All projects" }));
+    await expandJob(/Foreign swarm/);
+
+    await waitFor(() => {
+      expect(screen.getByTitle("/Users/x/other-repo")).toHaveTextContent("/Users/x/other-repo");
+    });
+    expect(
+      screen.queryByTitle(
+        "Started outside Marionette (Cursor MCP or terminal Puppetmaster) for this workspace",
+      ),
+    ).toBeNull();
+  });
 });
 
 describe("SwarmPane repo-scoped dismiss", () => {
@@ -2186,6 +2241,7 @@ describe("SwarmPane repo-scoped dismiss", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
     clearSWRCache();
     mockArtifacts.mockResolvedValue([]);
@@ -2371,6 +2427,7 @@ describe("SwarmPane harness-open-swarm-job deep-link", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     localStorage.clear();
+    localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
     clearSWRCache();
     const { clearPendingSwarmOpenJob } = await import("../lib/pendingSwarmOpenJob");
@@ -2509,6 +2566,7 @@ describe("SwarmPane final-review blockers", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
     clearSWRCache();
     mockArtifacts.mockResolvedValue([]);
@@ -2810,6 +2868,7 @@ describe("SwarmPane job-card expansion persistence", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
     clearSWRCache();
     mockArtifacts.mockResolvedValue([]);
@@ -2947,6 +3006,7 @@ describe("swarm tracker usage pills (0.9.300)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
     clearSWRCache();
     mockArtifacts.mockResolvedValue([]);
@@ -3026,6 +3086,7 @@ describe("SwarmPane command vs swarm split", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
     clearSWRCache();
     mockArtifacts.mockResolvedValue([]);
@@ -3148,6 +3209,7 @@ describe("SwarmPane v0.9.350 collapsed chrome", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
     clearSWRCache();
     mockArtifacts.mockResolvedValue([]);
@@ -3215,6 +3277,7 @@ describe("SwarmPane 353 mixed chrome and routing", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
     clearSWRCache();
     mockArtifacts.mockResolvedValue([]);

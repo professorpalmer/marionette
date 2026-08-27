@@ -486,3 +486,87 @@ def test_unpriced_job_cost_is_unknown_not_measured_zero(monkeypatch):
     assert row["measured_cost_usd"] is None
     assert row["cost_basis"] == "unknown"
     assert payload["owned_actual_marginal_usd"] is None
+
+
+def test_get_economics_all_projects_period_30_opens_extra_dirs(tmp_path, monkeypatch):
+    extra = tmp_path / "other-project"
+    extra.mkdir()
+    opened = []
+    reports, opened = _patch_pm(monkeypatch, extra_dirs=[extra], opened=opened)
+    code, payload = get_economics(
+        {"scope": ["all_projects"], "period": ["30"]},
+        _svc(),
+    )
+    assert code == 200
+    assert payload["all_projects"] is True
+    assert payload["window_days"] == 30.0
+    assert reports[0]["window_days"] == 30.0
+    opened_paths = [path for _backend, path in opened]
+    assert "/tmp/pm-primary" in opened_paths
+    assert str(extra) in opened_paths
+    assert len(opened_paths) == 2
+
+
+def test_get_economics_repo_period_30_primary_store_only(tmp_path, monkeypatch):
+    extra = tmp_path / "other-project"
+    extra.mkdir()
+    opened = []
+    reports, opened = _patch_pm(monkeypatch, extra_dirs=[extra], opened=opened)
+    code, payload = get_economics({"scope": ["repo"], "period": ["30"]}, _svc())
+    assert code == 200
+    assert payload["scope"] == "repo"
+    assert payload["all_projects"] is False
+    assert payload["window_days"] == 30.0
+    assert reports[0]["window_days"] == 30.0
+    assert opened == [("sqlite", "/tmp/pm-primary")]
+
+
+def test_conversation_fail_closes_missing_session(monkeypatch):
+    jobs = [
+        {
+            "id": "here",
+            "status": "complete",
+            "source": "harness",
+            "accounting_owned": True,
+            "accounting_scope": "marionette",
+            "session_id": "sess-1",
+            "created_at": "2026-08-20T00:02:00+00:00",
+        },
+    ]
+    _patch_pm(monkeypatch)
+    code, payload = get_economics(
+        {"scope": ["conversation"]},
+        _svc(jobs=jobs, session_id=""),
+    )
+    assert code == 200
+    assert payload["recent_jobs"] == []
+    assert payload["owned_jobs_considered"] == 0
+
+
+def test_repo_economics_drops_cross_project_jobs(monkeypatch):
+    _patch_pm(monkeypatch)
+    jobs = [
+        {
+            "id": "local",
+            "status": "complete",
+            "source": "harness",
+            "accounting_owned": True,
+            "created_at": "2026-08-20T00:00:00+00:00",
+        },
+        {
+            "id": "foreign",
+            "status": "running",
+            "source": "cli",
+            "cross_project": True,
+            "accounting_owned": False,
+            "created_at": "2026-08-20T00:01:00+00:00",
+        },
+    ]
+    _code, repo_payload = get_economics({"scope": ["repo"]}, _svc(jobs=jobs))
+    repo_ids = [row.get("job_id") for row in repo_payload["recent_jobs"]]
+    assert "local" in repo_ids
+    assert "foreign" not in repo_ids
+
+    _code, all_payload = get_economics({"scope": ["all_projects"]}, _svc(jobs=jobs))
+    all_ids = [row.get("job_id") for row in all_payload["recent_jobs"]]
+    assert "foreign" in all_ids

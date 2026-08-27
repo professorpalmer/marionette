@@ -868,6 +868,63 @@ class ToolDispatchMixin:
         except Exception as exc:
             return False, "exception", str(exc)
 
+    def _do_bind_kernel(self, act: PilotAction) -> tuple[bool, str, Any]:
+        from .session_repl import SessionReplError, bind_spill, bind_text
+
+        args = act.arguments or {}
+        name = (act.path or args.get("name") or "").strip()
+        if not name:
+            return False, "invalid_arguments", "bind_kernel requires a non-empty 'name'"
+        spill_uri = (args.get("spill_uri") or args.get("uri") or "").strip()
+        text = act.content if act.content not in (None, "") else args.get("text")
+        try:
+            if spill_uri:
+                bound = bind_spill(self, name, spill_uri)
+                return True, "success", f"bound spill into kernel as {bound!r}"
+            if text is None or str(text) == "":
+                return False, "invalid_arguments", "bind_kernel requires text or spill_uri"
+            bound = bind_text(self, name, str(text))
+            return True, "success", f"bound {len(str(text))} chars into kernel as {bound!r}"
+        except SessionReplError as exc:
+            return False, "error", str(exc)
+
+    def _do_show_kernel(self, act: PilotAction) -> tuple[bool, str, str]:
+        from .session_repl import SessionReplError, serialize_bindings
+
+        args = act.arguments or {}
+        raw = (act.path or args.get("names") or args.get("name") or "").strip()
+        names = [n.strip() for n in raw.split(",") if n.strip()] if raw else None
+        try:
+            text = serialize_bindings(self, names)
+            return True, "success", text
+        except SessionReplError as exc:
+            return False, "error", str(exc)
+
+    def _do_list_kernel(self, act: PilotAction) -> tuple[bool, str, str]:
+        from .session_repl import list_bindings
+
+        rows = list_bindings(self)
+        if not rows:
+            return True, "success", "(kernel bindings empty)"
+        lines = [
+            f"- {row['name']}: kind={row.get('kind')} chars~{row.get('char_estimate')}"
+            for row in rows
+        ]
+        return True, "success", "\n".join(lines)
+
+    def _do_clear_kernel(self, act: PilotAction) -> tuple[bool, str, str]:
+        from .session_repl import SessionReplError, clear_bindings
+
+        args = act.arguments or {}
+        name = (act.path or args.get("name") or "").strip()
+        try:
+            n = clear_bindings(self, name)
+            if name:
+                return True, "success", f"cleared kernel binding {name!r}"
+            return True, "success", f"cleared {n} kernel binding(s)"
+        except SessionReplError as exc:
+            return False, "error", str(exc)
+
     def _compaction_generation(self) -> int:
         try:
             fields = {}
@@ -1485,4 +1542,11 @@ class ToolDispatchMixin:
             return False, "timeout", payload
         if not result.ok:
             return False, "error", payload
+        output = result.output or ""
+        from .session_repl import offload_ipython_output
+
+        display, bound = offload_ipython_output(self, output)
+        if bound:
+            payload["kernel_binding"] = bound
+            payload["output"] = display
         return True, "success", payload

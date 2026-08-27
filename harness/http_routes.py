@@ -223,6 +223,8 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
             _skills_api.post_skills_reject, services=svc.skills_services),
         "/api/skills/archive": post_json(
             _skills_api.post_skills_archive, services=svc.skills_services),
+        "/api/skills/rollback": post_json(
+            _skills_api.post_skills_rollback, services=svc.skills_services),
         "/api/rules/approve": post_json(
             _skills_api.post_rules_approve, services=svc.skills_services),
         "/api/rules/add": post_json(
@@ -259,6 +261,10 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
             _sessions_api.post_sessions_settle, services=svc.session_services),
         "/api/sessions/rename": post_json(
             _sessions_api.post_sessions_rename, services=svc.session_services),
+        "/api/sessions/attach": post_json(
+            _sessions_api.post_sessions_attach, services=svc.session_services),
+        "/api/sessions/detach": post_json(
+            _sessions_api.post_sessions_detach, services=svc.session_services),
         "/api/chat/stash": post_json(
             _sc_api.post_chat_stash, services=svc.session_control_services),
         "/api/session/interrupt": _bind_post_session_interrupt(svc),
@@ -688,6 +694,9 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
             _cmd_api.get_commands, services=svc.commands_services, qs_arg="repo"),
         "/api/skills": get_json(
             _skills_api.get_skills, services=svc.skills_services),
+        "/api/skills/versions": get_json(
+            _skills_api.get_skill_versions, services=svc.skills_services,
+            qs_arg="slug"),
         "/api/rules": get_json(
             _skills_api.get_rules, services=svc.skills_services),
         "/api/memory": get_json(
@@ -792,6 +801,8 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
         "/api/sessions/search": get_json(
             _sessions_api.get_sessions_search, services=svc.session_services,
             pass_qs=True),
+        "/api/sessions/runners": get_json(
+            _sessions_api.get_sessions_runners, services=svc.session_services),
         "/api/auto": _get_auto,
         "/api/collab/presence": get_json(
             _collab_presence_api.get_presence, pass_qs=True),

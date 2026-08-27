@@ -17,6 +17,7 @@ import { lastSelectedProjectRoot } from "../lib/panelTransition";
 import { usePolling } from "../lib/usePolling";
 import { writeSWRCache } from "../lib/useStaleWhileRevalidate";
 import { countRunningTrackerJobs } from "../lib/jobClassification";
+import { filterJobsByScope, JOB_SCOPE_CHANGED_EVENT, loadJobScope } from "../lib/jobScope";
 import {
   isSettingsOverlayOpen,
   setSettingsOverlayOpen,
@@ -563,14 +564,27 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
   const [swarmRepo, setSwarmRepo] = useState<string | undefined>(
     () => lastSelectedProjectRoot() || undefined,
   );
+  const [activitySessionId, setActivitySessionId] = useState("");
+  const [scopeEpoch, setScopeEpoch] = useState(0);
 
   useEffect(() => {
     const onProject = (e: Event) => {
       const path = (e as CustomEvent<string>).detail;
       if (typeof path === "string") setSwarmRepo(path || undefined);
     };
+    const onSession = (e: Event) => {
+      const id = String((e as CustomEvent<{ sessionId?: string | null }>).detail?.sessionId || "");
+      setActivitySessionId(id);
+    };
+    const onScope = () => setScopeEpoch((n) => n + 1);
     window.addEventListener("harness-project-selected", onProject);
-    return () => window.removeEventListener("harness-project-selected", onProject);
+    window.addEventListener("harness-session-changed", onSession);
+    window.addEventListener(JOB_SCOPE_CHANGED_EVENT, onScope);
+    return () => {
+      window.removeEventListener("harness-project-selected", onProject);
+      window.removeEventListener("harness-session-changed", onSession);
+      window.removeEventListener(JOB_SCOPE_CHANGED_EVENT, onScope);
+    };
   }, []);
 
   const fetchReviews = () => {
@@ -596,7 +610,11 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
         // "Loading swarm jobs..." flash — the tab light already polls this payload.
         writeSWRCache(`swarm:${swarmRepo || "__default__"}`, data);
         const jobs = Array.isArray(data?.jobs) ? data.jobs : [];
-        setSwarmRunning(countRunningTrackerJobs(jobs));
+        setSwarmRunning(
+          countRunningTrackerJobs(
+            filterJobsByScope(jobs, loadJobScope(), activitySessionId),
+          ),
+        );
       })
       .catch(() => {
         /* keep last known; tab light is best-effort */
@@ -605,6 +623,10 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
 
   usePolling(fetchReviews, 4000);
   usePolling(fetchSwarmActivity, 4000);
+
+  useEffect(() => {
+    void fetchSwarmActivity();
+  }, [activitySessionId, scopeEpoch, swarmRepo]);
 
   // Immediate refresh when a swarm parks a DiffReview (pending_review stream/poll).
   useEffect(() => {

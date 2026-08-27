@@ -94,6 +94,7 @@ LOCAL_ACTION_KINDS: frozenset[str] = frozenset({
     "run_command_batch", "run_ipython", "wait",
     "search_tools", "search_state",
     "store_scratch", "load_scratch", "list_scratch", "clear_scratch",
+    "bind_kernel", "show_kernel", "list_kernel", "clear_kernel",
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
     "browser_get_text", "browser_screenshot", "browser_auth_handoff",
@@ -3574,6 +3575,28 @@ def dispatch_local_action(
             "load_scratch": session._do_load_scratch,
             "list_scratch": session._do_list_scratch,
             "clear_scratch": session._do_clear_scratch,
+        }[act.kind]
+        try:
+            ok, status, val = handler(act)
+        except Exception as exc:
+            ok, status, val = False, "exception", str(exc)
+        if ok:
+            yield ConvEvent("action_result", {
+                "id": aid, "num": 1, "types": [act.kind], "adapter": "local", "mode": "tool",
+                "artifacts": [{"type": act.kind, "headline": act.kind}],
+            })
+            session._append_action_result(act, aid, f"({act.kind} returned)\n{val}", is_native)
+        else:
+            yield ConvEvent("action_result", {"id": aid, "error": val})
+            session._append_action_result(act, aid, f"({act.kind} failed: {val})", is_native)
+        return
+    # ---- session kernel L2 bindings --------------------------------
+    if act.kind in ("bind_kernel", "show_kernel", "list_kernel", "clear_kernel"):
+        handler = {
+            "bind_kernel": session._do_bind_kernel,
+            "show_kernel": session._do_show_kernel,
+            "list_kernel": session._do_list_kernel,
+            "clear_kernel": session._do_clear_kernel,
         }[act.kind]
         try:
             ok, status, val = handler(act)

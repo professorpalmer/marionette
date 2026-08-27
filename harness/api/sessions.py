@@ -697,3 +697,64 @@ def write_sessions_export(handler: Any, qs: dict, svc: SessionServices) -> None:
     handler.end_headers()
     handler.wfile.write(att.data)
 
+
+def get_sessions_runners(svc: SessionServices) -> tuple[int, dict]:
+    """GET /api/sessions/runners — daemon-owned pilot session tree."""
+    statuses = svc.runners.statuses()
+    titles = {s.get("id", ""): s.get("title", "") for s in svc.sessions.list()}
+    rows = []
+    for sid in svc.runners.ids():
+        rows.append(
+            {
+                "session_id": sid,
+                "status": statuses.get(sid, "missing"),
+                "title": titles.get(sid, ""),
+                "active_view": sid == svc.runners.active_view_id,
+            }
+        )
+    return 200, {
+        "ok": True,
+        "active_view_id": svc.runners.active_view_id,
+        "runners": rows,
+    }
+
+
+def post_sessions_attach(body: dict, svc: SessionServices) -> tuple[int, dict]:
+    """POST /api/sessions/attach — attach UI view to a live daemon runner."""
+    target_id = (body.get("id") or body.get("session_id") or "").strip()
+    if not target_id:
+        return 400, {"ok": False, "error": "session id required"}
+    svc.save_active_transcript()
+    res = svc.sessions.switch(target_id)
+    if not res.get("ok"):
+        return 404, res
+    try:
+        svc.attach_view(svc.sessions.active, defer_cold_build=True)
+    except LeaseExhaustedError as exc:
+        return 409, svc.lease_exhausted_body(exc)
+    transcript = svc.attach_view_transcript_payload(svc.get_pilot(), target_id)
+    return 200, {
+        "ok": True,
+        "id": target_id,
+        "active": target_id,
+        "runners": svc.runners.statuses(),
+        "active_view_id": svc.runners.active_view_id,
+        **transcript,
+    }
+
+
+def post_sessions_detach(body: dict, svc: SessionServices) -> tuple[int, dict]:
+    """POST /api/sessions/detach — UI detach must not cancel an in-flight turn."""
+    sid = (body.get("id") or body.get("session_id") or svc.sessions.active or "").strip()
+    if not sid:
+        return 400, {"ok": False, "error": "session id required"}
+    svc.save_active_transcript()
+    detached = svc.runners.detach_view(sid)
+    return 200, {
+        "ok": True,
+        "detached": sid,
+        "was_active_view": detached,
+        "runners": svc.runners.statuses(),
+        "active_view_id": svc.runners.active_view_id,
+    }
+

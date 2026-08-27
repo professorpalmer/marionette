@@ -231,6 +231,24 @@ def distill_session(pilot, objective: str, findings: List[dict],
     Returns a status dict: {status: skipped|duplicate|proposed|patch_proposed, slug?, reason?}.
     `pilot` is any object with .complete(prompt, system=...) -> obj with .text.
     """
+
+    def _provenance_fields() -> dict:
+        sid = (
+            getattr(pilot, "harness_session_id", None)
+            or getattr(pilot, "session_id", None)
+            or ""
+        )
+        job = ""
+        for attr in ("last_job_id", "job_id"):
+            raw = getattr(pilot, attr, None)
+            if raw:
+                job = str(raw)
+                break
+        return {
+            "provenance_session": str(sid or ""),
+            "provenance_job": job,
+        }
+
     non_verification_findings = [f for f in findings if f.get("type") != "verification"]
     if len(non_verification_findings) < MIN_FINDINGS:
         if not extra_context:
@@ -252,7 +270,7 @@ def distill_session(pilot, objective: str, findings: List[dict],
     shortlist = _build_shortlist(cand, store)
     if not shortlist:
         skill = Skill(name=cand.name, description=cand.description, body=cand.body,
-                      state="pending", source=source)
+                      state="pending", source=source, **_provenance_fields())
         store.save(skill)
         return {"status": "proposed", "slug": skill.slug, "name": skill.name}
 
@@ -308,13 +326,13 @@ def distill_session(pilot, objective: str, findings: List[dict],
                 return {"status": "duplicate", "slug": slug}
         else:
             skill = Skill(name=cand.name, description=cand.description, body=cand.body,
-                          state="pending", source=source)
+                          state="pending", source=source, **_provenance_fields())
             store.save(skill)
             return {"status": "proposed", "slug": skill.slug, "name": skill.name}
 
     else:
         skill = Skill(name=cand.name, description=cand.description, body=cand.body,
-                      state="pending", source=source)
+                      state="pending", source=source, **_provenance_fields())
         store.save(skill)
         return {"status": "proposed", "slug": skill.slug, "name": skill.name}
 

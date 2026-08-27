@@ -273,6 +273,7 @@ def merge_running_cli_jobs_all_projects(
                 }
             row["source"] = "cli"
             row["cli_state_dir"] = state_dir
+            row["cross_project"] = True
             out.append(row)
             seen_ids.add(jid)
     return out

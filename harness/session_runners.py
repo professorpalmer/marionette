@@ -259,6 +259,13 @@ class SessionRunnerRegistry:
     def set_active_view(self, session_id: str) -> None:
         self._active_view_id = session_id
 
+    def detach_view(self, session_id: str) -> bool:
+        """Clear active view when the UI detaches; runner keeps executing."""
+        if self._active_view_id == session_id:
+            self._active_view_id = None
+            return True
+        return False
+
     def status(self, session_id: str) -> str:
         runner = self._runners.get(session_id)
         if runner is None:

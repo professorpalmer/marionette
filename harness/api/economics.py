@@ -48,20 +48,25 @@ JsonPayload = Union[dict, list]
 
 
 def get_economics(qs: dict, svc: EconomicsServices) -> tuple[int, JsonPayload]:
-    """GET /api/economics?scope=repo|window30|all_projects|conversation."""
+    """GET /api/economics?scope=repo|window30|all_projects|conversation&period=30|all.
+
+    ``scope=window30`` remains a back-compat alias for ownership=repo + 30 days.
+    ``period=30`` is a date cutoff on the chosen ownership, not a third ownership.
+    """
     scope = _qs_scope(qs)
     if scope not in SCOPES:
         return 400, {
             "error": "scope must be repo, window30, all_projects, or conversation",
         }
+    window_days = _qs_window_days(qs, scope)
     try:
-        return 200, _project_economics(scope, svc)
+        return 200, _project_economics(scope, svc, window_days)
     except Exception as exc:
         try:
             svc.diag("server.economics", exc)
         except Exception:
             pass
-        return 200, _unavailable_payload(scope, exc)
+        return 200, _unavailable_payload(scope, exc, window_days)
 
 
 def _qs_scope(qs: Optional[dict]) -> str:
@@ -90,10 +95,34 @@ def _scope_window_days(scope: str) -> Optional[float]:
     return None
 
 
-def _unavailable_payload(scope: str, exc: BaseException) -> dict:
+def _qs_window_days(qs: Optional[dict], scope: str) -> Optional[float]:
+    """30-day cutoff from ``scope=window30`` or ``period=30``; else no window."""
+    if scope == "window30":
+        return 30.0
+    if not qs:
+        return None
+    values = qs.get("period") or [""]
+    raw = (values[0] if values else "") or ""
+    text = str(raw).strip().lower()
+    if text in ("30", "30.0"):
+        return 30.0
+    return None
+
+
+def _ownership_from_scope(scope: str) -> str:
+    if scope == "window30":
+        return "repo"
+    return scope
+
+
+def _unavailable_payload(
+    scope: str,
+    exc: BaseException,
+    window_days: Optional[float] = None,
+) -> dict:
     return {
         "scope": scope,
-        "window_days": _scope_window_days(scope),
+        "window_days": window_days if window_days is not None else _scope_window_days(scope),
         "all_projects": scope == "all_projects",
         "savings_scope": "repo" if scope == "conversation" else scope,
         "available": False,
@@ -245,12 +274,16 @@ def _open_savings_stores(dirs: list) -> list:
     return stores
 
 
-def _build_savings(scope: str, workspace: str) -> Optional[dict]:
+def _build_savings(
+    ownership: str,
+    workspace: str,
+    window_days: Optional[float] = None,
+) -> Optional[dict]:
     from puppetmaster.savings import build_report
 
-    dirs = _savings_state_dirs(scope, workspace)
+    dirs = _savings_state_dirs(ownership, workspace)
     stores = _open_savings_stores(dirs)
-    return build_report(stores, window_days=_scope_window_days(scope))
+    return build_report(stores, window_days=window_days)
 
 
 def _created_at_key(job: dict) -> float:
@@ -537,7 +570,11 @@ def _owned_totals(recent_jobs: list) -> dict:
     }
 
 
-def _recent_job_rows(scope: str, svc: EconomicsServices) -> list:
+def _recent_job_rows(
+    scope: str,
+    svc: EconomicsServices,
+    window_days: Optional[float] = None,
+) -> list:
     repo = str(getattr(svc.cfg, "repo", None) or "").strip()
     jobs, harness_store, cli_store = svc.scoped_jobs_with_stores(
         repo_root=repo or None
@@ -545,8 +582,10 @@ def _recent_job_rows(scope: str, svc: EconomicsServices) -> list:
     jobs = list(jobs or [])
     if scope == "conversation":
         jobs = _conversation_jobs(jobs, svc.active_session_id())
-    elif scope == "window30":
-        jobs = [job for job in jobs if _job_in_window(job, 30.0)]
+    elif scope in ("repo", "window30"):
+        jobs = [job for job in jobs if not job.get("cross_project")]
+    if window_days:
+        jobs = [job for job in jobs if _job_in_window(job, window_days)]
     jobs.sort(key=_created_at_key, reverse=True)
     jobs = jobs[:RECENT_JOB_LIMIT]
     registry: list = []
@@ -589,26 +628,33 @@ def _recent_job_rows(scope: str, svc: EconomicsServices) -> list:
     return rows
 
 
-def _project_economics(scope: str, svc: EconomicsServices) -> dict:
+def _project_economics(
+    scope: str,
+    svc: EconomicsServices,
+    window_days: Optional[float] = None,
+) -> dict:
     workspace = _workspace_root(svc)
+    ownership = _ownership_from_scope(scope)
     # Conversation is jobs-only. Do not open repo-lifetime savings stores.
     if scope == "conversation":
         savings = None
         counterfactual = None
         savings_scope = "repo"
     else:
-        report = _build_savings(scope, workspace)
+        report = _build_savings(ownership, workspace, window_days)
         savings = _serialize_savings(report)
         counterfactual = _with_counterfactual_label(
             (savings or {}).get("counterfactual") if savings else None
         )
         savings_scope = scope
-    recent_jobs = _recent_job_rows(scope, svc)
+    recent_jobs = _recent_job_rows(scope, svc, window_days)
     totals = _owned_totals(recent_jobs)
     return {
         "scope": scope,
+        "ownership": ownership,
+        "period": "30" if window_days else "all",
         "savings_scope": savings_scope,
-        "window_days": _scope_window_days(scope),
+        "window_days": window_days,
         "all_projects": scope == "all_projects",
         "available": True,
         "savings": savings,

@@ -73,6 +73,10 @@ ActionKind = Literal[
     "load_scratch",
     "list_scratch",
     "clear_scratch",
+    "bind_kernel",
+    "show_kernel",
+    "list_kernel",
+    "clear_kernel",
     "peek_history",
     "peek_artifact",
     "open_project",
@@ -1688,6 +1692,81 @@ def build_tools_schema(
         },
     })
 
+    # 14b2. session kernel L2 (persistent REPL bindings — serialize on demand)
+    schema.append({
+        "type": "function",
+        "function": {
+            "name": "bind_kernel",
+            "description": (
+                "Bind large text or a spill:// payload into the session Python "
+                "kernel (L2). Values stay out of transcript tokens until show_kernel."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Kernel variable name (Python identifier)",
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": "Large text to store in-kernel",
+                    },
+                    "spill_uri": {
+                        "type": "string",
+                        "description": "Optional spill:// URI to load instead of text",
+                    },
+                },
+                "required": ["name"],
+            },
+        },
+    })
+    schema.append({
+        "type": "function",
+        "function": {
+            "name": "show_kernel",
+            "description": (
+                "Serialize session kernel bindings into the response on demand "
+                "(L2). Use after bind_kernel or large run_ipython offload."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "names": {
+                        "type": "string",
+                        "description": "Comma-separated binding names; omit for all",
+                    },
+                },
+                "required": [],
+            },
+        },
+    })
+    schema.append({
+        "type": "function",
+        "function": {
+            "name": "list_kernel",
+            "description": "List session kernel binding names and sizes (no values).",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    })
+    schema.append({
+        "type": "function",
+        "function": {
+            "name": "clear_kernel",
+            "description": "Clear one kernel binding or all L2 bindings.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Optional name; omit to clear all bindings",
+                    },
+                },
+                "required": [],
+            },
+        },
+    })
+
     # 14c. bounded peek tools (programmatic re-access)
     schema.append({
         "type": "function",
@@ -2591,6 +2670,7 @@ You have direct access to a local CodeGraph-indexed workspace and can explore/ed
 - `relocate_session`: move the current (or named) conversation into a project without starting a blank session. Requires `workspace_root` (or `path`); optional `session_id`, `title`.
 - `session_bank`: list/search prior sessions across workspaces, or read a transcript summary by `session_id`.
 - `store_scratch` / `load_scratch` / `list_scratch` / `clear_scratch`: session-local scratch bindings (survive compaction). Scratch is NOT durable cross-session memory — use `memory` for lasting user preferences/facts.
+- `bind_kernel` / `show_kernel` / `list_kernel` / `clear_kernel`: L2 persistent REPL bindings (large eval/log output stays in the session Python kernel until `show_kernel` serializes it). Prefer `run_ipython` for stateful probes; bind spill:// handles when tool output was offloaded.
 - `peek_history`: bounded slice of the durable transcript (after compact) with compaction_generation.
 - `peek_artifact`: inspect a known artifact:// handle (or job_id+artifact_id). Do not use it to discover which evidence exists; the delivery receipt already lists the set.
 - `call_mcp`: call a connected MCP tool. Requires `tool` (the qualified server.tool name) and `arguments` (object). Connected MCP tools may be listed in a "Connected MCP tools" section appended below; use them when relevant.
