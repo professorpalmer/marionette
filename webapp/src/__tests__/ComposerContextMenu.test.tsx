@@ -20,6 +20,7 @@ describe("ComposerContextMenu", () => {
     }) => void) | undefined;
     const contextMenuEdit = vi.fn().mockResolvedValue(undefined);
     const contextMenuSpellcheck = vi.fn().mockResolvedValue(undefined);
+    const contextMenuNative = vi.fn().mockResolvedValue(undefined);
     (window as any).harnessIPC = {
       onContextMenuOpen: (callback: typeof openMenu) => {
         openMenu = callback;
@@ -27,6 +28,7 @@ describe("ComposerContextMenu", () => {
       },
       contextMenuEdit,
       contextMenuSpellcheck,
+      contextMenuNative,
     };
     const textarea = document.createElement("textarea");
     textarea.value = "ostencibly";
@@ -40,6 +42,7 @@ describe("ComposerContextMenu", () => {
     await waitFor(() => expect(openMenu).toBeTypeOf("function"));
     act(() => openMenu?.({ x: 20, y: 20, misspelledWord: "elsewhere", suggestions: ["elsewhere"] }));
     expect(screen.queryByRole("menu")).toBeNull();
+    expect(contextMenuNative).toHaveBeenCalledTimes(1);
 
     fireEvent.contextMenu(textarea, { clientX: 120, clientY: 350 });
     act(() => openMenu?.({
@@ -50,7 +53,8 @@ describe("ComposerContextMenu", () => {
     }));
 
     const menu = await screen.findByRole("menu");
-    expect(menu.className).toContain("backdrop-blur");
+    expect(menu.className).toContain("bg-panel");
+    expect(menu.className).not.toContain("backdrop-blur");
     expect(menu.style.top).toBe("351px");
     expect(screen.getByText("Cut")).toBeTruthy();
     expect(screen.getByText("Copy")).toBeTruthy();
@@ -74,6 +78,7 @@ describe("ComposerContextMenu", () => {
 
     fireEvent.contextMenu(textarea, { clientX: 120, clientY: 180 });
     act(() => openMenu?.({ x: 120, y: 180, misspelledWord: "", suggestions: [] }));
+    expect(contextMenuNative).toHaveBeenCalledTimes(1);
     fireEvent.click(await screen.findByText("Copy"));
     await waitFor(() => expect(contextMenuEdit).toHaveBeenCalledWith("copy"));
   });

@@ -19,9 +19,13 @@ describe("v0.9.344 link menu and Cmd+W intercept", () => {
     const preload = fs.readFileSync(path.join(__dirname, "preload.cjs"), "utf8");
     assert.match(main, /wireContextMenu/);
     assert.match(main, /context-menu:open/);
+    assert.match(main, /MAX_SPELLCHECK_WORD/);
+    assert.match(main, /context-menu:native/);
+    assert.match(main, /editableContextMenuTemplate/);
     assert.match(main, /addWordToSpellCheckerDictionary/);
     assert.match(preload, /onContextMenuOpen/);
     assert.match(preload, /contextMenuEdit/);
+    assert.match(preload, /contextMenuNative/);
   });
 
   it("main.cjs intercepts Cmd\/Ctrl+W so Close Window is not first", () => {

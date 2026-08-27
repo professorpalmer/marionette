@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld("harnessIPC", {
   },
   contextMenuEdit: (command) => ipcRenderer.invoke("context-menu:edit", command),
   contextMenuSpellcheck: (action) => ipcRenderer.invoke("context-menu:spellcheck", action),
+  contextMenuNative: () => ipcRenderer.invoke("context-menu:native"),
   uploadFile: (payload) => ipcRenderer.invoke("harness:uploadFile", payload),
   // Electron no longer sets File.path; this is the supported drop-path API.
   pathForFile: (file) => {

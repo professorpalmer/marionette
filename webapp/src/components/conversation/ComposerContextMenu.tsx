@@ -7,7 +7,7 @@ type Spellcheck = { misspelledWord: string; suggestions: string[] };
 type MenuState = { x: number; y: number; spellcheck: Spellcheck | null };
 type EditCommand = "copy" | "cut" | "paste";
 
-const itemClass = "flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] text-txt transition-colors hover:bg-accent/15 disabled:pointer-events-none disabled:opacity-40";
+const itemClass = "flex w-full items-center gap-2 text-left px-3 py-1.5 text-txt hover:bg-panel2 transition-colors disabled:pointer-events-none disabled:opacity-40";
 
 export default function ComposerContextMenu({
   textareaRef,
@@ -32,7 +32,10 @@ export default function ComposerContextMenu({
     return ipc?.onContextMenuOpen?.((payload: Spellcheck & { x: number; y: number }) => {
       const belongsToComposer = composerGesture.current;
       composerGesture.current = false;
-      if (!belongsToComposer) return;
+      if (!belongsToComposer) {
+        void ipc.contextMenuNative?.();
+        return;
+      }
       setMenu({
         x: payload.x,
         y: payload.y,
@@ -89,40 +92,40 @@ export default function ComposerContextMenu({
       ref={menuRef}
       role="menu"
       aria-label="Composer menu"
-      className="fixed z-[100] min-w-[220px] overflow-hidden rounded-xl border border-edge bg-panel/95 p-1.5 text-txt shadow-2xl shadow-black/40 backdrop-blur-xl"
+      className="fixed z-50 min-w-[220px] rounded border border-edge bg-panel py-1 text-[12px] text-txt shadow-lg"
       style={position}
       onMouseDown={(event) => event.stopPropagation()}
     >
       {menu.spellcheck && (
         <>
           {menu.spellcheck.suggestions.slice(0, 5).map((suggestion) => (
-            <button key={suggestion} role="menuitem" className={itemClass} onClick={() => spell("replace", suggestion)}>
-              <Pencil size={13} className="text-accent" />
+            <button key={suggestion} type="button" role="menuitem" className={itemClass} onClick={() => spell("replace", suggestion)}>
+              <Pencil size={12} className="text-accent" />
               <span>{suggestion}</span>
             </button>
           ))}
-          <button role="menuitem" className={itemClass} onClick={() => spell("add", menu.spellcheck!.misspelledWord)}>
-            <BookPlus size={13} className="text-muted" />
+          <button type="button" role="menuitem" className={itemClass} onClick={() => spell("add", menu.spellcheck!.misspelledWord)}>
+            <BookPlus size={12} className="text-muted" />
             <span>Add to dictionary</span>
           </button>
-          <div className="mx-1 my-1 h-px bg-edge/70" />
+          <div className="border-t border-edge my-1" />
         </>
       )}
-      <button role="menuitem" className={itemClass} disabled={!hasSelection} onClick={() => edit("cut")}>
-        <Scissors size={13} className="text-muted" />
+      <button type="button" role="menuitem" className={itemClass} disabled={!hasSelection} onClick={() => edit("cut")}>
+        <Scissors size={12} className="text-muted" />
         <span>Cut</span><span className="ml-auto font-mono text-[10px] text-faint">{modifier}X</span>
       </button>
-      <button role="menuitem" className={itemClass} disabled={!hasSelection} onClick={() => edit("copy")}>
-        <Clipboard size={13} className="text-muted" />
+      <button type="button" role="menuitem" className={itemClass} disabled={!hasSelection} onClick={() => edit("copy")}>
+        <Clipboard size={12} className="text-muted" />
         <span>Copy</span><span className="ml-auto font-mono text-[10px] text-faint">{modifier}C</span>
       </button>
-      <button role="menuitem" className={itemClass} onClick={() => edit("paste")}>
-        <ClipboardPaste size={13} className="text-muted" />
+      <button type="button" role="menuitem" className={itemClass} onClick={() => edit("paste")}>
+        <ClipboardPaste size={12} className="text-muted" />
         <span>Paste</span><span className="ml-auto font-mono text-[10px] text-faint">{modifier}V</span>
       </button>
-      <div className="mx-1 my-1 h-px bg-edge/70" />
-      <button role="menuitem" className={itemClass} disabled={!hasText} onClick={() => run(() => textareaRef.current?.select())}>
-        <TextSelect size={13} className="text-muted" />
+      <div className="border-t border-edge my-1" />
+      <button type="button" role="menuitem" className={itemClass} disabled={!hasText} onClick={() => run(() => textareaRef.current?.select())}>
+        <TextSelect size={12} className="text-muted" />
         <span>Select all</span><span className="ml-auto font-mono text-[10px] text-faint">{modifier}A</span>
       </button>
     </div>
