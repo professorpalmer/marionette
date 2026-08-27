@@ -24,6 +24,9 @@ from typing import Dict, List, Optional
 
 SKILLS_DIR = Path(os.path.expanduser("~/.pmharness/skills"))
 STATES = ("pending", "active", "archived")
+VERSIONS_DIRNAME = "versions"
+MIN_ADMIT_SUPPORT_MANUAL = 1
+MIN_ADMIT_SUPPORT_DISTILLED = 2
 
 # Windows rejects CON/PRN/AUX/NUL/COM1-9/LPT1-9 as filenames regardless of extension.
 _WIN_RESERVED = frozenset(
@@ -52,6 +55,11 @@ class Skill:
     used_count: int = 0
     last_used: float = 0.0
     supersedes: str = ""
+    version: int = 1
+    admit_support: int = 0
+    admit_sessions: str = ""
+    provenance_session: str = ""
+    provenance_job: str = ""
 
     @property
     def slug(self) -> str:
@@ -75,6 +83,16 @@ class Skill:
         ]
         if getattr(self, "supersedes", ""):
             fm.append(f"supersedes: {self.supersedes}")
+        if getattr(self, "version", 1) > 1:
+            fm.append(f"version: {self.version}")
+        if getattr(self, "admit_support", 0):
+            fm.append(f"admit_support: {self.admit_support}")
+        if getattr(self, "admit_sessions", ""):
+            fm.append(f"admit_sessions: {self.admit_sessions}")
+        if getattr(self, "provenance_session", ""):
+            fm.append(f"provenance_session: {self.provenance_session}")
+        if getattr(self, "provenance_job", ""):
+            fm.append(f"provenance_job: {self.provenance_job}")
         fm.extend([
             "---",
             "",
@@ -117,6 +135,11 @@ def _parse(text: str) -> Skill:
         used_count=_i("used_count", 0),
         last_used=_f("last_used", 0.0),
         supersedes=meta.get("supersedes", ""),
+        version=_i("version", 1),
+        admit_support=_i("admit_support", 0),
+        admit_sessions=meta.get("admit_sessions", ""),
+        provenance_session=meta.get("provenance_session", ""),
+        provenance_job=meta.get("provenance_job", ""),
     )
 
 
@@ -167,12 +190,134 @@ class SkillStore:
                     return f
         return None
 
+    def _versions_dir(self, slug: str) -> Path:
+        return self.root / VERSIONS_DIRNAME / _slug(slug)
+
+    def snapshot_version(self, skill: Skill) -> Optional[Path]:
+        """Append-only version snapshot before mutating an active skill."""
+        with self._lock:
+            if not skill or not skill.slug:
+                return None
+            vdir = self._versions_dir(skill.slug)
+            vdir.mkdir(parents=True, exist_ok=True)
+            version = max(1, int(getattr(skill, "version", 1) or 1))
+            dest = vdir / f"v{version}.md"
+            if dest.exists():
+                return dest
+            tmp = dest.with_suffix(".md.tmp")
+            with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(skill.to_markdown())
+            os.replace(tmp, dest)
+            return dest
+
+    def list_versions(self, slug: str) -> List[int]:
+        with self._lock:
+            vdir = self._versions_dir(slug)
+            if not vdir.is_dir():
+                return []
+            out: List[int] = []
+            for f in sorted(vdir.glob("v*.md")):
+                stem = f.stem
+                if stem.startswith("v") and stem[1:].isdigit():
+                    out.append(int(stem[1:]))
+            return out
+
+    def _needed_admit_support(self, skill: Skill) -> int:
+        source = (skill.source or "").strip().lower()
+        if source.startswith("distilled") or source == "refine":
+            return MIN_ADMIT_SUPPORT_DISTILLED
+        return MIN_ADMIT_SUPPORT_MANUAL
+
+    def admit(self, slug: str, approver_session_id: str = "") -> dict:
+        """Human gate with independent session support (not worker self-rating)."""
+        with self._lock:
+            sk = self.get(slug)
+            if not sk:
+                return {"ok": False, "error": "skill not found"}
+            sessions = [
+                s.strip()
+                for s in (getattr(sk, "admit_sessions", "") or "").split(",")
+                if s.strip()
+            ]
+            approver = (approver_session_id or "").strip()
+            if approver and approver not in sessions:
+                sessions.append(approver)
+            sk.admit_sessions = ",".join(sessions)
+            sk.admit_support = len(sessions)
+            needed = self._needed_admit_support(sk)
+            if sk.admit_support < needed:
+                self.save(sk)
+                return {
+                    "ok": True,
+                    "active": False,
+                    "pending_admit": True,
+                    "slug": sk.slug,
+                    "support": sk.admit_support,
+                    "needed": needed,
+                }
+            self.snapshot_version(sk)
+            promoted = self.set_state(slug, "active")
+            if not promoted:
+                return {"ok": False, "error": "could not activate skill"}
+            promoted.admit_support = sk.admit_support
+            promoted.admit_sessions = sk.admit_sessions
+            self.save(promoted)
+            return {
+                "ok": True,
+                "active": True,
+                "slug": promoted.slug,
+                "support": sk.admit_support,
+                "needed": needed,
+                "version": promoted.version,
+            }
+
+    def rollback(self, slug: str, version: Optional[int] = None) -> Optional[Skill]:
+        """Restore a prior snapshot (default: latest archived version)."""
+        with self._lock:
+            versions = self.list_versions(slug)
+            if not versions:
+                return None
+            target = int(version) if version is not None else (
+                versions[-2] if len(versions) >= 2 else versions[-1]
+            )
+            snap_path = self._versions_dir(slug) / f"v{target}.md"
+            if not snap_path.is_file():
+                return None
+            restored = _parse(snap_path.read_text(encoding="utf-8", errors="replace"))
+            current = self.get(slug)
+            if current:
+                self.snapshot_version(current)
+            restored.version = max(versions) + 1
+            restored.state = current.state if current else restored.state
+            existing = self._find(restored.slug)
+            p = self._path(restored.state, restored.slug)
+            if existing and existing != p:
+                existing.unlink()
+            tmp = p.with_suffix(".md.tmp")
+            with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+                f.write(restored.to_markdown())
+            os.replace(tmp, p)
+            return restored
+
     def save(self, skill: Skill) -> Path:
         with self._lock:
             # ensure a skill lives in exactly one file: state moves change the
             # dir, and legacy un-truncated filenames get renormalized to the
             # canonical slug path (found via the _find fallback scan).
             existing = self._find(skill.slug)
+            if existing:
+                try:
+                    prior = _parse(existing.read_text(encoding="utf-8", errors="replace"))
+                    body_changed = (
+                        prior.body != skill.body
+                        or prior.name != skill.name
+                        or prior.description != skill.description
+                    )
+                    if body_changed and prior.state == "active" and skill.state == "active":
+                        self.snapshot_version(prior)
+                        skill.version = max(int(getattr(prior, "version", 1) or 1), 1) + 1
+                except Exception:
+                    pass
             p = self._path(skill.state, skill.slug)
             if existing and existing != p:
                 existing.unlink()

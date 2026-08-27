@@ -1301,6 +1301,20 @@ export const api = {
   getSwarmResults: () => getJSON<SwarmResultsResponse>(withToken("/api/session/swarm-results")),
   createSession: (title?: string) => postJSON<Session>("/api/sessions/create", { title }),
   switchSession: (id: string) => postJSON("/api/sessions/switch", { id }),
+  attachSession: (id: string) =>
+    postJSON<{ ok: boolean; id?: string; active?: string; runners?: Record<string, string> }>(
+      "/api/sessions/attach",
+      { id },
+    ),
+  detachSession: (id: string) =>
+    postJSON<{ ok: boolean; detached?: string; was_active_view?: boolean; runners?: Record<string, string> }>(
+      "/api/sessions/detach",
+      { id },
+    ),
+  listSessionRunners: () =>
+    getJSON<{ ok: boolean; active_view_id?: string | null; runners?: { session_id: string; status: string; title?: string; active_view?: boolean }[] }>(
+      withToken("/api/sessions/runners"),
+    ),
   relocateSession: (workspaceRoot: string, opts?: { sessionId?: string; title?: string }) =>
     postJSON<{
       ok: boolean;

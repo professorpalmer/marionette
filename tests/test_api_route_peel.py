@@ -52,6 +52,11 @@ class _FakeSkill:
         self.source = "manual"
         self.used_count = 0
         self.supersedes = ""
+        self.version = 1
+        self.admit_support = 0
+        self.admit_sessions = ""
+        self.provenance_session = ""
+        self.provenance_job = ""
 
 
 class _FakeSkills:
@@ -69,6 +74,13 @@ class _FakeSkills:
         if sk:
             sk.state = state
         return sk
+
+    def admit(self, slug, approver_session_id=""):
+        sk = self._items.get(slug)
+        if not sk:
+            return {"ok": False, "error": "skill not found"}
+        sk.state = "active"
+        return {"ok": True, "active": True, "slug": slug}
 
     def update(self, slug, **kw):
         sk = self._items.get(slug)
@@ -190,7 +202,7 @@ def test_skills_update_not_found():
 
 def test_skills_approve_unknown():
     code, payload = post_skills_approve({"slug": "missing"}, _skills_svc())
-    assert code == 200
+    assert code == 404
     assert payload["ok"] is False
 
 

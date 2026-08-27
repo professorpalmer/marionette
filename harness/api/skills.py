@@ -35,8 +35,54 @@ def post_skills_distill(svc: SkillsServices) -> tuple[int, JsonPayload]:
 
 def post_skills_approve(body: dict, svc: SkillsServices) -> tuple[int, JsonPayload]:
     """POST /api/skills/approve."""
-    sk = svc.skills.set_state(body.get("slug", ""), "active")
-    return 200, {"ok": bool(sk)}
+    slug = (body.get("slug") or "").strip()
+    if not slug:
+        return 400, {"error": "slug is required"}
+    approver = (body.get("session_id") or "").strip()
+    if not approver:
+        pilot = svc.get_pilot()
+        approver = getattr(pilot, "harness_session_id", "") or ""
+    result = svc.skills.admit(slug, approver)
+    code = 200 if result.get("ok") else 404
+    return code, result
+
+
+def post_skills_rollback(body: dict, svc: SkillsServices) -> tuple[int, JsonPayload]:
+    """POST /api/skills/rollback — restore a prior skill version snapshot."""
+    slug = (body.get("slug") or "").strip()
+    if not slug:
+        return 400, {"ok": False, "error": "slug is required"}
+    version_raw = body.get("version")
+    version = None
+    if version_raw not in (None, ""):
+        try:
+            version = int(version_raw)
+        except (TypeError, ValueError):
+            return 400, {"ok": False, "error": "version must be an int"}
+    sk = svc.skills.rollback(slug, version=version)
+    if not sk:
+        return 404, {"ok": False, "error": "no version to rollback"}
+    return 200, {
+        "ok": True,
+        "slug": sk.slug,
+        "version": sk.version,
+        "state": sk.state,
+    }
+
+
+def get_skill_versions(slug: str, svc: SkillsServices) -> tuple[int, JsonPayload]:
+    """GET /api/skills/versions?slug="""
+    cleaned = (slug or "").strip()
+    if not cleaned:
+        return 400, {"ok": False, "error": "slug is required"}
+    versions = svc.skills.list_versions(cleaned)
+    sk = svc.skills.get(cleaned)
+    return 200, {
+        "ok": True,
+        "slug": cleaned,
+        "current_version": getattr(sk, "version", 1) if sk else 0,
+        "versions": versions,
+    }
 
 
 def post_skills_add(body: dict, svc: SkillsServices) -> tuple[int, JsonPayload]:
@@ -307,6 +353,11 @@ def get_skills(svc: SkillsServices) -> tuple[int, JsonPayload]:
             "used_count": sk.used_count,
             "body": sk.body,
             "supersedes": getattr(sk, "supersedes", ""),
+            "version": getattr(sk, "version", 1),
+            "admit_support": getattr(sk, "admit_support", 0),
+            "admit_sessions": getattr(sk, "admit_sessions", ""),
+            "provenance_session": getattr(sk, "provenance_session", ""),
+            "provenance_job": getattr(sk, "provenance_job", ""),
         }
         for sk in svc.skills.list()
     ])
