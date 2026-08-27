@@ -84,6 +84,7 @@ from .stream_performance import (
     yield_timed_phase,
 )
 from .text_clean import clean_say
+from pmharness.drivers.base import stamp_assistant_phase
 from .tool_dispatch import _strip_ansi, is_safe_path
 from .send_loop_secrets import (
     iter_extracted_secret_turn,
@@ -1417,17 +1418,17 @@ class SendLoopMixin:
                 else:
                     _history_text = _promoted_say
             # record the pilot's turn in transcript (prose only -- the conversation)
+            assistant_msg: dict[str, Any] = {"role": "assistant"}
             if is_native:
-                assistant_msg: dict[str, Any] = {"role": "assistant"}
-                if _history_text:
-                    assistant_msg["content"] = _history_text
-                else:
-                    assistant_msg["content"] = ""
+                assistant_msg["content"] = _history_text or ""
                 if tool_calls:
                     assistant_msg["tool_calls"] = tool_calls
-                self._history.append(assistant_msg)
             else:
-                self._history.append({"role": "assistant", "content": _history_text or "(acting)"})
+                assistant_msg["content"] = _history_text or "(acting)"
+            stamp_assistant_phase(
+                assistant_msg, getattr(resp, "assistant_phase", None),
+            )
+            self._history.append(assistant_msg)
 
             if (yield from iter_extracted_secret_turn(
                 self, _extracted_secret, turn, user_message=user_message, step=step,

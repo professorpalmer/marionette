@@ -7,7 +7,48 @@ harness's job, identically for every model.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, Protocol
+from typing import Any, Optional, Protocol
+
+KNOWN_ASSISTANT_PHASES = frozenset(("commentary", "final_answer"))
+
+
+def known_assistant_phase(value: Any) -> Optional[str]:
+    """Return commentary|final_answer when OpenAI supplied that phase.
+
+    Absent, blank, and unknown values stay None so legacy Chat Completions
+    history is never inferred as final_answer.
+    """
+    if not isinstance(value, str):
+        return None
+    phase = value.strip().lower()
+    if phase in KNOWN_ASSISTANT_PHASES:
+        return phase
+    return None
+
+
+def stamp_assistant_phase(msg: dict, value: Any) -> dict:
+    """Copy a known assistant phase onto a history message. No-op otherwise."""
+    phase = known_assistant_phase(value)
+    if phase and isinstance(msg, dict) and msg.get("role") == "assistant":
+        msg["phase"] = phase
+    return msg
+
+
+def chat_completions_messages(messages: list) -> list:
+    """Project history for Chat Completions: drop Responses-only phase.
+
+    Chat Completions cannot represent assistant phase. Copies only rows that
+    carry ``phase`` so live ``_history`` dicts stay intact.
+    """
+    out = []
+    for msg in messages:
+        if isinstance(msg, dict) and "phase" in msg:
+            copy = dict(msg)
+            copy.pop("phase", None)
+            out.append(copy)
+        else:
+            out.append(msg)
+    return out
 
 
 @dataclass
@@ -19,6 +60,7 @@ class DriverResponse:
     model: str = ""
     error: Optional[str] = None
     meta: dict = field(default_factory=dict)
+    assistant_phase: Optional[str] = None
 
 
 SYSTEM_PROMPT = """You are the driver loop for Puppetmaster, an orchestration engine.

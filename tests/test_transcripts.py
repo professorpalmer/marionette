@@ -7,6 +7,7 @@ from pathlib import Path
 from harness.conversation import ConversationalSession
 from harness.config import HarnessConfig
 from harness.sessions import save_transcript, load_transcript
+from pmharness.drivers.base import chat_completions_messages, stamp_assistant_phase
 
 
 def test_export_load_history_roundtrip():
@@ -43,6 +44,64 @@ def test_export_load_history_roundtrip():
     assert session2._history[0]["content"] == "different freshly-built system prompt"
     # and subsequent messages are loaded correctly
     assert session2._history[1:] == turns
+
+
+def test_export_load_history_roundtrip_preserves_assistant_phase():
+    """Issue #228: known Responses phase survives transcript export/reload."""
+    cfg = HarnessConfig()
+    session = ConversationalSession(cfg)
+    turns = [
+        {"role": "user", "content": "inspect the sql"},
+        {
+            "role": "assistant",
+            "content": "I'll inspect the SQL first.",
+            "phase": "commentary",
+        },
+        {
+            "role": "assistant",
+            "content": "The employee filter explains it.",
+            "phase": "final_answer",
+        },
+        {"role": "assistant", "content": "legacy answer"},
+    ]
+    session._history.extend(turns)
+    exported = session.export_history()
+    assert exported[1]["phase"] == "commentary"
+    assert exported[2]["phase"] == "final_answer"
+    assert "phase" not in exported[3]
+
+    session2 = ConversationalSession(cfg)
+    session2.load_history(exported)
+    assert session2._history[2]["phase"] == "commentary"
+    assert session2._history[3]["phase"] == "final_answer"
+    assert "phase" not in session2._history[4]
+
+
+def test_stamp_assistant_phase_only_known_assistant_values():
+    assistant = {"role": "assistant", "content": "hi"}
+    stamp_assistant_phase(assistant, " commentary ")
+    assert assistant["phase"] == "commentary"
+    stamp_assistant_phase(assistant, "analysis")
+    assert assistant["phase"] == "commentary"
+    user = {"role": "user", "content": "hi"}
+    stamp_assistant_phase(user, "final_answer")
+    assert "phase" not in user
+    legacy = {"role": "assistant", "content": "hi"}
+    stamp_assistant_phase(legacy, None)
+    assert "phase" not in legacy
+
+
+def test_chat_completions_messages_drop_phase_without_mutating_history():
+    original = {
+        "role": "assistant",
+        "content": "I'll inspect the SQL first.",
+        "phase": "commentary",
+    }
+    projected = chat_completions_messages([original])
+    assert "phase" not in projected[0]
+    assert projected[0]["content"] == "I'll inspect the SQL first."
+    assert original["phase"] == "commentary"
+    assert projected[0] is not original
 
 
 def test_save_load_transcript_to_disk(tmp_path):

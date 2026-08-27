@@ -22,7 +22,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from .base import DriverResponse, SYSTEM_PROMPT
+from .base import DriverResponse, SYSTEM_PROMPT, known_assistant_phase
 from .retry import with_retry
 
 
@@ -245,6 +245,18 @@ def _content_parts_to_responses(
     return parts or [{"type": part_type, "text": ""}]
 
 
+def _assistant_message_item(msg: dict, content: List[dict]) -> dict:
+    item = {
+        "type": "message",
+        "role": "assistant",
+        "content": content,
+    }
+    phase = known_assistant_phase(msg.get("phase"))
+    if phase:
+        item["phase"] = phase
+    return item
+
+
 def _messages_to_responses_input(messages: List[dict]) -> List[dict]:
     """Minimal chat → Responses input conversion (text + images + tool stubs)."""
     out: List[dict] = []
@@ -263,11 +275,9 @@ def _messages_to_responses_input(messages: List[dict]) -> List[dict]:
         if role == "assistant" and msg.get("tool_calls"):
             text = content if isinstance(content, str) else ""
             if text:
-                out.append({
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{"type": "output_text", "text": text}],
-                })
+                out.append(_assistant_message_item(
+                    msg, [{"type": "output_text", "text": text}],
+                ))
             for tc in msg.get("tool_calls") or []:
                 fn = tc.get("function") or {}
                 out.append({
@@ -278,10 +288,14 @@ def _messages_to_responses_input(messages: List[dict]) -> List[dict]:
                 })
             continue
         wire_role = "user" if role == "user" else role
+        content_parts = _content_parts_to_responses(content, role=wire_role)
+        if wire_role == "assistant":
+            out.append(_assistant_message_item(msg, content_parts))
+            continue
         out.append({
             "type": "message",
             "role": wire_role,
-            "content": _content_parts_to_responses(content, role=wire_role),
+            "content": content_parts,
         })
     return out
 
@@ -404,6 +418,39 @@ def _extract_text_and_tools(raw: dict) -> Tuple[str, list, str]:
     ):
         text_parts.append(raw["output_text"])
     return "".join(text_parts), tool_calls, finish
+
+
+def _contributing_assistant_phase(raw: dict) -> Optional[str]:
+    """Known phase shared by every answer-channel message item, else None.
+
+    Commentary/analysis are not contributing. A single phase-less (legacy)
+    answer item refuses inference — we must not stamp final_answer.
+    """
+    phases: List[str] = []
+    for item in raw.get("output") or []:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        if _codex_channel_for_item("message", item.get("phase")) != "answer":
+            continue
+        known = known_assistant_phase(item.get("phase"))
+        if known is None:
+            return None
+        phases.append(known)
+    if not phases:
+        return None
+    first = phases[0]
+    if all(phase == first for phase in phases):
+        return first
+    return None
+
+
+def _saw_answer_message(raw: dict) -> bool:
+    for item in raw.get("output") or []:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        if _codex_channel_for_item("message", item.get("phase")) == "answer":
+            return True
+    return False
 
 
 def _codex_tool_hint_goal(arguments: Any, name: str) -> str:
@@ -1321,8 +1368,16 @@ class CodexResponsesDriver:
         incomplete_retries: int = 0,
     ) -> DriverResponse:
         text, tool_calls, finish = _extract_text_and_tools(raw)
-        if not text and isinstance(raw.get("output_text"), str):
+        # Extract already falls back to output_text for phase-less bodies.
+        # Do not undo that when an answer-phase item existed (even empty) —
+        # re-applying the mixed blob reintroduces commentary into history.
+        if (
+            not text
+            and not _saw_answer_message(raw)
+            and isinstance(raw.get("output_text"), str)
+        ):
             text = raw["output_text"]
+        assistant_phase = _contributing_assistant_phase(raw)
         if finish == "content_filter":
             meta = {
                 **self._billing_meta(),
@@ -1336,6 +1391,7 @@ class CodexResponsesDriver:
                 error=_CONTENT_FILTER_MSG,
                 latency_ms=(time.time() - t0) * 1000.0,
                 meta=meta,
+                assistant_phase=assistant_phase,
             )
         usage = raw.get("usage") or {}
         tin, tout = _usage_ints(usage)
@@ -1381,6 +1437,7 @@ class CodexResponsesDriver:
             model=self.name,
             error=err_msg,
             meta=meta,
+            assistant_phase=assistant_phase,
         )
 
     def _post_stream(
@@ -1605,6 +1662,7 @@ class CodexResponsesDriver:
                             model=self.name,
                             error=err,
                             meta=meta,
+                            assistant_phase=resp.assistant_phase,
                         )
                     )
                 if kind is None:
@@ -1619,6 +1677,7 @@ class CodexResponsesDriver:
                             latency_ms=resp.latency_ms,
                             model=self.name,
                             meta=_final_meta(resp.meta or {}),
+                            assistant_phase=resp.assistant_phase,
                         )
                     )
 
@@ -1674,11 +1733,15 @@ class CodexResponsesDriver:
                             last_text += str(part.get("text") or "")
                 if last_text.strip() != nudge:
                     if kind == "length" and text.strip():
-                        inp.append({
+                        cont_item = {
                             "type": "message",
                             "role": "assistant",
                             "content": [{"type": "output_text", "text": text}],
-                        })
+                        }
+                        phase = known_assistant_phase(resp.assistant_phase)
+                        if phase:
+                            cont_item["phase"] = phase
+                        inp.append(cont_item)
                     inp.append(_user_input_item(nudge))
                     body["input"] = inp
                     data = json.dumps(body).encode("utf-8")
