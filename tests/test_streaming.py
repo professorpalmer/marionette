@@ -18,10 +18,12 @@ class FakeStreamingDriver:
         self.chat_called = False
         self.chat_stream_called = False
         self.calls = 0
+        self.messages = []
 
     def chat(self, messages, *, tools=None, system=None):
         self.chat_called = True
         self.calls += 1
+        self.messages.append(messages)
         if self.calls == 1:
             if self.use_native_tool_calls:
                 meta = {
@@ -39,7 +41,10 @@ class FakeStreamingDriver:
                     "finish_reason": "tool_calls",
                     "stream_terminal": "tool_calls",
                 }
-                return DriverResponse(text="Reading...", meta=meta)
+                return DriverResponse(
+                    text="Reading...", meta=meta,
+                    assistant_phase="commentary",
+                )
             else:
                 text = '{"say":"Reading...","actions":[{"kind":"read_file","path":"test.txt"}]}'
                 return DriverResponse(text=text, meta={"finish_reason": "stop"})
@@ -47,17 +52,20 @@ class FakeStreamingDriver:
             return DriverResponse(
                 text="Done.",
                 meta={"tool_calls": [], "reasoning": "", "finish_reason": "stop"},
+                assistant_phase="final_answer",
             )
 
     def chat_stream(self, messages, *, tools=None, system=None, on_delta,
                     on_reasoning_delta=None, on_tool_hint=None):
         self.chat_stream_called = True
         self.calls += 1
+        self.messages.append(messages)
 
-        # Fire off some deltas
-        on_delta("Read")
-        on_delta("ing")
-        on_delta("...")
+        # Fire off progress before the tool, answer prose after its result.
+        channel = "progress" if self.calls == 1 else "answer"
+        on_delta({"text": "Read", "channel": channel})
+        on_delta({"text": "ing", "channel": channel})
+        on_delta({"text": "...", "channel": channel})
 
         if self.calls == 1:
             if self.use_native_tool_calls:
@@ -77,7 +85,10 @@ class FakeStreamingDriver:
                     "stream_terminal": "tool_calls",
                     "stream_started": True,
                 }
-                return DriverResponse(text="Reading...", meta=meta)
+                return DriverResponse(
+                    text="Reading...", meta=meta,
+                    assistant_phase="commentary",
+                )
             else:
                 text = '{"say":"Reading...","actions":[{"kind":"read_file","path":"test.txt"}]}'
                 return DriverResponse(
@@ -94,6 +105,7 @@ class FakeStreamingDriver:
                     "stream_started": True,
                     "stream_terminal": "stop",
                 },
+                assistant_phase="final_answer",
             )
 
 
@@ -353,11 +365,28 @@ def test_conversational_loop_streaming():
     assert delta_events[4].data["text"] == "ing"
     assert delta_events[5].data["text"] == "..."
 
-    # final 'message' event still arrives with the cleaned text
+    # Commentary was already streamed as progress; only the final answer closes
+    # as a durable assistant message.
     msg_events = [e for e in events if e.kind == "message"]
-    assert len(msg_events) == 2
-    assert msg_events[0].data["text"] == "Reading..."
-    assert msg_events[1].data["text"] == "Done."
+    assert [event.data["text"] for event in msg_events] == ["Done."]
+
+    assistant_history = [
+        item for item in s._history if item.get("role") == "assistant"
+    ]
+    assert assistant_history[0]["content"] == "Reading..."
+    assert assistant_history[0]["phase"] == "commentary"
+    assert assistant_history[-1]["content"] == "Done."
+    assert assistant_history[-1]["phase"] == "final_answer"
+    replayed = s.pilot.messages[1]
+    commentary_index = next(
+        index for index, item in enumerate(replayed)
+        if item.get("role") == "assistant"
+        and item.get("phase") == "commentary"
+        and item.get("content") == "Reading..."
+    )
+    assert replayed[commentary_index]["tool_calls"][0]["id"] == "call_1"
+    assert replayed[commentary_index + 1]["role"] == "tool"
+    assert replayed[commentary_index + 1]["tool_call_id"] == "call_1"
 
     # tool_calls assembled from the stream still execute
     assert "action_start" in kinds

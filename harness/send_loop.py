@@ -63,8 +63,8 @@ from .send_loop_phases import (
     emit_stagnation_halt,
     finalize_assistant_turn,
     native_tools_blocked,
-    promote_trailing_reasoning_to_say,
     record_provider_dispatch_error_receipt,
+    resolve_emit_say_texts,
     run_auto_verify,
     yield_session_interrupted,
 )
@@ -1373,21 +1373,13 @@ class SendLoopMixin:
 
             cleaned_say_text, _extracted_secret = peel_secret_request_message(
                 clean_say(turn.say) if turn.say else "")
-            _resp_meta = getattr(resp, "meta", None) or {}
-            if not isinstance(_resp_meta, dict):
-                _resp_meta = {}
-            _promoted_say = promote_trailing_reasoning_to_say(
-                say_text=cleaned_say_text,
-                streamed_reasoning=str(_resp_meta.get("streamed_reasoning") or ""),
-                stream_ended_on_reasoning=bool(
-                    _resp_meta.get("stream_ended_on_reasoning")
-                ),
-                meta_reasoning=str(
-                    _resp_meta.get("reasoning") or turn.thinking or ""
-                ),
+            cleaned_say_text, commentary_history_text, _promoted_say = (
+                resolve_emit_say_texts(
+                    cleaned_say_text=cleaned_say_text,
+                    resp=resp,
+                    turn_thinking=turn.thinking or "",
+                )
             )
-            if _promoted_say:
-                _promoted_say = clean_say(_promoted_say) or _promoted_say
             if cleaned_say_text:
                 step_emitted_user_prose = True
                 # If this prose was already streamed token-by-token, flag it so the
@@ -1411,7 +1403,7 @@ class SendLoopMixin:
                     "role": "assistant",
                     "text": _promoted_say,
                 })
-            _history_text = cleaned_say_text or ""
+            _history_text = commentary_history_text or cleaned_say_text or ""
             if _promoted_say:
                 if _history_text and _promoted_say.strip() != _history_text.strip():
                     _history_text = f"{_history_text}\n\n{_promoted_say}"
