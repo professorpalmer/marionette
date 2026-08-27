@@ -368,11 +368,12 @@ def _extract_text_and_tools(raw: dict) -> Tuple[str, list, str]:
     burning continuation retries.
 
     Message text for ``DriverResponse.text`` prefers ``final_answer`` and
-    phase-less (legacy) items. Commentary and analysis are excluded — they
-    stream via progress/reasoning callbacks and must not contaminate the
-    final answer even when final text is empty.
+    phase-less (legacy) items. Commentary is retained only when it precedes a
+    tool call and no answer exists, so history can replay the preamble with its
+    phase. Analysis is always excluded.
     """
     text_parts: List[str] = []
+    commentary_parts: List[str] = []
     tool_calls: List[dict] = []
     saw_answer_item = False
     status = str(raw.get("status") or "")
@@ -391,6 +392,14 @@ def _extract_text_and_tools(raw: dict) -> Tuple[str, list, str]:
             # Reuse channel policy: commentary -> progress, analysis ->
             # reasoning, final_answer / phase-less -> answer.
             channel = _codex_channel_for_item("message", item.get("phase"))
+            if channel == "progress":
+                commentary_parts.extend(
+                    str(part.get("text") or "")
+                    for part in item.get("content") or []
+                    if isinstance(part, dict)
+                    and part.get("type") in ("output_text", "text")
+                )
+                continue
             if channel != "answer":
                 continue
             saw_answer_item = True
@@ -413,7 +422,9 @@ def _extract_text_and_tools(raw: dict) -> Tuple[str, list, str]:
     # Legacy / SSE-assembled bodies may only populate output_text. Never fall
     # back to it when answer-phase items existed (even if their text is empty)
     # — that would re-introduce commentary contamination via a mixed blob.
-    if not text_parts and not saw_answer_item and isinstance(
+    if not text_parts and not saw_answer_item and tool_calls and commentary_parts:
+        text_parts.extend(commentary_parts)
+    elif not text_parts and not saw_answer_item and isinstance(
         raw.get("output_text"), str
     ):
         text_parts.append(raw["output_text"])
@@ -421,10 +432,9 @@ def _extract_text_and_tools(raw: dict) -> Tuple[str, list, str]:
 
 
 def _contributing_assistant_phase(raw: dict) -> Optional[str]:
-    """Known phase shared by every answer-channel message item, else None.
+    """Phase of final text, or commentary before a tool call, else None.
 
-    Commentary/analysis are not contributing. A single phase-less (legacy)
-    answer item refuses inference — we must not stamp final_answer.
+    A phase-less legacy answer refuses inference. Analysis never contributes.
     """
     phases: List[str] = []
     for item in raw.get("output") or []:
@@ -436,11 +446,22 @@ def _contributing_assistant_phase(raw: dict) -> Optional[str]:
         if known is None:
             return None
         phases.append(known)
-    if not phases:
+    if phases:
+        first = phases[0]
+        if all(phase == first for phase in phases):
+            return first
         return None
-    first = phases[0]
-    if all(phase == first for phase in phases):
-        return first
+    if any(
+        isinstance(item, dict) and item.get("type") == "function_call"
+        for item in raw.get("output") or []
+    ):
+        for item in raw.get("output") or []:
+            if (
+                isinstance(item, dict)
+                and item.get("type") == "message"
+                and known_assistant_phase(item.get("phase")) == "commentary"
+            ):
+                return "commentary"
     return None
 
 

@@ -170,6 +170,33 @@ def test_response_from_raw_stamps_known_phase_and_skips_legacy():
     assert legacy.assistant_phase is None
 
 
+def test_response_from_raw_preserves_commentary_before_tool_call():
+    """OpenAI Agents JS #1513 follow-up: replay commentary before the tool."""
+    driver = CodexResponsesDriver(name="openai-codex/test", model="gpt-5.6-luna")
+    resp = driver._response_from_raw(
+        {
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "phase": "commentary",
+                    "content": [{"type": "output_text", "text": "Checking. "}],
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "read_file",
+                    "arguments": "{}",
+                },
+            ],
+        },
+        t0=time.time(),
+    )
+
+    assert resp.text == "Checking. "
+    assert resp.assistant_phase == "commentary"
+
+
 def test_response_from_raw_empty_final_does_not_fallback_to_commentary():
     """Extract already refuses commentary fallback; DriverResponse must too."""
     driver = CodexResponsesDriver(name="openai-codex/test", model="gpt-5.6-luna")

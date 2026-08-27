@@ -1373,6 +1373,9 @@ class SendLoopMixin:
 
             cleaned_say_text, _extracted_secret = peel_secret_request_message(
                 clean_say(turn.say) if turn.say else "")
+            commentary_history_text = ""
+            if getattr(resp, "assistant_phase", None) == "commentary":
+                commentary_history_text, cleaned_say_text = cleaned_say_text, ""
             _resp_meta = getattr(resp, "meta", None) or {}
             if not isinstance(_resp_meta, dict):
                 _resp_meta = {}
@@ -1386,6 +1389,8 @@ class SendLoopMixin:
                     _resp_meta.get("reasoning") or turn.thinking or ""
                 ),
             )
+            if commentary_history_text:
+                _promoted_say = ""
             if _promoted_say:
                 _promoted_say = clean_say(_promoted_say) or _promoted_say
             if cleaned_say_text:
@@ -1411,7 +1416,7 @@ class SendLoopMixin:
                     "role": "assistant",
                     "text": _promoted_say,
                 })
-            _history_text = cleaned_say_text or ""
+            _history_text = commentary_history_text or cleaned_say_text or ""
             if _promoted_say:
                 if _history_text and _promoted_say.strip() != _history_text.strip():
                     _history_text = f"{_history_text}\n\n{_promoted_say}"
