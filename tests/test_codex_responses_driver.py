@@ -197,6 +197,81 @@ def test_response_from_raw_preserves_commentary_before_tool_call():
     assert resp.assistant_phase == "commentary"
 
 
+def test_response_from_raw_analysis_before_tool_is_not_promoted():
+    """Analysis stays off DriverResponse.text even when a tool call follows."""
+    driver = CodexResponsesDriver(name="openai-codex/test", model="gpt-5.6-luna")
+    resp = driver._response_from_raw(
+        {
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "phase": "analysis",
+                    "content": [{"type": "output_text", "text": "thinking aloud "}],
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "read_file",
+                    "arguments": "{}",
+                },
+            ],
+        },
+        t0=time.time(),
+    )
+
+    assert resp.text == ""
+    assert resp.assistant_phase is None
+    assert resp.meta["tool_calls"][0]["id"] == "call_1"
+
+
+def test_response_from_raw_commentary_without_tool_stays_empty():
+    """Commentary-only still streams via progress; do not stamp a ledger row."""
+    driver = CodexResponsesDriver(name="openai-codex/test", model="gpt-5.6-luna")
+    resp = driver._response_from_raw(
+        {
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "phase": "commentary",
+                    "content": [{"type": "output_text", "text": "Checking. "}],
+                },
+            ],
+        },
+        t0=time.time(),
+    )
+
+    assert resp.text == ""
+    assert resp.assistant_phase is None
+
+
+def test_messages_to_input_replays_commentary_on_tool_row():
+    """Same assistant row carries commentary then function_call then the tool result."""
+    inp = _messages_to_responses_input([
+        {"role": "user", "content": "inspect"},
+        {
+            "role": "assistant",
+            "content": "Checking. ",
+            "phase": "commentary",
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": "{}"},
+            }],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+    ])
+    assert inp[0]["role"] == "user"
+    assert inp[1]["type"] == "message"
+    assert inp[1]["phase"] == "commentary"
+    assert inp[1]["content"][0]["text"] == "Checking. "
+    assert inp[2]["type"] == "function_call"
+    assert inp[2]["call_id"] == "call_1"
+    assert inp[3]["type"] == "function_call_output"
+    assert inp[3]["call_id"] == "call_1"
+
+
 def test_response_from_raw_empty_final_does_not_fallback_to_commentary():
     """Extract already refuses commentary fallback; DriverResponse must too."""
     driver = CodexResponsesDriver(name="openai-codex/test", model="gpt-5.6-luna")
