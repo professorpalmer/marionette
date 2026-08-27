@@ -16,7 +16,7 @@ import urllib.parse
 import urllib.request
 from typing import Callable
 
-from .base import DriverResponse, SYSTEM_PROMPT
+from .base import DriverResponse, SYSTEM_PROMPT, chat_completions_messages
 from .prompt_cache import (
     apply_openai_compat_cache_control,
     maybe_attach_openrouter_session_id,
@@ -939,7 +939,7 @@ class OpenAICompatDriver:
         full_messages = []
         if system:
             full_messages.append({"role": "system", "content": system})
-        full_messages.extend(messages)
+        full_messages.extend(chat_completions_messages(messages))
 
         body = {
             "model": self.model,
@@ -1136,7 +1136,7 @@ class OpenAICompatDriver:
         full_messages = []
         if system:
             full_messages.append({"role": "system", "content": system})
-        full_messages.extend(messages)
+        full_messages.extend(chat_completions_messages(messages))
 
         body = {
             "model": self.model,
