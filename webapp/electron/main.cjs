@@ -1503,6 +1503,21 @@ function setupRequestInterception() {
 }
 
 
+const MAX_SPELLCHECK_WORD = 128;
+const _editableContextByContents = new WeakMap();
+
+function spellcheckWord(value) {
+  if (typeof value !== "string") return "";
+  const word = value.trim();
+  if (!word || word.length > MAX_SPELLCHECK_WORD) return "";
+  return word;
+}
+
+function popupMenuForContents(contents, template) {
+  const owner = (win && !win.isDestroyed()) ? win : BrowserWindow.fromWebContents(contents);
+  Menu.buildFromTemplate(template).popup({ window: owner || undefined });
+}
+
 function linkContextMenuTemplate(url) {
   return [
     {
@@ -1529,16 +1544,73 @@ function linkContextMenuTemplate(url) {
   ];
 }
 
-function wireLinkContextMenu(contents) {
+function editableContextMenuTemplate(params, contents) {
+  const items = [];
+  const word = spellcheckWord(params && params.misspelledWord);
+  const suggestions = Array.isArray(params && params.dictionarySuggestions)
+    ? params.dictionarySuggestions
+    : [];
+  if (word) {
+    for (const suggestion of suggestions.slice(0, 5)) {
+      if (typeof suggestion !== "string" || !suggestion) continue;
+      items.push({
+        label: suggestion,
+        click: () => {
+          try { contents.replaceMisspelling(suggestion); } catch {}
+        },
+      });
+    }
+    items.push({
+      label: "Add to dictionary",
+      click: () => {
+        try { contents.session.addWordToSpellCheckerDictionary(word); } catch {}
+      },
+    });
+    items.push({ type: "separator" });
+  }
+  items.push(
+    { role: "cut" },
+    { role: "copy" },
+    { role: "paste" },
+    { type: "separator" },
+    { role: "selectAll" },
+  );
+  return items;
+}
+
+function isMainWindowContents(contents) {
+  return Boolean(win && !win.isDestroyed() && contents === win.webContents);
+}
+
+function wireContextMenu(contents) {
   if (!contents || contents.isDestroyed()) return;
   contents.on("context-menu", (_e, params) => {
+    if (params && params.isEditable) {
+      if (isMainWindowContents(contents)) {
+        _editableContextByContents.set(contents, params);
+        contents.send("context-menu:open", {
+          x: params.x,
+          y: params.y,
+          misspelledWord: params.misspelledWord || "",
+          suggestions: Array.isArray(params.dictionarySuggestions)
+            ? params.dictionarySuggestions
+            : [],
+        });
+        return;
+      }
+      try {
+        popupMenuForContents(contents, editableContextMenuTemplate(params, contents));
+      } catch (err) {
+        logMain(`context-menu failed: ${err && err.message ? err.message : err}`);
+      }
+      return;
+    }
     const url = params && params.linkURL;
     if (!url || !isAllowedBrowserUrl(url)) return;
-    const owner = (win && !win.isDestroyed()) ? win : BrowserWindow.fromWebContents(contents);
     try {
-      Menu.buildFromTemplate(linkContextMenuTemplate(url)).popup({ window: owner || undefined });
+      popupMenuForContents(contents, linkContextMenuTemplate(url));
     } catch (err) {
-      logMain(`link context-menu failed: ${err && err.message ? err.message : err}`);
+      logMain(`context-menu failed: ${err && err.message ? err.message : err}`);
     }
   });
 }
@@ -1608,7 +1680,7 @@ function createWindow() {
   }
   trackWindowState(win);
   loadRenderer();
-  wireLinkContextMenu(win.webContents);
+  wireContextMenu(win.webContents);
   wireCloseTabShortcut(win.webContents);
 
   // Drop the reference when the window is closed so a reopen builds a clean one
@@ -1960,7 +2032,7 @@ app.on("web-contents-created", (_e, contents) => {
   if (type === "webview") {
     applyChromeFingerprint(contents);
     wireWikiConnectNavigation(contents);
-    wireLinkContextMenu(contents);
+    wireContextMenu(contents);
     wireCloseTabShortcut(contents);
     logMain(`[browser] webview contents created; UA applied`);
     contents.setWindowOpenHandler(() => {
@@ -2092,6 +2164,32 @@ ipcMain.handle("browser:openExternal", async (_e, url) => {
     logMain(`browser:openExternal failed: ${e && e.message ? e.message : e}`);
     return { ok: false, error: String(e && e.message ? e.message : e) };
   }
+});
+
+ipcMain.handle("context-menu:native", (event) => {
+  const contents = event.sender;
+  const params = _editableContextByContents.get(contents);
+  _editableContextByContents.delete(contents);
+  if (!params) return;
+  try {
+    popupMenuForContents(contents, editableContextMenuTemplate(params, contents));
+  } catch (err) {
+    logMain(`context-menu failed: ${err && err.message ? err.message : err}`);
+  }
+});
+
+ipcMain.handle("context-menu:edit", (event, command) => {
+  if (command === "copy") event.sender.copy();
+  else if (command === "cut") event.sender.cut();
+  else if (command === "paste") event.sender.paste();
+});
+
+ipcMain.handle("context-menu:spellcheck", (event, action) => {
+  if (!action || typeof action !== "object") return;
+  const word = spellcheckWord(action.word);
+  if (!word) return;
+  if (action.kind === "replace") event.sender.replaceMisspelling(word);
+  else if (action.kind === "add") event.sender.session.addWordToSpellCheckerDictionary(word);
 });
 
 ipcMain.handle("window:close", () => {

@@ -28,6 +28,7 @@ import {
 import { api, type Config, type ContextUsageResponse, type Job } from "../../lib/api";
 import PilotPicker from "../PilotPicker";
 import WorkspaceChip from "./WorkspaceChip";
+import ComposerContextMenu from "./ComposerContextMenu";
 import ComposerStatusStack from "./ComposerStatusStack";
 import ComposerTasksPanel from "./ComposerTasksPanel";
 import { formatMentionListingCapMessage, type MentionListingCap } from "./slashCommands";
@@ -972,6 +973,7 @@ export default function ComposerDock({
             onPaste={handlePaste}
             rows={1} placeholder={auto ? "Give the pilot an objective..." : "Message the pilot..."}
             className="w-full bg-transparent px-3 pt-2.5 pb-1 text-[0.8125rem] resize-none focus:outline-none overflow-hidden placeholder:text-faint" />
+          <ComposerContextMenu textareaRef={taRef} />
           <div className="composer-toolbar px-3 pb-2">
             <div className="composer-toolbar-actions">
             <button type="button" onClick={() => {
