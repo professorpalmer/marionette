@@ -7,10 +7,10 @@ and both the chat **pilot** and agentic **workers** (swarm / implement) run on
 that credential. No Cursor, Claude, or Codex CLI install is required.
 
 Puppetmaster is the bundled kernel — not a second product to set up.
-stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.36` is the one
+stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.37` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.361, deliberately pre-1.0. Rides puppetmaster-ai==1.22.36. Pi TUI/pilot package (not a worker adapter).
+> Status: v0.9.362, deliberately pre-1.0. Rides puppetmaster-ai==1.22.37. Pi TUI/pilot package (not a worker adapter).
 
 ## Documentation
 
@@ -92,7 +92,7 @@ The cost thesis is measured, not asserted:
 |---|---|
 | **Provider-native pilot** | One driver, every OpenAI-compatible endpoint (OpenRouter or native). Frontier control models (Claude, GPT) and open-weights (GLM, DeepSeek, Kimi, Qwen, MiniMax) drive the same loop. |
 | **CodeGraph-first retrieval** | Per-turn structural context is auto-injected (symbols, defs, call sites) before the model acts, so it leans on the graph instead of dumping whole files. Self-healing: the index detects edits, additions, and deletions and refreshes in the background. |
-| **Puppetmaster delegation** | run_swarm (read-only analysis), run_implement (edit-capable worktree worker), run_parallel (concurrent waves). Heavy/multi-file work runs as durable, auditable jobs. Requires `puppetmaster-ai==1.22.36` (headed Chrome auth handoff with a durable profile and shared CDP port, configurable default reviewer platform, shared `build_cost_report`, safely resumable jobs, honest delivery verdicts, Google Antigravity `agy` adapter, dashboard per-project isolation, hermetic test-suite credential isolation, swarm timeout propagation, Sonnet 5 catalogs, discovery origin, spawned-worker delegate-first exemption, SWE-bench Bash Only priors, exact registry pins, and Bedrock invoke health). |
+| **Puppetmaster delegation** | run_swarm (read-only analysis), run_implement (edit-capable worktree worker), run_parallel (concurrent waves). Heavy/multi-file work runs as durable, auditable jobs. Requires `puppetmaster-ai==1.22.37` (headed Chrome auth handoff with a durable profile and shared CDP port, configurable default reviewer platform, shared `build_cost_report`, safely resumable jobs, honest delivery verdicts, Google Antigravity `agy` adapter, dashboard per-project isolation, hermetic test-suite credential isolation, swarm timeout propagation, Sonnet 5 catalogs, discovery origin, spawned-worker delegate-first exemption, SWE-bench Bash Only priors, exact registry pins, and Bedrock invoke health. 1.22.37 -- PyPI live, GitHub PR professorpalmer/Puppetmaster#113, not necessarily merged yet -- closes METR seams: graph is the only dispatcher (same-job children; foreign job / new job / wrong parent refused; worker recruit/HOLD/VETO/mailbox is `task.enqueue_refused`); no writable listing API across jobs (protocol gists rejected; cross-job inject needs `independently_supported`); coordinator outlives workers (job `acceptance_criteria` / `granted_authority` / `wait_reason` `waiting_external` vs `waiting_user`; failed GATE does not enqueue merge/ship; worker cannot `update_job_status` to COMPLETE); host receipts beat worker shipped/merged/released claims (idempotent `record_host_observation`); one writer per subgraph (leases + HOLD/VETO/`subgraph_owner`)). |
 | **Portable LLM Wiki** | Cross-session, cross-LLM durable memory. A local model structures a session digest into entity/concept/decision pages (the "backwards" orchestration) cheaply, then ingests them -- human-approved by default. |
 | **Durable memory graph** | Local durable facts/preferences (`MemoryStore`) plus optional relations via `MemoryGraph` (`GET /api/memory/graph`, shape `{nodes,edges}` like the wiki graph; sqlite + append-only jsonl). |
 | **Vision on any driver** | Paste or drop a screenshot and even a text-only driver "sees" it. A VLM sidecar transcribes the image, resolved in tiers: an explicit `HARNESS_VLM_REACH` override, then a dedicated Gemini/OpenRouter vision key, then -- with zero extra setup -- **any provider key you already have that exposes a vision model** (Anthropic, OpenAI, xAI, ...). No separate vision key required if your driver's provider can see. |
