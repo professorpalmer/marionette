@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.request
 
@@ -130,6 +131,71 @@ def test_extract_empty_final_does_not_fallback_to_commentary():
     assert text == ""
 
 
+def test_response_from_raw_stamps_known_phase_and_skips_legacy():
+    driver = CodexResponsesDriver(name="openai-codex/test", model="gpt-5.6-luna")
+    phased = driver._response_from_raw(
+        {
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "phase": "commentary",
+                    "content": [{"type": "output_text", "text": "Checking. "}],
+                },
+                {
+                    "type": "message",
+                    "phase": "final_answer",
+                    "content": [{"type": "output_text", "text": "Done."}],
+                },
+            ],
+        },
+        t0=time.time(),
+    )
+    assert phased.text == "Done."
+    assert phased.assistant_phase == "final_answer"
+
+    legacy = driver._response_from_raw(
+        {
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "legacy answer"}],
+                },
+            ],
+        },
+        t0=time.time(),
+    )
+    assert legacy.text == "legacy answer"
+    assert legacy.assistant_phase is None
+
+
+def test_response_from_raw_empty_final_does_not_fallback_to_commentary():
+    """Extract already refuses commentary fallback; DriverResponse must too."""
+    driver = CodexResponsesDriver(name="openai-codex/test", model="gpt-5.6-luna")
+    resp = driver._response_from_raw(
+        {
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "phase": "commentary",
+                    "content": [{"type": "output_text", "text": "I need to critique…"}],
+                },
+                {
+                    "type": "message",
+                    "phase": "final_answer",
+                    "content": [{"type": "output_text", "text": ""}],
+                },
+            ],
+            "output_text": "I need to critique…",
+        },
+        t0=time.time(),
+    )
+    assert resp.text == ""
+    assert resp.assistant_phase == "final_answer"
+
+
 def test_commentary_streams_via_delta_but_extract_is_final_only():
     """Commentary arrives on progress/on_delta; extract text is final_answer."""
     progress = []
@@ -168,6 +234,66 @@ def test_messages_to_input_skips_system():
     ])
     assert len(inp) == 1
     assert inp[0]["role"] == "user"
+
+
+def test_messages_to_input_preserves_known_assistant_phase():
+    """Issue #228: replay assistant messages with OpenAI's known phase."""
+    inp = _messages_to_responses_input([
+        {"role": "user", "content": "inspect the sql"},
+        {
+            "role": "assistant",
+            "content": "I'll inspect the SQL first.",
+            "phase": "commentary",
+        },
+        {
+            "role": "assistant",
+            "content": "The employee filter explains it.",
+            "phase": "final_answer",
+        },
+        {
+            "role": "assistant",
+            "content": "calling",
+            "phase": "final_answer",
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": "{}"},
+            }],
+        },
+    ])
+    by_text = {
+        part["text"]: item
+        for item in inp
+        if item.get("type") == "message"
+        for part in item.get("content") or []
+        if isinstance(part, dict) and part.get("type") == "output_text"
+    }
+    assert by_text["I'll inspect the SQL first."]["phase"] == "commentary"
+    assert by_text["The employee filter explains it."]["phase"] == "final_answer"
+    assert by_text["calling"]["phase"] == "final_answer"
+    assert inp[-1]["type"] == "function_call"
+
+
+def test_messages_to_input_omits_absent_invalid_and_non_assistant_phase():
+    """Do not infer final_answer; never forward phase on user/tool rows."""
+    inp = _messages_to_responses_input([
+        {"role": "user", "content": "hi", "phase": "final_answer"},
+        {"role": "assistant", "content": "legacy answer"},
+        {"role": "assistant", "content": "nope", "phase": "analysis"},
+        {"role": "assistant", "content": "also-nope", "phase": "FINAL_ANSWER "},
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": "ok",
+            "phase": "commentary",
+        },
+    ])
+    assert "phase" not in inp[0]
+    assert inp[1]["role"] == "assistant" and "phase" not in inp[1]
+    assert inp[2]["role"] == "assistant" and "phase" not in inp[2]
+    assert inp[3]["phase"] == "final_answer"
+    assert inp[4]["type"] == "function_call_output"
+    assert "phase" not in inp[4]
 
 
 def test_messages_to_input_emits_input_image_for_multimodal_list():
