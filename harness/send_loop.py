@@ -63,8 +63,8 @@ from .send_loop_phases import (
     emit_stagnation_halt,
     finalize_assistant_turn,
     native_tools_blocked,
-    promote_trailing_reasoning_to_say,
     record_provider_dispatch_error_receipt,
+    resolve_emit_say_texts,
     run_auto_verify,
     yield_session_interrupted,
 )
@@ -84,7 +84,7 @@ from .stream_performance import (
     yield_timed_phase,
 )
 from .text_clean import clean_say
-from pmharness.drivers.base import known_assistant_phase, stamp_assistant_phase
+from pmharness.drivers.base import stamp_assistant_phase
 from .tool_dispatch import _strip_ansi, is_safe_path
 from .send_loop_secrets import (
     iter_extracted_secret_turn,
@@ -1373,29 +1373,13 @@ class SendLoopMixin:
 
             cleaned_say_text, _extracted_secret = peel_secret_request_message(
                 clean_say(turn.say) if turn.say else "")
-            commentary_history_text = ""
-            _resp_phase = known_assistant_phase(
-                getattr(resp, "assistant_phase", None),
+            cleaned_say_text, commentary_history_text, _promoted_say = (
+                resolve_emit_say_texts(
+                    cleaned_say_text=cleaned_say_text,
+                    resp=resp,
+                    turn_thinking=turn.thinking or "",
+                )
             )
-            if _resp_phase == "commentary":
-                commentary_history_text, cleaned_say_text = cleaned_say_text, ""
-            _resp_meta = getattr(resp, "meta", None) or {}
-            if not isinstance(_resp_meta, dict):
-                _resp_meta = {}
-            _promoted_say = promote_trailing_reasoning_to_say(
-                say_text=cleaned_say_text,
-                streamed_reasoning=str(_resp_meta.get("streamed_reasoning") or ""),
-                stream_ended_on_reasoning=bool(
-                    _resp_meta.get("stream_ended_on_reasoning")
-                ),
-                meta_reasoning=str(
-                    _resp_meta.get("reasoning") or turn.thinking or ""
-                ),
-            )
-            if _resp_phase == "commentary":
-                _promoted_say = ""
-            if _promoted_say:
-                _promoted_say = clean_say(_promoted_say) or _promoted_say
             if cleaned_say_text:
                 step_emitted_user_prose = True
                 # If this prose was already streamed token-by-token, flag it so the

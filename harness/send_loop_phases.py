@@ -25,6 +25,7 @@ from functools import partial
 from typing import Any, Dict, Iterator, Optional
 
 from pmharness.bridge import execute_intent
+from pmharness.drivers.base import known_assistant_phase
 
 from .log_reconstruction import check_outbound_reconstruction
 from .pilot import PilotAction, StreamingSayExtractor
@@ -59,6 +60,7 @@ from .terminal_cause import (
     loop_exit_message,
     provider_tools_are_executable,
 )
+from .text_clean import clean_say
 from .tool_timeout import invoke_do, run_with_tool_deadline
 from .workspace_rules_refresh import maybe_refresh_workspace_rules
 from .url_safety import sanitize_url_for_display
@@ -1215,6 +1217,47 @@ def promote_trailing_reasoning_to_say(
     if reasoning in say:
         return ""
     return reasoning
+
+
+def resolve_emit_say_texts(
+    *,
+    cleaned_say_text: str,
+    resp: Any,
+    turn_thinking: str = "",
+) -> tuple[str, str, str]:
+    """Apply commentary fail-close and optional reasoning promotion.
+
+    Returns ``(cleaned_say_text, commentary_history_text, promoted_say)``.
+
+    When ``assistant_phase`` is commentary, keep text on history only (not
+    rendered as a completed assistant message) and never promote trailing
+    reasoning into a say bubble. Empty final_answer still wins upstream;
+    analysis is never promoted by ``promote_trailing_reasoning_to_say``.
+    """
+    commentary_history_text = ""
+    resp_phase = known_assistant_phase(
+        getattr(resp, "assistant_phase", None),
+    )
+    if resp_phase == "commentary":
+        commentary_history_text, cleaned_say_text = cleaned_say_text, ""
+    resp_meta = getattr(resp, "meta", None) or {}
+    if not isinstance(resp_meta, dict):
+        resp_meta = {}
+    promoted_say = promote_trailing_reasoning_to_say(
+        say_text=cleaned_say_text,
+        streamed_reasoning=str(resp_meta.get("streamed_reasoning") or ""),
+        stream_ended_on_reasoning=bool(
+            resp_meta.get("stream_ended_on_reasoning")
+        ),
+        meta_reasoning=str(
+            resp_meta.get("reasoning") or turn_thinking or ""
+        ),
+    )
+    if resp_phase == "commentary":
+        promoted_say = ""
+    if promoted_say:
+        promoted_say = clean_say(promoted_say) or promoted_say
+    return cleaned_say_text, commentary_history_text, promoted_say
 
 
 def _emit_batched_delta(
