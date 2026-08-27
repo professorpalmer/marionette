@@ -1529,16 +1529,27 @@ function linkContextMenuTemplate(url) {
   ];
 }
 
-function wireLinkContextMenu(contents) {
+function wireContextMenu(contents) {
   if (!contents || contents.isDestroyed()) return;
   contents.on("context-menu", (_e, params) => {
+    if (params && params.isEditable) {
+      contents.send("context-menu:open", {
+        x: params.x,
+        y: params.y,
+        misspelledWord: params.misspelledWord || "",
+        suggestions: Array.isArray(params.dictionarySuggestions)
+          ? params.dictionarySuggestions
+          : [],
+      });
+      return;
+    }
     const url = params && params.linkURL;
     if (!url || !isAllowedBrowserUrl(url)) return;
     const owner = (win && !win.isDestroyed()) ? win : BrowserWindow.fromWebContents(contents);
     try {
       Menu.buildFromTemplate(linkContextMenuTemplate(url)).popup({ window: owner || undefined });
     } catch (err) {
-      logMain(`link context-menu failed: ${err && err.message ? err.message : err}`);
+      logMain(`context-menu failed: ${err && err.message ? err.message : err}`);
     }
   });
 }
@@ -1608,7 +1619,7 @@ function createWindow() {
   }
   trackWindowState(win);
   loadRenderer();
-  wireLinkContextMenu(win.webContents);
+  wireContextMenu(win.webContents);
   wireCloseTabShortcut(win.webContents);
 
   // Drop the reference when the window is closed so a reopen builds a clean one
@@ -1960,7 +1971,7 @@ app.on("web-contents-created", (_e, contents) => {
   if (type === "webview") {
     applyChromeFingerprint(contents);
     wireWikiConnectNavigation(contents);
-    wireLinkContextMenu(contents);
+    wireContextMenu(contents);
     wireCloseTabShortcut(contents);
     logMain(`[browser] webview contents created; UA applied`);
     contents.setWindowOpenHandler(() => {
@@ -2092,6 +2103,19 @@ ipcMain.handle("browser:openExternal", async (_e, url) => {
     logMain(`browser:openExternal failed: ${e && e.message ? e.message : e}`);
     return { ok: false, error: String(e && e.message ? e.message : e) };
   }
+});
+
+ipcMain.handle("context-menu:edit", (event, command) => {
+  if (command === "copy") event.sender.copy();
+  else if (command === "cut") event.sender.cut();
+  else if (command === "paste") event.sender.paste();
+});
+
+ipcMain.handle("context-menu:spellcheck", (event, action) => {
+  const word = typeof action?.word === "string" ? action.word : "";
+  if (!word) return;
+  if (action.kind === "replace") event.sender.replaceMisspelling(word);
+  else if (action.kind === "add") event.sender.session.addWordToSpellCheckerDictionary(word);
 });
 
 ipcMain.handle("window:close", () => {

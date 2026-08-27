@@ -10,8 +10,18 @@ describe("v0.9.344 link menu and Cmd+W intercept", () => {
     assert.match(main, /Open in system browser/);
     assert.match(main, /Open in-app browser/);
     assert.match(main, /Copy link/);
-    assert.match(main, /wireLinkContextMenu/);
+    assert.match(main, /wireContextMenu/);
     assert.match(main, /browser:openInApp/);
+  });
+
+  it("main.cjs wires spelling and link items through one context menu", () => {
+    const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+    const preload = fs.readFileSync(path.join(__dirname, "preload.cjs"), "utf8");
+    assert.match(main, /wireContextMenu/);
+    assert.match(main, /context-menu:open/);
+    assert.match(main, /addWordToSpellCheckerDictionary/);
+    assert.match(preload, /onContextMenuOpen/);
+    assert.match(preload, /contextMenuEdit/);
   });
 
   it("main.cjs intercepts Cmd\/Ctrl+W so Close Window is not first", () => {
