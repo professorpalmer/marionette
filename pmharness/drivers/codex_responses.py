@@ -376,6 +376,7 @@ def _extract_text_and_tools(raw: dict) -> Tuple[str, list, str]:
     commentary_parts: List[str] = []
     tool_calls: List[dict] = []
     saw_answer_item = False
+    saw_non_answer_item = False
     status = str(raw.get("status") or "")
     reason = _incomplete_reason(raw)
     if status == "incomplete" and reason == "content_filter":
@@ -393,6 +394,7 @@ def _extract_text_and_tools(raw: dict) -> Tuple[str, list, str]:
             # reasoning, final_answer / phase-less -> answer.
             channel = _codex_channel_for_item("message", item.get("phase"))
             if channel == "progress":
+                saw_non_answer_item = True
                 commentary_parts.extend(
                     str(part.get("text") or "")
                     for part in item.get("content") or []
@@ -401,6 +403,7 @@ def _extract_text_and_tools(raw: dict) -> Tuple[str, list, str]:
                 )
                 continue
             if channel != "answer":
+                saw_non_answer_item = True
                 continue
             saw_answer_item = True
             for part in item.get("content") or []:
@@ -424,8 +427,11 @@ def _extract_text_and_tools(raw: dict) -> Tuple[str, list, str]:
     # — that would re-introduce commentary contamination via a mixed blob.
     if not text_parts and not saw_answer_item and tool_calls and commentary_parts:
         text_parts.extend(commentary_parts)
-    elif not text_parts and not saw_answer_item and isinstance(
-        raw.get("output_text"), str
+    elif (
+        not text_parts
+        and not saw_answer_item
+        and not saw_non_answer_item
+        and isinstance(raw.get("output_text"), str)
     ):
         text_parts.append(raw["output_text"])
     return "".join(text_parts), tool_calls, finish
@@ -463,15 +469,6 @@ def _contributing_assistant_phase(raw: dict) -> Optional[str]:
             ):
                 return "commentary"
     return None
-
-
-def _saw_answer_message(raw: dict) -> bool:
-    for item in raw.get("output") or []:
-        if not isinstance(item, dict) or item.get("type") != "message":
-            continue
-        if _codex_channel_for_item("message", item.get("phase")) == "answer":
-            return True
-    return False
 
 
 def _codex_tool_hint_goal(arguments: Any, name: str) -> str:
@@ -1389,15 +1386,6 @@ class CodexResponsesDriver:
         incomplete_retries: int = 0,
     ) -> DriverResponse:
         text, tool_calls, finish = _extract_text_and_tools(raw)
-        # Extract already falls back to output_text for phase-less bodies.
-        # Do not undo that when an answer-phase item existed (even empty) —
-        # re-applying the mixed blob reintroduces commentary into history.
-        if (
-            not text
-            and not _saw_answer_message(raw)
-            and isinstance(raw.get("output_text"), str)
-        ):
-            text = raw["output_text"]
         assistant_phase = _contributing_assistant_phase(raw)
         if finish == "content_filter":
             meta = {

@@ -246,6 +246,49 @@ def test_response_from_raw_commentary_without_tool_stays_empty():
     assert resp.assistant_phase is None
 
 
+def test_extract_non_answer_items_do_not_use_mixed_output_text():
+    """Structured commentary/analysis must not lose to a mixed output_text blob."""
+    commentary_only = {
+        "status": "completed",
+        "output": [
+            {
+                "type": "message",
+                "phase": "commentary",
+                "content": [{"type": "output_text", "text": "Checking. "}],
+            },
+        ],
+        "output_text": "Checking. ",
+    }
+    text, _, _ = _extract_text_and_tools(commentary_only)
+    assert text == ""
+
+    analysis_and_tool = {
+        "status": "completed",
+        "output": [
+            {
+                "type": "message",
+                "phase": "analysis",
+                "content": [{"type": "output_text", "text": "thinking aloud "}],
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "read_file",
+                "arguments": "{}",
+            },
+        ],
+        "output_text": "thinking aloud ",
+    }
+    text, tools, _ = _extract_text_and_tools(analysis_and_tool)
+    assert text == ""
+    assert tools[0]["id"] == "call_1"
+
+    driver = CodexResponsesDriver(name="openai-codex/test", model="gpt-5.6-luna")
+    resp = driver._response_from_raw(analysis_and_tool, t0=time.time())
+    assert resp.text == ""
+    assert resp.assistant_phase is None
+
+
 def test_messages_to_input_replays_commentary_on_tool_row():
     """Same assistant row carries commentary then function_call then the tool result."""
     inp = _messages_to_responses_input([

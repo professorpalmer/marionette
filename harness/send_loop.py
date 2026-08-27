@@ -84,7 +84,7 @@ from .stream_performance import (
     yield_timed_phase,
 )
 from .text_clean import clean_say
-from pmharness.drivers.base import stamp_assistant_phase
+from pmharness.drivers.base import known_assistant_phase, stamp_assistant_phase
 from .tool_dispatch import _strip_ansi, is_safe_path
 from .send_loop_secrets import (
     iter_extracted_secret_turn,
@@ -1374,7 +1374,10 @@ class SendLoopMixin:
             cleaned_say_text, _extracted_secret = peel_secret_request_message(
                 clean_say(turn.say) if turn.say else "")
             commentary_history_text = ""
-            if getattr(resp, "assistant_phase", None) == "commentary":
+            _resp_phase = known_assistant_phase(
+                getattr(resp, "assistant_phase", None),
+            )
+            if _resp_phase == "commentary":
                 commentary_history_text, cleaned_say_text = cleaned_say_text, ""
             _resp_meta = getattr(resp, "meta", None) or {}
             if not isinstance(_resp_meta, dict):
@@ -1389,7 +1392,7 @@ class SendLoopMixin:
                     _resp_meta.get("reasoning") or turn.thinking or ""
                 ),
             )
-            if commentary_history_text:
+            if _resp_phase == "commentary":
                 _promoted_say = ""
             if _promoted_say:
                 _promoted_say = clean_say(_promoted_say) or _promoted_say
