@@ -782,6 +782,8 @@ export type UsageData = {
       reasons?: string[];
       needs_intervention?: boolean;
       warning_reason?: string;
+      budget_kind?: "absolute" | "percent" | "l1" | "";
+      budget_tokens?: number;
     };
     history_compaction_ran?: boolean;
     /** estimated — AGNT standing floor / TTL fields (HARNESS_STANDING_ECONOMICS). */

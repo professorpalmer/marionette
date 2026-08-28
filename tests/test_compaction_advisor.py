@@ -75,6 +75,8 @@ def test_hot_now_boundary_at():
     assert advice["reasons"]
     assert advice["needs_intervention"] is True
     assert advice["warning_reason"] == advice["reasons"][0]
+    assert advice["budget_kind"] == "percent"
+    assert advice["budget_tokens"] == 0
 
 
 def test_hot_soon_boundary_below():
@@ -94,6 +96,8 @@ def test_hot_soon_boundary_at():
     assert "hot context" in advice["reasons"][0]
     assert advice["needs_intervention"] is True
     assert "hot context" in advice["warning_reason"]
+    assert advice["budget_kind"] == "percent"
+    assert advice["budget_tokens"] == 0
 
 
 def test_needs_intervention_false_when_calm():
@@ -101,6 +105,8 @@ def test_needs_intervention_false_when_calm():
     assert advice["level"] == "none"
     assert advice["needs_intervention"] is False
     assert advice["warning_reason"] == ""
+    assert advice["budget_kind"] == ""
+    assert advice["budget_tokens"] == 0
 
 
 def test_needs_intervention_with_reclaim_under_pressure():
@@ -202,6 +208,8 @@ def test_manual_ack_clears_intervention_until_history_grows():
     assert body["level"] == "none"
     assert body["acked_manual_compact"] is True
     assert body["warning_reason"] == ""
+    assert body["budget_kind"] == ""
+    assert body["budget_tokens"] == 0
 
     pilot._history = list(pilot._history) + [{"role": "user", "content": "more"}]
     pilot._estimate_context_tokens = lambda: 140
@@ -403,6 +411,8 @@ def test_small_window_ratio_behavior_unchanged():
     advice = assess_layer_pressure(_snapshot(l0_at), budget)
     assert advice["level"] == "soon"
     assert "percent of budget" in advice["reasons"][0]
+    assert advice["budget_kind"] == "percent"
+    assert advice["budget_tokens"] == 0
 
 
 def test_large_window_absolute_soon_fires_before_ratio():
@@ -412,6 +422,18 @@ def test_large_window_absolute_soon_fires_before_ratio():
     advice = assess_layer_pressure(_snapshot(l0_bytes), budget)
     assert advice["level"] == "soon"
     assert "150000 tokens on a large window" in advice["reasons"][0]
+    assert advice["budget_kind"] == "absolute"
+    assert advice["budget_tokens"] == 150_000
+
+
+def test_large_window_absolute_now_fires_at_270k():
+    budget = 1_000_000
+    l0_bytes = 280_000 * 4
+    advice = assess_layer_pressure(_snapshot(l0_bytes), budget)
+    assert advice["level"] == "now"
+    assert "270000 tokens on a large window" in advice["reasons"][0]
+    assert advice["budget_kind"] == "absolute"
+    assert advice["budget_tokens"] == 270_000
 
 
 def test_absolute_threshold_env_zero_restores_ratio_only(monkeypatch):
@@ -430,3 +452,5 @@ def test_absolute_threshold_invalid_env_ignored(monkeypatch):
     advice = assess_layer_pressure(_snapshot(l0_bytes), budget)
     assert advice["level"] == "soon"
     assert "150000 tokens on a large window" in advice["reasons"][0]
+    assert advice["budget_kind"] == "absolute"
+    assert advice["budget_tokens"] == 150_000
