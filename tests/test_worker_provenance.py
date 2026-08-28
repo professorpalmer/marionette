@@ -534,6 +534,78 @@ def test_empty_implement_recovery_skips_guard_exhausted_first_attempt(monkeypatc
     ) is False
 
 
+def test_empty_implement_recovery_skips_agentic_engine_error():
+    crashed = WorkerResult(
+        ok=False,
+        error="agentic_error",
+        summary="Agentic engine error: swarm exited with incomplete tasks",
+        worktree_diff_empty=True,
+        patch="",
+        managed_worktree_mode="managed",
+    )
+    assert _empty_implement_recovery_eligible(
+        crashed,
+        expects_diff=True,
+        live_dirty_before=["report.ts"],
+        cancelled=False,
+    ) is False
+
+
+def test_agentic_engine_error_keeps_unapplied_files_without_apply(monkeypatch):
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    session = ConversationalSession(cfg)
+    job_id = "job_agentic_crash"
+    session._register_local_job(
+        job_id, goal="harden scoring", role="implement", engine="agentic",
+    )
+    crashed = WorkerResult(
+        ok=False,
+        error="agentic_error",
+        summary=(
+            "Agentic engine error: swarm exited with incomplete tasks\n"
+            "require_diff: no PATCH artifact\n"
+            "unapplied worktree files: src/lib/scoring/report.ts"
+        ),
+        patch="diff --git a/src/lib/scoring/report.ts b/src/lib/scoring/report.ts\n",
+        files_changed=["src/lib/scoring/report.ts"],
+        tokens_in=40,
+        tokens_out=12,
+        engine="agentic",
+        model="agentic/openai-codex/gpt-5.6-luna",
+        managed_worktree_path="/tmp/managed-wt",
+        managed_worktree_mode="managed",
+        worktree_diff_empty=False,
+    )
+    applied = []
+
+    def fake_apply(*_a, **_k):
+        applied.append("ran")
+        return True, ["src/lib/scoring/report.ts"], "ok"
+
+    session._apply_worker_patch = fake_apply
+    monkeypatch.setattr(
+        "harness.worktree_seed._list_git_status_porcelain_paths",
+        lambda _repo: [],
+    )
+    with patch.object(session, "_run_edit_worker_bounded", return_value=crashed):
+        session._run_provider_worker_background(
+            job_id, "harden scoring", expects_diff=True,
+        )
+    item = session._swarm_results.get_nowait()
+    result = item["result"]
+    assert result["error"] == "agentic_error"
+    assert result["applied"] is False
+    assert result["has_patch_art"] is False
+    assert result["files"] == ["src/lib/scoring/report.ts"]
+    assert "require_diff" in (result["summary"] or "")
+    assert "managed" in (result["summary"] or "")
+    assert applied == []
+    finished = session._local_jobs[job_id]
+    assert finished["status"] == "failed"
+    assert finished["worker_provenance"]["managed_worktree_mode"] == "managed"
+    assert finished["worker_provenance"]["worktree_diff_empty"] is False
+
+
 def test_empty_implement_recovery_shares_lifecycle_budget(monkeypatch):
     """Primary + recovery share one ambient lifecycle budget (no double ceiling)."""
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())

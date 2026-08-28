@@ -23,6 +23,7 @@ model) -- never when agentic ran and simply produced no changes.
 """
 
 import contextlib
+import json
 import os
 import shutil
 import subprocess
@@ -52,6 +53,120 @@ AGENTIC_UNAVAILABLE = "agentic_unavailable"
 AGENTIC_ROUTE_FAILED = "agentic_route_failed"
 AGENTIC_ERROR = "agentic_error"
 _FALLBACK_REASONS = (AGENTIC_UNAVAILABLE, AGENTIC_ROUTE_FAILED, AGENTIC_ERROR)
+
+
+def _agentic_store_failure_snapshot(store: Any, job_id: str = "") -> dict:
+    """Copy fail-closed facts off the scratch PM store before it is deleted.
+
+    ``Orchestrator.run`` raises ``swarm exited with incomplete tasks`` after the
+    worker/gate already recorded why. The temp sqlite dir is then rmtree'd, so
+    this snapshot is the only durable reason/token/task status the harness keeps.
+    """
+    snap = {
+        "job_id": "",
+        "reason": "",
+        "task_statuses": [],
+        "tokens_in": 0,
+        "tokens_out": 0,
+    }
+    if store is None:
+        return snap
+    resolved = str(job_id or "").strip()
+    if not resolved:
+        try:
+            jobs = list(store.list_jobs() or [])
+        except Exception:
+            jobs = []
+        if jobs:
+            resolved = str(getattr(jobs[-1], "id", "") or "")
+    snap["job_id"] = resolved
+    if not resolved:
+        return snap
+
+    try:
+        tasks = list(store.list_tasks(resolved) or [])
+    except Exception:
+        tasks = []
+    statuses = []
+    for task in tasks:
+        role = str(getattr(task, "role", "") or "").strip()
+        raw_status = getattr(task, "status", "")
+        status = str(getattr(raw_status, "value", raw_status) or "").strip()
+        if role and status:
+            statuses.append(f"{role}={status}")
+        elif status:
+            statuses.append(status)
+    snap["task_statuses"] = statuses
+
+    reason = ""
+    try:
+        records = store.read_events(resolved) if hasattr(store, "read_events") else []
+    except Exception:
+        records = []
+    for rec in records or []:
+        if not isinstance(rec, dict):
+            continue
+        name = str(rec.get("event") or "").strip()
+        payload = rec.get("payload")
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except Exception:
+                payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        if name == "worker.gate_failed":
+            text = str(payload.get("reason") or "").strip()
+            if text:
+                reason = text
+        elif name == "worker.failed_task":
+            text = str(payload.get("error") or payload.get("failure") or "").strip()
+            if text:
+                reason = text
+        elif name == "worker.lease_lost":
+            reason = "worker lease lost"
+    snap["reason"] = reason
+
+    try:
+        arts = list(store.list_artifacts(resolved) or [])
+    except Exception:
+        arts = []
+    tokens_in = 0
+    tokens_out = 0
+    art_failure = ""
+    for art in arts:
+        payload = getattr(art, "payload", None)
+        if not isinstance(payload, dict):
+            continue
+        tokens_out += int(payload.get("tokens_out") or 0)
+        tokens_in += int(payload.get("tokens_in") or 0)
+        if not art_failure and payload.get("failure"):
+            art_failure = str(payload.get("failure") or "").strip()
+    snap["tokens_in"] = tokens_in
+    snap["tokens_out"] = tokens_out
+    if not snap["reason"] and art_failure:
+        snap["reason"] = art_failure
+    return snap
+
+
+def _format_agentic_engine_error(
+    exc: BaseException,
+    snapshot: Optional[dict] = None,
+    files_changed: Optional[list] = None,
+) -> str:
+    """Pilot-facing summary for an agentic engine crash after store snapshot."""
+    parts = [f"Agentic engine error: {exc}"]
+    snap = snapshot or {}
+    reason = str(snap.get("reason") or "").strip()
+    if reason and reason not in parts[0]:
+        parts.append(reason)
+    statuses = [str(item) for item in (snap.get("task_statuses") or []) if str(item).strip()]
+    if statuses:
+        parts.append("tasks: " + ", ".join(statuses))
+    files = [str(path) for path in (files_changed or []) if str(path).strip()]
+    if files:
+        parts.append("unapplied worktree files: " + ", ".join(files))
+    return "\n".join(parts)
 
 
 @contextlib.contextmanager
@@ -762,21 +877,56 @@ def run_agentic_edit(
             tmp = tempfile.mkdtemp(prefix="pmh-edit-")
             mark_marionette_host_scratch(tmp)
             mapped_events: list = []
+            result = None
+            orchestrator_exc = None
+            failure_snap: dict = {}
             try:
                 store = create_store("sqlite", tmp)
-                result = Orchestrator(store).run(
-                    goal,
-                    specs=[spec],
-                    worker_mode="inline",
-                    label=job_label_for_session(session_id, dispatch_id=job_id),
-                )
-                pm_job_id = str(getattr(getattr(result, "job", None), "id", "") or "")
-                mapped_events = agentic_events_from_store(store, pm_job_id)
+                try:
+                    result = Orchestrator(store).run(
+                        goal,
+                        specs=[spec],
+                        worker_mode="inline",
+                        label=job_label_for_session(session_id, dispatch_id=job_id),
+                    )
+                    pm_job_id = str(getattr(getattr(result, "job", None), "id", "") or "")
+                    mapped_events = agentic_events_from_store(store, pm_job_id)
+                except Exception as run_exc:
+                    orchestrator_exc = run_exc
+                    failure_snap = _agentic_store_failure_snapshot(store)
+                    mapped_events = agentic_events_from_store(
+                        store, str(failure_snap.get("job_id") or ""),
+                    )
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
 
-            patch, files_changed = finalize_worktree_patch(wt_path)
-            worktree_diff_empty = not bool(patch.strip())
+            patch = ""
+            files_changed: list = []
+            worktree_diff_empty = None
+            try:
+                patch, files_changed = finalize_worktree_patch(wt_path)
+                worktree_diff_empty = not bool(patch.strip())
+            except Exception as final_exc:
+                _diag("edit_engines.run_agentic_edit.finalize", final_exc)
+
+            if orchestrator_exc is not None:
+                return _stamp_agentic(WorkerResult(
+                    ok=False,
+                    error=AGENTIC_ERROR,
+                    summary=_format_agentic_engine_error(
+                        orchestrator_exc, failure_snap, files_changed,
+                    ),
+                    patch=patch,
+                    files_changed=list(files_changed),
+                    tokens_out=int(failure_snap.get("tokens_out") or 0),
+                    tokens_in=int(failure_snap.get("tokens_in") or 0),
+                    worktree=wt_path,
+                    managed_worktree_path=wt_path,
+                    managed_worktree_mode="managed",
+                    worktree_diff_empty=worktree_diff_empty,
+                    events=list(mapped_events),
+                ), execution_pin=agentic_pin)
+
             tokens_out, tokens_in, failure, final_text = _summarize_agentic_result(result)
             routed_model = _routed_model_id(result)
             if agentic_pin is not None:
