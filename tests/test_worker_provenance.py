@@ -250,7 +250,7 @@ def test_cancelled_worker_provenance_collection_failure_is_best_effort(
     saved = json.loads((tmp_path / "jobs.json").read_text(encoding="utf-8"))
     job = saved["jobs"][0]
     assert job["status"] == "cancelled"
-    assert job["worker_provenance"]["managed_worktree_mode"] == "unknown"
+    assert job["worker_provenance"]["managed_worktree_mode"] == "none"
 
 
 def test_empty_diff_implement_failure_detector():
@@ -795,3 +795,114 @@ def test_lifecycle_halted_skips_recovery_but_marks_exhausted(monkeypatch):
     finished = session._local_jobs[job_id]
     assert finished["worker_provenance"]["empty_implement_recovery"] is False
     assert finished["worker_provenance"]["empty_managed_implement_exhausted"] is True
+
+
+def test_implement_provenance_never_renders_mode_unknown():
+    text = _worker_provenance_text({
+        "requested_mode": "implement",
+        "worktree_diff_empty": None,
+        "error": "patch_capture_failed",
+        "live_dirty_paths_before": [],
+        "live_dirty_paths_after": [],
+    })
+    assert "mode=unknown" not in text
+    assert "unavailable" not in text.lower()
+    assert "patch_capture_failed" in text
+    assert "could not be determined" in text
+
+
+def test_undetermined_diff_not_empty_recovery_or_unavailable_unknown():
+    res = WorkerResult(
+        ok=False,
+        error="patch_capture_failed",
+        worktree_diff_empty=None,
+        patch="",
+        requested_mode="implement",
+        managed_worktree_mode="managed",
+    )
+    assert _is_empty_diff_implement_failure(res, expects_diff=True) is False
+    assert _empty_implement_recovery_eligible(
+        res,
+        expects_diff=True,
+        live_dirty_before=["report.ts"],
+        cancelled=False,
+    ) is False
+    text = _worker_provenance_text({
+        "requested_mode": "implement",
+        "managed_worktree_mode": "managed",
+        "worktree_diff_empty": None,
+        "error": "patch_capture_failed",
+        "live_dirty_paths_before": [],
+        "live_dirty_paths_after": [],
+    })
+    assert "unavailable" not in text.lower()
+    assert "mode=unknown" not in text
+
+
+def test_usage_known_false_does_not_claim_measured_zero():
+    text = _worker_provenance_text({
+        "requested_mode": "implement",
+        "managed_worktree_mode": "managed",
+        "worktree_diff_empty": None,
+        "error": "agentic_orchestrator_failed",
+        "usage_known": False,
+        "live_dirty_paths_before": [],
+        "live_dirty_paths_after": [],
+    })
+    assert "$0" not in text
+    assert "0.00" not in text
+    assert "measured $0" not in text.lower()
+
+
+def test_agentic_orchestrator_failed_skips_empty_implement_recovery():
+    crashed = WorkerResult(
+        ok=False,
+        error="agentic_orchestrator_failed",
+        summary="Agentic engine error: swarm exited with incomplete tasks",
+        worktree_diff_empty=True,
+        patch="",
+        managed_worktree_mode="managed",
+    )
+    assert _empty_implement_recovery_eligible(
+        crashed,
+        expects_diff=True,
+        live_dirty_before=["report.ts"],
+        cancelled=False,
+    ) is False
+
+
+def test_stage_codes_skip_empty_implement_recovery():
+    for err in (
+        "worktree_create_failed",
+        "patch_capture_failed",
+        "worker_cleanup_failed",
+    ):
+        res = WorkerResult(
+            ok=False,
+            error=err,
+            worktree_diff_empty=True,
+            patch="",
+            managed_worktree_mode="none" if err == "worktree_create_failed" else "managed",
+        )
+        assert _empty_implement_recovery_eligible(
+            res,
+            expects_diff=True,
+            live_dirty_before=["report.ts"],
+            cancelled=False,
+        ) is False
+
+
+def test_failure_stamp_fields_survive_in_provenance_text():
+    text = _worker_provenance_text({
+        "requested_mode": "implement",
+        "managed_worktree_mode": "managed",
+        "worktree_diff_empty": True,
+        "error": "agentic_orchestrator_failed",
+        "engine": "agentic",
+        "adapter": "agentic",
+        "model": "agentic/openrouter/foo",
+        "live_dirty_paths_before": [],
+        "live_dirty_paths_after": [],
+    })
+    assert text.startswith("[provenance] agentic_orchestrator_failed:")
+    assert "mode=managed" in text
