@@ -65,6 +65,10 @@ export type CostBreakdownData = {
     reasons?: string[];
     needs_intervention?: boolean;
     warning_reason?: string;
+    /** absolute | percent | l1 — which advisor rule bound. */
+    budget_kind?: "absolute" | "percent" | "l1" | "";
+    /** Absolute working-context budget when budget_kind is absolute. */
+    budget_tokens?: number;
   };
   history_compaction_ran?: boolean;
   /** estimated — standing floor / TTL (HARNESS_STANDING_ECONOMICS; flag-off omits). */
@@ -455,22 +459,46 @@ function fmtDurationMs(ms: number): string {
   return rem ? `${h}h ${rem}m` : `${h}h`;
 }
 
+function formatWorkingContextBudget(tokens: number): string {
+  if (!Number.isFinite(tokens) || tokens <= 0) return "";
+  if (tokens >= 1000) {
+    const k = tokens / 1000;
+    const label = Number.isInteger(k) ? String(k) : k.toFixed(1).replace(/\.0$/, "");
+    return `~${label}k`;
+  }
+  return String(Math.round(tokens));
+}
+
+export type CompactionAdviceCopyInput = {
+  budget_kind?: "absolute" | "percent" | "l1" | "";
+  budget_tokens?: number;
+};
+
 /** Calm user-facing copy for compaction advice. Machine reasons stay in title. */
 export function compactionAdvicePresentation(
   level: string | undefined,
+  advice?: CompactionAdviceCopyInput,
 ): { label: string; message: string; showCompactAction: boolean } {
+  const absolute =
+    advice?.budget_kind === "absolute"
+    && typeof advice.budget_tokens === "number"
+    && advice.budget_tokens > 0
+      ? formatWorkingContextBudget(advice.budget_tokens)
+      : "";
   if (level === "soon") {
     return {
       label: "Long session",
-      message:
-        "This conversation is getting long. Older history can be tidied to keep responses fast and costs down.",
+      message: absolute
+        ? `Past the ${absolute} working-context budget. The advertised window is larger; quality drops well before it fills. Compact older history. Auto-compact waits until a higher budget.`
+        : "This session is past the working-context threshold for this model. Compact older history.",
       showCompactAction: true,
     };
   }
   return {
     label: "Needs attention",
-    message:
-      "This conversation is very long. Compact it now or start a fresh session for best results.",
+    message: absolute
+      ? `Well past the ${absolute} working-context budget. Compact now or start a fresh session.`
+      : "This session is well past the working-context threshold. Compact now or start a fresh session.",
     showCompactAction: true,
   };
 }
@@ -686,7 +714,10 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
             : "") ||
           (data.history_compaction_ran ? "history compaction ran under context pressure" : ""))
       : "";
-  const adviceCopy = compactionAdvicePresentation(compactionAdviceLevel);
+  const adviceCopy = compactionAdvicePresentation(
+    compactionAdviceLevel,
+    data.compaction_advice,
+  );
   const showContextHealth =
     historyCompactions > 0
     || standingFloorCost > 0

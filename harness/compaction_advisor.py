@@ -96,6 +96,8 @@ def _none_advice() -> dict[str, Any]:
         "reasons": [],
         "needs_intervention": False,
         "warning_reason": "",
+        "budget_kind": "",
+        "budget_tokens": 0,
     }
 
 
@@ -195,6 +197,8 @@ def apply_manual_compaction_ack(
         cleared["needs_intervention"] = False
         cleared["warning_reason"] = ""
         cleared["reasons"] = []
+        cleared["budget_kind"] = ""
+        cleared["budget_tokens"] = 0
         cleared["acked_manual_compact"] = True
         out = dict(advice)
         out["compaction_advice"] = cleared
@@ -271,25 +275,34 @@ def assess_layer_pressure(snapshot: dict, max_context_tokens: int) -> dict[str, 
 
     reasons: list[str] = []
     level = "none"
+    budget_kind = ""
+    budget_tokens = 0
 
     now_threshold, soon_threshold, binding_now, binding_soon = _effective_thresholds(budget)
 
     if hot_ratio >= now_threshold:
         level = "now"
         if binding_now:
+            budget_kind = "absolute"
+            budget_tokens = binding_now
             reasons.append(f"hot context above {binding_now} tokens on a large window")
         else:
+            budget_kind = "percent"
             pct = int(round(hot_ratio * 100))
             reasons.append(f"hot context at {pct} percent of budget")
     elif hot_ratio >= soon_threshold:
         level = "soon"
         if binding_soon:
+            budget_kind = "absolute"
+            budget_tokens = binding_soon
             reasons.append(f"hot context above {binding_soon} tokens on a large window")
         else:
+            budget_kind = "percent"
             pct = int(round(hot_ratio * 100))
             reasons.append(f"hot context at {pct} percent of budget")
     elif hot_ratio >= _HOT_L1_COMBO_RATIO and l1_bytes > _L1_PRESSURE_BYTES:
         level = "soon"
+        budget_kind = "l1"
         pct = int(round(hot_ratio * 100))
         reasons.append(
             f"session state exceeds 5 MB with warm context at {pct} percent of budget"
@@ -301,6 +314,8 @@ def assess_layer_pressure(snapshot: dict, max_context_tokens: int) -> dict[str, 
         "l1_bytes": l1_bytes,
         "l3_reclaimed_bytes": l3_reclaimed,
         "reasons": reasons,
+        "budget_kind": budget_kind,
+        "budget_tokens": budget_tokens,
     }
     advice.update(_intervention_fields(level, reasons, l3_reclaimed))
     return advice

@@ -42,24 +42,48 @@ const baseData: CostBreakdownData = {
     reasons: ["hot context above 150000 tokens on a large window"],
     needs_intervention: true,
     warning_reason: "hot context above 150000 tokens on a large window",
+    budget_kind: "absolute",
+    budget_tokens: 150000,
   },
   price_in: 3,
   price_out: 15,
 };
 
 describe("compactionAdvicePresentation", () => {
-  it("maps soon to calm Long session copy", () => {
-    const copy = compactionAdvicePresentation("soon");
+  it("maps soon absolute to working-context budget copy", () => {
+    const copy = compactionAdvicePresentation("soon", {
+      budget_kind: "absolute",
+      budget_tokens: 150000,
+    });
     expect(copy.label).toBe("Long session");
-    expect(copy.message).toMatch(/getting long/i);
+    expect(copy.message).toMatch(/~150k working-context budget/);
+    expect(copy.message).toMatch(/advertised window is larger/i);
     expect(copy.message).not.toMatch(/150000/);
+    expect(copy.message).not.toMatch(/tidied/i);
   });
 
-  it("maps now to Needs attention with actionable copy", () => {
-    const copy = compactionAdvicePresentation("now");
+  it("maps soon percent to threshold copy without a token number", () => {
+    const copy = compactionAdvicePresentation("soon", { budget_kind: "percent" });
+    expect(copy.label).toBe("Long session");
+    expect(copy.message).toMatch(/working-context threshold/);
+    expect(copy.message).not.toMatch(/~150k/);
+  });
+
+  it("maps now absolute to Needs attention with the binding budget", () => {
+    const copy = compactionAdvicePresentation("now", {
+      budget_kind: "absolute",
+      budget_tokens: 270000,
+    });
     expect(copy.label).toBe("Needs attention");
-    expect(copy.message).toMatch(/very long/i);
-    expect(copy.message).toMatch(/Compact it now/i);
+    expect(copy.message).toMatch(/~270k working-context budget/);
+    expect(copy.message).toMatch(/Compact now or start a fresh session/i);
+  });
+
+  it("maps now percent to Needs attention without a token number", () => {
+    const copy = compactionAdvicePresentation("now", { budget_kind: "percent" });
+    expect(copy.label).toBe("Needs attention");
+    expect(copy.message).toMatch(/working-context threshold/);
+    expect(copy.message).toMatch(/Compact now or start a fresh session/i);
   });
 });
 
@@ -145,7 +169,7 @@ describe("CostBreakdown", () => {
     expect(screen.getByText("Memory layers")).toBeInTheDocument();
     expect(screen.getByText("Long session")).toBeInTheDocument();
     expect(
-      screen.getByText(/This conversation is getting long/),
+      screen.getByText(/~150k working-context budget/),
     ).toBeInTheDocument();
     expect(screen.queryByText(/150000 tokens/)).not.toBeInTheDocument();
     const badge = screen.getByRole("status");
@@ -266,6 +290,8 @@ describe("CostBreakdown", () => {
             needs_intervention: true,
             warning_reason: "hot context above 150000 tokens on a large window",
             reasons: ["hot context above 150000 tokens on a large window"],
+            budget_kind: "absolute",
+            budget_tokens: 150000,
           },
         }}
       />,
@@ -274,8 +300,9 @@ describe("CostBreakdown", () => {
     expect(screen.getByText("Long session")).toBeInTheDocument();
     expect(screen.queryByText("Needs attention")).not.toBeInTheDocument();
     expect(
-      screen.getByText(/Older history can be tidied/),
+      screen.getByText(/~150k working-context budget/),
     ).toBeInTheDocument();
+    expect(screen.queryByText(/tidied/)).not.toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveAttribute(
       "title",
       "hot context above 150000 tokens on a large window",
@@ -300,7 +327,7 @@ describe("CostBreakdown", () => {
 
     expect(screen.getByText("Needs attention")).toBeInTheDocument();
     expect(
-      screen.getByText(/Compact it now or start a fresh session/),
+      screen.getByText(/Compact now or start a fresh session/),
     ).toBeInTheDocument();
     expect(screen.queryByText(/80 percent of budget/)).not.toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveAttribute(
