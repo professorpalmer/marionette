@@ -3,6 +3,9 @@ import { useEffect, useRef } from "react";
 const FOCUSABLE =
   'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
+const overlayStack: number[] = [];
+let overlaySeq = 0;
+
 function focusableElements(root: HTMLElement): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
     (el) => !el.hasAttribute("disabled") && el.tabIndex !== -1 && el.offsetParent !== null,
@@ -23,6 +26,10 @@ export function useOverlayFocus(
 
   useEffect(() => {
     if (!open) return;
+    const id = ++overlaySeq;
+    overlayStack.push(id);
+    const isTop = () => overlayStack[overlayStack.length - 1] === id;
+
     triggerRef.current = document.activeElement instanceof HTMLElement
       ? document.activeElement
       : null;
@@ -30,6 +37,7 @@ export function useOverlayFocus(
     const root = rootRef.current;
     const initial = opts?.initialFocusRef?.current;
     const t = window.setTimeout(() => {
+      if (!isTop()) return;
       if (initial) {
         initial.focus();
       } else if (root) {
@@ -39,6 +47,7 @@ export function useOverlayFocus(
     }, 0);
 
     const onKeyDown = (e: KeyboardEvent) => {
+      if (!isTop()) return;
       if (e.key === "Escape") {
         e.preventDefault();
         e.stopPropagation();
@@ -64,6 +73,8 @@ export function useOverlayFocus(
 
     window.addEventListener("keydown", onKeyDown, true);
     return () => {
+      const idx = overlayStack.lastIndexOf(id);
+      if (idx >= 0) overlayStack.splice(idx, 1);
       window.clearTimeout(t);
       window.removeEventListener("keydown", onKeyDown, true);
       if (opts?.restoreFocus !== false && triggerRef.current) {

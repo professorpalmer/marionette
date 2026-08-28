@@ -206,6 +206,7 @@ export function upsertStreamingThinking(
   const turnStart = turnStartIndex(items);
 
   if (streamId) {
+    let latestThinkingIdx = -1;
     for (let i = items.length - 1; i >= turnStart; i--) {
       const it = items[i];
       // Never resume a reasoning row that sits above a tool boundary.
@@ -215,6 +216,26 @@ export function upsertStreamingThinking(
       if (it.kind === "thinking" && it.stream_id === streamId) {
         const copy = items.slice();
         copy[i] = {
+          kind: "thinking",
+          text: mergeThinkingText(it.text, chunk, coalesceSnapshots),
+          streaming: true,
+          id: it.id || newThinkingId(),
+          stream_id: streamId,
+          started_at_ms: thinkingStartedAt(it),
+        };
+        return copy;
+      }
+      if (it.kind === "thinking" && latestThinkingIdx < 0) {
+        latestThinkingIdx = i;
+      }
+    }
+    // Codex/Luna Responses rotates output-item ids per reasoning snapshot.
+    // Same phase (no tool fence) continues the latest Thought fold.
+    if (latestThinkingIdx >= 0) {
+      const it = items[latestThinkingIdx];
+      if (it.kind === "thinking") {
+        const copy = items.slice();
+        copy[latestThinkingIdx] = {
           kind: "thinking",
           text: mergeThinkingText(it.text, chunk, coalesceSnapshots),
           streaming: true,

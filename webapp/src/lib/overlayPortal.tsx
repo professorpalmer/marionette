@@ -2,6 +2,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type CSSProperties,
   type ReactNode,
   type RefObject,
 } from "react";
@@ -22,6 +23,7 @@ export type OverlayPortalProps = {
   restoreFocus?: boolean;
   onBackdropClick?: (e: React.MouseEvent<HTMLDivElement>) => void;
   onBackdropMouseDown?: (e: React.MouseEvent<HTMLDivElement>) => void;
+  style?: CSSProperties;
 };
 
 /**
@@ -41,6 +43,7 @@ export function OverlayPortal({
   restoreFocus = true,
   onBackdropClick,
   onBackdropMouseDown,
+  style,
 }: OverlayPortalProps) {
   const backdropRef = useRef<HTMLDivElement>(null);
   const rootRef = focusRootRef ?? backdropRef;
@@ -76,6 +79,7 @@ export function OverlayPortal({
       data-testid={testId}
       data-starting-style={phase === "enter" ? "" : undefined}
       data-instant={phase === "leave" ? "" : undefined}
+      style={style}
       onClick={onBackdropClick}
       onMouseDown={onBackdropMouseDown}
     >

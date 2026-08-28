@@ -559,10 +559,16 @@ export function activityWorkDurationMs(
 }
 
 export type StackedActivityRow<T> =
-  | { kind: "thought"; item: T; index: number }
+  | { kind: "thought"; items: T[]; indexes: number[] }
   | { kind: "commands"; items: T[]; indexes: number[] }
   | { kind: "shelf"; items: T[]; indexes: number[] }
   | { kind: "item"; item: T; index: number };
+
+/** Join consecutive sealed reasoning snapshots into one Thought body. */
+export function joinThoughtFoldText(texts: string[]): string {
+  const parts = texts.map((t) => String(t || "").trim()).filter(Boolean);
+  return parts.join("\n\n");
+}
 
 /**
  * Partition an open activity fold into Cursor-style stacked rows:
@@ -581,8 +587,14 @@ export function partitionStackedActivity<T>(
     const cur = meta(items[i]);
 
     if (cur.isThinking && !seenCommand) {
-      out.push({ kind: "thought", item: items[i], index: i });
-      i += 1;
+      const group: T[] = [];
+      const indexes: number[] = [];
+      while (i < items.length && meta(items[i]).isThinking) {
+        group.push(items[i]);
+        indexes.push(i);
+        i += 1;
+      }
+      out.push({ kind: "thought", items: group, indexes });
       continue;
     }
 
@@ -612,8 +624,14 @@ export function partitionStackedActivity<T>(
     }
 
     if (cur.isThinking) {
-      out.push({ kind: "thought", item: items[i], index: i });
-      i += 1;
+      const group: T[] = [];
+      const indexes: number[] = [];
+      while (i < items.length && meta(items[i]).isThinking) {
+        group.push(items[i]);
+        indexes.push(i);
+        i += 1;
+      }
+      out.push({ kind: "thought", items: group, indexes });
       continue;
     }
 

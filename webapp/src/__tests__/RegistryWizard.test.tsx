@@ -1,6 +1,9 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import RegistryWizard from "../components/RegistryWizard";
+import wizardSrc from "../components/RegistryWizard.tsx?raw";
+import settingsSrc from "../components/SettingsShell.tsx?raw";
+import SettingsShell from "../components/SettingsShell";
 import { api } from "../lib/api";
 
 vi.mock("../lib/api", () => ({
@@ -8,6 +11,14 @@ vi.mock("../lib/api", () => ({
     providers: vi.fn(),
     setProviderKey: vi.fn(),
   },
+}));
+
+vi.mock("../components/ModelsSettingsPage", () => ({
+  default: () => <div data-testid="models-page" />,
+}));
+
+vi.mock("../components/SettingsPane", () => ({
+  default: () => <div data-testid="settings-section" />,
 }));
 
 const providers = [
@@ -42,6 +53,12 @@ const providers = [
 
 describe("RegistryWizard first-run connect", () => {
   beforeEach(() => {
+    Object.defineProperty(HTMLElement.prototype, "offsetParent", {
+      configurable: true,
+      get() {
+        return this.parentElement;
+      },
+    });
     vi.clearAllMocks();
     vi.mocked(api.providers).mockResolvedValue(providers);
     vi.mocked(api.setProviderKey).mockResolvedValue({
@@ -91,5 +108,35 @@ describe("RegistryWizard first-run connect", () => {
     fireEvent.click(screen.getByRole("button", { name: /choose a provider later/i }));
     expect(api.setProviderKey).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("portals above the Settings shell so Connect a provider is not buried", async () => {
+    expect(wizardSrc).toContain("OverlayPortal");
+    expect(wizardSrc).toContain("z-[90]");
+    expect(settingsSrc).toContain("z-[80]");
+
+    const onSettingsClose = vi.fn();
+    const onWizardClose = vi.fn();
+    const host = document.createElement("div");
+    document.body.append(host);
+    render(
+      <>
+        <SettingsShell onClose={onSettingsClose} onOpenWizard={vi.fn()} />
+        <RegistryWizard onClose={onWizardClose} />
+      </>,
+      { container: host },
+    );
+
+    const wizard = await screen.findByTestId("provider-onboarding");
+    const settings = screen.getByTestId("settings-shell");
+    expect(document.body.contains(wizard)).toBe(true);
+    expect(host.contains(wizard)).toBe(false);
+    expect(wizard.className).toMatch(/z-\[90\]/);
+    expect(settings.className).toContain("z-[80]");
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(onWizardClose).toHaveBeenCalledTimes(1);
+    expect(onSettingsClose).not.toHaveBeenCalled();
+    host.remove();
   });
 });

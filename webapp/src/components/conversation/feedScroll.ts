@@ -178,8 +178,17 @@ export function nextFeedPinState(opts: {
 export function shouldShowJumpToBottom(opts: {
   pinned: boolean;
   settling: boolean;
+  atTail?: boolean;
+  distanceFromEndPx?: number;
 }): boolean {
-  return !opts.pinned && !opts.settling;
+  if (opts.pinned || opts.settling || opts.atTail) return false;
+  if (
+    opts.distanceFromEndPx != null
+    && opts.distanceFromEndPx < FEED_REPIN_THRESHOLD_PX
+  ) {
+    return false;
+  }
+  return true;
 }
 
 /** Upward wheel unpins even during session-switch settle glue. */
