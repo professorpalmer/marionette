@@ -21,6 +21,7 @@ from harness.edit_engines import (
     AGENTIC_TIMEOUT,
     AGENTIC_UNAVAILABLE,
     PATCH_CAPTURE_FAILED,
+    WORKER_CLEANUP_FAILED,
     WORKTREE_CREATE_FAILED,
     agentic_available,
     agentic_events_from_store,
@@ -45,7 +46,10 @@ EXPECTED_CAP_KEY = "max_capability" if ROUTER_HAS_CEILING else "min_capability"
 
 
 def create_temp_git_repo():
-    repo_dir = tempfile.mkdtemp()
+    # Unique parent so xdist workers do not share /tmp/.pmharness-worktrees.
+    root = tempfile.mkdtemp()
+    repo_dir = os.path.join(root, "repo")
+    os.mkdir(repo_dir)
     subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, capture_output=True)
     subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_dir, capture_output=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_dir, capture_output=True)
@@ -75,7 +79,7 @@ def _fake_pm_result(artifacts=None):
 
 
 @contextlib.contextmanager
-def _fake_managed_worktree(repo: str, base: str = "HEAD"):
+def _fake_managed_worktree(*_args, **_kwargs):
     wt = tempfile.mkdtemp()
     try:
         yield wt
@@ -1108,7 +1112,7 @@ def test_agentic_edit_worktree_create_failed(monkeypatch):
         monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
 
         @contextlib.contextmanager
-        def _boom_worktree(repo, goal, base="HEAD"):
+        def _boom_worktree(*_args, **_kwargs):
             raise RuntimeError(
                 "fatal: could not create worktree api_key=sk-abcdefghijklmnopqrstuvwxyz"
             )
@@ -1666,7 +1670,10 @@ def test_run_edit_worker_falls_back_on_route_and_runtime_errors(monkeypatch):
             "harness.edit_engines.run_native_edit",
             lambda *a, **k: native_called.append(True) or WorkerResult(ok=False),
         )
-        for err in (AGENTIC_ORCHESTRATOR_FAILED, PATCH_CAPTURE_FAILED, AGENTIC_ERROR):
+        for err in (
+            AGENTIC_ORCHESTRATOR_FAILED, PATCH_CAPTURE_FAILED, AGENTIC_ERROR,
+            WORKER_CLEANUP_FAILED,
+        ):
             monkeypatch.setattr(
                 "harness.edit_engines.run_agentic_edit",
                 lambda *a, err=err, **k: WorkerResult(ok=False, error=err, patch=""),
@@ -1756,6 +1763,7 @@ def test_agentic_edit_patch_capture_failed(monkeypatch):
         result = run_agentic_edit(cfg, "goal")
         assert result.ok is False
         assert result.error == PATCH_CAPTURE_FAILED
+        assert result.patch == ""
         assert result.worktree_diff_empty is None
         assert result.patch_capture_status == "failed"
         assert result.requested_mode == "implement"
@@ -1810,6 +1818,8 @@ def test_agentic_edit_cleanup_failure_keeps_orchestrator_error(monkeypatch):
 
         def boom_rmtree(path, *a, **k):
             if os.path.basename(str(path)).startswith("pmh-edit-"):
+                if k.get("ignore_errors"):
+                    return real_rmtree(path, *a, **k)
                 raise OSError("rmtree denied")
             return real_rmtree(path, *a, **k)
 
@@ -1817,8 +1827,155 @@ def test_agentic_edit_cleanup_failure_keeps_orchestrator_error(monkeypatch):
         result = run_agentic_edit(cfg, "implement the thing")
         assert result.error == AGENTIC_ORCHESTRATOR_FAILED
         assert "incomplete tasks" in (result.summary or "")
+        assert "Cleanup also failed" in (result.summary or "")
         assert result.managed_worktree_mode == "managed"
+        assert result.cleanup_status == "failed"
+        assert "store" in (result.cleanup_stage or "")
     finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
+def test_apply_cleanup_provenance_keeps_primary_and_patch():
+    from harness.edit_engines import _apply_cleanup_provenance
+
+    wr = WorkerResult(
+        ok=False,
+        error=AGENTIC_ORCHESTRATOR_FAILED,
+        summary="orch boom",
+        patch="diff --git a/x b/x\n+line",
+    )
+    _apply_cleanup_provenance(wr, [{"stage": "store", "exc": OSError("rmtree denied")}])
+    assert wr.error == AGENTIC_ORCHESTRATOR_FAILED
+    assert wr.ok is False
+    assert wr.patch.startswith("diff --git")
+    assert wr.cleanup_status == "failed"
+    assert wr.cleanup_stage == "store"
+    assert "Cleanup also failed" in wr.summary
+
+    clean = WorkerResult(ok=True, patch="diff --git a/y b/y\n+ok")
+    _apply_cleanup_provenance(clean, [
+        {"stage": "worktree_remove", "exc": RuntimeError("worktree remove denied")},
+    ])
+    assert clean.error == WORKER_CLEANUP_FAILED
+    assert clean.ok is False
+    assert clean.patch.startswith("diff --git")
+    assert clean.cleanup_stage == "worktree_remove"
+    assert "Worker cleanup failed" in clean.summary
+
+
+def test_managed_worktree_records_remove_failure(monkeypatch):
+    from harness.worktrees import list_worktrees
+    from harness.worktrees import remove_worktree as real_remove
+
+    repo_dir = create_temp_git_repo()
+    bag = []
+
+    def boom_remove(*_a, **_k):
+        raise RuntimeError("worktree remove denied")
+
+    monkeypatch.setattr("harness.worktrees.remove_worktree", boom_remove)
+    try:
+        with managed_worktree(repo_dir, cleanup_errors=bag) as wt_path:
+            assert os.path.isdir(wt_path)
+        assert bag
+        assert bag[0]["stage"] == "worktree_remove"
+    finally:
+        for wt in list_worktrees(repo_dir):
+            path = (wt.get("path") or "").strip()
+            if path and os.path.realpath(path) != os.path.realpath(repo_dir):
+                with contextlib.suppress(Exception):
+                    real_remove(repo_dir, path, force=True)
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
+def test_agentic_edit_worktree_remove_failure_keeps_patch(monkeypatch):
+    from harness.worktrees import list_worktrees
+    from harness.worktrees import remove_worktree as real_remove
+
+    repo_dir = create_temp_git_repo()
+    try:
+        cfg = _cfg(repo_dir)
+        monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
+
+        class _OkOrch:
+            def __init__(self, store):
+                self.store = store
+
+            def run(self, goal, specs=None, **kwargs):
+                return _fake_pm_result([
+                    _fake_artifact(tokens_out=1, tokens_in=1, stdout="ok"),
+                ])
+
+        monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _OkOrch)
+        monkeypatch.setattr(
+            "harness.edit_engines.finalize_worktree_patch",
+            lambda _wt: ("diff --git a/x b/x\n+line", ["x.py"]),
+        )
+
+        def boom_remove(*_a, **_k):
+            raise RuntimeError("worktree remove denied")
+
+        monkeypatch.setattr("harness.worktrees.remove_worktree", boom_remove)
+        result = run_agentic_edit(cfg, "goal")
+        assert result.ok is False
+        assert result.error == WORKER_CLEANUP_FAILED
+        assert result.patch.startswith("diff --git")
+        assert result.cleanup_status == "failed"
+        assert "worktree_remove" in (result.cleanup_stage or "").split(",")
+        assert "Worker cleanup failed" in (result.summary or "")
+    finally:
+        for wt in list_worktrees(repo_dir):
+            path = (wt.get("path") or "").strip()
+            if path and os.path.realpath(path) != os.path.realpath(repo_dir):
+                with contextlib.suppress(Exception):
+                    real_remove(repo_dir, path, force=True)
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
+def test_agentic_edit_branch_delete_failure_keeps_patch(monkeypatch):
+    from harness.worktrees import delete_branch as real_delete
+    from harness.worktrees import list_worktrees
+    from harness.worktrees import remove_worktree as real_remove
+
+    repo_dir = create_temp_git_repo()
+
+    def boom_delete(repo, branch, raise_on_error=False):
+        if raise_on_error:
+            raise RuntimeError("branch delete denied")
+        return real_delete(repo, branch, raise_on_error=raise_on_error)
+
+    try:
+        cfg = _cfg(repo_dir)
+        monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
+
+        class _OkOrch:
+            def __init__(self, store):
+                self.store = store
+
+            def run(self, goal, specs=None, **kwargs):
+                return _fake_pm_result([
+                    _fake_artifact(tokens_out=1, tokens_in=1, stdout="ok"),
+                ])
+
+        monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _OkOrch)
+        monkeypatch.setattr(
+            "harness.edit_engines.finalize_worktree_patch",
+            lambda _wt: ("diff --git a/x b/x\n+line", ["x.py"]),
+        )
+        monkeypatch.setattr("harness.worktrees.delete_branch", boom_delete)
+        result = run_agentic_edit(cfg, "goal")
+        assert result.ok is False
+        assert result.error == WORKER_CLEANUP_FAILED
+        assert result.patch.startswith("diff --git")
+        assert result.cleanup_status == "failed"
+        assert result.cleanup_stage == "branch_delete"
+    finally:
+        monkeypatch.setattr("harness.worktrees.delete_branch", real_delete)
+        for wt in list_worktrees(repo_dir):
+            path = (wt.get("path") or "").strip()
+            if path and os.path.realpath(path) != os.path.realpath(repo_dir):
+                with contextlib.suppress(Exception):
+                    real_remove(repo_dir, path, force=True)
         shutil.rmtree(repo_dir, ignore_errors=True)
 
 
@@ -1846,6 +2003,7 @@ def test_agentic_edit_no_leaked_pmh_edit_dirs(monkeypatch):
         )
         ok_result = run_agentic_edit(cfg, "goal")
         assert ok_result.ok is True
+        assert ok_result.cleanup_status == "ok"
 
         class _BoomOrch:
             def __init__(self, store):

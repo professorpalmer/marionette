@@ -129,6 +129,9 @@ class WorkerResult:
     failure_command: str = ""
     failure_exit_code: Optional[int] = None
     failure_stderr: str = ""
+    cleanup_status: str = ""
+    cleanup_stage: str = ""
+    cleanup_error: str = ""
     usage_known: Optional[bool] = None
     cost_known: Optional[bool] = None
     http_status: Optional[int] = None

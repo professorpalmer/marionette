@@ -367,13 +367,83 @@ def _should_native_fallback(result: "WorkerResult") -> bool:
     return getattr(result, "error", "") in _FALLBACK_REASONS
 
 
+def _record_cleanup_error(bag: Optional[list], stage: str, exc: BaseException) -> None:
+    if bag is None:
+        return
+    bag.append({"stage": stage, "exc": exc})
+
+
+def _cleanup_store_dir(tmp: str, cleanup_errors: Optional[list]) -> None:
+    try:
+        shutil.rmtree(tmp)
+    except Exception as exc:
+        _record_cleanup_error(cleanup_errors, "store", exc)
+        try:
+            shutil.rmtree(tmp, ignore_errors=True)
+        except Exception:
+            pass
+
+
+def _apply_cleanup_provenance(
+    wr: "WorkerResult", cleanup_errors: Optional[list],
+) -> "WorkerResult":
+    """Attach worktree/store cleanup failures without replacing a primary error."""
+    errors = list(cleanup_errors or [])
+    if wr.cleanup_status == "failed":
+        return wr
+    if not errors:
+        if not wr.cleanup_status:
+            wr.cleanup_status = "ok"
+        return wr
+    wr.cleanup_status = "failed"
+    stages = []
+    parts = []
+    for item in errors:
+        stage = str(item.get("stage") or "cleanup")
+        stages.append(stage)
+        parts.append("%s: %s" % (stage, _redact_text(str(item.get("exc") or ""))))
+    wr.cleanup_stage = ",".join(stages)
+    wr.cleanup_error = "; ".join(parts)
+    extra = "Cleanup also failed: " + wr.cleanup_error
+    if not wr.error:
+        wr.error = WORKER_CLEANUP_FAILED
+        wr.ok = False
+        extra = "Worker cleanup failed: " + wr.cleanup_error
+    if wr.summary:
+        wr.summary = (wr.summary + "\n" + extra).strip()
+    else:
+        wr.summary = extra
+    return wr
+
+
 @contextlib.contextmanager
-def managed_worktree(repo: str, base: str = "HEAD") -> Iterator[str]:
+def _managed_worktree_collecting(
+    repo: str,
+    goal: str,
+    cleanup_errors: list,
+    pending: dict,
+) -> Iterator[str]:
+    try:
+        with managed_worktree_for_goal(
+            repo, goal, cleanup_errors=cleanup_errors,
+        ) as wt_path:
+            yield wt_path
+    finally:
+        wr = pending.get("wr")
+        if wr is not None:
+            _apply_cleanup_provenance(wr, cleanup_errors)
+
+
+@contextlib.contextmanager
+def managed_worktree(
+    repo: str, base: str = "HEAD", cleanup_errors: Optional[list] = None,
+) -> Iterator[str]:
     """Create a confined git worktree for `repo`, yield its path, always clean up.
 
     Both engines edit inside the worktree so the live repo is untouched until the
     review/apply gate runs. The worktree and its throwaway branch are removed on
-    exit even when the body raises.
+    exit even when the body raises. Removal failures are appended to
+    ``cleanup_errors`` when provided; they are never swallowed silently.
     """
     from harness.worktrees import (
         _get_managed_dir,
@@ -386,6 +456,7 @@ def managed_worktree(repo: str, base: str = "HEAD") -> Iterator[str]:
 
     branch_name = _safe_branch_name(f"pmedit-{uuid.uuid4().hex[:8]}")
     wt_path = ""
+    bag = cleanup_errors if cleanup_errors is not None else []
     try:
         wt_info = add_worktree(repo, branch=branch_name, base=base)
         wt_path = wt_info["path"]
@@ -396,15 +467,23 @@ def managed_worktree(repo: str, base: str = "HEAD") -> Iterator[str]:
         yield wt_path
     finally:
         if wt_path:
-            with contextlib.suppress(Exception):
+            try:
                 remove_worktree(repo, wt_path, force=True)
-        with contextlib.suppress(Exception):
-            delete_branch(repo, branch_name)
+            except Exception as exc:
+                _record_cleanup_error(bag, "worktree_remove", exc)
+                if cleanup_errors is None:
+                    _diag("edit_engines.managed_worktree.remove", exc)
+        try:
+            delete_branch(repo, branch_name, raise_on_error=True)
+        except Exception as exc:
+            _record_cleanup_error(bag, "branch_delete", exc)
+            if cleanup_errors is None:
+                _diag("edit_engines.managed_worktree.branch", exc)
 
 
 @contextlib.contextmanager
 def managed_worktree_for_goal(
-    repo: str, goal: str, base: str = "HEAD",
+    repo: str, goal: str, base: str = "HEAD", cleanup_errors: Optional[list] = None,
 ) -> Iterator[str]:
     """Like :func:`managed_worktree`, then seed live goal paths into the worktree.
 
@@ -414,7 +493,7 @@ def managed_worktree_for_goal(
     """
     from harness.worktree_seed import commit_seed_baseline, seed_worktree_from_goal
 
-    with managed_worktree(repo, base=base) as wt_path:
+    with managed_worktree(repo, base=base, cleanup_errors=cleanup_errors) as wt_path:
         with contextlib.suppress(Exception):
             seed_result = seed_worktree_from_goal(repo, wt_path, goal)
             commit_seed_baseline(wt_path, seed_result.paths)
@@ -853,9 +932,19 @@ def run_cursor_edit(
             summary=f"Puppetmaster unavailable: {exc}",
         ))
 
+    pending = {"wr": None}
+    cleanup_errors: list = []
+
+    def cursor_finish(wr: "WorkerResult", pm_result=None) -> "WorkerResult":
+        wr = _stamp_agentic(wr, pm_result)
+        pending["wr"] = wr
+        return wr
+
     try:
         repo_root = cwd or config.repo
-        with managed_worktree_for_goal(repo_root, goal) as wt_path:
+        with _managed_worktree_collecting(
+            repo_root, goal, cleanup_errors, pending,
+        ) as wt_path:
             from pmharness.bridge import (
                 _analysis_instruction,
                 _analyze_max_turns,
@@ -911,7 +1000,7 @@ def run_cursor_edit(
                     label=job_label_for_session(session_id, dispatch_id=job_id),
                 )
             finally:
-                shutil.rmtree(tmp, ignore_errors=True)
+                _cleanup_store_dir(tmp, cleanup_errors)
 
             patch, files_changed = finalize_worktree_patch(wt_path)
             if not expects_diff:
@@ -920,7 +1009,7 @@ def run_cursor_edit(
             tokens_out, tokens_in, failure, final_text = _summarize_agentic_result(result)
             routed_model = _routed_model_id(result)
             if failure in ("no_model", "unknown_provider", "route_failed"):
-                return _stamp_agentic(WorkerResult(
+                return cursor_finish(WorkerResult(
                     ok=False, error=AGENTIC_ROUTE_FAILED,
                     summary=final_text or "Cursor engine could not select a model.",
                     model=routed_model,
@@ -928,7 +1017,7 @@ def run_cursor_edit(
                     managed_worktree_path=wt_path,
                     managed_worktree_mode="managed",
                 ), result)
-            return _stamp_agentic(WorkerResult(
+            return cursor_finish(WorkerResult(
                 ok=True,
                 patch=patch,
                 files_changed=files_changed,
@@ -943,10 +1032,10 @@ def run_cursor_edit(
             ), result)
     except Exception as exc:
         _diag("edit_engines.run_cursor_edit", exc)
-        return _stamp_agentic(WorkerResult(
+        return _apply_cleanup_provenance(cursor_finish(WorkerResult(
             ok=False, error=AGENTIC_ERROR,
             summary=str(exc),
-        ))
+        )), cleanup_errors)
 
 
 def run_agentic_edit(
@@ -973,6 +1062,8 @@ def run_agentic_edit(
     from harness.job_scoping import job_label_for_session, stamp_task_payload
 
     requested_mode = "implement" if expects_diff else "analysis"
+    pending = {"wr": None}
+    cleanup_errors: list = []
 
     def finish(
         wr: "WorkerResult",
@@ -994,7 +1085,9 @@ def run_agentic_edit(
                 wr.pm_job_id = str(snap.get("job_id") or "")
             if not wr.task_ids and snap.get("task_ids"):
                 wr.task_ids = list(snap.get("task_ids") or [])
-        return _stamp_agentic(wr, pm_result, execution_pin=agentic_pin)
+        wr = _stamp_agentic(wr, pm_result, execution_pin=agentic_pin)
+        pending["wr"] = wr
+        return wr
 
     if not agentic_available():
         return finish(WorkerResult(
@@ -1029,7 +1122,9 @@ def run_agentic_edit(
     worktree_entered = False
     try:
         repo_root = cwd or config.repo
-        with managed_worktree_for_goal(repo_root, goal) as wt_path:
+        with _managed_worktree_collecting(
+            repo_root, goal, cleanup_errors, pending,
+        ) as wt_path:
             worktree_entered = True
             from pmharness.bridge import (
                 _analysis_capability_payload,
@@ -1125,7 +1220,6 @@ def run_agentic_edit(
             result = None
             orchestrator_exc = None
             failure_snap: dict = {}
-            store_cleanup_exc = None
             pm_job_id = ""
             try:
                 store = create_store("sqlite", tmp)
@@ -1152,10 +1246,7 @@ def run_agentic_edit(
                     except Exception as snap_exc:
                         _diag("edit_engines.run_agentic_edit.snapshot", snap_exc)
             finally:
-                try:
-                    shutil.rmtree(tmp, ignore_errors=True)
-                except Exception as rmtree_exc:
-                    store_cleanup_exc = rmtree_exc
+                _cleanup_store_dir(tmp, cleanup_errors)
 
             patch = ""
             files_changed: list = []
@@ -1179,8 +1270,6 @@ def run_agentic_edit(
                 )
             elif finalize_exc is not None:
                 primary_error = PATCH_CAPTURE_FAILED
-            elif store_cleanup_exc is not None and result is None:
-                primary_error = WORKER_CLEANUP_FAILED
 
             if orchestrator_exc is not None:
                 usage = _usage_from_snapshot(failure_snap)
@@ -1239,23 +1328,6 @@ def run_agentic_edit(
                     failure_stderr=str(git_fail.get("failure_stderr") or ""),
                 ), result, worktree_existed=True, snap=failure_snap,
                     job_id_hint=pm_job_id)
-
-            if store_cleanup_exc is not None and result is None:
-                return finish(WorkerResult(
-                    ok=False,
-                    error=WORKER_CLEANUP_FAILED,
-                    summary=_redact_text(
-                        f"Worker cleanup failed: {store_cleanup_exc}"
-                    ),
-                    worktree=wt_path,
-                    managed_worktree_path=wt_path,
-                    managed_worktree_mode="managed",
-                    worktree_diff_empty=worktree_diff_empty,
-                    events=list(mapped_events),
-                    patch_capture_status=patch_capture_status,
-                    usage_known=False,
-                    cost_known=False,
-                ), worktree_existed=True, snap=failure_snap)
 
             tokens_out, tokens_in, failure, final_text = _summarize_agentic_result(result)
             usage_known = _artifacts_usage_known(result)
@@ -1422,7 +1494,7 @@ def run_agentic_edit(
         _diag("edit_engines.run_agentic_edit", exc)
         if not worktree_entered:
             git_fail = _failure_fields_from_exc(exc)
-            return finish(WorkerResult(
+            return _apply_cleanup_provenance(finish(WorkerResult(
                 ok=False,
                 error=WORKTREE_CREATE_FAILED,
                 summary=f"Worktree create failed: {_redact_text(str(exc))}",
@@ -1432,15 +1504,15 @@ def run_agentic_edit(
                 failure_command=git_fail.get("failure_command") or "git worktree add",
                 failure_exit_code=git_fail.get("failure_exit_code"),
                 failure_stderr=_redact_text(str(exc)),
-            ), worktree_existed=False)
-        return finish(WorkerResult(
+            ), worktree_existed=False), cleanup_errors)
+        return _apply_cleanup_provenance(finish(WorkerResult(
             ok=False,
             error=AGENTIC_ERROR,
             summary=f"Agentic engine error: {_redact_text(str(exc))}",
             managed_worktree_mode="managed",
             worktree_diff_empty=None,
             patch_capture_status="skipped",
-        ), worktree_existed=True)
+        ), worktree_existed=True), cleanup_errors)
 
 
 # Store event names that already mean a tool/action boundary (not lifecycle).

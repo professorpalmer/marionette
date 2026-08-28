@@ -11,7 +11,10 @@ from harness.worktrees import _is_repo
 
 
 def create_temp_git_repo():
-    repo_dir = tempfile.mkdtemp()
+    # Unique parent so xdist workers do not share /tmp/.pmharness-worktrees.
+    root = tempfile.mkdtemp()
+    repo_dir = os.path.join(root, "repo")
+    os.mkdir(repo_dir)
     subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, capture_output=True)
     subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_dir, capture_output=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_dir, capture_output=True)
@@ -473,7 +476,7 @@ def test_provider_worker_leak_and_failure_cleanup(monkeypatch):
             keep_worktree_on_failure=False  # default is False now
         )
         res = worker.run()
-        assert res.ok is True
+        assert res.ok is True, (res.error, res.summary)
 
         # Assert worktree dir is gone
         assert not os.path.exists(res.worktree)
