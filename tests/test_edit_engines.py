@@ -37,6 +37,7 @@ from harness.edit_engines import (
     _agentic_store_failure_snapshot,
     _format_agentic_engine_error,
     _summarize_agentic_result,
+    failure_is_retryable,
 )
 from harness.worker import ProviderWorker, WorkerResult
 from pmharness.bridge import _router_supports_max_capability
@@ -195,6 +196,74 @@ def test_agentic_store_failure_snapshot_unknown_usage_is_not_measured_zero():
     assert snap["tokens_in"] == 0
     assert snap["tokens_out"] == 0
     assert snap["task_ids"] == ["t9"]
+
+
+def test_agentic_store_failure_snapshot_captures_events_when_reason_empty():
+    class _Store:
+        def list_jobs(self):
+            return [type("J", (), {"id": "job_1", "status": "failed"})()]
+
+        def list_tasks(self, job_id):
+            return [type("T", (), {
+                "id": "t1",
+                "role": "implement",
+                "status": "failed",
+                "error": "",
+                "failure": "task attr boom",
+            })()]
+
+        def read_events(self, job_id):
+            return [
+                {"event": "worker.started", "payload": {}},
+                {"event": "worker.progress", "payload": {}},
+                {"event": "worker.tool_error", "payload": {"error": "adapter 500"}},
+            ]
+
+        def list_artifacts(self, job_id):
+            art = type("A", (), {})()
+            art.payload = {"tokens_in": 3}
+            art.type = "PATCH"
+            return [art]
+
+    snap = _agentic_store_failure_snapshot(_Store())
+    assert snap["reason"] == "adapter 500"
+    assert snap["event_names"][-1] == "worker.tool_error"
+    assert "worker.started" in snap["event_names"]
+    assert snap["job_status"] == "failed"
+    assert "PATCH" in snap["artifact_types"]
+    assert snap["task_ids"] == ["t1"]
+    summary = _format_agentic_engine_error(
+        RuntimeError("swarm exited with incomplete tasks"),
+        snap,
+    )
+    assert "incomplete tasks" in summary
+    assert "adapter 500" in summary
+    assert summary.strip() != "Agentic engine error: swarm exited with incomplete tasks"
+
+
+def test_format_agentic_engine_error_includes_events_when_reason_empty():
+    snap = {
+        "reason": "",
+        "event_names": ["worker.started", "worker.lease_check"],
+        "task_statuses": ["implement=running"],
+        "job_status": "running",
+    }
+    summary = _format_agentic_engine_error(
+        RuntimeError("swarm exited with incomplete tasks"),
+        snap,
+    )
+    assert "incomplete tasks" in summary
+    assert "events: worker.started, worker.lease_check" in summary
+    assert "tasks: implement=running" in summary
+    assert summary.strip() != "Agentic engine error: swarm exited with incomplete tasks"
+
+
+def test_failure_is_retryable_only_timeout_or_429():
+    assert failure_is_retryable("agentic_timeout") is True
+    assert failure_is_retryable("agentic_provider_rate_limited") is True
+    assert failure_is_retryable("agentic_error", 429) is True
+    assert failure_is_retryable("agentic_error") is False
+    assert failure_is_retryable("agentic_orchestrator_failed", 500) is False
 
 
 # --- pure helpers: _summarize_agentic_result ---

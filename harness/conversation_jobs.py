@@ -40,6 +40,8 @@ _PROVENANCE_STAGE_CODES = frozenset({
     "agentic_timeout",
 })
 
+_GENERIC_INCOMPLETE_TASKS = "swarm exited with incomplete tasks"
+
 # Soft-refuse cue for pilots/guards: empty managed implement already recovered once.
 EMPTY_MANAGED_IMPLEMENT_EXHAUSTED = "empty_managed_implement_exhausted"
 
@@ -49,6 +51,74 @@ _EMPTY_WORKTREE_MARKERS = (
     "no changes produced",
     "worker produced no changes",
 )
+
+
+def _non_generic_failure_reason(*candidates) -> str:
+    """Prefer a specific reason over the generic incomplete-tasks string."""
+    generic = _GENERIC_INCOMPLETE_TASKS
+    for raw in candidates:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        lowered = text.lower()
+        if lowered in _PROVENANCE_STAGE_CODES:
+            continue
+        if lowered == generic or lowered.endswith(generic):
+            continue
+        return text
+    return ""
+
+
+def _enrich_worker_provenance(
+    provenance: dict,
+    res,
+    *,
+    applied: bool = False,
+    held_for_review: bool = False,
+    retry_count: int = 0,
+) -> dict:
+    """Stamp structured failure fields onto worker_provenance (and finish copies)."""
+    from harness.edit_engines import failure_is_retryable
+
+    if not isinstance(provenance, dict):
+        provenance = {}
+    ok = bool(getattr(res, "ok", False))
+    stage = str(getattr(res, "error", "") or provenance.get("error") or "")
+    http_status = getattr(res, "http_status", None)
+    finish_reason = str(getattr(res, "finish_reason", "") or "")
+    summary = str(getattr(res, "summary", "") or "") if not ok else ""
+    failure_reason = _non_generic_failure_reason(
+        finish_reason,
+        summary,
+        provenance.get("failure_reason"),
+        provenance.get("error"),
+    )
+    files = [
+        str(path) for path in (getattr(res, "files_changed", None) or [])
+        if str(path).strip()
+    ]
+    try:
+        status_i = int(http_status) if http_status is not None else None
+    except (TypeError, ValueError):
+        status_i = None
+    provenance.update({
+        "failure_stage": stage,
+        "failure_reason": failure_reason,
+        "http_status": status_i,
+        "retry_after": str(getattr(res, "retry_after", "") or ""),
+        "provider_request_id": str(getattr(res, "provider_request_id", "") or ""),
+        "pm_job_id": str(getattr(res, "pm_job_id", "") or ""),
+        "task_ids": list(getattr(res, "task_ids", None) or []),
+        "provider": str(getattr(res, "provider", "") or provenance.get("provider") or ""),
+        "model": str(getattr(res, "model", "") or provenance.get("model") or ""),
+        "retryable": failure_is_retryable(stage, status_i),
+        "retry_count": int(retry_count or 0),
+        "partial_patch": bool(files) and not ok,
+        "applied": bool(applied),
+        "held_for_review": bool(held_for_review),
+        "files": files,
+    })
+    return provenance
 
 
 def _is_empty_diff_implement_failure(res, *, expects_diff: bool) -> bool:
@@ -668,6 +738,12 @@ class ConversationJobsMixin:
         target_repo: str = "", expects_diff: bool = True,
         agentic_pin=None, strict_adapter: bool = False,
     ) -> None:
+        try:
+            mark = getattr(self, "_mark_local_job_started", None)
+            if callable(mark):
+                mark(job_id)
+        except Exception:
+            pass
         from .conversation import append_failed_declarative_checks_summary
 
         live_repo = target_repo or self.config.repo or ""
@@ -1219,6 +1295,21 @@ class ConversationJobsMixin:
                     "pending_review": pending_review_info
                 }
 
+            retry_count = 0
+            try:
+                prior = (getattr(self, "_local_jobs", {}) or {}).get(job_id) or {}
+                retry_count = int(prior.get("retry_count") or 0)
+                if not retry_count and isinstance(prior.get("worker_provenance"), dict):
+                    retry_count = int(prior["worker_provenance"].get("retry_count") or 0)
+            except Exception:
+                retry_count = 0
+            _enrich_worker_provenance(
+                provenance,
+                res,
+                applied=bool(res_dict.get("applied")),
+                held_for_review=bool(res_dict.get("held_for_review")),
+                retry_count=retry_count,
+            )
             res_dict["worker_provenance"] = provenance
             for routing_key, routing_value in (
                 ("adapter", getattr(res, "engine", "")),
@@ -1316,6 +1407,13 @@ class ConversationJobsMixin:
                 "managed_worktree_mode": "none" if expects_diff else "unknown",
                 "requested_mode": "implement" if expects_diff else "analysis",
                 "worktree_diff_empty": None,
+                "failure_stage": "agentic_error",
+                "failure_reason": str(e),
+                "retryable": False,
+                "retry_count": 0,
+                "applied": False,
+                "held_for_review": False,
+                "partial_patch": False,
             }
             if self._local_job_cancelled(job_id):
                 # A failure while collecting late facts must not turn a
@@ -1539,12 +1637,27 @@ class ConversationJobsMixin:
                             res_job["artifacts"] = delivered
                             res_job["artifact_delivery"] = delivery
                         try:
+                            from harness.local_jobs import _TERMINAL_LOCAL_JOB_STATUSES
                             with self._local_jobs_lock:
                                 local = (getattr(self, "_local_jobs", {}) or {}).get(job_id)
                                 if isinstance(local, dict):
                                     local["artifact_delivery"] = delivery
                                     if delivered and not local.get("artifacts"):
                                         local["artifacts"] = list(delivered)
+                                    if display_error and not local.get("error"):
+                                        local["error"] = display_error
+                                    if applied_files and not local.get("files"):
+                                        local["files"] = list(applied_files)
+                                    if "applied" not in local:
+                                        local["applied"] = bool(applied)
+                                    if held_for_review:
+                                        local["held_for_review"] = True
+                                    if (
+                                        failed
+                                        and str(local.get("status") or "")
+                                        not in _TERMINAL_LOCAL_JOB_STATUSES
+                                    ):
+                                        local["status"] = "failed"
                         except Exception:
                             pass
                         manifest = _render_swarm_delivery_manifest(

@@ -151,9 +151,10 @@ def test_parallel_children_keep_exact_independent_receipts(tmp_path):
 
     parent = reloaded._local_jobs["local-wave-pr2"]
     assert set(parent["terminal_job_ids"]) == {ok_id, bad_id}
-    assert parent["status"] in {"failed", "completed"}
+    assert parent["status"] == "partial"
     receipt = parent["terminal_receipt"]
     assert receipt is not None
+    assert receipt["status"] == "partial"
     assert set(receipt["child_job_ids"]) == {ok_id, bad_id}
     assert "artifacts" not in receipt
     assert list(parent.get("artifacts") or []) == []
@@ -163,7 +164,7 @@ def test_parallel_children_keep_exact_independent_receipts(tmp_path):
         if row.get("type") == "swarm_pending"
     )
     assert set(pending["terminal_job_ids"]) == {ok_id, bad_id}
-    assert pending.get("status") == "done"
+    assert pending.get("status") == "partial"
 
 
 def test_identical_artifact_ids_do_not_leak_through_shared_store(tmp_path):

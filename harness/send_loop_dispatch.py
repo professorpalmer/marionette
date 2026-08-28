@@ -1920,6 +1920,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                                         else ''
                                     )
                                 ),
+                                initial_status="queued",
                                 **(
                                     {"skip_routing_preview": True}
                                     if agentic_pin is not None
@@ -2019,6 +2020,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                                         else ''
                                     )
                                 ),
+                                initial_status="queued",
                                 **(
                                     {"skip_routing_preview": True}
                                     if agentic_pin is not None
@@ -2103,6 +2105,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                                 else ''
                             )
                         ),
+                        initial_status="queued",
                         **(
                             {"skip_routing_preview": True}
                             if agentic_pin is not None
