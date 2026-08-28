@@ -8,7 +8,7 @@ import { COMPOSER_FAMILY_CLASS } from "../components/conversation/composerFamily
 import type { Job } from "../lib/api";
 
 vi.mock("../lib/api", () => ({
-  api: {},
+  api: { swarmCancel: vi.fn() },
 }));
 vi.mock("../components/PilotPicker", () => ({
   default: () => <div data-testid="pilot-picker" />,
@@ -23,6 +23,7 @@ vi.mock("../lib/agentCommandIndex", () => ({
   },
   getAgentCommandIndexVersion: () => 1,
   listAgentCommandSessions: () => [],
+  registerAgentCommandSession: () => null,
 }));
 
 const noop = () => {};
