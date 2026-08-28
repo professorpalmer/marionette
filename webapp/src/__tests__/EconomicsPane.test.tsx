@@ -62,7 +62,7 @@ describe("EconomicsPane", () => {
     mockGetEconomics.mockResolvedValue(durablePayload);
   });
 
-  it("owns a persistent header and height-constrained scroll viewport", async () => {
+  it("puts the persistent header first and owns one scroll viewport", async () => {
     mockGetUsage.mockResolvedValue({
       session: usageSession,
       jobs: [],
@@ -70,49 +70,60 @@ describe("EconomicsPane", () => {
 
     const { container } = render(<EconomicsPane />);
 
-    expect(await screen.findByText("This app run")).toBeInTheDocument();
+    expect(await screen.findByText("Spend and savings")).toBeInTheDocument();
     expect(screen.getByText("Economics")).toBeInTheDocument();
     expect(container.firstElementChild).toHaveClass("flex", "flex-col", "h-full", "overflow-hidden");
-    const appRun = screen.getByText("This app run");
+    const durable = screen.getByText("Spend and savings");
     const econ = screen.getByText("Economics");
-    expect(appRun.compareDocumentPosition(econ) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(econ.compareDocumentPosition(durable) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(econ.closest(".shrink-0")).toBeTruthy();
-    expect(screen.getByText("Durable").closest(".overflow-y-auto")).toHaveClass(
-      "flex-1",
-      "min-h-0",
-      "overflow-y-auto",
-    );
-    expect(screen.getByText(/not Swarm Tracker receipt savings/)).toBeInTheDocument();
+    const scrollViews = container.querySelectorAll(".overflow-y-auto");
+    expect(scrollViews).toHaveLength(1);
+    expect(scrollViews[0]?.contains(durable)).toBe(true);
+    expect(screen.queryByText(/Spend and savings since you opened Marionette/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Worker spend compared with the selected frontier model/)).toBeInTheDocument();
+
+    fireEvent.change(await screen.findByLabelText("Economics ownership"), { target: { value: "app_run" } });
+    expect(await screen.findByText(/Spend and savings since you opened Marionette/)).toBeInTheDocument();
+    expect(screen.queryByText("Spend and savings")).not.toBeInTheDocument();
   });
 
   it("keeps the last Economics data visible across card remounts", async () => {
     mockGetUsage.mockResolvedValue({ session: usageSession, jobs: [] });
 
     const first = render(<EconomicsPane />);
-    expect(await screen.findByText("This app run")).toBeInTheDocument();
+    fireEvent.change(await screen.findByLabelText("Economics ownership"), { target: { value: "app_run" } });
+    expect(await screen.findByText(/Spend and savings since you opened Marionette/)).toBeInTheDocument();
     first.unmount();
     mockGetUsage.mockImplementation(() => new Promise(() => {}));
 
     render(<EconomicsPane />);
+    fireEvent.change(await screen.findByLabelText("Economics ownership"), { target: { value: "app_run" } });
 
-    expect(screen.getByText("This app run")).toBeInTheDocument();
+    expect(screen.getByText(/Spend and savings since you opened Marionette/)).toBeInTheDocument();
     expect(screen.queryByText("Loading this app run…")).not.toBeInTheDocument();
   });
 
-  it("shows spend and list-price value from getUsage", async () => {
+  it("shows one app-run receipt and keeps context diagnostics out", async () => {
     mockGetUsage.mockResolvedValue({
       session: usageSession,
       jobs: [],
     });
 
     render(<EconomicsPane />);
+    fireEvent.change(await screen.findByLabelText("Economics ownership"), { target: { value: "app_run" } });
 
-    expect(await screen.findByText("This app run")).toBeInTheDocument();
-    expect(screen.getByText("Estimated spend")).toBeInTheDocument();
+    expect(await screen.findByText("Spend")).toBeInTheDocument();
     expect(screen.getByText("~$0.12")).toBeInTheDocument();
-    expect(screen.getByText("Prompt-cache value")).toBeInTheDocument();
-    expect(screen.getByText("List-price value (est.)")).toBeInTheDocument();
-    expect(screen.queryByText("Session cost")).not.toBeInTheDocument();
+    expect(screen.getByText("Without savings")).toBeInTheDocument();
+    expect(screen.getByText("~$0.18")).toBeInTheDocument();
+    expect(screen.getByText("Estimated savings")).toBeInTheDocument();
+    expect(screen.getByText("~$0.06")).toBeInTheDocument();
+    expect(screen.getByText("33.3%")).toBeInTheDocument();
+    expect(screen.getByText("Why you saved")).toBeInTheDocument();
+    expect(screen.queryByText("Context health")).not.toBeInTheDocument();
+    expect(screen.queryByText("Memory layers")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Compact now" })).not.toBeInTheDocument();
   });
 
   it("shows durable heading, reference model, and scope control", async () => {
@@ -123,7 +134,7 @@ describe("EconomicsPane", () => {
 
     render(<EconomicsPane />);
 
-    expect(await screen.findByText("Durable")).toBeInTheDocument();
+    expect(await screen.findByText("Spend and savings")).toBeInTheDocument();
     expect(screen.getAllByText(/anthropic\/claude-opus-4/).length).toBeGreaterThan(0);
     expect(screen.getByLabelText("Economics ownership")).toBeInTheDocument();
     expect(screen.getByLabelText("Economics period")).toBeInTheDocument();
@@ -138,6 +149,40 @@ describe("EconomicsPane", () => {
     expect(screen.queryByText("Session cost")).not.toBeInTheDocument();
   });
 
+  it("leads durable economics with one full-scope PM receipt", async () => {
+    mockGetUsage.mockResolvedValue({ session: usageSession, jobs: [] });
+    mockGetEconomics.mockResolvedValue({
+      ...durablePayload,
+      savings: {
+        ...durablePayload.savings,
+        jobs_considered: 381,
+      },
+      counterfactual: {
+        reference_model_id: "codex/gpt-5-5",
+        reference_priced: true,
+        actual_cost_usd: 0.316217,
+        naive_cost_usd: 4.237335,
+        avoided_usd: 3.921118,
+        tasks: 78,
+      },
+      owned_jobs_considered: 7,
+      owned_actual_marginal_usd: 0.042856,
+      owned_avoided_usd: 11.341534,
+    });
+
+    render(<EconomicsPane />);
+
+    expect(await screen.findByText("Worker spend")).toBeTruthy();
+    expect(screen.getByText("$0.32")).toBeTruthy();
+    expect(screen.getByText("Frontier equivalent")).toBeTruthy();
+    expect(screen.getByText("$4.24")).toBeTruthy();
+    expect(screen.getByText("Estimated savings")).toBeTruthy();
+    expect(screen.getByText("$3.92")).toBeTruthy();
+    expect(screen.getByText("92.5%")).toBeTruthy();
+    expect(screen.getByText(/381 jobs considered/).textContent).toContain("78 priced tasks");
+    expect(screen.queryByText("$11.34")).toBeNull();
+  });
+
   it("requests Last 30 days as a period on the selected ownership", async () => {
     mockGetUsage.mockResolvedValue({
       session: usageSession,
@@ -145,7 +190,7 @@ describe("EconomicsPane", () => {
     });
 
     render(<EconomicsPane />);
-    expect(await screen.findByText("Durable")).toBeInTheDocument();
+    expect(await screen.findByText("Spend and savings")).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Economics period"), {
       target: { value: "30" },
@@ -201,11 +246,11 @@ describe("EconomicsPane", () => {
     const ownedRow = screen.getByText("owned-1").closest(".mb-2");
     expect(ownedRow).toBeTruthy();
     const ownedScope = within(ownedRow as HTMLElement);
-    expect(ownedScope.getByText("Measured Cost")).toBeInTheDocument();
-    expect(ownedScope.getByText("Estimated Cost")).toBeInTheDocument();
+    expect(ownedScope.getByText("Measured usage cost")).toBeInTheDocument();
+    expect(ownedScope.queryByText("Estimated cost")).not.toBeInTheDocument();
     expect(ownedScope.getByText("Vs reference").parentElement).toHaveTextContent("Vs reference$2.00");
     expect(ownedScope.getAllByText("$1.25").length).toBeGreaterThanOrEqual(1);
-    expect(ownedScope.getAllByText("—").length).toBeGreaterThanOrEqual(1);
+    expect(ownedScope.queryByText("—")).toBeNull();
   });
 
   it("opens a recent PM job in the Swarm Tracker", async () => {
@@ -258,8 +303,8 @@ describe("EconomicsPane", () => {
     render(<EconomicsPane />);
 
     expect(await screen.findByText("mixed-1")).toBeInTheDocument();
-    expect(screen.getByText("Measured Cost")).toBeInTheDocument();
-    expect(screen.getByText("Estimated Cost")).toBeInTheDocument();
+    expect(screen.getByText("Measured usage cost")).toBeInTheDocument();
+    expect(screen.getByText("Estimated cost")).toBeInTheDocument();
     expect(screen.getAllByText("$1.25").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("$0.25")).toBeInTheDocument();
     const mixedRow = within(screen.getByText("mixed-1").closest(".mb-2") as HTMLElement);
@@ -290,8 +335,8 @@ describe("EconomicsPane", () => {
 
     expect(await screen.findByText("meas-1")).toBeInTheDocument();
     const row = within(screen.getByText("meas-1").closest(".mb-2") as HTMLElement);
-    expect(row.getByText("Measured Cost").parentElement).toHaveTextContent("Measured Cost$2.00");
-    expect(row.getByText("Estimated Cost").parentElement).toHaveTextContent("Estimated Cost—");
+    expect(row.getByText("Measured usage cost").parentElement).toHaveTextContent("Measured usage cost$2.00");
+    expect(row.queryByText("Estimated cost")).not.toBeInTheDocument();
     expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
   });
 
@@ -316,8 +361,8 @@ describe("EconomicsPane", () => {
 
     expect(await screen.findByText("est-1")).toBeInTheDocument();
     const row = within(screen.getByText("est-1").closest(".mb-2") as HTMLElement);
-    expect(row.getByText("Measured Cost").parentElement).toHaveTextContent("Measured Cost—");
-    expect(row.getByText("Estimated Cost").parentElement).toHaveTextContent("Estimated Cost$0.75");
+    expect(row.queryByText("Measured usage cost")).not.toBeInTheDocument();
+    expect(row.getByText("Estimated cost").parentElement).toHaveTextContent("Estimated cost$0.75");
     expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
   });
 
@@ -340,7 +385,34 @@ describe("EconomicsPane", () => {
     render(<EconomicsPane />);
 
     expect(await screen.findByText("legacy-1")).toBeInTheDocument();
-    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(2);
+    const row = within(screen.getByText("legacy-1").closest(".mb-2") as HTMLElement);
+    expect(row.getByText("Measured usage cost").parentElement).toHaveTextContent("Measured usage cost$1.10");
+    expect(row.queryByText("Estimated cost")).not.toBeInTheDocument();
+  });
+
+  it("explains a failed zero-work job instead of rendering three zero dollars", async () => {
+    mockGetUsage.mockResolvedValue({ session: usageSession, jobs: [] });
+    mockGetEconomics.mockResolvedValue({
+      ...durablePayload,
+      recent_jobs: [{
+        job_id: "failed-before-worker",
+        status: "failed",
+        accounting_owned: true,
+        models: [],
+        measured_cost_usd: 0,
+        estimated_cost_usd: 0,
+        actual_marginal_usd: 0,
+        cost_basis: "measured",
+        counterfactual: { avoided_usd: 0 },
+      }],
+    });
+
+    render(<EconomicsPane />);
+
+    const row = within((await screen.findByText("failed-before-worker")).closest(".mb-2") as HTMLElement);
+    expect(row.getByText("No billable worker ran")).toBeTruthy();
+    expect(row.queryByText("$0.00")).toBeNull();
+    expect(row.queryByText("Vs reference")).toBeNull();
   });
 
   it("clears durable state when getEconomics returns a soft 400", async () => {
@@ -381,53 +453,53 @@ describe("EconomicsPane", () => {
     });
 
     render(<EconomicsPane />);
-    expect(await screen.findByText("Durable")).toBeInTheDocument();
+    expect(await screen.findByText("Spend and savings")).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Economics ownership"), {
       target: { value: "conversation" },
     });
     expect(
-      await screen.findByText(/Owned jobs for this conversation/),
+      await screen.findByText(/Jobs started from this conversation/),
     ).toBeInTheDocument();
     expect(screen.queryByText("Routing saved (measured)")).not.toBeInTheDocument();
     expect(screen.queryByText("CodeGraph (estimated)")).not.toBeInTheDocument();
   });
 
   it("refetches on harness-usage-refresh", async () => {
-    mockGetUsage
-      .mockResolvedValueOnce({
-        session: {
-          tokens_used: 1000,
-          est_cost_usd: 0.05,
-          driver: "anthropic:claude-sonnet",
-          price_in: 3,
-          price_out: 15,
-        },
-        jobs: [],
-      })
-      .mockResolvedValue({
-        session: {
-          tokens_used: 4000,
-          est_cost_usd: 0.22,
-          driver: "anthropic:claude-sonnet",
-          price_in: 3,
-          price_out: 15,
-          cache_savings_usd: 0.10,
-        },
-        jobs: [],
-      });
+    mockGetUsage.mockResolvedValue({
+      session: {
+        tokens_used: 1000,
+        est_cost_usd: 0.05,
+        driver: "anthropic:claude-sonnet",
+        price_in: 3,
+        price_out: 15,
+      },
+      jobs: [],
+    });
 
     render(<EconomicsPane />);
-    expect(await screen.findByText("~$0.05")).toBeInTheDocument();
+    fireEvent.change(await screen.findByLabelText("Economics ownership"), { target: { value: "app_run" } });
+    expect((await screen.findAllByText("~$0.05")).length).toBeGreaterThanOrEqual(2);
 
+    mockGetUsage.mockResolvedValue({
+      session: {
+        tokens_used: 4000,
+        est_cost_usd: 0.22,
+        driver: "anthropic:claude-sonnet",
+        price_in: 3,
+        price_out: 15,
+        cache_savings_usd: 0.10,
+      },
+      jobs: [],
+    });
     act(() => {
       window.dispatchEvent(new Event("harness-usage-refresh"));
     });
 
     await waitFor(() => {
-      expect(screen.getByText("~$0.22")).toBeInTheDocument();
+      expect(screen.getAllByText("~$0.22").length).toBeGreaterThanOrEqual(1);
     });
-    expect(screen.getByText("List-price value")).toBeInTheDocument();
+    expect(screen.getByText("Why you saved")).toBeInTheDocument();
     expect(mockGetUsage.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 });

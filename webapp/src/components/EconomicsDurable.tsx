@@ -1,12 +1,6 @@
 import type { EconomicsData, EconomicsJobRow, EconomicsScope } from "../lib/api";
 import { openAgentSwarmJob } from "../lib/agentLinks";
 
-const OWNERSHIP: Array<{ value: EconomicsScope; label: string }> = [
-  { value: "conversation", label: "This conversation" },
-  { value: "repo", label: "This repo" },
-  { value: "all_projects", label: "All projects" },
-];
-
 const PERIODS: Array<{ value: "all" | "30"; label: string }> = [
   { value: "all", label: "All time" },
   { value: "30", label: "Last 30 days" },
@@ -40,13 +34,11 @@ export function jobHeadlineTotal(job: Pick<EconomicsJobRow, "measured_cost_usd" 
 export default function EconomicsDurable({
   data,
   scope,
-  onScopeChange,
   periodDays,
   onPeriodChange,
 }: {
   data: EconomicsData | null;
   scope: EconomicsScope;
-  onScopeChange: (scope: EconomicsScope) => void;
   periodDays: 30 | null;
   onPeriodChange: (periodDays: 30 | null) => void;
 }) {
@@ -58,31 +50,27 @@ export default function EconomicsDurable({
   const avoided = data?.counterfactual?.avoided_usd;
   const planRouted = data?.savings?.routing?.plan_routed_tasks ?? 0;
   const jobs = Array.isArray(data?.recent_jobs) ? data.recent_jobs : [];
+  const receiptSpend = data?.counterfactual?.actual_cost_usd;
+  const receiptReference = data?.counterfactual?.naive_cost_usd;
+  const receiptSavings = data?.counterfactual?.avoided_usd;
+  const receiptJobs = data?.savings?.jobs_considered;
+  const receiptTasks = data?.counterfactual?.tasks;
+  const hasReceipt = isFiniteNumber(receiptSpend)
+    && isFiniteNumber(receiptReference)
+    && isFiniteNumber(receiptSavings);
+  const savingsPercent = hasReceipt && receiptReference > 0
+    ? Math.max(0, Math.min(100, (receiptSavings / receiptReference) * 100))
+    : null;
 
   return (
     <div className="w-full px-3 pb-3 text-[11px] text-txt">
-      <div className="text-[10px] uppercase tracking-wide text-faint">Durable</div>
+      <div className="text-[10px] uppercase tracking-wide text-faint">Spend and savings</div>
       <p className="text-[10px] text-muted mb-2 leading-snug">
         {scope === "conversation"
-          ? "Owned jobs for this conversation. Puppetmaster savings stay on This repo / All projects."
-          : "Puppetmaster savings for the selected ownership. Last 30 days is a date cutoff on the selected ownership, not a different project set. App-run spend stays above. Vs reference is a list-price counterfactual, not Swarm Tracker receipt savings. $0 route estimates stay forecasts, not cash."}
+          ? "Jobs started from this conversation."
+          : "Worker spend compared with the selected frontier model."}
       </p>
 
-      <label className="flex items-center justify-between mb-2 text-faint">
-        <span className="text-[10px] uppercase tracking-wide">Ownership</span>
-        <select
-          className="bg-transparent text-[11px] text-txt"
-          value={scope === "window30" ? "repo" : scope}
-          onChange={(event) => onScopeChange(event.target.value as EconomicsScope)}
-          aria-label="Economics ownership"
-        >
-          {OWNERSHIP.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-      </label>
 
       <label className="flex items-center justify-between mb-2 text-faint">
         <span className="text-[10px] uppercase tracking-wide">Period</span>
@@ -99,6 +87,38 @@ export default function EconomicsDurable({
           ))}
         </select>
       </label>
+
+      {hasReceipt ? (
+        <div className="mb-3 rounded border border-edge/50 bg-panel2/20 px-2.5 py-2.5">
+          <div className="grid grid-cols-2 gap-x-3 gap-y-2.5">
+            <div className="min-w-0">
+              <div className="text-[9px] uppercase tracking-wide text-faint">Worker spend</div>
+              <div className="mt-0.5 text-[16px] font-semibold tabular-nums text-warn/90">{fmtUnknownMoney(receiptSpend)}</div>
+            </div>
+            <div className="min-w-0">
+              <div className="text-[9px] uppercase tracking-wide text-faint">Frontier equivalent</div>
+              <div className="mt-0.5 text-[16px] font-semibold tabular-nums">{fmtUnknownMoney(receiptReference)}</div>
+            </div>
+            <div className="min-w-0">
+              <div className="text-[9px] uppercase tracking-wide text-faint">Estimated savings</div>
+              <div className="mt-0.5 text-[16px] font-semibold tabular-nums text-good/90">{fmtUnknownMoney(receiptSavings)}</div>
+            </div>
+            <div className="min-w-0">
+              <div className="text-[9px] uppercase tracking-wide text-faint">Less than frontier</div>
+              <div className="mt-0.5 text-[16px] font-semibold tabular-nums text-good/90">
+                {savingsPercent === null ? "—" : `${savingsPercent.toFixed(1)}%`}
+              </div>
+            </div>
+          </div>
+          {isFiniteNumber(receiptJobs) || isFiniteNumber(receiptTasks) ? (
+            <div className="mt-2 pt-1.5 border-t border-edge/50 text-[10px] text-faint">
+              {isFiniteNumber(receiptJobs) ? `${receiptJobs} jobs considered` : ""}
+              {isFiniteNumber(receiptJobs) && isFiniteNumber(receiptTasks) ? " · " : ""}
+              {isFiniteNumber(receiptTasks) ? `${receiptTasks} priced tasks` : ""}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       {data && data.available === false ? (
         <p className="text-[10px] text-muted mb-2 leading-snug">
@@ -140,7 +160,7 @@ export default function EconomicsDurable({
         </div>
       ) : null}
 
-      {isFiniteNumber(avoided) ? (
+      {!hasReceipt && isFiniteNumber(avoided) ? (
         <div className="flex items-center justify-between mb-1 text-faint">
           <span title="List-price counterfactual vs the named reference model, not Swarm Tracker receipt savings.">
             {referenceId
@@ -166,12 +186,21 @@ export default function EconomicsDurable({
           {jobs.map((job) => {
             const owned = Boolean(job.accounting_owned);
             const modelIds = (job.models || []).map((model) => model.model_id || "").filter(Boolean);
-            const measuredCost = isFiniteNumber(job.measured_cost_usd)
+            const measuredCost = isFiniteNumber(job.measured_cost_usd) && job.measured_cost_usd > 0
               ? job.measured_cost_usd
-              : (!isFiniteNumber(job.estimated_cost_usd) && isFiniteNumber(job.actual_marginal_usd)
+              : (!isFiniteNumber(job.estimated_cost_usd)
+                  && isFiniteNumber(job.actual_marginal_usd)
+                  && job.actual_marginal_usd > 0
                 ? job.actual_marginal_usd
                 : null);
+            const estimatedCost = isFiniteNumber(job.estimated_cost_usd) && job.estimated_cost_usd > 0
+              ? job.estimated_cost_usd
+              : null;
             const jobAvoided = owned ? job.counterfactual?.avoided_usd : null;
+            const noBillableWorker = owned
+              && job.status === "failed"
+              && modelIds.length === 0
+              && jobHeadlineTotal(job) === 0;
             return (
               <div key={job.job_id || `${job.source}-${job.status}`} className="mb-2">
                 <div className="flex items-center justify-between text-faint">
@@ -195,18 +224,32 @@ export default function EconomicsDurable({
                 ) : null}
                 {owned ? (
                   <>
-                    <div className="flex items-center justify-between text-faint pl-2">
-                      <span>Measured Cost</span>
-                      <span className="tabular-nums shrink-0 text-warn/90">{fmtUnknownMoney(measuredCost)}</span>
-                    </div>
-                    <div className="flex items-center justify-between text-faint pl-2">
-                      <span>Estimated Cost</span>
-                      <span className="tabular-nums shrink-0 text-warn/90">{fmtUnknownMoney(job.estimated_cost_usd)}</span>
-                    </div>
-                    <div className="flex items-center justify-between text-faint pl-2">
-                      <span title="List-price counterfactual vs the pane reference, not Swarm Tracker receipt savings.">Vs reference</span>
-                      <span className="tabular-nums shrink-0 text-good/90">{fmtUnknownMoney(jobAvoided)}</span>
-                    </div>
+                    {noBillableWorker ? (
+                      <div className="text-faint pl-2">No billable worker ran</div>
+                    ) : measuredCost !== null || estimatedCost !== null ? (
+                      <>
+                        {measuredCost !== null ? (
+                          <div className="flex items-center justify-between text-faint pl-2">
+                            <span>Measured usage cost</span>
+                            <span className="tabular-nums shrink-0 text-warn/90">{fmtUnknownMoney(measuredCost)}</span>
+                          </div>
+                        ) : null}
+                        {estimatedCost !== null ? (
+                          <div className="flex items-center justify-between text-faint pl-2">
+                            <span>Estimated cost</span>
+                            <span className="tabular-nums shrink-0 text-warn/90">{fmtUnknownMoney(estimatedCost)}</span>
+                          </div>
+                        ) : null}
+                      </>
+                    ) : (
+                      <div className="text-faint pl-2">Cost unavailable</div>
+                    )}
+                    {isFiniteNumber(jobAvoided) && jobAvoided > 0 ? (
+                      <div className="flex items-center justify-between text-faint pl-2">
+                        <span title="List-price counterfactual vs the pane reference, not Swarm Tracker receipt savings.">Vs reference</span>
+                        <span className="tabular-nums shrink-0 text-good/90">{fmtUnknownMoney(jobAvoided)}</span>
+                      </div>
+                    ) : null}
                   </>
                 ) : null}
                 {!owned ? <div className="text-faint pl-2">visible only</div> : null}

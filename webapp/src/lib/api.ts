@@ -907,6 +907,7 @@ export type EconomicsData = {
   available?: boolean;
   error?: string;
   savings?: {
+    jobs_considered?: number;
     routing?: {
       saved_usd?: number;
       baseline_usd?: number;
@@ -927,6 +928,7 @@ export type EconomicsData = {
     naive_cost_usd?: number | null;
     actual_cost_usd?: number | null;
     avoided_usd?: number | null;
+    tasks?: number;
     label?: string;
   } | null;
   recent_jobs?: EconomicsJobRow[];

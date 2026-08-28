@@ -1,847 +1,181 @@
-import { fireEvent, render, screen, within, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { render, screen, within } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
 import CostBreakdown, {
   cacheHitDisplay,
-  compactionAdvicePresentation,
   delegationSavingsCredited,
   formatCacheHitPercent,
   listPriceValueHeading,
   listPriceValueTotal,
   listPriceValueWeakestBasis,
   routingSavingsCredited,
-  shortPilotModel,
   spendIsEstimated,
   type CostBreakdownData,
 } from "../components/CostBreakdown";
-import { api } from "../lib/api";
-
-vi.mock("../lib/api", () => ({
-  api: {
-    compactSession: vi.fn(),
-  },
-}));
-
-const mockCompactSession = vi.mocked(api.compactSession);
 
 const baseData: CostBreakdownData = {
-  tokens_used: 12000,
-  est_cost_usd: 0.042,
-  tokens_cached: 4000,
-  cache_savings_usd: 0.018,
-  tool_output_tokens_saved: 900,
-  tool_output_savings_usd: 0.006,
-  history_compactions: 2,
-  history_tokens_saved: 1500,
-  spill_count: 1,
-  spill_chars: 3200,
-  evals_recorded: 5,
-  evals_failed: 1,
-  memory_layers: { L1: { bytes: 2048 } },
-  compaction_advice: {
-    level: "soon",
-    reasons: ["hot context above 150000 tokens on a large window"],
-    needs_intervention: true,
-    warning_reason: "hot context above 150000 tokens on a large window",
-    budget_kind: "absolute",
-    budget_tokens: 150000,
-  },
-  price_in: 3,
-  price_out: 15,
+  tokens_used: 12_000,
+  est_cost_usd: 0.12,
+  cache_savings_usd: 0.04,
+  cache_savings_basis: "catalog",
+  tool_output_tokens_saved: 736_100,
+  tool_output_savings_usd: 0.02,
 };
 
-describe("compactionAdvicePresentation", () => {
-  it("maps soon absolute to working-context budget copy", () => {
-    const copy = compactionAdvicePresentation("soon", {
-      budget_kind: "absolute",
-      budget_tokens: 150000,
-    });
-    expect(copy.label).toBe("Long session");
-    expect(copy.message).toMatch(/~150k working-context budget/);
-    expect(copy.message).toMatch(/advertised window is larger/i);
-    expect(copy.message).not.toMatch(/150000/);
-    expect(copy.message).not.toMatch(/tidied/i);
-  });
-
-  it("maps soon percent to threshold copy without a token number", () => {
-    const copy = compactionAdvicePresentation("soon", { budget_kind: "percent" });
-    expect(copy.label).toBe("Long session");
-    expect(copy.message).toMatch(/working-context threshold/);
-    expect(copy.message).not.toMatch(/~150k/);
-  });
-
-  it("maps now absolute to Needs attention with the binding budget", () => {
-    const copy = compactionAdvicePresentation("now", {
-      budget_kind: "absolute",
-      budget_tokens: 270000,
-    });
-    expect(copy.label).toBe("Needs attention");
-    expect(copy.message).toMatch(/~270k working-context budget/);
-    expect(copy.message).toMatch(/Compact now or start a fresh session/i);
-  });
-
-  it("maps now percent to Needs attention without a token number", () => {
-    const copy = compactionAdvicePresentation("now", { budget_kind: "percent" });
-    expect(copy.label).toBe("Needs attention");
-    expect(copy.message).toMatch(/working-context threshold/);
-    expect(copy.message).toMatch(/Compact now or start a fresh session/i);
-  });
-});
-
-describe("shortPilotModel", () => {
-  it("keeps the last path segment of a provider spec", () => {
-    expect(shortPilotModel("openrouter:moonshotai/kimi-k3")).toBe("kimi-k3");
-    expect(shortPilotModel("composer-2.5-fast")).toBe("composer-2.5-fast");
-    expect(shortPilotModel("")).toBe("unknown");
-  });
-});
-
-describe("CostBreakdown", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockCompactSession.mockResolvedValue({
-      ok: true,
-      compacted: true,
-      before_tokens: 1000,
-      after_tokens: 400,
-    });
-  });
-
-  it("lists locked cumulative spend per pilot model", () => {
-    render(
-      <CostBreakdown
-        data={{
-          ...baseData,
-          est_cost_usd: 2.62,
-          pilot_by_model: [
-            { model: "openrouter:moonshotai/kimi-k3", est_cost_usd: 2.1 },
-            { model: "composer-2.5-fast", est_cost_usd: 0.52 },
-          ],
-        }}
-      />,
-    );
-    expect(screen.getByText("kimi-k3")).toBeInTheDocument();
-    expect(screen.getByText("composer-2.5-fast")).toBeInTheDocument();
-    expect(screen.getByText("~$2.10")).toBeInTheDocument();
-    expect(screen.getByText("~$0.52")).toBeInTheDocument();
-  });
-
-  it("lists swarm models next to the locked pilot and separates list-price value", () => {
-    render(
-      <CostBreakdown
-        data={{
-          ...baseData,
-          est_cost_usd: 0.16,
-          cost_source: "mixed",
-          estimated: true,
-          pilot_by_model: [
-            { model: "openrouter:deepseek/deepseek-v4-flash-vision-exp", est_cost_usd: 0.01 },
-          ],
-          swarm_by_model: [
-            { model: "openrouter:z-ai/glm-5.3", est_cost_usd: 0.15, calls: 30 },
-          ],
-        }}
-      />,
-    );
-    expect(screen.getByText("Spend (mixed)")).toBeInTheDocument();
-    expect(screen.getByText("deepseek-v4-flash-vision-exp")).toBeInTheDocument();
-    expect(screen.getByText("glm-5.3")).toBeInTheDocument();
-    expect(screen.getByText("swarm")).toBeInTheDocument();
-    expect(screen.getByText(/Not an OpenRouter invoice/i)).toBeInTheDocument();
-  });
-
-  it("renders the session cost fields it is given", () => {
+describe("CostBreakdown receipt", () => {
+  it("shows one app-run receipt and each savings mechanism once", () => {
     render(<CostBreakdown data={baseData} />);
 
-    expect(screen.getByText("This app run")).toBeInTheDocument();
-    expect(screen.queryByText("Session cost")).not.toBeInTheDocument();
-    expect(screen.getByText(/Resets on full quit/i)).toBeInTheDocument();
-    expect(screen.getByText("Estimated spend")).toBeInTheDocument();
-    expect(screen.getByText("~$0.04")).toBeInTheDocument();
-    expect(screen.getByText("Prompt-cache value")).toBeInTheDocument();
-    const cacheRow = screen.getByText("Prompt-cache value").closest("div");
-    expect(within(cacheRow!).getByText("~$0.02")).toBeInTheDocument();
-    expect(screen.getByText("Tokens from cache")).toBeInTheDocument();
-    expect(screen.getByText(/4k read/)).toBeInTheDocument();
-    expect(screen.getByText("Compact tool outputs saved")).toBeInTheDocument();
-    expect(screen.getByText("History compaction")).toBeInTheDocument();
-    expect(screen.getByText("Offloaded outputs")).toBeInTheDocument();
-    expect(screen.getByText("Checks recorded")).toBeInTheDocument();
-    expect(screen.getByText("Memory layers")).toBeInTheDocument();
-    expect(screen.getByText("Long session")).toBeInTheDocument();
-    expect(
-      screen.getByText(/~150k working-context budget/),
-    ).toBeInTheDocument();
-    expect(screen.queryByText(/150000 tokens/)).not.toBeInTheDocument();
-    const badge = screen.getByRole("status");
-    expect(badge).toHaveAttribute(
-      "title",
-      "hot context above 150000 tokens on a large window",
-    );
+    expect(screen.getByText("Spend")).toBeTruthy();
+    expect(screen.getByText("~$0.12")).toBeTruthy();
+    expect(screen.getByText("Without savings")).toBeTruthy();
+    expect(screen.getByText("~$0.18")).toBeTruthy();
+    expect(screen.getByText("Estimated savings")).toBeTruthy();
+    expect(screen.getByText("~$0.06")).toBeTruthy();
+    expect(screen.getByText("Less spent")).toBeTruthy();
+    expect(screen.getByText("33.3%")).toBeTruthy();
+    expect(screen.getByText("Why you saved")).toBeTruthy();
+    expect(screen.getByText("Prompt-cache value")).toBeTruthy();
+    const compact = screen.getByText("Compact tool outputs").closest("div");
+    expect(within(compact as HTMLElement).getByText(/736.1k tok · ~\$0.02/)).toBeTruthy();
+    expect(screen.queryByText(/List-price value/)).toBeNull();
   });
 
-  it("reconciles the visible additive value total using gross cache value", () => {
-    const data: CostBreakdownData = {
-      ...baseData,
-      cache_savings_usd: 0.1,
-      cache_savings_gross_usd: 1.14,
-      cache_saved_usd_swarm: 0.22,
-      delegation_saved_usd: 2.46,
-      delegation_savings_basis: "actual_usage",
-      routing_saved_usd: 0.02,
-      tool_output_savings_usd: 0.76,
-    };
-    expect(listPriceValueTotal(data)).toBeCloseTo(4.58, 8);
-    expect(listPriceValueWeakestBasis(data)).toBe("estimated");
-    render(<CostBreakdown data={data} />);
-    const totalRow = screen.getByText("List-price value (est.)").closest("div");
-    expect(within(totalRow!).getByText("~$4.58")).toBeInTheDocument();
-    expect(totalRow).toHaveAttribute(
-      "title",
-      expect.stringMatching(/not a cash refund/i),
-    );
-    expect(screen.queryByText("Total value saved")).not.toBeInTheDocument();
-    expect(screen.queryByText("Session cost")).not.toBeInTheDocument();
+  it("keeps context diagnostics and compaction controls out of Economics", () => {
+    render(<CostBreakdown data={baseData} />);
+
+    expect(screen.queryByText("Context health")).toBeNull();
+    expect(screen.queryByText("Memory layers")).toBeNull();
+    expect(screen.queryByText("Offloaded outputs")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Compact now" })).toBeNull();
   });
 
-  it("labels the combined list-price total with the weakest included basis", () => {
-    const estimated: CostBreakdownData = {
-      tokens_used: 1000,
-      est_cost_usd: 0.10,
-      cache_savings_usd: 0.20,
-      cache_savings_basis: "catalog",
-      routing_saved_usd: 0.40,
-      routing_savings_basis: "estimated",
-    };
-    expect(listPriceValueWeakestBasis(estimated)).toBe("estimated");
-    expect(listPriceValueHeading("estimated")).toBe("List-price value (est.)");
-    const { rerender } = render(<CostBreakdown data={estimated} />);
-    expect(screen.getByText("List-price value (est.)")).toBeInTheDocument();
+  it("shows exact zero without inventing savings", () => {
+    render(<CostBreakdown data={{ tokens_used: 0, est_cost_usd: 0 }} />);
 
-    const partial: CostBreakdownData = {
-      tokens_used: 1000,
-      est_cost_usd: 0.10,
-      cache_saved_usd_swarm: 0.22,
-      swarm_cache_savings_basis: "unknown",
-      swarm_cache_unpriced_tokens: 12_500,
-    };
-    expect(listPriceValueWeakestBasis(partial)).toBe("partial");
-    rerender(<CostBreakdown data={partial} />);
-    expect(screen.getByText("List-price value (partial)")).toBeInTheDocument();
-
-    const unknown: CostBreakdownData = {
-      tokens_used: 1000,
-      est_cost_usd: 0.01,
-      routing_saved_usd: 1.25,
-      routing_savings_basis: "unknown",
-    };
-    expect(listPriceValueTotal(unknown)).toBe(0);
-    expect(listPriceValueWeakestBasis(unknown)).toBeNull();
-    rerender(<CostBreakdown data={unknown} />);
-    expect(screen.getByText("unknown basis")).toBeInTheDocument();
-    expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
-    expect(screen.queryByText("List-price value")).not.toBeInTheDocument();
+    expect(screen.getByText("Spend").parentElement?.textContent).toContain("~$0.00");
+    expect(screen.getByText("Without savings").parentElement?.textContent).toContain("~$0.00");
+    expect(screen.getByText("Estimated savings").parentElement?.textContent).toContain("~$0.00");
+    expect(screen.getByText("Less spent").parentElement?.textContent).toContain("—");
+    expect(screen.queryByText("Why you saved")).toBeNull();
   });
 
-  it("labels swarm cache value as partial when some tokens are unpriced", () => {
+  it("shows model-selection and routing decision values only when supported", () => {
     render(
       <CostBreakdown
         data={{
-          ...baseData,
-          cache_savings_usd: 0,
-          cache_saved_usd_swarm: 0.22,
-          swarm_cache_savings_basis: "unknown",
-          swarm_cache_unpriced_tokens: 12_500,
-        }}
-      />,
-    );
-
-    const label = screen.getByText("Prompt-cache value (partial)");
-    expect(label.closest("div")).toHaveAttribute(
-      "title",
-      expect.stringMatching(/12\.5k swarm cache tokens could not be priced/i),
-    );
-  });
-
-  it("does not replace measured zero delegation value with a routing estimate", () => {
-    const data: CostBreakdownData = {
-      ...baseData,
-      cache_savings_usd: 0,
-      tool_output_savings_usd: 0,
-      delegation_saved_usd: 0,
-      delegation_savings_basis: "actual_usage",
-      routing_saved_usd: 1.25,
-      routing_savings_basis: "estimated",
-    };
-
-    expect(listPriceValueTotal(data)).toBe(0);
-    render(<CostBreakdown data={data} />);
-    expect(screen.queryByText("Model selection value")).not.toBeInTheDocument();
-    expect(screen.getByText("Routing decision value (est.)")).toBeInTheDocument();
-  });
-
-  it("shows soon calm copy and keeps machine reason in the title", () => {
-    render(
-      <CostBreakdown
-        data={{
-          tokens_used: 1000,
-          est_cost_usd: 0.01,
-          compaction_advice: {
-            level: "soon",
-            needs_intervention: true,
-            warning_reason: "hot context above 150000 tokens on a large window",
-            reasons: ["hot context above 150000 tokens on a large window"],
-            budget_kind: "absolute",
-            budget_tokens: 150000,
-          },
-        }}
-      />,
-    );
-
-    expect(screen.getByText("Long session")).toBeInTheDocument();
-    expect(screen.queryByText("Needs attention")).not.toBeInTheDocument();
-    expect(
-      screen.getByText(/~150k working-context budget/),
-    ).toBeInTheDocument();
-    expect(screen.queryByText(/tidied/)).not.toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveAttribute(
-      "title",
-      "hot context above 150000 tokens on a large window",
-    );
-  });
-
-  it("shows now actionable copy with Compact now button", async () => {
-    render(
-      <CostBreakdown
-        data={{
-          tokens_used: 1000,
-          est_cost_usd: 0.01,
-          compaction_advice: {
-            level: "now",
-            needs_intervention: true,
-            warning_reason: "hot context at 80 percent of budget",
-            reasons: [],
-          },
-        }}
-      />,
-    );
-
-    expect(screen.getByText("Needs attention")).toBeInTheDocument();
-    expect(
-      screen.getByText(/Compact now or start a fresh session/),
-    ).toBeInTheDocument();
-    expect(screen.queryByText(/80 percent of budget/)).not.toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveAttribute(
-      "title",
-      "hot context at 80 percent of budget",
-    );
-
-    const button = screen.getByRole("button", { name: "Compact now" });
-    fireEvent.click(button);
-    await waitFor(() => expect(mockCompactSession).toHaveBeenCalledTimes(1));
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Compacted" })).toBeInTheDocument(),
-    );
-  });
-
-  const nowAdviceData: CostBreakdownData = {
-    tokens_used: 1000,
-    est_cost_usd: 0.01,
-    compaction_advice: {
-      level: "now",
-      needs_intervention: true,
-      warning_reason: "hot context at 80 percent of budget",
-      reasons: [],
-    },
-  };
-
-  it("shows Compacted and refreshes usage only after a true reduction", async () => {
-    const refreshes: Event[] = [];
-    const onRefresh = (e: Event) => refreshes.push(e);
-    window.addEventListener("harness-usage-refresh", onRefresh);
-    try {
-      render(<CostBreakdown data={nowAdviceData} />);
-      fireEvent.click(screen.getByRole("button", { name: "Compact now" }));
-      await waitFor(() =>
-        expect(screen.getByRole("button", { name: "Compacted" })).toBeInTheDocument(),
-      );
-      expect(refreshes).toHaveLength(1);
-    } finally {
-      window.removeEventListener("harness-usage-refresh", onRefresh);
-    }
-  });
-
-  it("shows Retry compact when the backend reports a no-op", async () => {
-    mockCompactSession.mockResolvedValue({
-      ok: false,
-      compacted: false,
-      before_tokens: 1000,
-      after_tokens: 1000,
-      error: "no compaction occurred",
-    });
-    const refreshes: Event[] = [];
-    const onRefresh = (e: Event) => refreshes.push(e);
-    window.addEventListener("harness-usage-refresh", onRefresh);
-    try {
-      render(<CostBreakdown data={nowAdviceData} />);
-      fireEvent.click(screen.getByRole("button", { name: "Compact now" }));
-      await waitFor(() =>
-        expect(screen.getByRole("button", { name: "Retry compact" })).toBeInTheDocument(),
-      );
-      expect(screen.queryByRole("button", { name: "Compacted" })).not.toBeInTheDocument();
-      expect(refreshes).toHaveLength(0);
-    } finally {
-      window.removeEventListener("harness-usage-refresh", onRefresh);
-    }
-  });
-
-  it("shows calm Already compact copy for no_compactable_history", async () => {
-    mockCompactSession.mockRejectedValue(
-      Object.assign(new Error("Recent turn is already compact"), {
-        ok: false,
-        compacted: false,
-        reason: "no_compactable_history",
-        status: 409,
-      }),
-    );
-    const refreshes: Event[] = [];
-    const onRefresh = (e: Event) => refreshes.push(e);
-    window.addEventListener("harness-usage-refresh", onRefresh);
-    try {
-      render(<CostBreakdown data={nowAdviceData} />);
-      fireEvent.click(screen.getByRole("button", { name: "Compact now" }));
-      await waitFor(() =>
-        expect(screen.getByText("Already compact")).toBeInTheDocument(),
-      );
-      expect(screen.getByText("Recent turn is already compact.")).toBeInTheDocument();
-      expect(screen.queryByRole("button", { name: "Compact now" })).not.toBeInTheDocument();
-      expect(screen.queryByRole("button", { name: "Retry compact" })).not.toBeInTheDocument();
-      // Refresh pulls the backend ack so reopen does not restore Needs attention.
-      expect(refreshes).toHaveLength(1);
-    } finally {
-      window.removeEventListener("harness-usage-refresh", onRefresh);
-    }
-  });
-
-  it("shows Retry compact when the request itself fails", async () => {
-    mockCompactSession.mockRejectedValue(new Error("/api/session/compact -> 409"));
-    render(<CostBreakdown data={nowAdviceData} />);
-    fireEvent.click(screen.getByRole("button", { name: "Compact now" }));
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Retry compact" })).toBeInTheDocument(),
-    );
-  });
-
-  it("falls back to token delta for legacy responses without a compacted flag", async () => {
-    mockCompactSession.mockResolvedValue({ ok: true, before_tokens: 1000, after_tokens: 1000 });
-    render(<CostBreakdown data={nowAdviceData} />);
-    fireEvent.click(screen.getByRole("button", { name: "Compact now" }));
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Retry compact" })).toBeInTheDocument(),
-    );
-  });
-
-  it("renders model selection and routing decision rows when both differ", () => {
-    render(
-      <CostBreakdown
-        data={{
-          tokens_used: 1000,
+          tokens_used: 1_000,
           est_cost_usd: 0.70,
-          tokens_cached: 50_000,
-          cache_savings_usd: 0.02,
           cache_savings_gross_usd: 0.02,
+          cache_savings_basis: "catalog",
           delegation_saved_usd: 0.40,
           delegation_savings_basis: "actual_usage",
           routing_saved_usd: 0.02,
           routing_savings_basis: "actual_usage",
-          cache_saved_usd_swarm: 0.05,
         }}
       />,
     );
 
-    expect(screen.getByText("Model selection value")).toBeInTheDocument();
-    const modelRow = screen.getByText("Model selection value").closest("div");
-    expect(within(modelRow!).getByText("~$0.40")).toBeInTheDocument();
-    expect(screen.getByText("Routing decision value")).toBeInTheDocument();
-    expect(screen.getByText("Prompt-cache value")).toBeInTheDocument();
-    expect(screen.queryByText("Routing value")).not.toBeInTheDocument();
-    expect(screen.queryByText("Swarm cache saved")).not.toBeInTheDocument();
-    expect(screen.queryByText(/\(capped\)/)).not.toBeInTheDocument();
-    const cacheRow = screen.getByText("Prompt-cache value").closest("div");
-    // 0.02 pilot gross + 0.05 swarm = ~$0.07
-    expect(within(cacheRow!).getByText("~$0.07")).toBeInTheDocument();
-    expect(screen.getByText("Tokens from cache")).toBeInTheDocument();
-    expect(screen.getByText(/Not an OpenRouter invoice/i)).toBeInTheDocument();
+    expect(screen.getByText("Model selection value")).toBeTruthy();
+    expect(screen.getByText("Routing decision value")).toBeTruthy();
+    expect(screen.getByText("Prompt-cache value")).toBeTruthy();
   });
 
-  it("omits zero or absent savings rows", () => {
+  it("refuses an unknown routing basis", () => {
     render(
       <CostBreakdown
         data={{
-          tokens_used: 500,
-          est_cost_usd: 0.01,
-          routing_saved_usd: 0,
-          cache_saved_usd_swarm: 0,
-        }}
-      />,
-    );
-
-    expect(screen.getByText("Estimated spend")).toBeInTheDocument();
-    expect(screen.queryByText("Prompt-cache value")).not.toBeInTheDocument();
-    expect(screen.queryByText("Model selection value")).not.toBeInTheDocument();
-    expect(screen.queryByText("Routing value")).not.toBeInTheDocument();
-    expect(screen.queryByText("Swarm cache saved")).not.toBeInTheDocument();
-    expect(screen.queryByText("Compact tool outputs saved")).not.toBeInTheDocument();
-    expect(
-      screen.getByText(/Cash is this app run/i),
-    ).toBeInTheDocument();
-  });
-
-  it("marks default-rate spend as estimated and labels it", () => {
-    expect(spendIsEstimated({ cost_source: "estimated", price_source: "default" })).toBe(true);
-    expect(spendIsEstimated({ cost_source: "provider", estimated: false })).toBe(false);
-    render(
-      <CostBreakdown
-        data={{
-          tokens_used: 1000,
-          est_cost_usd: 0.05,
-          cost_source: "estimated",
-          price_source: "default",
-          estimated: true,
-        }}
-      />,
-    );
-    expect(screen.getByText("Estimated spend (default rates)")).toBeInTheDocument();
-    expect(screen.getByText("~$0.05")).toBeInTheDocument();
-  });
-
-  it("labels unknown OpenRouter rates without fabricating spend copy", () => {
-    expect(spendIsEstimated({ cost_source: "estimated", price_source: "unknown" })).toBe(true);
-    render(
-      <CostBreakdown
-        data={{
-          tokens_used: 1000,
-          est_cost_usd: 0.01,
-          cost_source: "estimated",
-          price_source: "unknown",
-          estimated: true,
-        }}
-      />,
-    );
-    expect(screen.getByText("Spend (rates unavailable)")).toBeInTheDocument();
-    expect(screen.getByText("~$0.01")).toBeInTheDocument();
-  });
-
-  it("prefers uncapped gross cache value over reconciled/capped", () => {
-    render(
-      <CostBreakdown
-        data={{
-          tokens_used: 1000,
+          tokens_used: 1_000,
           est_cost_usd: 0.10,
-          cost_source: "provider",
-          estimated: false,
-          tokens_cached: 50_000,
-          cache_savings_usd: 0.05,
-          cache_savings_gross_usd: 0.90,
-          cache_savings_basis: "capped",
+          routing_saved_usd: 1.25,
+          routing_savings_basis: "unknown",
         }}
       />,
     );
-    expect(screen.getByText("Billed spend")).toBeInTheDocument();
-    expect(screen.getByText("Prompt-cache value")).toBeInTheDocument();
-    expect(screen.queryByText(/\(capped\)/)).not.toBeInTheDocument();
-    const cacheRow = screen.getByText("Prompt-cache value").closest("div");
-    expect(within(cacheRow!).getByText("~$0.90")).toBeInTheDocument();
-  });
 
-  it("never renders capped label for prompt-cache value", () => {
-    render(
-      <CostBreakdown
-        data={{
-          tokens_used: 1000,
-          est_cost_usd: 0.10,
-          cost_source: "provider",
-          estimated: false,
-          tokens_cached: 50_000,
-          cache_savings_usd: 0.05,
-          cache_savings_basis: "capped",
-        }}
-      />,
-    );
-    expect(screen.queryByText(/\(capped\)/)).not.toBeInTheDocument();
-    expect(screen.getByText("Prompt-cache value")).toBeInTheDocument();
-  });
-
-  it("refuses unknown routing basis as measured list-price value", () => {
-    expect(routingSavingsCredited("unknown", 1.25)).toBe(0);
-    expect(routingSavingsCredited("estimated", 1.25)).toBe(1.25);
-    expect(delegationSavingsCredited("unknown", 2)).toBe(0);
-    expect(delegationSavingsCredited("actual_usage", 2)).toBe(2);
-
-    const data: CostBreakdownData = {
-      tokens_used: 1000,
-      est_cost_usd: 0.01,
-      routing_saved_usd: 1.25,
-      routing_savings_basis: "unknown",
-      cache_savings_usd: 0,
-      tool_output_savings_usd: 0,
-    };
-    expect(listPriceValueTotal(data)).toBe(0);
-    render(<CostBreakdown data={data} />);
-    expect(screen.queryByText("Model selection value")).not.toBeInTheDocument();
-    expect(screen.getByText("unknown basis")).toBeInTheDocument();
-    expect(screen.queryByText("Billed spend")).not.toBeInTheDocument();
-  });
-
-  it("labels estimated routing and never treats it as billed", () => {
-    render(
-      <CostBreakdown
-        data={{
-          tokens_used: 1000,
-          est_cost_usd: 0.05,
-          cost_source: "provider",
-          estimated: false,
-          routing_saved_usd: 0.40,
-          routing_savings_basis: "estimated",
-        }}
-      />,
-    );
-    expect(screen.getByText("Billed spend")).toBeInTheDocument();
-    expect(screen.getByText("Model selection value (est.)")).toBeInTheDocument();
-    const modelRow = screen.getByText("Model selection value (est.)").closest("div");
-    expect(within(modelRow!).getByText("~$0.40")).toBeInTheDocument();
-  });
-
-  it("shows history compaction tokens/thrash and USD only when measured", () => {
-    const { rerender } = render(
-      <CostBreakdown
-        data={{
-          tokens_used: 1000,
-          est_cost_usd: 0.01,
-          history_compactions: 2,
-          history_tokens_saved: 1500,
-          history_cache_bust_tokens: 800,
-          history_thrash_events: 1,
-        }}
-      />,
-    );
-    expect(screen.getByText("History compaction")).toBeInTheDocument();
-    expect(screen.getByText(/1\.5k saved \(2 events\)/)).toBeInTheDocument();
-    expect(screen.getByText(/800 cache bust/)).toBeInTheDocument();
-    expect(screen.getByText(/1 thrash/)).toBeInTheDocument();
-    expect(screen.queryByText(/measured/)).not.toBeInTheDocument();
-
-    rerender(
-      <CostBreakdown
-        data={{
-          tokens_used: 1000,
-          est_cost_usd: 0.01,
-          history_compactions: 1,
-          history_tokens_saved: 500,
-          history_compaction_cost_usd: 0.0123,
-        }}
-      />,
-    );
-    expect(screen.getByText(/\$0\.01 measured/)).toBeInTheDocument();
-  });
-
-  it("does not fold history or standing floor into list-price totals", () => {
-    const data: CostBreakdownData = {
-      tokens_used: 1000,
-      est_cost_usd: 0.01,
-      cache_savings_usd: 0.10,
-      history_compaction_cost_usd: 9.99,
-      standing_economics_basis: "estimated",
-      standing_floor_cost_usd: 5.0,
-      standing_floor_cost_cached_usd: 0.5,
-    };
-    expect(listPriceValueTotal(data)).toBeCloseTo(0.10, 8);
-  });
-
-  it("renders standing economics only when estimated fields are present", () => {
-    render(
-      <CostBreakdown
-        data={{
-          tokens_used: 1000,
-          est_cost_usd: 0.01,
-          standing_economics_basis: "estimated",
-          standing_floor_tokens: 31_000,
-          standing_floor_cost_usd: 0.093,
-          standing_floor_cost_cached_usd: 0.0093,
-          prompt_cache_ttl_ms: 3_600_000,
-          prompt_cache_expires_in_ms: 2_700_000,
-          prompt_cache_state: "warm",
-        }}
-      />,
-    );
-    expect(screen.getByText("Standing context floor (est.)")).toBeInTheDocument();
-    expect(screen.getByText("Prompt-cache TTL (est.)")).toBeInTheDocument();
-    expect(screen.getByText(/warm ·/)).toBeInTheDocument();
-  });
-
-  it("hides standing economics when flag-off omits fields", () => {
-    render(
-      <CostBreakdown
-        data={{
-          tokens_used: 1000,
-          est_cost_usd: 0.01,
-        }}
-      />,
-    );
-    expect(screen.queryByText("Standing context floor (est.)")).not.toBeInTheDocument();
-    expect(screen.queryByText("Prompt-cache TTL (est.)")).not.toBeInTheDocument();
-  });
-
-  it("never claims cached standing floor after TTL expiry", () => {
-    render(
-      <CostBreakdown
-        data={{
-          tokens_used: 1000,
-          est_cost_usd: 0.01,
-          standing_economics_basis: "estimated",
-          standing_floor_cost_usd: 0.09,
-          standing_floor_tokens: 30_000,
-          // Backend omits cached USD when expired; UI must not invent it.
-          prompt_cache_ttl_ms: 3_600_000,
-          prompt_cache_expires_in_ms: 0,
-          prompt_cache_state: "expired",
-        }}
-      />,
-    );
-    expect(screen.getByText("Standing context floor (est.)")).toBeInTheDocument();
-    expect(screen.queryByText(/cached/)).not.toBeInTheDocument();
-    expect(screen.getByText("expired")).toBeInTheDocument();
-  });
-
-  it("shows sub-minute TTL expiry as <1m not 1m", () => {
-    render(
-      <CostBreakdown
-        data={{
-          tokens_used: 1000,
-          est_cost_usd: 0.01,
-          standing_economics_basis: "estimated",
-          standing_floor_cost_usd: 0.09,
-          prompt_cache_ttl_ms: 3_600_000,
-          prompt_cache_expires_in_ms: 45_000,
-          prompt_cache_state: "warm",
-        }}
-      />,
-    );
-    expect(screen.getByText(/warm · ~<1m left/)).toBeInTheDocument();
-    expect(screen.queryByText(/~1m left/)).not.toBeInTheDocument();
-  });
-
-  it("shows honest 90%+ prompt-cache hit from warm lane ratios", () => {
-    render(
-      <CostBreakdown
-        data={{
-          tokens_used: 1_500_000,
-          est_cost_usd: 0.50,
-          tokens_cached: 415_700,
-          prompt_cache_read_tokens: 415_700,
-          prompt_input_tokens: 429_000,
-          prompt_cache_hit_ratio: 0.968,
-          pilot_cache_read_tokens: 200_000,
-          swarm_cache_read_tokens: 215_700,
-        }}
-      />,
-    );
-    expect(screen.getByText(/prompt cache hit/i)).toBeInTheDocument();
-    expect(screen.getByText(/97%/)).toBeInTheDocument();
-    const row = screen.getByText(/prompt cache hit/i).closest("div");
-    expect(row).toHaveAttribute("title", expect.stringMatching(/cache-read ÷ prompt-input/i));
-    expect(row).toHaveAttribute("title", expect.stringMatching(/not cache÷process-total/i));
-  });
-
-  it("omits misleading cache percent when hit ratio is unknown", () => {
-    render(
-      <CostBreakdown
-        data={{
-          tokens_used: 1_500_000,
-          est_cost_usd: 0.50,
-          tokens_cached: 415_700,
-          // Absolute cache reads present, but no input denominator / ratio.
-          prompt_cache_hit_ratio: null,
-          pilot_cache_hit_ratio: null,
-          swarm_cache_hit_ratio: null,
-        }}
-      />,
-    );
-    expect(screen.getByText("Tokens from cache")).toBeInTheDocument();
-    expect(screen.queryByText(/%/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/prompt cache hit/i)).not.toBeInTheDocument();
+    expect(screen.getByText("unknown basis")).toBeTruthy();
+    expect(screen.queryByText("Why you saved")).toBeNull();
   });
 });
 
-describe("formatCacheHitPercent / cacheHitDisplay", () => {
-  it("formats warm ratios at 90%+", () => {
-    expect(formatCacheHitPercent(0.968)).toBe("97%");
-    expect(formatCacheHitPercent(0.866)).toBe("87%");
+describe("CostBreakdown accounting helpers", () => {
+  it("credits only supported routing and delegation bases", () => {
+    expect(routingSavingsCredited("actual_usage", 1.2)).toBe(1.2);
+    expect(routingSavingsCredited("estimated", 1.2)).toBe(1.2);
+    expect(routingSavingsCredited("unknown", 1.2)).toBe(0);
+    expect(delegationSavingsCredited("actual_usage", 1.2)).toBe(1.2);
+    expect(delegationSavingsCredited("estimated", 1.2)).toBe(0);
+    expect(delegationSavingsCredited("unknown", 1.2)).toBe(0);
   });
 
-  it("returns null for unknown, zero, or invalid (>1) ratios", () => {
+  it("keeps additive value mechanisms separate and labels the weakest basis", () => {
+    const data: CostBreakdownData = {
+      tokens_used: 1_000,
+      est_cost_usd: 0.10,
+      cache_savings_gross_usd: 2.50,
+      cache_savings_basis: "catalog",
+      cache_saved_usd_swarm: 0.90,
+      swarm_cache_savings_basis: "actual_usage",
+      delegation_saved_usd: 0.42,
+      delegation_savings_basis: "actual_usage",
+      routing_saved_usd: 9,
+      routing_savings_basis: "estimated",
+      tool_output_savings_usd: 0.76,
+    };
+
+    expect(listPriceValueTotal(data)).toBeCloseTo(4.58, 8);
+    expect(listPriceValueWeakestBasis(data)).toBe("estimated");
+    expect(listPriceValueHeading("estimated")).toBe("List-price value (est.)");
+    expect(listPriceValueHeading("partial")).toBe("List-price value (partial)");
+  });
+
+  it("does not replace measured-zero delegation with a routing estimate", () => {
+    const data: CostBreakdownData = {
+      tokens_used: 1_000,
+      est_cost_usd: 0.10,
+      delegation_saved_usd: 0,
+      delegation_savings_basis: "actual_usage",
+      routing_saved_usd: 5,
+      routing_savings_basis: "estimated",
+    };
+
+    expect(listPriceValueTotal(data)).toBe(0);
+  });
+
+  it("classifies spend estimates conservatively", () => {
+    expect(spendIsEstimated({ cost_source: "estimated", price_source: "default" })).toBe(true);
+    expect(spendIsEstimated({ cost_source: "provider", estimated: false })).toBe(false);
+    expect(spendIsEstimated({ cost_source: "mixed", estimated: true })).toBe(true);
+  });
+});
+
+describe("cache hit helpers", () => {
+  it("formats valid warm ratios and rejects unknown or invalid values", () => {
+    expect(formatCacheHitPercent(0.90)).toBe("90%");
+    expect(formatCacheHitPercent(0.995)).toBe("100%");
     expect(formatCacheHitPercent(null)).toBeNull();
-    expect(formatCacheHitPercent(undefined)).toBeNull();
-    expect(formatCacheHitPercent(Number.NaN)).toBeNull();
     expect(formatCacheHitPercent(0)).toBeNull();
-    expect(formatCacheHitPercent(1.2)).toBeNull();
+    expect(formatCacheHitPercent(1.01)).toBeNull();
   });
 
-  it("prefers combined prompt ratio then lane ratios when reads exist", () => {
-    expect(
-      cacheHitDisplay({
-        prompt_cache_hit_ratio: 0.95,
-        pilot_cache_hit_ratio: 0.9,
-        swarm_cache_hit_ratio: 0.8,
-        tokens_cached: 10_000,
-      }).percent,
-    ).toBe("95%");
-    expect(
-      cacheHitDisplay({
-        prompt_cache_hit_ratio: null,
-        pilot_cache_hit_ratio: 0.968,
-        swarm_cache_hit_ratio: 0.5,
-        pilot_cache_read_tokens: 200_000,
-      }).label,
-    ).toBe("pilot cache");
-    expect(
-      cacheHitDisplay({
-        prompt_cache_hit_ratio: null,
-        pilot_cache_hit_ratio: null,
-        swarm_cache_hit_ratio: null,
-        tokens_cached: 10_000,
-      }).percent,
-    ).toBeNull();
-  });
+  it("prefers the combined prompt ratio, then a priced lane with reads", () => {
+    expect(cacheHitDisplay({
+      prompt_cache_hit_ratio: 0.92,
+      prompt_cache_read_tokens: 92_000,
+      pilot_cache_hit_ratio: 0.70,
+      pilot_cache_read_tokens: 7_000,
+    }).percent).toBe("92%");
 
-  it("suppresses a green 0% chip when cache reads are zero", () => {
-    expect(
-      cacheHitDisplay({
-        prompt_cache_hit_ratio: 0,
-        pilot_cache_hit_ratio: 0,
-        swarm_cache_hit_ratio: 0,
-        tokens_cached: 0,
-        prompt_cache_read_tokens: 0,
-      }).percent,
-    ).toBeNull();
-  });
+    expect(cacheHitDisplay({
+      prompt_cache_hit_ratio: null,
+      prompt_cache_read_tokens: 0,
+      pilot_cache_hit_ratio: 0.75,
+      pilot_cache_read_tokens: 7_500,
+    }).percent).toBe("75%");
 
-  it("keeps absolute read count reconciliation in the cache row", () => {
-    render(
-      <CostBreakdown
-        data={{
-          tokens_used: 100_000,
-          est_cost_usd: 0.10,
-          tokens_cached: 70_000,
-          prompt_cache_read_tokens: 70_000,
-          prompt_input_tokens: 100_000,
-          prompt_cache_hit_ratio: 0.7,
-          pilot_cache_read_tokens: 70_000,
-          swarm_cache_read_tokens: 0,
-        }}
-      />,
-    );
-    const row = screen.getByText(/prompt cache hit/i).closest("div");
-    expect(row).toHaveTextContent(/70%/);
-    expect(row).toHaveTextContent(/70k read/i);
+    expect(cacheHitDisplay({
+      prompt_cache_hit_ratio: 0,
+      prompt_cache_read_tokens: 0,
+      tokens_cached: 0,
+    }).percent).toBeNull();
   });
 });

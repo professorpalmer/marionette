@@ -6,6 +6,15 @@ import { readSWRCache, writeSWRCache } from "../lib/useStaleWhileRevalidate";
 import CostBreakdown, { usageToCostBreakdownData } from "./CostBreakdown";
 import EconomicsDurable from "./EconomicsDurable";
 
+type EconomicsPaneScope = "app_run" | Exclude<EconomicsScope, "window30">;
+
+const SCOPES: Array<{ value: EconomicsPaneScope; label: string }> = [
+  { value: "app_run", label: "This app run" },
+  { value: "conversation", label: "This conversation" },
+  { value: "repo", label: "This repo" },
+  { value: "all_projects", label: "All projects" },
+];
+
 function isEconomicsPayload(data: unknown): data is EconomicsData {
   return Boolean(data && typeof data === "object" && "available" in (data as object));
 }
@@ -16,7 +25,7 @@ export default function EconomicsPane() {
     () => readSWRCache<UsageData>("economics:usage")?.session ?? null,
   );
   const [error, setError] = useState<string | null>(null);
-  const [scope, setScope] = useState<EconomicsScope>("repo");
+  const [scope, setScope] = useState<EconomicsPaneScope>("repo");
   const [periodDays, setPeriodDays] = useState<30 | null>(null);
   const [economics, setEconomics] = useState<EconomicsData | null>(
     () => readSWRCache<EconomicsData>("economics:repo:all") ?? null,
@@ -37,7 +46,9 @@ export default function EconomicsPane() {
       });
 
   const loadEconomics = () =>
-    Promise.resolve(api.getEconomics(scope, periodDays ?? "all"))
+    scope === "app_run"
+      ? Promise.resolve()
+      : Promise.resolve(api.getEconomics(scope, periodDays ?? "all"))
       .then((data) => {
         if (isEconomicsPayload(data) && (!data.scope || data.scope === scope)) {
           writeSWRCache(`economics:${scope}:${periodDays || "all"}`, data);
@@ -83,23 +94,33 @@ export default function EconomicsPane() {
   }
   return (
     <div className="flex flex-col h-full overflow-hidden bg-transparent">
-      <div className="shrink-0 max-h-[45%] overflow-y-auto">
-        <CostBreakdown data={usageToCostBreakdownData(session)} />
-      </div>
-      <div className="shrink-0 flex items-center px-3 py-2 border-y border-[var(--shell-panel-border)] select-none">
-        <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-faint font-semibold">
+      <div className="shrink-0 flex items-center px-3 py-2 border-b border-[var(--shell-panel-border)] select-none">
+        <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-faint font-semibold mr-auto">
           <CircleDollarSign size={11} className="text-faint/70" />
           <span>Economics</span>
         </div>
+        <select
+          className="bg-transparent text-[11px] text-txt"
+          value={scope}
+          onChange={(event) => setScope(event.target.value as EconomicsPaneScope)}
+          aria-label="Economics ownership"
+        >
+          {SCOPES.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
+        </select>
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto">
-        <EconomicsDurable
-          data={economics}
-          scope={scope}
-          onScopeChange={setScope}
-          periodDays={periodDays}
-          onPeriodChange={setPeriodDays}
-        />
+        {scope === "app_run" ? (
+          <CostBreakdown data={usageToCostBreakdownData(session)} />
+        ) : (
+          <EconomicsDurable
+            data={economics}
+            scope={scope}
+            periodDays={periodDays}
+            onPeriodChange={setPeriodDays}
+          />
+        )}
       </div>
     </div>
   );
