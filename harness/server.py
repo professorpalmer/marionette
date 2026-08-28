@@ -2962,6 +2962,7 @@ def _settings_compaction_residual():
 
 
 def _get_settings_dict():
+    from harness.browser_real_profile import real_profile_enabled
     from harness.hash_edit import hash_edit_enabled
     from harness.reasoning_effort import current_reasoning_effort
     from harness.session_trace import session_trace_export_enabled
@@ -2989,6 +2990,7 @@ def _get_settings_dict():
         "autoVerify": getattr(_cfg, "auto_verify", True),
         "verifyCommand": getattr(_cfg, "verify_command", ""),
         "autoCommandGuard": getattr(_pilot, "_auto_command_guard", True),
+        "browserRealProfile": real_profile_enabled(),
         "hash_edit_enabled": hash_edit_enabled(),
         "session_trace_export": session_trace_export_enabled(),
         "commandTimeout": (os.environ.get("HARNESS_COMMAND_TIMEOUT", "").strip() or "120"),

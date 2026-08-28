@@ -1345,6 +1345,7 @@ def test_step0_overflow_retry_keeps_turn_once_phases(monkeypatch, tmp_path):
     )
 
     compact_calls = []
+    _pad = {"role": "user", "content": "X" * 1000}
 
     cfg = HarnessConfig(
         driver="stub-oracle-v2",
@@ -1354,9 +1355,13 @@ def test_step0_overflow_retry_keeps_turn_once_phases(monkeypatch, tmp_path):
     session = ConversationalSession(cfg)
     monkeypatch.setattr(session, "_resolve_append_only", lambda: False)
     session._get_codegraph_context = lambda msg: ""
+    session._history.append(_pad)
 
     def _spy_compact(force=False, emergency=False):
         compact_calls.append({"force": force, "emergency": emergency})
+        # One-shot byte drop so overflow retry scores progress (413 is bytes).
+        if emergency and _pad in session._history:
+            session._history.remove(_pad)
         if False:
             yield None
 

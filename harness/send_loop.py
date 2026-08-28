@@ -172,6 +172,9 @@ def profile_skips_auto_inject(session: Any) -> tuple[bool, bool]:
 # After emergency compact, a remaining "overflow" on a tiny history is almost
 # always a misclassified provider 400 (completion max_tokens), not a window blow.
 OVERFLOW_RETRY_SMALL_CONTEXT_TOKENS = 16_000
+# HTTP 413 is a byte-size error. Retry while serialized history shrinks, not
+# forever and not on a flat token heuristic (images are priced cheap).
+OVERFLOW_RETRY_MAX_ATTEMPTS = 3
 
 
 def format_overflow_persist_error(
@@ -202,6 +205,50 @@ def format_overflow_persist_error(
             "after compaction. Start a fresh session or pick a "
             "longer-context model."
         )
+
+
+def iter_overflow_byte_recovery(session, resp, attempt, timing):
+    """Emergency-compact after CONTEXT_OVERFLOW; retry only if bytes drop.
+
+    Yields compaction (and possibly persist-error) events. Return value is
+    True when the caller should ``continue`` the provider loop.
+    """
+    from .conversation import ConvEvent
+    from .context_budget import serialized_history_bytes
+
+    def _persist():
+        try:
+            est = int(session._estimate_context_tokens() or 0)
+        except Exception:
+            est = 0
+        return ConvEvent("error", {
+            "error": format_overflow_persist_error(
+                (getattr(resp, "error", None) or ""),
+                est,
+                session._humanize_pilot_error,
+            ),
+        })
+
+    if attempt >= OVERFLOW_RETRY_MAX_ATTEMPTS - 1:
+        yield _persist()
+        return False
+    try:
+        bytes_before = serialized_history_bytes(session._history)
+    except Exception:
+        bytes_before = 0
+    reset_provider_step_timing(timing)
+    yield from yield_timed_phase(
+        timing, "advisory_compaction",
+        session._maybe_compact_history(force=True, emergency=True),
+    )
+    try:
+        bytes_after = serialized_history_bytes(session._history)
+    except Exception:
+        bytes_after = bytes_before
+    if bytes_after >= bytes_before:
+        yield _persist()
+        return False
+    return True
 
 
 class SendLoopMixin:
@@ -1197,7 +1244,7 @@ class SendLoopMixin:
 
             resp = None
             self._streamed_prose = ""  # reset per step; set if this step streams
-            for attempt in range(2):
+            for attempt in range(OVERFLOW_RETRY_MAX_ATTEMPTS):
                 # Sanitize BEFORE rendering/dispatch so both chat() and
                 # complete() see healed tool_use/tool_result pairs. (A prior
                 # interrupted spree — cancel/steer/worker-ceiling/exception —
@@ -1275,30 +1322,12 @@ class SendLoopMixin:
                     from pmharness.drivers import error_classifier
                     err_cls = error_classifier.classify(None, resp.error)
                     if err_cls == error_classifier.ErrorClass.CONTEXT_OVERFLOW:
-                        if attempt == 0:
-                            # Reset this attempt's provider marks only —
-                            # keep closed turn-once pre-request durations.
-                            reset_provider_step_timing(timing)
-                            yield from yield_timed_phase(
-                                timing, "advisory_compaction",
-                                self._maybe_compact_history(
-                                    force=True, emergency=True,
-                                ),
-                            )
+                        retry = yield from iter_overflow_byte_recovery(
+                            self, resp, attempt, timing,
+                        )
+                        if retry:
                             continue
-                        else:
-                            try:
-                                est = int(self._estimate_context_tokens() or 0)
-                            except Exception:
-                                est = 0
-                            yield ConvEvent("error", {
-                                "error": format_overflow_persist_error(
-                                    resp.error or "",
-                                    est,
-                                    self._humanize_pilot_error,
-                                ),
-                            })
-                            return
+                        return
 
                 # If there's no error or it is not context overflow, we're done
                 break

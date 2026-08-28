@@ -452,13 +452,17 @@ def test_overflow_failed_and_retry_are_separate_attempts(monkeypatch, tmp_path):
             return DriverResponse(text="summary", tokens_out=1, latency_ms=1.0)
 
     compact_calls = []
+    _pad = {"role": "user", "content": "X" * 1000}
 
     def _spy_compact(force=False, emergency=False):
         compact_calls.append({"force": force, "emergency": emergency})
+        if emergency and _pad in session._history:
+            session._history.remove(_pad)
         if False:
             yield None
 
     session = _send_session(tmp_path, monkeypatch, OverflowThenOk(), sid="sess-ovf")
+    session._history.append(_pad)
     monkeypatch.setattr(session, "_maybe_compact_history", _spy_compact)
     events = list(session.send("audit overflow receipts"))
     assert not any(getattr(e, "kind", None) == "error" for e in events)
@@ -797,13 +801,17 @@ def test_persistent_overflow_records_both_attempts(monkeypatch, tmp_path):
             return DriverResponse(text="summary", tokens_out=1, latency_ms=1.0)
 
     compact_calls = []
+    _pad = {"role": "user", "content": "X" * 1000}
 
     def _spy_compact(force=False, emergency=False):
         compact_calls.append({"force": force, "emergency": emergency})
+        if emergency and _pad in session._history:
+            session._history.remove(_pad)
         if False:
             yield None
 
     session = _send_session(tmp_path, monkeypatch, DoubleOverflow(), sid="sess-ovf-persist")
+    session._history.append(_pad)
     monkeypatch.setattr(session, "_maybe_compact_history", _spy_compact)
     events = list(session.send("overflow twice"))
     assert any(getattr(e, "kind", None) == "error" for e in events)

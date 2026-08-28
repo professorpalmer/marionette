@@ -27,7 +27,14 @@ def test_view_image_schema():
     schemas_normal = build_tools_schema(no_delegation=False)
     normal_names = [s["function"]["name"] for s in schemas_normal]
     assert "view_image" in normal_names
-    
+    view_fn = next(s["function"] for s in schemas_normal if s["function"]["name"] == "view_image")
+    desc = view_fn["description"]
+    desc_l = desc.lower()
+    assert "precise text description" not in desc_l
+    mentions_pixels_or_see = "pixel" in desc_l or "see" in desc_l
+    mentions_native_vs_sidecar = "native" in desc_l or "sidecar" in desc_l
+    assert mentions_pixels_or_see or mentions_native_vs_sidecar
+
     schemas_worker = build_tools_schema(no_delegation=True)
     worker_names = [s["function"]["name"] for s in schemas_worker]
     assert "view_image" in worker_names

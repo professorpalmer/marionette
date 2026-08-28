@@ -1289,7 +1289,7 @@ def build_tools_schema(
         "type": "function",
         "function": {
             "name": "view_image",
-            "description": "View/describe an image file (screenshot, diagram, photo, mockup). Use this to SEE an image referenced in the task or repo -- it is transcribed to a precise text description you can reason over. Requires path (path to a .png/.jpg/.jpeg/.webp image, relative to the repo or absolute).",
+            "description": "View an image file. Path required. Native-vision pilots see the image; text-only pilots get a sidecar transcription.",
             "parameters": {
                 "type": "object",
                 "properties": {

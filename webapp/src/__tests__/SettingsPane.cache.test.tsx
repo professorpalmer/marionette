@@ -148,4 +148,13 @@ describe("toSafeSettingsSnapshot", () => {
     const stored = JSON.parse(localStorage.getItem(SETTINGS_SNAPSHOT_KEY)!);
     expect(stored.settings.pilotToolBudget).toBe("25");
   });
+
+  it("includes browserRealProfile in safe snapshot fields", () => {
+    const raw = { ...sampleSettings, browserRealProfile: true };
+    const safe = toSafeSettingsSnapshot(raw);
+    expect(safe.browserRealProfile).toBe(true);
+    writeSettingsSnapshot(raw);
+    const stored = JSON.parse(localStorage.getItem(SETTINGS_SNAPSHOT_KEY)!);
+    expect(stored.settings.browserRealProfile).toBe(true);
+  });
 });

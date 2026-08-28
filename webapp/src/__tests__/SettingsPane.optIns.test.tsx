@@ -35,6 +35,7 @@ const sampleSettings: Settings = {
   reviewEditsBeforeApply: false,
   hash_edit_enabled: false,
   autoVerify: true,
+  browserRealProfile: false,
   compactionResidual: "catalog",
   state_dir: "/tmp/state",
   repo: "/tmp/repo",
@@ -62,6 +63,25 @@ describe("SettingsPane Opt-ins section", () => {
     fireEvent.click(screen.getByTestId("settings-opt-in-reviewEditsBeforeApply"));
     await waitFor(() => {
       expect(mockUpdate).toHaveBeenCalledWith({ reviewEditsBeforeApply: true });
+    });
+  });
+});
+
+describe("SettingsPane Safety Chrome login", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    writeSettingsSnapshot(sampleSettings);
+    mockSettings.mockResolvedValue(sampleSettings);
+    mockUpdate.mockImplementation(async (partial) => ({ ...sampleSettings, ...partial }));
+  });
+
+  it("toggles browserRealProfile from Safety", async () => {
+    render(<SettingsPane onOpenWizard={vi.fn()} section="safety" />);
+
+    expect(await screen.findByText("Use my Chrome login")).toBeTruthy();
+    fireEvent.click(screen.getByText("Use my Chrome login"));
+    await waitFor(() => {
+      expect(mockUpdate).toHaveBeenCalledWith({ browserRealProfile: true });
     });
   });
 });

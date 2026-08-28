@@ -37,6 +37,7 @@ def test_settings_get_returns_expected_shape(monkeypatch):
     # Live developer shells often pin HARNESS_CODEX_REASONING_EFFORT=max;
     # this shape test asserts the factory default, not the host preference.
     monkeypatch.delenv("HARNESS_CODEX_REASONING_EFFORT", raising=False)
+    monkeypatch.delenv("HARNESS_BROWSER_REAL_PROFILE", raising=False)
     httpd, port, srv = _server()
     try:
         resp = _get(port, "/api/settings")
@@ -55,6 +56,8 @@ def test_settings_get_returns_expected_shape(monkeypatch):
         assert data["reasoning_effort"] == "low"
         assert "compactionResidual" in data
         assert data["compactionResidual"] == "catalog"
+        assert "browserRealProfile" in data
+        assert data["browserRealProfile"] is False
         assert "state_dir" in data
         assert "repo" in data
     finally:
@@ -218,5 +221,66 @@ def test_settings_post_persists_compaction_residual(tmp_path, monkeypatch):
         )
         assert restore_resp.status == 200
         assert json.loads(restore_resp.read().decode())["compactionResidual"] == "summary"
+    finally:
+        httpd.shutdown()
+
+
+def test_settings_post_persists_browser_real_profile(tmp_path, monkeypatch):
+    import os
+
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    monkeypatch.delenv("HARNESS_BROWSER_REAL_PROFILE", raising=False)
+    monkeypatch.setattr(
+        "harness.browser_real_profile.Path.home",
+        classmethod(lambda cls: tmp_path / "home"),
+    )
+    cleaned = []
+    real_cleanup = __import__(
+        "harness.browser_real_profile", fromlist=["cleanup_real_profile_snapshots"]
+    ).cleanup_real_profile_snapshots
+
+    def _cleanup():
+        cleaned.append(True)
+        real_cleanup()
+
+    monkeypatch.setattr(
+        "harness.browser_real_profile.cleanup_real_profile_snapshots",
+        _cleanup,
+    )
+    httpd, port, srv = _server()
+    try:
+        assert json.loads(_get(port, "/api/settings").read().decode())[
+            "browserRealProfile"
+        ] is False
+
+        post_resp = _post(
+            port,
+            "/api/settings",
+            {"browserRealProfile": True},
+            {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN},
+        )
+        assert post_resp.status == 200
+        post_data = json.loads(post_resp.read().decode())
+        assert post_data["browserRealProfile"] is True
+        assert os.environ.get("HARNESS_BROWSER_REAL_PROFILE") == "1"
+
+        env_path = os.path.join(str(tmp_path), "env_settings.json")
+        with open(env_path, encoding="utf-8") as f:
+            persisted = json.load(f)
+        assert persisted["HARNESS_BROWSER_REAL_PROFILE"] == "1"
+
+        off_resp = _post(
+            port,
+            "/api/settings",
+            {"browserRealProfile": False},
+            {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN},
+        )
+        assert off_resp.status == 200
+        assert json.loads(off_resp.read().decode())["browserRealProfile"] is False
+        assert os.environ.get("HARNESS_BROWSER_REAL_PROFILE") == "0"
+        assert cleaned == [True]
+        with open(env_path, encoding="utf-8") as f:
+            persisted = json.load(f)
+        assert persisted["HARNESS_BROWSER_REAL_PROFILE"] == "0"
     finally:
         httpd.shutdown()

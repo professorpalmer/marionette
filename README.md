@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.37` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.371, deliberately pre-1.0. Rides puppetmaster-ai==1.22.37. Pi TUI/pilot package (not a worker adapter).
+> Status: v0.9.372, deliberately pre-1.0. Rides puppetmaster-ai==1.22.37. Pi TUI/pilot package (not a worker adapter).
 
 ## Documentation
 
@@ -260,6 +260,7 @@ The driver and keys are set in the app (Settings pane) or via env. Key vars:
 | `HARNESS_COMPACTION_RESIDUAL` | Compact residual. Default `catalog` (also the empty/invalid fallback). Settings cycle: catalog, hybrid, summary. `off` is env-only. |
 | `HARNESS_COMPACTION_VAULT` | SQLite FTS retrieve of compacted history (default on). Set `0` to disable inject. |
 | `HARNESS_AUTO_COMMAND_GUARD` | Full-auto danger guard; default on, off to disable. |
+| `HARNESS_BROWSER_REAL_PROFILE` | Consent-gated copy of last-used Chrome/Chromium login data into `~/.pmharness/browser-profile-real`. Default off. Settings > Safety: Use my Chrome login. |
 | `HARNESS_WIKI_ORCHESTRATE` | Local wiki structuring: unset (off), 1/approve (prepare-and-approve), auto (silent ingest). |
 | `HARNESS_AUTO_MAX_SWARMS` / `_TOKENS` / `_SECONDS` / `_MAX_IDLE` | Full-auto budget governor ceilings. |
 | `HARNESS_APPEND_ONLY_CONTEXT` | Force append-only KV-cache context mode (auto-detected for local/cache-discounting endpoints when unset). |

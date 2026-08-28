@@ -1,4 +1,6 @@
 import os
+import copy
+import json
 import math
 import hashlib
 import logging
@@ -41,6 +43,74 @@ def truncate_bytes(content: str, max_bytes: int) -> str:
         return content
     # Decode the leading max_bytes, dropping any partial trailing character.
     return encoded[:max_bytes].decode("utf-8", errors="ignore")
+
+
+def serialized_history_bytes(messages: Any) -> int:
+    """UTF-8 byte length of json-serialized history. Never raises.
+
+    HTTP 413 is a byte-size error. Inline data-URL image payloads dominate
+    that budget and must be counted exactly — token heuristics price images
+    cheap and will report "no progress" after a compact that freed megabytes.
+    """
+    try:
+        if not isinstance(messages, (list, tuple)):
+            return 0
+        payload = json.dumps(messages, default=str, ensure_ascii=False)
+        return len(payload.encode("utf-8"))
+    except Exception:
+        return 0
+
+
+_IMAGE_REMOVED_DURING_COMPACTION = "[image removed during compaction]"
+
+
+def _is_image_url_part(part: Any) -> bool:
+    return isinstance(part, dict) and part.get("type") == "image_url"
+
+
+def age_history_images(messages: Any, keep_last_user: bool = True) -> list:
+    """Replace stale ``image_url`` parts with a text marker. Copies only.
+
+    Walks each message; list-of-parts content has ``image_url`` parts swapped
+    for ``{"type": "text", "text": "[image removed during compaction]"}``.
+    When ``keep_last_user`` is True, image parts on the most recent user
+    message are kept (the live tail the model still needs to see).
+    """
+    if not isinstance(messages, list):
+        return []
+    try:
+        last_user_idx = -1
+        if keep_last_user:
+            for i in range(len(messages) - 1, -1, -1):
+                msg = messages[i]
+                if isinstance(msg, dict) and msg.get("role") == "user":
+                    last_user_idx = i
+                    break
+        aged: list = []
+        for i, msg in enumerate(messages):
+            if not isinstance(msg, dict):
+                aged.append(copy.deepcopy(msg))
+                continue
+            cloned = copy.deepcopy(msg)
+            if keep_last_user and i == last_user_idx:
+                aged.append(cloned)
+                continue
+            content = cloned.get("content")
+            if isinstance(content, list):
+                cloned["content"] = [
+                    (
+                        {"type": "text", "text": _IMAGE_REMOVED_DURING_COMPACTION}
+                        if _is_image_url_part(part)
+                        else part
+                    )
+                    for part in content
+                ]
+            aged.append(cloned)
+        return aged
+    except Exception:
+        # Never hand the caller an empty list for a non-empty history
+        # (emergency compact assigns this onto `_history`).
+        return list(messages) if isinstance(messages, list) else []
 
 
 def content_hash(content: str, length: int = 12) -> str:

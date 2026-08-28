@@ -210,6 +210,16 @@ def post_settings(body: dict, svc: SettingsServices) -> tuple[int, JsonPayload]:
         g_val = svc.parse_bool(body["autoCommandGuard"])
         pilot._auto_command_guard = g_val
         _set_env_setting("HARNESS_AUTO_COMMAND_GUARD", "true" if g_val else "off")
+    if "browserRealProfile" in body:
+        rp_val = svc.parse_bool(body["browserRealProfile"])
+        _set_env_setting("HARNESS_BROWSER_REAL_PROFILE", "1" if rp_val else "0")
+        if not rp_val:
+            from ..browser_real_profile import cleanup_real_profile_snapshots
+            cleanup_real_profile_snapshots()
+        else:
+            # Drop a process-lifetime isolated-profile bind so the next
+            # browser launch re-resolves through snapshot_real_profile.
+            os.environ.pop("PM_BROWSER_USER_DATA_DIR", None)
     if "autoVerify" in body:
         av_val = svc.parse_bool(body["autoVerify"])
         cfg.auto_verify = av_val

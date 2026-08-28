@@ -486,28 +486,33 @@ def test_advisory_compact_once_per_user_turn_not_per_tool_step(monkeypatch, tmp_
     import inspect
     import json
 
+    from harness.send_loop import iter_overflow_byte_recovery
     from pmharness.drivers.openai_compat import DriverResponse
 
     # Call-site contract: advisory compact is before the step loop; emergency
-    # overflow path stays inside the loop. Timing may wrap the advisory call
-    # in yield_timed_phase — do not require the obsolete bare yield-from.
+    # overflow path stays inside the loop (via iter_overflow_byte_recovery).
+    # Timing may wrap the advisory call in yield_timed_phase — do not require
+    # the obsolete bare yield-from.
     src = inspect.getsource(ConversationalSession._send_locked_inner)
     advisory_idx = src.find("self._maybe_compact_history()")
-    force_idx = src.find("emergency=True")
+    force_idx = src.find("iter_overflow_byte_recovery")
     step_loop_idx = src.find("for step in _step_iter:")
     assert advisory_idx != -1, "advisory _maybe_compact_history() must remain"
-    assert force_idx != -1, "CONTEXT_OVERFLOW force=True compact must remain"
+    assert force_idx != -1, "CONTEXT_OVERFLOW recovery must remain in the send loop"
     assert step_loop_idx != -1
     assert advisory_idx < step_loop_idx, (
         "advisory compact must run once before the tool-loop step iterator"
     )
     assert force_idx > step_loop_idx, (
-        "emergency=True overflow compact must stay inside the step loop"
+        "overflow byte recovery must stay inside the step loop"
     )
     # No per-step no-arg advisory call after the loop starts (only emergency).
     after_loop = src[step_loop_idx:]
     assert "self._maybe_compact_history()" not in after_loop
-    assert "emergency=True" in after_loop
+    assert "iter_overflow_byte_recovery" in after_loop
+    helper = inspect.getsource(iter_overflow_byte_recovery)
+    assert "emergency=True" in helper
+    assert "force=True" in helper
 
     class _TwoStepPilot:
         name = "two-step-compact-spy"
@@ -932,6 +937,42 @@ def test_second_compact_does_not_rewrap_previous_historical(monkeypatch):
     summarizer_input = s.pilot.chat_calls[0][0][0]["content"]
     assert "PREVIOUS HISTORICAL CONVERSATION SUMMARY:" not in summarizer_input
     assert "PREVIOUS HISTORICAL CONVERSATION SUMMARY:" not in s._history[1]["content"]
+
+
+def test_emergency_compact_strips_older_image_url():
+    """emergency=True ages stale image_url parts; live last-user images stay."""
+    cfg = HarnessConfig(max_context_tokens=100000)
+    s = ConversationalSession(cfg)
+    s.pilot = MockPilot()  # type: ignore
+    older = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "old shot"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64," + ("B" * 500)},
+            },
+        ],
+    }
+    live = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "live shot"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,LIVE"}},
+        ],
+    }
+    s._history.append(older)
+    s._history.append({"role": "assistant", "content": "ok"})
+    s._history.append(live)
+
+    list(s._maybe_compact_history(emergency=True))
+
+    assert older["content"][1]["type"] == "image_url"
+    aged_older = s._history[1]["content"]
+    assert aged_older[1]["type"] == "text"
+    assert aged_older[1]["text"] == "[image removed during compaction]"
+    assert s._history[-1]["content"][1]["type"] == "image_url"
+    assert s._history[-1]["content"][1]["image_url"]["url"].endswith("LIVE")
 
 
 def test_live_goal_tail_does_not_expand_to_fill_acks(monkeypatch):
