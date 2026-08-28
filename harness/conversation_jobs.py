@@ -168,6 +168,14 @@ def _empty_implement_recovery_eligible(
     """
     if cancelled or not expects_diff or not live_dirty_before:
         return False
+    try:
+        err = str(getattr(res, "error", "") or "").strip().lower()
+    except Exception:
+        err = ""
+    # Engine crash / unavailable / route failure is not a seeded-worktree miss.
+    # Stamping worktree_diff_empty on AGENTIC_ERROR must not launch a second run.
+    if err.startswith("agentic_"):
+        return False
     if not _is_empty_diff_implement_failure(res, expects_diff=True):
         return False
     if _worker_stopped_by_guard_or_budget(res):
@@ -875,10 +883,14 @@ class ConversationJobsMixin:
                     if not expects_diff
                     else "Worker failed to produce patch"
                 )
+                failed_files = [
+                    str(path) for path in (getattr(res, "files_changed", None) or [])
+                    if str(path).strip()
+                ]
                 res_dict = {
                     "job_id": job_id,
                     "applied": False,
-                    "files": [],
+                    "files": failed_files,
                     "tokens_in": _nc_t_in,
                     "tokens_out": _nc_t_out,
                     "tokens_cached": _nc_t_cached,

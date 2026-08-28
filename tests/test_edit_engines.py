@@ -28,6 +28,8 @@ from harness.edit_engines import (
     run_native_edit,
     run_parallel,
     select_edit_engine,
+    _agentic_store_failure_snapshot,
+    _format_agentic_engine_error,
     _summarize_agentic_result,
 )
 from harness.worker import ProviderWorker, WorkerResult
@@ -116,6 +118,49 @@ def _install_agentic_mocks(
     monkeypatch.setattr("puppetmaster.store_factory.create_store", lambda *a, **k: MagicMock())
 
     return storage
+
+
+# --- pure helpers: agentic fail-closed snapshot ---
+
+
+def test_agentic_store_failure_snapshot_prefers_gate_reason():
+    class _Store:
+        def list_jobs(self):
+            return [type("J", (), {"id": "job_1"})()]
+
+        def list_tasks(self, job_id):
+            assert job_id == "job_1"
+            return [type("T", (), {"id": "t1", "role": "implement", "status": "failed"})()]
+
+        def read_events(self, job_id):
+            return [
+                {"event": "worker.failed_task", "payload": {"error": "adapter boom"}},
+                {
+                    "event": "worker.gate_failed",
+                    "payload": {"reason": "require_diff: no PATCH artifact"},
+                },
+            ]
+
+        def list_artifacts(self, job_id):
+            art = type("A", (), {})()
+            art.payload = {"tokens_in": 40, "tokens_out": 12, "failure": "no_model"}
+            return [art]
+
+    snap = _agentic_store_failure_snapshot(_Store())
+    assert snap["job_id"] == "job_1"
+    assert snap["reason"] == "require_diff: no PATCH artifact"
+    assert snap["task_statuses"] == ["implement=failed"]
+    assert snap["tokens_in"] == 40
+    assert snap["tokens_out"] == 12
+    summary = _format_agentic_engine_error(
+        RuntimeError("swarm exited with incomplete tasks"),
+        snap,
+        ["src/lib/scoring/report.ts"],
+    )
+    assert "incomplete tasks" in summary
+    assert "require_diff: no PATCH artifact" in summary
+    assert "tasks: implement=failed" in summary
+    assert "unapplied worktree files: src/lib/scoring/report.ts" in summary
 
 
 # --- pure helpers: _summarize_agentic_result ---
@@ -1005,6 +1050,79 @@ def test_agentic_edit_runtime_exception_returns_agentic_error(monkeypatch):
         assert result.ok is False
         assert result.error == AGENTIC_ERROR
         assert "worktree blew up" in result.summary
+        assert result.managed_worktree_mode == ""
+        assert result.worktree_diff_empty is None
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
+def test_agentic_edit_incomplete_swarm_stamps_provenance_and_gate_reason(monkeypatch):
+    """Orchestrator fail-closed must not look like 'worktree status unavailable'."""
+    repo_dir = create_temp_git_repo()
+    try:
+        cfg = _cfg(repo_dir)
+        monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
+
+        class _BoomOrch:
+            def __init__(self, store):
+                self.store = store
+
+            def run(self, goal, specs=None, **kwargs):
+                payload = ((specs[0].payload if specs else {}) or {})
+                cwd = payload.get("cwd") or ""
+                if cwd:
+                    with open(os.path.join(cwd, "test.txt"), "a", encoding="utf-8") as fh:
+                        fh.write("from-worker\n")
+                job, _created = self.store.create_or_get_job(goal or "g", label="boom")
+                self.store.emit(
+                    job.id,
+                    "worker.gate_failed",
+                    {"reason": "require_diff: no PATCH artifact", "task_id": "t1"},
+                )
+                raise RuntimeError("swarm exited with incomplete tasks")
+
+        monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _BoomOrch)
+        result = run_agentic_edit(cfg, "implement the thing")
+        assert result.ok is False
+        assert result.error == AGENTIC_ERROR
+        assert result.managed_worktree_mode == "managed"
+        assert result.worktree_diff_empty is False
+        assert "test.txt" in (result.files_changed or [])
+        assert (result.patch or "").strip()
+        assert "incomplete tasks" in (result.summary or "")
+        assert "require_diff" in (result.summary or "")
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
+def test_agentic_edit_incomplete_swarm_empty_worktree_is_explicit(monkeypatch):
+    repo_dir = create_temp_git_repo()
+    try:
+        cfg = _cfg(repo_dir)
+        monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
+
+        class _BoomOrch:
+            def __init__(self, store):
+                self.store = store
+
+            def run(self, goal, specs=None, **kwargs):
+                job, _created = self.store.create_or_get_job(goal or "g", label="boom")
+                self.store.emit(
+                    job.id,
+                    "worker.failed_task",
+                    {"error": "adapter boom", "task_id": "t1"},
+                )
+                raise RuntimeError("swarm exited with incomplete tasks")
+
+        monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _BoomOrch)
+        result = run_agentic_edit(cfg, "implement the thing")
+        assert result.ok is False
+        assert result.error == AGENTIC_ERROR
+        assert result.managed_worktree_mode == "managed"
+        assert result.worktree_diff_empty is True
+        assert result.files_changed == []
+        assert "adapter boom" in (result.summary or "")
+        assert "unavailable" not in (result.summary or "").lower()
     finally:
         shutil.rmtree(repo_dir, ignore_errors=True)
 
