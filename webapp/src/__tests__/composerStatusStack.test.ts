@@ -244,6 +244,58 @@ describe("composerStatusStack", () => {
     });
   });
 
+  it("treats truncated command jobs as failed, not running", () => {
+    const now = Date.parse("2026-08-23T12:00:00Z");
+    const job = {
+      id: "local-cmd-trunc",
+      goal: "find ~/.pmharness",
+      source: "harness",
+      status: "truncated",
+      updated_at: now - 1000,
+      job_kind: "run_command",
+      role: "command",
+      adapter: "command",
+      command_preview: "find ~/.pmharness",
+    } as any;
+    expect(visibleCommandJob(job, now)).toMatchObject({
+      id: "local-cmd-trunc",
+      kind: "terminal",
+      state: "failed",
+    });
+  });
+
+  it("lets a truncated live job overlay a still-running command session", () => {
+    const now = Date.parse("2026-08-23T12:00:00Z");
+    const rows = buildComposerStatusStackRows({
+      nowMs: now,
+      swarmJobs: [{
+        id: "local-cmd-e35cf193",
+        goal: "find ~/.pmharness",
+        source: "harness",
+        status: "truncated",
+        updated_at: now - 1000,
+        job_kind: "run_command",
+        role: "command",
+        adapter: "command",
+        command_preview: "find ~/.pmharness",
+      } as any],
+      commandSessions: [{
+        id: "local-cmd-e35cf193",
+        command: "find ~/.pmharness",
+        output: "truncated (exit -1)",
+        state: "running",
+        updatedAt: now - 200,
+      }],
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: "local-cmd-e35cf193",
+      kind: "terminal",
+      state: "failed",
+      output: "truncated (exit -1)",
+    });
+  });
+
   it("collapses command preview whitespace so the task bar does not stair-step", () => {
     const now = Date.parse("2026-08-23T12:00:00Z");
     const job = {

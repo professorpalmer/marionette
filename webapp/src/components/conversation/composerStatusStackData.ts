@@ -38,6 +38,21 @@ function timestampMs(value: unknown): number | null {
   return null;
 }
 
+function overlayExistingRow(
+  existing: ComposerStatusStackRow,
+  incoming: ComposerStatusStackRow,
+): ComposerStatusStackRow {
+  return {
+    ...existing,
+    state: incoming.state,
+    updatedAt: Math.max(existing.updatedAt, incoming.updatedAt),
+    output: existing.output || incoming.output,
+    command: existing.command || incoming.command,
+    label: existing.label || incoming.label,
+    title: existing.title || incoming.title,
+  };
+}
+
 function normalizeState(status: unknown): ComposerStatusStackState {
   const s = String(status || "").trim().toLowerCase();
   if (
@@ -47,6 +62,7 @@ function normalizeState(status: unknown): ComposerStatusStackState {
     || s.includes("dead")
     || s.includes("interrupt")
     || s.includes("cancel")
+    || s.includes("truncat")
     || /time(?:d)?[-_ ]?out/.test(s)
   ) {
     return "failed";
@@ -172,12 +188,15 @@ export function buildComposerStatusStackRows(
 
   for (const job of source.swarmJobs) {
     const id = String(job.id || "").trim();
-    if (id && seen.has(id)) continue;
     const row = visibleSwarmJob(job, nowMs) ?? visibleCommandJob(job, nowMs);
-    if (row) {
-      rows.push(row);
-      seen.add(row.id);
+    if (!row) continue;
+    if (id && seen.has(id)) {
+      const idx = rows.findIndex((item) => item.id === id);
+      if (idx >= 0) rows[idx] = overlayExistingRow(rows[idx], row);
+      continue;
     }
+    rows.push(row);
+    if (id) seen.add(id);
   }
 
   return rows.sort((a, b) => {
