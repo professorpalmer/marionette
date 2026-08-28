@@ -43,6 +43,7 @@ import {
   deriveBusyProgress,
   explorationShelfAnchorId,
   investigatingHeadline,
+  joinThoughtFoldText,
   partitionStackedActivity,
   ranCommandsLabel,
   resolveCardCliInput,
@@ -2650,7 +2651,26 @@ function ActivityGroup({
             isThinking: row.kind === "thinking",
           })).map((row) => {
             if (row.kind === "thought") {
-              return renderInner(row.item, row.index);
+              const thoughts = row.items.filter(
+                (it): it is Extract<ActivityItem, { kind: "thinking" }> =>
+                  it.kind === "thinking",
+              );
+              const first = thoughts[0];
+              if (!first) return null;
+              const durationMs = thoughts.reduce((sum, t) => {
+                return typeof t.duration_ms === "number" && Number.isFinite(t.duration_ms)
+                  ? sum + Math.max(0, t.duration_ms)
+                  : sum;
+              }, 0);
+              return (
+                <ThinkingBlock
+                  key={first.id || `${groupId}-think-${row.indexes[0]}`}
+                  blockId={first.id || `${groupId}-think-${row.indexes[0]}`}
+                  text={joinThoughtFoldText(thoughts.map((t) => t.text))}
+                  live={thoughts.some((t) => t.streaming)}
+                  durationMs={durationMs > 0 ? durationMs : null}
+                />
+              );
             }
             if (row.kind === "commands") {
               const cmdCards = row.items.filter(

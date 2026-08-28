@@ -1126,9 +1126,22 @@ export default function Conversation({
   const scrollFeedToEndRef = useRef<(() => void) | null>(null);
   const publishJumpVisibilityRef = useRef(() => {});
   publishJumpVisibilityRef.current = () => {
+    const el = feedRef.current;
+    const atTail = el
+      ? isAtFeedTail(el.scrollHeight, el.scrollTop, el.clientHeight)
+      : false;
+    const distanceFromEndPx = el
+      ? el.scrollHeight - el.scrollTop - el.clientHeight
+      : undefined;
+    if (atTail) {
+      pinnedToBottomRef.current = true;
+      scrollReleasedByGestureRef.current = false;
+    }
     const next = shouldShowJumpToBottom({
       pinned: pinnedToBottomRef.current,
       settling: scrollSettlingRef.current,
+      atTail,
+      distanceFromEndPx,
     });
     setShowJumpToBottom((prev) => (prev === next ? prev : next));
   };

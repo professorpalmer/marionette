@@ -712,6 +712,56 @@ describe("createApplyStreamEvent Sol reasoning coalescing", () => {
     expect(afterTool[0].id).toBe(thinking[0].id);
   });
 
+  it("keeps one thinking fold across Codex/Luna Responses item-id rotation", () => {
+    const state = {
+      items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    state.itemsRef.current = state.items;
+    const apply = createApplyStreamEvent(makeApplyDeps(state));
+    apply({
+      kind: "thinking",
+      data: { text: "Planning the audit. ", delta: true, stream_id: "rs_a" },
+    });
+    apply({ kind: "stream_item_done", data: { stream_id: "rs_a" } });
+    apply({
+      kind: "thinking",
+      data: { text: "Prioritizing P0 fixes. ", delta: true, stream_id: "rs_b" },
+    });
+    apply({ kind: "stream_item_done", data: { stream_id: "rs_b" } });
+    apply({
+      kind: "thinking",
+      data: { text: "Designing tests.", delta: true, stream_id: "rs_c" },
+    });
+    const beforeTool = thinkingRows(state.items);
+    expect(beforeTool).toHaveLength(1);
+    expect(beforeTool[0].text).toBe(
+      "Planning the audit. Prioritizing P0 fixes. Designing tests.",
+    );
+
+    apply({
+      kind: "tool_prep",
+      data: { name: "run_swarm", id: "call-1", goal: "audit" },
+    });
+    apply({
+      kind: "thinking",
+      data: { text: "Synthesizing evidence. ", delta: true, stream_id: "rs_d" },
+    });
+    apply({ kind: "stream_item_done", data: { stream_id: "rs_d" } });
+    apply({
+      kind: "thinking",
+      data: { text: "Planning the rollout.", delta: true, stream_id: "rs_e" },
+    });
+    const afterTool = thinkingRows(state.items);
+    expect(afterTool).toHaveLength(2);
+    expect(afterTool[0].text).toBe(
+      "Planning the audit. Prioritizing P0 fixes. Designing tests.",
+    );
+    expect(afterTool[1].text).toBe("Synthesizing evidence. Planning the rollout.");
+    expect(afterTool[1].id).not.toBe(afterTool[0].id);
+  });
+
   it("stream_item_done without stream_id seals all open stream surfaces", () => {
     // Regression: missing/empty stream_id used to no-op and leave streaming:true.
     const state = {

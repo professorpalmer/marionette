@@ -59,17 +59,6 @@ export default function SettingsShell({
     onClose,
   });
 
-  // Escape always closes settings -- a keyboard escape hatch so a missed click
-  // on the X (e.g. a busy main thread during a swarm) can never trap the user
-  // behind this full-window overlay. Capture phase so it wins over inner inputs.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.stopPropagation(); onClose(); }
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [onClose]);
-
   // Add key / hotkeys can request Accounts & Keys while Settings is already open.
   useEffect(() => {
     const onPage = (e: Event) => {

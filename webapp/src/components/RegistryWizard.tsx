@@ -7,6 +7,7 @@ import {
   onboardingCopy,
   openOnboardingKeyUrl,
 } from "../lib/onboardingProviders";
+import { OverlayPortal } from "../lib/overlayPortal";
 import { usePanelNotice } from "../lib/useOperationalDiagnostic";
 import { setConfigured, skipFirstRun } from "../state/onboardingStore";
 
@@ -35,17 +36,6 @@ export default function RegistryWizard({ onClose }: RegistryWizardProps) {
   const copy = onboardingCopy(selected);
   const selectedProvider = tiles.find((p) => p.name === selected);
   const canConnect = Boolean(keyValue.trim()) && !saving && Boolean(selected);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        dismissWizard();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
 
   useEffect(() => {
     let cancelled = false;
@@ -97,9 +87,11 @@ export default function RegistryWizard({ onClose }: RegistryWizardProps) {
   };
 
   return (
-    <div
-      data-testid="provider-onboarding"
-      className="fixed inset-0 z-50 flex items-center justify-center px-4 py-6"
+    <OverlayPortal
+      open
+      onClose={skip}
+      testId="provider-onboarding"
+      className="fixed inset-0 z-[90] flex items-center justify-center px-4 py-6"
       style={{
         background:
           "radial-gradient(ellipse at 50% 38%, rgba(224,164,90,0.08) 0%, transparent 52%), #0f1113",
@@ -220,6 +212,6 @@ export default function RegistryWizard({ onClose }: RegistryWizardProps) {
           </button>
         </div>
       </div>
-    </div>
+    </OverlayPortal>
   );
 }

@@ -75,6 +75,26 @@ describe("feedScroll hysteresis", () => {
     expect(shouldShowJumpToBottom({ pinned: false, settling: true })).toBe(false);
     expect(shouldShowJumpToBottom({ pinned: false, settling: false })).toBe(true);
   });
+
+  it("hides jump-to-latest when the viewport is already at the tail", () => {
+    expect(
+      shouldShowJumpToBottom({ pinned: false, settling: false, atTail: true }),
+    ).toBe(false);
+    expect(
+      shouldShowJumpToBottom({
+        pinned: false,
+        settling: false,
+        distanceFromEndPx: 10,
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowJumpToBottom({
+        pinned: false,
+        settling: false,
+        distanceFromEndPx: 80,
+      }),
+    ).toBe(true);
+  });
 });
 
 describe("scrollTopAfterFeedHeightChange", () => {

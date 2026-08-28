@@ -104,6 +104,36 @@ describe("stacked fold labels", () => {
     expect(rows[1].items).toHaveLength(3);
     expect(rows[1].items.filter((it) => it.kind === "thinking")).toHaveLength(1);
   });
+
+  it("coalesces consecutive Thought siblings into one fold", () => {
+    const items = [
+      { kind: "thinking" as const },
+      { kind: "thinking" as const },
+      { kind: "thinking" as const },
+      { kind: "card", cardKind: "run_command" },
+      { kind: "other" as const },
+      { kind: "thinking" as const },
+      { kind: "thinking" as const },
+    ];
+    const rows = partitionStackedActivity(items, (row) => ({
+      cardKind: row.kind === "card" ? row.cardKind : null,
+      isThinking: row.kind === "thinking",
+    }));
+    expect(rows.map((r) => r.kind)).toEqual([
+      "thought",
+      "commands",
+      "item",
+      "thought",
+    ]);
+    expect(rows[0]?.kind).toBe("thought");
+    if (rows[0]?.kind === "thought") {
+      expect(rows[0].items).toHaveLength(3);
+    }
+    expect(rows[3]?.kind).toBe("thought");
+    if (rows[3]?.kind === "thought") {
+      expect(rows[3].items).toHaveLength(2);
+    }
+  });
 });
 
 describe("live stacked folds (Investigating + Thinking + Ran)", () => {

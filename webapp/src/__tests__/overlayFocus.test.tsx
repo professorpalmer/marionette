@@ -73,4 +73,23 @@ describe("useOverlayFocus", () => {
 
     trigger.remove();
   });
+
+  it("only the topmost overlay handles Escape when two traps are open", async () => {
+    const onBottom = vi.fn();
+    const onTop = vi.fn();
+    render(
+      <>
+        <OverlayTrapFixture open onClose={onBottom} />
+        <div>
+          <OverlayTrapFixture open onClose={onTop} />
+        </div>
+      </>,
+    );
+    await waitFor(() => {
+      expect(screen.getAllByRole("dialog", { name: "trap" })).toHaveLength(2);
+    });
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(onTop).toHaveBeenCalledTimes(1);
+    expect(onBottom).not.toHaveBeenCalled();
+  });
 });
