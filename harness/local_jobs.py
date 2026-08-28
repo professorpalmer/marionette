@@ -44,10 +44,133 @@ from .model_identity import (
 from .provenance_sanitize import sanitize_clean_tree_claims
 
 # Job statuses that must never accept a fresh status=running nested row.
-# Includes command-job terminals (timeout/truncated) from Wave 2 durability.
+# Includes command-job terminals (timeout/truncated) from Wave 2 durability
+# and parallel_wave aggregate terminals (partial / timed_out).
 _TERMINAL_LOCAL_JOB_STATUSES = frozenset({
     "completed", "failed", "cancelled", "timeout", "truncated",
+    "partial", "timed_out",
 })
+
+_SUCCESS_CHILD_STATUSES = frozenset({"completed", "done"})
+_TIMEOUT_CHILD_STATUSES = frozenset({"timeout", "timed_out"})
+_CANCEL_CHILD_STATUSES = frozenset({"cancelled", "canceled"})
+_HARD_FAIL_CHILD_STATUSES = frozenset({"failed", "truncated", "error"})
+_ANALYSIS_ROLES = frozenset({"analysis", "review"})
+_WAVE_RETRY_PARENT_STATUSES = frozenset({"partial", "failed", "timed_out"})
+_WAVE_FAILURE_COPY_KEYS = (
+    "failure_stage",
+    "failure_reason",
+    "http_status",
+    "retry_after",
+    "provider_request_id",
+    "pm_job_id",
+    "task_ids",
+    "provider",
+    "retryable",
+    "retry_count",
+    "partial_patch",
+    "applied",
+    "held_for_review",
+    "files",
+    "error",
+)
+
+
+def _normalize_job_role(role: Any) -> str:
+    return str(role or "").split("(")[0].strip().lower()
+
+
+def _child_outcome_kind(status: str) -> str:
+    st = str(status or "").strip().lower()
+    if st in _SUCCESS_CHILD_STATUSES:
+        return "success"
+    if st in _TIMEOUT_CHILD_STATUSES:
+        return "timeout"
+    if st in _HARD_FAIL_CHILD_STATUSES:
+        return "failed"
+    if st in _CANCEL_CHILD_STATUSES:
+        return "cancelled"
+    return "other"
+
+
+def aggregate_parallel_wave_status(statuses: list) -> str:
+    """Parent lifecycle from child terminal statuses. No artifact merge."""
+    kinds = [_child_outcome_kind(s) for s in statuses]
+    n_ok = sum(1 for k in kinds if k == "success")
+    n_fail = sum(1 for k in kinds if k == "failed")
+    n_timeout = sum(1 for k in kinds if k == "timeout")
+    n_cancel = sum(1 for k in kinds if k == "cancelled")
+    any_hard = n_fail > 0
+    any_bad = any_hard or n_timeout > 0
+    if n_ok and any_bad:
+        return "partial"
+    if n_ok and n_cancel and not any_bad:
+        return "cancelled"
+    if n_ok and not any_bad and not n_cancel:
+        return "completed"
+    if n_timeout and not any_hard:
+        return "timed_out"
+    if any_hard:
+        return "failed"
+    if n_cancel:
+        return "cancelled"
+    return "failed"
+
+
+def _wave_is_analysis_or_review(parent: dict, children: list) -> bool:
+    parent_role = _normalize_job_role((parent or {}).get("role"))
+    if parent_role in _ANALYSIS_ROLES:
+        return True
+    roles = []
+    for child in children or []:
+        if not isinstance(child, dict):
+            continue
+        role = _normalize_job_role(child.get("role"))
+        if role in _ANALYSIS_ROLES:
+            roles.append(role)
+        elif role and role != "parallel_wave":
+            roles.append(role)
+    if not roles:
+        return False
+    return all(r in _ANALYSIS_ROLES for r in roles)
+
+
+def _job_file_set(job: dict) -> set:
+    paths = set()
+    if not isinstance(job, dict):
+        return paths
+    for raw in list(job.get("files") or []):
+        text = str(raw or "").strip()
+        if text:
+            paths.add(text)
+    prov = job.get("worker_provenance")
+    if isinstance(prov, dict):
+        for raw in list(prov.get("files") or []):
+            text = str(raw or "").strip()
+            if text:
+                paths.add(text)
+    return paths
+
+
+def _child_retry_count(child: dict) -> int:
+    if not isinstance(child, dict):
+        return 0
+    try:
+        n = child.get("retry_count")
+        if n is None and isinstance(child.get("worker_provenance"), dict):
+            n = child["worker_provenance"].get("retry_count")
+        return int(n or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _child_is_retryable(child: dict) -> bool:
+    if not isinstance(child, dict):
+        return False
+    if child.get("retryable") is True:
+        return True
+    prov = child.get("worker_provenance")
+    return isinstance(prov, dict) and prov.get("retryable") is True
 
 
 def _reconcile_routing_artifact(art: dict, selected_model: str) -> dict:
@@ -449,13 +572,7 @@ class LocalJobsMixin:
                 "tokens": 0,
                 "est_cost_usd": 0.0,
                 "artifacts": [],
-                "tasks": [{
-                    "id": f"{wave_id}-w0",
-                    "role": "parallel_wave",
-                    "instruction": objective or f"Parallel wave ({len(ids)} jobs)",
-                    "status": "running",
-                    "adapter": "parallel_wave",
-                }],
+                "tasks": [],
                 "actions": [],
                 "source": "harness",
                 "accounting_owned": True,
@@ -465,12 +582,14 @@ class LocalJobsMixin:
                 "terminal_job_ids": [],
                 "child_count": len(ids),
                 "mixed_terminal": False,
+                "review_required": False,
             }
             self._local_jobs[wave_id] = row
             for cid in ids:
                 child = self._local_jobs.get(cid)
                 if isinstance(child, dict):
                     child["parent_wave_id"] = wave_id
+            self._sync_parallel_wave_locked(row)
             self._upsert_display_parallel_wave_locked(row)
             self._persist_local_jobs_locked()
             return copy.deepcopy(row)
@@ -499,6 +618,7 @@ class LocalJobsMixin:
         if not wave_id:
             return
         cid = str(child_id or "").strip()
+        retry_ids: list = []
         with self._local_jobs_lock:
             parent = self._local_jobs.get(wave_id)
             if not isinstance(parent, dict) or parent.get("job_kind") != "parallel_wave":
@@ -508,8 +628,11 @@ class LocalJobsMixin:
                 terminals.append(cid)
             parent["terminal_job_ids"] = terminals
             self._sync_parallel_wave_locked(parent)
+            retry_ids = self._collect_parallel_wave_retries_locked(parent)
             self._upsert_display_parallel_wave_locked(parent)
             self._persist_local_jobs_locked()
+        if retry_ids:
+            self._launch_parallel_wave_retries(wave_id, retry_ids)
 
     def _sync_parallel_wave_from_children(self, wave_id: str) -> None:
         wid = str(wave_id or "").strip()
@@ -523,15 +646,89 @@ class LocalJobsMixin:
             self._upsert_display_parallel_wave_locked(parent)
             self._persist_local_jobs_locked()
 
+    def _project_parallel_wave_tasks_locked(self, parent: dict) -> None:
+        """One parent.tasks row per child — membership display, not artifacts."""
+        child_ids = [str(x) for x in (parent.get("child_job_ids") or []) if str(x)]
+        tasks = []
+        for cid in child_ids:
+            child = self._local_jobs.get(cid) or {}
+            if not isinstance(child, dict):
+                child = {}
+            role = str(child.get("role") or "implement").strip() or "implement"
+            prov = child.get("worker_provenance")
+            if not isinstance(prov, dict):
+                prov = {}
+            tasks.append({
+                "id": cid,
+                "role": role,
+                "instruction": str(child.get("goal") or ""),
+                "status": str(child.get("status") or "queued"),
+                "adapter": str(child.get("adapter") or ""),
+                "model": str(child.get("model") or ""),
+                "error": str(child.get("error") or prov.get("error") or ""),
+                "failure_stage": str(
+                    child.get("failure_stage") or prov.get("failure_stage") or ""
+                ),
+                "failure_reason": str(
+                    child.get("failure_reason") or prov.get("failure_reason") or ""
+                ),
+                "applied": bool(
+                    child.get("applied")
+                    if child.get("applied") is not None
+                    else prov.get("applied")
+                ),
+                "retryable": bool(child.get("retryable") or prov.get("retryable")),
+            })
+        parent["tasks"] = tasks
+        parent["task_count"] = len(child_ids)
+        parent["child_count"] = len(child_ids)
+
+    def _parallel_child_receipt_row_locked(self, cid: str) -> dict:
+        child = self._local_jobs.get(cid) or {}
+        if not isinstance(child, dict):
+            child = {}
+        prov = child.get("worker_provenance")
+        if not isinstance(prov, dict):
+            prov = {}
+        files = list(child.get("files") or prov.get("files") or [])
+        applied = child.get("applied")
+        if applied is None:
+            applied = prov.get("applied")
+        return {
+            "id": cid,
+            "goal": str(child.get("goal") or ""),
+            "status": str(child.get("status") or ""),
+            "error": str(child.get("error") or prov.get("error") or ""),
+            "failure_stage": str(
+                child.get("failure_stage") or prov.get("failure_stage") or ""
+            ),
+            "failure_reason": str(
+                child.get("failure_reason") or prov.get("failure_reason") or ""
+            ),
+            "model": str(child.get("model") or prov.get("model") or ""),
+            "provider": str(child.get("provider") or prov.get("provider") or ""),
+            "applied": bool(applied),
+            "held_for_review": bool(
+                child.get("held_for_review") or prov.get("held_for_review")
+            ),
+            "retryable": bool(child.get("retryable") or prov.get("retryable")),
+            "retry_count": _child_retry_count(child),
+            "files": [str(p) for p in files if str(p).strip()],
+        }
+
     def _sync_parallel_wave_locked(self, parent: dict) -> None:
         """Refresh aggregate lifecycle from accepted children. No artifact merge."""
         import time
 
         child_ids = [str(x) for x in (parent.get("child_job_ids") or []) if str(x)]
         terminals = [str(x) for x in (parent.get("terminal_job_ids") or []) if str(x)]
-        statuses: list[str] = []
+        statuses: list = []
+        child_rows: list = []
         for cid in child_ids:
             child = self._local_jobs.get(cid) or {}
+            if not isinstance(child, dict):
+                child = {}
+            child_rows.append(child)
             st = str(child.get("status") or "")
             if st in _TERMINAL_LOCAL_JOB_STATUSES and cid not in terminals:
                 terminals.append(cid)
@@ -553,38 +750,28 @@ class LocalJobsMixin:
                 statuses.append(st or "running")
         parent["terminal_job_ids"] = terminals
         parent["updated_at"] = time.time()
-        parent["child_count"] = len(child_ids)
-        parent["task_count"] = len(child_ids)
         # Parent never owns child evidence.
         parent["artifacts"] = []
+        self._project_parallel_wave_tasks_locked(parent)
 
         all_settled = bool(child_ids) and all(cid in terminals for cid in child_ids)
         if not all_settled:
             parent["status"] = "running"
             parent["terminal_receipt"] = None
             parent["mixed_terminal"] = False
-            if parent.get("tasks"):
-                try:
-                    parent["tasks"][0]["status"] = "running"
-                except Exception:
-                    pass
+            parent["review_required"] = False
             return
 
         mixed = len(set(statuses)) > 1
-        if any(s in ("failed", "timeout", "truncated") for s in statuses):
-            aggregate = "failed"
-        elif any(s == "cancelled" for s in statuses):
-            aggregate = "cancelled"
-        else:
-            aggregate = "completed"
+        aggregate = aggregate_parallel_wave_status(statuses)
+        review_required = (
+            aggregate == "partial"
+            and not _wave_is_analysis_or_review(parent, child_rows)
+        )
         parent["status"] = aggregate
         parent["mixed_terminal"] = mixed
-        if parent.get("tasks"):
-            try:
-                parent["tasks"][0]["status"] = aggregate
-            except Exception:
-                pass
-        counts: dict[str, int] = {}
+        parent["review_required"] = review_required
+        counts: dict = {}
         for s in statuses:
             counts[s] = counts.get(s, 0) + 1
         parent["terminal_receipt"] = {
@@ -596,9 +783,148 @@ class LocalJobsMixin:
             "finished_at": parent["updated_at"],
             "child_statuses": dict(counts),
             "mixed_terminal": mixed,
+            "review_required": review_required,
             "child_job_ids": list(child_ids),
             "terminal_job_ids": list(terminals),
+            "children": [
+                self._parallel_child_receipt_row_locked(cid) for cid in child_ids
+            ],
         }
+
+    def _collect_parallel_wave_retries_locked(self, parent: dict) -> list:
+        """Reopen retryable children once after the parent first settles."""
+        if parent.get("wave_auto_retry_attempted"):
+            return []
+        if str(parent.get("status") or "") not in _WAVE_RETRY_PARENT_STATUSES:
+            return []
+        parent["wave_auto_retry_attempted"] = True
+        child_ids = [str(x) for x in (parent.get("child_job_ids") or []) if str(x)]
+        success_files = set()
+        for cid in child_ids:
+            child = self._local_jobs.get(cid) or {}
+            if _child_outcome_kind(str(child.get("status") or "")) != "success":
+                continue
+            if child.get("applied") is False:
+                continue
+            success_files.update(_job_file_set(child))
+        retry_ids = []
+        terminals = [str(x) for x in (parent.get("terminal_job_ids") or []) if str(x)]
+        for cid in child_ids:
+            child = self._local_jobs.get(cid)
+            if not isinstance(child, dict):
+                continue
+            if not _child_is_retryable(child):
+                continue
+            if _child_retry_count(child) >= 1:
+                continue
+            child_files = _job_file_set(child)
+            if child_files and success_files and child_files & success_files:
+                continue
+            child["retry_count"] = 1
+            child["retryable"] = True
+            prov = child.get("worker_provenance")
+            if isinstance(prov, dict):
+                prov["retry_count"] = 1
+            child["status"] = "queued"
+            if child.get("tasks"):
+                try:
+                    child["tasks"][0]["status"] = "queued"
+                except Exception:
+                    pass
+            if cid in terminals:
+                terminals = [x for x in terminals if x != cid]
+            if cid not in self._local_job_cancels:
+                self._local_job_cancels[cid] = threading.Event()
+            retry_ids.append(cid)
+        parent["terminal_job_ids"] = terminals
+        if retry_ids:
+            self._sync_parallel_wave_locked(parent)
+        return retry_ids
+
+    def _fail_wave_retry_child(self, wave_id: str, cid: str, reason: str) -> None:
+        with self._local_jobs_lock:
+            child = self._local_jobs.get(cid)
+            if isinstance(child, dict):
+                child["status"] = "failed"
+                child["error"] = reason
+                child["failure_stage"] = "retry_launch"
+                child["failure_reason"] = reason
+                child["retryable"] = False
+                if child.get("tasks"):
+                    try:
+                        child["tasks"][0]["status"] = "failed"
+                    except Exception:
+                        pass
+            parent = self._local_jobs.get(wave_id)
+            if not isinstance(parent, dict) or parent.get("job_kind") != "parallel_wave":
+                return
+            terminals = [str(x) for x in (parent.get("terminal_job_ids") or []) if str(x)]
+            if cid not in terminals:
+                terminals.append(cid)
+            parent["terminal_job_ids"] = terminals
+            self._sync_parallel_wave_locked(parent)
+            self._upsert_display_parallel_wave_locked(parent)
+            self._persist_local_jobs_locked()
+
+    def _launch_parallel_wave_retries(self, wave_id: str, retry_ids: list) -> None:
+        submit = getattr(self, "_submit_swarm", None)
+        run_fn = getattr(self, "_run_provider_worker_background", None)
+        if not callable(submit) or not callable(run_fn):
+            for cid in retry_ids:
+                self._fail_wave_retry_child(wave_id, cid, "retry launcher unavailable")
+            return
+        for cid in retry_ids:
+            child = {}
+            with self._local_jobs_lock:
+                raw = self._local_jobs.get(cid)
+                if isinstance(raw, dict):
+                    child = copy.deepcopy(raw)
+            goal = str(child.get("goal") or "")
+            if not goal:
+                self._fail_wave_retry_child(wave_id, cid, "retry child has no goal")
+                continue
+            role = _normalize_job_role(child.get("role"))
+            expects_diff = role not in _ANALYSIS_ROLES
+            adapter = str(child.get("adapter") or "")
+            requested_adapter = adapter if adapter in ("agentic", "native") else ""
+            target_repo = str(child.get("cwd") or getattr(self.config, "repo", "") or "")
+            pin = None
+            requested = str(child.get("requested_model") or "").strip()
+            provider = str(child.get("provider") or "").strip()
+            if requested and provider:
+                try:
+                    from harness.swarm_model_pin import AgenticModelPin
+                    model = str(child.get("model") or "")
+                    pin = AgenticModelPin(
+                        requested=requested,
+                        provider=provider,
+                        model=model.split("/")[-1] if model else requested,
+                        router_model_id=model or requested,
+                        policy=str(child.get("routing_policy") or "explicit_pin"),
+                    )
+                except Exception:
+                    pin = None
+            claim = getattr(self, "_claim_objective", None)
+            if callable(claim):
+                try:
+                    claim(goal)
+                except Exception:
+                    pass
+            try:
+                submit(
+                    run_fn,
+                    cid,
+                    goal,
+                    requested_adapter,
+                    target_repo,
+                    expects_diff,
+                    pin,
+                    False,
+                )
+            except Exception as exc:
+                self._fail_wave_retry_child(
+                    wave_id, cid, f"retry launch failed: {exc}",
+                )
 
     def _upsert_display_parallel_wave_locked(self, parent: dict) -> None:
         display = getattr(self, "_display_transcript", None)
@@ -612,13 +938,24 @@ class LocalJobsMixin:
         terminals = [str(x) for x in (parent.get("terminal_job_ids") or []) if str(x)]
         wave_id = str(parent.get("id") or "")
         settled = bool(child_ids) and all(cid in terminals for cid in child_ids)
+        parent_status = str(parent.get("status") or "")
+        if not settled:
+            display_status = "running"
+        elif parent_status == "completed":
+            display_status = "done"
+        elif parent_status == "partial":
+            display_status = "partial"
+        elif parent_status == "cancelled":
+            display_status = "ended"
+        else:
+            display_status = "failed"
         row = {
             "type": "swarm_pending",
             "wave_id": wave_id,
             "job_ids": list(child_ids),
             "objective": str(parent.get("goal") or ""),
             "terminal_job_ids": list(terminals),
-            "status": "done" if settled else "running",
+            "status": display_status,
             "session_id": mine,
         }
         for i, existing in enumerate(display):
@@ -823,7 +1160,8 @@ class LocalJobsMixin:
 
     def _register_local_job(self, job_id: str, goal: str, role: str = "implement",
                             cwd: str = "", engine: str = "", model: str = "",
-                            *, skip_routing_preview: bool = False) -> None:
+                            *, skip_routing_preview: bool = False,
+                            initial_status: str = "") -> None:
         """Record a dispatched in-process edit worker so it appears in the swarm
         panel while it runs (the panel otherwise only sees Puppetmaster store
         jobs). Shaped like a store job: a single synthesized worker task carries
@@ -888,12 +1226,15 @@ class LocalJobsMixin:
         else:
             display_model = ""
             model_id = ""
+        start_status = (initial_status or "running").strip() or "running"
+        if start_status not in ("queued", "running", "registered"):
+            start_status = "running"
         task_role = f"{role} ({engine_label})" if role else f"implement ({engine_label})"
         task_row = {
             "id": f"{job_id}-w0",
             "role": task_role,
             "instruction": goal,
-            "status": "running",
+            "status": start_status,
             "adapter": engine_label,
         }
         if display_model:
@@ -904,7 +1245,7 @@ class LocalJobsMixin:
             row = {
                 "id": job_id,
                 "goal": goal,
-                "status": "running",
+                "status": start_status,
                 "role": role,
                 "adapter": engine_label,
                 "model": display_model,
@@ -949,6 +1290,36 @@ class LocalJobsMixin:
                     )
                 except Exception:
                     pass
+
+    def _mark_local_job_started(self, job_id: str) -> None:
+        """Flip queued/registered children to running when the worker thread starts."""
+        import time
+
+        jid = str(job_id or "").strip()
+        if not jid:
+            return
+        with self._local_jobs_lock:
+            job = self._local_jobs.get(jid)
+            if not isinstance(job, dict):
+                return
+            if job.get("status") in _TERMINAL_LOCAL_JOB_STATUSES:
+                return
+            now = time.time()
+            job["status"] = "running"
+            job["started_at"] = job.get("started_at") or now
+            job["updated_at"] = now
+            if job.get("tasks"):
+                try:
+                    job["tasks"][0]["status"] = "running"
+                except Exception:
+                    pass
+            self._persist_local_jobs_locked()
+        try:
+            wave_id = self._parallel_wave_id_for_child(jid)
+            if wave_id:
+                self._sync_parallel_wave_from_children(wave_id)
+        except Exception:
+            pass
 
     def _refresh_local_job_routed_model(
         self, job_id: str, model: str, engine: str = "",
@@ -1033,8 +1404,17 @@ class LocalJobsMixin:
             # A user-cancelled job settles into a distinct 'cancelled' state so the
             # UI can render it differently from a natural completion/failure.
             cancelled = bool(job.get("status") == "cancelled" or status == "cancelled")
+            stage = ""
+            if isinstance(worker_provenance, dict):
+                stage = str(worker_provenance.get("failure_stage") or "")
             if cancelled:
                 terminal = "cancelled"
+            elif not ok and (
+                status in ("timeout", "timed_out") or stage == "agentic_timeout"
+            ):
+                terminal = "timeout"
+            elif not ok and status == "truncated":
+                terminal = "truncated"
             else:
                 terminal = "completed" if ok else "failed"
             job["status"] = terminal
@@ -1148,7 +1528,33 @@ class LocalJobsMixin:
             except Exception:
                 pass
             if isinstance(worker_provenance, dict):
-                job["worker_provenance"] = copy.deepcopy(worker_provenance)
+                prov = copy.deepcopy(worker_provenance)
+                if files and not prov.get("files"):
+                    prov["files"] = list(files)
+                if "retryable" not in prov and not ok:
+                    try:
+                        from harness.edit_engines import failure_is_retryable
+                        prov["retryable"] = failure_is_retryable(
+                            str(prov.get("failure_stage") or stage),
+                            prov.get("http_status"),
+                        )
+                    except Exception:
+                        prov["retryable"] = False
+                job["worker_provenance"] = prov
+                for key in _WAVE_FAILURE_COPY_KEYS:
+                    if key in prov:
+                        job[key] = copy.deepcopy(prov[key])
+            if files:
+                job["files"] = list(files)
+            if not ok and not cancelled and not job.get("error"):
+                err = ""
+                if isinstance(worker_provenance, dict):
+                    err = str(
+                        worker_provenance.get("error")
+                        or worker_provenance.get("failure_reason")
+                        or ""
+                    )
+                job["error"] = err or (summary or "Worker failed")
             summary_text = summary or ""
             if isinstance(worker_provenance, dict):
                 summary_text = sanitize_clean_tree_claims(
@@ -1567,7 +1973,7 @@ class LocalJobsMixin:
                         except Exception:
                             pass
                     # Fall through to action settle; do not heal-overwrite.
-                elif job.get("status") in ("running", "registered"):
+                elif job.get("status") in ("running", "registered", "queued"):
                     # running *and* registered-but-not-started rows are stale
                     # after process death — heal to cancelled so the panel
                     # never spins. Launch-checkpoint distinguishes "never

@@ -1,8 +1,17 @@
 import { useState } from "react";
 import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Circle, Loader2, ListChecks, XCircle } from "lucide-react";
 import type { Job } from "../../lib/api";
-import { buildComposerTasks, pickTaskSourceJob, taskProgress, type ComposerTask } from "../../lib/composerTasks";
+import { isWaveCoordinator } from "../../lib/jobClassification";
+import { buildComposerTasks, pickTaskSourceJob, taskProgress, waveHeaderText, type ComposerTask } from "../../lib/composerTasks";
 import { COMPOSER_FAMILY_SURFACE } from "./composerFamily";
+
+function waveHeaderTone(status: string): string {
+  const s = status.toLowerCase();
+  if (s.includes("fail") || s.includes("timed")) return "text-risk";
+  if (s === "partial") return "text-warn";
+  if (s.includes("complete")) return "text-good";
+  return "text-txt";
+}
 
 function TaskIcon({ state }: { state: ComposerTask["state"] }) {
   if (state === "completed") return <CheckCircle2 size={11} className="shrink-0 text-good" />;
@@ -25,6 +34,9 @@ export default function ComposerTasksPanel({
   const tasks = buildComposerTasks(job);
   const { done, total } = taskProgress(tasks);
   if (!total) return null;
+  const wave = Boolean(job && isWaveCoordinator(job));
+  const header = wave && job ? waveHeaderText(job) : `Tasks ${done}/${total}`;
+  const headerTone = wave ? waveHeaderTone(String(job?.status || "")) : "text-txt";
 
   return (
     <div
@@ -39,7 +51,7 @@ export default function ComposerTasksPanel({
       >
         {open ? <ChevronDown size={11} className="text-faint" /> : <ChevronRight size={11} className="text-faint" />}
         <ListChecks size={11} className="text-faint" />
-        <span className="font-medium">Tasks {done}/{total}</span>
+        <span className={`font-medium ${headerTone}`}>{header}</span>
       </button>
       {open && (
         <div className="border-t border-edge/50 px-2 py-1 space-y-0.5">
@@ -56,6 +68,9 @@ export default function ComposerTasksPanel({
                 <TaskIcon state={task.state} />
                 <span className={`${task.state === "pending" ? "text-faint" : "text-txt"} ${expanded ? "whitespace-pre-wrap break-words" : "min-w-0 truncate"}`}>
                   {task.content}
+                  {expanded && task.detail ? (
+                    <span className="mt-0.5 block text-faint">{task.detail}</span>
+                  ) : null}
                 </span>
               </button>
             );

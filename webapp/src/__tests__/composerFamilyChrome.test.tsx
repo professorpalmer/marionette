@@ -161,4 +161,33 @@ describe("composer-family chrome", () => {
       expect(el?.className).not.toMatch(/text-muted-foreground|rose-500|uppercase tracking-\[0\.16em\]/);
     }
   });
+
+  it("renders parallel wave partial header from child counts", () => {
+    const waveTasks = Array.from({ length: 8 }, (_, i) => ({
+      id: `c${i}`,
+      role: "implement",
+      instruction: `goal ${i}`,
+      status: i < 4 ? "completed" : "failed",
+      adapter: "x",
+      applied: i < 4,
+    }));
+    const wave = {
+      id: "local-wave-mix",
+      goal: "mixed implement",
+      status: "partial",
+      session_id: "sess-1",
+      job_kind: "parallel_wave",
+      role: "parallel_wave",
+      adapter: "parallel_wave",
+      child_count: 8,
+      review_required: true,
+      tasks: waveTasks,
+    } as Job;
+    const { getByText } = render(
+      <ComposerTasksPanel jobs={[wave]} sessionId="sess-1" />,
+    );
+    expect(
+      getByText("Parallel wave — partial 4/8 completed · 4 failed · 4 patches applied · review required"),
+    ).toBeInTheDocument();
+  });
 });

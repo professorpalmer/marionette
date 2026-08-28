@@ -33,7 +33,7 @@ export function swarmPendingStatusOf(
 export function isSwarmPendingTerminalStatus(
   status: SwarmPendingStatus,
 ): boolean {
-  return status === "done" || status === "failed" || status === "ended";
+  return status === "done" || status === "failed" || status === "ended" || status === "partial";
 }
 
 export function isSwarmPendingTerminal(item: SwarmPendingItem): boolean {
@@ -44,13 +44,19 @@ export function isSwarmPendingTerminal(item: SwarmPendingItem): boolean {
 export function swarmPendingStatusRank(status: SwarmPendingStatus): number {
   switch (status) {
     case "failed":
+      return 4;
+    case "partial":
       return 3;
     case "done":
       return 2;
     case "ended":
       return 1;
-    default:
+    case "running":
       return 0;
+    default: {
+      const _exhaustive: never = status;
+      return _exhaustive;
+    }
   }
 }
 

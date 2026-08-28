@@ -82,6 +82,20 @@ _TIMEOUT_MARKERS = (
 )
 
 
+def failure_is_retryable(stage: str = "", http_status: Any = None) -> bool:
+    """True only for timeout, provider rate-limit, or HTTP 429."""
+    if str(stage or "").strip() in (AGENTIC_TIMEOUT, AGENTIC_PROVIDER_RATE_LIMITED):
+        return True
+    try:
+        return int(http_status) == 429
+    except (TypeError, ValueError):
+        return False
+
+
+def _status_text(raw: Any) -> str:
+    return str(getattr(raw, "value", raw) or "").strip()
+
+
 def _agentic_store_failure_snapshot(store: Any, job_id: str = "") -> dict:
     """Copy fail-closed facts off the scratch PM store before it is deleted.
 
@@ -97,10 +111,14 @@ def _agentic_store_failure_snapshot(store: Any, job_id: str = "") -> dict:
         "tokens_in": 0,
         "tokens_out": 0,
         "usage_known": False,
+        "event_names": [],
+        "job_status": "",
+        "artifact_types": [],
     }
     if store is None:
         return snap
     resolved = str(job_id or "").strip()
+    jobs: list = []
     if not resolved:
         try:
             jobs = list(store.list_jobs() or [])
@@ -118,21 +136,29 @@ def _agentic_store_failure_snapshot(store: Any, job_id: str = "") -> dict:
         tasks = []
     statuses = []
     task_ids = []
+    task_fail_text = ""
     for task in tasks:
         tid = str(getattr(task, "id", "") or "").strip()
         if tid:
             task_ids.append(tid)
         role = str(getattr(task, "role", "") or "").strip()
-        raw_status = getattr(task, "status", "")
-        status = str(getattr(raw_status, "value", raw_status) or "").strip()
+        status = _status_text(getattr(task, "status", ""))
         if role and status:
             statuses.append(f"{role}={status}")
         elif status:
             statuses.append(status)
+        if not task_fail_text:
+            for attr in ("error", "failure", "failure_reason", "reason"):
+                text = str(getattr(task, attr, "") or "").strip()
+                if text:
+                    task_fail_text = text
+                    break
     snap["task_statuses"] = statuses
     snap["task_ids"] = task_ids
 
     reason = ""
+    event_names: list = []
+    last_payload_reason = ""
     try:
         records = store.read_events(resolved) if hasattr(store, "read_events") else []
     except Exception:
@@ -141,6 +167,8 @@ def _agentic_store_failure_snapshot(store: Any, job_id: str = "") -> dict:
         if not isinstance(rec, dict):
             continue
         name = str(rec.get("event") or "").strip()
+        if name:
+            event_names.append(name)
         payload = rec.get("payload")
         if isinstance(payload, str):
             try:
@@ -149,6 +177,10 @@ def _agentic_store_failure_snapshot(store: Any, job_id: str = "") -> dict:
                 payload = {}
         if not isinstance(payload, dict):
             payload = {}
+        for key in ("error", "failure", "reason"):
+            text = str(payload.get(key) or "").strip()
+            if text:
+                last_payload_reason = text
         if name == "worker.gate_failed":
             text = str(payload.get("reason") or "").strip()
             if text:
@@ -159,7 +191,29 @@ def _agentic_store_failure_snapshot(store: Any, job_id: str = "") -> dict:
                 reason = text
         elif name == "worker.lease_lost":
             reason = "worker lease lost"
+    snap["event_names"] = event_names[-20:]
     snap["reason"] = reason
+
+    job_status = ""
+    try:
+        if hasattr(store, "get_job"):
+            job_obj = store.get_job(resolved)
+            if job_obj is not None:
+                job_status = _status_text(getattr(job_obj, "status", ""))
+    except Exception:
+        job_status = ""
+    if not job_status:
+        if not jobs:
+            try:
+                jobs = list(store.list_jobs() or [])
+            except Exception:
+                jobs = []
+        for job in jobs:
+            if str(getattr(job, "id", "") or "") != resolved:
+                continue
+            job_status = _status_text(getattr(job, "status", ""))
+            break
+    snap["job_status"] = job_status
 
     try:
         arts = list(store.list_artifacts(resolved) or [])
@@ -169,7 +223,11 @@ def _agentic_store_failure_snapshot(store: Any, job_id: str = "") -> dict:
     tokens_out = 0
     usage_known = False
     art_failure = ""
+    artifact_types: list = []
     for art in arts:
+        atype = str(getattr(art, "type", "") or getattr(art, "kind", "") or "").strip()
+        if atype:
+            artifact_types.append(atype)
         payload = getattr(art, "payload", None)
         if not isinstance(payload, dict):
             continue
@@ -182,6 +240,11 @@ def _agentic_store_failure_snapshot(store: Any, job_id: str = "") -> dict:
     snap["tokens_in"] = tokens_in
     snap["tokens_out"] = tokens_out
     snap["usage_known"] = usage_known
+    snap["artifact_types"] = artifact_types
+    if not snap["reason"] and last_payload_reason:
+        snap["reason"] = last_payload_reason
+    if not snap["reason"] and task_fail_text:
+        snap["reason"] = task_fail_text
     if not snap["reason"] and art_failure:
         snap["reason"] = art_failure
     return snap
@@ -200,6 +263,13 @@ def _format_agentic_engine_error(
     reason = redact_secret_text(str(snap.get("reason") or "").strip())
     if reason and reason not in parts[0]:
         parts.append(reason)
+    if not reason:
+        names = [str(item) for item in (snap.get("event_names") or []) if str(item).strip()]
+        if names:
+            parts.append("events: " + ", ".join(names[-20:]))
+        job_status = str(snap.get("job_status") or "").strip()
+        if job_status:
+            parts.append("job_status: " + job_status)
     statuses = [str(item) for item in (snap.get("task_statuses") or []) if str(item).strip()]
     if statuses:
         parts.append("tasks: " + ", ".join(statuses))

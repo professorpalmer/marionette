@@ -25,6 +25,7 @@ import {
   mergeSwarmPendingReplay,
   normalizeSwarmJobIds,
   swarmPendingStatusOf,
+  swarmPendingStatusRank,
 } from "./swarmPendingIdentity";
 import {
   boundActionField,
@@ -124,7 +125,7 @@ function swarmResultLooksFailed(resObj: {
 
 function withPendingTerminal(
   item: SwarmPendingItem,
-  status: "done" | "failed" | "ended",
+  status: SwarmPendingStatus,
   terminalJobIds: string[],
 ): SwarmPendingItem {
   return {
@@ -1477,14 +1478,19 @@ function pendingStatusFromCoveredResults(
   if (!allTerminal) {
     return { status: "running", resolved: false, terminal_job_ids: terminals };
   }
-  const anyFailed = items.some(
-    (it) =>
-      it.kind === "swarm_result"
-      && ids.includes(it.job_id)
-      && swarmResultLooksFailed(it),
+  const members = items.filter(
+    (it): it is Extract<Item, { kind: "swarm_result" }> =>
+      it.kind === "swarm_result" && ids.includes(it.job_id),
   );
+  const anyFailed = members.some((it) => swarmResultLooksFailed(it));
+  const anyOk = members.some((it) => !swarmResultLooksFailed(it));
+  const status: SwarmPendingStatus = anyFailed && anyOk
+    ? "partial"
+    : anyFailed
+      ? "failed"
+      : "done";
   return {
-    status: anyFailed ? "failed" : "done",
+    status,
     resolved: true,
     terminal_job_ids: terminals,
   };
@@ -1536,7 +1542,7 @@ export function appendSwarmPending(
       ],
     );
     if (!isSwarmPendingTerminal(merged) && covered.resolved) {
-      merged = withPendingTerminal(merged, covered.status as "done" | "failed", covered.terminal_job_ids);
+      merged = withPendingTerminal(merged, covered.status, covered.terminal_job_ids);
     } else {
       merged = { ...merged, terminal_job_ids: covered.terminal_job_ids };
     }
@@ -1846,13 +1852,7 @@ function findSwarmPendingForResult(
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
     if (it.kind !== "swarm_pending" || !it.job_ids.includes(jobId)) continue;
-    const rank = isSwarmPendingTerminal(it)
-      ? swarmPendingStatus(it) === "failed"
-        ? 3
-        : swarmPendingStatus(it) === "done"
-          ? 2
-          : 1
-      : 0;
+    const rank = swarmPendingStatusRank(swarmPendingStatus(it));
     if (bestIdx < 0 || rank > bestRank) {
       bestIdx = i;
       bestRank = rank;
@@ -1880,13 +1880,7 @@ function findSwarmPendingForResult(
     ) {
       continue;
     }
-    const rank = isSwarmPendingTerminal(it)
-      ? swarmPendingStatus(it) === "failed"
-        ? 3
-        : swarmPendingStatus(it) === "done"
-          ? 2
-          : 1
-      : 0;
+    const rank = swarmPendingStatusRank(swarmPendingStatus(it));
     // Prefer still-running so a spinner clears; otherwise keep most advanced.
     const prefer = !isSwarmPendingTerminal(it) ? 10 : rank;
     if (aliasIdx < 0 || prefer > aliasRank) {
@@ -2085,16 +2079,25 @@ export function applySwarmResultToItems(
       };
     }
 
-    // Any prior credited failure on this pill, or this result, flips to failed.
-    const priorFailed = swarmPendingStatus(item) === "failed";
     const siblingFailed = items.some(
       (it) =>
         it.kind === "swarm_result"
         && item.job_ids.includes(it.job_id)
         && swarmResultLooksFailed(it),
     );
-    const status: "done" | "failed" =
-      priorFailed || siblingFailed || resultFailed ? "failed" : "done";
+    const siblingOk = items.some(
+      (it) =>
+        it.kind === "swarm_result"
+        && item.job_ids.includes(it.job_id)
+        && !swarmResultLooksFailed(it),
+    );
+    const anyFailed = siblingFailed || resultFailed || swarmPendingStatus(item) === "failed";
+    const anyOk = siblingOk || !resultFailed;
+    const status: SwarmPendingStatus = anyFailed && anyOk
+      ? "partial"
+      : anyFailed
+        ? "failed"
+        : "done";
     return withPendingTerminal(item, status, terminalJobIds);
   });
 
@@ -2183,12 +2186,21 @@ export function finalizeOrphanSwarmPills(
     const allTerminal =
       item.job_ids.every((id) => terminalFromResults.has(id)) || objectiveCovered;
     if (allTerminal) {
-      const anyFailed =
-        objectiveFailed
-        || [...terminalFromResults].some((id) => resultByJob.get(id)?.failed);
+      const failedIds = [...terminalFromResults].filter((id) => resultByJob.get(id)?.failed);
+      const okIds = [...terminalFromResults].filter((id) => {
+        const row = resultByJob.get(id);
+        return row != null && !row.failed;
+      });
+      const anyFailed = objectiveFailed || failedIds.length > 0;
+      const anyOk = okIds.length > 0 && !objectiveFailed;
+      const status: SwarmPendingStatus = anyFailed && anyOk
+        ? "partial"
+        : anyFailed
+          ? "failed"
+          : "done";
       return withPendingTerminal(
         item,
-        anyFailed ? "failed" : "done",
+        status,
         [...terminalFromResults],
       );
     }

@@ -471,7 +471,7 @@ def test_dispatch_parallel_uses_resolved_git_child_cwd(tmp_path, monkeypatch):
     )
     registered: list = []
 
-    def _register(job_id, goal, role="implement", cwd="", engine="", model=""):
+    def _register(job_id, goal, role="implement", cwd="", engine="", model="", **_kw):
         registered.append({"job_id": job_id, "cwd": cwd, "goal": goal})
 
     session = SimpleNamespace(

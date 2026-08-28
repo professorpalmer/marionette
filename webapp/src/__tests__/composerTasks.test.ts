@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildComposerTasks, pickTaskSourceJob, taskProgress, taskState } from "../lib/composerTasks";
+import { buildComposerTasks, pickTaskSourceJob, taskProgress, taskState, waveHeaderText, waveProgress } from "../lib/composerTasks";
 import type { Job } from "../lib/api";
 
 const job = (id: string, status: string, session_id: string, tasks: Job["tasks"]): Job => ({
@@ -17,6 +17,8 @@ describe("taskState", () => {
     expect(taskState("pending")).toBe("pending");
     expect(taskState("failed")).toBe("failed");
     expect(taskState("degraded")).toBe("degraded");
+    expect(taskState("partial")).toBe("degraded");
+    expect(taskState("timeout")).toBe("failed");
   });
 });
 
@@ -28,6 +30,26 @@ describe("pickTaskSourceJob", () => {
       job("other", "running", "sess-2", [{ id: "t2", role: "impl", instruction: "other", status: "running", adapter: "x" }]),
     ], "sess-1");
     expect(picked?.id).toBe("live");
+  });
+
+  it("prefers the wave coordinator in the active session", () => {
+    const wave: Job = {
+      ...job("local-wave-abc", "partial", "sess-1", [
+        { id: "c1", role: "implement", instruction: "one", status: "completed", adapter: "x" },
+        { id: "c2", role: "implement", instruction: "two", status: "failed", adapter: "x" },
+      ]),
+      job_kind: "parallel_wave",
+      role: "parallel_wave",
+      adapter: "parallel_wave",
+      child_count: 8,
+    };
+    const picked = pickTaskSourceJob([
+      job("local-child-1", "failed", "sess-1", [
+        { id: "c1", role: "implement", instruction: "child", status: "failed", adapter: "x" },
+      ]),
+      wave,
+    ], "sess-1");
+    expect(picked?.id).toBe("local-wave-abc");
   });
 });
 
@@ -77,5 +99,33 @@ describe("buildComposerTasks + progress", () => {
     expect(tasks[0].state).toBe("completed");
     expect(tasks[1].state).toBe("degraded");
     expect(taskProgress(tasks)).toEqual({ done: 2, total: 2 });
+  });
+
+  it("wave coordinator header and progress use child counts 4/8", () => {
+    const tasks = Array.from({ length: 8 }, (_, i) => ({
+      id: `c${i}`,
+      role: "implement",
+      instruction: `goal ${i}`,
+      status: i < 4 ? "completed" : "failed",
+      adapter: "x",
+      applied: i < 4,
+      failure_stage: i < 4 ? "" : "agentic_error",
+      failure_reason: i < 4 ? "" : "adapter boom",
+    }));
+    const wave = {
+      ...job("local-wave-mix", "partial", "sess-1", tasks),
+      job_kind: "parallel_wave",
+      role: "parallel_wave",
+      child_count: 8,
+      review_required: true,
+    } as Job;
+    const built = buildComposerTasks(wave);
+    expect(built.filter((t) => t.state === "failed")).toHaveLength(4);
+    expect(built.filter((t) => t.state === "completed")).toHaveLength(4);
+    expect(built[4].detail).toBe("agentic_error: adapter boom");
+    expect(waveProgress(wave)).toEqual({ completed: 4, failed: 4, applied: 4, total: 8 });
+    expect(waveHeaderText(wave)).toBe(
+      "Parallel wave — partial 4/8 completed · 4 failed · 4 patches applied · review required",
+    );
   });
 });

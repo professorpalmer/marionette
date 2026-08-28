@@ -171,7 +171,7 @@ export type Card = {
              output_preview?: string };
 };
 /** Inline swarm status pill lifecycle (running spinner vs terminal chips). */
-export type SwarmPendingStatus = "running" | "done" | "failed" | "ended";
+export type SwarmPendingStatus = "running" | "done" | "failed" | "ended" | "partial";
 
 export type SwarmPendingItem = {
   kind: "swarm_pending";
@@ -3991,25 +3991,31 @@ function SwarmPendingPill({
   const truncatedObj = objective.length > 60 ? objective.slice(0, 60) + "..." : objective;
   const label = status === "failed"
     ? "swarm failed"
-    : status === "ended"
-      ? "swarm ended"
-      : status === "done"
-        ? "swarm done"
-        : "swarm running";
+    : status === "partial"
+      ? "swarm partial"
+      : status === "ended"
+        ? "swarm ended"
+        : status === "done"
+          ? "swarm done"
+          : "swarm running";
   const shell =
     status === "failed"
       ? "bg-risk/10 border-risk/30 text-risk/80"
-      : status === "ended"
-        ? "bg-panel2/15 border-edge/20 text-faint"
-        : status === "done"
-          ? "bg-panel2/20 border-edge/30 text-faint"
-          : "bg-panel2/60 border-edge/60 text-muted";
+      : status === "partial"
+        ? "bg-warn/10 border-warn/30 text-warn"
+        : status === "ended"
+          ? "bg-panel2/15 border-edge/20 text-faint"
+          : status === "done"
+            ? "bg-panel2/20 border-edge/30 text-faint"
+            : "bg-panel2/60 border-edge/60 text-muted";
   const dot =
     status === "failed"
       ? "bg-risk/50"
-      : status === "done"
-        ? "bg-good/40"
-        : "bg-faint/40";
+      : status === "partial"
+        ? "bg-warn/50"
+        : status === "done"
+          ? "bg-good/40"
+          : "bg-faint/40";
   return (
     <div className={`flex items-center gap-1.5 py-1 px-3 rounded-full border text-[11px] w-fit my-1 select-none ${shell}`}>
       {status === "running"

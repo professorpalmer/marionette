@@ -1362,7 +1362,7 @@ describe("streamApply module", () => {
     }
   });
 
-  it("run_parallel pill waits for all jobs and fails if any failed", () => {
+  it("run_parallel pill waits for all jobs and marks mixed waves partial", () => {
     let items: Item[] = [
       {
         kind: "swarm_pending",
@@ -1394,7 +1394,7 @@ describe("streamApply module", () => {
     });
     expect(items[0]).toMatchObject({
       kind: "swarm_pending",
-      status: "failed",
+      status: "partial",
       resolved: true,
     });
   });

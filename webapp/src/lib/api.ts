@@ -202,10 +202,16 @@ export type Task = {
   estimated?: boolean;
   /** Pre-run routing forecast — never spend. */
   route_forecast_usd?: number;
+  error?: string;
+  failure_stage?: string;
+  failure_reason?: string;
+  applied?: boolean;
+  retryable?: boolean;
 };
 export type Job = {
   id: string;
   goal: string;
+  /** running | completed | partial | failed | cancelled | timed_out | … */
   status: string;
   /** Harness chat that dispatched this job, when stamped. */
   session_id?: string;
@@ -330,7 +336,32 @@ export type Job = {
   child_count?: number;
   max_concurrency?: number;
   mixed_terminal?: boolean;
-  /** Durable terminal receipt once the command settles. */
+  /** Implement parallel_wave: mixed success+failure needs review. */
+  review_required?: boolean;
+  worker_provenance?: {
+    failure_stage?: string;
+    failure_reason?: string;
+    http_status?: number | null;
+    retry_after?: string;
+    provider_request_id?: string;
+    pm_job_id?: string;
+    task_ids?: string[];
+    provider?: string;
+    model?: string;
+    retryable?: boolean;
+    retry_count?: number;
+    partial_patch?: boolean;
+    applied?: boolean;
+    held_for_review?: boolean;
+    event_names?: string[];
+    files?: string[];
+    error?: string;
+  };
+  failure_stage?: string;
+  failure_reason?: string;
+  retryable?: boolean;
+  retry_count?: number;
+  /** Durable terminal receipt once the command or wave settles. */
   terminal_receipt?: {
     status?: string;
     run_status?: string;
@@ -342,9 +373,26 @@ export type Job = {
     output_spilled?: boolean;
     child_statuses?: Record<string, number>;
     mixed_terminal?: boolean;
+    review_required?: boolean;
     child_job_ids?: string[];
+    terminal_job_ids?: string[];
     recovery?: string;
     had_launch_checkpoint?: boolean;
+    children?: Array<{
+      id?: string;
+      goal?: string;
+      status?: string;
+      error?: string;
+      failure_stage?: string;
+      failure_reason?: string;
+      model?: string;
+      provider?: string;
+      applied?: boolean;
+      held_for_review?: boolean;
+      retryable?: boolean;
+      retry_count?: number;
+      files?: string[];
+    }>;
   } | null;
   /**
    * Wave 4 launch fact persisted before the child process can start.
