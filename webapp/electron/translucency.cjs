@@ -61,10 +61,32 @@ function translucencySupportedOn(platform) {
 }
 
 function windowsBuildNumber(release) {
-  const parts = String(release || "").split(".");
+  const text = String(release || "");
+  const parts = text.split(".");
   const raw = parts.length >= 3 ? parts[2] : parts[0];
-  const build = Number.parseInt(raw || "", 10);
+  const dotted = Number.parseInt(raw || "", 10);
+  if (Number.isFinite(dotted) && dotted > 0) return dotted;
+  // "Windows 10.0.26100" / leftover RtlGetVersion blobs without a clean split.
+  const embedded = text.match(/(?:^|\.)(\d{5})(?:\D|$)/);
+  if (!embedded) return 0;
+  const build = Number.parseInt(embedded[1], 10);
   return Number.isFinite(build) ? build : 0;
+}
+
+function isWindowsCompatLieBuild(build) {
+  // GetVersionEx without a Win10+ supportedOS GUID reports these.
+  return build === 9200 || build === 9600;
+}
+
+function windowsRealBuild(value) {
+  const build = windowsBuildNumber(value);
+  return isWindowsCompatLieBuild(build) ? 0 : build;
+}
+
+function windowsEffectiveBuild(release, versionName) {
+  const real = Math.max(windowsRealBuild(release), windowsRealBuild(versionName));
+  if (real > 0) return real;
+  return Math.max(windowsBuildNumber(release), windowsBuildNumber(versionName));
 }
 
 function resolveSystemRelease(explicit) {
@@ -92,10 +114,16 @@ function readOsVersionName(explicit) {
 function glassSupportedOn(platform, release, versionName) {
   if (platform === "darwin") return true;
   if (platform !== "win32") return false;
-  if (windowsBuildNumber(release) >= WINDOWS_GLASS_MIN_BUILD) return true;
-  // Application-manifest compat can make os.release() look like 6.2.9200
-  // on a real Windows 11 box. os.version() still says Windows 11.
-  return /Windows 11/i.test(String(versionName || ""));
+  const real = Math.max(windowsRealBuild(release), windowsRealBuild(versionName));
+  if (real >= WINDOWS_GLASS_MIN_BUILD) return true;
+  if (real > 0) return false;
+  if (/Windows 11/i.test(String(versionName || ""))) return true;
+  // No 10.0.xxxxx from either source — only the GetVersionEx lie.
+  // Electron 33 cannot run on Windows 8, so show the Settings lever.
+  return (
+    isWindowsCompatLieBuild(windowsBuildNumber(release)) ||
+    isWindowsCompatLieBuild(windowsBuildNumber(versionName))
+  );
 }
 
 function normalizeMode(value, glassSupported, legacyIntensity) {
@@ -213,7 +241,7 @@ function capabilities(platform, release, versionName) {
     translucencySupported: translucencySupportedOn(platform),
     glassSupported,
     isWindows: platform === "win32",
-    windowsBuild: platform === "win32" ? windowsBuildNumber(release) : 0,
+    windowsBuild: platform === "win32" ? windowsEffectiveBuild(release, versionName) : 0,
     materials: glassMaterialsFor(platform === "win32" && glassSupported),
   };
 }
@@ -318,7 +346,7 @@ function createTranslucencyController(opts) {
   try {
     log(
       `[translucency] platform=${platform} release=${release} ` +
-        `build=${caps.windowsBuild} glass=${caps.glassSupported}`,
+        `version=${versionName} build=${caps.windowsBuild} glass=${caps.glassSupported}`,
     );
   } catch {
     /* logging must never throw */
@@ -422,6 +450,8 @@ module.exports = {
   readOsVersionName,
   resolveSystemRelease,
   windowsBuildNumber,
+  windowsEffectiveBuild,
+  windowsRealBuild,
   normalizeMaterial,
   normalizeMode,
   normalizeState,

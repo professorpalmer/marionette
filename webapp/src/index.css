@@ -72,6 +72,9 @@ body {
   --shell-panel: #13161a;
   --shell-panel-border: rgba(255, 255, 255, 0.05);
   --shell-panel-radius: 12px;
+  /* Floating menus over chat. Same fill as Tailwind `panel`. Glass must
+     not mix this token — labels have to stay readable at any tint. */
+  --shell-overlay: #181a1d;
 }
 
 /* Window glass (Settings → General → Transparent background).
@@ -82,7 +85,8 @@ body {
   background-color: transparent !important;
   --shell-chrome: transparent;
   /* Keep every shell surface on one glass curve. Panels retain their borders
-     and slightly lighter base, but no longer become opaque islands. */
+     and slightly lighter base, but no longer become opaque islands.
+     --shell-overlay stays solid: flyouts sit over scrolling chat. */
   --shell-chat: color-mix(in srgb, #0f1113 var(--translucency-glass-keep, 80%), transparent);
   --shell-panel: color-mix(in srgb, #13161a var(--translucency-glass-keep, 80%), transparent);
   --shell-panel-border: rgba(255, 255, 255, 0.08);
@@ -435,7 +439,7 @@ body.is-row-resizing iframe {
   padding: 4px;
   border: 1px solid var(--shell-panel-border);
   border-radius: 7px;
-  background: var(--shell-panel);
+  background: var(--shell-overlay);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
 }
 

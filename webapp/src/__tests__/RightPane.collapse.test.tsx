@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import RightPane from "../components/RightPane";
 import RightDock from "../components/RightDock";
+import css from "../index.css?raw";
 import { api } from "../lib/api";
 import { dispatchProjectSelected } from "../lib/panelTransition";
 import { usePolling } from "../lib/usePolling";
@@ -89,6 +90,15 @@ describe("RightPane collapse placement", () => {
   it("paints the floating pill with the left-rail panel glass", () => {
     render(<RightDock onOpenTab={vi.fn()} onExpand={vi.fn()} onCollapse={baseProps.onCollapse} />);
     expect(screen.getByTestId("floating-dock-pill")).toHaveClass("shell-inset-glass");
+  });
+
+  it("keeps the Add panel menu on the opaque overlay token, not glass-mixed --shell-panel", () => {
+    const menu = css.match(/\.right-pane-add-menu\s*\{[^}]+\}/)?.[0] ?? "";
+    expect(menu).toContain("background: var(--shell-overlay)");
+    expect(menu).not.toContain("background: var(--shell-panel)");
+    expect(css).toMatch(/--shell-overlay:\s*#181a1d/);
+    const glassBlock = css.match(/:root\[data-marionette-glass\]\s*\{[^}]+\}/)?.[0] ?? "";
+    expect(glassBlock).not.toMatch(/--shell-overlay\s*:/);
   });
 
   it("places collapse in the dock action cluster and invokes onCollapse", () => {
