@@ -200,6 +200,28 @@ def test_post_settings_compaction_residual_rejects_off():
     assert payload["error"] == "Invalid compactionResidual"
 
 
+def test_post_settings_browser_real_profile_roundtrip(monkeypatch):
+    import os
+
+    cleaned = []
+    monkeypatch.setattr(
+        "harness.browser_real_profile.cleanup_real_profile_snapshots",
+        lambda: cleaned.append(True),
+    )
+    monkeypatch.setenv("PM_BROWSER_USER_DATA_DIR", "/tmp/isolated-profile")
+    svc, _, _, calls = _svc()
+    code, _ = post_settings({"browserRealProfile": True}, svc)
+    assert code == 200
+    assert dict(calls["persist"])["HARNESS_BROWSER_REAL_PROFILE"] == "1"
+    assert cleaned == []
+    assert "PM_BROWSER_USER_DATA_DIR" not in os.environ
+
+    code, _ = post_settings({"browserRealProfile": False}, svc)
+    assert code == 200
+    assert dict(calls["persist"])["HARNESS_BROWSER_REAL_PROFILE"] == "0"
+    assert cleaned == [True]
+
+
 def test_post_settings_bad_budget():
     svc, _, _, _ = _svc()
     assert post_settings({"budget": "x"}, svc)[0] == 400

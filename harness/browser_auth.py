@@ -18,6 +18,8 @@ import os
 from pathlib import Path
 from typing import Optional
 
+from .browser_real_profile import real_profile_enabled, snapshot_real_profile
+
 AUTH_ENV = "HARNESS_BROWSER_AUTH"
 HEADED_ENV = "HARNESS_BROWSER_HEADED"
 DEFAULT_CDP_PORT = "9333"
@@ -72,9 +74,14 @@ def ensure_shared_browser_env(*, headed: Optional[bool] = None) -> dict:
         elif headed_enabled() and "PM_BROWSER_HEADED" not in os.environ:
             os.environ["PM_BROWSER_HEADED"] = "1"
         if not (os.environ.get("PM_BROWSER_USER_DATA_DIR") or "").strip():
-            path = default_profile_dir()
-            Path(path).mkdir(parents=True, exist_ok=True)
-            os.environ["PM_BROWSER_USER_DATA_DIR"] = path
+            if real_profile_enabled():
+                copy_dir, _err = snapshot_real_profile()
+                if copy_dir:
+                    os.environ["PM_BROWSER_USER_DATA_DIR"] = copy_dir
+            if not (os.environ.get("PM_BROWSER_USER_DATA_DIR") or "").strip():
+                path = default_profile_dir()
+                Path(path).mkdir(parents=True, exist_ok=True)
+                os.environ["PM_BROWSER_USER_DATA_DIR"] = path
         if not (os.environ.get("PM_BROWSER_CDP_PORT") or "").strip():
             os.environ["PM_BROWSER_CDP_PORT"] = DEFAULT_CDP_PORT
         applied = {

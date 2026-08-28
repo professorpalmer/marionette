@@ -22,6 +22,8 @@ import threading
 import time
 from typing import Iterator, Optional
 
+from .context_budget import age_history_images
+
 # grok-build-style quality floors (see xai-grok-compaction summary.rs /
 # intra_compaction/config.rs). Floor / reduction guards fail closed: an
 # exception in those paths refuses compaction rather than applying a bad rewrite.
@@ -841,6 +843,16 @@ class CompactionContextMixin:
             RESIDUAL_OFF,
             compaction_residual_mode,
         )
+        # 413 recovery is a byte problem: drop stale data-URL images before
+        # any residual/trigger gate so emergency compact actually frees payload.
+        if emergency:
+            try:
+                aged = age_history_images(self._history, keep_last_user=True)
+                if aged:
+                    self._history[:] = aged
+                    self._invalidate_ctx_cache()
+            except Exception:
+                pass
 
         residual_mode = compaction_residual_mode()
         # Explicit off only — empty/invalid env values stay on catalog.
@@ -941,6 +953,15 @@ class CompactionContextMixin:
 
         middle_block = self._history[1:split_idx]
         recent_block = self._history[split_idx:]
+        # Non-emergency: strip images from the summarized/dropped middle only.
+        # Live tail (including the latest user image) stays intact.
+        if not emergency:
+            try:
+                middle_block = age_history_images(
+                    middle_block, keep_last_user=False,
+                )
+            except Exception:
+                pass
         if not middle_block:
             self._set_compaction_attempt(
                 REASON_NO_COMPACTABLE,

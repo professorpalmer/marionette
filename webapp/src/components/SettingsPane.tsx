@@ -1128,6 +1128,29 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
+        {gate("safety", "browser chrome cookies real profile login") && settings && (
+        <div className="space-y-1.5">
+          <button
+            onClick={() => update({ browserRealProfile: !(settings.browserRealProfile ?? false) })}
+            disabled={saving}
+            className={`w-full flex items-center justify-between px-3 py-2 rounded border transition text-left ${
+              (settings.browserRealProfile ?? false)
+                ? "bg-accent/10 border-accent/30 text-accent"
+                : "bg-panel2 border-edge text-muted"
+            } disabled:opacity-50`}
+          >
+            <span className="font-medium text-[11px]">Use my Chrome login</span>
+            <span className="text-[10px] uppercase font-bold tracking-wider">
+              {(settings.browserRealProfile ?? false) ? "on" : "off"}
+            </span>
+          </button>
+          <p className="text-[10px] text-muted">
+            Copies cookies into a Marionette-owned profile so the agent browser is already
+            signed in. Off by default. Closing Chrome may be required on Windows if copy
+            fails.
+          </p>
+        </div>
+        )}
         {gate("safety", "full-auto safety command guard timeout max investigation steps per-turn tool-call cap iteration budget guard") && settings && (<>
         {/* Full-Auto Safety: command guard + timeout */}
         <div className="space-y-1.5">

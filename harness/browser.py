@@ -16,6 +16,7 @@ import os
 import shutil
 import sys
 import time
+from pathlib import Path
 from typing import Optional
 
 try:
@@ -214,7 +215,13 @@ def browser_get_text() -> str:
 
 
 def browser_screenshot(out_dir: Optional[str] = None) -> str:
-    return _call("screenshot", "screenshot", out_dir)
+    if out_dir is None or not str(out_dir).strip():
+        dest = Path.home() / ".pmharness" / "browser-shots"
+        dest.mkdir(parents=True, exist_ok=True)
+        resolved = str(dest)
+    else:
+        resolved = out_dir
+    return _call("screenshot", "screenshot", resolved)
 
 
 def browser_relay_enabled() -> bool:
