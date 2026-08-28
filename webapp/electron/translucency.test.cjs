@@ -64,10 +64,20 @@ describe("platform support", () => {
     assert.equal(glassSupportedOn("win32", "10.0.26100.4652"), true);
     assert.equal(glassSupportedOn("win32", "10.0.19045"), false);
     assert.equal(glassSupportedOn("win32", ""), false);
-    assert.equal(glassSupportedOn("win32", "6.2.9200"), false);
+    // GetVersionEx without a Win10+ supportedOS GUID reports 6.2.9200.
+    // Node os.version() on Windows is RtlGetVersion, e.g. 10.0.26100 — not
+    // the marketing string "Windows 11 Pro" that v0.9.261 tested against.
+    assert.equal(glassSupportedOn("win32", "6.2.9200", "10.0.26100"), true);
+    assert.equal(glassSupportedOn("win32", "6.2.9200", "10.0.26100.4652"), true);
+    assert.equal(glassSupportedOn("win32", "6.2.9200", "10.0.19045"), false);
+    assert.equal(glassSupportedOn("win32", "6.2.9200", "6.2.9200"), true);
+    assert.equal(glassSupportedOn("win32", "6.2.9200", "Windows 10 Pro"), true);
+    assert.equal(glassSupportedOn("win32", "6.2.9200"), true);
     assert.equal(glassSupportedOn("win32", "6.2.9200", "Windows 11 Pro"), true);
     assert.equal(capabilities("win32", "10.0.26100.4652").windowsBuild, 26100);
+    assert.equal(capabilities("win32", "6.2.9200", "10.0.26100").windowsBuild, 26100);
     assert.equal(capabilities("win32", "6.2.9200", "Windows 11 Pro").glassSupported, true);
+    assert.equal(capabilities("win32", "6.2.9200", "10.0.26100").glassSupported, true);
   });
 });
 
