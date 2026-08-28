@@ -213,6 +213,34 @@ def test_delete_branch_refuses_current_checkout():
         shutil.rmtree(repo, ignore_errors=True)
 
 
+def test_delete_branch_missing_is_success_with_raise_on_error():
+    repo = create_temp_git_repo()
+    try:
+        _wt.delete_branch(repo, "pmedit-missing1", raise_on_error=True)
+    finally:
+        shutil.rmtree(repo, ignore_errors=True)
+
+
+def test_delete_branch_raise_on_error_when_checked_out_in_worktree():
+    repo = create_temp_git_repo()
+    info = None
+    try:
+        info = _wt.add_worktree(repo, "pmedit-locked01")
+        with pytest.raises(RuntimeError):
+            _wt.delete_branch(repo, "pmedit-locked01", raise_on_error=True)
+        _wt.delete_branch(repo, "pmedit-locked01")
+        assert "pmedit-locked01" in _branch_list(repo)
+    finally:
+        if info and info.get("path"):
+            subprocess.run(
+                ["git", "-C", repo, "worktree", "remove", "--force", info["path"]],
+                capture_output=True,
+            )
+        shutil.rmtree(repo, ignore_errors=True)
+        managed_dir = os.path.abspath(os.path.join(repo, "..", ".pmharness-worktrees"))
+        shutil.rmtree(managed_dir, ignore_errors=True)
+
+
 def test_reap_stale_managed_worktrees_removes_leftover_pmedit():
     repo = create_temp_git_repo()
     managed_dir = os.path.abspath(os.path.join(repo, "..", ".pmharness-worktrees"))

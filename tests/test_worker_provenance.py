@@ -811,6 +811,23 @@ def test_implement_provenance_never_renders_mode_unknown():
     assert "could not be determined" in text
 
 
+def test_cleanup_failed_provenance_is_secondary():
+    text = _worker_provenance_text({
+        "requested_mode": "implement",
+        "managed_worktree_mode": "managed",
+        "worktree_diff_empty": False,
+        "error": "agentic_orchestrator_failed",
+        "cleanup_status": "failed",
+        "cleanup_stage": "store",
+        "cleanup_error": "store: rmtree denied",
+        "live_dirty_paths_before": [],
+        "live_dirty_paths_after": [],
+    })
+    assert text.startswith("[provenance] agentic_orchestrator_failed:")
+    assert "Cleanup failed (store)" in text
+    assert "rmtree denied" in text
+
+
 def test_undetermined_diff_not_empty_recovery_or_unavailable_unknown():
     res = WorkerResult(
         ok=False,

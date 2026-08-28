@@ -680,12 +680,13 @@ def _current_branch(repo: str) -> str:
     return "" if name == "HEAD" else name
 
 
-def delete_branch(repo: str, branch: str) -> None:
+def delete_branch(repo: str, branch: str, raise_on_error: bool = False) -> None:
     """Force-delete a managed edit/worker branch or a stale local release head.
 
     ``pmedit-*`` / ``pmworker-*`` and leftover ``release/v0.9.*`` are eligible.
     Current checkout, ``main`` / ``master`` / ``dev`` are never deleted;
-    unrelated names are refused (no-op).
+    unrelated names are refused (no-op). Missing branches are success.
+    When ``raise_on_error`` is true, a real ``git branch -D`` failure raises.
     """
     if not branch:
         return
@@ -699,7 +700,7 @@ def delete_branch(repo: str, branch: str) -> None:
         return
     if branch == _current_branch(repo):
         return
-    subprocess.run(
+    proc = subprocess.run(
         ["git", "-C", repo, "branch", "-D", branch],
         capture_output=True,
         text=True,
@@ -707,6 +708,14 @@ def delete_branch(repo: str, branch: str) -> None:
         errors="replace",
         timeout=15,
     )
+    if proc.returncode == 0:
+        return
+    err = ((proc.stderr or "") + "\n" + (proc.stdout or "")).strip()
+    lowered = err.lower()
+    if "not found" in lowered or "does not exist" in lowered or "doesn't exist" in lowered:
+        return
+    if raise_on_error:
+        raise RuntimeError(err or "git branch -D failed")
 
 
 def prune_orphan_edit_branches(repo: str) -> dict:

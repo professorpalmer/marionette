@@ -279,12 +279,23 @@ def _worker_provenance_text(provenance: dict, *, expects_diff: bool = True) -> s
         shown = [str(item) for item in paths[:_WORKER_PROVENANCE_PATH_CAP]]
         suffix = f", +{len(paths) - len(shown)} more" if len(paths) > len(shown) else ""
         return ", ".join(shown) + suffix if shown else "none"
-    return (
+    text = (
         f"[provenance] {worker_line}; mode={mode}"
         f"{f', path={path}' if path else ''}. "
         f"User checkout had {len(before)} pre-existing dirty paths before"
         f" ({path_list(before)}) and {len(after)} after ({path_list(after)})."
     )
+    if str(provenance.get("cleanup_status") or "") == "failed":
+        stage = str(provenance.get("cleanup_stage") or "").strip()
+        detail = str(provenance.get("cleanup_error") or "").strip()
+        extra = " Cleanup failed"
+        if stage:
+            extra += f" ({stage})"
+        extra += "."
+        if detail:
+            extra += f" {detail}"
+        text += extra
+    return text
 
 
 def _analysis_signal_rows_for_job(res, summary_text: str) -> list:
@@ -862,6 +873,9 @@ class ConversationJobsMixin:
                 "patch_capture_status": str(
                     _worker_attribute("patch_capture_status") or ""
                 ),
+                "cleanup_status": str(_worker_attribute("cleanup_status") or ""),
+                "cleanup_stage": str(_worker_attribute("cleanup_stage") or ""),
+                "cleanup_error": str(_worker_attribute("cleanup_error") or ""),
                 "usage_known": _worker_attribute("usage_known", None),
                 "worktree_diff_empty": _worker_attribute("worktree_diff_empty", None),
                 "empty_implement_recovery": bool(should_recover),
