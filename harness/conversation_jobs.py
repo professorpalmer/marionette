@@ -28,6 +28,18 @@ from ._exec import _puppetmaster_cmd
 
 _WORKER_PROVENANCE_PATH_CAP = 12
 
+_PROVENANCE_STAGE_CODES = frozenset({
+    "agentic_unavailable",
+    "agentic_route_failed",
+    "agentic_error",
+    "worktree_create_failed",
+    "agentic_orchestrator_failed",
+    "patch_capture_failed",
+    "worker_cleanup_failed",
+    "agentic_provider_rate_limited",
+    "agentic_timeout",
+})
+
 # Soft-refuse cue for pilots/guards: empty managed implement already recovered once.
 EMPTY_MANAGED_IMPLEMENT_EXHAUSTED = "empty_managed_implement_exhausted"
 
@@ -176,6 +188,12 @@ def _empty_implement_recovery_eligible(
     # Stamping worktree_diff_empty on AGENTIC_ERROR must not launch a second run.
     if err.startswith("agentic_"):
         return False
+    if err in (
+        "worktree_create_failed",
+        "patch_capture_failed",
+        "worker_cleanup_failed",
+    ):
+        return False
     if not _is_empty_diff_implement_failure(res, expects_diff=True):
         return False
     if _worker_stopped_by_guard_or_budget(res):
@@ -214,6 +232,14 @@ def _annotate_empty_managed_implement_exhausted(
         pass
 
 
+def _should_meter_worker_usage(res) -> bool:
+    """False when usage artifacts were missing — do not treat zeros as measured."""
+    try:
+        return getattr(res, "usage_known", None) is not False
+    except Exception:
+        return True
+
+
 def _worker_provenance_text(provenance: dict, *, expects_diff: bool = True) -> str:
     """Render measured worker/live-tree facts for pilot-facing text.
 
@@ -224,9 +250,17 @@ def _worker_provenance_text(provenance: dict, *, expects_diff: bool = True) -> s
         return ""
     before = list(provenance.get("live_dirty_paths_before") or [])
     after = list(provenance.get("live_dirty_paths_after") or [])
-    mode = str(provenance.get("managed_worktree_mode") or "unknown")
+    requested_mode = str(provenance.get("requested_mode") or "")
+    if not requested_mode:
+        requested_mode = "implement" if expects_diff else "analysis"
     path = str(provenance.get("managed_worktree_path") or "")
+    mode = str(provenance.get("managed_worktree_mode") or "")
+    if requested_mode == "implement" and mode in ("", "unknown"):
+        mode = "managed" if path else "none"
+    elif not mode:
+        mode = "unknown"
     diff_empty = provenance.get("worktree_diff_empty")
+    error = str(provenance.get("error") or "").strip()
     if diff_empty is True:
         if not expects_diff:
             worker_line = (
@@ -238,7 +272,9 @@ def _worker_provenance_text(provenance: dict, *, expects_diff: bool = True) -> s
     elif diff_empty is False:
         worker_line = "Worker produced changes in disposable managed worktree"
     else:
-        worker_line = "Worker worktree diff status unavailable"
+        worker_line = "worktree diff could not be determined"
+    if error and error in _PROVENANCE_STAGE_CODES and error not in worker_line:
+        worker_line = f"{error}: {worker_line}"
     def path_list(paths: list) -> str:
         shown = [str(item) for item in paths[:_WORKER_PROVENANCE_PATH_CAP]]
         suffix = f", +{len(paths) - len(shown)} more" if len(paths) > len(shown) else ""
@@ -802,18 +838,31 @@ class ConversationJobsMixin:
                 except Exception:
                     return default
 
+            requested_mode = str(
+                _worker_attribute("requested_mode")
+                or ("implement" if expects_diff else "analysis")
+            )
+            wt_path = str(
+                _worker_attribute("managed_worktree_path")
+                or _worker_attribute("worktree")
+                or ""
+            )
+            raw_mode = str(_worker_attribute("managed_worktree_mode") or "")
+            if requested_mode == "implement" and raw_mode in ("", "unknown"):
+                mode = "managed" if wt_path else "none"
+            else:
+                mode = raw_mode or ("managed" if wt_path else "unknown")
             provenance = {
                 "live_dirty_paths_before": list(live_dirty_before),
                 "live_dirty_paths_after": list(live_dirty_after),
-                "managed_worktree_path": str(
-                    _worker_attribute("managed_worktree_path")
-                    or _worker_attribute("worktree")
-                    or ""
+                "managed_worktree_path": wt_path,
+                "managed_worktree_mode": mode,
+                "requested_mode": requested_mode,
+                "error": str(_worker_attribute("error") or ""),
+                "patch_capture_status": str(
+                    _worker_attribute("patch_capture_status") or ""
                 ),
-                "managed_worktree_mode": str(
-                    _worker_attribute("managed_worktree_mode")
-                    or ("managed" if _worker_attribute("worktree") else "unknown")
-                ),
+                "usage_known": _worker_attribute("usage_known", None),
                 "worktree_diff_empty": _worker_attribute("worktree_diff_empty", None),
                 "empty_implement_recovery": bool(should_recover),
                 "empty_managed_implement_exhausted": bool(
@@ -836,8 +885,11 @@ class ConversationJobsMixin:
                     tokens=(
                         int(_worker_attribute("tokens_in", 0) or 0)
                         + int(_worker_attribute("tokens_out", 0) or 0)
+                    ) if _should_meter_worker_usage(res) else 0,
+                    est_cost_usd=(
+                        float(_worker_attribute("est_cost_usd", 0.0) or 0.0)
+                        if _should_meter_worker_usage(res) else 0.0
                     ),
-                    est_cost_usd=float(_worker_attribute("est_cost_usd", 0.0) or 0.0),
                 )
                 return
             raw_worker_summary = res.summary or ""
@@ -863,7 +915,9 @@ class ConversationJobsMixin:
                 _nc_t_in = int(getattr(res, "tokens_in", 0) or 0)
                 _nc_t_out = int(getattr(res, "tokens_out", 0) or 0)
                 _nc_t_cached = int(getattr(res, "tokens_cached", 0) or 0)
-                if _nc_t_in or _nc_t_out or _nc_t_cached:
+                if _should_meter_worker_usage(res) and (
+                    _nc_t_in or _nc_t_out or _nc_t_cached
+                ):
                     with self._apply_lock:
                         self._tokens_used += _nc_t_out + _nc_t_in
                         self._tokens_in += _nc_t_in
@@ -919,15 +973,16 @@ class ConversationJobsMixin:
                 tokens_in = int(getattr(res, "tokens_in", 0) or 0)
                 tokens_out = int(getattr(res, "tokens_out", 0) or 0)
                 tokens_cached = int(getattr(res, "tokens_cached", 0) or 0)
-                with self._apply_lock:
-                    self._tokens_used += tokens_out + tokens_in
-                    self._tokens_in += tokens_in
-                    self._tokens_out += tokens_out
-                    self._tokens_cached += tokens_cached
-                    self._attribute_worker_cost(
-                        tokens_in, tokens_out,
-                        real_cost_usd=float(getattr(res, "est_cost_usd", 0.0) or 0.0),
-                        tokens_cached=tokens_cached)
+                if _should_meter_worker_usage(res):
+                    with self._apply_lock:
+                        self._tokens_used += tokens_out + tokens_in
+                        self._tokens_in += tokens_in
+                        self._tokens_out += tokens_out
+                        self._tokens_cached += tokens_cached
+                        self._attribute_worker_cost(
+                            tokens_in, tokens_out,
+                            real_cost_usd=float(getattr(res, "est_cost_usd", 0.0) or 0.0),
+                            tokens_cached=tokens_cached)
                 summary = res.summary or "Successfully completed analysis task"
                 substantive = True
                 if not expects_diff:
@@ -1031,26 +1086,27 @@ class ConversationJobsMixin:
                 tokens_in = res.tokens_in
                 tokens_out = res.tokens_out
                 tokens_cached = int(getattr(res, "tokens_cached", 0) or 0)
-                with self._apply_lock:
-                    # Attribute the worker's FULL spend (prompt + completion) to
-                    # the parent session's cost meter. Track _tokens_out too, not
-                    # just _tokens_in: the cost accounting prices output at the
-                    # (higher) completion rate, so dropping _tokens_out here made
-                    # implement-worker output get billed at the cheaper input
-                    # rate -- undercounting every implement worker's real cost.
-                    self._tokens_used += tokens_out + tokens_in
-                    self._tokens_in += tokens_in
-                    self._tokens_out += tokens_out
-                    # Cached prompt tokens are already inside tokens_in above;
-                    # feed the parent's cache-savings meter without inflating
-                    # _tokens_used (avoids double-counting).
-                    self._tokens_cached += tokens_cached
-                    # Worker dollars at the worker's own model rate (prefer the
-                    # result's real cost when present, else derive from rate).
-                    self._attribute_worker_cost(
-                        tokens_in, tokens_out,
-                        real_cost_usd=float(getattr(res, "est_cost_usd", 0.0) or 0.0),
-                        tokens_cached=tokens_cached)
+                if _should_meter_worker_usage(res):
+                    with self._apply_lock:
+                        # Attribute the worker's FULL spend (prompt + completion) to
+                        # the parent session's cost meter. Track _tokens_out too, not
+                        # just _tokens_in: the cost accounting prices output at the
+                        # (higher) completion rate, so dropping _tokens_out here made
+                        # implement-worker output get billed at the cheaper input
+                        # rate -- undercounting every implement worker's real cost.
+                        self._tokens_used += tokens_out + tokens_in
+                        self._tokens_in += tokens_in
+                        self._tokens_out += tokens_out
+                        # Cached prompt tokens are already inside tokens_in above;
+                        # feed the parent's cache-savings meter without inflating
+                        # _tokens_used (avoids double-counting).
+                        self._tokens_cached += tokens_cached
+                        # Worker dollars at the worker's own model rate (prefer the
+                        # result's real cost when present, else derive from rate).
+                        self._attribute_worker_cost(
+                            tokens_in, tokens_out,
+                            real_cost_usd=float(getattr(res, "est_cost_usd", 0.0) or 0.0),
+                            tokens_cached=tokens_cached)
 
                 patch_summary = ""
                 if res.files_changed:
@@ -1200,8 +1256,14 @@ class ConversationJobsMixin:
                 ok=not res_dict.get("error"),
                 summary=res_dict.get("summary", ""),
                 files=res_dict.get("files") or [],
-                tokens=res_dict.get("tokens_out", 0) + res_dict.get("tokens_in", 0),
-                est_cost_usd=float(getattr(res, "est_cost_usd", 0.0) or 0.0),
+                tokens=(
+                    (res_dict.get("tokens_out", 0) + res_dict.get("tokens_in", 0))
+                    if _should_meter_worker_usage(res) else 0
+                ),
+                est_cost_usd=(
+                    float(getattr(res, "est_cost_usd", 0.0) or 0.0)
+                    if _should_meter_worker_usage(res) else 0.0
+                ),
                 engine=wr_engine,
                 model=wr_model,
                 findings=_signal_rows,
@@ -1237,7 +1299,8 @@ class ConversationJobsMixin:
                 "live_dirty_paths_before": list(live_dirty_before),
                 "live_dirty_paths_after": list(live_dirty_after),
                 "managed_worktree_path": "",
-                "managed_worktree_mode": "unknown",
+                "managed_worktree_mode": "none" if expects_diff else "unknown",
+                "requested_mode": "implement" if expects_diff else "analysis",
                 "worktree_diff_empty": None,
             }
             if self._local_job_cancelled(job_id):

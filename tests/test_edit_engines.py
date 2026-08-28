@@ -15,8 +15,13 @@ import pytest
 from harness.config import HarnessConfig
 from harness.edit_engines import (
     AGENTIC_ERROR,
+    AGENTIC_ORCHESTRATOR_FAILED,
+    AGENTIC_PROVIDER_RATE_LIMITED,
     AGENTIC_ROUTE_FAILED,
+    AGENTIC_TIMEOUT,
     AGENTIC_UNAVAILABLE,
+    PATCH_CAPTURE_FAILED,
+    WORKTREE_CREATE_FAILED,
     agentic_available,
     agentic_events_from_store,
     finalize_worktree_patch,
@@ -152,6 +157,8 @@ def test_agentic_store_failure_snapshot_prefers_gate_reason():
     assert snap["task_statuses"] == ["implement=failed"]
     assert snap["tokens_in"] == 40
     assert snap["tokens_out"] == 12
+    assert snap["usage_known"] is True
+    assert snap["task_ids"] == ["t1"]
     summary = _format_agentic_engine_error(
         RuntimeError("swarm exited with incomplete tasks"),
         snap,
@@ -161,6 +168,29 @@ def test_agentic_store_failure_snapshot_prefers_gate_reason():
     assert "require_diff: no PATCH artifact" in summary
     assert "tasks: implement=failed" in summary
     assert "unapplied worktree files: src/lib/scoring/report.ts" in summary
+
+
+def test_agentic_store_failure_snapshot_unknown_usage_is_not_measured_zero():
+    class _Store:
+        def list_jobs(self):
+            return [type("J", (), {"id": "job_1"})()]
+
+        def list_tasks(self, job_id):
+            return [type("T", (), {"id": "t9", "role": "implement", "status": "failed"})()]
+
+        def read_events(self, job_id):
+            return []
+
+        def list_artifacts(self, job_id):
+            art = type("A", (), {})()
+            art.payload = {"failure": "boom"}
+            return [art]
+
+    snap = _agentic_store_failure_snapshot(_Store())
+    assert snap["usage_known"] is False
+    assert snap["tokens_in"] == 0
+    assert snap["tokens_out"] == 0
+    assert snap["task_ids"] == ["t9"]
 
 
 # --- pure helpers: _summarize_agentic_result ---
@@ -460,6 +490,43 @@ def test_finalize_worktree_patch_empty_when_no_changes():
             patch, files = finalize_worktree_patch(wt_path)
             assert patch.strip() == ""
             assert files == []
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
+def test_finalize_worktree_patch_rejects_missing_path():
+    with pytest.raises(RuntimeError, match="does not exist"):
+        finalize_worktree_patch("/no/such/worktree-path")
+
+
+def test_finalize_worktree_patch_rejects_non_repo(tmp_path):
+    with pytest.raises(RuntimeError, match="not a git repository"):
+        finalize_worktree_patch(str(tmp_path))
+
+
+def test_finalize_worktree_patch_name_only_failure_does_not_return_empty(monkeypatch):
+    repo_dir = create_temp_git_repo()
+    try:
+        with managed_worktree(repo_dir) as wt_path:
+            with open(os.path.join(wt_path, "x.txt"), "w", encoding="utf-8") as fh:
+                fh.write("x\n")
+            real_run = subprocess.run
+
+            def fake_run(cmd, *a, **k):
+                if isinstance(cmd, (list, tuple)) and "--name-only" in cmd:
+                    return type(
+                        "P", (),
+                        {"returncode": 1, "stdout": "", "stderr": "name-only boom"},
+                    )()
+                return real_run(cmd, *a, **k)
+
+            monkeypatch.setattr(subprocess, "run", fake_run)
+            with pytest.raises(RuntimeError) as caught:
+                finalize_worktree_patch(wt_path)
+            text = str(caught.value)
+            assert "failed (exit 1)" in text
+            assert "--name-only" in text
+            assert "name-only boom" in text
     finally:
         shutil.rmtree(repo_dir, ignore_errors=True)
 
@@ -1034,24 +1101,59 @@ def test_agentic_edit_empty_diff_route_failure(monkeypatch):
         shutil.rmtree(repo_dir, ignore_errors=True)
 
 
-def test_agentic_edit_runtime_exception_returns_agentic_error(monkeypatch):
+def test_agentic_edit_worktree_create_failed(monkeypatch):
     repo_dir = create_temp_git_repo()
     try:
         cfg = _cfg(repo_dir)
         monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
 
         @contextlib.contextmanager
-        def _boom_worktree(repo, base="HEAD"):
-            raise RuntimeError("worktree blew up")
+        def _boom_worktree(repo, goal, base="HEAD"):
+            raise RuntimeError(
+                "fatal: could not create worktree api_key=sk-abcdefghijklmnopqrstuvwxyz"
+            )
             yield ""  # pragma: no cover
 
-        monkeypatch.setattr("harness.edit_engines.managed_worktree", _boom_worktree)
+        monkeypatch.setattr(
+            "harness.edit_engines.managed_worktree_for_goal", _boom_worktree,
+        )
+        result = run_agentic_edit(cfg, "goal")
+        assert result.ok is False
+        assert result.error == WORKTREE_CREATE_FAILED
+        assert result.requested_mode == "implement"
+        assert result.managed_worktree_mode == "none"
+        assert result.patch_capture_status == "skipped"
+        assert "fatal" in result.summary
+        assert "sk-abcdefghijklmnopqrstuvwxyz" not in result.summary
+        assert "sk-abcdefghijklmnopqrstuvwxyz" not in result.failure_stderr
+        assert result.failure_command
+        assert result.engine == "agentic"
+        assert result.adapter == "agentic"
+        assert result.worktree_diff_empty is None
+        assert "unavailable" not in (result.summary or "").lower()
+        assert "mode=unknown" not in (result.summary or "")
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
+def test_agentic_edit_unclassified_crash_stamps_requested_mode(monkeypatch):
+    repo_dir = create_temp_git_repo()
+    try:
+        cfg = _cfg(repo_dir)
+        monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
+
+        def boom_store(*_a, **_k):
+            raise RuntimeError("store exploded")
+
+        monkeypatch.setattr("puppetmaster.store_factory.create_store", boom_store)
         result = run_agentic_edit(cfg, "goal")
         assert result.ok is False
         assert result.error == AGENTIC_ERROR
-        assert "worktree blew up" in result.summary
-        assert result.managed_worktree_mode == ""
-        assert result.worktree_diff_empty is None
+        assert result.requested_mode == "implement"
+        assert result.engine == "agentic"
+        assert result.adapter == "agentic"
+        assert result.managed_worktree_mode == "managed"
+        assert "store exploded" in result.summary
     finally:
         shutil.rmtree(repo_dir, ignore_errors=True)
 
@@ -1084,13 +1186,20 @@ def test_agentic_edit_incomplete_swarm_stamps_provenance_and_gate_reason(monkeyp
         monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _BoomOrch)
         result = run_agentic_edit(cfg, "implement the thing")
         assert result.ok is False
-        assert result.error == AGENTIC_ERROR
+        assert result.error == AGENTIC_ORCHESTRATOR_FAILED
+        assert result.requested_mode == "implement"
+        assert result.engine == "agentic"
+        assert result.adapter == "agentic"
         assert result.managed_worktree_mode == "managed"
         assert result.worktree_diff_empty is False
+        assert result.patch_capture_status == "ok"
         assert "test.txt" in (result.files_changed or [])
         assert (result.patch or "").strip()
         assert "incomplete tasks" in (result.summary or "")
         assert "require_diff" in (result.summary or "")
+        assert result.pm_job_id
+        assert "unavailable" not in (result.summary or "").lower()
+        assert "mode=unknown" not in (result.summary or "")
     finally:
         shutil.rmtree(repo_dir, ignore_errors=True)
 
@@ -1117,12 +1226,14 @@ def test_agentic_edit_incomplete_swarm_empty_worktree_is_explicit(monkeypatch):
         monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _BoomOrch)
         result = run_agentic_edit(cfg, "implement the thing")
         assert result.ok is False
-        assert result.error == AGENTIC_ERROR
+        assert result.error == AGENTIC_ORCHESTRATOR_FAILED
+        assert result.requested_mode == "implement"
         assert result.managed_worktree_mode == "managed"
         assert result.worktree_diff_empty is True
         assert result.files_changed == []
         assert "adapter boom" in (result.summary or "")
         assert "unavailable" not in (result.summary or "").lower()
+        assert "mode=unknown" not in (result.summary or "")
     finally:
         shutil.rmtree(repo_dir, ignore_errors=True)
 
@@ -1236,6 +1347,11 @@ def test_agentic_edit_success_with_patch(monkeypatch):
         assert result.files_changed == ["x.py"]
         assert result.tokens_out == 200
         assert result.tokens_in == 80
+        assert result.requested_mode == "implement"
+        assert result.engine == "agentic"
+        assert result.adapter == "agentic"
+        assert result.patch_capture_status == "ok"
+        assert result.usage_known is True
     finally:
         shutil.rmtree(repo_dir, ignore_errors=True)
 
@@ -1537,12 +1653,298 @@ def test_run_edit_worker_falls_back_on_route_and_runtime_errors(monkeypatch):
         monkeypatch.setattr("harness.edit_engines.cursor_platform_available", lambda: False)
         native_sentinel = WorkerResult(ok=True, summary="native")
 
-        for err in (AGENTIC_ROUTE_FAILED, AGENTIC_ERROR):
+        for err in (AGENTIC_ROUTE_FAILED, WORKTREE_CREATE_FAILED):
             monkeypatch.setattr(
                 "harness.edit_engines.run_agentic_edit",
                 lambda *a, err=err, **k: WorkerResult(ok=False, error=err),
             )
             monkeypatch.setattr("harness.edit_engines.run_native_edit", lambda *a, **k: native_sentinel)
             assert run_edit_worker(cfg, "goal") is native_sentinel
+
+        native_called = []
+        monkeypatch.setattr(
+            "harness.edit_engines.run_native_edit",
+            lambda *a, **k: native_called.append(True) or WorkerResult(ok=False),
+        )
+        for err in (AGENTIC_ORCHESTRATOR_FAILED, PATCH_CAPTURE_FAILED, AGENTIC_ERROR):
+            monkeypatch.setattr(
+                "harness.edit_engines.run_agentic_edit",
+                lambda *a, err=err, **k: WorkerResult(ok=False, error=err, patch=""),
+            )
+            result = run_edit_worker(cfg, "goal")
+            assert result.error == err
+            assert native_called == []
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
+def test_run_edit_worker_no_fallback_on_partial_implement(monkeypatch):
+    repo_dir = create_temp_git_repo()
+    try:
+        cfg = _cfg(repo_dir)
+        monkeypatch.setattr("harness.edit_engines.select_edit_engine", lambda *a, **k: "agentic")
+        monkeypatch.setattr("harness.edit_engines.cursor_platform_available", lambda: False)
+        native_called = []
+        monkeypatch.setattr(
+            "harness.edit_engines.run_native_edit",
+            lambda *a, **k: native_called.append(True) or WorkerResult(ok=False),
+        )
+        partial = WorkerResult(
+            ok=False,
+            error=WORKTREE_CREATE_FAILED,
+            patch="diff --git a/x b/x\n+line",
+            files_changed=["x.py"],
+        )
+        monkeypatch.setattr(
+            "harness.edit_engines.run_agentic_edit",
+            lambda *a, **k: partial,
+        )
+        result = run_edit_worker(cfg, "goal")
+        assert result is partial
+        assert native_called == []
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
+def test_agentic_edit_ignores_parent_dirty_file(monkeypatch):
+    repo_dir = create_temp_git_repo()
+    try:
+        parent_file = os.path.join(repo_dir, "test.txt")
+        with open(parent_file, "a", encoding="utf-8") as fh:
+            fh.write("parent-dirty\n")
+        cfg = _cfg(repo_dir)
+        monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
+
+        class _Orch:
+            def __init__(self, store):
+                self.store = store
+
+            def run(self, goal, specs=None, **kwargs):
+                payload = ((specs[0].payload if specs else {}) or {})
+                cwd = payload.get("cwd") or ""
+                with open(os.path.join(cwd, "new_from_worker.txt"), "w", encoding="utf-8") as out:
+                    out.write("only-in-wt\n")
+                return _fake_pm_result([
+                    _fake_artifact(tokens_out=1, tokens_in=1, stdout="ok"),
+                ])
+
+        monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _Orch)
+        result = run_agentic_edit(cfg, "add worker_only.txt")
+        assert result.ok is True
+        assert "new_from_worker.txt" in (result.files_changed or [])
+        assert "test.txt" not in (result.files_changed or [])
+        with open(parent_file, encoding="utf-8") as fh:
+            assert "parent-dirty" in fh.read()
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
+def test_agentic_edit_patch_capture_failed(monkeypatch):
+    repo_dir = create_temp_git_repo()
+    try:
+        cfg = _cfg(repo_dir)
+        _install_agentic_mocks(monkeypatch, orchestrator_result=_fake_pm_result([
+            _fake_artifact(tokens_out=2, tokens_in=1, stdout="ok"),
+        ]))
+
+        def boom_finalize(_wt):
+            raise RuntimeError(
+                "git -C /tmp/wt diff --cached --name-only failed (exit 1): boom"
+            )
+
+        monkeypatch.setattr("harness.edit_engines.finalize_worktree_patch", boom_finalize)
+        result = run_agentic_edit(cfg, "goal")
+        assert result.ok is False
+        assert result.error == PATCH_CAPTURE_FAILED
+        assert result.worktree_diff_empty is None
+        assert result.patch_capture_status == "failed"
+        assert result.requested_mode == "implement"
+        assert result.managed_worktree_mode == "managed"
+        assert result.worktree_diff_empty is not True
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
+def test_agentic_edit_finalize_fail_keeps_orchestrator_error(monkeypatch):
+    repo_dir = create_temp_git_repo()
+    try:
+        cfg = _cfg(repo_dir)
+        monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
+
+        class _BoomOrch:
+            def __init__(self, store):
+                self.store = store
+
+            def run(self, goal, specs=None, **kwargs):
+                raise RuntimeError("swarm exited with incomplete tasks")
+
+        monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _BoomOrch)
+        monkeypatch.setattr(
+            "harness.edit_engines.finalize_worktree_patch",
+            lambda _wt: (_ for _ in ()).throw(RuntimeError("git add failed")),
+        )
+        result = run_agentic_edit(cfg, "implement the thing")
+        assert result.error == AGENTIC_ORCHESTRATOR_FAILED
+        assert result.patch_capture_status == "failed"
+        assert result.worktree_diff_empty is None
+        assert result.managed_worktree_mode == "managed"
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
+def test_agentic_edit_cleanup_failure_keeps_orchestrator_error(monkeypatch):
+    repo_dir = create_temp_git_repo()
+    try:
+        cfg = _cfg(repo_dir)
+        monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
+
+        class _BoomOrch:
+            def __init__(self, store):
+                self.store = store
+
+            def run(self, goal, specs=None, **kwargs):
+                raise RuntimeError("swarm exited with incomplete tasks")
+
+        monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _BoomOrch)
+        real_rmtree = shutil.rmtree
+
+        def boom_rmtree(path, *a, **k):
+            if os.path.basename(str(path)).startswith("pmh-edit-"):
+                raise OSError("rmtree denied")
+            return real_rmtree(path, *a, **k)
+
+        monkeypatch.setattr("harness.edit_engines.shutil.rmtree", boom_rmtree)
+        result = run_agentic_edit(cfg, "implement the thing")
+        assert result.error == AGENTIC_ORCHESTRATOR_FAILED
+        assert "incomplete tasks" in (result.summary or "")
+        assert result.managed_worktree_mode == "managed"
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
+def test_agentic_edit_no_leaked_pmh_edit_dirs(monkeypatch):
+    repo_dir = create_temp_git_repo()
+    created = []
+    real_mkdtemp = tempfile.mkdtemp
+
+    def spy_mkdtemp(*a, **k):
+        path = real_mkdtemp(*a, **k)
+        if str(k.get("prefix") or "").startswith("pmh-edit"):
+            created.append(path)
+        return path
+
+    try:
+        cfg = _cfg(repo_dir)
+        monkeypatch.setattr("tempfile.mkdtemp", spy_mkdtemp)
+        monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
+        _install_agentic_mocks(monkeypatch, orchestrator_result=_fake_pm_result([
+            _fake_artifact(tokens_out=1, tokens_in=1, stdout="ok"),
+        ]))
+        monkeypatch.setattr(
+            "harness.edit_engines.finalize_worktree_patch",
+            lambda _wt: ("diff --git a/x b/x\n+line", ["x.py"]),
+        )
+        ok_result = run_agentic_edit(cfg, "goal")
+        assert ok_result.ok is True
+
+        class _BoomOrch:
+            def __init__(self, store):
+                self.store = store
+
+            def run(self, goal, specs=None, **kwargs):
+                raise RuntimeError("swarm exited with incomplete tasks")
+
+        monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _BoomOrch)
+        fail_result = run_agentic_edit(cfg, "goal")
+        assert fail_result.ok is False
+        assert created
+        for path in created:
+            assert not os.path.exists(path)
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
+def test_managed_worktree_for_goal_paths_are_distinct():
+    from harness.edit_engines import managed_worktree_for_goal
+
+    repo_dir = create_temp_git_repo()
+    try:
+        with managed_worktree_for_goal(repo_dir, "goal a") as wt1:
+            with open(os.path.join(wt1, "only_in_first.txt"), "w", encoding="utf-8") as fh:
+                fh.write("secret-patch-a\n")
+            patch1, files1 = finalize_worktree_patch(wt1)
+            with managed_worktree_for_goal(repo_dir, "goal b") as wt2:
+                assert wt1 != wt2
+                patch2, files2 = finalize_worktree_patch(wt2)
+                assert "only_in_first.txt" not in files2
+                assert "secret-patch-a" not in patch2
+            assert "only_in_first.txt" in files1
+        assert not os.path.exists(wt1)
+        assert not os.path.exists(wt2)
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
+def test_agentic_edit_classifies_rate_limit(monkeypatch):
+    repo_dir = create_temp_git_repo()
+    try:
+        cfg = _cfg(repo_dir)
+        monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
+
+        class _BoomOrch:
+            def __init__(self, store):
+                self.store = store
+
+            def run(self, goal, specs=None, **kwargs):
+                raise RuntimeError("HTTP 429 Too Many Requests Retry-After: 12 quota exceeded")
+
+        monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _BoomOrch)
+        result = run_agentic_edit(cfg, "implement the thing")
+        assert result.error == AGENTIC_PROVIDER_RATE_LIMITED
+        assert result.http_status == 429
+        assert result.retry_after == "12"
+        assert result.managed_worktree_mode == "managed"
+        assert result.requested_mode == "implement"
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
+def test_agentic_edit_classifies_timeout(monkeypatch):
+    repo_dir = create_temp_git_repo()
+    try:
+        cfg = _cfg(repo_dir)
+        monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
+
+        class _BoomOrch:
+            def __init__(self, store):
+                self.store = store
+
+            def run(self, goal, specs=None, **kwargs):
+                raise TimeoutError("request timed out waiting for provider")
+
+        monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _BoomOrch)
+        result = run_agentic_edit(cfg, "implement the thing")
+        assert result.error == AGENTIC_TIMEOUT
+        assert result.managed_worktree_mode == "managed"
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
+def test_agentic_edit_connection_error_is_orchestrator_failed(monkeypatch):
+    repo_dir = create_temp_git_repo()
+    try:
+        cfg = _cfg(repo_dir)
+        monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
+
+        class _BoomOrch:
+            def __init__(self, store):
+                self.store = store
+
+            def run(self, goal, specs=None, **kwargs):
+                raise RuntimeError("connection refused")
+
+        monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _BoomOrch)
+        result = run_agentic_edit(cfg, "implement the thing")
+        assert result.error == AGENTIC_ORCHESTRATOR_FAILED
     finally:
         shutil.rmtree(repo_dir, ignore_errors=True)

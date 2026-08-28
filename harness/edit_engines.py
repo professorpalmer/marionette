@@ -48,11 +48,38 @@ _ARTIFACT_PATHSPECS = [
 ]
 
 # Machine-readable reasons that mean "the agentic engine could not run at all"
-# (as opposed to "ran fine, made no changes"). Only these trigger native fallback.
+# (as opposed to "ran fine, made no changes"). Only never-started reasons
+# trigger native fallback — post-start stage codes must not.
 AGENTIC_UNAVAILABLE = "agentic_unavailable"
 AGENTIC_ROUTE_FAILED = "agentic_route_failed"
 AGENTIC_ERROR = "agentic_error"
-_FALLBACK_REASONS = (AGENTIC_UNAVAILABLE, AGENTIC_ROUTE_FAILED, AGENTIC_ERROR)
+WORKTREE_CREATE_FAILED = "worktree_create_failed"
+AGENTIC_ORCHESTRATOR_FAILED = "agentic_orchestrator_failed"
+PATCH_CAPTURE_FAILED = "patch_capture_failed"
+WORKER_CLEANUP_FAILED = "worker_cleanup_failed"
+AGENTIC_PROVIDER_RATE_LIMITED = "agentic_provider_rate_limited"
+AGENTIC_TIMEOUT = "agentic_timeout"
+_FALLBACK_REASONS = (
+    AGENTIC_UNAVAILABLE,
+    AGENTIC_ROUTE_FAILED,
+    WORKTREE_CREATE_FAILED,
+)
+_RATE_LIMIT_MARKERS = (
+    "429",
+    "retry-after",
+    "rate limit",
+    "rate_limit",
+    "ratelimit",
+    "too many requests",
+    "quota",
+    "resource exhausted",
+)
+_TIMEOUT_MARKERS = (
+    "timeout",
+    "timed out",
+    "time out",
+    "deadline exceeded",
+)
 
 
 def _agentic_store_failure_snapshot(store: Any, job_id: str = "") -> dict:
@@ -66,8 +93,10 @@ def _agentic_store_failure_snapshot(store: Any, job_id: str = "") -> dict:
         "job_id": "",
         "reason": "",
         "task_statuses": [],
+        "task_ids": [],
         "tokens_in": 0,
         "tokens_out": 0,
+        "usage_known": False,
     }
     if store is None:
         return snap
@@ -88,7 +117,11 @@ def _agentic_store_failure_snapshot(store: Any, job_id: str = "") -> dict:
     except Exception:
         tasks = []
     statuses = []
+    task_ids = []
     for task in tasks:
+        tid = str(getattr(task, "id", "") or "").strip()
+        if tid:
+            task_ids.append(tid)
         role = str(getattr(task, "role", "") or "").strip()
         raw_status = getattr(task, "status", "")
         status = str(getattr(raw_status, "value", raw_status) or "").strip()
@@ -97,6 +130,7 @@ def _agentic_store_failure_snapshot(store: Any, job_id: str = "") -> dict:
         elif status:
             statuses.append(status)
     snap["task_statuses"] = statuses
+    snap["task_ids"] = task_ids
 
     reason = ""
     try:
@@ -133,17 +167,21 @@ def _agentic_store_failure_snapshot(store: Any, job_id: str = "") -> dict:
         arts = []
     tokens_in = 0
     tokens_out = 0
+    usage_known = False
     art_failure = ""
     for art in arts:
         payload = getattr(art, "payload", None)
         if not isinstance(payload, dict):
             continue
-        tokens_out += int(payload.get("tokens_out") or 0)
-        tokens_in += int(payload.get("tokens_in") or 0)
+        if "tokens_in" in payload or "tokens_out" in payload:
+            usage_known = True
+            tokens_out += int(payload.get("tokens_out") or 0)
+            tokens_in += int(payload.get("tokens_in") or 0)
         if not art_failure and payload.get("failure"):
             art_failure = str(payload.get("failure") or "").strip()
     snap["tokens_in"] = tokens_in
     snap["tokens_out"] = tokens_out
+    snap["usage_known"] = usage_known
     if not snap["reason"] and art_failure:
         snap["reason"] = art_failure
     return snap
@@ -155,9 +193,11 @@ def _format_agentic_engine_error(
     files_changed: Optional[list] = None,
 ) -> str:
     """Pilot-facing summary for an agentic engine crash after store snapshot."""
-    parts = [f"Agentic engine error: {exc}"]
+    from harness.api.redaction import redact_secret_text
+
+    parts = [f"Agentic engine error: {redact_secret_text(str(exc))}"]
     snap = snapshot or {}
-    reason = str(snap.get("reason") or "").strip()
+    reason = redact_secret_text(str(snap.get("reason") or "").strip())
     if reason and reason not in parts[0]:
         parts.append(reason)
     statuses = [str(item) for item in (snap.get("task_statuses") or []) if str(item).strip()]
@@ -167,6 +207,164 @@ def _format_agentic_engine_error(
     if files:
         parts.append("unapplied worktree files: " + ", ".join(files))
     return "\n".join(parts)
+
+
+def _redact_text(text: str) -> str:
+    from harness.api.redaction import redact_secret_text
+
+    return redact_secret_text(text or "")
+
+
+def _git_failed_message(wt_path: str, args: tuple, rc: int, stderr: str, stdout: str) -> str:
+    detail = _redact_text((stderr or stdout or "").strip())
+    cmd = " ".join(("git", "-C", str(wt_path)) + tuple(str(a) for a in args))
+    return f"{cmd} failed (exit {rc}): {detail}"
+
+
+def _raise_git_failed(wt_path: str, args: tuple, rc: int, stderr: str, stdout: str) -> None:
+    raise RuntimeError(_git_failed_message(wt_path, args, rc, stderr, stdout))
+
+
+def classify_agentic_exception(
+    exc: BaseException,
+    snapshot: Optional[dict] = None,
+) -> str:
+    """Map orchestrator/snapshot exceptions onto a stage error code."""
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        status = getattr(exc, "status", None)
+    if status is None:
+        status = getattr(exc, "http_status", None)
+    try:
+        status_i = int(status) if status is not None else None
+    except (TypeError, ValueError):
+        status_i = None
+    if status_i == 429:
+        return AGENTIC_PROVIDER_RATE_LIMITED
+    if isinstance(exc, TimeoutError):
+        return AGENTIC_TIMEOUT
+    parts = [_redact_text(str(exc))]
+    if snapshot:
+        parts.append(str(snapshot.get("reason") or ""))
+    text = " ".join(parts).lower()
+    if any(marker in text for marker in _RATE_LIMIT_MARKERS):
+        return AGENTIC_PROVIDER_RATE_LIMITED
+    if any(marker in text for marker in _TIMEOUT_MARKERS):
+        return AGENTIC_TIMEOUT
+    return AGENTIC_ORCHESTRATOR_FAILED
+
+
+def _failure_http_hints(exc: BaseException) -> tuple:
+    http_status = None
+    retry_after = ""
+    request_id = ""
+    for obj in (exc, getattr(exc, "__cause__", None), getattr(exc, "__context__", None)):
+        if obj is None:
+            continue
+        for attr in ("status_code", "status", "http_status"):
+            raw = getattr(obj, attr, None)
+            if raw is None:
+                continue
+            try:
+                http_status = int(raw)
+                break
+            except (TypeError, ValueError):
+                continue
+        headers = getattr(obj, "headers", None)
+        if isinstance(headers, dict):
+            if not retry_after:
+                retry_after = str(
+                    headers.get("Retry-After") or headers.get("retry-after") or ""
+                )
+            if not request_id:
+                request_id = str(
+                    headers.get("x-request-id")
+                    or headers.get("X-Request-Id")
+                    or headers.get("request-id")
+                    or ""
+                )
+        if not retry_after:
+            retry_after = str(getattr(obj, "retry_after", "") or "")
+        if not request_id:
+            request_id = str(
+                getattr(obj, "request_id", "")
+                or getattr(obj, "provider_request_id", "")
+                or ""
+            )
+    text = _redact_text(str(exc))
+    if http_status is None and "429" in text:
+        http_status = 429
+    if not retry_after:
+        lowered = text.lower()
+        key = "retry-after"
+        idx = lowered.find(key)
+        if idx >= 0:
+            rest = text[idx + len(key):].lstrip(":= \t")
+            token = rest.split()[0] if rest.split() else ""
+            retry_after = token.rstrip(".,;")
+    return http_status, retry_after, request_id
+
+
+def _failure_fields_from_exc(exc: BaseException) -> dict:
+    text = str(exc)
+    failure_command = ""
+    failure_exit_code = None
+    failure_stderr = text
+    marker = " failed (exit "
+    if text.startswith("git ") and marker in text:
+        idx = text.find(marker)
+        failure_command = text[:idx]
+        rest = text[idx + len(marker):]
+        code_s, sep, err = rest.partition("): ")
+        if sep:
+            try:
+                failure_exit_code = int(code_s)
+            except ValueError:
+                failure_exit_code = None
+            failure_stderr = err
+    return {
+        "failure_command": failure_command,
+        "failure_exit_code": failure_exit_code,
+        "failure_stderr": _redact_text(failure_stderr),
+    }
+
+
+def _usage_from_snapshot(snap: Optional[dict]) -> dict:
+    data = snap or {}
+    known = data.get("usage_known")
+    if known is True:
+        return {
+            "tokens_in": int(data.get("tokens_in") or 0),
+            "tokens_out": int(data.get("tokens_out") or 0),
+            "usage_known": True,
+            "cost_known": False,
+        }
+    return {
+        "tokens_in": 0,
+        "tokens_out": 0,
+        "usage_known": False if known is False else None,
+        "cost_known": False if known is False else None,
+    }
+
+
+def _artifacts_usage_known(result) -> bool:
+    for art in getattr(result, "artifacts", []) or []:
+        payload = getattr(art, "payload", {}) or {}
+        if isinstance(payload, dict) and (
+            "tokens_in" in payload or "tokens_out" in payload
+        ):
+            return True
+    return False
+
+
+def _should_native_fallback(result: "WorkerResult") -> bool:
+    if result is None:
+        return False
+    if (getattr(result, "patch", None) or "").strip():
+        return False
+    if getattr(result, "files_changed", None):
+        return False
+    return getattr(result, "error", "") in _FALLBACK_REASONS
 
 
 @contextlib.contextmanager
@@ -229,28 +427,47 @@ def finalize_worktree_patch(wt_path: str) -> tuple[str, list[str]]:
     Returns the ``git diff --cached`` unified diff and the list of changed paths.
     Raises RuntimeError when a git step fails so the caller can report honestly.
     """
-    rc_add, out_add, err_add = _git(wt_path, "add", "-A")
+    from harness.worktrees import _is_repo
+
+    if not wt_path or not os.path.exists(wt_path):
+        raise RuntimeError(f"worktree path does not exist: {wt_path!r}")
+    if not _is_repo(wt_path):
+        raise RuntimeError(f"worktree path is not a git repository: {wt_path!r}")
+
+    add_args = ("add", "-A")
+    rc_add, out_add, err_add = _git(wt_path, *add_args)
     if rc_add != 0:
-        raise RuntimeError(f"git add failed: {err_add or out_add}")
+        _raise_git_failed(wt_path, add_args, rc_add, err_add, out_add)
 
     reset_specs: list[str] = []
     for spec in _ARTIFACT_PATHSPECS:
         reset_specs.append(f":(glob){spec}")
         reset_specs.append(f":(glob)**/{spec}")
-    _git(wt_path, "reset", "-q", "--", *reset_specs)
+    reset_args = ("reset", "-q", "--") + tuple(reset_specs)
+    rc_reset, out_reset, err_reset = _git(wt_path, *reset_args)
+    if rc_reset != 0:
+        _raise_git_failed(wt_path, reset_args, rc_reset, err_reset, out_reset)
 
+    diff_args = ("diff", "--cached", "--no-color")
     p_diff = subprocess.run(
-        ["git", "-C", wt_path, "diff", "--cached", "--no-color"],
+        ["git", "-C", wt_path, *diff_args],
         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
     )
     if p_diff.returncode != 0:
-        raise RuntimeError(f"git diff failed: {p_diff.stderr or p_diff.stdout}")
+        _raise_git_failed(
+            wt_path, diff_args, p_diff.returncode, p_diff.stderr, p_diff.stdout,
+        )
     patch = p_diff.stdout
 
+    name_args = ("diff", "--cached", "--name-only")
     p_files = subprocess.run(
-        ["git", "-C", wt_path, "diff", "--cached", "--name-only"],
+        ["git", "-C", wt_path, *name_args],
         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
     )
+    if p_files.returncode != 0:
+        _raise_git_failed(
+            wt_path, name_args, p_files.returncode, p_files.stderr, p_files.stdout,
+        )
     files_changed = [ln.strip() for ln in p_files.stdout.splitlines() if ln.strip()]
     return patch, files_changed
 
@@ -492,7 +709,7 @@ def run_edit_worker(
             config, goal, session_id=session_id, cwd=target_cwd,
             expects_diff=expects_diff, job_id=job_id,
         )
-        if result.error in _FALLBACK_REASONS:
+        if _should_native_fallback(result):
             _diag("edit_engines.run_edit_worker",
                   msg=f"cursor engine unavailable ({result.error}); falling back to native")
             return run_native_edit(
@@ -508,7 +725,7 @@ def run_edit_worker(
         )
         if strict_agentic:
             return result
-        if result.error in _FALLBACK_REASONS:
+        if _should_native_fallback(result):
             if cursor_platform_available():
                 _diag("edit_engines.run_edit_worker",
                       msg=f"agentic unavailable ({result.error}); trying cursor")
@@ -516,7 +733,7 @@ def run_edit_worker(
                     config, goal, session_id=session_id, cwd=target_cwd,
                     expects_diff=expects_diff, job_id=job_id,
                 )
-                if cursor_result.error not in _FALLBACK_REASONS:
+                if not _should_native_fallback(cursor_result):
                     return cursor_result
             _diag("edit_engines.run_edit_worker",
                   msg=f"agentic engine unavailable ({result.error}); falling back to native")
@@ -755,11 +972,36 @@ def run_agentic_edit(
     from harness.cli_job_merge import mark_marionette_host_scratch
     from harness.job_scoping import job_label_for_session, stamp_task_payload
 
+    requested_mode = "implement" if expects_diff else "analysis"
+
+    def finish(
+        wr: "WorkerResult",
+        pm_result=None,
+        *,
+        worktree_existed: bool = False,
+        snap: Optional[dict] = None,
+        job_id_hint: str = "",
+    ) -> "WorkerResult":
+        wr.requested_mode = requested_mode
+        if requested_mode == "implement" and (wr.managed_worktree_mode or "") in (
+            "", "unknown",
+        ):
+            wr.managed_worktree_mode = "managed" if worktree_existed else "none"
+        if job_id_hint and not wr.pm_job_id:
+            wr.pm_job_id = job_id_hint
+        if snap:
+            if not wr.pm_job_id:
+                wr.pm_job_id = str(snap.get("job_id") or "")
+            if not wr.task_ids and snap.get("task_ids"):
+                wr.task_ids = list(snap.get("task_ids") or [])
+        return _stamp_agentic(wr, pm_result, execution_pin=agentic_pin)
+
     if not agentic_available():
-        return _stamp_agentic(WorkerResult(
+        return finish(WorkerResult(
             ok=False, error=AGENTIC_UNAVAILABLE,
             summary="No provider key visible for the agentic engine.",
-        ), execution_pin=agentic_pin)
+            patch_capture_status="skipped",
+        ), worktree_existed=False)
 
     try:
         from puppetmaster.orchestrator import Orchestrator
@@ -767,10 +1009,11 @@ def run_agentic_edit(
         from puppetmaster.workers import WorkerSpec
     except Exception as exc:
         _diag("edit_engines.run_agentic_edit.import", exc)
-        return _stamp_agentic(WorkerResult(
+        return finish(WorkerResult(
             ok=False, error=AGENTIC_UNAVAILABLE,
-            summary=f"Puppetmaster unavailable: {exc}",
-        ), execution_pin=agentic_pin)
+            summary=f"Puppetmaster unavailable: {_redact_text(str(exc))}",
+            patch_capture_status="skipped",
+        ), worktree_existed=False)
 
     provider = (
         agentic_pin.provider
@@ -783,9 +1026,11 @@ def run_agentic_edit(
         else (os.environ.get("HARNESS_IMPLEMENT_MODEL", "") or "").strip()
     )
 
+    worktree_entered = False
     try:
         repo_root = cwd or config.repo
         with managed_worktree_for_goal(repo_root, goal) as wt_path:
+            worktree_entered = True
             from pmharness.bridge import (
                 _analysis_capability_payload,
                 _analysis_instruction,
@@ -880,6 +1125,8 @@ def run_agentic_edit(
             result = None
             orchestrator_exc = None
             failure_snap: dict = {}
+            store_cleanup_exc = None
+            pm_job_id = ""
             try:
                 store = create_store("sqlite", tmp)
                 try:
@@ -891,43 +1138,128 @@ def run_agentic_edit(
                     )
                     pm_job_id = str(getattr(getattr(result, "job", None), "id", "") or "")
                     mapped_events = agentic_events_from_store(store, pm_job_id)
+                    try:
+                        failure_snap = _agentic_store_failure_snapshot(store, pm_job_id)
+                    except Exception as snap_exc:
+                        _diag("edit_engines.run_agentic_edit.snapshot", snap_exc)
                 except Exception as run_exc:
                     orchestrator_exc = run_exc
-                    failure_snap = _agentic_store_failure_snapshot(store)
-                    mapped_events = agentic_events_from_store(
-                        store, str(failure_snap.get("job_id") or ""),
-                    )
+                    try:
+                        failure_snap = _agentic_store_failure_snapshot(store)
+                        mapped_events = agentic_events_from_store(
+                            store, str(failure_snap.get("job_id") or ""),
+                        )
+                    except Exception as snap_exc:
+                        _diag("edit_engines.run_agentic_edit.snapshot", snap_exc)
             finally:
-                shutil.rmtree(tmp, ignore_errors=True)
+                try:
+                    shutil.rmtree(tmp, ignore_errors=True)
+                except Exception as rmtree_exc:
+                    store_cleanup_exc = rmtree_exc
 
             patch = ""
             files_changed: list = []
             worktree_diff_empty = None
+            patch_capture_status = "skipped"
+            finalize_exc = None
             try:
                 patch, files_changed = finalize_worktree_patch(wt_path)
                 worktree_diff_empty = not bool(patch.strip())
+                patch_capture_status = "ok"
             except Exception as final_exc:
+                finalize_exc = final_exc
+                patch_capture_status = "failed"
+                worktree_diff_empty = None
                 _diag("edit_engines.run_agentic_edit.finalize", final_exc)
 
+            primary_error = ""
             if orchestrator_exc is not None:
-                return _stamp_agentic(WorkerResult(
+                primary_error = classify_agentic_exception(
+                    orchestrator_exc, failure_snap,
+                )
+            elif finalize_exc is not None:
+                primary_error = PATCH_CAPTURE_FAILED
+            elif store_cleanup_exc is not None and result is None:
+                primary_error = WORKER_CLEANUP_FAILED
+
+            if orchestrator_exc is not None:
+                usage = _usage_from_snapshot(failure_snap)
+                http_status, retry_after, request_id = _failure_http_hints(
+                    orchestrator_exc,
+                )
+                git_fail = (
+                    _failure_fields_from_exc(finalize_exc)
+                    if finalize_exc is not None else {}
+                )
+                return finish(WorkerResult(
                     ok=False,
-                    error=AGENTIC_ERROR,
+                    error=primary_error,
                     summary=_format_agentic_engine_error(
                         orchestrator_exc, failure_snap, files_changed,
                     ),
                     patch=patch,
                     files_changed=list(files_changed),
-                    tokens_out=int(failure_snap.get("tokens_out") or 0),
-                    tokens_in=int(failure_snap.get("tokens_in") or 0),
+                    tokens_out=int(usage["tokens_out"]),
+                    tokens_in=int(usage["tokens_in"]),
+                    usage_known=usage["usage_known"],
+                    cost_known=usage["cost_known"],
                     worktree=wt_path,
                     managed_worktree_path=wt_path,
                     managed_worktree_mode="managed",
                     worktree_diff_empty=worktree_diff_empty,
                     events=list(mapped_events),
-                ), execution_pin=agentic_pin)
+                    patch_capture_status=patch_capture_status,
+                    http_status=http_status,
+                    retry_after=retry_after,
+                    provider_request_id=request_id,
+                    finish_reason=str((failure_snap or {}).get("reason") or ""),
+                    failure_command=str(git_fail.get("failure_command") or ""),
+                    failure_exit_code=git_fail.get("failure_exit_code"),
+                    failure_stderr=str(git_fail.get("failure_stderr") or ""),
+                ), worktree_existed=True, snap=failure_snap)
+
+            if finalize_exc is not None:
+                git_fail = _failure_fields_from_exc(finalize_exc)
+                return finish(WorkerResult(
+                    ok=False,
+                    error=PATCH_CAPTURE_FAILED,
+                    summary=_redact_text(
+                        f"Patch capture failed: {finalize_exc}"
+                    ),
+                    worktree=wt_path,
+                    managed_worktree_path=wt_path,
+                    managed_worktree_mode="managed",
+                    worktree_diff_empty=None,
+                    events=list(mapped_events),
+                    patch_capture_status="failed",
+                    usage_known=_artifacts_usage_known(result) if result is not None else False,
+                    cost_known=False,
+                    failure_command=str(git_fail.get("failure_command") or ""),
+                    failure_exit_code=git_fail.get("failure_exit_code"),
+                    failure_stderr=str(git_fail.get("failure_stderr") or ""),
+                ), result, worktree_existed=True, snap=failure_snap,
+                    job_id_hint=pm_job_id)
+
+            if store_cleanup_exc is not None and result is None:
+                return finish(WorkerResult(
+                    ok=False,
+                    error=WORKER_CLEANUP_FAILED,
+                    summary=_redact_text(
+                        f"Worker cleanup failed: {store_cleanup_exc}"
+                    ),
+                    worktree=wt_path,
+                    managed_worktree_path=wt_path,
+                    managed_worktree_mode="managed",
+                    worktree_diff_empty=worktree_diff_empty,
+                    events=list(mapped_events),
+                    patch_capture_status=patch_capture_status,
+                    usage_known=False,
+                    cost_known=False,
+                ), worktree_existed=True, snap=failure_snap)
 
             tokens_out, tokens_in, failure, final_text = _summarize_agentic_result(result)
+            usage_known = _artifacts_usage_known(result)
+            cost_known = False if usage_known else None
             routed_model = _routed_model_id(result)
             if agentic_pin is not None:
                 from harness.swarm_model_pin import agentic_pin_matches_routed_model
@@ -936,7 +1268,7 @@ def run_agentic_edit(
                     agentic_pin,
                     routed_model,
                 ):
-                    return _stamp_agentic(WorkerResult(
+                    return finish(WorkerResult(
                         ok=False,
                         error=AGENTIC_ROUTE_FAILED,
                         summary=(
@@ -950,7 +1282,11 @@ def run_agentic_edit(
                         managed_worktree_mode="managed",
                         worktree_diff_empty=worktree_diff_empty,
                         events=list(mapped_events),
-                    ), result, execution_pin=agentic_pin)
+                        patch_capture_status=patch_capture_status,
+                        usage_known=usage_known,
+                        cost_known=cost_known,
+                    ), result, worktree_existed=True, snap=failure_snap,
+                        job_id_hint=pm_job_id)
 
             # Analysis/review: never report seed leftovers as applied edits.
             if not expects_diff:
@@ -961,7 +1297,7 @@ def run_agentic_edit(
                 # Distinguish "engine could not run" (route/provider failure) from
                 # "ran fine but changed nothing" so fallback only fires for the former.
                 if failure in ("no_model", "unknown_provider", "route_failed"):
-                    return _stamp_agentic(WorkerResult(
+                    return finish(WorkerResult(
                         ok=False, error=AGENTIC_ROUTE_FAILED,
                         summary=final_text or "Agentic engine could not select a model/provider.",
                         model=routed_model,
@@ -970,7 +1306,11 @@ def run_agentic_edit(
                         managed_worktree_mode="managed",
                         worktree_diff_empty=worktree_diff_empty,
                         events=list(mapped_events),
-                    ), result, execution_pin=agentic_pin)
+                        patch_capture_status=patch_capture_status,
+                        usage_known=usage_known,
+                        cost_known=cost_known,
+                    ), result, worktree_existed=True, snap=failure_snap,
+                        job_id_hint=pm_job_id)
                 if not expects_diff:
                     # Gate on structured findings — never green unlabeled prose.
                     # Same rescue order as swarm/bridge: promote verification-
@@ -1012,7 +1352,7 @@ def run_agentic_edit(
                         signal_rows = parse_analysis_signal_rows(analysis_text)
                         if not signal_rows and has_structured:
                             signal_rows = _signal_rows_from_compact(compact)
-                        return _stamp_agentic(WorkerResult(
+                        return finish(WorkerResult(
                             ok=True, tokens_out=tokens_out, tokens_in=tokens_in,
                             summary=summary,
                             model=routed_model,
@@ -1022,14 +1362,18 @@ def run_agentic_edit(
                             worktree_diff_empty=worktree_diff_empty,
                             events=list(mapped_events),
                             findings=signal_rows,
-                        ), result, execution_pin=agentic_pin)
+                            patch_capture_status=patch_capture_status,
+                            usage_known=usage_known,
+                            cost_known=cost_known,
+                        ), result, worktree_existed=True, snap=failure_snap,
+                            job_id_hint=pm_job_id)
                     label = degrade_reason or "no structured findings"
                     summary_parts = [label]
                     if final_text:
                         summary_parts.append(
                             f"Last assistant message: {final_text}"
                         )
-                    return _stamp_agentic(WorkerResult(
+                    return finish(WorkerResult(
                         ok=False, error=label,
                         tokens_out=tokens_out, tokens_in=tokens_in,
                         summary="\n".join(summary_parts),
@@ -1039,8 +1383,12 @@ def run_agentic_edit(
                         managed_worktree_mode="managed",
                         worktree_diff_empty=worktree_diff_empty,
                         events=list(mapped_events),
-                    ), result, execution_pin=agentic_pin)
-                return _stamp_agentic(WorkerResult(
+                        patch_capture_status=patch_capture_status,
+                        usage_known=usage_known,
+                        cost_known=cost_known,
+                    ), result, worktree_existed=True, snap=failure_snap,
+                        job_id_hint=pm_job_id)
+                return finish(WorkerResult(
                     ok=False, tokens_out=tokens_out, tokens_in=tokens_in,
                     summary=final_text or "no changes produced",
                     model=routed_model,
@@ -1049,9 +1397,13 @@ def run_agentic_edit(
                     managed_worktree_mode="managed",
                     worktree_diff_empty=worktree_diff_empty,
                     events=list(mapped_events),
-                ), result, execution_pin=agentic_pin)
+                    patch_capture_status=patch_capture_status,
+                    usage_known=usage_known,
+                    cost_known=cost_known,
+                ), result, worktree_existed=True, snap=failure_snap,
+                    job_id_hint=pm_job_id)
 
-            return _stamp_agentic(WorkerResult(
+            return finish(WorkerResult(
                 ok=True, patch=patch, files_changed=files_changed,
                 tokens_out=tokens_out, tokens_in=tokens_in,
                 summary=final_text or (f"Files changed: {', '.join(files_changed)}" if files_changed else "Patch generated"),
@@ -1061,12 +1413,34 @@ def run_agentic_edit(
                 managed_worktree_mode="managed",
                 worktree_diff_empty=worktree_diff_empty,
                 events=list(mapped_events),
-            ), result, execution_pin=agentic_pin)
+                patch_capture_status=patch_capture_status,
+                usage_known=usage_known,
+                cost_known=cost_known,
+            ), result, worktree_existed=True, snap=failure_snap,
+                job_id_hint=pm_job_id)
     except Exception as exc:
         _diag("edit_engines.run_agentic_edit", exc)
-        return _stamp_agentic(WorkerResult(
-            ok=False, error=AGENTIC_ERROR, summary=f"Agentic engine error: {exc}",
-        ), execution_pin=agentic_pin)
+        if not worktree_entered:
+            git_fail = _failure_fields_from_exc(exc)
+            return finish(WorkerResult(
+                ok=False,
+                error=WORKTREE_CREATE_FAILED,
+                summary=f"Worktree create failed: {_redact_text(str(exc))}",
+                managed_worktree_mode="none",
+                worktree_diff_empty=None,
+                patch_capture_status="skipped",
+                failure_command=git_fail.get("failure_command") or "git worktree add",
+                failure_exit_code=git_fail.get("failure_exit_code"),
+                failure_stderr=_redact_text(str(exc)),
+            ), worktree_existed=False)
+        return finish(WorkerResult(
+            ok=False,
+            error=AGENTIC_ERROR,
+            summary=f"Agentic engine error: {_redact_text(str(exc))}",
+            managed_worktree_mode="managed",
+            worktree_diff_empty=None,
+            patch_capture_status="skipped",
+        ), worktree_existed=True)
 
 
 # Store event names that already mean a tool/action boundary (not lifecycle).
@@ -1264,6 +1638,7 @@ def _stamp_agentic(
 ) -> "WorkerResult":
     """Label a WorkerResult as the agentic engine + routed model (best-effort)."""
     result.engine = "agentic"
+    result.adapter = "agentic"
     if not (result.model or "").strip() and pm_result is not None:
         routed = _routed_model_id(pm_result)
         if routed:

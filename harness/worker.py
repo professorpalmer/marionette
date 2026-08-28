@@ -119,6 +119,22 @@ class WorkerResult:
     # True when the inner turn stopped because the tool-call / AutoBudget ceiling
     # tripped (empty-diff recovery must not burn a second full attempt).
     stopped_by_guard_or_budget: bool = False
+    # Stage-specific agentic provenance. Empty/None defaults keep positional
+    # construction back-compatible; WorkerResult.error remains the stage code.
+    requested_mode: str = ""
+    adapter: str = ""
+    pm_job_id: str = ""
+    task_ids: list[str] = field(default_factory=list)
+    patch_capture_status: str = ""
+    failure_command: str = ""
+    failure_exit_code: Optional[int] = None
+    failure_stderr: str = ""
+    usage_known: Optional[bool] = None
+    cost_known: Optional[bool] = None
+    http_status: Optional[int] = None
+    retry_after: str = ""
+    provider_request_id: str = ""
+    finish_reason: str = ""
 
 
 def scope_goal_paths_to_worktree(
