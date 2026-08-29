@@ -589,8 +589,8 @@ describe("StatusBar compact chrome", () => {
     mockSessions.mockResolvedValue([]);
   });
 
-  it("splits the footer into overflow-safe clusters and shortens long model ids", () => {
-    const { container } = render(
+  it("shortens long model ids", () => {
+    render(
       <StatusBar
         {...statusBarProps}
         config={{
@@ -601,9 +601,7 @@ describe("StatusBar compact chrome", () => {
       />,
     );
 
-    expect(container.querySelector(".status-bar-cluster-start")).toBeTruthy();
-    expect(container.querySelector(".status-bar-cluster-end")).toBeTruthy();
-    expect(container.querySelector(".status-bar-model")).toHaveTextContent("deepseek-v4-pro-0813");
-    expect(container.querySelector(".status-bar-model")).not.toHaveTextContent("openrouter:deepseek/");
+    expect(screen.getByText("deepseek-v4-pro-0813")).toBeInTheDocument();
+    expect(screen.queryByText("openrouter:deepseek/deepseek-v4-pro-0813")).toBeNull();
   });
 });

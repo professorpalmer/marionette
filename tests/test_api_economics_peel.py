@@ -1067,7 +1067,7 @@ def test_cost_prefetch_does_not_rescan_per_job_when_bulk_result_is_empty(tmp_pat
     assert bulk_calls == [(job.id,)]
 
 
-def test_new_request_sees_running_job_terminal_usage_from_real_store(tmp_path, monkeypatch):
+def test_real_pm_builder_drives_fresh_scope_headline_and_row(tmp_path, monkeypatch):
     from puppetmaster.models import Artifact, ArtifactType
     from puppetmaster.store_factory import create_store
 
@@ -1128,5 +1128,8 @@ def test_new_request_sees_running_job_terminal_usage_from_real_store(tmp_path, m
     second_code, second_payload = get_economics({"scope": ["conversation"]}, services)
     assert second_code == 200
     assert isinstance(second_payload, dict)
+    assert second_payload["counterfactual_source"] == "job_financial_reports"
+    assert second_payload["counterfactual_status"] == "ok"
+    assert second_payload["counterfactual"]["actual_cost_usd"] == 0.2
     assert second_payload["recent_jobs"][0]["status"] == "complete"
     assert second_payload["recent_jobs"][0]["measured_cost_usd"] == 0.2
