@@ -1,4 +1,4 @@
-import type { EconomicsData, EconomicsJobRow, EconomicsScope } from "../lib/api";
+import type { EconomicsData, EconomicsJobRow } from "../lib/api";
 import { openAgentSwarmJob } from "../lib/agentLinks";
 
 function isFiniteNumber(value: unknown): value is number {
@@ -28,10 +28,8 @@ export function jobHeadlineTotal(job: Pick<EconomicsJobRow, "measured_cost_usd" 
 
 export default function EconomicsDurable({
   data,
-  scope,
 }: {
   data: EconomicsData | null;
-  scope: EconomicsScope;
 }) {
   const referenceId = data?.counterfactual?.reference_model_id
     || data?.savings?.counterfactual?.reference_model_id
@@ -42,15 +40,20 @@ export default function EconomicsDurable({
   const receiptSavings = data?.counterfactual?.avoided_usd;
   const receiptJobs = data?.counterfactual?.jobs;
   const receiptTasks = data?.counterfactual?.tasks;
+  const receiptMeasured = data?.counterfactual?.measured_cost_usd;
+  const receiptEstimated = data?.counterfactual?.estimated_cost_usd;
   const receiptBasis = data?.counterfactual?.spend_basis;
   const alignedJobSavings = data?.counterfactual_source === "job_financial_reports";
+  const isRoutingForecast = data?.counterfactual_source === "routing_report";
   const spendHeading = receiptBasis === "plan"
     ? "Included in your plan"
-    : receiptBasis === "estimated" || receiptBasis === "mixed"
+    : receiptBasis === "mixed"
+      ? "Usage cost"
+    : receiptBasis === "estimated"
     ? "Estimated cost"
     : receiptBasis === "measured_usage_x_registry_price"
       ? "Measured usage cost"
-      : "Route forecast";
+      : "Cost unavailable";
   const hasReceipt = isFiniteNumber(receiptSpend)
     && isFiniteNumber(receiptReference)
     && isFiniteNumber(receiptSavings);
@@ -73,16 +76,12 @@ export default function EconomicsDurable({
         </p>
       ) : null}
 
-      {hasReceipt ? (
+      {hasReceipt && !isRoutingForecast ? (
         <section className="mx-3 mb-3 rounded-lg border border-edge/60 bg-panel2/25 px-3 py-3">
-          <div className="mb-2.5 text-[9px] uppercase tracking-wide text-faint">
-            {scope === "all_projects" ? "All projects" : "This repo"}
-            {data?.window_days ? " · last 30 days" : " · all time"}
-          </div>
           <div className="grid grid-cols-2 gap-x-4 gap-y-3">
             <div className="min-w-0">
               <div className="text-[10px] text-muted">{spendHeading}</div>
-              <div className="mt-0.5 text-[20px] font-semibold tracking-tight tabular-nums text-warn/90">{fmtUnknownMoney(receiptSpend)}</div>
+              <div className="mt-0.5 text-[20px] font-semibold tracking-tight tabular-nums text-warn/90">{receiptBasis === "estimated" || receiptBasis === "mixed" ? "~" : ""}{fmtUnknownMoney(receiptSpend)}</div>
             </div>
             <div className="min-w-0">
               <div className="text-[10px] text-muted">Estimated frontier cost</div>
@@ -99,41 +98,85 @@ export default function EconomicsDurable({
               </div>
             </div>
           </div>
-          {isFiniteNumber(receiptJobs) || isFiniteNumber(receiptTasks) ? (
-            <div className="mt-3 flex justify-between gap-3 border-t border-edge/50 pt-2 text-[10px] text-faint">
-              <span>{isFiniteNumber(receiptJobs) ? `${receiptJobs} jobs considered` : ""}</span>
-              <span>{isFiniteNumber(receiptTasks) ? `${receiptTasks} priced tasks` : ""}</span>
+          {receiptBasis === "mixed" ? (
+            <div className="mt-3 flex gap-4 border-t border-edge/50 pt-2 text-[10px] text-muted">
+              <span>
+                <span>Measured usage</span>{" "}
+                <span className="font-medium tabular-nums text-warn/90">{fmtUnknownMoney(receiptMeasured)}</span>
+              </span>
+              <span>
+                <span>Estimated usage</span>{" "}
+                <span className="font-medium tabular-nums text-warn/90">~{fmtUnknownMoney(receiptEstimated)}</span>
+              </span>
             </div>
           ) : null}
+          <div className="mt-3 border-t border-edge/50 pt-2 text-[10px] text-faint">
+            {isFiniteNumber(receiptJobs) || isFiniteNumber(receiptTasks) ? (
+              <div className="flex justify-between gap-3">
+                <span>{isFiniteNumber(receiptJobs) ? `${receiptJobs} jobs considered` : ""}</span>
+                <span>{isFiniteNumber(receiptTasks) ? `${receiptTasks} priced tasks` : ""}</span>
+              </div>
+            ) : null}
+            {referenceId ? (
+              <div className="mt-1.5 leading-snug">
+                Compared with <strong className="font-mono font-medium text-txt">{referenceId}</strong>. Savings are estimates, not cash back.
+              </div>
+            ) : null}
+          </div>
           {receiptBasis === "measured_usage_x_registry_price" ? (
             <div className="mt-2 text-[10px] text-faint">Based on measured usage and current model prices.</div>
           ) : receiptBasis === "mixed" ? (
             <div className="mt-2 text-[10px] text-faint">Includes measured and estimated usage.</div>
           ) : null}
         </section>
+      ) : isRoutingForecast && hasReceipt ? (
+        <section className="mx-3 mb-3 rounded-lg border border-edge/60 bg-panel2/25 px-3 py-3">
+          <div className="text-[10px] text-muted">Cost unavailable</div>
+          <div className="mt-1 text-[10px] leading-snug text-faint">No terminal job receipts for this scope.</div>
+          <div className="mt-3 grid grid-cols-3 gap-3 border-t border-edge/50 pt-3">
+            <div className="min-w-0">
+              <div className="text-[10px] text-muted">Route forecast</div>
+              <div className="mt-0.5 font-semibold tabular-nums text-warn/90">~{fmtUnknownMoney(receiptSpend)}</div>
+            </div>
+            <div className="min-w-0">
+              <div className="text-[10px] text-muted">Estimated frontier forecast</div>
+              <div className="mt-0.5 font-semibold tabular-nums">~{fmtUnknownMoney(receiptReference)}</div>
+            </div>
+            <div className="min-w-0">
+              <div className="text-[10px] text-muted">Estimated difference</div>
+              <div className="mt-0.5 font-semibold tabular-nums">~{fmtUnknownMoney(receiptSavings)}</div>
+            </div>
+          </div>
+          {referenceId ? (
+            <div className="mt-2 text-[10px] leading-snug text-faint">
+              Compared with <strong className="font-mono font-medium text-txt">{referenceId}</strong>. Forecasts are predictions, not spend.
+            </div>
+          ) : null}
+        </section>
       ) : financialIssue ? (
         <p className="px-3 pb-3 text-[10px] leading-snug text-warn">{financialIssue}</p>
-      ) : scope === "conversation" && data?.available !== false ? (
+      ) : data?.scope === "conversation" && data.available !== false ? (
         <p className="px-3 pb-3 text-[10px] leading-snug text-muted">
-          {jobs.length ? "A full comparison is not available for this conversation yet." : "No owned jobs for this conversation."}
+          {jobs.length ? "A full comparison is not available for this session yet." : "No owned jobs for this session."}
         </p>
       ) : null}
 
 
       <section className="border-t border-edge/60">
           <div className="flex items-center justify-between px-3 py-2.5 text-[10px] font-semibold uppercase tracking-wide text-txt">
-            <span>Recent jobs</span>
+            <span>Job receipts</span>
             {isFiniteNumber(data?.recent_jobs_total) && data.recent_jobs_total > jobs.length ? (
-              <span className="font-normal normal-case tracking-normal text-faint">Showing {jobs.length} of {data.recent_jobs_total}</span>
+              <span className="font-normal normal-case tracking-normal text-faint">Showing {jobs.length} of {data.recent_jobs_total} jobs in this scope</span>
             ) : null}
           </div>
           <div className="px-3 pb-3">
           {jobs.length === 0 ? (
-            <div className="py-2 text-[10px] text-faint">No recent jobs.</div>
+            <div className="py-2 text-[10px] text-faint">No job receipts in this scope.</div>
           ) : jobs.map((job) => {
             const owned = Boolean(job.accounting_owned);
             const modelIds = (job.models || []).map((model) => model.model_id || "").filter(Boolean);
-            const measuredCost = isFiniteNumber(job.measured_cost_usd) && job.measured_cost_usd > 0
+            const measuredCost = isFiniteNumber(job.measured_cost_usd)
+              && (job.measured_cost_usd > 0 || job.cost_basis === "measured")
               ? job.measured_cost_usd
               : (!isFiniteNumber(job.estimated_cost_usd)
                   && isFiniteNumber(job.actual_marginal_usd)
@@ -155,13 +198,6 @@ export default function EconomicsDurable({
               && job.counterfactual.avoided_usd > 0
                 ? job.counterfactual.avoided_usd
                 : null;
-            const spendKind = measuredCost !== null
-              ? "Measured usage"
-              : estimatedCost !== null
-                ? "Estimated usage"
-                : null;
-            const spendAmount = measuredCost ?? estimatedCost;
-
             return (
               <div key={job.job_id || `${job.source}-${job.status}`} className="border-t border-edge/40 py-2 first:border-t-0">
                 <div className="flex items-center justify-between gap-2 font-mono text-[10px]">
@@ -181,11 +217,21 @@ export default function EconomicsDurable({
                 ) : null}
                 <div className="mt-1 flex items-center justify-between gap-3 text-[10px] text-muted">
                   <span>
-                    {!owned ? "Visible only" : includedInPlan ? "Included in your plan" : noBillableWorker ? "No billable worker ran" : spendKind ? (
-                      <>
-                        {spendKind}{" "}
-                        <span className="font-medium tabular-nums text-warn/90">{fmtUnknownMoney(spendAmount)}</span>
-                      </>
+                    {!owned ? "Visible only" : includedInPlan ? "Included in your plan" : noBillableWorker ? "No billable worker ran" : measuredCost !== null || estimatedCost !== null ? (
+                      <span className="flex flex-wrap gap-x-3 gap-y-1">
+                        {measuredCost !== null ? (
+                          <span>
+                            <span>Measured usage</span>{" "}
+                            <span className="font-medium tabular-nums text-warn/90">{fmtUnknownMoney(measuredCost)}</span>
+                          </span>
+                        ) : null}
+                        {estimatedCost !== null ? (
+                          <span>
+                            <span>Estimated usage</span>{" "}
+                            <span className="font-medium tabular-nums text-warn/90">~{fmtUnknownMoney(estimatedCost)}</span>
+                          </span>
+                        ) : null}
+                      </span>
                     ) : "Cost unavailable"}
                   </span>
                   {jobSavings !== null ? (
@@ -198,11 +244,6 @@ export default function EconomicsDurable({
           </div>
         </section>
 
-      {referenceId ? (
-        <div className="mx-3 mt-3 rounded bg-panel2/30 px-2.5 py-2 text-[10px] leading-snug text-muted">
-          Compared with <strong className="font-mono font-medium text-txt">{referenceId}</strong>. Savings are estimates, not cash back.
-        </div>
-      ) : null}
     </div>
   );
 }
