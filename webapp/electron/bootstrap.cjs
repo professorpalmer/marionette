@@ -308,7 +308,7 @@ async function provisionPython(dest, onProgress) {
   }
   await reportProgress(onProgress, "Installing Marionette + Puppetmaster...", 55);
   await runAsync("uv", ["pip", "install", "--python", ".venv", "-e", "."], { cwd: dest });
-  const spec = process.env.MARIONETTE_PUPPETMASTER_SPEC || "puppetmaster-ai==1.22.40";
+  const spec = process.env.MARIONETTE_PUPPETMASTER_SPEC || "puppetmaster-ai==1.22.41";
   await runAsync("uv", ["pip", "install", "--python", ".venv", spec], { cwd: dest });
 }
 
