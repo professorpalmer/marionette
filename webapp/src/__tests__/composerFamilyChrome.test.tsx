@@ -1,8 +1,8 @@
 import { createRef } from "react";
 import { render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import ComposerActivityRail from "../components/conversation/ComposerActivityRail";
 import ComposerDock from "../components/conversation/ComposerDock";
-import ComposerStatusStack from "../components/conversation/ComposerStatusStack";
 import ComposerTasksPanel from "../components/conversation/ComposerTasksPanel";
 import { COMPOSER_FAMILY_CLASS } from "../components/conversation/composerFamily";
 import type { Job } from "../lib/api";
@@ -138,19 +138,15 @@ const swarmJob = {
 } as Job;
 
 describe("composer-family chrome", () => {
-  it("puts the same class family and tokens on dock, tasks, and PM tracker", () => {
+  it("puts the same class family and tokens on dock and the activity rail", () => {
     const dock = renderDock();
-    const tasks = render(
-      <ComposerTasksPanel jobs={[taskJob]} sessionId="sess-1" />,
-    );
-    const stack = render(
-      <ComposerStatusStack swarmJobs={[swarmJob]} />,
+    const rail = render(
+      <ComposerActivityRail jobs={[taskJob, swarmJob]} sessionId="sess-1" />,
     );
 
     const surfaces = [
       dock.container.querySelector(".composer-dock"),
-      tasks.container.querySelector("[data-slot=composer-tasks-panel]"),
-      stack.container.querySelector("[data-slot=composer-status-stack]"),
+      rail.container.querySelector("[data-slot=composer-activity-rail]"),
     ];
 
     for (const el of surfaces) {
@@ -161,6 +157,20 @@ describe("composer-family chrome", () => {
       expect(el).toHaveClass("border-edge");
       expect(el?.className).not.toMatch(/text-muted-foreground|rose-500|uppercase tracking-\[0\.16em\]/);
     }
+
+    const tasks = rail.container.querySelector("[data-slot=composer-tasks-panel]");
+    const stack = rail.container.querySelector("[data-slot=composer-status-stack]");
+    expect(tasks).toHaveClass(COMPOSER_FAMILY_CLASS);
+    expect(stack).toHaveClass(COMPOSER_FAMILY_CLASS);
+    expect(tasks?.className).not.toMatch(/border-edge|rounded-2xl|bg-panel2/);
+    expect(stack?.className).not.toMatch(/border-edge|rounded-2xl|bg-panel2/);
+  });
+
+  it("does not paint an empty activity rail", () => {
+    const rail = render(
+      <ComposerActivityRail jobs={[]} sessionId="sess-1" />,
+    );
+    expect(rail.container.querySelector("[data-slot=composer-activity-rail]")).toBeNull();
   });
 
   it("renders parallel wave partial header from child counts", () => {

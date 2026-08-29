@@ -576,6 +576,21 @@ def test_loop_suppresses_identical_repeat():
     assert "run_swarm" in verdict.message
 
 
+def test_loop_guard_never_replays_or_suppresses_wait():
+    """Identical wait must always re-execute; never cache-replay or suppress."""
+    from harness.pilot_guards import record_successful_result
+
+    state = new_turn_guard_state()
+    act = _Act(kind="wait", arguments={"seconds": 30, "job_id": "job_abc"})
+    record_action_execution(state, "wait", act)
+    record_successful_result(state, "wait", act, "waited 30s; job still running")
+
+    verdict = check_loop_guard(state, "wait", act)
+    assert verdict.suppress is False
+    assert verdict.replay is False
+    assert verdict.reason != "loop_replay"
+
+
 def test_loop_replays_identical_successful_call():
     """Second identical successful call returns cached content, not SUPPRESSED."""
     from harness.pilot_guards import record_successful_result

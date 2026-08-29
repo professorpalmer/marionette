@@ -9,7 +9,7 @@ import {
   subscribeAgentCommandIndex,
 } from "../../lib/agentCommandIndex";
 import { buildComposerStatusStackRows, type ComposerStatusStackRow } from "./composerStatusStackData";
-import { COMPOSER_FAMILY_LABEL, COMPOSER_FAMILY_SURFACE } from "./composerFamily";
+import { COMPOSER_FAMILY_HAIRLINE, COMPOSER_FAMILY_LABEL, COMPOSER_FAMILY_SECTION } from "./composerFamily";
 
 const ROW_FOCUS =
   "focus-visible:border-accent/60 focus-visible:outline-none";
@@ -97,7 +97,7 @@ function StatusStackGroup({
         )}
       </div>
       {open && (
-        <div className="space-y-0.5 border-t border-edge/50 px-2 py-1">
+        <div className={`space-y-0.5 border-t ${COMPOSER_FAMILY_HAIRLINE} px-2 py-1`}>
           {rows.map((row) => {
             const stopping = cancelling.has(row.id);
             const onOpen = () => {
@@ -117,9 +117,9 @@ function StatusStackGroup({
                   type="button"
                   onClick={onOpen}
                   title={row.title}
-                  className={`flex min-w-0 flex-1 items-center gap-1.5 rounded-md border border-edge/50 bg-panel/60 px-1.5 py-1 text-left text-[10.5px] leading-4 text-txt transition-colors hover:border-edge2 hover:bg-panel2/70 ${ROW_FOCUS}`}
+                  className={`flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[10.5px] leading-4 text-txt transition-colors hover:bg-panel/30 ${ROW_FOCUS}`}
                 >
-                  <span className="flex h-[20px] shrink-0 items-center rounded-md border border-edge/30 bg-panel2/40 px-1 text-[10.5px] font-medium text-faint">
+                  <span className="flex h-[20px] shrink-0 items-center px-0.5 text-[10.5px] font-medium text-faint">
                     {rowKindLabel(row.kind)}
                   </span>
                   <span className="min-w-0 flex-1 truncate">{row.label}</span>
@@ -230,10 +230,10 @@ export default function ComposerStatusStack({ swarmJobs }: { swarmJobs: readonly
 
   return (
     <div
-      className={`mx-2 mb-1 overflow-hidden ${COMPOSER_FAMILY_SURFACE}`}
+      className={COMPOSER_FAMILY_SECTION}
       data-slot="composer-status-stack"
     >
-      <div className="divide-y divide-edge/50">
+      <div className={`divide-y ${COMPOSER_FAMILY_HAIRLINE}`}>
         {grouped.map((group) => (
           <StatusStackGroup
             key={group.kind}

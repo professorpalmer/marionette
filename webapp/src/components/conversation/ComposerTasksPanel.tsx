@@ -3,7 +3,7 @@ import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Circle, Loader2
 import type { Job } from "../../lib/api";
 import { isWaveCoordinator } from "../../lib/jobClassification";
 import { buildComposerTasks, pickTaskSourceJob, taskProgress, waveHeaderText, type ComposerTask } from "../../lib/composerTasks";
-import { COMPOSER_FAMILY_SURFACE } from "./composerFamily";
+import { COMPOSER_FAMILY_SECTION } from "./composerFamily";
 
 function waveHeaderTone(status: string): string {
   const s = status.toLowerCase();
@@ -40,7 +40,7 @@ export default function ComposerTasksPanel({
 
   return (
     <div
-      className={`mx-2 mb-1 overflow-hidden ${COMPOSER_FAMILY_SURFACE}`}
+      className={COMPOSER_FAMILY_SECTION}
       data-slot="composer-tasks-panel"
     >
       <button

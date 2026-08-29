@@ -1491,7 +1491,13 @@ class SendLoopMixin:
             # own 3-strike guard after results are appended — skip them here
             # so the third pair still closes before auto_halt.
             from .pilot import is_invalid_only_step as _is_invalid_only_step
-            if not _is_invalid_only_step(getattr(turn, "actions", None)):
+            _step_actions = getattr(turn, "actions", None)
+            # Wait-only steps are a live swarm-await, not stalled progress.
+            # Repeating list_dir/read_file still increment; run_command is not exempt.
+            _wait_only = bool(_step_actions) and all(
+                (getattr(a, "kind", "") or "") == "wait" for a in _step_actions
+            )
+            if not _is_invalid_only_step(_step_actions) and not _wait_only:
                 try:
                     from .pilot_guards import (
                         fingerprint_turn_actions,

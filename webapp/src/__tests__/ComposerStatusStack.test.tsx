@@ -51,6 +51,7 @@ describe("ComposerStatusStack", () => {
     fireEvent.click(screen.getByRole("button", { name: "Terminal" }));
     expect(screen.getByRole("button", { name: "Terminal" })).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText("Open terminal")).toBeInTheDocument();
+    expect(screen.getByText("Open terminal").closest("button")?.className).not.toMatch(/border-edge/);
     expect(screen.queryByRole("button", { name: "Stop command" })).not.toBeInTheDocument();
   });
 
