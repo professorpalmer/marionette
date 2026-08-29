@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import RightPane from "../components/RightPane";
 import RightDock from "../components/RightDock";
@@ -44,7 +45,21 @@ vi.mock("../components/DiffReviewPane", () => ({
 }));
 vi.mock("../components/SwarmPane", () => ({ default: () => <div /> }));
 vi.mock("../components/EconomicsPane", () => ({
-  default: () => <div data-testid="economics-pane" />,
+  default: function MockEconomicsPane() {
+    const [scope, setScope] = useState("repo");
+    return (
+      <div data-testid="economics-pane">
+        <select
+          aria-label="Economics ownership"
+          value={scope}
+          onChange={(event) => setScope(event.target.value)}
+        >
+          <option value="conversation">This session</option>
+          <option value="repo">This repo</option>
+        </select>
+      </div>
+    );
+  },
 }));
 vi.mock("../components/ErrorBoundary", () => ({
   default: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -118,6 +133,20 @@ describe("RightPane collapse placement", () => {
     fireEvent.click(screen.getByTitle("Economics"));
 
     expect(onOpenTab).toHaveBeenCalledWith("economics");
+  });
+
+  it("preserves the mounted Economics selection when another panel opens", () => {
+    seedBoardTabOrder(["economics"]);
+    render(<RightPane {...baseProps} />);
+
+    const ownership = screen.getByLabelText("Economics ownership");
+    fireEvent.change(ownership, { target: { value: "conversation" } });
+    expect(ownership).toHaveValue("conversation");
+
+    fireEvent(window, new CustomEvent("harness-focus-tab", { detail: "browser" }));
+
+    expect(screen.getByRole("region", { name: "Browser panel" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Economics ownership")).toHaveValue("conversation");
   });
 
   it("keeps Add panel items clickable after an inside mousedown", () => {
