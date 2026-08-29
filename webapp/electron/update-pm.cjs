@@ -21,7 +21,7 @@
 
 const path = require("node:path");
 
-const DEFAULT_PUPPETMASTER_SPEC = "puppetmaster-ai==1.22.39";
+const DEFAULT_PUPPETMASTER_SPEC = "puppetmaster-ai==1.22.40";
 const PUPPETMASTER_DIST_NAME = "puppetmaster-ai";
 const HARNESS_DIST_NAME = "pm-harness";
 
@@ -95,7 +95,7 @@ function installedPuppetmasterVersion(pipShowOutput) {
 // Decide whether the updater should upgrade Puppetmaster, given the environment
 // and the current install's `pip show` text. Returns either
 //   { skip: true, reason }                       -- leave the install untouched
-//   { skip: false, spec: "puppetmaster-ai==1.22.39" }    -- install the pinned PyPI release
+//   { skip: false, spec: "puppetmaster-ai==1.22.40" }    -- install the pinned PyPI release
 function planPuppetmasterUpgrade({ specEnv, pipShowOutput, pinnedSpec } = {}) {
   const spec = String(specEnv || "").trim();
   if (spec) {
@@ -117,7 +117,7 @@ function planPuppetmasterUpgrade({ specEnv, pipShowOutput, pinnedSpec } = {}) {
  * A packaged shell's own require("./update-pm.cjs") is frozen in app.asar; the
  * checkout's copy moves with `git pull`, so it is authoritative (otherwise PM
  * stays stuck on the shell's build-time pin, e.g. 1.21.6 after the tree moved
- * to 1.22.39).
+ * to 1.22.40).
  *
  * @returns {{ pinnedSpec: string, distName: string, planPuppetmasterUpgrade: Function }}
  */
