@@ -586,7 +586,10 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
                         load_pm_cost_report,
                         persistable_pm_receipt,
                     )
-                    raw_report = load_pm_cost_report(job_store, jid, registry=registry)
+                    try:
+                        raw_report = load_pm_cost_report(job_store, jid, registry=registry)
+                    except Exception:
+                        raw_report = {}
                     receipt = persistable_pm_receipt(raw_report)
                     row["financial_receipt"] = receipt
                     if receipt.get("spend_usd") is not None:

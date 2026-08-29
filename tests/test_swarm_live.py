@@ -154,6 +154,12 @@ def test_session_total_includes_swarm_store_job_cost(monkeypatch):
                 srv, "_job_swarm_accounting", lambda arts, registry: (50_000, 0.37)
             )
             # Live session totals read persistable_pm_receipt.spend_usd.
+            # 1.22.40 workers attach() only; an empty test store can fail
+            # load_pm_cost_report. Receipt application must still run.
+            monkeypatch.setattr(
+                "harness.financial_receipt.load_pm_cost_report",
+                lambda store, job_id, registry=None: {"job_id": job_id},
+            )
             monkeypatch.setattr(
                 "harness.financial_receipt.persistable_pm_receipt",
                 lambda report: {
