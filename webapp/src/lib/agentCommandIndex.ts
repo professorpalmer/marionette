@@ -11,6 +11,8 @@ export type AgentCommandSession = {
   output: string;
   state: "running" | "done" | "failed";
   updatedAt: number;
+  /** Harness chat that ran this command. Missing means unscoped leftover. */
+  sessionId?: string;
 };
 
 const byId = new Map<string, AgentCommandSession>();
@@ -54,12 +56,14 @@ export function registerAgentCommandSession(input: {
   command: string;
   output?: string;
   state?: AgentCommandSession["state"];
+  sessionId?: string;
 }): AgentCommandSession | null {
   const id = String(input.id || "").trim();
   const command = normalizeCommandKey(input.command);
   if (!id || !command || command.length > 500) return null;
   const output = String(input.output || "");
   const state = input.state;
+  const sessionId = String(input.sessionId || "").trim();
   const existing = byId.get(id);
   const now = Date.now();
   if (existing && existing.command === command) {
@@ -67,6 +71,7 @@ export function registerAgentCommandSession(input: {
     existing.output = output;
     existing.updatedAt = now;
     if (state) existing.state = state;
+    if (sessionId) existing.sessionId = sessionId;
     if (state && state !== prevState) {
       emit(true);
       rememberCommandId(command, id);
@@ -84,6 +89,7 @@ export function registerAgentCommandSession(input: {
     output,
     state: state || "running",
     updatedAt: now,
+    ...(sessionId ? { sessionId } : {}),
   };
   byId.set(id, session);
   rememberCommandId(command, id);
@@ -116,8 +122,22 @@ export function getAgentCommandIndexVersion(): number {
   return version;
 }
 
-export function listAgentCommandSessions(): AgentCommandSession[] {
-  return [...byId.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+export function dismissAgentCommandSession(id: string): boolean {
+  const key = String(id || "").trim();
+  const existing = byId.get(key);
+  if (!existing) return false;
+  forgetCommandId(existing.command, key);
+  byId.delete(key);
+  emit(true);
+  return true;
+}
+
+export function listAgentCommandSessions(sessionId?: string): AgentCommandSession[] {
+  const all = [...byId.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+  if (sessionId === undefined) return all;
+  const sid = sessionId.trim();
+  if (!sid) return [];
+  return all.filter((session) => session.sessionId === sid);
 }
 
 /** Test helper: wipe the index between cases. */

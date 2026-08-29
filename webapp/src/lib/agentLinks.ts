@@ -386,6 +386,18 @@ export function classifyActionGoal(
   if (k === "web_fetch") {
     return { linkKind: "url", value: g };
   }
+  // Search / wiki queries are prose. looksLikeShellCommand treats any
+  // spaced string as a command, which parked CodeGraph queries on the Term rail.
+  if (
+    k === "search_codegraph"
+    || k === "search_files"
+    || k === "search_state"
+    || k === "search_tools"
+    || k === "web_search"
+    || k === "query_wiki"
+  ) {
+    return { linkKind: "none", value: g };
+  }
   // Worker / shell dispatches are processes, not files — even when the goal
   // text embeds a path (looksLikeFilePath would otherwise open the editor).
   if (

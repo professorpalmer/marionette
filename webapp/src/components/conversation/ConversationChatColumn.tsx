@@ -43,6 +43,7 @@ export default function ConversationChatColumn({
   composerDock,
   showJumpToBottom = false,
   onJumpToBottom,
+  sessionId,
 }: {
   feedRef: RefObject<HTMLDivElement | null>;
   /** Direct child of the feed scrollport — observed for height-driven stick. */
@@ -72,6 +73,7 @@ export default function ConversationChatColumn({
   composerDock: ReactNode;
   showJumpToBottom?: boolean;
   onJumpToBottom?: () => void;
+  sessionId?: string;
 }) {
   const chromeRef = useRef<HTMLDivElement>(null);
   const [clearancePx, setClearancePx] = useState(96);
@@ -141,6 +143,7 @@ export default function ConversationChatColumn({
             onCommandApproval={onCommandApproval}
             onSecretRequest={onSecretRequest}
             onAuthFailureRetry={onAuthFailureRetry}
+            sessionId={sessionId}
           />
         </div>
       </div>

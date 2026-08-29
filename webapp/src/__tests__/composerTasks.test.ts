@@ -149,6 +149,17 @@ describe("buildComposerTasks + progress", () => {
     expect(tasks[2].state).toBe("in_progress");
   });
 
+  it("shows the role and a short stem, not the shared swarm brief", () => {
+    const brief = "Determine the exact current steps for configuring Marionette to use OrcaRouter's OpenAI-compatible API.";
+    const tasks = buildComposerTasks(job("j", "running", "sess-1", [
+      { id: "1", role: "explore", instruction: brief, status: "running", adapter: "x" },
+      { id: "2", role: "decision-explainer", instruction: brief, status: "pending", adapter: "x" },
+    ]));
+    expect(tasks.map((t) => t.content)).toEqual(["explore", "decision explainer"]);
+    expect(tasks.every((t) => !t.summary)).toBe(true);
+    expect(tasks[0].detail).toBe(brief);
+  });
+
   it("collapses a multi-line worker prompt onto one line", () => {
     const tasks = buildComposerTasks(job("j", "running", "sess-1", [
       {
@@ -159,9 +170,9 @@ describe("buildComposerTasks + progress", () => {
         adapter: "x",
       },
     ]));
-    expect(tasks[0].content).toBe(
-      "reviewer · Audit the Marionette harness Python backend under harness/. React UI under webapp/src/.",
-    );
+    expect(tasks[0].content).toBe("reviewer");
+    expect(tasks[0].summary).toBe("Audit the Marionette harness");
+    expect(tasks[0].detail).toContain("Python backend under harness/.");
     expect(tasks[0].content.includes("\n")).toBe(false);
   });
 

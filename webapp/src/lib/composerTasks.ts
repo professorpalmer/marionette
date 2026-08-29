@@ -8,6 +8,8 @@ export type ComposerTask = {
   id: string;
   content: string;
   state: ComposerTaskState;
+  /** Short unique stem. Omitted when every worker shares the same brief. */
+  summary?: string;
   detail?: string;
 };
 
@@ -65,13 +67,33 @@ export function pickTaskSourceJob(jobs: readonly Job[], activeSessionId: string)
   return pickRankedJob(waves.length ? waves : remaining);
 }
 
-function oneLineLabel(task: Task): string {
-  const role = String(task.role || "").replace(/\s+/g, " ").trim();
-  const instruction = String(task.instruction || "").replace(/\s+/g, " ").trim();
-  if (role && instruction && !instruction.toLowerCase().startsWith(role.toLowerCase())) {
-    return `${role} · ${instruction}`;
-  }
-  return instruction || role || String(task.id || "Task");
+function roleLabel(role: string): string {
+  return role.replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function oneLineInstruction(instruction: string): string {
+  return instruction.replace(/\s+/g, " ").trim();
+}
+
+const STEM_MAX = 42;
+
+function instructionStem(instruction: string): string {
+  const firstLine = instruction.split(/\n/).map((line) => line.trim()).find(Boolean) || "";
+  if (firstLine && firstLine.length <= STEM_MAX) return firstLine;
+  const one = oneLineInstruction(instruction);
+  if (!one) return "";
+  const sentence = one.split(/(?<=[.!?])\s/)[0] || one;
+  if (sentence.length <= STEM_MAX) return sentence;
+  const cut = sentence.slice(0, STEM_MAX);
+  const at = cut.lastIndexOf(" ");
+  return `${(at > 16 ? cut.slice(0, at) : cut).trimEnd()}…`;
+}
+
+function taskCopy(task: Task): { role: string; instruction: string } {
+  return {
+    role: roleLabel(String(task.role || "")),
+    instruction: oneLineInstruction(String(task.instruction || "")),
+  };
 }
 
 function artifactLooksFailed(art: { result?: unknown; type?: unknown; failure?: unknown; task_id?: unknown }): boolean {
@@ -87,17 +109,27 @@ function artifactLooksFailed(art: { result?: unknown; type?: unknown; failure?: 
 
 export function buildComposerTasks(job: Job | null): ComposerTask[] {
   const arts = Array.isArray(job?.artifacts) ? job.artifacts as { result?: unknown; type?: unknown; failure?: unknown; task_id?: unknown }[] : [];
-  return (job?.tasks || []).map((task: Task, i) => {
+  const rows = job?.tasks || [];
+  const briefs = new Set(rows.map((task) => taskCopy(task).instruction).filter(Boolean));
+  const sharedBrief = briefs.size === 1 && rows.length > 1;
+  return rows.map((task: Task, i) => {
     let state = taskState(task.status);
     if (state === "completed") {
       const fail = arts.find((a) => String(a.task_id || "") === String(task.id || "") && artifactLooksFailed(a));
       if (fail) state = "degraded";
     }
-    const detail = waveChildDetail(task);
+    const { role, instruction } = taskCopy(task);
+    const failure = waveChildDetail(task);
+    const stem = instructionStem(String(task.instruction || ""));
+    const content = role || stem || String(task.id || "Task");
+    const summary = !sharedBrief && stem && stem !== content ? stem : undefined;
+    const brief = instruction && instruction !== stem ? instruction : undefined;
+    const detail = failure || brief;
     return {
       id: String(task.id || `${job?.id || "job"}-${i}`),
-      content: oneLineLabel(task),
+      content,
       state,
+      ...(summary ? { summary } : {}),
       ...(detail ? { detail } : {}),
     };
   });

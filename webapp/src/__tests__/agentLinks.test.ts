@@ -167,6 +167,11 @@ describe("agentLinks detection", () => {
       "audit harness/send_loop_dispatch.py mode=analysis",
     ).linkKind).toBe("command");
     // Unknown kinds: shell-like never falls through to file.
+    expect(classifyActionGoal(
+      "search_codegraph",
+      "custom OpenAI-compatible provider API base URL model configuration settings",
+    ).linkKind).toBe("none");
+    expect(classifyActionGoal("search_files", "base_url|api_base").linkKind).toBe("none");
     expect(classifyActionGoal("custom_tool", "npm.cmd").linkKind).toBe("command");
     expect(classifyActionGoal("custom_tool", "git status").linkKind).toBe("command");
     expect(classifyActionGoal("custom_tool", "webapp/src/App.tsx").linkKind).toBe("file");

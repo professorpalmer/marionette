@@ -25,6 +25,7 @@ vi.mock("../lib/agentCommandIndex", () => ({
   getAgentCommandIndexVersion: () => 1,
   listAgentCommandSessions: () => [],
   registerAgentCommandSession: () => null,
+  dismissAgentCommandSession: () => false,
 }));
 
 const noop = () => {};

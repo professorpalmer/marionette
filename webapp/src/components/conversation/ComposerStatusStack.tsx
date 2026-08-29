@@ -3,9 +3,9 @@ import { ChevronDown, ChevronRight, CheckCircle2, Loader2, X, XCircle } from "lu
 import { api, type Job } from "../../lib/api";
 import { openAgentCommand, openAgentSwarmJob } from "../../lib/agentLinks";
 import {
+  dismissAgentCommandSession,
   getAgentCommandIndexVersion,
   listAgentCommandSessions,
-  registerAgentCommandSession,
   subscribeAgentCommandIndex,
 } from "../../lib/agentCommandIndex";
 import { buildComposerStatusStackRows, type ComposerStatusStackRow } from "./composerStatusStackData";
@@ -24,15 +24,6 @@ function statusIcon(row: ComposerStatusStackRow) {
     return <XCircle size={11} className="text-risk" aria-hidden />;
   }
   return <CheckCircle2 size={11} className="text-good" aria-hidden />;
-}
-
-function rowKindLabel(kind: ComposerStatusStackRow["kind"]): string {
-  return kind === "swarm" ? "PM" : "Term";
-}
-
-function rowActionLabel(row: ComposerStatusStackRow): string {
-  if (row.kind === "swarm") return "Open swarm";
-  return "Open terminal";
 }
 
 function groupLabel(kind: ComposerStatusStackRow["kind"]): string {
@@ -97,9 +88,10 @@ function StatusStackGroup({
         )}
       </div>
       {open && (
-        <div className={`space-y-0.5 border-t ${COMPOSER_FAMILY_HAIRLINE} px-2 py-1`}>
+        <div className="space-y-0.5 px-2 pb-1.5">
           {rows.map((row) => {
             const stopping = cancelling.has(row.id);
+            const openLabel = row.kind === "swarm" ? "Open swarm" : "Open terminal";
             const onOpen = () => {
               if (row.kind === "swarm") {
                 openAgentSwarmJob(row.id);
@@ -116,17 +108,11 @@ function StatusStackGroup({
                 <button
                   type="button"
                   onClick={onOpen}
-                  title={row.title}
-                  className={`flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[10.5px] leading-4 text-txt transition-colors hover:bg-panel/30 ${ROW_FOCUS}`}
+                  aria-label={`${openLabel}: ${row.label}`}
+                  className={`flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[10.5px] leading-4 text-txt transition-colors hover:bg-panel/25 ${ROW_FOCUS}`}
                 >
-                  <span className="flex h-[20px] shrink-0 items-center px-0.5 text-[10.5px] font-medium text-faint">
-                    {rowKindLabel(row.kind)}
-                  </span>
+                  {statusIcon(row)}
                   <span className="min-w-0 flex-1 truncate">{row.label}</span>
-                  <span className="flex shrink-0 items-center gap-1 text-[10.5px] text-muted">
-                    {statusIcon(row)}
-                    <span>{rowActionLabel(row)}</span>
-                  </span>
                   <ChevronRight size={11} className="shrink-0 text-faint" aria-hidden />
                 </button>
                 {row.state === "running" && (
@@ -153,7 +139,13 @@ function StatusStackGroup({
   );
 }
 
-export default function ComposerStatusStack({ swarmJobs }: { swarmJobs: readonly Job[] }) {
+export default function ComposerStatusStack({
+  swarmJobs,
+  sessionId = "",
+}: {
+  swarmJobs: readonly Job[];
+  sessionId?: string;
+}) {
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [cancelling, setCancelling] = useState<Set<string>>(() => new Set());
   const commandIndexVersion = useSyncExternalStore(
@@ -162,25 +154,19 @@ export default function ComposerStatusStack({ swarmJobs }: { swarmJobs: readonly
     getAgentCommandIndexVersion,
   );
   const commandSessions = useMemo(
-    () => listAgentCommandSessions(),
-    [commandIndexVersion],
+    () => listAgentCommandSessions(sessionId),
+    [commandIndexVersion, sessionId],
   );
   const rows = useMemo(
-    () => buildComposerStatusStackRows({ swarmJobs, commandSessions, nowMs: nowTick }),
-    [commandSessions, nowTick, swarmJobs],
+    () => buildComposerStatusStackRows({
+      swarmJobs,
+      commandSessions,
+      nowMs: nowTick,
+      sessionId,
+    }),
+    [commandSessions, nowTick, sessionId, swarmJobs],
   );
 
-  useEffect(() => {
-    for (const row of rows) {
-      if (row.kind !== "terminal" || !row.command) continue;
-      registerAgentCommandSession({
-        id: row.id,
-        command: row.command,
-        output: row.output || "",
-        state: row.state,
-      });
-    }
-  }, [rows]);
   const hasTerminalRows = rows.some((row) => row.state !== "running");
 
   useEffect(() => {
@@ -210,6 +196,7 @@ export default function ComposerStatusStack({ swarmJobs }: { swarmJobs: readonly
       for (const id of unique) next.add(id);
       return next;
     });
+    for (const id of unique) dismissAgentCommandSession(id);
     void Promise.allSettled(unique.map((id) => api.swarmCancel(id))).then((results) => {
       setCancelling((prev) => {
         const next = new Set(prev);

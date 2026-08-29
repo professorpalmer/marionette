@@ -1228,7 +1228,7 @@ const VirtualTranscriptRow = memo(
 );
 
 /** Bind run_command cards even when Investigating is collapsed (Hermes procId). */
-function indexCardCommandSession(card: Card): void {
+function indexCardCommandSession(card: Card, sessionId?: string): void {
   const cliInput = resolveCardCliInput(card);
   const resultCommand = String(card.result?.command || "").trim();
   const inputKey = toolInputFieldKey(card.kind || "");
@@ -1260,12 +1260,13 @@ function indexCardCommandSession(card: Card): void {
     command: value,
     output: String(card.result?.output || ""),
     state,
+    sessionId,
   });
 }
 
-function indexTranscriptCommandSessions(items: Item[]): void {
+function indexTranscriptCommandSessions(items: Item[], sessionId?: string): void {
   for (const it of items) {
-    if (it.kind === "card") indexCardCommandSession(it.card);
+    if (it.kind === "card") indexCardCommandSession(it.card, sessionId);
   }
 }
 
@@ -1373,6 +1374,8 @@ export type TranscriptListProps = {
   onSecretRequest?: (item: SecretRequestItem, decision: { action: "save"; value: string } | { action: "dismiss" }) => void;
   /** Relaunch the failed turn after provider auth recovery (Settings still opens). */
   onAuthFailureRetry?: () => void;
+  /** Active harness chat — stamps command-index rows so the composer rail stays session-owned. */
+  sessionId?: string;
 };
 
 export const TranscriptList = memo(function TranscriptList({
@@ -1396,12 +1399,13 @@ export const TranscriptList = memo(function TranscriptList({
   onCommandApproval,
   onSecretRequest,
   onAuthFailureRetry,
+  sessionId,
 }: TranscriptListProps) {
   // Match Conversation's latch — awaiting_swarm plus holdSwarmAwait so
   // Investigating / mid-turn absorption / footer stay armed through idle flaps.
   useEffect(() => {
-    indexTranscriptCommandSessions(items);
-  }, [items]);
+    indexTranscriptCommandSessions(items, sessionId);
+  }, [items, sessionId]);
 
   const agentLoopOpen = isAgentLoopOpen(turnOpen, status) || holdSwarmAwait;
   // Pause-point: StatusPill prefers Still working… — seal sticky Investigating
@@ -3550,9 +3554,10 @@ function ActionCard({
       id: commandRevealId,
       command: goalValue,
       output: commandRevealOutput,
+      state: isErr ? "failed" : effectivelyRunning ? "running" : "done",
     });
     if (commandRevealOutput) syncAgentCommandOutput(commandRevealId, commandRevealOutput);
-  }, [linkKind, commandRevealId, goalValue, commandRevealOutput]);
+  }, [commandRevealId, commandRevealOutput, effectivelyRunning, goalValue, isErr, linkKind]);
 
   const openCommandReveal = (command: string) => {
     const cmd = (command || "").trim();

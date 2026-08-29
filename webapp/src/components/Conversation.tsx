@@ -3658,6 +3658,7 @@ export default function Conversation({
           onAuthFailureRetry={handleAuthFailureRetry}
           showJumpToBottom={showJumpToBottom}
           onJumpToBottom={jumpToLatest}
+          sessionId={activeSessionId ?? ""}
           composerDock={(
       <ComposerDock
         config={config}
