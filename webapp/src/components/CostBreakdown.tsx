@@ -378,72 +378,11 @@ function fmtCost(num: number): string {
   return `$${num.toFixed(2)}`;
 }
 
-function fmtTokens(num: number): string {
-  if (!isFinite(num) || num <= 0) return "0";
-  if (num >= 1000000) return (num / 1000000).toFixed(1).replace(/\.0$/, "") + "M";
-  if (num >= 1000) return (num / 1000).toFixed(1).replace(/\.0$/, "") + "k";
-  return String(num);
-}
-
 export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
   const est = isFinite(data.est_cost_usd) ? data.est_cost_usd : 0;
   const estimated = spendIsEstimated(data);
   const spendPrefix = estimated ? "~" : "";
-  const pilotCacheGross =
-    typeof data.cache_savings_gross_usd === "number" && isFinite(data.cache_savings_gross_usd)
-      ? data.cache_savings_gross_usd
-      : typeof data.cache_savings_usd === "number" && isFinite(data.cache_savings_usd)
-        ? data.cache_savings_usd
-        : 0;
-  const routingSaved = routingSavingsCredited(
-    data.routing_savings_basis,
-    data.routing_saved_usd,
-  );
-  const routingEstimated = data.routing_savings_basis === "estimated";
-  const routingUnknown = data.routing_savings_basis === "unknown";
-  const delegationSaved = delegationSavingsCredited(
-    data.delegation_savings_basis,
-    data.delegation_saved_usd,
-  );
-  const delegationMeasured = data.delegation_savings_basis === "actual_usage";
-  // Keep routing and delegation separate: measured delegation (even $0)
-  // owns the model-selection row; routing estimate must not replace it.
-  const modelSelectionSaved = delegationMeasured
-    ? delegationSaved
-    : (delegationSaved > 0 ? delegationSaved : routingSaved);
-  const showRoutingDecision =
-    routingSaved > 0
-    && (delegationMeasured || delegationSaved > 0)
-    && Math.abs(routingSaved - delegationSaved) > 0.0001;
-  const swarmCacheSaved =
-    typeof data.cache_saved_usd_swarm === "number" && isFinite(data.cache_saved_usd_swarm) && data.cache_saved_usd_swarm > 0
-      ? data.cache_saved_usd_swarm
-      : 0;
-  const swarmCacheUnpricedTokens =
-    typeof data.swarm_cache_unpriced_tokens === "number"
-    && isFinite(data.swarm_cache_unpriced_tokens)
-    && data.swarm_cache_unpriced_tokens > 0
-      ? data.swarm_cache_unpriced_tokens
-      : 0;
-  const swarmCachePartial =
-    swarmCacheSaved > 0
-    && (
-      data.swarm_cache_savings_basis === "unknown"
-      || swarmCacheUnpricedTokens > 0
-    );
-  // One Prompt-cache value row: uncapped pilot gross + store-job cache.
-  const promptCacheSaved =
-    (pilotCacheGross > 0 ? pilotCacheGross : 0) + swarmCacheSaved;
-  const compactSavings =
-    typeof data.tool_output_savings_usd === "number" && isFinite(data.tool_output_savings_usd) && data.tool_output_savings_usd > 0
-      ? data.tool_output_savings_usd
-      : 0;
   const valueTotal = listPriceValueTotal(data);
-
-  const compactTokens =
-    typeof data.tool_output_tokens_saved === "number" && isFinite(data.tool_output_tokens_saved) && data.tool_output_tokens_saved > 0
-      ? data.tool_output_tokens_saved
-      : 0;
   const withoutSavings = est + valueTotal;
   const savingsPercent = withoutSavings > 0
     ? Math.max(0, Math.min(100, (valueTotal / withoutSavings) * 100))
@@ -476,80 +415,6 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
           </div>
         </div>
       </div>
-
-      {/* Each mechanism is shown once; the receipt above owns the total. */}
-      {(promptCacheSaved > 0 || modelSelectionSaved > 0 || showRoutingDecision || compactSavings > 0) ? (
-      <div className="mt-2 pt-2 border-t border-edge/50">
-      <div className="text-[10px] uppercase tracking-wide text-faint mb-1">Why you saved</div>
-      <p className="text-[10px] text-muted mb-1.5 leading-snug">
-        Each saving is shown once, so the total stays honest.
-      </p>
-      {promptCacheSaved > 0 ? (
-        <div
-          className="flex items-center justify-between mb-1"
-          title={
-            swarmCachePartial
-              ? swarmCacheUnpricedTokens > 0
-                ? `Partial avoided full-price input value; ${fmtTokens(swarmCacheUnpricedTokens)} swarm cache tokens could not be priced. Not a cash refund.`
-                : "Partial avoided full-price input value; not every swarm cache hit has a trustworthy list rate. Not a cash refund."
-              : "Gross avoided full-price input value from prompt-cache hits (catalog/list rate). Continues growing with cached tokens; not a cash refund and not capped to provider spend."
-          }
-        >
-          <span className="text-muted">
-            Prompt-cache value{swarmCachePartial ? " (partial)" : ""}
-          </span>
-          <span className="text-good font-medium tabular-nums">~{fmtCost(promptCacheSaved)}</span>
-        </div>
-      ) : null}
-
-      {modelSelectionSaved > 0 ? (
-        <div
-          className="flex items-center justify-between mb-1"
-          title={
-            delegationSaved > 0
-              ? "Full list-price value of choosing cheaper worker models vs a frontier-equivalent baseline on the same actual tokens (ignores prompt-cache discounts). Not a cash refund."
-              : routingEstimated
-                ? "Running estimate vs frontier-equivalent list price (preflight). Not a cash refund or billed spend."
-                : "List-price value vs a frontier-equivalent baseline on the same actual tokens. Not a cash refund."
-          }
-        >
-          <span className="text-muted">
-            Model selection value{routingEstimated && delegationSaved <= 0 ? " (est.)" : ""}
-          </span>
-          <span className="text-good font-medium tabular-nums">~{fmtCost(modelSelectionSaved)}</span>
-        </div>
-      ) : null}
-
-      {showRoutingDecision ? (
-        <div
-          className="flex items-center justify-between mb-1 text-faint"
-          title="Narrow router-decision delta (balanced/cheap policies only; includes prompt-cache discount in counterfactual). Shown separately from model-selection value. Not billed spend."
-        >
-          <span>Routing decision value{routingEstimated ? " (est.)" : ""}</span>
-          <span className="tabular-nums">~{fmtCost(routingSaved)}</span>
-        </div>
-      ) : null}
-
-      {compactSavings > 0 ? (
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-muted">Compact tool outputs</span>
-          <span className="text-good font-medium tabular-nums">
-            {compactTokens > 0 ? `${fmtTokens(compactTokens)} tok · ` : ""}~{fmtCost(compactSavings)}
-          </span>
-        </div>
-      ) : null}
-      </div>
-      ) : null}
-
-      {routingUnknown && typeof data.routing_saved_usd === "number" && data.routing_saved_usd > 0 ? (
-        <div
-          className="flex items-center justify-between mb-1 text-faint"
-          title="Routing savings basis is unknown — refused as billed or measured value."
-        >
-          <span>Routing decision value</span>
-          <span className="tabular-nums">unknown basis</span>
-        </div>
-      ) : null}
 
 
 

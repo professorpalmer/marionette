@@ -15,6 +15,11 @@ const SCOPES: Array<{ value: EconomicsPaneScope; label: string }> = [
   { value: "all_projects", label: "All projects" },
 ];
 
+const PERIODS = [
+  { value: "all", label: "All time" },
+  { value: "30", label: "Last 30 days" },
+] as const;
+
 function isEconomicsPayload(data: unknown): data is EconomicsData {
   return Boolean(data && typeof data === "object" && "available" in (data as object));
 }
@@ -95,17 +100,32 @@ export default function EconomicsPane() {
   return (
     <div className="flex flex-col h-full overflow-hidden bg-transparent">
       <div className="shrink-0 flex items-center px-3 py-2 border-b border-[var(--shell-panel-border)] select-none">
-        <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-faint font-semibold mr-auto">
+        <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-faint font-semibold">
           <CircleDollarSign size={11} className="text-faint/70" />
           <span>Economics</span>
         </div>
+      </div>
+      <div className="shrink-0 grid grid-cols-[minmax(0,1fr)_110px] gap-2 px-3 pt-3 pb-2">
         <select
-          className="bg-transparent text-[11px] text-txt"
+          className="min-w-0 rounded border border-edge/60 bg-panel2/40 px-2 py-1.5 text-[11px] text-txt"
           value={scope}
           onChange={(event) => setScope(event.target.value as EconomicsPaneScope)}
           aria-label="Economics ownership"
         >
           {SCOPES.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
+        </select>
+        <select
+          className="min-w-0 rounded border border-edge/60 bg-panel2/40 px-2 py-1.5 text-[11px] text-txt disabled:text-faint"
+          value={scope === "app_run" ? "run" : periodDays === 30 ? "30" : "all"}
+          onChange={(event) => setPeriodDays(event.target.value === "30" ? 30 : null)}
+          aria-label="Economics period"
+          disabled={scope === "app_run"}
+        >
+          {scope === "app_run" ? (
+            <option value="run">Since launch</option>
+          ) : PERIODS.map((option) => (
             <option key={option.value} value={option.value}>{option.label}</option>
           ))}
         </select>
@@ -117,8 +137,6 @@ export default function EconomicsPane() {
           <EconomicsDurable
             data={economics}
             scope={scope}
-            periodDays={periodDays}
-            onPeriodChange={setPeriodDays}
           />
         )}
       </div>

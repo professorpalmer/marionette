@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import CostBreakdown, {
   cacheHitDisplay,
@@ -22,7 +22,7 @@ const baseData: CostBreakdownData = {
 };
 
 describe("CostBreakdown receipt", () => {
-  it("shows one app-run receipt and each savings mechanism once", () => {
+  it("shows one app-run receipt without a competing breakdown", () => {
     render(<CostBreakdown data={baseData} />);
 
     expect(screen.getByText("Spend")).toBeTruthy();
@@ -33,11 +33,9 @@ describe("CostBreakdown receipt", () => {
     expect(screen.getByText("~$0.06")).toBeTruthy();
     expect(screen.getByText("Less spent")).toBeTruthy();
     expect(screen.getByText("33.3%")).toBeTruthy();
-    expect(screen.getByText("Why you saved")).toBeTruthy();
-    expect(screen.getByText("Prompt-cache value")).toBeTruthy();
-    const compact = screen.getByText("Compact tool outputs").closest("div");
-    expect(within(compact as HTMLElement).getByText(/736.1k tok · ~\$0.02/)).toBeTruthy();
-    expect(screen.queryByText(/List-price value/)).toBeNull();
+    expect(screen.queryByText("Why you saved")).toBeNull();
+    expect(screen.queryByText("Prompt-cache value")).toBeNull();
+    expect(screen.queryByText("Compact tool outputs")).toBeNull();
   });
 
   it("keeps context diagnostics and compaction controls out of Economics", () => {
@@ -56,43 +54,6 @@ describe("CostBreakdown receipt", () => {
     expect(screen.getByText("Without savings").parentElement?.textContent).toContain("~$0.00");
     expect(screen.getByText("Estimated savings").parentElement?.textContent).toContain("~$0.00");
     expect(screen.getByText("Less spent").parentElement?.textContent).toContain("—");
-    expect(screen.queryByText("Why you saved")).toBeNull();
-  });
-
-  it("shows model-selection and routing decision values only when supported", () => {
-    render(
-      <CostBreakdown
-        data={{
-          tokens_used: 1_000,
-          est_cost_usd: 0.70,
-          cache_savings_gross_usd: 0.02,
-          cache_savings_basis: "catalog",
-          delegation_saved_usd: 0.40,
-          delegation_savings_basis: "actual_usage",
-          routing_saved_usd: 0.02,
-          routing_savings_basis: "actual_usage",
-        }}
-      />,
-    );
-
-    expect(screen.getByText("Model selection value")).toBeTruthy();
-    expect(screen.getByText("Routing decision value")).toBeTruthy();
-    expect(screen.getByText("Prompt-cache value")).toBeTruthy();
-  });
-
-  it("refuses an unknown routing basis", () => {
-    render(
-      <CostBreakdown
-        data={{
-          tokens_used: 1_000,
-          est_cost_usd: 0.10,
-          routing_saved_usd: 1.25,
-          routing_savings_basis: "unknown",
-        }}
-      />,
-    );
-
-    expect(screen.getByText("unknown basis")).toBeTruthy();
     expect(screen.queryByText("Why you saved")).toBeNull();
   });
 });
