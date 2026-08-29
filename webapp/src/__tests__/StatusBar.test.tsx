@@ -12,7 +12,7 @@ import { publishTaskProfile } from "../lib/taskProfileChrome";
 
 vi.mock("../lib/api", () => ({
   api: {
-    getUsage: vi.fn(),
+    getEconomics: vi.fn(),
     workspaces: vi.fn(),
     getSessionState: vi.fn(),
     sessions: vi.fn(),
@@ -28,7 +28,7 @@ vi.mock("../lib/transport", () => ({
   isDesktop: () => false,
 }));
 
-const mockGetUsage = vi.mocked(api.getUsage);
+const mockGetEconomics = vi.mocked(api.getEconomics);
 const mockWorkspaces = vi.mocked(api.workspaces);
 const mockGetSessionState = vi.mocked(api.getSessionState);
 const mockSessions = vi.mocked(api.sessions);
@@ -36,6 +36,14 @@ const mockPauseSessionGoal = vi.mocked(api.pauseSessionGoal);
 const mockResumeSessionGoal = vi.mocked(api.resumeSessionGoal);
 const mockCompleteSessionGoal = vi.mocked(api.completeSessionGoal);
 const mockClearSessionGoal = vi.mocked(api.clearSessionGoal);
+
+beforeEach(() => {
+  mockGetEconomics.mockResolvedValue({
+    available: true,
+    scope: "conversation",
+    counterfactual: null,
+  });
+});
 
 const statusBarProps = {
   config: null,
@@ -134,268 +142,43 @@ describe("StatusBar usage pills", () => {
     mockSessions.mockResolvedValue([]);
   });
 
-  it("shows a single saved pill combining cache and compaction dollars", async () => {
-    mockGetUsage.mockResolvedValue({
-      session: {
-        tokens_used: 8000,
-        est_cost_usd: 0.12,
-        driver: "anthropic:claude-sonnet",
-        price_in: 3,
-        price_out: 15,
-        tokens_cached: 2000,
-        cache_savings_usd: 0.04,
-        tool_output_tokens_saved: 500,
-        tool_output_savings_usd: 0.02,
-      },
-      jobs: [],
-    });
-
-    render(<StatusBar {...statusBarProps} />);
-
-    await waitFor(() => {
-      expect(screen.getByText("$0.06 saved")).toBeInTheDocument();
-    });
-  });
-
-  it("folds routing and swarm-cache savings into the green saved chip", async () => {
-    mockGetUsage.mockResolvedValue({
-      session: {
-        tokens_used: 1000,
-        est_cost_usd: 0.70,
-        driver: "anthropic:claude-sonnet",
-        price_in: 3,
-        price_out: 15,
-        cache_savings_usd: 0.01,
-        routing_saved_usd: 0.40,
-        cache_saved_usd_swarm: 0.05,
-      },
-      jobs: [],
-    });
-
-    render(<StatusBar {...statusBarProps} />);
-
-    await waitFor(() => {
-      expect(screen.getByText("$0.46 saved")).toBeInTheDocument();
-    });
-  });
-
-  it("marks the saved chip when swarm cache pricing is partial", async () => {
-    mockGetUsage.mockResolvedValue({
-      session: {
-        tokens_used: 1000,
-        est_cost_usd: 0.10,
-        driver: "anthropic:claude-sonnet",
-        price_in: 3,
-        price_out: 15,
-        tokens_cached: 20_000,
-        cache_saved_usd_swarm: 0.05,
-        swarm_cache_savings_basis: "unknown",
-        swarm_cache_unpriced_tokens: 8_000,
-      },
-      jobs: [],
-    });
-
-    render(<StatusBar {...statusBarProps} />);
-
-    const saved = await screen.findByRole("button", { name: /~\$0\.05 saved/ });
-    expect(saved).toHaveAttribute(
-      "title",
-      expect.stringMatching(/8k tokens unpriced/i),
-    );
-  });
-
-  it("hides the saved pill when there is no cache or compaction savings", async () => {
-    mockGetUsage.mockResolvedValue({
-      session: {
-        tokens_used: 3000,
-        est_cost_usd: 0.08,
-        driver: "anthropic:claude-sonnet",
-        price_in: 3,
-        price_out: 15,
-      },
-      jobs: [],
-    });
-
-    render(<StatusBar {...statusBarProps} />);
-
-    await waitFor(() => {
-      expect(screen.getByText("~$0.08")).toBeInTheDocument();
-    });
-    expect(screen.queryByText(/^\$[\d.]+ saved$/)).not.toBeInTheDocument();
-  });
-
-  it("renders the spend pill with formatted estimated cost", async () => {
-    mockGetUsage.mockResolvedValue({
-      session: {
-        tokens_used: 1500,
-        est_cost_usd: 0.05,
-        driver: "anthropic:claude-sonnet",
-        price_in: 3,
-        price_out: 15,
-      },
-      jobs: [],
-    });
-
-    render(<StatusBar {...statusBarProps} />);
-
-    await waitFor(() => {
-      expect(screen.getByText("~$0.05")).toBeInTheDocument();
-    });
-  });
-
-  it("opens Economics from both the spend and savings pills", async () => {
+  it("shows canonical PM session cost and opens that same all-time scope", async () => {
     const onOpenEconomics = vi.fn();
-    mockGetUsage.mockResolvedValue({
-      session: {
-        tokens_used: 8000,
-        est_cost_usd: 0.12,
-        driver: "anthropic:claude-sonnet",
-        price_in: 3,
-        price_out: 15,
-        tokens_cached: 2000,
-        cache_savings_usd: 0.04,
-        tool_output_savings_usd: 0.02,
+    const selections: unknown[] = [];
+    const onSelection = (event: Event) => selections.push((event as CustomEvent).detail);
+    window.addEventListener("harness-economics-selection", onSelection);
+    mockGetEconomics.mockResolvedValue({
+      available: true,
+      scope: "conversation",
+      counterfactual_source: "job_financial_reports",
+      counterfactual_status: "ok",
+      counterfactual: {
+        actual_cost_usd: 2.312042,
+        measured_cost_usd: 2.312042,
+        estimated_cost_usd: 0,
+        spend_basis: "measured_usage_x_registry_price",
+        avoided_usd: 11.34,
       },
-      jobs: [],
     });
 
-    render(<StatusBar {...statusBarProps} onOpenEconomics={onOpenEconomics} />);
+    try {
+      render(<StatusBar {...statusBarProps} onOpenEconomics={onOpenEconomics} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "~$0.12" }));
-    expect(onOpenEconomics).toHaveBeenCalledTimes(1);
-    fireEvent.click(screen.getByRole("button", { name: "$0.06 saved" }));
-    expect(onOpenEconomics).toHaveBeenCalledTimes(2);
-    expect(screen.queryByText("Session cost")).not.toBeInTheDocument();
-    expect(screen.queryByText(/click for the full cost breakdown/i)).not.toBeInTheDocument();
-  });
-
-  it("labels process-wide spend to distinguish from Swarm pane session spend", async () => {
-    mockGetUsage.mockResolvedValue({
-      session: {
-        tokens_used: 1500,
-        est_cost_usd: 0.05,
-        driver: "anthropic:claude-sonnet",
-        price_in: 3,
-        price_out: 15,
-      },
-      jobs: [],
-    });
-
-    render(<StatusBar {...statusBarProps} />);
-
-    await waitFor(() => {
-      expect(screen.getByText("process")).toBeInTheDocument();
-    });
-    expect(screen.getByTitle(/Process-wide token usage/i)).toBeInTheDocument();
-    expect(screen.getByTitle(/Swarm pane shows per-repo session spend/i)).toBeInTheDocument();
-  });
-
-  it("shows the boot cost cluster when tokens are zero but swarm dollars exist", async () => {
-    mockGetUsage.mockResolvedValue({
-      session: {
-        tokens_used: 0,
-        est_cost_usd: 0.70,
-        driver: "anthropic:claude-sonnet",
-        price_in: 3,
-        price_out: 15,
-      },
-      jobs: [],
-    });
-
-    render(<StatusBar {...statusBarProps} />);
-
-    await waitFor(() => {
-      expect(screen.getByText("~$0.70")).toBeInTheDocument();
-    });
-    expect(screen.getByText("0 tok")).toBeInTheDocument();
-  });
-
-  it("never renders a session-total pill, even when the API sends one", async () => {
-    // The lifetime "session ~$X" pill was removed by user request (2026-07-08):
-    // the boot-scoped "since last open" figure is the useful one. The backend
-    // still reports session_total (CostBreakdown and budgeting logic may use
-    // it), but the status bar must ignore it.
-    mockGetUsage.mockResolvedValue({
-      session: {
-        tokens_used: 1500,
-        est_cost_usd: 0.05,
-        driver: "anthropic:claude-sonnet",
-        price_in: 3,
-        price_out: 15,
-      },
-      session_total: {
-        session_id: "abc123",
-        est_cost_usd: 3.174,
-        input_tokens: 900000,
-        output_tokens: 120000,
-      },
-      jobs: [],
-    });
-
-    render(<StatusBar {...statusBarProps} />);
-
-    await waitFor(() => {
-      expect(screen.getByText("~$0.05")).toBeInTheDocument();
-    });
-    expect(screen.queryByText("session")).not.toBeInTheDocument();
-    expect(screen.queryByText("~$3.17")).not.toBeInTheDocument();
-  });
-
-  it("keeps last-good spend when a later poll returns all zeros", async () => {
-    mockGetUsage
-      .mockResolvedValueOnce({
-        session: {
-          tokens_used: 1500,
-          est_cost_usd: 0.05,
-          driver: "anthropic:claude-sonnet",
-          price_in: 3,
-          price_out: 15,
-        },
-        jobs: [],
-      })
-      .mockResolvedValue({
-        session: {
-          tokens_used: 0,
-          est_cost_usd: 0,
-          driver: "anthropic:claude-sonnet",
-          price_in: 3,
-          price_out: 15,
-        },
-        jobs: [],
-      });
-
-    render(<StatusBar {...statusBarProps} />);
-
-    await waitFor(() => {
-      expect(screen.getByText("~$0.05")).toBeInTheDocument();
-    });
-
-    // Workspace/project events re-trigger usage fetch (replaces the old
-    // jobCount bump that also drove a confusing footer job total).
-    window.dispatchEvent(new Event("harness-config-changed"));
-
-    await waitFor(() => {
-      expect(mockGetUsage.mock.calls.length).toBeGreaterThanOrEqual(2);
-    });
-    // Cluster must still show the prior non-zero spend.
-    expect(screen.getByText("~$0.05")).toBeInTheDocument();
-    expect(screen.getByText("1.5k tok")).toBeInTheDocument();
+      const pill = await screen.findByRole("button", { name: "$2.31" });
+      expect(screen.queryByText("~$0.04")).toBeNull();
+      fireEvent.click(pill);
+      await waitFor(() => expect(selections).toEqual([{ scope: "conversation", period: "all" }]));
+      expect(onOpenEconomics).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener("harness-economics-selection", onSelection);
+    }
   });
 });
-
-const emptyUsageSession = {
-  tokens_used: 0,
-  est_cost_usd: 0,
-  driver: "",
-  price_in: 0,
-  price_out: 0,
-};
 
 describe("StatusBar runtime status", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockWorkspaces.mockResolvedValue([]);
-    mockGetUsage.mockResolvedValue({ session: emptyUsageSession, jobs: [] });
     mockSessions.mockResolvedValue([{ id: "sess-1", title: "Test", created: 0, active: true }]);
   });
 
@@ -468,100 +251,11 @@ describe("StatusBar runtime status", () => {
   });
 });
 
-describe("StatusBar prompt-cache hit display", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockWorkspaces.mockResolvedValue([]);
-    mockGetSessionState.mockResolvedValue({
-      state: "idle",
-      pending_swarms: false,
-      runners: {},
-    });
-    mockSessions.mockResolvedValue([]);
-  });
-
-  it("shows honest 90%+ prompt-cache hit from warm usage ratios", async () => {
-    mockGetUsage.mockResolvedValue({
-      session: {
-        tokens_used: 1_500_000,
-        est_cost_usd: 0.50,
-        driver: "xai:grok",
-        price_in: 3,
-        price_out: 15,
-        tokens_cached: 415_700,
-        prompt_cache_hit_ratio: 0.968,
-        prompt_input_tokens: 429_000,
-        prompt_cache_read_tokens: 415_700,
-        cache_savings_usd: 0.10,
-      },
-      jobs: [],
-    });
-
-    render(<StatusBar {...statusBarProps} />);
-
-    const chip = await screen.findByTitle(/cache-read ÷ prompt-input/i);
-    expect(chip).toHaveTextContent(/97% prompt cache/i);
-  });
-
-  it("does not invent a cache percent when ratio is unknown", async () => {
-    mockGetUsage.mockResolvedValue({
-      session: {
-        tokens_used: 1_500_000,
-        est_cost_usd: 0.50,
-        driver: "xai:grok",
-        price_in: 3,
-        price_out: 15,
-        tokens_cached: 415_700,
-        prompt_cache_hit_ratio: null,
-        pilot_cache_hit_ratio: null,
-        swarm_cache_hit_ratio: null,
-        cache_savings_usd: 0.10,
-      },
-      jobs: [],
-    });
-
-    render(<StatusBar {...statusBarProps} />);
-
-    await waitFor(() => {
-      expect(screen.getByText(/\$0\.10 saved/i)).toBeInTheDocument();
-    });
-    expect(screen.queryByText(/%.*cache/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/prompt cache/i)).not.toBeInTheDocument();
-  });
-
-  it("does not render a green 0% cache chip when cache reads are zero", async () => {
-    mockGetUsage.mockResolvedValue({
-      session: {
-        tokens_used: 10_000,
-        est_cost_usd: 0.05,
-        driver: "xai:grok",
-        price_in: 3,
-        price_out: 15,
-        tokens_cached: 0,
-        prompt_cache_read_tokens: 0,
-        prompt_cache_hit_ratio: 0,
-        pilot_cache_hit_ratio: 0,
-        swarm_cache_hit_ratio: 0,
-        cache_savings_usd: 0,
-      },
-      jobs: [],
-    });
-
-    render(<StatusBar {...statusBarProps} />);
-
-    await waitFor(() => {
-      expect(screen.getByText(/10k tok/i)).toBeInTheDocument();
-    });
-    expect(screen.queryByText(/0% .*cache/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/prompt cache/i)).not.toBeInTheDocument();
-  });
-});
 
 describe("StatusBar panel toggle shortcuts", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockWorkspaces.mockResolvedValue([]);
-    mockGetUsage.mockResolvedValue({ session: emptyUsageSession, jobs: [] });
     mockGetSessionState.mockResolvedValue({
       state: "idle",
       pending_swarms: false,
@@ -582,7 +276,6 @@ describe("StatusBar session GOAL chip", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockWorkspaces.mockResolvedValue([]);
-    mockGetUsage.mockResolvedValue({ session: emptyUsageSession, jobs: [] });
     mockSessions.mockResolvedValue([]);
     mockPauseSessionGoal.mockResolvedValue({
       ok: true,
@@ -694,7 +387,6 @@ describe("StatusBar update progress mirror", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockWorkspaces.mockResolvedValue([]);
-    mockGetUsage.mockResolvedValue({ session: emptyUsageSession, jobs: [] });
     mockGetSessionState.mockResolvedValue({
       state: "idle",
       pending_swarms: false,
@@ -806,7 +498,6 @@ describe("StatusBar task profile chip", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockWorkspaces.mockResolvedValue([]);
-    mockGetUsage.mockResolvedValue({ session: emptyUsageSession, jobs: [] });
     mockGetSessionState.mockResolvedValue({
       state: "idle",
       pending_swarms: false,
@@ -861,19 +552,9 @@ describe("StatusBar compact chrome", () => {
       runners: {},
     });
     mockSessions.mockResolvedValue([]);
-    mockGetUsage.mockResolvedValue({
-      session: {
-        tokens_used: 1500,
-        est_cost_usd: 0.05,
-        driver: "openrouter:deepseek/deepseek-v4-pro-0813",
-        price_in: 0.4,
-        price_out: 0.8,
-      },
-      jobs: [],
-    });
   });
 
-  it("splits the footer into overflow-safe clusters and shortens long model ids", async () => {
+  it("splits the footer into overflow-safe clusters and shortens long model ids", () => {
     const { container } = render(
       <StatusBar
         {...statusBarProps}
@@ -889,8 +570,5 @@ describe("StatusBar compact chrome", () => {
     expect(container.querySelector(".status-bar-cluster-end")).toBeTruthy();
     expect(container.querySelector(".status-bar-model")).toHaveTextContent("deepseek-v4-pro-0813");
     expect(container.querySelector(".status-bar-model")).not.toHaveTextContent("openrouter:deepseek/");
-    await waitFor(() => {
-      expect(screen.getByText("process")).toBeInTheDocument();
-    });
   });
 });

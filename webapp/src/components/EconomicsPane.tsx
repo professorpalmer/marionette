@@ -28,7 +28,7 @@ function economicsCacheKey(root: string, scope: EconomicsPaneScope, periodDays: 
   return `economics:${root}:${scope}:${periodDays || "all"}`;
 }
 
-/** Right-pane Economics card: live process spend plus durable PM projection. */
+/** Right-pane projection of canonical PM Economics reports. */
 export default function EconomicsPane() {
   const [projectRoot, setProjectRoot] = useState(() => lastSelectedProjectRoot());
   const [scope, setScope] = useState<EconomicsPaneScope>("repo");
@@ -100,6 +100,23 @@ export default function EconomicsPane() {
     window.addEventListener("harness-project-selected", onProject);
     return () => window.removeEventListener("harness-project-selected", onProject);
   }, [scope, periodDays, projectRoot]);
+
+  useEffect(() => {
+    const onSelection = (event: Event) => {
+      const detail = (event as CustomEvent<{ scope?: string; period?: string }>).detail;
+      if (detail?.scope !== "conversation" || detail.period !== "all") return;
+      setScope("conversation");
+      setPeriodDays(null);
+      setEconomics(
+        readSWRCache<EconomicsData>(
+          economicsCacheKey(projectRoot, "conversation", null),
+        ) ?? null,
+      );
+      void loadEconomics("conversation", null, projectRoot);
+    };
+    window.addEventListener("harness-economics-selection", onSelection);
+    return () => window.removeEventListener("harness-economics-selection", onSelection);
+  }, [projectRoot]);
 
   const economicsMatchesSelection = Boolean(
     economics

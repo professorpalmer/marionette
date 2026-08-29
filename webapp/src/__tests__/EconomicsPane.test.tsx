@@ -358,6 +358,24 @@ describe("EconomicsPane", () => {
     });
   });
 
+  it("opens the status-bar destination at This session and All time", async () => {
+    render(<EconomicsPane />);
+    await chooseScope("all_projects");
+    fireEvent.change(screen.getByLabelText("Economics period"), { target: { value: "30" } });
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent("harness-economics-selection", {
+        detail: { scope: "conversation", period: "all" },
+      }));
+    });
+
+    await waitFor(() => {
+      expect((screen.getByLabelText("Economics ownership") as HTMLSelectElement).value).toBe("conversation");
+      expect((screen.getByLabelText("Economics period") as HTMLSelectElement).value).toBe("all");
+      expect(mockGetEconomics).toHaveBeenCalledWith("conversation", "all");
+    });
+  });
+
   it("renders job evidence without meaningless zero rows", async () => {
     mockGetEconomics.mockResolvedValue({
       ...durablePayload,
