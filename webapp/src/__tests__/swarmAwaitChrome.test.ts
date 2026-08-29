@@ -340,6 +340,30 @@ describe("swarm await chrome", () => {
     ).toEqual(["job_alive", "job_queued"]);
   });
 
+  it("does not hold Still working for a settled partial or timed_out wave", () => {
+    const live = [
+      { id: "local-wave-call_KzqPc5uVkh7VyutjZlCzjV3N", status: "partial" },
+      { id: "local-wave-call_Iliw2ZfBkaIh881nw8QmEh7i", status: "partial" },
+      { id: "local-wave-call_v7ZjvWP9peyQUMFAk0IIWXdb", status: "completed" },
+      { id: "local-wave-timeout", status: "timed_out" },
+    ];
+    expect(pendingJobIdsFromSwarmLive(live)).toEqual([]);
+    expect(terminalJobIdsFromSwarmLive(live)).toEqual([
+      "local-wave-call_KzqPc5uVkh7VyutjZlCzjV3N",
+      "local-wave-call_Iliw2ZfBkaIh881nw8QmEh7i",
+      "local-wave-call_v7ZjvWP9peyQUMFAk0IIWXdb",
+      "local-wave-timeout",
+    ]);
+    expect(
+      shouldHoldSwarmAwaitChrome({
+        pendingJobIds: pendingJobIdsFromSwarmLive(live),
+        backendPendingSwarms: false,
+        userStopped: false,
+      }),
+    ).toBe(false);
+    expect(waitHintForAssistantDone(pendingJobIdsFromSwarmLive(live))).toBeNull();
+  });
+
   it("paints Still working hint after assistant_done with live jobs", () => {
     expect(waitHintForAssistantDone(["local-bf1b30f4"])).toBe(SWARM_AWAIT_HINT);
     expect(waitHintForAssistantDone(["local-swarm-a"])).toBe(null);

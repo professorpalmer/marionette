@@ -737,6 +737,12 @@ describe("chatEvents module", () => {
     expect(isTerminalJobStatus("running")).toBe(false);
   });
 
+  it("treats parallel-wave aggregate partial and timed_out as terminal", () => {
+    expect(isTerminalJobStatus("partial")).toBe(true);
+    expect(isTerminalJobStatus("timed_out")).toBe(true);
+    expect(isTerminalJobStatus("PARTIAL")).toBe(true);
+  });
+
   it("gates poll and runner arming", () => {
     expect(
       shouldPollChatEvents({

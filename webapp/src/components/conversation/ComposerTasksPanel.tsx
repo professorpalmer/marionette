@@ -31,12 +31,12 @@ export default function ComposerTasksPanel({
   const [open, setOpen] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const job = pickTaskSourceJob(jobs, sessionId);
+  if (!job) return null;
   const tasks = buildComposerTasks(job);
   const { done, total } = taskProgress(tasks);
-  if (!total) return null;
-  const wave = Boolean(job && isWaveCoordinator(job));
-  const header = wave && job ? waveHeaderText(job) : `Tasks ${done}/${total}`;
-  const headerTone = wave ? waveHeaderTone(String(job?.status || "")) : "text-txt";
+  const wave = isWaveCoordinator(job);
+  const header = wave ? waveHeaderText(job) : `Tasks ${done}/${total}`;
+  const headerTone = wave ? waveHeaderTone(String(job.status || "")) : "text-txt";
 
   return (
     <div

@@ -1,6 +1,8 @@
 /**
  * Shared nested-action bounds / status normalization for live merge and
- * durable hydrate. Keep in sync with harness.job_actions.
+ * durable hydrate. Keep in sync with harness.job_actions for nested rows,
+ * and with harness.local_jobs._TERMINAL_LOCAL_JOB_STATUSES for wave
+ * aggregates (partial / timed_out).
  */
 
 export const MAX_JOB_ACTIONS = 80;
@@ -20,10 +22,12 @@ const TERMINAL_JOB_STATUSES = new Set([
   "success",
   "error",
   "timeout",
+  "timed_out",
   "truncated",
   "interrupted",
   "stalled",
   "degraded",
+  "partial",
 ]);
 
 export function isTerminalJobStatus(status: string | undefined | null): boolean {

@@ -15,7 +15,7 @@ from harness.local_job_artifacts import artifacts_are_complete
 
 _TERMINAL_STATUSES = frozenset({
     "completed", "failed", "cancelled", "complete", "done",
-    "timeout", "truncated",
+    "timeout", "truncated", "partial", "timed_out",
 })
 _RUNNING_STATUSES = frozenset({
     "running", "in_progress", "pending", "started", "registered",
