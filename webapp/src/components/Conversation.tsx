@@ -29,6 +29,7 @@ import {
 } from "../lib/turnTerminal";
 import { renameDefaultSessionIfNeeded } from "../lib/sessionTitle";
 import { notifyWorkspaceMutated } from "../lib/workspaceMutationEvents";
+import { publishSessionTodos } from "../lib/sessionTodos";
 
 import { writeTranscriptCache } from "./conversation/transcriptCache";
 import {
@@ -3074,6 +3075,31 @@ export default function Conversation({
       setInput("");
       setEditingIndex(null);
       window.dispatchEvent(new Event("harness-new-session"));
+      return;
+    }
+    if (slash.kind === "todo") {
+      const command = msg.startsWith("/") ? msg : `/todo ${slash.text || ""}`.trim();
+      setInput("");
+      setEditingIndex(null);
+      void api.sessionTodo({ command })
+        .then((res) => {
+          if (res?.todos) publishSessionTodos(res.todos, activeSessionId || "");
+          const reply = !res?.ok
+            ? (res?.error || res?.usage || "Could not run /todo.")
+            : (res?.notice || res?.tree || res?.markdown || "No todos.");
+          setItems((p) => [
+            ...p,
+            { kind: "msg", msg: { role: "user", text: msg } },
+            { kind: "msg", msg: { role: "assistant", text: reply } },
+          ]);
+        })
+        .catch(() => {
+          setItems((p) => [
+            ...p,
+            { kind: "msg", msg: { role: "user", text: msg } },
+            { kind: "msg", msg: { role: "assistant", text: "Could not run /todo." } },
+          ]);
+        });
       return;
     }
     if (slash.kind === "refine") {

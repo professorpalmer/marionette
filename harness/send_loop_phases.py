@@ -93,7 +93,7 @@ STREAM_IDLE_STUCK_MESSAGE = (
 LOCAL_ACTION_KINDS: frozenset[str] = frozenset({
     "open_project", "relocate_session", "session_bank",
     "write_file", "edit_file", "hash_edit", "run_command",
-    "run_command_batch", "run_ipython", "wait",
+    "run_command_batch", "run_ipython", "wait", "todo",
     "search_tools", "search_state",
     "store_scratch", "load_scratch", "list_scratch", "clear_scratch",
     "bind_kernel", "show_kernel", "list_kernel", "clear_kernel",
@@ -1163,6 +1163,9 @@ def action_display_goal(act: PilotAction) -> Any:
         act_goal = act.query
     elif act.kind == "search_files":
         act_goal = act.query
+    elif act.kind == "todo":
+        _t = act.arguments or {}
+        act_goal = _t.get("op") or _t.get("task") or _t.get("phase") or "todo"
     elif act.kind == "search_state":
         act_goal = act.query
     elif act.kind == "session_bank":
@@ -2751,6 +2754,31 @@ def dispatch_local_action(
     if act.kind == "wait":
         from .pilot_wait import dispatch_wait_action
         yield from dispatch_wait_action(session, act, aid, is_native)
+        return
+
+    if act.kind == "todo":
+        try:
+            ok, status, val = session._do_todo(act)
+        except Exception as exc:
+            ok, status, val = False, "exception", str(exc)
+        if ok:
+            tree, payload = val
+            yield ConvEvent("action_result", {
+                "id": aid,
+                "kind": "todo",
+                "goal": act_goal,
+                "num": 1,
+                "types": ["todo"],
+                "adapter": "local",
+                "mode": "tool",
+                "session_id": getattr(session, "harness_session_id", "") or "",
+                "todos": payload,
+                "artifacts": [{"type": "todo", "headline": tree.splitlines()[0] if tree else "TODO"}],
+            })
+            session._append_action_result(act, aid, "(todo %s)\n%s" % (payload.get("op") or "view", tree), is_native)
+        else:
+            yield ConvEvent("action_result", {"id": aid, "error": val})
+            session._append_action_result(act, aid, "(todo failed: %s)" % val, is_native)
         return
 
     if act.kind == "request_secret":

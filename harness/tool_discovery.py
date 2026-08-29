@@ -81,6 +81,7 @@ _PILOT_EXTRAS: Set[str] = {
     "run_implement",
     "run_parallel",
     "wait",
+    "todo",
     "query_wiki",
 }
 

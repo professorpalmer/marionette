@@ -840,6 +840,59 @@ class ToolDispatchMixin:
         except Exception as exc:
             return False, "exception", str(exc)
 
+    def _get_todo_store(self):
+        store = getattr(self, "_todo_store", None)
+        if store is not None:
+            return store
+        from .todo import SessionTodoStore
+
+        state_dir = getattr(self, "state_dir", None) or getattr(self.config, "state_dir", "") or ""
+        store = SessionTodoStore(state_dir)
+        self._todo_store = store
+        if not getattr(self, "_todo_phases", None):
+            self._todo_phases = store.load()
+        return store
+
+    def todo_snapshot(self) -> dict:
+        from .todo import snapshot_payload
+
+        phases = getattr(self, "_todo_phases", None) or []
+        return snapshot_payload(phases)
+
+    def _do_todo(self, act: PilotAction) -> tuple[bool, str, Any]:
+        from .todo import apply_todo_op, format_todo_tree, snapshot_payload
+
+        store = self._get_todo_store()
+        current = getattr(self, "_todo_phases", None)
+        if current is None:
+            current = store.load()
+            self._todo_phases = current
+        phases, errors, op = apply_todo_op(current, act.arguments or {})
+        if errors:
+            return False, "invalid_arguments", "; ".join(errors)
+        self._todo_phases = phases
+        try:
+            store.save(phases)
+        except Exception as exc:
+            return False, "exception", str(exc)
+        tree = format_todo_tree(phases)
+        payload = snapshot_payload(phases, op)
+        return True, "success", (tree, payload)
+
+    def handle_todo_slash(self, raw: str, workspace_root: str = "") -> dict:
+        from .todo import handle_todo_slash_command
+
+        store = self._get_todo_store()
+        current = getattr(self, "_todo_phases", None)
+        if current is None:
+            current = store.load()
+            self._todo_phases = current
+        result = handle_todo_slash_command(raw, current, workspace_root)
+        if result.ok and result.mutated:
+            self._todo_phases = result.phases
+            store.save(result.phases)
+        return result.public_dict()
+
     def _do_clear_scratch(self, act: PilotAction) -> tuple[bool, str, str]:
         from .session_scratch import ScratchStoreCorrupt, ScratchStoreError
 

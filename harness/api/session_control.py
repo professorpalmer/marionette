@@ -392,6 +392,12 @@ def get_session_state(qs: dict, svc: SessionControlServices) -> tuple[int, JsonP
             goal = pilot.session_goal_dict() or {}
     except Exception:
         goal = {}
+    todos = {}
+    try:
+        if pilot is not None and hasattr(pilot, "todo_snapshot"):
+            todos = pilot.todo_snapshot() or {}
+    except Exception:
+        todos = {}
     return 200, {
         "state": state,
         "pending_swarms": pilot.has_pending_swarms(),
@@ -402,6 +408,7 @@ def get_session_state(qs: dict, svc: SessionControlServices) -> tuple[int, JsonP
         "active_view_id": runners.active_view_id,
         # Sticky session GOAL (chip-ready); distinct from Schedule.objective.
         "goal": goal,
+        "todos": todos,
     }
 
 
@@ -462,6 +469,24 @@ def post_session_goal(body: dict, svc: SessionControlServices) -> tuple[int, Jso
     except Exception as exc:
         return 500, {"ok": False, "error": str(exc)}
     return 200, {"ok": True, "goal": goal}
+
+
+def post_session_todo(body: dict, svc: SessionControlServices) -> tuple[int, JsonPayload]:
+    """POST /api/session/todo — local /todo slash (view/export/import/mutate)."""
+    pilot, err = _goal_pilot(svc)
+    if err is not None:
+        return err
+    command = str(body.get("command") or body.get("text") or "").strip()
+    workspace = str(getattr(svc.cfg, "repo", "") or "").strip()
+    try:
+        if not hasattr(pilot, "handle_todo_slash"):
+            return 404, {"ok": False, "error": "todo slash is unavailable"}
+        payload = pilot.handle_todo_slash(command, workspace_root=workspace)
+    except Exception as exc:
+        return 500, {"ok": False, "error": str(exc)}
+    if not isinstance(payload, dict):
+        return 500, {"ok": False, "error": "todo slash returned no payload"}
+    return 200, payload
 
 
 def get_session_context_at(

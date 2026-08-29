@@ -34,6 +34,7 @@ MOVED_METHODS = (
     "_do_edit_file",
     "_do_run_command",
     "_do_run_ipython",
+    "_do_todo",
 )
 
 

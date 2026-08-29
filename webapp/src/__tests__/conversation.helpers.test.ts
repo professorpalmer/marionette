@@ -2694,6 +2694,13 @@ describe("composerSend module", () => {
     expect(
       classifyLocalSlashCommand({ message: "hello", isBuiltIn: builtIn, customNames: [] }).kind,
     ).toBe("none");
+    expect(
+      classifyLocalSlashCommand({
+        message: "/todo export TODO.md",
+        isBuiltIn: builtIn,
+        customNames: [],
+      }),
+    ).toEqual({ kind: "todo", text: "export TODO.md" });
   });
 
   it("classifies navigation slash commands as local (not sent to the model)", () => {

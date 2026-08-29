@@ -55,6 +55,7 @@ ActionKind = Literal[
     "run_command_batch",
     "run_ipython",
     "wait",
+    "todo",
     "list_dir",
     "web_search",
     "web_fetch",
@@ -404,6 +405,12 @@ class PilotAction:
             raise PilotError("run_command action requires a 'command'")
         if self.kind == "run_ipython" and not (self.content or "").strip():
             raise PilotError("run_ipython action requires 'code' (or content)")
+        if self.kind == "todo":
+            from .todo import resolve_todo_params
+
+            _params, err = resolve_todo_params(self.arguments or {}, has_existing=False)
+            if err:
+                raise PilotError(err)
         if self.background and self.kind != "run_command":
             raise PilotError("background=true is only valid on run_command")
         if self.kind == "run_command_batch":
@@ -1191,6 +1198,67 @@ def build_tools_schema(
                     "job_id": {
                         "type": "string",
                         "description": "Optional job id to watch; omit to watch all pending jobs.",
+                    },
+                },
+            },
+        },
+    })
+
+    schema.append({
+        "type": "function",
+        "function": {
+            "name": "todo",
+            "description": (
+                "Maintain a nested session TODO tree (phases with child tasks). "
+                "Use this for multi-step work: init a phased list, start the "
+                "current task, mark done, append, block, or view. Tasks are "
+                "addressed by their full content text, not by ids. One task "
+                "is in_progress at a time. After init/start/done, keep working "
+                "the Next task from the result instead of restating the plan."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "op": {
+                        "type": "string",
+                        "enum": [
+                            "init", "start", "done", "rm", "drop",
+                            "block", "unblock", "append", "view",
+                        ],
+                        "description": "Operation to apply",
+                    },
+                    "list": {
+                        "type": "array",
+                        "description": "Phased task list for init: [{phase, items}]",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "phase": {"type": "string"},
+                                "items": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "minItems": 1,
+                                },
+                            },
+                            "required": ["phase", "items"],
+                        },
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "Task content to start/done/rm/block/unblock",
+                    },
+                    "phase": {
+                        "type": "string",
+                        "description": "Phase name (init/append/done/block target)",
+                    },
+                    "items": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Task contents for init or append",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Blocker note (block op)",
                     },
                 },
             },
@@ -2652,6 +2720,7 @@ You have direct access to a local CodeGraph-indexed workspace and can explore/ed
 - `run_command_batch`: run 1-6 independent shell commands as one batch. Requires `commands`.
 - `run_ipython`: execute Python in a session-scoped persistent REPL (variables survive across turns). Prefer read_file/hash_edit/run_command/swarms for normal coding; use this for stateful probes. Requires `code`.
 - `wait`: stay on this turn while background jobs run (Cursor-style Await). Sleeps up to `seconds` (default 2, max 30) and returns whether jobs settled. After run_implement / run_parallel, call wait instead of ending the turn.
+- `todo`: nested phased checklist for multi-step work. `init` a `{list:[{phase, items}]}` tree, then `start` / `done` / `append` / `block` / `view`. Address tasks by their full content text. One in_progress task at a time; the result names Next. Do not restate the whole plan in prose.
 - `list_dir`: list the files and folders inside a directory. `path` is optional.
 - `run_swarm`: dispatch a parallel agent swarm for complex/broad investigations. Requires `goal`. One worker runs per role -- for a broad ask (audit, "review the platform", "find ways to improve quality/robustness/scale") pass SEVERAL `roles` (explore, pipeline-mapper, decision-explainer, conflict-auditor, test-coverage-reviewer) so it fans out into real parallel coverage; pass all five for a full audit. Omit roles only for a single narrow question. Prefer omitting `model` so the harness auto-routes among currently keyed agentic worker providers (ChatGPT Codex OAuth, OpenCode Go, OpenRouter, …). Pass `model` only when the user names a worker from the live agentic catalog in the tool schema; session pilot ids (openai-codex:…, cursor/…, codex/…) remap to matching worker rows when present. Unknown pins demote to auto-route; they do not fail the swarm. Prompt text alone does not pin a model. To audit a DIFFERENT checkout than the open workspace, pass `repo`=<absolute git path>: the workers read that subject, while your own writes/edits/commands stay in the open session workspace.
 - `run_implement`: dispatch an edit-capable worker that edits the repo in an isolated worktree and produces a reviewable patch. Requires `goal`. Default engine is standalone `agentic` (routes directly through your provider keys, no external CLI); pass `adapter` only to force a specific engine. Optional `mode` (`implement` default, or `analysis`/`review` for read-only reports).
@@ -2765,7 +2834,7 @@ Rules:
 """
 
 
-PLAN_SYSTEM_SUFFIX = """PLAN MODE: Do NOT call run_implement, run_parallel, write_file, edit_file, hash_edit, run_command, run_ipython, call_mcp, manage_mcp, memory, or any browser_* tool (navigate/click/type/snapshot/screenshot/…). Investigate read-only if needed (read_file, search_codegraph, query_wiki, list_dir, web_search), then output a clear, actionable, numbered implementation PLAN in markdown: goal restatement, the concrete steps (each with what/where/why), files likely touched, risks, and a suggested verification. End with a one-line summary. The user will review the plan before any execution."""
+PLAN_SYSTEM_SUFFIX = """PLAN MODE: Do NOT call run_implement, run_parallel, write_file, edit_file, hash_edit, run_command, run_ipython, call_mcp, manage_mcp, memory, or any browser_* tool (navigate/click/type/snapshot/screenshot/…). Investigate read-only if needed (read_file, search_codegraph, query_wiki, list_dir, web_search). You MAY use `todo` to structure a nested phased checklist. Then output a clear, actionable, numbered implementation PLAN in markdown: goal restatement, the concrete steps (each with what/where/why), files likely touched, risks, and a suggested verification. End with a one-line summary. The user will review the plan before any execution."""
 
 
 WORKER_SYSTEM = """You are an implementation worker. Be FAST and DECISIVE. Your job is to EDIT FILES to complete the task, not to investigate. Read ONLY the specific file(s) you must change (read_file once per file), then make the edit immediately with edit_file, then FINISH. To change an existing file, ALWAYS use edit_file with a small old_str/new_str snippet -- do NOT use write_file to rewrite an existing file (that wastes tokens and can truncate). Use write_file ONLY to create a brand-new file. Do NOT explore the wider codebase. Do NOT call search_codegraph (this workspace has no code index; it returns nothing and wastes time). Do NOT re-read a file you already read. Ideal small change = read target file once, edit the change, done. As soon as all required edits are made, STOP. Do not do extra investigation rounds.
