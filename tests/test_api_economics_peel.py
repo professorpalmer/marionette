@@ -888,6 +888,25 @@ def test_real_pm_receipt_consumer_drives_headline_and_row(monkeypatch):
     assert payload["recent_jobs"][0]["counterfactual"]["avoided_usd"] == 2.75
 
 
+def test_owned_job_reports_skip_the_legacy_savings_plane(monkeypatch):
+    job = {
+        "id": "job_canonical_receipt",
+        "status": "complete",
+        "source": "harness",
+        "accounting_owned": True,
+        "accounting_scope": "marionette",
+        "created_at": "2026-08-20T00:00:00+00:00",
+    }
+    reports, _opened = _patch_pm(monkeypatch)
+
+    code, payload = get_economics({"scope": ["repo"]}, _svc(jobs=[job]))
+
+    assert code == 200
+    assert isinstance(payload, dict)
+    assert payload["counterfactual_source"] == "job_financial_reports"
+    assert reports == []
+
+
 def test_supported_pm_builder_failure_does_not_reconstruct_an_economics_answer(monkeypatch):
     job = {
         "id": "job_canonical_failure",

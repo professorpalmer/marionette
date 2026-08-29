@@ -746,24 +746,12 @@ def _project_economics(
     workspace = _workspace_root(svc)
     ownership = _ownership_from_scope(scope)
     all_project_stores = []
-    # Conversation is jobs-only. Do not open repo-lifetime savings stores.
-    if scope == "conversation":
-        savings = None
-        savings_scope = "repo"
-    elif scope == "all_projects":
-        from puppetmaster.savings import build_report
-
+    savings = None
+    savings_scope = "repo" if scope == "conversation" else scope
+    if scope == "all_projects":
         all_project_stores = _open_savings_stores(
             _savings_state_dirs(ownership, workspace)
         )
-        savings = _serialize_savings(
-            build_report(all_project_stores, window_days=window_days)
-        )
-        savings_scope = scope
-    else:
-        report = _build_savings(ownership, workspace, window_days)
-        savings = _serialize_savings(report)
-        savings_scope = scope
 
     recent_jobs, owned_rows, recent_jobs_total = _scoped_job_rows(
         scope, svc, window_days, all_project_stores
@@ -772,14 +760,19 @@ def _project_economics(
     if job_counterfactual is not None:
         counterfactual = job_counterfactual
         counterfactual_source = "job_financial_reports"
-    elif not owned_rows and savings:
-        # Backward-compatible read-only fallback when this scope has no
-        # Marionette-owned jobs to aggregate.
+    elif not owned_rows and scope != "conversation":
+        if scope == "all_projects":
+            from puppetmaster.savings import build_report
+
+            report = build_report(all_project_stores, window_days=window_days)
+        else:
+            report = _build_savings(ownership, workspace, window_days)
+        savings = _serialize_savings(report)
         counterfactual = _with_counterfactual_label(
             (savings or {}).get("counterfactual")
         )
-        counterfactual_source = "routing_report"
-        counterfactual_status = "routing_report"
+        counterfactual_source = "routing_report" if counterfactual else "unavailable"
+        counterfactual_status = counterfactual_source
     else:
         counterfactual = None
         counterfactual_source = "unavailable"
