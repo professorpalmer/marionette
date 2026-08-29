@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Optional, Union
 
 from harness.job_scoping import (
+    ACCOUNTING_SCOPE_MARIONETTE,
     apply_job_economics_policy,
     filter_accountable_jobs,
     parse_job_session_id,
@@ -66,7 +67,9 @@ def get_economics(qs: dict, svc: EconomicsServices) -> tuple[int, JsonPayload]:
             svc.diag("server.economics", exc)
         except Exception:
             pass
-        return 200, _unavailable_payload(scope, exc, window_days)
+        payload = _unavailable_payload(scope, exc, window_days)
+        payload["repo"] = _workspace_root(svc)
+        return 200, payload
 
 
 def _qs_scope(qs: Optional[dict]) -> str:
@@ -626,6 +629,7 @@ def _scoped_job_rows(
     scope: str,
     svc: EconomicsServices,
     window_days: Optional[float] = None,
+    all_project_stores: Optional[list] = None,
 ) -> tuple[list, list, int]:
     """Return recent rows, every owned row, and the full visible job count."""
     repo = str(getattr(svc.cfg, "repo", None) or "").strip()
@@ -633,10 +637,66 @@ def _scoped_job_rows(
         repo_root=repo or None
     )
     jobs = list(jobs or [])
+    store_by_job: dict[str, Any] = {}
     if scope == "conversation":
         jobs = _conversation_jobs(jobs, svc.active_session_id())
     elif scope in ("repo", "window30"):
         jobs = [job for job in jobs if not job.get("cross_project")]
+        jobs = [
+            {
+                **job,
+                "accounting_owned": True,
+                "accounting_scope": ACCOUNTING_SCOPE_MARIONETTE,
+            }
+            if str(job.get("id") or "").startswith("job_")
+            else job
+            for job in jobs
+        ]
+    elif scope == "all_projects":
+        jobs = []
+        seen_jobs: set[str] = set()
+        seen_stores: set[str] = set()
+        stores = [harness_store, cli_store]
+        stores.extend(all_project_stores or [])
+        for raw_store in stores:
+            if raw_store is None:
+                continue
+            store_key = str(
+                getattr(raw_store, "db_path", None)
+                or getattr(raw_store, "root", None)
+                or id(raw_store)
+            )
+            if store_key in seen_stores:
+                continue
+            seen_stores.add(store_key)
+            try:
+                raw_jobs = raw_store.list_jobs() or []
+            except Exception:
+                continue
+            store_jobs = []
+            for raw_job in raw_jobs:
+                job_id = str(getattr(raw_job, "id", "") or "")
+                if not job_id.startswith("job_") or job_id in seen_jobs:
+                    continue
+                row = {
+                    "id": job_id,
+                    "status": str(getattr(raw_job, "status", "") or ""),
+                    "source": "harness" if raw_store is harness_store else "cli",
+                    "accounting_owned": True,
+                    "accounting_scope": ACCOUNTING_SCOPE_MARIONETTE,
+                    "created_at": getattr(raw_job, "created_at", None),
+                    "label": getattr(raw_job, "label", None),
+                }
+                if window_days and not _job_in_window(row, window_days):
+                    continue
+                seen_jobs.add(job_id)
+                store_jobs.append(row)
+            prefetched = _PrefetchedArtifacts(
+                raw_store, [job["id"] for job in store_jobs]
+            )
+            for job in store_jobs:
+                store_by_job[job["id"]] = prefetched
+            jobs.extend(store_jobs)
     if window_days:
         jobs = [job for job in jobs if _job_in_window(job, window_days)]
     jobs.sort(key=_created_at_key, reverse=True)
@@ -650,16 +710,19 @@ def _scoped_job_rows(
         except Exception:
             registry = []
 
-    harness_store, cli_store = _prefetch_owned_stores(
-        jobs, harness_store, cli_store
-    )
+    if scope != "all_projects":
+        harness_store, cli_store = _prefetch_owned_stores(
+            jobs, harness_store, cli_store
+        )
     recent = []
     owned = []
     for index, job in enumerate(jobs):
         is_recent = index < RECENT_JOB_LIMIT
         if not is_recent and not job.get("accounting_owned"):
             continue
-        store = _owning_store(job, harness_store, cli_store)
+        store = store_by_job.get(str(job.get("id") or "")) or _owning_store(
+            job, harness_store, cli_store
+        )
         try:
             row = _project_job_row(job, store, registry)
         except Exception as exc:
@@ -682,17 +745,28 @@ def _project_economics(
 ) -> dict:
     workspace = _workspace_root(svc)
     ownership = _ownership_from_scope(scope)
+    all_project_stores = []
     # Conversation is jobs-only. Do not open repo-lifetime savings stores.
     if scope == "conversation":
         savings = None
         savings_scope = "repo"
+    elif scope == "all_projects":
+        from puppetmaster.savings import build_report
+
+        all_project_stores = _open_savings_stores(
+            _savings_state_dirs(ownership, workspace)
+        )
+        savings = _serialize_savings(
+            build_report(all_project_stores, window_days=window_days)
+        )
+        savings_scope = scope
     else:
         report = _build_savings(ownership, workspace, window_days)
         savings = _serialize_savings(report)
         savings_scope = scope
 
     recent_jobs, owned_rows, recent_jobs_total = _scoped_job_rows(
-        scope, svc, window_days
+        scope, svc, window_days, all_project_stores
     )
     job_counterfactual, counterfactual_status = _aggregate_job_counterfactual(owned_rows)
     if job_counterfactual is not None:
@@ -711,6 +785,7 @@ def _project_economics(
         counterfactual_source = "unavailable"
     totals = _owned_totals(owned_rows)
     return {
+        "repo": workspace,
         "scope": scope,
         "ownership": ownership,
         "period": "30" if window_days else "all",

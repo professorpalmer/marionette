@@ -178,8 +178,10 @@ def test_get_economics_default_scope_repo(monkeypatch):
     reports, opened = _patch_pm(monkeypatch)
     code, payload = get_economics({}, _svc())
     assert code == 200
+    assert isinstance(payload, dict)
     assert payload["available"] is True
     assert payload["scope"] == "repo"
+    assert payload["repo"] == "/workspace"
     assert payload["all_projects"] is False
     assert payload["window_days"] is None
     assert reports == [{"stores": reports[0]["stores"], "window_days": None}]
@@ -615,7 +617,157 @@ def test_repo_economics_drops_cross_project_jobs(monkeypatch):
     _code, all_payload = get_economics({"scope": ["all_projects"]}, _svc(jobs=jobs))
     assert isinstance(all_payload, dict)
     all_ids = [row.get("job_id") for row in all_payload["recent_jobs"]]
-    assert "foreign" in all_ids
+    assert "foreign" not in all_ids
+
+
+def test_repo_scope_prices_prior_session_pm_jobs_but_session_scope_does_not(monkeypatch):
+    _patch_pm(monkeypatch)
+    jobs = [
+        {
+            "id": "job_session_a",
+            "status": "complete",
+            "source": "harness",
+            "accounting_owned": True,
+            "accounting_scope": "marionette",
+            "session_id": "sess-1",
+            "created_at": "2026-08-20T00:02:00+00:00",
+        },
+        {
+            "id": "job_session_b",
+            "status": "complete",
+            "source": "cli",
+            "accounting_owned": False,
+            "accounting_scope": "visibility_only",
+            "session_id": "sess-2",
+            "created_at": "2026-08-20T00:01:00+00:00",
+        },
+        {
+            "id": "job_other_repo",
+            "status": "complete",
+            "source": "cli",
+            "accounting_owned": False,
+            "accounting_scope": "visibility_only",
+            "cross_project": True,
+            "session_id": "sess-3",
+            "created_at": "2026-08-20T00:00:00+00:00",
+        },
+    ]
+
+    def project(job, _store, _registry):
+        owned = bool(job.get("accounting_owned"))
+        cost = 1.0 if job["id"] == "job_session_a" else 2.0
+        return {
+            "job_id": job["id"],
+            "status": "complete",
+            "source": job["source"],
+            "accounting_owned": owned,
+            "accounting_scope": job.get("accounting_scope"),
+            "measured_cost_usd": cost if owned else None,
+            "estimated_cost_usd": 0.0 if owned else None,
+            "actual_marginal_usd": cost if owned else None,
+            "cost_basis": "measured_usage_x_registry_price" if owned else None,
+            "priced_tasks": 1 if owned else 0,
+            "counterfactual": ({
+                "reference_model_id": "codex/gpt-5-5",
+                "reference_priced": True,
+                "naive_cost_usd": cost + 1.0,
+                "actual_cost_usd": cost,
+                "avoided_usd": 1.0,
+                "tasks": 1,
+            } if owned else None),
+        }
+
+    monkeypatch.setattr("harness.api.economics._project_job_row", project)
+    services = _svc(jobs=jobs, session_id="sess-1")
+
+    _code, session_payload = get_economics({"scope": ["conversation"]}, services)
+    _code, repo_payload = get_economics({"scope": ["repo"]}, services)
+
+    assert isinstance(session_payload, dict)
+    assert isinstance(repo_payload, dict)
+    assert session_payload["counterfactual"]["actual_cost_usd"] == 1.0
+    assert session_payload["counterfactual"]["jobs"] == 1
+    assert repo_payload["counterfactual"]["actual_cost_usd"] == 3.0
+    assert repo_payload["counterfactual"]["jobs"] == 2
+
+
+def test_all_projects_prices_job_reports_from_each_existing_pm_store(monkeypatch):
+    class Store(_Store):
+        def __init__(self, job_id):
+            self.job_id = job_id
+
+        def list_jobs(self):
+            return [SimpleNamespace(
+                id=self.job_id,
+                status="complete",
+                created_at="2026-08-20T00:00:00+00:00",
+                label=None,
+            )]
+
+        def list_artifacts_for_jobs(self, _job_ids):
+            return []
+
+    store_a = Store("job_project_a")
+    store_b = Store("job_project_b")
+    monkeypatch.setattr("harness.api.economics._build_savings", lambda *_args: None)
+    monkeypatch.setattr("harness.api.economics._savings_state_dirs", lambda *_args: [])
+    monkeypatch.setattr(
+        "harness.api.economics._open_savings_stores",
+        lambda _dirs: [store_a, store_b],
+    )
+    monkeypatch.setattr("puppetmaster.model_registry.load_registry", lambda: [])
+    monkeypatch.setattr(
+        "puppetmaster.savings.build_report",
+        lambda _stores, window_days=None: None,
+    )
+
+    def project(job, _store, _registry):
+        cost = 1.0 if job["id"] == "job_project_a" else 2.0
+        return {
+            "job_id": job["id"],
+            "status": "complete",
+            "source": job["source"],
+            "accounting_owned": True,
+            "accounting_scope": "marionette",
+            "measured_cost_usd": cost,
+            "estimated_cost_usd": 0.0,
+            "actual_marginal_usd": cost,
+            "cost_basis": "measured_usage_x_registry_price",
+            "priced_tasks": 1,
+            "counterfactual": {
+                "reference_model_id": "codex/gpt-5-5",
+                "reference_priced": True,
+                "naive_cost_usd": cost + 1.0,
+                "actual_cost_usd": cost,
+                "avoided_usd": 1.0,
+                "tasks": 1,
+            },
+        }
+
+    monkeypatch.setattr("harness.api.economics._project_job_row", project)
+    services = EconomicsServices(
+        cfg=SimpleNamespace(repo="/project-a"),
+        scoped_jobs_with_stores=lambda repo_root=None: ([{
+            "id": "job_project_a",
+            "status": "complete",
+            "source": "harness",
+            "accounting_owned": True,
+            "accounting_scope": "marionette",
+            "created_at": "2026-08-20T00:00:00+00:00",
+        }], store_a, store_a),
+        diag=lambda *args, **kwargs: None,
+        active_session_id=lambda: "sess-1",
+    )
+
+    _code, payload = get_economics({"scope": ["all_projects"]}, services)
+
+    assert isinstance(payload, dict)
+    assert payload["counterfactual"]["actual_cost_usd"] == 3.0
+    assert payload["counterfactual"]["jobs"] == 2
+    assert {row["job_id"] for row in payload["recent_jobs"]} == {
+        "job_project_a",
+        "job_project_b",
+    }
 
 
 def test_headline_aggregates_same_job_reports_as_recent_rows(monkeypatch):
