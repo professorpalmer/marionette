@@ -31,17 +31,38 @@ function jobRank(job: Job): number {
   return 3;
 }
 
-export function pickTaskSourceJob(jobs: readonly Job[], activeSessionId: string): Job | null {
-  const scoped = jobs.filter((job) => jobInActiveSession(job, activeSessionId) && (job.tasks || []).length);
-  const remaining = scoped.filter((job) => composerTasksRemainVisible(buildComposerTasks(job)));
-  if (!remaining.length) return null;
-  const wave = remaining.filter((job) => isWaveCoordinator(job));
-  const pool = wave.length ? wave : remaining;
+function composerJobIsLive(job: Job): boolean {
+  const st = taskState(job.status);
+  if (st === "in_progress" || st === "pending") return true;
+  return (job.tasks || []).some((task) => {
+    const ts = taskState(task.status);
+    return ts === "in_progress" || ts === "pending";
+  });
+}
+
+function pickRankedJob(pool: readonly Job[]): Job {
   return [...pool].sort((a, b) => {
     const rank = jobRank(a) - jobRank(b);
     if (rank !== 0) return rank;
     return String(b.updated_at || b.created_at || "").localeCompare(String(a.updated_at || a.created_at || ""));
   })[0];
+}
+
+export function pickTaskSourceJob(jobs: readonly Job[], activeSessionId: string): Job | null {
+  const inSession = jobs.filter((job) => jobInActiveSession(job, activeSessionId));
+  const remaining = inSession.filter(
+    (job) => (job.tasks || []).length && composerTasksRemainVisible(buildComposerTasks(job)),
+  );
+  if (!remaining.length) return null;
+  const liveRemaining = remaining.filter(composerJobIsLive);
+  const liveWaves = liveRemaining.filter((job) => isWaveCoordinator(job));
+  if (liveWaves.length) return pickRankedJob(liveWaves);
+  if (liveRemaining.length) return pickRankedJob(liveRemaining);
+  if (inSession.some((job) => composerJobIsLive(job) && !isWaveCoordinator(job))) {
+    return null;
+  }
+  const waves = remaining.filter((job) => isWaveCoordinator(job));
+  return pickRankedJob(waves.length ? waves : remaining);
 }
 
 function oneLineLabel(task: Task): string {

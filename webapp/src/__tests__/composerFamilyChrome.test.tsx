@@ -217,4 +217,40 @@ describe("composer-family chrome", () => {
     expect(queryByText("Parallel wave — completed 5/5 completed")).not.toBeInTheDocument();
     expect(queryByText("implement")).not.toBeInTheDocument();
   });
+
+  it("unmounts a settled partial wave while an unrelated swarm is running", () => {
+    const wave = {
+      id: "local-wave-stale",
+      goal: "implement",
+      status: "partial",
+      session_id: "sess-1",
+      job_kind: "parallel_wave",
+      role: "parallel_wave",
+      adapter: "parallel_wave",
+      child_count: 4,
+      tasks: [
+        { id: "c1", role: "implement", instruction: "implement", status: "completed", adapter: "x" },
+        { id: "c2", role: "implement", instruction: "implement", status: "failed", adapter: "x" },
+        { id: "c3", role: "implement", instruction: "implement", status: "completed", adapter: "x" },
+        { id: "c4", role: "implement", instruction: "implement", status: "completed", adapter: "x" },
+      ],
+    } as Job;
+    const swarm = {
+      id: "job_live_swarm",
+      goal: "Perform a fresh read-only validation",
+      status: "running",
+      session_id: "sess-1",
+      job_kind: "run_swarm",
+      tasks: [
+        { id: "w1", role: "decision-explainer", instruction: "Explain", status: "running", adapter: "agentic" },
+        { id: "w2", role: "explore", instruction: "Explore", status: "running", adapter: "agentic" },
+      ],
+    } as Job;
+    const { container, queryByText, getByText } = render(
+      <ComposerTasksPanel jobs={[wave, swarm]} sessionId="sess-1" />,
+    );
+    expect(queryByText("Parallel wave — partial 3/4 completed · 1 failed")).not.toBeInTheDocument();
+    expect(container.querySelector("[data-slot=composer-tasks-panel]")).toBeTruthy();
+    expect(getByText("Tasks 0/2")).toBeInTheDocument();
+  });
 });

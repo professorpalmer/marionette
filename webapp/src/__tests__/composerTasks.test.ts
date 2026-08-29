@@ -76,6 +76,64 @@ describe("pickTaskSourceJob", () => {
     };
     expect(pickTaskSourceJob([done, partial], "sess-1")?.id).toBe("local-wave-mix");
   });
+
+  it("does not keep a settled partial wave when a live swarm is in the same session", () => {
+    const wave: Job = {
+      ...job("local-wave-stale", "partial", "sess-1", [
+        { id: "c1", role: "implement", instruction: "implement", status: "completed", adapter: "x" },
+        { id: "c2", role: "implement", instruction: "implement", status: "failed", adapter: "x" },
+        { id: "c3", role: "implement", instruction: "implement", status: "completed", adapter: "x" },
+        { id: "c4", role: "implement", instruction: "implement", status: "completed", adapter: "x" },
+      ]),
+      job_kind: "parallel_wave",
+      role: "parallel_wave",
+      adapter: "parallel_wave",
+    };
+    const swarm: Job = {
+      ...job("job_live_swarm", "running", "sess-1", [
+        { id: "w1", role: "decision-explainer", instruction: "Explain", status: "running", adapter: "agentic" },
+        { id: "w2", role: "explore", instruction: "Explore", status: "running", adapter: "agentic" },
+      ]),
+      job_kind: "run_swarm",
+    };
+    expect(pickTaskSourceJob([wave, swarm], "sess-1")?.id).toBe("job_live_swarm");
+  });
+
+  it("does not keep a settled partial wave when a live swarm has no task rows yet", () => {
+    const wave: Job = {
+      ...job("local-wave-stale", "partial", "sess-1", [
+        { id: "c1", role: "implement", instruction: "implement", status: "completed", adapter: "x" },
+        { id: "c2", role: "implement", instruction: "implement", status: "failed", adapter: "x" },
+      ]),
+      job_kind: "parallel_wave",
+      role: "parallel_wave",
+      adapter: "parallel_wave",
+    };
+    const swarm: Job = {
+      ...job("job_live_swarm", "running", "sess-1", []),
+      job_kind: "run_swarm",
+    };
+    expect(pickTaskSourceJob([wave, swarm], "sess-1")).toBeNull();
+  });
+
+  it("still prefers a live wave over a live swarm", () => {
+    const wave: Job = {
+      ...job("local-wave-live", "running", "sess-1", [
+        { id: "c1", role: "implement", instruction: "one", status: "running", adapter: "x" },
+        { id: "c2", role: "implement", instruction: "two", status: "pending", adapter: "x" },
+      ]),
+      job_kind: "parallel_wave",
+      role: "parallel_wave",
+      adapter: "parallel_wave",
+    };
+    const swarm: Job = {
+      ...job("job_live_swarm", "running", "sess-1", [
+        { id: "w1", role: "explore", instruction: "Explore", status: "running", adapter: "agentic" },
+      ]),
+      job_kind: "run_swarm",
+    };
+    expect(pickTaskSourceJob([wave, swarm], "sess-1")?.id).toBe("local-wave-live");
+  });
 });
 
 describe("buildComposerTasks + progress", () => {
