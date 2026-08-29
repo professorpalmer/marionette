@@ -113,6 +113,12 @@ class DurableState:
         try:
             if hasattr(self.store, "count_artifacts_for_jobs"):
                 counts_by_job = self.store.count_artifacts_for_jobs(jids)
+            elif hasattr(self.store, "list_artifacts_for_jobs"):
+                counts_by_job = {jid: 0 for jid in jids}
+                for artifact in self.store.list_artifacts_for_jobs(jids):
+                    job_id = getattr(artifact, "job_id", None)
+                    if job_id in counts_by_job:
+                        counts_by_job[job_id] += 1
             else:
                 counts_by_job = None
         except Exception:
