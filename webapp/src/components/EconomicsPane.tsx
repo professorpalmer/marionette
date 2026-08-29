@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { CircleDollarSign } from "lucide-react";
+import { Coins } from "lucide-react";
 import { api, type EconomicsData, type EconomicsScope } from "../lib/api";
 import { usePolling } from "../lib/usePolling";
 import { readSWRCache, writeSWRCache } from "../lib/useStaleWhileRevalidate";
@@ -112,7 +112,7 @@ export default function EconomicsPane() {
     <div className="flex flex-col h-full overflow-hidden bg-transparent">
       <div className="shrink-0 flex items-center px-3 py-2 border-b border-[var(--shell-panel-border)] select-none">
         <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-faint font-semibold">
-          <CircleDollarSign size={11} className="text-faint/70" />
+          <Coins size={11} className="text-faint/70" />
           <span>Economics</span>
         </div>
       </div>
