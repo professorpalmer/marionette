@@ -884,6 +884,10 @@ export type EconomicsJobRow = {
   actual_marginal_usd?: number | null;
   measured_cost_usd?: number | null;
   estimated_cost_usd?: number | null;
+  priced_tasks?: number | null;
+  unpriced_tasks?: number | null;
+  measured_runs?: number | null;
+  estimated_runs?: number | null;
   cost_basis?: string | null;
   counterfactual?: {
     reference_model_id?: string;
@@ -929,9 +933,16 @@ export type EconomicsData = {
     actual_cost_usd?: number | null;
     avoided_usd?: number | null;
     tasks?: number;
+    jobs?: number;
+    measured_cost_usd?: number | null;
+    estimated_cost_usd?: number | null;
+    spend_basis?: "measured_usage_x_registry_price" | "estimated" | "mixed" | "plan" | string;
     label?: string;
   } | null;
+  counterfactual_source?: "job_financial_reports" | "routing_report" | "unavailable" | string;
+  counterfactual_status?: "ok" | "routing_report" | "incomplete" | "mixed_reference" | "receipt_mismatch" | "unavailable" | string;
   recent_jobs?: EconomicsJobRow[];
+  recent_jobs_total?: number;
   owned_jobs_considered?: number;
   owned_actual_marginal_usd?: number | null;
   owned_avoided_usd?: number | null;

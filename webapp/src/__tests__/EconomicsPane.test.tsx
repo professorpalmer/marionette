@@ -50,7 +50,14 @@ const durablePayload = {
     naive_cost_usd: 4.237335,
     avoided_usd: 3.921118,
     tasks: 78,
+    jobs: 7,
+    measured_cost_usd: 0.316217,
+    estimated_cost_usd: 0,
+    spend_basis: "measured_usage_x_registry_price",
   },
+  counterfactual_source: "job_financial_reports",
+  counterfactual_status: "ok",
+  recent_jobs_total: 381,
   recent_jobs: [],
 };
 
@@ -101,15 +108,65 @@ describe("EconomicsPane", () => {
   it("shows one full-scope PM receipt", async () => {
     render(<EconomicsPane />);
 
-    expect(await screen.findByText("Worker spend")).toBeTruthy();
+    expect(await screen.findByText("Measured usage cost")).toBeTruthy();
     expect(screen.getByText("$0.32")).toBeTruthy();
-    expect(screen.getByText("Frontier equivalent")).toBeTruthy();
+    expect(screen.getByText("Estimated frontier cost")).toBeTruthy();
     expect(screen.getByText("~$4.24")).toBeTruthy();
     expect(screen.getByText("Estimated savings")).toBeTruthy();
     expect(screen.getByText("~$3.92")).toBeTruthy();
     expect(screen.getByText("92.5%")).toBeTruthy();
-    expect(screen.getByText("381 jobs considered")).toBeTruthy();
+    expect(screen.getByText("7 jobs considered")).toBeTruthy();
     expect(screen.getByText("78 priced tasks")).toBeTruthy();
+    expect(screen.getByText("No recent jobs.")).toBeTruthy();
+  });
+
+  it("keeps a zero-dollar plan receipt included instead of measured", async () => {
+    mockGetEconomics.mockResolvedValue({
+      ...durablePayload,
+      counterfactual: {
+        ...durablePayload.counterfactual,
+        actual_cost_usd: 0,
+        avoided_usd: 4.237335,
+        measured_cost_usd: 0,
+        estimated_cost_usd: 0,
+        spend_basis: "plan",
+      },
+      recent_jobs: [{
+        job_id: "job_plan",
+        status: "complete",
+        accounting_owned: true,
+        models: [{ model_id: "codex/gpt-5-5", billing: "plan" }],
+        actual_marginal_usd: 0,
+        measured_cost_usd: 0,
+        estimated_cost_usd: 0,
+        cost_basis: "plan",
+        counterfactual: {
+          reference_model_id: "codex/gpt-5-5",
+          reference_priced: true,
+          avoided_usd: 4.237335,
+        },
+      }],
+    });
+
+    render(<EconomicsPane />);
+
+    expect(await screen.findAllByText("Included in your plan")).toHaveLength(2);
+    expect(screen.queryByText("Measured usage cost")).toBeNull();
+    expect(screen.queryByText("Route forecast")).toBeNull();
+  });
+
+  it("shows an honest warning when job reports do not reconcile", async () => {
+    mockGetEconomics.mockResolvedValue({
+      ...durablePayload,
+      counterfactual: null,
+      counterfactual_source: "unavailable",
+      counterfactual_status: "receipt_mismatch",
+    });
+
+    render(<EconomicsPane />);
+
+    expect(await screen.findByText(/job reports do not agree/)).toBeTruthy();
+    expect(screen.queryByText("Estimated savings")).toBeNull();
   });
 
   it("switches to one app-run receipt without durable sections", async () => {
@@ -149,7 +206,11 @@ describe("EconomicsPane", () => {
           models: [{ model_id: "codex/gpt-5-4-mini" }],
           measured_cost_usd: 0.018,
           estimated_cost_usd: 0,
-          counterfactual: { avoided_usd: 4.78 },
+          counterfactual: {
+            reference_model_id: "codex/gpt-5-5",
+            reference_priced: true,
+            avoided_usd: 4.78,
+          },
         },
         {
           job_id: "job_failed",
@@ -175,11 +236,12 @@ describe("EconomicsPane", () => {
     const measured = within((await screen.findByText("job_measured")).closest(".border-t") as HTMLElement);
     expect(measured.getByText("Measured usage")).toBeTruthy();
     expect(measured.getByText("$0.02").className).toContain("text-warn/90");
-    expect(measured.queryByText(/Saved/)).toBeNull();
+    expect(measured.getByText(/Estimated savings ~\$4.78/).className).toContain("text-good/90");
     expect(measured.queryByText("$0.00")).toBeNull();
     expect(measured.getByRole("button", { name: "job_measured" }).className).toContain("text-blue-400");
     expect(screen.getByText("No billable worker ran")).toBeTruthy();
     expect(screen.getByText("Visible only")).toBeTruthy();
+    expect(screen.getByText("Showing 3 of 381")).toBeTruthy();
   });
 
   it("opens a recent job in Swarm Tracker", async () => {
@@ -218,7 +280,7 @@ describe("EconomicsPane", () => {
     await chooseScope("conversation");
 
     expect(await screen.findByText(/full comparison is not available/)).toBeTruthy();
-    expect(screen.queryByText("Frontier equivalent")).toBeNull();
+    expect(screen.queryByText("Estimated frontier cost")).toBeNull();
     expect(screen.queryByText("Additional estimates")).toBeNull();
     expect(screen.getByText("Recent jobs")).toBeTruthy();
   });
@@ -229,10 +291,10 @@ describe("EconomicsPane", () => {
       : { ...durablePayload, scope });
 
     render(<EconomicsPane />);
-    expect(await screen.findByText("Worker spend")).toBeTruthy();
+    expect(await screen.findByText("Measured usage cost")).toBeTruthy();
     await chooseScope("conversation");
 
-    await waitFor(() => expect(screen.queryByText("Worker spend")).toBeNull());
+    await waitFor(() => expect(screen.queryByText("Measured usage cost")).toBeNull());
   });
 
   it("refreshes app-run values on harness-usage-refresh", async () => {

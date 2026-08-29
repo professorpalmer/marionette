@@ -330,7 +330,7 @@ def _spend_from_actual(actual: dict) -> tuple:
             if isinstance(bucket, dict)
         ]
         plan = bool(billings) and all(b == "plan" for b in billings)
-    if not priced and total is None:
+    if not priced:
         return None, SPEND_UNAVAILABLE, True, "unknown"
     if plan:
         return 0.0, SPEND_PROVIDER, False, "plan"
@@ -466,15 +466,7 @@ def load_pm_cost_report(store: Any, job_id: str, registry: Optional[list] = None
     """Return the canonical PM cost report, preferring a reusable PM function."""
     builder = try_pm_build_cost_report()
     if builder is not None:
-        try:
-            return builder(store, job_id, registry=registry)  # type: ignore[misc]
-        except TypeError:
-            try:
-                return builder(store, job_id)
-            except Exception:
-                pass
-        except Exception:
-            pass
+        return builder(store, job_id, registry=registry)  # type: ignore[misc]
     return assemble_pm_cost_report(store, job_id, registry=registry)
 
 
