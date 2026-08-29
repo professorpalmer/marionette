@@ -29,8 +29,7 @@ import { api, type Config, type ContextUsageResponse, type Job } from "../../lib
 import PilotPicker from "../PilotPicker";
 import WorkspaceChip from "./WorkspaceChip";
 import ComposerContextMenu from "./ComposerContextMenu";
-import ComposerStatusStack from "./ComposerStatusStack";
-import ComposerTasksPanel from "./ComposerTasksPanel";
+import ComposerActivityRail from "./ComposerActivityRail";
 import { formatMentionListingCapMessage, type MentionListingCap } from "./slashCommands";
 import { filterSlashCommands } from "./composerInput";
 import {
@@ -485,8 +484,7 @@ export default function ComposerDock({
             })}
           </div>
         )}
-        <ComposerTasksPanel jobs={swarmLiveJobs} sessionId={sessionId} />
-        <ComposerStatusStack swarmJobs={swarmLiveJobs} />
+        <ComposerActivityRail jobs={swarmLiveJobs} sessionId={sessionId} />
         {/* Server-side PROMPT QUEUE, stacked ABOVE the composer (Cursor-style)
             so the "runs next" items are always visible right over the input.
             These prompts are drained by the backend one full turn at a time. */}

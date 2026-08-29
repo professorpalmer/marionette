@@ -1722,6 +1722,12 @@ def check_loop_guard(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict
     if not loop_guard_enabled():
         return GuardVerdict(False)
 
+    # Swarm await: identical wait must always re-sleep / re-poll. Cache-replay
+    # would skip the wait (no sleep) and starve a live job. run_command is
+    # intentionally not exempt.
+    if kind == "wait":
+        return GuardVerdict(False)
+
     key = (kind, normalize_action_args(kind, act))
     prior = state.execution_counts.get(key, 0)
     if prior < 1:

@@ -185,6 +185,99 @@ def test_stagnation_governor_halts_on_repeated_prose_and_actions(monkeypatch):
     assert call_count["n"] <= 5
 
 
+def test_stagnation_governor_does_not_halt_on_repeated_wait(monkeypatch):
+    """Three empty-prose wait(30s, same job_id) steps are a live swarm-await."""
+    monkeypatch.setenv("HARNESS_STAGNATION_STREAK_CAP", "3")
+    monkeypatch.setenv("HARNESS_MAX_PILOT_STEPS", "8")
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    session = ConversationalSession(cfg)
+
+    wait_payload = json.dumps({
+        "say": "",
+        "actions": [{"kind": "wait", "seconds": 30, "job_id": "job_abc"}],
+    })
+    done_payload = json.dumps({
+        "say": "The swarm is still running.",
+        "actions": [],
+    })
+    call_count = {"n": 0}
+
+    def fake_chat(*_a, **_k):
+        call_count["n"] += 1
+        resp = MagicMock()
+        resp.text = wait_payload if call_count["n"] <= 3 else done_payload
+        resp.meta = {"finish_reason": "stop"}
+        resp.error = None
+        return resp
+
+    mock_pilot = MagicMock()
+    mock_pilot.chat.side_effect = fake_chat
+    mock_pilot.chat_stream = None
+    session.pilot = mock_pilot
+
+    events = list(session.send("await the swarm"))
+    stagnation = [
+        e for e in events
+        if e.kind == "notice" and e.data.get("kind") == "stagnation"
+    ]
+    assert not stagnation
+    done = [e for e in events if e.kind == "assistant_done"]
+    assert done
+    assert done[-1].data.get("stagnation_halt") is not True
+    assert done[-1].data.get("stop_cause") != "stagnation"
+    assert call_count["n"] >= 3
+    assert int(getattr(session, "_stagnation_streak", 0) or 0) < 3
+
+
+def test_identical_wait_still_dispatches_after_success(monkeypatch):
+    """A second identical wait must sleep again — never loop_replay."""
+    monkeypatch.setenv("HARNESS_LOOP_GUARD", "1")
+    monkeypatch.setenv("HARNESS_MAX_PILOT_STEPS", "6")
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    session = ConversationalSession(cfg)
+
+    wait_payload = json.dumps({
+        "say": "",
+        "actions": [{"kind": "wait", "seconds": 30, "job_id": "job_abc"}],
+    })
+    done_payload = json.dumps({"say": "Still watching the job.", "actions": []})
+    call_count = {"n": 0}
+
+    def fake_chat(*_a, **_k):
+        call_count["n"] += 1
+        resp = MagicMock()
+        resp.text = wait_payload if call_count["n"] <= 2 else done_payload
+        resp.meta = {"finish_reason": "stop"}
+        resp.error = None
+        return resp
+
+    mock_pilot = MagicMock()
+    mock_pilot.chat.side_effect = fake_chat
+    mock_pilot.chat_stream = None
+    session.pilot = mock_pilot
+
+    dispatched = {"n": 0}
+    from harness.pilot_wait import dispatch_wait_action as _real_wait
+
+    def counting_wait(*args, **kwargs):
+        dispatched["n"] += 1
+        yield from _real_wait(*args, **kwargs)
+
+    monkeypatch.setattr("harness.pilot_wait.dispatch_wait_action", counting_wait)
+
+    events = list(session.send("await the swarm"))
+    assert dispatched["n"] == 2
+    replayed = [
+        e for e in events
+        if e.kind == "action_result"
+        and (
+            e.data.get("types") == ["cached"]
+            or "cached repeat" in str(e.data.get("message") or "").lower()
+        )
+    ]
+    assert not replayed
+
+
 def test_fingerprint_helpers_normalize_duplicates():
     a1 = PilotAction(kind="list_dir", path="./foo")
     a2 = PilotAction(kind="list_dir", path="foo")

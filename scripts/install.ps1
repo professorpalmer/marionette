@@ -211,7 +211,7 @@ if (Test-Path ".venv") {
 
 Say "Installing Marionette (editable) + Puppetmaster into .venv"
 & uv pip install --python .venv -e .
-$puppetSpec = if ($env:MARIONETTE_PUPPETMASTER_SPEC) { $env:MARIONETTE_PUPPETMASTER_SPEC } else { "puppetmaster-ai==1.22.38" }
+$puppetSpec = if ($env:MARIONETTE_PUPPETMASTER_SPEC) { $env:MARIONETTE_PUPPETMASTER_SPEC } else { "puppetmaster-ai==1.22.39" }
 & uv pip install --python .venv $puppetSpec
 
 Say "Installing node deps + building the renderer"
