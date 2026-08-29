@@ -923,8 +923,8 @@ def test_supported_pm_builder_failure_does_not_reconstruct_an_economics_answer(m
         raise RuntimeError("canonical report unavailable")
 
     monkeypatch.setattr(
-        "harness.financial_receipt.try_pm_build_cost_report",
-        lambda: fail_builder,
+        "puppetmaster.cost.build_cost_report",
+        fail_builder,
     )
     monkeypatch.setattr(
         "puppetmaster.cost.price_job",
