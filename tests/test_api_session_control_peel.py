@@ -17,6 +17,7 @@ from harness.api.session_control import (
     post_session_queue_reorder,
     post_session_rewind,
     post_session_steer,
+    post_session_todo,
     prepare_session_restart,
 )
 
@@ -545,3 +546,23 @@ def test_context_at_and_swarm_results():
     code2, payload = get_session_swarm_results(svc)
     assert code2 == 200 and payload["results"][0]["kind"] == "swarm_done"
     assert ckpt["n"] == 1
+
+
+def test_post_session_todo_slash():
+    class _Pilot:
+        def handle_todo_slash(self, command, workspace_root=""):
+            return {
+                "ok": True,
+                "notice": "TODO 0/1",
+                "todos": {"phases": [{"name": "Tasks", "tasks": []}]},
+                "command": command,
+                "workspace": workspace_root,
+            }
+
+    svc = _svc(pilot=_Pilot())
+    svc.cfg.repo = "/repo"
+    code, payload = post_session_todo({"command": "/todo view"}, svc)
+    assert code == 200
+    assert payload["ok"] is True
+    assert payload["command"] == "/todo view"
+    assert payload["workspace"] == "/repo"

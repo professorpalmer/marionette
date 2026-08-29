@@ -910,6 +910,10 @@ class ConversationalSession(
         from .session_scratch import SessionScratchStore
 
         self._scratch_store = SessionScratchStore(self.state_dir)
+        from .todo import SessionTodoStore
+
+        self._todo_store = SessionTodoStore(self.state_dir)
+        self._todo_phases = self._todo_store.load()
         # Host quality gate (optional; disabled when quality_gate_cmds empty).
         from .quality_gate import QualityGateRunner
 

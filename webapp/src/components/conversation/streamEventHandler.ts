@@ -66,6 +66,7 @@ import { clearDiagnostic } from "../../lib/operationalDiagnosticBus";
 import { notifyWorkspaceMutated } from "../../lib/workspaceMutationEvents";
 import { shouldRefreshBusyChrome } from "./streamTerminal";
 import { waitHintForAssistantDone } from "./swarmPoll";
+import { publishSessionTodos } from "../../lib/sessionTodos";
 import {
   hasPartialAssistantAnswer,
   settleFromAssistantDone,
@@ -490,6 +491,9 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
         setItems((p) => appendActionStartCard(p, d));
       }
     } else if (ev.kind === "action_result") {
+      if (d.todos && Array.isArray(d.todos.phases)) {
+        publishSessionTodos(d.todos, String(d.session_id || ""));
+      }
       clearWaitHintOnProgress();
       setCompactingStatus(null);
       // Late command/batch terminal receipts after assistant_done must update

@@ -70,7 +70,7 @@ export function formatHelpSlashReply(
   return (
     "Available Slash Commands:\n\n"
     + commands.map((s) => `* \`${s.cmd}\` - ${s.desc}`).join("\n")
-    + "\n\nLocal chrome (not sent to the model): `/swarm` `/terminal` `/settings` `/memory` `/mcp` `/files` `/state` `/refine`."
+    + "\n\nLocal chrome (not sent to the model): `/swarm` `/terminal` `/settings` `/memory` `/mcp` `/files` `/state` `/refine` `/todo`."
     + "\n\nType @ to list and mention files in your message context."
   );
 }
@@ -356,6 +356,7 @@ export type LocalSlashAction =
   | { kind: "new" }
   | { kind: "compact" }
   | { kind: "refine"; text: string }
+  | { kind: "todo"; text: string }
   | { kind: "model" }
   | { kind: "help" }
   | { kind: "swarm" }
@@ -424,6 +425,9 @@ export function classifyLocalSlashCommand(opts: {
   if (cmd === "/compact") return { kind: "compact" };
   if (cmd === "/refine") {
     return { kind: "refine", text: msg.substring(cmd.length).trim() };
+  }
+  if (cmd === "/todo") {
+    return { kind: "todo", text: msg.substring(cmd.length).trim() };
   }
   if (cmd === "/model") return { kind: "model" };
   if (cmd === "/help") return { kind: "help" };

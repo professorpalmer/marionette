@@ -3,6 +3,7 @@ export const SLASH_COMMANDS = [
   { cmd: "/new", desc: "Start a new session" },
   { cmd: "/compact", desc: "Trigger manual context compaction" },
   { cmd: "/refine", desc: "Propose a harness refine (existing controller)" },
+  { cmd: "/todo", desc: "View or edit the session nested TODO tree" },
   { cmd: "/model", desc: "Focus model picker to switch models" },
   { cmd: "/swarm", desc: "Focus Swarm tab" },
   { cmd: "/terminal", desc: "Focus Terminal" },

@@ -561,6 +561,27 @@ export type SessionState = {
   active_view_id?: string | null;
   // Sticky session GOAL (chip-ready); distinct from Schedule.objective / Job.goal.
   goal?: SessionGoal;
+  todos?: SessionTodoSnapshot;
+};
+
+export type SessionTodoStatus = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
+
+export type SessionTodoItem = {
+  content: string;
+  status: SessionTodoStatus;
+  blocker?: string;
+};
+
+export type SessionTodoPhase = {
+  name: string;
+  tasks: SessionTodoItem[];
+};
+
+export type SessionTodoSnapshot = {
+  op?: string | null;
+  phases: SessionTodoPhase[];
+  storage?: string;
+  next?: string | null;
 };
 
 export type SwarmResultData = {
@@ -1292,6 +1313,18 @@ export const api = {
     postJSON<{ ok: boolean; goal: SessionGoal }>("/api/session/goal", { action: "complete" }),
   clearSessionGoal: () =>
     postJSON<{ ok: boolean; goal: SessionGoal }>("/api/session/goal", { action: "clear" }),
+  sessionTodo: (body: { command: string }) =>
+    postJSON<{
+      ok: boolean;
+      mutated?: boolean;
+      tree?: string;
+      markdown?: string;
+      notice?: string;
+      path?: string;
+      usage?: string;
+      error?: string;
+      todos?: SessionTodoSnapshot;
+    }>("/api/session/todo", body),
   refinePropose: (body: {
     text?: string;
     kind?: string;

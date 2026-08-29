@@ -1,14 +1,15 @@
 import { createRef } from "react";
 import { render } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import ComposerActivityRail from "../components/conversation/ComposerActivityRail";
 import ComposerDock from "../components/conversation/ComposerDock";
 import ComposerTasksPanel from "../components/conversation/ComposerTasksPanel";
 import { COMPOSER_FAMILY_CLASS } from "../components/conversation/composerFamily";
 import type { Job } from "../lib/api";
+import { clearSessionTodos, publishSessionTodos } from "../lib/sessionTodos";
 
 vi.mock("../lib/api", () => ({
-  api: { swarmCancel: vi.fn() },
+  api: { swarmCancel: vi.fn(), getSessionState: vi.fn(async () => ({ todos: { phases: [] } })) },
 }));
 vi.mock("../components/PilotPicker", () => ({
   default: () => <div data-testid="pilot-picker" />,
@@ -138,6 +139,10 @@ const swarmJob = {
 } as Job;
 
 describe("composer-family chrome", () => {
+  afterEach(() => {
+    clearSessionTodos();
+  });
+
   it("puts the same class family and tokens on dock and the activity rail", () => {
     const dock = renderDock();
     const rail = render(
@@ -171,6 +176,56 @@ describe("composer-family chrome", () => {
       <ComposerActivityRail jobs={[]} sessionId="sess-1" />,
     );
     expect(rail.container.querySelector("[data-slot=composer-activity-rail]")).toBeNull();
+  });
+
+  it("renders a nested session TODO tree on the activity rail", () => {
+    publishSessionTodos({
+      phases: [
+        {
+          name: "WP-02",
+          tasks: [
+            { content: "hosted pari", status: "in_progress" },
+            { content: "service invariants", status: "pending" },
+          ],
+        },
+      ],
+      next: "hosted pari",
+    }, "sess-1");
+    const rail = render(
+      <ComposerActivityRail jobs={[]} sessionId="sess-1" />,
+    );
+    expect(rail.container.querySelector("[data-slot=composer-todo-panel]")).toBeTruthy();
+    expect(rail.getByText("TODO 0/2")).toBeInTheDocument();
+    expect(rail.getByText(/I\. WP-02 · 0\/2/)).toBeInTheDocument();
+    clearSessionTodos();
+  });
+
+  it("lights a pending session TODO from a live swarm label", () => {
+    publishSessionTodos({
+      phases: [
+        {
+          name: "WP-02",
+          tasks: [
+            { content: "hosted pari", status: "pending" },
+            { content: "unrelated cutover", status: "pending" },
+          ],
+        },
+      ],
+    }, "sess-1");
+    const job = {
+      id: "j-live",
+      goal: "nested lighting",
+      status: "running",
+      session_id: "sess-1",
+      tasks: [{ id: "t1", role: "explore", instruction: "hosted pari service", status: "running" }],
+    } as Job;
+    const rail = render(
+      <ComposerActivityRail jobs={[job]} sessionId="sess-1" />,
+    );
+    const lit = rail.container.querySelector("[data-todo-lit='1']");
+    expect(lit).toBeTruthy();
+    expect(lit?.textContent).toContain("hosted pari");
+    clearSessionTodos();
   });
 
   it("renders parallel wave partial header from child counts", () => {

@@ -70,6 +70,7 @@ _MICRO_VISIBLE: FrozenSet[str] = frozenset(
         "run_command",
         "run_ipython",
         "wait",
+        "todo",
         "list_dir",
         "search_tools",
         "search_files",

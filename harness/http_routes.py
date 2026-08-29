@@ -282,6 +282,8 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
             services=svc.session_control_services),
         "/api/session/goal": post_json(
             _sc_api.post_session_goal, services=svc.session_control_services),
+        "/api/session/todo": post_json(
+            _sc_api.post_session_todo, services=svc.session_control_services),
         "/api/refine": post_json(
             _skills_api.post_refine, services=svc.skills_services),
         "/api/refine/propose": post_json(

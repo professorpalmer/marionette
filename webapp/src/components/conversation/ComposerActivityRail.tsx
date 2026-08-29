@@ -6,8 +6,11 @@ import {
   subscribeAgentCommandIndex,
 } from "../../lib/agentCommandIndex";
 import { pickTaskSourceJob } from "../../lib/composerTasks";
+import { todoHasWork } from "../../lib/composerTodos";
+import { getSessionTodos, subscribeSessionTodos } from "../../lib/sessionTodos";
 import ComposerStatusStack from "./ComposerStatusStack";
 import ComposerTasksPanel from "./ComposerTasksPanel";
+import ComposerTodoPanel from "./ComposerTodoPanel";
 import { COMPOSER_FAMILY_HAIRLINE, COMPOSER_FAMILY_SURFACE } from "./composerFamily";
 import { buildComposerStatusStackRows } from "./composerStatusStackData";
 
@@ -31,8 +34,10 @@ export default function ComposerActivityRail({
     () => buildComposerStatusStackRows({ swarmJobs: jobs, commandSessions }),
     [commandSessions, jobs],
   );
+  const todos = useSyncExternalStore(subscribeSessionTodos, getSessionTodos, getSessionTodos);
+  const showTodos = todoHasWork(todos);
   const showTasks = !!pickTaskSourceJob(jobs, sessionId);
-  if (!showTasks && !stackRows.length) return null;
+  if (!showTasks && !showTodos && !stackRows.length) return null;
 
   return (
     <div
@@ -40,6 +45,7 @@ export default function ComposerActivityRail({
       data-slot="composer-activity-rail"
     >
       <div className={`divide-y ${COMPOSER_FAMILY_HAIRLINE}`}>
+        <ComposerTodoPanel jobs={jobs} sessionId={sessionId} />
         <ComposerTasksPanel jobs={jobs} sessionId={sessionId} />
         <ComposerStatusStack swarmJobs={jobs} />
       </div>
