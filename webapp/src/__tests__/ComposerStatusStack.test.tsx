@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import ComposerStatusStack from "../components/conversation/ComposerStatusStack";
 import { api } from "../lib/api";
 import { openAgentCommand } from "../lib/agentLinks";
+import { dismissAgentCommandSession } from "../lib/agentCommandIndex";
 import type { Job } from "../lib/api";
 
 vi.mock("../lib/api", () => ({
@@ -20,6 +21,7 @@ vi.mock("../lib/agentCommandIndex", () => ({
   getAgentCommandIndexVersion: () => 1,
   listAgentCommandSessions: () => [],
   registerAgentCommandSession: () => null,
+  dismissAgentCommandSession: vi.fn(() => true),
 }));
 
 function commandJob(partial: Partial<Job> & Pick<Job, "id" | "status">): Job {
@@ -39,6 +41,7 @@ describe("ComposerStatusStack", () => {
   beforeEach(() => {
     vi.mocked(api.swarmCancel).mockClear();
     vi.mocked(openAgentCommand).mockClear();
+    vi.mocked(dismissAgentCommandSession).mockClear();
   });
   it("collapses settled terminal rows behind a header like the wave bar", () => {
     render(
@@ -47,11 +50,11 @@ describe("ComposerStatusStack", () => {
       />,
     );
     expect(screen.getByRole("button", { name: "Terminal" })).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByText("Open terminal")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Open terminal/ })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Terminal" }));
     expect(screen.getByRole("button", { name: "Terminal" })).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByText("Open terminal")).toBeInTheDocument();
-    expect(screen.getByText("Open terminal").closest("button")?.className).not.toMatch(/border-edge/);
+    expect(screen.getByRole("button", { name: /Open terminal/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Open terminal/ }).className).not.toMatch(/border-edge/);
     expect(screen.queryByRole("button", { name: "Stop command" })).not.toBeInTheDocument();
   });
 
@@ -62,8 +65,9 @@ describe("ComposerStatusStack", () => {
       />,
     );
     expect(screen.getByRole("button", { name: "Terminal" })).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByText("Open terminal")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Open terminal/ })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Stop command" }));
+    expect(dismissAgentCommandSession).toHaveBeenCalledWith("local-cmd-live");
     expect(api.swarmCancel).toHaveBeenCalledWith("local-cmd-live");
     expect(openAgentCommand).not.toHaveBeenCalled();
   });
@@ -79,8 +83,10 @@ describe("ComposerStatusStack", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Terminal" }));
     expect(screen.getByRole("button", { name: "Terminal" })).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByText("Open terminal")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Open terminal/ })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Stop all commands" }));
+    expect(dismissAgentCommandSession).toHaveBeenCalledWith("local-cmd-a");
+    expect(dismissAgentCommandSession).toHaveBeenCalledWith("local-cmd-b");
     expect(api.swarmCancel).toHaveBeenCalledWith("local-cmd-a");
     expect(api.swarmCancel).toHaveBeenCalledWith("local-cmd-b");
     expect(openAgentCommand).not.toHaveBeenCalled();

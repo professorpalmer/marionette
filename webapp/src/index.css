@@ -190,7 +190,7 @@ body {
 }
 
 .composer-family-hairline {
-  border-color: color-mix(in srgb, var(--edge, #2a2d31) 50%, transparent);
+  border-color: color-mix(in srgb, var(--edge, #2a2d31) 28%, transparent);
 }
 
 .composer-toolbar {

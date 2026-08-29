@@ -1,6 +1,7 @@
 import type { Job } from "../../lib/api";
 import type { AgentCommandSession } from "../../lib/agentCommandIndex";
 import { isCommandJob, isTrackerJob } from "../../lib/jobClassification";
+import { jobInActiveSession } from "../../lib/jobScope";
 
 export type ComposerStatusStackKind = "swarm" | "terminal";
 export type ComposerStatusStackState = "running" | "done" | "failed";
@@ -20,6 +21,8 @@ export type ComposerStatusStackSource = {
   commandSessions: readonly AgentCommandSession[];
   nowMs?: number;
   swarmJobs: readonly Job[];
+  /** When set, Term/PM rows must belong to this chat. Unscoped leftovers drop. */
+  sessionId?: string;
 };
 
 const SWARM_SUCCESS_LINGER_MS = 4_000;
@@ -176,9 +179,11 @@ export function buildComposerStatusStackRows(
   const nowMs = source.nowMs ?? Date.now();
   const rows: ComposerStatusStackRow[] = [];
   const seen = new Set<string>();
+  const sessionId = String(source.sessionId || "").trim();
 
   // Sessions first: they carry live stdout for the existing openAgentCommand path.
   for (const session of source.commandSessions) {
+    if (sessionId && session.sessionId !== sessionId) continue;
     const row = visibleCommandSession(session, nowMs);
     if (row) {
       rows.push(row);
@@ -187,6 +192,7 @@ export function buildComposerStatusStackRows(
   }
 
   for (const job of source.swarmJobs) {
+    if (sessionId && !jobInActiveSession(job, sessionId)) continue;
     const id = String(job.id || "").trim();
     const row = visibleSwarmJob(job, nowMs) ?? visibleCommandJob(job, nowMs);
     if (!row) continue;

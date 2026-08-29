@@ -27,12 +27,12 @@ export default function ComposerActivityRail({
     getAgentCommandIndexVersion,
   );
   const commandSessions = useMemo(
-    () => listAgentCommandSessions(),
-    [commandIndexVersion],
+    () => listAgentCommandSessions(sessionId),
+    [commandIndexVersion, sessionId],
   );
   const stackRows = useMemo(
-    () => buildComposerStatusStackRows({ swarmJobs: jobs, commandSessions }),
-    [commandSessions, jobs],
+    () => buildComposerStatusStackRows({ swarmJobs: jobs, commandSessions, sessionId }),
+    [commandSessions, jobs, sessionId],
   );
   const todos = useSyncExternalStore(subscribeSessionTodos, getSessionTodos, getSessionTodos);
   const showTodos = todoHasWork(todos);
@@ -47,7 +47,7 @@ export default function ComposerActivityRail({
       <div className={`divide-y ${COMPOSER_FAMILY_HAIRLINE}`}>
         <ComposerTodoPanel jobs={jobs} sessionId={sessionId} />
         <ComposerTasksPanel jobs={jobs} sessionId={sessionId} />
-        <ComposerStatusStack swarmJobs={jobs} />
+        <ComposerStatusStack swarmJobs={jobs} sessionId={sessionId} />
       </div>
     </div>
   );

@@ -296,6 +296,65 @@ describe("composerStatusStack", () => {
     });
   });
 
+  it("hides leftover Term rows from another chat on a New session", () => {
+    const now = Date.parse("2026-08-23T12:00:00Z");
+    const rows = buildComposerStatusStackRows({
+      nowMs: now,
+      sessionId: "sess-new",
+      swarmJobs: [
+        {
+          id: "local-cmd-foreign",
+          goal: "git checkout -- tsconfig.json",
+          source: "harness",
+          status: "completed",
+          session_id: "sess-old",
+          updated_at: now - 1000,
+          job_kind: "run_command",
+          command_preview: "git checkout -- tsconfig.json",
+        } as any,
+        {
+          id: "local-cmd-here",
+          goal: "echo hi",
+          source: "harness",
+          status: "running",
+          session_id: "sess-new",
+          updated_at: now - 1000,
+          job_kind: "run_command",
+          command_preview: "echo hi",
+        } as any,
+        {
+          id: "local-cmd-cli",
+          goal: "cursor leftover",
+          source: "cli",
+          status: "running",
+          session_id: "sess-new",
+          updated_at: now - 1000,
+          job_kind: "run_command",
+          command_preview: "cursor leftover",
+        } as any,
+      ],
+      commandSessions: [
+        {
+          id: "leftover-index",
+          command: "sqliteTable tournaments slug",
+          output: "done",
+          state: "done",
+          updatedAt: now - 500,
+          sessionId: "sess-old",
+        },
+        {
+          id: "orphan-index",
+          command: "git status --short",
+          output: "done",
+          state: "done",
+          updatedAt: now - 500,
+        },
+      ],
+    });
+    expect(rows.map((row) => row.id)).toEqual(["local-cmd-here"]);
+    expect(rows[0]).toMatchObject({ kind: "terminal", command: "echo hi" });
+  });
+
   it("collapses command preview whitespace so the task bar does not stair-step", () => {
     const now = Date.parse("2026-08-23T12:00:00Z");
     const job = {

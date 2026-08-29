@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach } from "vitest";
 import {
   getAgentCommandIndexVersion,
+  dismissAgentCommandSession,
   listAgentCommandSessions,
   lookupAgentCommandSession,
   lookupAgentCommandSessionById,
@@ -51,5 +52,55 @@ describe("agentCommandIndex", () => {
     expect(registerAgentCommandSession({ id: "x", command: "   " })).toBeNull();
     expect(registerAgentCommandSession({ id: "x", command: "n".repeat(501) })).toBeNull();
     expect(lookupAgentCommandSession("echo hi")).toBeNull();
+  });
+
+  it("lists only the active chat when sessionId is passed", () => {
+    registerAgentCommandSession({
+      id: "old-chat",
+      command: "git checkout -- tsconfig.json",
+      state: "done",
+      sessionId: "sess-old",
+    });
+    registerAgentCommandSession({
+      id: "new-chat",
+      command: "echo hi",
+      state: "running",
+      sessionId: "sess-new",
+    });
+    registerAgentCommandSession({
+      id: "orphan",
+      command: "git status",
+      state: "done",
+    });
+    expect(listAgentCommandSessions("sess-new").map((s) => s.id)).toEqual(["new-chat"]);
+    expect(listAgentCommandSessions("")).toEqual([]);
+    expect(listAgentCommandSessions().map((s) => s.id).sort()).toEqual([
+      "new-chat",
+      "old-chat",
+      "orphan",
+    ]);
+  });
+
+  it("keeps sessionId on streaming updates so a later list still scopes", () => {
+    registerAgentCommandSession({
+      id: "cmd-1",
+      command: "pytest -q",
+      sessionId: "sess-1",
+    });
+    registerAgentCommandSession({ id: "cmd-1", command: "pytest -q", output: "ok\n" });
+    expect(lookupAgentCommandSessionById("cmd-1")?.sessionId).toBe("sess-1");
+    expect(listAgentCommandSessions("sess-1").map((s) => s.id)).toEqual(["cmd-1"]);
+  });
+
+  it("drops a dismissed session so X can clear a phantom Term row", () => {
+    registerAgentCommandSession({
+      id: "cg-1",
+      command: "custom OpenAI-compatible provider API base URL",
+      state: "running",
+      sessionId: "sess-1",
+    });
+    expect(dismissAgentCommandSession("cg-1")).toBe(true);
+    expect(lookupAgentCommandSessionById("cg-1")).toBeNull();
+    expect(listAgentCommandSessions("sess-1")).toEqual([]);
   });
 });
