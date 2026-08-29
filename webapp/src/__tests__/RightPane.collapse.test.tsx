@@ -111,6 +111,15 @@ describe("RightPane collapse placement", () => {
     expect(baseProps.onCollapse).toHaveBeenCalledTimes(1);
   });
 
+  it("opens Economics from a first-class dock shortcut", () => {
+    const onOpenTab = vi.fn();
+    render(<RightDock onOpenTab={onOpenTab} onExpand={vi.fn()} onCollapse={baseProps.onCollapse} />);
+
+    fireEvent.click(screen.getByTitle("Economics"));
+
+    expect(onOpenTab).toHaveBeenCalledWith("economics");
+  });
+
   it("keeps Add panel items clickable after an inside mousedown", () => {
     const onOpenTab = vi.fn();
     render(<RightDock onOpenTab={onOpenTab} onExpand={vi.fn()} onCollapse={baseProps.onCollapse} />);
