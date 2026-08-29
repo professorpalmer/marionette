@@ -157,6 +157,28 @@ def test_context_usage_prefers_real_total():
     assert usage_real["total"] > heuristic_total
 
 
+def test_context_usage_exposes_compaction_advice(monkeypatch):
+    session = _session(budget=200000)
+    monkeypatch.setattr(
+        "harness.turn_economy.TurnEconomy.advise_compaction",
+        lambda *_args, **_kwargs: {
+            "compaction_advice": {
+                "level": "soon",
+                "needs_intervention": True,
+                "budget_kind": "absolute",
+                "budget_tokens": 120000,
+            }
+        },
+    )
+
+    assert session.get_context_usage()["compaction_advice"] == {
+        "level": "soon",
+        "needs_intervention": True,
+        "budget_kind": "absolute",
+        "budget_tokens": 120000,
+    }
+
+
 def test_context_usage_limit_follows_live_driver_when_unpinned(monkeypatch):
     monkeypatch.setenv("PMHARNESS_OR_LIVE_WINDOWS", "0")
     import pmharness.registry as reg

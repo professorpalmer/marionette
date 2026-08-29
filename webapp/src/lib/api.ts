@@ -1065,6 +1065,15 @@ export type ContextUsageResponse = {
   history_tokens_saved?: number;
   spill_count?: number;
   spill_chars?: number;
+  compaction_advice?: {
+    level?: string;
+    needs_intervention?: boolean;
+    budget_kind?: "absolute" | "percent" | "l1" | "";
+    budget_tokens?: number;
+    warning_reason?: string;
+    reasons?: string[];
+    acked_manual_compact?: boolean;
+  };
 };
 
 // Above this many characters, a chat message / autopilot objective is routed
