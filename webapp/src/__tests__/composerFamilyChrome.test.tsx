@@ -191,4 +191,30 @@ describe("composer-family chrome", () => {
       getByText("Parallel wave — partial 4/8 completed · 4 failed · 4 patches applied · review required"),
     ).toBeInTheDocument();
   });
+
+  it("unmounts a completed 5/5 parallel wave instead of leaving implement flags", () => {
+    const wave = {
+      id: "local-wave-done",
+      goal: "implement",
+      status: "completed",
+      session_id: "sess-1",
+      job_kind: "parallel_wave",
+      role: "parallel_wave",
+      adapter: "parallel_wave",
+      child_count: 5,
+      tasks: Array.from({ length: 5 }, (_, i) => ({
+        id: `c${i}`,
+        role: "implement",
+        instruction: "implement",
+        status: "completed",
+        adapter: "x",
+      })),
+    } as Job;
+    const { container, queryByText } = render(
+      <ComposerTasksPanel jobs={[wave]} sessionId="sess-1" />,
+    );
+    expect(container.querySelector("[data-slot=composer-tasks-panel]")).toBeNull();
+    expect(queryByText("Parallel wave — completed 5/5 completed")).not.toBeInTheDocument();
+    expect(queryByText("implement")).not.toBeInTheDocument();
+  });
 });

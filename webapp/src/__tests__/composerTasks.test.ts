@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildComposerTasks, pickTaskSourceJob, taskProgress, taskState, waveHeaderText, waveProgress } from "../lib/composerTasks";
+import { buildComposerTasks, composerTasksRemainVisible, pickTaskSourceJob, taskProgress, taskState, waveHeaderText, waveProgress } from "../lib/composerTasks";
 import type { Job } from "../lib/api";
 
 const job = (id: string, status: string, session_id: string, tasks: Job["tasks"]): Job => ({
@@ -50,6 +50,31 @@ describe("pickTaskSourceJob", () => {
       wave,
     ], "sess-1");
     expect(picked?.id).toBe("local-wave-abc");
+  });
+
+  it("does not let a completed 5/5 wave hide a partial wave in the same session", () => {
+    const done: Job = {
+      ...job("local-wave-done", "completed", "sess-1", Array.from({ length: 5 }, (_, i) => ({
+        id: `d${i}`,
+        role: "implement",
+        instruction: "implement",
+        status: "completed",
+        adapter: "x",
+      }))),
+      job_kind: "parallel_wave",
+      role: "parallel_wave",
+      adapter: "parallel_wave",
+    };
+    const partial: Job = {
+      ...job("local-wave-mix", "partial", "sess-1", [
+        { id: "c1", role: "implement", instruction: "one", status: "completed", adapter: "x" },
+        { id: "c2", role: "implement", instruction: "two", status: "failed", adapter: "x" },
+      ]),
+      job_kind: "parallel_wave",
+      role: "parallel_wave",
+      adapter: "parallel_wave",
+    };
+    expect(pickTaskSourceJob([done, partial], "sess-1")?.id).toBe("local-wave-mix");
   });
 });
 
@@ -127,5 +152,35 @@ describe("buildComposerTasks + progress", () => {
     expect(waveHeaderText(wave)).toBe(
       "Parallel wave — partial 4/8 completed · 4 failed · 4 patches applied · review required",
     );
+  });
+
+  it("drops a fully completed parallel wave so the composer does not keep implement flags", () => {
+    const wave = {
+      ...job("local-wave-done", "completed", "sess-1", Array.from({ length: 5 }, (_, i) => ({
+        id: `c${i}`,
+        role: "implement",
+        instruction: "implement",
+        status: "completed",
+        adapter: "x",
+      }))),
+      job_kind: "parallel_wave",
+      role: "parallel_wave",
+      adapter: "parallel_wave",
+      child_count: 5,
+    } as Job;
+    const tasks = buildComposerTasks(wave);
+    expect(taskProgress(tasks)).toEqual({ done: 5, total: 5 });
+    expect(composerTasksRemainVisible(tasks)).toBe(false);
+  });
+
+  it("keeps a partial or failed wave visible", () => {
+    const tasks = buildComposerTasks({
+      ...job("local-wave-mix", "partial", "sess-1", [
+        { id: "c1", role: "implement", instruction: "one", status: "completed", adapter: "x" },
+        { id: "c2", role: "implement", instruction: "two", status: "failed", adapter: "x" },
+      ]),
+      job_kind: "parallel_wave",
+    } as Job);
+    expect(composerTasksRemainVisible(tasks)).toBe(true);
   });
 });

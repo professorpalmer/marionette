@@ -33,9 +33,10 @@ function jobRank(job: Job): number {
 
 export function pickTaskSourceJob(jobs: readonly Job[], activeSessionId: string): Job | null {
   const scoped = jobs.filter((job) => jobInActiveSession(job, activeSessionId) && (job.tasks || []).length);
-  if (!scoped.length) return null;
-  const wave = scoped.filter((job) => isWaveCoordinator(job));
-  const pool = wave.length ? wave : scoped;
+  const remaining = scoped.filter((job) => composerTasksRemainVisible(buildComposerTasks(job)));
+  if (!remaining.length) return null;
+  const wave = remaining.filter((job) => isWaveCoordinator(job));
+  const pool = wave.length ? wave : remaining;
   return [...pool].sort((a, b) => {
     const rank = jobRank(a) - jobRank(b);
     if (rank !== 0) return rank;
@@ -79,6 +80,10 @@ export function buildComposerTasks(job: Job | null): ComposerTask[] {
       ...(detail ? { detail } : {}),
     };
   });
+}
+
+export function composerTasksRemainVisible(tasks: readonly ComposerTask[]): boolean {
+  return tasks.some((task) => task.state !== "completed");
 }
 
 export function taskProgress(tasks: readonly ComposerTask[]): { done: number; total: number } {
