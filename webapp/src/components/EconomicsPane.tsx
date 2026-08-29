@@ -30,12 +30,23 @@ function economicsCacheKey(root: string, scope: EconomicsPaneScope, periodDays: 
 
 /** Right-pane projection of canonical PM Economics reports. */
 export default function EconomicsPane() {
+  const pendingSelection = (window as any).__pmPendingEconomicsSelection as
+    | { scope?: string; period?: string }
+    | undefined;
+  const opensAtSessionAll = pendingSelection?.scope === "conversation"
+    && pendingSelection.period === "all";
   const [projectRoot, setProjectRoot] = useState(() => lastSelectedProjectRoot());
-  const [scope, setScope] = useState<EconomicsPaneScope>("repo");
+  const [scope, setScope] = useState<EconomicsPaneScope>(
+    opensAtSessionAll ? "conversation" : "repo",
+  );
   const [periodDays, setPeriodDays] = useState<30 | null>(null);
   const [economics, setEconomics] = useState<EconomicsData | null>(
     () => readSWRCache<EconomicsData>(
-      economicsCacheKey(lastSelectedProjectRoot(), "repo", null),
+      economicsCacheKey(
+        lastSelectedProjectRoot(),
+        opensAtSessionAll ? "conversation" : "repo",
+        null,
+      ),
     ) ?? null,
   );
   const economicsRequest = useRef(0);
@@ -105,6 +116,7 @@ export default function EconomicsPane() {
     const onSelection = (event: Event) => {
       const detail = (event as CustomEvent<{ scope?: string; period?: string }>).detail;
       if (detail?.scope !== "conversation" || detail.period !== "all") return;
+      delete (window as any).__pmPendingEconomicsSelection;
       setScope("conversation");
       setPeriodDays(null);
       setEconomics(
@@ -115,8 +127,9 @@ export default function EconomicsPane() {
       void loadEconomics("conversation", null, projectRoot);
     };
     window.addEventListener("harness-economics-selection", onSelection);
+    if (opensAtSessionAll) delete (window as any).__pmPendingEconomicsSelection;
     return () => window.removeEventListener("harness-economics-selection", onSelection);
-  }, [projectRoot]);
+  }, [opensAtSessionAll, projectRoot]);
 
   const economicsMatchesSelection = Boolean(
     economics

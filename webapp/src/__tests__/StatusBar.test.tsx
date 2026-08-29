@@ -6,6 +6,7 @@ import StatusBar, {
   footerRuntimeStatusLabel,
   sessionGoalForChip,
 } from "../components/StatusBar";
+import EconomicsPane from "../components/EconomicsPane";
 import UpdateBanner, { type UpdateAvailability } from "../components/UpdateBanner";
 import { api } from "../lib/api";
 import { publishTaskProfile } from "../lib/taskProfileChrome";
@@ -172,6 +173,40 @@ describe("StatusBar usage pills", () => {
     } finally {
       window.removeEventListener("harness-economics-selection", onSelection);
     }
+  });
+
+  it("opens a late-mounted Economics pane at This session and All time", async () => {
+    function Harness() {
+      const [economicsOpen, setEconomicsOpen] = useState(false);
+      return (
+        <>
+          <StatusBar
+            {...statusBarProps}
+            onOpenEconomics={() => window.setTimeout(() => setEconomicsOpen(true), 20)}
+          />
+          {economicsOpen ? <EconomicsPane /> : null}
+        </>
+      );
+    }
+    mockGetEconomics.mockImplementation(async (scope = "repo") => ({
+      available: true,
+      scope,
+      counterfactual_source: "job_financial_reports",
+      counterfactual_status: "ok",
+      counterfactual: {
+        actual_cost_usd: scope === "conversation" ? 2.312042 : 115.57,
+        measured_cost_usd: scope === "conversation" ? 2.312042 : 115.57,
+        estimated_cost_usd: 0,
+        spend_basis: "measured_usage_x_registry_price",
+        avoided_usd: 11.34,
+      },
+    }));
+
+    render(<Harness />);
+    fireEvent.click(await screen.findByRole("button", { name: "$2.31" }));
+
+    expect(await screen.findByLabelText("Economics ownership")).toHaveValue("conversation");
+    expect(screen.getByLabelText("Economics period")).toHaveValue("all");
   });
 });
 

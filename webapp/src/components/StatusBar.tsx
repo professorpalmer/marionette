@@ -274,6 +274,12 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
       ? ""
       : `${sessionBasis === "estimated" || sessionBasis === "mixed" ? "~" : ""}${formatCost(sessionCost)}`;
   const openSessionEconomics = () => {
+    // The panel can mount after this click's selection event. Keep the exact
+    // destination available for that first render; the pane consumes it.
+    (window as any).__pmPendingEconomicsSelection = {
+      scope: "conversation",
+      period: "all",
+    };
     onOpenEconomics();
     window.setTimeout(() => {
       window.dispatchEvent(new CustomEvent("harness-economics-selection", {
