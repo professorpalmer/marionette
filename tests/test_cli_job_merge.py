@@ -249,66 +249,6 @@ def test_merge_scoped_cli_jobs_keeps_marionette_stamped_foreign(tmp_path, monkey
     assert merged[0].get("session_id") == "sess-x"
 
 
-def test_merge_scoped_cli_jobs_sibling_task_only_stamp_emits_session_id(tmp_path, monkeypatch):
-    """Sibling merge inspects tasks before ownership; live row carries session_id."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    harness_store = create_store("sqlite", str(tmp_path / "harness-state"))
-    foreign = tmp_path / "foreign-state"
-    store = create_store("sqlite", str(foreign))
-    job = store.create_job("sibling task stamp")
-    payload = stamp_task_payload(
-        {"cwd": str(repo)},
-        session_id="sess-x",
-        origin="marionette",
-    )
-    store.save_task(Task(
-        job_id=job.id,
-        role="implement",
-        instruction="do work",
-        adapter="agentic",
-        payload=payload,
-    ))
-    try:
-        store.update_job_status(job.id, "running")
-    except Exception:
-        store.set_job_status(job.id, "running")
-
-    monkeypatch.setenv("HARNESS_CLI_CROSS_PROJECT", "1")
-    monkeypatch.setattr("harness.cli_job_merge.open_cli_durable_state", lambda workspace_root="": None)
-
-    def _fake_merge(*, seen_ids, primary_state_dir="", tasks_by_job=None):
-        row = {
-            "id": job.id,
-            "goal": "sibling task stamp",
-            "status": "running",
-            "source": "cli",
-            "cross_project": True,
-            "cli_state_dir": str(foreign),
-        }
-        if tasks_by_job is not None:
-            tasks_by_job[job.id] = store.list_tasks(job.id)
-        return [row]
-
-    monkeypatch.setattr(
-        "harness.cli_job_merge.merge_running_cli_jobs_all_projects",
-        _fake_merge,
-    )
-
-    merged, _, tasks_by_job = merge_scoped_cli_jobs(
-        [],
-        harness_store=harness_store,
-        active_session_id="sess-x",
-        repo_root=str(repo),
-        workspace_root=str(repo),
-        registered_job_ids=[job.id],
-    )
-    assert [row["id"] for row in merged] == [job.id]
-    assert merged[0]["session_id"] == "sess-x"
-    assert job.id in tasks_by_job
-    assert "tasks" not in merged[0]
-
-
 def test_registered_id_does_not_admit_sibling_cli_store(tmp_path, monkeypatch):
     """A harness-registered id must not heal a colliding unstamped sibling row."""
     repo = tmp_path / "repo"
@@ -318,10 +258,7 @@ def test_registered_id_does_not_admit_sibling_cli_store(tmp_path, monkeypatch):
     store = create_store("sqlite", str(foreign))
     job = store.create_job("foreign collide")
     _save_task(store, job.id, str(repo))
-    try:
-        store.update_job_status(job.id, "running")
-    except Exception:
-        store.set_job_status(job.id, "running")
+    store.update_job_status(job.id, "running")
 
     monkeypatch.setenv("HARNESS_CLI_CROSS_PROJECT", "1")
     monkeypatch.setattr("harness.cli_job_merge.open_cli_durable_state", lambda workspace_root="": None)
@@ -368,10 +305,7 @@ def test_sibling_task_only_stamp_uses_one_store_open(tmp_path, monkeypatch):
         adapter="agentic",
         payload=payload,
     ))
-    try:
-        store.update_job_status(job.id, "running")
-    except Exception:
-        store.set_job_status(job.id, "running")
+    store.update_job_status(job.id, "running")
 
     opens: list[str] = []
     real_open = open_cli_durable_at

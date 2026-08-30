@@ -348,7 +348,6 @@ def merge_scoped_cli_jobs(
     if cli_state is not None:
         try:
             cli_rows = _retry_on_locked(lambda: cli_state.list_jobs())
-            # Registered-id healing is harness/local only — never a sibling CLI store.
             visible, cli_tasks_by_job = filter_store_jobs_with_tasks(
                 cli_rows,
                 cli_state.store,

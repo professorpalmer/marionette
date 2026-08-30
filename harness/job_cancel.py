@@ -95,8 +95,6 @@ def cancel_job_dual_store(
             "marked": mark_store_job_cancelled(harness_store, job_id),
         }
 
-    # CLI durable store second (workspace-scoped). Sibling stores are
-    # resolved and ownership-checked by post_swarm_cancel, not here.
     for store in iter_dual_stores(None, repo_root=repo_root):
         if store is harness_store:
             continue

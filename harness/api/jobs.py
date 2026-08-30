@@ -175,10 +175,7 @@ def _inspect_sibling_job(job_id: str) -> tuple[bool | None, Any]:
         state_dir = None
     if state_dir is None:
         return None, None
-    try:
-        durable = open_cli_durable_at(str(state_dir))
-    except Exception:
-        durable = None
+    durable = open_cli_durable_at(str(state_dir))
     store = getattr(durable, "store", None) if durable is not None else None
     if store is None:
         return None, None
@@ -313,8 +310,6 @@ def post_swarm_cancel(body: dict, svc: JobServices) -> tuple[int, dict]:
     if owned is False:
         return _unknown_job_refusal(job_id)
     if owned is None:
-        # Primary harness + primary CLI miss: inspect the sibling store
-        # ourselves. Do not fail-open into cancel_job_dual_store.
         sibling_owned, sibling_durable = _inspect_sibling_job(job_id)
         if sibling_owned is not True:
             return _unknown_job_refusal(job_id)
@@ -336,10 +331,7 @@ def post_swarm_cancel(body: dict, svc: JobServices) -> tuple[int, dict]:
             svc.diag("server.swarm_cancel_sibling", e)
             return _unknown_job_refusal(job_id)
 
-    # 2) Durable Puppetmaster store job -- best-effort mark cancelled.
-    # Canonical dual-store seam (harness then CLI): shared with
-    # BusyControlMixin.interrupt so membership/cancel cannot diverge.
-    # Primary-store hits only — sibling ids are handled above.
+    # Durable Puppetmaster store job — harness then primary CLI only.
     try:
         from ..job_cancel import cancel_job_dual_store
 

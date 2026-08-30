@@ -284,9 +284,9 @@ def test_cancel_and_artifacts_both_resolve_cli_store(monkeypatch):
 
 
 def test_known_unowned_job_artifacts_and_cancel_look_unknown(monkeypatch):
+    tripped = _track_request_cancel(monkeypatch)
     harness = _FakeStore([{"id": "foreign-row", "goal": "unstamped leftover"}])
     reads = {"harness": 0}
-    tripped = _track_request_cancel(monkeypatch)
 
     class _HarnessState(_FakeState):
         def job_artifacts(self, job_id: str):
@@ -313,6 +313,7 @@ def test_known_unowned_job_artifacts_and_cancel_look_unknown(monkeypatch):
 
 
 def test_known_unowned_cli_job_artifacts_and_cancel_look_unknown(monkeypatch):
+    tripped = _track_request_cancel(monkeypatch)
     harness = _FakeStore([])
     cli_store = _FakeStore([{"id": "cli-foreign", "goal": "unstamped leftover"}])
 
@@ -335,6 +336,7 @@ def test_known_unowned_cli_job_artifacts_and_cancel_look_unknown(monkeypatch):
     assert cancel_code == 404
     assert cancel_body == {"ok": False, "error": "unknown job_id", "job_id": "cli-foreign"}
     assert cli_store.cancelled == []
+    assert tripped == []
     art_code, arts = get_artifacts("cli-foreign", svc)
     assert art_code == 200
     assert arts == []
