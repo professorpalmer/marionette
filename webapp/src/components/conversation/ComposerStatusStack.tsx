@@ -8,6 +8,7 @@ import {
   listAgentCommandSessions,
   subscribeAgentCommandIndex,
 } from "../../lib/agentCommandIndex";
+import { pickTaskSourceJob } from "../../lib/composerTasks";
 import { buildComposerStatusStackRows, type ComposerStatusStackRow } from "./composerStatusStackData";
 import { COMPOSER_FAMILY_LABEL, COMPOSER_FAMILY_SECTION } from "./composerFamily";
 
@@ -43,15 +44,17 @@ function StatusStackGroup({
   rows,
   cancelling,
   onCancel,
+  defaultCollapsed = false,
 }: {
   kind: ComposerStatusStackRow["kind"];
   rows: ComposerStatusStackRow[];
   cancelling: ReadonlySet<string>;
   onCancel: (ids: string[]) => void;
+  defaultCollapsed?: boolean;
 }) {
   const runningIds = rows.filter((row) => row.state === "running").map((row) => row.id);
   const [userOpen, setUserOpen] = useState<boolean | null>(null);
-  const open = userOpen ?? runningIds.length > 0;
+  const open = userOpen ?? (!defaultCollapsed && runningIds.length > 0);
 
   return (
     <div>
@@ -157,14 +160,23 @@ export default function ComposerStatusStack({
     () => listAgentCommandSessions(sessionId),
     [commandIndexVersion, sessionId],
   );
+  const taskSource = useMemo(
+    () => pickTaskSourceJob(swarmJobs, sessionId),
+    [sessionId, swarmJobs],
+  );
+  const taskSourceId = taskSource?.id ?? "";
   const rows = useMemo(
-    () => buildComposerStatusStackRows({
-      swarmJobs,
-      commandSessions,
-      nowMs: nowTick,
-      sessionId,
-    }),
-    [commandSessions, nowTick, sessionId, swarmJobs],
+    () => {
+      const built = buildComposerStatusStackRows({
+        swarmJobs,
+        commandSessions,
+        nowMs: nowTick,
+        sessionId,
+      });
+      if (!taskSourceId) return built;
+      return built.filter((row) => row.kind !== "swarm" || row.id !== taskSourceId);
+    },
+    [commandSessions, nowTick, sessionId, swarmJobs, taskSourceId],
   );
 
   const hasTerminalRows = rows.some((row) => row.state !== "running");
@@ -228,6 +240,7 @@ export default function ComposerStatusStack({
             rows={group.rows}
             cancelling={cancelling}
             onCancel={onCancel}
+            defaultCollapsed={group.kind === "terminal" && Boolean(taskSource)}
           />
         ))}
       </div>

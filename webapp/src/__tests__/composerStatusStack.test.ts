@@ -4,9 +4,10 @@ import {
   visibleCommandJob,
   visibleSwarmJob,
 } from "../components/conversation/composerStatusStackData";
+import type { Job } from "../lib/api";
 
 describe("composerStatusStack", () => {
-  it("filters to owned jobs and hides stale terminal rows", () => {
+  it("filters to owned jobs and ignores session-only commands", () => {
     const now = Date.parse("2026-08-23T12:00:00Z");
     const rows = buildComposerStatusStackRows({
       nowMs: now,
@@ -58,17 +59,141 @@ describe("composerStatusStack", () => {
       ],
     });
 
-    expect(rows.map((row) => row.id)).toEqual(["job_abc123def456", "cmd-1"]);
+    expect(rows.map((row) => row.id)).toEqual(["job_abc123def456"]);
     expect(rows[0]).toMatchObject({
       kind: "swarm",
       state: "running",
       label: "Audit composer stack",
     });
-    expect(rows[1]).toMatchObject({
-      kind: "terminal",
-      state: "running",
-      label: "pytest -q",
+  });
+
+  it("yields only a Puppetmaster row for a running swarm session plus swarm job", () => {
+    const now = Date.parse("2026-08-23T12:00:00Z");
+    const swarmJob = {
+      id: "job_abc123def456",
+      goal: "Audit composer stack",
+      source: "harness",
+      status: "running",
+      updated_at: now - 1000,
+      job_kind: "run_swarm",
+    } satisfies Job;
+    const rows = buildComposerStatusStackRows({
+      nowMs: now,
+      swarmJobs: [swarmJob],
+      commandSessions: [{
+        id: "job_abc123def456",
+        command: "Audit composer stack",
+        output: "working",
+        state: "running",
+        updatedAt: now - 200,
+      }],
     });
+    expect(rows.map((row) => ({ id: row.id, kind: row.kind }))).toEqual([
+      { id: "job_abc123def456", kind: "swarm" },
+    ]);
+  });
+
+  it("removes the Terminal row when the command job is gone", () => {
+    const now = Date.parse("2026-08-23T12:00:00Z");
+    const session = {
+      id: "local-cmd-e35cf193",
+      command: "sleep 999",
+      output: "still running",
+      state: "running" as const,
+      updatedAt: now - 200,
+    };
+    const commandJob = {
+      id: "local-cmd-e35cf193",
+      goal: "sleep 999",
+      source: "harness",
+      status: "running",
+      updated_at: now - 1000,
+      job_kind: "run_command",
+      role: "command",
+      adapter: "command",
+      command_preview: "sleep 999",
+    } satisfies Job;
+    expect(buildComposerStatusStackRows({
+      nowMs: now,
+      swarmJobs: [commandJob],
+      commandSessions: [session],
+    }).map((row) => row.id)).toEqual(["local-cmd-e35cf193"]);
+    expect(buildComposerStatusStackRows({
+      nowMs: now,
+      swarmJobs: [],
+      commandSessions: [session],
+    })).toEqual([]);
+  });
+
+  it("keeps two live command jobs with the same command text as separate rows", () => {
+    const now = Date.parse("2026-08-23T12:00:00Z");
+    const rows = buildComposerStatusStackRows({
+      nowMs: now,
+      swarmJobs: [
+        {
+          id: "local-cmd-aaa",
+          goal: "pytest -q",
+          source: "harness",
+          status: "running",
+          updated_at: now - 1000,
+          job_kind: "run_command",
+          command_preview: "pytest -q",
+        } satisfies Job,
+        {
+          id: "local-cmd-bbb",
+          goal: "pytest -q",
+          source: "harness",
+          status: "running",
+          updated_at: now - 500,
+          job_kind: "run_command",
+          command_preview: "pytest -q",
+        } satisfies Job,
+      ],
+      commandSessions: [
+        {
+          id: "local-cmd-aaa",
+          command: "pytest -q",
+          output: "a",
+          state: "running",
+          updatedAt: now - 200,
+        },
+        {
+          id: "local-cmd-bbb",
+          command: "pytest -q",
+          output: "b",
+          state: "running",
+          updatedAt: now - 100,
+        },
+      ],
+    });
+    expect(rows.map((row) => ({ id: row.id, output: row.output }))).toEqual([
+      { id: "local-cmd-bbb", output: "b" },
+      { id: "local-cmd-aaa", output: "a" },
+    ]);
+  });
+
+  it("drops a completed command job after linger even if a session is still running", () => {
+    const now = Date.parse("2026-08-23T12:00:00Z");
+    const rows = buildComposerStatusStackRows({
+      nowMs: now,
+      swarmJobs: [{
+        id: "local-cmd-stale",
+        goal: "sleep 1",
+        source: "harness",
+        status: "completed",
+        updated_at: now - 5_000,
+        job_kind: "run_command",
+        command_preview: "sleep 1",
+      } satisfies Job],
+      commandSessions: [{
+        id: "local-cmd-stale",
+        command: "sleep 1",
+        output: "ok",
+        state: "running",
+        updatedAt: now - 200,
+      }],
+    });
+    expect(rows).toEqual([]);
   });
 
 
@@ -84,7 +209,7 @@ describe("composerStatusStack", () => {
       role: "command",
       adapter: "command",
       command_preview: "sleep 999",
-    } as any;
+    } satisfies Job;
     const swarmJob = {
       id: "job_abc123def456",
       goal: "Audit composer stack",
@@ -378,7 +503,100 @@ describe("composerStatusStack", () => {
     });
     expect(rows).toHaveLength(1);
     expect(rows[0].state).toBe("done");
-    expect(rows[0].updatedAt).toBe(now - 3_000);
+    expect(rows[0].updatedAt).toBe(now - 200);
+  });
+
+  it("treats a recent blank command-job status as done", () => {
+    const now = Date.parse("2026-08-23T12:00:00Z");
+    const job = {
+      id: "local-cmd-blank-recent",
+      goal: "echo done",
+      source: "harness",
+      status: "",
+      updated_at: now - 1000,
+      job_kind: "run_command",
+      command_preview: "echo done",
+    } satisfies Job;
+    expect(visibleCommandJob(job, now)).toMatchObject({
+      id: "local-cmd-blank-recent",
+      kind: "terminal",
+      state: "done",
+      updatedAt: now - 1000,
+    });
+    const rows = buildComposerStatusStackRows({
+      nowMs: now,
+      swarmJobs: [job],
+      commandSessions: [],
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: "local-cmd-blank-recent",
+      state: "done",
+    });
+  });
+
+  it("drops an old blank command-job status without a session", () => {
+    const now = Date.parse("2026-08-23T12:00:00Z");
+    const job = {
+      id: "local-cmd-blank-old",
+      goal: "echo stale",
+      source: "harness",
+      status: "   ",
+      updated_at: now - 5_000,
+      job_kind: "run_command",
+      command_preview: "echo stale",
+    } satisfies Job;
+    expect(visibleCommandJob(job, now)).toBeNull();
+    expect(buildComposerStatusStackRows({
+      nowMs: now,
+      swarmJobs: [job],
+      commandSessions: [],
+    })).toEqual([]);
+  });
+
+  it("lets a matching running session overlay a recent blank command job", () => {
+    const now = Date.parse("2026-08-23T12:00:00Z");
+    const rows = buildComposerStatusStackRows({
+      nowMs: now,
+      swarmJobs: [{
+        id: "local-cmd-blank-live",
+        goal: "sleep 999",
+        source: "harness",
+        status: "",
+        updated_at: now - 1000,
+        job_kind: "run_command",
+        command_preview: "sleep 999",
+      } satisfies Job],
+      commandSessions: [{
+        id: "local-cmd-blank-live",
+        command: "sleep 999",
+        output: "still going",
+        state: "running",
+        updatedAt: now - 200,
+      }],
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: "local-cmd-blank-live",
+      state: "running",
+      output: "still going",
+    });
+  });
+
+  it("keeps explicit pending, queued, running, and active command statuses running", () => {
+    const now = Date.parse("2026-08-23T12:00:00Z");
+    for (const status of ["pending", "queued", "running", "active"]) {
+      const job = {
+        id: `local-cmd-${status}`,
+        goal: "sleep 1",
+        source: "harness",
+        status,
+        updated_at: now - 5_000,
+        job_kind: "run_command",
+        command_preview: "sleep 1",
+      } satisfies Job;
+      expect(visibleCommandJob(job, now)?.state, status).toBe("running");
+    }
   });
 
   it("hides settled transcript history that was never observed running", () => {
@@ -398,7 +616,7 @@ describe("composerStatusStack", () => {
     expect(rows).toEqual([]);
   });
 
-  it("does not resurrect hidden transcript history from a stale live poll", () => {
+  it("lets a live command job own the row even when the session is rail-hidden", () => {
     const now = Date.parse("2026-08-23T12:00:00Z");
     const rows = buildComposerStatusStackRows({
       nowMs: now,
@@ -420,12 +638,39 @@ describe("composerStatusStack", () => {
         railVisible: false,
       }],
     });
-    expect(rows).toEqual([]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: "local-cmd-aa11",
+      kind: "terminal",
+      state: "done",
+      output: "ok",
+    });
   });
 
-  it("keeps a settled command briefly when this process observed it running", () => {
+  it("keeps a settled command job briefly, then drops a session-only linger", () => {
     const now = Date.parse("2026-08-23T12:00:00Z");
-    const rows = buildComposerStatusStackRows({
+    const commandJob = {
+      id: "live-then-done",
+      goal: "brew install llama.cpp",
+      source: "harness",
+      status: "completed",
+      updated_at: now - 400,
+      job_kind: "run_command",
+      command_preview: "brew install llama.cpp",
+    } satisfies Job;
+    expect(buildComposerStatusStackRows({
+      nowMs: now,
+      swarmJobs: [commandJob],
+      commandSessions: [{
+        id: "live-then-done",
+        command: "brew install llama.cpp",
+        output: "ok",
+        state: "done",
+        updatedAt: now - 400,
+        railVisible: true,
+      }],
+    }).map((row) => row.id)).toEqual(["live-then-done"]);
+    expect(buildComposerStatusStackRows({
       nowMs: now,
       swarmJobs: [],
       commandSessions: [{
@@ -436,8 +681,7 @@ describe("composerStatusStack", () => {
         updatedAt: now - 400,
         railVisible: true,
       }],
-    });
-    expect(rows.map((row) => row.id)).toEqual(["live-then-done"]);
+    })).toEqual([]);
   });
 
   it("collapses command preview whitespace so the task bar does not stair-step", () => {

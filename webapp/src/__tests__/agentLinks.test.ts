@@ -154,27 +154,38 @@ describe("agentLinks detection", () => {
       linkKind: "workspace",
       value: "C:\\Users\\me\\proj",
     });
-    // Worker goals often embed paths — never open the file editor for them.
     expect(classifyActionGoal(
       "run_implement",
       "Prefer C:\\Users\\pwall\\.marionette\\marionette over parent",
-    )).toEqual({
-      linkKind: "command",
-      value: "Prefer C:\\Users\\pwall\\.marionette\\marionette over parent",
-    });
+    ).linkKind).toBe("none");
     expect(classifyActionGoal(
       "run_parallel",
       "audit harness/send_loop_dispatch.py mode=analysis",
-    ).linkKind).toBe("command");
-    // Unknown kinds: shell-like never falls through to file.
+    ).linkKind).toBe("none");
+    expect(classifyActionGoal("run_swarm", "audit composer terminal ownership").linkKind).toBe("none");
+    expect(classifyActionGoal("route_task", "implement the terminal rail fix").linkKind).toBe("none");
     expect(classifyActionGoal(
       "search_codegraph",
       "custom OpenAI-compatible provider API base URL model configuration settings",
     ).linkKind).toBe("none");
     expect(classifyActionGoal("search_files", "base_url|api_base").linkKind).toBe("none");
+    expect(classifyActionGoal("query_wiki", "terminal process list").linkKind).toBe("none");
     expect(classifyActionGoal("custom_tool", "npm.cmd").linkKind).toBe("command");
     expect(classifyActionGoal("custom_tool", "git status").linkKind).toBe("command");
     expect(classifyActionGoal("custom_tool", "webapp/src/App.tsx").linkKind).toBe("file");
+  });
+
+  it("does not classify swarm, parallel, implement, or route cards as command", () => {
+    for (const kind of ["run_swarm", "run_parallel", "run_implement", "route_task"] as const) {
+      expect(classifyActionGoal(kind, "pytest -q").linkKind, kind).toBe("none");
+      expect(classifyActionGoal(kind, "sleep 999").linkKind, kind).toBe("none");
+    }
+    expect(classifyActionGoal("run_command", "pytest -q").linkKind).toBe("command");
+    expect(classifyActionGoal("search_codegraph", "pytest -q").linkKind).toBe("none");
+    expect(classifyActionGoal("web_search", "pytest -q").linkKind).toBe("none");
+    expect(classifyActionGoal("query_wiki", "pytest -q").linkKind).toBe("none");
+    expect(classifyActionGoal("puppetmaster_codegraph_search", "pytest -q").linkKind).toBe("none");
+    expect(classifyActionGoal("search_symbols", "git status").linkKind).toBe("none");
   });
 
   it("detects shell-like inline code separately from paths", () => {

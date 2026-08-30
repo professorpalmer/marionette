@@ -44,6 +44,7 @@ function timestampMs(value: unknown): number | null {
 function overlayExistingRow(
   existing: ComposerStatusStackRow,
   incoming: ComposerStatusStackRow,
+  allowRunningOnDone = false,
 ): ComposerStatusStackRow {
   let state = existing.state;
   let updatedAt = existing.updatedAt;
@@ -53,20 +54,27 @@ function overlayExistingRow(
   } else if (incoming.state === "done" && existing.state === "running") {
     state = "done";
     updatedAt = incoming.updatedAt;
+  } else if (allowRunningOnDone && incoming.state === "running" && existing.state === "done") {
+    state = "running";
+    updatedAt = incoming.updatedAt;
   }
   return {
     ...existing,
     state,
     updatedAt,
-    output: existing.output || incoming.output,
-    command: existing.command || incoming.command,
+    output: incoming.output || existing.output,
+    command: incoming.command || existing.command,
     label: existing.label || incoming.label,
     title: existing.title || incoming.title,
   };
 }
 
-function normalizeState(status: unknown): ComposerStatusStackState {
+function normalizeState(
+  status: unknown,
+  emptyFallback: ComposerStatusStackState = "running",
+): ComposerStatusStackState {
   const s = String(status || "").trim().toLowerCase();
+  if (!s) return emptyFallback;
   if (
     s.includes("fail")
     || s.includes("error")
@@ -139,7 +147,7 @@ export function visibleSwarmJob(job: Job, nowMs: number): ComposerStatusStackRow
 export function visibleCommandJob(job: Job, nowMs: number): ComposerStatusStackRow | null {
   if (!jobAccountingOwned(job)) return null;
   if (!isCommandJob(job)) return null;
-  const state = normalizeState(job.status);
+  const state = normalizeState(job.status, "done");
   const updatedAt = jobUpdatedAt(job);
   if (!lingerAllows(state, updatedAt, nowMs, COMMAND_SUCCESS_LINGER_MS, COMMAND_FAILURE_LINGER_MS)) return null;
   const id = String(job.id || "").trim();
@@ -160,22 +168,15 @@ export function visibleCommandJob(job: Job, nowMs: number): ComposerStatusStackR
   };
 }
 
-function visibleCommandSession(
-  session: AgentCommandSession,
-  nowMs: number,
-): ComposerStatusStackRow | null {
+function commandSessionOverlay(session: AgentCommandSession): ComposerStatusStackRow | null {
   const id = String(session.id || "").trim();
   const command = String(session.command || "").trim();
   if (!id || !command) return null;
-  if (session.railVisible === false) return null;
-  const state = session.state || "running";
-  if (state === "done" && nowMs - session.updatedAt > COMMAND_SUCCESS_LINGER_MS) return null;
-  if (state === "failed" && nowMs - session.updatedAt > COMMAND_FAILURE_LINGER_MS) return null;
   return {
     id,
     kind: "terminal",
     label: oneLinePreview(command),
-    state,
+    state: session.state || "running",
     updatedAt: session.updatedAt,
     title: oneLinePreview(command),
     command,
@@ -190,18 +191,15 @@ export function buildComposerStatusStackRows(
   const rows: ComposerStatusStackRow[] = [];
   const seen = new Set<string>();
   const sessionId = String(source.sessionId || "").trim();
-
-  // Sessions first: they carry live stdout for the existing openAgentCommand path.
+  const sessionsById = new Map<string, AgentCommandSession>();
   for (const session of source.commandSessions) {
     if (sessionId && session.sessionId !== sessionId) continue;
     const id = String(session.id || "").trim();
-    if (id) seen.add(id);
-    const row = visibleCommandSession(session, nowMs);
-    if (row) {
-      rows.push(row);
-    }
+    if (id) sessionsById.set(id, session);
   }
 
+  // /api/swarm/live isCommandJob rows are the only Terminal authority.
+  // Matching sessions overlay output/state; they never mint a row alone.
   for (const job of source.swarmJobs) {
     if (sessionId && !jobInActiveSession(job, sessionId)) continue;
     const id = String(job.id || "").trim();
@@ -212,7 +210,14 @@ export function buildComposerStatusStackRows(
       if (idx >= 0) rows[idx] = overlayExistingRow(rows[idx], row);
       continue;
     }
-    rows.push(row);
+    if (row.kind === "terminal" && id) {
+      const overlay = sessionsById.get(id);
+      const incoming = overlay ? commandSessionOverlay(overlay) : null;
+      const blankCommandStatus = !String(job.status ?? "").trim();
+      rows.push(incoming ? overlayExistingRow(row, incoming, blankCommandStatus) : row);
+    } else {
+      rows.push(row);
+    }
     if (id) seen.add(id);
   }
 

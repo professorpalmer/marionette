@@ -55,6 +55,68 @@ test("resolveBehindCount: shallow + no merge-base falls back to SHA compare", ()
   );
 });
 
+test("checkForUpdate: only a fast-forwardable source checkout is actionable", async (t) => {
+  const { execFileSync } = require("node:child_process");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "marionette-update-availability-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const seed = path.join(root, "seed");
+  const remoteDir = path.join(root, "remote.git");
+  const behindOnly = path.join(root, "behind-only");
+  const diverged = path.join(root, "diverged");
+  const gitEnv = {
+    ...process.env,
+    GIT_CONFIG_GLOBAL: os.devNull,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_AUTHOR_NAME: "Test",
+    GIT_AUTHOR_EMAIL: "test@example.invalid",
+    GIT_COMMITTER_NAME: "Test",
+    GIT_COMMITTER_EMAIL: "test@example.invalid",
+  };
+  const runGit = (args) => execFileSync("git", args, { encoding: "utf8", env: gitEnv });
+  const git = (cwd, args) => runGit(["-C", cwd, "-c", "commit.gpgsign=false", ...args]);
+
+  fs.mkdirSync(path.join(seed, "webapp"), { recursive: true });
+  git(seed, ["init", "-q", "-b", "main"]);
+  fs.writeFileSync(
+    path.join(seed, "webapp", "package.json"),
+    JSON.stringify({ version: "0.9.383" }),
+  );
+  git(seed, ["add", "webapp/package.json"]);
+  git(seed, ["commit", "-q", "-m", "base"]);
+  runGit(["clone", "-q", "--bare", seed, remoteDir]);
+  runGit(["clone", "-q", remoteDir, behindOnly]);
+  runGit(["clone", "-q", remoteDir, diverged]);
+  git(diverged, ["commit", "--allow-empty", "-q", "-m", "local feature"]);
+  git(seed, ["remote", "add", "origin", remoteDir]);
+  fs.writeFileSync(
+    path.join(seed, "webapp", "package.json"),
+    JSON.stringify({ version: "0.9.384" }),
+  );
+  git(seed, ["add", "webapp/package.json"]);
+  git(seed, ["commit", "-q", "-m", "upstream main"]);
+  git(seed, ["push", "-q", "origin", "main"]);
+
+  const fastForward = await bridge.checkForUpdate({
+    repoRoot: behindOnly,
+    branch: "main",
+    currentVersion: "0.9.383",
+  });
+  const fork = await bridge.checkForUpdate({
+    repoRoot: diverged,
+    branch: "main",
+    currentVersion: "0.9.383",
+  });
+
+  assert.equal(fastForward.behind, 1);
+  assert.equal(fastForward.ahead, 0);
+  assert.equal(fastForward.latest, "0.9.384");
+  assert.equal(fastForward.available, true);
+  assert.equal(fork.behind, 1);
+  assert.equal(fork.ahead, 1);
+  assert.equal(fork.latest, "0.9.384");
+  assert.equal(fork.available, false);
+});
+
 test("overallPercent: monotonic across the pipeline, clamped to 0..100", () => {
   assert.equal(steps.overallPercent("idle"), 0);
   const fetchEnd = steps.overallPercent("fetch", 1);

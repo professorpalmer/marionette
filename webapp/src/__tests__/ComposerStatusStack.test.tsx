@@ -91,4 +91,40 @@ describe("ComposerStatusStack", () => {
     expect(api.swarmCancel).toHaveBeenCalledWith("local-cmd-b");
     expect(openAgentCommand).not.toHaveBeenCalled();
   });
+
+  it("omits the task-source Puppetmaster row and keeps Terminal collapsed until clicked", () => {
+    render(
+      <ComposerStatusStack
+        sessionId="sess-task-source"
+        swarmJobs={[
+          {
+            id: "job_impl_running",
+            goal: "Implement last-mile stack",
+            source: "harness",
+            status: "running",
+            updated_at: Date.now(),
+            job_kind: "run_implement",
+            role: "implementer",
+            adapter: "agentic",
+            session_id: "sess-task-source",
+            tasks: [{
+              id: "t1",
+              role: "impl",
+              instruction: "Edit the stack",
+              status: "running",
+              adapter: "x",
+            }],
+          } satisfies Job,
+          commandJob({ id: "local-cmd-beside-tasks", status: "running", session_id: "sess-task-source" }),
+        ]}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "Puppetmaster" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Terminal" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: "Stop all commands" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Open terminal/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Terminal" }));
+    expect(screen.getByRole("button", { name: "Terminal" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: /Open terminal/ })).toBeInTheDocument();
+  });
 });
