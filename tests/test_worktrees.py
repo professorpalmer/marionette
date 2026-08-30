@@ -313,6 +313,7 @@ def test_boot_reaper_wires_managed_worktree_reap():
     import harness.server as srv
     source = inspect.getsource(srv._reap_stale_swarms_on_boot)
     assert "reap_stale_managed_worktrees" in source
+    assert "prune_orphan_edit_branches" in source
 
 
 def test_prune_orphan_edit_branches_skips_active_and_attached_worktree():
@@ -405,6 +406,68 @@ def test_prune_orphan_edit_branches_deletes_stale_local_release():
             capture_output=True,
         )
         shutil.rmtree(wt, ignore_errors=True)
+        shutil.rmtree(repo, ignore_errors=True)
+        shutil.rmtree(managed_dir, ignore_errors=True)
+        shutil.rmtree(remote, ignore_errors=True)
+
+
+def test_prune_orphan_edit_branches_deletes_gone_absorb_and_dest():
+    """Prune deletes dest / absorb / gone-upstream leftovers; keeps unpushed feats."""
+    repo = create_temp_git_repo()
+    parent = os.path.dirname(repo)
+    managed_dir = os.path.abspath(os.path.join(parent, ".pmharness-worktrees"))
+    remote = os.path.join(parent, "origin-gone-prune.git")
+    try:
+        _create_branch(repo, "dev")
+        _create_branch(repo, "dest")
+        _create_branch(repo, "absorb/marionette-254-economics")
+        _create_branch(repo, "feat/pm-pin-1.22.37")
+        _create_branch(repo, "feat/keep-unpushed")
+
+        subprocess.run(["git", "init", "-q", "--bare", remote], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", repo, "remote", "add", "origin", remote],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", repo, "push", "-q", "origin", "main", "dev"],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", repo, "push", "-q", "-u", "origin",
+             "absorb/marionette-254-economics", "feat/pm-pin-1.22.37"],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", repo, "push", "origin", "--delete",
+             "absorb/marionette-254-economics", "feat/pm-pin-1.22.37"],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", repo, "fetch", "--prune", "origin"],
+            check=True,
+            capture_output=True,
+        )
+
+        result = _wt.prune_orphan_edit_branches(repo)
+        deleted = set(result["deleted"])
+        assert "dest" in deleted
+        assert "absorb/marionette-254-economics" in deleted
+        assert "feat/pm-pin-1.22.37" in deleted
+        assert "feat/keep-unpushed" not in deleted
+        assert "main" not in deleted
+        assert "dev" not in deleted
+
+        branches = _branch_list(repo)
+        assert "dest" not in branches
+        assert "absorb/marionette-254-economics" not in branches
+        assert "feat/pm-pin-1.22.37" not in branches
+        assert "feat/keep-unpushed" in branches
+    finally:
         shutil.rmtree(repo, ignore_errors=True)
         shutil.rmtree(managed_dir, ignore_errors=True)
         shutil.rmtree(remote, ignore_errors=True)

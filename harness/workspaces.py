@@ -88,7 +88,11 @@ def list_workspaces(repo: str) -> list[dict]:
     """Each local branch is a workspace; the checked-out one is active."""
     if not _is_repo(repo):
         return []
-    rc, out, _ = _git(repo, "branch", "--format=%(refname:short)\t%(HEAD)")
+    rc, out, _ = _git(
+        repo,
+        "branch",
+        "--format=%(refname:short)%09%(HEAD)%09%(upstream:track)",
+    )
     if rc != 0:
         return []
     dirty = _dirty(repo)
@@ -118,6 +122,7 @@ def list_workspaces(repo: str) -> list[dict]:
         parts = line.split("\t")
         name = parts[0].strip()
         active = len(parts) > 1 and parts[1].strip() == "*"
+        upstream_track = parts[2].strip() if len(parts) > 2 else ""
         row = asdict(Workspace(
             name=name,
             branch=name,
@@ -128,9 +133,14 @@ def list_workspaces(repo: str) -> list[dict]:
         # Drop null worktree_path so older clients / tests stay compact.
         if not row.get("worktree_path"):
             row.pop("worktree_path", None)
+        if upstream_track == "[gone]":
+            row["_upstream_gone"] = True
         rows.append(row)
     remote = _origin_branch_names(repo)
-    return [row for row in rows if not _is_stale_local_release(row, remote)]
+    visible = [row for row in rows if not _is_stale_local_workspace(row, remote)]
+    for row in visible:
+        row.pop("_upstream_gone", None)
+    return visible
 
 
 def _origin_branch_names(repo: str) -> set[str]:
@@ -148,6 +158,25 @@ def _origin_branch_names(repo: str) -> set[str]:
             continue
         names.add(short)
     return names
+
+
+def _is_stale_local_workspace(row: dict, remote: set[str]) -> bool:
+    """True when BRANCHES should hide a leftover local head.
+
+    Hide: gone-upstream locals, retired dest, absorb/* not on origin, and
+    leftover release/v0.9.*. Keep the current checkout, main/dev, origin-backed
+    names, and unpushed feature branches that were never on origin.
+    """
+    if row.get("active"):
+        return False
+    if row.get("_upstream_gone"):
+        return True
+    name = str(row.get("name") or "")
+    if name == "dest" and name not in remote:
+        return True
+    if name.startswith("absorb/") and name not in remote:
+        return True
+    return _is_stale_local_release(row, remote)
 
 
 def _is_stale_local_release(row: dict, remote: set[str]) -> bool:
