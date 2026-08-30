@@ -115,6 +115,7 @@ def test_dispatch_persists_and_formats(tmp_path):
         _todo_store=None,
         _todo_phases=None,
     )
+    host._todo_session_id = ToolDispatchMixin._todo_session_id.__get__(host)
     host._get_todo_store = ToolDispatchMixin._get_todo_store.__get__(host)
     host.todo_snapshot = ToolDispatchMixin.todo_snapshot.__get__(host)
     act = PilotAction(
@@ -131,6 +132,39 @@ def test_dispatch_persists_and_formats(tmp_path):
     assert reloaded[0].tasks[0].content == "hosted pari"
 
 
+def test_todo_dispatch_does_not_leak_across_sessions(tmp_path):
+    from types import SimpleNamespace
+
+    from harness.pilot import PilotAction
+    from harness.tool_dispatch import ToolDispatchMixin
+
+    def _host(session_id: str):
+        host = SimpleNamespace(
+            config=SimpleNamespace(state_dir=str(tmp_path)),
+            state_dir=str(tmp_path),
+            harness_session_id=session_id,
+            _todo_store=None,
+            _todo_phases=None,
+        )
+        host._todo_session_id = ToolDispatchMixin._todo_session_id.__get__(host)
+        host._get_todo_store = ToolDispatchMixin._get_todo_store.__get__(host)
+        host.reload_session_todos = ToolDispatchMixin.reload_session_todos.__get__(host)
+        host.todo_snapshot = ToolDispatchMixin.todo_snapshot.__get__(host)
+        return host
+
+    arena = _host("sess-arena")
+    act = PilotAction(
+        kind="todo",
+        arguments={"op": "init", "items": ["arena leftover"]},
+    )
+    ok, status, _val = ToolDispatchMixin._do_todo(arena, act)
+    assert ok and status == "success"
+
+    marionette = _host("sess-marionette")
+    marionette.reload_session_todos()
+    assert marionette.todo_snapshot()["phases"] == []
+
+
 def test_todo_is_a_local_action_and_from_wire():
     assert "todo" in LOCAL_ACTION_KINDS
     act = from_wire("todo", {"op": "view"})
@@ -144,6 +178,26 @@ def test_store_round_trip(tmp_path):
     store.save(phases)
     loaded = store.load()
     assert phases_from_raw([p.to_dict() for p in loaded])[0].tasks[0].content == "one"
+
+
+def test_store_isolates_todos_by_session_id(tmp_path):
+    store = SessionTodoStore(str(tmp_path))
+    arena, _, _ = _apply([], op="init", items=["beyblade wave"])
+    marionette, _, _ = _apply([], op="init", items=["marionette only"])
+    store.save(arena, session_id="sess-arena")
+    store.save(marionette, session_id="sess-marionette")
+    assert [t.content for t in store.load("sess-arena")[0].tasks] == ["beyblade wave"]
+    assert [t.content for t in store.load("sess-marionette")[0].tasks] == ["marionette only"]
+    assert store.load("sess-other") == []
+    assert store.load() == []
+
+
+def test_store_does_not_attach_legacy_phases_to_a_session(tmp_path):
+    store = SessionTodoStore(str(tmp_path))
+    phases, _, _ = _apply([], op="init", items=["stale other repo"])
+    store.save(phases)
+    assert store.load("sess-marionette") == []
+    assert store.load()[0].tasks[0].content == "stale other repo"
 
 
 def test_markdown_round_trip_preserves_blockers():
@@ -223,6 +277,7 @@ def test_mixin_slash_persists(tmp_path):
         _todo_store=None,
         _todo_phases=None,
     )
+    host._todo_session_id = ToolDispatchMixin._todo_session_id.__get__(host)
     host._get_todo_store = ToolDispatchMixin._get_todo_store.__get__(host)
     host.handle_todo_slash = ToolDispatchMixin.handle_todo_slash.__get__(host)
     first = host.handle_todo_slash("/todo append WP-02 hosted pari", workspace_root=str(tmp_path))

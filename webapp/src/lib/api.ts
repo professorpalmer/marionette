@@ -1507,6 +1507,27 @@ export const api = {
     postJSON<{ ok: boolean; deleted: number; active: string | null }>(withToken("/api/sessions/clear"), {}),
   /** Persist archive flag (distinct from inbox Settle triage). */
   archiveSession: (id: string, archived: boolean) => postJSON<{ ok: boolean }>("/api/sessions/archive", { session: id, archived }),
+  archiveStatus: () => getJSON<{
+    ok: boolean;
+    archive_db: string;
+    chats: number;
+    backup_dir: string;
+    vault_present: boolean;
+  }>("/api/archive/status"),
+  ingestChatArchive: () => postJSON<{
+    ok: boolean;
+    ingested: number;
+    skipped_unchanged: number;
+    errors: number;
+    backup_dir: string;
+    archive_db: string;
+  }>("/api/archive/ingest", {}),
+  pruneChatArchive: () => postJSON<{
+    ok: boolean;
+    pruned: number;
+    skipped: number;
+    archive_db: string;
+  }>("/api/archive/prune", {}),
   /** Persist independent inbox Settle / Unsettle triage. */
   settleSession: (id: string, settled: boolean) => postJSON<{ ok: boolean }>("/api/sessions/settle", { session: id, settled }),
   renameSession: (id: string, title: string) => postJSON<{ ok: boolean }>("/api/sessions/rename", { session: id, title }),

@@ -7,7 +7,7 @@ import {
 } from "../../lib/agentCommandIndex";
 import { pickTaskSourceJob } from "../../lib/composerTasks";
 import { todoHasWork } from "../../lib/composerTodos";
-import { getSessionTodos, subscribeSessionTodos } from "../../lib/sessionTodos";
+import { getSessionTodos, getSessionTodosSessionId, subscribeSessionTodos } from "../../lib/sessionTodos";
 import ComposerStatusStack from "./ComposerStatusStack";
 import ComposerTasksPanel from "./ComposerTasksPanel";
 import ComposerTodoPanel from "./ComposerTodoPanel";
@@ -35,7 +35,12 @@ export default function ComposerActivityRail({
     [commandSessions, jobs, sessionId],
   );
   const todos = useSyncExternalStore(subscribeSessionTodos, getSessionTodos, getSessionTodos);
-  const showTodos = todoHasWork(todos);
+  const todoSessionId = useSyncExternalStore(
+    subscribeSessionTodos,
+    getSessionTodosSessionId,
+    getSessionTodosSessionId,
+  );
+  const showTodos = todoHasWork(todos) && todoSessionId === sessionId;
   const showTasks = !!pickTaskSourceJob(jobs, sessionId);
   if (!showTasks && !showTodos && !stackRows.length) return null;
 

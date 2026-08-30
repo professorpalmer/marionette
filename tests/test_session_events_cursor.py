@@ -159,3 +159,34 @@ def test_read_events_since_runners_fingerprint_dedupes():
         "s1", hw, sse_svc=sse, session_control_svc=sc2, store=store,
     )
     assert any(e["kind"] == "runners" for e in p3["events"])
+
+
+def test_store_since_overflow_sets_gap():
+    store = SessionEventStore(cap=3)
+    for i in range(8):
+        store.append("s1", "stream", {"n": i})
+    batch = store.since("s1", 2)
+    assert batch["gap"] is True
+    assert batch["events"] == []
+    assert batch["cursor"] == 8
+
+
+def test_read_events_since_overflow_emits_cursor_gap_miss():
+    reset_default_store_for_tests()
+    store = SessionEventStore(cap=2)
+    for i in range(6):
+        store.append("s1", "stream", {"n": i})
+    sse = _sse_svc({})
+    sc = _sc_svc({})
+    code, payload = read_events_since(
+        "s1", 1, sse_svc=sse, session_control_svc=sc, store=store,
+    )
+    assert code == 200
+    assert payload["gap"] is True
+    misses = [e for e in payload["events"] if e["kind"] == "ring_miss"]
+    assert misses
+    assert misses[0]["data"]["code"] == "cursor_gap"
+
+    replay = store.since("s1", 0)
+    assert replay["gap"] is False
+    assert replay["events"]

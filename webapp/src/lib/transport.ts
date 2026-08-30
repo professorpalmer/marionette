@@ -63,6 +63,7 @@ export type StoreEventsSince = {
   session_id: string;
   cursor: number;
   events: StoreEvent[];
+  gap?: boolean;
 };
 
 /** Build the tokened URL for chat event replay / reattach. */

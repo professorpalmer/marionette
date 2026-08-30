@@ -281,10 +281,14 @@ def test_search_state_visible_in_core_pilot():
     from harness.tool_discovery import CORE_PILOT
 
     assert "search_state" in CORE_PILOT
+    assert "search_archive" in CORE_PILOT
+    assert "read_archived_chat" in CORE_PILOT
     catalog = ToolCatalog()
     catalog.refresh()
     names = {t["function"]["name"] for t in catalog.visible_schema()}
     assert "search_state" in names
+    assert "search_archive" in names
+    assert "read_archived_chat" in names
 
 
 def test_core_always_includes_hash_edit_when_enabled(monkeypatch):

@@ -492,7 +492,8 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       }
     } else if (ev.kind === "action_result") {
       if (d.todos && Array.isArray(d.todos.phases)) {
-        publishSessionTodos(d.todos, String(d.session_id || ""));
+        const todoSid = String(d.session_id || "").trim();
+        if (todoSid) publishSessionTodos(d.todos, todoSid);
       }
       clearWaitHintOnProgress();
       setCompactingStatus(null);

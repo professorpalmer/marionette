@@ -25,7 +25,7 @@ import {
 import { api } from "../lib/api";
 import { TranscriptList, type Item } from "../components/TranscriptList";
 import { chatEventsPath, sessionEventsPath } from "../lib/transport";
-import { nextStoreCursor, shouldApplyStoreEvent } from "../components/conversation/storeEvents";
+import { nextStoreCursor, shouldApplyStoreEvent, storeCursorAfterBatch } from "../components/conversation/storeEvents";
 
 /**
  * Mid-turn chatEvents reattach contracts (cursor + poll gating), plus the
@@ -778,6 +778,21 @@ describe("Wave 4 command-job reattach fences", () => {
       subscriptionSid: "sess-a",
     })).toBe(false);
     expect(nextStoreCursor(0, [{ id: 1 }, { id: 3 }], 3)).toBe(3);
+    expect(storeCursorAfterBatch({
+      lastApplied: 2,
+      events: [{ id: 8, kind: "stream", data: {} }],
+      responseCursor: 8,
+      gap: true,
+    })).toBe(0);
+    expect(storeCursorAfterBatch({
+      lastApplied: 2,
+      events: [{
+        id: 2,
+        kind: "ring_miss",
+        data: { ok: false, missed: true, code: "cursor_gap", available: true },
+      }],
+      responseCursor: 8,
+    })).toBe(2);
   });
 
   it("drops late ring frames after a session switch (no cross-session merge)", async () => {

@@ -94,7 +94,7 @@ LOCAL_ACTION_KINDS: frozenset[str] = frozenset({
     "open_project", "relocate_session", "session_bank",
     "write_file", "edit_file", "hash_edit", "run_command",
     "run_command_batch", "run_ipython", "wait", "todo",
-    "search_tools", "search_state",
+    "search_tools", "search_state", "search_archive", "read_archived_chat",
     "store_scratch", "load_scratch", "list_scratch", "clear_scratch",
     "bind_kernel", "show_kernel", "list_kernel", "clear_kernel",
     "browser_navigate", "browser_snapshot", "browser_click",
@@ -1168,6 +1168,10 @@ def action_display_goal(act: PilotAction) -> Any:
         act_goal = _t.get("op") or _t.get("task") or _t.get("phase") or "todo"
     elif act.kind == "search_state":
         act_goal = act.query
+    elif act.kind == "search_archive":
+        act_goal = act.query
+    elif act.kind == "read_archived_chat":
+        act_goal = act.path or (act.arguments or {}).get("chat_id") or ""
     elif act.kind == "session_bank":
         act_goal = (act.arguments or {}).get("session_id") or act.query or "list"
     elif act.kind == "search_tools":
@@ -3638,6 +3642,26 @@ def dispatch_local_action(
         else:
             yield ConvEvent("action_result", {"id": aid, "error": val})
             session._append_action_result(act, aid, f"(search_state failed: {val})", is_native)
+        return
+    # ---- search_archive / read_archived_chat -----------------------
+    if act.kind in ("search_archive", "read_archived_chat"):
+        handler = (
+            session._do_search_archive if act.kind == "search_archive"
+            else session._do_read_archived_chat
+        )
+        try:
+            ok, status, val = handler(act)
+        except Exception as exc:
+            ok, status, val = False, "exception", str(exc)
+        if ok:
+            yield ConvEvent("action_result", {
+                "id": aid, "num": 1, "types": [act.kind], "adapter": "local", "mode": "tool",
+                "artifacts": [{"type": act.kind, "headline": act_goal or act.kind}],
+            })
+            session._append_action_result(act, aid, f"({act.kind} returned)\n{val}", is_native)
+        else:
+            yield ConvEvent("action_result", {"id": aid, "error": val})
+            session._append_action_result(act, aid, f"({act.kind} failed: {val})", is_native)
         return
     # ---- session scratch bindings ----------------------------------
     if act.kind in ("store_scratch", "load_scratch", "list_scratch", "clear_scratch"):

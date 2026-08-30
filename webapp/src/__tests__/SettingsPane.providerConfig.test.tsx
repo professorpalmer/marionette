@@ -19,6 +19,7 @@ vi.mock("../lib/api", () => ({
     getUsage: vi.fn().mockResolvedValue(null),
     getWikiConfig: vi.fn().mockResolvedValue({ api_base: "", has_token: false }),
     getHooks: vi.fn().mockResolvedValue({ hooks: [], events: [] }),
+    archiveStatus: vi.fn().mockResolvedValue({ chats: 0, vault_present: false, backup_dir: "", archive_db: "" }),
     providers: vi.fn(),
     authPools: vi.fn().mockResolvedValue({ pools: [] }),
     getAuthPools: vi.fn().mockResolvedValue({ pools: [] }),

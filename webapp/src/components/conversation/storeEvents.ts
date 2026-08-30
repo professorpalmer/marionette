@@ -30,6 +30,28 @@ export function nextStoreCursor(
 }
 
 /**
+ * Advance the store cursor after a read_events_since batch.
+ *
+ * Store overflow (`gap`) rewinds to 0 so the next poll can read the
+ * remaining buffer from the start. A ring_miss event without `gap` still
+ * advances past that event id, but ignores the envelope high-water so a
+ * hole cannot look like catch-up.
+ */
+export function storeCursorAfterBatch(opts: {
+  lastApplied: number;
+  events: StoreEvent[];
+  responseCursor?: number;
+  gap?: boolean;
+}): number {
+  if (opts.gap) return 0;
+  const sawMiss = opts.events.some((ev) => isStoreRingMissEvent(ev));
+  if (sawMiss) {
+    return nextStoreCursor(opts.lastApplied, opts.events, undefined);
+  }
+  return nextStoreCursor(opts.lastApplied, opts.events, opts.responseCursor);
+}
+
+/**
  * Generation + session fence for store-event apply.
  * Late events from a prior stream generation or switched session must not paint.
  */

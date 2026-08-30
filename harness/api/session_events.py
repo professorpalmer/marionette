@@ -115,7 +115,12 @@ class SessionEventStore:
             self._last_ring_miss_fp.pop(victim, None)
 
     def since(self, session_id: str, cursor: int = 0) -> dict:
-        """Return events with id > ``cursor`` plus the high-water cursor."""
+        """Return events with id > ``cursor`` plus the high-water cursor.
+
+        When ``since > 0`` and cap-eviction left a hole (oldest retained id >
+        since+1, or the bucket is empty while high-water is still ahead of
+        ``since``), sets ``gap`` so callers refuse a contiguous-looking replay.
+        """
         sid = (session_id or "").strip()
         try:
             since_c = int(cursor or 0)
@@ -123,11 +128,22 @@ class SessionEventStore:
             since_c = 0
         with self._lock:
             bucket = self._sessions.get(sid) or deque()
-            events = [ev for eid, ev in bucket if eid > since_c]
+            high = int(self._cursors.get(sid, 0) or 0)
+            gap = False
+            if since_c > 0:
+                if not bucket:
+                    if high > since_c:
+                        gap = True
+                else:
+                    oldest = bucket[0][0]
+                    if oldest > since_c + 1:
+                        gap = True
+            events = [] if gap else [ev for eid, ev in bucket if eid > since_c]
             return {
                 "session_id": sid,
-                "cursor": int(self._cursors.get(sid, 0) or 0),
+                "cursor": high,
                 "events": events,
+                "gap": gap,
             }
 
     def mirrored_ring_cursor(self, session_id: str) -> int:
@@ -348,11 +364,31 @@ def read_events_since(
     _sample_runners_into_store(store, session_control_svc, sid)
 
     batch = store.since(sid, since_c)
+    events = batch.get("events") if isinstance(batch.get("events"), list) else []
+    gap = bool(batch.get("gap"))
+    if gap:
+        events = [
+            {
+                "id": since_c,
+                "kind": "ring_miss",
+                "data": {
+                    "ok": False,
+                    "code": "cursor_gap",
+                    "missed": True,
+                    "available": True,
+                    "generation": store.mirrored_ring_generation(sid),
+                    "cursor": int(batch.get("cursor") or 0),
+                    "session_id": sid,
+                },
+                "session_id": sid,
+            }
+        ]
     return 200, {
         "ok": True,
         "session_id": sid,
         "cursor": int(batch.get("cursor") or 0),
-        "events": batch.get("events") if isinstance(batch.get("events"), list) else [],
+        "events": events,
+        "gap": gap,
     }
 
 

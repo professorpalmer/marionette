@@ -61,6 +61,8 @@ _PILOT_EXTRAS: Set[str] = {
     "search_codegraph",
     "search_files",
     "search_state",
+    "search_archive",
+    "read_archived_chat",
     "memory",
     "store_scratch",
     "load_scratch",

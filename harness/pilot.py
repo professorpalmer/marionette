@@ -63,6 +63,8 @@ ActionKind = Literal[
     "search_codegraph",
     "search_files",
     "search_state",
+    "search_archive",
+    "read_archived_chat",
     "search_tools",
     "query_wiki",
     "run_implement",
@@ -445,6 +447,12 @@ class PilotAction:
             raise PilotError("search_files action requires a 'query'")
         if self.kind == "search_state" and not (self.query or "").strip():
             raise PilotError("search_state action requires a 'query'")
+        if self.kind == "search_archive" and not (self.query or "").strip():
+            raise PilotError("search_archive action requires a 'query'")
+        if self.kind == "read_archived_chat":
+            chat_id = (self.path or (self.arguments or {}).get("chat_id") or "").strip()
+            if not chat_id:
+                raise PilotError("read_archived_chat requires a 'chat_id'")
         if self.kind == "search_tools" and not (self.query or "").strip() and not self.arguments.get("activate"):
             raise PilotError("search_tools action requires a 'query' and/or 'activate' list")
         if self.kind == "query_wiki" and not (self.arguments.get("question") or "").strip():
@@ -570,6 +578,8 @@ def from_wire(
             or raw.get("url")
             or ""
         )
+    if kind == "read_archived_chat" and not str(path).strip():
+        path = raw.get("chat_id") or arguments.get("chat_id") or ""
 
     content = (
         raw.get("content")
@@ -1517,7 +1527,49 @@ def build_tools_schema(
             },
         })
 
-    # lsp (status + diagnostics via local tools; small first-pass)
+    # search_archive / read_archived_chat (Marionette cold vault)
+    if not no_delegation:
+        schema.append({
+            "type": "function",
+            "function": {
+                "name": "search_archive",
+                "description": (
+                    "Search ingested archived Marionette chats by distinctive keywords. "
+                    "All tokens must match the same chat. Open a hit with read_archived_chat. "
+                    "Does not load the chat back into the live session store."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Distinctive keywords; all must match the same chat"},
+                        "source": {
+                            "type": "string",
+                            "description": "Optional source filter",
+                        },
+                        "max_results": {"type": "integer", "description": "Optional max results, default 20"},
+                    },
+                    "required": ["query"],
+                },
+            },
+        })
+        schema.append({
+            "type": "function",
+            "function": {
+                "name": "read_archived_chat",
+                "description": (
+                    "Read one archived chat by chat_id from search_archive "
+                    "(marionette:<session_id>). Does not write the transcript back into the live session store."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "chat_id": {"type": "string", "description": "Archive chat id from search_archive"},
+                        "max_messages": {"type": "integer", "description": "Optional message cap, default 200"},
+                    },
+                    "required": ["chat_id"],
+                },
+            },
+        })
     if not no_delegation:
         schema.append({
             "type": "function",
@@ -2732,6 +2784,8 @@ You have direct access to a local CodeGraph-indexed workspace and can explore/ed
 - `search_codegraph`: search the CodeGraph index for symbol usages, definitions, context, or affected dependents. Requires `query` and optional `kind` (`search` | `context` | `affected`).
 - `search_files`: plain-text/regex content search over the repository, complementary to symbol search. Requires `query`, optional `path` (or `paths` for several at once), and `max_results`.
 - `search_state`: look up durable prior jobs/artifacts/spills by keyword (returns job://, artifact://, spill:// URIs). Use before re-dispatching a broad swarm when a prior green analysis may still be valid; open hits with read_file.
+- `search_archive`: search ingested archived Marionette chats by distinctive keywords. Open a hit with `read_archived_chat`. Does not reload into the live session store.
+- `read_archived_chat`: read one archived chat by `chat_id` from search_archive.
 - `lsp`: fetch IDE-style status/diagnostics for Python/TypeScript by invoking locally available tools (pyright/tsc/tsserver). Requires optional `language` ('python'/'typescript'/'auto') and `mode` ('status'/'diagnostics').
 - `search_tools`: search the catalog of available pilot and MCP tools; use `activate` to enable hidden tools for later turns.
 - `query_wiki`: query the durable cross-session architecture and knowledge wiki. Requires `question`.

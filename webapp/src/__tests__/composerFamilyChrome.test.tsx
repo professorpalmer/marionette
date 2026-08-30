@@ -207,6 +207,23 @@ describe("composer-family chrome", () => {
     clearSessionTodos();
   });
 
+  it("does not paint another session's TODO tree on this conversation", () => {
+    publishSessionTodos({
+      phases: [
+        {
+          name: "Wave I",
+          tasks: [{ content: "beyblade leftover", status: "in_progress" }],
+        },
+      ],
+    }, "sess-arena");
+    const rail = render(
+      <ComposerActivityRail jobs={[]} sessionId="sess-marionette" />,
+    );
+    expect(rail.container.querySelector("[data-slot=composer-activity-rail]")).toBeNull();
+    expect(rail.queryByText("beyblade leftover")).toBeNull();
+    clearSessionTodos();
+  });
+
   it("lights a pending session TODO from a live swarm label", () => {
     publishSessionTodos({
       phases: [

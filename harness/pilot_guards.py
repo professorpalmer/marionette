@@ -94,6 +94,8 @@ FAILED_OBJECTIVE_RESUME_CAP = int(os.environ.get("HARNESS_FAILED_OBJECTIVE_RESUM
 DELEGATION_EXEMPT_KINDS = frozenset({
     "search_codegraph",
     "search_state",
+    "search_archive",
+    "read_archived_chat",
     "query_wiki",
     "run_swarm",
     "run_implement",
@@ -883,7 +885,7 @@ def normalize_action_args(kind: str, act: Any) -> str:
         payload["code_fingerprint"] = (
             hashlib.sha256(code.encode("utf-8")).hexdigest()[:16] if code else ""
         )
-    elif kind in ("search_files", "search_codegraph", "search_state", "search_tools", "web_search"):
+    elif kind in ("search_files", "search_codegraph", "search_state", "search_archive", "search_tools", "web_search"):
         payload["query"] = _norm_whitespace(getattr(act, "query", "") or args.get("query", "") or "")
         if kind == "search_files":
             payload["path"] = _norm_path(args.get("path", "") or "")
@@ -1267,7 +1269,7 @@ def is_swarm_gate_blocked_exploration(state: TurnGuardState, kind: str, act: Any
         if not state.swarm_dispatched:
             if kind in ("run_swarm", "run_parallel"):
                 return False
-            if kind in ("search_codegraph", "search_state", "route_task", "query_wiki"):
+            if kind in ("search_codegraph", "search_state", "search_archive", "read_archived_chat", "route_task", "query_wiki"):
                 return False
             if kind == "read_file" and _is_durable_recall_read(act):
                 return False
@@ -1285,7 +1287,7 @@ def is_swarm_gate_blocked_exploration(state: TurnGuardState, kind: str, act: Any
 
     # Durable recall is never swarm-gated: search_state and read_file of
     # artifact:// / job:// / spill:// must stay available before redispatch.
-    if kind == "search_state":
+    if kind in ("search_state", "search_archive", "read_archived_chat"):
         return False
     if kind == "read_file" and _is_durable_recall_read(act):
         return False

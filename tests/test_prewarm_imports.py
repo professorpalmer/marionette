@@ -51,3 +51,25 @@ def test_concurrent_worker_imports_after_prewarm_never_fail():
         t.join()
 
     assert errors == []
+
+
+def test_prewarm_retries_when_essential_import_fails(monkeypatch):
+    import importlib
+    import harness.conversation as conv
+
+    conv._WORKER_IMPORTS_WARMED = False
+    real = importlib.import_module
+
+    def boom(name, package=None):
+        if name == "harness.worker":
+            raise ImportError("simulated essential miss")
+        return real(name, package)
+
+    monkeypatch.setattr(importlib, "import_module", boom)
+    conv._prewarm_worker_imports()
+    assert conv._WORKER_IMPORTS_WARMED is False
+
+    monkeypatch.setattr(importlib, "import_module", real)
+    conv._prewarm_worker_imports()
+    assert conv._WORKER_IMPORTS_WARMED is True
+    assert "harness.worker" in sys.modules

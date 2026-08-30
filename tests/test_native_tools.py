@@ -34,6 +34,8 @@ def test_build_tools_schema():
     assert "wait" in names
     assert "todo" in names
     assert "search_codegraph" in names
+    assert "search_archive" in names
+    assert "read_archived_chat" in names
     assert "query_wiki" in names
 
     # Call with MCP tools

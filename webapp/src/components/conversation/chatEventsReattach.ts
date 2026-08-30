@@ -17,7 +17,7 @@ import {
 import {
   STORE_EVENTS_POLL_MS,
   isStoreRingMissEvent,
-  nextStoreCursor,
+  storeCursorAfterBatch,
   shouldApplyStoreEvent,
   storeBatchSawTerminal,
   storeRingMissFields,
@@ -459,11 +459,12 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
         if (ev.kind === "runners") {
           const keep = await applyRunnersEvent(ev.data || {});
           if (!keep) {
-            lastAppliedCursorRef.current = nextStoreCursor(
-              lastAppliedCursorRef.current,
+            lastAppliedCursorRef.current = storeCursorAfterBatch({
+              lastApplied: lastAppliedCursorRef.current,
               events,
-              batch.cursor,
-            );
+              responseCursor: batch.cursor,
+              gap: batch.gap,
+            });
             return false;
           }
           continue;
@@ -488,11 +489,12 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
         }
       }
 
-      lastAppliedCursorRef.current = nextStoreCursor(
-        lastAppliedCursorRef.current,
+      lastAppliedCursorRef.current = storeCursorAfterBatch({
+        lastApplied: lastAppliedCursorRef.current,
         events,
-        batch.cursor,
-      );
+        responseCursor: batch.cursor,
+        gap: batch.gap,
+      });
 
       if (wantRetry && !missRetried) {
         return pullChatEvents(true);

@@ -28,6 +28,8 @@ MOVED_METHODS = (
     "_do_search_codegraph",
     "_do_search_files",
     "_do_search_state",
+    "_do_search_archive",
+    "_do_read_archived_chat",
     "_do_search_tools",
     "_do_hash_edit",
     "_do_write_file",

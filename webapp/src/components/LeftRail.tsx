@@ -1216,7 +1216,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   };
 
   const activeSessionId = sessions.find((session) => session.active)?.id || "";
-  const sortedJobs = filterJobsByScope(jobs.slice().reverse(), jobScope, activeSessionId);
+  const sortedJobs = filterJobsByScope(jobs.slice().reverse(), "session", activeSessionId);
   const visibleJobs = sortedJobs.filter(
     (j) => !hiddenJobIds.has(j.id) || !isTerminalJob(j),
   );
