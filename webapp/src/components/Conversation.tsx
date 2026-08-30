@@ -2429,7 +2429,7 @@ export default function Conversation({
             const hasActions = jobs.some(
               (j) => Array.isArray(j.actions) && j.actions.length > 0,
             );
-            const terminalIds = terminalJobIdsFromSwarmLive(jobs, pollSid);
+            const terminalIds = terminalJobIdsFromSwarmLive(jobs, pollSid ?? "");
             const hasTerminal = terminalIds.length > 0;
             const recoveryIds = terminalJobIdsNeedingResultRecovery(
               pendingJobIdsRef.current,

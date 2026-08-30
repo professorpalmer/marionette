@@ -1232,7 +1232,7 @@ export default function SwarmPane() {
             // resolves empty (sibling-store miss must not wipe the row).
             if (
               incoming.length === 0
-              && (j.artifacts || []).length > 0
+              && jobArtifactList(j).length > 0
               && j.cross_project
               && jobOwnedForScope(j)
             ) {
