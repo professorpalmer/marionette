@@ -63,26 +63,37 @@ test("checkForUpdate: only a fast-forwardable source checkout is actionable", as
   const remoteDir = path.join(root, "remote.git");
   const behindOnly = path.join(root, "behind-only");
   const diverged = path.join(root, "diverged");
-  const git = (cwd, args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
+  const gitEnv = {
+    ...process.env,
+    GIT_CONFIG_GLOBAL: os.devNull,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_AUTHOR_NAME: "Test",
+    GIT_AUTHOR_EMAIL: "test@example.invalid",
+    GIT_COMMITTER_NAME: "Test",
+    GIT_COMMITTER_EMAIL: "test@example.invalid",
+  };
+  const runGit = (args) => execFileSync("git", args, { encoding: "utf8", env: gitEnv });
+  const git = (cwd, args) => runGit(["-C", cwd, "-c", "commit.gpgsign=false", ...args]);
 
   fs.mkdirSync(path.join(seed, "webapp"), { recursive: true });
   git(seed, ["init", "-q", "-b", "main"]);
-  git(seed, ["config", "user.name", "Test"]);
-  git(seed, ["config", "user.email", "test@example.invalid"]);
   fs.writeFileSync(
     path.join(seed, "webapp", "package.json"),
     JSON.stringify({ version: "0.9.383" }),
   );
   git(seed, ["add", "webapp/package.json"]);
   git(seed, ["commit", "-q", "-m", "base"]);
-  execFileSync("git", ["clone", "-q", "--bare", seed, remoteDir]);
-  execFileSync("git", ["clone", "-q", remoteDir, behindOnly]);
-  execFileSync("git", ["clone", "-q", remoteDir, diverged]);
-  git(diverged, ["config", "user.name", "Test"]);
-  git(diverged, ["config", "user.email", "test@example.invalid"]);
+  runGit(["clone", "-q", "--bare", seed, remoteDir]);
+  runGit(["clone", "-q", remoteDir, behindOnly]);
+  runGit(["clone", "-q", remoteDir, diverged]);
   git(diverged, ["commit", "--allow-empty", "-q", "-m", "local feature"]);
   git(seed, ["remote", "add", "origin", remoteDir]);
-  git(seed, ["commit", "--allow-empty", "-q", "-m", "upstream main"]);
+  fs.writeFileSync(
+    path.join(seed, "webapp", "package.json"),
+    JSON.stringify({ version: "0.9.384" }),
+  );
+  git(seed, ["add", "webapp/package.json"]);
+  git(seed, ["commit", "-q", "-m", "upstream main"]);
   git(seed, ["push", "-q", "origin", "main"]);
 
   const fastForward = await bridge.checkForUpdate({
@@ -98,10 +109,11 @@ test("checkForUpdate: only a fast-forwardable source checkout is actionable", as
 
   assert.equal(fastForward.behind, 1);
   assert.equal(fastForward.ahead, 0);
+  assert.equal(fastForward.latest, "0.9.384");
   assert.equal(fastForward.available, true);
   assert.equal(fork.behind, 1);
   assert.equal(fork.ahead, 1);
-  assert.equal(fork.latest, fork.currentVersion);
+  assert.equal(fork.latest, "0.9.384");
   assert.equal(fork.available, false);
 });
 
