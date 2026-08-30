@@ -271,22 +271,23 @@ def test_empty_diff_implement_failure_detector():
     assert _is_empty_diff_implement_failure(ok_patch, expects_diff=True) is False
 
 
-def test_agentic_empty_managed_implement_is_recovery_eligible():
-    result = WorkerResult(
-        ok=False,
-        error="agentic_orchestrator_failed",
-        summary="Worker produced no changes in disposable managed worktree",
-        patch="",
-        worktree_diff_empty=True,
-        managed_worktree_mode="managed",
-    )
+def test_agentic_empty_managed_implement_does_not_retry():
+    for error in ("agentic_orchestrator_failed", "agentic_no_diff"):
+        result = WorkerResult(
+            ok=False,
+            error=error,
+            summary="Worker produced no changes in disposable managed worktree",
+            patch="",
+            worktree_diff_empty=True,
+            managed_worktree_mode="managed",
+        )
 
-    assert _empty_implement_recovery_eligible(
-        result,
-        expects_diff=True,
-        live_dirty_before=["src/lib/db/schema.ts"],
-        cancelled=False,
-    ) is True
+        assert _empty_implement_recovery_eligible(
+            result,
+            expects_diff=True,
+            live_dirty_before=["src/lib/db/schema.ts"],
+            cancelled=False,
+        ) is False
 
 
 def test_agentic_orchestrator_failure_without_empty_worktree_evidence_does_not_retry():

@@ -15,6 +15,7 @@ import pytest
 from harness.config import HarnessConfig
 from harness.edit_engines import (
     AGENTIC_ERROR,
+    AGENTIC_NO_DIFF,
     AGENTIC_ORCHESTRATOR_FAILED,
     AGENTIC_PROVIDER_RATE_LIMITED,
     AGENTIC_ROUTE_FAILED,
@@ -37,6 +38,7 @@ from harness.edit_engines import (
     _agentic_store_failure_snapshot,
     _format_agentic_engine_error,
     _summarize_agentic_result,
+    classify_agentic_exception,
     failure_is_retryable,
 )
 from harness.worker import ProviderWorker, WorkerResult
@@ -153,7 +155,18 @@ def test_agentic_store_failure_snapshot_prefers_gate_reason():
 
         def list_artifacts(self, job_id):
             art = type("A", (), {})()
-            art.payload = {"tokens_in": 40, "tokens_out": 12, "failure": "no_model"}
+            art.payload = {
+                "tokens_in": 40,
+                "tokens_out": 12,
+                "failure": "no_diff_produced",
+                "stop_reason": "submitted",
+                "turns": 9,
+                "provider": "openai-codex",
+                "model": "gpt-5.6-luna",
+                "submit_forced_budget": True,
+                "has_work": False,
+                "stdout": "Validated the current implementation but changed no files.",
+            }
             return [art]
 
     snap = _agentic_store_failure_snapshot(_Store())
@@ -164,6 +177,20 @@ def test_agentic_store_failure_snapshot_prefers_gate_reason():
     assert snap["tokens_out"] == 12
     assert snap["usage_known"] is True
     assert snap["task_ids"] == ["t1"]
+    assert snap["worker_failure"] == "no_diff_produced"
+    assert snap["stop_reason"] == "submitted"
+    assert snap["turns"] == 9
+    assert snap["provider"] == "openai-codex"
+    assert snap["model"] == "gpt-5.6-luna"
+    assert snap["submit_forced_budget"] is True
+    assert snap["has_work"] is False
+    assert snap["final_response_excerpt"] == (
+        "Validated the current implementation but changed no files."
+    )
+    assert classify_agentic_exception(
+        RuntimeError("swarm exited with incomplete tasks"),
+        snap,
+    ) == AGENTIC_NO_DIFF
     summary = _format_agentic_engine_error(
         RuntimeError("swarm exited with incomplete tasks"),
         snap,
@@ -172,6 +199,9 @@ def test_agentic_store_failure_snapshot_prefers_gate_reason():
     assert "incomplete tasks" in summary
     assert "require_diff: no PATCH artifact" in summary
     assert "tasks: implement=failed" in summary
+    assert "worker: no_diff_produced; stop=submitted; turns=9" in summary
+    assert "route=openai-codex/gpt-5.6-luna" in summary
+    assert "final response: Validated the current implementation" in summary
     assert "unapplied worktree files: src/lib/scoring/report.ts" in summary
 
 
@@ -196,6 +226,13 @@ def test_agentic_store_failure_snapshot_unknown_usage_is_not_measured_zero():
     assert snap["tokens_in"] == 0
     assert snap["tokens_out"] == 0
     assert snap["task_ids"] == ["t9"]
+
+
+def test_require_diff_without_worker_no_diff_evidence_stays_orchestrator_failure():
+    assert classify_agentic_exception(
+        RuntimeError("swarm exited with incomplete tasks"),
+        {"reason": "require_diff: no PATCH artifact"},
+    ) == AGENTIC_ORCHESTRATOR_FAILED
 
 
 def test_agentic_store_failure_snapshot_captures_events_when_reason_empty():
