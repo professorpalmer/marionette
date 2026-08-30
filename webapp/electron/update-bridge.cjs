@@ -468,7 +468,7 @@ async function checkForUpdate({ repoRoot, branch = DEFAULT_BRANCH, currentVersio
     );
 
     return {
-      available: behind > 0,
+      available: behind > 0 && ahead === 0,
       behind,
       latest,
       branch,
