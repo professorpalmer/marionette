@@ -386,13 +386,56 @@ def test_cwd_under_repo_longest_prefix():
     ]) == os.path.normcase(os.path.abspath("/work/a/deep/nested"))
 
 
-def test_jobs_api_lists_cwd_alias_under_canonical_workspace(tmp_path, monkeypatch):
+def _alias_or_symlink_root(tmp_path):
     repo = tmp_path / "marionette"
     repo.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
     alias = tmp_path / "Marionette"
     if not alias.exists():
         alias.symlink_to(repo, target_is_directory=True)
+    return repo, alias
+
+
+def test_cwd_under_repo_nested_alias_under_canonical(tmp_path):
+    repo, alias = _alias_or_symlink_root(tmp_path)
+    nested = alias / "nested" / "child"
+    nested.mkdir(parents=True)
+    missing = alias / "nested" / "historical-gone"
+    other = tmp_path / "other-root" / "child"
+    other.mkdir(parents=True)
+
+    assert cwd_under_repo(str(nested), str(repo))
+    assert cwd_under_repo(str(missing), str(repo))
+    assert not cwd_under_repo(str(other), str(repo))
+
+    nested_tasks = [SimpleNamespace(payload={"cwd": str(nested)})]
+    assert job_visible_for_view(
+        session_id="",
+        label=None,
+        tasks=nested_tasks,
+        active_session_id="sess-b",
+        repo_root=str(repo),
+    )
+    missing_tasks = [SimpleNamespace(payload={"cwd": str(missing)})]
+    assert job_visible_for_view(
+        session_id="",
+        label=None,
+        tasks=missing_tasks,
+        active_session_id="sess-b",
+        repo_root=str(repo),
+    )
+    other_tasks = [SimpleNamespace(payload={"cwd": str(other)})]
+    assert not job_visible_for_view(
+        session_id="",
+        label=None,
+        tasks=other_tasks,
+        active_session_id="sess-b",
+        repo_root=str(repo),
+    )
+
+
+def test_jobs_api_lists_cwd_alias_under_canonical_workspace(tmp_path, monkeypatch):
+    repo, alias = _alias_or_symlink_root(tmp_path)
     store = create_store("sqlite", str(tmp_path / "state"))
     created = store.create_job("aliased job")
     _save_task(store, created.id, str(alias))

@@ -185,15 +185,25 @@ def job_repo_cwd(tasks: list) -> str:
 
 
 def cwd_under_repo(cwd: str, repo_root: str) -> bool:
-    """True when ``cwd`` sits under ``repo_root`` (longest-prefix / commonpath)."""
+    """True when ``cwd`` sits under ``repo_root`` (prefix, alias, or ancestor)."""
     if not cwd or not repo_root:
         return False
+    try:
+        repo_n = _norm_path(repo_root)
+        if os.path.commonpath([repo_n, _norm_path(cwd)]) == repo_n:
+            return True
+    except ValueError:
+        pass
     if same_workspace_path(cwd, repo_root):
         return True
-    try:
-        return os.path.commonpath([_norm_path(repo_root), _norm_path(cwd)]) == _norm_path(repo_root)
-    except ValueError:
-        return False
+    current = os.path.abspath(os.path.normpath(cwd))
+    while True:
+        parent = os.path.dirname(current)
+        if parent == current:
+            return False
+        current = parent
+        if os.path.exists(current) and same_workspace_path(current, repo_root):
+            return True
 
 
 _RUNNING_STATUSES = frozenset({"running", "in_progress", "pending", "started"})

@@ -140,9 +140,13 @@ def test_boot_restores_git_workspace_under_its_canonical_root(reload_server, tmp
 
     srv = reload_server(HARNESS_REPO=None)
 
-    assert srv._cfg.repo == str(repo)
-    assert os.environ.get("HARNESS_REPO") == str(repo)
-    assert json.loads((tmp_path / "workspace.json").read_text(encoding="utf-8"))["repo"] == str(repo)
+    assert os.path.samefile(srv._cfg.repo, repo)
+    assert os.path.samefile(os.environ["HARNESS_REPO"], repo)
+    persisted = json.loads((tmp_path / "workspace.json").read_text(encoding="utf-8"))["repo"]
+    assert os.path.samefile(persisted, repo)
+    other = tmp_path / "other-root"
+    other.mkdir()
+    assert not os.path.samefile(srv._cfg.repo, other)
 
 
 def test_boot_skips_workspace_when_harness_repo_already_set(reload_server, tmp_path):
