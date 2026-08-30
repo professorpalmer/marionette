@@ -117,12 +117,21 @@ test("checkForUpdate: only a fast-forwardable source checkout is actionable", as
   assert.equal(fork.available, false);
 });
 
-function registerUpdateApplyHarness({ dirty, sourceResult }) {
+function registerUpdateApplyHarness({
+  dirty,
+  sourceResult,
+  shellVersion = "0.9.385",
+  checkoutVersion = shellVersion,
+  updatedCheckoutVersion = "0.9.386",
+  packagedAvailable = true,
+}) {
   const handlers = {};
   const observed = { sourceStrategies: [], shellInstalls: 0 };
+  const checkoutVersions = [checkoutVersion, updatedCheckoutVersion];
+  let checkoutVersionRead = 0;
   const packagedUpdater = {
     enabled: true,
-    check: async () => ({ available: true, latest: "0.9.386" }),
+    check: async () => ({ available: packagedAvailable, latest: "0.9.386" }),
     isDownloaded: () => false,
     downloadAndInstall: async () => {
       observed.shellInstalls += 1;
@@ -136,11 +145,14 @@ function registerUpdateApplyHarness({ dirty, sourceResult }) {
         handlers[channel] = handler;
       },
     },
-    { isPackaged: true, getVersion: () => "0.9.385" },
+    { isPackaged: true, getVersion: () => shellVersion },
     { openExternal: async () => true },
     {
       getRepoRoot: () => path.join(os.tmpdir(), "marionette-update-test"),
       packagedUpdater,
+      readCheckoutVersion: () => (
+        checkoutVersions[Math.min(checkoutVersionRead++, checkoutVersions.length - 1)]
+      ),
       checkSourceUpdate: async () => ({
         available: true,
         dirty,
@@ -150,6 +162,7 @@ function registerUpdateApplyHarness({ dirty, sourceResult }) {
         observed.sourceStrategies.push(strategy);
         return sourceResult;
       },
+      relaunch: () => {},
     },
   );
 
@@ -188,6 +201,40 @@ test("updates:apply does not install the packaged shell after a source failure",
 
   assert.equal(result.code, "conflict");
   assert.equal(update.observed.shellInstalls, 0);
+});
+
+test("updates:apply does not reinstall a packaged shell already at the updated source version", async () => {
+  const update = registerUpdateApplyHarness({
+    dirty: false,
+    shellVersion: "0.9.386",
+    checkoutVersion: "0.9.385",
+    updatedCheckoutVersion: "0.9.386",
+    packagedAvailable: false,
+    sourceResult: { ok: true, mainProcessChanged: true },
+  });
+
+  const result = await update.apply();
+
+  assert.equal(result.ok, true);
+  assert.equal(result.code, undefined);
+  assert.equal(update.observed.shellInstalls, 0);
+});
+
+test("updates:apply still installs a packaged shell behind the updated source version", async () => {
+  const update = registerUpdateApplyHarness({
+    dirty: false,
+    shellVersion: "0.9.385",
+    checkoutVersion: "0.9.385",
+    updatedCheckoutVersion: "0.9.386",
+    packagedAvailable: false,
+    sourceResult: { ok: true, mainProcessChanged: true },
+  });
+
+  const result = await update.apply();
+
+  assert.equal(result.ok, true);
+  assert.equal(result.installerUpdateRequired, true);
+  assert.equal(update.observed.shellInstalls, 1);
 });
 
 test("overallPercent: monotonic across the pipeline, clamped to 0..100", () => {
