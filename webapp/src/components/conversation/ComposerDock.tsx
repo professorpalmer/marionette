@@ -270,6 +270,22 @@ export default function ComposerDock({
   const toolOutputSavingsUsd = positiveFinite(contextUsage?.tool_output_savings_usd);
   const showContextHonesty =
     spillCount > 0 || historyCompactions > 0 || toolOutputTokensSaved > 0 || toolOutputSavingsUsd > 0;
+  const compactionAdvice = contextUsage?.compaction_advice;
+  const showCompactionAdvice = Boolean(
+    compactionAdvice
+    && !compactionAdvice.acked_manual_compact
+    && (
+      compactionAdvice.needs_intervention
+      || compactionAdvice.level === "soon"
+      || compactionAdvice.level === "now"
+    )
+  );
+  const compactionBudget =
+    compactionAdvice?.budget_kind === "absolute"
+    && typeof compactionAdvice.budget_tokens === "number"
+    && compactionAdvice.budget_tokens > 0
+      ? `${Math.round(compactionAdvice.budget_tokens / 1000)}k`
+      : "";
   const formatHonestyCount = (num: number): string => {
     if (!Number.isFinite(num) || num <= 0) return "0";
     if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
@@ -707,6 +723,32 @@ export default function ComposerDock({
                   );
                 })}
               </div>
+
+              {showCompactionAdvice && (
+                <div
+                  className="mt-2.5 rounded border border-amber-500/25 bg-amber-500/10 px-2.5 py-2 text-amber-100/90"
+                  role="status"
+                  title={compactionAdvice?.warning_reason || compactionAdvice?.reasons?.[0] || "Context pressure needs attention"}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="font-medium">
+                      {compactionAdvice?.level === "soon" ? "Long session" : "Needs attention"}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => window.dispatchEvent(new Event("harness-compact-session"))}
+                      className="shrink-0 rounded border border-amber-500/40 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-100 hover:bg-amber-500/25"
+                    >
+                      Compact now
+                    </button>
+                  </div>
+                  <p className="mt-1 mb-0 leading-snug text-amber-100/75">
+                    {compactionBudget
+                      ? `Past the ${compactionBudget} working-context budget. Compact older history.`
+                      : "This session is past its working-context budget. Compact older history."}
+                  </p>
+                </div>
+              )}
 
               {showContextHonesty && (
                 <div className="mt-2.5 pt-2 border-t border-edge/30 space-y-1 text-[10.5px] text-faint font-mono">

@@ -103,6 +103,54 @@ def test_state_list_jobs_uses_batch(monkeypatch):
     assert all(j["artifacts"] == 3 and j["task_count"] == 1 for j in jobs)
 
 
+def test_state_list_jobs_counts_existing_bulk_artifact_rows_without_per_job_queries():
+    from harness import state as state_mod
+
+    class FakeJob:
+        def __init__(self, jid):
+            self.id = jid
+            self.goal = "g"
+            self.status = "done"
+            self.created_at = 0
+
+    class FakeStore:
+        def __init__(self):
+            self.bulk_artifact_calls = 0
+            self.per_job_count_calls = 0
+
+        def list_jobs(self):
+            return [FakeJob("j1"), FakeJob("j2"), FakeJob("j3")]
+
+        def list_tasks_for_jobs(self, _jids):
+            return []
+
+        def list_artifacts_for_jobs(self, _jids):
+            self.bulk_artifact_calls += 1
+            return [
+                type("Artifact", (), {"job_id": "j1"})(),
+                type("Artifact", (), {"job_id": "j1"})(),
+                type("Artifact", (), {"job_id": "j2"})(),
+            ]
+
+        def count_artifacts(self, _jid):
+            self.per_job_count_calls += 1
+            raise AssertionError("per-job artifact counts must not run")
+
+    store = FakeStore()
+    ds = state_mod.DurableState.__new__(state_mod.DurableState)
+    ds.__dict__["store"] = store
+
+    jobs = ds.list_jobs()
+
+    assert store.bulk_artifact_calls == 1
+    assert store.per_job_count_calls == 0
+    assert {job["id"]: job["artifacts"] for job in jobs} == {
+        "j1": 2,
+        "j2": 1,
+        "j3": 0,
+    }
+
+
 def test_state_list_jobs_survives_poisoned_status_row(tmp_path):
     """A job row whose status string the installed puppetmaster can't parse
     must degrade to a raw row-tolerant read, not blank the whole feed (this

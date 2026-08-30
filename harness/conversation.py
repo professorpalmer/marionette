@@ -2313,6 +2313,16 @@ class ConversationalSession(
         # sample. Heuristic is fallback, not a peer that can win via max().
         total_tokens = self._usage_clock(heuristic_total)
 
+        try:
+            from harness.compaction_advisor import apply_manual_compaction_ack
+
+            compaction_advice = apply_manual_compaction_ack(
+                self._turn_economy.advise_compaction(budget),
+                self,
+            )
+        except Exception:
+            compaction_advice = {}
+
         categories = [
             {"name": "System prompt", "tokens": system_prompt_tokens},
             {"name": "Tool definitions", "tokens": tool_definitions_tokens},
@@ -2337,6 +2347,7 @@ class ConversationalSession(
             **self._wiki_grounding_fields(),
             **self._history_compaction_fields(),
             **self._spill_usage_fields(),
+            **compaction_advice,
             **self._turn_budget_usage_fields(),
             **self._append_only_usage_fields(),
             **self._task_profile_usage_fields(),

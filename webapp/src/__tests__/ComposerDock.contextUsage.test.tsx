@@ -4,7 +4,7 @@
  * undefined (reading 'map')") and paint "NaN" in the Usage button.
  */
 import { createRef } from "react";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import ComposerDock from "../components/conversation/ComposerDock";
 import type { ContextUsageResponse } from "../lib/api";
@@ -188,6 +188,33 @@ describe("ComposerDock context-usage resilience", () => {
     expect(screen.getByText("900")).toBeInTheDocument();
     expect(screen.getByText("Compact tool outputs saved")).toBeInTheDocument();
     expect(screen.getByText("~$0.006")).toBeInTheDocument();
+  });
+
+  it("offers Compact now beside a pressured session warning", () => {
+    const onCompact = vi.fn();
+    window.addEventListener("harness-compact-session", onCompact);
+    const pressuredUsage = {
+      total: 125000,
+      limit: 200000,
+      categories: [{ name: "Conversation", tokens: 125000 }],
+      compaction_advice: {
+        level: "soon",
+        needs_intervention: true,
+        budget_kind: "absolute",
+        budget_tokens: 120000,
+      },
+    } as ContextUsageResponse;
+
+    try {
+      renderDock(pressuredUsage);
+
+      expect(screen.getByText("Long session")).toBeInTheDocument();
+      expect(screen.getByText(/120k working-context budget/)).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Compact now" }));
+      expect(onCompact).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener("harness-compact-session", onCompact);
+    }
   });
 
   it("hides honesty footer lines when offload counts are zero or non-finite", () => {

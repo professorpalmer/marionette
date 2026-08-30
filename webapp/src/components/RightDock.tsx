@@ -31,6 +31,12 @@ const DOCK_LINKS: { id: string; tab: string; icon: ReactNode; title: string }[] 
     title: "Swarm tracker",
   },
   {
+    id: "economics",
+    tab: "economics",
+    icon: <Coins size={15} strokeWidth={1.75} />,
+    title: "Economics",
+  },
+  {
     id: "review",
     tab: "review",
     icon: <GitPullRequest size={15} strokeWidth={1.75} />,

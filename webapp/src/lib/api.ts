@@ -905,6 +905,10 @@ export type EconomicsJobRow = {
   actual_marginal_usd?: number | null;
   measured_cost_usd?: number | null;
   estimated_cost_usd?: number | null;
+  priced_tasks?: number | null;
+  unpriced_tasks?: number | null;
+  measured_runs?: number | null;
+  estimated_runs?: number | null;
   cost_basis?: string | null;
   counterfactual?: {
     reference_model_id?: string;
@@ -920,6 +924,7 @@ export type EconomicsJobRow = {
 };
 
 export type EconomicsData = {
+  repo?: string;
   scope?: EconomicsScope | string;
   /** Where PM savings were aggregated. Conversation jobs use repo-lifetime savings. */
   savings_scope?: EconomicsScope | string;
@@ -928,6 +933,7 @@ export type EconomicsData = {
   available?: boolean;
   error?: string;
   savings?: {
+    jobs_considered?: number;
     routing?: {
       saved_usd?: number;
       baseline_usd?: number;
@@ -948,9 +954,17 @@ export type EconomicsData = {
     naive_cost_usd?: number | null;
     actual_cost_usd?: number | null;
     avoided_usd?: number | null;
+    tasks?: number;
+    jobs?: number;
+    measured_cost_usd?: number | null;
+    estimated_cost_usd?: number | null;
+    spend_basis?: "measured_usage_x_registry_price" | "estimated" | "mixed" | "plan" | string;
     label?: string;
   } | null;
+  counterfactual_source?: "job_financial_reports" | "routing_report" | "unavailable" | string;
+  counterfactual_status?: "ok" | "routing_report" | "incomplete" | "mixed_reference" | "receipt_mismatch" | "unavailable" | string;
   recent_jobs?: EconomicsJobRow[];
+  recent_jobs_total?: number;
   owned_jobs_considered?: number;
   owned_actual_marginal_usd?: number | null;
   owned_avoided_usd?: number | null;
@@ -1072,6 +1086,15 @@ export type ContextUsageResponse = {
   history_tokens_saved?: number;
   spill_count?: number;
   spill_chars?: number;
+  compaction_advice?: {
+    level?: string;
+    needs_intervention?: boolean;
+    budget_kind?: "absolute" | "percent" | "l1" | "";
+    budget_tokens?: number;
+    warning_reason?: string;
+    reasons?: string[];
+    acked_manual_compact?: boolean;
+  };
 };
 
 // Above this many characters, a chat message / autopilot objective is routed
