@@ -138,6 +138,13 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
   const [skillsOpen, setSkillsOpen] = useState(false);
   // Cmd-K / /memory may fire harness-expand-memory before this mounts — consume latch.
   const [memoryOpen, setMemoryOpen] = useState(() => takePendingExpandMemory());
+  const [archiveStatus, setArchiveStatus] = useState<{
+    chats: number;
+    backup_dir: string;
+    vault_present: boolean;
+  } | null>(null);
+  const [archiveBusy, setArchiveBusy] = useState(false);
+  const [archiveNotice, setArchiveNotice] = useState("");
 
   // Form states for hooks
   const [newHookEvent, setNewHookEvent] = useState("");
@@ -240,6 +247,15 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         }
         console.error(err);
       });
+    api.archiveStatus()
+      .then((st) => {
+        setArchiveStatus({
+          vault_present: !!st.vault_present,
+          chats: Number(st.chats) || 0,
+          backup_dir: String(st.backup_dir || ""),
+        });
+      })
+      .catch(() => {});
   }, []);
 
   // Deep-link: Cmd-K Open Memory / /memory expand Agent Memory (mirror harness-expand-mcp).
@@ -2316,6 +2332,78 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
           )}
         </div>
 
+        </>)}
+        {gate("advanced", "chat archive ingest backup prune compact") && (<>
+        <div className="border-t border-edge pt-3 space-y-2">
+          <span className="uppercase tracking-wider text-[10px] text-faint font-semibold flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-accent inline-block"></span> Chat archive
+          </span>
+          <p className="text-[10px] text-muted">
+            Archive hides a session. Ingest copies it into a local vault and markdown
+            backup. Search reads the vault. Compact removes ingested transcripts from
+            the live store; Unarchive restores them.
+          </p>
+          <p className="text-[10px] text-faint">
+            {archiveStatus
+              ? `${archiveStatus.chats} chat${archiveStatus.chats === 1 ? "" : "s"} in the vault${archiveStatus.vault_present ? "" : " (empty)"}.`
+              : "Archive status loading…"}
+          </p>
+          <button
+            onClick={async () => {
+              setArchiveBusy(true);
+              setArchiveNotice("");
+              try {
+                const report = await api.ingestChatArchive();
+                setArchiveNotice(`Ingested ${Number(report.ingested || 0)} archived session${Number(report.ingested || 0) === 1 ? "" : "s"}.`);
+                const st = await api.archiveStatus();
+                setArchiveStatus({
+                  vault_present: !!st.vault_present,
+                  chats: Number(st.chats) || 0,
+                  backup_dir: String(st.backup_dir || ""),
+                });
+              } catch (err) {
+                setArchiveNotice(String(err || "Ingest failed"));
+              } finally {
+                setArchiveBusy(false);
+              }
+            }}
+            disabled={archiveBusy}
+            className="w-full flex items-center justify-between px-3 py-2 rounded border bg-panel2 border-edge text-muted transition text-left disabled:opacity-50"
+          >
+            <span className="font-medium text-[11px]">Ingest archived sessions</span>
+            <span className="text-[10px] uppercase font-bold tracking-wider">
+              {archiveBusy ? "working" : "ingest"}
+            </span>
+          </button>
+          <button
+            onClick={async () => {
+              setArchiveBusy(true);
+              setArchiveNotice("");
+              try {
+                const report = await api.pruneChatArchive();
+                setArchiveNotice(`Compacted ${Number(report.pruned || 0)} ingested transcript${Number(report.pruned || 0) === 1 ? "" : "s"}.`);
+                const st = await api.archiveStatus();
+                setArchiveStatus({
+                  vault_present: !!st.vault_present,
+                  chats: Number(st.chats) || 0,
+                  backup_dir: String(st.backup_dir || ""),
+                });
+              } catch (err) {
+                setArchiveNotice(String(err || "Compact failed"));
+              } finally {
+                setArchiveBusy(false);
+              }
+            }}
+            disabled={archiveBusy}
+            className="w-full flex items-center justify-between px-3 py-2 rounded border bg-panel2 border-edge text-muted transition text-left disabled:opacity-50"
+          >
+            <span className="font-medium text-[11px]">Compact ingested transcripts</span>
+            <span className="text-[10px] uppercase font-bold tracking-wider">
+              {archiveBusy ? "working" : "compact"}
+            </span>
+          </button>
+          {archiveNotice ? <p className="text-[10px] text-muted">{archiveNotice}</p> : null}
+        </div>
         </>)}
         {gate("advanced", "agent memory durable facts preferences") && (<>
         {/* Agent Memory Section */}

@@ -767,6 +767,49 @@ class ToolDispatchMixin:
         except Exception as e:
             return False, "exception", str(e)
 
+    def _do_search_archive(self, act: PilotAction) -> tuple[bool, str, str]:
+        from .chat_archive import format_search_hits, search_archive
+
+        args = act.arguments or {}
+        query = (act.query or args.get("query") or "").strip()
+        if not query:
+            return False, "invalid_arguments", "search_archive requires a 'query'"
+        source = str(args.get("source") or "").strip()
+        max_results = args.get("max_results", 20)
+        try:
+            hits = search_archive(
+                getattr(self, "state_dir", None) or getattr(self.config, "state_dir", "") or "",
+                query,
+                limit=max_results,
+                source=source,
+            )
+            return True, "success", format_search_hits(hits)
+        except Exception as e:
+            return False, "exception", str(e)
+
+    def _do_read_archived_chat(self, act: PilotAction) -> tuple[bool, str, str]:
+        from .chat_archive import format_archived_chat, read_archived_chat
+
+        args = act.arguments or {}
+        chat_id = (act.path or args.get("chat_id") or "").strip()
+        if not chat_id:
+            return False, "invalid_arguments", "read_archived_chat requires a 'chat_id'"
+        try:
+            max_messages = int(args.get("max_messages") or 200)
+        except (TypeError, ValueError):
+            max_messages = 200
+        try:
+            payload = read_archived_chat(
+                getattr(self, "state_dir", None) or getattr(self.config, "state_dir", "") or "",
+                chat_id,
+                max_messages=max_messages,
+            )
+            if payload is None:
+                return False, "not_found", "Archived chat not found."
+            return True, "success", format_archived_chat(payload)
+        except Exception as e:
+            return False, "exception", str(e)
+
     def _get_scratch_store(self):
         store = getattr(self, "_scratch_store", None)
         if store is not None:
@@ -841,6 +884,9 @@ class ToolDispatchMixin:
         except Exception as exc:
             return False, "exception", str(exc)
 
+    def _todo_session_id(self) -> str:
+        return str(getattr(self, "harness_session_id", "") or "").strip()
+
     def _get_todo_store(self):
         store = getattr(self, "_todo_store", None)
         if store is not None:
@@ -850,9 +896,13 @@ class ToolDispatchMixin:
         state_dir = getattr(self, "state_dir", None) or getattr(self.config, "state_dir", "") or ""
         store = SessionTodoStore(state_dir)
         self._todo_store = store
-        if not getattr(self, "_todo_phases", None):
-            self._todo_phases = store.load()
         return store
+
+    def reload_session_todos(self) -> None:
+        """Load todos for the bound conversation; empty until a session id exists."""
+        sid = self._todo_session_id()
+        store = self._get_todo_store()
+        self._todo_phases = store.load(session_id=sid) if sid else []
 
     def todo_snapshot(self) -> dict:
         from .todo import snapshot_payload
@@ -866,14 +916,14 @@ class ToolDispatchMixin:
         store = self._get_todo_store()
         current = getattr(self, "_todo_phases", None)
         if current is None:
-            current = store.load()
+            current = store.load(session_id=self._todo_session_id())
             self._todo_phases = current
         phases, errors, op = apply_todo_op(current, act.arguments or {})
         if errors:
             return False, "invalid_arguments", "; ".join(errors)
         self._todo_phases = phases
         try:
-            store.save(phases)
+            store.save(phases, session_id=self._todo_session_id())
         except Exception as exc:
             return False, "exception", str(exc)
         tree = format_todo_tree(phases)
@@ -886,12 +936,12 @@ class ToolDispatchMixin:
         store = self._get_todo_store()
         current = getattr(self, "_todo_phases", None)
         if current is None:
-            current = store.load()
+            current = store.load(session_id=self._todo_session_id())
             self._todo_phases = current
         result = handle_todo_slash_command(raw, current, workspace_root)
         if result.ok and result.mutated:
             self._todo_phases = result.phases
-            store.save(result.phases)
+            store.save(result.phases, session_id=self._todo_session_id())
         return result.public_dict()
 
     def _do_clear_scratch(self, act: PilotAction) -> tuple[bool, str, str]:

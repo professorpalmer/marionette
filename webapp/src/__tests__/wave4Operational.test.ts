@@ -29,6 +29,33 @@ describe("fromBackendDiagnostic", () => {
   it("returns null for incomplete wire payloads", () => {
     expect(fromBackendDiagnostic({ summary: "only summary" })).toBeNull();
   });
+
+  it("treats string false as not retryable", () => {
+    const diag = fromBackendDiagnostic({
+      scope: "backend",
+      operation: "doctor",
+      code: BACKEND_NOT_READY,
+      summary: "durable state failed",
+      severity: "error",
+      retryable: "false",
+    });
+    expect(diag?.retryable).toBe(false);
+  });
+
+  it("rejects unknown scope and severity", () => {
+    expect(fromBackendDiagnostic({
+      scope: "not-a-scope" as never,
+      operation: "doctor",
+      summary: "x",
+      severity: "error",
+    })).toBeNull();
+    expect(fromBackendDiagnostic({
+      scope: "backend",
+      operation: "doctor",
+      summary: "x",
+      severity: "fatal" as never,
+    })).toBeNull();
+  });
 });
 
 describe("authFailureDiagnostic", () => {

@@ -82,6 +82,12 @@ def test_sessions_archive_works_fine(tmp_path):
         # Create a session
         meta = srv._sessions.create("Test Session to Archive")
         sid = meta["id"]
+        (tmp_path / "transcripts").mkdir(exist_ok=True)
+        save_transcript(
+            str(tmp_path),
+            sid,
+            [{"role": "user", "content": "Archive the nebula thumbnail hunt"}],
+        )
         
         # Verify it lists as not archived by default
         resp = _get(port, "/api/sessions")
@@ -96,6 +102,11 @@ def test_sessions_archive_works_fine(tmp_path):
         assert post_resp.status == 200
         post_data = json.loads(post_resp.read().decode())
         assert post_data["ok"] is True
+
+        from harness.chat_archive import search_archive
+        hits = search_archive(str(tmp_path), "nebula thumbnail")
+        assert hits
+        assert hits[0]["chat_id"] == "marionette:%s" % sid
         
         # Verify lists as archived
         resp = _get(port, "/api/sessions")

@@ -78,7 +78,7 @@ export default function ComposerTodoPanel({
     };
   }, [sessionId, storedSid]);
 
-  if (!todoHasWork(snapshot) || (storedSid && storedSid !== sessionId)) return null;
+  if (!todoHasWork(snapshot) || storedSid !== sessionId) return null;
   const { done, total } = todoSnapshotProgress(snapshot);
   const next = snapshot.next;
 

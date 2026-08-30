@@ -3,7 +3,7 @@
  */
 
 import { useEffect, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
-import { api } from "../../lib/api";
+import { clearSessionTodos } from "../../lib/sessionTodos";
 import { clearActivityFoldPrefs, type Item } from "../TranscriptList";
 import {
   peekTranscriptCacheEntry,
@@ -283,6 +283,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
     // Settled session A must not suppress busy-chrome refresh for mid-turn B.
     resetTurnSettledOnSessionSwitch(turnSettledRef);
     if (switchedSession) {
+      clearSessionTodos();
       // Stop / resume / approved-retry latched on A must not force idle, skip
       // reattach, or execute into mid-turn B.
       resetCrossSessionLatchesOnSwitch({

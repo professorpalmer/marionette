@@ -41,4 +41,15 @@ describe("ComposerTodoPanel", () => {
     expect(screen.getByText("first wave task")).toBeInTheDocument();
     expect(screen.getByText("second wave task")).toBeInTheDocument();
   });
+
+  it("hides todos stamped for a different conversation", () => {
+    publishSessionTodos({
+      phases: [
+        { name: "Wave One", tasks: [{ content: "arena leftover", status: "pending" }] },
+      ],
+    }, "sess-arena");
+    render(<ComposerTodoPanel sessionId="sess-marionette" />);
+    expect(screen.queryByText("TODO 0/1")).not.toBeInTheDocument();
+    expect(screen.queryByText("arena leftover")).not.toBeInTheDocument();
+  });
 });

@@ -394,8 +394,14 @@ def get_session_state(qs: dict, svc: SessionControlServices) -> tuple[int, JsonP
         goal = {}
     todos = {}
     try:
-        if pilot is not None and hasattr(pilot, "todo_snapshot"):
-            todos = pilot.todo_snapshot() or {}
+        todo_pilot = pilot
+        if session_id:
+            other = runners.get(session_id) if hasattr(runners, "get") else None
+            todo_pilot = other
+        if todo_pilot is not None and hasattr(todo_pilot, "todo_snapshot"):
+            todos = todo_pilot.todo_snapshot() or {}
+        elif session_id:
+            todos = {}
     except Exception:
         todos = {}
     return 200, {

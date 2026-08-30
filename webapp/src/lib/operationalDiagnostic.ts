@@ -224,7 +224,7 @@ type BackendDiagnosticWire = {
   summary?: string;
   detail?: string;
   severity?: DiagnosticSeverity;
-  retryable?: boolean;
+  retryable?: unknown;
   dataSafe?: boolean;
   recovery?: DiagnosticRecovery;
   sessionId?: string;
@@ -237,21 +237,45 @@ type BackendDiagnosticWire = {
 };
 
 /** Parse GET /api/diagnostics diagnostic payload into the renderer contract. */
+const DIAGNOSTIC_SCOPES = new Set<DiagnosticScope>([
+  "desktop_bridge",
+  "transport",
+  "backend",
+  "conversation",
+  "workspace",
+  "projects",
+  "sessions",
+  "prompt_queue",
+  "config",
+  "update",
+  "panel",
+]);
+const DIAGNOSTIC_SEVERITIES = new Set<DiagnosticSeverity>(["info", "warning", "error"]);
+
+function parseWireBool(value: unknown): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value === 1;
+  const text = String(value ?? "").trim().toLowerCase();
+  return text === "1" || text === "true" || text === "yes" || text === "on";
+}
+
 export function fromBackendDiagnostic(
   wire: BackendDiagnosticWire | null | undefined,
 ): OperationalDiagnostic | null {
   if (!wire || !wire.summary || !wire.scope || !wire.operation || !wire.severity) {
     return null;
   }
+  if (!DIAGNOSTIC_SCOPES.has(wire.scope as DiagnosticScope)) return null;
+  if (!DIAGNOSTIC_SEVERITIES.has(wire.severity as DiagnosticSeverity)) return null;
   return createOperationalDiagnostic({
     id: wire.id,
-    scope: wire.scope,
+    scope: wire.scope as DiagnosticScope,
     operation: wire.operation,
     code: wire.code,
     summary: wire.summary,
     detail: wire.detail,
-    severity: wire.severity,
-    retryable: Boolean(wire.retryable),
+    severity: wire.severity as DiagnosticSeverity,
+    retryable: parseWireBool(wire.retryable),
     dataSafe: wire.dataSafe,
     recovery: wire.recovery,
     sessionId: wire.sessionId,

@@ -471,29 +471,31 @@ def snapshot_payload(phases: Sequence[TodoPhase], op: str = "") -> Dict[str, Any
 
 
 class SessionTodoStore:
-    """Load/save session todo JSON under a session state_dir."""
+    """Load/save todo JSON under a harness state_dir, keyed by conversation id.
+
+    One file is shared across sessions in the same home. Unscoped ``phases``
+    (legacy) are never attached to a real session id — that leaked beyblade
+    todos into marionette conversations.
+    """
 
     def __init__(self, state_dir: str) -> None:
         self.state_dir = state_dir or ""
         self.path = os.path.join(self.state_dir, TODO_FILENAME) if self.state_dir else ""
 
-    def load(self) -> List[TodoPhase]:
+    def _read_raw(self) -> dict:
         if not self.path or not os.path.isfile(self.path):
-            return []
+            return {}
         try:
             with open(self.path, "r", encoding="utf-8") as fh:
                 raw = json.load(fh)
         except (OSError, json.JSONDecodeError):
-            return []
-        if isinstance(raw, dict):
-            raw = raw.get("phases")
-        return phases_from_raw(raw)
+            return {}
+        return raw if isinstance(raw, dict) else {}
 
-    def save(self, phases: Sequence[TodoPhase]) -> None:
+    def _write_raw(self, payload: dict) -> None:
         if not self.path or not self.state_dir:
             return
         os.makedirs(self.state_dir, exist_ok=True)
-        payload = {"phases": phases_to_dicts(phases)}
         fd, tmp = tempfile.mkstemp(prefix="session_todos.", dir=self.state_dir)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -506,6 +508,31 @@ class SessionTodoStore:
             except OSError:
                 pass
             raise
+
+    def load(self, session_id: str = "") -> List[TodoPhase]:
+        raw = self._read_raw()
+        sid = (session_id or "").strip()
+        sessions = raw.get("sessions")
+        if sid:
+            if not isinstance(sessions, dict):
+                return []
+            bucket = sessions.get(sid)
+            if isinstance(bucket, dict):
+                return phases_from_raw(bucket.get("phases"))
+            return phases_from_raw(bucket)
+        if isinstance(sessions, dict) and sessions:
+            return []
+        return phases_from_raw(raw.get("phases"))
+
+    def save(self, phases: Sequence[TodoPhase], session_id: str = "") -> None:
+        sid = (session_id or "").strip()
+        if sid:
+            raw = self._read_raw()
+            sessions = raw.get("sessions") if isinstance(raw.get("sessions"), dict) else {}
+            sessions[sid] = {"phases": phases_to_dicts(phases)}
+            self._write_raw({"sessions": sessions})
+            return
+        self._write_raw({"phases": phases_to_dicts(phases)})
 
 
 DEFAULT_TODO_MARKDOWN = "TODO.md"

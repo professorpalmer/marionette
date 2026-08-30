@@ -449,6 +449,25 @@ def post_sessions_archive(body: dict, svc: SessionServices) -> tuple[int, dict]:
         return 400, {"error": "missing session id"}
     archived = svc.parse_bool(body.get("archived"))
     svc.sessions.archive(sid, archived)
+    if archived:
+        try:
+            from ..chat_archive import ingest_marionette_session
+            row = next((s for s in svc.sessions.rows() if s.get("id") == sid), None) or {}
+            ingest_marionette_session(
+                svc.sessions_state_dir(),
+                sid,
+                title=str(row.get("title") or ""),
+                workspace=str(row.get("workspace_root") or row.get("repo") or ""),
+                updated_at=int(row.get("created") or 0),
+            )
+        except Exception:
+            pass
+    else:
+        try:
+            from ..chat_archive import restore_pruned_transcript
+            restore_pruned_transcript(svc.sessions_state_dir(), sid)
+        except Exception:
+            pass
     return 200, {"ok": True}
 
 

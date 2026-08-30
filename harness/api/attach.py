@@ -157,6 +157,9 @@ def attach_view(
                 # Session ownership must be set before hydrate so pending
                 # command-approval restore can refuse foreign display rows.
                 real.harness_session_id = session_id
+                reload_todos = getattr(real, "reload_session_todos", None)
+                if callable(reload_todos):
+                    reload_todos()
                 # Prefer the placeholder's live transcript: callers may
                 # load_history() after cold attach (tests + resume paths)
                 # while this build was still in flight. The attach-time

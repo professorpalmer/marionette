@@ -84,6 +84,7 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
     """Build path → POST JSON handler map. ``svc`` holds service factories."""
     from .api import auth as _auth_api
     from .api import browser as _browser_api
+    from .api import chat_archive as _archive_api
     from .api import checkpoints as _ckpt_api
     from .api import codegraph as _cg_api
     from .api import command_approvals as _command_approval_api
@@ -257,6 +258,10 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
             needs_body=False),
         "/api/sessions/archive": post_json(
             _sessions_api.post_sessions_archive, services=svc.session_services),
+        "/api/archive/ingest": post_json(
+            _archive_api.post_archive_ingest, services=svc.chat_archive_services),
+        "/api/archive/prune": post_json(
+            _archive_api.post_archive_prune, services=svc.chat_archive_services),
         "/api/sessions/settle": post_json(
             _sessions_api.post_sessions_settle, services=svc.session_services),
         "/api/sessions/rename": post_json(
@@ -462,6 +467,7 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
     from .api import commands as _cmd_api
     from .api import economics as _econ_api
     from .api import browser as _browser_api
+    from .api import chat_archive as _archive_api
     from .api import environment as _env_api
     from .api import doctor as _doctor_api
     from .api import files as _files_api
@@ -802,6 +808,15 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
             pass_qs=True),
         "/api/sessions/search": get_json(
             _sessions_api.get_sessions_search, services=svc.session_services,
+            pass_qs=True),
+        "/api/archive/status": get_json(
+            _archive_api.get_archive_status, services=svc.chat_archive_services,
+            pass_qs=True),
+        "/api/archive/search": get_json(
+            _archive_api.get_archive_search, services=svc.chat_archive_services,
+            pass_qs=True),
+        "/api/archive/read": get_json(
+            _archive_api.get_archive_read, services=svc.chat_archive_services,
             pass_qs=True),
         "/api/sessions/runners": get_json(
             _sessions_api.get_sessions_runners, services=svc.session_services),

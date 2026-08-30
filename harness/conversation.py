@@ -124,18 +124,19 @@ def _prewarm_worker_imports() -> None:
     global _WORKER_IMPORTS_WARMED
     if _WORKER_IMPORTS_WARMED:
         return
-    _WORKER_IMPORTS_WARMED = True
 
     import importlib
     import pkgutil
 
     # Essentials first, so the worker path is guaranteed warm even if the broad
-    # walk below is interrupted.
+    # walk below is interrupted. Leave the warmed flag false when an essential
+    # import fails so the next dispatch retries instead of skipping forever.
+    essentials_ok = True
     for mod in ("harness.worker", "harness.edit_engines"):
         try:
             importlib.import_module(mod)
         except Exception:
-            pass
+            essentials_ok = False
 
     for pkg_name in ("harness", "pmharness", "puppetmaster"):
         try:
@@ -157,6 +158,8 @@ def _prewarm_worker_imports() -> None:
                 importlib.import_module(name)
             except Exception:
                 pass
+    if essentials_ok:
+        _WORKER_IMPORTS_WARMED = True
 
 
 def _is_stub_tool_result(msg: dict) -> bool:
@@ -913,7 +916,7 @@ class ConversationalSession(
         from .todo import SessionTodoStore
 
         self._todo_store = SessionTodoStore(self.state_dir)
-        self._todo_phases = self._todo_store.load()
+        self._todo_phases = []
         # Host quality gate (optional; disabled when quality_gate_cmds empty).
         from .quality_gate import QualityGateRunner
 

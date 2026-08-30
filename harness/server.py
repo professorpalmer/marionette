@@ -161,6 +161,9 @@ def _sync_pilot_session_id() -> None:
     """Keep the pilot's savings-ledger session scope aligned with SessionStore."""
     try:
         _pilot.harness_session_id = _sessions.active or ""
+        reload_todos = getattr(_pilot, "reload_session_todos", None)
+        if callable(reload_todos):
+            reload_todos()
     except Exception:
         pass
 
@@ -1517,6 +1520,14 @@ def _session_services():
     )
 
 
+def _chat_archive_services():
+    from .api.chat_archive import ChatArchiveServices
+    return ChatArchiveServices(
+        state_dir=_sessions_state_dir,
+        list_sessions=lambda: _sessions.rows(),
+    )
+
+
 def _stream_services():
     """Build StreamServices from live server module globals (call-time lookup)."""
     from .api.streams import StreamServices
@@ -2492,6 +2503,7 @@ def _route_services():
         wiki_services=_wiki_services,
         provider_services=_provider_services,
         session_services=_session_services,
+        chat_archive_services=_chat_archive_services,
         terminal_services=_terminal_services,
         platform_services=_platform_services,
         doctor_services=_doctor_services,
@@ -3279,6 +3291,13 @@ def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False) -> Non
         # Connect configured MCP servers (incl. local Docker HTTP) without
         # blocking the GUI bind. Failures land on status().error for State→MCP.
         threading.Thread(target=boot_mcp_servers, name="mcp-boot", daemon=True).start()
+        def _boot_archive():
+            try:
+                from .chat_archive import maybe_boot_ingest
+                maybe_boot_ingest(_sessions_state_dir(), _sessions.rows())
+            except Exception:
+                pass
+        threading.Thread(target=_boot_archive, name="chat-archive-ingest", daemon=True).start()
         srv.serve_forever()
     except SystemExit:
         raise
