@@ -67,6 +67,46 @@ describe("composerStatusStack", () => {
     });
   });
 
+  it("ignores other-session running swarms when sessionId is set", () => {
+    const now = Date.parse("2026-08-23T12:00:00Z");
+    const rows = buildComposerStatusStackRows({
+      nowMs: now,
+      sessionId: "sess-here",
+      swarmJobs: [
+        {
+          id: "job_abc123def456",
+          goal: "This chat",
+          source: "harness",
+          status: "running",
+          session_id: "sess-here",
+          updated_at: now - 1000,
+        } as any,
+        {
+          id: "job_other999888777",
+          goal: "Other chat",
+          source: "harness",
+          status: "running",
+          session_id: "sess-other",
+          updated_at: now - 500,
+        } as any,
+        {
+          id: "job_orphan000111222",
+          goal: "Unstamped leftover",
+          source: "harness",
+          status: "running",
+          updated_at: now - 200,
+        } as any,
+      ],
+      commandSessions: [],
+    });
+    expect(rows.map((row) => row.id)).toEqual(["job_abc123def456"]);
+    expect(rows[0]).toMatchObject({
+      kind: "swarm",
+      state: "running",
+      label: "This chat",
+    });
+  });
+
   it("yields only a Puppetmaster row for a running swarm session plus swarm job", () => {
     const now = Date.parse("2026-08-23T12:00:00Z");
     const swarmJob = {

@@ -8,6 +8,9 @@ from types import SimpleNamespace
 import pytest
 
 from harness.api.jobs import make_job_services, get_artifacts, post_swarm_cancel
+from harness.job_scoping import job_label_for_session, stamp_task_payload
+from puppetmaster.models import Artifact, ArtifactType, Task
+from puppetmaster.store_factory import create_store
 from harness.api.sessions import handle_session_delete, remove_session_transcript
 from harness.api.workspace import _persistable_recent_path, record_recent_workspace
 from harness.server import _job_status_is_terminal
@@ -37,6 +40,9 @@ class _FakeStore:
     def list_jobs(self):
         return list(self._jobs)
 
+    def list_tasks(self, job_id: str):
+        return []
+
     def cancel_job(self, job_id: str):
         if not self._cancelable:
             raise RuntimeError("cancel_job unavailable")
@@ -60,11 +66,30 @@ class _FakeSession:
 
 
 class _FakePilot:
-    def __init__(self, local_ids=None):
-        self._local_ids = set(local_ids or [])
+    def __init__(self, local_ids=None, *, session_id="", local_jobs=None, registered=None):
+        self.harness_session_id = session_id
+        self._session_job_ids = list(registered or [])
+        self._local_jobs: dict = {}
+        for jid in local_ids or []:
+            self._local_jobs[jid] = {"id": jid, "session_id": session_id}
+        for job in local_jobs or []:
+            self._local_jobs[job["id"]] = dict(job)
+
+    def get_local_job(self, job_id: str):
+        job = self._local_jobs.get(job_id)
+        return dict(job) if job else None
 
     def cancel_local_job(self, job_id: str) -> bool:
-        return job_id in self._local_ids
+        return job_id in self._local_jobs
+
+
+def _track_request_cancel(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "puppetmaster.cancellation.request_cancel",
+        lambda job_id: calls.append(job_id),
+    )
+    return calls
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +239,8 @@ def _silence_request_cancel(monkeypatch):
 
 
 def test_cancel_and_artifacts_both_resolve_cli_store(monkeypatch):
-    harness = _FakeStore([{"id": "harness-job"}])
+    label = job_label_for_session("sess-x")
+    harness = _FakeStore([{"id": "harness-job", "label": label}])
 
     class _CliStore(_FakeStore):
         def list_artifacts(self, job_id: str):
@@ -222,7 +248,7 @@ def test_cancel_and_artifacts_both_resolve_cli_store(monkeypatch):
                 return [{"type": "verification", "payload": {"check": "ok"}}]
             return []
 
-    cli_store = _CliStore([{"id": "cli-job"}])
+    cli_store = _CliStore([{"id": "cli-job", "label": label}])
 
     class _HarnessState(_FakeState):
         def job_artifacts(self, job_id: str):
@@ -257,17 +283,81 @@ def test_cancel_and_artifacts_both_resolve_cli_store(monkeypatch):
     assert arts[0]["type"] == "verification"
 
 
-def test_unknown_job_is_unknown_for_cancel_and_empty_for_artifacts(monkeypatch):
-    harness = _FakeStore([])
-    cli_store = _FakeStore([])
+def test_known_unowned_job_artifacts_and_cancel_look_unknown(monkeypatch):
+    harness = _FakeStore([{"id": "foreign-row", "goal": "unstamped leftover"}])
+    reads = {"harness": 0}
+    tripped = _track_request_cancel(monkeypatch)
 
     class _HarnessState(_FakeState):
-        def job_artifacts(self, _job_id: str):
-            return []
+        def job_artifacts(self, job_id: str):
+            reads["harness"] += 1
+            return [{"type": "finding", "headline": "should not leak"}]
 
     monkeypatch.setattr(
         "harness.cli_job_merge.open_cli_durable_state",
-        lambda _repo="": SimpleNamespace(store=cli_store, job_artifacts=lambda _j: []),
+        lambda _repo="": None,
+    )
+    svc = _job_services(
+        get_pilot=lambda: _FakePilot(),
+        get_session=lambda: _FakeSession(_HarnessState(harness)),
+    )
+    cancel_code, cancel_body = post_swarm_cancel({"job_id": "foreign-row"}, svc)
+    assert cancel_code == 404
+    assert cancel_body == {"ok": False, "error": "unknown job_id", "job_id": "foreign-row"}
+    assert harness.cancelled == []
+    assert tripped == []
+    art_code, arts = get_artifacts("foreign-row", svc)
+    assert art_code == 200
+    assert arts == []
+    assert reads["harness"] == 0
+
+
+def test_known_unowned_cli_job_artifacts_and_cancel_look_unknown(monkeypatch):
+    harness = _FakeStore([])
+    cli_store = _FakeStore([{"id": "cli-foreign", "goal": "unstamped leftover"}])
+
+    class _HarnessState(_FakeState):
+        def job_artifacts(self, job_id: str):
+            return [{"type": "finding", "headline": "should not leak"}]
+
+    monkeypatch.setattr(
+        "harness.cli_job_merge.open_cli_durable_state",
+        lambda _repo="": SimpleNamespace(
+            store=cli_store,
+            job_artifacts=lambda _j: [{"type": "finding", "headline": "cli leak"}],
+        ),
+    )
+    svc = _job_services(
+        get_pilot=lambda: _FakePilot(),
+        get_session=lambda: _FakeSession(_HarnessState(harness)),
+    )
+    cancel_code, cancel_body = post_swarm_cancel({"job_id": "cli-foreign"}, svc)
+    assert cancel_code == 404
+    assert cancel_body == {"ok": False, "error": "unknown job_id", "job_id": "cli-foreign"}
+    assert cli_store.cancelled == []
+    art_code, arts = get_artifacts("cli-foreign", svc)
+    assert art_code == 200
+    assert arts == []
+
+
+def test_unknown_job_is_unknown_for_cancel_and_empty_for_artifacts(monkeypatch):
+    harness = _FakeStore([])
+    cli_store = _FakeStore([])
+    reads = {"harness": 0, "cli": 0}
+    tripped = _track_request_cancel(monkeypatch)
+
+    class _HarnessState(_FakeState):
+        def job_artifacts(self, _job_id: str):
+            reads["harness"] += 1
+            return [{"type": "finding", "headline": "should not leak"}]
+
+    def _cli_artifacts(_job_id: str):
+        reads["cli"] += 1
+        return [{"type": "finding", "headline": "cli leak"}]
+
+    monkeypatch.setattr(
+        "harness.cli_job_merge.open_cli_durable_state",
+        lambda _repo="": SimpleNamespace(store=cli_store, job_artifacts=_cli_artifacts),
     )
     svc = _job_services(
         get_pilot=lambda: _FakePilot(),
@@ -275,9 +365,135 @@ def test_unknown_job_is_unknown_for_cancel_and_empty_for_artifacts(monkeypatch):
     )
     code, body = post_swarm_cancel({"job_id": "missing"}, svc)
     assert code == 404
+    assert tripped == []
     art_code, arts = get_artifacts("missing", svc)
     assert art_code == 200
     assert arts == []
+    assert reads["harness"] == 0
+    assert reads["cli"] == 0
+
+
+def _job_status(store, job_id: str) -> str:
+    job = store.get_job(job_id)
+    raw = getattr(job, "status", None)
+    return str(getattr(raw, "value", raw) or "")
+
+
+def _seed_sibling_store(tmp_path, *, owned: bool, with_artifact: bool = True):
+    sibling = tmp_path / "sibling-state"
+    store = create_store("sqlite", str(sibling))
+    job = store.create_job("sibling job")
+    payload = (
+        stamp_task_payload({}, session_id="sess-x", origin="marionette")
+        if owned
+        else {"note": "unstamped leftover"}
+    )
+    task = Task(
+        job_id=job.id,
+        role="implement",
+        instruction="do work",
+        adapter="agentic",
+        payload=payload,
+    )
+    store.save_task(task)
+    store.update_job_status(job.id, "running")
+    if with_artifact:
+        store.save_artifact(Artifact(
+            job_id=job.id,
+            task_id=task.id,
+            type=ArtifactType.FINDING,
+            created_by="worker",
+            payload={"claim": "sibling finding"},
+            confidence=0.9,
+            evidence=["test"],
+        ))
+    return store, sibling, job.id
+
+
+def _sibling_action_svc(monkeypatch, sibling_dir, *, registered=None):
+    monkeypatch.setenv("HARNESS_CLI_CROSS_PROJECT", "1")
+    monkeypatch.setattr(
+        "harness.cli_job_merge.open_cli_durable_state",
+        lambda _repo="": None,
+    )
+    monkeypatch.setattr(
+        "puppetmaster.state.list_project_state_dirs",
+        lambda: [sibling_dir],
+    )
+
+    def _forbidden_dual(*_a, **_k):
+        raise AssertionError("cancel_job_dual_store must not run after a primary miss")
+
+    monkeypatch.setattr("harness.job_cancel.cancel_job_dual_store", _forbidden_dual)
+
+    class _HarnessState(_FakeState):
+        def job_artifacts(self, _job_id: str):
+            return []
+
+        def format_artifacts(self, raw):
+            return list(raw)
+
+    harness = _FakeStore([])
+    pilot = _FakePilot()
+    if registered is not None:
+        pilot._session_job_ids = list(registered)
+    return _job_services(
+        get_pilot=lambda: pilot,
+        get_session=lambda: _FakeSession(_HarnessState(harness)),
+    ), harness
+
+
+def test_foreign_sibling_artifacts_hidden(tmp_path, monkeypatch):
+    store, sibling_dir, job_id = _seed_sibling_store(tmp_path, owned=False)
+    svc, _harness = _sibling_action_svc(monkeypatch, sibling_dir, registered=[job_id])
+    art_code, arts = get_artifacts(job_id, svc)
+    assert art_code == 200
+    assert arts == []
+    assert store.list_artifacts(job_id)
+
+
+def test_owned_sibling_task_stamp_artifacts_returned(tmp_path, monkeypatch):
+    _store, sibling_dir, job_id = _seed_sibling_store(tmp_path, owned=True)
+    svc, _harness = _sibling_action_svc(monkeypatch, sibling_dir)
+    art_code, arts = get_artifacts(job_id, svc)
+    assert art_code == 200
+    assert arts
+    assert any(
+        "sibling finding" in str(row.get("headline") or "")
+        for row in arts
+        if isinstance(row, dict)
+    )
+
+
+def test_foreign_sibling_cancel_refused_and_artifacts_hidden(tmp_path, monkeypatch):
+    store, sibling_dir, job_id = _seed_sibling_store(tmp_path, owned=False)
+    svc, _harness = _sibling_action_svc(monkeypatch, sibling_dir, registered=[job_id])
+    tripped = _track_request_cancel(monkeypatch)
+    before = _job_status(store, job_id)
+    cancel_code, cancel_body = post_swarm_cancel({"job_id": job_id}, svc)
+    assert cancel_code == 404
+    assert cancel_body == {"ok": False, "error": "unknown job_id", "job_id": job_id}
+    assert tripped == []
+    assert _job_status(store, job_id) == before
+    art_code, arts = get_artifacts(job_id, svc)
+    assert art_code == 200
+    assert arts == []
+
+
+def test_owned_sibling_cancel_succeeds_and_artifacts_returned(tmp_path, monkeypatch):
+    store, sibling_dir, job_id = _seed_sibling_store(tmp_path, owned=True)
+    svc, harness = _sibling_action_svc(monkeypatch, sibling_dir)
+    tripped = _track_request_cancel(monkeypatch)
+    art_code, arts = get_artifacts(job_id, svc)
+    assert art_code == 200
+    assert arts
+    cancel_code, cancel_body = post_swarm_cancel({"job_id": job_id}, svc)
+    assert cancel_code == 200
+    assert cancel_body["ok"] is True
+    assert cancel_body["marked"] is True
+    assert tripped == [job_id]
+    assert _job_status(store, job_id) == "cancelled"
+    assert harness.cancelled == []
 
 
 # ---------------------------------------------------------------------------

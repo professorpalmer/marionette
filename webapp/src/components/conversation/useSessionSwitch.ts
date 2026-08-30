@@ -527,7 +527,11 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
           }
           const jobs = Array.isArray(live?.jobs) ? live.jobs : [];
           setPendingJobIds(
-            hydratePendingJobIdsAfterReload({ liveJobs: jobs, items: loadedItems }),
+            hydratePendingJobIdsAfterReload({
+              liveJobs: jobs,
+              items: loadedItems,
+              activeSessionId,
+            }),
           );
           setItems((prev) => {
             if (!shouldApplySwarmLiveMerge({
@@ -561,7 +565,11 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
             return;
           }
           setPendingJobIds(
-            hydratePendingJobIdsAfterReload({ liveJobs: null, items: loadedItems }),
+            hydratePendingJobIdsAfterReload({
+              liveJobs: null,
+              items: loadedItems,
+              activeSessionId,
+            }),
           );
         });
 

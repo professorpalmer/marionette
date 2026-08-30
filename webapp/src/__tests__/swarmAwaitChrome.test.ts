@@ -306,49 +306,67 @@ describe("swarm await chrome", () => {
       },
     ];
     const liveDone = [
-      { job_id: "job_old", status: "cancelled" },
-      { id: "job_from_transcript", status: "completed" },
-      { job_id: "job_interrupted", status: "interrupted" },
+      { job_id: "job_old", status: "cancelled", session_id: "sess-1" },
+      { id: "job_from_transcript", status: "completed", session_id: "sess-1" },
+      { job_id: "job_interrupted", status: "interrupted", session_id: "sess-1" },
     ];
     expect(
-      hydratePendingJobIdsAfterReload({ liveJobs: liveDone, items }),
+      hydratePendingJobIdsAfterReload({ liveJobs: liveDone, items, activeSessionId: "sess-1" }),
     ).toEqual([]);
     expect(
-      hydratePendingJobIdsAfterReload({ liveJobs: [], items }),
+      hydratePendingJobIdsAfterReload({ liveJobs: [], items, activeSessionId: "sess-1" }),
     ).toEqual([]);
     expect(
       shouldHoldSwarmAwaitChrome({
-        pendingJobIds: hydratePendingJobIdsAfterReload({ liveJobs: [], items }),
+        pendingJobIds: hydratePendingJobIdsAfterReload({ liveJobs: [], items, activeSessionId: "sess-1" }),
         backendPendingSwarms: false,
         userStopped: false,
       }),
     ).toBe(false);
     expect(
-      hydratePendingJobIdsAfterReload({ liveJobs: null, items }),
+      hydratePendingJobIdsAfterReload({ liveJobs: null, items, activeSessionId: "sess-1" }),
     ).toEqual(["job_old"]);
   });
 
   it("keeps only live non-terminal jobs after reload", () => {
     expect(
       pendingJobIdsFromSwarmLive([
-        { job_id: "job_alive", status: "running" },
-        { job_id: "job_done", status: "completed" },
-        { job_id: "job_complete", status: "complete" },
-        { id: "local-swarm-skip", status: "pending" },
-        { job_id: "job_queued", status: "queued" },
-      ]),
+        { job_id: "job_alive", status: "running", session_id: "sess-1" },
+        { job_id: "job_done", status: "completed", session_id: "sess-1" },
+        { job_id: "job_complete", status: "complete", session_id: "sess-1" },
+        { id: "local-swarm-skip", status: "pending", session_id: "sess-1" },
+        { job_id: "job_queued", status: "queued", session_id: "sess-1" },
+      ], "sess-1"),
     ).toEqual(["job_alive", "job_queued"]);
+  });
+
+  it("does not hold Still working for another session or unstamped live job", () => {
+    const live = [
+      { job_id: "job_other", status: "running", session_id: "sess-b" },
+      { job_id: "job_orphan", status: "running" },
+      { job_id: "job_here", status: "running", session_id: "sess-a" },
+    ];
+    expect(pendingJobIdsFromSwarmLive(live, "sess-a")).toEqual(["job_here"]);
+    expect(pendingJobIdsFromSwarmLive(live, "")).toEqual([]);
+    expect(pendingJobIdsFromSwarmLive(live.filter((j) => j.session_id !== "sess-a"), "sess-a")).toEqual([]);
+    expect(
+      shouldHoldSwarmAwaitChrome({
+        pendingJobIds: pendingJobIdsFromSwarmLive(live.filter((j) => j.session_id !== "sess-a"), "sess-a"),
+        backendPendingSwarms: false,
+        userStopped: false,
+      }),
+    ).toBe(false);
   });
 
   it("does not hold Still working for a settled partial or timed_out wave", () => {
     const live = [
-      { id: "local-wave-call_KzqPc5uVkh7VyutjZlCzjV3N", status: "partial" },
-      { id: "local-wave-call_Iliw2ZfBkaIh881nw8QmEh7i", status: "partial" },
-      { id: "local-wave-call_v7ZjvWP9peyQUMFAk0IIWXdb", status: "completed" },
-      { id: "local-wave-timeout", status: "timed_out" },
+      { id: "local-wave-call_KzqPc5uVkh7VyutjZlCzjV3N", status: "partial", session_id: "sess-1" },
+      { id: "local-wave-call_Iliw2ZfBkaIh881nw8QmEh7i", status: "partial", session_id: "sess-1" },
+      { id: "local-wave-call_v7ZjvWP9peyQUMFAk0IIWXdb", status: "completed", session_id: "sess-1" },
+      { id: "local-wave-timeout", status: "timed_out", session_id: "sess-1" },
     ];
-    expect(pendingJobIdsFromSwarmLive(live)).toEqual([]);
-    expect(terminalJobIdsFromSwarmLive(live)).toEqual([
+    expect(pendingJobIdsFromSwarmLive(live, "sess-1")).toEqual([]);
+    expect(terminalJobIdsFromSwarmLive(live, "sess-1")).toEqual([
       "local-wave-call_KzqPc5uVkh7VyutjZlCzjV3N",
       "local-wave-call_Iliw2ZfBkaIh881nw8QmEh7i",
       "local-wave-call_v7ZjvWP9peyQUMFAk0IIWXdb",
@@ -356,12 +374,12 @@ describe("swarm await chrome", () => {
     ]);
     expect(
       shouldHoldSwarmAwaitChrome({
-        pendingJobIds: pendingJobIdsFromSwarmLive(live),
+        pendingJobIds: pendingJobIdsFromSwarmLive(live, "sess-1"),
         backendPendingSwarms: false,
         userStopped: false,
       }),
     ).toBe(false);
-    expect(waitHintForAssistantDone(pendingJobIdsFromSwarmLive(live))).toBeNull();
+    expect(waitHintForAssistantDone(pendingJobIdsFromSwarmLive(live, "sess-1"))).toBeNull();
   });
 
   it("paints Still working hint after assistant_done with live jobs", () => {
@@ -571,13 +589,14 @@ describe("swarm await chrome", () => {
   it("prunes terminal swarm/live job ids from pendingJobIds", () => {
     expect(
       terminalJobIdsFromSwarmLive([
-        { job_id: "job_done", status: "completed" },
-        { job_id: "job_complete", status: "complete" },
-        { job_id: "job_alive", status: "running" },
-        { id: "local-x", status: "failed" },
-        { job_id: "job_cancel", status: "cancelled" },
-        { job_id: "job_interrupted", status: "interrupted" },
-      ]),
+        { job_id: "job_done", status: "completed", session_id: "sess-1" },
+        { job_id: "job_complete", status: "complete", session_id: "sess-1" },
+        { job_id: "job_alive", status: "running", session_id: "sess-1" },
+        { id: "local-x", status: "failed", session_id: "sess-1" },
+        { job_id: "job_cancel", status: "cancelled", session_id: "sess-1" },
+        { job_id: "job_interrupted", status: "interrupted", session_id: "sess-1" },
+        { job_id: "job_other", status: "completed", session_id: "sess-2" },
+      ], "sess-1"),
     ).toEqual(["job_done", "job_complete", "local-x", "job_cancel", "job_interrupted"]);
     expect(
       pruneTerminalJobIds(

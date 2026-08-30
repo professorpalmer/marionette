@@ -216,13 +216,17 @@ def merge_running_cli_jobs_all_projects(
     *,
     seen_ids: set,
     primary_state_dir: str = "",
+    tasks_by_job: dict[str, list] | None = None,
 ) -> list[dict]:
-    """Surface live CLI/MCP jobs from recent sibling PM project stores.
+    """Scan recent sibling PM project stores for running jobs.
 
-    Cursor MCP and Marionette often resolve different workspace hashes
-    (``.marionette`` Home vs ``Projects/marionette``). Without a cross-project
-    live merge, the Swarm Tracker goes blank while chat still awaits a swarm.
-    Terminal jobs stay workspace-scoped via ``merge_scoped_cli_jobs``.
+    ``merge_scoped_cli_jobs`` applies Marionette ownership before any row is
+    listed. This helper is the bounded open/scan only — unstamped CLI and
+    foreign harness jobs must not appear on Marionette surfaces.
+
+    Tasks used for ownership/session stamps are loaded from the same open
+    store that listed the row. Callers pass ``tasks_by_job`` to collect them;
+    they stay off the live row.
 
     Bounded by recent ``state.sqlite3`` mtime, a max open count, and a short
     wall-clock budget so a bloated ``projects/`` tree cannot stall HTTP polls.
@@ -250,6 +254,8 @@ def merge_running_cli_jobs_all_projects(
             )
         except Exception:
             continue
+        store = getattr(durable, "store", None)
+        collected: list[dict] = []
         for job in rows or []:
             jid = job.get("id") if isinstance(job, dict) else getattr(job, "id", None)
             if not jid or jid in seen_ids:
@@ -274,9 +280,34 @@ def merge_running_cli_jobs_all_projects(
             row["source"] = "cli"
             row["cli_state_dir"] = state_dir
             row["cross_project"] = True
-            out.append(row)
+            collected.append(row)
             seen_ids.add(jid)
+        if tasks_by_job is not None and store is not None and collected:
+            jids = [str(row.get("id") or "") for row in collected if row.get("id")]
+            try:
+                loaded = bulk_load_store_tasks(store, jids)
+            except Exception:
+                loaded = {}
+            for jid in jids:
+                tasks = list(loaded.get(jid) or [])
+                if not tasks:
+                    try:
+                        tasks = list(store.list_tasks(jid) or [])
+                    except Exception:
+                        tasks = []
+                tasks_by_job[jid] = tasks
+        out.extend(collected)
     return out
+
+
+def cross_project_scan_enabled() -> bool:
+    """True when sibling PM project stores may be opened for live merge/actions.
+
+    Hermetic pytest sets ``HARNESS_CLI_CROSS_PROJECT=0`` so cancel/artifacts
+    cannot scan the developer's live project tree.
+    """
+    flag = (os.environ.get("HARNESS_CLI_CROSS_PROJECT") or "1").strip().lower()
+    return flag not in ("0", "false", "no", "off")
 
 
 def merge_scoped_cli_jobs(
@@ -286,16 +317,20 @@ def merge_scoped_cli_jobs(
     active_session_id: str,
     repo_root: str,
     workspace_root: str,
+    registered_job_ids: list | set | None = None,
 ) -> tuple[list[dict], Any | None, dict[str, list]]:
-    """Return harness jobs plus visible CLI jobs, tagged with ``source``.
+    """Return harness jobs plus Marionette-owned CLI jobs, tagged with ``source``.
 
-    Also merges **running** jobs from other Puppetmaster project stores so a
-    Cursor-MCP swarm started under a sibling cwd still appears in the tracker.
+    Cross-project running rows are admitted only when they carry Marionette
+    ownership (``origin=marionette`` plus a session stamp). Task payloads are
+    loaded before that check so a task-only stamp survives. Registered-id
+    healing never applies to CLI/sibling stores — a colliding id cannot admit
+    foreign store data. Unstamped CLI / sibling store jobs stay out.
 
     The third tuple element is ``tasks_by_job`` loaded while filtering CLI rows
     (harness tasks are loaded separately in ``filter_store_jobs_with_tasks``).
     """
-    from .job_scoping import filter_store_jobs_with_tasks
+    from .job_scoping import filter_store_jobs_with_tasks, job_visible_for_view, parse_job_session_id
 
     harness_ids = {j.get("id") for j in harness_jobs if j.get("id")}
     merged: list[dict] = []
@@ -313,11 +348,15 @@ def merge_scoped_cli_jobs(
     if cli_state is not None:
         try:
             cli_rows = _retry_on_locked(lambda: cli_state.list_jobs())
+            # Registered-id healing is harness/local only — never a sibling CLI store.
             visible, cli_tasks_by_job = filter_store_jobs_with_tasks(
                 cli_rows,
                 cli_state.store,
                 active_session_id=active_session_id,
                 repo_root=repo_root,
+                registered_job_ids=None,
+                source="cli",
+                allow_registered_heal=False,
             )
             for job in visible:
                 jid = job.get("id")
@@ -335,13 +374,35 @@ def merge_scoped_cli_jobs(
 
     # Opt-out for hermetic pytest (conftest sets HARNESS_CLI_CROSS_PROJECT=0)
     # and operators who want workspace-scoped tracker views only.
-    _cross = (os.environ.get("HARNESS_CLI_CROSS_PROJECT") or "1").strip().lower()
-    if _cross not in ("0", "false", "no", "off"):
+    if cross_project_scan_enabled():
         try:
+            sibling_tasks: dict[str, list] = {}
             for row in merge_running_cli_jobs_all_projects(
                 seen_ids=seen_ids,
                 primary_state_dir=primary_state_dir,
+                tasks_by_job=sibling_tasks,
             ):
+                jid = str(row.get("id") or "")
+                tasks = sibling_tasks.get(jid) or []
+                if jid and tasks:
+                    cli_tasks_by_job[jid] = tasks
+                if not job_visible_for_view(
+                    session_id=parse_job_session_id(row.get("label"), tasks),
+                    label=row.get("label"),
+                    tasks=tasks,
+                    active_session_id=active_session_id,
+                    repo_root=repo_root,
+                    status=row.get("status"),
+                    job_id=jid,
+                    registered_job_ids=None,
+                    origin=str(row.get("origin") or ""),
+                    source="cli",
+                    allow_registered_heal=False,
+                ):
+                    continue
+                stamped = parse_job_session_id(row.get("label"), tasks)
+                if stamped:
+                    row["session_id"] = stamped
                 merged.append(row)
         except Exception as exc:
             _log_merge_failure("cli_job_merge.merge_running_all", exc)

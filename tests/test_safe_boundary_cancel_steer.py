@@ -18,6 +18,7 @@ from types import SimpleNamespace
 import pytest
 
 from harness.api.jobs import make_job_services, post_swarm_cancel
+from harness.job_scoping import job_label_for_session
 from harness.busy_control import BusyControlMixin
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession
@@ -43,6 +44,9 @@ class _FakeStore:
 
     def list_jobs(self):
         return list(self._jobs)
+
+    def list_tasks(self, job_id: str):
+        return []
 
     def cancel_job(self, job_id: str):
         if job_id not in self._known:
@@ -256,8 +260,9 @@ def test_interrupt_source_has_no_unsafe_thread_kill():
 
 def test_http_cancel_and_interrupt_share_dual_store_seam(monkeypatch):
     """Membership cancel (HTTP) and drain (interrupt) use the same helpers."""
-    harness = _FakeStore([{"id": "harness-only"}])
-    cli = _FakeStore([{"id": "cli-only"}])
+    label = job_label_for_session("sess-x")
+    harness = _FakeStore([{"id": "harness-only", "label": label}])
+    cli = _FakeStore([{"id": "cli-only", "label": label}])
     monkeypatch.setattr(
         "harness.cli_job_merge.open_cli_durable_state",
         lambda _repo="": SimpleNamespace(store=cli),
@@ -287,6 +292,33 @@ def test_http_cancel_and_interrupt_share_dual_store_seam(monkeypatch):
     assert code == 200
     assert body["ok"] is True
     assert harness.cancelled == ["harness-only"]
+
+
+def test_cancel_job_dual_store_does_not_resolve_sibling(monkeypatch):
+    """Sibling resolve is owned by post_swarm_cancel, not the dual-store helper."""
+    harness = _FakeStore([])
+    cli = _FakeStore([])
+    finds: list[str] = []
+
+    def _find(job_id):
+        finds.append(job_id)
+        return "/should-not-open"
+
+    monkeypatch.setattr(
+        "harness.cli_job_merge.open_cli_durable_state",
+        lambda _repo="": SimpleNamespace(store=cli),
+    )
+    monkeypatch.setattr("puppetmaster.state.find_state_dir_for_job", _find)
+    result = cancel_job_dual_store(
+        "job-sibling-only",
+        harness_store=harness,
+        harness_list_jobs=harness.list_jobs,
+        repo_root="/repo",
+    )
+    assert result is None
+    assert finds == []
+    assert harness.cancelled == []
+    assert cli.cancelled == []
 
 
 # --- S2: Stop ↔ steer boundary -------------------------------------------------

@@ -10,7 +10,7 @@ import {
   peekPendingSwarmOpenJob,
 } from "../lib/pendingSwarmOpenJob";
 import { useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
-import { filterJobsByScope, loadJobScope, saveJobScope, type JobScope } from "../lib/jobScope";
+import { filterJobsByScope, jobOwnedForScope, loadJobScope, saveJobScope, type JobScope } from "../lib/jobScope";
 import { isTrackerJob } from "../lib/jobClassification";
 import { jobHeadlineTotal } from "./EconomicsDurable";
 
@@ -920,22 +920,6 @@ function creditDelegationSavings(
   return 0;
 }
 
-function cliOriginCaption(job: Job): { text: string; title: string } {
-  if (job.cross_project) {
-    const cwd = String(job.cwd || "").trim();
-    const stateDir = String(job.cli_state_dir || "").trim();
-    const shown = cwd || (stateDir.replace(/[\\/]+$/, "").split(/[/\\]/).pop() || stateDir);
-    return {
-      text: shown || "other project",
-      title: cwd || stateDir || "Started in another project",
-    };
-  }
-  return {
-    text: "external",
-    title: "Started outside Marionette (Cursor MCP or terminal Puppetmaster) for this workspace",
-  };
-}
-
 /** Missing ownership is owned for harness/local rows; CLI/external fail closed. */
 export function jobAccountingOwned(j: Job): boolean {
   if (j.accounting_owned === true) return true;
@@ -1239,13 +1223,23 @@ export default function SwarmPane() {
       .then((arts) => {
         const prev = dataRef.current;
         if (!prev) return;
+        const incoming = Array.isArray(arts) ? arts : [];
         mutate({
           ...prev,
-          jobs: (prev.jobs || []).map((j) =>
-            j.id === job.id
-              ? { ...j, artifacts: Array.isArray(arts) ? arts : [], artifacts_complete: true }
-              : j,
-          ),
+          jobs: (prev.jobs || []).map((j) => {
+            if (j.id !== job.id) return j;
+            // Owned cross-project slim rows keep live artifacts when expand
+            // resolves empty (sibling-store miss must not wipe the row).
+            if (
+              incoming.length === 0
+              && (j.artifacts || []).length > 0
+              && j.cross_project
+              && jobOwnedForScope(j)
+            ) {
+              return j;
+            }
+            return { ...j, artifacts: incoming, artifacts_complete: true };
+          }),
         });
       })
       .catch(() => {
@@ -1473,9 +1467,9 @@ export default function SwarmPane() {
     (job) => isTrackerJob(job),
   );
   // Clear/dismiss is archive chrome for finished runs only. Live (and pending)
-  // jobs must stay visible even if their id was previously dismissed — otherwise
-  // a CLI-started swarm looks "gone" while workers are still running, and pilots
-  // burn tokens inventing recovery paths.
+  // owned jobs must stay visible even if their id was previously dismissed —
+  // otherwise a still-running Marionette swarm looks "gone", and pilots burn
+  // tokens inventing recovery paths.
   //
   // If a dismissed id reappears as live, drop it from the dismiss set so its
   // later terminal transition does not vanish again into "Show N hidden".
@@ -1748,7 +1742,7 @@ export default function SwarmPane() {
                 {jobIdentifier(j.id)}
               </button>
 
-              {(hasHeaderMeters || headerModel || showJobRoutingPlaceholder || adapter || j.source === "cli" || (workerCount === 0 && attestedPolicy === "explicit_pin")) && (
+              {(hasHeaderMeters || headerModel || showJobRoutingPlaceholder || adapter || (workerCount === 0 && attestedPolicy === "explicit_pin")) && (
                 <div className="flex items-center gap-x-2 gap-y-1 flex-wrap text-[9px]">
                   {hasHeaderMeters && (
                     <div className="inline-flex items-center gap-1 min-w-0 flex-wrap">
@@ -1851,14 +1845,6 @@ export default function SwarmPane() {
                   {adapter && adapter.toLowerCase() !== displayModel.toLowerCase() && (
                     <span className="text-faint lowercase">{adapter}</span>
                   )}
-                  {j.source === "cli" && (
-                    <span
-                      className="text-muted uppercase tracking-[0.1em]"
-                      title={cliOriginCaption(j).title}
-                    >
-                      {cliOriginCaption(j).text}
-                    </span>
-                  )}
                   {j.reuse_status && ["reused", "partial", "invalidated", "fresh"].includes(
                     String(j.reuse_status).toLowerCase(),
                   ) && (
@@ -1884,14 +1870,6 @@ export default function SwarmPane() {
                     >
                       {j.invalidated_paths.slice(0, 2).join(", ")}
                       {j.invalidated_paths.length > 2 ? ` +${j.invalidated_paths.length - 2}` : ""}
-                    </span>
-                  )}
-                  {!jobAccountingOwned(j) && (
-                    <span
-                      className="text-[9px] text-faint bg-panel2/30 border border-edge/40 px-1.5 py-0.5 rounded"
-                      title="Visible for cancellation only — does not affect Marionette session cost or savings"
-                    >
-                      visibility only
                     </span>
                   )}
                 </div>

@@ -74,6 +74,7 @@ class InternalUriContext:
     repo: Optional[str] = None
     session_id: Optional[str] = None
     live_jobs: Optional[list] = None
+    registered_job_ids: Optional[list] = None
 
     def store(self):
         if not self.state_dir:
@@ -124,7 +125,15 @@ def _local_jobs(ctx: InternalUriContext) -> list[dict]:
             valid,
             active_session_id=str(ctx.session_id or ""),
             repo_root=str(ctx.repo or ""),
+            registered_job_ids=ctx.registered_job_ids,
         )
+        # URI reads stay session-isolated even though tracker lists all owned jobs.
+        if ctx.session_id:
+            sid = str(ctx.session_id)
+            visible = [
+                job for job in visible
+                if str(job.get("session_id") or "") == sid
+            ]
         if ctx.repo:
             visible = [
                 job for job in visible
@@ -195,6 +204,67 @@ def _local_job_artifacts(job: dict) -> list[dict]:
 
 def _find_local_job(job_id: str, ctx: InternalUriContext) -> Optional[dict]:
     return next((job for job in _local_jobs(ctx) if job.get("id") == job_id), None)
+
+
+def _store_job_tasks(store, job_id: str) -> list:
+    try:
+        return list(store.list_tasks(job_id) or [])
+    except Exception:
+        return []
+
+
+def _durable_job_readable(job, store, ctx: InternalUriContext) -> bool:
+    """True when a durable store job passes ownership and the session read cut."""
+    from .job_scoping import job_owned_by_marionette, parse_job_session_id
+
+    jid = str(getattr(job, "id", "") or "")
+    if not jid:
+        return False
+    label = getattr(job, "label", None)
+    tasks = _store_job_tasks(store, jid)
+    if not job_owned_by_marionette(
+        session_id=parse_job_session_id(label, tasks),
+        label=label,
+        tasks=tasks,
+        job_id=jid,
+        registered_job_ids=ctx.registered_job_ids,
+        origin=str(getattr(job, "origin", "") or ""),
+        source="harness",
+        allow_registered_heal=True,
+    ):
+        return False
+    if ctx.session_id:
+        sid = parse_job_session_id(label, tasks)
+        if sid and sid != str(ctx.session_id):
+            return False
+        if not sid and jid not in {
+            str(x).strip() for x in (ctx.registered_job_ids or []) if x
+        }:
+            return False
+    return True
+
+
+def _iter_owned_store_jobs(store, ctx: InternalUriContext):
+    for job in store.list_jobs():
+        if _durable_job_readable(job, store, ctx):
+            yield job
+
+
+def _require_readable_store_job(store, job_id: str, ctx: InternalUriContext):
+    """Return the store job if readable; raise the same not-found shape otherwise."""
+    job = None
+    try:
+        job = store.get_job(job_id)
+    except Exception:
+        job = None
+    if job is None:
+        for candidate in store.list_jobs():
+            if getattr(candidate, "id", "") == job_id:
+                job = candidate
+                break
+    if job is None or not _durable_job_readable(job, store, ctx):
+        raise InternalUriError(f"job not found: {job_id}")
+    return job
 
 
 def is_internal_uri(path: str) -> bool:
@@ -338,7 +408,7 @@ def search_internal_uris(
         if len(hits) >= max_results:
             break
         if sch == "job":
-            for job in store.list_jobs():
+            for job in _iter_owned_store_jobs(store, ctx):
                 goal = getattr(job, "goal", "") or ""
                 jid = getattr(job, "id", "")
                 if needle in goal.lower() or needle in jid.lower():
@@ -355,7 +425,7 @@ def search_internal_uris(
                     if len(hits) >= max_results:
                         break
         elif sch == "artifact":
-            for job in store.list_jobs():
+            for job in _iter_owned_store_jobs(store, ctx):
                 for art in durable.format_artifacts(store.list_artifacts(job.id)):
                     headline = str(art.get("headline") or "")
                     aid = str(art.get("id") or "")
@@ -379,7 +449,7 @@ def search_internal_uris(
                         if len(hits) >= max_results:
                             break
         elif sch == "agent":
-            for job in store.list_jobs():
+            for job in _iter_owned_store_jobs(store, ctx):
                 for run in _list_runs(store, job.id):
                     blob = json.dumps(to_jsonable(run), sort_keys=True).lower()
                     if needle in blob:
@@ -462,12 +532,13 @@ def _resolve_job(parsed: ParsedInternalUri, ctx: InternalUriContext) -> Internal
 
     if not parsed.path:
         entries = [f"{job.id}\t{getattr(job, 'status', '')}\t{getattr(job, 'goal', '')[:80]}"
-                   for job in store.list_jobs()]
+                   for job in _iter_owned_store_jobs(store, ctx)]
         return _json_resource(url, entries, is_directory=True)
 
     parts = parsed.path.split("/")
     job_id = parts[0]
     _require_safe_id(job_id, "job id")
+    _require_readable_store_job(store, job_id, ctx)
 
     if len(parts) == 1:
         job = store.get_job(job_id)
@@ -572,6 +643,7 @@ def _resolve_artifact(parsed: ParsedInternalUri, ctx: InternalUriContext) -> Int
     job_id, artifact_id = parts[0], parts[1]
     _require_safe_id(job_id, "job id")
     _require_safe_id(artifact_id, "artifact id")
+    _require_readable_store_job(store, job_id, ctx)
     url = f"artifact://{parsed.path}"
 
     artifact = None
@@ -607,7 +679,7 @@ def _resolve_agent(parsed: ParsedInternalUri, ctx: InternalUriContext) -> Intern
 
     if not parsed.path:
         entries: list[str] = []
-        for job in store.list_jobs():
+        for job in _iter_owned_store_jobs(store, ctx):
             for run in _list_runs(store, job.id):
                 entries.append(
                     f"{job.id}/{run['id']}\t{run.get('role', '')}\t{run.get('status', '')}"
@@ -617,6 +689,7 @@ def _resolve_agent(parsed: ParsedInternalUri, ctx: InternalUriContext) -> Intern
     parts = parsed.path.split("/")
     job_id = parts[0]
     _require_safe_id(job_id, "job id")
+    _require_readable_store_job(store, job_id, ctx)
 
     if len(parts) == 1:
         runs = _list_runs(store, job_id)

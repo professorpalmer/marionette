@@ -227,7 +227,7 @@ export type Job = {
   cwd?: string;
   /** marionette | visibility_only — whether Marionette owns economic totals. */
   accounting_scope?: "marionette" | "visibility_only" | string;
-  /** False for external/CLI jobs that are visible but must not bill Marionette meters. */
+  /** False when an admitted job must not bill Marionette meters (owned-but-unbilled). */
   accounting_owned?: boolean;
   created_at?: string | null;
   updated_at?: number | string | null;

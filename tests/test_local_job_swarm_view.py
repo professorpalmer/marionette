@@ -464,7 +464,7 @@ def test_project_preserves_accounting_fields():
 
 
 def test_swarm_live_session_savings_exclude_external_cli_jobs(tmp_path, monkeypatch):
-    """Visibility-only CLI rows stay visible but do not inflate session savings."""
+    """Unstamped CLI rows stay off Marionette live and do not inflate session savings."""
     repo = tmp_path / "repo"
     repo.mkdir()
     harness_dir = tmp_path / "harness-state"
@@ -510,9 +510,7 @@ def test_swarm_live_session_savings_exclude_external_cli_jobs(tmp_path, monkeypa
             _get(port, f"/api/swarm/live?repo={scoped}", {"X-Harness-Token": srv._TOKEN}).read().decode()
         )
         cli_rows = [j for j in data["jobs"] if j.get("id") == cli_job.id]
-        assert len(cli_rows) == 1
-        assert cli_rows[0]["accounting_owned"] is False
-        assert cli_rows[0]["routing_saved_usd"] == 0.0
+        assert cli_rows == []
         assert data["session"]["routing_saved_usd"] == 0.0
     finally:
         httpd.shutdown()
