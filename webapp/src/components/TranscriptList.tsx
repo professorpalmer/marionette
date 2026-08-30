@@ -25,6 +25,7 @@ import {
   type AgentLinkKind,
 } from "../lib/agentLinks";
 import {
+  dismissAgentCommandSession,
   getAgentCommandIndexVersion,
   lookupAgentCommandSession,
   registerAgentCommandSession,
@@ -1235,8 +1236,11 @@ function indexCardCommandSession(card: Card, sessionId?: string): void {
   const commandKv = inputKey === "command" && resultCommand ? resultCommand : cliInput;
   const rawGoal = commandKv || cliInput;
   const { linkKind, value } = classifyActionGoal(card.kind || "", rawGoal);
-  const id = String(card.id || card.result?.job_id || "").trim();
+  const jobId = String(card.result?.job_id || "").trim();
+  const cardId = String(card.id || "").trim();
+  const id = jobId || cardId;
   if (linkKind !== "command" || !id || !value) return;
+  if (jobId && cardId && jobId !== cardId) dismissAgentCommandSession(cardId);
   const rawStatus = String(card.result?.status || "").trim().toLowerCase();
   const exitCode =
     typeof card.result?.exit_code === "number"
@@ -3543,13 +3547,18 @@ function ActionCard({
   const suppressed = isGateSuppressed(card);
   const isErr = (!!card.result?.error || nonZeroExit) && !suppressed;
   const { linkKind, value: goalValue } = classifyActionGoal(card.kind || "", rawGoal);
-  const commandRevealId = String(card.id || card.result?.job_id || goalValue || "").trim();
+  const commandJobId = String(card.result?.job_id || "").trim();
+  const commandCardId = String(card.id || "").trim();
+  const commandRevealId = commandJobId || commandCardId || goalValue;
   const commandRevealOutput = String(card.result?.output || "");
 
   // Bind this card's process id the way Hermes keys background terminals
   // by procId, then keep an open mirror in sync as output grows.
   useEffect(() => {
     if (linkKind !== "command" || !commandRevealId || !goalValue) return;
+    if (commandJobId && commandCardId && commandJobId !== commandCardId) {
+      dismissAgentCommandSession(commandCardId);
+    }
     registerAgentCommandSession({
       id: commandRevealId,
       command: goalValue,
@@ -3557,13 +3566,13 @@ function ActionCard({
       state: isErr ? "failed" : effectivelyRunning ? "running" : "done",
     });
     if (commandRevealOutput) syncAgentCommandOutput(commandRevealId, commandRevealOutput);
-  }, [commandRevealId, commandRevealOutput, effectivelyRunning, goalValue, isErr, linkKind]);
+  }, [commandCardId, commandJobId, commandRevealId, commandRevealOutput, effectivelyRunning, goalValue, isErr, linkKind]);
 
   const openCommandReveal = (command: string) => {
     const cmd = (command || "").trim();
     if (!cmd) return;
     openAgentCommand(cmd, {
-      id: card.id || card.result?.job_id || cmd,
+      id: commandRevealId || cmd,
       output: card.result?.output || "",
       run: false,
     });

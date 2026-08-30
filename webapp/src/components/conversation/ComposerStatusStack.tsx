@@ -9,7 +9,7 @@ import {
   subscribeAgentCommandIndex,
 } from "../../lib/agentCommandIndex";
 import { buildComposerStatusStackRows, type ComposerStatusStackRow } from "./composerStatusStackData";
-import { COMPOSER_FAMILY_HAIRLINE, COMPOSER_FAMILY_LABEL, COMPOSER_FAMILY_SECTION } from "./composerFamily";
+import { COMPOSER_FAMILY_LABEL, COMPOSER_FAMILY_SECTION } from "./composerFamily";
 
 const ROW_FOCUS =
   "focus-visible:border-accent/60 focus-visible:outline-none";
@@ -220,7 +220,7 @@ export default function ComposerStatusStack({
       className={COMPOSER_FAMILY_SECTION}
       data-slot="composer-status-stack"
     >
-      <div className={`divide-y ${COMPOSER_FAMILY_HAIRLINE}`}>
+      <div className="space-y-0.5">
         {grouped.map((group) => (
           <StatusStackGroup
             key={group.kind}

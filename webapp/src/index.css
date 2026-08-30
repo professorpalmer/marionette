@@ -189,10 +189,6 @@ body {
   color: var(--faint, #8b919a);
 }
 
-.composer-family-hairline {
-  border-color: color-mix(in srgb, var(--edge, #2a2d31) 28%, transparent);
-}
-
 .composer-toolbar {
   display: flex;
   flex-wrap: wrap;

@@ -15,7 +15,7 @@ import {
   Check,
   X,
 } from "lucide-react";
-import { api, type Config, type SessionGoal, type SessionState, type UsageData } from "../lib/api";
+import { api, type Config, type EconomicsData, type SessionGoal, type SessionState } from "../lib/api";
 import {
   subscribeTaskProfile,
   taskProfileTitle,
@@ -23,13 +23,7 @@ import {
 } from "../lib/taskProfileChrome";
 import { isDesktop } from "../lib/transport";
 import { usePolling } from "../lib/usePolling";
-import {
-  cacheHitDisplay,
-  delegationSavingsCredited,
-  listPriceValueTotal,
-  routingSavingsCredited,
-  spendIsEstimated,
-} from "./CostBreakdown";
+
 import { sanitizeUpdateMessage } from "../lib/updateMessages";
 import { shortPilotModelLabel } from "../lib/turnProgress";
 import type { UpdateAvailability } from "./UpdateBanner";
@@ -87,7 +81,7 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
   onOpenEconomics: () => void;
 }) {
   const [branch, setBranch] = useState("");
-  const [usage, setUsage] = useState<UsageData["session"] | null>(null);
+  const [sessionEconomics, setSessionEconomics] = useState<EconomicsData | null>(null);
   const [apply, setApply] = useState<{ stage: string; message: string; percent: number | null } | null>(null);
   const [toast, setToast] = useState<{
     message: string;
@@ -193,41 +187,24 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
     };
   }, []);
 
-  // In-flight guard: while a swarm keeps the backend busy, getUsage can take
-  // longer than the 10s cadence. Skipping an overlapping poll keeps the status
-  // bar from adding to the request pileup that made panels load in chunks.
-  const usageInFlight = useRef(false);
-  // After a session/project switch, accept the next meters even if zero so a
-  // prior chat's totals cannot stick via the zeros-guard.
-  const acceptZeroUsageRef = useRef(false);
-  const fetchUsage = () => {
-    if (usageInFlight.current) return;
-    usageInFlight.current = true;
-    api.getUsage()
+  const economicsInFlight = useRef(false);
+  const fetchSessionEconomics = () => {
+    if (economicsInFlight.current) return;
+    economicsInFlight.current = true;
+    api.getEconomics("conversation", "all")
       .then((data) => {
-        if (data && data.session) {
-          // Belt-and-suspenders: a workspace switch rebuilds the pilot and can
-          // briefly report all-zero meters before the copy lands (or if an older
-          // backend omits the carry). Keep last-good spend rather than blanking
-          // the status-bar cluster on a zeros response — but never across
-          // session boundaries (see harness-session-changed).
-          setUsage((prev) => {
-            const next = data.session;
-            const nextZero =
-              (next.tokens_used ?? 0) === 0 && (next.est_cost_usd ?? 0) === 0;
-            const prevHadSpend =
-              !!prev && ((prev.tokens_used ?? 0) > 0 || (prev.est_cost_usd ?? 0) > 0);
-            if (acceptZeroUsageRef.current) {
-              acceptZeroUsageRef.current = false;
-              return next;
-            }
-            if (nextZero && prevHadSpend) return prev;
-            return next;
-          });
+        if (
+          data?.counterfactual_source === "job_financial_reports"
+          && data.counterfactual_status === "ok"
+          && data.counterfactual
+        ) {
+          setSessionEconomics(data);
+        } else {
+          setSessionEconomics(null);
         }
       })
-      .catch((err) => console.error("Failed to load usage in StatusBar", err))
-      .finally(() => { usageInFlight.current = false; });
+      .catch((err) => console.error("Failed to load session Economics in StatusBar", err))
+      .finally(() => { economicsInFlight.current = false; });
   };
 
   useEffect(() => {
@@ -244,20 +221,14 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
   const runtimeStatus = deriveFooterRuntimeStatus(sessionState);
   const runtimeReady = runtimeStatus === "ready";
   const sessionGoal = sessionGoalForChip(sessionState?.goal);
-  // While a runner is busy, poll tok/$ every 2s so multi-step host-tool turns
-  // (and the jump when a long Cursor CLI stream finally meters) show up live.
-  // Idle stays on the 10s cadence to avoid request pileup.
-  const usageBusy = runtimeStatus === "busy" || runtimeStatus === "thinking";
+  usePolling(fetchSessionEconomics, 10000);
 
   useEffect(() => {
-    fetchUsage();
-    const interval = setInterval(fetchUsage, usageBusy ? 2000 : 10000);
-    const onRefresh = () => fetchUsage();
+    const onRefresh = () => fetchSessionEconomics();
     const onSessionChanged = () => {
-      acceptZeroUsageRef.current = true;
-      setUsage(null);
+      setSessionEconomics(null);
       setTaskProfile(null);
-      fetchUsage();
+      fetchSessionEconomics();
       // Session/view swaps carry a different sticky GOAL — refresh immediately
       // rather than waiting for the next 4s poll tick.
       void refreshSessionState();
@@ -268,24 +239,13 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
     window.addEventListener("harness-usage-refresh", onRefresh);
     window.addEventListener("harness-session-changed", onSessionChanged);
     return () => {
-      clearInterval(interval);
       window.removeEventListener("harness-config-changed", onRefresh);
       window.removeEventListener("harness-project-selected", onRefresh);
       window.removeEventListener("harness-new-session", onSessionChanged);
       window.removeEventListener("harness-usage-refresh", onRefresh);
       window.removeEventListener("harness-session-changed", onSessionChanged);
     };
-  }, [usageBusy]);
-
-  const formatTokens = (num: number) => {
-    if (num >= 1000000) {
-      return (num / 1000000).toFixed(1).replace(/\.0$/, "") + "M";
-    }
-    if (num >= 1000) {
-      return (num / 1000).toFixed(1).replace(/\.0$/, "") + "k";
-    }
-    return num.toString();
-  };
+  }, []);
 
   const formatCost = (num: number) => {
     if (num === 0) return "$0.00";
@@ -298,7 +258,35 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
     return `$${num.toFixed(2)}`;
   };
 
-  const showUsage = usage && (usage.tokens_used > 0 || usage.est_cost_usd > 0);
+  const sessionReceipt = sessionEconomics?.counterfactual;
+  const sessionCost = typeof sessionReceipt?.actual_cost_usd === "number"
+    && Number.isFinite(sessionReceipt.actual_cost_usd)
+    ? sessionReceipt.actual_cost_usd
+    : null;
+  const sessionSavings = typeof sessionReceipt?.avoided_usd === "number"
+    && Number.isFinite(sessionReceipt.avoided_usd)
+    ? sessionReceipt.avoided_usd
+    : null;
+  const sessionBasis = sessionReceipt?.spend_basis;
+  const sessionCostLabel = sessionBasis === "plan"
+    ? "Included"
+    : sessionCost === null
+      ? ""
+      : `${sessionBasis === "estimated" || sessionBasis === "mixed" ? "~" : ""}${formatCost(sessionCost)}`;
+  const openSessionEconomics = () => {
+    // The panel can mount after this click's selection event. Keep the exact
+    // destination available for that first render; the pane consumes it.
+    (window as any).__pmPendingEconomicsSelection = {
+      scope: "conversation",
+      period: "all",
+    };
+    onOpenEconomics();
+    window.setTimeout(() => {
+      window.dispatchEvent(new CustomEvent("harness-economics-selection", {
+        detail: { scope: "conversation", period: "all" },
+      }));
+    }, 0);
+  };
   const driverLabel = shortPilotModelLabel(config?.driver) || "pilot";
   const driverProvider = config?.driver?.includes(":")
     ? config.driver.split(":")[0]
@@ -398,116 +386,30 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
           </button>
         </span>
       )}
-      {showUsage && (
+      {sessionCostLabel && (
         <>
           <span className="w-px h-3 bg-edge/40 shrink-0" />
-          <span className="flex items-center gap-1.5 text-muted/80 min-w-0" title="Process-wide token usage and estimated cost since app launch (not repo session spend in Swarm pane; survives backend restart; resets on full quit)">
+          <span className="flex items-center gap-1.5 text-muted/80 min-w-0" title="This session · all time PM financial receipt">
             <Coins size={10} className="text-faint shrink-0" />
-            <span className="status-bar-optional-xs">{formatTokens(usage.tokens_used)} tok</span>
-            {(() => {
-              const cached = usage.tokens_cached || 0;
-              const compacted = usage.tool_output_tokens_saved || 0;
-              const hit = cacheHitDisplay(usage);
-              const cacheValue =
-                (typeof usage.cache_savings_gross_usd === "number"
-                  ? usage.cache_savings_gross_usd
-                  : usage.cache_savings_usd || 0)
-                + (usage.cache_saved_usd_swarm || 0);
-              const swarmCachePartial =
-                (usage.cache_saved_usd_swarm || 0) > 0
-                && (
-                  usage.swarm_cache_savings_basis === "unknown"
-                  || (usage.swarm_cache_unpriced_tokens || 0) > 0
-                );
-              const savedUsd = listPriceValueTotal(usage);
-              if (cached <= 0 && compacted <= 0 && savedUsd <= 0 && hit.percent == null) return null;
-              const delegationMeasured =
-                usage.delegation_savings_basis === "actual_usage";
-              const delegationUsd = delegationSavingsCredited(
-                usage.delegation_savings_basis,
-                usage.delegation_saved_usd,
-              );
-              const routingUsd = routingSavingsCredited(
-                usage.routing_savings_basis,
-                usage.routing_saved_usd,
-              );
-              const modelSelectionUsd = delegationMeasured
-                ? delegationUsd
-                : (delegationUsd > 0 ? delegationUsd : routingUsd);
-              const detail = [
-                hit.percent != null
-                  ? `${hit.percent} ${hit.label} hit (cache-read÷prompt-input; cold first turns and independent workers start uncached)`
-                  : "",
-                cached > 0
-                  ? `${formatTokens(cached)} prompt tokens served from cache${
-                      cacheValue > 0 ? ` (~${formatCost(cacheValue)} prompt-cache value)` : ""
-                    }${
-                      swarmCachePartial
-                        ? `, partial pricing${
-                            (usage.swarm_cache_unpriced_tokens || 0) > 0
-                              ? `; ${formatTokens(usage.swarm_cache_unpriced_tokens || 0)} tokens unpriced`
-                              : ""
-                          }`
-                        : ""
-                    }`
-                  : "",
-                compacted > 0
-                  ? `${formatTokens(compacted)} tool-output tokens compacted away${
-                      usage.tool_output_savings_usd ? ` (~${formatCost(usage.tool_output_savings_usd)})` : ""
-                    }`
-                  : "",
-                modelSelectionUsd
-                  ? `model selection value vs frontier-equivalent list price (~${formatCost(modelSelectionUsd)}${
-                      usage.routing_savings_basis === "estimated" && !delegationMeasured
-                        ? ", estimate"
-                        : ""
-                    })`
-                  : "",
-              ].filter(Boolean).join("  ·  ");
-              return (
-                <button
-                  type="button"
-                  onClick={onOpenEconomics}
-                  className="status-bar-optional-sm inline-flex items-center gap-1 px-1.5 py-px rounded-full bg-good/10 border border-good/20 text-good/90"
-                  title={`${hit.title} List-price value from model selection, prompt-cache, and compaction (additive, not overlapping cash refunds): ${detail}`}
-                >
-                  <span className="text-good/60" aria-hidden="true">&#8595;</span>
-                  {hit.percent != null ? (
-                    <span>{hit.percent} {hit.label}</span>
-                  ) : null}
-                  {hit.percent != null && (savedUsd > 0 || cached > 0 || compacted > 0) ? (
-                    <span className="text-good/50" aria-hidden="true">·</span>
-                  ) : null}
-                  {savedUsd > 0
-                    ? `${swarmCachePartial ? "~" : ""}${formatCost(savedUsd)} saved`
-                    : (cached > 0 || compacted > 0)
-                      ? `${formatTokens(cached + compacted)} saved`
-                      : null}
-                </button>
-              );
-            })()}
-            <span className="relative inline-flex items-center gap-1 shrink-0">
+            {sessionSavings !== null && sessionSavings > 0 ? (
               <button
                 type="button"
-                onClick={onOpenEconomics}
-                title={
-                  !spendIsEstimated(usage)
-                    ? "Process-wide billed spend since app launch (provider usage.cost) -- click to open Economics"
-                    : usage.cost_source === "plan_estimated"
-                      ? "Process-wide plan-credit estimate since app launch (subscription pilots; not an API receipt) -- click to open Economics"
-                      : usage.price_source === "default"
-                        ? "Process-wide estimated spend using default rates (live/catalog pricing unavailable) -- click to open Economics"
-                        : usage.price_source === "unknown"
-                          ? "Process-wide spend with unavailable model rates (no fabricated dollars) -- click to open Economics"
-                          : "Process-wide estimated spend since app launch -- click to open Economics (Swarm pane shows per-repo session spend)"
-                }
-                className="inline-flex items-center gap-1 px-1.5 py-px rounded-full bg-panel2 border border-edge text-txt/90 font-medium hover:border-edge hover:text-txt transition cursor-pointer"
+                onClick={openSessionEconomics}
+                className="status-bar-optional-sm inline-flex items-center gap-1 px-1.5 py-px text-good/65 hover:text-good/80"
+                title="Estimated savings for this session · all time — click to open Economics"
               >
-                {spendIsEstimated(usage) ? "~" : ""}
-                {formatCost(usage.est_cost_usd)}
+                ~{formatCost(sessionSavings)} saved
               </button>
-              <span className="text-faint/70 normal-case font-sans tracking-normal status-bar-optional-lg">process</span>
-            </span>
+            ) : null}
+            <button
+              type="button"
+              onClick={openSessionEconomics}
+              title="Cost for this session · all time — click to open Economics"
+              className="inline-flex items-center gap-1 px-1.5 py-px rounded-full bg-panel2 border border-edge text-txt/90 font-medium hover:border-edge hover:text-txt transition cursor-pointer"
+            >
+              {sessionCostLabel}
+            </button>
+            <span className="text-faint/70 normal-case font-sans tracking-normal status-bar-optional-lg">session</span>
           </span>
         </>
       )}

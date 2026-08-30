@@ -11,7 +11,7 @@ import { getSessionTodos, subscribeSessionTodos } from "../../lib/sessionTodos";
 import ComposerStatusStack from "./ComposerStatusStack";
 import ComposerTasksPanel from "./ComposerTasksPanel";
 import ComposerTodoPanel from "./ComposerTodoPanel";
-import { COMPOSER_FAMILY_HAIRLINE, COMPOSER_FAMILY_SURFACE } from "./composerFamily";
+import { COMPOSER_FAMILY_SURFACE } from "./composerFamily";
 import { buildComposerStatusStackRows } from "./composerStatusStackData";
 
 export default function ComposerActivityRail({
@@ -41,10 +41,10 @@ export default function ComposerActivityRail({
 
   return (
     <div
-      className={`mx-2 mb-1 overflow-hidden ${COMPOSER_FAMILY_SURFACE}`}
+      className={`mb-1 overflow-hidden ${COMPOSER_FAMILY_SURFACE}`}
       data-slot="composer-activity-rail"
     >
-      <div className={`divide-y ${COMPOSER_FAMILY_HAIRLINE}`}>
+      <div className="space-y-0.5 p-0.5">
         <ComposerTodoPanel jobs={jobs} sessionId={sessionId} />
         <ComposerTasksPanel jobs={jobs} sessionId={sessionId} />
         <ComposerStatusStack swarmJobs={jobs} sessionId={sessionId} />
