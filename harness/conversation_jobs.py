@@ -121,6 +121,17 @@ def _enrich_worker_provenance(
     return provenance
 
 
+def _worker_result_has_empty_worktree_marker(res) -> bool:
+    try:
+        text = (
+            f"{getattr(res, 'summary', '') or ''} "
+            f"{getattr(res, 'error', '') or ''}"
+        ).lower()
+    except Exception:
+        return False
+    return any(marker in text for marker in _EMPTY_WORKTREE_MARKERS)
+
+
 def _is_empty_diff_implement_failure(res, *, expects_diff: bool) -> bool:
     """True when an implement worker left the managed worktree unchanged."""
     if not expects_diff or res is None:
@@ -135,14 +146,7 @@ def _is_empty_diff_implement_failure(res, *, expects_diff: bool) -> bool:
             return False
     except Exception:
         pass
-    try:
-        text = (
-            f"{getattr(res, 'summary', '') or ''} "
-            f"{getattr(res, 'error', '') or ''}"
-        ).lower()
-    except Exception:
-        return False
-    if not any(marker in text for marker in _EMPTY_WORKTREE_MARKERS):
+    if not _worker_result_has_empty_worktree_marker(res):
         return False
     try:
         return not bool(getattr(res, "ok", True))
@@ -254,17 +258,18 @@ def _empty_implement_recovery_eligible(
         err = str(getattr(res, "error", "") or "").strip().lower()
     except Exception:
         err = ""
-    # Engine crash / unavailable / route failure is not a seeded-worktree miss.
-    # Stamping worktree_diff_empty on AGENTIC_ERROR must not launch a second run.
-    if err.startswith("agentic_"):
+    if not _is_empty_diff_implement_failure(res, expects_diff=True):
+        return False
+    if err == "agentic_orchestrator_failed":
+        if not _worker_result_has_empty_worktree_marker(res):
+            return False
+    elif err.startswith("agentic_"):
         return False
     if err in (
         "worktree_create_failed",
         "patch_capture_failed",
         "worker_cleanup_failed",
     ):
-        return False
-    if not _is_empty_diff_implement_failure(res, expects_diff=True):
         return False
     if _worker_stopped_by_guard_or_budget(res):
         return False

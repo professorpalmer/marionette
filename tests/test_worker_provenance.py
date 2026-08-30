@@ -271,6 +271,42 @@ def test_empty_diff_implement_failure_detector():
     assert _is_empty_diff_implement_failure(ok_patch, expects_diff=True) is False
 
 
+def test_agentic_empty_managed_implement_is_recovery_eligible():
+    result = WorkerResult(
+        ok=False,
+        error="agentic_orchestrator_failed",
+        summary="Worker produced no changes in disposable managed worktree",
+        patch="",
+        worktree_diff_empty=True,
+        managed_worktree_mode="managed",
+    )
+
+    assert _empty_implement_recovery_eligible(
+        result,
+        expects_diff=True,
+        live_dirty_before=["src/lib/db/schema.ts"],
+        cancelled=False,
+    ) is True
+
+
+def test_agentic_orchestrator_failure_without_empty_worktree_evidence_does_not_retry():
+    result = WorkerResult(
+        ok=False,
+        error="agentic_orchestrator_failed",
+        summary="provider process exited unexpectedly",
+        patch="",
+        worktree_diff_empty=False,
+        managed_worktree_mode="managed",
+    )
+
+    assert _empty_implement_recovery_eligible(
+        result,
+        expects_diff=True,
+        live_dirty_before=["src/lib/db/schema.ts"],
+        cancelled=False,
+    ) is False
+
+
 def test_empty_managed_implement_triggers_one_recovery_when_live_dirty(monkeypatch):
     """Empty managed implement + dirty live tree re-invokes the edit engine once."""
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
