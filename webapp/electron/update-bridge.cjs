@@ -789,6 +789,7 @@ function registerUpdateBridge(ipcMain, app, shell, opts = {}) {
   const packagedUpdater = opts.packagedUpdater || null;
   const checkSourceUpdate = opts.checkSourceUpdate || checkForUpdate;
   const applySourceUpdate = opts.applySourceUpdate || applyUpdate;
+  const readCheckoutVersion = opts.readCheckoutVersion || readCheckoutPackageVersion;
   // Startup Puppetmaster parity result (puppetmaster-runtime.cjs). A stale
   // runtime is an update the user still owes, so the check payload carries it.
   const getRuntimeParity = opts.getRuntimeParity || (() => null);
@@ -807,7 +808,7 @@ function registerUpdateBridge(ipcMain, app, shell, opts = {}) {
   const doCheck = async () => {
     const currentVersion = app.getVersion();
     const repoRoot = getRepoRoot();
-    const checkoutVersion = readCheckoutPackageVersion(repoRoot);
+    const checkoutVersion = readCheckoutVersion(repoRoot);
     const gitRes = await checkSourceUpdate({ repoRoot, currentVersion, env: getEnv() });
     let packagedRes = null;
     if (packagedUpdater && packagedUpdater.enabled) {
@@ -872,7 +873,7 @@ function registerUpdateBridge(ipcMain, app, shell, opts = {}) {
       // still behind -- that was the double Restart / shell-skew loop.
       const repoRoot = getRepoRoot();
       const shellVersion = app.getVersion();
-      let checkoutVersion = readCheckoutPackageVersion(repoRoot);
+      let checkoutVersion = readCheckoutVersion(repoRoot);
       let skew = isPackaged && shellBehindCheckout({ shellVersion, checkoutVersion });
 
       const gitRes = await checkSourceUpdate({
@@ -915,10 +916,13 @@ function registerUpdateBridge(ipcMain, app, shell, opts = {}) {
           );
           return sourceResult;
         }
-        checkoutVersion = readCheckoutPackageVersion(repoRoot);
+        checkoutVersion = readCheckoutVersion(repoRoot);
         skew = isPackaged && shellBehindCheckout({ shellVersion, checkoutVersion });
-        // After pull, main-process or version skew may newly require the installer.
-        if (isPackaged && (skew || sourceResult.mainProcessChanged)) {
+        // The pulled range may include Electron files already present in the
+        // running shell release. Only remaining version skew means this shell
+        // still owes an installer; an available/downloaded package already
+        // kept runShell in the plan above.
+        if (isPackaged && skew) {
           plan = { ...plan, runShell: true, sequence: [...plan.sequence.filter((s) => s !== "shell"), "shell"] };
         }
       }
