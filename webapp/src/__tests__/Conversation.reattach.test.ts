@@ -943,6 +943,7 @@ describe("Wave 4 command-job reattach fences", () => {
 describe("mid-turn store-event cursor reattach", () => {
   afterEach(() => {
     cleanup();
+    vi.clearAllTimers();
     vi.restoreAllMocks();
     vi.useRealTimers();
   });
@@ -954,16 +955,18 @@ describe("mid-turn store-event cursor reattach", () => {
     const streamGenRef = { current: 1 };
     const cachedSessionIdRef = { current: "sess-live" as string | null };
     const lastAppliedCursorRef = { current: 0 };
+    const localStreamActiveRef = { current: false };
+    const transcriptLoadGenRef = { current: 1 };
     const applied: string[] = [];
     const base = {
       cancelled: () => false,
       loadGen: 1,
-      transcriptLoadGenRef: { current: 1 },
+      transcriptLoadGenRef,
       streamGenRef,
       reattachGen: 1,
       reattachSid: "sess-live",
       cachedSessionIdRef,
-      localStreamActiveRef: { current: false },
+      localStreamActiveRef,
       userStoppedRef: { current: false },
       lastAppliedCursorRef,
       ringGenerationRef: { current: 1 as number | undefined },
@@ -1182,20 +1185,58 @@ describe("mid-turn store-event cursor reattach", () => {
     expect(deps.chatEventsPollTimerRef.current).not.toBeNull();
   });
 
-  it("clears mounted Investigating when an external stream misses the terminal", async () => {
+  function liveSwarmPrep(callId: string, goal: string): Extract<Item, { kind: "card" }> {
+    return {
+      kind: "card",
+      card: {
+        id: `tool-prep:${callId}`,
+        call_id: callId,
+        goal,
+        cwd: null,
+        kind: "run_swarm",
+        running: true,
+        open: false,
+      },
+    };
+  }
+
+  function assignItemsWithoutRefFlush(setItemsVar: (next: Item[]) => void) {
+    return (next: Item[] | ((prev: Item[]) => Item[])) => {
+      if (typeof next === "function") {
+        throw new Error("setItems updater is not flushed before the same-tick decision");
+      }
+      setItemsVar(next);
+    };
+  }
+
+  function mountedTranscriptProps(
+    items: Item[],
+    chrome: { status?: "idle" | "thinking"; turnOpen?: boolean } = {},
+  ) {
+    return {
+      items,
+      status: chrome.status ?? "thinking",
+      compactingStatus: null,
+      editingIndex: null,
+      auto: false,
+      plan: false,
+      turnOpen: chrome.turnOpen ?? true,
+      holdSwarmAwait: false,
+      scrollContainerRef: { current: null },
+      onEditMessage: vi.fn(),
+      onExecuteSend: vi.fn(),
+      onImageClick: vi.fn(),
+      onSetCard: vi.fn(),
+      onExecutePlan: vi.fn(),
+      onCommandApproval: vi.fn(),
+    };
+  }
+
+  it("clears mounted Investigating when tool-prep call_id matches a different durable id", async () => {
+    const callId = "call-review";
     let items: Item[] = [
       { kind: "msg", msg: { role: "user", text: "review the claim" } },
-      {
-        kind: "card",
-        card: {
-          id: "swarm-call",
-          goal: "review the claim",
-          cwd: null,
-          kind: "run_swarm",
-          running: true,
-          open: false,
-        },
-      },
+      liveSwarmPrep(callId, "review the claim"),
     ];
     const itemsRef = { current: items };
     let turnOpen = false;
@@ -1203,10 +1244,7 @@ describe("mid-turn store-event cursor reattach", () => {
     const deps = reattachDeps({
       itemsRef,
       transcriptFpRef: { current: "" },
-      setItems: (next: Item[] | ((prev: Item[]) => Item[])) => {
-        items = typeof next === "function" ? next(items) : next;
-        itemsRef.current = items;
-      },
+      setItems: assignItemsWithoutRefFlush((next) => { items = next; }),
       setTurnOpen: (next: boolean) => { turnOpen = next; },
       setStatus: (next: any) => {
         status = typeof next === "function" ? next(status) : next;
@@ -1236,10 +1274,20 @@ describe("mid-turn store-event cursor reattach", () => {
         { role: "user", text: "review the claim" },
         {
           type: "card",
-          id: "swarm-call",
+          id: "a7",
+          call_id: callId,
           goal: "review the claim",
           kind: "run_swarm",
           result: { job_id: "job_done", status: "complete" },
+        },
+        {
+          type: "swarm_result",
+          job_id: "job_done",
+          applied: true,
+          files: [],
+          summary: "one finding",
+          error: null,
+          objective: "review the claim",
         },
         { role: "assistant", text: "The review is complete." },
       ],
@@ -1248,23 +1296,7 @@ describe("mid-turn store-event cursor reattach", () => {
     const { pullChatEvents } = createChatEventsReattach(deps as any);
     await pullChatEvents();
 
-    const transcriptProps = () => ({
-      items,
-      status,
-      compactingStatus: null,
-      editingIndex: null,
-      auto: false,
-      plan: false,
-      turnOpen,
-      holdSwarmAwait: false,
-      scrollContainerRef: { current: null },
-      onEditMessage: vi.fn(),
-      onExecuteSend: vi.fn(),
-      onImageClick: vi.fn(),
-      onSetCard: vi.fn(),
-      onExecutePlan: vi.fn(),
-      onCommandApproval: vi.fn(),
-    });
+    const transcriptProps = () => mountedTranscriptProps(items, { status, turnOpen });
     const mounted = render(createElement(TranscriptList, transcriptProps()));
     expect(screen.getByText(/Investigating/i)).toBeTruthy();
 
@@ -1274,8 +1306,63 @@ describe("mid-turn store-event cursor reattach", () => {
 
     expect(readEventsSince).toHaveBeenCalledTimes(3);
     expect(sessionTranscript).toHaveBeenCalledTimes(1);
+    expect(itemsRef.current.some(
+      (item) => item.kind === "card" && item.card.kind === "run_swarm",
+    )).toBe(false);
+    expect(itemsRef.current.some(
+      (item) => item.kind === "swarm_result" && item.job_id === "job_done",
+    )).toBe(true);
     expect(screen.getByText("The review is complete.")).toBeTruthy();
+    expect(screen.getByText("Swarm · 1 result")).toBeTruthy();
     expect(screen.queryByText(/Investigating/i)).toBeNull();
+  });
+
+  it("keeps an unrelated active tool-prep swarm when another call_id is terminal", async () => {
+    let items: Item[] = [
+      liveSwarmPrep("call-done", "finished review"),
+      liveSwarmPrep("call-keep", "still active"),
+    ];
+    const itemsRef = { current: items };
+    const deps = reattachDeps({
+      itemsRef,
+      transcriptFpRef: { current: "" },
+      setItems: assignItemsWithoutRefFlush((next) => { items = next; }),
+    });
+    const sessionTranscript = vi.spyOn(api, "sessionTranscript").mockResolvedValue({
+      display: [{
+        type: "card",
+        id: "a9",
+        call_id: "call-done",
+        goal: "finished review",
+        kind: "run_swarm",
+        result: { job_id: "job_done", status: "complete" },
+      }],
+    } as any);
+    vi.spyOn(api, "readEventsSince").mockResolvedValue({
+      cursor: 2,
+      events: [{
+        id: 2,
+        kind: "runners",
+        data: { state: "idle", runners: { "sess-live": "idle" } },
+      }],
+    } as any);
+
+    const { pullChatEvents } = createChatEventsReattach(deps as any);
+    await pullChatEvents();
+    await pullChatEvents();
+
+    expect(sessionTranscript).toHaveBeenCalledTimes(1);
+    expect(itemsRef.current.some(
+      (item) => item.kind === "card" && item.card.id === "tool-prep:call-done",
+    )).toBe(false);
+    expect(itemsRef.current.some(
+      (item) => item.kind === "card"
+        && item.card.id === "tool-prep:call-keep"
+        && item.card.call_id === "call-keep"
+        && item.card.running,
+    )).toBe(true);
+    render(createElement(TranscriptList, mountedTranscriptProps(itemsRef.current)));
+    expect(screen.getByText(/Investigating/i)).toBeTruthy();
   });
 
   it("keeps an unrelated active swarm whose call id only cross-matches a terminal", async () => {
@@ -1295,9 +1382,47 @@ describe("mid-turn store-event cursor reattach", () => {
     const deps = reattachDeps({
       itemsRef,
       transcriptFpRef: { current: "" },
-      setItems: (next: Item[] | ((prev: Item[]) => Item[])) => {
-        items = typeof next === "function" ? next(items) : next;
-        itemsRef.current = items;
+      setItems: assignItemsWithoutRefFlush((next) => { items = next; }),
+    });
+    const sessionTranscript = vi.spyOn(api, "sessionTranscript").mockResolvedValue({
+      display: [{
+        type: "card",
+        id: "terminal-card",
+        call_id: "different-terminal-call",
+        goal: "finished elsewhere",
+        kind: "run_swarm",
+        result: { job_id: "job_done", status: "complete" },
+      }],
+    } as any);
+    vi.spyOn(api, "readEventsSince").mockResolvedValue({
+      cursor: 2,
+      events: [{
+        id: 2,
+        kind: "runners",
+        data: { state: "idle", runners: { "sess-live": "idle" } },
+      }],
+    } as any);
+
+    const { pullChatEvents } = createChatEventsReattach(deps as any);
+    await pullChatEvents();
+    await pullChatEvents();
+
+    expect(sessionTranscript).toHaveBeenCalledTimes(1);
+    expect(itemsRef.current.some(
+      (item) => item.kind === "card" && item.card.id === "active-card" && item.card.running,
+    )).toBe(true);
+    render(createElement(TranscriptList, mountedTranscriptProps(itemsRef.current)));
+    expect(screen.getByText(/Investigating/i)).toBeTruthy();
+  });
+
+  it("ignores a disk transcript after a new send bumps generation during the await", async () => {
+    const snapshot = [liveSwarmPrep("call-stale", "review the claim")];
+    const itemsRef = { current: snapshot };
+    const deps = reattachDeps({
+      itemsRef,
+      transcriptFpRef: { current: "" },
+      setItems: () => {
+        throw new Error("stale transcript must not call setItems");
       },
     });
     vi.spyOn(api, "readEventsSince").mockResolvedValue({
@@ -1308,42 +1433,197 @@ describe("mid-turn store-event cursor reattach", () => {
         data: { state: "idle", runners: { "sess-live": "idle" } },
       }],
     } as any);
-    vi.spyOn(api, "sessionTranscript").mockResolvedValue({
-      display: [{
-        type: "card",
-        id: "terminal-card",
-        call_id: "different-terminal-call",
-        goal: "finished elsewhere",
-        kind: "run_swarm",
-        result: { job_id: "job_done", status: "complete" },
-      }],
-    } as any);
+    const sessionTranscript = vi.spyOn(api, "sessionTranscript").mockImplementation(async () => {
+      deps.streamGenRef.current = 2;
+      return {
+        display: [
+          { role: "user", text: "stale" },
+          {
+            type: "card",
+            id: "a7",
+            call_id: "call-stale",
+            kind: "run_swarm",
+            result: { job_id: "job_stale", status: "complete" },
+          },
+        ],
+      } as any;
+    });
 
     const { pullChatEvents } = createChatEventsReattach(deps as any);
     await pullChatEvents();
     await pullChatEvents();
 
-    expect(items.some(
-      (item) => item.kind === "card" && item.card.id === "active-card" && item.card.running,
-    )).toBe(true);
-    render(createElement(TranscriptList, {
-      items,
-      status: "thinking",
-      compactingStatus: null,
-      editingIndex: null,
-      auto: false,
-      plan: false,
-      turnOpen: true,
-      holdSwarmAwait: false,
-      scrollContainerRef: { current: null },
-      onEditMessage: vi.fn(),
-      onExecuteSend: vi.fn(),
-      onImageClick: vi.fn(),
-      onSetCard: vi.fn(),
-      onExecutePlan: vi.fn(),
-      onCommandApproval: vi.fn(),
-    }));
-    expect(screen.getByText(/Investigating/i)).toBeTruthy();
+    expect(sessionTranscript).toHaveBeenCalledTimes(1);
+    expect(itemsRef.current).toBe(snapshot);
+    expect(itemsRef.current[0]).toMatchObject({
+      kind: "card",
+      card: { id: "tool-prep:call-stale", call_id: "call-stale", running: true },
+    });
+  });
+
+  it("ignores a disk transcript after a session switch during the await", async () => {
+    const snapshot = [liveSwarmPrep("call-stale", "review the claim")];
+    const itemsRef = { current: snapshot };
+    const deps = reattachDeps({
+      itemsRef,
+      transcriptFpRef: { current: "" },
+      setItems: () => {
+        throw new Error("stale transcript must not call setItems");
+      },
+    });
+    vi.spyOn(api, "readEventsSince").mockResolvedValue({
+      cursor: 2,
+      events: [{
+        id: 2,
+        kind: "runners",
+        data: { state: "idle", runners: { "sess-live": "idle" } },
+      }],
+    } as any);
+    const sessionTranscript = vi.spyOn(api, "sessionTranscript").mockImplementation(async () => {
+      deps.cachedSessionIdRef.current = "sess-other";
+      return {
+        display: [
+          {
+            type: "card",
+            id: "a7",
+            call_id: "call-stale",
+            kind: "run_swarm",
+            result: { job_id: "job_stale", status: "complete" },
+          },
+        ],
+      } as any;
+    });
+
+    const { pullChatEvents } = createChatEventsReattach(deps as any);
+    await pullChatEvents();
+    await pullChatEvents();
+
+    expect(sessionTranscript).toHaveBeenCalledTimes(1);
+    expect(itemsRef.current).toBe(snapshot);
+  });
+
+  function staleCompletedDisplay() {
+    return [
+      { role: "user", text: "stale" },
+      {
+        type: "card",
+        id: "a7",
+        call_id: "call-stale",
+        kind: "run_swarm",
+        result: { job_id: "job_stale", status: "complete" },
+      },
+    ];
+  }
+
+  async function startDeferredIdleRefresh(deps: ReturnType<typeof reattachDeps>) {
+    vi.useRealTimers();
+    let resolveTranscript: ((value: { display: unknown[] }) => void) | null = null;
+    const sessionTranscript = vi.spyOn(api, "sessionTranscript").mockImplementation(
+      async () => {
+        throw new Error("sessionTranscript called before confirmed-idle refresh");
+      },
+    );
+    vi.spyOn(api, "readEventsSince").mockResolvedValue({
+      cursor: 2,
+      events: [{
+        id: 2,
+        kind: "runners",
+        data: { state: "idle", runners: { "sess-live": "idle" } },
+      }],
+    } as any);
+    const { pullChatEvents } = createChatEventsReattach(deps as any);
+    await pullChatEvents();
+    expect(sessionTranscript).not.toHaveBeenCalled();
+    sessionTranscript.mockImplementation(
+      () => new Promise((resolve) => {
+        resolveTranscript = resolve;
+      }),
+    );
+    const inFlight = pullChatEvents();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(sessionTranscript).toHaveBeenCalledTimes(1);
+    return {
+      inFlight,
+      resolveStale: () => {
+        if (!resolveTranscript) {
+          throw new Error("confirmed-idle refresh is not waiting on sessionTranscript");
+        }
+        resolveTranscript({ display: staleCompletedDisplay() });
+      },
+    };
+  }
+
+  async function assertConfirmedIdleChromeHolds(
+    tripFence: (args: {
+      deps: ReturnType<typeof reattachDeps>;
+      itemsRef: { current: Item[] };
+      subscriptionCancelled: { current: boolean };
+    }) => void,
+  ) {
+    const snapshot = [liveSwarmPrep("call-stale", "review the claim")];
+    const itemsRef = { current: snapshot };
+    const subscriptionCancelled = { current: false };
+    const setTurnOpen = vi.fn();
+    const setStatus = vi.fn();
+    const deps = reattachDeps({
+      cancelled: () => subscriptionCancelled.current,
+      itemsRef,
+      transcriptFpRef: { current: "" },
+      setItems: () => {
+        throw new Error("stale transcript must not call setItems");
+      },
+      setTurnOpen,
+      setStatus,
+    });
+    const { inFlight, resolveStale } = await startDeferredIdleRefresh(deps);
+
+    tripFence({ deps, itemsRef, subscriptionCancelled });
+    const itemsAfterFence = itemsRef.current;
+    setTurnOpen.mockClear();
+    setStatus.mockClear();
+    resolveStale();
+    await inFlight;
+
+    expect(itemsRef.current).toBe(itemsAfterFence);
+    expect(setTurnOpen).not.toHaveBeenCalledWith(false);
+    expect(setStatus).not.toHaveBeenCalledWith("idle");
+  }
+
+  it.each([
+    {
+      name: "a new local stream starts",
+      tripFence: ({ deps }) => {
+        deps.localStreamActiveRef.current = true;
+        deps.streamGenRef.current = 2;
+      },
+    },
+    {
+      name: "the subscription is cancelled",
+      tripFence: ({ itemsRef, subscriptionCancelled }) => {
+        subscriptionCancelled.current = true;
+        itemsRef.current = [];
+      },
+    },
+    {
+      name: "transcript load generation changes",
+      tripFence: ({ deps, itemsRef }) => {
+        deps.transcriptLoadGenRef.current = 2;
+        itemsRef.current = [];
+      },
+    },
+    {
+      name: "the session switches",
+      tripFence: ({ deps }) => {
+        deps.cachedSessionIdRef.current = "sess-other";
+      },
+    },
+  ] satisfies Array<{
+    name: string;
+    tripFence: Parameters<typeof assertConfirmedIdleChromeHolds>[0];
+  }>)("does not settle chrome when $name during confirmed-idle refresh", async ({ tripFence }) => {
+    await assertConfirmedIdleChromeHolds(tripFence);
   });
 
   it("sessionEventsPath builds the store cursor URL", () => {

@@ -80,6 +80,59 @@ export type ChatEventsReattachDeps = {
   abandonStaleLocalStreamRef?: { current: () => void };
 };
 
+type SwarmCallIdentity = {
+  id: string;
+  callId: string;
+};
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value != null && typeof value === "object" && !Array.isArray(value);
+}
+
+function trimmedDisplayString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+/** Durable run_swarm ActionCards stay suppressed; only identity is harvested. */
+function parseTerminalRunSwarmCall(row: unknown): SwarmCallIdentity | null {
+  if (!isPlainRecord(row)) return null;
+  if (row.type !== "card" || row.kind !== "run_swarm") return null;
+  if (row.result == null) return null;
+  const id = trimmedDisplayString(row.id);
+  const callId = trimmedDisplayString(row.call_id);
+  if (!id && !callId) return null;
+  return { id, callId };
+}
+
+function collectTerminalRunSwarmCalls(display: unknown): SwarmCallIdentity[] {
+  if (!Array.isArray(display)) return [];
+  const out: SwarmCallIdentity[] = [];
+  for (const row of display) {
+    const parsed = parseTerminalRunSwarmCall(row);
+    if (parsed) out.push(parsed);
+  }
+  return out;
+}
+
+function liveRunSwarmIdentity(card: { id?: string; call_id?: string }): SwarmCallIdentity {
+  return {
+    id: typeof card.id === "string" ? card.id.trim() : "",
+    callId: typeof card.call_id === "string" ? card.call_id.trim() : "",
+  };
+}
+
+/**
+ * Call identity wins when both rows have it. Never compare one row's id to
+ * the other row's call_id — that would drop an unrelated live swarm.
+ */
+function liveRunSwarmMatchesTerminal(
+  live: SwarmCallIdentity,
+  terminal: SwarmCallIdentity,
+): boolean {
+  if (live.callId && terminal.callId) return live.callId === terminal.callId;
+  return Boolean(live.id && terminal.id && live.id === terminal.id);
+}
+
 export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
   const {
     cancelled,
@@ -131,17 +184,21 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
     liveCancel: chatEventsLiveCancelRef.current,
   });
 
+  const subscriptionFencesStillPass = (sid: string): boolean => (
+    !cancelled()
+    && loadGen === transcriptLoadGenRef.current
+    && streamGenRef.current === reattachGen
+    && cachedSessionIdRef.current === sid
+    && !localStreamActiveRef.current
+  );
+
   const hydrateDurableTranscript = async (): Promise<void> => {
     const missHydrateGen = ++runnerBusyPollGenRef.current;
     const missSid = reattachSid;
     try {
       const tres = await api.sessionTranscript(missSid);
       if (missHydrateGen !== runnerBusyPollGenRef.current) return;
-      if (cancelled()) return;
-      if (loadGen !== transcriptLoadGenRef.current) return;
-      if (streamGenRef.current !== reattachGen) return;
-      if (cachedSessionIdRef.current !== missSid) return;
-      if (localStreamActiveRef.current) return;
+      if (!subscriptionFencesStillPass(missSid)) return;
       const loadedItems = transcriptResponseToItems(tres);
       const next = mergeTranscriptItems(itemsRef.current, loadedItems);
       const fp = transcriptFingerprint(next);
@@ -156,59 +213,40 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
     }
   };
 
+  const transcriptRefreshStillCurrent = (pollGen: number, sid: string): boolean => {
+    if (pollGen !== runnerBusyPollGenRef.current) return false;
+    if (!subscriptionFencesStillPass(sid)) return false;
+    return shouldApplySwarmLiveMerge({
+      pollGen,
+      currentGen: runnerBusyPollGenRef.current,
+      pollSessionId: sid,
+      cachedSessionId: cachedSessionIdRef.current,
+      activeSessionId: cachedSessionIdRef.current,
+    });
+  };
+
   const refreshTranscriptFromDisk = async (sid: string): Promise<void> => {
     const pollGen = ++runnerBusyPollGenRef.current;
     try {
       const tres = await api.sessionTranscript(sid);
-      if (!shouldApplySwarmLiveMerge({
-        pollGen,
-        currentGen: runnerBusyPollGenRef.current,
-        pollSessionId: sid,
-        cachedSessionId: cachedSessionIdRef.current,
-        activeSessionId: cachedSessionIdRef.current,
-      })) {
-        return;
-      }
-      if (localStreamActiveRef.current) return;
-      const terminalSwarmCalls = (Array.isArray(tres.display) ? tres.display : [])
-        .filter((row: any) => row?.type === "card" && row?.kind === "run_swarm" && row?.result != null)
-        .map((row: any) => {
-          const id = String(row.id || "").trim();
-          const callId = String(row.call_id || row.id || "").trim();
-          return { id, callId };
-        })
-        .filter((row) => row.id && row.callId);
+      if (!transcriptRefreshStillCurrent(pollGen, sid)) return;
+      const terminalSwarmCalls = collectTerminalRunSwarmCalls(tres.display);
       const loadedItems = transcriptResponseToItems(tres);
-      let applied = false;
-      setItems((prev) => {
-        if (!shouldApplySwarmLiveMerge({
-          pollGen,
-          currentGen: runnerBusyPollGenRef.current,
-          pollSessionId: sid,
-          cachedSessionId: cachedSessionIdRef.current,
-          activeSessionId: cachedSessionIdRef.current,
-        })) {
-          return prev;
-        }
-        if (localStreamActiveRef.current) return prev;
-        const local = prev.filter((item) => {
-          if (item.kind !== "card" || item.card.kind !== "run_swarm") return true;
-          const id = String(item.card.id || "").trim();
-          const callId = String(item.card.call_id || item.card.id || "").trim();
-          return !terminalSwarmCalls.some(
-            (terminal) => terminal.id === id && terminal.callId === callId,
-          );
-        });
-        const next = mergeTranscriptItems(local, loadedItems);
-        const fp = transcriptFingerprint(next);
-        if (fp === transcriptFpRef.current) return prev;
-        transcriptFpRef.current = fp;
-        itemsRef.current = next;
-        writeTranscriptCache(sid, next);
-        applied = true;
-        return next;
+      const local = itemsRef.current.filter((item) => {
+        if (item.kind !== "card" || item.card.kind !== "run_swarm") return true;
+        const live = liveRunSwarmIdentity(item.card);
+        return !terminalSwarmCalls.some((terminal) => (
+          liveRunSwarmMatchesTerminal(live, terminal)
+        ));
       });
-      if (applied) setTranscriptStale(false);
+      const next = mergeTranscriptItems(local, loadedItems);
+      const fp = transcriptFingerprint(next);
+      if (fp === transcriptFpRef.current) return;
+      transcriptFpRef.current = fp;
+      itemsRef.current = next;
+      setItems(next);
+      writeTranscriptCache(sid, next);
+      setTranscriptStale(false);
     } catch {
       // best-effort
     }
@@ -323,6 +361,9 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
         // deciding whether the investigation is still live.
         await refreshTranscriptFromDisk(sid);
         refreshedAfterConfirmedIdle = true;
+        if (!subscriptionFencesStillPass(sid)) {
+          return true;
+        }
         tick = runnersBusyTickDecision({
           userStopped: userStoppedRef.current,
           localStreamActive: localStreamActiveRef.current,
@@ -338,6 +379,13 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
         tick.kind === "hold_live_investigation"
         || tick.kind === "hold_idle_unconfirmed"
       ) {
+        return true;
+      }
+      // `noop` (e.g. a new local stream) is not authorization to idle.
+      if (tick.kind !== "finalize_idle_refresh") {
+        return true;
+      }
+      if (!subscriptionFencesStillPass(sid)) {
         return true;
       }
       consecutiveIdlePolls = 0;
