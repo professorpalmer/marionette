@@ -3,6 +3,7 @@
  */
 
 import { useEffect, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { api } from "../../lib/api";
 import { clearSessionTodos } from "../../lib/sessionTodos";
 import { clearActivityFoldPrefs, type Item } from "../TranscriptList";
 import {
