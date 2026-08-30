@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import threading
 import urllib.error
 import urllib.request
@@ -82,6 +83,77 @@ def test_sessions_filtered_by_workspace_two_roots(tmp_path):
         resp_b = _get(port, "/api/sessions")
         sessions_b = json.loads(resp_b.read().decode())
         assert {s["id"] for s in sessions_b} == {meta_b["id"]}
+    finally:
+        httpd.shutdown()
+
+
+def _alias_or_symlink_root(tmp_path):
+    repo = tmp_path / "marionette"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    alias = tmp_path / "Marionette"
+    if not alias.exists():
+        alias.symlink_to(repo, target_is_directory=True)
+    return repo, alias
+
+
+def test_sessions_api_lists_case_alias_under_canonical_workspace(tmp_path):
+    httpd, port, srv = _server()
+    repo, alias = _alias_or_symlink_root(tmp_path)
+    _setup_server(tmp_path, srv)
+
+    try:
+        aliased = srv._sessions.create(
+            "Aliased",
+            repo=str(alias),
+            workspace_root=str(alias),
+        )
+        srv._cfg.repo = str(repo)
+
+        sessions = json.loads(_get(port, "/api/sessions").read().decode())
+
+        assert {session["id"] for session in sessions} == {aliased["id"]}
+    finally:
+        httpd.shutdown()
+
+
+def test_sessions_api_lists_nested_alias_under_canonical_workspace(tmp_path):
+    httpd, port, srv = _server()
+    repo, alias = _alias_or_symlink_root(tmp_path)
+    nested = alias / "nested" / "child"
+    nested.mkdir(parents=True)
+    missing = alias / "nested" / "historical-gone"
+    other = tmp_path / "other-root"
+    other.mkdir()
+    _setup_server(tmp_path, srv)
+
+    try:
+        nested_session = srv._sessions.create(
+            "Nested alias",
+            repo=str(nested),
+            workspace_root=str(nested),
+        )
+        missing_session = srv._sessions.create(
+            "Historical nested",
+            repo=str(missing),
+            workspace_root=str(missing),
+        )
+        foreign = srv._sessions.create(
+            "Other root",
+            repo=str(other),
+            workspace_root=str(other),
+        )
+        srv._cfg.repo = str(repo)
+
+        sessions = json.loads(_get(port, "/api/sessions").read().decode())
+        ids = {session["id"] for session in sessions}
+        assert nested_session["id"] in ids
+        assert missing_session["id"] in ids
+        assert foreign["id"] not in ids
+
+        assert session_visible_for_workspace(nested_session, str(repo), str(tmp_path))
+        assert session_visible_for_workspace(missing_session, str(repo), str(tmp_path))
+        assert not session_visible_for_workspace(nested_session, str(other), str(tmp_path))
     finally:
         httpd.shutdown()
 

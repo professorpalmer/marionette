@@ -26,6 +26,7 @@ from dataclasses import dataclass, asdict
 from typing import Optional, Any, List
 
 from .job_scoping import cwd_under_repo, _norm_path
+from .paths import same_workspace_path
 
 # Cap bytes read from a transcript when building list previews (OMP-style
 # cheap listing — avoid hydrating multi-MB histories for the sidebar).
@@ -628,7 +629,7 @@ def _same_root(a: str, b: str) -> bool:
         return True
     if not a or not b:
         return False
-    return _norm_path(a) == _norm_path(b)
+    return same_workspace_path(a, b)
 
 
 def _is_ephemeral_root(root: str) -> bool:
@@ -672,12 +673,12 @@ def session_visible_for_workspace(session: dict, workspace_root: str, state_dir:
         return True
     stored = session_stored_root(session)
     if stored:
-        if _norm_path(stored) == _norm_path(workspace_root):
+        if same_workspace_path(stored, workspace_root):
             return True
         return cwd_under_repo(stored, workspace_root) or cwd_under_repo(workspace_root, stored)
     inferred = infer_legacy_session_root(session, state_dir)
     if inferred:
-        if _norm_path(inferred) == _norm_path(workspace_root):
+        if same_workspace_path(inferred, workspace_root):
             return True
         return cwd_under_repo(inferred, workspace_root)
     return True
