@@ -386,27 +386,28 @@ export function classifyActionGoal(
   if (k === "web_fetch") {
     return { linkKind: "url", value: g };
   }
-  // Search / wiki queries are prose. looksLikeShellCommand treats any
-  // spaced string as a command, which parked CodeGraph queries on the Term rail.
+  // Search and wiki inputs are prose even when their query looks shell-like.
+  // Keep these action families aligned with toolInputFieldKey.
   if (
-    k === "search_codegraph"
-    || k === "search_files"
-    || k === "search_state"
-    || k === "search_tools"
-    || k === "web_search"
+    k === "web_search"
     || k === "query_wiki"
+    || k.includes("codegraph")
+    || k.startsWith("search_")
   ) {
     return { linkKind: "none", value: g };
   }
-  // Worker / shell dispatches are processes, not files — even when the goal
-  // text embeds a path (looksLikeFilePath would otherwise open the editor).
+  // Orchestration cards belong on Puppetmaster / Tasks, not Terminal.
   if (
-    k === "run_command"
-    || k === "run_ipython"
-    || k === "run_implement"
+    k === "run_implement"
     || k === "run_parallel"
     || k === "run_swarm"
     || k === "route_task"
+  ) {
+    return { linkKind: "none", value: g };
+  }
+  if (
+    k === "run_command"
+    || k === "run_ipython"
     || k === "shell"
     || k === "bash"
     || k === "execute"

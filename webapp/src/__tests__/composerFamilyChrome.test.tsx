@@ -136,6 +136,7 @@ const swarmJob = {
   goal: "Audit composer stack",
   source: "harness",
   status: "running",
+  session_id: "sess-1",
   updated_at: Date.now(),
 } as Job;
 
