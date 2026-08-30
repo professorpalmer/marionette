@@ -62,7 +62,10 @@ export function usePolling(fn: PollFn, intervalMs: number, opts: PollOptions = {
         });
     };
 
-    tick();
+    // Defer the first tick so React StrictMode can clean up its throwaway
+    // mount before any request starts. The committed mount still runs on the
+    // next task, preserving immediate polling without duplicate backend work.
+    schedule(0);
     const onVisible = () => {
       if (!document.hidden && !inFlight) { window.clearTimeout(timer); tick(); }
     };

@@ -743,7 +743,7 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
                 );
                 return (
             <div
-              key={pairKey}
+              key={stackTabs[0]}
               className={`right-pane-card-stack${stackPlacement.groupIndex > 0 ? " right-pane-card-stack-join-end" : ""}`}
               style={{
                 gridColumn: stackPlacement.gridColumn,
