@@ -787,6 +787,8 @@ function registerUpdateBridge(ipcMain, app, shell, opts = {}) {
   // to inherit process.env (dev/CLI runs already have a full env).
   const getEnv = opts.getEnv || (() => process.env);
   const packagedUpdater = opts.packagedUpdater || null;
+  const checkSourceUpdate = opts.checkSourceUpdate || checkForUpdate;
+  const applySourceUpdate = opts.applySourceUpdate || applyUpdate;
   // Startup Puppetmaster parity result (puppetmaster-runtime.cjs). A stale
   // runtime is an update the user still owes, so the check payload carries it.
   const getRuntimeParity = opts.getRuntimeParity || (() => null);
@@ -806,7 +808,7 @@ function registerUpdateBridge(ipcMain, app, shell, opts = {}) {
     const currentVersion = app.getVersion();
     const repoRoot = getRepoRoot();
     const checkoutVersion = readCheckoutPackageVersion(repoRoot);
-    const gitRes = await checkForUpdate({ repoRoot, currentVersion, env: getEnv() });
+    const gitRes = await checkSourceUpdate({ repoRoot, currentVersion, env: getEnv() });
     let packagedRes = null;
     if (packagedUpdater && packagedUpdater.enabled) {
       try {
@@ -856,8 +858,8 @@ function registerUpdateBridge(ipcMain, app, shell, opts = {}) {
   ipcMain.handle("updates:apply", async (event, arg) => {
     if (applying) return { ok: false, error: "an update is already in progress" };
     applying = true;
-    // arg may be a strategy string ("ff"|"stash") or an options object.
-    const strategy = (arg && typeof arg === "object" ? arg.strategy : arg) || "ff";
+    // arg may be a strategy string ("auto"|"ff"|"stash") or an options object.
+    const strategy = (arg && typeof arg === "object" ? arg.strategy : arg) || "auto";
     const emit = (payload) => {
       try {
         if (event.sender && !event.sender.isDestroyed()) event.sender.send("updates:progress", payload);
@@ -873,7 +875,7 @@ function registerUpdateBridge(ipcMain, app, shell, opts = {}) {
       let checkoutVersion = readCheckoutPackageVersion(repoRoot);
       let skew = isPackaged && shellBehindCheckout({ shellVersion, checkoutVersion });
 
-      const gitRes = await checkForUpdate({
+      const gitRes = await checkSourceUpdate({
         repoRoot,
         currentVersion: shellVersion,
         env: getEnv(),
@@ -900,30 +902,24 @@ function registerUpdateBridge(ipcMain, app, shell, opts = {}) {
 
       let sourceResult = { ok: true, skipped: true, mainProcessChanged: false };
       if (plan.runSource) {
-        sourceResult = await applyUpdate({ repoRoot, strategy, env: getEnv() }, emit);
+        const sourceStrategy = strategy === "auto"
+          ? (gitRes.dirty ? "stash" : "ff")
+          : strategy;
+        sourceResult = await applySourceUpdate(
+          { repoRoot, strategy: sourceStrategy, env: getEnv() },
+          emit,
+        );
         if (!sourceResult.ok) {
-          // Source plane failed, but a packaged shell update can still finish
-          // the user-visible "update Marionette" path. Prefer that over opening
-          // GitHub when electron-updater already has a newer build ready.
-          const canContinueShell =
-            plan.runShell && packagedUpdater && packagedUpdater.enabled;
-          if (!canContinueShell) return sourceResult;
           appendUpdateLog(
-            `[apply] source failed (${sourceResult.code || "error"}); continuing with packaged shell install`
+            `[apply] source failed (${sourceResult.code || "error"}); packaged shell stage skipped`
           );
-          sourceResult = {
-            ok: true,
-            skipped: true,
-            mainProcessChanged: false,
-            sourceError: sourceResult.error || sourceResult.code || "source update failed",
-          };
-        } else {
-          checkoutVersion = readCheckoutPackageVersion(repoRoot);
-          skew = isPackaged && shellBehindCheckout({ shellVersion, checkoutVersion });
-          // After pull, main-process or version skew may newly require the installer.
-          if (isPackaged && (skew || sourceResult.mainProcessChanged)) {
-            plan = { ...plan, runShell: true, sequence: [...plan.sequence.filter((s) => s !== "shell"), "shell"] };
-          }
+          return sourceResult;
+        }
+        checkoutVersion = readCheckoutPackageVersion(repoRoot);
+        skew = isPackaged && shellBehindCheckout({ shellVersion, checkoutVersion });
+        // After pull, main-process or version skew may newly require the installer.
+        if (isPackaged && (skew || sourceResult.mainProcessChanged)) {
+          plan = { ...plan, runShell: true, sequence: [...plan.sequence.filter((s) => s !== "shell"), "shell"] };
         }
       }
 

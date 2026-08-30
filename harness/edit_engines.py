@@ -55,6 +55,7 @@ AGENTIC_ROUTE_FAILED = "agentic_route_failed"
 AGENTIC_ERROR = "agentic_error"
 WORKTREE_CREATE_FAILED = "worktree_create_failed"
 AGENTIC_ORCHESTRATOR_FAILED = "agentic_orchestrator_failed"
+AGENTIC_NO_DIFF = "agentic_no_diff"
 PATCH_CAPTURE_FAILED = "patch_capture_failed"
 WORKER_CLEANUP_FAILED = "worker_cleanup_failed"
 AGENTIC_PROVIDER_RATE_LIMITED = "agentic_provider_rate_limited"
@@ -114,6 +115,14 @@ def _agentic_store_failure_snapshot(store: Any, job_id: str = "") -> dict:
         "event_names": [],
         "job_status": "",
         "artifact_types": [],
+        "worker_failure": "",
+        "stop_reason": "",
+        "turns": 0,
+        "provider": "",
+        "model": "",
+        "submit_forced_budget": False,
+        "has_work": None,
+        "final_response_excerpt": "",
     }
     if store is None:
         return snap
@@ -237,6 +246,30 @@ def _agentic_store_failure_snapshot(store: Any, job_id: str = "") -> dict:
             tokens_in += int(payload.get("tokens_in") or 0)
         if not art_failure and payload.get("failure"):
             art_failure = str(payload.get("failure") or "").strip()
+        if not snap["worker_failure"] and payload.get("failure"):
+            snap["worker_failure"] = str(payload.get("failure") or "").strip()
+        if not snap["stop_reason"] and payload.get("stop_reason"):
+            snap["stop_reason"] = str(payload.get("stop_reason") or "").strip()
+        if not snap["turns"] and payload.get("turns"):
+            try:
+                snap["turns"] = int(payload.get("turns") or 0)
+            except (TypeError, ValueError):
+                pass
+        if not snap["provider"] and payload.get("provider"):
+            snap["provider"] = str(payload.get("provider") or "").strip()
+        if not snap["model"] and payload.get("model"):
+            snap["model"] = str(payload.get("model") or "").strip()
+        if payload.get("submit_forced_budget") is True:
+            snap["submit_forced_budget"] = True
+        if snap["has_work"] is None and isinstance(payload.get("has_work"), bool):
+            snap["has_work"] = payload.get("has_work")
+        if (
+            not snap["final_response_excerpt"]
+            and (payload.get("stop_reason") or isinstance(payload.get("has_work"), bool))
+            and payload.get("stdout")
+        ):
+            final_response = _redact_text(str(payload.get("stdout") or "")).strip()
+            snap["final_response_excerpt"] = final_response[-2000:]
     snap["tokens_in"] = tokens_in
     snap["tokens_out"] = tokens_out
     snap["usage_known"] = usage_known
@@ -273,6 +306,32 @@ def _format_agentic_engine_error(
     statuses = [str(item) for item in (snap.get("task_statuses") or []) if str(item).strip()]
     if statuses:
         parts.append("tasks: " + ", ".join(statuses))
+    worker_failure = redact_secret_text(
+        str(snap.get("worker_failure") or "").strip()
+    )
+    stop_reason = redact_secret_text(str(snap.get("stop_reason") or "").strip())
+    turns = snap.get("turns")
+    worker_details = []
+    if worker_failure:
+        worker_details.append(worker_failure)
+    if stop_reason:
+        worker_details.append(f"stop={stop_reason}")
+    if turns:
+        worker_details.append(f"turns={turns}")
+    provider = redact_secret_text(str(snap.get("provider") or "").strip())
+    model = redact_secret_text(str(snap.get("model") or "").strip())
+    route = "/".join(part for part in (provider, model) if part)
+    if route:
+        worker_details.append(f"route={route}")
+    if snap.get("submit_forced_budget") is True:
+        worker_details.append("budget-submit-forced")
+    if worker_details:
+        parts.append("worker: " + "; ".join(worker_details))
+    final_response = redact_secret_text(
+        str(snap.get("final_response_excerpt") or "").strip()
+    )
+    if final_response:
+        parts.append("final response: " + final_response)
     files = [str(path) for path in (files_changed or []) if str(path).strip()]
     if files:
         parts.append("unapplied worktree files: " + ", ".join(files))
@@ -313,6 +372,17 @@ def classify_agentic_exception(
         return AGENTIC_PROVIDER_RATE_LIMITED
     if isinstance(exc, TimeoutError):
         return AGENTIC_TIMEOUT
+    snapshot_data = snapshot or {}
+    snapshot_reason = str(snapshot_data.get("reason") or "").lower()
+    worker_failure = str(snapshot_data.get("worker_failure") or "").lower()
+    if (
+        "require_diff" in snapshot_reason
+        and (
+            worker_failure == "no_diff_produced"
+            or snapshot_data.get("has_work") is False
+        )
+    ):
+        return AGENTIC_NO_DIFF
     parts = [_redact_text(str(exc))]
     if snapshot:
         parts.append(str(snapshot.get("reason") or ""))
@@ -1362,6 +1432,8 @@ def run_agentic_edit(
                     tokens_in=int(usage["tokens_in"]),
                     usage_known=usage["usage_known"],
                     cost_known=usage["cost_known"],
+                    provider=str(failure_snap.get("provider") or ""),
+                    model=str(failure_snap.get("model") or ""),
                     worktree=wt_path,
                     managed_worktree_path=wt_path,
                     managed_worktree_mode="managed",

@@ -115,7 +115,6 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     window.addEventListener("harness-job-scope-changed", onScope);
     return () => window.removeEventListener("harness-job-scope-changed", onScope);
   }, []);
-  const [confirmClearJobs, setConfirmClearJobs] = useState(false);
   const [showAllJobs, setShowAllJobs] = useState(false);
   const [expandedJobs, setExpandedJobs] = useState<Record<string, boolean>>({});
   const [sessionJobsHeight, setSessionJobsHeight] = useState(loadSessionJobsHeight);
@@ -1232,7 +1231,6 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       for (const j of terminalVisibleJobs) next.add(j.id);
       return next;
     });
-    setConfirmClearJobs(false);
   };
 
   const restoreHiddenJobs = () => setHiddenJobIds(new Set());
@@ -1906,7 +1904,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           session doesn't swallow the left rail. Vertically resizable via the
           grab handle above the header. */}
       <div
-        className="px-2 shrink-0 border-t border-edge/40 min-w-0 flex flex-col"
+        data-slot="left-rail-jobs"
+        className="mt-auto px-2 shrink-0 border-t border-edge/40 min-w-0 flex flex-col"
         style={sessionJobsCollapsed ? undefined : { height: sessionJobsHeight }}
       >
         {!sessionJobsCollapsed && (
@@ -1923,22 +1922,40 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
             <div className="w-8 h-0.5 rounded-full bg-edge/80 group-hover:bg-muted/80 transition-colors" />
           </div>
         )}
-        <div className={`h-7 flex items-center justify-between px-1.5 mb-1 gap-2 min-w-0 shrink-0 ${sessionJobsCollapsed ? "mt-2" : ""}`}>
-          <button
-            onClick={toggleSessionJobsCollapsed}
-            className="h-6 flex items-center gap-1 min-w-0 text-[11px] uppercase tracking-wider text-muted font-semibold hover:text-txt focus:outline-none"
-          >
-            {sessionJobsCollapsed ? <ChevronRight size={11} className="shrink-0" /> : <ChevronDown size={11} className="shrink-0" />}
-            <span className="truncate">Jobs</span>
-            {jobsValidating && !sessionJobsCollapsed && (
-              <Loader2 size={10} className="animate-spin text-muted shrink-0" />
+        <div
+          data-slot="left-rail-jobs-header"
+          className={`shrink-0 min-w-0 ${sessionJobsCollapsed ? "mt-2" : ""}`}
+        >
+          <div className="h-7 flex items-center justify-between px-1.5 gap-2 min-w-0">
+            <button
+              onClick={toggleSessionJobsCollapsed}
+              className="h-6 flex items-center gap-1 min-w-0 text-[11px] uppercase tracking-wider text-muted font-semibold hover:text-txt focus:outline-none"
+            >
+              {sessionJobsCollapsed ? <ChevronRight size={11} className="shrink-0" /> : <ChevronDown size={11} className="shrink-0" />}
+              <span className="truncate">Jobs</span>
+              {jobsValidating && !sessionJobsCollapsed && (
+                <Loader2 size={10} className="animate-spin text-muted shrink-0" />
+              )}
+              {visibleJobs.length > 0 && (
+                <span className="text-faint/70 normal-case tracking-normal shrink-0">({visibleJobs.length})</span>
+              )}
+            </button>
+            {!sessionJobsCollapsed && terminalVisibleJobs.length > 0 && (
+              <button
+                type="button"
+                aria-label="Clear finished jobs"
+                onClick={clearFinishedJobs}
+                className="h-6 w-6 shrink-0 grid place-items-center rounded text-faint hover:bg-panel2/60 hover:text-red-400 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/70 transition-colors"
+              >
+                <Trash2 size={11} />
+              </button>
             )}
-            {visibleJobs.length > 0 && (
-              <span className="text-faint/70 normal-case tracking-normal shrink-0">({visibleJobs.length})</span>
-            )}
-          </button>
+          </div>
           {!sessionJobsCollapsed && (
-            <div className="flex h-5 overflow-hidden rounded border border-edge/70 shrink-0">
+            <div
+              data-slot="left-rail-job-scopes"
+              className="grid grid-cols-3 h-6 mx-1.5 mb-1 overflow-hidden rounded border border-edge/70"
+            >
               {(["session", "repo", "all"] as const).map((scope) => (
                 <button
                   key={scope}
@@ -1946,38 +1963,12 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                   aria-pressed={jobScope === scope}
                   aria-label={scope === "session" ? "This session" : scope === "repo" ? "This repo" : "All projects"}
                   onClick={(e) => { e.stopPropagation(); setJobScope(scope); saveJobScope(scope); }}
-                  className={`px-1.5 text-[9px] uppercase tracking-wider ${jobScope === scope ? "bg-accent/15 text-txt" : "text-muted hover:text-txt"}`}
+                  className={`min-w-0 text-[9px] uppercase tracking-wider ${jobScope === scope ? "bg-accent/15 text-txt" : "text-muted hover:text-txt"}`}
                 >
                   {scope === "session" ? "Session" : scope === "repo" ? "Repo" : "All"}
                 </button>
               ))}
             </div>
-          )}
-          {!sessionJobsCollapsed && terminalVisibleJobs.length > 0 && (
-            confirmClearJobs ? (
-              <div className="flex items-center gap-2 text-[10px] shrink-0">
-                <span className="text-muted">Clear all?</span>
-                <button
-                  onClick={clearFinishedJobs}
-                  className="text-red-400 font-semibold hover:underline"
-                >
-                  Yes
-                </button>
-                <button
-                  onClick={() => setConfirmClearJobs(false)}
-                  className="text-muted hover:underline"
-                >
-                  No
-                </button>
-              </div>
-            ) : (
-              <button
-                onClick={() => setConfirmClearJobs(true)}
-                className="text-[10px] text-faint hover:text-red-400 transition-colors shrink-0"
-              >
-                Clear jobs
-              </button>
-            )
           )}
         </div>
         {!sessionJobsCollapsed && (

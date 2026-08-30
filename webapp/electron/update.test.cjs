@@ -117,6 +117,79 @@ test("checkForUpdate: only a fast-forwardable source checkout is actionable", as
   assert.equal(fork.available, false);
 });
 
+function registerUpdateApplyHarness({ dirty, sourceResult }) {
+  const handlers = {};
+  const observed = { sourceStrategies: [], shellInstalls: 0 };
+  const packagedUpdater = {
+    enabled: true,
+    check: async () => ({ available: true, latest: "0.9.386" }),
+    isDownloaded: () => false,
+    downloadAndInstall: async () => {
+      observed.shellInstalls += 1;
+      return { ok: true };
+    },
+  };
+
+  bridge.registerUpdateBridge(
+    {
+      handle(channel, handler) {
+        handlers[channel] = handler;
+      },
+    },
+    { isPackaged: true, getVersion: () => "0.9.385" },
+    { openExternal: async () => true },
+    {
+      getRepoRoot: () => path.join(os.tmpdir(), "marionette-update-test"),
+      packagedUpdater,
+      checkSourceUpdate: async () => ({
+        available: true,
+        dirty,
+        ahead: 0,
+      }),
+      applySourceUpdate: async ({ strategy }) => {
+        observed.sourceStrategies.push(strategy);
+        return sourceResult;
+      },
+    },
+  );
+
+  return {
+    apply: () => handlers["updates:apply"]({
+      sender: { isDestroyed: () => false, send() {} },
+    }),
+    observed,
+  };
+}
+
+test("updates:apply preserves dirty self-edits in the same source-to-shell transaction", async () => {
+  const update = registerUpdateApplyHarness({
+    dirty: true,
+    sourceResult: { ok: true, mainProcessChanged: false },
+  });
+
+  const result = await update.apply();
+
+  assert.deepEqual(update.observed.sourceStrategies, ["stash"]);
+  assert.equal(result.ok, true);
+  assert.equal(update.observed.shellInstalls, 1);
+});
+
+test("updates:apply does not install the packaged shell after a source failure", async () => {
+  const update = registerUpdateApplyHarness({
+    dirty: false,
+    sourceResult: {
+      ok: false,
+      code: "conflict",
+      error: "source update failed",
+    },
+  });
+
+  const result = await update.apply();
+
+  assert.equal(result.code, "conflict");
+  assert.equal(update.observed.shellInstalls, 0);
+});
+
 test("overallPercent: monotonic across the pipeline, clamped to 0..100", () => {
   assert.equal(steps.overallPercent("idle"), 0);
   const fetchEnd = steps.overallPercent("fetch", 1);

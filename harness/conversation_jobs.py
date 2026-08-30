@@ -34,6 +34,7 @@ _PROVENANCE_STAGE_CODES = frozenset({
     "agentic_error",
     "worktree_create_failed",
     "agentic_orchestrator_failed",
+    "agentic_no_diff",
     "patch_capture_failed",
     "worker_cleanup_failed",
     "agentic_provider_rate_limited",
@@ -260,10 +261,7 @@ def _empty_implement_recovery_eligible(
         err = ""
     if not _is_empty_diff_implement_failure(res, expects_diff=True):
         return False
-    if err == "agentic_orchestrator_failed":
-        if not _worker_result_has_empty_worktree_marker(res):
-            return False
-    elif err.startswith("agentic_"):
+    if err.startswith("agentic_"):
         return False
     if err in (
         "worktree_create_failed",
