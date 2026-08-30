@@ -11,6 +11,8 @@ export type AgentCommandSession = {
   output: string;
   state: "running" | "done" | "failed";
   updatedAt: number;
+  /** True only when this process observed the command running. */
+  railVisible?: boolean;
   /** Harness chat that ran this command. Missing means unscoped leftover. */
   sessionId?: string;
 };
@@ -68,11 +70,16 @@ export function registerAgentCommandSession(input: {
   const now = Date.now();
   if (existing && existing.command === command) {
     const prevState = existing.state;
+    let nextState = prevState;
+    if (state && prevState === "running") nextState = state;
+    else if (state === "failed" && prevState === "done") nextState = "failed";
     existing.output = output;
-    existing.updatedAt = now;
-    if (state) existing.state = state;
+    existing.state = nextState;
     if (sessionId) existing.sessionId = sessionId;
-    if (state && state !== prevState) {
+    if (nextState === "running") existing.railVisible = true;
+    const stateChanged = nextState !== prevState;
+    if (stateChanged) {
+      existing.updatedAt = now;
       emit(true);
       rememberCommandId(command, id);
       return existing;
@@ -89,6 +96,7 @@ export function registerAgentCommandSession(input: {
     output,
     state: state || "running",
     updatedAt: now,
+    railVisible: !state || state === "running",
     ...(sessionId ? { sessionId } : {}),
   };
   byId.set(id, session);

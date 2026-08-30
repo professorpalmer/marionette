@@ -45,10 +45,19 @@ function overlayExistingRow(
   existing: ComposerStatusStackRow,
   incoming: ComposerStatusStackRow,
 ): ComposerStatusStackRow {
+  let state = existing.state;
+  let updatedAt = existing.updatedAt;
+  if (incoming.state === "failed" && existing.state !== "failed") {
+    state = "failed";
+    updatedAt = incoming.updatedAt;
+  } else if (incoming.state === "done" && existing.state === "running") {
+    state = "done";
+    updatedAt = incoming.updatedAt;
+  }
   return {
     ...existing,
-    state: incoming.state,
-    updatedAt: Math.max(existing.updatedAt, incoming.updatedAt),
+    state,
+    updatedAt,
     output: existing.output || incoming.output,
     command: existing.command || incoming.command,
     label: existing.label || incoming.label,
@@ -158,6 +167,7 @@ function visibleCommandSession(
   const id = String(session.id || "").trim();
   const command = String(session.command || "").trim();
   if (!id || !command) return null;
+  if (session.railVisible === false) return null;
   const state = session.state || "running";
   if (state === "done" && nowMs - session.updatedAt > COMMAND_SUCCESS_LINGER_MS) return null;
   if (state === "failed" && nowMs - session.updatedAt > COMMAND_FAILURE_LINGER_MS) return null;
@@ -184,10 +194,11 @@ export function buildComposerStatusStackRows(
   // Sessions first: they carry live stdout for the existing openAgentCommand path.
   for (const session of source.commandSessions) {
     if (sessionId && session.sessionId !== sessionId) continue;
+    const id = String(session.id || "").trim();
+    if (id) seen.add(id);
     const row = visibleCommandSession(session, nowMs);
     if (row) {
       rows.push(row);
-      seen.add(row.id);
     }
   }
 

@@ -355,6 +355,91 @@ describe("composerStatusStack", () => {
     expect(rows[0]).toMatchObject({ kind: "terminal", command: "echo hi" });
   });
 
+  it("does not let a live poll flip a finished command back to running", () => {
+    const now = Date.parse("2026-08-23T12:00:00Z");
+    const rows = buildComposerStatusStackRows({
+      nowMs: now,
+      swarmJobs: [{
+        id: "local-cmd-e35cf193",
+        goal: "brew install llama.cpp",
+        source: "harness",
+        status: "",
+        updated_at: now - 200,
+        job_kind: "run_command",
+        command_preview: "brew install llama.cpp",
+      } as any],
+      commandSessions: [{
+        id: "local-cmd-e35cf193",
+        command: "brew install llama.cpp",
+        output: "ok",
+        state: "done",
+        updatedAt: now - 3_000,
+      }],
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].state).toBe("done");
+    expect(rows[0].updatedAt).toBe(now - 3_000);
+  });
+
+  it("hides settled transcript history that was never observed running", () => {
+    const now = Date.parse("2026-08-23T12:00:00Z");
+    const rows = buildComposerStatusStackRows({
+      nowMs: now,
+      swarmJobs: [],
+      commandSessions: [{
+        id: "old-card",
+        command: "brew install llama.cpp",
+        output: "ok",
+        state: "done",
+        updatedAt: now - 400,
+        railVisible: false,
+      }],
+    });
+    expect(rows).toEqual([]);
+  });
+
+  it("does not resurrect hidden transcript history from a stale live poll", () => {
+    const now = Date.parse("2026-08-23T12:00:00Z");
+    const rows = buildComposerStatusStackRows({
+      nowMs: now,
+      swarmJobs: [{
+        id: "local-cmd-aa11",
+        goal: "brew install llama.cpp",
+        source: "harness",
+        status: "",
+        updated_at: now - 100,
+        job_kind: "run_command",
+        command_preview: "brew install llama.cpp",
+      } as any],
+      commandSessions: [{
+        id: "local-cmd-aa11",
+        command: "brew install llama.cpp",
+        output: "ok",
+        state: "done",
+        updatedAt: now - 400,
+        railVisible: false,
+      }],
+    });
+    expect(rows).toEqual([]);
+  });
+
+  it("keeps a settled command briefly when this process observed it running", () => {
+    const now = Date.parse("2026-08-23T12:00:00Z");
+    const rows = buildComposerStatusStackRows({
+      nowMs: now,
+      swarmJobs: [],
+      commandSessions: [{
+        id: "live-then-done",
+        command: "brew install llama.cpp",
+        output: "ok",
+        state: "done",
+        updatedAt: now - 400,
+        railVisible: true,
+      }],
+    });
+    expect(rows.map((row) => row.id)).toEqual(["live-then-done"]);
+  });
+
   it("collapses command preview whitespace so the task bar does not stair-step", () => {
     const now = Date.parse("2026-08-23T12:00:00Z");
     const job = {

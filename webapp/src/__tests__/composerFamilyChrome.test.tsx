@@ -161,8 +161,13 @@ describe("composer-family chrome", () => {
       expect(el).toHaveClass("bg-panel2/80");
       expect(el).toHaveClass("rounded-2xl");
       expect(el).toHaveClass("border-edge");
+      expect(el).toHaveClass("shadow-lg");
       expect(el?.className).not.toMatch(/text-muted-foreground|rose-500|uppercase tracking-\[0\.16em\]/);
     }
+
+    const railSurface = rail.container.querySelector("[data-slot=composer-activity-rail]");
+    expect(railSurface).not.toHaveClass("mx-2");
+    expect(railSurface?.firstElementChild).not.toHaveClass("divide-y");
 
     const tasks = rail.container.querySelector("[data-slot=composer-tasks-panel]");
     const stack = rail.container.querySelector("[data-slot=composer-status-stack]");

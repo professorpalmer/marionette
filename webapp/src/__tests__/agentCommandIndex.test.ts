@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from "vitest";
+import { describe, expect, it, beforeEach, vi } from "vitest";
 import {
   getAgentCommandIndexVersion,
   dismissAgentCommandSession,
@@ -12,6 +12,7 @@ import {
 
 describe("agentCommandIndex", () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
     _resetAgentCommandIndexForTests();
   });
 
@@ -46,6 +47,40 @@ describe("agentCommandIndex", () => {
     registerAgentCommandSession({ id: "card-1", command: "pytest -q", output: "ok\nmore\n" });
     expect(getAgentCommandIndexVersion()).toBe(v);
     expect(lookupAgentCommandSession("pytest -q")?.output).toBe("ok\nmore\n");
+  });
+
+  it("does not restamp updatedAt when transcript re-indexes a settled command", () => {
+    const now = vi.spyOn(Date, "now")
+      .mockReturnValueOnce(100)
+      .mockReturnValueOnce(200);
+    registerAgentCommandSession({ id: "card-1", command: "brew install llama.cpp", state: "done" });
+    const first = lookupAgentCommandSessionById("card-1")!.updatedAt;
+    registerAgentCommandSession({
+      id: "card-1",
+      command: "brew install llama.cpp",
+      output: "already installed\n",
+      state: "done",
+    });
+    expect(lookupAgentCommandSessionById("card-1")?.updatedAt).toBe(first);
+    expect(lookupAgentCommandSessionById("card-1")?.railVisible).toBe(false);
+    now.mockRestore();
+  });
+
+  it("keeps a completed command rail-visible when it was observed running", () => {
+    registerAgentCommandSession({ id: "card-1", command: "brew install llama.cpp", state: "running" });
+    registerAgentCommandSession({ id: "card-1", command: "brew install llama.cpp", state: "done" });
+    expect(lookupAgentCommandSessionById("card-1")?.railVisible).toBe(true);
+  });
+
+  it("does not regress a settled command to running", () => {
+    registerAgentCommandSession({ id: "card-1", command: "brew install llama.cpp", state: "done" });
+    const settledAt = lookupAgentCommandSessionById("card-1")!.updatedAt;
+    registerAgentCommandSession({ id: "card-1", command: "brew install llama.cpp", state: "running" });
+    expect(lookupAgentCommandSessionById("card-1")).toMatchObject({
+      state: "done",
+      railVisible: false,
+      updatedAt: settledAt,
+    });
   });
 
   it("ignores empty and overlong commands", () => {

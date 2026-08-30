@@ -93,7 +93,7 @@ export default function ComposerTodoPanel({
         {next && !open ? <span className="min-w-0 truncate text-faint">{next}</span> : null}
       </button>
       {open && (
-        <div className="border-t border-edge/50 px-2 py-1 space-y-1">
+        <div className="space-y-1 px-2 pb-1.5">
           {snapshot.phases.map((phase, index) => (
             <PhaseBlock
               key={`${phase.name}-${index}`}
