@@ -1,3 +1,5 @@
+import { createElement } from "react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi, afterEach } from "vitest";
 import {
   chatFrameToStreamEvent,
@@ -21,13 +23,13 @@ import {
   isUpgradeableActionResult,
 } from "../components/Conversation";
 import { api } from "../lib/api";
-import type { Item } from "../components/TranscriptList";
+import { TranscriptList, type Item } from "../components/TranscriptList";
 import { chatEventsPath, sessionEventsPath } from "../lib/transport";
 import { nextStoreCursor, shouldApplyStoreEvent } from "../components/conversation/storeEvents";
 
 /**
- * Mid-turn chatEvents reattach contracts (cursor + poll gating).
- * Does not mount Conversation — covers pure helpers only.
+ * Mid-turn chatEvents reattach contracts (cursor + poll gating), plus the
+ * mounted transcript boundary for terminal reconciliation.
  */
 
 describe("chatEvents reattach cursor", () => {
@@ -940,6 +942,7 @@ describe("Wave 4 command-job reattach fences", () => {
 
 describe("mid-turn store-event cursor reattach", () => {
   afterEach(() => {
+    cleanup();
     vi.restoreAllMocks();
     vi.useRealTimers();
   });
@@ -1177,6 +1180,170 @@ describe("mid-turn store-event cursor reattach", () => {
     expect(setStatus).not.toHaveBeenCalled();
     expect(live).not.toHaveBeenCalled();
     expect(deps.chatEventsPollTimerRef.current).not.toBeNull();
+  });
+
+  it("clears mounted Investigating when an external stream misses the terminal", async () => {
+    let items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "review the claim" } },
+      {
+        kind: "card",
+        card: {
+          id: "swarm-call",
+          goal: "review the claim",
+          cwd: null,
+          kind: "run_swarm",
+          running: true,
+          open: false,
+        },
+      },
+    ];
+    const itemsRef = { current: items };
+    let turnOpen = false;
+    let status: "idle" | "thinking" = "idle";
+    const deps = reattachDeps({
+      itemsRef,
+      transcriptFpRef: { current: "" },
+      setItems: (next: Item[] | ((prev: Item[]) => Item[])) => {
+        items = typeof next === "function" ? next(items) : next;
+        itemsRef.current = items;
+      },
+      setTurnOpen: (next: boolean) => { turnOpen = next; },
+      setStatus: (next: any) => {
+        status = typeof next === "function" ? next(status) : next;
+      },
+    });
+    deps.detachedBusyRef.current = false;
+
+    const readEventsSince = vi.spyOn(api, "readEventsSince")
+      .mockResolvedValueOnce({
+        cursor: 1,
+        events: [{
+          id: 1,
+          kind: "runners",
+          data: { state: "running", runners: { "sess-live": "running" } },
+        }],
+      } as any)
+      .mockResolvedValue({
+        cursor: 2,
+        events: [{
+          id: 2,
+          kind: "runners",
+          data: { state: "idle", runners: { "sess-live": "idle" } },
+        }],
+      } as any);
+    const sessionTranscript = vi.spyOn(api, "sessionTranscript").mockResolvedValue({
+      display: [
+        { role: "user", text: "review the claim" },
+        {
+          type: "card",
+          id: "swarm-call",
+          goal: "review the claim",
+          kind: "run_swarm",
+          result: { job_id: "job_done", status: "complete" },
+        },
+        { role: "assistant", text: "The review is complete." },
+      ],
+    } as any);
+
+    const { pullChatEvents } = createChatEventsReattach(deps as any);
+    await pullChatEvents();
+
+    const transcriptProps = () => ({
+      items,
+      status,
+      compactingStatus: null,
+      editingIndex: null,
+      auto: false,
+      plan: false,
+      turnOpen,
+      holdSwarmAwait: false,
+      scrollContainerRef: { current: null },
+      onEditMessage: vi.fn(),
+      onExecuteSend: vi.fn(),
+      onImageClick: vi.fn(),
+      onSetCard: vi.fn(),
+      onExecutePlan: vi.fn(),
+      onCommandApproval: vi.fn(),
+    });
+    const mounted = render(createElement(TranscriptList, transcriptProps()));
+    expect(screen.getByText(/Investigating/i)).toBeTruthy();
+
+    await pullChatEvents();
+    await pullChatEvents();
+    mounted.rerender(createElement(TranscriptList, transcriptProps()));
+
+    expect(readEventsSince).toHaveBeenCalledTimes(3);
+    expect(sessionTranscript).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("The review is complete.")).toBeTruthy();
+    expect(screen.queryByText(/Investigating/i)).toBeNull();
+  });
+
+  it("keeps an unrelated active swarm whose call id only cross-matches a terminal", async () => {
+    let items: Item[] = [{
+      kind: "card",
+      card: {
+        id: "active-card",
+        call_id: "terminal-card",
+        goal: "still active",
+        cwd: null,
+        kind: "run_swarm",
+        running: true,
+        open: false,
+      },
+    }];
+    const itemsRef = { current: items };
+    const deps = reattachDeps({
+      itemsRef,
+      transcriptFpRef: { current: "" },
+      setItems: (next: Item[] | ((prev: Item[]) => Item[])) => {
+        items = typeof next === "function" ? next(items) : next;
+        itemsRef.current = items;
+      },
+    });
+    vi.spyOn(api, "readEventsSince").mockResolvedValue({
+      cursor: 2,
+      events: [{
+        id: 2,
+        kind: "runners",
+        data: { state: "idle", runners: { "sess-live": "idle" } },
+      }],
+    } as any);
+    vi.spyOn(api, "sessionTranscript").mockResolvedValue({
+      display: [{
+        type: "card",
+        id: "terminal-card",
+        call_id: "different-terminal-call",
+        goal: "finished elsewhere",
+        kind: "run_swarm",
+        result: { job_id: "job_done", status: "complete" },
+      }],
+    } as any);
+
+    const { pullChatEvents } = createChatEventsReattach(deps as any);
+    await pullChatEvents();
+    await pullChatEvents();
+
+    expect(items.some(
+      (item) => item.kind === "card" && item.card.id === "active-card" && item.card.running,
+    )).toBe(true);
+    render(createElement(TranscriptList, {
+      items,
+      status: "thinking",
+      compactingStatus: null,
+      editingIndex: null,
+      auto: false,
+      plan: false,
+      turnOpen: true,
+      holdSwarmAwait: false,
+      scrollContainerRef: { current: null },
+      onEditMessage: vi.fn(),
+      onExecuteSend: vi.fn(),
+      onImageClick: vi.fn(),
+      onSetCard: vi.fn(),
+      onExecutePlan: vi.fn(),
+      onCommandApproval: vi.fn(),
+    }));
+    expect(screen.getByText(/Investigating/i)).toBeTruthy();
   });
 
   it("sessionEventsPath builds the store cursor URL", () => {

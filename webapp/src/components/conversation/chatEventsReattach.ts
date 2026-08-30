@@ -170,6 +170,14 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
         return;
       }
       if (localStreamActiveRef.current) return;
+      const terminalSwarmCalls = (Array.isArray(tres.display) ? tres.display : [])
+        .filter((row: any) => row?.type === "card" && row?.kind === "run_swarm" && row?.result != null)
+        .map((row: any) => {
+          const id = String(row.id || "").trim();
+          const callId = String(row.call_id || row.id || "").trim();
+          return { id, callId };
+        })
+        .filter((row) => row.id && row.callId);
       const loadedItems = transcriptResponseToItems(tres);
       let applied = false;
       setItems((prev) => {
@@ -183,7 +191,15 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
           return prev;
         }
         if (localStreamActiveRef.current) return prev;
-        const next = mergeTranscriptItems(prev, loadedItems);
+        const local = prev.filter((item) => {
+          if (item.kind !== "card" || item.card.kind !== "run_swarm") return true;
+          const id = String(item.card.id || "").trim();
+          const callId = String(item.card.call_id || item.card.id || "").trim();
+          return !terminalSwarmCalls.some(
+            (terminal) => terminal.id === id && terminal.callId === callId,
+          );
+        });
+        const next = mergeTranscriptItems(local, loadedItems);
         const fp = transcriptFingerprint(next);
         if (fp === transcriptFpRef.current) return prev;
         transcriptFpRef.current = fp;
@@ -287,7 +303,8 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
 
     if (detachedBusyRef.current) {
       consecutiveIdlePolls += 1;
-      const tick = runnersBusyTickDecision({
+      let refreshedAfterConfirmedIdle = false;
+      let tick = runnersBusyTickDecision({
         userStopped: userStoppedRef.current,
         localStreamActive: localStreamActiveRef.current,
         runnerBusy: false,
@@ -297,6 +314,26 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
         consecutiveIdlePolls,
         idleConfirmPolls: RUNNERS_IDLE_CONFIRM_POLLS,
       });
+      if (
+        tick.kind === "hold_live_investigation"
+        && consecutiveIdlePolls >= RUNNERS_IDLE_CONFIRM_POLLS
+      ) {
+        // A missed terminal can leave the local card running forever. Once the
+        // backend is durably idle, refresh its completed transcript before
+        // deciding whether the investigation is still live.
+        await refreshTranscriptFromDisk(sid);
+        refreshedAfterConfirmedIdle = true;
+        tick = runnersBusyTickDecision({
+          userStopped: userStoppedRef.current,
+          localStreamActive: localStreamActiveRef.current,
+          runnerBusy: false,
+          detachedBusy: true,
+          chatEventsPollArmed: chatEventsReattachArmed(),
+          items: itemsRef.current,
+          consecutiveIdlePolls,
+          idleConfirmPolls: RUNNERS_IDLE_CONFIRM_POLLS,
+        });
+      }
       if (
         tick.kind === "hold_live_investigation"
         || tick.kind === "hold_idle_unconfirmed"
@@ -310,7 +347,9 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
       setStatus("idle");
       setCompactingStatus?.(null);
       setBackendPendingSwarms?.(false);
-      await refreshTranscriptFromDisk(sid);
+      if (!refreshedAfterConfirmedIdle) {
+        await refreshTranscriptFromDisk(sid);
+      }
       return true;
     }
 
