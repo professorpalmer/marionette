@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import threading
 import urllib.parse
@@ -383,6 +384,32 @@ def test_cwd_under_repo_longest_prefix():
         {"payload": {"cwd": "/work/a"}},
         {"payload": {"cwd": "/work/a/deep/nested"}},
     ]) == os.path.normcase(os.path.abspath("/work/a/deep/nested"))
+
+
+def test_jobs_api_lists_cwd_alias_under_canonical_workspace(tmp_path, monkeypatch):
+    repo = tmp_path / "marionette"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    alias = tmp_path / "Marionette"
+    if not alias.exists():
+        alias.symlink_to(repo, target_is_directory=True)
+    store = create_store("sqlite", str(tmp_path / "state"))
+    created = store.create_job("aliased job")
+    _save_task(store, created.id, str(alias))
+    httpd, port, srv = _api_server(str(tmp_path / "state"))
+
+    try:
+        monkeypatch.setattr(srv, "_jobs_snapshot", lambda: [
+            {"id": created.id, "goal": "aliased job", "status": "complete", "adapter": "agentic"},
+        ])
+        monkeypatch.setattr(srv._session, "state", lambda: SimpleNamespace(store=store))
+        srv._cfg.repo = str(repo)
+
+        jobs = json.loads(_api_get(port, "/api/jobs", srv._TOKEN).read().decode())
+
+        assert {job["id"] for job in jobs} == {created.id}
+    finally:
+        httpd.shutdown()
 
 
 def _api_server(tmp_state_dir):

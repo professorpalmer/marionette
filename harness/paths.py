@@ -216,6 +216,38 @@ def git_toplevel(repo: str) -> Optional[str]:
     return toplevel
 
 
+def canonical_workspace_path(path: str) -> str:
+    """Adopt Git's root spelling only when ``path`` is that exact directory."""
+    if not path:
+        return ""
+    normalized = os.path.normpath(os.path.abspath(path))
+    top = git_toplevel(normalized)
+    if top:
+        try:
+            if os.path.samefile(normalized, top):
+                return top
+        except OSError:
+            pass
+    return normalized
+
+
+def same_workspace_path(a: str, b: str) -> bool:
+    """True when two existing paths identify the same physical workspace."""
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    try:
+        if os.path.samefile(a, b):
+            return True
+    except OSError:
+        pass
+    try:
+        return os.path.normcase(_resolve(a)) == os.path.normcase(_resolve(b))
+    except Exception:
+        return False
+
+
 def resolve_workspace_path(repo: str, user_path: str) -> tuple[str, str]:
     """Resolve a user/editor path to ``(absolute_path, repo_relative_posix)``.
 

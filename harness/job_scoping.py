@@ -11,6 +11,8 @@ import json
 import os
 from typing import Any, Iterable, Optional
 
+from .paths import same_workspace_path
+
 ACCOUNTING_SCOPE_MARIONETTE = "marionette"
 ACCOUNTING_SCOPE_VISIBILITY = "visibility_only"
 
@@ -186,6 +188,8 @@ def cwd_under_repo(cwd: str, repo_root: str) -> bool:
     """True when ``cwd`` sits under ``repo_root`` (longest-prefix / commonpath)."""
     if not cwd or not repo_root:
         return False
+    if same_workspace_path(cwd, repo_root):
+        return True
     try:
         return os.path.commonpath([_norm_path(repo_root), _norm_path(cwd)]) == _norm_path(repo_root)
     except ValueError:
