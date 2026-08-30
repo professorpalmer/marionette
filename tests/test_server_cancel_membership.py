@@ -12,16 +12,19 @@ from types import SimpleNamespace
 import pytest
 
 from harness.api.jobs import make_job_services, post_swarm_cancel
+from harness.job_scoping import job_label_for_session, stamp_task_payload
+from puppetmaster.models import Task
+from puppetmaster.store_factory import create_store
 
 
 def _noop(*_a, **_k):
     return None
 
 
-def _job_services(*, get_pilot, get_session, cfg_repo: str = "/repo"):
+def _job_services(*, get_pilot, get_session, cfg_repo: str = "/repo", session_id: str = ""):
     return make_job_services(
         cfg=SimpleNamespace(repo=cfg_repo),
-        sessions=SimpleNamespace(),
+        sessions=SimpleNamespace(active=session_id),
         get_pilot=get_pilot,
         get_session=get_session,
         diag=_noop,
@@ -49,6 +52,9 @@ class _FakeStore:
     def list_jobs(self):
         return list(self._jobs)
 
+    def list_tasks(self, job_id: str):
+        return []
+
     def cancel_job(self, job_id: str):
         if not self._cancelable:
             raise RuntimeError("cancel_job unavailable")
@@ -72,15 +78,37 @@ class _FakeSession:
 
 
 class _FakePilot:
-    def __init__(self, local_ids=None):
-        self._local_ids = set(local_ids or [])
+    def __init__(self, local_ids=None, *, session_id="", local_jobs=None, registered=None):
+        self.harness_session_id = session_id
+        self._session_job_ids = list(registered or [])
         self.cancelled_local: list[str] = []
+        self._local_jobs: dict = {}
+        for jid in local_ids or []:
+            self._local_jobs[jid] = {"id": jid, "session_id": session_id}
+        for job in local_jobs or []:
+            self._local_jobs[job["id"]] = dict(job)
+
+    def get_local_job(self, job_id: str):
+        job = self._local_jobs.get(job_id)
+        return dict(job) if job else None
+
+    def live_local_jobs(self):
+        return [dict(job) for job in self._local_jobs.values()]
 
     def cancel_local_job(self, job_id: str) -> bool:
-        if job_id in self._local_ids:
+        if job_id in self._local_jobs:
             self.cancelled_local.append(job_id)
             return True
         return False
+
+
+def _track_request_cancel(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "puppetmaster.cancellation.request_cancel",
+        lambda job_id: calls.append(job_id),
+    )
+    return calls
 
 
 @pytest.fixture(autouse=True)
@@ -102,7 +130,12 @@ def test_missing_job_id_is_bad_request():
 
 
 def test_harness_store_job_cancels_via_production_path(monkeypatch):
-    harness = _FakeStore([{"id": "job-a"}, {"id": "job-b"}])
+    tripped = _track_request_cancel(monkeypatch)
+    label = job_label_for_session("sess-x")
+    harness = _FakeStore([
+        {"id": "job-a", "label": label},
+        {"id": "job-b", "label": label},
+    ])
     monkeypatch.setattr(
         "harness.cli_job_merge.open_cli_durable_state",
         lambda _repo="": None,
@@ -115,12 +148,15 @@ def test_harness_store_job_cancels_via_production_path(monkeypatch):
     assert code == 200
     assert body == {"ok": True, "job_id": "job-b", "durable": True, "marked": True}
     assert harness.cancelled == ["job-b"]
+    assert tripped == ["job-b"]
 
 
 def test_cli_store_only_job_cancels_not_404(monkeypatch):
     """CLI durable jobs must resolve through the same dual-store set as reads."""
-    harness = _FakeStore([{"id": "harness-only"}])
-    cli_store = _FakeStore([{"id": "cli-only"}, {}, {"goal": "x"}])
+    tripped = _track_request_cancel(monkeypatch)
+    label = job_label_for_session("sess-x")
+    harness = _FakeStore([{"id": "harness-only", "label": label}])
+    cli_store = _FakeStore([{"id": "cli-only", "label": label}, {}, {"goal": "x"}])
     cli_state = SimpleNamespace(store=cli_store)
     monkeypatch.setattr(
         "harness.cli_job_merge.open_cli_durable_state",
@@ -138,11 +174,14 @@ def test_cli_store_only_job_cancels_not_404(monkeypatch):
     assert body["marked"] is True
     assert cli_store.cancelled == ["cli-only"]
     assert harness.cancelled == []
+    assert tripped == ["cli-only"]
 
 
 def test_unknown_job_id_returns_404(monkeypatch):
-    harness = _FakeStore([{"id": "job-a"}])
-    cli_store = _FakeStore([{"id": "cli-a"}])
+    tripped = _track_request_cancel(monkeypatch)
+    label = job_label_for_session("sess-x")
+    harness = _FakeStore([{"id": "job-a", "label": label}])
+    cli_store = _FakeStore([{"id": "cli-a", "label": label}])
     monkeypatch.setattr(
         "harness.cli_job_merge.open_cli_durable_state",
         lambda _repo="": SimpleNamespace(store=cli_store),
@@ -154,10 +193,11 @@ def test_unknown_job_id_returns_404(monkeypatch):
     code, body = post_swarm_cancel({"job_id": "job-zzz"}, svc)
     assert code == 404
     assert body == {"ok": False, "error": "unknown job_id", "job_id": "job-zzz"}
+    assert tripped == []
 
 
 def test_malformed_rows_do_not_match_or_raise(monkeypatch):
-    harness = _FakeStore([{}, {"goal": "x"}, {"id": "real-job"}])
+    harness = _FakeStore([{}, {"goal": "x"}, {"id": "real-job", "label": job_label_for_session("sess-x")}])
     monkeypatch.setattr(
         "harness.cli_job_merge.open_cli_durable_state",
         lambda _repo="": None,
@@ -175,19 +215,58 @@ def test_malformed_rows_do_not_match_or_raise(monkeypatch):
     assert body_bad["ok"] is False
 
 
+def test_known_unowned_job_cancel_looks_unknown(monkeypatch):
+    tripped = _track_request_cancel(monkeypatch)
+    harness = _FakeStore([{"id": "foreign-cli", "goal": "unstamped leftover"}])
+    monkeypatch.setattr(
+        "harness.cli_job_merge.open_cli_durable_state",
+        lambda _repo="": None,
+    )
+    svc = _job_services(
+        get_pilot=lambda: _FakePilot(),
+        get_session=lambda: _FakeSession(_FakeState(harness)),
+    )
+    code, body = post_swarm_cancel({"job_id": "foreign-cli"}, svc)
+    assert code == 404
+    assert body == {"ok": False, "error": "unknown job_id", "job_id": "foreign-cli"}
+    assert harness.cancelled == []
+    assert tripped == []
+
+
+def test_known_unowned_cli_job_cancel_looks_unknown(monkeypatch):
+    tripped = _track_request_cancel(monkeypatch)
+    harness = _FakeStore([])
+    cli_store = _FakeStore([{"id": "cli-foreign", "goal": "unstamped leftover"}])
+    monkeypatch.setattr(
+        "harness.cli_job_merge.open_cli_durable_state",
+        lambda _repo="": SimpleNamespace(store=cli_store),
+    )
+    svc = _job_services(
+        get_pilot=lambda: _FakePilot(),
+        get_session=lambda: _FakeSession(_FakeState(harness)),
+    )
+    code, body = post_swarm_cancel({"job_id": "cli-foreign"}, svc)
+    assert code == 404
+    assert body == {"ok": False, "error": "unknown job_id", "job_id": "cli-foreign"}
+    assert cli_store.cancelled == []
+    assert tripped == []
+
+
 def test_local_pilot_cancel_short_circuits_before_stores(monkeypatch):
     harness = _FakeStore([{"id": "local-1"}])
     calls = {"cli": 0}
+    tripped = _track_request_cancel(monkeypatch)
 
     def _open_cli(_repo=""):
         calls["cli"] += 1
         return None
 
     monkeypatch.setattr("harness.cli_job_merge.open_cli_durable_state", _open_cli)
-    pilot = _FakePilot(local_ids={"local-1"})
+    pilot = _FakePilot(local_ids={"local-1"}, session_id="sess-x")
     svc = _job_services(
         get_pilot=lambda: pilot,
         get_session=lambda: _FakeSession(_FakeState(harness)),
+        session_id="sess-x",
     )
     code, body = post_swarm_cancel({"job_id": "local-1"}, svc)
     assert code == 200
@@ -195,3 +274,103 @@ def test_local_pilot_cancel_short_circuits_before_stores(monkeypatch):
     assert pilot.cancelled_local == ["local-1"]
     assert harness.cancelled == []
     assert calls["cli"] == 0
+    assert tripped == ["local-1"]
+
+
+def _job_status(store, job_id: str) -> str:
+    job = store.get_job(job_id)
+    raw = getattr(job, "status", None)
+    return str(getattr(raw, "value", raw) or "")
+
+
+def _seed_sibling_store(tmp_path, *, owned: bool):
+    sibling = tmp_path / "sibling-state"
+    store = create_store("sqlite", str(sibling))
+    job = store.create_job("sibling job")
+    payload = (
+        stamp_task_payload({}, session_id="sess-x", origin="marionette")
+        if owned
+        else {"note": "unstamped leftover"}
+    )
+    store.save_task(Task(
+        job_id=job.id,
+        role="implement",
+        instruction="do work",
+        adapter="agentic",
+        payload=payload,
+    ))
+    store.update_job_status(job.id, "running")
+    return store, sibling, job.id
+
+
+def _sibling_cancel_svc(monkeypatch, sibling_dir, *, registered=None):
+    monkeypatch.setenv("HARNESS_CLI_CROSS_PROJECT", "1")
+    monkeypatch.setattr(
+        "harness.cli_job_merge.open_cli_durable_state",
+        lambda _repo="": None,
+    )
+    monkeypatch.setattr(
+        "puppetmaster.state.list_project_state_dirs",
+        lambda: [sibling_dir],
+    )
+
+    def _forbidden_dual(*_a, **_k):
+        raise AssertionError("cancel_job_dual_store must not run after a primary miss")
+
+    monkeypatch.setattr("harness.job_cancel.cancel_job_dual_store", _forbidden_dual)
+    harness = _FakeStore([])
+    pilot = _FakePilot()
+    if registered is not None:
+        pilot._session_job_ids = list(registered)
+    return _job_services(
+        get_pilot=lambda: pilot,
+        get_session=lambda: _FakeSession(_FakeState(harness)),
+    ), harness
+
+
+def test_foreign_sibling_cancel_refused_status_unchanged(tmp_path, monkeypatch):
+    store, sibling_dir, job_id = _seed_sibling_store(tmp_path, owned=False)
+    svc, _harness = _sibling_cancel_svc(monkeypatch, sibling_dir, registered=[job_id])
+    tripped = _track_request_cancel(monkeypatch)
+    before = _job_status(store, job_id)
+    code, body = post_swarm_cancel({"job_id": job_id}, svc)
+    assert code == 404
+    assert body == {"ok": False, "error": "unknown job_id", "job_id": job_id}
+    assert tripped == []
+    assert _job_status(store, job_id) == before
+    assert _job_status(store, job_id) == "running"
+
+
+def test_owned_sibling_task_stamp_cancel_succeeds(tmp_path, monkeypatch):
+    store, sibling_dir, job_id = _seed_sibling_store(tmp_path, owned=True)
+    svc, harness = _sibling_cancel_svc(monkeypatch, sibling_dir)
+    tripped = _track_request_cancel(monkeypatch)
+    code, body = post_swarm_cancel({"job_id": job_id}, svc)
+    assert code == 200
+    assert body["ok"] is True
+    assert body["job_id"] == job_id
+    assert body["durable"] is True
+    assert body["marked"] is True
+    assert _job_status(store, job_id) == "cancelled"
+    assert harness.cancelled == []
+    assert tripped == [job_id]
+
+
+def test_foreign_local_session_does_not_trip_or_cancel(monkeypatch):
+    tripped = _track_request_cancel(monkeypatch)
+    harness = _FakeStore([])
+    monkeypatch.setattr("harness.cli_job_merge.open_cli_durable_state", lambda _repo="": None)
+    pilot = _FakePilot(
+        local_jobs=[{"id": "local-other", "session_id": "sess-other"}],
+        session_id="sess-x",
+    )
+    svc = _job_services(
+        get_pilot=lambda: pilot,
+        get_session=lambda: _FakeSession(_FakeState(harness)),
+        session_id="sess-x",
+    )
+    code, body = post_swarm_cancel({"job_id": "local-other"}, svc)
+    assert code == 404
+    assert body == {"ok": False, "error": "unknown job_id", "job_id": "local-other"}
+    assert pilot.cancelled_local == []
+    assert tripped == []

@@ -205,7 +205,7 @@ def test_cache_saved_usd_swarm_credits_real_cost_tasks():
 
 
 def test_api_usage_excludes_unowned_cli_store_jobs(tmp_path, monkeypatch):
-    """Unstamped CLI-store jobs stay visible on the tracker but not /api/usage."""
+    """Unstamped CLI-store jobs must not bill Marionette /api/usage."""
     repo = tmp_path / "repo"
     repo.mkdir()
     harness_dir = tmp_path / "harness-state"

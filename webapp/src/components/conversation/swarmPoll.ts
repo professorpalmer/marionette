@@ -7,12 +7,18 @@
  */
 
 import type { Item } from "../TranscriptList";
+import { jobInActiveSession } from "../../lib/jobScope";
 import { isTerminalJobStatus } from "./nestedActionBounds";
 import { isSwarmPendingTerminal } from "./swarmPendingIdentity";
 import { formatDistilledNotice, formatWikiAutoIngestNotice } from "./streamApply";
 
 /** One row from `/api/swarm/live` (id field names vary by store). */
-export type SwarmLiveJobRow = { job_id?: string; id?: string; status?: string };
+export type SwarmLiveJobRow = {
+  job_id?: string;
+  id?: string;
+  status?: string;
+  session_id?: string | null;
+};
 
 function liveJobId(job: SwarmLiveJobRow): string {
   return String(job?.job_id || job?.id || "").trim();
@@ -159,9 +165,12 @@ export function terminalJobIdsNeedingResultRecovery(
 /** Job ids from swarm/live rows whose status is already terminal. */
 export function terminalJobIdsFromSwarmLive(
   jobs: readonly SwarmLiveJobRow[],
+  activeSessionId = "",
 ): string[] {
   const out: string[] = [];
   for (const job of jobs) {
+    if (activeSessionId && !jobInActiveSession(job, activeSessionId)) continue;
+    if (!activeSessionId) continue;
     if (!isTerminalJobStatus(job?.status)) continue;
     const id = liveJobId(job);
     if (id) out.push(id);
@@ -171,14 +180,19 @@ export function terminalJobIdsFromSwarmLive(
 
 /**
  * Job ids that should still hold await chrome given a live snapshot.
- * Missing / terminal / local-swarm-* rows do not count.
+ * Missing / terminal / local-swarm-* rows do not count. Other Marionette
+ * sessions must not paint this conversation's chrome even if a backend leak
+ * regresses.
  */
 export function pendingJobIdsFromSwarmLive(
   jobs: readonly SwarmLiveJobRow[],
+  activeSessionId = "",
 ): string[] {
+  if (!(activeSessionId || "").trim()) return [];
   const out: string[] = [];
   const seen = new Set<string>();
   for (const job of jobs) {
+    if (!jobInActiveSession(job, activeSessionId)) continue;
     if (isTerminalJobStatus(job?.status)) continue;
     const id = liveJobId(job);
     if (!id || id.startsWith("local-swarm-") || seen.has(id)) continue;
@@ -196,8 +210,11 @@ export function pendingJobIdsFromSwarmLive(
 export function hydratePendingJobIdsAfterReload(opts: {
   liveJobs: readonly SwarmLiveJobRow[] | null;
   items: readonly Item[];
+  activeSessionId?: string;
 }): string[] {
-  if (opts.liveJobs) return pendingJobIdsFromSwarmLive(opts.liveJobs);
+  if (opts.liveJobs) {
+    return pendingJobIdsFromSwarmLive(opts.liveJobs, opts.activeSessionId || "");
+  }
   return seedPendingJobIdsFromHydrate({ items: opts.items });
 }
 

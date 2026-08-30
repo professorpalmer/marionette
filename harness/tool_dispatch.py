@@ -226,6 +226,7 @@ class ToolDispatchMixin:
             repo=self.config.repo or None,
             session_id=getattr(self, "harness_session_id", None) or None,
             live_jobs=live,
+            registered_job_ids=list(getattr(self, "_session_job_ids", []) or []),
         )
 
     def _do_read_file(self, act: PilotAction) -> tuple[bool, str, str]:

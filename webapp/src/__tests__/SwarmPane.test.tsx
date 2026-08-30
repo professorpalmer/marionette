@@ -34,6 +34,7 @@ function liveJob(
         id: "job-1",
         goal: "Audit auth flow",
         status: "running",
+        session_id: "sess-test",
         ...jobOverrides,
       },
     ],
@@ -82,12 +83,12 @@ describe("SwarmPane sort and filter controls", () => {
     mockSwarmLive.mockResolvedValue({
       session: { tokens_used: 0, est_cost_usd: 0 },
       jobs: [
-        { id: "job-z", goal: "Older active audit", status: "running", created_at: "2026-01-01T00:00:00Z", model: "model-old" },
-        { id: "job-a", goal: "Newest active build", status: "running", created_at: "2026-03-01T00:00:00Z", model: "model-new" },
-        { id: "job-no-time", goal: "Active job without timestamp", status: "running" },
-        { id: "job-y", goal: "Older completed review", status: "complete", created_at: "2026-01-15T00:00:00Z" },
-        { id: "job-b", goal: "Newest failed review", status: "failed", created_at: "2026-02-15T00:00:00Z" },
-        { id: "job-c", goal: "Degraded architecture review", status: "complete", created_at: "2026-02-01T00:00:00Z", outcome: { quality: "degraded", trustworthy: false, reasons: ["only verification artifacts"] } },
+        { id: "job-z", goal: "Older active audit", status: "running", session_id: "sess-test", created_at: "2026-01-01T00:00:00Z", model: "model-old" },
+        { id: "job-a", goal: "Newest active build", status: "running", session_id: "sess-test", created_at: "2026-03-01T00:00:00Z", model: "model-new" },
+        { id: "job-no-time", goal: "Active job without timestamp", status: "running", session_id: "sess-test" },
+        { id: "job-y", goal: "Older completed review", status: "complete", session_id: "sess-test", created_at: "2026-01-15T00:00:00Z" },
+        { id: "job-b", goal: "Newest failed review", status: "failed", session_id: "sess-test", created_at: "2026-02-15T00:00:00Z" },
+        { id: "job-c", goal: "Degraded architecture review", status: "complete", session_id: "sess-test", created_at: "2026-02-01T00:00:00Z", outcome: { quality: "degraded", trustworthy: false, reasons: ["only verification artifacts"] } },
       ],
     });
   });
@@ -1508,6 +1509,36 @@ describe("SwarmPane findings section collapse", () => {
       expect(screen.getByText("lazy finding landed")).toBeInTheDocument();
     });
   });
+
+  it("does not replace an owned cross-project slim row with empty artifacts", async () => {
+    localStorage.setItem("marionette.jobScope.v1", "all");
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        id: "job-sibling",
+        status: "complete",
+        goal: "Owned sibling slim",
+        session_id: "sess-x",
+        source: "cli",
+        cross_project: true,
+        artifacts_complete: false,
+        artifacts: [
+          { type: "FINDING", headline: "slim finding kept", confidence: 0.9 },
+        ],
+      }),
+    );
+    mockArtifacts.mockResolvedValue([]);
+
+    render(<SwarmPane />);
+    fireEvent.click(screen.getByRole("button", { name: "All projects" }));
+    await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Finished"));
+    fireEvent.click(await screen.findByText("Owned sibling slim"));
+
+    await waitFor(() => {
+      expect(mockArtifacts).toHaveBeenCalledWith("job-sibling");
+    });
+    expect(screen.getByText("slim finding kept")).toBeInTheDocument();
+  });
 });
 
 describe("SwarmPane worker-owned routing surface", () => {
@@ -2131,7 +2162,7 @@ describe("SwarmPane tracker header", () => {
   });
 });
 
-describe("SwarmPane external (CLI) source badge", () => {
+describe("SwarmPane does not paint unowned CLI captions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
@@ -2141,11 +2172,31 @@ describe("SwarmPane external (CLI) source badge", () => {
     mockArtifacts.mockResolvedValue([]);
   });
 
-  it("labels CLI-merged jobs as external", async () => {
+  it("hides an unstamped CLI leak", async () => {
     mockSwarmLive.mockResolvedValue(
       liveJob({
         id: "job-cli",
         goal: "Cursor MCP implement",
+        session_id: "",
+        status: "running",
+        adapter: "cursor",
+        source: "cli",
+      }),
+    );
+
+    render(<SwarmPane />);
+    await waitFor(() => {
+      expect(screen.getByText("Swarm Tracker")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Cursor MCP implement")).toBeNull();
+  });
+
+  it("does not label an owned CLI row as external", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        id: "job-cli",
+        goal: "Cursor MCP implement",
+        session_id: "sess-test",
         status: "running",
         adapter: "cursor",
         source: "cli",
@@ -2164,16 +2215,16 @@ describe("SwarmPane external (CLI) source badge", () => {
     render(<SwarmPane />);
     await expandJob(/Cursor MCP implement/);
 
-    await waitFor(() => {
-      expect(
-        screen.getByTitle(
-          "Started outside Marionette (Cursor MCP or terminal Puppetmaster) for this workspace",
-        ),
-      ).toHaveTextContent("external");
-    });
+    expect(
+      screen.queryByTitle(
+        "Started outside Marionette (Cursor MCP or terminal Puppetmaster) for this workspace",
+      ),
+    ).toBeNull();
+    expect(screen.queryByText("visibility only")).toBeNull();
+    expect(screen.queryByText("external")).toBeNull();
   });
 
-  it("does not show the external chip for harness jobs", async () => {
+  it("does not show an origin chip for harness jobs", async () => {
     mockSwarmLive.mockResolvedValue(
       liveJob({
         source: "harness",
@@ -2195,12 +2246,36 @@ describe("SwarmPane external (CLI) source badge", () => {
     ).toBeNull();
   });
 
-  it("discloses cwd for cross-project CLI jobs instead of only external", async () => {
+  it("hides an unstamped cross-project leak", async () => {
     localStorage.setItem("marionette.jobScope.v1", "all");
     mockSwarmLive.mockResolvedValue(
       liveJob({
         id: "job-foreign",
         goal: "Foreign swarm",
+        session_id: "",
+        status: "running",
+        adapter: "cursor",
+        source: "cli",
+        cross_project: true,
+        cwd: "/Users/x/other-repo",
+      }),
+    );
+
+    render(<SwarmPane />);
+    fireEvent.click(screen.getByRole("button", { name: "All projects" }));
+    await waitFor(() => {
+      expect(screen.getByText("Swarm Tracker")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Foreign swarm")).toBeNull();
+  });
+
+  it("does not disclose a cross-project cwd caption", async () => {
+    localStorage.setItem("marionette.jobScope.v1", "all");
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        id: "job-foreign",
+        goal: "Foreign swarm",
+        session_id: "sess-9",
         status: "running",
         adapter: "cursor",
         source: "cli",
@@ -2223,14 +2298,8 @@ describe("SwarmPane external (CLI) source badge", () => {
     fireEvent.click(screen.getByRole("button", { name: "All projects" }));
     await expandJob(/Foreign swarm/);
 
-    await waitFor(() => {
-      expect(screen.getByTitle("/Users/x/other-repo")).toHaveTextContent("/Users/x/other-repo");
-    });
-    expect(
-      screen.queryByTitle(
-        "Started outside Marionette (Cursor MCP or terminal Puppetmaster) for this workspace",
-      ),
-    ).toBeNull();
+    expect(screen.queryByTitle("/Users/x/other-repo")).toBeNull();
+    expect(screen.queryByText("visibility only")).toBeNull();
   });
 });
 
@@ -2320,16 +2389,17 @@ describe("SwarmPane repo-scoped dismiss", () => {
   it("keeps live jobs visible even when their id is in the dismiss store", async () => {
     localStorage.setItem(
       "swarm.dismissed.v2",
-      JSON.stringify({ [REPO_A]: ["live-cli-job", "old-finished"] }),
+      JSON.stringify({ [REPO_A]: ["live-owned-job", "old-finished"] }),
     );
     mockSwarmLive.mockResolvedValue({
       session: { tokens_used: 0, est_cost_usd: 0 },
       jobs: [
         {
-          id: "live-cli-job",
-          goal: "CLI swarm still running",
+          id: "live-owned-job",
+          goal: "Owned swarm still running",
           status: "running",
-          source: "cli",
+          source: "harness",
+          session_id: "sess-1",
         },
         {
           id: "old-finished",
@@ -2342,7 +2412,7 @@ describe("SwarmPane repo-scoped dismiss", () => {
     render(<SwarmPane />);
 
     await waitFor(() => {
-      expect(screen.getByText("CLI swarm still running")).toBeInTheDocument();
+      expect(screen.getByText("Owned swarm still running")).toBeInTheDocument();
     });
     // Finished accordion may list zero visible rows; dismissed finished stay hidden.
     expect(screen.queryByText("Previously cleared finished job")).not.toBeInTheDocument();
@@ -2352,27 +2422,28 @@ describe("SwarmPane repo-scoped dismiss", () => {
   it("keeps a previously dismissed job visible after it completes if it was seen live", async () => {
     localStorage.setItem(
       "swarm.dismissed.v2",
-      JSON.stringify({ [REPO_A]: ["live-cli-job"] }),
+      JSON.stringify({ [REPO_A]: ["live-owned-job"] }),
     );
     mockSwarmLive.mockResolvedValue({
       session: { tokens_used: 0, est_cost_usd: 0 },
       jobs: [
         {
-          id: "live-cli-job",
-          goal: "CLI swarm still running",
+          id: "live-owned-job",
+          goal: "Owned swarm still running",
           status: "running",
-          source: "cli",
+          source: "harness",
+          session_id: "sess-1",
         },
       ],
     });
     const { unmount } = render(<SwarmPane />);
     await waitFor(() => {
-      expect(screen.getByText("CLI swarm still running")).toBeInTheDocument();
+      expect(screen.getByText("Owned swarm still running")).toBeInTheDocument();
     });
     // Live sighting prunes the id from dismiss so completion cannot re-hide it.
     await waitFor(() => {
       const stored = JSON.parse(localStorage.getItem("swarm.dismissed.v2") || "{}");
-      expect(stored[REPO_A] || []).not.toContain("live-cli-job");
+      expect(stored[REPO_A] || []).not.toContain("live-owned-job");
     });
     unmount();
     clearSWRCache();
@@ -2381,17 +2452,18 @@ describe("SwarmPane repo-scoped dismiss", () => {
       session: { tokens_used: 0, est_cost_usd: 0 },
       jobs: [
         {
-          id: "live-cli-job",
-          goal: "CLI swarm completed",
+          id: "live-owned-job",
+          goal: "Owned swarm completed",
           status: "complete",
-          source: "cli",
+          source: "harness",
+          session_id: "sess-1",
         },
       ],
     });
     render(<SwarmPane />);
     await openFinishedSection();
     await waitFor(() => {
-      expect(screen.getByText("CLI swarm completed")).toBeInTheDocument();
+      expect(screen.getByText("Owned swarm completed")).toBeInTheDocument();
     });
   });
 
@@ -2408,8 +2480,8 @@ describe("SwarmPane repo-scoped dismiss", () => {
     mockSwarmLive.mockResolvedValue({
       session: { tokens_used: 0, est_cost_usd: 0 },
       jobs: [
-        { id: "old-a", goal: "Old finished A", status: "complete" },
-        { id: "new-peel", goal: "MCP surface audit peel", status: "complete" },
+        { id: "old-a", goal: "Old finished A", status: "complete", session_id: "sess-test" },
+        { id: "new-peel", goal: "MCP surface audit peel", status: "complete", session_id: "sess-test" },
       ],
     });
     render(<SwarmPane />);
@@ -3101,6 +3173,7 @@ describe("SwarmPane command vs swarm split", () => {
           id: "local-cmd-e35cf193",
           goal: "sleep 999",
           status: "running",
+          session_id: "sess-test",
           job_kind: "run_command",
           role: "command",
           adapter: "command",
@@ -3111,6 +3184,7 @@ describe("SwarmPane command vs swarm split", () => {
           id: "job_abc123def456",
           goal: "Audit auth flow",
           status: "running",
+          session_id: "sess-test",
           source: "harness",
         },
       ],
@@ -3125,13 +3199,14 @@ describe("SwarmPane command vs swarm split", () => {
     mockSwarmLive.mockResolvedValue({
       session: { tokens_used: 0, est_cost_usd: 0 },
       jobs: [
-        { id: "job_swarm", goal: "run_swarm audit", status: "running", source: "harness" },
-        { id: "job_impl", goal: "run_implement fix", status: "running", source: "harness", role: "implementer", adapter: "agentic" },
-        { id: "job_par", goal: "run_parallel wave", status: "running", source: "harness" },
+        { id: "job_swarm", goal: "run_swarm audit", status: "running", session_id: "sess-test", source: "harness" },
+        { id: "job_impl", goal: "run_implement fix", status: "running", session_id: "sess-test", source: "harness", role: "implementer", adapter: "agentic" },
+        { id: "job_par", goal: "run_parallel wave", status: "running", session_id: "sess-test", source: "harness" },
         {
           id: "local-cmdbatch-aa11bb22",
           goal: "echo batch",
           status: "running",
+          session_id: "sess-test",
           job_kind: "run_command_batch",
           role: "command_batch",
           adapter: "command_batch",
@@ -3176,6 +3251,7 @@ describe("SwarmPane command vs swarm split", () => {
           id: "local-wave-call_00_ET_S8G91HzE94famGY0TK0Q8637",
           goal: "Parallel wave (2 jobs)",
           status: "running",
+          session_id: "sess-test",
           job_kind: "parallel_wave",
           role: "parallel_wave",
           adapter: "parallel_wave",
@@ -3185,6 +3261,7 @@ describe("SwarmPane command vs swarm split", () => {
           id: "job_abc123def456",
           goal: "run_swarm audit",
           status: "running",
+          session_id: "sess-test",
           job_kind: "run_swarm",
           source: "harness",
         },
@@ -3192,6 +3269,7 @@ describe("SwarmPane command vs swarm split", () => {
           id: "local-impl-1",
           goal: "run_implement fix",
           status: "running",
+          session_id: "sess-test",
           job_kind: "run_implement",
           source: "harness",
         },
@@ -3259,8 +3337,8 @@ describe("SwarmPane v0.9.350 collapsed chrome", () => {
     mockSwarmLive.mockResolvedValue({
       session: { tokens_used: 0, est_cost_usd: 0 },
       jobs: [
-        { id: "job-a", goal: "First job", status: "running" },
-        { id: "job-b", goal: "Second job", status: "running" },
+        { id: "job-a", goal: "First job", status: "running", session_id: "sess-test" },
+        { id: "job-b", goal: "Second job", status: "running", session_id: "sess-test" },
       ],
     });
     render(<SwarmPane />);

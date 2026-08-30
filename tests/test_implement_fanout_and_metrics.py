@@ -308,8 +308,8 @@ def test_seed_baseline_excludes_seeded_files_from_finalize(tmp_path):
         remove_worktree(str(repo), wt_path, force=True)
 
 
-def test_filter_local_running_visible_on_session_drift(tmp_path):
-    # Session stamp drifted but cwd is under the open workspace -- still show.
+def test_filter_local_session_stamped_remain_owned_on_session_drift(tmp_path):
+    # Sidecar rows with a session stamp stay owned after a chat switch.
     rows = [
         {
             "id": "local-run",
@@ -323,12 +323,17 @@ def test_filter_local_running_visible_on_session_drift(tmp_path):
             "session_id": "old-sess",
             "cwd": str(tmp_path / "proj"),
         },
+        {
+            "id": "local-cwd-only",
+            "status": "running",
+            "cwd": str(tmp_path / "proj"),
+        },
     ]
     (tmp_path / "proj").mkdir()
     visible = filter_local_jobs(
         rows, active_session_id="new-sess", repo_root=str(tmp_path / "proj"),
     )
-    assert [j["id"] for j in visible] == ["local-run"]
+    assert [j["id"] for j in visible] == ["local-run", "local-done"]
 
 
 def test_preview_agentic_route_empty_on_bad_goal():

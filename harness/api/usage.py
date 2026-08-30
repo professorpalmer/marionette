@@ -225,9 +225,8 @@ def _get_usage_body(repo_override: str, svc: UsageServices) -> tuple[int, JsonPa
     swarm_cached = 0
     swarm_input = 0
     try:
-        # Same merged, workspace-scoped job set the tracker uses
-        # (/api/swarm/live): harness store + per-project CLI store, so
-        # MCP/CLI-dispatched swarm spend reaches the status bar.
+        # Same merged, Marionette-owned job set the tracker uses
+        # (/api/swarm/live): harness store + owned CLI rows only.
         from ..cli_job_merge import (
             bulk_load_store_artifacts,
             cli_stores_by_job,

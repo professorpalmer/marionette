@@ -20,6 +20,7 @@ from harness.internal_uri import (
     InternalUriError,
     resolve_internal_uri,
 )
+from harness.job_scoping import job_label_for_session, stamp_task_payload
 from harness.local_job_artifacts import (
     artifacts_are_complete,
     resolve_execution_provenance,
@@ -367,8 +368,16 @@ def test_store_backed_job_ids_never_resolve_through_the_sidecar(session):
     sess, state_dir, repo = session
     store = create_store("sqlite", state_dir)
     store.init()
-    job = store.create_job("audit swarm artifact resolvability")
-    task = Task(job_id=job.id, role="audit", instruction="scan")
+    job = store.create_job(
+        "audit swarm artifact resolvability",
+        label=job_label_for_session("sess-a"),
+    )
+    task = Task(
+        job_id=job.id,
+        role="audit",
+        instruction="scan",
+        payload=stamp_task_payload({}, session_id="sess-a"),
+    )
     store.save_task(task)
     run = AgentRun(job_id=job.id, task_id=task.id, role="audit", worker_id="w-1")
     store.save_run(run)
@@ -391,8 +400,16 @@ def test_store_surfaced_artifacts_are_resolvable_and_counts_agree(session):
     sess, state_dir, repo = session
     store = create_store("sqlite", state_dir)
     store.init()
-    job = store.create_job("audit swarm artifact resolvability")
-    task = Task(job_id=job.id, role="audit", instruction="scan")
+    job = store.create_job(
+        "audit swarm artifact resolvability",
+        label=job_label_for_session("sess-a"),
+    )
+    task = Task(
+        job_id=job.id,
+        role="audit",
+        instruction="scan",
+        payload=stamp_task_payload({}, session_id="sess-a"),
+    )
     store.save_task(task)
     run = AgentRun(job_id=job.id, task_id=task.id, role="audit", worker_id="w-1")
     store.save_run(run)

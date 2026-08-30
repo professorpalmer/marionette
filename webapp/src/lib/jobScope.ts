@@ -1,4 +1,4 @@
-/** Ownership views over already-visible jobs: session, this repo, or all projects. */
+/** Ownership views over already-owned Marionette jobs: session, this repo, or all. */
 
 export type JobScope = "session" | "repo" | "all";
 
@@ -21,6 +21,16 @@ export function jobInActiveSession(job: ScopedJob, activeSessionId: string): boo
   return Boolean(sid && active && sid === active);
 }
 
+/** Stamped session id is the frontend ownership proof on an already-listed row. */
+export function jobOwnedForScope(job: ScopedJob): boolean {
+  return Boolean(jobSessionId(job));
+}
+
+/** Sibling-store or unstamped rows must not be pinned back into a narrower scope. */
+export function jobIsForeignForScope(job: ScopedJob): boolean {
+  return Boolean(job.cross_project) || !jobOwnedForScope(job);
+}
+
 export function filterJobsByScope<T extends ScopedJob>(
   jobs: readonly T[],
   scope: JobScope,
@@ -30,23 +40,24 @@ export function filterJobsByScope<T extends ScopedJob>(
   const includeIds = new Set(
     [...(opts?.includeJobIds || [])].map((id) => String(id || "").trim()).filter(Boolean),
   );
+  const owned = jobs.filter((job) => jobOwnedForScope(job));
   let filtered: T[];
   if (scope === "all") {
-    filtered = [...jobs];
+    filtered = [...owned];
   } else if (scope === "session") {
     if (!(activeSessionId || "").trim()) {
       filtered = [];
     } else {
-      filtered = jobs.filter((job) => jobInActiveSession(job, activeSessionId));
+      filtered = owned.filter((job) => jobInActiveSession(job, activeSessionId));
     }
   } else {
-    filtered = jobs.filter((job) => !job.cross_project);
+    filtered = owned.filter((job) => !job.cross_project);
   }
   if (includeIds.size === 0) return filtered;
   const kept = new Set(filtered.map((job) => String(job.id || "").trim()).filter(Boolean));
   const extras = jobs.filter((job) => {
     const id = String(job.id || "").trim();
-    return Boolean(id && includeIds.has(id) && !kept.has(id));
+    return Boolean(id && includeIds.has(id) && !kept.has(id) && !jobIsForeignForScope(job));
   });
   return extras.length ? [...filtered, ...extras] : filtered;
 }

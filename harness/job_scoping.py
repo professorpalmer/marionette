@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-"""Session- and repo-scoped views over the durable Puppetmaster job store.
+"""Marionette-owned views over the durable Puppetmaster job store.
 
-Jobs are stamped with ``session_id`` at dispatch (job label + task payload).
-Repo membership is derived at read time from each task payload's ``cwd`` via
-longest-prefix match against the open workspace root — no store migration.
+Jobs are stamped with ``origin=marionette`` and ``session_id`` at dispatch
+(job label + task payload). Visibility requires that ownership proof, or a
+job id registered by the active session. cwd/repo match is not ownership.
 """
 
 import json
@@ -16,7 +16,7 @@ from .paths import same_workspace_path
 ACCOUNTING_SCOPE_MARIONETTE = "marionette"
 ACCOUNTING_SCOPE_VISIBILITY = "visibility_only"
 
-# Economic fields zeroed on visibility-only rows (tracker still shows the job).
+# Economic fields zeroed on owned-but-unbilled rows (accounting fail-closed).
 _JOB_ECONOMIC_FIELDS = (
     "tokens",
     "est_cost_usd",
@@ -213,6 +213,47 @@ def job_is_running(status: Any) -> bool:
     return str(status or "").strip().lower() in _RUNNING_STATUSES
 
 
+def job_owned_by_marionette(
+    *,
+    session_id: str = "",
+    label: Any = None,
+    tasks: list | None = None,
+    job_id: str = "",
+    registered_job_ids: Iterable[str] | None = None,
+    origin: str = "",
+    source: str = "",
+    allow_registered_heal: bool = True,
+) -> bool:
+    """Positive ownership proof for Marionette job surfaces.
+
+    Durable proof is ``origin=marionette`` plus a stamped session id.
+    A pre-origin row with a non-empty session id is owned only when it comes
+    from the harness/local sidecar (or its id is registered by that session).
+    A CLI/sibling-store row still requires ``origin=marionette``.
+    Registered-id healing applies only to the active harness/local store —
+    never a sibling CLI store, even when ids collide.
+    cwd/repo match, running state, and ``app_run_id`` are never ownership.
+    """
+    jid = str(job_id or "").strip()
+    source_norm = (source or "").strip().lower()
+    is_cli = source_norm == "cli"
+    # Colliding ids in a sibling CLI store must not inherit harness registry.
+    allow_heal = bool(allow_registered_heal) and not is_cli
+    registered = {str(x).strip() for x in (registered_job_ids or []) if x}
+    if allow_heal and jid and jid in registered:
+        return True
+    task_list = tasks or []
+    stamped = parse_job_session_id(label, task_list) or (session_id or "").strip()
+    parsed_origin = (origin or parse_job_origin(label, task_list) or "").strip()
+    if parsed_origin == "marionette" and stamped:
+        return True
+    if jid.startswith("local-") and stamped:
+        return True
+    if stamped and not is_cli:
+        return True
+    return False
+
+
 def job_visible_for_view(
     *,
     session_id: str,
@@ -221,35 +262,29 @@ def job_visible_for_view(
     active_session_id: str,
     repo_root: str,
     status: Any = None,
+    job_id: str = "",
+    registered_job_ids: Iterable[str] | None = None,
+    origin: str = "",
+    source: str = "",
+    allow_registered_heal: bool = True,
 ) -> bool:
     """Filter rule for /api/jobs and /api/swarm/live.
 
-    Visible when the stamped session matches the active session, OR the job is
-    an unstamped legacy row whose task cwd lies under the current workspace.
-    Running jobs use those same rules (they must not leak across open
-    directories). Narrow escape: a running job with no session stamp and no
-    cwd stays visible so true orphans remain cancellable.
+    Surfaces only Marionette-owned jobs. Repo/all scope is applied later on
+    that owned set. ``active_session_id``, ``repo_root``, and ``status`` are
+    kept for call-compat and are not admission keys.
     """
-    stamped = parse_job_session_id(label, tasks) or (session_id or "").strip()
-    cwd = job_repo_cwd(tasks)
-    if stamped:
-        if stamped == (active_session_id or ""):
-            return True
-        # Match filter_local_jobs: a running job under the open workspace stays
-        # visible across session switches so the tracker cannot go blank while
-        # chat still says a swarm is running (CLI + harness).
-        return bool(
-            job_is_running(status)
-            and repo_root
-            and cwd
-            and cwd_under_repo(cwd, repo_root)
-        )
-    if not cwd:
-        # Unstamped + no cwd: only running orphans stay visible (cancellable).
-        return job_is_running(status)
-    if not repo_root:
-        return False
-    return cwd_under_repo(cwd, repo_root)
+    del active_session_id, repo_root, status
+    return job_owned_by_marionette(
+        session_id=session_id,
+        label=label,
+        tasks=tasks,
+        job_id=job_id,
+        registered_job_ids=registered_job_ids,
+        origin=origin,
+        source=source,
+        allow_registered_heal=allow_registered_heal,
+    )
 
 
 def resolve_job_model(raw_arts, raw_tasks, adapter: str = "") -> str:
@@ -307,10 +342,11 @@ def resolve_job_accounting(
     app_run_id: str = "",
     cli_cost_merge: bool | None = None,
 ) -> dict[str, Any]:
-    """Decide whether a visible job may affect Marionette economic totals.
+    """Decide whether an admitted job may affect Marionette economic totals.
 
     Visibility (``job_visible_for_view``) and accounting ownership are split:
-    foreign/unstamped CLI jobs stay on the tracker but fail closed for money.
+    an owned row can still be unbilled (owned-but-unbilled) when CLI cost
+    merge is off or the process ``app_run_id`` does not match.
     """
     row = job or {}
     jid = str(row.get("id") or "").strip()
@@ -451,8 +487,11 @@ def filter_store_jobs_with_tasks(
     *,
     active_session_id: str,
     repo_root: str,
+    registered_job_ids: Iterable[str] | None = None,
+    source: str = "harness",
+    allow_registered_heal: bool = True,
 ) -> tuple[list[dict], dict[str, list]]:
-    """Return visible job rows plus task lists loaded for visibility filtering."""
+    """Return Marionette-owned job rows plus task lists used for ownership."""
     if not jobs:
         return [], {}
     jids = [j.get("id") for j in jobs if j.get("id")]
@@ -488,6 +527,11 @@ def filter_store_jobs_with_tasks(
             active_session_id=active_session_id,
             repo_root=repo_root,
             status=job.get("status"),
+            job_id=str(jid),
+            registered_job_ids=registered_job_ids if allow_registered_heal else None,
+            origin=str(job.get("origin") or ""),
+            source=str(job.get("source") or source or ""),
+            allow_registered_heal=allow_registered_heal,
         ):
             row = dict(job)
             if label is not None:
@@ -495,6 +539,18 @@ def filter_store_jobs_with_tasks(
             stamped_sid = parse_job_session_id(label, tasks)
             if stamped_sid:
                 row["session_id"] = stamped_sid
+            elif allow_registered_heal and str(jid) in {
+                str(x).strip() for x in (registered_job_ids or []) if x
+            }:
+                heal_sid = (active_session_id or "").strip()
+                if not heal_sid:
+                    continue
+                row["session_id"] = heal_sid
+            elif not (row.get("session_id") or "").strip():
+                continue
+            parsed_origin = parse_job_origin(label, tasks)
+            if parsed_origin:
+                row["origin"] = parsed_origin
             visible.append(row)
     return visible, tasks_by_job
 
@@ -505,48 +561,120 @@ def filter_store_jobs(
     *,
     active_session_id: str,
     repo_root: str,
+    registered_job_ids: Iterable[str] | None = None,
+    source: str = "harness",
+    allow_registered_heal: bool = True,
 ) -> list[dict]:
-    """Return ``jobs`` rows visible for the active session + workspace."""
+    """Return ``jobs`` rows owned by Marionette."""
     visible, _tasks = filter_store_jobs_with_tasks(
         jobs,
         store,
         active_session_id=active_session_id,
         repo_root=repo_root,
+        registered_job_ids=registered_job_ids,
+        source=source,
+        allow_registered_heal=allow_registered_heal,
     )
     return visible
 
 
-def filter_local_jobs(local_jobs: list[dict], *, active_session_id: str, repo_root: str) -> list[dict]:
-    """Apply the same visibility rule to in-process ``local-*`` worker rows.
+def filter_local_jobs(
+    local_jobs: list[dict],
+    *,
+    active_session_id: str,
+    repo_root: str,
+    registered_job_ids: Iterable[str] | None = None,
+) -> list[dict]:
+    """Apply the same ownership rule to in-process ``local-*`` worker rows.
 
-    Running locals whose cwd sits under the open workspace stay visible even
-    when the session stamp drifted (interrupt / mid-flight session switch) --
-    otherwise the chat can say "swarm running" while the tracker looks empty.
-    Terminal jobs still require an exact session match (or legacy cwd match
-    when unstamped).
+    Sidecar rows stamped with a session id stay owned (including after reload).
+    cwd match and running orphans are never admission.
     """
     visible: list[dict] = []
     for job in local_jobs or []:
         label = job.get("label")
         session_id = job.get("session_id") or parse_job_session_id(label, [])
-        cwd = (job.get("cwd") or "").strip()
-        if session_id:
-            if session_id == (active_session_id or ""):
-                visible.append(job)
-                continue
-            if (
-                job_is_running(job.get("status"))
-                and repo_root
-                and cwd
-                and cwd_under_repo(cwd, repo_root)
-            ):
-                visible.append(job)
-            continue
-        if not cwd:
-            # Unstamped + no cwd: only running orphans stay visible (cancellable).
-            if job_is_running(job.get("status")):
-                visible.append(job)
-            continue
-        if repo_root and cwd_under_repo(cwd, repo_root):
-            visible.append(job)
+        if job_visible_for_view(
+            session_id=session_id or "",
+            label=label,
+            tasks=[],
+            active_session_id=active_session_id,
+            repo_root=repo_root,
+            status=job.get("status"),
+            job_id=str(job.get("id") or ""),
+            registered_job_ids=registered_job_ids,
+            origin=str(job.get("origin") or ""),
+            source="harness",
+            allow_registered_heal=True,
+        ):
+            row = dict(job)
+            if session_id and not (row.get("session_id") or "").strip():
+                row["session_id"] = session_id
+            if not (row.get("session_id") or "").strip():
+                registered = {str(x).strip() for x in (registered_job_ids or []) if x}
+                heal_sid = (active_session_id or "").strip()
+                if str(row.get("id") or "") in registered and heal_sid:
+                    row["session_id"] = heal_sid
+                else:
+                    continue
+            visible.append(row)
     return visible
+
+
+def inspect_store_job_ownership(
+    store,
+    job_id: str,
+    *,
+    source: str = "harness",
+    registered_job_ids: Iterable[str] | None = None,
+    allow_registered_heal: bool = True,
+) -> bool | None:
+    """Return True/False when ``job_id`` is in ``store``, else None if absent.
+
+    Used by artifacts/cancel so a known unowned id is refused without leaking
+    that it exists. Missing ``list_tasks`` is treated as an empty task list.
+    """
+    jid = str(job_id or "").strip()
+    if store is None or not jid:
+        return None
+    job = None
+    try:
+        getter = getattr(store, "get_job", None)
+        if callable(getter):
+            try:
+                job = getter(jid)
+            except Exception:
+                job = None
+        if job is None:
+            for row in store.list_jobs() or []:
+                rid = row.get("id") if isinstance(row, dict) else getattr(row, "id", None)
+                if rid == jid:
+                    job = row
+                    break
+    except Exception:
+        return None
+    if job is None:
+        return None
+    label = job.get("label") if isinstance(job, dict) else getattr(job, "label", None)
+    tasks: list = []
+    try:
+        lister = getattr(store, "list_tasks", None)
+        if callable(lister):
+            tasks = list(lister(jid) or [])
+    except Exception:
+        tasks = []
+    origin = ""
+    if isinstance(job, dict):
+        origin = str(job.get("origin") or "")
+    else:
+        origin = str(getattr(job, "origin", "") or "")
+    return job_owned_by_marionette(
+        session_id=parse_job_session_id(label, tasks),
+        label=label,
+        tasks=tasks,
+        job_id=jid,
+        registered_job_ids=registered_job_ids,
+        origin=origin,
+        source=source,
+        allow_registered_heal=allow_registered_heal,
+    )

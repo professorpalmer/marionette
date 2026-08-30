@@ -10,6 +10,7 @@ import pytest
 
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession
+from harness.job_scoping import job_label_for_session, stamp_task_payload
 from harness.internal_uri import (
     InternalUriContext,
     InternalUriError,
@@ -23,11 +24,19 @@ from puppetmaster.models import AgentRun, Artifact, ArtifactType, Task
 from puppetmaster.store_factory import create_store
 
 
-def _seed_store(state_dir: str) -> dict[str, str]:
+def _seed_store(state_dir: str, session_id: str = "sess-uri") -> dict[str, str]:
     store = create_store("sqlite", state_dir)
     store.init()
-    job = store.create_job("Find routing regressions in harness")
-    task = Task(job_id=job.id, role="conflict-auditor", instruction="scan")
+    job = store.create_job(
+        "Find routing regressions in harness",
+        label=job_label_for_session(session_id),
+    )
+    task = Task(
+        job_id=job.id,
+        role="conflict-auditor",
+        instruction="scan",
+        payload=stamp_task_payload({}, session_id=session_id),
+    )
     store.save_task(task)
     run = AgentRun(
         job_id=job.id,
@@ -195,6 +204,61 @@ class TestInternalUriResolution:
 
         art_hits = search_internal_uris("Router drops", ctx, scheme="artifact")
         assert f"artifact://{ids['job_id']}/{ids['artifact_id']}" in art_hits
+
+    def test_unstamped_store_job_absent_from_uri_surfaces(self, tmp_path):
+        state_dir = str(tmp_path)
+        store = create_store("sqlite", state_dir)
+        store.init()
+        job = store.create_job("foreign leftover")
+        task = Task(job_id=job.id, role="implement", instruction="scan")
+        store.save_task(task)
+        run = AgentRun(
+            job_id=job.id,
+            task_id=task.id,
+            role="implement",
+            worker_id="foreign-worker",
+        )
+        store.save_run(run)
+        artifact = Artifact(
+            job_id=job.id,
+            task_id=task.id,
+            type=ArtifactType.FINDING,
+            created_by=run.worker_id,
+            payload={"claim": "foreign leftover finding"},
+            confidence=0.5,
+            evidence=["foreign leftover"],
+        )
+        store.save_artifact(artifact)
+        ctx = InternalUriContext(state_dir=state_dir, repo=None)
+        listing = resolve_internal_uri("job://", ctx)
+        assert job.id not in listing.content
+        with pytest.raises(InternalUriError, match="not found"):
+            resolve_internal_uri(f"job://{job.id}", ctx)
+        with pytest.raises(InternalUriError, match="not found"):
+            resolve_internal_uri(f"artifact://{job.id}/{artifact.id}", ctx)
+        with pytest.raises(InternalUriError, match="not found"):
+            resolve_internal_uri(f"agent://{job.id}", ctx)
+        assert job.id not in search_internal_uris("foreign leftover", ctx, scheme="job")
+        assert job.id not in search_internal_uris("foreign leftover finding", ctx, scheme="artifact")
+        assert job.id not in search_internal_uris("foreign-worker", ctx, scheme="agent")
+
+    def test_uri_session_cut_hides_other_owned_session(self, tmp_path):
+        state_dir = str(tmp_path)
+        mine = _seed_store(state_dir, session_id="sess-a")
+        other = _seed_store(state_dir, session_id="sess-b")
+        ctx = InternalUriContext(state_dir=state_dir, session_id="sess-a")
+        listing = resolve_internal_uri("job://", ctx)
+        assert mine["job_id"] in listing.content
+        assert other["job_id"] not in listing.content
+        resolve_internal_uri(f"job://{mine['job_id']}", ctx)
+        resolve_internal_uri(f"artifact://{mine['job_id']}/{mine['artifact_id']}", ctx)
+        with pytest.raises(InternalUriError, match="not found"):
+            resolve_internal_uri(f"job://{other['job_id']}", ctx)
+        with pytest.raises(InternalUriError, match="not found"):
+            resolve_internal_uri(f"artifact://{other['job_id']}/{other['artifact_id']}", ctx)
+        with pytest.raises(InternalUriError, match="not found"):
+            resolve_internal_uri(f"agent://{other['job_id']}", ctx)
+        assert other["job_id"] not in search_internal_uris("routing regressions", ctx, scheme="job")
 
 
 class TestConflictUri:

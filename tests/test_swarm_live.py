@@ -328,17 +328,14 @@ def test_swarm_live_held_open_scratch_hijack_exposes_only_host_local(tmp_path, m
         ids = [j.get("id") for j in data["jobs"]]
         assert "local-host-a" in ids
         assert "local-host-b" in ids
-        assert external.id in ids
-        assert foreign.id in ids
+        assert external.id not in ids
+        assert foreign.id not in ids
         assert scratch_job.id not in ids
         assert leaked_job.id not in ids
         locals_ = [j for j in data["jobs"] if str(j.get("id") or "").startswith("local-")]
         assert len(locals_) == 2
         assert all(j.get("model") == "" for j in locals_)
         assert all(j.get("source") == "harness" for j in locals_)
-        ext_row = next(j for j in data["jobs"] if j.get("id") == external.id)
-        assert ext_row["source"] == "cli"
-        assert ext_row["goal"] == goal
     finally:
         httpd.shutdown()
         srv._pilot._local_jobs.clear()

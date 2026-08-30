@@ -228,8 +228,8 @@ def _api_get(port, path, token):
     return urllib.request.urlopen(req, timeout=10)
 
 
-def test_api_swarm_live_cli_job_visible_zero_economics(tmp_path, monkeypatch):
-    """Regression: unstamped CLI job visible but contributes 0 to Marionette meters."""
+def test_api_swarm_live_cli_job_absent_not_just_zeroed(tmp_path, monkeypatch):
+    """Unstamped CLI jobs must not appear on /api/swarm/live."""
     repo = tmp_path / "repo"
     repo.mkdir()
     harness_dir = tmp_path / "harness-state"
@@ -284,15 +284,7 @@ def test_api_swarm_live_cli_job_visible_zero_economics(tmp_path, monkeypatch):
             _api_get(port, "/api/swarm/live", srv._TOKEN).read().decode()
         )
         cli_rows = [j for j in data["jobs"] if j.get("id") == cli_job_id]
-        assert len(cli_rows) == 1
-        row = cli_rows[0]
-        assert row["source"] == "cli"
-        assert row["accounting_owned"] is False
-        assert row["accounting_scope"] == ACCOUNTING_SCOPE_VISIBILITY
-        assert row["tokens"] == 0
-        assert row["est_cost_usd"] == 0.0
-        assert row["routing_saved_usd"] == 0.0
-        assert row["cache_saved_usd"] == 0.0
+        assert cli_rows == []
         # Pilot/session Codex meters must survive — not replaced by CLI artifacts.
         assert data["session"]["tokens_cached"] >= 4_000
         assert data["session"]["tokens_used"] >= 12_000

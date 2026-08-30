@@ -21,7 +21,7 @@ from harness.cli_job_merge import (
     resolve_cli_state_dir,
 )
 from harness.job_scoping import (
-    ACCOUNTING_SCOPE_VISIBILITY,
+    job_label_for_session,
     stamp_task_payload,
 )
 from harness.server import _job_swarm_accounting, _scoped_jobs_snapshot
@@ -164,8 +164,8 @@ def test_missing_cli_store_is_silent(monkeypatch):
     assert open_cli_durable_state("/no/such/workspace") is None
 
 
-def test_merge_running_cli_jobs_all_projects_surfaces_foreign_live(tmp_path, monkeypatch):
-    """A running job in another PM project store must appear in the tracker."""
+def test_merge_running_cli_jobs_all_projects_scans_foreign_live(tmp_path, monkeypatch):
+    """Low-level sibling scan still finds running rows; ownership is applied later."""
     foreign = tmp_path / "foreign-state"
     store = create_store("sqlite", str(foreign))
     job = store.create_job("foreign swarm")
@@ -186,6 +186,155 @@ def test_merge_running_cli_jobs_all_projects_surfaces_foreign_live(tmp_path, mon
     assert rows[0]["cli_state_dir"]
     assert rows[0]["cross_project"] is True
     assert job.id in seen
+
+
+def test_merge_scoped_cli_jobs_drops_unstamped_foreign_running(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    harness_store = create_store("sqlite", str(tmp_path / "harness-state"))
+    monkeypatch.setenv("HARNESS_CLI_CROSS_PROJECT", "1")
+
+    monkeypatch.setattr("harness.cli_job_merge.open_cli_durable_state", lambda workspace_root="": None)
+    monkeypatch.setattr(
+        "harness.cli_job_merge.merge_running_cli_jobs_all_projects",
+        lambda **kwargs: [{
+            "id": "job_foreign_running",
+            "goal": "foreign swarm",
+            "status": "running",
+            "source": "cli",
+            "cross_project": True,
+            "cli_state_dir": str(tmp_path / "foreign"),
+        }],
+    )
+
+    merged, _, _ = merge_scoped_cli_jobs(
+        [],
+        harness_store=harness_store,
+        active_session_id="sess-x",
+        repo_root=str(repo),
+        workspace_root=str(repo),
+    )
+    assert merged == []
+
+
+def test_merge_scoped_cli_jobs_keeps_marionette_stamped_foreign(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    harness_store = create_store("sqlite", str(tmp_path / "harness-state"))
+    label = job_label_for_session("sess-x")
+    monkeypatch.setenv("HARNESS_CLI_CROSS_PROJECT", "1")
+
+    monkeypatch.setattr("harness.cli_job_merge.open_cli_durable_state", lambda workspace_root="": None)
+    monkeypatch.setattr(
+        "harness.cli_job_merge.merge_running_cli_jobs_all_projects",
+        lambda **kwargs: [{
+            "id": "job_owned_foreign",
+            "goal": "owned sibling",
+            "status": "running",
+            "source": "cli",
+            "cross_project": True,
+            "label": label,
+            "cli_state_dir": str(tmp_path / "foreign"),
+        }],
+    )
+
+    merged, _, _ = merge_scoped_cli_jobs(
+        [],
+        harness_store=harness_store,
+        active_session_id="sess-x",
+        repo_root=str(repo),
+        workspace_root=str(repo),
+    )
+    assert [row["id"] for row in merged] == ["job_owned_foreign"]
+    assert merged[0].get("session_id") == "sess-x"
+
+
+def test_registered_id_does_not_admit_sibling_cli_store(tmp_path, monkeypatch):
+    """A harness-registered id must not heal a colliding unstamped sibling row."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    harness_store = create_store("sqlite", str(tmp_path / "harness-state"))
+    foreign = tmp_path / "foreign-collide"
+    store = create_store("sqlite", str(foreign))
+    job = store.create_job("foreign collide")
+    _save_task(store, job.id, str(repo))
+    store.update_job_status(job.id, "running")
+
+    monkeypatch.setenv("HARNESS_CLI_CROSS_PROJECT", "1")
+    monkeypatch.setattr("harness.cli_job_merge.open_cli_durable_state", lambda workspace_root="": None)
+    monkeypatch.setattr(
+        "harness.cli_job_merge.merge_running_cli_jobs_all_projects",
+        lambda **kwargs: [{
+            "id": job.id,
+            "goal": "foreign collide",
+            "status": "running",
+            "source": "cli",
+            "cross_project": True,
+            "cli_state_dir": str(foreign),
+        }],
+    )
+
+    merged, _, _ = merge_scoped_cli_jobs(
+        [],
+        harness_store=harness_store,
+        active_session_id="sess-x",
+        repo_root=str(repo),
+        workspace_root=str(repo),
+        registered_job_ids=[job.id],
+    )
+    assert merged == []
+
+
+def test_sibling_task_only_stamp_uses_one_store_open(tmp_path, monkeypatch):
+    """Listing and task-stamp ownership must share one sibling store open."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    harness_store = create_store("sqlite", str(tmp_path / "harness-state"))
+    foreign = tmp_path / "foreign-one-open"
+    store = create_store("sqlite", str(foreign))
+    job = store.create_job("sibling one open")
+    payload = stamp_task_payload(
+        {"cwd": str(repo)},
+        session_id="sess-x",
+        origin="marionette",
+    )
+    store.save_task(Task(
+        job_id=job.id,
+        role="implement",
+        instruction="do work",
+        adapter="agentic",
+        payload=payload,
+    ))
+    store.update_job_status(job.id, "running")
+
+    opens: list[str] = []
+    real_open = open_cli_durable_at
+
+    def _count_open(state_dir, **kwargs):
+        opens.append(str(state_dir))
+        return real_open(state_dir, **kwargs)
+
+    monkeypatch.setenv("HARNESS_CLI_CROSS_PROJECT", "1")
+    monkeypatch.setattr("harness.cli_job_merge.open_cli_durable_state", lambda workspace_root="": None)
+    monkeypatch.setattr("harness.cli_job_merge.open_cli_durable_at", _count_open)
+    monkeypatch.setattr(
+        "puppetmaster.state.list_project_state_dirs",
+        lambda: [foreign],
+    )
+
+    merged, _, tasks_by_job = merge_scoped_cli_jobs(
+        [],
+        harness_store=harness_store,
+        active_session_id="sess-x",
+        repo_root=str(repo),
+        workspace_root=str(repo),
+    )
+    assert [row["id"] for row in merged] == [job.id]
+    assert merged[0]["session_id"] == "sess-x"
+    assert job.id in tasks_by_job
+    assert "tasks" not in merged[0]
+    sibling_opens = [path for path in opens if str(foreign) in path]
+    assert len(sibling_opens) == 1
 
 
 def test_foreign_state_dir_candidates_skips_stale_and_caps(tmp_path, monkeypatch):
@@ -334,7 +483,7 @@ def _api_get(port, path, token):
     return urllib.request.urlopen(req, timeout=10)
 
 
-def test_api_swarm_live_includes_cli_jobs_with_accounting(tmp_path, monkeypatch):
+def test_api_swarm_live_excludes_unstamped_cli_jobs(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
     harness_dir = tmp_path / "harness-state"
@@ -377,13 +526,7 @@ def test_api_swarm_live_includes_cli_jobs_with_accounting(tmp_path, monkeypatch)
             _api_get(port, f"/api/swarm/live?repo={scoped}", srv._TOKEN).read().decode()
         )
         cli_rows = [j for j in data["jobs"] if j.get("id") == cli_job_id]
-        assert len(cli_rows) == 1
-        row = cli_rows[0]
-        assert row["source"] == "cli"
-        assert row["accounting_owned"] is False
-        assert row["tokens"] == 0
-        assert row["est_cost_usd"] == 0.0
-        assert row["model"] == "worker-model"
+        assert cli_rows == []
     finally:
         httpd.shutdown()
 
@@ -410,8 +553,8 @@ def _seed_unstamped_cli_store(tmp_path, repo_root: str, goal: str = "external cl
     return store, str(cli_dir), job.id
 
 
-def test_scoped_jobs_snapshot_unstamped_external_cli_visibility_only(tmp_path, monkeypatch):
-    """External Cursor MCP row (cwd only) stays visible-only for accounting."""
+def test_scoped_jobs_snapshot_unstamped_external_cli_absent(tmp_path, monkeypatch):
+    """External Cursor MCP row (cwd only) must not appear on Marionette surfaces."""
     import harness.server as srv
 
     repo = tmp_path / "repo"
@@ -438,11 +581,7 @@ def test_scoped_jobs_snapshot_unstamped_external_cli_visibility_only(tmp_path, m
 
     rows = _scoped_jobs_snapshot(repo_root=str(repo))
     cli_rows = [r for r in rows if r.get("id") == cli_job_id]
-    assert len(cli_rows) == 1
-    row = cli_rows[0]
-    assert row["source"] == "cli"
-    assert row["accounting_owned"] is False
-    assert row["accounting_scope"] == ACCOUNTING_SCOPE_VISIBILITY
+    assert cli_rows == []
 
 
 def test_scoped_jobs_snapshot_task_only_marionette_stamp_owned(tmp_path, monkeypatch):
@@ -490,6 +629,7 @@ def test_scoped_jobs_snapshot_task_only_marionette_stamp_owned(tmp_path, monkeyp
     cli_rows = [r for r in rows if r.get("id") == job.id]
     assert len(cli_rows) == 1
     assert cli_rows[0]["accounting_owned"] is True
+    assert cli_rows[0]["session_id"] == "sess-live"
 
 
 def test_scoped_jobs_snapshot_merges_cli_source(tmp_path, monkeypatch):
@@ -516,6 +656,78 @@ def test_scoped_jobs_snapshot_merges_cli_source(tmp_path, monkeypatch):
     srv._pilot.harness_session_id = ""
 
     rows = _scoped_jobs_snapshot(repo_root=str(repo))
-    assert len(rows) == 1
-    assert rows[0]["id"] == cli_job_id
-    assert rows[0]["source"] == "cli"
+    assert [r["id"] for r in rows if r.get("id") == cli_job_id] == []
+
+
+def test_scoped_jobs_snapshot_keeps_marionette_cli_without_app_run_id(tmp_path, monkeypatch):
+    """Visibility uses origin+session, not the process app_run_id."""
+    import harness.server as srv
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    harness_dir = tmp_path / "harness-state"
+    harness_store = create_store("sqlite", str(harness_dir))
+    cli_dir = tmp_path / "cli-owned"
+    cli_store = create_store("sqlite", str(cli_dir))
+    job = cli_store.create_job("owned cli", label=job_label_for_session("sess-live", app_run_id="run-old"))
+    payload = stamp_task_payload(
+        {"cwd": str(repo)},
+        session_id="sess-live",
+        origin="marionette",
+        app_run_id="run-old",
+    )
+    cli_store.save_task(Task(
+        job_id=job.id,
+        role="implement",
+        instruction="do work",
+        adapter="agentic",
+        payload=payload,
+    ))
+
+    monkeypatch.setenv("HARNESS_APP_RUN_ID", "run-after-restart")
+    monkeypatch.setattr(srv, "_jobs_snapshot", lambda: [])
+    monkeypatch.setattr(srv._session, "state", lambda: SimpleNamespace(store=harness_store))
+    monkeypatch.setattr(
+        "harness.cli_job_merge.resolve_cli_state_dir",
+        lambda workspace_root="": str(cli_dir),
+    )
+    monkeypatch.setattr(
+        "harness.cli_job_merge.merge_running_cli_jobs_all_projects",
+        lambda **kwargs: [],
+    )
+    srv._cfg.repo = str(repo)
+    srv._sessions._active = "sess-live"
+    srv._pilot.harness_session_id = "sess-live"
+
+    rows = _scoped_jobs_snapshot(repo_root=str(repo))
+    assert [r["id"] for r in rows] == [job.id]
+
+
+def test_scoped_jobs_snapshot_keeps_registered_unstamped_harness_job(tmp_path, monkeypatch):
+    import harness.server as srv
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    harness_dir = tmp_path / "harness-state"
+    harness_store = create_store("sqlite", str(harness_dir))
+    job = harness_store.create_job("legacy heal")
+    _save_task(harness_store, job.id, str(repo))
+
+    monkeypatch.setattr(
+        srv,
+        "_jobs_snapshot",
+        lambda: [{"id": job.id, "goal": "legacy heal", "status": "running", "adapter": "agentic"}],
+    )
+    monkeypatch.setattr(srv._session, "state", lambda: SimpleNamespace(store=harness_store))
+    monkeypatch.setattr(
+        "harness.cli_job_merge.merge_running_cli_jobs_all_projects",
+        lambda **kwargs: [],
+    )
+    monkeypatch.setattr(srv._pilot, "_session_job_ids", [job.id], raising=False)
+    srv._cfg.repo = str(repo)
+    srv._sessions._active = "sess-live"
+    srv._pilot.harness_session_id = "sess-live"
+
+    rows = _scoped_jobs_snapshot(repo_root=str(repo))
+    assert [r["id"] for r in rows] == [job.id]
+    assert rows[0]["session_id"] == "sess-live"

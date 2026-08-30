@@ -215,6 +215,7 @@ def _scoped_jobs_with_stores(repo_root: str | None = None) -> tuple[list, Any, A
         store,
         active_session_id=active_session_id,
         repo_root=effective_repo,
+        registered_job_ids=registered_job_ids,
     )
     try:
         merged, cli_store, cli_tasks = merge_scoped_cli_jobs(
@@ -223,6 +224,7 @@ def _scoped_jobs_with_stores(repo_root: str | None = None) -> tuple[list, Any, A
             active_session_id=active_session_id,
             repo_root=effective_repo,
             workspace_root=workspace_root,
+            registered_job_ids=registered_job_ids,
         )
         tasks_by_job = {**harness_tasks, **cli_tasks}
         tagged = annotate_jobs_accounting(
@@ -245,12 +247,11 @@ def _scoped_jobs_with_stores(repo_root: str | None = None) -> tuple[list, Any, A
 
 
 def _scoped_jobs_snapshot(repo_root: str | None = None) -> list:
-    """Jobs visible for the active harness session and open workspace.
+    """Marionette-owned jobs for /api/jobs and /api/swarm/live.
 
-    When ``repo_root`` is present and non-empty it overrides ``_cfg().repo`` for
-    legacy (unstamped) cwd filtering; stamped session jobs are unchanged.
-    Merges read-only CLI jobs from the Puppetmaster per-project store when
-    present (tagged ``source``: ``harness`` or ``cli``).
+    Admission is origin+session (or a registered job id), not cwd/repo match.
+    Merges read-only CLI jobs from the Puppetmaster per-project store only when
+    those rows are similarly owned (tagged ``source``: ``harness`` or ``cli``).
     """
     jobs, _, _ = _scoped_jobs_with_stores(repo_root)
     return jobs

@@ -549,10 +549,7 @@ def test_usage_and_swarm_live_pm_offloads_fail_closed_without_merge(tmp_path, mo
 
         swarm = _get_json(port, f"/api/swarm/live?repo={scoped}", headers=headers)
         swarm_rows = [j for j in swarm["jobs"] if j.get("id") == job.id]
-        assert len(swarm_rows) == 1
-        assert swarm_rows[0]["accounting_owned"] is False
-        assert swarm_rows[0]["tool_output_tokens_saved"] == 0
-        assert swarm_rows[0]["tool_output_savings_usd"] == 0.0
+        assert swarm_rows == []
     finally:
         httpd.shutdown()
         srv_mod._BOOT_REPOS.discard(str(repo))

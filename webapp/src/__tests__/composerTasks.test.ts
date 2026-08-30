@@ -134,6 +134,17 @@ describe("pickTaskSourceJob", () => {
     };
     expect(pickTaskSourceJob([wave, swarm], "sess-1")?.id).toBe("local-wave-live");
   });
+
+  it("ignores other-session and unstamped running jobs", () => {
+    expect(pickTaskSourceJob([
+      job("foreign", "running", "sess-2", [
+        { id: "t2", role: "impl", instruction: "other", status: "running", adapter: "x" },
+      ]),
+      job("orphan", "running", "", [
+        { id: "t0", role: "impl", instruction: "orphan", status: "running", adapter: "x" },
+      ]),
+    ], "sess-1")).toBeNull();
+  });
 });
 
 describe("taskSourceJobIds", () => {
