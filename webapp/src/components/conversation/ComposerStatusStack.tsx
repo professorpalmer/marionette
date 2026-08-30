@@ -8,7 +8,7 @@ import {
   listAgentCommandSessions,
   subscribeAgentCommandIndex,
 } from "../../lib/agentCommandIndex";
-import { pickTaskSourceJob } from "../../lib/composerTasks";
+import { pickTaskSourceJob, taskSourceJobIds } from "../../lib/composerTasks";
 import { buildComposerStatusStackRows, type ComposerStatusStackRow } from "./composerStatusStackData";
 import { COMPOSER_FAMILY_LABEL, COMPOSER_FAMILY_SECTION } from "./composerFamily";
 
@@ -164,7 +164,7 @@ export default function ComposerStatusStack({
     () => pickTaskSourceJob(swarmJobs, sessionId),
     [sessionId, swarmJobs],
   );
-  const taskSourceId = taskSource?.id ?? "";
+  const taskSourceIds = useMemo(() => taskSourceJobIds(taskSource), [taskSource]);
   const rows = useMemo(
     () => {
       const built = buildComposerStatusStackRows({
@@ -173,10 +173,10 @@ export default function ComposerStatusStack({
         nowMs: nowTick,
         sessionId,
       });
-      if (!taskSourceId) return built;
-      return built.filter((row) => row.kind !== "swarm" || row.id !== taskSourceId);
+      if (!taskSourceIds.size) return built;
+      return built.filter((row) => row.kind !== "swarm" || !taskSourceIds.has(row.id));
     },
-    [commandSessions, nowTick, sessionId, swarmJobs, taskSourceId],
+    [commandSessions, nowTick, sessionId, swarmJobs, taskSourceIds],
   );
 
   const hasTerminalRows = rows.some((row) => row.state !== "running");

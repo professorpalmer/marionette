@@ -264,6 +264,54 @@ describe("composer-family chrome", () => {
     ).toBeInTheDocument();
   });
 
+  it("does not repeat parallel-wave children in the Puppetmaster group", () => {
+    const childIds = ["local-60b0773c", "local-42c84d72", "local-f25dd421"];
+    const wave = {
+      id: "local-wave-call_3Du6fz",
+      goal: "Wave 2B",
+      status: "running",
+      session_id: "sess-1",
+      job_kind: "parallel_wave",
+      role: "parallel_wave",
+      adapter: "parallel_wave",
+      child_job_ids: childIds,
+      tasks: childIds.map((id, index) => ({
+        id,
+        role: "implement",
+        instruction: `slice ${index}`,
+        status: index === 0 ? "running" : index === 1 ? "completed" : "failed",
+        adapter: "agentic",
+      })),
+    } as Job;
+    const children = childIds.map((id, index) => ({
+      id,
+      goal: `slice ${index}`,
+      status: index === 0 ? "running" : index === 1 ? "completed" : "failed",
+      session_id: "sess-1",
+      job_kind: "run_implement",
+      source: "harness",
+      updated_at: Date.now(),
+    } as Job));
+    const unrelated = {
+      id: "job_unrelated",
+      goal: "Independent audit",
+      status: "running",
+      session_id: "sess-1",
+      job_kind: "run_swarm",
+      source: "harness",
+      updated_at: Date.now(),
+    } as Job;
+
+    const rail = render(
+      <ComposerActivityRail jobs={[wave, ...children, unrelated]} sessionId="sess-1" />,
+    );
+
+    expect(rail.getByText(/Parallel wave — running/)).toBeInTheDocument();
+    expect(rail.getByRole("button", { name: "Puppetmaster" })).toHaveTextContent("1");
+    expect(rail.queryByRole("button", { name: "Open swarm: slice 0" })).not.toBeInTheDocument();
+    expect(rail.getByText("Independent audit")).toBeInTheDocument();
+  });
+
   it("unmounts a completed 5/5 parallel wave instead of leaving implement flags", () => {
     const wave = {
       id: "local-wave-done",

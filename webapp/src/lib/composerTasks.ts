@@ -67,6 +67,15 @@ export function pickTaskSourceJob(jobs: readonly Job[], activeSessionId: string)
   return pickRankedJob(waves.length ? waves : remaining);
 }
 
+export function taskSourceJobIds(job: Job | null): ReadonlySet<string> {
+  const ids = [
+    job?.id,
+    ...(job?.child_job_ids || []),
+    ...(job?.terminal_receipt?.child_job_ids || []),
+  ];
+  return new Set(ids.map((id) => String(id || "").trim()).filter(Boolean));
+}
+
 function roleLabel(role: string): string {
   return role.replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
 }

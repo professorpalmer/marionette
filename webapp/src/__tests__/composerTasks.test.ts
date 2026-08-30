@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildComposerTasks, composerTasksRemainVisible, pickTaskSourceJob, taskProgress, taskState, waveHeaderText, waveProgress } from "../lib/composerTasks";
+import { buildComposerTasks, composerTasksRemainVisible, pickTaskSourceJob, taskProgress, taskSourceJobIds, taskState, waveHeaderText, waveProgress } from "../lib/composerTasks";
 import type { Job } from "../lib/api";
 
 const job = (id: string, status: string, session_id: string, tasks: Job["tasks"]): Job => ({
@@ -133,6 +133,25 @@ describe("pickTaskSourceJob", () => {
       job_kind: "run_swarm",
     };
     expect(pickTaskSourceJob([wave, swarm], "sess-1")?.id).toBe("local-wave-live");
+  });
+});
+
+describe("taskSourceJobIds", () => {
+  it("includes the task source and every durable wave child", () => {
+    const wave = {
+      ...job("local-wave-call", "running", "sess-1", []),
+      child_job_ids: [" local-60 ", "local-42", "local-60"],
+      terminal_receipt: {
+        child_job_ids: ["local-f25", ""],
+      },
+    } as Job;
+
+    expect([...taskSourceJobIds(wave)]).toEqual([
+      "local-wave-call",
+      "local-60",
+      "local-42",
+      "local-f25",
+    ]);
   });
 });
 
