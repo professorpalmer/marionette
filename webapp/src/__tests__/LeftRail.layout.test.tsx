@@ -36,14 +36,15 @@ describe("LeftRail branch layout", () => {
   });
 
   it("keeps branch resizing without reserving empty list height", async () => {
-    render(<LeftRail jobsRefresh={0} />);
+    const { container } = render(<LeftRail jobsRefresh={0} />);
 
-    const branch = await screen.findByRole("button", { name: /main/ });
-    const branchList = branch.parentElement as HTMLElement;
+    await screen.findByRole("button", { name: /main/ });
+    const branchList = container.querySelector<HTMLElement>("[data-slot=left-rail-branches-list]");
+    const upperSections = container.querySelector<HTMLElement>("[data-slot=left-rail-upper-sections]");
     expect(screen.getByRole("button", { name: "Jobs" })).toBeInTheDocument();
     expect(screen.getByRole("separator", { name: "Resize branches list" })).toBeInTheDocument();
-    expect(branchList.style.height).toBe("");
-    expect(branchList.style.maxHeight).not.toBe("");
-    expect(branchList.parentElement?.parentElement?.className.split(" ")).not.toContain("flex-1");
+    expect(branchList?.style.height).toBe("");
+    expect(branchList?.style.maxHeight).not.toBe("");
+    expect(upperSections?.className.split(" ")).not.toContain("flex-1");
   });
 });

@@ -142,15 +142,9 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     const top = topChromeRef.current;
     const upper = upperSectionsRef.current;
     if (!rail || !top || !upper) return sessionJobsMinHeight();
-    // Measure the upper content's NATURAL height by summing its children --
-    // not upper.scrollHeight. The upper div is a flex-1 scroll container, and
-    // a scroll container's scrollHeight is never less than its rendered
-    // height, so with a short projects list the computed max collapsed to
-    // "whatever the jobs panel already has": dragging up crawled at the ~1px
-    // of layout rounding slack per event while dragging down ran free.
-    // Children inside an overflow container keep their natural height, so
-    // their sum is the true content bound in both the short and overflowing
-    // cases.
+    // A scroll container's scrollHeight cannot undercut its rendered height.
+    // Summing child heights preserves the natural content bound for both short
+    // and overflowing lists.
     const upperContent = Array.from(upper.children).reduce(
       (sum, el) => sum + (el as HTMLElement).offsetHeight,
       0,
@@ -1319,7 +1313,11 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       </div>
       </div>
 
-      <div ref={upperSectionsRef} className={`min-h-0 overflow-y-auto overflow-x-hidden min-w-0 ${panelOpacityClass(panelSwitching, sessionsStale || workspaceStale)}`}>
+      <div
+        ref={upperSectionsRef}
+        data-slot="left-rail-upper-sections"
+        className={`min-h-0 overflow-y-auto overflow-x-hidden min-w-0 ${panelOpacityClass(panelSwitching, sessionsStale || workspaceStale)}`}
+      >
       {/* Projects | Sessions toggle */}
       <div className="px-2.5 pt-2 flex items-center gap-0 border-b border-edge/35">
         <button
@@ -1843,7 +1841,11 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           {filterBranchWorkspaces(workspaces).length === 0 && (
             <Empty>{workspaceInfo?.head_unborn ? "No commits yet" : "No branches"}</Empty>
           )}
-          <div className="space-y-0.5 overflow-y-auto" style={{ maxHeight: branchesHeight }}>
+          <div
+            data-slot="left-rail-branches-list"
+            className="space-y-0.5 overflow-y-auto"
+            style={{ maxHeight: branchesHeight }}
+          >
             {filterBranchWorkspaces(workspaces).map((w) => {
               const linked = !!w.worktree_path;
               const linkKind = w.name.startsWith("pmworker-")
