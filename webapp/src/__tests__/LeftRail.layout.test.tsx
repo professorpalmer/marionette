@@ -41,10 +41,14 @@ describe("LeftRail branch layout", () => {
     await screen.findByRole("button", { name: /main/ });
     const branchList = container.querySelector<HTMLElement>("[data-slot=left-rail-branches-list]");
     const upperSections = container.querySelector<HTMLElement>("[data-slot=left-rail-upper-sections]");
+    const jobsPanel = container.querySelector<HTMLElement>("[data-slot=left-rail-jobs]");
+    const jobScopes = container.querySelector<HTMLElement>("[data-slot=left-rail-job-scopes]");
     expect(screen.getByRole("button", { name: "Jobs" })).toBeInTheDocument();
     expect(screen.getByRole("separator", { name: "Resize branches list" })).toBeInTheDocument();
     expect(branchList?.style.height).toBe("");
     expect(branchList?.style.maxHeight).not.toBe("");
     expect(upperSections?.className.split(" ")).not.toContain("flex-1");
+    expect(jobsPanel).toHaveClass("mt-auto");
+    expect(jobScopes).toHaveClass("grid", "grid-cols-3");
   });
 });
