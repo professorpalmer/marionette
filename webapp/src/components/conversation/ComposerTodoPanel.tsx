@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Ban, CheckCircle2, ChevronDown, ChevronRight, Circle, ListTree, Loader2, MinusCircle } from "lucide-react";
 import { api, type Job, type SessionTodoItem, type SessionTodoSnapshot } from "../../lib/api";
 import {
-  collapseTodoTasks,
   litTodoContents,
   liveJobTodoLabels,
   todoHasWork,
@@ -38,6 +37,10 @@ function taskTone(status: SessionTodoItem["status"], lit?: boolean): string {
   return "text-txt";
 }
 
+function todoPhaseKey(sessionId: string, phaseIndex: number, phaseName: string): string {
+  return `${sessionId}:${phaseIndex}:${phaseName}`;
+}
+
 export default function ComposerTodoPanel({
   jobs = [],
   sessionId,
@@ -56,7 +59,7 @@ export default function ComposerTodoPanel({
     getSessionTodosSessionId,
   );
   const [open, setOpen] = useState(true);
-  const [expandedPhase, setExpandedPhase] = useState<string | null>(null);
+  const [collapsedPhaseKeys, setCollapsedPhaseKeys] = useState<Set<string>>(() => new Set());
   const lit = useMemo(
     () => litTodoContents(snapshot, liveJobTodoLabels(jobs, sessionId)),
     [jobs, sessionId, snapshot],
@@ -94,16 +97,24 @@ export default function ComposerTodoPanel({
       </button>
       {open && (
         <div className="space-y-1 px-2 pb-1.5">
-          {snapshot.phases.map((phase, index) => (
-            <PhaseBlock
-              key={`${phase.name}-${index}`}
-              index={index + 1}
-              phase={phase}
-              expanded={expandedPhase === phase.name}
-              litContents={lit}
-              onToggle={() => setExpandedPhase((name) => (name === phase.name ? null : phase.name))}
-            />
-          ))}
+          {snapshot.phases.map((phase, index) => {
+            const key = todoPhaseKey(sessionId, index, phase.name);
+            return (
+              <PhaseBlock
+                key={key}
+                index={index + 1}
+                phase={phase}
+                expanded={!collapsedPhaseKeys.has(key)}
+                litContents={lit}
+                onToggle={() => setCollapsedPhaseKeys((current) => {
+                  const next = new Set(current);
+                  if (next.has(key)) next.delete(key);
+                  else next.add(key);
+                  return next;
+                })}
+              />
+            );
+          })}
         </div>
       )}
     </div>
@@ -124,13 +135,11 @@ function PhaseBlock({
   onToggle: () => void;
 }) {
   const { done, total } = todoPhaseProgress(phase);
-  const { items, hidden } = expanded
-    ? { items: phase.tasks, hidden: 0 }
-    : collapseTodoTasks(phase.tasks, litContents);
   return (
     <div>
       <button
         type="button"
+        aria-expanded={expanded}
         onClick={onToggle}
         className="flex w-full items-center gap-1.5 rounded-md px-0.5 py-0.5 text-left text-[10.5px] leading-4 text-txt hover:bg-panel/30"
       >
@@ -139,34 +148,27 @@ function PhaseBlock({
           {toRoman(index)}. {phase.name} · {done}/{total}
         </span>
       </button>
-      <div className="pl-4 space-y-0.5">
-        {items.map((task) => {
-          const lit = litContents.has(task.content);
-          return (
-          <div
-            key={task.content}
-            title={task.blocker || task.content}
-            data-todo-lit={lit ? "1" : undefined}
-            className={`flex items-start gap-1.5 text-[10.5px] leading-4 ${taskTone(task.status, lit)}`}
-          >
-            <TaskMark status={task.status} lit={lit} />
-            <span className={expanded ? "whitespace-pre-wrap break-words" : "min-w-0 truncate"}>
-              {task.content}
-              {expanded && task.blocker ? <span className="mt-0.5 block text-faint">{task.blocker}</span> : null}
-            </span>
-          </div>
-          );
-        })}
-        {hidden > 0 ? (
-          <button
-            type="button"
-            onClick={onToggle}
-            className="text-[10.5px] leading-4 text-faint hover:text-txt"
-          >
-            ... {hidden} more todo{hidden === 1 ? "" : "s"}
-          </button>
-        ) : null}
-      </div>
+      {expanded ? (
+        <div className="pl-4 space-y-0.5">
+          {phase.tasks.map((task) => {
+            const lit = litContents.has(task.content);
+            return (
+              <div
+                key={task.content}
+                title={task.blocker || task.content}
+                data-todo-lit={lit ? "1" : undefined}
+                className={`flex items-start gap-1.5 text-[10.5px] leading-4 ${taskTone(task.status, lit)}`}
+              >
+                <TaskMark status={task.status} lit={lit} />
+                <span className="whitespace-pre-wrap break-words">
+                  {task.content}
+                  {task.blocker ? <span className="mt-0.5 block text-faint">{task.blocker}</span> : null}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
     </div>
   );
 }
