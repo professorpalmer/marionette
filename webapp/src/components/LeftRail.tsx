@@ -1319,7 +1319,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       </div>
       </div>
 
-      <div ref={upperSectionsRef} className={`flex-1 min-h-0 overflow-y-auto overflow-x-hidden min-w-0 ${panelOpacityClass(panelSwitching, sessionsStale || workspaceStale)}`}>
+      <div ref={upperSectionsRef} className={`min-h-0 overflow-y-auto overflow-x-hidden min-w-0 ${panelOpacityClass(panelSwitching, sessionsStale || workspaceStale)}`}>
       {/* Projects | Sessions toggle */}
       <div className="px-2.5 pt-2 flex items-center gap-0 border-b border-edge/35">
         <button
@@ -1843,7 +1843,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           {filterBranchWorkspaces(workspaces).length === 0 && (
             <Empty>{workspaceInfo?.head_unborn ? "No commits yet" : "No branches"}</Empty>
           )}
-          <div className="space-y-0.5 overflow-y-auto" style={{ height: branchesHeight }}>
+          <div className="space-y-0.5 overflow-y-auto" style={{ maxHeight: branchesHeight }}>
             {filterBranchWorkspaces(workspaces).map((w) => {
               const linked = !!w.worktree_path;
               const linkKind = w.name.startsWith("pmworker-")
