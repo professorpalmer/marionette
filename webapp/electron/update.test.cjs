@@ -55,6 +55,56 @@ test("resolveBehindCount: shallow + no merge-base falls back to SHA compare", ()
   );
 });
 
+test("checkForUpdate: only a fast-forwardable source checkout is actionable", async (t) => {
+  const { execFileSync } = require("node:child_process");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "marionette-update-availability-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const seed = path.join(root, "seed");
+  const remoteDir = path.join(root, "remote.git");
+  const behindOnly = path.join(root, "behind-only");
+  const diverged = path.join(root, "diverged");
+  const git = (cwd, args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
+
+  fs.mkdirSync(path.join(seed, "webapp"), { recursive: true });
+  git(seed, ["init", "-q", "-b", "main"]);
+  git(seed, ["config", "user.name", "Test"]);
+  git(seed, ["config", "user.email", "test@example.invalid"]);
+  fs.writeFileSync(
+    path.join(seed, "webapp", "package.json"),
+    JSON.stringify({ version: "0.9.383" }),
+  );
+  git(seed, ["add", "webapp/package.json"]);
+  git(seed, ["commit", "-q", "-m", "base"]);
+  execFileSync("git", ["clone", "-q", "--bare", seed, remoteDir]);
+  execFileSync("git", ["clone", "-q", remoteDir, behindOnly]);
+  execFileSync("git", ["clone", "-q", remoteDir, diverged]);
+  git(diverged, ["config", "user.name", "Test"]);
+  git(diverged, ["config", "user.email", "test@example.invalid"]);
+  git(diverged, ["commit", "--allow-empty", "-q", "-m", "local feature"]);
+  git(seed, ["remote", "add", "origin", remoteDir]);
+  git(seed, ["commit", "--allow-empty", "-q", "-m", "upstream main"]);
+  git(seed, ["push", "-q", "origin", "main"]);
+
+  const fastForward = await bridge.checkForUpdate({
+    repoRoot: behindOnly,
+    branch: "main",
+    currentVersion: "0.9.383",
+  });
+  const fork = await bridge.checkForUpdate({
+    repoRoot: diverged,
+    branch: "main",
+    currentVersion: "0.9.383",
+  });
+
+  assert.equal(fastForward.behind, 1);
+  assert.equal(fastForward.ahead, 0);
+  assert.equal(fastForward.available, true);
+  assert.equal(fork.behind, 1);
+  assert.equal(fork.ahead, 1);
+  assert.equal(fork.latest, fork.currentVersion);
+  assert.equal(fork.available, false);
+});
+
 test("overallPercent: monotonic across the pipeline, clamped to 0..100", () => {
   assert.equal(steps.overallPercent("idle"), 0);
   const fetchEnd = steps.overallPercent("fetch", 1);
