@@ -77,36 +77,36 @@ export default function EconomicsDurable({
       ) : null}
 
       {hasReceipt && !isRoutingForecast ? (
-        <section className="mx-3 mb-3 rounded-lg border border-edge/60 bg-panel2/25 px-3 py-3">
-          <div className="grid grid-cols-2 gap-x-4 gap-y-3">
+        <section className="mx-3 mb-3 rounded-md border border-edge/50 bg-panel2/20 px-3 py-2.5">
+          <div className="grid grid-cols-2 gap-x-4 gap-y-2.5">
             <div className="min-w-0">
               <div className="text-[10px] text-muted">{spendHeading}</div>
-              <div className="mt-0.5 text-[20px] font-semibold tracking-tight tabular-nums text-warn/90">{receiptBasis === "estimated" || receiptBasis === "mixed" ? "~" : ""}{fmtUnknownMoney(receiptSpend)}</div>
+              <div className="mt-0.5 text-[15px] font-medium tabular-nums text-txt">{receiptBasis === "estimated" || receiptBasis === "mixed" ? "~" : ""}{fmtUnknownMoney(receiptSpend)}</div>
             </div>
             <div className="min-w-0">
               <div className="text-[10px] text-muted">Estimated frontier cost</div>
-              <div className="mt-0.5 text-[20px] font-semibold tracking-tight tabular-nums">~{fmtUnknownMoney(receiptReference)}</div>
+              <div className="mt-0.5 text-[15px] font-medium tabular-nums text-txt">~{fmtUnknownMoney(receiptReference)}</div>
             </div>
             <div className="min-w-0">
               <div className="text-[10px] text-muted">Estimated savings</div>
-              <div className="mt-0.5 text-[20px] font-semibold tracking-tight tabular-nums text-good/90">~{fmtUnknownMoney(receiptSavings)}</div>
+              <div className="mt-0.5 text-[15px] font-medium tabular-nums text-good/65">~{fmtUnknownMoney(receiptSavings)}</div>
             </div>
             <div className="min-w-0">
               <div className="text-[10px] text-muted">Less than frontier</div>
-              <div className="mt-0.5 text-[20px] font-semibold tracking-tight tabular-nums text-good/90">
+              <div className="mt-0.5 text-[15px] font-medium tabular-nums text-good/65">
                 {savingsPercent === null ? "—" : `${savingsPercent.toFixed(1)}%`}
               </div>
             </div>
           </div>
           {receiptBasis === "mixed" ? (
-            <div className="mt-3 flex gap-4 border-t border-edge/50 pt-2 text-[10px] text-muted">
+            <div className="mt-2.5 flex gap-4 border-t border-edge/40 pt-2 text-[10px] text-muted">
               <span>
                 <span>Measured usage</span>{" "}
-                <span className="font-medium tabular-nums text-warn/90">{fmtUnknownMoney(receiptMeasured)}</span>
+                <span className="tabular-nums text-txt">{fmtUnknownMoney(receiptMeasured)}</span>
               </span>
               <span>
                 <span>Estimated usage</span>{" "}
-                <span className="font-medium tabular-nums text-warn/90">~{fmtUnknownMoney(receiptEstimated)}</span>
+                <span className="tabular-nums text-txt">~{fmtUnknownMoney(receiptEstimated)}</span>
               </span>
             </div>
           ) : null}
@@ -130,21 +130,21 @@ export default function EconomicsDurable({
           ) : null}
         </section>
       ) : isRoutingForecast && hasReceipt ? (
-        <section className="mx-3 mb-3 rounded-lg border border-edge/60 bg-panel2/25 px-3 py-3">
+        <section className="mx-3 mb-3 rounded-md border border-edge/50 bg-panel2/20 px-3 py-2.5">
           <div className="text-[10px] text-muted">Cost unavailable</div>
           <div className="mt-1 text-[10px] leading-snug text-faint">No terminal job receipts for this scope.</div>
-          <div className="mt-3 grid grid-cols-3 gap-3 border-t border-edge/50 pt-3">
+          <div className="mt-2.5 grid grid-cols-3 gap-3 border-t border-edge/40 pt-2.5">
             <div className="min-w-0">
               <div className="text-[10px] text-muted">Route forecast</div>
-              <div className="mt-0.5 font-semibold tabular-nums text-warn/90">~{fmtUnknownMoney(receiptSpend)}</div>
+              <div className="mt-0.5 font-medium tabular-nums text-txt">~{fmtUnknownMoney(receiptSpend)}</div>
             </div>
             <div className="min-w-0">
               <div className="text-[10px] text-muted">Estimated frontier forecast</div>
-              <div className="mt-0.5 font-semibold tabular-nums">~{fmtUnknownMoney(receiptReference)}</div>
+              <div className="mt-0.5 font-medium tabular-nums text-txt">~{fmtUnknownMoney(receiptReference)}</div>
             </div>
             <div className="min-w-0">
               <div className="text-[10px] text-muted">Estimated difference</div>
-              <div className="mt-0.5 font-semibold tabular-nums">~{fmtUnknownMoney(receiptSavings)}</div>
+              <div className="mt-0.5 font-medium tabular-nums text-txt">~{fmtUnknownMoney(receiptSavings)}</div>
             </div>
           </div>
           {referenceId ? (
@@ -163,7 +163,7 @@ export default function EconomicsDurable({
 
 
       <section className="border-t border-edge/60">
-          <div className="flex items-center justify-between px-3 py-2.5 text-[10px] font-semibold uppercase tracking-wide text-txt">
+          <div className="flex items-center justify-between px-3 py-2 text-[10px] font-medium text-muted">
             <span>Job receipts</span>
             {isFiniteNumber(data?.recent_jobs_total) && data.recent_jobs_total > jobs.length ? (
               <span className="font-normal normal-case tracking-normal text-faint">Showing {jobs.length} of {data.recent_jobs_total} jobs in this scope</span>
@@ -204,7 +204,7 @@ export default function EconomicsDurable({
                   {job.job_id ? (
                     <button
                       type="button"
-                      className="min-w-0 truncate text-left text-blue-400/90 hover:text-blue-300 hover:underline underline-offset-2"
+                      className="min-w-0 truncate text-left text-accent/80 hover:text-accent hover:underline underline-offset-2"
                       onClick={() => openAgentSwarmJob(job.job_id || "")}
                     >
                       {job.job_id}
@@ -222,20 +222,20 @@ export default function EconomicsDurable({
                         {measuredCost !== null ? (
                           <span>
                             <span>Measured usage</span>{" "}
-                            <span className="font-medium tabular-nums text-warn/90">{fmtUnknownMoney(measuredCost)}</span>
+                            <span className="tabular-nums text-txt">{fmtUnknownMoney(measuredCost)}</span>
                           </span>
                         ) : null}
                         {estimatedCost !== null ? (
                           <span>
                             <span>Estimated usage</span>{" "}
-                            <span className="font-medium tabular-nums text-warn/90">~{fmtUnknownMoney(estimatedCost)}</span>
+                            <span className="tabular-nums text-txt">~{fmtUnknownMoney(estimatedCost)}</span>
                           </span>
                         ) : null}
                       </span>
                     ) : "Cost unavailable"}
                   </span>
                   {jobSavings !== null ? (
-                    <span className="shrink-0 tabular-nums text-good/90">Estimated savings ~{fmtUnknownMoney(jobSavings)}</span>
+                    <span className="shrink-0 tabular-nums text-good/65">Estimated savings ~{fmtUnknownMoney(jobSavings)}</span>
                   ) : null}
                 </div>
               </div>

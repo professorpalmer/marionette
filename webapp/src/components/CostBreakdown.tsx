@@ -393,23 +393,23 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
       <p className="text-[10px] text-muted mb-2 leading-snug">
         Spend and savings since you opened Marionette.
       </p>
-      <div className="mb-3 rounded border border-edge/50 bg-panel2/20 px-2.5 py-2.5">
+      <div className="mb-3 rounded-md border border-edge/50 bg-panel2/20 px-2.5 py-2.5">
         <div className="grid grid-cols-2 gap-x-3 gap-y-2.5">
           <div className="min-w-0">
-            <div className="text-[9px] uppercase tracking-wide text-faint">Spend</div>
-            <div className="mt-0.5 text-[16px] font-semibold tabular-nums text-warn/90">{spendPrefix}{fmtCost(est)}</div>
+            <div className="text-[10px] text-muted">Spend</div>
+            <div className="mt-0.5 text-[15px] font-medium tabular-nums text-txt">{spendPrefix}{fmtCost(est)}</div>
           </div>
           <div className="min-w-0">
-            <div className="text-[9px] uppercase tracking-wide text-faint">Without savings</div>
-            <div className="mt-0.5 text-[16px] font-semibold tabular-nums">~{fmtCost(withoutSavings)}</div>
+            <div className="text-[10px] text-muted">Without savings</div>
+            <div className="mt-0.5 text-[15px] font-medium tabular-nums text-txt">~{fmtCost(withoutSavings)}</div>
           </div>
           <div className="min-w-0">
-            <div className="text-[9px] uppercase tracking-wide text-faint">Estimated savings</div>
-            <div className="mt-0.5 text-[16px] font-semibold tabular-nums text-good/90">~{fmtCost(valueTotal)}</div>
+            <div className="text-[10px] text-muted">Estimated savings</div>
+            <div className="mt-0.5 text-[15px] font-medium tabular-nums text-good/65">~{fmtCost(valueTotal)}</div>
           </div>
           <div className="min-w-0">
-            <div className="text-[9px] uppercase tracking-wide text-faint">Less spent</div>
-            <div className="mt-0.5 text-[16px] font-semibold tabular-nums text-good/90">
+            <div className="text-[10px] text-muted">Less spent</div>
+            <div className="mt-0.5 text-[15px] font-medium tabular-nums text-good/65">
               {savingsPercent === null ? "—" : `${savingsPercent.toFixed(1)}%`}
             </div>
           </div>

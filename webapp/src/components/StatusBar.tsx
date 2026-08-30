@@ -395,7 +395,7 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
               <button
                 type="button"
                 onClick={openSessionEconomics}
-                className="status-bar-optional-sm inline-flex items-center gap-1 px-1.5 py-px rounded-full bg-good/10 border border-good/20 text-good/90"
+                className="status-bar-optional-sm inline-flex items-center gap-1 px-1.5 py-px text-good/65 hover:text-good/80"
                 title="Estimated savings for this session · all time — click to open Economics"
               >
                 ~{formatCost(sessionSavings)} saved

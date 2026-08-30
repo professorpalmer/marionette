@@ -416,10 +416,10 @@ describe("EconomicsPane", () => {
 
     const measured = within((await screen.findByText("job_measured")).closest(".border-t") as HTMLElement);
     expect(measured.getByText("Measured usage")).toBeTruthy();
-    expect(measured.getByText("$0.02").className).toContain("text-warn/90");
-    expect(measured.getByText(/Estimated savings ~\$4.78/).className).toContain("text-good/90");
+    expect(measured.getByText("$0.02").className).toContain("text-txt");
+    expect(measured.getByText(/Estimated savings ~\$4.78/).className).toContain("text-good/65");
     expect(measured.queryByText("$0.00")).toBeNull();
-    expect(measured.getByRole("button", { name: "job_measured" }).className).toContain("text-blue-400");
+    expect(measured.getByRole("button", { name: "job_measured" }).className).toContain("text-accent");
     expect(screen.getByText("No billable worker ran")).toBeTruthy();
     expect(screen.getByText("Visible only")).toBeTruthy();
     expect(screen.getByText("Showing 3 of 381 jobs in this scope")).toBeTruthy();
