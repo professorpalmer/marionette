@@ -8,12 +8,33 @@ import urllib.request
 from http.server import ThreadingHTTPServer
 
 from harness import server
+from harness.job_scoping import job_label_for_session
+
+
+_OWNED_JOB_ID = "j1"
+_OWNED_LABEL = job_label_for_session("sess-artifacts", origin="marionette")
+
+
+class _OwnedStore:
+    """Harness store row so GET /api/artifacts admits this id as owned."""
+
+    def get_job(self, job_id):
+        if job_id != _OWNED_JOB_ID:
+            return None
+        return {"id": job_id, "origin": "marionette", "label": _OWNED_LABEL}
+
+    def list_jobs(self):
+        return [self.get_job(_OWNED_JOB_ID)]
+
+    def list_tasks(self, _job_id):
+        return []
 
 
 class _State:
     def __init__(self, artifacts=None, exc=None):
         self._artifacts = artifacts
         self._exc = exc
+        self.store = _OwnedStore()
 
     def job_artifacts(self, job_id):
         if self._exc is not None:
