@@ -665,17 +665,9 @@ def _norm_realpath(path: str) -> str:
 
 def _paths_same_workspace(a: str, b: str) -> bool:
     """True when two workspace roots refer to the same directory."""
-    if not a or not b:
-        return False
-    if a == b:
-        return True
-    try:
-        return _norm_realpath(a) == _norm_realpath(b)
-    except Exception:
-        # Fall back to slash/case fold when resolve fails.
-        na = os.path.normcase(a.replace("/", os.sep).replace("\\", os.sep)).rstrip(os.sep)
-        nb = os.path.normcase(b.replace("/", os.sep).replace("\\", os.sep)).rstrip(os.sep)
-        return na == nb
+    from .paths import same_workspace_path
+
+    return same_workspace_path(a, b)
 
 
 def _app_install_roots() -> list:
@@ -878,7 +870,9 @@ if not os.environ.get("HARNESS_REPO") and os.path.exists(_ws_boot_path):
             _ws_data = {}
         # Prefer last user project; never boot into the Marionette app
         # checkout even if an older build wrote it into workspace.json.
-        _boot_repo = _pick_boot_workspace(_ws_data)
+        from .paths import canonical_workspace_path
+
+        _boot_repo = canonical_workspace_path(_pick_boot_workspace(_ws_data))
         if _boot_repo:
             _cfg.repo = _boot_repo
             os.environ["HARNESS_REPO"] = _boot_repo

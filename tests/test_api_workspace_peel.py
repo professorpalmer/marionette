@@ -243,7 +243,7 @@ def test_workspace_open_uses_canonical_git_root(monkeypatch, tmp_path):
         "harness.paths.git_toplevel",
         lambda path: str(canonical),
     )
-    monkeypatch.setattr("harness.api.workspace.os.path.samefile", lambda a, b: True)
+    monkeypatch.setattr("harness.paths.os.path.samefile", lambda a, b: True)
     monkeypatch.setattr(
         "harness.api.workspace.subprocess.run",
         lambda args, **kwargs: SimpleNamespace(returncode=0, stdout="main\n"),

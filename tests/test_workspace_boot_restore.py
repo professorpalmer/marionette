@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -123,6 +124,25 @@ def test_boot_restores_last_project_when_harness_repo_unset(reload_server, tmp_p
     srv = reload_server(HARNESS_REPO=None)
     assert srv._cfg.repo == str(repo)
     assert os.environ.get("HARNESS_REPO") == str(repo)
+
+
+def test_boot_restores_git_workspace_under_its_canonical_root(reload_server, tmp_path):
+    repo = tmp_path / "marionette"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    alias = tmp_path / "Marionette"
+    if not alias.exists():
+        alias.symlink_to(repo, target_is_directory=True)
+    (tmp_path / "workspace.json").write_text(
+        json.dumps({"repo": str(alias), "recents": [str(alias)]}),
+        encoding="utf-8",
+    )
+
+    srv = reload_server(HARNESS_REPO=None)
+
+    assert srv._cfg.repo == str(repo)
+    assert os.environ.get("HARNESS_REPO") == str(repo)
+    assert json.loads((tmp_path / "workspace.json").read_text(encoding="utf-8"))["repo"] == str(repo)
 
 
 def test_boot_skips_workspace_when_harness_repo_already_set(reload_server, tmp_path):
