@@ -2,7 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
-const { spawnSync } = require("node:child_process");
+const { spawnElectronSync } = require("./spawn-electron-sync.cjs");
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 
@@ -26,13 +26,13 @@ function runScreenshotScript() {
     ...process.env,
     ELECTRON_NO_ATTACH_CONSOLE: "1",
   };
-  let result = spawnSync(bin, args, {
+  let result = spawnElectronSync(bin, args, {
     encoding: "utf8",
     env,
     timeout: 30000,
   });
   if (result.error && result.error.code === "ENOENT" && process.platform === "linux") {
-    result = spawnSync("xvfb-run", ["-a", bin, ...args], {
+    result = spawnElectronSync("xvfb-run", ["-a", bin, ...args], {
       encoding: "utf8",
       env,
       timeout: 30000,
