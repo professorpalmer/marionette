@@ -22,7 +22,7 @@ test("stream-to-fold live tail growth outside the virtual window still pins to t
   assert.equal(nextTop, pinnedTop + (grownTail - initialTail));
 });
 
-const { spawnSync } = require("node:child_process");
+const { spawnElectronSync } = require("./spawn-electron-sync.cjs");
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -44,12 +44,12 @@ function runLurchVm() {
   ];
   const env = { ...process.env, ELECTRON_NO_ATTACH_CONSOLE: "1" };
   const opts = { encoding: "utf8", env, timeout: 30000 };
-  let result = spawnSync(bin, args, opts);
+  let result = spawnElectronSync(bin, args, opts);
   if (
     (result.error || result.status !== 0) &&
     process.platform === "linux"
   ) {
-    result = spawnSync("xvfb-run", ["-a", bin, ...args], opts);
+    result = spawnElectronSync("xvfb-run", ["-a", bin, ...args], opts);
   }
   return result;
 }
