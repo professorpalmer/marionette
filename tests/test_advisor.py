@@ -115,7 +115,7 @@ def test_session_surfaces_warnings_on_first_action_result(monkeypatch):
             def complete(self, prompt, system=None):
                 # The advisor call carries the advisor system prompt; answer
                 # it with a warning array. Pilot turns get the normal envelope.
-                if system and "advisor" in system:
+                if system and "code-review advisor" in system:
                     return FakeResponse(text=json.dumps(["writing outside src/"]))
                 self.calls += 1
                 if self.calls == 1:
@@ -152,7 +152,7 @@ def test_session_makes_no_advisor_call_when_disabled(monkeypatch):
                 self.calls = 0
 
             def complete(self, prompt, system=None):
-                if system and "advisor" in system:
+                if system and "code-review advisor" in system:
                     advisor_calls.append(prompt)
                     return FakeResponse(text="[]")
                 self.calls += 1

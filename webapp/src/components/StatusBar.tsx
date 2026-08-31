@@ -15,7 +15,7 @@ import {
   Check,
   X,
 } from "lucide-react";
-import { api, type Config, type EconomicsData, type SessionGoal, type SessionState } from "../lib/api";
+import { api, type Config, type SessionGoal, type SessionState, type UsageData } from "../lib/api";
 import {
   subscribeTaskProfile,
   taskProfileTitle,
@@ -24,6 +24,13 @@ import {
 import { isDesktop } from "../lib/transport";
 import { usePolling } from "../lib/usePolling";
 
+import {
+  cacheHitDisplay,
+  delegationSavingsCredited,
+  listPriceValueTotal,
+  routingSavingsCredited,
+  spendIsEstimated,
+} from "./CostBreakdown";
 import { sanitizeUpdateMessage } from "../lib/updateMessages";
 import { shortPilotModelLabel } from "../lib/turnProgress";
 import type { UpdateAvailability } from "./UpdateBanner";
@@ -81,7 +88,7 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
   onOpenEconomics: () => void;
 }) {
   const [branch, setBranch] = useState("");
-  const [sessionEconomics, setSessionEconomics] = useState<EconomicsData | null>(null);
+  const [usage, setUsage] = useState<UsageData["session"] | null>(null);
   const [apply, setApply] = useState<{ stage: string; message: string; percent: number | null } | null>(null);
   const [toast, setToast] = useState<{
     message: string;
@@ -187,24 +194,31 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
     };
   }, []);
 
-  const economicsInFlight = useRef(false);
-  const fetchSessionEconomics = () => {
-    if (economicsInFlight.current) return;
-    economicsInFlight.current = true;
-    api.getEconomics("conversation", "all")
+  const usageInFlight = useRef(false);
+  const acceptZeroUsageRef = useRef(false);
+  const fetchUsage = () => {
+    if (usageInFlight.current) return;
+    usageInFlight.current = true;
+    api.getUsage()
       .then((data) => {
-        if (
-          data?.counterfactual_source === "job_financial_reports"
-          && data.counterfactual_status === "ok"
-          && data.counterfactual
-        ) {
-          setSessionEconomics(data);
-        } else {
-          setSessionEconomics(null);
+        if (data && data.session) {
+          setUsage((prev) => {
+            const next = data.session;
+            const nextZero =
+              (next.tokens_used ?? 0) === 0 && (next.est_cost_usd ?? 0) === 0;
+            const prevHadSpend =
+              !!prev && ((prev.tokens_used ?? 0) > 0 || (prev.est_cost_usd ?? 0) > 0);
+            if (acceptZeroUsageRef.current) {
+              acceptZeroUsageRef.current = false;
+              return next;
+            }
+            if (nextZero && prevHadSpend) return prev;
+            return next;
+          });
         }
       })
-      .catch((err) => console.error("Failed to load session Economics in StatusBar", err))
-      .finally(() => { economicsInFlight.current = false; });
+      .catch((err) => console.error("Failed to load usage in StatusBar", err))
+      .finally(() => { usageInFlight.current = false; });
   };
 
   useEffect(() => {
@@ -221,14 +235,17 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
   const runtimeStatus = deriveFooterRuntimeStatus(sessionState);
   const runtimeReady = runtimeStatus === "ready";
   const sessionGoal = sessionGoalForChip(sessionState?.goal);
-  usePolling(fetchSessionEconomics, 10000);
+  const usageBusy = runtimeStatus === "busy" || runtimeStatus === "thinking";
 
   useEffect(() => {
-    const onRefresh = () => fetchSessionEconomics();
+    fetchUsage();
+    const interval = setInterval(fetchUsage, usageBusy ? 2000 : 10000);
+    const onRefresh = () => fetchUsage();
     const onSessionChanged = () => {
-      setSessionEconomics(null);
+      acceptZeroUsageRef.current = true;
+      setUsage(null);
       setTaskProfile(null);
-      fetchSessionEconomics();
+      fetchUsage();
       // Session/view swaps carry a different sticky GOAL — refresh immediately
       // rather than waiting for the next 4s poll tick.
       void refreshSessionState();
@@ -239,13 +256,24 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
     window.addEventListener("harness-usage-refresh", onRefresh);
     window.addEventListener("harness-session-changed", onSessionChanged);
     return () => {
+      clearInterval(interval);
       window.removeEventListener("harness-config-changed", onRefresh);
       window.removeEventListener("harness-project-selected", onRefresh);
       window.removeEventListener("harness-new-session", onSessionChanged);
       window.removeEventListener("harness-usage-refresh", onRefresh);
       window.removeEventListener("harness-session-changed", onSessionChanged);
     };
-  }, []);
+  }, [usageBusy]);
+
+  const formatTokens = (num: number) => {
+    if (num >= 1000000) {
+      return (num / 1000000).toFixed(1).replace(/\.0$/, "") + "M";
+    }
+    if (num >= 1000) {
+      return (num / 1000).toFixed(1).replace(/\.0$/, "") + "k";
+    }
+    return num.toString();
+  };
 
   const formatCost = (num: number) => {
     if (num === 0) return "$0.00";
@@ -258,21 +286,7 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
     return `$${num.toFixed(2)}`;
   };
 
-  const sessionReceipt = sessionEconomics?.counterfactual;
-  const sessionCost = typeof sessionReceipt?.actual_cost_usd === "number"
-    && Number.isFinite(sessionReceipt.actual_cost_usd)
-    ? sessionReceipt.actual_cost_usd
-    : null;
-  const sessionSavings = typeof sessionReceipt?.avoided_usd === "number"
-    && Number.isFinite(sessionReceipt.avoided_usd)
-    ? sessionReceipt.avoided_usd
-    : null;
-  const sessionBasis = sessionReceipt?.spend_basis;
-  const sessionCostLabel = sessionBasis === "plan"
-    ? "Included"
-    : sessionCost === null
-      ? ""
-      : `${sessionBasis === "estimated" || sessionBasis === "mixed" ? "~" : ""}${formatCost(sessionCost)}`;
+  const showUsage = usage && (usage.tokens_used > 0 || usage.est_cost_usd > 0);
   const openSessionEconomics = () => {
     // The panel can mount after this click's selection event. Keep the exact
     // destination available for that first render; the pane consumes it.
@@ -386,30 +400,81 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
           </button>
         </span>
       )}
-      {sessionCostLabel && (
+      {showUsage && usage && (
         <>
           <span className="w-px h-3 bg-edge/40 shrink-0" />
-          <span className="flex items-center gap-1.5 text-muted/80 min-w-0" title="This session · all time PM financial receipt">
+          <span
+            className="flex items-center gap-1.5 text-muted/80 min-w-0"
+            title="Pilot and worker spend since this app open (survives backend restart; resets on full quit). Click the dollar for this conversation's Puppetmaster receipts."
+          >
             <Coins size={10} className="text-faint shrink-0" />
-            {sessionSavings !== null && sessionSavings > 0 ? (
-              <button
-                type="button"
-                onClick={openSessionEconomics}
-                className="status-bar-optional-sm inline-flex items-center gap-1 px-1.5 py-px text-good/65 hover:text-good/80"
-                title="Estimated savings for this session · all time — click to open Economics"
-              >
-                ~{formatCost(sessionSavings)} saved
-              </button>
-            ) : null}
+            <span className="status-bar-optional-xs">{formatTokens(usage.tokens_used)} tok</span>
+            {(() => {
+              const savedUsd = listPriceValueTotal(usage);
+              const hit = cacheHitDisplay(usage);
+              if (savedUsd <= 0 && hit.percent == null) return null;
+              const cached = usage.tokens_cached || 0;
+              const compacted = usage.tool_output_tokens_saved || 0;
+              const cacheValue =
+                (typeof usage.cache_savings_gross_usd === "number"
+                  ? usage.cache_savings_gross_usd
+                  : usage.cache_savings_usd || 0)
+                + (usage.cache_saved_usd_swarm || 0);
+              const delegationUsd = delegationSavingsCredited(
+                usage.delegation_savings_basis,
+                usage.delegation_saved_usd,
+              );
+              const routingUsd = routingSavingsCredited(
+                usage.routing_savings_basis,
+                usage.routing_saved_usd,
+              );
+              const detail = [
+                hit.percent != null
+                  ? `${hit.percent} ${hit.label} hit`
+                  : "",
+                cached > 0
+                  ? `${formatTokens(cached)} prompt tokens from cache${
+                      cacheValue > 0 ? ` (~${formatCost(cacheValue)} list-price cache value)` : ""
+                    }`
+                  : "",
+                compacted > 0
+                  ? `${formatTokens(compacted)} tool-output tokens compacted${
+                      usage.tool_output_savings_usd ? ` (~${formatCost(usage.tool_output_savings_usd)})` : ""
+                    }`
+                  : "",
+                (delegationUsd || routingUsd)
+                  ? `model-selection list-price value (~${formatCost(delegationUsd || routingUsd)})`
+                  : "",
+              ].filter(Boolean).join("  ·  ");
+              return (
+                <button
+                  type="button"
+                  onClick={openSessionEconomics}
+                  className="status-bar-optional-sm inline-flex items-center gap-1 px-1.5 py-px text-good/65 hover:text-good/80"
+                  title={`List-price value, not a cash refund. ${detail}`}
+                >
+                  {hit.percent != null ? <span>{hit.percent} {hit.label}</span> : null}
+                  {hit.percent != null && savedUsd > 0 ? (
+                    <span className="text-good/50" aria-hidden="true">·</span>
+                  ) : null}
+                  {savedUsd > 0 ? `~${formatCost(savedUsd)} saved` : null}
+                </button>
+              );
+            })()}
             <button
               type="button"
               onClick={openSessionEconomics}
-              title="Cost for this session · all time — click to open Economics"
+              title={
+                !spendIsEstimated(usage)
+                  ? "Billed spend since app launch (pilot + workers). Click for this conversation's Puppetmaster receipts."
+                  : "Estimated spend since app launch (pilot + workers). Click for this conversation's Puppetmaster receipts."
+              }
               className="inline-flex items-center gap-1 px-1.5 py-px rounded-full bg-panel2 border border-edge text-txt/90 font-medium hover:border-edge hover:text-txt transition cursor-pointer"
             >
-              {sessionCostLabel}
+              {spendIsEstimated(usage) ? "~" : ""}
+              {formatCost(usage.est_cost_usd)}
             </button>
-            <span className="text-faint/70 normal-case font-sans tracking-normal status-bar-optional-lg">session</span>
+            <span className="text-faint/70 normal-case font-sans tracking-normal status-bar-optional-lg">process</span>
           </span>
         </>
       )}

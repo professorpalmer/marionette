@@ -13,6 +13,7 @@ import { publishTaskProfile } from "../lib/taskProfileChrome";
 
 vi.mock("../lib/api", () => ({
   api: {
+    getUsage: vi.fn(),
     getEconomics: vi.fn(),
     workspaces: vi.fn(),
     getSessionState: vi.fn(),
@@ -29,7 +30,26 @@ vi.mock("../lib/transport", () => ({
   isDesktop: () => false,
 }));
 
+const mockGetUsage = vi.mocked(api.getUsage);
 const mockGetEconomics = vi.mocked(api.getEconomics);
+
+const processUsage = {
+  session: {
+    tokens_used: 2700000,
+    est_cost_usd: 0.55,
+    cost_source: "provider" as const,
+    price_source: "live" as const,
+    estimated: false,
+    driver: "openrouter:z-ai/glm-5.3",
+    price_in: 1.4,
+    price_out: 4.4,
+    tokens_cached: 2500000,
+    cache_savings_gross_usd: 3.26,
+    tool_output_savings_usd: 3.41,
+  },
+  jobs: [],
+  session_total: { session_id: "sess-1", est_cost_usd: 33.6, input_tokens: 1, output_tokens: 1 },
+};
 const mockWorkspaces = vi.mocked(api.workspaces);
 const mockGetSessionState = vi.mocked(api.getSessionState);
 const mockSessions = vi.mocked(api.sessions);
@@ -39,6 +59,7 @@ const mockCompleteSessionGoal = vi.mocked(api.completeSessionGoal);
 const mockClearSessionGoal = vi.mocked(api.clearSessionGoal);
 
 beforeEach(() => {
+  mockGetUsage.mockResolvedValue(processUsage);
   mockGetEconomics.mockResolvedValue({
     available: true,
     scope: "conversation",
@@ -143,7 +164,7 @@ describe("StatusBar usage pills", () => {
     mockSessions.mockResolvedValue([]);
   });
 
-  it("shows canonical PM session cost and opens that same all-time scope", async () => {
+  it("shows process tokens and billed cash from /api/usage, not frozen job receipts", async () => {
     const onOpenEconomics = vi.fn();
     const selections: unknown[] = [];
     const onSelection = (event: Event) => selections.push((event as CustomEvent).detail);
@@ -165,8 +186,9 @@ describe("StatusBar usage pills", () => {
     try {
       render(<StatusBar {...statusBarProps} onOpenEconomics={onOpenEconomics} />);
 
-      const pill = await screen.findByRole("button", { name: "$2.31" });
-      expect(screen.queryByText("~$0.04")).toBeNull();
+      expect(await screen.findByText("2.7M tok")).toBeTruthy();
+      const pill = await screen.findByRole("button", { name: "$0.55" });
+      expect(screen.queryByRole("button", { name: "$2.31" })).toBeNull();
       fireEvent.click(pill);
       await waitFor(() => expect(selections).toEqual([{ scope: "conversation", period: "all" }]));
       expect(onOpenEconomics).toHaveBeenCalledTimes(1);
@@ -203,7 +225,7 @@ describe("StatusBar usage pills", () => {
     }));
 
     render(<Harness />);
-    fireEvent.click(await screen.findByRole("button", { name: "$2.31" }));
+    fireEvent.click(await screen.findByRole("button", { name: "$0.55" }));
 
     expect(await screen.findByLabelText("Economics ownership")).toHaveValue("conversation");
     expect(screen.getByLabelText("Economics period")).toHaveValue("all");
