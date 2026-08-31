@@ -113,6 +113,7 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
     from .api import worktrees as _wt_api
     from .api import collab_presence as _collab_presence_api
     from .api import metaharness as _mh_api
+    from .api import local_models as _local_models_api
 
     routes: dict[str, PostHandler] = {
         "/api/browser/relay": post_json(_browser_api.post_browser_relay),
@@ -212,6 +213,8 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
             _prov_api.post_models_toggle, services=svc.provider_services),
         "/api/models/set": post_json(
             _prov_api.post_models_set, services=svc.provider_services),
+        "/api/local-models": post_json(
+            _local_models_api.post_local_models, services=svc.local_model_services),
         "/api/skills/approve": post_json(
             _skills_api.post_skills_approve, services=svc.skills_services),
         "/api/skills/add": post_json(
@@ -494,6 +497,7 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
     from .api import worktrees as _wt_api
     from .api import collab_presence as _collab_presence_api
     from .api import metaharness as _mh_api
+    from .api import local_models as _local_models_api
 
     def _get_git_diff(handler: Any, u: Any, qs: dict) -> Any:
         staged = qs.get("staged", ["0"])[0].strip().lower() in ("1", "true", "yes")
@@ -534,6 +538,17 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
         force = (qs.get("refresh", [""])[0] or "").strip().lower() in (
             "1", "true", "yes")
         status, payload = _prov_api.get_models_catalog(force=force)
+        return send_json(handler, status, payload)
+
+    def _get_local_model_events(handler: Any, u: Any, qs: dict) -> Any:
+        watch = (qs.get("watch", ["0"])[0] or "").strip().lower() in (
+            "1", "true", "yes")
+        since = (qs.get("since", ["0"])[0] or "0")
+        if watch:
+            return _local_models_api.stream_local_model_events(
+                handler, svc.local_model_services(), since)
+        status, payload = _local_models_api.get_local_model_events(
+            svc.local_model_services(), since)
         return send_json(handler, status, payload)
 
     def _get_auth_pools(handler: Any, u: Any, qs: dict) -> Any:
@@ -731,6 +746,9 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
         "/api/workspace": get_json(
             _ws_api.get_workspace, services=svc.workspace_services),
         "/api/models/catalog": _get_models_catalog,
+        "/api/local-models": get_json(
+            _local_models_api.get_local_models, services=svc.local_model_services),
+        "/api/local-models/events": _get_local_model_events,
         "/api/codegraph": get_json(
             _cg_api.get_codegraph, services=svc.codegraph_services),
         "/api/config": get_json(

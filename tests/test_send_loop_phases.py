@@ -605,6 +605,9 @@ def test_drain_stream_queue_usable_via_yield_from():
         return prose, r
 
     gen = _consume()
+    first = next(gen)
+    assert first.kind == "stream_item_done"
+    assert first.data == {}
     try:
         next(gen)
         raise AssertionError("expected StopIteration with return value")

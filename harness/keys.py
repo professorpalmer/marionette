@@ -108,11 +108,38 @@ def get_env_var_for_reach(reach: str) -> str:
     if reach == "bedrock":
         # Preferred simple path; access-key auth uses multiple env vars instead.
         return "AWS_BEARER_TOKEN_BEDROCK"
+    folded = (reach or "").strip().lower()
+    # Custom local-endpoint reaches must not inherit HARNESS_KEY_ENV or they
+    # collide with the session's active provider after restart.
+    if folded.startswith("local-"):
+        slug = re.sub(r"[^A-Za-z0-9]+", "_", folded).strip("_").upper()
+        return "%s_API_KEY" % (slug or "LOCAL_ENDPOINT")
     from .providers import get_provider
     p = get_provider(reach)
     if p and p.env_vars:
         return p.env_vars[0]
     return os.environ.get("HARNESS_KEY_ENV", "") or f"{reach.upper()}_API_KEY"
+
+
+def hydrate_reach_key(reach: str) -> bool:
+    """Restore a stored reach key into its env var. Never returns the secret."""
+    if not reach:
+        return False
+    try:
+        if reach in get_disconnected():
+            return False
+    except Exception:
+        pass
+    stored = _read_keys().get(reach, "")
+    if not isinstance(stored, str) or not stored.strip():
+        return False
+    if is_placeholder_credential(stored):
+        return False
+    env_var = get_env_var_for_reach(reach)
+    if not env_var:
+        return False
+    os.environ[env_var] = stored
+    return True
 
 
 # AWS Bedrock BYOK: multi-field credentials stored under keys.json["bedrock"]

@@ -175,8 +175,9 @@ def parse_native_tool_turn(
 
     ``schema`` is the exact tools schema sent on this step (or None when
     unknown). Visible-name repair and invalid carriers use that allowlist.
-    Inline function-call markup becomes synthetic tool_calls. Missing or
-    empty provider tool_call ids receive one portable synthetic id on a
+    Inline function-call markup in content *or* reasoning (Qwen ``<tool_call>``
+    / ``<function=...>`` thought dumps) becomes synthetic tool_calls. Missing
+    or empty provider tool_call ids receive one portable synthetic id on a
     deep copy *before* ``parse_tool_calls``, so assistant history and the
     PilotAction / tool result share that same identity. Raises on
     unexpected parse failures so the send loop can surface the same error.
@@ -189,7 +190,8 @@ def parse_native_tool_turn(
     catalog = getattr(session, "_tool_catalog", None) if session is not None else None
     allowed_names = expand_allowed_names_for_lazy_activate(
         allowed_names,
-        _tool_call_names(tool_calls, pure_content),
+        _tool_call_names(tool_calls, pure_content)
+        + _tool_call_names([], reasoning or ""),
         catalog,
     )
     used = _history_tool_call_ids(
@@ -205,10 +207,18 @@ def parse_native_tool_turn(
     def allocate_id() -> str:
         return next_synthetic_tool_call_id(session, used)
 
-    if not tool_calls and pure_content:
+    if not tool_calls:
+        inline_from_content = True
         inline_actions = parse_inline_tool_calls(
-            pure_content, allowed_names=allowed_names,
+            pure_content or "", allowed_names=allowed_names,
         )
+        # llama.cpp/Qwen often dump <tool_call> XML on the thought channel
+        # (inside <think> / reasoning_content) while content is narration.
+        if not inline_actions and (reasoning or "").strip():
+            inline_actions = parse_inline_tool_calls(
+                reasoning, allowed_names=allowed_names,
+            )
+            inline_from_content = False
         if inline_actions:
             synthetic_tool_calls = []
             for act in inline_actions:
@@ -233,7 +243,8 @@ def parse_native_tool_turn(
                 ):
                     act.tool_call_id = id_by_index[idx]
             actions = inline_actions
-            pure_content = strip_inline_tool_calls(pure_content)
+            if inline_from_content:
+                pure_content = strip_inline_tool_calls(pure_content)
         else:
             actions = parse_tool_calls(
                 tool_calls, allowed_names=allowed_names,

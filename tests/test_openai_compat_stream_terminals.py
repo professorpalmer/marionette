@@ -627,3 +627,205 @@ def test_stream_finish_aliases_are_case_insensitive(monkeypatch, finish, termina
     assert resp.meta["finish_reason"] == finish
     assert resp.meta["stream_terminal"] == terminal
     assert "without a finish_reason" not in str(resp.error or "")
+
+
+def test_finish_reason_without_done_settles_when_end_on_finish():
+    """llama.cpp can send finish_reason=stop then keepalives with no [DONE]."""
+    def _lines():
+        yield _data({"choices": [{"delta": {"content": "pong"}, "finish_reason": "stop"}]})
+        n = 0
+        while True:
+            n += 1
+            if n > 50:
+                raise AssertionError("parser waited for [DONE] after finish_reason")
+            yield b": keepalive\n"
+
+    parsed = _consume_openai_chat_sse(_lines(), end_on_finish=True)
+    assert parsed["error"] is None
+    assert parsed["text"] == "pong"
+    assert parsed["finish_reason"] == "stop"
+    assert parsed["stream_terminal"] == "stop"
+    assert parsed["saw_done"] is False
+    assert parsed["stream_started"] is True
+
+
+def test_llama_cpp_omits_stream_options_and_stops_on_finish(monkeypatch):
+    captured = {}
+    hung = {"n": 0}
+
+    class _LazySse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def __iter__(self):
+            yield _data({
+                "choices": [{"delta": {"content": "pong"}, "finish_reason": "stop"}],
+            })
+            while True:
+                hung["n"] += 1
+                if hung["n"] > 50:
+                    raise AssertionError("llama-cpp parser waited for [DONE]")
+                yield b": keepalive\n"
+
+    def fake_urlopen(req, timeout=None):
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return _LazySse()
+
+    monkeypatch.setenv("LLAMA_CPP_API_KEY", "local-test-key")
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    driver = OpenAICompatDriver(
+        name="llama-cpp:qwen38-cyber",
+        model="qwen38-cyber",
+        base_url="http://127.0.0.1:8080/v1",
+        api_key_env="LLAMA_CPP_API_KEY",
+    )
+    resp = driver.chat_stream(
+        [{"role": "user", "content": "ping"}],
+        on_delta=lambda _t: None,
+    )
+    assert "stream_options" not in captured["body"]
+    assert resp.error is None
+    assert resp.text == "pong"
+    assert resp.meta["finish_reason"] == "stop"
+    assert resp.meta["stream_terminal"] == "stop"
+    assert resp.meta["saw_done"] is False
+
+
+def test_stop_finish_with_complete_tool_calls_is_executable():
+    """llama.cpp/Qwen often emit delta.tool_calls then finish_reason=stop."""
+    def _lines():
+        yield _data({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call_wiki",
+                        "type": "function",
+                        "function": {
+                            "name": "query_wiki",
+                            "arguments": '{"question":"prior findings on example service"}',
+                        },
+                    }, {
+                        "index": 1,
+                        "id": "call_fetch",
+                        "type": "function",
+                        "function": {
+                            "name": "web_fetch",
+                            "arguments": '{"url":"https://example.com/docs"}',
+                        },
+                    }],
+                },
+                "finish_reason": "stop",
+            }],
+        })
+        n = 0
+        while True:
+            n += 1
+            if n > 50:
+                raise AssertionError("parser waited for [DONE] after stop+tools")
+            yield b": keepalive\n"
+
+    parsed = _consume_openai_chat_sse(_lines(), end_on_finish=True)
+    assert parsed["error"] is None
+    assert parsed["finish_reason"] == "stop"
+    assert parsed["stream_terminal"] == "tool_calls"
+    names = [tc["function"]["name"] for tc in parsed["tool_calls"]]
+    assert names == ["query_wiki", "web_fetch"]
+    assert parsed["saw_done"] is False
+
+
+def test_stop_finish_with_truncated_tool_args_is_incomplete():
+    lines = [
+        _data({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call_1",
+                        "function": {
+                            "name": "query_wiki",
+                            "arguments": '{"question":',
+                        },
+                    }],
+                },
+                "finish_reason": "stop",
+            }],
+        }),
+        b"data: [DONE]\n",
+    ]
+    parsed = _consume_openai_chat_sse(lines)
+    assert parsed["error"]
+    assert parsed["stream_terminal"] == "incomplete"
+    assert parsed["tool_calls"] == []
+    assert parsed["incomplete_tool_calls"][0]["function"]["name"] == "query_wiki"
+
+
+def test_ollama_loopback_keeps_stream_options_and_is_not_llama_cpp(monkeypatch):
+    captured = {}
+
+    class _DoneSse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def __iter__(self):
+            yield _data({
+                "choices": [{"delta": {"content": "pong"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 1},
+            })
+            yield b"data: [DONE]\n"
+
+    def fake_urlopen(req, timeout=None):
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return _DoneSse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    driver = OpenAICompatDriver(
+        name="local:ollama-127-0-0-1-11434/llama3",
+        model="llama3",
+        base_url="http://127.0.0.1:11434/v1",
+        api_key_env="LOCAL_OLLAMA_11434_API_KEY",
+        vendor="ollama",
+        allow_keyless=True,
+    )
+    assert driver._is_llama_cpp_host() is False
+    assert driver._is_loopback_base() is True
+    resp = driver.chat_stream(
+        [{"role": "user", "content": "ping"}],
+        on_delta=lambda _t: None,
+    )
+    assert captured["body"]["stream_options"] == {"include_usage": True}
+    assert resp.error is None
+    assert resp.meta.get("raw_usage") is not None or resp.tokens_out or resp.tokens_in
+
+
+def test_public_llama_cpp_driver_key_fails_closed(monkeypatch):
+    monkeypatch.delenv("PUBLIC_LLAMA_KEY", raising=False)
+    driver = OpenAICompatDriver(
+        name="llama-cpp:qwen",
+        model="qwen",
+        base_url="https://proxy.runpod.net/v1",
+        api_key_env="PUBLIC_LLAMA_KEY",
+        vendor="llama.cpp",
+        allow_keyless=False,
+    )
+    with pytest.raises(RuntimeError, match="missing API key"):
+        driver._key()
+
+
+def test_loopback_llama_cpp_driver_synthesizes_local_key(monkeypatch):
+    monkeypatch.delenv("LOCAL_LLAMA_KEY", raising=False)
+    driver = OpenAICompatDriver(
+        name="llama-cpp:qwen",
+        model="qwen",
+        base_url="http://127.0.0.1:8080/v1",
+        api_key_env="LOCAL_LLAMA_KEY",
+        vendor="llama.cpp",
+        allow_keyless=False,
+    )
+    assert driver._key() == "local"

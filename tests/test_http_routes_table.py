@@ -33,6 +33,8 @@ _SAMPLE_GUARDED_GET = (
     "/api/sessions",
     "/api/archive/status",
     "/api/providers",
+    "/api/local-models",
+    "/api/local-models/events",
     "/api/chat/events",
     "/api/collab/presence",
 )
@@ -56,6 +58,7 @@ _SAMPLE_GUARDED_POST = (
     "/api/session/snapcompact",
     "/api/mcp/refresh",
     "/api/collab/presence/heartbeat",
+    "/api/local-models",
 )
 
 

@@ -163,6 +163,14 @@ class Provider:
 
     @property
     def available(self) -> bool:
+        if self._is_disconnected():
+            return False
+        if self.name == "local":
+            try:
+                from .local_model_manager import local_provider_available
+                return local_provider_available()
+            except Exception:
+                return False
         return self.key() is not None
 
     def resolved_base_url(self) -> str:
@@ -347,6 +355,13 @@ PROVIDERS = (
     # AWS Bedrock: auth is multi-env (bearer OR access-key pair + region).
     # Interactive pilot uses BedrockDriver (puppetmaster.bedrock.bedrock_chat);
     # Marionette stores credentials and injects AWS_* / BEDROCK_* into the env.
+    Provider(
+        name="local", aliases=("llama-cpp", "llamacpp", "local-llm"),
+        env_vars=("LOCAL_MODEL_API_KEY", "LLAMA_CPP_API_KEY"),
+        base_url="",
+        api_mode="chat_completions", display_name="Local",
+        pilot_models=(),
+    ),
     Provider(
         name="bedrock", aliases=("aws-bedrock", "aws"),
         env_vars=("AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID"),
@@ -626,14 +641,63 @@ def build_pilot(spec: str, *, max_tokens: int | None = None):
     bare = (model or "").lower().replace("_", "-")
     if any(tok in bare for tok in ("glm-5.3", "glm-5-3", "glm-5p3")):
         extra_body = _opencode_go.reasoning_body_extras(model) or None
+    timeout = 90
+    base_url = provider.resolved_base_url()
+    driver_name = spec
+    if provider.name == "local":
+        from .local_model_manager import get_manager
+        from .keys import get_env_var_for_reach
+        full_spec = spec if spec.startswith("local:") else "local:%s" % model
+        resolved = get_manager().resolve_spec(full_spec)
+        if not resolved or not resolved.get("base_url"):
+            raise ProviderError(
+                "local endpoint %r is not usable. Start the managed server or save an external endpoint."
+                % full_spec
+            )
+        base_url = resolved["base_url"]
+        model = resolved.get("model") or model
+        timeout = int(resolved.get("timeout") or 600)
+        secret_reach = resolved.get("secret_reach") or "local"
+        try:
+            from .keys import hydrate_reach_key
+            hydrate_reach_key(secret_reach)
+        except Exception:
+            pass
+        key_env = get_env_var_for_reach(secret_reach) or key_env or "LOCAL_MODEL_API_KEY"
+        vendor = str(resolved.get("vendor") or "")
+        if vendor == "llama.cpp":
+            driver_name = "llama-cpp:%s" % model
+        requires_key = bool(resolved.get("requires_key"))
+        if requires_key:
+            # Live env after hydrate only. Persisted has_key is stale metadata
+            # once the secret is cleared or hydration fails.
+            have_key = bool(os.environ.get(key_env, "").strip())
+            if not have_key:
+                raise ProviderError(
+                    "public local endpoint %r requires an API key" % full_spec
+                )
+        return _finalize_driver(
+            OpenAICompatDriver(
+                name=driver_name,
+                model=model,
+                base_url=base_url,
+                api_key_env=key_env,
+                max_tokens=max_tokens,
+                extra_body=extra_body,
+                timeout=timeout,
+                vendor=vendor,
+                allow_keyless=not requires_key,
+            )
+        )
     return _finalize_driver(
         OpenAICompatDriver(
-            name=spec,
+            name=driver_name,
             model=model,
-            base_url=provider.resolved_base_url(),
+            base_url=base_url,
             api_key_env=key_env,
             max_tokens=max_tokens,
             extra_body=extra_body,
+            timeout=timeout,
         )
     )
 

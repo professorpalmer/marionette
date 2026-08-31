@@ -1600,6 +1600,10 @@ def drain_stream_queue(q: Any, accumulator: Any = None) -> Iterator[Any]:
         elif kind == "done":
             for ev in _flush_all():
                 yield ev
+            # OpenAI-compat / llama-cpp never fire on_stream_item_done, so
+            # thinking + assistant bubbles stay streaming:true until a
+            # terminal. Empty stream_id seals every open surface.
+            yield ConvEvent("stream_item_done", {})
             reasoning = "".join(streamed_reasoning)
             if reasoning:
                 meta = getattr(val, "meta", None)
