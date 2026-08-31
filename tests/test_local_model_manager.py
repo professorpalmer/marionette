@@ -579,10 +579,15 @@ def test_stop_never_signals_unmatched(tmp_path, monkeypatch):
     assert mgr._state()["managed"]["process"] is None
 
 
-def test_readiness_requires_alias(tmp_path):
+def test_readiness_requires_alias(tmp_path, monkeypatch):
     catalog, _, model_bytes = _tiny_catalog(tmp_path)
     root = tmp_path / "lm"
     ticks = {"n": 0}
+    stopped = []
+    monkeypatch.setattr(
+        "harness.local_model_manager.stop_process_tree",
+        lambda pid, *args, **kwargs: stopped.append(pid),
+    )
 
     def clock():
         ticks["n"] += 1
@@ -620,13 +625,19 @@ def test_readiness_requires_alias(tmp_path):
     with pytest.raises(LocalModelError) as exc:
         mgr.start()
     assert exc.value.code == "not_ready"
+    assert stopped == [77]
     assert mgr._state()["managed"]["process"] is None
     assert mgr._procs == {}
 
 
-def test_readiness_fails_if_child_exits(tmp_path):
+def test_readiness_fails_if_child_exits(tmp_path, monkeypatch):
     catalog, _, model_bytes = _tiny_catalog(tmp_path)
     root = tmp_path / "lm"
+    stopped = []
+    monkeypatch.setattr(
+        "harness.local_model_manager.stop_process_tree",
+        lambda pid, *args, **kwargs: stopped.append(pid),
+    )
     mgr = LocalModelManager(
         root=str(root), catalog=catalog, sleeper=lambda _s: None,
         clock=lambda: 1.0, ready_timeout=1.0,
@@ -658,6 +669,7 @@ def test_readiness_fails_if_child_exits(tmp_path):
     with pytest.raises(LocalModelError) as exc:
         mgr.start()
     assert exc.value.code == "not_ready"
+    assert stopped == [88]
     assert mgr._procs == {}
 
 
