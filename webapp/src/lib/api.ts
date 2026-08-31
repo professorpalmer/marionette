@@ -164,6 +164,8 @@ export type AuthPoolsResponse = {
 
 export type PendingReviewHunk = {
   id: string;
+  /** Server-assigned stable decision identity (content fingerprint + dup ordinal). */
+  decision_id?: string;
   header: string;
   lines: string[];
   status: "pending" | "accept" | "reject";

@@ -20,6 +20,9 @@ _TERMINAL_STATUSES = frozenset({
 _RUNNING_STATUSES = frozenset({
     "running", "in_progress", "pending", "started", "registered",
 })
+_NONTERMINAL_TASK_STATUSES = frozenset({
+    "", "pending", "running", "in_progress", "started", "registered", "queued",
+})
 
 
 def _as_float(value: Any, default: float = 0.0) -> float:
@@ -51,18 +54,60 @@ def _artifacts_complete(raw: Any) -> bool:
     return artifacts_are_complete(_normalize_artifacts(raw))
 
 
-def _normalize_tasks(raw: Any, *, terminal: bool) -> list[dict]:
+def _receipt_child_status_by_id(job: dict) -> dict[str, str]:
+    """Map child id -> status from a durable terminal_receipt when present."""
+    out: dict[str, str] = {}
+    receipt = job.get("terminal_receipt")
+    if not isinstance(receipt, dict):
+        return out
+    children = receipt.get("children")
+    if not isinstance(children, list):
+        return out
+    for child in children:
+        if not isinstance(child, dict):
+            continue
+        cid = str(child.get("id") or "").strip()
+        status = str(child.get("status") or "").strip()
+        if cid and status:
+            out[cid] = status
+    return out
+
+
+def _parent_lifecycle_task_status(parent_status: str) -> str:
+    """Normalize a stale nonterminal child when the parent is already terminal."""
+    st = str(parent_status or "").strip().lower()
+    if st in {"failed", "cancelled", "timeout", "truncated", "timed_out"}:
+        return "failed"
+    if st in {"partial"}:
+        return "partial"
+    if st in {"completed", "complete", "done"}:
+        return "completed"
+    return "completed"
+
+
+def _normalize_tasks(raw: Any, *, terminal: bool, job: Optional[dict] = None) -> list[dict]:
     if not isinstance(raw, list):
         return []
+    parent_status = str((job or {}).get("status") or "")
+    receipt_by_id = _receipt_child_status_by_id(job or {})
     out: list[dict] = []
     for task in raw:
         if not isinstance(task, dict):
             continue
+        task_id = str(task.get("id") or "")
+        status = str(task.get("status") or "")
+        receipt_status = receipt_by_id.get(task_id.strip())
+        if receipt_status:
+            status = receipt_status
+        elif terminal and status.strip().lower() in _NONTERMINAL_TASK_STATUSES:
+            # Authoritative live projection: hollow/pending children must not
+            # disagree with a terminal parent (Composer Tasks / Swarm Tracker).
+            status = _parent_lifecycle_task_status(parent_status)
         entry = {
-            "id": str(task.get("id") or ""),
+            "id": task_id,
             "role": str(task.get("role") or ""),
             "instruction": "" if terminal else str(task.get("instruction") or ""),
-            "status": str(task.get("status") or ""),
+            "status": status,
             "adapter": str(task.get("adapter") or ""),
         }
         task_model = str(task.get("model") or "").strip()
@@ -168,10 +213,12 @@ def project_local_job_for_swarm_live(job: dict) -> dict:
         ),
         "artifacts": _normalize_artifacts(job.get("artifacts")),
         "artifacts_complete": _artifacts_complete(job.get("artifacts")),
-        "tasks": _normalize_tasks(job.get("tasks"), terminal=terminal),
+        "tasks": _normalize_tasks(job.get("tasks"), terminal=terminal, job=job),
         "source": str(job.get("source") or "harness"),
         "actions": _normalize_actions(job.get("actions")),
     }
+    if isinstance(job.get("terminal_receipt"), dict):
+        row["terminal_receipt"] = dict(job["terminal_receipt"])
     if isinstance(job.get("financial_receipt"), dict):
         row["financial_receipt"] = dict(job["financial_receipt"])
     if job.get("route_forecast_usd") is not None:

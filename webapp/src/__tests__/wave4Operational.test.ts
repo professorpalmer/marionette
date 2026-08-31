@@ -1,11 +1,19 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AUTH_FAILURE,
   BACKEND_NOT_READY,
+  MALFORMED_DIAGNOSTIC_WIRE,
   authFailureDiagnostic,
   fromBackendDiagnostic,
+  malformedBackendDiagnostic,
+  parseBackendDiagnostic,
 } from "../lib/operationalDiagnostic";
+import { clearDiagnostic, getActiveDiagnostic, publishDiagnostic } from "../lib/operationalDiagnosticBus";
 import { executeDiagnosticRecovery } from "../lib/operationalRecovery";
+
+afterEach(() => {
+  clearDiagnostic();
+});
 
 describe("fromBackendDiagnostic", () => {
   it("parses GET /api/diagnostics wire payloads", () => {
@@ -55,6 +63,84 @@ describe("fromBackendDiagnostic", () => {
       summary: "x",
       severity: "fatal" as never,
     })).toBeNull();
+  });
+});
+
+describe("parseBackendDiagnostic", () => {
+  it("distinguishes absent from malformed", () => {
+    expect(parseBackendDiagnostic(null)).toEqual({ status: "absent" });
+    expect(parseBackendDiagnostic(undefined)).toEqual({ status: "absent" });
+    expect(parseBackendDiagnostic({})).toEqual({ status: "absent" });
+    const incomplete = parseBackendDiagnostic({ summary: "only summary" });
+    expect(incomplete.status).toBe("invalid");
+    if (incomplete.status === "invalid") {
+      expect(incomplete.reason.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("rejects invalid recovery and non-boolean retryable", () => {
+    expect(parseBackendDiagnostic({
+      scope: "backend",
+      operation: "doctor",
+      summary: "x",
+      severity: "error",
+      retryable: "maybe",
+    }).status).toBe("invalid");
+    expect(parseBackendDiagnostic({
+      scope: "backend",
+      operation: "doctor",
+      summary: "x",
+      severity: "error",
+      retryable: true,
+      recovery: { kind: "retry" },
+    }).status).toBe("invalid");
+    expect(parseBackendDiagnostic({
+      scope: "backend",
+      operation: "doctor",
+      summary: "x",
+      severity: "error",
+      retryable: true,
+      recovery: { kind: "warp", label: "Nope" },
+    }).status).toBe("invalid");
+  });
+
+  it("defaults missing recovery to none and accepts boolean-like retryable", () => {
+    const parsed = parseBackendDiagnostic({
+      scope: "backend",
+      operation: "doctor",
+      summary: "ok",
+      severity: "warning",
+      retryable: "0",
+    });
+    expect(parsed.status).toBe("ok");
+    if (parsed.status === "ok") {
+      expect(parsed.diagnostic.retryable).toBe(false);
+      expect(parsed.diagnostic.recovery).toEqual({ kind: "none" });
+    }
+  });
+
+  it("absent clears chrome while invalid publishes a malformed diagnostic (not healthy)", () => {
+    publishDiagnostic(authFailureDiagnostic("prior"));
+    expect(getActiveDiagnostic()?.code).toBe(AUTH_FAILURE);
+
+    const absent = parseBackendDiagnostic(null);
+    expect(absent.status).toBe("absent");
+    clearDiagnostic();
+    expect(getActiveDiagnostic()).toBeNull();
+
+    const invalid = parseBackendDiagnostic({ summary: "only summary" });
+    expect(invalid.status).toBe("invalid");
+    if (invalid.status === "invalid") {
+      const observed = malformedBackendDiagnostic(invalid.reason);
+      publishDiagnostic(observed);
+      const active = getActiveDiagnostic();
+      expect(active?.code).toBe(MALFORMED_DIAGNOSTIC_WIRE);
+      expect(active?.summary).toMatch(/malformed/i);
+      expect(active?.detail).toBeTruthy();
+      // Must not masquerade as a healthy clear / successful backend diagnostic.
+      expect(active?.severity).toBe("warning");
+      expect(fromBackendDiagnostic({ summary: "only summary" })).toBeNull();
+    }
   });
 });
 

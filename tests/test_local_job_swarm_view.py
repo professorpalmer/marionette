@@ -326,6 +326,45 @@ def test_stable_id_through_projection():
     assert again["id"] == row["id"]
 
 
+def test_terminal_parent_reconciles_nonterminal_child_tasks():
+    """Authoritative /api/swarm/live projection normalizes stale pending children."""
+    job = _sample_local_job(
+        id="local-wave-done",
+        status="completed",
+        tasks=[
+            {"id": "w1", "role": "explore", "instruction": "a", "status": "complete", "adapter": "x"},
+            {"id": "w2", "role": "review", "instruction": "b", "status": "pending", "adapter": "x"},
+            {"id": "w3", "role": "audit", "instruction": "c", "status": "", "adapter": "x"},
+            {"id": "w4", "role": "map", "instruction": "d", "status": "running", "adapter": "x"},
+            {"id": "w5", "role": "tests", "instruction": "e", "status": "pending", "adapter": "x"},
+        ],
+        task_count=5,
+    )
+    row = project_local_job_for_swarm_live(job)
+    assert [t["status"] for t in row["tasks"]] == [
+        "complete", "completed", "completed", "completed", "completed",
+    ]
+
+    with_receipt = _sample_local_job(
+        id="local-wave-receipt",
+        status="completed",
+        tasks=[
+            {"id": "w1", "role": "explore", "instruction": "a", "status": "pending", "adapter": "x"},
+            {"id": "w2", "role": "review", "instruction": "b", "status": "pending", "adapter": "x"},
+        ],
+        terminal_receipt={
+            "status": "completed",
+            "children": [
+                {"id": "w1", "status": "completed"},
+                {"id": "w2", "status": "failed"},
+            ],
+        },
+    )
+    row2 = project_local_job_for_swarm_live(with_receipt)
+    assert [t["status"] for t in row2["tasks"]] == ["completed", "failed"]
+    assert isinstance(row2.get("terminal_receipt"), dict)
+
+
 def test_local_jobs_mixin_never_writes_swarm_store(monkeypatch):
     """LocalJobsMixin must not call create_store / add_job / store.write."""
     calls: list[str] = []

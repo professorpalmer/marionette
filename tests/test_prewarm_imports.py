@@ -59,17 +59,97 @@ def test_prewarm_retries_when_essential_import_fails(monkeypatch):
 
     conv._WORKER_IMPORTS_WARMED = False
     real = importlib.import_module
+    notes = []
 
     def boom(name, package=None):
         if name == "harness.worker":
             raise ImportError("simulated essential miss")
         return real(name, package)
 
+    def capture(where, exc=None, msg=""):
+        notes.append((where, repr(exc) if exc is not None else None, msg))
+
     monkeypatch.setattr(importlib, "import_module", boom)
+    monkeypatch.setattr(conv, "_diag_note", capture)
     conv._prewarm_worker_imports()
     assert conv._WORKER_IMPORTS_WARMED is False
+    assert any(where == "prewarm.essential_import" for where, _, _ in notes)
+    assert any(where == "prewarm.essentials_incomplete" for where, _, _ in notes)
 
     monkeypatch.setattr(importlib, "import_module", real)
     conv._prewarm_worker_imports()
     assert conv._WORKER_IMPORTS_WARMED is True
     assert "harness.worker" in sys.modules
+
+
+def test_prewarm_aggregates_broad_module_failures(monkeypatch):
+    import importlib
+    import pkgutil
+    import harness.conversation as conv
+
+    conv._WORKER_IMPORTS_WARMED = False
+    real = importlib.import_module
+    notes = []
+    failed_names = [f"harness.fake_mod_{i}" for i in range(12)]
+
+    def capture(where, exc=None, msg=""):
+        notes.append((where, repr(exc) if exc is not None else None, msg))
+
+    class FakePkg:
+        __path__ = ["unused"]
+
+    def fake_walk(path, prefix=""):
+        for name in failed_names:
+            yield type("Info", (), {"name": name})()
+
+    def import_mix(name, package=None):
+        if name in ("harness.worker", "harness.edit_engines"):
+            return real(name, package)
+        if name == "harness":
+            return FakePkg()
+        if name in ("pmharness", "puppetmaster"):
+            raise ImportError("skip other roots")
+        if name in failed_names or name.startswith("harness.fake_mod_"):
+            raise ImportError(f"boom {name}")
+        return real(name, package)
+
+    monkeypatch.setattr(importlib, "import_module", import_mix)
+    monkeypatch.setattr(pkgutil, "walk_packages", fake_walk)
+    monkeypatch.setattr(conv, "_diag_note", capture)
+    conv._prewarm_worker_imports()
+
+    module_notes = [n for n in notes if n[0] == "prewarm.module_import"]
+    assert len(module_notes) == 1
+    msg = module_notes[0][2]
+    assert "12 module(s) failed" in msg
+    assert "harness.fake_mod_0" in msg
+    assert "+7 more" in msg
+    assert not any(n[0] == "prewarm.essential_import" for n in notes)
+    assert conv._WORKER_IMPORTS_WARMED is True
+
+
+def test_prewarm_package_and_walk_failures_stay_observable(monkeypatch):
+    import importlib
+    import harness.conversation as conv
+
+    conv._WORKER_IMPORTS_WARMED = False
+    real = importlib.import_module
+    notes = []
+
+    def capture(where, exc=None, msg=""):
+        notes.append((where, repr(exc) if exc is not None else None, msg))
+
+    def boom_pkg(name, package=None):
+        if name in ("harness.worker", "harness.edit_engines"):
+            return real(name, package)
+        if name == "pmharness":
+            raise ImportError("pkg missing")
+        return real(name, package)
+
+    monkeypatch.setattr(importlib, "import_module", boom_pkg)
+    monkeypatch.setattr(conv, "_diag_note", capture)
+    conv._prewarm_worker_imports()
+    assert any(
+        where == "prewarm.package_import" and "pmharness" in (msg or "")
+        for where, _, msg in notes
+    )

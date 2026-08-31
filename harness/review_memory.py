@@ -41,21 +41,29 @@ class ReviewMemoryMixin:
 
         rejected_hunks = []
         all_hunks = []
+        from .diffreview import decision_for_hunk, reconstruct_diff
+        fingerprint_counts: dict[str, int] = {}
         for f in review["files"]:
+            path = str(f.get("path") or "")
             for h in f["hunks"]:
                 h_id = h["id"]
                 all_hunks.append(h_id)
-                dec = decisions.get(h_id, "reject")
+                dec = decision_for_hunk(decisions, h, path, fingerprint_counts)
                 if dec == "reject":
                     rejected_hunks.append(h_id)
 
         # Reconstruct the accepted subset diff
-        from .diffreview import reconstruct_diff
         accepted_diff = reconstruct_diff(review["files"], decisions)
 
         applied_files = []
+        fingerprint_counts = {}
         for f in review["files"]:
-            if any(decisions.get(h["id"]) == "accept" for h in f["hunks"]):
+            path = str(f.get("path") or "")
+            file_accepted = False
+            for h in f["hunks"]:
+                if decision_for_hunk(decisions, h, path, fingerprint_counts) == "accept":
+                    file_accepted = True
+            if file_accepted:
                 applied_files.append(f["path"])
 
         # If ALL hunks are rejected, do not apply anything, just remove the review

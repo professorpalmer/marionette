@@ -1019,3 +1019,147 @@ class TestSynchronousBoundary:
             criteria=["provenance chips cite a real baseline"],
         )
         assert "[not_verified] provenance chips cite a real baseline" in text
+
+
+class TestDuplicateContradictoryAndBoundedEvidence:
+    def test_duplicate_criteria_are_deduped_not_double_settled(self):
+        facts = evaluate_acceptance_criteria(
+            ["pyright is clean", "pyright is clean", "  pyright is clean  "],
+            [{
+                "type": "verification",
+                "headline": "checked harness/a.py:1",
+                "acceptance_criteria": [{
+                    "criterion": "pyright is clean",
+                    "status": "passed",
+                    "evidence": "harness/a.py:1",
+                }],
+                "execution_ref": {"job_id": CURRENT_JOB},
+            }],
+            CURRENT_JOB,
+        )
+        assert len(facts) == 1
+        assert facts[0].status == VERIFIED
+
+    def test_contradictory_pass_and_fail_refuse_verification(self):
+        facts = evaluate_acceptance_criteria(
+            ["tsc passes"],
+            [{
+                "type": "verification",
+                "headline": "checked harness/a.py:1",
+                "acceptance_criteria": [
+                    {
+                        "criterion": "tsc passes",
+                        "status": "passed",
+                        "evidence": "harness/a.py:1",
+                    },
+                    {
+                        "criterion": "tsc passes",
+                        "status": "failed",
+                        "evidence": "harness/a.py:2",
+                    },
+                ],
+                "execution_ref": {"job_id": CURRENT_JOB},
+            }],
+            CURRENT_JOB,
+        )
+        assert facts[0].status == NOT_VERIFIED
+
+    def test_cross_artifact_contradiction_fails_closed(self):
+        facts = evaluate_acceptance_criteria(
+            ["tsc passes"],
+            [
+                {
+                    "type": "verification",
+                    "headline": "checked harness/a.py:1",
+                    "acceptance_criteria": [{
+                        "criterion": "tsc passes",
+                        "status": "passed",
+                        "evidence": "harness/a.py:1",
+                    }],
+                    "execution_ref": {"job_id": CURRENT_JOB},
+                },
+                {
+                    "type": "verification",
+                    "headline": "checked harness/b.py:1",
+                    "acceptance_criteria": [{
+                        "criterion": "tsc passes",
+                        "status": "failed",
+                        "evidence": "harness/b.py:1",
+                    }],
+                    "execution_ref": {"job_id": CURRENT_JOB},
+                },
+            ],
+            CURRENT_JOB,
+        )
+        assert facts[0].status == NOT_VERIFIED
+        assert "contradictory" in facts[0].basis
+
+    def test_oversized_evidence_collections_are_bounded(self):
+        from harness.swarm_run_facts import _MAX_EVIDENCE_ENTRIES
+
+        huge = [f"harness/mod_{i}.py:{i}" for i in range(_MAX_EVIDENCE_ENTRIES + 40)]
+        rows = normalize_execution_refs(
+            [{"type": "finding", "headline": "x", "evidence": huge}],
+            CURRENT_JOB,
+        )
+        assert len(rows) == 1
+        assert len(rows[0]["evidence"]) == _MAX_EVIDENCE_ENTRIES
+        assert rows[0]["evidence_locus"] == "harness/mod_0.py:0"
+
+    def test_hermetic_probe_to_artifact_path(self, stub_probe, tmp_path):
+        """Environment probe output must land via the production boundary helper."""
+        from harness.conversation_jobs import _background_evidence_boundary
+
+        subject = tmp_path / "subject"
+        subject.mkdir()
+        stub_probe(
+            tool_paths={"pyright": str(subject / "pyright"), "tsc": ""},
+            browser_path="",
+            puppetmaster_version="9.9.9",
+            mcp_server_names=["hermetic-probe"],
+        )
+        session = SimpleNamespace(
+            state_dir=str(tmp_path / "state"),
+            config=SimpleNamespace(repo=str(subject)),
+        )
+        artifacts = [{
+            "type": "verification",
+            "headline": "checked harness/a.py:1",
+            "acceptance_criteria": [{
+                "criterion": "pyright is clean",
+                "status": "passed",
+                "evidence": "harness/a.py:1",
+            }],
+            "execution_ref": {"job_id": CURRENT_JOB},
+            "job_id": CURRENT_JOB,
+        }]
+        res_job = {
+            "status": "completed",
+            "acceptance_criteria": ["pyright is clean"],
+            "artifacts": artifacts,
+        }
+        stamped = {
+            "cwd": str(subject),
+            "status": "completed",
+            "acceptance_criteria": ["pyright is clean"],
+            "artifacts": artifacts,
+        }
+        text = _background_evidence_boundary(session, CURRENT_JOB, res_job, stamped)
+        assert "9.9.9" in text
+        assert "hermetic-probe" in text
+        assert CURRENT_JOB in text
+        assert "pyright is clean" in text
+        # Direct builder still agrees with the boundary for the same inputs.
+        facts = build_swarm_run_facts(
+            job_id=CURRENT_JOB,
+            subject_cwd=str(subject),
+            state_root=str(tmp_path / "state"),
+            artifacts=normalize_execution_refs(artifacts, CURRENT_JOB),
+            acceptance_criteria=["pyright is clean"],
+        )
+        payload = facts.as_dict()
+        assert payload["puppetmaster_version"] == "9.9.9"
+        assert any(c["status"] == VERIFIED for c in payload["criteria"])
+        by_name = {r["name"]: r for r in payload["readiness"]}
+        assert by_name["pyright"]["status"] == VERIFIED
+        assert by_name["tsc"]["status"] == NOT_VERIFIED

@@ -318,6 +318,7 @@ test("operational Puppetmaster pins match DEFAULT_PUPPETMASTER_SPEC", () => {
     "scripts/doctor.ps1",
     "FINDINGS.md",
     "harness/diag_bundle.py",
+    "pyproject.toml",
     ".github/workflows/tests.yml",
     ".github/workflows/tests-full.yml",
     ".github/workflows/release.yml",

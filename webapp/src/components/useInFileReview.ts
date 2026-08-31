@@ -51,7 +51,7 @@ export function useInFileReview(editorPath: string): {
     setApplyError(null);
     setApplyingKey(item.decisionKey);
     try {
-      const res = await applyInFileHunkDecision(item.review, item.hunk.id, "accept");
+      const res = await applyInFileHunkDecision(item.review, item.decisionId, "accept");
       if (!res.ok) setApplyError(res.message);
       else refresh();
     } catch (err: any) {
@@ -65,7 +65,7 @@ export function useInFileReview(editorPath: string): {
     setApplyError(null);
     setApplyingKey(item.decisionKey);
     try {
-      const res = await applyInFileHunkDecision(item.review, item.hunk.id, "reject");
+      const res = await applyInFileHunkDecision(item.review, item.decisionId, "reject");
       if (!res.ok) setApplyError(res.message);
       else refresh();
     } catch (err: any) {

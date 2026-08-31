@@ -116,7 +116,13 @@ describe("DiffReviewPane apply decision seeding + namespace", () => {
       files: [
         {
           path: "a.ts",
-          hunks: [{ id: "0:0", header: "@@", lines: ["+a"], status: "pending" }],
+          hunks: [{
+            id: "0:0",
+            decision_id: "fp_a#0",
+            header: "@@",
+            lines: ["+a"],
+            status: "pending",
+          }],
         },
       ],
     };
@@ -128,20 +134,26 @@ describe("DiffReviewPane apply decision seeding + namespace", () => {
       files: [
         {
           path: "b.ts",
-          hunks: [{ id: "0:0", header: "@@", lines: ["+b"], status: "pending" }],
+          hunks: [{
+            id: "0:0",
+            decision_id: "fp_b#0",
+            header: "@@",
+            lines: ["+b"],
+            status: "pending",
+          }],
         },
       ],
     };
 
-    expect(reviewHunkDecisionKey("rev-a", "0:0")).toBe("rev-a::0:0");
-    expect(reviewHunkDecisionKey("rev-b", "0:0")).toBe("rev-b::0:0");
+    expect(reviewHunkDecisionKey("rev-a", "fp_a#0")).toBe("rev-a::fp_a#0");
+    expect(reviewHunkDecisionKey("rev-b", "fp_b#0")).toBe("rev-b::fp_b#0");
 
     const decisions = {
-      [reviewHunkDecisionKey("rev-a", "0:0")]: "reject" as const,
+      [reviewHunkDecisionKey("rev-a", "fp_a#0")]: "reject" as const,
       // rev-b intentionally omitted — seed must paint accept to match UI
     };
-    expect(seedApplyDecisions(reviewA, decisions)).toEqual({ "0:0": "reject" });
-    expect(seedApplyDecisions(reviewB, decisions)).toEqual({ "0:0": "accept" });
+    expect(seedApplyDecisions(reviewA, decisions)).toEqual({ "fp_a#0": "reject" });
+    expect(seedApplyDecisions(reviewB, decisions)).toEqual({ "fp_b#0": "accept" });
   });
 
   it("Apply posts a fully seeded payload (no missing keys for harness reject default)", async () => {
@@ -163,8 +175,20 @@ describe("DiffReviewPane apply decision seeding + namespace", () => {
           {
             path: "a.ts",
             hunks: [
-              { id: "0:0", header: "@@ -1 +1 @@", lines: ["+one"], status: "pending" },
-              { id: "0:1", header: "@@ -2 +2 @@", lines: ["+two"], status: "pending" },
+              {
+                id: "0:0",
+                decision_id: "seed_one#0",
+                header: "@@ -1 +1 @@",
+                lines: ["+one"],
+                status: "pending",
+              },
+              {
+                id: "0:1",
+                decision_id: "seed_two#0",
+                header: "@@ -2 +2 @@",
+                lines: ["+two"],
+                status: "pending",
+              },
             ],
           },
         ],
@@ -176,8 +200,8 @@ describe("DiffReviewPane apply decision seeding + namespace", () => {
 
     await vi.waitFor(() => {
       expect(api.applyReview).toHaveBeenCalledWith("rev-seed", {
-        "0:0": "accept",
-        "0:1": "accept",
+        "seed_one#0": "accept",
+        "seed_two#0": "accept",
       });
     });
   });

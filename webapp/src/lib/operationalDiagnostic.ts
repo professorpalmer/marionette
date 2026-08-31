@@ -61,6 +61,7 @@ export const BACKEND_NOT_READY = "backend_not_ready";
 export const BACKEND_WARNING = "backend_warning";
 export const AUTH_FAILURE = "provider_auth_failure";
 export const CONVERSATION_TURN_FAILURE = "conversation_turn_failure";
+export const MALFORMED_DIAGNOSTIC_WIRE = "malformed_diagnostic_wire";
 
 const SUMMARY_MAX = 160;
 const DETAIL_MAX = 280;
@@ -217,24 +218,34 @@ export function fromTransportFailure(input: {
   });
 }
 
-type BackendDiagnosticWire = {
-  scope?: DiagnosticScope;
-  operation?: string;
-  code?: string;
-  summary?: string;
-  detail?: string;
-  severity?: DiagnosticSeverity;
+/** Wire shape from GET /api/diagnostics — validated by parseBackendDiagnostic. */
+export type BackendDiagnosticWire = {
+  scope?: unknown;
+  operation?: unknown;
+  code?: unknown;
+  summary?: unknown;
+  detail?: unknown;
+  severity?: unknown;
   retryable?: unknown;
-  dataSafe?: boolean;
-  recovery?: DiagnosticRecovery;
-  sessionId?: string;
-  repo?: string;
-  jobId?: string;
-  taskId?: string;
-  id?: string;
-  createdAt?: number;
-  correlation_id?: string;
+  dataSafe?: unknown;
+  recovery?: unknown;
+  sessionId?: unknown;
+  repo?: unknown;
+  jobId?: unknown;
+  taskId?: unknown;
+  id?: unknown;
+  createdAt?: unknown;
+  correlation_id?: unknown;
 };
+
+/**
+ * Strict parse result so callers can tell absent (clear chrome) from malformed
+ * (keep prior chrome / surface a reason) instead of collapsing both to null.
+ */
+export type BackendDiagnosticParseResult =
+  | { status: "absent" }
+  | { status: "invalid"; reason: string }
+  | { status: "ok"; diagnostic: OperationalDiagnostic };
 
 /** Parse GET /api/diagnostics diagnostic payload into the renderer contract. */
 const DIAGNOSTIC_SCOPES = new Set<DiagnosticScope>([
@@ -252,38 +263,162 @@ const DIAGNOSTIC_SCOPES = new Set<DiagnosticScope>([
 ]);
 const DIAGNOSTIC_SEVERITIES = new Set<DiagnosticSeverity>(["info", "warning", "error"]);
 
-function parseWireBool(value: unknown): boolean {
+function parseWireBool(value: unknown): boolean | null {
+  if (value == null) return false;
   if (typeof value === "boolean") return value;
-  if (typeof value === "number") return value === 1;
-  const text = String(value ?? "").trim().toLowerCase();
-  return text === "1" || text === "true" || text === "yes" || text === "on";
-}
-
-export function fromBackendDiagnostic(
-  wire: BackendDiagnosticWire | null | undefined,
-): OperationalDiagnostic | null {
-  if (!wire || !wire.summary || !wire.scope || !wire.operation || !wire.severity) {
+  if (typeof value === "number") {
+    if (value === 1) return true;
+    if (value === 0) return false;
     return null;
   }
-  if (!DIAGNOSTIC_SCOPES.has(wire.scope as DiagnosticScope)) return null;
-  if (!DIAGNOSTIC_SEVERITIES.has(wire.severity as DiagnosticSeverity)) return null;
+  if (typeof value === "string") {
+    const text = value.trim().toLowerCase();
+    if (text === "1" || text === "true" || text === "yes" || text === "on") return true;
+    if (text === "0" || text === "false" || text === "no" || text === "off" || text === "") return false;
+    return null;
+  }
+  return null;
+}
+
+function parseWireRecovery(value: unknown): DiagnosticRecovery | null {
+  if (value == null) return { kind: "none" };
+  if (typeof value !== "object" || Array.isArray(value)) return null;
+  const bag = value as Record<string, unknown>;
+  const kind = bag.kind;
+  if (kind === "none") return { kind: "none" };
+  if (kind === "retry" || kind === "relaunch") {
+    const label = typeof bag.label === "string" ? bag.label.trim() : "";
+    if (!label) return null;
+    return { kind, label: sanitizeDiagnosticText(label, 80) };
+  }
+  return null;
+}
+
+function parseOptionalWireString(value: unknown, field: string): { ok: true; value?: string } | { ok: false; reason: string } {
+  if (value == null) return { ok: true, value: undefined };
+  if (typeof value !== "string") return { ok: false, reason: `${field} must be a string` };
+  const trimmed = value.trim();
+  return { ok: true, value: trimmed || undefined };
+}
+
+/**
+ * Strict observable parse of backend diagnostic wire.
+ * Absent (null/undefined/empty) vs invalid (present but malformed) are distinct.
+ */
+export function parseBackendDiagnostic(
+  wire: BackendDiagnosticWire | null | undefined | unknown,
+): BackendDiagnosticParseResult {
+  if (wire == null) return { status: "absent" };
+  if (typeof wire !== "object" || Array.isArray(wire)) {
+    return { status: "invalid", reason: "diagnostic wire must be an object" };
+  }
+  const bag = wire as Record<string, unknown>;
+  const requiredPresent = ["summary", "scope", "operation", "severity"].some(
+    (key) => bag[key] != null && String(bag[key]).trim() !== "",
+  );
+  if (!requiredPresent) return { status: "absent" };
+
+  const summary = typeof bag.summary === "string" ? bag.summary.trim() : "";
+  if (!summary) return { status: "invalid", reason: "summary required" };
+  const operation = typeof bag.operation === "string" ? bag.operation.trim() : "";
+  if (!operation) return { status: "invalid", reason: "operation required" };
+  const scope = bag.scope;
+  if (typeof scope !== "string" || !DIAGNOSTIC_SCOPES.has(scope as DiagnosticScope)) {
+    return { status: "invalid", reason: "scope must be a known DiagnosticScope" };
+  }
+  const severity = bag.severity;
+  if (typeof severity !== "string" || !DIAGNOSTIC_SEVERITIES.has(severity as DiagnosticSeverity)) {
+    return { status: "invalid", reason: "severity must be info|warning|error" };
+  }
+  const retryable = parseWireBool(bag.retryable);
+  if (retryable == null) {
+    return { status: "invalid", reason: "retryable must be a boolean-like value" };
+  }
+  const recovery = parseWireRecovery(bag.recovery);
+  if (!recovery) {
+    return { status: "invalid", reason: "recovery must be none|retry|relaunch with label" };
+  }
+  let dataSafe: boolean | undefined;
+  if (bag.dataSafe != null) {
+    const parsed = parseWireBool(bag.dataSafe);
+    if (parsed == null) return { status: "invalid", reason: "dataSafe must be boolean-like" };
+    dataSafe = parsed;
+  }
+  const sessionId = parseOptionalWireString(bag.sessionId, "sessionId");
+  if (!sessionId.ok) return { status: "invalid", reason: sessionId.reason };
+  const repo = parseOptionalWireString(bag.repo, "repo");
+  if (!repo.ok) return { status: "invalid", reason: repo.reason };
+  const jobId = parseOptionalWireString(bag.jobId, "jobId");
+  if (!jobId.ok) return { status: "invalid", reason: jobId.reason };
+  const taskId = parseOptionalWireString(bag.taskId, "taskId");
+  if (!taskId.ok) return { status: "invalid", reason: taskId.reason };
+  const code = parseOptionalWireString(bag.code, "code");
+  if (!code.ok) return { status: "invalid", reason: code.reason };
+  const detail = parseOptionalWireString(bag.detail, "detail");
+  if (!detail.ok) return { status: "invalid", reason: detail.reason };
+  const id = parseOptionalWireString(bag.id, "id");
+  if (!id.ok) return { status: "invalid", reason: id.reason };
+  const correlationId = parseOptionalWireString(bag.correlation_id, "correlation_id");
+  if (!correlationId.ok) return { status: "invalid", reason: correlationId.reason };
+
+  let createdAt: number | undefined;
+  if (bag.createdAt != null) {
+    if (typeof bag.createdAt !== "number" || !Number.isFinite(bag.createdAt)) {
+      return { status: "invalid", reason: "createdAt must be a finite number" };
+    }
+    createdAt = bag.createdAt;
+  }
+
+  return {
+    status: "ok",
+    diagnostic: createOperationalDiagnostic({
+      id: id.value,
+      scope: scope as DiagnosticScope,
+      operation,
+      code: code.value,
+      summary,
+      detail: detail.value,
+      severity: severity as DiagnosticSeverity,
+      retryable,
+      dataSafe,
+      recovery,
+      sessionId: sessionId.value,
+      repo: repo.value,
+      jobId: jobId.value,
+      taskId: taskId.value,
+      createdAt,
+      correlationId: correlationId.value,
+    }),
+  };
+}
+
+/** Back-compat: ok → diagnostic; absent/invalid → null (use parseBackendDiagnostic to observe). */
+export function fromBackendDiagnostic(
+  wire: BackendDiagnosticWire | null | undefined | unknown,
+): OperationalDiagnostic | null {
+  const parsed = parseBackendDiagnostic(wire);
+  return parsed.status === "ok" ? parsed.diagnostic : null;
+}
+
+/**
+ * Observable operational diagnostic for malformed GET /api/diagnostics wire.
+ * Uses a static sanitized reason only — never the raw payload.
+ */
+export function malformedBackendDiagnostic(reason: string): OperationalDiagnostic {
+  const safe = sanitizeDiagnosticText(
+    String(reason || "invalid diagnostic fields").trim() || "invalid diagnostic fields",
+    DETAIL_MAX,
+  );
   return createOperationalDiagnostic({
-    id: wire.id,
-    scope: wire.scope as DiagnosticScope,
-    operation: wire.operation,
-    code: wire.code,
-    summary: wire.summary,
-    detail: wire.detail,
-    severity: wire.severity as DiagnosticSeverity,
-    retryable: parseWireBool(wire.retryable),
-    dataSafe: wire.dataSafe,
-    recovery: wire.recovery,
-    sessionId: wire.sessionId,
-    repo: wire.repo,
-    jobId: wire.jobId,
-    taskId: wire.taskId,
-    createdAt: wire.createdAt,
-    correlationId: wire.correlation_id,
+    scope: "backend",
+    operation: "diagnostics",
+    code: MALFORMED_DIAGNOSTIC_WIRE,
+    summary: "Backend diagnostic payload was malformed",
+    detail: safe,
+    severity: "warning",
+    retryable: true,
+    dataSafe: true,
+    recovery: { kind: "retry", label: "Retry" },
   });
 }
 
