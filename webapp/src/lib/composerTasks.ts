@@ -35,11 +35,35 @@ function jobRank(job: Job): number {
 
 function composerJobIsLive(job: Job): boolean {
   const st = taskState(job.status);
+  // Parent terminal owns the projection — do not treat stale pending children as live.
+  if (st === "completed" || st === "failed" || st === "degraded") return false;
   if (st === "in_progress" || st === "pending") return true;
   return (job.tasks || []).some((task) => {
     const ts = taskState(task.status);
     return ts === "in_progress" || ts === "pending";
   });
+}
+
+function receiptChildStatusById(job: Job): Map<string, string> {
+  const out = new Map<string, string>();
+  const children = job.terminal_receipt?.children;
+  if (!Array.isArray(children)) return out;
+  for (const child of children) {
+    const id = String(child?.id || "").trim();
+    if (!id) continue;
+    const status = String(child?.status || "").trim();
+    if (status) out.set(id, status);
+  }
+  return out;
+}
+
+function projectTaskLifecycle(job: Job, task: Task): ComposerTaskState {
+  const receipt = receiptChildStatusById(job);
+  const fromReceipt = receipt.get(String(task.id || "").trim());
+  // Prefer terminal_receipt child status; otherwise trust the projected row.
+  // Parent-terminal cosmetic completion lives on /api/swarm/live projection —
+  // do not re-infer it here.
+  return taskState(fromReceipt || task.status);
 }
 
 function pickRankedJob(pool: readonly Job[]): Job {
@@ -122,7 +146,7 @@ export function buildComposerTasks(job: Job | null): ComposerTask[] {
   const briefs = new Set(rows.map((task) => taskCopy(task).instruction).filter(Boolean));
   const sharedBrief = briefs.size === 1 && rows.length > 1;
   return rows.map((task: Task, i) => {
-    let state = taskState(task.status);
+    let state = job ? projectTaskLifecycle(job, task) : taskState(task.status);
     if (state === "completed") {
       const fail = arts.find((a) => String(a.task_id || "") === String(task.id || "") && artifactLooksFailed(a));
       if (fail) state = "degraded";

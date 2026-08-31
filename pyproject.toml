@@ -4,20 +4,20 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pm-harness"
-version = "0.9.392"
+version = "0.9.393"
 description = "Research rig: which LLMs can drive Puppetmaster as a native harness layer"
 requires-python = ">=3.9"
 dependencies = [
-    "pypdf"
+    "pypdf",
+    # Runtime ownership: a standalone `pip install pm-harness` must pull the
+    # pinned Puppetmaster bridge. Desktop/Electron still re-checks the same pin.
+    "puppetmaster-ai==1.22.43",
 ]
 
 [project.scripts]
 harness = "harness.cli:main"
 
 [project.optional-dependencies]
-# Puppetmaster is required to execute swarm intents (the bridge). Installed
-# editable from the local checkout in dev; not pinned here to avoid coupling
-# the research rig to a PyPI release of an internal tool.
 dev = [
     "pytest>=7",
     "pytest-xdist>=3.5",

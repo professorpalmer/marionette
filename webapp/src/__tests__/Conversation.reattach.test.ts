@@ -22,10 +22,11 @@ import {
   isDurableTerminalActionResult,
   isUpgradeableActionResult,
 } from "../components/Conversation";
-import { api } from "../lib/api";
+import { api, type StoreEventsSince } from "../lib/api";
+import type { ChatEventsReattachDeps } from "../components/conversation/chatEventsReattach";
 import { TranscriptList, type Item } from "../components/TranscriptList";
 import { chatEventsPath, sessionEventsPath } from "../lib/transport";
-import { nextStoreCursor, shouldApplyStoreEvent, storeCursorAfterBatch } from "../components/conversation/storeEvents";
+import { nextStoreCursor, shouldApplyStoreEvent, storeCursorAfterBatch, STORE_EVENTS_POLL_MS } from "../components/conversation/storeEvents";
 
 /**
  * Mid-turn chatEvents reattach contracts (cursor + poll gating), plus the
@@ -963,7 +964,7 @@ describe("mid-turn store-event cursor reattach", () => {
     vi.useRealTimers();
   });
 
-  function reattachDeps(overrides: Record<string, unknown> = {}) {
+  function reattachDeps(overrides: Partial<ChatEventsReattachDeps> = {}) {
     const chatEventsLiveCancelRef = { current: null as null | (() => void) };
     const chatEventsPollTimerRef = { current: null as number | null };
     const detachedBusyRef = { current: true };
@@ -973,7 +974,7 @@ describe("mid-turn store-event cursor reattach", () => {
     const localStreamActiveRef = { current: false };
     const transcriptLoadGenRef = { current: 1 };
     const applied: string[] = [];
-    const base = {
+    const base: ChatEventsReattachDeps = {
       cancelled: () => false,
       loadGen: 1,
       transcriptLoadGenRef,
@@ -999,6 +1000,7 @@ describe("mid-turn store-event cursor reattach", () => {
       maybeDrainQueueRef: { current: () => {} },
       clearChatEventsPoll: () => {
         if (chatEventsPollTimerRef.current != null) {
+          window.clearTimeout(chatEventsPollTimerRef.current);
           window.clearInterval(chatEventsPollTimerRef.current);
           chatEventsPollTimerRef.current = null;
         }
@@ -1039,12 +1041,12 @@ describe("mid-turn store-event cursor reattach", () => {
         kind: "stream",
         data: { cursor: 4, kind: "message_delta", data: { text: "hi" }, generation: 1 },
       }],
-    } as any);
+    });
     vi.spyOn(api, "getSessionState").mockResolvedValue({
       runners: { "sess-live": "running" },
-    } as any);
+    } as Awaited<ReturnType<typeof api.getSessionState>>);
 
-    const { startChatEventsReattach } = createChatEventsReattach(deps as any);
+    const { startChatEventsReattach } = createChatEventsReattach(deps);
     await startChatEventsReattach();
     await Promise.resolve();
     await vi.advanceTimersByTimeAsync(0);
@@ -1060,6 +1062,112 @@ describe("mid-turn store-event cursor reattach", () => {
     expect(deps.chatEventsPollTimerRef.current).not.toBeNull();
     expect(deps.applied).toEqual(["message_delta"]);
     expect(deps.lastAppliedCursorRef.current).toBe(4);
+  });
+
+  it("request-driven poll chain: no overlap, next arm only after prior settles", async () => {
+    vi.useFakeTimers();
+    const deps = reattachDeps();
+    let inflight = 0;
+    let maxInflight = 0;
+    const deferred: Array<(value: StoreEventsSince) => void> = [];
+    const readEventsSince = vi.spyOn(api, "readEventsSince").mockImplementation(
+      () => new Promise((resolve) => {
+        inflight += 1;
+        maxInflight = Math.max(maxInflight, inflight);
+        deferred.push((value) => {
+          inflight -= 1;
+          resolve(value);
+        });
+      }),
+    );
+    vi.spyOn(api, "getSessionState").mockResolvedValue({
+      runners: { "sess-live": "running" },
+    } as Awaited<ReturnType<typeof api.getSessionState>>);
+
+    const { startChatEventsReattach } = createChatEventsReattach(deps);
+    await startChatEventsReattach();
+    await Promise.resolve();
+
+    expect(readEventsSince).toHaveBeenCalledTimes(1);
+    expect(inflight).toBe(1);
+    // While the first pull is deferred, advancing the poll interval must not
+    // start a second overlapping read (no setInterval fan-out).
+    await vi.advanceTimersByTimeAsync(STORE_EVENTS_POLL_MS * 3);
+    expect(readEventsSince).toHaveBeenCalledTimes(1);
+    expect(maxInflight).toBe(1);
+
+    deferred.shift()!({
+      ok: true,
+      session_id: "sess-live",
+      cursor: 1,
+      events: [],
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(deps.chatEventsPollTimerRef.current).not.toBeNull();
+
+    await vi.advanceTimersByTimeAsync(STORE_EVENTS_POLL_MS);
+    expect(readEventsSince).toHaveBeenCalledTimes(2);
+    expect(maxInflight).toBe(1);
+    expect(inflight).toBe(1);
+
+    // Settle second pull so afterEach cleanup is clean.
+    deferred.shift()!({
+      ok: true,
+      session_id: "sess-live",
+      cursor: 2,
+      events: [],
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  it("cancellation stops the chain; restart with new generation re-owns polling", async () => {
+    vi.useFakeTimers();
+    let cancelled = false;
+    const deps = reattachDeps({
+      cancelled: () => cancelled,
+    });
+    vi.spyOn(api, "readEventsSince").mockResolvedValue({
+      ok: true,
+      session_id: "sess-live",
+      cursor: 1,
+      events: [],
+    });
+    vi.spyOn(api, "getSessionState").mockResolvedValue({
+      runners: { "sess-live": "running" },
+    } as Awaited<ReturnType<typeof api.getSessionState>>);
+
+    const first = createChatEventsReattach(deps);
+    await first.startChatEventsReattach();
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(deps.chatEventsPollTimerRef.current).not.toBeNull();
+
+    cancelled = true;
+    deps.clearChatEventsPoll();
+    expect(deps.chatEventsPollTimerRef.current).toBeNull();
+
+    // Advancing time after cancel must not resurrect the prior chain.
+    await vi.advanceTimersByTimeAsync(STORE_EVENTS_POLL_MS * 3);
+    expect(deps.chatEventsPollTimerRef.current).toBeNull();
+
+    // Fresh owner (new generation) can arm again.
+    let cancelled2 = false;
+    const deps2 = reattachDeps({
+      cancelled: () => cancelled2,
+      reattachGen: 2,
+    });
+    deps2.streamGenRef.current = 2;
+    const second = createChatEventsReattach(deps2);
+    await second.startChatEventsReattach();
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(deps2.chatEventsPollTimerRef.current).not.toBeNull();
+
+    cancelled2 = true;
+    deps2.clearChatEventsPoll();
+    expect(deps2.chatEventsPollTimerRef.current).toBeNull();
   });
 
   it("drops store stream events after session switch (no cross-session bleed)", async () => {

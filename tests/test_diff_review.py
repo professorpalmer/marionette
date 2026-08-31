@@ -122,6 +122,74 @@ def test_reconstruct_diff_preserves_index_headers():
     assert "Line J.5" not in rebuilt
 
 
+def test_decision_id_assigned_and_stable_under_reorder():
+    from harness.diffreview import (
+        assign_decision_ids,
+        decision_for_hunk,
+        hunk_content_fingerprint,
+        parse_unified_diff,
+    )
+
+    diff_text = (
+        "diff --git a/a.txt b/a.txt\n"
+        "--- a/a.txt\n"
+        "+++ b/a.txt\n"
+        "@@ -1 +1 @@\n"
+        "+one\n"
+        "@@ -2 +2 @@\n"
+        "+two\n"
+        "@@ -1 +1 @@\n"
+        "+one\n"
+    )
+    parsed = parse_unified_diff(diff_text)
+    hunks = parsed[0]["hunks"]
+    assert all(h.get("decision_id") for h in hunks)
+    # Exact duplicate content gets distinct decision ids.
+    assert hunks[0]["decision_id"] != hunks[2]["decision_id"]
+    assert hunks[0]["decision_id"].rsplit("#", 1)[0] == hunks[2]["decision_id"].rsplit("#", 1)[0]
+    assert hunks[0]["decision_id"].endswith("#0")
+    assert hunks[2]["decision_id"].endswith("#1")
+
+    # Opposite decisions on duplicate-content hunks.
+    decisions = {
+        hunks[0]["decision_id"]: "accept",
+        hunks[1]["decision_id"]: "reject",
+        hunks[2]["decision_id"]: "reject",
+    }
+    assert decision_for_hunk(decisions, hunks[0], "a.txt") == "accept"
+    assert decision_for_hunk(decisions, hunks[2], "a.txt") == "reject"
+
+    # Reordering unrelated middle hunk must not change keys for A and the dup.
+    reordered = [
+        {
+            "path": "a.txt",
+            "headers": parsed[0]["headers"],
+            "hunks": [dict(hunks[0]), dict(hunks[2]), dict(hunks[1])],
+        }
+    ]
+    # Strip decision_ids to force reassignment from content.
+    for h in reordered[0]["hunks"]:
+        h.pop("decision_id", None)
+    assign_decision_ids(reordered)
+    ids = [h["decision_id"] for h in reordered[0]["hunks"]]
+    # First duplicate-content occurrence stays #0; second stays #1 regardless of
+    # where the unrelated hunk sits.
+    assert ids[0] == hunks[0]["decision_id"]
+    assert ids[1] == hunks[2]["decision_id"]
+    assert ids[2] == hunks[1]["decision_id"]
+
+    fp = hunk_content_fingerprint("a.txt", "@@ -1 +1 @@\n", ["+one\n"])
+    assert hunks[0]["decision_id"].startswith(fp)
+
+
+def test_legacy_plain_id_decisions_still_resolve():
+    from harness.diffreview import decision_for_hunk
+
+    hunk = {"id": "0:0", "header": "@@", "lines": ["+x"]}
+    assert decision_for_hunk({"0:0": "accept"}, hunk, "f.py") == "accept"
+    assert decision_for_hunk({}, hunk, "f.py") == "reject"
+
+
 def test_apply_review(temp_git_repo):
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
     cfg.repo = temp_git_repo

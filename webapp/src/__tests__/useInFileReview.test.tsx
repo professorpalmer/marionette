@@ -25,12 +25,14 @@ const review: PendingReview = {
       hunks: [
         {
           id: "0:0",
+          decision_id: "infile_a#0",
           header: "@@ -1,2 +1,2 @@",
           lines: [" keep", "-a", "+b"],
           status: "pending",
         },
         {
           id: "0:1",
+          decision_id: "infile_b#0",
           header: "@@ -8,1 +8,1 @@",
           lines: ["-x", "+y"],
           status: "pending",
@@ -67,14 +69,14 @@ describe("useInFileReview", () => {
     // Drive the same helper path the widget buttons use.
     const { applyInFileHunkDecision } = await import("../lib/inFileReview");
     await act(async () => {
-      await applyInFileHunkDecision(review, "0:0", "accept");
+      await applyInFileHunkDecision(review, "infile_a#0", "accept");
     });
 
     expect(api.applyReview).toHaveBeenCalledWith("rev-infile", {
-      "0:0": "accept",
-      "0:1": "accept",
+      "infile_a#0": "accept",
+      "infile_b#0": "accept",
     });
-    expect(reviewHunkDecisionKey("rev-infile", "0:0")).toBe("rev-infile::0:0");
+    expect(reviewHunkDecisionKey("rev-infile", "infile_a#0")).toBe("rev-infile::infile_a#0");
   });
 
   it("Reject seeds sibling hunks as accept so they are not silently dropped", async () => {
@@ -87,11 +89,11 @@ describe("useInFileReview", () => {
     } as any);
 
     const { applyInFileHunkDecision } = await import("../lib/inFileReview");
-    await applyInFileHunkDecision(review, "0:1", "reject");
+    await applyInFileHunkDecision(review, "infile_b#0", "reject");
 
     expect(api.applyReview).toHaveBeenCalledWith("rev-infile", {
-      "0:0": "accept",
-      "0:1": "reject",
+      "infile_a#0": "accept",
+      "infile_b#0": "reject",
     });
   });
 });

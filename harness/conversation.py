@@ -135,20 +135,28 @@ def _prewarm_worker_imports() -> None:
     for mod in ("harness.worker", "harness.edit_engines"):
         try:
             importlib.import_module(mod)
-        except Exception:
+        except Exception as exc:
             essentials_ok = False
+            _diag_note("prewarm.essential_import", exc, msg=mod)
+
+    # Cap broad walk noise: one aggregate note with count + small sample, not
+    # one note per failed module (unbounded on a broken install).
+    _MODULE_FAIL_SAMPLE = 5
+    module_failures: list[str] = []
 
     for pkg_name in ("harness", "pmharness", "puppetmaster"):
         try:
             pkg = importlib.import_module(pkg_name)
-        except Exception:
+        except Exception as exc:
+            _diag_note("prewarm.package_import", exc, msg=pkg_name)
             continue
         pkg_path = getattr(pkg, "__path__", None)
         if not pkg_path:
             continue
         try:
             modules = list(pkgutil.walk_packages(pkg_path, prefix=pkg_name + "."))
-        except Exception:
+        except Exception as exc:
+            _diag_note("prewarm.walk_packages", exc, msg=pkg_name)
             continue
         for info in modules:
             name = info.name
@@ -157,10 +165,29 @@ def _prewarm_worker_imports() -> None:
             try:
                 importlib.import_module(name)
             except Exception:
-                pass
+                # Sanitize: module path only, no exception text (may be huge).
+                safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in name)[:120]
+                if safe:
+                    module_failures.append(safe)
+
+    if module_failures:
+        sample = module_failures[:_MODULE_FAIL_SAMPLE]
+        extra = len(module_failures) - len(sample)
+        sample_txt = ", ".join(sample)
+        if extra > 0:
+            sample_txt = f"{sample_txt} (+{extra} more)"
+        _diag_note(
+            "prewarm.module_import",
+            msg=f"{len(module_failures)} module(s) failed: {sample_txt}",
+        )
+
     if essentials_ok:
         _WORKER_IMPORTS_WARMED = True
-
+    else:
+        _diag_note(
+            "prewarm.essentials_incomplete",
+            msg="essential imports failed; warmed flag left false for retry",
+        )
 
 def _is_stub_tool_result(msg: dict) -> bool:
     """True for the synthesized "(no result: ...)" placeholder that

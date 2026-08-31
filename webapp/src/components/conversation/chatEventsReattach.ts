@@ -522,20 +522,31 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
   const startChatEventsPoll = () => {
     if (cancelled() || userStoppedRef.current) return;
     if (chatEventsPollTimerRef.current != null) return;
+
+    const armNext = (delayMs: number) => {
+      if (cancelled() || userStoppedRef.current) return;
+      if (streamGenRef.current !== reattachGen) return;
+      if (chatEventsPollTimerRef.current != null) return;
+      chatEventsPollTimerRef.current = window.setTimeout(() => {
+        chatEventsPollTimerRef.current = null;
+        void pullChatEvents().then((keepPolling) => {
+          if (!keepPolling || cancelled()) {
+            clearChatEventsPoll();
+            return;
+          }
+          if (streamGenRef.current !== reattachGen) return;
+          armNext(STORE_EVENTS_POLL_MS);
+        });
+      }, delayMs) as unknown as number;
+    };
+
+    // Non-overlapping request-driven chain: next poll only after the prior settles.
     void pullChatEvents().then((keepPolling) => {
       if (!keepPolling || cancelled()) return;
       if (streamGenRef.current !== reattachGen) return;
-      if (chatEventsPollTimerRef.current != null) return;
-      chatEventsPollTimerRef.current = window.setInterval(() => {
-        void pullChatEvents().then((cont) => {
-          if (!cont) clearChatEventsPoll();
-        });
-      }, STORE_EVENTS_POLL_MS);
+      armNext(STORE_EVENTS_POLL_MS);
     });
   };
-
-  /** Live watch collapsed — store cursor owns reattach. */
-  const startLiveChatEventsWatch = (): boolean => false;
 
   const startChatEventsReattach = async () => {
     if (cancelled() || userStoppedRef.current) return;
@@ -585,5 +596,5 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
     startChatEventsPoll();
   };
 
-  return { pullChatEvents, startChatEventsReattach, startLiveChatEventsWatch };
+  return { pullChatEvents, startChatEventsReattach };
 }

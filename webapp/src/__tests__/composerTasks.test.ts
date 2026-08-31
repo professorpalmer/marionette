@@ -272,6 +272,51 @@ describe("buildComposerTasks + progress", () => {
     expect(composerTasksRemainVisible(tasks)).toBe(false);
   });
 
+  it("projects parent 5/5 completion from reconciled child rows", () => {
+    // /api/swarm/live already normalized nonterminal children when the parent
+    // is terminal — the renderer must not re-infer completion from parent status.
+    const swarm = job("job_done", "completed", "sess-1", [
+      { id: "w1", role: "explore", instruction: "a", status: "completed", adapter: "x" },
+      { id: "w2", role: "decision-explainer", instruction: "b", status: "completed", adapter: "x" },
+      { id: "w3", role: "conflict-auditor", instruction: "c", status: "completed", adapter: "x" },
+      { id: "w4", role: "pipeline-mapper", instruction: "d", status: "completed", adapter: "x" },
+      { id: "w5", role: "test-coverage-reviewer", instruction: "e", status: "completed", adapter: "x" },
+    ]);
+    const tasks = buildComposerTasks(swarm);
+    expect(taskProgress(tasks)).toEqual({ done: 5, total: 5 });
+    expect(tasks.every((t) => t.state === "completed")).toBe(true);
+    expect(composerTasksRemainVisible(tasks)).toBe(false);
+    expect(pickTaskSourceJob([swarm], "sess-1")).toBeNull();
+  });
+
+  it("does not paint stale pending children complete from parent status alone", () => {
+    const swarm = job("job_stale", "completed", "sess-1", [
+      { id: "w1", role: "explore", instruction: "a", status: "complete", adapter: "x" },
+      { id: "w2", role: "review", instruction: "b", status: "pending", adapter: "x" },
+    ]);
+    const tasks = buildComposerTasks(swarm);
+    expect(tasks.map((t) => t.state)).toEqual(["completed", "pending"]);
+    expect(taskProgress(tasks)).toEqual({ done: 1, total: 2 });
+  });
+
+  it("prefers terminal_receipt child status when projecting workers", () => {
+    const swarm = {
+      ...job("job_receipt", "completed", "sess-1", [
+        { id: "w1", role: "explore", instruction: "a", status: "pending", adapter: "x" },
+        { id: "w2", role: "review", instruction: "b", status: "pending", adapter: "x" },
+      ]),
+      terminal_receipt: {
+        status: "completed",
+        children: [
+          { id: "w1", status: "completed" },
+          { id: "w2", status: "failed" },
+        ],
+      },
+    } as Job;
+    const tasks = buildComposerTasks(swarm);
+    expect(tasks.map((t) => t.state)).toEqual(["completed", "failed"]);
+  });
+
   it("keeps a partial or failed wave visible", () => {
     const tasks = buildComposerTasks({
       ...job("local-wave-mix", "partial", "sess-1", [

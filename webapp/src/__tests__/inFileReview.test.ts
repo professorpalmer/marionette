@@ -9,6 +9,10 @@ import {
   parseHunkHeader,
 } from "../lib/inFileReview";
 import {
+  forEachReviewHunkDecision,
+  hunkContentFingerprint,
+  hunkDecisionApplyKey,
+  resolveHunkDecisionId,
   reviewHunkDecisionKey,
   seedApplyDecisions,
 } from "../lib/reviewDecisions";
@@ -36,12 +40,14 @@ function makeReview(overrides?: Partial<PendingReview>): PendingReview {
         hunks: [
           {
             id: "0:0",
+            decision_id: "aaa1111111111111#0",
             header: "@@ -2,3 +2,4 @@",
             lines: [" context", "-old", "+new", " more"],
             status: "pending",
           },
           {
             id: "0:1",
+            decision_id: "bbb2222222222222#0",
             header: "@@ -20,1 +20,1 @@",
             lines: ["-bye", "+hi"],
             status: "pending",
@@ -53,6 +59,7 @@ function makeReview(overrides?: Partial<PendingReview>): PendingReview {
         hunks: [
           {
             id: "1:0",
+            decision_id: "ccc3333333333333#0",
             header: "@@ -1,1 +1,2 @@",
             lines: [" keep", "+extra"],
             status: "pending",
@@ -64,19 +71,107 @@ function makeReview(overrides?: Partial<PendingReview>): PendingReview {
   };
 }
 
-describe("review decision namespace helpers (shared with DiffReviewPane)", () => {
-  it("namespaces decisions per review", () => {
-    expect(reviewHunkDecisionKey("rev-a", "0:0")).toBe("rev-a::0:0");
-    expect(reviewHunkDecisionKey("rev-b", "0:0")).toBe("rev-b::0:0");
+describe("review decision identity helpers (shared with DiffReviewPane)", () => {
+  it("namespaces decisions per review and decision_id", () => {
+    expect(reviewHunkDecisionKey("rev-a", "fp#0")).toBe("rev-a::fp#0");
+    expect(reviewHunkDecisionKey("rev-b", "fp#0")).toBe("rev-b::fp#0");
   });
 
-  it("seedApplyDecisions fills every hunk id as accept by default", () => {
+  it("seedApplyDecisions fills every decision_id key as accept by default", () => {
     const review = makeReview();
     expect(seedApplyDecisions(review, {})).toEqual({
-      "0:0": "accept",
-      "0:1": "accept",
-      "1:0": "accept",
+      "aaa1111111111111#0": "accept",
+      "bbb2222222222222#0": "accept",
+      "ccc3333333333333#0": "accept",
     });
+  });
+
+  it("keeps duplicate hunk ids with opposite decisions as distinct keys", () => {
+    const review = makeReview({
+      files: [
+        {
+          path: "a.ts",
+          hunks: [
+            {
+              id: "dup",
+              decision_id: "samefpaaaaaaaaaa#0",
+              header: "@@ -1 +1 @@",
+              lines: ["+one"],
+              status: "pending",
+            },
+            {
+              id: "dup",
+              decision_id: "samefpaaaaaaaaaa#1",
+              header: "@@ -1 +1 @@",
+              lines: ["+one"],
+              status: "pending",
+            },
+          ],
+        },
+      ],
+    });
+    const decisions = {
+      [reviewHunkDecisionKey(review.id, "samefpaaaaaaaaaa#0")]: "reject" as const,
+      [reviewHunkDecisionKey(review.id, "samefpaaaaaaaaaa#1")]: "accept" as const,
+    };
+    expect(seedApplyDecisions(review, decisions)).toEqual({
+      "samefpaaaaaaaaaa#0": "reject",
+      "samefpaaaaaaaaaa#1": "accept",
+    });
+    const keys: string[] = [];
+    forEachReviewHunkDecision(review, (_hunk, decisionId) => {
+      keys.push(hunkDecisionApplyKey(decisionId));
+    });
+    expect(keys).toEqual(["samefpaaaaaaaaaa#0", "samefpaaaaaaaaaa#1"]);
+  });
+
+  it("reordering unrelated hunks does not change existing decision keys", () => {
+    const hunkA = {
+      id: "0:0",
+      header: "@@ -1 +1 @@",
+      lines: ["+alpha"],
+      status: "pending" as const,
+    };
+    const hunkB = {
+      id: "0:1",
+      header: "@@ -2 +2 @@",
+      lines: ["+beta"],
+      status: "pending" as const,
+    };
+    const hunkC = {
+      id: "0:2",
+      header: "@@ -3 +3 @@",
+      lines: ["+gamma"],
+      status: "pending" as const,
+    };
+    const order1 = makeReview({
+      files: [{ path: "x.ts", hunks: [hunkA, hunkB, hunkC] }],
+    });
+    const order2 = makeReview({
+      files: [{ path: "x.ts", hunks: [hunkC, hunkA, hunkB] }],
+    });
+    const keys1: string[] = [];
+    const keys2: string[] = [];
+    forEachReviewHunkDecision(order1, (_h, id) => keys1.push(id));
+    forEachReviewHunkDecision(order2, (_h, id) => keys2.push(id));
+    expect(new Set(keys1)).toEqual(new Set(keys2));
+    expect(keys1[0]).toBe(keys2[1]); // A moves but keeps its key
+    expect(keys1[1]).toBe(keys2[2]);
+    expect(keys1[2]).toBe(keys2[0]);
+  });
+
+  it("legacy reviews without decision_id get deterministic content fingerprints", () => {
+    const hunk = {
+      id: "0:0",
+      header: "@@ -1 +1 @@",
+      lines: ["+legacy"],
+      status: "pending" as const,
+    };
+    const counts = new Map<string, number>();
+    const id = resolveHunkDecisionId(hunk, "a.ts", counts);
+    const fp = hunkContentFingerprint("a.ts", "@@ -1 +1 @@", ["+legacy"]);
+    expect(id).toBe(`${fp}#0`);
+    expect(resolveHunkDecisionId({ ...hunk }, "a.ts", counts)).toBe(`${fp}#1`);
   });
 });
 
@@ -152,19 +247,19 @@ describe("buildInFileApplyDecisions + applyInFileHunkDecision", () => {
 
   it("Accept seeds all review hunk keys (never omits other files)", () => {
     const review = makeReview();
-    expect(buildInFileApplyDecisions(review, "0:0", "accept")).toEqual({
-      "0:0": "accept",
-      "0:1": "accept",
-      "1:0": "accept",
+    expect(buildInFileApplyDecisions(review, "aaa1111111111111#0", "accept")).toEqual({
+      "aaa1111111111111#0": "accept",
+      "bbb2222222222222#0": "accept",
+      "ccc3333333333333#0": "accept",
     });
   });
 
   it("Reject of one hunk still seeds sibling hunks as accept", () => {
     const review = makeReview();
-    expect(buildInFileApplyDecisions(review, "0:1", "reject")).toEqual({
-      "0:0": "accept",
-      "0:1": "reject",
-      "1:0": "accept",
+    expect(buildInFileApplyDecisions(review, "bbb2222222222222#0", "reject")).toEqual({
+      "aaa1111111111111#0": "accept",
+      "bbb2222222222222#0": "reject",
+      "ccc3333333333333#0": "accept",
     });
   });
 
@@ -178,12 +273,12 @@ describe("buildInFileApplyDecisions + applyInFileHunkDecision", () => {
     } as any);
 
     const review = makeReview();
-    const res = await applyInFileHunkDecision(review, "0:0", "accept");
+    const res = await applyInFileHunkDecision(review, "aaa1111111111111#0", "accept");
     expect(res.ok).toBe(true);
     expect(api.applyReview).toHaveBeenCalledWith("rev-a", {
-      "0:0": "accept",
-      "0:1": "accept",
-      "1:0": "accept",
+      "aaa1111111111111#0": "accept",
+      "bbb2222222222222#0": "accept",
+      "ccc3333333333333#0": "accept",
     });
 
     const kinds = vi.mocked(window.dispatchEvent).mock.calls.map(
@@ -203,11 +298,11 @@ describe("buildInFileApplyDecisions + applyInFileHunkDecision", () => {
     } as any);
 
     const review = makeReview();
-    await applyInFileHunkDecision(review, "0:0", "reject");
+    await applyInFileHunkDecision(review, "aaa1111111111111#0", "reject");
     expect(api.applyReview).toHaveBeenCalledWith("rev-a", {
-      "0:0": "reject",
-      "0:1": "accept",
-      "1:0": "accept",
+      "aaa1111111111111#0": "reject",
+      "bbb2222222222222#0": "accept",
+      "ccc3333333333333#0": "accept",
     });
   });
 });

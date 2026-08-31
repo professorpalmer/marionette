@@ -51,3 +51,24 @@ def test_version_is_pep440_ish():
     placeholder like 0.0.0 or a leftover 0.1.0."""
     v = _package_json_version()
     assert re.match(r"^\d+\.\d+\.\d+([.\-+].+)?$", v), f"unexpected version format: {v}"
+
+
+def test_pyproject_declares_pinned_puppetmaster_runtime_dependency():
+    """Standalone ``pip install pm-harness`` must own the Puppetmaster pin.
+
+    Desktop/Electron also re-checks the pin, but a fresh isolated Python install
+    must not succeed while leaving ``import puppetmaster`` broken.
+    """
+    text = (ROOT / "pyproject.toml").read_text()
+    match = re.search(
+        r'(?ms)^dependencies\s*=\s*\[(.*?)\]',
+        text,
+    )
+    assert match, "no [project] dependencies = [...] in pyproject.toml"
+    deps = match.group(1)
+    pin = re.search(r'"puppetmaster-ai==(\d+\.\d+\.\d+)"', deps)
+    assert pin, (
+        "pyproject.toml runtime dependencies must pin puppetmaster-ai==X.Y.Z "
+        "(standalone install ownership)"
+    )
+    assert pin.group(1), "empty Puppetmaster pin"

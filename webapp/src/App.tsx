@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type Config } from "./lib/api";
 import { subscribeDocumentMotionPolicy } from "./lib/motionPolicy";
-import { fromBackendDiagnostic } from "./lib/operationalDiagnostic";
+import { malformedBackendDiagnostic, parseBackendDiagnostic } from "./lib/operationalDiagnostic";
 import { clearDiagnostic, publishDiagnostic } from "./lib/operationalDiagnosticBus";
 import { setCorrelationId } from "./lib/correlationId";
 import LeftRail from "./components/LeftRail";
@@ -145,10 +145,10 @@ export default function App() {
     api.diagnostics()
       .then((res) => {
         if (res.correlation_id) setCorrelationId(res.correlation_id);
-        const diag = fromBackendDiagnostic(res.diagnostic as Record<string, unknown> | null);
-        if (diag) publishDiagnostic(diag);
-        else clearDiagnostic();
-      })
+        const parsed = parseBackendDiagnostic(res.diagnostic);
+        if (parsed.status === "ok") publishDiagnostic(parsed.diagnostic);
+        else if (parsed.status === "absent") clearDiagnostic();
+        else publishDiagnostic(malformedBackendDiagnostic(parsed.reason));      })
       .catch(() => {});
   };
 

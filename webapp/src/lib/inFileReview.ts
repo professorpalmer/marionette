@@ -5,7 +5,11 @@ import {
   type PendingReviewHunk,
 } from "./api";
 import { pathsReferToSameFile } from "./workspaceMutationEvents";
-import { reviewHunkDecisionKey, seedApplyDecisions } from "./reviewDecisions";
+import {
+  forEachReviewHunkDecision,
+  reviewHunkDecisionKey,
+  seedApplyDecisions,
+} from "./reviewDecisions";
 
 export type HunkLineKind = "context" | "add" | "del" | "meta";
 
@@ -94,6 +98,7 @@ export type InFilePendingHunk = {
   hunk: PendingReviewHunk;
   geometry: ParsedHunkGeometry;
   decisionKey: string;
+  decisionId: string;
 };
 
 /** Collect pending hunks whose file path matches the open editor path. */
@@ -105,21 +110,21 @@ export function collectInFilePendingHunks(
   if (!editorPath) return out;
 
   for (const review of reviews) {
-    for (const file of review.files || []) {
-      if (!pathsReferToSameFile(file.path, editorPath)) continue;
-      for (const hunk of file.hunks || []) {
-        if (hunk.status && hunk.status !== "pending") continue;
-        const geometry = parseHunkGeometry(hunk);
-        if (!geometry) continue;
-        out.push({
-          review,
-          file,
-          hunk,
-          geometry,
-          decisionKey: reviewHunkDecisionKey(review.id, hunk.id),
-        });
-      }
-    }
+    forEachReviewHunkDecision(review, (hunk, decisionId, fileIndex) => {
+      const file = review.files[fileIndex];
+      if (!file || !pathsReferToSameFile(file.path, editorPath)) return;
+      if (hunk.status && hunk.status !== "pending") return;
+      const geometry = parseHunkGeometry(hunk);
+      if (!geometry) return;
+      out.push({
+        review,
+        file,
+        hunk,
+        geometry,
+        decisionId,
+        decisionKey: reviewHunkDecisionKey(review.id, decisionId),
+      });
+    });
   }
 
   out.sort((a, b) => a.geometry.anchorOldLine - b.geometry.anchorOldLine);
@@ -133,11 +138,11 @@ export function collectInFilePendingHunks(
  */
 export function buildInFileApplyDecisions(
   review: PendingReview,
-  hunkId: string,
+  decisionId: string,
   decision: "accept" | "reject",
 ): Record<string, "accept" | "reject"> {
   const namespaced: Record<string, "accept" | "reject"> = {
-    [reviewHunkDecisionKey(review.id, hunkId)]: decision,
+    [reviewHunkDecisionKey(review.id, decisionId)]: decision,
   };
   return seedApplyDecisions(review, namespaced);
 }
@@ -150,10 +155,10 @@ export type InFileApplyResult = {
 /** Apply one in-file hunk decision via the shared apply_review API. */
 export async function applyInFileHunkDecision(
   review: PendingReview,
-  hunkId: string,
+  decisionId: string,
   decision: "accept" | "reject",
 ): Promise<InFileApplyResult> {
-  const payload = buildInFileApplyDecisions(review, hunkId, decision);
+  const payload = buildInFileApplyDecisions(review, decisionId, decision);
   const res = await api.applyReview(review.id, payload);
   if (!res.ok) {
     return { ok: false, message: res.message || "Failed to apply" };

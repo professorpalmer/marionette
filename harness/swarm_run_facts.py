@@ -256,13 +256,21 @@ def normalize_execution_refs(
     rewrite ``execution_ref.job_id``: an artifact that arrived without parent
     attribution must keep reading as unattributed, otherwise the provenance
     count would launder itself to N/N.
+
+    Oversized artifact batches and evidence collections are truncated so a
+    runaway worker cannot unbounded-expand the evidence surface.
     """
     current = str(job_id or "").strip()
     normalized: list[dict[str, Any]] = []
     for artifact in artifacts or ():
+        if len(normalized) >= _MAX_ARTIFACT_ROWS:
+            break
         if not isinstance(artifact, Mapping):
             continue
         row = dict(artifact)
+        evidence = row.get("evidence")
+        if isinstance(evidence, (list, tuple)) and len(evidence) > _MAX_EVIDENCE_ENTRIES:
+            row["evidence"] = list(evidence[:_MAX_EVIDENCE_ENTRIES])
         ref = row.get("execution_ref")
         ref = dict(ref) if isinstance(ref, Mapping) else {}
         ref.setdefault("job_id", "")
@@ -357,6 +365,9 @@ def _normalized_text(value: Any) -> str:
 
 
 _VERIFY_STATUSES = frozenset({"passed", "verified"})
+_FAIL_STATUSES = frozenset({"failed", "fail", "error", "blocked", "rejected"})
+_MAX_EVIDENCE_ENTRIES = 64
+_MAX_ARTIFACT_ROWS = 500
 
 
 def _criterion_text(value: Any) -> str:
@@ -380,16 +391,21 @@ def _record_evidence_locus(record: Mapping[str, Any]) -> str:
     return _extract_locus(evidence)
 
 
-def _verified_criterion_loci(artifact: Mapping[str, Any]) -> dict[str, str]:
-    """Normalized criterion keys an artifact verifies, mapped to their locus.
+def _criterion_status_loci(
+    artifact: Mapping[str, Any],
+) -> tuple[dict[str, str], set[str]]:
+    """Return ``(verified_loci, failed_keys)`` for one artifact.
 
     Bare string entries are ignored: a worker echoing the checklist or citing
     criteria in prose must not settle them, even when the artifact carries an
     unrelated path:line locus. Only structured status rows with an exact
-    criterion, ``passed``/``verified`` status, and concrete dispatch evidence
-    may contribute.
+    criterion and concrete dispatch evidence may contribute. A contradictory
+    failed/passed pair for the same criterion refuses verification rather than
+    last-wins green — both within one artifact and across artifacts at the
+    evaluator.
     """
     verified: dict[str, str] = {}
+    failed: set[str] = set()
     for item in artifact.get("acceptance_criteria") or ():
         if isinstance(item, str):
             continue
@@ -399,12 +415,26 @@ def _verified_criterion_loci(artifact: Mapping[str, Any]) -> dict[str, str]:
         if not key:
             continue
         status = str(item.get("status") or "").strip().lower()
+        if status in _FAIL_STATUSES:
+            failed.add(key)
+            verified.pop(key, None)
+            continue
         if status not in _VERIFY_STATUSES:
+            continue
+        if key in failed:
             continue
         locus = _record_evidence_locus(item)
         if not locus:
             continue
         verified[key] = locus
+    for key in failed:
+        verified.pop(key, None)
+    return verified, failed
+
+
+def _verified_criterion_loci(artifact: Mapping[str, Any]) -> dict[str, str]:
+    """Normalized criterion keys an artifact verifies, mapped to their locus."""
+    verified, _failed = _criterion_status_loci(artifact)
     return verified
 
 
@@ -532,6 +562,7 @@ def evaluate_acceptance_criteria(
         return ()
     current = str(job_id or "").strip()
     rows = []
+    failed_keys: set[str] = set()
     for artifact in artifacts or ():
         if not isinstance(artifact, Mapping):
             continue
@@ -542,11 +573,20 @@ def evaluate_acceptance_criteria(
         kind = str(artifact.get("type") or "").strip().lower()
         if kind not in {"finding", "risk", "decision", "verification"}:
             continue
-        rows.append((artifact, _verified_criterion_loci(artifact)))
+        verified, failed = _criterion_status_loci(artifact)
+        failed_keys |= failed
+        rows.append((artifact, verified))
 
     facts = []
     for criterion in clean:
         needle = _normalized_text(criterion)
+        if needle and needle in failed_keys:
+            facts.append(CriterionFact(
+                criterion,
+                NOT_VERIFIED,
+                "contradictory current-job pass/fail records for this criterion",
+            ))
+            continue
         basis = ""
         for artifact, verified in rows:
             locus = verified.get(needle) if needle else ""

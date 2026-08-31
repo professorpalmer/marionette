@@ -2,6 +2,9 @@ import { useState, useEffect } from "react";
 import { api, type PendingReview, type PendingReviewFile } from "../lib/api";
 import { Check, X, Eye, AlertCircle, RefreshCw } from "lucide-react";
 import {
+  forEachReviewHunkDecision,
+  hunkDecisionApplyKey,
+  resolveHunkDecisionId,
   reviewHunkDecisionKey,
   seedApplyDecisions,
 } from "../lib/reviewDecisions";
@@ -26,28 +29,38 @@ export default function DiffReviewPane({ reviews, onRefresh, loadError = null }:
   useEffect(() => {
     const initial: Record<string, "accept" | "reject"> = { ...decisions };
     reviews.forEach(rev => {
-      rev.files.forEach(file => {
-        file.hunks.forEach(hunk => {
-          const key = reviewHunkDecisionKey(rev.id, hunk.id);
-          if (!initial[key]) {
-            initial[key] = "accept";
-          }
-        });
+      forEachReviewHunkDecision(rev, (_hunk, decisionId) => {
+        const key = reviewHunkDecisionKey(rev.id, decisionId);
+        if (!initial[key]) {
+          initial[key] = "accept";
+        }
       });
     });
     setDecisions(initial);
   }, [reviews]);
 
-  const handleSetHunkDecision = (reviewId: string, hunkId: string, value: "accept" | "reject") => {
-    const key = reviewHunkDecisionKey(reviewId, hunkId);
+  const handleSetHunkDecision = (
+    reviewId: string,
+    decisionId: string,
+    value: "accept" | "reject",
+  ) => {
+    const key = reviewHunkDecisionKey(reviewId, decisionId);
     setDecisions(prev => ({ ...prev, [key]: value }));
   };
 
   const handleSetFileDecisions = (reviewId: string, file: PendingReviewFile, value: "accept" | "reject") => {
+    const review = reviews.find(r => r.id === reviewId);
+    if (!review) return;
     const updated = { ...decisions };
-    file.hunks.forEach(h => {
-      updated[reviewHunkDecisionKey(reviewId, h.id)] = value;
-    });
+    const fingerprintCounts = new Map<string, number>();
+    for (const f of review.files) {
+      for (const h of f.hunks) {
+        const decisionId = resolveHunkDecisionId(h, f.path, fingerprintCounts);
+        if (f === file) {
+          updated[reviewHunkDecisionKey(reviewId, decisionId)] = value;
+        }
+      }
+    }
     setDecisions(updated);
   };
 
@@ -63,13 +76,12 @@ export default function DiffReviewPane({ reviews, onRefresh, loadError = null }:
 
     // Identify all hunks in this review and their decisions
     const allHunks: { id: string; stateKey: string; decision: "accept" | "reject" }[] = [];
-    review.files.forEach(f => {
-      f.hunks.forEach(h => {
-        allHunks.push({
-          id: h.id,
-          stateKey: reviewHunkDecisionKey(reviewId, h.id),
-          decision: applyPayload[h.id] || "accept",
-        });
+    forEachReviewHunkDecision(review, (h, decisionId) => {
+      const applyKey = hunkDecisionApplyKey(decisionId);
+      allHunks.push({
+        id: h.id,
+        stateKey: reviewHunkDecisionKey(reviewId, decisionId),
+        decision: applyPayload[applyKey] || "accept",
       });
     });
 
@@ -295,15 +307,14 @@ export default function DiffReviewPane({ reviews, onRefresh, loadError = null }:
         // Calculate totals for this review
         let totalHunks = 0;
         let acceptedHunks = 0;
-        rev.files.forEach(f => {
-          f.hunks.forEach(h => {
-            totalHunks++;
-            if (decisions[reviewHunkDecisionKey(rev.id, h.id)] === "accept") {
-              acceptedHunks++;
-            }
-          });
+        forEachReviewHunkDecision(rev, (_h, decisionId) => {
+          totalHunks += 1;
+          if (decisions[reviewHunkDecisionKey(rev.id, decisionId)] === "accept") {
+            acceptedHunks += 1;
+          }
         });
 
+        const fingerprintCounts = new Map<string, number>();
         return (
           <div key={rev.id} className="bg-panel2/40 border border-edge rounded p-3 space-y-3">
             <div className="flex flex-col gap-1 border-b border-edge/60 pb-2">
@@ -356,7 +367,8 @@ export default function DiffReviewPane({ reviews, onRefresh, loadError = null }:
 
                   <div className="space-y-2">
                     {file.hunks.map(hunk => {
-                      const decisionKey = reviewHunkDecisionKey(rev.id, hunk.id);
+                      const decisionId = resolveHunkDecisionId(hunk, file.path, fingerprintCounts);
+                      const decisionKey = reviewHunkDecisionKey(rev.id, decisionId);
                       const isAccepted = decisions[decisionKey] === "accept";
                       const hState = hunkStates[decisionKey];
                       const isApplying = hState === "applying";
@@ -418,7 +430,7 @@ export default function DiffReviewPane({ reviews, onRefresh, loadError = null }:
                             <span className="text-[9px] font-mono text-faint">{hunk.header.trim()}</span>
                             <div className="flex gap-1">
                               <button
-                                onClick={() => handleSetHunkDecision(rev.id, hunk.id, "accept")}
+                                onClick={() => handleSetHunkDecision(rev.id, decisionId, "accept")}
                                 disabled={loading !== null}
                                 className={`p-1 rounded transition-colors ${
                                   isAccepted ? "bg-accent/20 text-accent" : "hover:bg-panel2 text-faint"
@@ -428,7 +440,7 @@ export default function DiffReviewPane({ reviews, onRefresh, loadError = null }:
                                 <Check size={10} />
                               </button>
                               <button
-                                onClick={() => handleSetHunkDecision(rev.id, hunk.id, "reject")}
+                                onClick={() => handleSetHunkDecision(rev.id, decisionId, "reject")}
                                 disabled={loading !== null}
                                 className={`p-1 rounded transition-colors ${
                                   !isAccepted ? "bg-risk/20 text-risk" : "hover:bg-panel2 text-faint"

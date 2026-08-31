@@ -163,7 +163,7 @@ import {
   type DirectoryEntryLike,
 } from "./conversation/composerInput";
 import { openAgentBusyDetail, openAgentWorkspace } from "../lib/agentLinks";
-import { AUTH_FAILURE, sharedReadinessNotice, fromBackendDiagnostic } from "../lib/operationalDiagnostic";
+import { AUTH_FAILURE, sharedReadinessNotice, malformedBackendDiagnostic, parseBackendDiagnostic } from "../lib/operationalDiagnostic";
 import { getActiveDiagnostic, publishDiagnostic } from "../lib/operationalDiagnosticBus";
 import {
   executeDiagnosticRecovery,
@@ -280,6 +280,7 @@ export default function Conversation({
 
   const clearChatEventsPoll = () => {
     if (chatEventsPollTimerRef.current != null) {
+      window.clearTimeout(chatEventsPollTimerRef.current);
       window.clearInterval(chatEventsPollTimerRef.current);
       chatEventsPollTimerRef.current = null;
     }
@@ -3555,9 +3556,10 @@ export default function Conversation({
       }
       try {
         const res = await api.diagnostics();
-        const diag = fromBackendDiagnostic(res.diagnostic as Record<string, unknown> | null);
-        if (!diag) clearDiagnosticAfterSuccess(operationalDiagnostic);
-        else publishDiagnostic(diag);
+        const parsed = parseBackendDiagnostic(res.diagnostic);
+        if (parsed.status === "ok") publishDiagnostic(parsed.diagnostic);
+        else if (parsed.status === "absent") clearDiagnosticAfterSuccess(operationalDiagnostic);
+        else publishDiagnostic(malformedBackendDiagnostic(parsed.reason));
         window.dispatchEvent(new Event("harness-config-changed"));
       } catch {
         /* keep diagnostic visible */
