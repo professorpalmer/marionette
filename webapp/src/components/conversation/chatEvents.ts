@@ -185,5 +185,77 @@ export function shouldApplyReattachFrame(opts: {
   return opts.cachedSessionId === opts.reattachSid;
 }
 
+/** Prefer live ``?watch=1`` for detached-busy mid-turn reattach. */
+export function shouldStartLiveChatEventsWatch(opts: {
+  detachedBusy: boolean;
+  localStreamActive: boolean;
+  userStopped: boolean;
+}): boolean {
+  return opts.detachedBusy && !opts.localStreamActive && !opts.userStopped;
+}
+
+/** Live ``?watch=1`` control frame for a mid-watch ring miss / cursor gap. */
+export function isChatEventsLiveRingMissFrame(ev: {
+  kind?: string;
+  data?: ChatEventReplayMissFields | null;
+}): boolean {
+  if (ev.kind !== "ring_miss") return false;
+  const data = ev.data;
+  if (data == null || typeof data !== "object") return false;
+  return isChatEventReplayMiss(data);
+}
+
+/** Transport open-miss for live watch (JSON 409 from stream_chat_events). */
+export function isChatEventsLiveOpenMiss(error: unknown): boolean {
+  if (error != null && typeof error === "object") {
+    const status = (error as { status?: unknown }).status;
+    if (status === 409) return true;
+  }
+  const message = error instanceof Error
+    ? error.message
+    : typeof error === "string" ? error : "";
+  return /\b409\b/.test(message);
+}
+
+export type LiveWatchCloseDecision = "settle" | "reconnect" | "fallback";
+
+/**
+ * How a live watch should close.
+ * Terminal settles without fallback. Open miss (409) goes straight to store
+ * poll. Other error/EOF gets one reconnect, then store poll.
+ */
+export function liveWatchCloseDecision(opts: {
+  sawTerminal: boolean;
+  openMiss: boolean;
+  reconnectUsed: boolean;
+}): LiveWatchCloseDecision {
+  if (opts.sawTerminal) return "settle";
+  if (opts.openMiss) return "fallback";
+  if (!opts.reconnectUsed) return "reconnect";
+  return "fallback";
+}
+
+/** Advance the live ring cursor only from an accepted newer frame cursor. */
+export function ringCursorAfterLiveFrame(
+  lastApplied: number,
+  frameCursor: number | undefined,
+): number {
+  if (typeof frameCursor === "number" && frameCursor > lastApplied) {
+    return frameCursor;
+  }
+  return lastApplied;
+}
+
+/** Start a stream generation with its fresh server ring. */
+export function beginChatStreamGeneration(opts: {
+  streamGenRef: { current: number };
+  lastAppliedRingCursorRef: { current: number };
+  ringGenerationRef: { current: number | undefined };
+}): number {
+  opts.lastAppliedRingCursorRef.current = 0;
+  opts.ringGenerationRef.current = undefined;
+  return ++opts.streamGenRef.current;
+}
+
 /** Bounded interval for mid-turn chatEvents reattach while detached-busy. */
 export const CHAT_EVENTS_POLL_MS = 1000;

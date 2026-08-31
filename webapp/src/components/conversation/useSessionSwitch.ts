@@ -33,6 +33,7 @@ import {
   type ComposerAttachedImage,
 } from "./composerAttachmentCache";
 import type { MemoryProposal } from "./streamEventHandler";
+import { beginChatStreamGeneration } from "./chatEvents";
 import { createChatEventsReattach } from "./chatEventsReattach";
 import { cancelStreamPaint, cancelTypewriterWithoutFlush } from "./streamTypewriter";
 import { gatherSessionArtifacts } from "./sessionArtifacts";
@@ -74,6 +75,7 @@ export type UseSessionSwitchDeps = {
   streamGenRef: MutableRefObject<number>;
   streamSessionIdRef: MutableRefObject<string | null>;
   lastAppliedCursorRef: MutableRefObject<number>;
+  lastAppliedRingCursorRef: MutableRefObject<number>;
   ringGenerationRef: MutableRefObject<number | undefined>;
   chatEventsPollTimerRef: MutableRefObject<number | null>;
   chatEventsLiveCancelRef: MutableRefObject<null | (() => void)>;
@@ -151,6 +153,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
     streamGenRef,
     streamSessionIdRef,
     lastAppliedCursorRef,
+    lastAppliedRingCursorRef,
     ringGenerationRef,
     chatEventsPollTimerRef,
     chatEventsLiveCancelRef,
@@ -272,7 +275,11 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
     // Bump streamGen so any late onmessage from the closed stream is ignored.
     // Bump runnerBusyPollGen so an in-flight session-A transcript poll cannot
     // pass the shared shouldApplySwarmLiveMerge generation fence after switch.
-    streamGenRef.current += 1;
+    beginChatStreamGeneration({
+      streamGenRef,
+      lastAppliedRingCursorRef,
+      ringGenerationRef,
+    });
     runnerBusyPollGenRef.current += 1;
     streamSessionIdRef.current = null;
     if (cancelRef.current) {
@@ -302,7 +309,6 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
     // Reset mid-turn reattach cursor/poll so the next session starts clean.
     clearChatEventsPoll();
     lastAppliedCursorRef.current = 0;
-    ringGenerationRef.current = undefined;
     // Drop the typewriter loop without flushing into items (would race the
     // cache hydrate below). Authoritative text comes back via sessionTranscript.
     cancelTypewriterWithoutFlush(
@@ -607,6 +613,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
           localStreamActiveRef,
           userStoppedRef,
           lastAppliedCursorRef,
+          lastAppliedRingCursorRef,
           ringGenerationRef,
           detachedBusyRef,
           runnerBusyPollGenRef,

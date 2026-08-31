@@ -196,6 +196,7 @@ import SpillPreviewModal, {
   shouldApplySpillPreview,
   type SpillPreviewState,
 } from "./conversation/SpillPreviewModal";
+import { beginChatStreamGeneration } from "./conversation/chatEvents";
 import { useSessionSwitch } from "./conversation/useSessionSwitch";
 import { useRunnersBusyPoll } from "./conversation/useRunnersBusyPoll";
 import {
@@ -260,11 +261,13 @@ export default function Conversation({
   const streamGenRef = useRef(0);
   // Mid-turn reattach: last applied /api/session/events store cursor (unified).
   const lastAppliedCursorRef = useRef(0);
+  // Live ?watch=1 ring cursor; distinct from the store cursor.
+  const lastAppliedRingCursorRef = useRef(0);
   // Ring generation from the last successful stream event (pin subsequent polls).
   const ringGenerationRef = useRef<number | undefined>(undefined);
-  // setInterval handle for the single store-event cursor poll.
+  // setTimeout handle for the store-event cursor poll fallback.
   const chatEventsPollTimerRef = useRef<number | null>(null);
-  // Legacy live-watch cancel slot (store cursor owns reattach; kept for armed()).
+  // Live ?watch=1 cancel; never set at the same time as the poll timer.
   const chatEventsLiveCancelRef = useRef<null | (() => void)>(null);
   // Shared live-SSE + reattach event applicator (assigned where handlers live).
   const applyStreamEventRef = useRef<(ev: { kind: string; data?: any }) => void>(() => {});
@@ -1540,6 +1543,7 @@ export default function Conversation({
     streamGenRef,
     streamSessionIdRef,
     lastAppliedCursorRef,
+    lastAppliedRingCursorRef,
     ringGenerationRef,
     chatEventsPollTimerRef,
     chatEventsLiveCancelRef,
@@ -2648,7 +2652,11 @@ export default function Conversation({
     resumeQueuedRef.current = false;
     detachedBusyRef.current = false;
     clearChatEventsPoll();
-    streamGenRef.current += 1;
+    beginChatStreamGeneration({
+      streamGenRef,
+      lastAppliedRingCursorRef,
+      ringGenerationRef,
+    });
     cancelRef.current?.();
     cancelRef.current = null;
     localStreamActiveRef.current = false;
@@ -2784,7 +2792,11 @@ export default function Conversation({
     localStreamActiveRef.current = true;
     detachedBusyRef.current = false;
     const streamSid = activeSessionId;
-    const streamGen = ++streamGenRef.current;
+    const streamGen = beginChatStreamGeneration({
+      streamGenRef,
+      lastAppliedRingCursorRef,
+      ringGenerationRef,
+    });
     streamSessionIdRef.current = streamSid;
     const streamLive = () =>
       streamGenRef.current === streamGen
@@ -3334,7 +3346,11 @@ export default function Conversation({
     detachedBusyRef.current = false;
     clearChatEventsPoll();
     // Invalidate in-flight reattach pulls / late SSE frames.
-    streamGenRef.current += 1;
+    beginChatStreamGeneration({
+      streamGenRef,
+      lastAppliedRingCursorRef,
+      ringGenerationRef,
+    });
     cancelRef.current?.();
     cancelRef.current = null;
     localStreamActiveRef.current = false;

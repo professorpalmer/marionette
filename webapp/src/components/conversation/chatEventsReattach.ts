@@ -1,24 +1,32 @@
 /**
- * Unified store-event subscription for session-switch / reattach / busy.
- * One cursor via ``api.readEventsSince`` — not a third poller beside runners.
+ * Mid-turn chat-event reattach (Live-XOR-Store).
+ * Detached-busy prefers ``api.chatEventsLive``; ``api.readEventsSince`` is the
+ * bounded fallback for idle/unknown, runner snapshots, live open-miss,
+ * error/EOF before terminal, and reconnect exhaustion. Never both owners.
  */
 
 import { api } from "../../lib/api";
 import type { Item } from "../TranscriptList";
 import {
-  cursorAfterReplayMiss,
+  chatFrameToStreamEvent,
+  isChatEventsLiveOpenMiss,
+  isChatEventsLiveRingMissFrame,
   isChatEventsReattachArmed,
   isTerminalStreamKind,
+  liveWatchCloseDecision,
+  ringCursorAfterLiveFrame,
   ringGenerationAfterReplayMiss,
   shouldHydrateTranscriptOnReplayMiss,
   shouldPollChatEvents,
   shouldRetryRingAfterReplayMiss,
+  shouldStartLiveChatEventsWatch,
 } from "./chatEvents";
 import {
   STORE_EVENTS_POLL_MS,
   isStoreRingMissEvent,
   storeCursorAfterBatch,
   shouldApplyStoreEvent,
+  shouldApplyStoreStreamAfterLive,
   storeBatchSawTerminal,
   storeRingMissFields,
   storeStreamToStreamEvent,
@@ -44,6 +52,8 @@ import {
 } from "./swarmPoll";
 import type { SessionStatus } from "./useSessionSwitch";
 
+const CHAT_EVENTS_POLL_IN_FLIGHT = -1;
+
 export type ChatEventsReattachDeps = {
   cancelled: () => boolean;
   loadGen: number;
@@ -56,13 +66,15 @@ export type ChatEventsReattachDeps = {
   userStoppedRef: { current: boolean };
   /** Unified store cursor (read_events_since), not the SSE ring cursor. */
   lastAppliedCursorRef: { current: number };
+  /** Live ``?watch=1`` ring cursor; advance only from accepted live frames. */
+  lastAppliedRingCursorRef: { current: number };
   ringGenerationRef: { current: number | undefined };
   detachedBusyRef: { current: boolean };
   runnerBusyPollGenRef: { current: number };
   itemsRef: { current: Item[] };
   transcriptFpRef: { current: string };
   chatEventsPollTimerRef: { current: number | null };
-  /** Legacy live-watch cancel slot; store cursor owns the turn (kept for armed()). */
+  /** Live ``?watch=1`` cancel; never set at the same time as the poll timer. */
   chatEventsLiveCancelRef: { current: null | (() => void) };
   applyStreamEventRef: { current: (ev: { kind: string; data?: any }) => void };
   flushTypewriterRef: { current: () => void };
@@ -145,6 +157,7 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
     localStreamActiveRef,
     userStoppedRef,
     lastAppliedCursorRef,
+    lastAppliedRingCursorRef,
     ringGenerationRef,
     detachedBusyRef,
     runnerBusyPollGenRef,
@@ -406,12 +419,21 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
 
   const handleRingMiss = async (ev: {
     kind: string;
-    data?: any;
+    data?: {
+      ok?: boolean;
+      missed?: boolean;
+      available?: boolean;
+      code?: string;
+      generation?: number;
+    };
   }, missRetried: boolean): Promise<"retry" | "continue" | "stop"> => {
-    const replay = storeRingMissFields(ev as any);
+    const replay = storeRingMissFields({
+      id: 0,
+      kind: ev.kind,
+      data: ev.data ?? {},
+    });
     const prevGen = ringGenerationRef.current;
     ringGenerationRef.current = ringGenerationAfterReplayMiss(replay, prevGen);
-    void cursorAfterReplayMiss(replay, 0);
     if (shouldHydrateTranscriptOnReplayMiss(replay)) {
       await hydrateDurableTranscript();
     }
@@ -432,6 +454,10 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
     if (loadGen !== transcriptLoadGenRef.current) return false;
     if (!fenceOk()) return false;
     if (userStoppedRef.current) return false;
+    if (chatEventsLiveCancelRef.current != null) return false;
+    if (chatEventsPollTimerRef.current == null) {
+      chatEventsPollTimerRef.current = CHAT_EVENTS_POLL_IN_FLIGHT;
+    }
     try {
       const batch = await api.readEventsSince({
         session: reattachSid,
@@ -444,6 +470,7 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
       if (loadGen !== transcriptLoadGenRef.current) return false;
       if (!fenceOk()) return false;
       if (userStoppedRef.current) return false;
+      if (chatEventsLiveCancelRef.current != null) return false;
 
       const events = Array.isArray(batch.events) ? batch.events : [];
       let sawTerminal = false;
@@ -470,7 +497,7 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
           continue;
         }
         if (ev.kind === "stream") {
-          const frame = ev.data || {};
+          const frame = isPlainRecord(ev.data) ? ev.data : {};
           const terminal = isTerminalStreamKind(String(frame.kind || ""));
           // The durable cursor is the recovery path when a live SSE remains open
           // but misses its terminal frame. Ignore duplicate progress, not an
@@ -479,6 +506,13 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
             localStreamActiveRef.current
             && (!terminal || (turnSettledRef?.current ?? false))
           ) {
+            continue;
+          }
+          const ringCursor = typeof frame.cursor === "number" ? frame.cursor : undefined;
+          if (!shouldApplyStoreStreamAfterLive({
+            ringCursor,
+            lastAppliedRingCursor: lastAppliedRingCursorRef.current,
+          })) {
             continue;
           }
           if (typeof frame.generation === "number" && frame.generation > 0) {
@@ -519,22 +553,53 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
     }
   };
 
+  const releasePollInFlight = () => {
+    if (chatEventsPollTimerRef.current === CHAT_EVENTS_POLL_IN_FLIGHT) {
+      chatEventsPollTimerRef.current = null;
+    }
+  };
+
   const startChatEventsPoll = () => {
     if (cancelled() || userStoppedRef.current) return;
+    if (chatEventsLiveCancelRef.current != null) return;
     if (chatEventsPollTimerRef.current != null) return;
 
+    chatEventsPollTimerRef.current = CHAT_EVENTS_POLL_IN_FLIGHT;
+
     const armNext = (delayMs: number) => {
-      if (cancelled() || userStoppedRef.current) return;
-      if (streamGenRef.current !== reattachGen) return;
-      if (chatEventsPollTimerRef.current != null) return;
+      if (cancelled() || userStoppedRef.current) {
+        releasePollInFlight();
+        return;
+      }
+      if (streamGenRef.current !== reattachGen) {
+        releasePollInFlight();
+        return;
+      }
+      if (chatEventsLiveCancelRef.current != null) {
+        releasePollInFlight();
+        return;
+      }
+      if (
+        chatEventsPollTimerRef.current != null
+        && chatEventsPollTimerRef.current !== CHAT_EVENTS_POLL_IN_FLIGHT
+      ) {
+        return;
+      }
       chatEventsPollTimerRef.current = window.setTimeout(() => {
-        chatEventsPollTimerRef.current = null;
+        chatEventsPollTimerRef.current = CHAT_EVENTS_POLL_IN_FLIGHT;
         void pullChatEvents().then((keepPolling) => {
           if (!keepPolling || cancelled()) {
             clearChatEventsPoll();
             return;
           }
-          if (streamGenRef.current !== reattachGen) return;
+          if (streamGenRef.current !== reattachGen) {
+            releasePollInFlight();
+            return;
+          }
+          if (chatEventsLiveCancelRef.current != null) {
+            releasePollInFlight();
+            return;
+          }
           armNext(STORE_EVENTS_POLL_MS);
         });
       }, delayMs) as unknown as number;
@@ -542,15 +607,154 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
 
     // Non-overlapping request-driven chain: next poll only after the prior settles.
     void pullChatEvents().then((keepPolling) => {
-      if (!keepPolling || cancelled()) return;
-      if (streamGenRef.current !== reattachGen) return;
+      if (!keepPolling || cancelled()) {
+        releasePollInFlight();
+        return;
+      }
+      if (streamGenRef.current !== reattachGen) {
+        releasePollInFlight();
+        return;
+      }
+      if (chatEventsLiveCancelRef.current != null) {
+        releasePollInFlight();
+        return;
+      }
       armNext(STORE_EVENTS_POLL_MS);
     });
+  };
+
+  const settleLiveTerminal = () => {
+    flushTypewriterRef.current();
+    detachedBusyRef.current = false;
+    clearChatEventsPoll();
+    startChatEventsPoll();
+    maybeRunQueuedResumeRef.current();
+    maybeDrainQueueRef.current();
+  };
+
+  /**
+   * Prefer live ``?watch=1`` SSE while the turn is open.
+   * Returns true when this owner installed (or already owns) the live slot.
+   * Open miss / error / EOF before terminal reconnects once, then store poll.
+   */
+  const startLiveChatEventsWatch = (reconnectUsed = false): boolean => {
+    if (cancelled() || localStreamActiveRef.current || userStoppedRef.current) {
+      return false;
+    }
+    if (!fenceOk()) return false;
+    if (chatEventsLiveCancelRef.current != null) return true;
+    if (chatEventsPollTimerRef.current != null) return false;
+
+    let sawTerminal = false;
+    let settled = false;
+    let released = false;
+    let streamCancel: (() => void) | null = null;
+    const cancel = () => {
+      released = true;
+      streamCancel?.();
+    };
+    chatEventsLiveCancelRef.current = cancel;
+
+    const releaseOwner = () => {
+      released = true;
+      if (chatEventsLiveCancelRef.current === cancel) {
+        chatEventsLiveCancelRef.current = null;
+      }
+    };
+
+    const fallBackToPoll = () => {
+      if (released || settled || cancelled()) return;
+      if (!fenceOk()) return;
+      if (localStreamActiveRef.current || userStoppedRef.current) return;
+      if (sawTerminal) return;
+      releaseOwner();
+      startChatEventsPoll();
+    };
+
+    const fallBackAfterRingMissHydrate = async () => {
+      if (released || settled || cancelled()) return;
+      if (!fenceOk()) return;
+      if (localStreamActiveRef.current || userStoppedRef.current) return;
+      if (sawTerminal) return;
+      releaseOwner();
+      streamCancel?.();
+      await hydrateDurableTranscript();
+      if (cancelled() || settled || sawTerminal) return;
+      if (!fenceOk()) return;
+      if (localStreamActiveRef.current || userStoppedRef.current) return;
+      startChatEventsPoll();
+    };
+
+    const closeLive = (openMiss: boolean) => {
+      if (settled || cancelled() || released) {
+        releaseOwner();
+        return;
+      }
+      if (!fenceOk()) {
+        releaseOwner();
+        return;
+      }
+      const decision = liveWatchCloseDecision({
+        sawTerminal,
+        openMiss,
+        reconnectUsed,
+      });
+      if (decision === "settle") {
+        settled = true;
+        settleLiveTerminal();
+        return;
+      }
+      if (decision === "reconnect") {
+        releaseOwner();
+        startLiveChatEventsWatch(true);
+        return;
+      }
+      fallBackToPoll();
+    };
+
+    streamCancel = api.chatEventsLive(
+      {
+        session: reattachSid,
+        since: lastAppliedRingCursorRef.current,
+        ...(ringGenerationRef.current != null
+          ? { generation: ringGenerationRef.current }
+          : {}),
+      },
+      (ev) => {
+        if (released || settled || cancelled()) return;
+        if (!fenceOk()) return;
+        if (localStreamActiveRef.current || userStoppedRef.current) return;
+        const kind = String(ev?.kind || "");
+        if (kind === "done") return;
+        if (isChatEventsLiveRingMissFrame(ev)) {
+          void fallBackAfterRingMissHydrate();
+          return;
+        }
+        applyStreamEventRef.current(chatFrameToStreamEvent(ev));
+        lastAppliedRingCursorRef.current = ringCursorAfterLiveFrame(
+          lastAppliedRingCursorRef.current,
+          typeof ev.cursor === "number" ? ev.cursor : undefined,
+        );
+        if (isTerminalStreamKind(kind)) {
+          sawTerminal = true;
+          settled = true;
+          settleLiveTerminal();
+        }
+      },
+      () => {
+        closeLive(false);
+      },
+      (err) => {
+        closeLive(isChatEventsLiveOpenMiss(err));
+      },
+    );
+    return true;
   };
 
   const startChatEventsReattach = async () => {
     if (cancelled() || userStoppedRef.current) return;
     if (streamGenRef.current !== reattachGen) return;
+    if (chatEventsLiveCancelRef.current != null) return;
     if (!detachedBusyRef.current && !localStreamActiveRef.current) {
       const maxAttempts = 2;
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -593,6 +797,13 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
       }
     }
     if (streamGenRef.current !== reattachGen) return;
+    if (shouldStartLiveChatEventsWatch({
+      detachedBusy: detachedBusyRef.current,
+      localStreamActive: localStreamActiveRef.current,
+      userStopped: userStoppedRef.current,
+    })) {
+      if (startLiveChatEventsWatch()) return;
+    }
     startChatEventsPoll();
   };
 
