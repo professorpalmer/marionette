@@ -1624,7 +1624,7 @@ export const api = {
   /**
    * Live ring watch for mid-turn reattach (``?watch=1``).
    * Returns cancel(); on open miss the transport errors so callers fall back
-   * to ``chatEvents`` JSON poll.
+   * to the unified session-event cursor.
    */
   chatEventsLive: (
     opts: { session?: string; since?: number; generation?: number },

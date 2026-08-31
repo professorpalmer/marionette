@@ -362,9 +362,10 @@ def stream_chat_events(
     """Live SSE watch over the chat-events ring (``GET /api/chat/events?watch=1``).
 
     Replays retained frames since ``since``, then tails new appends until a
-    terminal kind (or the ring ends). On miss/gap, returns JSON 409 so the
-    client can fall back to the 1Hz pull poll without inventing a second
-    transcript protocol.
+    terminal kind (or the ring ends). On open miss/gap, returns JSON 409 so
+    the client can fall back to the store poll. Mid-watch gap cannot change
+    the HTTP status, so the watch emits one ring_miss / cursor_gap SSE frame
+    and closes — same miss contract, no reconnect RTT.
     """
     _status, payload = get_chat_events(svc, session_id, since, generation)
     if not isinstance(payload, dict) or not payload.get("ok"):
@@ -434,8 +435,21 @@ def stream_chat_events(
             return
         batch = ring.since(cursor)
         if batch.pop("gap", False):
-            # Mid-watch hole: close without framing done so the client falls
-            # back to JSON poll + disk hydrate (same miss contract).
+            sse_write(
+                handler.wfile,
+                _encode_chat_events_watch_frame({
+                    "kind": "ring_miss",
+                    "data": {
+                        "ok": False,
+                        "missed": True,
+                        "available": False,
+                        "code": "cursor_gap",
+                        "generation": int(batch.get("generation") or 0),
+                        "cursor": int(batch.get("cursor") or 0),
+                        "session_id": sid,
+                    },
+                }),
+            )
             return
         events = batch.get("events") if isinstance(batch.get("events"), list) else []
         if events:

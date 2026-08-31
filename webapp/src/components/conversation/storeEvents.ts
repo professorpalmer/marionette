@@ -66,6 +66,18 @@ export function shouldApplyStoreEvent(opts: {
   return opts.cachedSessionId === opts.subscriptionSid;
 }
 
+/**
+ * Skip store stream frames the live watch already accepted.
+ * Missing ring cursor cannot prove a duplicate, so those frames still apply.
+ */
+export function shouldApplyStoreStreamAfterLive(opts: {
+  ringCursor: number | undefined;
+  lastAppliedRingCursor: number;
+}): boolean {
+  if (typeof opts.ringCursor !== "number") return true;
+  return opts.ringCursor > opts.lastAppliedRingCursor;
+}
+
 /** Map a store ``stream`` event payload to the live stream-event shape. */
 export function storeStreamToStreamEvent(data: {
   kind?: string;

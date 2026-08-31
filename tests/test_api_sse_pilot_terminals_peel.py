@@ -175,6 +175,68 @@ def test_stream_chat_events_replays_then_terminals():
     assert '"kind": "done"' in blob or '"kind":"done"' in blob
 
 
+def test_stream_chat_events_mid_watch_gap_emits_ring_miss_then_closes():
+    """Mid-watch cursor gap emits one ring_miss SSE frame, then closes."""
+    ring = SseEventRing("s1", 1)
+    ring.pinned = True
+    ring.append("message_delta", {"text": "a"})
+    original_since = ring.since
+    calls = {"n": 0}
+
+    def since_then_gap(cursor=0):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return original_since(cursor)
+        return {
+            "session_id": "s1",
+            "generation": 1,
+            "cursor": 9,
+            "events": [],
+            "retained": 1,
+            "gap": True,
+        }
+
+    ring.since = since_then_gap
+    svc = _sse_svc(rings={("s1", 1): ring}, gens={"s1": 1})
+    chunks: list[bytes] = []
+
+    class _WFile:
+        def write(self, data):
+            chunks.append(data)
+
+        def flush(self):
+            pass
+
+    class _Handler:
+        def __init__(self):
+            self.wfile = _WFile()
+            self.headers = []
+            self.code = None
+
+        def send_response(self, code):
+            self.code = code
+
+        def send_header(self, k, v):
+            self.headers.append((k, v))
+
+        def _cors(self):
+            pass
+
+        def end_headers(self):
+            pass
+
+        def _send(self, status, body):
+            raise AssertionError(f"unexpected JSON send {status}")
+
+    stream_chat_events(_Handler(), svc, "s1", 0, 1)
+    blob = b"".join(chunks).decode()
+    assert "message_delta" in blob
+    assert blob.count("ring_miss") == 1
+    assert "cursor_gap" in blob
+    assert '"missed": true' in blob or '"missed":true' in blob
+    assert '"available": false' in blob or '"available":false' in blob
+
+
 # ---------------------------------------------------------------------------
 # GET /api/pilot
 # ---------------------------------------------------------------------------

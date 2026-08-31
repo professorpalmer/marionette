@@ -28,15 +28,22 @@ import {
   chatFrameToStreamEvent,
   cursorAfterReplayMiss,
   isChatEventReplayMiss,
+  isChatEventsLiveOpenMiss,
+  isChatEventsLiveRingMissFrame,
   isTerminalStreamKind,
+  liveWatchCloseDecision,
   nextAppliedCursor,
+  beginChatStreamGeneration,
+  ringCursorAfterLiveFrame,
   ringGenerationAfterReplayMiss,
   shouldAdvanceReplayCursor,
   shouldArmChatEventsFromRunners,
   shouldHydrateTranscriptOnReplayMiss,
   shouldPollChatEvents,
   shouldRetryRingAfterReplayMiss,
+  shouldStartLiveChatEventsWatch,
 } from "../components/conversation/chatEvents";
+import { shouldApplyStoreStreamAfterLive } from "../components/conversation/storeEvents";
 import {
   formatWorkspaceOpenLeaseExhaustedMessage,
   isWorkspaceOpenLeaseExhausted,
@@ -741,6 +748,116 @@ describe("chatEvents module", () => {
     expect(isTerminalJobStatus("partial")).toBe(true);
     expect(isTerminalJobStatus("timed_out")).toBe(true);
     expect(isTerminalJobStatus("PARTIAL")).toBe(true);
+  });
+
+  it("prefers live watch only for detached-busy mid-turn reattach", () => {
+    expect(shouldStartLiveChatEventsWatch({
+      detachedBusy: true,
+      localStreamActive: false,
+      userStopped: false,
+    })).toBe(true);
+    expect(shouldStartLiveChatEventsWatch({
+      detachedBusy: false,
+      localStreamActive: false,
+      userStopped: false,
+    })).toBe(false);
+    expect(shouldStartLiveChatEventsWatch({
+      detachedBusy: true,
+      localStreamActive: true,
+      userStopped: false,
+    })).toBe(false);
+    expect(shouldStartLiveChatEventsWatch({
+      detachedBusy: true,
+      localStreamActive: false,
+      userStopped: true,
+    })).toBe(false);
+  });
+
+  it("classifies live-watch close as settle, one reconnect, or store fallback", () => {
+    expect(liveWatchCloseDecision({
+      sawTerminal: true,
+      openMiss: false,
+      reconnectUsed: false,
+    })).toBe("settle");
+    expect(liveWatchCloseDecision({
+      sawTerminal: false,
+      openMiss: true,
+      reconnectUsed: false,
+    })).toBe("fallback");
+    expect(liveWatchCloseDecision({
+      sawTerminal: false,
+      openMiss: false,
+      reconnectUsed: false,
+    })).toBe("reconnect");
+    expect(liveWatchCloseDecision({
+      sawTerminal: false,
+      openMiss: false,
+      reconnectUsed: true,
+    })).toBe("fallback");
+    expect(isChatEventsLiveOpenMiss(new Error("stream /api/chat/events -> 409"))).toBe(true);
+    expect(isChatEventsLiveOpenMiss({ status: 409, code: "http_error" })).toBe(true);
+    expect(isChatEventsLiveOpenMiss(new Error("network"))).toBe(false);
+    expect(isChatEventsLiveOpenMiss({ status: 500, code: "backend_error" })).toBe(false);
+  });
+
+  it("same-session generation bump clears the live ring cursor and generation pin", () => {
+    const streamGenRef = { current: 2 };
+    const lastAppliedRingCursorRef = { current: 9 };
+    const ringGenerationRef = { current: 4 as number | undefined };
+    expect(beginChatStreamGeneration({
+      streamGenRef,
+      lastAppliedRingCursorRef,
+      ringGenerationRef,
+    })).toBe(3);
+    expect(streamGenRef.current).toBe(3);
+    expect(lastAppliedRingCursorRef.current).toBe(0);
+    expect(ringGenerationRef.current).toBeUndefined();
+  });
+
+  it("advances the ring cursor only from a newer live frame cursor", () => {
+    expect(ringCursorAfterLiveFrame(3, 4)).toBe(4);
+    expect(ringCursorAfterLiveFrame(4, 4)).toBe(4);
+    expect(ringCursorAfterLiveFrame(4, 2)).toBe(4);
+    expect(ringCursorAfterLiveFrame(4, undefined)).toBe(4);
+  });
+
+  it("skips store stream frames already accepted by the live ring cursor", () => {
+    expect(shouldApplyStoreStreamAfterLive({
+      ringCursor: 4,
+      lastAppliedRingCursor: 4,
+    })).toBe(false);
+    expect(shouldApplyStoreStreamAfterLive({
+      ringCursor: 3,
+      lastAppliedRingCursor: 4,
+    })).toBe(false);
+    expect(shouldApplyStoreStreamAfterLive({
+      ringCursor: 5,
+      lastAppliedRingCursor: 4,
+    })).toBe(true);
+    expect(shouldApplyStoreStreamAfterLive({
+      ringCursor: undefined,
+      lastAppliedRingCursor: 4,
+    })).toBe(true);
+  });
+
+  it("recognizes a live ring-miss control frame without treating it as chat", () => {
+    expect(isChatEventsLiveRingMissFrame({
+      kind: "ring_miss",
+      data: {
+        ok: false,
+        missed: true,
+        available: false,
+        code: "cursor_gap",
+      },
+    })).toBe(true);
+    expect(isChatEventsLiveRingMissFrame({
+      kind: "message_delta",
+      data: { text: "hi" },
+    })).toBe(false);
+    expect(isChatEventsLiveRingMissFrame({
+      kind: "ring_miss",
+      data: { ok: true, missed: false },
+    })).toBe(false);
   });
 
   it("gates poll and runner arming", () => {
