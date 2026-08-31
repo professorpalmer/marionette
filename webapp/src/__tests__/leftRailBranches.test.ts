@@ -54,4 +54,17 @@ describe("leftRailBranches stale release filter", () => {
       ),
     ).toBe(true);
   });
+
+  it("hides dest and absorb leftovers not on origin; keeps unpushed features", () => {
+    const rows = [
+      row("main", { active: true }),
+      row("dev"),
+      row("dest"),
+      row("absorb/marionette-223-scope-labels"),
+      row("feat/keep-unpushed"),
+    ];
+    const origin = new Set(["main", "dev"]);
+    const names = filterBranchWorkspaces(rows, origin).map((r) => r.name);
+    expect(names).toEqual(["main", "dev", "feat/keep-unpushed"]);
+  });
 });

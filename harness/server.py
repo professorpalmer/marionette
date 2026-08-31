@@ -1459,6 +1459,13 @@ def _reap_stale_swarms_on_boot() -> None:
                     "server.boot_worktree_reaper",
                     msg=f"removed {reaped_trees} stale managed worktree(s)",
                 )
+            leftover = _wt.prune_orphan_edit_branches(repo)
+            pruned = int(leftover.get("count") or 0)
+            if pruned:
+                _diag(
+                    "server.boot_branch_prune",
+                    msg="deleted {} leftover local branch(es)".format(pruned),
+                )
     except Exception as e:
         _diag("server.boot_worktree_reaper", e)
 

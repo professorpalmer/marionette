@@ -288,3 +288,31 @@ def test_list_workspaces_hides_stale_release_even_without_origin_picture(tmp_pat
     assert "dev" in names
     assert "feature" in names
     assert "release/v0.9.308" not in names
+
+
+def test_list_workspaces_hides_gone_upstream_absorb_and_dest(tmp_path):
+    """BRANCHES hides locals whose origin copy is gone; keep unpushed features."""
+    repo = _init_repo(tmp_path, branch="main")
+    _git(repo, "branch", "dev")
+    _git(repo, "branch", "dest")
+    _git(repo, "branch", "absorb/marionette-223-scope-labels")
+    _git(repo, "branch", "feat/pm-pin-1.22.37")
+    _git(repo, "branch", "feat/keep-unpushed")
+
+    remote = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True, capture_output=True)
+    _git(repo, "remote", "add", "origin", str(remote))
+    _git(repo, "push", "-q", "origin", "main", "dev")
+    _git(repo, "push", "-q", "-u", "origin", "absorb/marionette-223-scope-labels")
+    _git(repo, "push", "-q", "-u", "origin", "feat/pm-pin-1.22.37")
+    _git(repo, "push", "origin", "--delete", "absorb/marionette-223-scope-labels")
+    _git(repo, "push", "origin", "--delete", "feat/pm-pin-1.22.37")
+    _git(repo, "fetch", "--prune", "origin")
+
+    names = {r["name"] for r in list_workspaces(str(repo))}
+    assert "main" in names
+    assert "dev" in names
+    assert "feat/keep-unpushed" in names
+    assert "dest" not in names
+    assert "absorb/marionette-223-scope-labels" not in names
+    assert "feat/pm-pin-1.22.37" not in names

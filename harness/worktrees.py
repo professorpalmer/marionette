@@ -680,20 +680,84 @@ def _current_branch(repo: str) -> str:
     return "" if name == "HEAD" else name
 
 
-def delete_branch(repo: str, branch: str, raise_on_error: bool = False) -> None:
-    """Force-delete a managed edit/worker branch or a stale local release head.
+def _upstream_gone_names(repo: str) -> set:
+    rc, out, _ = _git(
+        repo,
+        "for-each-ref",
+        "--format=%(refname:short)%09%(upstream:track)",
+        "refs/heads",
+    )
+    if rc != 0:
+        return set()
+    gone = set()
+    for line in (out or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2 and parts[1].strip() == "[gone]":
+            name = parts[0].strip()
+            if name:
+                gone.add(name)
+    return gone
 
-    ``pmedit-*`` / ``pmworker-*`` and leftover ``release/v0.9.*`` are eligible.
-    Current checkout, ``main`` / ``master`` / ``dev`` are never deleted;
-    unrelated names are refused (no-op). Missing branches are success.
+
+def _prune_stale_origin_refs(repo: str) -> None:
+    """Drop origin/* tracking refs GitHub already deleted (best-effort)."""
+    try:
+        subprocess.run(
+            ["git", "-C", repo, "remote", "prune", "origin"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+    except Exception:
+        pass
+
+
+def _is_deletable_leftover_branch(branch: str, remote: set, gone: set) -> bool:
+    if not branch or branch in _PROTECTED_BRANCHES:
+        return False
+    if _is_managed_branch_name(branch):
+        return True
+    if branch in gone:
+        return True
+    if branch == "dest" and branch not in remote:
+        return True
+    if branch.startswith("absorb/") and branch not in remote:
+        return True
+    if _is_stale_release_branch_name(branch) and branch not in remote:
+        return True
+    return False
+
+
+def delete_branch(
+    repo: str,
+    branch: str,
+    raise_on_error: bool = False,
+    *,
+    remote=None,
+    gone_names=None,
+) -> None:
+    """Force-delete a managed edit/worker branch or a stale leftover head.
+
+    ``pmedit-*`` / ``pmworker-*`` and leftover ``release/v0.9.*`` are always
+    eligible. When ``remote`` / ``gone_names`` are passed, also dest, absorb/*,
+    and gone-upstream locals. Current checkout, ``main`` / ``master`` / ``dev``
+    are never deleted. Missing branches are success.
     When ``raise_on_error`` is true, a real ``git branch -D`` failure raises.
     """
     if not branch:
         return
-    managed = _is_managed_branch_name(branch)
-    stale_release = _is_stale_release_branch_name(branch)
-    if not managed and not stale_release:
-        return
+    if remote is not None or gone_names is not None:
+        if not _is_deletable_leftover_branch(
+            branch, remote or set(), gone_names or set()
+        ):
+            return
+    else:
+        managed = _is_managed_branch_name(branch)
+        stale_release = _is_stale_release_branch_name(branch)
+        if not managed and not stale_release:
+            return
     if branch in _PROTECTED_BRANCHES:
         return
     if not repo or not _is_repo(repo):
@@ -719,15 +783,17 @@ def delete_branch(repo: str, branch: str, raise_on_error: bool = False) -> None:
 
 
 def prune_orphan_edit_branches(repo: str) -> dict:
-    """Delete unused local edit/worker and leftover release/v0.9.* branches.
+    """Delete unused local edit/worker and leftover gone-upstream branches.
 
     Skips the current checkout, protected main/dev, and live pmedit-/pmworker-
-    worktrees. Leftover local release/v0.9.* heads are pruned even when a
-    leftover worktree directory still exists (``git worktree remove`` then
-    delete the branch). Returns ``{"deleted": [...], "count": N}``.
+    worktrees. Leftover dest / absorb / release/v0.9.* / gone-upstream heads
+    are pruned; leftover release worktrees are removed first. Returns
+    ``{"deleted": [...], "count": N}``.
     """
     if not repo or not _is_repo(repo):
         return {"deleted": [], "count": 0}
+
+    _prune_stale_origin_refs(repo)
 
     rc, out, _ = _git(repo, "branch", "--format=%(refname:short)")
     if rc != 0:
@@ -752,23 +818,26 @@ def prune_orphan_edit_branches(repo: str) -> dict:
         is_stale_local_release_branch = None  # type: ignore[assignment]
 
     remote = _origin_branch_names(repo) if callable(_origin_branch_names) else set()
+    gone = _upstream_gone_names(repo)
 
     candidates: list[str] = []
     for line in (out or "").splitlines():
         name = line.strip()
         if not name:
             continue
-        if _is_managed_branch_name(name):
-            candidates.append(name)
+        if name == current or name in _PROTECTED_BRANCHES:
+            continue
+        if not _is_deletable_leftover_branch(name, remote, gone):
             continue
         if _is_stale_release_branch_name(name) and is_stale_local_release_branch:
-            if is_stale_local_release_branch(
+            if not is_stale_local_release_branch(
                 name,
                 active=(name == current),
                 worktree_path=attached_paths.get(name),
                 remote=remote,
-            ):
-                candidates.append(name)
+            ) and name not in gone:
+                continue
+        candidates.append(name)
 
     if not candidates:
         return {"deleted": [], "count": 0}
@@ -799,7 +868,7 @@ def prune_orphan_edit_branches(repo: str) -> dict:
         before = _branch_exists(repo, branch)
         if not before:
             continue
-        delete_branch(repo, branch)
+        delete_branch(repo, branch, remote=remote, gone_names=gone)
         if not _branch_exists(repo, branch):
             deleted.append(branch)
 
