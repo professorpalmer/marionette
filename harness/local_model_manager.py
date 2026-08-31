@@ -76,6 +76,8 @@ _CONTENT_RANGE_RE = re.compile(r"bytes\s+(\d+)-(\d+)/(\d+|\*)", re.IGNORECASE)
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 _CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
 _DETACHED_PROCESS = getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+_SIGTERM = getattr(signal, "SIGTERM", 15)
+_SIGKILL = getattr(signal, "SIGKILL", 9)
 
 
 def _platform_name() -> str:
@@ -354,10 +356,10 @@ def stop_process_tree(pid: int, proc: Any = None, *, grace: float = 5.0, sleeper
     except (OSError, AttributeError):
         pgid = int(pid)
     try:
-        os.killpg(pgid, signal.SIGTERM)
+        os.killpg(pgid, _SIGTERM)
     except (OSError, AttributeError):
         try:
-            os.kill(int(pid), signal.SIGTERM)
+            os.kill(int(pid), _SIGTERM)
         except OSError:
             pass
     waited = False
@@ -370,10 +372,10 @@ def stop_process_tree(pid: int, proc: Any = None, *, grace: float = 5.0, sleeper
     if waited:
         return
     try:
-        os.killpg(pgid, signal.SIGKILL)
+        os.killpg(pgid, _SIGKILL)
     except (OSError, AttributeError):
         try:
-            os.kill(int(pid), signal.SIGKILL)
+            os.kill(int(pid), _SIGKILL)
         except OSError:
             pass
 

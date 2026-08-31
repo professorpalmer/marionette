@@ -5,7 +5,6 @@ import hashlib
 import io
 import json
 import os
-import signal
 import stat
 import subprocess
 import tarfile
@@ -29,6 +28,8 @@ from harness.local_model_manager import (
     _CREATE_NEW_PROCESS_GROUP,
     _CREATE_NO_WINDOW,
     _DETACHED_PROCESS,
+    _SIGKILL,
+    _SIGTERM,
     _pid_alive,
     assert_probe_hop_safe,
     download_host_allowed,
@@ -535,7 +536,7 @@ def test_posix_tree_stop_term_then_kill(monkeypatch):
     monkeypatch.setattr(os, "getpgid", lambda pid: 9001, raising=False)
     monkeypatch.setattr(os, "killpg", lambda pgid, sig: killed.append((pgid, sig)), raising=False)
     stop_process_tree(4242, proc=None, grace=0, sleeper=lambda _s: None)
-    assert killed == [(9001, signal.SIGTERM), (9001, signal.SIGKILL)]
+    assert killed == [(9001, _SIGTERM), (9001, _SIGKILL)]
 
 
 def test_windows_tree_stop_taskkill(monkeypatch):
