@@ -272,7 +272,8 @@ def test_drain_batches_second_same_identity_answer_until_done(monkeypatch):
     assert q.get_calls == 3
 
     extras, (streamed, got) = _finish_gen(gen)
-    assert extras == []
+    assert [e.kind for e in extras] == ["stream_item_done"]
+    assert not (extras[0].data or {}).get("stream_id")
     assert streamed == "Hello world"
     assert got is resp
     assert q.get_calls == 3
@@ -303,7 +304,8 @@ def test_drain_batches_second_same_identity_reasoning_until_done(monkeypatch):
     assert q.get_calls == 3
 
     extras, (streamed, got) = _finish_gen(gen)
-    assert extras == []
+    assert [e.kind for e in extras] == ["stream_item_done"]
+    assert not (extras[0].data or {}).get("stream_id")
     assert streamed == ""
     assert got.meta["streamed_reasoning"] == "Why not"
     assert q.get_calls == 3
@@ -451,7 +453,8 @@ def test_drain_identity_change_after_first_frame_flushes_held_answer(monkeypatch
     assert q.get_calls == 3
 
     extras, (streamed, got) = _finish_gen(gen)
-    assert extras == []
+    assert [e.kind for e in extras] == ["stream_item_done"]
+    assert not (extras[0].data or {}).get("stream_id")
     assert streamed == "Hello worldOther"
     assert got is resp
 
@@ -492,7 +495,8 @@ def test_drain_answer_reasoning_interleave_preserves_order(monkeypatch):
     assert q.get_calls == 5
 
     extras, (streamed, got) = _finish_gen(gen)
-    assert extras == []
+    assert [e.kind for e in extras] == ["stream_item_done"]
+    assert not (extras[0].data or {}).get("stream_id")
     assert streamed == "A1A2"
     assert got.meta["streamed_reasoning"] == "R1R2"
     assert q.get_calls == 5
@@ -520,7 +524,8 @@ def test_drain_first_frame_answer_then_tool_hint_keeps_answer_before_prep(monkey
     assert q.get_calls == 2
 
     extras, (streamed, got) = _finish_gen(gen)
-    assert extras == []
+    assert [e.kind for e in extras] == ["stream_item_done"]
+    assert not (extras[0].data or {}).get("stream_id")
     assert streamed == "Hello"
     assert got is resp
     assert q.get_calls == 3
@@ -563,7 +568,8 @@ def test_drain_new_stream_id_after_tool_first_frames(monkeypatch):
     assert q.get_calls == 5
 
     extras, (streamed, got) = _finish_gen(gen)
-    assert extras == []
+    assert [e.kind for e in extras] == ["stream_item_done"]
+    assert not (extras[0].data or {}).get("stream_id")
     assert streamed == "HelloAfter tool"
     assert got is resp
 
@@ -610,6 +616,7 @@ def test_drain_dual_output_identities_each_first_frame(monkeypatch):
     assert q.get_calls == 4
 
     extras, (streamed, got) = _finish_gen(gen)
-    assert extras == []
+    assert [e.kind for e in extras] == ["stream_item_done"]
+    assert not (extras[0].data or {}).get("stream_id")
     assert streamed == "OneTwo more"
     assert got is resp

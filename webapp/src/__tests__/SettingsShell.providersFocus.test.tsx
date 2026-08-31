@@ -6,6 +6,10 @@ vi.mock("../components/ModelsSettingsPage", () => ({
   default: () => <div data-testid="models-page" />,
 }));
 
+vi.mock("../components/LocalModelsSettingsPage", () => ({
+  default: () => <div data-testid="local-models-page" />,
+}));
+
 vi.mock("../components/SettingsPane", () => ({
   default: ({ section }: { section: string }) => (
     <div data-testid={`settings-section-${section}`} />

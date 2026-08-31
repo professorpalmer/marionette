@@ -63,11 +63,15 @@ def _executable_stream_tool_calls(assembled: dict, finish_reason: str) -> list:
 
     Missing ids stay empty so the conversation layer can canonicalize them.
     Truncated arguments and length-capped / filtered streams never become
-    executable ``tool_calls``. A tool close is executable only when the
-    finish is ``tool_calls`` / ``function_call`` and arguments parse.
+    executable ``tool_calls``. A tool close is executable when the finish is
+    ``tool_calls`` / ``function_call`` *or* a clean ``stop`` (llama.cpp/Qwen
+    often emit native ``delta.tool_calls`` then ``finish_reason=stop``) and
+    arguments parse.
     """
     finish = _norm_chat_finish(finish_reason)
-    if finish not in _TOOL_CHAT_FINISH:
+    if finish in _LENGTH_CHAT_FINISH or finish in _FILTER_CHAT_FINISH or finish in _INCOMPLETE_CHAT_FINISH:
+        return []
+    if finish not in _TOOL_CHAT_FINISH and finish not in _SUCCESS_CHAT_FINISH:
         return []
     out = []
     for idx in sorted(assembled.keys(), key=lambda k: (isinstance(k, int), k)):
@@ -138,6 +142,14 @@ def _openai_chat_terminal(
             "but no executable tool calls",
         )
     if finish in _SUCCESS_CHAT_FINISH:
+        if executable:
+            return "tool_calls", None
+        if incomplete_tools:
+            return (
+                "incomplete",
+                f"OpenAI chat finished with finish_reason={finish_raw} "
+                "but tool arguments were truncated",
+            )
         return "stop", None
     if finish_raw:
         return (
@@ -173,10 +185,13 @@ class _OpenAIChatSseAccumulator:
         on_delta=None,
         on_reasoning_delta=None,
         on_tool_hint=None,
+        end_on_finish: bool = False,
     ) -> None:
         self.on_delta = on_delta
         self.on_reasoning_delta = on_reasoning_delta
         self.on_tool_hint = on_tool_hint
+        # llama.cpp may send finish_reason then keepalives without [DONE].
+        self.end_on_finish = bool(end_on_finish)
         self.full_text = ""
         self.reasoning_pieces: list = []
         self.assembled_tool_calls: dict = {}
@@ -315,6 +330,8 @@ class _OpenAIChatSseAccumulator:
         chunk_finish_reason = choice.get("finish_reason")
         if chunk_finish_reason:
             self.finish_reason = chunk_finish_reason
+            if self.end_on_finish:
+                return False
         return True
 
     def flush_scrubber(self) -> None:
@@ -380,12 +397,14 @@ def _consume_openai_chat_sse(
     on_reasoning_delta=None,
     on_tool_hint=None,
     transport_error: str | None = None,
+    end_on_finish: bool = False,
 ) -> dict:
     """Shared OpenAI chat Completions SSE parser used by every host."""
     acc = _OpenAIChatSseAccumulator(
         on_delta=on_delta,
         on_reasoning_delta=on_reasoning_delta,
         on_tool_hint=on_tool_hint,
+        end_on_finish=end_on_finish,
     )
     for line in lines:
         if not acc.feed(line):
@@ -415,6 +434,8 @@ class OpenAICompatDriver:
         extra_body: dict | None = None,
         enable_reasoning: bool = False,
         session_id: str | None = None,
+        vendor: str = "",
+        allow_keyless: bool = False,
     ) -> None:
         self.name = name
         self.model = model
@@ -429,6 +450,8 @@ class OpenAICompatDriver:
         self.extra_body = extra_body or {}
         self.enable_reasoning = enable_reasoning
         self.session_id = session_id
+        self.vendor = str(vendor or "")
+        self.allow_keyless = bool(allow_keyless)
         # Set by _key() when a credential-pool entry is selected.
         self._pool_provider: str | None = None
         self._pool_entry_id: str | None = None
@@ -448,8 +471,27 @@ class OpenAICompatDriver:
             pass
         key = os.environ.get(self.api_key_env, "").strip()
         if not key:
+            # Synthesize only for actual loopback or an explicit trusted-LAN
+            # opt-in. Vendor/name llama.cpp on a public host is not keyless.
+            if self.allow_keyless or self._is_loopback_base():
+                return "local"
             raise RuntimeError(f"missing API key in env var {self.api_key_env}")
         return key
+
+    def _is_llama_cpp_host(self) -> bool:
+        """True only for the llama.cpp driver/vendor, not every loopback host."""
+        vendor = str(getattr(self, "vendor", "") or "").strip().lower().replace(" ", "")
+        if vendor in {"llama.cpp", "llamacpp"}:
+            return True
+        name = str(self.name or "")
+        return name.startswith("llama-cpp")
+
+    def _is_loopback_base(self) -> bool:
+        try:
+            host = (urllib.parse.urlparse(self.base_url or "").hostname or "").lower()
+        except Exception:
+            return False
+        return host in {"127.0.0.1", "localhost", "::1"}
 
     def _uses_openai_gpt5_chat_parameters(self) -> bool:
         return (
@@ -1161,7 +1203,7 @@ class OpenAICompatDriver:
             system=system,
             session_id=session_id,
         )
-        if self._is_opencode_go_host():
+        if self._is_opencode_go_host() or self._is_llama_cpp_host():
             body.pop("stream_options", None)
         self._apply_openrouter_parallel_tool_calls(body, tools)
 
@@ -1216,6 +1258,7 @@ class OpenAICompatDriver:
                 on_delta=on_delta,
                 on_reasoning_delta=on_reasoning_delta,
                 on_tool_hint=on_tool_hint,
+                end_on_finish=self._is_llama_cpp_host(),
             )
 
             req = urllib.request.Request(url, data=data, headers=headers, method="POST")

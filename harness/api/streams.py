@@ -637,18 +637,17 @@ def stream_chat(
             write_done=False,
             ring=ring,
         )
-        # After a chat turn streams its events, also drain ready swarm results
-        # (retain + drop-write if the UI already detached).
+        # Drain swarm_result / pilot_resume onto the live client before
+        # framing done. Framing done is not itself detach.
         for ev in turn_pilot.drain_swarm_results():
             _maybe_checkpoint(ev)
+            if not detached:
+                if not sse_write(handler.wfile, _encode_chat_sse_frame(ev)):
+                    detached = True
             try:
                 ring.append(ev.kind, ev.data or {}, getattr(ev, "turn", None))
             except Exception as exc:
                 _diag_note("stream_chat.ring_append", exc)
-            if detached:
-                continue
-            if not sse_write(handler.wfile, _encode_chat_sse_frame(ev)):
-                detached = True
         if not detached:
             sse_write(handler.wfile, b"data: {\"kind\": \"done\"}\n\n")
         try:

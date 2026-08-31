@@ -49,6 +49,7 @@ from .pilot_tool_recovery import (
     invalid_only_halt_reason,
     parse_native_tool_turn,
 )
+from .local_models import local_send_stale_seconds
 from .send_image_prep import prepare_turn_images
 from .send_loop_actions import execute_turn_actions
 from .repeat_tool_reminder import reset_repeat_chain
@@ -452,13 +453,8 @@ class SendLoopMixin:
             if not stale and self._busy_since and self._state in (
                 "thinking", "executing", "streaming",
             ):
-                try:
-                    send_stale_s = float(
-                        os.environ.get("HARNESS_SEND_STALE_SECONDS", "180").strip()
-                        or 180
-                    )
-                except ValueError:
-                    send_stale_s = 180.0
+                driver_spec = str(getattr(getattr(self, "cfg", None), "driver", "") or "")
+                send_stale_s = local_send_stale_seconds(driver_spec)
                 if send_stale_s > 0 and held_for > send_stale_s:
                     try:
                         pilot = getattr(self, "pilot", None)

@@ -1934,6 +1934,19 @@ def _provider_services():
     )
 
 
+def _local_model_services():
+    """Build LocalModelServices from live server module globals."""
+    from .api.local_models import LocalModelServices
+    from .local_model_manager import get_manager
+    return LocalModelServices(
+        manager=get_manager(),
+        cfg=_cfg,
+        rebuild_pilot_and_session=_rebuild_pilot_and_session,
+        save_workspace_driver=_save_workspace_driver,
+        resync_driver_after_model_curation=_resync_driver_after_model_curation,
+    )
+
+
 def _file_services():
     """Build FileServices from live server module globals (call-time lookup)."""
     from .api.files import FileServices
@@ -2522,6 +2535,7 @@ def _route_services():
         usage_services=_usage_services,
         economics_services=_economics_services,
         sse_services=_sse_services,
+        local_model_services=_local_model_services,
         handle_session_relocate=_handle_session_relocate,
         host_ok=_host_ok,
         diag=_diag,

@@ -1020,6 +1020,169 @@ export type ModelCatalogResponse = {
   enabled: string[];
 };
 
+export type LocalModelCommand =
+  | { type: "probe"; url: string; api_key?: string; accept_lan?: boolean; accept_remote?: boolean }
+  | {
+      type: "save_external";
+      url: string;
+      api_key?: string;
+      accept_lan?: boolean;
+      accept_remote?: boolean;
+      model?: string;
+      name?: string;
+      context_length?: number;
+    }
+  | { type: "install"; target?: "runtime" | "model" | "all"; model_id: string }
+  | { type: "cancel"; target?: "runtime" | "model" | "all" }
+  | { type: "start" }
+  | { type: "stop" }
+  | { type: "restart" }
+  | { type: "remove"; target: "model" | "runtime" | "all"; endpoint_id?: string }
+  | { type: "activate"; spec: string }
+  | { type: "verify_tool_calling"; spec: string };
+
+export const LOCAL_TOOL_CALLING_STATUSES = [
+  "unverified",
+  "verified",
+  "unsupported",
+  "error",
+] as const;
+
+export type LocalToolCallingStatus = (typeof LOCAL_TOOL_CALLING_STATUSES)[number];
+
+export type LocalToolCalling = {
+  status: LocalToolCallingStatus;
+  reason?: string;
+  checked_at?: number | null;
+};
+
+export function isLocalToolCallingStatus(value: unknown): value is LocalToolCallingStatus {
+  return typeof value === "string" && (LOCAL_TOOL_CALLING_STATUSES as readonly string[]).includes(value);
+}
+
+export function parseLocalToolCalling(value: unknown): LocalToolCalling {
+  if (typeof value !== "object" || value === null) {
+    return { status: "unverified", reason: "", checked_at: null };
+  }
+  const raw = value as Record<string, unknown>;
+  const status = isLocalToolCallingStatus(raw.status) ? raw.status : "unverified";
+  const reason = typeof raw.reason === "string" ? raw.reason : "";
+  const checkedAt = raw.checked_at;
+  const checked_at = typeof checkedAt === "number" && Number.isFinite(checkedAt) ? checkedAt : null;
+  return { status, reason, checked_at };
+}
+
+export type LocalCatalogModel = {
+  id: string;
+  name: string;
+  quant?: string;
+  size?: number;
+  context_length?: number;
+  min_ram_gb?: number;
+  min_disk_bytes?: number;
+  source?: string;
+  trust?: string;
+};
+
+export type LocalModelHardware = {
+  os: string;
+  arch: string;
+  platform_key: string;
+  ram_bytes?: number | null;
+  disk_free_bytes?: number | null;
+  accelerator: string;
+  supported: boolean;
+  unsupported_reason?: string;
+  min_ram_gb?: number;
+  runtime_available?: boolean;
+};
+
+export type LocalModelDownload = {
+  filename?: string;
+  bytes?: number;
+  total?: number;
+  phase?: string;
+};
+
+export type LocalManagedState = {
+  runtime: { status: string; path?: string; error?: string | null; platform?: string; release?: string };
+  model: { status: string; id?: string; path?: string; error?: string | null };
+  process?: {
+    pid?: number | null;
+    port?: number | null;
+    host?: string;
+    healthy?: boolean;
+    context_length?: number | null;
+  } | null;
+  downloads?: Record<string, LocalModelDownload>;
+  usable?: boolean;
+  spec?: string;
+};
+
+export type LocalExternalEndpoint = {
+  id: string;
+  name?: string;
+  vendor: string;
+  base_url: string;
+  models: string[];
+  selected_model?: string;
+  context_length?: number | null;
+  has_key?: boolean;
+  lan_accepted?: boolean;
+  remote_accepted?: boolean;
+  kind?: string;
+  requires_key?: boolean;
+  last_error?: string | null;
+  healthy?: boolean;
+  tool_calling?: LocalToolCalling;
+};
+
+export type LocalModelsSnapshot = {
+  hardware: LocalModelHardware;
+  catalog: {
+    runtime_release?: string;
+    runtime?: { filename?: string; size?: number; platform?: string; backend?: string } | null;
+    models?: LocalCatalogModel[];
+    model?: { id?: string; name?: string; size?: number; quant?: string; context_length?: number } | null;
+  };
+  managed: LocalManagedState;
+  externals: LocalExternalEndpoint[];
+  active_spec?: string;
+  usable_specs?: string[];
+  event_cursor?: number;
+  events?: LocalModelEvent[];
+  error?: string;
+  code?: string;
+};
+
+export type LocalModelEvent = {
+  cursor: number;
+  kind: string;
+  data?: Record<string, unknown>;
+  ts?: number;
+};
+
+export type LocalModelStreamFrame = {
+  kind: string;
+  cursor?: number;
+  snapshot?: LocalModelsSnapshot;
+  data?: Record<string, unknown>;
+  ts?: number;
+};
+
+export type LocalModelProbeResult = {
+  ok: boolean;
+  url: string;
+  vendor: string;
+  models: string[];
+  context_length?: number | null;
+  kind?: string;
+  requires_lan?: boolean;
+  requires_remote?: boolean;
+  error?: string;
+  code?: string;
+};
+
 export type CodegraphStatus = {
   indexed: boolean;
   status: "ready" | "indexing" | "unsupported" | "needs_scope" | "none";
@@ -1888,6 +2051,28 @@ export const api = {
   getScheduleHistory: (id: string, limit = 50) =>
     getJSON<{ id: string; runs: ScheduleRun[] }>(
       `/api/schedules/history?id=${encodeURIComponent(id)}&limit=${limit}`,
+    ),
+
+  getLocalModels: () => getJSON<LocalModelsSnapshot>("/api/local-models"),
+  localModelCommand: (command: LocalModelCommand) =>
+    postJSON<LocalModelsSnapshot | LocalModelProbeResult>("/api/local-models", command),
+  getLocalModelEvents: (since = 0) =>
+    getJSON<{ ok: boolean; events: LocalModelEvent[]; cursor: number; snapshot: LocalModelsSnapshot }>(
+      `/api/local-models/events?since=${encodeURIComponent(String(since))}`,
+    ),
+  watchLocalModelEvents: (opts: {
+    since?: number;
+    onEvent: (ev: LocalModelStreamFrame) => void;
+    onDone?: () => void;
+    onError?: (e: unknown) => void;
+  }) =>
+    stream(
+      `/api/local-models/events?watch=1&since=${encodeURIComponent(String(opts.since ?? 0))}`,
+      (ev) => {
+        opts.onEvent(ev as LocalModelStreamFrame);
+      },
+      opts.onDone,
+      opts.onError,
     ),
 
   getCodegraph: () => getJSON<CodegraphStatus>("/api/codegraph"),

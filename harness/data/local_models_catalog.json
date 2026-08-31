@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "runtime": {
+    "id": "llama.cpp",
+    "vendor": "ggml-org",
+    "release": "b10442",
+    "commit": "9b0a2ce859d3884252705e9ac7c93c98616bb238",
+    "published": "2026-08-15T14:58:24Z",
+    "binary": "llama-server",
+    "assets": {
+      "macos-arm64": {
+        "filename": "llama-b10442-bin-macos-arm64.tar.gz",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10442/llama-b10442-bin-macos-arm64.tar.gz",
+        "sha256": "10861c8a5405bf3a04889f1216505aafab6c48360446a5b73b9042e7bbe8d5b7",
+        "size": 11099940,
+        "archive": "tar.gz",
+        "backend": "metal"
+      },
+      "macos-x64": {
+        "filename": "llama-b10442-bin-macos-x64.tar.gz",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10442/llama-b10442-bin-macos-x64.tar.gz",
+        "sha256": "75b487d1c89048812a1d1c8fc99cfc0b75d1705cd6beddf6503e4edd1909bb71",
+        "size": 11379983,
+        "archive": "tar.gz",
+        "backend": "metal"
+      },
+      "linux-x64": {
+        "filename": "llama-b10442-bin-ubuntu-x64.tar.gz",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10442/llama-b10442-bin-ubuntu-x64.tar.gz",
+        "sha256": "a447495bdf503af09a1874ebbb450927171da2c84c68cc4eae27c9789ca37b0e",
+        "size": 16626482,
+        "archive": "tar.gz",
+        "backend": "cpu"
+      },
+      "linux-arm64": {
+        "filename": "llama-b10442-bin-ubuntu-arm64.tar.gz",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10442/llama-b10442-bin-ubuntu-arm64.tar.gz",
+        "sha256": "a3f8deaf74111bf508d2e8a071b1964dcfc16e15ecb56aeeb1ace40c238c2a8f",
+        "size": 13490908,
+        "archive": "tar.gz",
+        "backend": "cpu"
+      },
+      "windows-x64": {
+        "filename": "llama-b10442-bin-win-cpu-x64.zip",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10442/llama-b10442-bin-win-cpu-x64.zip",
+        "sha256": "67a5da01b254be88294bdb477f481b71bb482b838e8d7da013eef8b20a0cfa24",
+        "size": 18477132,
+        "archive": "zip",
+        "backend": "cpu"
+      },
+      "windows-arm64": {
+        "filename": "llama-b10442-bin-win-cpu-arm64.zip",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10442/llama-b10442-bin-win-cpu-arm64.zip",
+        "sha256": "5a1843d2995c106bcf7c796d89d3ed5f0a497aa641f0bf796c95ab868e8e43b8",
+        "size": 12310924,
+        "archive": "zip",
+        "backend": "cpu"
+      }
+    }
+  },
+  "models": [
+    {
+      "id": "qwen3-4b",
+      "name": "Qwen3 4B",
+      "quant": "Q4_K_M",
+      "filename": "Qwen3-4B-Q4_K_M.gguf",
+      "url": "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/bc640142c66e1fdd12af0bd68f40445458f3869b/Qwen3-4B-Q4_K_M.gguf",
+      "revision": "bc640142c66e1fdd12af0bd68f40445458f3869b",
+      "sha256": "7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5",
+      "size": 2497280256,
+      "context_length": 40960,
+      "min_ram_gb": 6,
+      "min_disk_bytes": 3200000000,
+      "source": "Qwen/Qwen3-4B-GGUF (Apache-2.0)",
+      "trust": "first-party",
+      "notes": "Pinned first-party GGUF at the stated revision. Real-machine install is not proven by the hermetic suite."
+    }
+  ]
+}

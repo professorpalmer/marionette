@@ -583,3 +583,51 @@ def test_missing_provider_tool_call_ids_persist_paired_and_portable(
     assert len(set(out_ids)) == 4
     assert all(_PORTABLE_ID.match(i) for i in out_ids)
     _assert_adjacent_pairs_match(outbound)
+
+
+def test_parse_native_tool_turn_recovers_xml_from_thought():
+    """Qwen thought dumps <tool_call> XML; recover into the native executor."""
+    schema = [
+        {"type": "function", "function": {"name": "query_wiki"}},
+        {"type": "function", "function": {"name": "web_fetch"}},
+    ]
+    thought = (
+        "Next I will look up prior notes and fetch the docs.\n"
+        "<tool_call>\n"
+        '{"name": "query_wiki", "arguments": {"question": "prior findings on example service"}}\n'
+        "</tool_call>\n"
+        "<tool_call>\n"
+        '{"name": "web_fetch", "arguments": {"url": "https://example.com/docs"}}\n'
+        "</tool_call>\n"
+    )
+    turn, calls, content = parse_native_tool_turn(
+        "I'll look that up.", [], thought, schema,
+    )
+    assert [act.kind for act in turn.actions] == ["query_wiki", "web_fetch"]
+    assert turn.actions[0].arguments.get("question") == "prior findings on example service"
+    assert turn.actions[1].url == "https://example.com/docs"
+    assert [tc["function"]["name"] for tc in calls] == ["query_wiki", "web_fetch"]
+    assert content == "I'll look that up."
+    assert turn.say == "I'll look that up."
+    assert turn.thinking == thought
+
+
+def test_parse_native_tool_turn_native_array_still_wins():
+    schema = [
+        {"type": "function", "function": {"name": "query_wiki"}},
+        {"type": "function", "function": {"name": "web_fetch"}},
+    ]
+    raw = [_tc(
+        "query_wiki",
+        {"question": "prior findings on example service"},
+        tc_id="tc_wiki",
+    )]
+    thought = (
+        "<tool_call>\n"
+        '{"name": "web_fetch", "arguments": {"url": "https://example.com/docs"}}\n'
+        "</tool_call>"
+    )
+    turn, calls, content = parse_native_tool_turn("", raw, thought, schema)
+    assert [act.kind for act in turn.actions] == ["query_wiki"]
+    assert calls[0]["id"] == "tc_wiki"
+    assert content == ""

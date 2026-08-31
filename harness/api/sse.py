@@ -565,8 +565,12 @@ def sse_pump(
         ring.pinned = True
     try:
         for ev in gen:
-            if on_event is not None:
-                on_event(ev)
+            # Write the live SSE frame BEFORE on_event (transcript checkpoint).
+            # assistant_done used to force-checkpoint first; a slow sidecar
+            # write left the UI on Still working with the reply already painted.
+            if not detached:
+                if not sse_write(wfile, frame_for_event(ev)):
+                    detached = True
             if ring is not None:
                 try:
                     # Match SseEventRing.append: only None becomes {}. Do not use
@@ -579,10 +583,8 @@ def sse_pump(
                     )
                 except Exception as exc:
                     _diag_note("sse_pump.ring_append", exc)
-            if detached:
-                continue
-            if not sse_write(wfile, frame_for_event(ev)):
-                detached = True
+            if on_event is not None:
+                on_event(ev)
         if write_done and not detached:
             sse_write(wfile, b"data: {\"kind\": \"done\"}\n\n")
         if write_done and ring is not None:

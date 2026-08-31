@@ -218,6 +218,18 @@ def provider_models(p, *, force: bool = False) -> list:
     returns exactly those normalized ids (deduped); curated ids appear only
     when live fetch/cache yields nothing.
     """
+    if getattr(p, "name", "") == "local":
+        try:
+            from .local_model_manager import get_manager
+            from .local_models import parse_local_spec
+            models = []
+            for spec in get_manager().usable_specs():
+                parsed = parse_local_spec(spec)
+                if parsed:
+                    models.append("%s/%s" % parsed)
+            return list(dict.fromkeys(models))
+        except Exception:
+            return []
     curated = list(p.pilot_models)
     live = []
     keyed = False
@@ -321,6 +333,9 @@ def catalog(available_only: bool = True, *, force: bool = False) -> list:
             elif isinstance(provider_metadata.get("name"), str) and provider_metadata["name"].strip():
                 display_name = provider_metadata["name"].strip()
             pricing = provider_metadata.get("pricing") or {}
+            if p.name == "local":
+                pricing = {"prompt": 0, "completion": 0}
+                display_name = display_name or m
             out.append({
                 "provider": p.name,
                 "provider_display": p.display_name,
