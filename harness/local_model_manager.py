@@ -78,6 +78,10 @@ _CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00
 _DETACHED_PROCESS = getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
 
 
+def _platform_name() -> str:
+    return os.name
+
+
 class LocalModelError(RuntimeError):
     def __init__(self, message: str, *, code: str = "error", http_status: Optional[int] = None) -> None:
         super().__init__(message)
@@ -294,7 +298,7 @@ def read_bounded(resp, limit: int = PROBE_MAX_BYTES) -> bytes:
 def spawn_popen_kwargs() -> dict:
     """POSIX new session; Windows process group + hidden console. Never DETACHED."""
     kwargs = {}
-    if os.name == "nt":
+    if _platform_name() == "nt":
         kwargs["creationflags"] = _CREATE_NEW_PROCESS_GROUP | _CREATE_NO_WINDOW
         startup = getattr(subprocess, "STARTUPINFO", None)
         if startup is not None:
@@ -312,7 +316,7 @@ def stop_process_tree(pid: int, proc: Any = None, *, grace: float = 5.0, sleeper
     sleep = sleeper or time.sleep
     if not pid or int(pid) <= 1:
         return
-    if os.name == "nt":
+    if _platform_name() == "nt":
         flags = _CREATE_NO_WINDOW
         try:
             subprocess.run(
@@ -467,7 +471,7 @@ def extract_archive(archive_path: str, dest_dir: str) -> str:
 
 
 def find_binary(root: str, name: str) -> Optional[str]:
-    expected = os.path.basename(name) + (".exe" if os.name == "nt" and not name.endswith(".exe") else "")
+    expected = os.path.basename(name) + (".exe" if _platform_name() == "nt" and not name.endswith(".exe") else "")
     root_real = os.path.realpath(root)
     for dirpath, _dirnames, filenames in os.walk(root):
         if expected not in filenames:
@@ -553,7 +557,7 @@ def _windows_pid_query(pid: int) -> Optional[dict]:
 def _pid_alive(pid: int) -> bool:
     if not pid or pid <= 0:
         return False
-    if os.name == "nt":
+    if _platform_name() == "nt":
         info = _windows_pid_query(int(pid))
         return bool(info and info.get("alive"))
     try:
@@ -569,7 +573,7 @@ def read_process_start_key(pid: int) -> str:
     """Best-effort process birth token without a third-party dependency."""
     if not pid:
         return ""
-    if os.name == "nt":
+    if _platform_name() == "nt":
         info = _windows_pid_query(int(pid))
         return str((info or {}).get("start_key") or "")
     stat_path = "/proc/%s/stat" % pid
@@ -601,7 +605,7 @@ def read_process_start_key(pid: int) -> str:
 def read_process_command(pid: int) -> str:
     if not pid:
         return ""
-    if os.name == "nt":
+    if _platform_name() == "nt":
         info = _windows_pid_query(int(pid))
         return str((info or {}).get("image") or "")
     if os.path.exists("/proc/%s/cmdline" % pid):
@@ -635,7 +639,7 @@ def process_matches_identity(pid: int, identity: dict) -> bool:
     alias = str(identity.get("alias") or "")
     nonce = str(identity.get("nonce") or "")
     model_name = os.path.basename(str(identity.get("model_path") or ""))
-    if os.name == "nt":
+    if _platform_name() == "nt":
         if not command or not live_birth or not expected_birth:
             return False
         if live_birth != expected_birth:

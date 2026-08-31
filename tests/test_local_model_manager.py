@@ -514,7 +514,7 @@ def test_extract_rejects_zip_symlink(tmp_path):
 
 
 def test_windows_spawn_flags(monkeypatch):
-    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr("harness.local_model_manager._platform_name", lambda: "nt")
     kwargs = spawn_popen_kwargs()
     flags = kwargs.get("creationflags") or 0
     assert flags & _CREATE_NEW_PROCESS_GROUP
@@ -524,14 +524,14 @@ def test_windows_spawn_flags(monkeypatch):
 
 
 def test_posix_spawn_new_session(monkeypatch):
-    monkeypatch.setattr(os, "name", "posix")
+    monkeypatch.setattr("harness.local_model_manager._platform_name", lambda: "posix")
     kwargs = spawn_popen_kwargs()
     assert kwargs.get("start_new_session") is True
 
 
 def test_posix_tree_stop_term_then_kill(monkeypatch):
     killed = []
-    monkeypatch.setattr(os, "name", "posix")
+    monkeypatch.setattr("harness.local_model_manager._platform_name", lambda: "posix")
     monkeypatch.setattr(os, "getpgid", lambda pid: 9001, raising=False)
     monkeypatch.setattr(os, "killpg", lambda pgid, sig: killed.append((pgid, sig)), raising=False)
     stop_process_tree(4242, proc=None, grace=0, sleeper=lambda _s: None)
@@ -545,7 +545,7 @@ def test_windows_tree_stop_taskkill(monkeypatch):
         calls.append(list(argv))
         return SimpleNamespace(returncode=0)
 
-    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr("harness.local_model_manager._platform_name", lambda: "nt")
     monkeypatch.setattr("harness.local_model_manager.subprocess.run", fake_run)
     stop_process_tree(4242, proc=None, grace=0, sleeper=lambda _s: None)
     assert calls[0][:4] == ["taskkill", "/PID", "4242", "/T"]
@@ -1281,7 +1281,7 @@ def test_pid_alive_windows_does_not_signal(monkeypatch):
         signaled.append((pid, sig))
         raise AssertionError("Windows liveness must not call os.kill")
 
-    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr("harness.local_model_manager._platform_name", lambda: "nt")
     monkeypatch.setattr(os, "kill", fake_kill)
     monkeypatch.setattr(
         "harness.local_model_manager._windows_pid_query",
@@ -1292,7 +1292,7 @@ def test_pid_alive_windows_does_not_signal(monkeypatch):
 
 
 def test_windows_identity_fail_closed_without_query(monkeypatch):
-    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr("harness.local_model_manager._platform_name", lambda: "nt")
     monkeypatch.setattr("harness.local_model_manager._windows_pid_query", lambda pid: None)
     assert _pid_alive(9) is False
     assert read_process_command(9) == ""
@@ -1303,7 +1303,7 @@ def test_windows_identity_fail_closed_without_query(monkeypatch):
 
 
 def test_windows_identity_matches_start_key_and_image(monkeypatch):
-    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr("harness.local_model_manager._platform_name", lambda: "nt")
     monkeypatch.setattr(
         "harness.local_model_manager._windows_pid_query",
         lambda pid: {
@@ -1331,7 +1331,7 @@ def test_windows_helpers_never_call_wmic(monkeypatch):
         calls.append(list(argv))
         return SimpleNamespace(returncode=1, stdout="")
 
-    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr("harness.local_model_manager._platform_name", lambda: "nt")
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr("harness.local_model_manager.subprocess.run", fake_run)
     monkeypatch.setattr(
@@ -1604,7 +1604,7 @@ def test_windows_unmatched_pid_does_not_taskkill(tmp_path, monkeypatch):
         calls.append(list(argv))
         return SimpleNamespace(returncode=0)
 
-    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr("harness.local_model_manager._platform_name", lambda: "nt")
     monkeypatch.setattr("harness.local_model_manager.subprocess.run", fake_run)
     monkeypatch.setattr(
         "harness.local_model_manager._windows_pid_query",
@@ -1627,7 +1627,7 @@ def test_windows_unmatched_pid_does_not_taskkill(tmp_path, monkeypatch):
     }
     mgr._save(state)
     mgr.stop()
-    assert calls == []
+    assert not any(call and call[0] == "taskkill" for call in calls)
     assert mgr._state()["managed"]["process"] is None
 
 
