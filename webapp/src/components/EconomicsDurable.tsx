@@ -65,7 +65,11 @@ export default function EconomicsDurable({
     : data?.counterfactual_status === "receipt_mismatch"
       ? "Savings unavailable because the job reports do not agree."
       : data?.counterfactual_status === "incomplete"
-        ? "Savings unavailable because one or more job reports are incomplete."
+        ? (
+          hasReceipt
+            ? "Complete reports were used; incomplete reports were excluded."
+            : "Savings unavailable because one or more job reports are incomplete."
+        )
         : "";
 
   return (
@@ -127,6 +131,9 @@ export default function EconomicsDurable({
             <div className="mt-2 text-[10px] text-faint">Based on measured usage and current model prices.</div>
           ) : receiptBasis === "mixed" ? (
             <div className="mt-2 text-[10px] text-faint">Includes measured and estimated usage.</div>
+          ) : null}
+          {financialIssue ? (
+            <p className="mt-2 text-[10px] leading-snug text-warn">{financialIssue}</p>
           ) : null}
         </section>
       ) : isRoutingForecast && hasReceipt ? (

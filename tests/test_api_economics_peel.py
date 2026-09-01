@@ -1,9 +1,11 @@
 """Characterization tests for the economics API peel."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from harness.api.economics import (
+    RECENT_JOB_LIMIT,
     EconomicsServices,
     _PrefetchedArtifacts,
     _aggregate_job_counterfactual,
@@ -979,6 +981,170 @@ def test_aggregate_fails_closed_on_mixed_reference_or_receipt_mismatch():
     ])
     assert report is None
     assert status == "incomplete"
+
+
+def _comparable_owned_row(*, avoided=1.0, actual=1.0, naive=2.0, tasks=1):
+    return {
+        "accounting_owned": True,
+        "priced_tasks": tasks,
+        "measured_cost_usd": actual,
+        "estimated_cost_usd": 0.0,
+        "counterfactual": {
+            "reference_model_id": "codex/gpt-5-5",
+            "reference_priced": True,
+            "naive_cost_usd": naive,
+            "actual_cost_usd": actual,
+            "avoided_usd": avoided,
+            "tasks": tasks,
+        },
+    }
+
+
+def test_aggregate_sums_comparable_rows_when_one_owned_report_is_incomplete():
+    complete = [_comparable_owned_row(avoided=1.5, actual=0.5, naive=2.0) for _ in range(3)]
+    hidden_incomplete = {
+        "accounting_owned": True,
+        "financial_error": True,
+        "priced_tasks": 1,
+        "measured_cost_usd": 4.0,
+        "estimated_cost_usd": 0.0,
+    }
+    report, status = _aggregate_job_counterfactual([*complete, hidden_incomplete])
+    assert status == "incomplete"
+    assert report is not None
+    assert report["jobs"] == 3
+    assert report["actual_cost_usd"] == 1.5
+    assert report["avoided_usd"] == 4.5
+    assert report["naive_cost_usd"] == 6.0
+
+    priced_without_reference = {
+        "accounting_owned": True,
+        "priced_tasks": 2,
+        "measured_cost_usd": 3.0,
+        "estimated_cost_usd": 0.0,
+        "counterfactual": None,
+    }
+    report, status = _aggregate_job_counterfactual([*complete, priced_without_reference])
+    assert status == "incomplete"
+    assert report is not None
+    assert report["jobs"] == 3
+    assert report["actual_cost_usd"] == 1.5
+
+    report, status = _aggregate_job_counterfactual([
+        hidden_incomplete,
+        priced_without_reference,
+    ])
+    assert report is None
+    assert status == "incomplete"
+
+
+def test_aggregate_keeps_partial_hero_for_each_malformed_accountable_shape():
+    valid = _comparable_owned_row(avoided=1.5, actual=0.5, naive=2.0)
+    float_parse = _comparable_owned_row()
+    float_parse["counterfactual"] = {
+        **float_parse["counterfactual"],
+        "naive_cost_usd": "not-a-number",
+    }
+    int_parse = _comparable_owned_row()
+    int_parse["counterfactual"] = {
+        **int_parse["counterfactual"],
+        "tasks": "nope",
+    }
+    missing_reference = _comparable_owned_row()
+    missing_reference["counterfactual"] = {
+        **missing_reference["counterfactual"],
+        "reference_model_id": "",
+    }
+    zero_tasks = _comparable_owned_row(actual=1.0, tasks=0)
+    malformed_shapes = (
+        {
+            "accounting_owned": True,
+            "financial_error": True,
+            "priced_tasks": 1,
+            "measured_cost_usd": 4.0,
+            "estimated_cost_usd": 0.0,
+        },
+        {
+            "accounting_owned": True,
+            "priced_tasks": 2,
+            "measured_cost_usd": 3.0,
+            "estimated_cost_usd": 0.0,
+            "counterfactual": None,
+        },
+        float_parse,
+        int_parse,
+        missing_reference,
+        zero_tasks,
+    )
+    for malformed in malformed_shapes:
+        report, status = _aggregate_job_counterfactual([valid, malformed])
+        assert status == "incomplete"
+        assert report is not None
+        assert report["jobs"] == 1
+        assert report["actual_cost_usd"] == 0.5
+        assert report["avoided_usd"] == 1.5
+        assert report["naive_cost_usd"] == 2.0
+
+
+def test_aggregate_unpriced_zero_task_report_is_unavailable_not_incomplete():
+    empty = {
+        "accounting_owned": True,
+        "priced_tasks": 0,
+        "measured_cost_usd": 0.0,
+        "estimated_cost_usd": 0.0,
+        "counterfactual": {
+            "reference_model_id": "cheap",
+            "reference_priced": True,
+            "naive_cost_usd": 0.0,
+            "actual_cost_usd": 0.0,
+            "avoided_usd": 0.0,
+            "tasks": 0,
+        },
+    }
+    report, status = _aggregate_job_counterfactual([empty])
+    assert report is None
+    assert status == "unavailable"
+
+
+def test_hidden_incomplete_owned_row_does_not_blank_scope_hero(monkeypatch):
+    assert RECENT_JOB_LIMIT == 12
+    base = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    jobs = [
+        {
+            "id": f"job_{index:03d}",
+            "status": "complete",
+            "source": "harness",
+            "accounting_owned": True,
+            "accounting_scope": "marionette",
+            "created_at": (base + timedelta(minutes=index)).isoformat(),
+        }
+        for index in range(1, 145)
+    ]
+    _patch_pm(monkeypatch)
+    real_builder = __import__(
+        "puppetmaster.cost", fromlist=["build_cost_report"]
+    ).build_cost_report
+
+    def fail_hidden(store, job_id, registry=None):
+        if job_id == "job_050":
+            raise RuntimeError("hidden receipt incomplete")
+        return real_builder(store, job_id, registry=registry)
+
+    monkeypatch.setattr("puppetmaster.cost.build_cost_report", fail_hidden)
+
+    code, payload = get_economics({"scope": ["repo"]}, _svc(jobs=jobs))
+
+    assert code == 200
+    assert isinstance(payload, dict)
+    assert payload["counterfactual_source"] == "job_financial_reports"
+    assert payload["counterfactual_status"] == "incomplete"
+    assert payload["counterfactual"] is not None
+    assert payload["counterfactual"]["jobs"] == 143
+    assert payload["counterfactual"]["actual_cost_usd"] == 1.25 * 143
+    assert payload["counterfactual"]["avoided_usd"] == 2.75 * 143
+    recent_ids = [row["job_id"] for row in payload["recent_jobs"]]
+    assert recent_ids == [f"job_{index:03d}" for index in range(144, 132, -1)]
+    assert "job_050" not in recent_ids
 
 
 def test_aggregate_preserves_plan_included_basis():

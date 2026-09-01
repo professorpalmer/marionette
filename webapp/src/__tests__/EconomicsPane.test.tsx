@@ -349,6 +349,27 @@ describe("EconomicsPane", () => {
     expect(row.queryByText("Cost unavailable")).toBeNull();
   });
 
+  it("shows a partial hero and warns when some job reports are incomplete", async () => {
+    mockGetEconomics.mockResolvedValue({
+      ...durablePayload,
+      counterfactual_status: "incomplete",
+      counterfactual: {
+        ...durablePayload.counterfactual,
+        jobs: 143,
+        tasks: 143,
+      },
+    });
+
+    render(<EconomicsPane />);
+
+    expect(await screen.findByText("Estimated savings")).toBeTruthy();
+    expect(screen.getByText("~$3.92")).toBeTruthy();
+    expect(screen.getByText("143 jobs considered")).toBeTruthy();
+    expect(screen.getByText(/complete reports were used/i)).toBeTruthy();
+    expect(screen.getByText(/incomplete reports were excluded/i)).toBeTruthy();
+    expect(screen.queryByText(/Savings unavailable because one or more job reports are incomplete/)).toBeNull();
+  });
+
   it("shows an honest warning when job reports do not reconcile", async () => {
     mockGetEconomics.mockResolvedValue({
       ...durablePayload,

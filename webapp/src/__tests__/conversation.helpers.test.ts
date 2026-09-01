@@ -230,6 +230,7 @@ import {
 } from "../components/conversation/openFileTabs";
 import {
   preserveOrThinking,
+  RUNNERS_IDLE_CONFIRM_POLLS,
   runnersBusyTickDecision,
   staleLocalStreamTickDecision,
   userStoppedBusyChrome,
@@ -3353,6 +3354,49 @@ describe("queueOps / openFileTabs / runnersBusy", () => {
       }).kind,
     ).toBe("noop");
   });
+
+  it("detached idle does not hold solely because of leftover tool_prep", () => {
+    const stalePrep: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "go" } },
+      {
+        kind: "card",
+        card: {
+          id: "a1",
+          goal: "foo.ts",
+          kind: "read_file",
+          running: false,
+          open: false,
+          result: { status: "ok" },
+        },
+      },
+      { kind: "tool_prep", name: "grep" },
+    ];
+    expect(
+      runnersBusyTickDecision({
+        userStopped: false,
+        localStreamActive: false,
+        runnerBusy: false,
+        detachedBusy: true,
+        chatEventsPollArmed: false,
+        items: stalePrep,
+        consecutiveIdlePolls: RUNNERS_IDLE_CONFIRM_POLLS,
+      }).kind,
+    ).toBe("finalize_idle_refresh");
+    expect(
+      runnersBusyTickDecision({
+        userStopped: false,
+        localStreamActive: false,
+        runnerBusy: false,
+        detachedBusy: true,
+        chatEventsPollArmed: false,
+        items: [
+          { kind: "msg", msg: { role: "user", text: "go" } },
+          { kind: "msg", msg: { role: "assistant", text: "partial…", streaming: true } },
+        ],
+        consecutiveIdlePolls: RUNNERS_IDLE_CONFIRM_POLLS,
+      }).kind,
+    ).toBe("hold_live_investigation");
+  });
 });
 
 describe("completionNotify / feedScroll / streamTerminal / swarmPoll", () => {
@@ -4670,6 +4714,62 @@ describe("investigation terminal reconciliation + live ordering", () => {
     expect((row?.goal || "").length).toBeLessThanOrEqual(MAX_ACTION_GOAL_CHARS);
     expect((row?.error || "").length).toBeLessThanOrEqual(240);
     expect(boundActionField(hugeGoal, MAX_ACTION_GOAL_CHARS).endsWith("…")).toBe(true);
+  });
+
+  it("applyActionResultCard preserves a newer tool_prep when an earlier card settles", () => {
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "go" } },
+      {
+        kind: "card",
+        card: {
+          id: "a1",
+          goal: "a.ts",
+          kind: "read_file",
+          running: true,
+          open: false,
+        },
+      },
+      { kind: "tool_prep", name: "grep" },
+    ];
+    const next = applyActionResultCard(items, {
+      id: "a1",
+      kind: "read_file",
+      goal: "a.ts",
+      status: "complete",
+    });
+    const prep = next.find((it) => it.kind === "tool_prep") as Extract<Item, { kind: "tool_prep" }>;
+    expect(prep?.name).toBe("grep");
+    const card = next.find((it) => it.kind === "card") as Extract<Item, { kind: "card" }>;
+    expect(card.card.running).toBe(false);
+  });
+
+  it("terminal reconciliation removes leftover tool_prep after the answer seals", () => {
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "go" } },
+      {
+        kind: "card",
+        card: {
+          id: "a1",
+          goal: "a.ts",
+          kind: "read_file",
+          running: false,
+          open: false,
+          result: { status: "complete" },
+        },
+      },
+      { kind: "tool_prep", name: "read_file" },
+      { kind: "msg", msg: { role: "assistant", text: "Here is the answer." } },
+    ];
+    const liveIds: string[] = [];
+    const next = reconcileOrphanInvestigationCards(
+      finalizeOrphanSwarmPills(
+        hoistCardsBeforeTrailingFinals(sealOpenStreamSurfaces(items)),
+        liveIds,
+      ),
+      liveIds,
+    );
+    expect(next.some((it) => it.kind === "tool_prep")).toBe(false);
+    expect(next.some((it) => it.kind === "card")).toBe(true);
   });
 
   it("applyActionResultCard settles nested running rows on the matched card", () => {
