@@ -22,7 +22,7 @@ const baseData: CostBreakdownData = {
 };
 
 describe("CostBreakdown receipt", () => {
-  it("shows one app-run receipt without a competing breakdown", () => {
+  it("shows one app-run receipt plus cache and compact line items", async () => {
     render(<CostBreakdown data={baseData} />);
 
     expect(screen.getByText("Spend")).toBeTruthy();
@@ -33,9 +33,9 @@ describe("CostBreakdown receipt", () => {
     expect(screen.getByText("~$0.06")).toBeTruthy();
     expect(screen.getByText("Less spent")).toBeTruthy();
     expect(screen.getByText("33.3%")).toBeTruthy();
-    expect(screen.queryByText("Why you saved")).toBeNull();
-    expect(screen.queryByText("Prompt-cache value")).toBeNull();
-    expect(screen.queryByText("Compact tool outputs")).toBeNull();
+    expect(screen.getByText("Why you saved")).toBeTruthy();
+    expect(screen.getByText("Prompt-cache value")).toBeTruthy();
+    expect(screen.getByText("Compact tool outputs")).toBeTruthy();
   });
 
   it("keeps context diagnostics and compaction controls out of Economics", () => {

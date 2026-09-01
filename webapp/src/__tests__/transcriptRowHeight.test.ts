@@ -5,6 +5,7 @@ import {
   createTranscriptRowHeightCache,
   hasMarkdownCodeFence,
   hasMarkdownImage,
+  hasMarkdownTable,
   hasMermaidFence,
   rowMeasureSignal,
   rowNeedsDomMeasure,
@@ -71,11 +72,29 @@ describe("transcriptRowHeight", () => {
     expect(hasMarkdownCodeFence("```ts\nx\n```")).toBe(true);
     expect(hasMermaidFence("```mermaid\ngraph TD\n```")).toBe(true);
     expect(hasMarkdownImage("![alt](https://x/y.png)")).toBe(true);
+    expect(hasMarkdownTable("plain pipes | are not a table")).toBe(false);
+    expect(
+      hasMarkdownTable("| Repository | Audited ref |\n|---|---|\n| hermes-agent | main |"),
+    ).toBe(true);
+  });
+
+  it("hides Codex gerund title crumbs the way Investigating headlines already hide", () => {
+    expect(
+      assistantTextForMeasure(
+        "**Creating concise manifest summaries****Preparing audit manifest files**",
+      ),
+    ).toBe("");
+    expect(assistantTextForMeasure("Use **bold** in the real answer.")).toBe(
+      "Use **bold** in the real answer.",
+    );
   });
 
   it("classifies rows for Pretext vs DOM settle", () => {
     expect(rowNeedsDomMeasure(msg("user", "short note"))).toBe(false);
     expect(rowNeedsDomMeasure(msg("assistant", "```py\nprint(1)\n```"))).toBe(true);
+    expect(
+      rowNeedsDomMeasure(msg("assistant", "| A | B |\n|---|---|\n| 1 | 2 |")),
+    ).toBe(true);
     expect(rowNeedsDomMeasure(msg("user", "pic", {
       images: [{ path: "/a.png", name: "a", previewUrl: "blob:x" }],
     }))).toBe(true);

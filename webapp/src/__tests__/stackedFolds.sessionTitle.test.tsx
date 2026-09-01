@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   TranscriptList,
@@ -8,6 +8,7 @@ import {
 import {
   partitionStackedActivity,
   ranCommandsLabel,
+  swarmDoneFoldLabel,
   thoughtFoldLabel,
   workFoldLabel,
   workedForLabel,
@@ -73,6 +74,9 @@ describe("stacked fold labels", () => {
     expect(thoughtFoldLabel({ durationMs: 8_000 })).toBe("Thought 8s");
     expect(ranCommandsLabel(1)).toBe("Ran 1 command");
     expect(ranCommandsLabel(3)).toBe("Ran 3 commands");
+    expect(swarmDoneFoldLabel(8, "done")).toBe("Swarm done · 8");
+    expect(swarmDoneFoldLabel(1, "done")).toBe("Swarm done");
+    expect(swarmDoneFoldLabel(2, "failed")).toBe("Swarm failed · 2");
   });
 
   it("work fold never falls through to spoken-prose Working...", () => {
@@ -103,6 +107,42 @@ describe("stacked fold labels", () => {
     if (rows[1]?.kind !== "commands") return;
     expect(rows[1].items).toHaveLength(3);
     expect(rows[1].items.filter((it) => it.kind === "thinking")).toHaveLength(1);
+  });
+
+  it("coalesces consecutive terminal swarm_pending into one Swarm done fold", () => {
+    const items = [
+      { kind: "thinking" as const },
+      { kind: "swarm_pending" as const, terminal: true },
+      { kind: "swarm_pending" as const, terminal: true },
+      { kind: "swarm_pending" as const, terminal: true },
+      { kind: "other" as const },
+      { kind: "swarm_pending" as const, terminal: true },
+    ];
+    const rows = partitionStackedActivity(items, (row) => ({
+      cardKind: null,
+      isThinking: row.kind === "thinking",
+      isTerminalSwarmPending: row.kind === "swarm_pending" && row.terminal,
+    }));
+    expect(rows.map((r) => r.kind)).toEqual([
+      "thought",
+      "swarms",
+      "item",
+      "item",
+    ]);
+    expect(rows[1]?.kind).toBe("swarms");
+    if (rows[1]?.kind === "swarms") {
+      expect(rows[1].items).toHaveLength(3);
+    }
+  });
+
+  it("leaves a single terminal swarm_pending as its own pill", () => {
+    const items = [{ kind: "swarm_pending" as const, terminal: true }];
+    const rows = partitionStackedActivity(items, (row) => ({
+      cardKind: null,
+      isThinking: false,
+      isTerminalSwarmPending: row.kind === "swarm_pending",
+    }));
+    expect(rows.map((r) => r.kind)).toEqual(["item"]);
   });
 
   it("coalesces consecutive Thought siblings into one fold", () => {
@@ -299,5 +339,49 @@ describe("session title lock", () => {
     // One session row — display stays the human title, never the wall.
     expect(displaySessionListTitle(userTitle)).toBe(userTitle);
     expect(displaySessionListTitle(headlines.join("\n"))).toBe("Untitled");
+  });
+});
+
+describe("stacked Swarm done fold", () => {
+  it("collapses eight terminal swarm pills behind Swarm done · 8", () => {
+    const pendings: Item[] = Array.from({ length: 8 }, (_, i) => ({
+      kind: "swarm_pending" as const,
+      job_ids: [`local-swarm-call_${i}`],
+      objective: `Audit the freshly fetched repo ${i}`,
+      status: "done" as const,
+      resolved: true,
+    }));
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "audit the agents" } },
+      {
+        kind: "card",
+        card: {
+          id: "c-swarm",
+          goal: "run swarm",
+          cwd: null,
+          kind: "run_swarm",
+          running: true,
+          open: false,
+        },
+      },
+      ...pendings,
+    ];
+
+    render(
+      <TranscriptList
+        {...listProps(items)}
+        status="executing"
+        turnOpen
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Investigating/i }));
+
+    const fold = screen.getByTestId("swarm-done-fold");
+    expect(fold.querySelector(".transcript-fold-chrome")?.textContent || "").toMatch(/Swarm done · 8/);
+    expect(screen.queryAllByText(/swarm done:/i)).toHaveLength(0);
+
+    fireEvent.click(within(fold).getByRole("button"));
+    expect(screen.getAllByText(/swarm done:/i).length).toBe(8);
   });
 });

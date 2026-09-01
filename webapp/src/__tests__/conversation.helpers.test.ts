@@ -16,6 +16,7 @@ import {
 import {
   clearToolPrepPlaceholders,
   coalesceThinkingChunk,
+  looksLikeStatusHeadline,
   sanitizeThinkingStatusGlue,
   finalizeStreamingThinking,
   hoistCardsBeforeTrailingFinals,
@@ -658,6 +659,34 @@ describe("thinkingToolPrep module", () => {
     expect(coalesceThinkingChunk("Diagnosing…", "****Inspecting…")).toBe("Inspecting…");
     expect(sanitizeThinkingStatusGlue("Diagnosing…****Inspecting…")).toBe("Inspecting…");
     expect(sanitizeThinkingStatusGlue("hello****Inspecting…")).toBe("Inspecting…");
+  });
+
+  it("treats Codex gerund title frames as status headlines, not spoken glue", () => {
+    // e4826862bc69 stored these as assistant bubbles; they must replace, not concatenate.
+    expect(looksLikeStatusHeadline("Creating concise manifest summaries")).toBe(true);
+    expect(looksLikeStatusHeadline("Preparing audit manifest files")).toBe(true);
+    expect(
+      looksLikeStatusHeadline(
+        "**Creating concise manifest summaries****Preparing audit manifest files**",
+      ),
+    ).toBe(true);
+    expect(
+      sanitizeThinkingStatusGlue(
+        "**Creating concise manifest summaries****Preparing audit manifest files**",
+      ),
+    ).toBe("Preparing audit manifest files");
+    expect(
+      coalesceThinkingChunk(
+        "**Creating concise manifest summaries**",
+        "**Preparing audit manifest files**",
+      ),
+    ).toBe("Preparing audit manifest files");
+    expect(looksLikeStatusHeadline("Use **bold** in the real answer.")).toBe(false);
+    expect(
+      looksLikeStatusHeadline(
+        "**Summarizing Luna worker allocation****Confirming GPT-5.6 Luna pinning and source status**",
+      ),
+    ).toBe(true);
   });
 
   it("upsertStreamingThinking coalesceSnapshots uses coalesce; default strict-appends", () => {
