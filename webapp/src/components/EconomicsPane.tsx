@@ -1,10 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { Coins } from "lucide-react";
-import { api, type EconomicsData, type EconomicsScope } from "../lib/api";
+import { api, type EconomicsData, type EconomicsScope, type UsageData } from "../lib/api";
 import { usePolling } from "../lib/usePolling";
 import { readSWRCache, writeSWRCache } from "../lib/useStaleWhileRevalidate";
 import { lastSelectedProjectRoot } from "../lib/panelTransition";
 import { repoPathsEqual } from "../lib/pathNormalize";
+import CostBreakdown, {
+  listPriceValueTotal,
+  usageToCostBreakdownData,
+} from "./CostBreakdown";
 import EconomicsDurable from "./EconomicsDurable";
 
 type EconomicsPaneScope = Exclude<EconomicsScope, "window30">;
@@ -49,7 +53,16 @@ export default function EconomicsPane() {
       ),
     ) ?? null,
   );
+  const [usage, setUsage] = useState<UsageData | null>(null);
   const economicsRequest = useRef(0);
+
+  const loadUsage = () => {
+    return Promise.resolve(api.getUsage())
+      .then((data) => {
+        if (data && data.session) setUsage(data);
+      })
+      .catch(() => {});
+  };
 
   const loadEconomics = (
     requestedScope = scope,
@@ -83,9 +96,13 @@ export default function EconomicsPane() {
   };
 
   usePolling(loadEconomics, 10000, { enabled: Boolean(projectRoot) });
+  usePolling(loadUsage, 10000);
 
   useEffect(() => {
-    const onUsageRefresh = () => { void loadEconomics(); };
+    const onUsageRefresh = () => {
+      void loadUsage();
+      void loadEconomics();
+    };
     const onSessionChanged = () => {
       if (scope === "conversation") void loadEconomics();
     };
@@ -138,6 +155,17 @@ export default function EconomicsPane() {
     && (periodDays === 30 ? economics.window_days === 30 : !economics.window_days),
   );
   const projectLabel = projectRoot.split(/[\\/]/).filter(Boolean).at(-1) || "this repo";
+  const processMeters = usage?.session
+    ? usageToCostBreakdownData(usage.session)
+    : null;
+  const showProcessMeters = Boolean(
+    processMeters
+    && (
+      (processMeters.tokens_used ?? 0) > 0
+      || (processMeters.est_cost_usd ?? 0) > 0
+      || listPriceValueTotal(processMeters) > 0
+    ),
+  );
   return (
     <div className="flex flex-col h-full overflow-hidden bg-transparent">
       <div className="shrink-0 flex items-center px-3 py-2 border-b border-[var(--shell-panel-border)] select-none">
@@ -183,6 +211,9 @@ export default function EconomicsPane() {
         </select>
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto">
+        {showProcessMeters && processMeters ? (
+          <CostBreakdown data={processMeters} />
+        ) : null}
         {economicsMatchesSelection ? (
           <EconomicsDurable
             data={economics}

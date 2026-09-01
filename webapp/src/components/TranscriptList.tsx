@@ -47,6 +47,7 @@ import {
   joinThoughtFoldText,
   partitionStackedActivity,
   ranCommandsLabel,
+  swarmDoneFoldLabel,
   resolveCardCliInput,
   shortenGoal,
   isWorkingEllipsisFallback,
@@ -928,6 +929,7 @@ const __activityOpen = new Map<string, boolean>();
 const __thinkingExpanded = new Map<string, boolean>();
 // Ran N command mid-fold expand preference (user click) survives remounts.
 const __commandFoldOpen = new Map<string, boolean>();
+const __swarmDoneFoldOpen = new Map<string, boolean>();
 // Alias every durable member of an investigation onto one canon key so a
 // thinking-only group does not remount when the first tool card arrives (and
 // the reverse). Streaming used to key off objKey(thinking) which changed every
@@ -943,6 +945,7 @@ export function clearActivityFoldPrefs(): void {
   __activityOpen.clear();
   __thinkingExpanded.clear();
   __commandFoldOpen.clear();
+  __swarmDoneFoldOpen.clear();
   __activityGroupCanon.clear();
 }
 
@@ -2657,6 +2660,9 @@ function ActivityGroup({
           {partitionStackedActivity(displayItems, (row) => ({
             cardKind: row.kind === "card" ? String(row.card.kind || "") : null,
             isThinking: row.kind === "thinking",
+            isTerminalSwarmPending: row.kind === "swarm_pending" && (
+              (row.status || (row.resolved ? "done" : "running")) !== "running"
+            ),
           })).map((row) => {
             if (row.kind === "thought") {
               const thoughts = row.items.filter(
@@ -2697,6 +2703,18 @@ function ActivityGroup({
                 />
               );
             }
+            if (row.kind === "swarms") {
+              const foldKey = `swarm-done-fold-${row.indexes[0]}`;
+              return (
+                <SwarmDoneFold
+                  key={foldKey}
+                  foldId={`${groupId}-${foldKey}`}
+                  items={row.items}
+                  indexes={row.indexes}
+                  renderInner={renderInner}
+                />
+              );
+            }
             if (row.kind === "shelf") {
               const shelfCards = row.items.filter(
                 (it): it is { kind: "card"; card: Card } => it.kind === "card",
@@ -2713,6 +2731,66 @@ function ActivityGroup({
             }
             return renderInner(row.item, row.index);
           })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+/** Collapsed swarm-lifecycle receipts. Expand shows one SwarmPendingPill per job. */
+function SwarmDoneFold({
+  foldId,
+  items,
+  indexes,
+  renderInner,
+}: {
+  foldId: string;
+  items: ActivityItem[];
+  indexes: number[];
+  renderInner: (it: ActivityItem, idx: number) => ReactNode;
+}) {
+  const [open, setOpen] = useState(() => {
+    if (__swarmDoneFoldOpen.has(foldId)) return Boolean(__swarmDoneFoldOpen.get(foldId));
+    return false;
+  });
+  const rootRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    requestFeedRowRemeasure(rootRef.current);
+  }, [open]);
+
+  const pendings = items.filter(
+    (it): it is SwarmPendingItem => it.kind === "swarm_pending",
+  );
+  const statuses = pendings.map((it) => it.status || (it.resolved ? "done" : "running"));
+  const outcome: "done" | "failed" | "partial" = statuses.every((s) => s === "failed")
+    ? "failed"
+    : statuses.every((s) => s === "done" || s === "ended")
+      ? "done"
+      : "partial";
+  const label = swarmDoneFoldLabel(pendings.length, outcome);
+
+  return (
+    <div className="flex flex-col w-full py-0.5 min-w-0" ref={rootRef} data-testid="swarm-done-fold">
+      <button
+        type="button"
+        onClick={() => {
+          setOpen((v) => {
+            const next = !v;
+            __swarmDoneFoldOpen.set(foldId, next);
+            return next;
+          });
+        }}
+        aria-expanded={open}
+        className="transcript-fold-chrome flex items-center gap-1.5 text-faint/65 hover:text-muted/90 transition font-sans font-normal text-[12px] text-left w-full min-w-0 select-none"
+        title={open ? "Collapse swarm receipts" : "Expand swarm receipts"}
+      >
+        {open ? <ChevronDown size={11} className="text-faint/55 shrink-0" /> : <ChevronRight size={11} className="text-faint/55 shrink-0" />}
+        <span className="shrink-0">{label}</span>
+      </button>
+      {open && (
+        <div className="mt-0.5 pl-2.5 ml-1 border-l border-edge/40 flex flex-col gap-0.5 w-full min-w-0">
+          {items.map((it, i) => renderInner(it, indexes[i] ?? i))}
         </div>
       )}
     </div>

@@ -514,6 +514,21 @@ export function ranCommandsLabel(count: number): string {
   return n === 1 ? "Ran 1 command" : `Ran ${n} commands`;
 }
 
+/** Mid-summary swarm-lifecycle fold — expand shows per-job SwarmPendingPill rows. */
+export function swarmDoneFoldLabel(
+  count: number,
+  outcome: "done" | "failed" | "partial" = "done",
+): string {
+  const n = Math.max(0, Math.floor(count));
+  const noun =
+    outcome === "failed"
+      ? "Swarm failed"
+      : outcome === "partial"
+        ? "Swarm results"
+        : "Swarm done";
+  return n <= 1 ? noun : `${noun} · ${n}`;
+}
+
 /** One expanded command row under Ran N — `Ran {goal}`. */
 export function ranGoalLine(goal: string): string {
   const g = String(goal || "").trim();
@@ -561,6 +576,7 @@ export function activityWorkDurationMs(
 export type StackedActivityRow<T> =
   | { kind: "thought"; items: T[]; indexes: number[] }
   | { kind: "commands"; items: T[]; indexes: number[] }
+  | { kind: "swarms"; items: T[]; indexes: number[] }
   | { kind: "shelf"; items: T[]; indexes: number[] }
   | { kind: "item"; item: T; index: number };
 
@@ -577,7 +593,11 @@ export function joinThoughtFoldText(texts: string[]): string {
  */
 export function partitionStackedActivity<T>(
   items: T[],
-  meta: (item: T) => { cardKind: string | null; isThinking: boolean },
+  meta: (item: T) => {
+    cardKind: string | null;
+    isThinking: boolean;
+    isTerminalSwarmPending?: boolean;
+  },
 ): StackedActivityRow<T>[] {
   const out: StackedActivityRow<T>[] = [];
   let i = 0;
@@ -650,6 +670,22 @@ export function partitionStackedActivity<T>(
         out.push({ kind: "shelf", items: group, indexes });
       } else {
         out.push({ kind: "item", item: group[0], index: start });
+      }
+      continue;
+    }
+
+    if (cur.isTerminalSwarmPending) {
+      const group: T[] = [];
+      const indexes: number[] = [];
+      while (i < items.length && meta(items[i]).isTerminalSwarmPending) {
+        group.push(items[i]);
+        indexes.push(i);
+        i += 1;
+      }
+      if (group.length >= 2) {
+        out.push({ kind: "swarms", items: group, indexes });
+      } else {
+        out.push({ kind: "item", item: group[0], index: indexes[0] });
       }
       continue;
     }

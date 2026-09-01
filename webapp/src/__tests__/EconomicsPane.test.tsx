@@ -8,14 +8,28 @@ import { dispatchProjectSelected } from "../lib/panelTransition";
 
 vi.mock("../lib/api", () => ({
   api: {
+    getUsage: vi.fn(),
     getEconomics: vi.fn(),
   },
 }));
 
 vi.mock("../lib/agentLinks", () => ({ openAgentSwarmJob: vi.fn() }));
 
+const mockGetUsage = vi.mocked(api.getUsage);
 const mockGetEconomics = vi.mocked(api.getEconomics);
 const mockOpenAgentSwarmJob = vi.mocked(openAgentSwarmJob);
+
+const emptyUsage = {
+  session: {
+    tokens_used: 0,
+    est_cost_usd: 0,
+    driver: "",
+    price_in: 0,
+    price_out: 0,
+  },
+  jobs: [],
+  session_total: { session_id: "", est_cost_usd: 0, input_tokens: 0, output_tokens: 0 },
+};
 
 const durablePayload = {
   available: true,
@@ -56,6 +70,7 @@ describe("EconomicsPane", () => {
     vi.clearAllMocks();
     clearSWRCache();
     dispatchProjectSelected("/repo-a");
+    mockGetUsage.mockResolvedValue(emptyUsage);
     mockGetEconomics.mockImplementation(async (scope = "repo") => ({
       ...durablePayload,
       scope,
@@ -439,6 +454,43 @@ describe("EconomicsPane", () => {
     render(<EconomicsPane />);
     fireEvent.click(await screen.findByRole("button", { name: "job_abcdef012345" }));
     expect(mockOpenAgentSwarmJob).toHaveBeenCalledWith("job_abcdef012345");
+  });
+
+  it("shows this-open cache and compact value even when the session has no owned jobs", async () => {
+    mockGetUsage.mockResolvedValue({
+      session: {
+        tokens_used: 229_800,
+        est_cost_usd: 0.21,
+        cost_source: "estimated",
+        estimated: true,
+        driver: "openai-codex:gpt-5.6-sol",
+        price_in: 1,
+        price_out: 1,
+        tokens_cached: 170_000,
+        prompt_cache_read_tokens: 170_000,
+        prompt_cache_hit_ratio: 0.74,
+        cache_savings_gross_usd: 5.22,
+        cache_savings_basis: "catalog",
+        tool_output_tokens_saved: 40_000,
+        tool_output_savings_usd: 0.40,
+      },
+      jobs: [],
+      session_total: { session_id: "s1", est_cost_usd: 0.21, input_tokens: 1, output_tokens: 1 },
+    });
+    mockGetEconomics.mockResolvedValue({
+      available: true,
+      repo: "/repo-a",
+      scope: "conversation",
+      counterfactual: null,
+      recent_jobs: [],
+    });
+    (window as any).__pmPendingEconomicsSelection = { scope: "conversation", period: "all" };
+
+    render(<EconomicsPane />);
+
+    expect(await screen.findByText("Prompt-cache value")).toBeTruthy();
+    expect(screen.getByText("Compact tool outputs")).toBeTruthy();
+    expect(screen.getByText("No owned jobs for this session.")).toBeTruthy();
   });
 
   it("keeps conversation scope honest when no full comparison exists", async () => {

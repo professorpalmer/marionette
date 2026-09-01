@@ -51,6 +51,21 @@ export function isTrivialAssistantCrumb(text: string): boolean {
 const STATUS_HEADLINE_RE =
   /^(Investigating|Explored|Diagnosing|Inspecting|Planning|Assessing|Searching|Looking|Thinking|Thought|Validating|Finalizing|Still working|Working)\b/i;
 
+/** Codex in-progress titles: "Creating concise manifest summaries". */
+const GERUND_TITLE_RE = /^[A-Z][A-Za-z]*ing\b/;
+
+function isTitleFrameCore(core: string): boolean {
+  if (!core) return false;
+  if (STATUS_HEADLINE_RE.test(core)) return true;
+  if (core.includes("\n")) return false;
+  // Sentence end, not version dots in "GPT-5.6 Luna pinning".
+  if (/[.!?](?:\s|$)/.test(core)) return false;
+  if (core.length > 96) return false;
+  const words = core.split(/\s+/).filter(Boolean);
+  if (words.length === 0 || words.length > 12) return false;
+  return GERUND_TITLE_RE.test(core);
+}
+
 /** Strip surrounding emphasis markers so `**Planning…**` compares as a title. */
 export function stripThinkingEmphasisChrome(text: string): string {
   let t = String(text || "").trim();
@@ -67,8 +82,16 @@ export function stripThinkingEmphasisChrome(text: string): string {
 }
 
 export function looksLikeStatusHeadline(text: string): boolean {
-  const core = stripThinkingEmphasisChrome(text);
-  return Boolean(core) && STATUS_HEADLINE_RE.test(core);
+  const raw = String(text || "");
+  const core = stripThinkingEmphasisChrome(raw);
+  if (isTitleFrameCore(core)) return true;
+  // `**Creating…****Preparing…**` — end-peel leaves **** in the middle.
+  if (!/\*{2,}|_{2,}/.test(raw)) return false;
+  const parts = raw
+    .split(/\*{2,}|_{2,}/)
+    .map((part) => stripThinkingEmphasisChrome(part))
+    .filter(Boolean);
+  return parts.length >= 2 && parts.every(isTitleFrameCore);
 }
 
 /**

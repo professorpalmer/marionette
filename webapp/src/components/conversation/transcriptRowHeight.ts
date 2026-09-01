@@ -101,6 +101,11 @@ export function hasMarkdownImage(text: string): boolean {
   return /!\[[^\]]*\]\([^)]+\)/.test(text);
 }
 
+/** GFM table: a pipe row immediately followed by a delimiter row. */
+export function hasMarkdownTable(text: string): boolean {
+  return /\|.+\|[\t ]*\n[\t ]*\|?[\t ]*:?-{3,}/.test(text);
+}
+
 /** Strip assistant traceback noise — mirrors Bubble's cleanAssistantText (height-only). */
 export function assistantTextForMeasure(raw: string): string {
   const lines = raw.split("\n");
@@ -164,6 +169,7 @@ export function rowNeedsDomMeasure(item: GroupedItem): boolean {
       if (hasMarkdownCodeFence(text)) return true;
       if (hasMermaidFence(text)) return true;
       if (hasMarkdownImage(text)) return true;
+      if (hasMarkdownTable(text)) return true;
       return false;
     }
     case "activity_group":
