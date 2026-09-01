@@ -20,6 +20,7 @@ from .mcp_client import StdioMcpClient, McpTool, McpError
 from .mcp_http_client import HttpMcpClient
 from .secure_files import restrict_to_owner
 from .diag import note as _diag
+from .api.redaction import build_auth_failure_attribution
 
 CONFIG_DIR = Path(os.path.expanduser("~/.pmharness"))
 CONFIG_PATH = CONFIG_DIR / "mcp.json"
@@ -248,13 +249,23 @@ class McpManager:
             at = row.get("at")
             if not isinstance(at, str) or not at.strip():
                 continue
-            # Ignore any accidental secret/payload keys; only keep the receipt.
-            loaded[name.strip()] = {
+            # Ignore accidental secret/payload keys. Rebuild attribution from
+            # the sanitized receipt error; persisted auth is untrusted.
+            receipt = {
                 "tool": tool.strip(),
                 "ok": ok,
                 "error": error if not ok else "",
                 "at": at.strip(),
             }
+            if not ok and isinstance(row.get("auth"), dict):
+                status = row["auth"].get("http_status")
+                if not isinstance(status, bool) and status in (401, 403):
+                    auth = build_auth_failure_attribution(
+                        "mcp_server", name.strip(), status, error,
+                    )
+                    if auth is not None:
+                        receipt["auth"] = auth
+            loaded[name.strip()] = receipt
         with self._lock:
             self._last_invocations = loaded
 
@@ -284,16 +295,25 @@ class McpManager:
             _diag("mcp.invocations_persist", e)
 
     def _record_invocation(self, server: str, tool: str, *, ok: bool, error: str = "") -> None:
+        """Record a bounded receipt and classify clear auth failures safely."""
         server = (server or "").strip()
         tool = (tool or "").strip()
         if not server or not tool:
             return
+        original_error = error
+        sanitized_error = "" if ok else _sanitize_invocation_error(original_error)
         row = {
             "tool": tool,
             "ok": bool(ok),
-            "error": "" if ok else _sanitize_invocation_error(error),
+            "error": sanitized_error,
             "at": _utc_now_iso(),
         }
+        if not ok:
+            auth = build_auth_failure_attribution(
+                "mcp_server", server, None, original_error,
+            )
+            if auth is not None:
+                row["auth"] = auth
         with self._lock:
             self._last_invocations[server] = row
             self._persist_invocations_unlocked()
