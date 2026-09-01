@@ -467,6 +467,10 @@ export function reconcileOrphanInvestigationCards(
   let changed = false;
   const next: Item[] = [];
   for (const it of items) {
+    if (it.kind === "tool_prep") {
+      changed = true;
+      continue;
+    }
     if (it.kind !== "card") {
       next.push(it);
       continue;

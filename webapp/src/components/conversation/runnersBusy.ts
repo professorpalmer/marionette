@@ -120,10 +120,9 @@ export function runnersBusyTickDecision(opts: {
   }
 
   if (opts.detachedBusy) {
-    // Runner already idle: only hold while a surface is actually live
-    // (running card / tool_prep / streaming). Completed cards must NOT keep
-    // Stop forever — sticky-between-batches applies while runnerBusy is true.
-    if (turnHasVisibleBusySurface(opts.items)) {
+    // Runner already idle: hold only for a live running card or streaming
+    // surface. Leftover tool_prep must not keep detached busy after idle.
+    if (turnHasVisibleBusySurface(opts.items, { includeToolPrep: false })) {
       return { kind: "hold_live_investigation" };
     }
     // Resist a single transient false idle poll before clearing Stop.

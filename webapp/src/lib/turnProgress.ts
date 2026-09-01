@@ -1098,7 +1098,10 @@ export function turnHasLiveInvestigation(
         return true;
       }
     }
-    if (it.kind === "tool_prep") return true;
+    if (it.kind === "tool_prep") {
+      if (agentLoopOpen) return true;
+      continue;
+    }
     if (
       it.kind === "thinking"
       && (it as { streaming?: boolean; text?: string }).streaming
@@ -1120,7 +1123,11 @@ export function turnHasLiveInvestigation(
  * Durable background jobs are pollable card UI — they must not hold Stop/Steer
  * after the pilot runner has gone idle.
  */
-export function turnHasVisibleBusySurface(items: TurnItem[]): boolean {
+export function turnHasVisibleBusySurface(
+  items: TurnItem[],
+  opts: { includeToolPrep?: boolean } = {},
+): boolean {
+  const includeToolPrep = opts.includeToolPrep !== false;
   for (const it of itemsInCurrentTurn(items)) {
     if (it.kind === "card") {
       const card = (it as { card: TurnCard }).card || ({} as TurnCard);
@@ -1128,7 +1135,10 @@ export function turnHasVisibleBusySurface(items: TurnItem[]): boolean {
         return true;
       }
     }
-    if (it.kind === "tool_prep") return true;
+    if (it.kind === "tool_prep") {
+      if (includeToolPrep) return true;
+      continue;
+    }
     if (it.kind === "thinking" && (it as { streaming?: boolean }).streaming === true) {
       return true;
     }

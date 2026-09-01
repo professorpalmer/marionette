@@ -30,6 +30,8 @@ import {
   looksLikeFinalAnswer,
   hoistCardsBeforeTrailingFinals,
 } from "../components/Conversation";
+import { derivePillStatus } from "../components/conversation/pillStatus";
+import { statusPillLabel } from "../components/conversation/StatusPill";
 import type { Item } from "../components/TranscriptList";
 
 function card(id: string, goal: string, kind = "read_file", running = false): Item {
@@ -276,6 +278,29 @@ describe("turnHasLiveInvestigation", () => {
       card("1", "a.ts", "read_file", false),
     ];
     expect(turnHasLiveInvestigation(items, true)).toBe(true);
+  });
+
+  it("leftover tool_prep is live only while the agent loop is open", () => {
+    const items: Item[] = [
+      msg("user", "go"),
+      card("1", "a.ts", "read_file", false),
+      { kind: "tool_prep", name: "read_file" },
+      msg("assistant", "Here is the answer."),
+    ];
+    expect(turnHasLiveInvestigation(items, true)).toBe(true);
+    expect(turnHasLiveInvestigation(items, false)).toBe(false);
+    expect(
+      statusPillLabel(
+        derivePillStatus({
+          transcriptStale: false,
+          answerChromeIdle: false,
+          liveInvestigation: turnHasLiveInvestigation(items, false),
+          turnOpen: false,
+          status: "idle",
+          agentLoopOpen: false,
+        }),
+      ),
+    ).toBe("Ready");
   });
 
   it("is true while nested worker actions are still running", () => {

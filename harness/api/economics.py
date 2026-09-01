@@ -563,25 +563,28 @@ def _owned_totals(rows: list) -> dict:
 
 
 def _aggregate_job_counterfactual(rows: list) -> tuple[Optional[dict], str]:
-    """Sum the same owned job reports projected into Recent jobs."""
+    """Sum comparable owned job reports; mark incomplete if any accountable row is malformed."""
     comparable = []
     references = set()
     measured_cost = 0.0
     estimated_cost = 0.0
     plan_jobs = 0
+    skipped_incomplete = False
     for row in filter_accountable_jobs(rows):
         if row.get("financial_error"):
-            return None, "incomplete"
+            skipped_incomplete = True
+            continue
         cf = row.get("counterfactual")
         try:
             priced_tasks = int(row.get("priced_tasks") or 0)
             row_measured = float(row.get("measured_cost_usd") or 0.0)
             row_estimated = float(row.get("estimated_cost_usd") or 0.0)
         except (TypeError, ValueError):
-            return None, "incomplete"
+            skipped_incomplete = True
+            continue
         if not isinstance(cf, dict) or cf.get("reference_priced") is not True:
             if priced_tasks > 0 or row_measured > 0 or row_estimated > 0:
-                return None, "incomplete"
+                skipped_incomplete = True
             continue
         reference = str(cf.get("reference_model_id") or "").strip()
         try:
@@ -590,8 +593,14 @@ def _aggregate_job_counterfactual(rows: list) -> tuple[Optional[dict], str]:
             avoided = float(cf["avoided_usd"])
             tasks = int(cf.get("tasks") or row.get("priced_tasks") or 0)
         except (KeyError, TypeError, ValueError):
+            skipped_incomplete = True
             continue
-        if not reference or tasks <= 0:
+        if not reference:
+            skipped_incomplete = True
+            continue
+        if tasks <= 0:
+            if priced_tasks > 0 or row_measured > 0 or row_estimated > 0:
+                skipped_incomplete = True
             continue
         if abs((row_measured + row_estimated) - actual) > 0.000001:
             return None, "receipt_mismatch"
@@ -604,7 +613,7 @@ def _aggregate_job_counterfactual(rows: list) -> tuple[Optional[dict], str]:
     if len(references) > 1:
         return None, "mixed_reference"
     if not comparable:
-        return None, "unavailable"
+        return None, "incomplete" if skipped_incomplete else "unavailable"
     return {
         "reference_model_id": next(iter(references)),
         "reference_priced": True,
@@ -622,7 +631,7 @@ def _aggregate_job_counterfactual(rows: list) -> tuple[Optional[dict], str]:
             else COST_BASIS
         ),
         "label": COUNTERFACTUAL_LABEL,
-    }, "ok"
+    }, ("incomplete" if skipped_incomplete else "ok")
 
 
 def _scoped_job_rows(
