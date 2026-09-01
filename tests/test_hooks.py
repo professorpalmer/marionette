@@ -1,6 +1,7 @@
 import os
 import json
 import shutil
+import subprocess
 import tempfile
 import threading
 import urllib.request
@@ -213,3 +214,25 @@ def test_legacy_string_hook_requires_both_opt_ins(monkeypatch, tmp_path):
     assert calls[0][1] is False
     expected_tail = ["-c", "echo legacy"] if os.name == "posix" else ["/c", "echo legacy"]
     assert calls[0][0][-2:] == expected_tail
+
+
+def test_run_hooks_timeout_is_named(monkeypatch, tmp_path):
+    import harness.hooks as hk
+
+    original_json = hk._HOOKS_JSON
+    hk._HOOKS_JSON = str(tmp_path / "hooks.json")
+    hk.save_hooks([{
+        "id": "h-slow",
+        "event": "preRun",
+        "command": ["sleep", "99"],
+        "enabled": True,
+    }])
+
+    def fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout") or 15)
+
+    monkeypatch.setattr(hk.subprocess, "run", fake_run)
+    try:
+        assert hk.run_hooks("preRun", {}) == [{"id": "h-slow", "status": "timeout"}]
+    finally:
+        hk._HOOKS_JSON = original_json

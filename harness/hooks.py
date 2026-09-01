@@ -3,22 +3,19 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shlex
 import subprocess
 import tempfile
-import uuid
 from typing import Any
 
 from .secure_files import restrict_to_owner
 from .diag import note as _diag
-from .api.redaction import redact_api_secrets, redact_secret_text
+from .api.redaction import redact_api_secrets
 
 logger = logging.getLogger("harness.hooks")
 
 ALLOWED_EVENTS = ["sessionStart", "sessionEnd", "preRun", "postRun"]
 _HOOKS_JSON = os.path.join(os.path.expanduser("~/.pmharness"), "hooks.json")
 _MAX_CONTEXT = 16 * 1024
-_MAX_OUTPUT = 8 * 1024
 _HOOK_TIMEOUT = 15
 _SECRET_ENV_NAMES = {"password", "secret", "token", "api_key", "access_token", "refresh_token", "authorization", "cookie"}
 
@@ -77,6 +74,18 @@ def _environment(event: str, context_json: str) -> dict[str, str]:
     return env
 
 
+def _legacy_shell_argv(command: str) -> list[str]:
+    if os.name == "posix":
+        return ["/bin/sh", "-c", command]
+    return [os.environ.get("COMSPEC") or "cmd.exe", "/c", command]
+
+
+def _hook_argv(command: Any) -> list[str]:
+    if isinstance(command, list):
+        return command
+    return _legacy_shell_argv(command)
+
+
 def run_hooks(event: str, context: dict) -> list[dict[str, str]]:
     """Run persisted hooks safely; return one non-sensitive outcome per record."""
     if event not in ALLOWED_EVENTS:
@@ -92,20 +101,20 @@ def run_hooks(event: str, context: dict) -> list[dict[str, str]]:
             outcomes.append({"id": hook_id, "status": "skipped"})
             logger.warning("Hook skipped: invalid or disabled record")
             continue
-        command = hook["command"]
         try:
-            if isinstance(command, list):
-                # Quote only at the shell runner boundary: this preserves argv
-                # semantics while using command_policy's owned process execution.
-                command_text = (" ".join(shlex.quote(part) for part in command)
-                                if os.name == "posix" else subprocess.list2cmdline(command))
-            else:
-                # Legacy records are explicitly opted in and remain shell-based.
-                command_text = command
-            output, exit_code, runner_status = _run_cancellable(
-                command_text, env=env, context_json=context_json, timeout=_HOOK_TIMEOUT)
-            status = ("executed" if exit_code == 0 and runner_status == "ok"
-                      else "timeout" if runner_status == "timeout" else "error")
+            completed = subprocess.run(
+                _hook_argv(hook["command"]),
+                shell=False,
+                env=env,
+                timeout=_HOOK_TIMEOUT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            status = "executed" if completed.returncode == 0 else "error"
+        except subprocess.TimeoutExpired:
+            status = "timeout"
         except Exception:
             status = "error"
         outcomes.append({"id": hook_id, "status": status})
