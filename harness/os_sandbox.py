@@ -60,16 +60,18 @@ def reset_probe_cache() -> None:
     _PROBE_CACHE = None
 
 
+def _canonical_path(path: str) -> str:
+    return os.path.normcase(os.path.realpath(os.path.abspath(os.path.expanduser(path))))
+
+
 def _resolve_state_dir(env: Mapping[str, str]) -> str:
     raw = (env.get("HARNESS_STATE_DIR") or "").strip()
-    if raw:
-        return os.path.abspath(os.path.expanduser(raw))
-    return os.path.abspath(os.path.expanduser("~/.pmharness/state"))
+    return _canonical_path(raw or "~/.pmharness/state")
 
 
 def _sandbox_temp_root(cwd: str | None, env: Mapping[str, str]) -> str:
     """Private per-command temp parent under state or cwd — never shared /tmp."""
-    resolved_cwd = os.path.abspath(cwd or os.getcwd())
+    resolved_cwd = _canonical_path(cwd or os.getcwd())
     state_dir = _resolve_state_dir(env)
     for candidate in (state_dir, resolved_cwd):
         try:
@@ -85,7 +87,7 @@ def _sandbox_temp_root(cwd: str | None, env: Mapping[str, str]) -> str:
 
 def _make_private_temp_dir(cwd: str | None, env: Mapping[str, str]) -> str:
     root = _sandbox_temp_root(cwd, env)
-    return tempfile.mkdtemp(prefix="cmd-", dir=root)
+    return _canonical_path(tempfile.mkdtemp(prefix="cmd-", dir=root))
 
 
 def _writable_paths(
@@ -94,19 +96,30 @@ def _writable_paths(
     *,
     private_temp: str,
 ) -> list[str]:
-    resolved_cwd = os.path.abspath(cwd or os.getcwd())
-    # Writable: repo cwd + this command's private temp only — not all of state_dir.
-    paths = [
-        resolved_cwd,
-        os.path.abspath(private_temp),
-    ]
-    seen: set[str] = set()
-    unique: list[str] = []
-    for path in paths:
-        if path not in seen:
-            seen.add(path)
-            unique.append(path)
-    return unique
+    canonical_cwd = _canonical_path(cwd or os.getcwd())
+    temp_parent = _canonical_path(os.path.dirname(private_temp))
+    result: list[str] = []
+    for candidate in (cwd or os.getcwd(), private_temp):
+        path = _canonical_path(candidate)
+        try:
+            allowed = (os.path.commonpath([path, canonical_cwd]) == canonical_cwd or
+                       os.path.commonpath([path, temp_parent]) == temp_parent)
+        except ValueError:
+            allowed = False
+        if not allowed:
+            raise SandboxRequiredUnavailable("OS sandbox writable path resolves outside allowed canonical roots")
+        if path not in result:
+            result.append(path)
+    return result
+
+
+def resolve_child_network_policy(env: Mapping[str, str] | None = None, *, mode: str | None = None) -> str:
+    values = env if env is not None else os.environ
+    selected = mode or resolve_os_sandbox_mode(values)
+    raw = (values.get("HARNESS_OS_SANDBOX_NETWORK") or "").strip().lower()
+    if raw in {"deny", "allow"}:
+        return raw
+    return "deny" if selected == "required" else "allow"
 
 
 def _landlock_capable() -> bool:
@@ -192,7 +205,7 @@ def detect_sandbox_capability(
     return cap
 
 
-def build_seatbelt_profile(writable_paths: list[str]) -> str:
+def build_seatbelt_profile(writable_paths: list[str], *, network: str = "allow") -> str:
     """Build a minimal Seatbelt profile confining writes to the given paths."""
     lines = [
         "(version 1)",
@@ -210,7 +223,7 @@ def build_seatbelt_profile(writable_paths: list[str]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def build_bwrap_argv(writable_paths: list[str], command: str) -> list[str]:
+def build_bwrap_argv(writable_paths: list[str], command: str, *, network: str = "allow") -> list[str]:
     """Build a bubblewrap argv prefix ending in sh -c <command>."""
     exe = shutil.which("bwrap")
     if not exe:
@@ -243,6 +256,7 @@ def _macos_spawn_plan(
     writable_paths: list[str],
     *,
     child_env: Mapping[str, str],
+    network: str = "allow",
 ) -> SandboxSpawnPlan:
     exe = shutil.which("sandbox-exec")
     if not exe:
@@ -251,8 +265,8 @@ def _macos_spawn_plan(
             "sandbox-exec is not available on this macOS host."
         )
 
-    profile_text = build_seatbelt_profile(writable_paths)
-    fd, profile_path = tempfile.mkstemp(suffix=".sb", prefix="harness_sandbox_")
+    profile_text = build_seatbelt_profile(writable_paths, network=network)
+    fd, profile_path = tempfile.mkstemp(suffix=".sb", prefix="harness_sandbox_", dir=child_env["TMPDIR"])
     os.close(fd)
     with open(profile_path, "w", encoding="utf-8") as fh:
         fh.write(profile_text)

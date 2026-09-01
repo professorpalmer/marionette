@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shlex
 import subprocess
 import tempfile
 import uuid
@@ -92,18 +93,19 @@ def run_hooks(event: str, context: dict) -> list[dict[str, str]]:
             logger.warning("Hook skipped: invalid or disabled record")
             continue
         command = hook["command"]
-        if isinstance(command, str):
-            # Explicit opt-in is required even for the legacy compatibility form.
-            command = ["/bin/sh", "-c", command] if os.name == "posix" else ["cmd", "/c", command]
         try:
-            result = subprocess.run(command, shell=False, input=context_json,
-                                    capture_output=True, text=True, encoding="utf-8",
-                                    errors="replace", timeout=_HOOK_TIMEOUT, env=env)
-            # Keep output bounded in case callers inspect the result in the future.
-            _ = (result.stdout or "")[:_MAX_OUTPUT], (result.stderr or "")[:_MAX_OUTPUT]
-            status = "executed" if result.returncode == 0 else "error"
-        except subprocess.TimeoutExpired:
-            status = "timeout"
+            if isinstance(command, list):
+                # Quote only at the shell runner boundary: this preserves argv
+                # semantics while using command_policy's owned process execution.
+                command_text = (" ".join(shlex.quote(part) for part in command)
+                                if os.name == "posix" else subprocess.list2cmdline(command))
+            else:
+                # Legacy records are explicitly opted in and remain shell-based.
+                command_text = command
+            output, exit_code, runner_status = _run_cancellable(
+                command_text, env=env, context_json=context_json, timeout=_HOOK_TIMEOUT)
+            status = ("executed" if exit_code == 0 and runner_status == "ok"
+                      else "timeout" if runner_status == "timeout" else "error")
         except Exception:
             status = "error"
         outcomes.append({"id": hook_id, "status": status})
