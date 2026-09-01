@@ -646,7 +646,10 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
         return send_json(handler, status, payload)
 
     def _get_terminal_stream(handler: Any, u: Any, qs: dict) -> Any:
-        return handler._stream_terminal(qs.get("id", [""])[0])
+        return handler._stream_terminal(
+            qs.get("id", [""])[0],
+            (qs.get("offset") or ["0"])[0],
+        )
 
     def _get_pilot(handler: Any, u: Any, qs: dict) -> Any:
         return handler._swap_pilot(qs.get("model", [""])[0])

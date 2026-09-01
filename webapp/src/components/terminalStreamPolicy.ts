@@ -34,6 +34,13 @@ export function terminalMissingSessionAction(alreadyRecovered: boolean): "auto_r
   return alreadyRecovered ? "mark_exited" : "auto_recover";
 }
 
+export function terminalStreamPath(sid: string, startOffset = 0): string {
+  const offset = Number.isFinite(startOffset) ? Math.max(0, Math.floor(startOffset)) : 0;
+  const params = new URLSearchParams({ id: sid });
+  if (offset > 0) params.set("offset", String(offset));
+  return `/api/terminal/stream?${params.toString()}`;
+}
+
 export function terminalBareOnDoneAction(opts: {
   disposed: boolean; sawExit: boolean; hasSession: boolean; sawOutput: boolean; autoRecovered: boolean;
 }): TerminalBareOnDoneAction {

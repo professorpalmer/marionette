@@ -4,6 +4,7 @@ import {
   terminalBareOnDoneAction,
   terminalMissingSessionAction,
   terminalNotice,
+  terminalStreamPath,
 } from "../components/terminalStreamPolicy";
 
 describe("terminalBareOnDoneAction", () => {
@@ -51,5 +52,8 @@ describe("terminalBareOnDoneAction", () => {
     expect(terminalMissingSessionAction(false)).toBe("auto_recover");
     expect(terminalMissingSessionAction(true)).toBe("mark_exited");
     expect(terminalNotice("x".repeat(300))).toHaveLength(240);
+    expect(terminalStreamPath("abc")).toBe("/api/terminal/stream?id=abc");
+    expect(terminalStreamPath("abc", 12)).toBe("/api/terminal/stream?id=abc&offset=12");
+    expect(terminalStreamPath("abc", -4)).toBe("/api/terminal/stream?id=abc");
   });
 });

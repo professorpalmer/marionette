@@ -28,6 +28,7 @@ import {
   terminalBareOnDoneAction,
   terminalMissingSessionAction,
   terminalNotice,
+  terminalStreamPath,
 } from "./terminalStreamPolicy";
 
 /** https via WebLinksAddon + workspace/file:// paths via our ILinkProvider. */
@@ -287,12 +288,12 @@ export default function TerminalPane() {
       return safePtyDims(term.cols, term.rows);
     };
 
+    let lastOffset = 0;
     const attachStream = (sid: string) => {
       let sawOutput = false;
       let sawExit = false;
-      let lastOffset = -1;
       cancelRef.current = stream(
-        `/api/terminal/stream?id=${sid}`,
+        terminalStreamPath(sid, lastOffset),
         (raw: unknown) => {
           const ev = decodeTerminalStreamEvent(raw);
           if (ev.offset !== undefined && ev.offset > lastOffset) lastOffset = ev.offset;

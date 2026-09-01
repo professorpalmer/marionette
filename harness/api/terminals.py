@@ -62,6 +62,14 @@ def post_terminal_kill(body: dict, svc: TerminalServices) -> tuple[int, dict]:
     return 200, {"ok": True}
 
 
+def parse_terminal_start_offset(raw: Any) -> int:
+    """Parse a reconnect byte offset from query or helper input. Never negative."""
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 0
+
+
 def stream_terminal(handler: Any, sid: str, svc: TerminalServices, start_offset: int = 0) -> None:
     """Stream PTY output over SSE (GET /api/terminal/stream).
 
@@ -71,7 +79,7 @@ def stream_terminal(handler: Any, sid: str, svc: TerminalServices, start_offset:
     import base64 as _b64
     from harness.api.redaction import redact_secret_text
 
-    offset = max(0, int(start_offset or 0))
+    offset = parse_terminal_start_offset(start_offset)
     sess = svc.pty.get(sid)
     handler.send_response(200)
     handler.send_header("Content-Type", "text/event-stream")

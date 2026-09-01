@@ -20,7 +20,7 @@ from harness.api.streams import (
     resolve_stashed_chat_message,
     validate_upload_image_paths,
 )
-from harness.api.terminals import TerminalServices, stream_terminal
+from harness.api.terminals import TerminalServices, parse_terminal_start_offset, stream_terminal
 
 
 # ---------------------------------------------------------------------------
@@ -378,6 +378,14 @@ def test_stream_terminal_natural_exit_flushes_final_data_once():
     assert [f["kind"] for f in frames] == ["data", "data", "exit"]
     assert [f["offset"] for f in frames] == [2, 3, 3]
     assert frames[-1]["reason"] == "process_exit"
+
+
+def test_parse_terminal_start_offset_rejects_junk():
+    assert parse_terminal_start_offset(9) == 9
+    assert parse_terminal_start_offset("12") == 12
+    assert parse_terminal_start_offset("-3") == 0
+    assert parse_terminal_start_offset("nope") == 0
+    assert parse_terminal_start_offset(None) == 0
 
 
 def test_stream_terminal_start_offset_is_honored():
