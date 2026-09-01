@@ -110,3 +110,32 @@ def test_auth_failure_status_and_forbidden_classification():
 
     assert build_auth_failure_attribution("api", "one", 403, "denied")["remediation"] == "check_permissions"
     assert build_auth_failure_attribution("api", "one", None, "credentials rejected")["category"] == "authentication"
+
+
+def test_auth_failure_infers_unambiguous_textual_http_status():
+    from harness.api.redaction import build_auth_failure_attribution
+
+    auth = build_auth_failure_attribution("api", "one", None, "HTTP 401: login required")
+    forbidden = build_auth_failure_attribution("api", "two", None, "status: 403 access denied")
+    assert auth["http_status"] == 401
+    assert auth["category"] == "authentication"
+    assert auth["remediation"] == "reauthenticate"
+    assert forbidden["http_status"] == 403
+    assert forbidden["category"] == "forbidden"
+    assert forbidden["remediation"] == "check_permissions"
+
+
+def test_auth_failure_does_not_infer_status_from_arbitrary_numbers():
+    from harness.api.redaction import build_auth_failure_attribution
+
+    for text in ("item401", "port 4010", "count=401"):
+        assert build_auth_failure_attribution("api", "one", None, text) is None
+
+
+def test_explicit_auth_status_wins_over_textual_status():
+    from harness.api.redaction import build_auth_failure_attribution
+
+    out = build_auth_failure_attribution("api", "one", 401, "status: 403 access denied")
+    assert out["http_status"] == 401
+    assert out["category"] == "authentication"
+    assert out["remediation"] == "reauthenticate"

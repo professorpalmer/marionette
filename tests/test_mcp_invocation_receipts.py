@@ -313,3 +313,62 @@ def test_lifecycle_manager_errors_redacted_before_status(tmp_path, monkeypatch):
     managed_refresh = m.manage("refresh", name="broken")
     assert managed_refresh["ok"] is False
     _assert_no_secret_leak(managed_refresh["error"])
+
+
+@pytest.mark.parametrize(("status", "remediation"), ((401, "reauthenticate"), (403, "check_permissions")))
+def test_auth_failure_receipt_is_attributed_without_secrets(tmp_path, monkeypatch, status, remediation):
+    from harness.api.mcp import McpServices, get_mcp
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(state))
+    m = McpManager(config_path=str(tmp_path / "mcp.json"))
+    m._record_invocation("  github-server  ", "search", ok=False,
+        error=(f"HTTP {status}: Bearer sk-live-secret https://example.test/call?token=query-secret"))
+    inv = m._last_invocations["github-server"]
+    assert inv["auth"]["consumer_kind"] == "mcp_server"
+    assert inv["auth"]["consumer_id"] == "github-server"
+    assert inv["auth"]["http_status"] == status
+    assert inv["auth"]["remediation"] == remediation
+    raw = (state / "mcp_invocations.json").read_text(encoding="utf-8")
+    code, body = get_mcp(McpServices(mcp=m))
+    assert code == 200
+    for exposed in (json.dumps(inv), raw, json.dumps(body)):
+        assert "sk-live-secret" not in exposed
+        assert "query-secret" not in exposed
+
+
+def test_non_auth_failure_omits_auth(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(state))
+    m = McpManager(config_path=str(tmp_path / "mcp.json"))
+    m._record_invocation("plain", "search", ok=False, error="HTTP 500: backend exploded")
+    assert "auth" not in m._last_invocations["plain"]
+
+
+def test_old_receipt_without_auth_loads_unchanged(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(state))
+    receipt = {"tool": "search", "ok": False, "error": "old failure", "at": "2020-01-01T00:00:00Z"}
+    (state / "mcp_invocations.json").write_text(json.dumps({"servers": {"old": receipt}}))
+    m = McpManager(config_path=str(tmp_path / "mcp.json"))
+    assert m._last_invocations["old"] == receipt
+
+
+def test_persisted_auth_is_rebuilt_from_safe_current_fields(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(state))
+    poison = "DO-NOT-PERSIST"
+    row = {"tool": "search", "ok": False, "error": "HTTP 401 Unauthorized", "at": "2020-01-01T00:00:00Z",
+           "auth": {"consumer_kind": "fake", "consumer_id": poison, "http_status": 401,
+                    "url": poison, "headers": {"Authorization": poison}, "cookie": poison,
+                    "token": poison, "payload": poison, "arguments": poison, "unknown": poison}}
+    (state / "mcp_invocations.json").write_text(json.dumps({"servers": {"real": row}}))
+    m = McpManager(config_path=str(tmp_path / "mcp.json"))
+    auth = m._last_invocations["real"]["auth"]
+    assert set(auth) <= {"category", "consumer_kind", "consumer_id", "http_status", "remediation", "summary"}
+    assert auth["consumer_kind"] == "mcp_server"
+    assert auth["consumer_id"] == "real"
+    assert poison not in json.dumps(m._last_invocations)

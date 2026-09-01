@@ -14,6 +14,10 @@ _SECRET_KV_RE = re.compile(r"(?i)((?:api[_-]?key|secret|password|token|bearer|au
 _URL_CREDENTIAL_RE = re.compile(r"(?i)([?&](?:api[_-]?key|access_token|refresh_token|client_secret|password|secret|token|key)=[^&#\s]*)")
 _TOKENISH_RE = re.compile(r"(?i)\b(sk-[A-Za-z0-9_-]{8,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|Bearer\s+\S+|Basic\s+\S+)(?!\w)")
 _AUTH_FAILURE_RE = re.compile(r"(?i)\b(authentication\s+(?:failed|failure)|unauthori[sz]ed|forbidden|credential(?:s)?\s+rejected)\b")
+_HTTP_AUTH_STATUS_RE = re.compile(
+    r"(?ix)(?:\bHTTP\s+|\bstatus\s*[:=]\s*)(?P<status>401|403)\b"
+    r"|\b(?P<response_status>401|403)\s+(?:unauthori[sz]ed|forbidden)\b"
+)
 
 
 class AuthFailureAttribution(TypedDict, total=False):
@@ -73,7 +77,12 @@ def build_auth_failure_attribution(consumer_kind: Any, consumer_id: Any, http_st
     """Build a bounded, privacy-safe attribution only for clear auth failures."""
     status = http_status if http_status in (401, 403) else None
     text = str(error_text or "")
+    status_match = _HTTP_AUTH_STATUS_RE.search(text) if status is None else None
+    if status_match:
+        status = int(status_match.group("status") or status_match.group("response_status"))
     match = _AUTH_FAILURE_RE.search(text)
+    if status is None and match:
+        status = 403 if re.search(r"(?i)forbidden", match.group(0)) else 401
     if not match and status is None:
         return None
     forbidden = status == 403 or bool(re.search(r"(?i)forbidden", text))
