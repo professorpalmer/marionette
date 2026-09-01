@@ -23,7 +23,12 @@ import {
   terminalSelectionLabel,
 } from "../lib/terminalSelection";
 import { hostHasLayout, safePtyDims } from "./terminalDims";
-import { terminalBareOnDoneAction } from "./terminalStreamPolicy";
+import {
+  decodeTerminalStreamEvent,
+  terminalBareOnDoneAction,
+  terminalMissingSessionAction,
+  terminalNotice,
+} from "./terminalStreamPolicy";
 
 /** https via WebLinksAddon + workspace/file:// paths via our ILinkProvider. */
 function attachTerminalLinkHandlers(term: Terminal): void {
@@ -60,6 +65,7 @@ export default function TerminalPane() {
   // Bumping this re-runs the effect: cleanly tears down the old PTY + xterm and
   // spins up a fresh one. Drives the Restart button and exit auto-recovery.
   const [restartNonce, setRestartNonce] = useState(0);
+  const autoRecoveredRef = useRef(false);
   const [exited, setExited] = useState(false);
   const [agentView, setAgentView] = useState<AgentView | null>(null);
   const [selection, setSelection] = useState("");
@@ -284,17 +290,39 @@ export default function TerminalPane() {
     const attachStream = (sid: string) => {
       let sawOutput = false;
       let sawExit = false;
+      let lastOffset = -1;
       cancelRef.current = stream(
         `/api/terminal/stream?id=${sid}`,
-        (ev: any) => {
-          if (ev.kind === "data" && ev.b64) {
+        (raw: unknown) => {
+          const ev = decodeTerminalStreamEvent(raw);
+          if (ev.offset !== undefined && ev.offset > lastOffset) lastOffset = ev.offset;
+          if (ev.kind === "data") {
             sawOutput = true;
             try { term.write(_b64ToBytes(ev.b64)); } catch { /* ignore */ }
-          } else if (ev.kind === "exit") {
+          } else if (ev.kind === "process_exit" || ev.kind === "legacy_exit") {
+            if (sawExit) return;
             sawExit = true;
             term.write("\r\n\x1b[90m[process exited -- press Restart]\x1b[0m\r\n");
-            idRef.current = "";  // session is dead; stop sending keystrokes to it
+            idRef.current = "";
             markExited();
+          } else if (ev.kind === "missing_session") {
+            if (sawExit) return;
+            const action = terminalMissingSessionAction(autoRecoveredRef.current);
+            if (action === "auto_recover") {
+              autoRecoveredRef.current = true;
+              idRef.current = "";
+              postJSON("/api/terminal/kill", { id: sid });
+              setRestartNonce((n) => n + 1);
+            } else {
+              sawExit = true;
+              idRef.current = "";
+              markExited(`\r\n\x1b[90m[session unavailable${terminalNotice(ev.error) ? `: ${terminalNotice(ev.error)}` : ""} -- press Restart]\x1b[0m\r\n`);
+            }
+          } else if (ev.kind === "stream_error") {
+            if (sawExit) return;
+            sawExit = true;
+            idRef.current = "";
+            markExited(`\r\n\x1b[31m[terminal stream error${terminalNotice(ev.error) ? `: ${terminalNotice(ev.error)}` : ""} -- press Restart]\x1b[0m\r\n`);
           }
         },
         // onDone: SSE closed. kind:exit already settled the pane. A bare close

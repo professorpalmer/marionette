@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 import threading
+
+import pytest
 from types import SimpleNamespace
 
 from harness.api.pilot import PilotServices, get_pilot_swap, swap_pilot
@@ -337,12 +340,119 @@ class _FakeHandler:
         pass
 
 
-def test_stream_terminal_missing_session_writes_exit():
-    svc = TerminalServices(cfg=SimpleNamespace(repo=None), pty=SimpleNamespace(get=lambda sid: None))
+def _sse_frames(handler):
+    """Decode the JSON payload from each data-only SSE frame."""
+    frames = []
+    for frame in handler.wfile.getvalue().decode().split("\n\n"):
+        if frame.startswith("data: "):
+            frames.append(json.loads(frame[6:]))
+    return frames
+
+
+def _terminal_svc(sess):
+    return TerminalServices(cfg=SimpleNamespace(repo=None), pty=SimpleNamespace(get=lambda sid: sess))
+
+
+def test_stream_terminal_missing_session_writes_reason_offset_once():
     h = _FakeHandler()
-    stream_terminal(h, "gone", svc)
-    assert h.status == 200
-    assert b'"kind": "exit"' in h.wfile.getvalue()
+    stream_terminal(h, "gone", _terminal_svc(None), start_offset=7)
+    frames = _sse_frames(h)
+    assert frames == [{"kind": "exit", "offset": 7, "reason": "missing_session"}]
+
+
+def test_stream_terminal_natural_exit_flushes_final_data_once():
+    class _Sess:
+        def __init__(self):
+            self.calls = 0
+
+        def alive(self):
+            self.calls += 1
+            return self.calls == 1
+
+        def read_since(self, offset):
+            return (b"hi", 2) if offset == 0 else ((b"!", 3) if offset == 2 else (b"", offset))
+
+    h = _FakeHandler()
+    stream_terminal(h, "t1", _terminal_svc(_Sess()))
+    frames = _sse_frames(h)
+    assert [f["kind"] for f in frames] == ["data", "data", "exit"]
+    assert [f["offset"] for f in frames] == [2, 3, 3]
+    assert frames[-1]["reason"] == "process_exit"
+
+
+def test_stream_terminal_start_offset_is_honored():
+    seen = []
+
+    class _Sess:
+        def alive(self):
+            return False
+
+        def read_since(self, offset):
+            seen.append(offset)
+            return b"", offset
+
+    h = _FakeHandler()
+    stream_terminal(h, "t1", _terminal_svc(_Sess()), start_offset=9)
+    assert seen == [9]
+    assert _sse_frames(h)[-1]["offset"] == 9
+
+
+def test_stream_terminal_offsets_never_move_backwards():
+    class _Sess:
+        def __init__(self):
+            self.calls = 0
+
+        def alive(self):
+            self.calls += 1
+            return self.calls == 1
+
+        def read_since(self, offset):
+            return (b"abc", 1) if offset == 0 else (b"", 0)
+
+    h = _FakeHandler()
+    stream_terminal(h, "t1", _terminal_svc(_Sess()))
+    offsets = [f["offset"] for f in _sse_frames(h)]
+    assert offsets == [3, 3]
+    h = _FakeHandler()
+    stream_terminal(h, "t1", _terminal_svc(_Sess()))
+    offsets = [f["offset"] for f in _sse_frames(h)]
+    assert offsets == [3, 3]
+
+
+def test_stream_terminal_internal_exception_redacts_and_bounds_error():
+    secret = "sk-SECRET_TOKEN_123456"
+
+    class _Sess:
+        def alive(self):
+            raise RuntimeError(f"bad {secret} " + "x" * 300)
+
+    h = _FakeHandler()
+    stream_terminal(h, "t1", _terminal_svc(_Sess()))
+    frames = _sse_frames(h)
+    assert len(frames) == 1
+    assert frames[0]["kind"] == "exit"
+    assert frames[0]["reason"] == "stream_error"
+    assert len(frames[0]["error"]) <= 160
+    assert secret not in h.wfile.getvalue().decode()
+
+
+@pytest.mark.parametrize("error", [BrokenPipeError(), ConnectionResetError()])
+def test_stream_terminal_disconnect_does_not_write_exit(error):
+    class _Wfile:
+        def __init__(self):
+            self.writes = 0
+
+        def write(self, data):
+            self.writes += 1
+            raise error
+
+        def flush(self):
+            pass
+
+    h = _FakeHandler()
+    h.wfile = _Wfile()
+    stream_terminal(h, "t1", _terminal_svc(SimpleNamespace(alive=lambda: False)))
+    assert h.wfile.writes == 1
 
 
 def test_stream_terminal_data_then_exit():
