@@ -66,11 +66,13 @@ def test_resolve_os_sandbox_mode_invalid_falls_back_to_off(monkeypatch):
 
 
 def test_build_seatbelt_profile_confines_writes():
-    profile = os_sandbox.build_seatbelt_profile(["/tmp/work", "/var/tmp"])
+    paths = ["/tmp/work", "/var/tmp"]
+    profile = os_sandbox.build_seatbelt_profile(paths)
     assert "(deny default)" in profile
     assert "(allow file-read*)" in profile
-    assert '(subpath "/tmp/work")' in profile
-    assert '(subpath "/var/tmp")' in profile
+    for path in paths:
+        canonical = os.path.normcase(os.path.realpath(os.path.abspath(path)))
+        assert f'(subpath "{canonical}")' in profile
     assert "(allow process*)" in profile
 
 

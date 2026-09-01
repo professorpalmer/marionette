@@ -207,17 +207,14 @@ def detect_sandbox_capability(
 
 def build_seatbelt_profile(writable_paths: list[str], *, network: str = "allow") -> str:
     """Build a minimal Seatbelt profile confining writes to the given paths."""
-    lines = [
-        "(version 1)",
-        "(deny default)",
-        "(allow process*)",
-        "(allow signal (target self))",
-        "(allow sysctl-read)",
-        "(allow file-read*)",
-        "(allow file-write*",
-    ]
+    if network not in {"allow", "deny"}:
+        raise ValueError("network must be 'allow' or 'deny'")
+    lines = ["(version 1)", "(deny default)", "(allow process*)", "(allow signal (target self))", "(allow sysctl-read)", "(allow file-read*)"]
+    if network == "deny":
+        lines.append("(deny network*)")
+    lines.append("(allow file-write*")
     for path in writable_paths:
-        escaped = path.replace("\\", "\\\\").replace('"', '\\"')
+        escaped = _canonical_path(path).replace("\\", "\\\\").replace('"', '\\"')
         lines.append(f'    (subpath "{escaped}")')
     lines.append(")")
     return "\n".join(lines) + "\n"
@@ -225,23 +222,17 @@ def build_seatbelt_profile(writable_paths: list[str], *, network: str = "allow")
 
 def build_bwrap_argv(writable_paths: list[str], command: str, *, network: str = "allow") -> list[str]:
     """Build a bubblewrap argv prefix ending in sh -c <command>."""
+    if network not in {"allow", "deny"}:
+        raise ValueError("network must be 'allow' or 'deny'")
     exe = shutil.which("bwrap")
     if not exe:
         raise FileNotFoundError("bwrap not found")
-
-    argv: list[str] = [
-        exe,
-        "--ro-bind",
-        "/",
-        "/",
-        "--dev",
-        "/dev",
-        "--proc",
-        "/proc",
-        "--die-with-parent",
-    ]
+    argv: list[str] = [exe, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--die-with-parent"]
+    if network == "deny":
+        argv.append("--unshare-net")
     for path in writable_paths:
-        argv.extend(["--bind", path, path])
+        canonical = _canonical_path(path)
+        argv.extend(["--bind", canonical, canonical])
     argv.extend(["sh", "-c", command])
     return argv
 
@@ -292,9 +283,10 @@ def _linux_spawn_plan(
     writable_paths: list[str],
     *,
     child_env: Mapping[str, str],
+    network: str = "allow",
 ) -> SandboxSpawnPlan:
     try:
-        argv = build_bwrap_argv(writable_paths, command)
+        argv = build_bwrap_argv(writable_paths, command, network=network)
     except FileNotFoundError:
         raise SandboxRequiredUnavailable(
             "OS sandbox is required (HARNESS_OS_SANDBOX=required) but "
@@ -373,10 +365,11 @@ def prepare_sandbox_spawn(
         "TMP": private_temp,
     }
     writable = _writable_paths(cwd, env_map, private_temp=private_temp)
+    network = resolve_child_network_policy(env_map, mode=mode)
     if cap.platform == "macos":
-        plan = _macos_spawn_plan(command, writable, child_env=child_env)
+        plan = _macos_spawn_plan(command, writable, child_env=child_env, network=network)
     elif cap.platform == "linux":
-        plan = _linux_spawn_plan(command, writable, child_env=child_env)
+        plan = _linux_spawn_plan(command, writable, child_env=child_env, network=network)
     else:
         _cleanup_private_temp()
         return None
