@@ -2821,10 +2821,12 @@ class Handler(BaseHTTPRequestHandler):
         status, payload = get_pilot_swap(model, _pilot_services())
         return self._send(status, json.dumps(payload))
 
-    def _stream_terminal(self, sid: str):
+    def _stream_terminal(self, sid: str, start_offset=0):
         """Stream PTY output over SSE. Client sends keystrokes via POST /api/terminal/write."""
-        from .api.terminals import stream_terminal
-        return stream_terminal(self, sid, _terminal_services())
+        from .api.terminals import parse_terminal_start_offset, stream_terminal
+        return stream_terminal(
+            self, sid, _terminal_services(), parse_terminal_start_offset(start_offset),
+        )
 
     def _stream_chat(self, message: str, images=None, plan: bool = False, resume: bool = False):
         """Stream the conversational PILOT loop over SSE."""

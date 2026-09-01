@@ -60,16 +60,18 @@ def reset_probe_cache() -> None:
     _PROBE_CACHE = None
 
 
+def _canonical_path(path: str) -> str:
+    return os.path.normcase(os.path.realpath(os.path.abspath(os.path.expanduser(path))))
+
+
 def _resolve_state_dir(env: Mapping[str, str]) -> str:
     raw = (env.get("HARNESS_STATE_DIR") or "").strip()
-    if raw:
-        return os.path.abspath(os.path.expanduser(raw))
-    return os.path.abspath(os.path.expanduser("~/.pmharness/state"))
+    return _canonical_path(raw or "~/.pmharness/state")
 
 
 def _sandbox_temp_root(cwd: str | None, env: Mapping[str, str]) -> str:
     """Private per-command temp parent under state or cwd — never shared /tmp."""
-    resolved_cwd = os.path.abspath(cwd or os.getcwd())
+    resolved_cwd = _canonical_path(cwd or os.getcwd())
     state_dir = _resolve_state_dir(env)
     for candidate in (state_dir, resolved_cwd):
         try:
@@ -85,7 +87,7 @@ def _sandbox_temp_root(cwd: str | None, env: Mapping[str, str]) -> str:
 
 def _make_private_temp_dir(cwd: str | None, env: Mapping[str, str]) -> str:
     root = _sandbox_temp_root(cwd, env)
-    return tempfile.mkdtemp(prefix="cmd-", dir=root)
+    return _canonical_path(tempfile.mkdtemp(prefix="cmd-", dir=root))
 
 
 def _writable_paths(
@@ -94,19 +96,30 @@ def _writable_paths(
     *,
     private_temp: str,
 ) -> list[str]:
-    resolved_cwd = os.path.abspath(cwd or os.getcwd())
-    # Writable: repo cwd + this command's private temp only — not all of state_dir.
-    paths = [
-        resolved_cwd,
-        os.path.abspath(private_temp),
-    ]
-    seen: set[str] = set()
-    unique: list[str] = []
-    for path in paths:
-        if path not in seen:
-            seen.add(path)
-            unique.append(path)
-    return unique
+    canonical_cwd = _canonical_path(cwd or os.getcwd())
+    temp_parent = _canonical_path(os.path.dirname(private_temp))
+    result: list[str] = []
+    for candidate in (cwd or os.getcwd(), private_temp):
+        path = _canonical_path(candidate)
+        try:
+            allowed = (os.path.commonpath([path, canonical_cwd]) == canonical_cwd or
+                       os.path.commonpath([path, temp_parent]) == temp_parent)
+        except ValueError:
+            allowed = False
+        if not allowed:
+            raise SandboxRequiredUnavailable("OS sandbox writable path resolves outside allowed canonical roots")
+        if path not in result:
+            result.append(path)
+    return result
+
+
+def resolve_child_network_policy(env: Mapping[str, str] | None = None, *, mode: str | None = None) -> str:
+    values = env if env is not None else os.environ
+    selected = mode or resolve_os_sandbox_mode(values)
+    raw = (values.get("HARNESS_OS_SANDBOX_NETWORK") or "").strip().lower()
+    if raw in {"deny", "allow"}:
+        return raw
+    return "deny" if selected == "required" else "allow"
 
 
 def _landlock_capable() -> bool:
@@ -192,43 +205,34 @@ def detect_sandbox_capability(
     return cap
 
 
-def build_seatbelt_profile(writable_paths: list[str]) -> str:
+def build_seatbelt_profile(writable_paths: list[str], *, network: str = "allow") -> str:
     """Build a minimal Seatbelt profile confining writes to the given paths."""
-    lines = [
-        "(version 1)",
-        "(deny default)",
-        "(allow process*)",
-        "(allow signal (target self))",
-        "(allow sysctl-read)",
-        "(allow file-read*)",
-        "(allow file-write*",
-    ]
+    if network not in {"allow", "deny"}:
+        raise ValueError("network must be 'allow' or 'deny'")
+    lines = ["(version 1)", "(deny default)", "(allow process*)", "(allow signal (target self))", "(allow sysctl-read)", "(allow file-read*)"]
+    if network == "deny":
+        lines.append("(deny network*)")
+    lines.append("(allow file-write*")
     for path in writable_paths:
-        escaped = path.replace("\\", "\\\\").replace('"', '\\"')
+        escaped = _canonical_path(path).replace("\\", "\\\\").replace('"', '\\"')
         lines.append(f'    (subpath "{escaped}")')
     lines.append(")")
     return "\n".join(lines) + "\n"
 
 
-def build_bwrap_argv(writable_paths: list[str], command: str) -> list[str]:
+def build_bwrap_argv(writable_paths: list[str], command: str, *, network: str = "allow") -> list[str]:
     """Build a bubblewrap argv prefix ending in sh -c <command>."""
+    if network not in {"allow", "deny"}:
+        raise ValueError("network must be 'allow' or 'deny'")
     exe = shutil.which("bwrap")
     if not exe:
         raise FileNotFoundError("bwrap not found")
-
-    argv: list[str] = [
-        exe,
-        "--ro-bind",
-        "/",
-        "/",
-        "--dev",
-        "/dev",
-        "--proc",
-        "/proc",
-        "--die-with-parent",
-    ]
+    argv: list[str] = [exe, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--die-with-parent"]
+    if network == "deny":
+        argv.append("--unshare-net")
     for path in writable_paths:
-        argv.extend(["--bind", path, path])
+        canonical = _canonical_path(path)
+        argv.extend(["--bind", canonical, canonical])
     argv.extend(["sh", "-c", command])
     return argv
 
@@ -243,6 +247,7 @@ def _macos_spawn_plan(
     writable_paths: list[str],
     *,
     child_env: Mapping[str, str],
+    network: str = "allow",
 ) -> SandboxSpawnPlan:
     exe = shutil.which("sandbox-exec")
     if not exe:
@@ -251,8 +256,8 @@ def _macos_spawn_plan(
             "sandbox-exec is not available on this macOS host."
         )
 
-    profile_text = build_seatbelt_profile(writable_paths)
-    fd, profile_path = tempfile.mkstemp(suffix=".sb", prefix="harness_sandbox_")
+    profile_text = build_seatbelt_profile(writable_paths, network=network)
+    fd, profile_path = tempfile.mkstemp(suffix=".sb", prefix="harness_sandbox_", dir=child_env["TMPDIR"])
     os.close(fd)
     with open(profile_path, "w", encoding="utf-8") as fh:
         fh.write(profile_text)
@@ -278,9 +283,10 @@ def _linux_spawn_plan(
     writable_paths: list[str],
     *,
     child_env: Mapping[str, str],
+    network: str = "allow",
 ) -> SandboxSpawnPlan:
     try:
-        argv = build_bwrap_argv(writable_paths, command)
+        argv = build_bwrap_argv(writable_paths, command, network=network)
     except FileNotFoundError:
         raise SandboxRequiredUnavailable(
             "OS sandbox is required (HARNESS_OS_SANDBOX=required) but "
@@ -359,10 +365,11 @@ def prepare_sandbox_spawn(
         "TMP": private_temp,
     }
     writable = _writable_paths(cwd, env_map, private_temp=private_temp)
+    network = resolve_child_network_policy(env_map, mode=mode)
     if cap.platform == "macos":
-        plan = _macos_spawn_plan(command, writable, child_env=child_env)
+        plan = _macos_spawn_plan(command, writable, child_env=child_env, network=network)
     elif cap.platform == "linux":
-        plan = _linux_spawn_plan(command, writable, child_env=child_env)
+        plan = _linux_spawn_plan(command, writable, child_env=child_env, network=network)
     else:
         _cleanup_private_temp()
         return None

@@ -7,11 +7,35 @@ from pathlib import Path
 
 from typing import Any
 
-from harness.memory_store import MemoryStore, MemoryEntry, MEMORY_CHAR_LIMIT
+from harness.memory_store import MemoryStore, MEMORY_CHAR_LIMIT
 from harness.rule_store import RuleStore
 from harness.pilot import build_tools_schema, parse_tool_calls, PilotAction, PilotError
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession
+
+
+def test_memory_provenance_search_and_legacy_row(tmp_path):
+    path = tmp_path / "memory.json"
+    store = MemoryStore(path=str(path))
+    user = store.add("Prefer dark theme", category="preference", source="user", workspace="repo-a")
+    store.add("Agent note about dark theme", category="fact", source="agent", workspace="repo-b")
+    assert user.origin == "user"
+    assert len(user.content_sha256) == 64
+    assert user.content_sha256 == store.list()[0].content_sha256
+    assert [e.workspace for e in store.search("dark", origin="user")] == ["repo-a"]
+    assert [e.workspace for e in store.search("dark", workspace="repo-b")] == ["repo-b"]
+    assert store.search("nope") == []
+
+    path.write_text(
+        '[{"text": "legacy fact", "category": "general", "created_at": 1, '
+        '"source": "user", "id": "legacy1", "extra": "ignore"}]',
+        encoding="utf-8",
+    )
+    legacy = MemoryStore(path=str(path)).list()
+    assert len(legacy) == 1
+    assert legacy[0].origin == "user"
+    assert legacy[0].content_sha256
+    assert legacy[0].text == "legacy fact"
 
 
 def test_memory_store_utf8_lf_roundtrip(tmp_path):
