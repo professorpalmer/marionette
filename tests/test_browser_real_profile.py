@@ -61,7 +61,18 @@ def test_real_profile_enabled_only_when_env_truthy(monkeypatch):
     assert rp.real_profile_enabled() is False
 
 
+def test_snapshot_refuses_without_consent(tmp_path, monkeypatch):
+    monkeypatch.delenv("HARNESS_BROWSER_REAL_PROFILE", raising=False)
+    monkeypatch.setattr(rp.Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    src = _make_src(tmp_path / "real")
+    copy_dir, err = rp.snapshot_real_profile("chrome", src=src)
+    assert copy_dir is None
+    assert err is not None
+    assert "consent" in err
+
+
 def test_snapshot_copies_auth_skips_cache_and_last_used(tmp_path, monkeypatch):
+    monkeypatch.setenv("HARNESS_BROWSER_REAL_PROFILE", "1")
     monkeypatch.setattr(rp.Path, "home", classmethod(lambda cls: tmp_path / "home"))
     src = _make_src(tmp_path / "real", last_used="Profile 1", marker="from-p1")
     (src / "Default").mkdir()
@@ -80,6 +91,7 @@ def test_snapshot_copies_auth_skips_cache_and_last_used(tmp_path, monkeypatch):
 
 
 def test_snapshot_missing_src_names_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("HARNESS_BROWSER_REAL_PROFILE", "1")
     monkeypatch.setattr(rp.Path, "home", classmethod(lambda cls: tmp_path / "home"))
     missing = tmp_path / "nope"
     copy_dir, err = rp.snapshot_real_profile("chrome", src=missing)
@@ -89,6 +101,7 @@ def test_snapshot_missing_src_names_path(tmp_path, monkeypatch):
 
 
 def test_snapshot_lock_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("HARNESS_BROWSER_REAL_PROFILE", "1")
     monkeypatch.setattr(rp.Path, "home", classmethod(lambda cls: tmp_path / "home"))
     src = _make_src(tmp_path / "real")
     real_open = open
@@ -107,6 +120,7 @@ def test_snapshot_lock_error(tmp_path, monkeypatch):
 
 
 def test_cleanup_wipes_copy_and_is_idempotent(tmp_path, monkeypatch):
+    monkeypatch.setenv("HARNESS_BROWSER_REAL_PROFILE", "1")
     monkeypatch.setattr(rp.Path, "home", classmethod(lambda cls: tmp_path / "home"))
     src = _make_src(tmp_path / "real")
     copy_dir, err = rp.snapshot_real_profile("chrome", src=src)
@@ -133,6 +147,21 @@ def test_ensure_shared_browser_env_points_at_copy_when_enabled(tmp_path, monkeyp
     expected = str(home / ".pmharness" / "browser-profile-real" / "chrome")
     assert applied["user_data_dir"] == expected
     assert Path(expected, "Default", "Cookies").is_file()
+
+
+def test_ensure_shared_browser_env_rejects_live_chrome_dir(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    live = home / "Library" / "Application Support" / "Google" / "Chrome"
+    live.mkdir(parents=True)
+    monkeypatch.setattr(rp.Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setattr(auth.Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("HARNESS_BROWSER_AUTH", "1")
+    monkeypatch.delenv("HARNESS_BROWSER_REAL_PROFILE", raising=False)
+    monkeypatch.setenv("PM_BROWSER_USER_DATA_DIR", str(live))
+    monkeypatch.delenv("PM_BROWSER_CDP_PORT", raising=False)
+    applied = auth.ensure_shared_browser_env()
+    assert applied["user_data_dir"] == str(home / ".pmharness" / "browser-profile")
+    assert live.is_dir()
 
 
 def test_ensure_shared_browser_env_keeps_preset_user_data_dir(tmp_path, monkeypatch):

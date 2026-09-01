@@ -93,6 +93,26 @@ _LINUX_FLATPAK_IDS = {
 }
 
 
+def is_live_browser_user_data_dir(path: str, system: Optional[str] = None) -> bool:
+    """True when ``path`` is (or is inside) a real installed-browser profile."""
+    raw = (path or "").strip()
+    if not raw:
+        return False
+    try:
+        resolved = Path(raw).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return False
+    for browser in _BROWSER_PATHS:
+        live = real_profile_data_dir(browser, system=system)
+        try:
+            live_resolved = Path(live).resolve()
+        except (OSError, RuntimeError):
+            continue
+        if resolved == live_resolved or live_resolved in resolved.parents:
+            return True
+    return False
+
+
 def real_profile_enabled() -> bool:
     """Return whether the user consented to a real-profile snapshot.
 
@@ -215,6 +235,11 @@ def snapshot_real_profile(
     Returns ``(copy_dir, None)`` on success or ``(None, error)`` on failure.
     The error for a locked cookie DB always starts with ``profile locked:``.
     """
+    if not real_profile_enabled():
+        return None, (
+            "real Chrome profile copy requires explicit consent "
+            "(HARNESS_BROWSER_REAL_PROFILE=1)"
+        )
     if src is None:
         src_path = real_profile_data_dir(browser)
     else:

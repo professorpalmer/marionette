@@ -18,7 +18,11 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from .browser_real_profile import real_profile_enabled, snapshot_real_profile
+from .browser_real_profile import (
+    is_live_browser_user_data_dir,
+    real_profile_enabled,
+    snapshot_real_profile,
+)
 
 AUTH_ENV = "HARNESS_BROWSER_AUTH"
 HEADED_ENV = "HARNESS_BROWSER_HEADED"
@@ -73,6 +77,9 @@ def ensure_shared_browser_env(*, headed: Optional[bool] = None) -> dict:
             os.environ["PM_BROWSER_HEADED"] = "0"
         elif headed_enabled() and "PM_BROWSER_HEADED" not in os.environ:
             os.environ["PM_BROWSER_HEADED"] = "1"
+        current_profile = (os.environ.get("PM_BROWSER_USER_DATA_DIR") or "").strip()
+        if current_profile and is_live_browser_user_data_dir(current_profile):
+            os.environ.pop("PM_BROWSER_USER_DATA_DIR", None)
         if not (os.environ.get("PM_BROWSER_USER_DATA_DIR") or "").strip():
             if real_profile_enabled():
                 copy_dir, _err = snapshot_real_profile()
