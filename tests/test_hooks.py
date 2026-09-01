@@ -54,10 +54,7 @@ def test_hooks_module_and_endpoints():
         hooks_list = [{
             "id": "h1",
             "event": "preRun",
-            # No quotes around the echo text: cmd.exe echoes single quotes
-            # literally, so quoting would make the written content differ by
-            # platform. Bare words echo identically under /bin/sh and cmd.
-            "command": "echo hello from test_hooks > " + os.path.join(tmp_dir, "hook_out.txt"),
+            "command": ["python", "-c", "import pathlib; pathlib.Path(r'" + os.path.join(tmp_dir, "hook_out.txt") + "').write_text('hello from test_hooks')"],
             "enabled": True
         }]
         _hk.save_hooks(hooks_list)
@@ -75,7 +72,7 @@ def test_hooks_module_and_endpoints():
         failing_hooks = [{
             "id": "h2",
             "event": "postRun",
-            "command": "non_existent_command_12345",
+            "command": ["non_existent_command_12345"],
             "enabled": True
         }]
         _hk.save_hooks(failing_hooks)
