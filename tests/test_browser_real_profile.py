@@ -155,6 +155,7 @@ def test_ensure_shared_browser_env_rejects_live_chrome_dir(tmp_path, monkeypatch
     live.mkdir(parents=True)
     monkeypatch.setattr(rp.Path, "home", classmethod(lambda cls: home))
     monkeypatch.setattr(auth.Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setattr(rp.platform, "system", lambda: "Linux")
     monkeypatch.setenv("HARNESS_BROWSER_AUTH", "1")
     monkeypatch.delenv("HARNESS_BROWSER_REAL_PROFILE", raising=False)
     monkeypatch.setenv("PM_BROWSER_USER_DATA_DIR", str(live))

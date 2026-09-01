@@ -102,14 +102,16 @@ def is_live_browser_user_data_dir(path: str, system: Optional[str] = None) -> bo
         resolved = Path(raw).expanduser().resolve()
     except (OSError, RuntimeError):
         return False
-    for browser in _BROWSER_PATHS:
-        live = real_profile_data_dir(browser, system=system)
-        try:
-            live_resolved = Path(live).resolve()
-        except (OSError, RuntimeError):
-            continue
-        if resolved == live_resolved or live_resolved in resolved.parents:
-            return True
+    hosts = (system,) if system else ("Darwin", "Windows", "Linux")
+    for host in hosts:
+        for browser in _BROWSER_PATHS:
+            live = real_profile_data_dir(browser, system=host)
+            try:
+                live_resolved = Path(live).resolve()
+            except (OSError, RuntimeError):
+                continue
+            if resolved == live_resolved or live_resolved in resolved.parents:
+                return True
     return False
 
 

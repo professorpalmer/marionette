@@ -66,7 +66,6 @@ export default function TerminalPane() {
   // Bumping this re-runs the effect: cleanly tears down the old PTY + xterm and
   // spins up a fresh one. Drives the Restart button and exit auto-recovery.
   const [restartNonce, setRestartNonce] = useState(0);
-  const autoRecoveredRef = useRef(false);
   const [exited, setExited] = useState(false);
   const [agentView, setAgentView] = useState<AgentView | null>(null);
   const [selection, setSelection] = useState("");
