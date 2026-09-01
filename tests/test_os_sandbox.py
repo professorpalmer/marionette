@@ -15,6 +15,15 @@ def _norm(path: str) -> str:
     return os.path.normpath(path)
 
 
+def _canon(path: str) -> str:
+    return os_sandbox._canonical_path(path)
+
+
+def _seatbelt_subpath(path: str) -> str:
+    escaped = _canon(path).replace("\\", "\\\\").replace('"', '\\"')
+    return f'(subpath "{escaped}")'
+
+
 def _assert_not_exact_shared_temp(path: str) -> None:
     normalized = _norm(path)
     shared = {_norm(p) for p in _SHARED_SYSTEM_TEMPS}
@@ -71,8 +80,7 @@ def test_build_seatbelt_profile_confines_writes():
     assert "(deny default)" in profile
     assert "(allow file-read*)" in profile
     for path in paths:
-        canonical = os.path.normcase(os.path.realpath(os.path.abspath(path)))
-        assert f'(subpath "{canonical}")' in profile
+        assert _seatbelt_subpath(path) in profile
     assert "(allow process*)" in profile
 
 
@@ -83,8 +91,8 @@ def test_build_bwrap_argv_includes_bind_and_sh_c(monkeypatch):
     assert "--ro-bind" in argv
     assert "--bind" in argv
     bind_idx = argv.index("--bind")
-    assert argv[bind_idx + 1] == "/repo"
-    assert argv[bind_idx + 2] == "/repo"
+    assert argv[bind_idx + 1] == _canon("/repo")
+    assert argv[bind_idx + 2] == _canon("/repo")
     sh_idx = argv.index("sh")
     assert argv[sh_idx : sh_idx + 3] == ["sh", "-c", "echo hi"]
 
@@ -160,9 +168,9 @@ def test_writable_paths_include_cwd_and_private_temp_only(monkeypatch, tmp_path)
         os.environ,
         private_temp=private,
     )
-    assert os.path.abspath(str(tmp_path / "repo")) in paths
-    assert os.path.abspath(private) in paths
-    assert os.path.abspath(str(tmp_path / "state")) not in paths
+    assert _canon(str(tmp_path / "repo")) in paths
+    assert _canon(private) in paths
+    assert _canon(str(tmp_path / "state")) not in paths
     for path in paths:
         _assert_not_exact_shared_temp(path)
 
@@ -180,8 +188,8 @@ def test_sibling_state_files_denied_by_seatbelt_profile(monkeypatch, tmp_path):
         private_temp=private,
     )
     profile = os_sandbox.build_seatbelt_profile(writable)
-    assert str(sibling) not in profile
-    assert str(tmp_path / "state") not in profile
+    assert _seatbelt_subpath(str(sibling)) not in profile
+    assert _seatbelt_subpath(str(tmp_path / "state")) not in profile
 
 
 def test_sibling_state_files_denied_by_bwrap_argv(monkeypatch, tmp_path):
@@ -195,8 +203,8 @@ def test_sibling_state_files_denied_by_bwrap_argv(monkeypatch, tmp_path):
     )
     argv = os_sandbox.build_bwrap_argv(writable, "echo hi")
     joined = " ".join(argv)
-    assert str(tmp_path / "state") not in joined
-    assert private in joined
+    assert _canon(str(tmp_path / "state")) not in joined
+    assert _canon(private) in argv
 
 
 def test_prepare_sandbox_spawn_sets_private_temp_env(monkeypatch, tmp_path):
@@ -213,7 +221,7 @@ def test_prepare_sandbox_spawn_sets_private_temp_env(monkeypatch, tmp_path):
     assert plan is not None
     assert plan.child_env is not None
     private = plan.child_env["TMPDIR"]
-    assert private.startswith(str(tmp_path / "state"))
+    assert _canon(private).startswith(_canon(str(tmp_path / "state")))
     assert os.path.isdir(private)
     _assert_not_exact_shared_temp(private)
     assert plan.cleanup is not None
@@ -232,7 +240,7 @@ def test_active_profile_excludes_shared_tmp(monkeypatch, tmp_path):
     )
     profile = os_sandbox.build_seatbelt_profile(writable)
     _assert_profile_excludes_shared_tmp(profile)
-    assert private.replace("\\", "\\\\") in profile or private in profile
+    assert _seatbelt_subpath(private) in profile
 
 
 def test_bwrap_argv_excludes_shared_tmp(monkeypatch, tmp_path):
@@ -243,7 +251,7 @@ def test_bwrap_argv_excludes_shared_tmp(monkeypatch, tmp_path):
         "echo hi",
     )
     _assert_bwrap_excludes_shared_tmp(argv)
-    assert private in argv
+    assert _canon(private) in argv
 
 
 def test_detect_sandbox_capability_windows_is_unavailable(monkeypatch):

@@ -19,6 +19,10 @@ def _server(tmp_state_dir):
     # prices but /api/swarm/live's pilot split ignores.
     srv._boot_usage_reset_for_tests()
     srv._session.state_dir = tmp_state_dir
+    # Process-global pilot: drop leftover local-* before this server's polls.
+    with srv._pilot._local_jobs_lock:
+        srv._pilot._local_jobs.clear()
+        srv._pilot._local_job_cancels.clear()
 
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), srv.Handler)
     port = httpd.server_address[1]
@@ -292,10 +296,9 @@ def test_swarm_live_held_open_scratch_hijack_exposes_only_host_local(tmp_path, m
     try:
         headers = {"X-Harness-Token": srv._TOKEN}
         srv._cfg.repo = str(repo)
-        if not srv._sessions.active:
-            srv._sessions.create(
-                "held-open", repo=str(repo), workspace_root=str(repo),
-            )
+        srv._sessions.create(
+            "held-open", repo=str(repo), workspace_root=str(repo),
+        )
         srv._sync_pilot_session_id()
         sid = srv._pilot.harness_session_id or srv._sessions.active or ""
 
