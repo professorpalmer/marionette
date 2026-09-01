@@ -155,30 +155,61 @@ def test_hooks_module_and_endpoints():
 
 
 def test_run_hooks_uses_shell_false_argv_wrapper(monkeypatch, tmp_path):
-    """Hook scripts run via argv wrapper, never shell=True + concatenated input."""
+    """Preferred list commands execute directly and never invoke a shell."""
     import harness.hooks as hk
 
     calls = []
     original_json = hk._HOOKS_JSON
     hk._HOOKS_JSON = str(tmp_path / "hooks.json")
     hk.save_hooks([{
-        "id": "h-shell",
+        "id": "h-argv",
         "event": "preRun",
-        "command": "echo ok",
+        "command": ["echo", "ok; not-shell-syntax"],
         "enabled": True,
     }])
 
     def fake_run(cmd, **kwargs):
         calls.append((cmd, kwargs.get("shell")))
-        class _R:
-            returncode = 0
-        return _R()
+        return type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr(hk.subprocess, "run", fake_run)
     try:
         hk.run_hooks("preRun", {"x": "1"})
     finally:
         hk._HOOKS_JSON = original_json
-    assert calls
+    assert calls == [(["echo", "ok; not-shell-syntax"], False)]
+
+
+def test_legacy_string_hook_requires_both_opt_ins(monkeypatch, tmp_path):
+    import harness.hooks as hk
+
+    calls = []
+    original_json = hk._HOOKS_JSON
+    hk._HOOKS_JSON = str(tmp_path / "hooks.json")
+    hook = {
+        "id": "h-legacy",
+        "event": "preRun",
+        "command": "echo legacy",
+        "enabled": True,
+        "legacy_shell": True,
+    }
+    hk.save_hooks([hook])
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs.get("shell")))
+        return type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(hk.subprocess, "run", fake_run)
+    monkeypatch.delenv("HARNESS_ALLOW_LEGACY_SHELL_HOOKS", raising=False)
+    try:
+        assert hk.run_hooks("preRun", {}) == [{"id": "h-legacy", "status": "skipped"}]
+        assert calls == []
+        monkeypatch.setenv("HARNESS_ALLOW_LEGACY_SHELL_HOOKS", "1")
+        assert hk.run_hooks("preRun", {}) == [{"id": "h-legacy", "status": "executed"}]
+    finally:
+        hk._HOOKS_JSON = original_json
+
+    assert len(calls) == 1
     assert calls[0][1] is False
-    assert isinstance(calls[0][0], list)
+    expected_tail = ["-c", "echo legacy"] if os.name == "posix" else ["/c", "echo legacy"]
+    assert calls[0][0][-2:] == expected_tail
