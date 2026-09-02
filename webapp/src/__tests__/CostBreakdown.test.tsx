@@ -38,6 +38,26 @@ describe("CostBreakdown receipt", () => {
     expect(screen.getByText("Compact tool outputs")).toBeTruthy();
   });
 
+  it("renders nothing when the app-run hero is omitted and there are no savings rows", () => {
+    const { container } = render(
+      <CostBreakdown data={{ tokens_used: 12_000, est_cost_usd: 0.12 }} hero={false} />,
+    );
+
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("can omit the app-run hero and keep why-you-saved rows", () => {
+    render(<CostBreakdown data={baseData} hero={false} />);
+
+    expect(screen.queryByText("Spend")).toBeNull();
+    expect(screen.queryByText("Without savings")).toBeNull();
+    expect(screen.queryByText("Less spent")).toBeNull();
+    expect(screen.getByText("Why you saved")).toBeTruthy();
+    expect(screen.getByText("Prompt-cache value")).toBeTruthy();
+    expect(screen.getByText("Compact tool outputs")).toBeTruthy();
+    expect(screen.getByText(/since you opened Marionette/)).toBeTruthy();
+  });
+
   it("keeps context diagnostics and compaction controls out of Economics", () => {
     render(<CostBreakdown data={baseData} />);
 

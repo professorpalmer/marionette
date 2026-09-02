@@ -13,6 +13,18 @@ function fmtUnknownMoney(value: number | null | undefined): string {
   return `$${value.toFixed(2)}`;
 }
 
+function hasFiniteReceiptTotals(data: EconomicsData | null): boolean {
+  return isFiniteNumber(data?.counterfactual?.actual_cost_usd)
+    && isFiniteNumber(data?.counterfactual?.naive_cost_usd)
+    && isFiniteNumber(data?.counterfactual?.avoided_usd);
+}
+
+/** True when EconomicsDurable will render the scoped 4-stat receipt hero. */
+export function durableReceiptHeroAvailable(data: EconomicsData | null): boolean {
+  if (!data || data.counterfactual_source === "routing_report") return false;
+  return hasFiniteReceiptTotals(data);
+}
+
 /** Headline total: measured + estimated when either is known; else legacy actual_marginal. */
 export function jobHeadlineTotal(job: Pick<EconomicsJobRow, "measured_cost_usd" | "estimated_cost_usd" | "actual_marginal_usd">): number | null {
   const measured = job.measured_cost_usd;
@@ -80,7 +92,7 @@ export default function EconomicsDurable({
         </p>
       ) : null}
 
-      {hasReceipt && !isRoutingForecast ? (
+      {durableReceiptHeroAvailable(data) ? (
         <section className="mx-3 mb-3 rounded-md border border-edge/50 bg-panel2/20 px-3 py-2.5">
           <div className="grid grid-cols-2 gap-x-4 gap-y-2.5">
             <div className="min-w-0">
