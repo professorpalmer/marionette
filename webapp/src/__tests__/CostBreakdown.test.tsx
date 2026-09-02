@@ -27,13 +27,13 @@ describe("CostBreakdown receipt", () => {
 
     expect(screen.getByText("Spend")).toBeTruthy();
     expect(screen.getByText("~$0.12")).toBeTruthy();
-    expect(screen.getByText("Without savings")).toBeTruthy();
+    expect(screen.getByText("At list price")).toBeTruthy();
     expect(screen.getByText("~$0.18")).toBeTruthy();
-    expect(screen.getByText("Estimated savings")).toBeTruthy();
+    expect(screen.getByText("List-price value (est.)")).toBeTruthy();
     expect(screen.getByText("~$0.06")).toBeTruthy();
-    expect(screen.getByText("Less spent")).toBeTruthy();
+    expect(screen.getByText("Less than list price")).toBeTruthy();
     expect(screen.getByText("33.3%")).toBeTruthy();
-    expect(screen.getByText("Why you saved")).toBeTruthy();
+    expect(screen.getByText("Why list-price is lower")).toBeTruthy();
     expect(screen.getByText("Prompt-cache value")).toBeTruthy();
     expect(screen.getByText("Compact tool outputs")).toBeTruthy();
   });
@@ -50,9 +50,9 @@ describe("CostBreakdown receipt", () => {
     render(<CostBreakdown data={baseData} hero={false} />);
 
     expect(screen.queryByText("Spend")).toBeNull();
-    expect(screen.queryByText("Without savings")).toBeNull();
-    expect(screen.queryByText("Less spent")).toBeNull();
-    expect(screen.getByText("Why you saved")).toBeTruthy();
+    expect(screen.queryByText("At list price")).toBeNull();
+    expect(screen.queryByText("Less than list price")).toBeNull();
+    expect(screen.getByText("Why list-price is lower")).toBeTruthy();
     expect(screen.getByText("Prompt-cache value")).toBeTruthy();
     expect(screen.getByText("Compact tool outputs")).toBeTruthy();
     expect(screen.getByText(/since you opened Marionette/)).toBeTruthy();
@@ -71,10 +71,10 @@ describe("CostBreakdown receipt", () => {
     render(<CostBreakdown data={{ tokens_used: 0, est_cost_usd: 0 }} />);
 
     expect(screen.getByText("Spend").parentElement?.textContent).toContain("~$0.00");
-    expect(screen.getByText("Without savings").parentElement?.textContent).toContain("~$0.00");
-    expect(screen.getByText("Estimated savings").parentElement?.textContent).toContain("~$0.00");
-    expect(screen.getByText("Less spent").parentElement?.textContent).toContain("—");
-    expect(screen.queryByText("Why you saved")).toBeNull();
+    expect(screen.getByText("At list price").parentElement?.textContent).toContain("~$0.00");
+    expect(screen.getByText("List-price value").parentElement?.textContent).toContain("~$0.00");
+    expect(screen.getByText("Less than list price").parentElement?.textContent).toContain("—");
+    expect(screen.queryByText("Why list-price is lower")).toBeNull();
   });
 });
 

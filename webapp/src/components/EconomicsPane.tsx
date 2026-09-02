@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Coins } from "lucide-react";
-import { api, type EconomicsData, type EconomicsScope, type UsageData } from "../lib/api";
+import { api, type EconomicsData, type EconomicsScope } from "../lib/api";
+import { useProcessUsage } from "../lib/processUsage";
 import { usePolling } from "../lib/usePolling";
 import { readSWRCache, writeSWRCache } from "../lib/useStaleWhileRevalidate";
 import { lastSelectedProjectRoot } from "../lib/panelTransition";
@@ -53,16 +54,8 @@ export default function EconomicsPane() {
       ),
     ) ?? null,
   );
-  const [usage, setUsage] = useState<UsageData | null>(null);
   const economicsRequest = useRef(0);
-
-  const loadUsage = () => {
-    return Promise.resolve(api.getUsage())
-      .then((data) => {
-        if (data && data.session) setUsage(data);
-      })
-      .catch(() => {});
-  };
+  const processUsage = useProcessUsage();
 
   const loadEconomics = (
     requestedScope = scope,
@@ -96,11 +89,9 @@ export default function EconomicsPane() {
   };
 
   usePolling(loadEconomics, 10000, { enabled: Boolean(projectRoot) });
-  usePolling(loadUsage, 10000);
 
   useEffect(() => {
     const onUsageRefresh = () => {
-      void loadUsage();
       void loadEconomics();
     };
     const onSessionChanged = () => {
@@ -155,8 +146,8 @@ export default function EconomicsPane() {
     && (periodDays === 30 ? economics.window_days === 30 : !economics.window_days),
   );
   const projectLabel = projectRoot.split(/[\\/]/).filter(Boolean).at(-1) || "this repo";
-  const processMeters = usage?.session
-    ? usageToCostBreakdownData(usage.session)
+  const processMeters = processUsage.session
+    ? usageToCostBreakdownData(processUsage.session)
     : null;
   const showProcessMeters = Boolean(
     processMeters

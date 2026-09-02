@@ -1,7 +1,8 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import EconomicsPane from "../components/EconomicsPane";
 import { api } from "../lib/api";
+import { _resetProcessUsageForTests } from "../lib/processUsage";
 import { openAgentSwarmJob } from "../lib/agentLinks";
 import { clearSWRCache } from "../lib/useStaleWhileRevalidate";
 import { dispatchProjectSelected } from "../lib/panelTransition";
@@ -68,6 +69,7 @@ async function chooseScope(value: "conversation" | "repo" | "all_projects") {
 describe("EconomicsPane", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    _resetProcessUsageForTests();
     clearSWRCache();
     dispatchProjectSelected("/repo-a");
     mockGetUsage.mockResolvedValue(emptyUsage);
@@ -76,6 +78,10 @@ describe("EconomicsPane", () => {
       scope,
       all_projects: scope === "all_projects",
     }));
+  });
+
+  afterEach(() => {
+    _resetProcessUsageForTests();
   });
 
   it("removes the previous repo receipt immediately while the selected repo loads", async () => {
@@ -164,7 +170,7 @@ describe("EconomicsPane", () => {
     expect(screen.getByRole("option", { name: "This session" })).toBeTruthy();
     expect(screen.queryByRole("option", { name: "This conversation" })).toBeNull();
     expect(container.querySelectorAll(".overflow-y-auto")).toHaveLength(1);
-    expect(screen.queryByText("Why you saved")).toBeNull();
+    expect(screen.queryByText("Why list-price is lower")).toBeNull();
     expect(screen.queryByText("Additional estimates")).toBeNull();
     expect(screen.queryByText("This repo · all time")).toBeNull();
     expect((await screen.findByText("Job receipts")).closest("details")).toBeNull();
@@ -180,6 +186,7 @@ describe("EconomicsPane", () => {
     render(<EconomicsPane />);
 
     expect(await screen.findByText("Measured usage cost")).toBeTruthy();
+    expect(screen.getByText("Job receipts for the selected scope and period. Not this-open process spend.")).toBeTruthy();
     expect(screen.getByText("$0.32")).toBeTruthy();
     expect(screen.getByText("Estimated frontier cost")).toBeTruthy();
     expect(screen.getByText("~$4.24")).toBeTruthy();
@@ -508,8 +515,8 @@ describe("EconomicsPane", () => {
 
     expect(await screen.findByText(/job reports do not agree/)).toBeTruthy();
     expect(screen.queryByText("Spend")).toBeNull();
-    expect(screen.queryByText("Without savings")).toBeNull();
-    expect(screen.getByText("Why you saved")).toBeTruthy();
+    expect(screen.queryByText("At list price")).toBeNull();
+    expect(screen.getByText("Why list-price is lower")).toBeTruthy();
     expect(screen.getByText("Prompt-cache value")).toBeTruthy();
   });
 
@@ -540,9 +547,9 @@ describe("EconomicsPane", () => {
     expect(await screen.findByText("Measured usage cost")).toBeTruthy();
     expect(screen.getByText("$0.32")).toBeTruthy();
     expect(screen.getByText("Estimated frontier cost")).toBeTruthy();
-    expect(screen.queryByText("Without savings")).toBeNull();
-    expect(screen.queryByText("Less spent")).toBeNull();
-    expect(screen.getByText("Why you saved")).toBeTruthy();
+    expect(screen.queryByText("At list price")).toBeNull();
+    expect(screen.queryByText("Less than list price")).toBeNull();
+    expect(screen.getByText("Why list-price is lower")).toBeTruthy();
     expect(screen.getByText("Prompt-cache value")).toBeTruthy();
     expect(screen.getByText("Compact tool outputs")).toBeTruthy();
     expect(screen.getByText(/since you opened Marionette/)).toBeTruthy();
@@ -583,8 +590,8 @@ describe("EconomicsPane", () => {
     expect(await screen.findByText("Prompt-cache value")).toBeTruthy();
     expect(screen.getByText("Compact tool outputs")).toBeTruthy();
     expect(screen.getByText("Spend")).toBeTruthy();
-    expect(screen.getByText("Without savings")).toBeTruthy();
-    expect(screen.getByText("No owned jobs for this session.")).toBeTruthy();
+    expect(screen.getByText("At list price")).toBeTruthy();
+    expect(await screen.findByText("No owned jobs for this session.")).toBeTruthy();
   });
 
   it("keeps conversation scope honest when no full comparison exists", async () => {

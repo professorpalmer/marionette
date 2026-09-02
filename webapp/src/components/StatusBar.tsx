@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Circle,
   GitBranch,
@@ -15,7 +15,8 @@ import {
   Check,
   X,
 } from "lucide-react";
-import { api, type Config, type SessionGoal, type SessionState, type UsageData } from "../lib/api";
+import { api, type Config, type SessionGoal, type SessionState } from "../lib/api";
+import { useProcessUsage } from "../lib/processUsage";
 import {
   subscribeTaskProfile,
   taskProfileTitle,
@@ -88,7 +89,6 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
   onOpenEconomics: () => void;
 }) {
   const [branch, setBranch] = useState("");
-  const [usage, setUsage] = useState<UsageData["session"] | null>(null);
   const [apply, setApply] = useState<{ stage: string; message: string; percent: number | null } | null>(null);
   const [toast, setToast] = useState<{
     message: string;
@@ -194,33 +194,6 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
     };
   }, []);
 
-  const usageInFlight = useRef(false);
-  const acceptZeroUsageRef = useRef(false);
-  const fetchUsage = () => {
-    if (usageInFlight.current) return;
-    usageInFlight.current = true;
-    api.getUsage()
-      .then((data) => {
-        if (data && data.session) {
-          setUsage((prev) => {
-            const next = data.session;
-            const nextZero =
-              (next.tokens_used ?? 0) === 0 && (next.est_cost_usd ?? 0) === 0;
-            const prevHadSpend =
-              !!prev && ((prev.tokens_used ?? 0) > 0 || (prev.est_cost_usd ?? 0) > 0);
-            if (acceptZeroUsageRef.current) {
-              acceptZeroUsageRef.current = false;
-              return next;
-            }
-            if (nextZero && prevHadSpend) return prev;
-            return next;
-          });
-        }
-      })
-      .catch((err) => console.error("Failed to load usage in StatusBar", err))
-      .finally(() => { usageInFlight.current = false; });
-  };
-
   useEffect(() => {
     api.workspaces().then((ws) => {
       const active = ws.find((w) => w.active);
@@ -236,34 +209,22 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
   const runtimeReady = runtimeStatus === "ready";
   const sessionGoal = sessionGoalForChip(sessionState?.goal);
   const usageBusy = runtimeStatus === "busy" || runtimeStatus === "thinking";
+  const usage = useProcessUsage({ busy: usageBusy }).session;
 
   useEffect(() => {
-    fetchUsage();
-    const interval = setInterval(fetchUsage, usageBusy ? 2000 : 10000);
-    const onRefresh = () => fetchUsage();
     const onSessionChanged = () => {
-      acceptZeroUsageRef.current = true;
-      setUsage(null);
       setTaskProfile(null);
-      fetchUsage();
       // Session/view swaps carry a different sticky GOAL — refresh immediately
       // rather than waiting for the next 4s poll tick.
       void refreshSessionState();
     };
-    window.addEventListener("harness-config-changed", onRefresh);
-    window.addEventListener("harness-project-selected", onRefresh);
     window.addEventListener("harness-new-session", onSessionChanged);
-    window.addEventListener("harness-usage-refresh", onRefresh);
     window.addEventListener("harness-session-changed", onSessionChanged);
     return () => {
-      clearInterval(interval);
-      window.removeEventListener("harness-config-changed", onRefresh);
-      window.removeEventListener("harness-project-selected", onRefresh);
       window.removeEventListener("harness-new-session", onSessionChanged);
-      window.removeEventListener("harness-usage-refresh", onRefresh);
       window.removeEventListener("harness-session-changed", onSessionChanged);
     };
-  }, [usageBusy]);
+  }, []);
 
   const formatTokens = (num: number) => {
     if (num >= 1000000) {
@@ -457,7 +418,7 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
                   {hit.percent != null && savedUsd > 0 ? (
                     <span className="text-good/50" aria-hidden="true">·</span>
                   ) : null}
-                  {savedUsd > 0 ? `~${formatCost(savedUsd)} saved` : null}
+                  {savedUsd > 0 ? `~${formatCost(savedUsd)} list-price` : null}
                 </button>
               );
             })()}
@@ -474,7 +435,7 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
               {spendIsEstimated(usage) ? "~" : ""}
               {formatCost(usage.est_cost_usd)}
             </button>
-            <span className="text-faint/70 normal-case font-sans tracking-normal status-bar-optional-lg">process</span>
+            <span className="text-faint/70 normal-case font-sans tracking-normal">this open</span>
           </span>
         </>
       )}
