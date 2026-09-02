@@ -4,9 +4,10 @@ from __future__ import annotations
 
 Extracted mechanically from harness/conversation.py to continue decomposing the
 ConversationalSession god-object, matching ToolDispatchMixin / PromptQueueMixin
-contract: these methods operate through `self` (``_steer_queue``, ``_steer_lock``,
-``_steer_pending``, ``_history``) provided by the concrete class -- the mixin
-defines no state and no __init__.
+contract: these methods operate through `self` (``_session_actions`` /
+``_steer_queue``, ``_steer_lock``, ``_steer_pending``, ``_history``)
+provided by the concrete class -- the mixin defines no state and no __init__.
+Pending mid-turn input is stored as SessionAction objects under ``_steer_lock``.
 
 Prompt-queue playlist CRUD stays on PromptQueueMixin. Busy lifecycle lives
 on BusyControlMixin; ``_send_locked_inner`` control flow lives on
@@ -17,7 +18,16 @@ enqueue_steer / drain_steer / _check_and_inject_steer still resolve via
 inheritance.
 """
 
-from typing import Iterator, Optional
+from typing import Iterator, List, Optional
+
+from .session_actions import (
+    ActionKind,
+    DeliveryPolicy,
+    SessionAction,
+    SessionActionStore,
+    SteerQueueView,
+    injectable_kinds,
+)
 
 
 class SteerMixin:
@@ -47,6 +57,40 @@ class SteerMixin:
             pass
         return False
 
+    def _action_store(self) -> SessionActionStore:
+        """Return the session admission store, installing one on minimal hosts."""
+        store = getattr(self, "_session_actions", None)
+        if not isinstance(store, SessionActionStore):
+            view = getattr(self, "_steer_queue", None)
+            if isinstance(view, SteerQueueView):
+                store = view._store
+            elif isinstance(view, SessionActionStore):
+                store = view
+            else:
+                store = SessionActionStore()
+                if view is not None:
+                    for item in list(view):
+                        text = (
+                            item.text
+                            if isinstance(item, SessionAction)
+                            else str(item or "").strip()
+                        )
+                        if text:
+                            store.admit(
+                                ActionKind.STEER,
+                                text,
+                                delivery=DeliveryPolicy.NEXT_TURN_BOUNDARY,
+                            )
+            self._session_actions = store
+        if not isinstance(getattr(self, "_steer_queue", None), SteerQueueView):
+            self._steer_queue = SteerQueueView(store)
+        return store
+
+    def admit_session_action(self, kind, text: str = "", **kwargs) -> SessionAction:
+        """Locked admit into the session store (HTTP RecoverTurn / turn input)."""
+        with self._steer_lock:
+            return self._action_store().admit(kind, text, **kwargs)
+
     def drop_queued_steers(self) -> list[str]:
         """Atomically discard pending steers and clear the mid-spree pending flag.
 
@@ -54,13 +98,12 @@ class SteerMixin:
         an abandoned generator or contaminate a later unrelated user send.
         """
         with self._steer_lock:
-            items = list(self._steer_queue)
-            self._steer_queue.clear()
+            dropped = self._action_store().clear()
         try:
             self._steer_pending = False
         except Exception:
             pass
-        return [item for item in items if str(item or "").strip()]
+        return [action.text for action in dropped if str(action.text or "").strip()]
 
     @staticmethod
     def _steer_drop_notice_text(dropped: list[str]) -> str:
@@ -191,9 +234,10 @@ class SteerMixin:
             # Fail closed under Stop hold if the lock is unreadable.
             return True
 
-    def enqueue_steer(self, text: str) -> None:
+    def enqueue_steer(self, text: str, *, expected_turn_id: Optional[str] = None) -> None:
         """Append a pending mid-turn user steer.
 
+        Thin adapter: admits ``kind=steer`` with ``delivery=next_turn_boundary``.
         While an abandoned generator still holds ``_busy`` after Stop, refuse
         to queue: a steer has nowhere truthful to go. Ready/idle sessions keep
         standard enqueue/drain even if ``_stop_holds_idle`` is still sticky for
@@ -206,14 +250,33 @@ class SteerMixin:
             self._record_steer_drop_notice([cleaned])
             return
         with self._steer_lock:
-            self._steer_queue.append(cleaned)
+            self._action_store().admit(
+                ActionKind.STEER,
+                cleaned,
+                delivery=DeliveryPolicy.NEXT_TURN_BOUNDARY,
+                expected_turn_id=expected_turn_id,
+            )
+
+    def _drain_steer_actions(self) -> List[SessionAction]:
+        """Pop steer/mailbox actions ready at the next-turn boundary."""
+        with self._steer_lock:
+            return self._action_store().drain_ready(
+                DeliveryPolicy.NEXT_TURN_BOUNDARY,
+                kinds=injectable_kinds(),
+            )
 
     def drain_steer(self) -> list[str]:
-        """Atomically pop and return all pending steer messages (empty list if none)."""
+        """Atomically pop and return all pending steer/mailbox texts (empty if none)."""
+        return [action.text for action in self._drain_steer_actions()]
+
+    def drain_mailbox(self) -> list[str]:
+        """Pop mailbox actions due when the run is idle."""
         with self._steer_lock:
-            items = list(self._steer_queue)
-            self._steer_queue.clear()
-            return items
+            actions = self._action_store().drain_ready(
+                DeliveryPolicy.WHEN_RUN_IDLE,
+                kinds=(ActionKind.MAILBOX,),
+            )
+        return [action.text for action in actions if str(action.text or "").strip()]
 
     @staticmethod
     def _format_steer_user_content(text: str) -> str:
@@ -316,8 +379,8 @@ class SteerMixin:
             else:
                 yield from self._flush_steer_drop_notice()
             return
-        steers = self.drain_steer()
-        if not steers:
+        actions = self._drain_steer_actions()
+        if not actions:
             return
         if not self._steer_inject_boundary_is_safe():
             # Keep pending until pairs complete (or sanitize heals them). Signal
@@ -325,11 +388,11 @@ class SteerMixin:
             # inject at a safe boundary — do NOT insert a user row between
             # assistant tool_use and tool_result.
             with self._steer_lock:
-                for steer in reversed(steers):
-                    self._steer_queue.appendleft(steer)
+                self._action_store().requeue_front(actions)
             self._steer_pending = True
             return
-        for steer in steers:
+        for action in actions:
+            steer = action.text
             content = self._format_steer_user_content(steer)
             try:
                 from .task_transaction import context_block

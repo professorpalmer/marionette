@@ -23,6 +23,7 @@ def test_steer_queue_round_trip():
     
     assert s.drain_steer() == ["First steer message", "Second steer message"]
     assert s.drain_steer() == []
+    assert list(s._session_actions) == []
 
 
 def test_enqueue_steer_ignores_blank_and_stop_does_not_notice():
@@ -37,6 +38,7 @@ def test_enqueue_steer_ignores_blank_and_stop_does_not_notice():
     assert dropped == []
     assert s._record_steer_drop_notice(dropped) is None
     assert getattr(s, "_pending_steer_drop_notice", None) in (None, {})
+    assert list(s._session_actions) == []
 
 
 class _SteeringPilot:

@@ -549,6 +549,19 @@ export type SessionGoal = {
 
 export type DeliveryMode = "auto" | "steer" | "follow_up" | "interrupt";
 
+export type TurnInputMode = "start_or_steer" | "start_if_idle" | "steer";
+
+export type SessionLoopMode = "interval" | "self_paced";
+
+export type SessionLoop = {
+  enabled: boolean;
+  mode?: SessionLoopMode | null;
+  prompt?: string;
+  interval_seconds?: number | null;
+  until?: number | null;
+  last_response_digest?: string | null;
+};
+
 export type SessionState = {
   state: "idle" | "thinking" | "awaiting_swarm";
   pending_swarms: boolean;
@@ -1501,6 +1514,26 @@ export const api = {
     postJSON<{ ok: boolean; goal: SessionGoal }>("/api/session/goal", { action: "complete" }),
   clearSessionGoal: () =>
     postJSON<{ ok: boolean; goal: SessionGoal }>("/api/session/goal", { action: "clear" }),
+  getSessionLoop: () =>
+    getJSON<{ ok: boolean; loop: SessionLoop }>(withToken("/api/session/loop")),
+  startSessionLoop: (
+    mode: SessionLoopMode,
+    prompt: string,
+    intervalSeconds?: number,
+    until?: number,
+  ) =>
+    postJSON<{ ok: boolean; loop: SessionLoop; error?: string; code?: string }>(
+      "/api/session/loop",
+      {
+        action: "start",
+        mode,
+        prompt,
+        ...(intervalSeconds != null ? { interval_seconds: intervalSeconds } : {}),
+        ...(until != null ? { until } : {}),
+      },
+    ),
+  stopSessionLoop: () =>
+    postJSON<{ ok: boolean; loop: SessionLoop }>("/api/session/loop", { action: "stop" }),
   sessionTodo: (body: { command: string }) =>
     postJSON<{
       ok: boolean;
@@ -1998,13 +2031,20 @@ export const api = {
       error?: string;
       reason?: string;
     }>("/api/session/compact", {}),
-  steerSession: (text: string, images?: string[], deliveryMode?: DeliveryMode) =>
-    postJSON<{ ok: boolean; action?: string }>(
+  steerSession: (
+    text: string,
+    images?: string[],
+    deliveryMode?: DeliveryMode,
+    opts?: { turnInputMode?: TurnInputMode; expectedTurnId?: string },
+  ) =>
+    postJSON<{ ok: boolean; action?: string; kind?: string; code?: string }>(
       "/api/session/steer",
       {
         text,
         images: images && images.length ? images : undefined,
         ...(deliveryMode ? { delivery_mode: deliveryMode } : {}),
+        ...(opts?.turnInputMode ? { turn_input_mode: opts.turnInputMode } : {}),
+        ...(opts?.expectedTurnId ? { expected_turn_id: opts.expectedTurnId } : {}),
       },
     ),
   // PROMPT QUEUE: a "playlist" of full user prompts that each run as their own

@@ -6,12 +6,14 @@ from types import SimpleNamespace
 from harness.api.session_control import (
     SessionControlServices,
     get_session_context_at,
+    get_session_loop,
     get_session_queue,
     get_session_state,
     get_session_swarm_results,
     post_chat_stash,
     post_session_compact,
     post_session_interrupt,
+    post_session_loop,
     post_session_persist,
     post_session_queue,
     post_session_queue_reorder,
@@ -20,6 +22,8 @@ from harness.api.session_control import (
     post_session_todo,
     prepare_session_restart,
 )
+from harness.session_actions import ActionKind, SessionActionStore
+from harness.session_loop import SessionLoop
 
 
 def _svc(pilot=None, runners=None, upload_dir="/uploads", sessions=None):
@@ -175,6 +179,117 @@ def test_steer_vision_images_reports_enqueue_prompt(tmp_path):
     assert payload["action"] == "enqueue_prompt"
     assert p.steers == []
     assert p.prompts[0]["text"] == "look"
+
+
+def test_steer_invalid_turn_input_mode_is_400():
+    class _P:
+        def enqueue_steer(self, text):
+            raise AssertionError("invalid mode must not enqueue")
+
+    svc = _svc(pilot=_P())
+    code, payload = post_session_steer(
+        {"text": "go", "turn_input_mode": "recover"}, svc,
+    )
+    assert code == 400
+    assert payload["ok"] is False
+    assert payload["error"] == "invalid turn_input_mode"
+
+
+def test_steer_recover_turn_admits_recover_and_requires_expected_turn_id():
+    class _P:
+        def __init__(self):
+            self._session_actions = SessionActionStore()
+
+        def enqueue_steer(self, text):
+            raise AssertionError("RecoverTurn must not enqueue_steer")
+
+    p = _P()
+    svc = _svc(pilot=p)
+    code, payload = post_session_steer(
+        {"text": "resume", "kind": "recover"}, svc,
+    )
+    assert code == 400
+    assert payload["ok"] is False
+    assert payload["code"] == "recover_requires_expected_turn_id"
+    assert list(p._session_actions) == []
+
+    code, payload = post_session_steer(
+        {"text": "resume", "kind": "recover", "expected_turn_id": "turn-7"}, svc,
+    )
+    assert code == 200
+    assert payload["ok"] is True
+    assert payload["action"] == "recover"
+    admitted = list(p._session_actions)
+    assert [a.kind for a in admitted] == [ActionKind.RECOVER]
+    assert admitted[0].expected_turn_id == "turn-7"
+
+
+def test_steer_turn_input_mode_start_if_idle():
+    class _P:
+        def __init__(self):
+            self._session_actions = SessionActionStore()
+            self._busy = False
+
+        def is_turn_busy(self):
+            return self._busy
+
+        def enqueue_steer(self, text):
+            raise AssertionError("start_if_idle must admit, not enqueue_steer")
+
+        def enqueue_prompt(self, text, images=None, model=None):
+            item = {"id": "s1", "text": text, "images": images or []}
+            self.prompts.append(item)
+            return item
+
+    p = _P()
+    p.prompts = []
+    svc = _svc(pilot=p)
+    code, payload = post_session_steer(
+        {"text": "begin", "turn_input_mode": "start_if_idle"}, svc,
+    )
+    assert code == 200
+    assert payload["action"] == "start"
+    assert payload["kind"] == "start"
+    assert list(p._session_actions)[0].kind is ActionKind.START
+    assert p.prompts[0]["text"] == "begin"
+    assert payload["item"]["text"] == "begin"
+    assert payload["deferred"] is True
+
+    p._busy = True
+    code, payload = post_session_steer(
+        {"text": "nope", "turn_input_mode": "start_if_idle"}, svc,
+    )
+    assert code == 400
+    assert payload["code"] == "start_if_idle_busy"
+
+
+def test_session_loop_start_stop_and_rejects_interval_without_seconds():
+    p = SimpleNamespace(_loop_state=SessionLoop())
+    svc = _svc(pilot=p)
+    code, payload = get_session_loop(svc)
+    assert code == 200
+    assert payload["loop"]["enabled"] is False
+
+    code, payload = post_session_loop(
+        {"action": "start", "mode": "interval", "prompt": "again"}, svc,
+    )
+    assert code == 400
+    assert payload["code"] == "interval_requires_seconds"
+
+    code, payload = post_session_loop(
+        {
+            "action": "start",
+            "mode": "self_paced",
+            "prompt": "next beat",
+        },
+        svc,
+    )
+    assert code == 200
+    assert payload["loop"]["enabled"] is True
+    assert payload["loop"]["mode"] == "self_paced"
+    code, payload = post_session_loop({"action": "stop"}, svc)
+    assert code == 200
+    assert payload["loop"]["enabled"] is False
 
 
 def test_rewind_requires_target():
