@@ -94,6 +94,9 @@ export default function EconomicsDurable({
 
       {durableReceiptHeroAvailable(data) ? (
         <section className="mx-3 mb-3 rounded-md border border-edge/50 bg-panel2/20 px-3 py-2.5">
+          <p className="text-[10px] text-muted mb-2 leading-snug">
+            Job receipts for the selected scope and period. Not this-open process spend.
+          </p>
           <div className="grid grid-cols-2 gap-x-4 gap-y-2.5">
             <div className="min-w-0">
               <div className="text-[10px] text-muted">{spendHeading}</div>
