@@ -385,7 +385,13 @@ function fmtTokens(num: number): string {
   return String(num);
 }
 
-export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
+export default function CostBreakdown({
+  data,
+  hero = true,
+}: {
+  data: CostBreakdownData;
+  hero?: boolean;
+}) {
   const est = isFinite(data.est_cost_usd) ? data.est_cost_usd : 0;
   const estimated = spendIsEstimated(data);
   const spendPrefix = estimated ? "~" : "";
@@ -444,12 +450,21 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
   const savingsPercent = withoutSavings > 0
     ? Math.max(0, Math.min(100, (valueTotal / withoutSavings) * 100))
     : null;
+  const showWhySaved = promptCacheSaved > 0
+    || modelSelectionSaved > 0
+    || showRoutingDecision
+    || compactSavings > 0;
+  const showUnknownRouting = routingUnknown
+    && typeof data.routing_saved_usd === "number"
+    && data.routing_saved_usd > 0;
+  if (!hero && !showWhySaved && !showUnknownRouting) return null;
 
   return (
     <div className="w-full min-h-0 px-3 py-3 text-[11px] text-txt">
       <p className="text-[10px] text-muted mb-2 leading-snug">
         Spend and savings since you opened Marionette.
       </p>
+      {hero ? (
       <div className="mb-3 rounded-md border border-edge/50 bg-panel2/20 px-2.5 py-2.5">
         <div className="grid grid-cols-2 gap-x-3 gap-y-2.5">
           <div className="min-w-0">
@@ -472,9 +487,10 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
           </div>
         </div>
       </div>
+      ) : null}
 
-      {(promptCacheSaved > 0 || modelSelectionSaved > 0 || showRoutingDecision || compactSavings > 0) ? (
-      <div className="mt-2 pt-2 border-t border-edge/50">
+      {showWhySaved ? (
+      <div className={hero ? "mt-2 pt-2 border-t border-edge/50" : undefined}>
       <div className="text-[10px] text-faint mb-1">Why you saved</div>
       <p className="text-[10px] text-muted mb-1.5 leading-snug">
         Each saving is shown once, so the total stays honest.
@@ -536,7 +552,7 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
       </div>
       ) : null}
 
-      {routingUnknown && typeof data.routing_saved_usd === "number" && data.routing_saved_usd > 0 ? (
+      {showUnknownRouting ? (
         <div
           className="flex items-center justify-between mb-1 text-faint"
           title="Routing savings basis is unknown — refused as billed or measured value."

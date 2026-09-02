@@ -9,7 +9,7 @@ import CostBreakdown, {
   listPriceValueTotal,
   usageToCostBreakdownData,
 } from "./CostBreakdown";
-import EconomicsDurable from "./EconomicsDurable";
+import EconomicsDurable, { durableReceiptHeroAvailable } from "./EconomicsDurable";
 
 type EconomicsPaneScope = Exclude<EconomicsScope, "window30">;
 
@@ -166,6 +166,8 @@ export default function EconomicsPane() {
       || listPriceValueTotal(processMeters) > 0
     ),
   );
+  const durableHero = economicsMatchesSelection && durableReceiptHeroAvailable(economics);
+  const processHero = scope === "conversation" && !durableHero;
   return (
     <div className="flex flex-col h-full overflow-hidden bg-transparent">
       <div className="shrink-0 flex items-center px-3 py-2 border-b border-[var(--shell-panel-border)] select-none">
@@ -212,7 +214,7 @@ export default function EconomicsPane() {
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto">
         {showProcessMeters && processMeters ? (
-          <CostBreakdown data={processMeters} />
+          <CostBreakdown data={processMeters} hero={processHero} />
         ) : null}
         {economicsMatchesSelection ? (
           <EconomicsDurable

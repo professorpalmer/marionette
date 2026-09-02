@@ -477,6 +477,77 @@ describe("EconomicsPane", () => {
     expect(mockOpenAgentSwarmJob).toHaveBeenCalledWith("job_abcdef012345");
   });
 
+  it("keeps this-open spend off This repo even when receipts are unavailable", async () => {
+    mockGetUsage.mockResolvedValue({
+      session: {
+        tokens_used: 229_800,
+        est_cost_usd: 0.62,
+        cost_source: "estimated",
+        estimated: true,
+        driver: "openai-codex:gpt-5.6-sol",
+        price_in: 1,
+        price_out: 1,
+        tokens_cached: 170_000,
+        prompt_cache_read_tokens: 170_000,
+        cache_savings_gross_usd: 5.22,
+        cache_savings_basis: "catalog",
+        tool_output_tokens_saved: 40_000,
+        tool_output_savings_usd: 0.40,
+      },
+      jobs: [],
+      session_total: { session_id: "s1", est_cost_usd: 0.62, input_tokens: 1, output_tokens: 1 },
+    });
+    mockGetEconomics.mockResolvedValue({
+      ...durablePayload,
+      counterfactual: null,
+      counterfactual_source: "unavailable",
+      counterfactual_status: "receipt_mismatch",
+    });
+
+    render(<EconomicsPane />);
+
+    expect(await screen.findByText(/job reports do not agree/)).toBeTruthy();
+    expect(screen.queryByText("Spend")).toBeNull();
+    expect(screen.queryByText("Without savings")).toBeNull();
+    expect(screen.getByText("Why you saved")).toBeTruthy();
+    expect(screen.getByText("Prompt-cache value")).toBeTruthy();
+  });
+
+  it("does not stack a this-open spend hero on a scoped receipt hero", async () => {
+    mockGetUsage.mockResolvedValue({
+      session: {
+        tokens_used: 229_800,
+        est_cost_usd: 0.62,
+        cost_source: "estimated",
+        estimated: true,
+        driver: "openai-codex:gpt-5.6-sol",
+        price_in: 1,
+        price_out: 1,
+        tokens_cached: 170_000,
+        prompt_cache_read_tokens: 170_000,
+        prompt_cache_hit_ratio: 0.74,
+        cache_savings_gross_usd: 5.22,
+        cache_savings_basis: "catalog",
+        tool_output_tokens_saved: 40_000,
+        tool_output_savings_usd: 0.40,
+      },
+      jobs: [],
+      session_total: { session_id: "s1", est_cost_usd: 0.62, input_tokens: 1, output_tokens: 1 },
+    });
+
+    render(<EconomicsPane />);
+
+    expect(await screen.findByText("Measured usage cost")).toBeTruthy();
+    expect(screen.getByText("$0.32")).toBeTruthy();
+    expect(screen.getByText("Estimated frontier cost")).toBeTruthy();
+    expect(screen.queryByText("Without savings")).toBeNull();
+    expect(screen.queryByText("Less spent")).toBeNull();
+    expect(screen.getByText("Why you saved")).toBeTruthy();
+    expect(screen.getByText("Prompt-cache value")).toBeTruthy();
+    expect(screen.getByText("Compact tool outputs")).toBeTruthy();
+    expect(screen.getByText(/since you opened Marionette/)).toBeTruthy();
+  });
+
   it("shows this-open cache and compact value even when the session has no owned jobs", async () => {
     mockGetUsage.mockResolvedValue({
       session: {
@@ -511,6 +582,8 @@ describe("EconomicsPane", () => {
 
     expect(await screen.findByText("Prompt-cache value")).toBeTruthy();
     expect(screen.getByText("Compact tool outputs")).toBeTruthy();
+    expect(screen.getByText("Spend")).toBeTruthy();
+    expect(screen.getByText("Without savings")).toBeTruthy();
     expect(screen.getByText("No owned jobs for this session.")).toBeTruthy();
   });
 
