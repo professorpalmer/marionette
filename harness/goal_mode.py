@@ -178,7 +178,10 @@ def stash_turn_swarm_facts(
         prior = list(getattr(session, "_turn_swarm_facts", None) or [])
         prior.append(facts)
         session._turn_swarm_facts = prior
-        if skip_continue:
+        # Any continueable swarm in the turn wins over a prior skip-class row.
+        if not skip_continue:
+            session._goal_mode_skip_continue = False
+        elif getattr(session, "_goal_mode_skip_continue", None) is not False:
             session._goal_mode_skip_continue = True
     except Exception:
         pass

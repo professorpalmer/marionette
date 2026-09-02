@@ -1557,6 +1557,17 @@ class SendLoopMixin:
                     })
                     continue
 
+                if synthesis_decision in ("none", "fallback"):
+                    try:
+                        _did_goal = maybe_inject_goal_continue(
+                            self, iters=goal_mode_iters, cap=_goal_mode_cap,
+                        )
+                    except Exception:
+                        _did_goal = False
+                    if _did_goal:
+                        goal_mode_iters += 1
+                        continue
+
                 if synthesis_decision == "fallback":
                     fallback = POST_SWARM_SYNTHESIS_FALLBACK
                     if self._history and self._history[-1].get("role") == "assistant":
@@ -1573,16 +1584,6 @@ class SendLoopMixin:
                         "role": "assistant",
                         "text": fallback,
                     })
-                if synthesis_decision == "none":
-                    try:
-                        _did_goal = maybe_inject_goal_continue(
-                            self, iters=goal_mode_iters, cap=_goal_mode_cap,
-                        )
-                    except Exception:
-                        _did_goal = False
-                    if _did_goal:
-                        goal_mode_iters += 1
-                        continue
                 disposition, user_message = yield from drain_idle_turn(
                     self,
                     user_message=user_message,

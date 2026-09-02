@@ -434,3 +434,33 @@ def test_prose_after_unverified_criteria_continues_once(monkeypatch):
     ]
     assert "Done." in texts
     assert "Still working." in texts
+
+
+def test_empty_synthesis_unverified_criteria_continues_instead_of_fallback(monkeypatch):
+    monkeypatch.setenv("HARNESS_GOAL_MODE_CONTINUE_MAX", "1")
+    pilot = _SequencePilot([
+        _pilot_envelope(actions=[{"kind": "run_swarm", "goal": "audit findings"}]),
+        _pilot_envelope(),
+        _pilot_envelope(),
+        _pilot_envelope(say="Still working."),
+    ])
+
+    session, events = _run_post_swarm_turn(
+        monkeypatch, pilot, execute_actions=_fake_execute_unverified_criteria,
+    )
+
+    notes = [
+        message["content"]
+        for message in session._history
+        if GOAL_CONTINUE_PREFIX in str(message.get("content") or "")
+    ]
+    assert len(notes) == 1
+    texts = [
+        event.data["text"]
+        for event in events
+        if event.kind == "message"
+    ]
+    assert POST_SWARM_SYNTHESIS_FALLBACK not in texts
+    assert "Still working." in texts
+    assert len(pilot.calls) == 4
+    assert events[-1].kind == "assistant_done"

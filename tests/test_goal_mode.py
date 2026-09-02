@@ -134,6 +134,21 @@ def test_goal_continue_note_and_skip_flag():
     assert goal_continue_note(session, iters=0, cap=2) is None
 
 
+def test_stash_continueable_swarm_clears_skip_latch():
+    session = SimpleNamespace()
+    stash_turn_swarm_facts(
+        session, _facts(_criterion("demo", NOT_VERIFIED)), skip_continue=True,
+    )
+    assert session._goal_mode_skip_continue is True
+    stash_turn_swarm_facts(
+        session, _facts(_criterion("windows", NOT_VERIFIED)), skip_continue=False,
+    )
+    assert session._goal_mode_skip_continue is False
+    note = goal_continue_note(session, iters=0, cap=2)
+    assert note is not None
+    assert "windows" in note
+
+
 def test_stash_turn_swarm_facts_appends_and_skip():
     session = SimpleNamespace()
     facts = _facts(_criterion("x", NOT_VERIFIED))
