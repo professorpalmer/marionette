@@ -10,9 +10,15 @@ from typing import Any, Callable, Dict, List, Optional, Union
 import harness.send_loop as send_loop
 from harness.config import HarnessConfig
 from harness.conversation import ConvEvent, ConversationalSession
+from harness.goal_mode import GOAL_CONTINUE_PREFIX, stash_turn_swarm_facts
 from harness.send_loop import (
     POST_SWARM_SYNTHESIS_FALLBACK,
     POST_SWARM_SYNTHESIS_NUDGE,
+)
+from harness.swarm_run_facts import (
+    NOT_VERIFIED,
+    CriterionFact,
+    SwarmRunFacts,
 )
 from pmharness.drivers.base import DriverResponse
 
@@ -354,3 +360,107 @@ def test_successful_post_swarm_synthesis_emits_one_message_before_done(monkeypat
     assert events[message_indexes[0]].data["text"] == "The audit found one issue."
     assert len(pilot.calls) == 2
     assert pilot.calls[1]["kwargs"]["tools"] == [{"name": "run_swarm"}]
+
+
+def _fake_execute_unverified_criteria(
+    session: ConversationalSession,
+    *,
+    turn: Any,
+    counters: dict[str, int],
+    turn_findings: list,
+    **_: Any,
+):
+    if not turn.actions:
+        return (None, [])
+    assert [action.kind for action in turn.actions] == ["run_swarm"]
+    counters["swarms"] += 1
+    counters["synchronous_swarms"] = counters.get("synchronous_swarms", 0) + 1
+    turn_findings.append({"kind": "finding", "headline": "one completed finding"})
+    session._history.append({
+        "role": "user",
+        "content": "[swarm result] one completed finding",
+    })
+    stash_turn_swarm_facts(
+        session,
+        SwarmRunFacts(
+            job_id="job_unverified",
+            job_status="complete",
+            subject_cwd="/tmp/repo",
+            state_root="/tmp/state",
+            marionette_version="0.9.400",
+            puppetmaster_version="1.22.43",
+            artifact_total=1,
+            artifact_type_counts={"finding": 1},
+            non_routing_total=1,
+            direct_provenance_total=1,
+            criteria=(
+                CriterionFact(
+                    text="windows path containment",
+                    status=NOT_VERIFIED,
+                    basis="test",
+                ),
+            ),
+        ),
+    )
+    yield ConvEvent("swarm_result", {"findings": 1})
+    return (None, [])
+
+
+def test_prose_after_unverified_criteria_continues_once(monkeypatch):
+    monkeypatch.setenv("HARNESS_GOAL_MODE_CONTINUE_MAX", "1")
+    pilot = _SequencePilot([
+        _pilot_envelope(actions=[{"kind": "run_swarm", "goal": "audit findings"}]),
+        _pilot_envelope(say="Done."),
+        _pilot_envelope(say="Still working."),
+    ])
+
+    session, events = _run_post_swarm_turn(
+        monkeypatch, pilot, execute_actions=_fake_execute_unverified_criteria,
+    )
+
+    notes = [
+        message["content"]
+        for message in session._history
+        if GOAL_CONTINUE_PREFIX in str(message.get("content") or "")
+    ]
+    assert len(notes) == 1
+    assert "windows path containment" in notes[0]
+    assert len(pilot.calls) == 3
+    assert events[-1].kind == "assistant_done"
+    texts = [
+        event.data["text"]
+        for event in events
+        if event.kind == "message"
+    ]
+    assert "Done." in texts
+    assert "Still working." in texts
+
+
+def test_empty_synthesis_unverified_criteria_continues_instead_of_fallback(monkeypatch):
+    monkeypatch.setenv("HARNESS_GOAL_MODE_CONTINUE_MAX", "1")
+    pilot = _SequencePilot([
+        _pilot_envelope(actions=[{"kind": "run_swarm", "goal": "audit findings"}]),
+        _pilot_envelope(),
+        _pilot_envelope(),
+        _pilot_envelope(say="Still working."),
+    ])
+
+    session, events = _run_post_swarm_turn(
+        monkeypatch, pilot, execute_actions=_fake_execute_unverified_criteria,
+    )
+
+    notes = [
+        message["content"]
+        for message in session._history
+        if GOAL_CONTINUE_PREFIX in str(message.get("content") or "")
+    ]
+    assert len(notes) == 1
+    texts = [
+        event.data["text"]
+        for event in events
+        if event.kind == "message"
+    ]
+    assert POST_SWARM_SYNTHESIS_FALLBACK not in texts
+    assert "Still working." in texts
+    assert len(pilot.calls) == 4
+    assert events[-1].kind == "assistant_done"

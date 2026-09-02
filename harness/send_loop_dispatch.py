@@ -26,6 +26,7 @@ from .swarm_run_facts import (
     normalize_execution_refs,
     render_evidence_boundary,
 )
+from .goal_mode import stash_turn_swarm_facts
 
 DISPATCH_ACTION_KINDS: frozenset[str] = frozenset({
     "run_swarm", "run_implement", "run_parallel", "route_task", "memory",
@@ -1195,14 +1196,25 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     elif not _substantive:
         stall = '\n(THIN SWARM FINDINGS — the findings above are generic one-liners with no file-backed evidence, a known failure mode when the goal is too long/multi-part for the workers. Do NOT present these as a completed audit. Re-dispatch narrowed workers with tight single-domain objectives.)' + stall
     _pilot_via = 'refused demo substrate' if _demo_refused else f'via {_ui_adapter}'
-    evidence_boundary = render_evidence_boundary(build_swarm_run_facts(
+    swarm_facts = build_swarm_run_facts(
         job_id=_job_id_text,
         job_status=str(getattr(result, 'status', '') or ''),
         subject_cwd=_swarm_repo,
         state_root=getattr(session, 'state_dir', '') or '',
         artifacts=_all_arts,
         acceptance_criteria=_finish_criteria,
-    ))
+    )
+    evidence_boundary = render_evidence_boundary(swarm_facts)
+    try:
+        stash_turn_swarm_facts(
+            session,
+            swarm_facts,
+            skip_continue=bool(
+                _demo_refused or auth_failure or _ntc_note or (not _has_signal)
+            ),
+        )
+    except Exception:
+        pass
     _follow = (
         'Synthesize the available PM evidence. Artifact discovery is complete '
         'above; do not gather the result set with additional tools or rerun the swarm.'

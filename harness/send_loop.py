@@ -92,6 +92,11 @@ from .send_loop_secrets import (
     iter_secret_action_turn,
     peel_secret_request_message,
 )
+from .goal_mode import (
+    maybe_enqueue_session_goal_continuation,
+    maybe_inject_goal_continue,
+    reset_turn_goal_state,
+)
 
 
 POST_SWARM_SYNTHESIS_NUDGE = (
@@ -800,16 +805,9 @@ class SendLoopMixin:
                                         ),
                                         "reason": "token_budget",
                                     })
-                                auto_continue = bool(
-                                    getattr(self.config, "goal_auto_continue", False)
+                                maybe_enqueue_session_goal_continuation(
+                                    self, gate_blocks_idle=gate_blocks_idle,
                                 )
-                                if (
-                                    auto_continue
-                                    and not gate_blocks_idle
-                                    and not getattr(goal, "budget_exceeded", False)
-                                    and hasattr(self, "enqueue_goal_continuation")
-                                ):
-                                    self.enqueue_goal_continuation()
                         except Exception:
                             pass
                         try:
@@ -1116,6 +1114,11 @@ class SendLoopMixin:
             _auto_verify_cap = int(os.environ.get("HARNESS_AUTO_VERIFY_MAX", "2"))
         except ValueError:
             _auto_verify_cap = 2
+        try:
+            _goal_mode_cap = reset_turn_goal_state(self)
+        except Exception:
+            _goal_mode_cap = 2
+        goal_mode_iters = 0
         # Step ceiling per user message, read LIVE from the env each turn so a
         # Settings change applies without a restart. 0 (or negative) means
         # UNLIMITED -- true autopilot: loop until the pilot is done, the budget
@@ -1553,6 +1556,17 @@ class SendLoopMixin:
                         "content": POST_SWARM_SYNTHESIS_NUDGE,
                     })
                     continue
+
+                if synthesis_decision in ("none", "fallback"):
+                    try:
+                        _did_goal = maybe_inject_goal_continue(
+                            self, iters=goal_mode_iters, cap=_goal_mode_cap,
+                        )
+                    except Exception:
+                        _did_goal = False
+                    if _did_goal:
+                        goal_mode_iters += 1
+                        continue
 
                 if synthesis_decision == "fallback":
                     fallback = POST_SWARM_SYNTHESIS_FALLBACK
