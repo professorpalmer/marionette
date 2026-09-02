@@ -9,6 +9,7 @@ import StatusBar, {
 import EconomicsPane from "../components/EconomicsPane";
 import UpdateBanner, { type UpdateAvailability } from "../components/UpdateBanner";
 import { api } from "../lib/api";
+import { _resetProcessUsageForTests } from "../lib/processUsage";
 import { publishTaskProfile } from "../lib/taskProfileChrome";
 
 vi.mock("../lib/api", () => ({
@@ -59,12 +60,17 @@ const mockCompleteSessionGoal = vi.mocked(api.completeSessionGoal);
 const mockClearSessionGoal = vi.mocked(api.clearSessionGoal);
 
 beforeEach(() => {
+  _resetProcessUsageForTests();
   mockGetUsage.mockResolvedValue(processUsage);
   mockGetEconomics.mockResolvedValue({
     available: true,
     scope: "conversation",
     counterfactual: null,
   });
+});
+
+afterEach(() => {
+  _resetProcessUsageForTests();
 });
 
 const statusBarProps = {
@@ -229,6 +235,36 @@ describe("StatusBar usage pills", () => {
 
     expect(await screen.findByLabelText("Economics ownership")).toHaveValue("conversation");
     expect(screen.getByLabelText("Economics period")).toHaveValue("all");
+  });
+
+  it("footer and pane spend the same process-usage snapshot", async () => {
+    (window as unknown as { __pmPendingEconomicsSelection?: { scope: string; period: string } })
+      .__pmPendingEconomicsSelection = { scope: "conversation", period: "all" };
+
+    render(
+      <>
+        <StatusBar {...statusBarProps} />
+        <EconomicsPane />
+      </>,
+    );
+
+    expect(await screen.findByRole("button", { name: "$0.55" })).toBeTruthy();
+    expect(await screen.findByText("Spend")).toBeTruthy();
+    expect(screen.getAllByText("$0.55").length).toBeGreaterThan(1);
+    expect(screen.getByText("this open")).toBeTruthy();
+    expect(screen.getByText("~$6.67 list-price")).toBeTruthy();
+
+    mockGetUsage.mockResolvedValue({
+      ...processUsage,
+      session: { ...processUsage.session, est_cost_usd: 0.99 },
+    });
+    await act(async () => {
+      window.dispatchEvent(new Event("harness-usage-refresh"));
+    });
+
+    expect(await screen.findByRole("button", { name: "$0.99" })).toBeTruthy();
+    expect(screen.getAllByText("$0.99").length).toBeGreaterThan(1);
+    expect(screen.queryByRole("button", { name: "$0.55" })).toBeNull();
   });
 });
 

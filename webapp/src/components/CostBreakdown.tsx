@@ -462,7 +462,7 @@ export default function CostBreakdown({
   return (
     <div className="w-full min-h-0 px-3 py-3 text-[11px] text-txt">
       <p className="text-[10px] text-muted mb-2 leading-snug">
-        Spend and savings since you opened Marionette.
+        Spend and list-price value since you opened Marionette.
       </p>
       {hero ? (
       <div className="mb-3 rounded-md border border-edge/50 bg-panel2/20 px-2.5 py-2.5">
@@ -472,15 +472,15 @@ export default function CostBreakdown({
             <div className="mt-0.5 text-[15px] font-medium tabular-nums text-txt">{spendPrefix}{fmtCost(est)}</div>
           </div>
           <div className="min-w-0">
-            <div className="text-[10px] text-muted">Without savings</div>
+            <div className="text-[10px] text-muted">At list price</div>
             <div className="mt-0.5 text-[15px] font-medium tabular-nums text-txt">~{fmtCost(withoutSavings)}</div>
           </div>
           <div className="min-w-0">
-            <div className="text-[10px] text-muted">Estimated savings</div>
+            <div className="text-[10px] text-muted">{listPriceValueHeading(listPriceValueWeakestBasis(data))}</div>
             <div className="mt-0.5 text-[15px] font-medium tabular-nums text-good/65">~{fmtCost(valueTotal)}</div>
           </div>
           <div className="min-w-0">
-            <div className="text-[10px] text-muted">Less spent</div>
+            <div className="text-[10px] text-muted">Less than list price</div>
             <div className="mt-0.5 text-[15px] font-medium tabular-nums text-good/65">
               {savingsPercent === null ? "—" : `${savingsPercent.toFixed(1)}%`}
             </div>
@@ -491,9 +491,9 @@ export default function CostBreakdown({
 
       {showWhySaved ? (
       <div className={hero ? "mt-2 pt-2 border-t border-edge/50" : undefined}>
-      <div className="text-[10px] text-faint mb-1">Why you saved</div>
+      <div className="text-[10px] text-faint mb-1">Why list-price is lower</div>
       <p className="text-[10px] text-muted mb-1.5 leading-snug">
-        Each saving is shown once, so the total stays honest.
+        Each line is shown once, so the total stays honest.
       </p>
       {promptCacheSaved > 0 ? (
         <div
