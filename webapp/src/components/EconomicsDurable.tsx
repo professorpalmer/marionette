@@ -193,7 +193,9 @@ export default function EconomicsDurable({
             <div className="py-2 text-[10px] text-faint">No job receipts in this scope.</div>
           ) : jobs.map((job) => {
             const owned = Boolean(job.accounting_owned);
-            const modelIds = (job.models || []).map((model) => model.model_id || "").filter(Boolean);
+            const modelIds = (Array.isArray(job.models) ? job.models : [])
+              .map((model) => model?.model_id)
+              .filter((modelId): modelId is string => typeof modelId === "string" && modelId.trim().length > 0);
             const measuredCost = isFiniteNumber(job.measured_cost_usd)
               && (job.measured_cost_usd > 0 || job.cost_basis === "measured")
               ? job.measured_cost_usd
