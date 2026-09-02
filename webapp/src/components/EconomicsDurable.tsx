@@ -66,7 +66,9 @@ export default function EconomicsDurable({
     : receiptBasis === "measured_usage_x_registry_price"
       ? "Measured usage cost"
       : "Cost unavailable";
-  const hasReceipt = hasFiniteReceiptTotals(data);
+  const hasReceipt = isFiniteNumber(receiptSpend)
+    && isFiniteNumber(receiptReference)
+    && isFiniteNumber(receiptSavings);
   const savingsPercent = hasReceipt && receiptReference > 0
     ? Math.max(0, Math.min(100, (receiptSavings / receiptReference) * 100))
     : null;
