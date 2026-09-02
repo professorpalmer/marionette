@@ -17,7 +17,7 @@ import tempfile
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from .agent_plugins import (
     STAMP_FILENAME,
@@ -27,6 +27,11 @@ from .agent_plugins import (
     compute_package_sha256,
     load_agent_plugin,
     read_agent_plugin_manifest,
+)
+from .plugin_capabilities import (
+    capability_set_hash,
+    parse_requested_capabilities,
+    requested_capabilities_from_manifest,
 )
 from .plugin_source_urls import (
     ResolvedPluginSource,
@@ -38,6 +43,7 @@ from .secure_files import restrict_to_owner
 from .diag import note as _diag
 
 _ENABLED_FILENAME = "enabled.json"
+_CAPABILITIES_FILENAME = "capabilities.json"
 _INSTALL_ID_RE = re.compile(r"^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$")
 _lock = threading.RLock()
 
@@ -138,13 +144,127 @@ def _read_enabled() -> List[str]:
     return out
 
 
+def _capabilities_path() -> Path:
+    return plugins_dir() / _CAPABILITIES_FILENAME
+
+
+def _read_capability_records() -> Dict[str, Dict[str, Any]]:
+    path = _capabilities_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    raw = data.get("plugins", data)
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, Dict[str, Any]] = {}
+    for key, value in raw.items():
+        if isinstance(key, str) and key.strip() and isinstance(value, dict):
+            out[key.strip()] = value
+    return out
+
+
+def _write_capability_records(records: Dict[str, Dict[str, Any]]) -> None:
+    root = plugins_dir()
+    root.mkdir(parents=True, exist_ok=True)
+    path = _capabilities_path()
+    payload = {"plugins": dict(records)}
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=str(root), prefix="capabilities_")
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(payload, handle, indent=2)
+            handle.write("\n")
+        os.replace(tmp_path, str(path))
+        if not restrict_to_owner(str(path)):
+            _diag("secure_files.restrict_failed", msg=str(path))
+    except Exception:
+        if os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        raise
+
+
+def _stored_capability_set(entry: Mapping[str, Any], key: str) -> frozenset:
+    try:
+        return parse_requested_capabilities(entry.get(key))
+    except AgentPluginError:
+        return frozenset()
+
+
+def _capability_entry(
+    requested: frozenset, consented: frozenset
+) -> Dict[str, Any]:
+    return {
+        "requested": sorted(requested),
+        "requested_hash": capability_set_hash(requested),
+        "consented": sorted(consented),
+        "consented_hash": capability_set_hash(consented),
+    }
+
+
+def _upsert_capability_entry(
+    plugin_id: str,
+    *,
+    requested: frozenset,
+    consented: Optional[frozenset] = None,
+    reset_consent: bool = False,
+) -> Dict[str, Any]:
+    records = _read_capability_records()
+    current = records.get(plugin_id) or {}
+    if reset_consent:
+        consented_set: frozenset = frozenset()
+    elif consented is not None:
+        consented_set = consented
+    else:
+        consented_set = _stored_capability_set(current, "consented")
+    entry = _capability_entry(requested, consented_set)
+    records[plugin_id] = entry
+    _write_capability_records(records)
+    return entry
+
+
+def _require_capability_consent(plugin_id: str, requested: frozenset) -> None:
+    """Fail closed when any requested id is outside the consented set."""
+    if not requested:
+        return
+    current = _read_capability_records().get(plugin_id) or {}
+    consented = _stored_capability_set(current, "consented")
+    missing = requested - consented
+    if missing:
+        raise AgentPluginError(
+            "plugin capability consent required for: " + ", ".join(sorted(missing))
+        )
+
+
+def _capability_snapshot(
+    plugin_id: str,
+    manifest: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    stored = _read_capability_records().get(plugin_id) or {}
+    if manifest is not None:
+        requested = requested_capabilities_from_manifest(manifest)
+    else:
+        requested = _stored_capability_set(stored, "requested")
+    consented = _stored_capability_set(stored, "consented")
+    return {
+        "requested_capabilities": sorted(requested),
+        "capability_set_hash": capability_set_hash(requested),
+        "consented_capabilities": sorted(consented),
+        "consented_hash": capability_set_hash(consented),
+    }
+
+
 def _write_enabled(enabled: List[str]) -> None:
     root = plugins_dir()
     root.mkdir(parents=True, exist_ok=True)
     path = _enabled_path()
     payload = {"enabled": list(enabled)}
-    import tempfile
-
     tmp_fd, tmp_path = tempfile.mkstemp(dir=str(root), prefix="enabled_")
     try:
         with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="\n") as handle:
@@ -199,6 +319,10 @@ class PluginRecord:
     content_sha256: str = ""
     sha256: str = ""
     stamp_ok: bool = False
+    requested_capabilities: List[str] = field(default_factory=list)
+    capability_set_hash: str = ""
+    consented_capabilities: List[str] = field(default_factory=list)
+    consented_hash: str = ""
     diagnostics: List[Dict[str, str]] = field(default_factory=list)
     error: str = ""
 
@@ -223,6 +347,7 @@ def _record_from_package(
     diagnostics = list(_diag_dicts(package.diagnostics))
     diagnostics.extend(_diag_dicts(extra_diagnostics))
     sha256 = digest or package.content_sha256
+    caps = _capability_snapshot(plugin_id, package.manifest)
     return PluginRecord(
         id=plugin_id,
         name=package.name,
@@ -237,6 +362,10 @@ def _record_from_package(
         content_sha256=sha256,
         sha256=sha256,
         stamp_ok=stamp_ok,
+        requested_capabilities=list(caps["requested_capabilities"]),
+        capability_set_hash=str(caps["capability_set_hash"]),
+        consented_capabilities=list(caps["consented_capabilities"]),
+        consented_hash=str(caps["consented_hash"]),
         diagnostics=diagnostics,
         error=error,
     )
@@ -379,6 +508,7 @@ def _materialize_source(source: object, *, clone_fn=None) -> Tuple[Path, Optiona
 def _install_materialized(src: Path, *, force: bool = False) -> PluginRecord:
     staging_ns = portable_skill_namespace("_install_probe")
     package = load_agent_plugin(src, plugin_data_root() / staging_ns)
+    requested = requested_capabilities_from_manifest(package.manifest)
     install_id = _sanitize_install_id(package.name)
     dest = plugins_dir() / install_id
     with _lock:
@@ -394,6 +524,9 @@ def _install_materialized(src: Path, *, force: bool = False) -> PluginRecord:
         digest = write_integrity_stamp(dest)
         enabled = [x for x in _read_enabled() if x != install_id]
         _write_enabled(enabled)
+        _upsert_capability_entry(
+            install_id, requested=requested, reset_consent=True
+        )
     namespace = portable_skill_namespace(install_id)
     loaded = load_agent_plugin(dest, plugin_data_root() / namespace)
     digest = verify_integrity_stamp(dest)
@@ -433,13 +566,45 @@ def enable_plugin(plugin_id: str) -> PluginRecord:
     namespace = portable_skill_namespace(plugin_id)
     package = load_agent_plugin(path, plugin_data_root() / namespace)
     digest = verify_integrity_stamp(path)
+    requested = requested_capabilities_from_manifest(package.manifest)
     with _lock:
+        _upsert_capability_entry(plugin_id, requested=requested)
+        _require_capability_consent(plugin_id, requested)
         enabled = _read_enabled()
         if plugin_id not in enabled:
             enabled.append(plugin_id)
             _write_enabled(enabled)
     return _record_from_package(
         plugin_id, package, enabled=True, digest=digest, stamp_ok=True
+    )
+
+
+def consent_plugin_capabilities(plugin_id: str, ids: object) -> PluginRecord:
+    """Store an explicit consented capability set (hash, not the integrity stamp)."""
+    plugin_id = (plugin_id or "").strip()
+    if not plugin_id:
+        raise AgentPluginError("plugin id is required")
+    path = plugins_dir() / plugin_id
+    if not path.is_dir():
+        raise AgentPluginError(f"plugin not found: {plugin_id}")
+    namespace = portable_skill_namespace(plugin_id)
+    package = load_agent_plugin(path, plugin_data_root() / namespace)
+    requested = requested_capabilities_from_manifest(package.manifest)
+    consented = parse_requested_capabilities(ids)
+    with _lock:
+        _upsert_capability_entry(
+            plugin_id, requested=requested, consented=consented
+        )
+    enabled = plugin_id in set(_read_enabled())
+    digest = read_integrity_stamp(path) or package.content_sha256
+    stamp_ok = False
+    try:
+        digest = verify_integrity_stamp(path)
+        stamp_ok = True
+    except AgentPluginError:
+        pass
+    return _record_from_package(
+        plugin_id, package, enabled=enabled, digest=digest, stamp_ok=stamp_ok
     )
 
 
@@ -500,6 +665,10 @@ def _load_enabled_packages() -> List[Tuple[str, str, AgentPluginPackage]]:
         try:
             package = load_agent_plugin(path, plugin_data_root() / namespace)
             verify_integrity_stamp(path)
+            _require_capability_consent(
+                plugin_id,
+                requested_capabilities_from_manifest(package.manifest),
+            )
         except Exception as exc:
             _diag("agent_plugins.load_enabled", msg=f"{plugin_id}: {exc}")
             continue
@@ -583,6 +752,10 @@ def plugin_record_to_dict(record: PluginRecord) -> Dict[str, Any]:
         "content_sha256": record.content_sha256,
         "sha256": record.sha256,
         "stamp_ok": record.stamp_ok,
+        "requested_capabilities": list(record.requested_capabilities),
+        "capability_set_hash": record.capability_set_hash,
+        "consented_capabilities": list(record.consented_capabilities),
+        "consented_hash": record.consented_hash,
         "diagnostics": list(record.diagnostics),
         "error": record.error,
     }

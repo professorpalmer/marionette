@@ -2254,6 +2254,45 @@ def drain_idle_turn(
             session._history.append({"role": "user", "content": content})
         session._steer_pending = False
         return ("continue", user_message)
+    mailbox_texts = []
+    drain_mailbox = getattr(session, "drain_mailbox", None)
+    if callable(drain_mailbox):
+        try:
+            mailbox_texts = [
+                str(text).strip()
+                for text in (drain_mailbox() or [])
+                if str(text or "").strip()
+            ]
+        except Exception:
+            mailbox_texts = []
+    leftover_queued = None
+    if mailbox_texts:
+        seen = set(mailbox_texts)
+        while True:
+            if session._next_queued_needs_driver_swap():
+                leftover_queued = None
+                break
+            queued = session._pop_next_prompt() or {}
+            q_text = str(queued.get("text") or "").strip()
+            if not q_text:
+                leftover_queued = None
+                break
+            if q_text in seen:
+                continue
+            leftover_queued = queued
+            break
+        format_steer = getattr(session, "_format_steer_user_content", None)
+        for text in mailbox_texts:
+            yield ConvEvent("queued_prompt", {"id": "", "text": text, "images": []})
+            content = format_steer(text) if callable(format_steer) else text
+            session._history.append({"role": "user", "content": content})
+        if leftover_queued and leftover_queued.get("text"):
+            queued = leftover_queued
+        else:
+            session._steer_pending = False
+            return ("continue", mailbox_texts[-1])
+    else:
+        queued = None
     # Steer took priority above; only if no steer was pending do we
     # look at the PROMPT QUEUE ("playlist"). A queued prompt runs as
     # a genuine next-turn user message — same first-class user shape as
@@ -2265,9 +2304,20 @@ def drain_idle_turn(
     # (Hermes-style mid-turn picker change), stop this turn instead
     # of draining it under the wrong driver -- idle drain + deferred
     # swap will pick it up next.
-    if session._next_queued_needs_driver_swap():
-        return ("break", user_message)
-    queued = session._pop_next_prompt()
+    if not (queued and queued.get("text")):
+        if session._next_queued_needs_driver_swap():
+            return ("break", user_message)
+        queued = session._pop_next_prompt()
+    if not (queued and queued.get("text")):
+        from .session_loop import note_session_loop_response, tick_session_loop
+
+        try:
+            if turn_prose:
+                note_session_loop_response(session, turn_prose[-1])
+            tick_session_loop(session, idle=True)
+        except Exception:
+            pass
+        queued = session._pop_next_prompt()
     if queued and queued.get("text"):
         q_text = queued.get("text", "")
         q_images = [p for p in (queued.get("images") or []) if p]

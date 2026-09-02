@@ -7,7 +7,15 @@ Actions: run_auto | enqueue_steer | enqueue_prompt | interrupt_then_queue
 """
 
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Optional, Sequence, Tuple
+
+from .session_actions import (
+    ActionKind,
+    DeliveryPolicy,
+    SessionActionIllegalTransition,
+    SessionActionStore,
+    WakePolicy,
+)
 
 
 class DeliveryMode(str, Enum):
@@ -52,6 +60,77 @@ def _try_interrupt_session(session: Any) -> bool:
                 pass
             return True
     return False
+
+
+def delivery_mode_action_kinds(requested: Optional[str]) -> Tuple[ActionKind, ...]:
+    """Map HTTP DeliveryMode onto SessionAction kinds (domain vocabulary)."""
+    mode = normalize_delivery_mode(requested)
+    if mode == DeliveryMode.STEER.value:
+        return (ActionKind.STEER,)
+    if mode == DeliveryMode.FOLLOW_UP.value:
+        return (ActionKind.MAILBOX,)
+    if mode == DeliveryMode.INTERRUPT.value:
+        return (ActionKind.REDIRECT, ActionKind.MAILBOX)
+    return ()
+
+
+def _session_action_store(session: Any) -> Optional[SessionActionStore]:
+    store = getattr(session, "_session_actions", None)
+    if isinstance(store, SessionActionStore):
+        return store
+    return None
+
+
+def _steer_text_already_admitted(session: Any, text: str) -> bool:
+    store = _session_action_store(session)
+    if store is None:
+        return False
+    cleaned = (text or "").strip()
+    for action in store:
+        if action.kind is ActionKind.STEER and action.text == cleaned:
+            return True
+    return False
+
+
+def _admit_delivery_kinds(
+    session: Any,
+    kinds: Sequence[ActionKind],
+    text: str,
+    images: Optional[list] = None,
+) -> None:
+    """Record domain actions. Never raises into the HTTP result path."""
+    if not kinds:
+        return
+    admit = getattr(session, "admit_session_action", None)
+    store = _session_action_store(session)
+    if not callable(admit) and store is None:
+        return
+    cleaned = (text or "").strip()
+    imgs = list(images or [])
+    for kind in kinds:
+        kwargs = {}
+        payload = cleaned
+        if kind is ActionKind.REDIRECT:
+            payload = ""
+            kwargs["delivery"] = DeliveryPolicy.NEXT_TURN_BOUNDARY
+            kwargs["wake"] = WakePolicy.ON_ADMIT
+        elif kind is ActionKind.MAILBOX:
+            kwargs["delivery"] = DeliveryPolicy.WHEN_RUN_IDLE
+            kwargs["wake"] = WakePolicy.ON_IDLE
+        elif kind is ActionKind.STEER:
+            kwargs["delivery"] = DeliveryPolicy.NEXT_TURN_BOUNDARY
+            kwargs["wake"] = WakePolicy.NONE
+        if imgs:
+            kwargs["images"] = imgs
+        try:
+            if callable(admit):
+                admit(kind, payload, **kwargs)
+            elif store is not None:
+                store.admit(kind, payload, **kwargs)
+        except SessionActionIllegalTransition:
+            return
+        except Exception:
+            return
 
 
 def realized_steer_action(result: Any) -> str:
@@ -110,6 +189,10 @@ def apply_delivery(
             session.enqueue_steer(cleaned)
         else:
             return {"ok": False, "error": "session lacks enqueue_steer", "action": action}
+        if not _steer_text_already_admitted(session, cleaned):
+            _admit_delivery_kinds(
+                session, delivery_mode_action_kinds(requested), cleaned, imgs,
+            )
         return {"ok": True, "action": action}
     if action == DeliveryAction.ENQUEUE_PROMPT.value:
         if not cleaned:
@@ -117,6 +200,9 @@ def apply_delivery(
         if not hasattr(session, "enqueue_prompt"):
             return {"ok": False, "error": "session lacks enqueue_prompt", "action": action}
         item = session.enqueue_prompt(cleaned, images=imgs)
+        _admit_delivery_kinds(
+            session, delivery_mode_action_kinds(requested), cleaned, imgs,
+        )
         return {"ok": True, "action": action, "item": item}
     if action == DeliveryAction.INTERRUPT_THEN_QUEUE.value:
         if not cleaned:
@@ -126,6 +212,11 @@ def apply_delivery(
             interrupted = _try_interrupt_session(session)
         if not hasattr(session, "enqueue_prompt"):
             return {"ok": False, "error": "session lacks enqueue_prompt", "action": action}
+        # Domain: redirect, then mailbox the text. HTTP still uses the existing
+        # interrupt hook + prompt playlist (no second interrupt path).
+        _admit_delivery_kinds(
+            session, delivery_mode_action_kinds(requested), cleaned, imgs,
+        )
         item = session.enqueue_prompt(cleaned, images=imgs)
         result: dict = {"ok": True, "action": action, "item": item}
         if interrupted:

@@ -1375,6 +1375,102 @@ def test_drain_idle_turn_finalizes_when_idle():
     assert submitted == [("ingest", ("hi", ["p"], ["f"]))]
 
 
+def test_drain_idle_turn_delivers_mailbox_and_skips_duplicate_playlist():
+    from harness.session_actions import ActionKind, DeliveryPolicy, SessionActionStore, WakePolicy
+    from harness.steer_mixin import SteerMixin
+
+    class Host(SteerMixin):
+        def __init__(self):
+            import threading
+            self._steer_lock = threading.Lock()
+            self._session_actions = SessionActionStore()
+            self._steer_queue = self._session_actions
+            self._steer_pending = False
+            self._history = []
+            self._prompts = [{"id": "p1", "text": "later please", "images": []}]
+
+        def _next_queued_needs_driver_swap(self):
+            return False
+
+        def _pop_next_prompt(self):
+            return self._prompts.pop(0) if self._prompts else {}
+
+    host = Host()
+    host._session_actions.admit(
+        ActionKind.MAILBOX,
+        "later please",
+        delivery=DeliveryPolicy.WHEN_RUN_IDLE,
+        wake=WakePolicy.ON_IDLE,
+    )
+    events = []
+    gen = drain_idle_turn(
+        host,
+        user_message="orig",
+        step=0,
+        swarms=0,
+        turn_prose=[],
+        turn_findings=[],
+    )
+    try:
+        while True:
+            events.append(next(gen))
+    except StopIteration as stop:
+        disposition, user_message = stop.value
+    assert disposition == "continue"
+    assert user_message == "later please"
+    assert [ev.kind for ev in events] == ["queued_prompt"]
+    assert host._history[-1]["content"] == "later please"
+    assert host._prompts == []
+
+
+def test_drain_idle_turn_fires_self_paced_loop_into_queue():
+    from harness.session_actions import SessionActionStore
+    from harness.session_loop import start_session_loop
+
+    prompts = []
+
+    def enqueue_prompt(text, images=None, model=None):
+        prompts.append({"id": "loop1", "text": text, "images": images or []})
+        return prompts[-1]
+
+    def pop_next():
+        return prompts.pop(0) if prompts else None
+
+    session = SimpleNamespace(
+        drain_steer=lambda: [],
+        _history=[],
+        _steer_pending=False,
+        _next_queued_needs_driver_swap=lambda: False,
+        _pop_next_prompt=pop_next,
+        enqueue_prompt=enqueue_prompt,
+        _session_actions=SessionActionStore(),
+        _loop_state=None,
+        _submit_housekeeping=MagicMock(),
+        _maybe_ingest=MagicMock(),
+    )
+    start_session_loop(session, "self_paced", "keep going", now=1.0)
+    events = []
+    gen = drain_idle_turn(
+        session,
+        user_message="orig",
+        step=0,
+        swarms=0,
+        turn_prose=[],
+        turn_findings=[],
+    )
+    try:
+        while True:
+            events.append(next(gen))
+    except StopIteration as stop:
+        disposition, user_message = stop.value
+    assert disposition == "continue"
+    assert user_message == "keep going"
+    assert events[0].kind == "queued_prompt"
+    assert events[0].data["text"] == "keep going"
+    assert session._history[-1]["content"] == "keep going"
+    session._submit_housekeeping.assert_not_called()
+
+
 def test_drain_idle_turn_blank_stop_cause_is_unspecified():
     session = SimpleNamespace(
         drain_steer=lambda: [],

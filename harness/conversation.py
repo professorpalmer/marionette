@@ -68,6 +68,8 @@ from .tool_dispatch import (
     is_safe_path,
 )
 from .prompt_queue import PromptQueueMixin
+from .session_actions import SessionActionStore, SteerQueueView
+from .session_loop import SessionLoop
 from .steer_mixin import SteerMixin
 from .adapter_resolve import AdapterResolveMixin
 from .compaction_mixin import CompactionContextMixin
@@ -779,8 +781,9 @@ class ConversationalSession(
         from .tool_discovery import ToolCatalog
         self._tool_catalog = ToolCatalog()
         self._checkpoints = CheckpointStore(config.repo)
-        import collections
-        self._steer_queue = collections.deque()
+        self._session_actions = SessionActionStore()
+        self._steer_queue = SteerQueueView(self._session_actions)
+        self._loop_state = SessionLoop()
         self._steer_lock = threading.Lock()
         self._steer_pending = False
         # Set by drop_queued_steers / interrupt; flushed as ConvEvent("notice")

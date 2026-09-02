@@ -12,9 +12,9 @@ Production seam (harness/steer_mixin.py):
 """
 from __future__ import annotations
 
-import collections
 import threading
 
+from harness.session_actions import SessionActionStore, SteerQueueView
 from harness.steer_mixin import SteerMixin
 
 
@@ -23,7 +23,8 @@ class _SteerHost(SteerMixin):
 
     def __init__(self) -> None:
         self._steer_lock = threading.Lock()
-        self._steer_queue = collections.deque()
+        self._session_actions = SessionActionStore()
+        self._steer_queue = SteerQueueView(self._session_actions)
         self._steer_pending = False
         self._stop_holds_idle = False
         self._busy = threading.Lock()
@@ -208,3 +209,25 @@ def test_enqueue_steer_ignores_blank_and_whitespace():
 
     host.enqueue_steer("  keep me  ")
     assert host.drain_steer() == ["keep me"]
+    assert list(host._session_actions) == []
+
+
+def test_stop_abandon_drop_clears_session_action_store():
+    """Stop-abandon refuse + drop_queued_steers still empty the typed store."""
+    host = _SteerHost()
+    host.enqueue_steer("keep then drop")
+    assert len(host._session_actions) == 1
+    dropped = host.drop_queued_steers()
+    assert dropped == ["keep then drop"]
+    assert list(host._session_actions) == []
+    assert list(host._steer_queue) == []
+
+    host._stop_holds_idle = True
+    assert host._busy.acquire(blocking=False)
+    try:
+        host.enqueue_steer("late after stop")
+        assert list(host._session_actions) == []
+        assert host.drain_steer() == []
+        assert host._pending_steer_drop_notice["reason"] == "steer_dropped"
+    finally:
+        host._busy.release()

@@ -13,6 +13,20 @@ import tempfile as _tf
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Union
 
+from ..delivery_mode import apply_delivery, normalize_delivery_mode, realized_steer_action
+from ..session_actions import (
+    ActionKind,
+    SessionActionIllegalTransition,
+    SessionActionStore,
+    normalize_turn_input_mode,
+)
+from ..session_loop import (
+    SessionLoopError,
+    session_loop_snapshot,
+    start_session_loop,
+    stop_session_loop,
+)
+
 
 @dataclass
 class SessionControlServices:
@@ -477,6 +491,60 @@ def post_session_goal(body: dict, svc: SessionControlServices) -> tuple[int, Jso
     return 200, {"ok": True, "goal": goal}
 
 
+def get_session_loop(svc: SessionControlServices) -> tuple[int, JsonPayload]:
+    """GET /api/session/loop — in-session interval/self-paced loop, not cron."""
+    pilot, err = _goal_pilot(svc)
+    if err is not None:
+        return err
+    return 200, {"ok": True, "loop": session_loop_snapshot(pilot)}
+
+
+def post_session_loop(body: dict, svc: SessionControlServices) -> tuple[int, JsonPayload]:
+    """POST /api/session/loop — start / stop. Distinct from /api/session/goal."""
+    pilot, err = _goal_pilot(svc)
+    if err is not None:
+        return err
+    action = str(body.get("action") or "start").strip().lower()
+    try:
+        if action == "stop":
+            loop = stop_session_loop(pilot)
+        elif action == "start":
+            interval = body.get("interval_seconds")
+            if interval in ("", None):
+                interval_seconds = None
+            else:
+                try:
+                    interval_seconds = float(interval)
+                except (TypeError, ValueError):
+                    return 400, {
+                        "ok": False,
+                        "error": "interval_seconds must be a number",
+                    }
+            raw_until = body.get("until")
+            if raw_until in ("", None):
+                until = None
+            else:
+                try:
+                    until = float(raw_until)
+                except (TypeError, ValueError):
+                    return 400, {
+                        "ok": False,
+                        "error": "until must be a unix timestamp",
+                    }
+            loop = start_session_loop(
+                pilot,
+                body.get("mode"),
+                (body.get("prompt") or body.get("text") or ""),
+                interval_seconds=interval_seconds,
+                until=until,
+            )
+        else:
+            return 400, {"ok": False, "error": "unknown action"}
+    except SessionLoopError as exc:
+        return 400, {"ok": False, "error": str(exc), "code": exc.code}
+    return 200, {"ok": True, "loop": loop.to_dict()}
+
+
 def post_session_todo(body: dict, svc: SessionControlServices) -> tuple[int, JsonPayload]:
     """POST /api/session/todo — local /todo slash (view/export/import/mutate)."""
     pilot, err = _goal_pilot(svc)
@@ -646,6 +714,42 @@ def post_session_rewind_restore(svc: SessionControlServices) -> tuple[int, JsonP
     return 200, result
 
 
+def _pilot_turn_busy(pilot: Any) -> bool:
+    try:
+        if hasattr(pilot, "is_turn_busy"):
+            return bool(pilot.is_turn_busy())
+    except Exception:
+        return False
+    return False
+
+
+def _optional_expected_turn_id(body: dict) -> Optional[str]:
+    raw = body.get("expected_turn_id")
+    if raw in (None, ""):
+        return None
+    text = str(raw).strip()
+    return text or None
+
+
+def _pilot_action_store(pilot: Any) -> Optional[SessionActionStore]:
+    store = getattr(pilot, "_session_actions", None)
+    if isinstance(store, SessionActionStore):
+        return store
+    getter = getattr(pilot, "_action_store", None)
+    if callable(getter):
+        got = getter()
+        if isinstance(got, SessionActionStore):
+            return got
+    return None
+
+
+def _is_recover_turn(body: dict) -> bool:
+    if body.get("recover") is True:
+        return True
+    kind = str(body.get("kind") or "").strip().lower()
+    return kind == "recover"
+
+
 def post_session_steer(body: dict, svc: SessionControlServices) -> tuple[int, JsonPayload]:
     """POST /api/session/steer."""
     text = (body.get("text") or "").strip()
@@ -665,28 +769,97 @@ def post_session_steer(body: dict, svc: SessionControlServices) -> tuple[int, Js
     valid_imgs, err = _validate_upload_images(images, svc.upload_dir)
     if err is not None:
         return err
+
+    turn_input_mode = body.get("turn_input_mode")
+    normalized_turn_mode = None
+    if turn_input_mode not in (None, ""):
+        normalized_turn_mode = normalize_turn_input_mode(turn_input_mode)
+        if normalized_turn_mode is None:
+            return 400, {"ok": False, "error": "invalid turn_input_mode"}
+    expected_turn_id = _optional_expected_turn_id(body)
+    # RecoverTurn is admit(kind=recover) on this same endpoint — not a new UI.
+    if _is_recover_turn(body):
+        try:
+            if hasattr(pilot, "admit_session_action"):
+                action = pilot.admit_session_action(
+                    ActionKind.RECOVER,
+                    text,
+                    images=valid_imgs,
+                    expected_turn_id=expected_turn_id,
+                )
+            else:
+                store = _pilot_action_store(pilot)
+                if store is None:
+                    return 400, {
+                        "ok": False,
+                        "error": "session lacks action store",
+                        "code": "missing_action_store",
+                    }
+                action = store.admit(
+                    ActionKind.RECOVER,
+                    text,
+                    images=valid_imgs,
+                    expected_turn_id=expected_turn_id,
+                )
+        except SessionActionIllegalTransition as exc:
+            return 400, {"ok": False, "error": str(exc), "code": exc.code}
+        return 200, {
+            "ok": True,
+            "action": "recover",
+            "kind": action.kind.value,
+        }
     # Optional delivery_mode: when set, route via shared DeliveryMode resolver.
     delivery_mode = body.get("delivery_mode")
     if delivery_mode:
-        from ..delivery_mode import apply_delivery, normalize_delivery_mode
-
         if normalize_delivery_mode(delivery_mode) is None:
             return 400, {"ok": False, "error": "invalid delivery_mode"}
-        busy = False
-        try:
-            busy = bool(pilot.is_turn_busy()) if hasattr(pilot, "is_turn_busy") else False
-        except Exception:
-            busy = False
+        busy = _pilot_turn_busy(pilot)
         result = apply_delivery(
             pilot, text, session_busy=busy, requested=delivery_mode, images=valid_imgs,
         )
         code = 200 if result.get("ok") else 400
         return code, result
+    if normalized_turn_mode is not None:
+        busy = _pilot_turn_busy(pilot)
+        try:
+            store = _pilot_action_store(pilot)
+            if store is None:
+                return 400, {
+                    "ok": False,
+                    "error": "session lacks action store",
+                    "code": "missing_action_store",
+                }
+            action = store.admit_turn_input(
+                text,
+                normalized_turn_mode,
+                expected_turn_id=expected_turn_id,
+                idle=not busy,
+                images=valid_imgs,
+            )
+        except SessionActionIllegalTransition as exc:
+            return 400, {"ok": False, "error": str(exc), "code": exc.code}
+        result = {
+            "ok": True,
+            "action": action.kind.value,
+            "kind": action.kind.value,
+            "turn_input_mode": normalized_turn_mode,
+        }
+        if action.kind is ActionKind.START and hasattr(pilot, "enqueue_prompt"):
+            result["item"] = pilot.enqueue_prompt(text, images=valid_imgs)
+            if not busy:
+                result["deferred"] = True
+        return 200, result
     if valid_imgs and hasattr(pilot, "steer_with_images"):
-        from ..delivery_mode import realized_steer_action
-
         actual = realized_steer_action(pilot.steer_with_images(text, valid_imgs))
         return 200, {"ok": True, "action": actual}
+    if expected_turn_id is not None and hasattr(pilot, "enqueue_steer"):
+        try:
+            pilot.enqueue_steer(text, expected_turn_id=expected_turn_id)
+        except TypeError:
+            pilot.enqueue_steer(text)
+        except SessionActionIllegalTransition as exc:
+            return 400, {"ok": False, "error": str(exc), "code": exc.code}
+        return 200, {"ok": True, "action": "enqueue_steer"}
     pilot.enqueue_steer(text)
     return 200, {"ok": True, "action": "enqueue_steer"}
 
@@ -725,8 +898,6 @@ def post_session_queue(body: dict, svc: SessionControlServices) -> tuple[int, Js
         return err
     delivery_mode = body.get("delivery_mode")
     if delivery_mode:
-        from ..delivery_mode import apply_delivery, normalize_delivery_mode
-
         if normalize_delivery_mode(delivery_mode) is None:
             return 400, {"ok": False, "error": "invalid delivery_mode"}
         busy = False

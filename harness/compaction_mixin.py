@@ -20,6 +20,7 @@ import os
 import re
 import threading
 import time
+import uuid
 from typing import Iterator, Optional
 
 from .context_budget import age_history_images
@@ -73,6 +74,22 @@ REASON_SUMMARY_REJECTED = "summary_rejected"
 REASON_THRASH_COOLDOWN = "thrash_cooldown"
 REASON_CACHE_DEFERRED = "cache_deferred"
 REASON_RESIDUAL_OFF = "residual_off"
+REASON_WATERMARK_FENCE = "watermark_fence"
+
+
+def _active_message_id(message, index: int) -> int:
+    """Index, or explicit integer ``id`` when a history row carries one."""
+    if isinstance(message, dict):
+        raw = message.get("id")
+        if raw is not None and str(raw).strip() != "":
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                pass
+    try:
+        return int(index)
+    except (TypeError, ValueError):
+        return 0
 
 
 def neutralize_compaction_control_tokens(text: str) -> str:
@@ -375,6 +392,130 @@ class CompactionContextMixin:
             pass
         return savings_pct, int(getattr(self, "_compaction_ineffective_count", 0) or 0)
 
+    def get_active_message_watermark(self) -> int:
+        """MAX index/id of messages still on the live ``_history``.
+
+        Captured at compact start so a concurrent tail (messages that land
+        after this watermark) can stay on the live list while residual/vault
+        elide the middle.
+        """
+        history = getattr(self, "_history", None) or []
+        max_id = -1
+        for i, msg in enumerate(history):
+            candidate = _active_message_id(msg, i)
+            if candidate > max_id:
+                max_id = candidate
+        return max_id if max_id >= 0 else 0
+
+    def mark_commit_watermark_fenced(self, watermark: int) -> None:
+        """Hold compact-commit admission at this watermark.
+
+        A turn-hold can keep commit admission while compact clones the tail
+        (messages after ``watermark`` stay on the live list). A proposed
+        rewrite that would drop that tail is refused.
+        """
+        try:
+            self._commit_watermark_fence = int(watermark)
+        except (TypeError, ValueError):
+            self._commit_watermark_fence = 0
+
+    def _clone_concurrent_tail(self, watermark: int) -> list:
+        """Live messages whose index/id is after ``watermark``."""
+        history = getattr(self, "_history", None) or []
+        tail = []
+        try:
+            fence = int(watermark)
+        except (TypeError, ValueError):
+            fence = 0
+        for i, msg in enumerate(history):
+            if _active_message_id(msg, i) > fence:
+                tail.append(msg)
+        return tail
+
+    def _admit_compact_commit(self, proposed_history) -> bool:
+        """False when a watermark fence would drop the live concurrent tail."""
+        fence = getattr(self, "_commit_watermark_fence", None)
+        if fence is None:
+            return True
+        try:
+            wm = int(fence)
+        except (TypeError, ValueError):
+            return True
+        history = getattr(self, "_history", None) or []
+        proposed_ids = {id(m) for m in (proposed_history or [])}
+        for i, msg in enumerate(history):
+            if _active_message_id(msg, i) <= wm:
+                continue
+            if id(msg) not in proposed_ids:
+                return False
+        return True
+
+    def _plan_compacted_history(
+        self,
+        summary_msg: dict,
+        recent_block: list,
+        start_watermark: int,
+    ):
+        """Build the rewrite list (residual + live tail) or None if fenced."""
+        concurrent_tail = self._clone_concurrent_tail(start_watermark)
+        recent_ids = {id(m) for m in (recent_block or [])}
+        extra = [m for m in concurrent_tail if id(m) not in recent_ids]
+        history = getattr(self, "_history", None) or []
+        system = history[0] if history else {"role": "system", "content": ""}
+        proposed = [system, summary_msg] + list(recent_block or []) + extra
+        if not self._admit_compact_commit(proposed):
+            return None
+        return proposed
+
+    def _prompt_cache_prefix_name(self) -> str:
+        """Builder-declared stable prefix on the live system message, if any."""
+        try:
+            from harness.prompt_cache_scope import find_stable_prefix
+
+            history = getattr(self, "_history", None) or []
+            if not history:
+                return ""
+            first = history[0]
+            content = first.get("content") if isinstance(first, dict) else ""
+            name = find_stable_prefix(str(content or ""))
+            return name or ""
+        except Exception:
+            return ""
+
+    def _prompt_cache_conversation_key(self) -> str:
+        """Rotation-stable conversation identity. Never ``harness_session_id``."""
+        base = ""
+        for attr in ("conversation_key", "_conversation_key", "_compression_lineage_root"):
+            raw = getattr(self, attr, None)
+            if raw is not None and str(raw).strip():
+                base = str(raw).strip()
+                break
+        if not base:
+            minted = uuid.uuid4().hex
+            try:
+                self._compression_lineage_root = minted
+            except Exception:
+                pass
+            base = minted
+        prefix = self._prompt_cache_prefix_name()
+        if prefix:
+            return "%s|%s" % (base, prefix)
+        return base
+
+    def _attach_prompt_cache_scope(self, fields: dict) -> None:
+        """Add ``prompt_cache_scope`` to an existing usage/peek dict."""
+        try:
+            from harness.prompt_cache_scope import prompt_cache_scope
+
+            key = self._prompt_cache_conversation_key()
+            if key:
+                fields["prompt_cache_scope"] = prompt_cache_scope(key)
+            name = self._prompt_cache_prefix_name()
+            if name:
+                fields["prompt_cache_prefix"] = name
+        except Exception:
+            pass
+
     def _advertised_compaction_generation(self) -> int:
         """Generation peek_history will see after this compact is journaled."""
         try:
@@ -479,15 +620,17 @@ class CompactionContextMixin:
         try:
             from harness.history_compaction_journal import history_compaction_payload
 
-            return history_compaction_payload(
+            fields = history_compaction_payload(
                 self.state_dir,
                 self.harness_session_id or "default",
             )
         except Exception:
-            return {
+            fields = {
                 "history_compactions": 0,
                 "history_tokens_saved": 0,
             }
+        self._attach_prompt_cache_scope(fields)
+        return fields
 
     def _format_block_for_summary(self, messages: list[dict]) -> str:
         lines = []
@@ -1057,6 +1200,12 @@ class CompactionContextMixin:
         except Exception:
             pass
 
+        start_watermark = self.get_active_message_watermark()
+        try:
+            self._compaction_start_watermark = start_watermark
+        except Exception:
+            pass
+
         yield ConvEvent("compacting", {"message": "Summarizing chat context"})
 
         # Pre-prune the middle block (cheap, pre-LLM). Large middles get a
@@ -1380,6 +1529,30 @@ class CompactionContextMixin:
         chars_before = sum(len(str(m.get("content") or "")) for m in middle_block)
         chars_after = len(summary_msg["content"])
 
+        proposed = self._plan_compacted_history(
+            summary_msg, recent_block, start_watermark,
+        )
+        if proposed is None:
+            _pct, _strikes = self._note_compaction_effectiveness(
+                before_tokens=before_tokens,
+                after_tokens=before_tokens,
+            )
+            self._set_compaction_attempt(
+                REASON_WATERMARK_FENCE,
+                before_tokens=before_tokens,
+                start_watermark=start_watermark,
+                thrash_strikes=_strikes,
+            )
+            yield ConvEvent("compaction", {
+                "before_tokens": before_tokens,
+                "after_tokens": before_tokens,
+                "summarized_messages": 0,
+                "aborted": True,
+                "reason": REASON_WATERMARK_FENCE,
+                "thrash_strikes": _strikes,
+            })
+            return
+
         # Persist the elided middle before the rewrite so peek_history can
         # still address those rows after residual transcript persist. Fail
         # closed: archive I/O must not block or crash Compact Now.
@@ -1394,7 +1567,7 @@ class CompactionContextMixin:
         except Exception:
             pass
 
-        self._history[:] = [self._history[0], summary_msg] + recent_block
+        self._history[:] = proposed
         # Compaction replaces the middle with a summary; new length usually
         # differs but not guaranteed (a tiny middle replaced by a summary_msg
         # could land at the same length). Explicitly invalidate.

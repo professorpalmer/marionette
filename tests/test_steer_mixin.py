@@ -12,7 +12,9 @@ from harness.steer_mixin import SteerMixin
 MOVED_METHODS = (
     "steer_with_images",
     "enqueue_steer",
+    "admit_session_action",
     "drain_steer",
+    "drain_mailbox",
     "drop_queued_steers",
     "_steer_boundary_blocks_inject",
     "_record_steer_drop_notice",

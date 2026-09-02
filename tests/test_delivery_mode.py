@@ -6,12 +6,14 @@ from harness.delivery_mode import (
     DeliveryMode,
     apply_delivery,
     deliver_schedule_to_session,
+    delivery_mode_action_kinds,
     normalize_delivery_mode,
     realized_steer_action,
     resolve_delivery,
     schedule_should_inject,
 )
 from harness.schedule_core import Schedule
+from harness.session_actions import ActionKind, DeliveryPolicy, SessionActionStore
 
 
 class _FakeSession:
@@ -176,3 +178,57 @@ def test_delivery_mode_interrupt_when_idle():
     assert "interrupted" not in result
     assert session.prompts[0]["text"] == "just queue"
     assert normalize_delivery_mode("interrupt") == DeliveryMode.INTERRUPT.value
+
+
+def test_delivery_mode_maps_to_session_action_kinds():
+    assert delivery_mode_action_kinds("steer") == (ActionKind.STEER,)
+    assert delivery_mode_action_kinds("follow_up") == (ActionKind.MAILBOX,)
+    assert delivery_mode_action_kinds("interrupt") == (
+        ActionKind.REDIRECT,
+        ActionKind.MAILBOX,
+    )
+    assert delivery_mode_action_kinds("auto") == ()
+
+
+def test_delivery_mode_steer_admits_kind_steer():
+    session = _FakeSession()
+    session._session_actions = SessionActionStore()
+    session._busy = True
+    result = apply_delivery(session, "nudge left", session_busy=True, requested="steer")
+    assert result["ok"] is True
+    assert result["action"] == "enqueue_steer"
+    assert session.steers == ["nudge left"]
+    admitted = list(session._session_actions)
+    assert [a.kind for a in admitted] == [ActionKind.STEER]
+    assert admitted[0].delivery is DeliveryPolicy.NEXT_TURN_BOUNDARY
+
+
+def test_delivery_mode_follow_up_admits_mailbox_when_run_idle():
+    session = _FakeSession()
+    session._session_actions = SessionActionStore()
+    result = apply_delivery(
+        session, "next turn please", session_busy=True, requested="follow_up",
+    )
+    assert result["ok"] is True
+    assert result["action"] == "enqueue_prompt"
+    assert session.prompts[0]["text"] == "next turn please"
+    admitted = list(session._session_actions)
+    assert [a.kind for a in admitted] == [ActionKind.MAILBOX]
+    assert admitted[0].delivery is DeliveryPolicy.WHEN_RUN_IDLE
+
+
+def test_delivery_mode_interrupt_admits_redirect_then_mailbox():
+    session = _FakeSessionWithInterrupt()
+    session._session_actions = SessionActionStore()
+    session._busy = True
+    result = apply_delivery(
+        session, "stop and do this", session_busy=True, requested="interrupt",
+    )
+    assert result["ok"] is True
+    assert result["action"] == "interrupt_then_queue"
+    assert session.interrupts == [True]
+    assert session.prompts[0]["text"] == "stop and do this"
+    admitted = list(session._session_actions)
+    assert [a.kind for a in admitted] == [ActionKind.REDIRECT, ActionKind.MAILBOX]
+    assert admitted[1].text == "stop and do this"
+    assert admitted[1].delivery is DeliveryPolicy.WHEN_RUN_IDLE
