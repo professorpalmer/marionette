@@ -1,17 +1,18 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import type { EconomicsData, EconomicsJobRow } from "../lib/api";
 import EconomicsDurable from "../components/EconomicsDurable";
 
-function economicsData(models: unknown[]) {
+function economicsData(models: unknown): EconomicsData {
   return {
     available: true,
     recent_jobs: [{
       job_id: "job-models",
       status: "completed",
       accounting_owned: true,
-      models,
+      models: models as EconomicsJobRow["models"],
     }],
-  } as any;
+  };
 }
 
 describe("EconomicsDurable model ID rendering", () => {
@@ -39,5 +40,12 @@ describe("EconomicsDurable model ID rendering", () => {
 
     expect(screen.getByTitle("google:gemini-2.5-pro")).toHaveTextContent("google:gemini-2.5-pro");
     expect(screen.queryByText("42")).not.toBeInTheDocument();
+  });
+
+  it("ignores a non-array models field without crashing", () => {
+    render(<EconomicsDurable data={economicsData({ not: "an-array" })} />);
+
+    expect(screen.getByText("job-models")).toBeInTheDocument();
+    expect(screen.queryByTitle("an-array")).not.toBeInTheDocument();
   });
 });
