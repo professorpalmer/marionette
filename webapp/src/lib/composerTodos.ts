@@ -99,7 +99,7 @@ export function litTodoContents(
   const lit = new Set<string>();
   for (const phase of snapshot?.phases || []) {
     for (const task of phase.tasks) {
-      if (task.status !== "pending") continue;
+      if (task.status !== "pending" && task.status !== "in_progress") continue;
       if (todoMatchesAnyDescription(task.content, descriptions)) {
         lit.add(task.content);
       }

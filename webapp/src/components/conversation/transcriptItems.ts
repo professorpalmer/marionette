@@ -699,13 +699,6 @@ function insertIndexForRemoteCard(
   return insertAt;
 }
 
-/**
- * Merge a disk/API transcript into the live feed without dropping in-flight
- * cards. Prefer remote message text when ids match; keep local-only cards
- * and still-pending command approval cards. When local cards win the prefer
- * path, remote swarm_result / swarm_pending rows still reconcile by stable
- * identity (latest-explicit reuse merge + terminal pending merge).
- */
 /** Restore client-only terminal chips at their owning user-turn boundary. */
 export function mergeLocalTurnTerminals(remote: Item[], local: Item[]): Item[] {
   const merged = [...remote];
@@ -729,6 +722,13 @@ export function mergeLocalTurnTerminals(remote: Item[], local: Item[]): Item[] {
   return merged;
 }
 
+/**
+ * Merge a disk/API transcript into the live feed without dropping in-flight
+ * cards. Prefer remote message text when ids match; keep local-only cards
+ * and still-pending command approval cards. When local cards win the prefer
+ * path, remote swarm_result / swarm_pending rows still reconcile by stable
+ * identity (latest-explicit reuse merge + terminal pending merge).
+ */
 export function mergeTranscriptItems(local: Item[], remote: Item[]): Item[] {
   if (!shouldPreferLocalTranscript(local, remote)) {
     // Equal card counts take remote, but never drop a still-pending approval
