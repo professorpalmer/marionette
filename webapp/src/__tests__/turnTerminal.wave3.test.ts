@@ -668,6 +668,99 @@ describe("Wave 3 last-mile: turn_terminal hydrate / merge", () => {
     expect(terminalChip(merged)?.id).toBe("term-local");
     expect(mergeLocalTurnTerminals(remote, local)).toHaveLength(3);
   });
+
+  it("keeps a client-only terminal chip on its owning turn after a later completed turn", () => {
+    const firstTerminal: Extract<Item, { kind: "turn_terminal" }> = {
+      kind: "turn_terminal",
+      id: "term-first",
+      cause: "incomplete",
+      state: "settled_incomplete",
+      text: "Reply incomplete.",
+    };
+    const local: Item[] = [
+      msg("user", "first"),
+      msg("assistant", "Halfway"),
+      firstTerminal,
+      msg("user", "continue"),
+      msg("assistant", "Done"),
+    ];
+    const remote: Item[] = [
+      msg("user", "first"),
+      msg("assistant", "Halfway"),
+      msg("user", "continue"),
+      msg("assistant", "Done"),
+    ];
+
+    expect(mergeTranscriptItems(local, remote)).toEqual([
+      remote[0],
+      remote[1],
+      firstTerminal,
+      remote[2],
+      remote[3],
+    ]);
+  });
+
+  it("keeps an earlier local chip when remote already has a later-turn terminal", () => {
+    const firstTerminal: Extract<Item, { kind: "turn_terminal" }> = {
+      kind: "turn_terminal",
+      id: "term-first",
+      cause: "incomplete",
+      state: "settled_incomplete",
+      text: "Reply incomplete.",
+    };
+    const laterTerminal: Extract<Item, { kind: "turn_terminal" }> = {
+      kind: "turn_terminal",
+      id: "term-later",
+      cause: "incomplete",
+      state: "settled_incomplete",
+      text: "Reply incomplete.",
+    };
+    const local: Item[] = [
+      msg("user", "first"),
+      msg("assistant", "Halfway"),
+      firstTerminal,
+      msg("user", "continue"),
+      msg("assistant", "Done"),
+    ];
+    const remote: Item[] = [
+      msg("user", "first"),
+      msg("assistant", "Halfway"),
+      msg("user", "continue"),
+      msg("assistant", "Done"),
+      laterTerminal,
+    ];
+
+    expect(mergeLocalTurnTerminals(remote, local)).toEqual([
+      remote[0],
+      remote[1],
+      firstTerminal,
+      remote[2],
+      remote[3],
+      laterTerminal,
+    ]);
+  });
+
+  it("rejects a local chip whose owning turn is missing from remote", () => {
+    const orphan: Extract<Item, { kind: "turn_terminal" }> = {
+      kind: "turn_terminal",
+      id: "term-orphan",
+      cause: "incomplete",
+      state: "settled_incomplete",
+      text: "Reply incomplete.",
+    };
+    const remote: Item[] = [
+      msg("user", "first"),
+      msg("assistant", "Halfway"),
+    ];
+    const local: Item[] = [
+      ...remote,
+      msg("user", "only local"),
+      msg("assistant", "ghost"),
+      orphan,
+    ];
+
+    expect(mergeLocalTurnTerminals(remote, local)).toEqual(remote);
+  });
 });
 
 describe("Wave 3 last-mile: unique keys and shelf identity", () => {

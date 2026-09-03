@@ -27,7 +27,8 @@ function TaskMark({
   if (status === "completed") return <CheckCircle2 size={11} className="shrink-0 text-good" />;
   if (status === "abandoned") return <MinusCircle size={11} className="shrink-0 text-faint" />;
   if (status === "blocked") return <Ban size={11} className="shrink-0 text-warn" />;
-  if (status === "in_progress" || lit) return <Loader2 size={11} className="shrink-0 animate-spin text-accent" />;
+  if (lit) return <Loader2 size={11} className="shrink-0 animate-spin text-accent" />;
+  if (status === "in_progress") return <Circle size={11} className="shrink-0 text-accent" />;
   return <Circle size={11} className="shrink-0 text-faint" />;
 }
 
