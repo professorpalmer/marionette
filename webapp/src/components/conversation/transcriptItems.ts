@@ -706,15 +706,27 @@ function insertIndexForRemoteCard(
  * path, remote swarm_result / swarm_pending rows still reconcile by stable
  * identity (latest-explicit reuse merge + terminal pending merge).
  */
-/** Keep this session's terminal chip when disk/API hydrate omits client-only rows. */
+/** Restore client-only terminal chips at their owning user-turn boundary. */
 export function mergeLocalTurnTerminals(remote: Item[], local: Item[]): Item[] {
-  const remoteHas = remote.some((it) => it.kind === "turn_terminal");
-  if (remoteHas) return remote;
-  const localTerms = local.filter(
-    (it): it is Extract<Item, { kind: "turn_terminal" }> => it.kind === "turn_terminal",
-  );
-  if (localTerms.length === 0) return remote;
-  return [...remote, ...localTerms];
+  const merged = [...remote];
+  const remoteUserCount = remote.filter(
+    (it) => it.kind === "msg" && it.msg.role === "user",
+  ).length;
+  const occupiedTurns = new Set<number>();
+  remote.forEach((it, index) => {
+    if (it.kind === "turn_terminal") {
+      occupiedTurns.add(owningUserTurnOrdinal(remote, index));
+    }
+  });
+  local.forEach((it, index) => {
+    if (it.kind !== "turn_terminal") return;
+    const turnOrdinal = owningUserTurnOrdinal(local, index);
+    if (turnOrdinal < 0 || turnOrdinal >= remoteUserCount || occupiedTurns.has(turnOrdinal)) return;
+    const { end } = localTurnBounds(merged, turnOrdinal);
+    merged.splice(end, 0, it);
+    occupiedTurns.add(turnOrdinal);
+  });
+  return merged;
 }
 
 export function mergeTranscriptItems(local: Item[], remote: Item[]): Item[] {
