@@ -175,6 +175,35 @@ def test_add_and_update_missed_policy(sched_state):
     assert closed["missed_policy"] == "once"
 
 
+def test_add_and_update_continuity_and_failure_deliver(sched_state):
+    status, added = sched_api.post_schedules_add({
+        "name": "watch", "objective": "o", "cron": "0 * * * *",
+        "monitor_mode": True,
+        "notepad": "watch flake rate",
+        "failure_deliver": "suppress",
+    })
+    assert status == 200
+    assert added["monitor_mode"] is True
+    assert added["notepad"] == "watch flake rate"
+    assert added["failure_deliver"] == "suppress"
+    assert added["continuity_digest"] == ""
+    status, updated = sched_api.post_schedules_update({
+        "id": added["id"],
+        "monitor_mode": False,
+        "notepad": "",
+        "failure_deliver": "route",
+    })
+    assert status == 200
+    assert updated["monitor_mode"] is False
+    assert updated["notepad"] == ""
+    assert updated["failure_deliver"] == "route"
+    status, closed = sched_api.post_schedules_update({
+        "id": added["id"], "failure_deliver": "bogus",
+    })
+    assert status == 200
+    assert closed["failure_deliver"] == "route"
+
+
 def test_history_requires_id(sched_state):
     status, body = sched_api.get_schedules_history("", "5")
     assert status == 400

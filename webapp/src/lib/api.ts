@@ -693,6 +693,11 @@ export type ScheduleInfo = {
   max_tokens?: number;
   max_seconds?: number;
   max_swarms?: number;
+  missed_policy?: string;
+  continuity_digest?: string;
+  notepad?: string;
+  monitor_mode?: boolean;
+  failure_deliver?: "route" | "suppress" | string;
 };
 
 export type ScheduleRun = {
@@ -2079,6 +2084,10 @@ export const api = {
     max_tokens?: number;
     max_seconds?: number;
     max_swarms?: number;
+    missed_policy?: string;
+    notepad?: string;
+    monitor_mode?: boolean;
+    failure_deliver?: string;
   }) => postJSON<ScheduleInfo>("/api/schedules/add", body),
   updateSchedule: (id: string, patch: Partial<ScheduleInfo>) =>
     postJSON<ScheduleInfo>("/api/schedules/update", { id, ...patch }),

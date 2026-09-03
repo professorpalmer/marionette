@@ -710,12 +710,20 @@ def test_migrate_old_sqlite_adds_missed_policy_and_pending_wakes(tmp_path):
         )
     }
     assert "missed_policy" in sched_cols
+    assert "continuity_digest" in sched_cols
+    assert "notepad" in sched_cols
+    assert "monitor_mode" in sched_cols
+    assert "failure_deliver" in sched_cols
     assert "missed_outcome" in run_cols
     assert "missed_slots" in run_cols
     assert "pending_wakes" in tables
     got = store.get("old01")
     assert got is not None
     assert got.missed_policy == "once"
+    assert got.continuity_digest == ""
+    assert got.notepad == ""
+    assert got.monitor_mode is False
+    assert got.failure_deliver == "route"
     store.close()
 
 

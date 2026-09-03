@@ -35,7 +35,13 @@ import uuid
 from pathlib import Path
 from typing import List, Optional, Union
 
-from .schedule_core import SCHEDULE_FIELDS, Schedule, parse_missed_policy
+from .schedule_core import (
+    SCHEDULE_FIELDS,
+    Schedule,
+    clip_notepad,
+    parse_failure_deliver,
+    parse_missed_policy,
+)
 from .sqlite_journal import configure_sqlite_connection, host_scoped_state_path
 
 DEFAULT_LEASE_SECONDS = 3600
@@ -217,7 +223,11 @@ class ScheduleStore:
                 claim_run_id TEXT NOT NULL DEFAULT '',
                 cancel_requested INTEGER NOT NULL DEFAULT 0,
                 timezone TEXT NOT NULL DEFAULT '',
-                missed_policy TEXT NOT NULL DEFAULT 'once'
+                missed_policy TEXT NOT NULL DEFAULT 'once',
+                continuity_digest TEXT NOT NULL DEFAULT '',
+                notepad TEXT NOT NULL DEFAULT '',
+                monitor_mode INTEGER NOT NULL DEFAULT 0,
+                failure_deliver TEXT NOT NULL DEFAULT 'route'
             )
             """
         )
@@ -275,6 +285,10 @@ class ScheduleStore:
             ("timezone", "TEXT NOT NULL DEFAULT ''"),
             ("delivery_mode", "TEXT NOT NULL DEFAULT ''"),
             ("missed_policy", "TEXT NOT NULL DEFAULT 'once'"),
+            ("continuity_digest", "TEXT NOT NULL DEFAULT ''"),
+            ("notepad", "TEXT NOT NULL DEFAULT ''"),
+            ("monitor_mode", "INTEGER NOT NULL DEFAULT 0"),
+            ("failure_deliver", "TEXT NOT NULL DEFAULT 'route'"),
         ):
             if col not in sched_cols:
                 self._conn.execute(
@@ -314,6 +328,9 @@ class ScheduleStore:
         # IANA deferred: persist empty timezone; evaluation is always host-local.
         schedule.timezone = validate_timezone(schedule.timezone or "")
         schedule.missed_policy = parse_missed_policy(schedule.missed_policy)
+        schedule.failure_deliver = parse_failure_deliver(schedule.failure_deliver)
+        schedule.notepad = clip_notepad(schedule.notepad)
+        schedule.monitor_mode = bool(schedule.monitor_mode)
         now = time.time()
         if not schedule.id:
             schedule.id = uuid.uuid4().hex[:8]
@@ -474,8 +491,15 @@ class ScheduleStore:
             "name", "objective", "cron", "repo", "driver", "swarm_adapter",
             "max_tokens", "max_seconds", "max_swarms", "timezone",
             "missed_policy",
+            "notepad", "monitor_mode", "failure_deliver",
         }
-        updates = {k: v for k, v in fields.items() if k in allowed and v is not None}
+        updates = {}
+        for k, v in fields.items():
+            if k not in allowed:
+                continue
+            # monitor_mode is a bool; False must not be dropped as "unset".
+            if k == "monitor_mode" or v is not None:
+                updates[k] = v
         if not updates:
             return self.get(schedule_id)
         _validate_ceilings(updates)
@@ -486,6 +510,14 @@ class ScheduleStore:
             updates["timezone"] = validate_timezone(str(updates["timezone"]))
         if "missed_policy" in updates:
             updates["missed_policy"] = parse_missed_policy(updates["missed_policy"])
+        if "notepad" in updates:
+            updates["notepad"] = clip_notepad(updates["notepad"])
+        if "monitor_mode" in updates:
+            updates["monitor_mode"] = 1 if updates["monitor_mode"] else 0
+        if "failure_deliver" in updates:
+            updates["failure_deliver"] = parse_failure_deliver(
+                updates["failure_deliver"]
+            )
         cols = ", ".join(f"{k} = ?" for k in updates)
         vals = list(updates.values()) + [schedule_id]
         with self._lock:
@@ -781,6 +813,7 @@ class ScheduleStore:
         history_keep: Optional[int] = None,
         missed_outcome: str = "",
         missed_slots: int = 0,
+        continuity_digest: Optional[str] = None,
     ) -> bool:
         """Atomically finish a run, release the claim, and update last_*.
 
@@ -868,6 +901,11 @@ class ScheduleStore:
                 if cur.rowcount != 1:
                     self._conn.execute("ROLLBACK")
                     return False
+                if continuity_digest is not None:
+                    self._conn.execute(
+                        "UPDATE schedules SET continuity_digest = ? WHERE id = ?",
+                        (str(continuity_digest), schedule_id),
+                    )
                 self._prune_runs_locked(schedule_id, keep=keep_n)
                 self._conn.execute("COMMIT")
                 return True

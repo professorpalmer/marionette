@@ -9,18 +9,27 @@ from datetime import datetime
 import pytest
 
 from harness.schedule_core import (
+    FAILURE_DELIVER_ROUTE,
+    FAILURE_DELIVER_SUPPRESS,
     MISSED_POLICY_ALL,
     MISSED_POLICY_ONCE,
     MISSED_POLICY_SKIP,
+    NOTEPAD_MAX_CHARS,
     STAMPEDE_CAP,
     CronExpr,
     Schedule,
+    clip_notepad,
     due_fire_at,
     due_fire_slots,
     fire_at_timestamp,
+    fire_continuity_digest,
     floor_minute,
     next_real_fire_after,
+    parse_failure_deliver,
     parse_missed_policy,
+    schedule_fire_prompt,
+    should_deliver_notice,
+    should_prepend_continuity,
     status_from_halt_reason,
     timezone_mode,
     validate_timezone,
@@ -194,6 +203,10 @@ def test_schedule_from_row_defaults():
     assert s.max_tokens == 0
     assert s.last_fire_at == 0.0
     assert s.missed_policy == MISSED_POLICY_ONCE
+    assert s.continuity_digest == ""
+    assert s.notepad == ""
+    assert s.monitor_mode is False
+    assert s.failure_deliver == FAILURE_DELIVER_ROUTE
 
 
 def test_due_fire_same_minute_once():
@@ -474,3 +487,60 @@ def test_all_caps_at_stampede_cap():
     assert len(slots) == STAMPEDE_CAP
     assert slots[0] == _dt(2024, 1, 1, 0, 1)
     assert slots[-1] == _dt(2024, 1, 1, 1, 40)
+
+
+def test_parse_failure_deliver_default_and_unknown():
+    assert parse_failure_deliver(None) == FAILURE_DELIVER_ROUTE
+    assert parse_failure_deliver("") == FAILURE_DELIVER_ROUTE
+    assert parse_failure_deliver("  ") == FAILURE_DELIVER_ROUTE
+    assert parse_failure_deliver("nope") == FAILURE_DELIVER_ROUTE
+    assert parse_failure_deliver("ROUTE") == FAILURE_DELIVER_ROUTE
+    assert parse_failure_deliver("suppress") == FAILURE_DELIVER_SUPPRESS
+
+
+def test_clip_notepad_caps_at_4k():
+    assert clip_notepad(None) == ""
+    assert clip_notepad("ok") == "ok"
+    long = "x" * (NOTEPAD_MAX_CHARS + 50)
+    clipped = clip_notepad(long)
+    assert len(clipped) == NOTEPAD_MAX_CHARS
+    assert clipped == "x" * NOTEPAD_MAX_CHARS
+
+
+def test_continuity_prompt_and_notice_policy():
+    bare = Schedule(id="a", name="n", objective="check the build", cron="* * * * *")
+    assert should_prepend_continuity(bare) is False
+    assert schedule_fire_prompt(bare) == "check the build"
+    assert should_deliver_notice(bare, {"status": "error"}) is True
+
+    digest = fire_continuity_digest("pilot reports objective met")
+    assert digest.split(" ", 1)[0]
+    assert "pilot reports" in digest
+
+    armed = Schedule(
+        id="b", name="n", objective="check the build", cron="* * * * *",
+        continuity_digest=digest, notepad="watch flake rate",
+        monitor_mode=True, failure_deliver=FAILURE_DELIVER_SUPPRESS,
+    )
+    prompt = schedule_fire_prompt(armed)
+    assert prompt.startswith("[schedule continuity]")
+    assert digest in prompt
+    assert "watch flake rate" in prompt
+    assert prompt.endswith("check the build")
+    assert should_deliver_notice(armed, {"status": "ok"}) is True
+    assert should_deliver_notice(armed, {"status": "error"}) is False
+    assert should_deliver_notice(armed, {"status": "failed"}) is False
+
+
+def test_schedule_continuity_fields_roundtrip():
+    s = Schedule(
+        id="abc123", name="nightly", objective="audit repo",
+        cron="0 2 * * *", continuity_digest="deadbeef snippet",
+        notepad="keep this", monitor_mode=True,
+        failure_deliver=FAILURE_DELIVER_SUPPRESS,
+    )
+    row = s.to_row()
+    assert row["monitor_mode"] == 1
+    assert row["failure_deliver"] == FAILURE_DELIVER_SUPPRESS
+    back = Schedule.from_row(row)
+    assert back == s

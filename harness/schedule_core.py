@@ -12,8 +12,8 @@ harness. We keep those apart so the fiddly, edge-case-heavy cron math can be
 proven hermetically and fast.
 
 This module therefore imports ONLY the standard library (datetime, calendar,
-dataclasses) and MUST NOT import harness.* or puppetmaster.* -- that invariant
-is what keeps tests/test_schedule_core.py hermetic.
+dataclasses, hashlib) and MUST NOT import harness.* or puppetmaster.* -- that
+invariant is what keeps tests/test_schedule_core.py hermetic.
 
 Cron semantics implemented (standard 5-field crontab):
     minute hour day-of-month month day-of-week
@@ -39,6 +39,7 @@ Timezone / DST:
 """
 
 import calendar
+import hashlib
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
@@ -65,6 +66,15 @@ MISSED_POLICY_ONCE = "once"
 MISSED_POLICY_ALL = "all"
 STAMPEDE_CAP = 100
 
+# Failure notice routing. Default ``route`` keeps today's Notifier behavior.
+FAILURE_DELIVER_ROUTE = "route"
+FAILURE_DELIVER_SUPPRESS = "suppress"
+
+# Persisted notepad cap (small note, not a transcript).
+NOTEPAD_MAX_CHARS = 4096
+_DIGEST_HASH_LEN = 16
+_DIGEST_SNIPPET_LEN = 80
+
 
 def parse_missed_policy(value: object) -> str:
     """Normalize a missed-window policy; unknown or empty becomes once."""
@@ -72,6 +82,84 @@ def parse_missed_policy(value: object) -> str:
     if raw in (MISSED_POLICY_SKIP, MISSED_POLICY_ONCE, MISSED_POLICY_ALL):
         return raw
     return MISSED_POLICY_ONCE
+
+
+def parse_failure_deliver(value: object) -> str:
+    """Normalize failure notice routing; unknown or empty becomes route."""
+    raw = str(value or "").strip().lower()
+    if raw in (FAILURE_DELIVER_ROUTE, FAILURE_DELIVER_SUPPRESS):
+        return raw
+    return FAILURE_DELIVER_ROUTE
+
+
+def clip_notepad(value: object, max_chars: int = NOTEPAD_MAX_CHARS) -> str:
+    """Bound a persisted notepad to ``max_chars`` (default 4k)."""
+    text = str(value or "")
+    limit = int(max_chars)
+    if limit <= 0:
+        return ""
+    if len(text) > limit:
+        return text[:limit]
+    return text
+
+
+def fire_continuity_digest(result_text: str) -> str:
+    """Short hash plus snippet of a successful fire result.
+
+    Shape matches SessionLoop.last_response_digest (sha256 of the text) but
+    stays short enough to persist on the schedule row and inject as context.
+    """
+    raw = (result_text or "").strip()
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:_DIGEST_HASH_LEN]
+    snippet = " ".join(raw.split())
+    if len(snippet) > _DIGEST_SNIPPET_LEN:
+        snippet = snippet[:_DIGEST_SNIPPET_LEN]
+    if snippet:
+        return "%s %s" % (digest, snippet)
+    return digest
+
+
+def should_deliver_notice(schedule: "Schedule", run: Optional[dict] = None) -> bool:
+    """False when failure_deliver=suppress and the run is not a success."""
+    policy = parse_failure_deliver(getattr(schedule, "failure_deliver", None))
+    if policy != FAILURE_DELIVER_SUPPRESS:
+        return True
+    payload = run or {}
+    status = str(payload.get("status") or "").strip().lower()
+    return status == "ok"
+
+
+def should_prepend_continuity(schedule: "Schedule") -> bool:
+    """True when the next fire should inject last digest and/or notepad."""
+    digest = str(getattr(schedule, "continuity_digest", "") or "").strip()
+    notepad = str(getattr(schedule, "notepad", "") or "").strip()
+    monitor = bool(getattr(schedule, "monitor_mode", False))
+    if not (monitor or digest):
+        return False
+    return bool(digest or notepad)
+
+
+def continuity_block(schedule: "Schedule") -> str:
+    """Context block prepended to the next fire's prompt, or empty."""
+    if not should_prepend_continuity(schedule):
+        return ""
+    parts = ["[schedule continuity]"]
+    digest = str(getattr(schedule, "continuity_digest", "") or "").strip()
+    if digest:
+        parts.append("last_digest: %s" % digest)
+    note = clip_notepad(getattr(schedule, "notepad", "")).strip()
+    if note:
+        parts.append("notepad:\n%s" % note)
+    return "\n".join(parts)
+
+
+def schedule_fire_prompt(schedule: "Schedule") -> str:
+    """Objective the session receives, with an optional continuity prefix."""
+    objective = str(getattr(schedule, "objective", "") or "")
+    block = continuity_block(schedule)
+    if not block:
+        return objective
+    return "%s\n\n%s" % (block, objective)
 
 
 @dataclass(frozen=True)
@@ -615,6 +703,11 @@ SCHEDULE_FIELDS = [
     # Opt-in busy-session inject (auto|steer|follow_up). Empty = legacy spawn.
     "delivery_mode",
     "missed_policy",
+    # Cron continuity across fires (digest + notepad) and failure notices.
+    "continuity_digest",
+    "notepad",
+    "monitor_mode",
+    "failure_deliver",
 ]
 
 
@@ -646,6 +739,15 @@ class Schedule:
     # Missed-window policy: skip | once (default) | all. last_fire_at is the
     # cron-slot identity; last_run_at is wall-clock completion.
     missed_policy: str = MISSED_POLICY_ONCE
+    # Last successful fire digest (short hash + snippet). Fresh session per
+    # fire; this is injected context, not a long-lived ConversationalSession.
+    continuity_digest: str = ""
+    # Small persisted note (capped at NOTEPAD_MAX_CHARS).
+    notepad: str = ""
+    # When true, the next fire injects last digest + notepad as context.
+    monitor_mode: bool = False
+    # Failure notice routing: route (default) | suppress.
+    failure_deliver: str = FAILURE_DELIVER_ROUTE
     # Claim / fencing fields (managed by ScheduleStore; shown by list).
     claim_owner: str = ""
     claim_at: float = 0.0
@@ -661,6 +763,10 @@ class Schedule:
         d["cancel_requested"] = 1 if self.cancel_requested else 0
         d["timezone"] = (self.timezone or "").strip()
         d["missed_policy"] = parse_missed_policy(self.missed_policy)
+        d["monitor_mode"] = 1 if self.monitor_mode else 0
+        d["notepad"] = clip_notepad(self.notepad)
+        d["continuity_digest"] = str(self.continuity_digest or "")
+        d["failure_deliver"] = parse_failure_deliver(self.failure_deliver)
         return d
 
     @classmethod
@@ -686,6 +792,10 @@ class Schedule:
             timezone=str(row.get("timezone") or ""),
             delivery_mode=str(row.get("delivery_mode") or ""),
             missed_policy=parse_missed_policy(row.get("missed_policy")),
+            continuity_digest=str(row.get("continuity_digest") or ""),
+            notepad=clip_notepad(row.get("notepad")),
+            monitor_mode=bool(row.get("monitor_mode", 0)),
+            failure_deliver=parse_failure_deliver(row.get("failure_deliver")),
             claim_owner=str(row.get("claim_owner") or ""),
             claim_at=float(row.get("claim_at") or 0.0),
             claim_lease_until=float(row.get("claim_lease_until") or 0.0),

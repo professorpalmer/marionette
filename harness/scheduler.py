@@ -49,7 +49,10 @@ from .schedule_core import (
     due_fire_at,
     due_fire_plan,
     fire_at_timestamp,
+    fire_continuity_digest,
     parse_missed_policy,
+    schedule_fire_prompt,
+    should_deliver_notice,
     status_from_halt_reason,
 )
 from .schedule_store import ScheduleStore, claim_lease_seconds
@@ -141,10 +144,42 @@ class Notifier(ABC):
         raise NotImplementedError
 
 
+def _emit_notice(notifier: Notifier, schedule: Schedule, run: dict) -> None:
+    """Call notifier.notify unless failure_deliver=suppress for a non-ok run."""
+    if not should_deliver_notice(schedule, run):
+        return
+    try:
+        notifier.notify(schedule, run)
+    except Exception:
+        pass
+
+
+def _sync_continuity_fields(schedule: Schedule, store: ScheduleStore) -> None:
+    """Refresh digest/notepad/monitor/failure_deliver from the live row."""
+    live = store.get(schedule.id)
+    if live is None:
+        return
+    schedule.continuity_digest = live.continuity_digest
+    schedule.notepad = live.notepad
+    schedule.monitor_mode = live.monitor_mode
+    schedule.failure_deliver = live.failure_deliver
+
+
+def _continuity_digest_for_ok(schedule: Schedule, status: str, result_text: str) -> Optional[str]:
+    """Persist a short digest on the in-memory row after a successful fire."""
+    if status != "ok":
+        return None
+    digest = fire_continuity_digest(result_text)
+    schedule.continuity_digest = digest
+    return digest
+
+
 class LogNotifier(Notifier):
     """Default notifier: prints a concise plain-text summary (no emoji)."""
 
     def notify(self, schedule: Schedule, run: dict) -> None:
+        if not should_deliver_notice(schedule, run):
+            return
         print(
             "schedule {id} ({name}): {status}"
             " reason={reason} cycles={cycles}"
@@ -491,6 +526,7 @@ def _run_one(
 
     heartbeat: Optional[_ClaimLeaseHeartbeat] = None
     try:
+        _sync_continuity_fields(schedule, store)
         # Workspace safety before any session work.
         repo = resolve_schedule_repo(schedule)
         refusal = check_schedule_workspace(repo)
@@ -517,10 +553,7 @@ def _run_one(
                 run["status"] = "superseded"
                 run["halt_reason"] = "ownership_lost"
                 return run
-            try:
-                notifier.notify(schedule, run)
-            except Exception:
-                pass
+            _emit_notice(notifier, schedule, run)
             return run
 
         status = "ok"
@@ -597,12 +630,12 @@ def _run_one(
                         status=status, halt_reason=halt_reason, fire_at=fire_at,
                         ended_at=ended,
                         advance_last_fire=not force_claim,
+                        continuity_digest=_continuity_digest_for_ok(
+                            schedule, status, halt_reason,
+                        ),
                         **missed_fields,
                     )
-                    try:
-                        notifier.notify(schedule, run)
-                    except Exception:
-                        pass
+                    _emit_notice(notifier, schedule, run)
                     return run
 
             session = session_factory(schedule)
@@ -610,7 +643,8 @@ def _run_one(
             last_snapshot: dict = {}
             # Explicit iterator so cancel is observed before advancing for the
             # first/next event. Heartbeat covers the blocked-next() gap.
-            events = iter(session.run_auto(schedule.objective, budget))
+            # Fresh session per fire; continuity is injected prompt context.
+            events = iter(session.run_auto(schedule_fire_prompt(schedule), budget))
             while True:
                 if heartbeat.ownership_lost:
                     ownership_lost = True
@@ -712,6 +746,9 @@ def _run_one(
             ended_at=ended_at,
             fire_at=fire_at,
             advance_last_fire=not force_claim,
+            continuity_digest=_continuity_digest_for_ok(
+                schedule, status, halt_reason,
+            ),
             **missed_fields,
         ):
             run["status"] = "superseded"
@@ -720,10 +757,7 @@ def _run_one(
         # Ownership-loss outcomes must never look like a successful notify.
         if run["status"] == "superseded":
             return run
-        try:
-            notifier.notify(schedule, run)
-        except Exception:  # a broken notifier must not break the run record
-            pass
+        _emit_notice(notifier, schedule, run)
         return run
     finally:
         if heartbeat is not None:
