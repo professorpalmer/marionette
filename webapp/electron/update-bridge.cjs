@@ -680,9 +680,14 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff",
     }
     if (nodeChanged) {
       progress("deps", "Updating node dependencies", 0.7);
-      const npmci = await runNpmStreamed(["ci"], { cwd: path.join(repoRoot, "webapp"), env: childEnv },
-        (l) => { appendUpdateLog(`[deps] ${l}`); progress("deps", "Updating node dependencies", 0.8); });
+      const webappDir = path.join(repoRoot, "webapp");
+      const onNodeLine = (l) => { appendUpdateLog(`[deps] ${l}`); progress("deps", "Updating node dependencies", 0.8); };
+      const npmci = await runNpmStreamed(["ci"], { cwd: webappDir, env: childEnv }, onNodeLine);
       if (npmci.code !== 0) return { ok: false, error: npmci.tail || "npm ci failed" };
+      // npm ci removes the Electron.app executing Marionette; Electron 44
+      // restores its platform runtime lazily when required from plain Node.
+      const electron = await runStreamed("node", ["-e", "require('electron')"], { cwd: webappDir, env: childEnv }, onNodeLine);
+      if (electron.code !== 0) return { ok: false, error: electron.tail || "Electron runtime install failed" };
     }
 
     // Puppetmaster -- the one integral runtime dep -- ships independently of this
