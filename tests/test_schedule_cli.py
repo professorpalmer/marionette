@@ -32,12 +32,14 @@ def test_cli_history_and_edit(tmp_path, capsys):
     assert " host-local" in out_add
     store = ScheduleStore(db)
     sid = store.list()[0].id
+    assert store.get(sid).missed_policy == "once"
 
     rc = _run_schedule([
         "--db", db, "edit", sid,
         "--name", "nightly2",
         "--cron", "0 3 * * *",
         "--max-tokens", "1000",
+        "--missed-policy", "all",
     ])
     assert rc == 0
     out_edit = capsys.readouterr().out
@@ -46,6 +48,7 @@ def test_cli_history_and_edit(tmp_path, capsys):
     assert got.name == "nightly2"
     assert got.cron == "0 3 * * *"
     assert got.max_tokens == 1000
+    assert got.missed_policy == "all"
 
     store.record_run(sid, 1.0, 2.0, "ok", halt_reason="objective met", cycles=1)
     rc = _run_schedule(["--db", db, "history", sid, "--limit", "10"])

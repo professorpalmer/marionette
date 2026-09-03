@@ -349,6 +349,66 @@ class SessionStore:
             self._save()
             return {**meta, "active": True, "workspace_root": ws_root}
 
+    def fork_at(self, parent_id: str, at_event_id: int, state_dir: str) -> Optional[dict]:
+        """Fork a session at a 1-based rematerialized history index.
+
+        ``at_event_id`` indexes ``rematerialize_driver_messages(load_transcript(...))``,
+        not an SSE cursor. Child transcript is the prefix through that index;
+        the parent transcript is unchanged. Stamps a single ThreadForked
+        pointer on each row (not a lineage DAG).
+        """
+        parent_id = (parent_id or "").strip()
+        if not parent_id:
+            return None
+        try:
+            cutoff = int(at_event_id)
+        except (TypeError, ValueError):
+            raise ValueError("bad event_id")
+        if cutoff < 1:
+            raise ValueError("bad event_id")
+        with self._lock:
+            parent = None
+            for row in self._sessions:
+                if row.get("id") == parent_id:
+                    parent = row
+                    break
+            if parent is None:
+                return None
+            raw = load_transcript(state_dir or "", parent_id)
+            messages = rematerialize_driver_messages(raw)
+            if cutoff > len(messages):
+                raise ValueError("bad event_id")
+            prefix = list(messages[:cutoff])
+            child_id = uuid.uuid4().hex[:12]
+            child = asdict(SessionMeta(
+                id=child_id,
+                title=parent.get("title") or "New session",
+                created=time.time(),
+                repo=parent.get("repo") or "",
+                branch=parent.get("branch") or "",
+                workspace_root=session_stored_root(parent),
+            ))
+            child["forked_from"] = {
+                "parent_id": parent_id,
+                "at_event_id": cutoff,
+            }
+            parent["forked_to"] = {
+                "child_id": child_id,
+                "at_event_id": cutoff,
+            }
+            self._sessions.append(child)
+            self._save()
+        if isinstance(raw, dict):
+            child_payload: Any = {"history": prefix}
+        else:
+            child_payload = prefix
+        save_transcript(state_dir or "", child_id, child_payload)
+        return {
+            **child,
+            "active": child_id == self._active,
+            "workspace_root": session_stored_root(child),
+        }
+
     def switch(self, sid: str) -> dict:
         with self._lock:
             if not any(s["id"] == sid for s in self._sessions):
@@ -757,6 +817,36 @@ def derive_title(prompt: str) -> str:
     if not title or is_activity_headline_text(title):
         return "New session"
     return title
+
+
+_DRIVER_ROLES = frozenset({"user", "assistant", "tool"})
+
+
+def rematerialize_driver_messages(transcript: Any) -> list:
+    """Driver-bound history from an existing ``load_transcript`` payload.
+
+    Accepts a dict with a ``history`` list or a bare list. Drops ``system``
+    turns; keeps user / assistant / tool pairs. Does not persist anything
+    and does not invent a second store.
+    """
+    if isinstance(transcript, dict):
+        history = transcript.get("history")
+        if not isinstance(history, list):
+            history = []
+    elif isinstance(transcript, list):
+        history = transcript
+    else:
+        return []
+    out: list = []
+    for msg in history:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "")
+        if role == "system":
+            continue
+        if role in _DRIVER_ROLES:
+            out.append(msg)
+    return out
 
 
 def save_transcript(state_dir: str, session_id: str, messages: Any) -> None:

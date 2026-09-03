@@ -235,6 +235,33 @@ def test_require_diff_without_worker_no_diff_evidence_stays_orchestrator_failure
     ) == AGENTIC_ORCHESTRATOR_FAILED
 
 
+def test_agentic_store_failure_snapshot_quiet_include_drops_heartbeat():
+    class _Store:
+        def list_jobs(self):
+            return [type("J", (), {"id": "job_1"})()]
+
+        def list_tasks(self, job_id):
+            return []
+
+        def read_events(self, job_id):
+            return [
+                {"event": "run.heartbeat", "payload": {"n": 1}},
+                {"event": "task.lease_renewed", "payload": {}},
+                {
+                    "event": "worker.gate_failed",
+                    "payload": {"reason": "require_diff: no PATCH artifact"},
+                },
+            ]
+
+        def list_artifacts(self, job_id):
+            return []
+
+    snap = _agentic_store_failure_snapshot(_Store())
+    assert snap["reason"] == "require_diff: no PATCH artifact"
+    assert "run.heartbeat" not in snap["event_names"]
+    assert "worker.gate_failed" in snap["event_names"]
+
+
 def test_agentic_store_failure_snapshot_captures_events_when_reason_empty():
     class _Store:
         def list_jobs(self):

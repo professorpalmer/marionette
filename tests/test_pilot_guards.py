@@ -1261,6 +1261,14 @@ def test_ordinary_commands_not_restart(monkeypatch):
     assert is_backend_restart_command("curl http://127.0.0.1:8085/mcp") is False
 
 
+def test_no_rebuild_and_restart_pilot_tool():
+    from harness.pilot import VALID_ACTION_KINDS, build_tools_schema
+
+    assert "rebuild_and_restart" not in VALID_ACTION_KINDS
+    names = {item["function"]["name"] for item in build_tools_schema()}
+    assert "rebuild_and_restart" not in names
+
+
 def test_implement_exhausted_soft_refuses_run_implement():
     state = new_turn_guard_state("fix the mockup styles")
     act = _Act(kind="run_implement", goal="polish styles.css")

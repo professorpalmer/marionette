@@ -762,6 +762,36 @@ def post_sessions_attach(body: dict, svc: SessionServices) -> tuple[int, dict]:
     }
 
 
+def post_session_fork(body: dict, svc: SessionServices) -> tuple[int, dict]:
+    """POST /api/session/fork — {session_id, event_id}. 404 unknown; 400 bad id."""
+    body = body or {}
+    session_id = (body.get("session_id") or body.get("id") or "").strip()
+    if not session_id:
+        return 404, {"ok": False, "error": "unknown session"}
+    raw_event = body.get("event_id", body.get("at_event_id"))
+    try:
+        event_id = int(raw_event)
+    except (TypeError, ValueError):
+        return 400, {"ok": False, "error": "bad event_id"}
+    state_dir = ""
+    try:
+        state_dir = svc.sessions_state_dir() or ""
+    except Exception:
+        state_dir = ""
+    if not state_dir:
+        try:
+            state_dir = str(getattr(svc.cfg, "state_dir", "") or "")
+        except Exception:
+            state_dir = ""
+    try:
+        child = svc.sessions.fork_at(session_id, event_id, state_dir)
+    except ValueError:
+        return 400, {"ok": False, "error": "bad event_id"}
+    if child is None:
+        return 404, {"ok": False, "error": "unknown session"}
+    return 200, {"ok": True, **child}
+
+
 def post_sessions_detach(body: dict, svc: SessionServices) -> tuple[int, dict]:
     """POST /api/sessions/detach — UI detach must not cancel an in-flight turn."""
     sid = (body.get("id") or body.get("session_id") or svc.sessions.active or "").strip()

@@ -20,6 +20,7 @@ from harness.tool_discovery import (
     _normalize_path_text,
     discovery_enabled,
     is_lazy_activatable_name,
+    tool_schema_is_usable,
 )
 
 
@@ -131,6 +132,47 @@ def test_build_tools_schema_includes_search_tools_when_requested():
     schema = build_tools_schema(include_search_tools=True)
     names = {t["function"]["name"] for t in schema}
     assert "search_tools" in names
+
+
+def test_tool_schema_is_usable_accepts_object_and_missing_type():
+    assert tool_schema_is_usable({"type": "object", "properties": {}}) is True
+    assert tool_schema_is_usable({"type": "object"}) is True
+    assert tool_schema_is_usable({"properties": {}}) is True
+    assert tool_schema_is_usable({}) is True
+    assert tool_schema_is_usable(
+        {"type": "object", "properties": {"q": {"type": "string"}}}
+    ) is True
+
+
+def test_tool_schema_is_usable_rejects_broken_shapes():
+    assert tool_schema_is_usable("not a dict") is False
+    assert tool_schema_is_usable(None) is False
+    assert tool_schema_is_usable([]) is False
+    assert tool_schema_is_usable({"type": "string"}) is False
+    assert tool_schema_is_usable({"type": "array"}) is False
+    assert tool_schema_is_usable({"type": "object", "parameters": "{}"}) is False
+    assert tool_schema_is_usable({"type": "object", "properties": []}) is False
+
+
+def test_build_tools_schema_skips_one_broken_mcp_tool():
+    good = McpTool(
+        server="gh",
+        name="ok_tool",
+        description="good",
+        input_schema={"type": "object", "properties": {"q": {"type": "string"}}},
+    )
+    broken = McpTool(
+        server="gh",
+        name="bad_tool",
+        description="bad",
+        input_schema={"type": "string"},
+    )
+    schema = build_tools_schema([good, broken])
+    names = {t["function"]["name"] for t in schema}
+    assert "mcp_gh__ok_tool" in names
+    assert "mcp_gh__bad_tool" not in names
+    assert "read_file" in names
+    assert "run_swarm" in names
 
 
 def test_parse_search_tools_native_call():

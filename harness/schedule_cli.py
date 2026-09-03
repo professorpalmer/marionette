@@ -19,8 +19,9 @@ and the next three fire times printed); an invalid expression exits 1.
 
 Cron times are host-local naive datetimes. Per-schedule IANA zones are
 deferred. Next-fire previews are labeled ``host-local``. A repeated local
-minute fires at most once (minute-stable ``last_fire_at``); missed windows
-coalesce to a single catch-up run. Delivery is at-least-once: a superseded
+minute fires at most once (minute-stable ``last_fire_at``). Missed windows
+follow ``--missed-policy`` (default ``once``: coalesce; ``skip``: no catch-up;
+``all``: every missed minute, cap 100). Delivery is at-least-once: a superseded
 worker that already performed tool side effects cannot rewrite durable
 claim/run state, but those side effects are not rolled back.
 
@@ -38,6 +39,7 @@ from .schedule_core import (
     CronExpr,
     Schedule,
     next_real_fire_after,
+    parse_missed_policy,
     timezone_mode,
 )
 from .schedule_store import (
@@ -104,6 +106,7 @@ def _cmd_add(args) -> int:
         max_seconds=args.max_seconds,
         max_swarms=args.max_swarms,
         timezone="",
+        missed_policy=parse_missed_policy(getattr(args, "missed_policy", None)),
     )
     try:
         store.add(sched)
@@ -128,6 +131,7 @@ def _cmd_list(args) -> int:
         print(_c("36", f"{s.id}") + f"  {s.name}  [{state}]")
         print(
             f"    cron={s.cron!r} tz=host-local ({mode}) "
+            f"missed={parse_missed_policy(s.missed_policy)} "
             f"adapter={s.swarm_adapter} status={status}"
         )
         print(f"    objective: {s.objective}")
@@ -166,6 +170,8 @@ def _cmd_edit(args) -> int:
         fields["max_seconds"] = args.max_seconds
     if args.max_swarms is not None:
         fields["max_swarms"] = args.max_swarms
+    if getattr(args, "missed_policy", None) is not None:
+        fields["missed_policy"] = args.missed_policy
     if not fields:
         print(_c("31", "nothing to update; pass at least one field"))
         return 1
@@ -280,8 +286,9 @@ def _run_schedule(argv) -> int:
             "Manage scheduled unattended objectives. Cron uses host-local "
             "time (per-schedule IANA timezone is deferred). HTTP/UI can list "
             "and mutate schedules; the local daemon is still required for "
-            "unattended cron fire. Missed fires coalesce; delivery is "
-            "at-least-once under lease recovery. SSE is deferred."
+            "unattended cron fire. Missed fires follow --missed-policy "
+            "(once/skip/all); delivery is at-least-once under lease recovery. "
+            "SSE is deferred."
         ),
     )
     ap.add_argument("--db", default=None, help="schedule store path (tests/override)")
@@ -304,6 +311,12 @@ def _run_schedule(argv) -> int:
     p_add.add_argument("--max-tokens", dest="max_tokens", type=int, default=0)
     p_add.add_argument("--max-seconds", dest="max_seconds", type=int, default=0)
     p_add.add_argument("--max-swarms", dest="max_swarms", type=int, default=0)
+    p_add.add_argument(
+        "--missed-policy",
+        dest="missed_policy",
+        default="once",
+        help="missed-window policy: once (default, coalesce), skip, all",
+    )
     p_add.set_defaults(func=_cmd_add)
 
     p_list = sub.add_parser("list", help="list schedules")
@@ -320,6 +333,9 @@ def _run_schedule(argv) -> int:
     p_edit.add_argument("--max-tokens", dest="max_tokens", type=int, default=None)
     p_edit.add_argument("--max-seconds", dest="max_seconds", type=int, default=None)
     p_edit.add_argument("--max-swarms", dest="max_swarms", type=int, default=None)
+    p_edit.add_argument(
+        "--missed-policy", dest="missed_policy", default=None,
+    )
     p_edit.set_defaults(func=_cmd_edit)
 
     p_rm = sub.add_parser("remove", help="remove a schedule")

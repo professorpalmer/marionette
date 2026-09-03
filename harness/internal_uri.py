@@ -29,7 +29,7 @@ from puppetmaster.models import to_jsonable
 from puppetmaster.store_factory import create_store
 
 from .paths import path_within
-from .state import DurableState
+from .state import DurableState, normalize_event_include
 
 SUPPORTED_SCHEMES = frozenset({"job", "artifact", "agent", "conflict", "spill"})
 
@@ -580,7 +580,11 @@ def _resolve_job(parsed: ParsedInternalUri, ctx: InternalUriContext) -> Internal
                 cursor = int(parts[3])
             except (IndexError, ValueError) as exc:
                 raise InternalUriError("events cursor must be an integer") from exc
-        payload = ctx.durable().events_since(job_id, cursor)
+        include = _job_events_include(parsed.raw)
+        try:
+            payload = ctx.durable().events_since(job_id, cursor, include=include)
+        except TypeError:
+            payload = ctx.durable().events_since(job_id, cursor)
         return _json_resource(url, payload)
 
     raise InternalUriError(f"unknown job path: {parsed.path}")
@@ -981,6 +985,18 @@ def _require_repo_relative_path(repo: str, rel_path: str) -> None:
     abs_path = os.path.realpath(os.path.join(repo, rel_path.replace("/", os.sep)))
     if not path_within(abs_path, repo, allow_equal=True):
         raise InternalUriError(f"path escapes repository: {rel_path!r}")
+
+
+def _job_events_include(raw: str) -> str:
+    """Read ``?include=`` from a job:// URI; unknown/missing -> lifecycle."""
+    try:
+        if "?" not in (raw or ""):
+            return "lifecycle"
+        qs = parse_qs(raw.split("?", 1)[1], keep_blank_values=True)
+        val = (qs.get("include") or ["lifecycle"])[0]
+        return normalize_event_include(val)
+    except Exception:
+        return "lifecycle"
 
 
 def _query_has_json_param(query_string: str) -> bool:

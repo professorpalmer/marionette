@@ -97,6 +97,25 @@ def _status_text(raw: Any) -> str:
     return str(getattr(raw, "value", raw) or "").strip()
 
 
+def _read_failure_scan_events(store: Any, job_id: str) -> list:
+    """Quiet event scan for failure reasons (gate_failed / failed_task).
+
+    Heartbeats stay out. Fail-soft to ``read_events`` when the lifecycle
+    helper is missing.
+    """
+    if store is None or not job_id:
+        return []
+    try:
+        from harness.state import read_job_events_since
+        return list(read_job_events_since(store, job_id, cursor=0, include="quiet") or [])
+    except Exception:
+        pass
+    try:
+        return list(store.read_events(job_id) if hasattr(store, "read_events") else [])
+    except Exception:
+        return []
+
+
 def _agentic_store_failure_snapshot(store: Any, job_id: str = "") -> dict:
     """Copy fail-closed facts off the scratch PM store before it is deleted.
 
@@ -168,10 +187,7 @@ def _agentic_store_failure_snapshot(store: Any, job_id: str = "") -> dict:
     reason = ""
     event_names: list = []
     last_payload_reason = ""
-    try:
-        records = store.read_events(resolved) if hasattr(store, "read_events") else []
-    except Exception:
-        records = []
+    records = _read_failure_scan_events(store, resolved)
     for rec in records or []:
         if not isinstance(rec, dict):
             continue

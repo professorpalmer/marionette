@@ -33,6 +33,7 @@ def test_add_list_enable_disable_history(sched_state):
     assert status == 200
     assert added["timezone"] == ""
     assert added["timezone_mode"] == "host_local"
+    assert added["missed_policy"] == "once"
     assert added["display_status"]
     assert isinstance(added["next_fires"], list)
     sid = added["id"]
@@ -153,6 +154,25 @@ def test_run_now_ok(sched_state, tmp_path, monkeypatch):
     assert status == 200
     assert body["ok"] is True
     assert body["run"]["status"] == "ok"
+
+
+def test_add_and_update_missed_policy(sched_state):
+    status, added = sched_api.post_schedules_add({
+        "name": "all", "objective": "o", "cron": "0 * * * *",
+        "missed_policy": "all",
+    })
+    assert status == 200
+    assert added["missed_policy"] == "all"
+    status, updated = sched_api.post_schedules_update({
+        "id": added["id"], "missed_policy": "skip",
+    })
+    assert status == 200
+    assert updated["missed_policy"] == "skip"
+    status, closed = sched_api.post_schedules_update({
+        "id": added["id"], "missed_policy": "bogus",
+    })
+    assert status == 200
+    assert closed["missed_policy"] == "once"
 
 
 def test_history_requires_id(sched_state):

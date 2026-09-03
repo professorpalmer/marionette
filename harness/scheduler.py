@@ -44,9 +44,12 @@ from typing import Callable, List, Optional
 
 from .schedule_core import (
     CronExpr,
+    MissedFireOutcome,
     Schedule,
     due_fire_at,
+    due_fire_plan,
     fire_at_timestamp,
+    parse_missed_policy,
     status_from_halt_reason,
 )
 from .schedule_store import ScheduleStore, claim_lease_seconds
@@ -290,6 +293,75 @@ def _mark_invalid_cron(store: ScheduleStore, schedule: Schedule) -> None:
             store.update_status(schedule.id, "invalid_cron")
 
 
+def redeliver_pending_wakes(
+    store: ScheduleStore,
+    *,
+    notifier: Optional[Notifier] = None,
+    session_factory: Optional[Callable[[Schedule], object]] = None,
+    budget_factory: Optional[Callable[[Schedule], object]] = None,
+    owner: Optional[str] = None,
+    active_schedule_holder: Optional[dict] = None,
+    now: Optional[float] = None,
+) -> List[dict]:
+    """Replay pending wakes whose claim lease is expired or missing.
+
+    Restart-immediate recovery: do not wait for due math. A live lease is
+    never double-run. Already-completed fires (last_fire_at advanced) drop
+    their leftover wake row.
+    """
+    notifier = notifier or LogNotifier()
+    session_factory = session_factory or _default_session_factory
+    budget_factory = budget_factory or _default_budget_factory
+    owner = owner or _claim_owner()
+    now_ts = time.time() if now is None else float(now)
+
+    results: List[dict] = []
+    for wake in store.list_pending_wakes():
+        sid = str(wake.get("schedule_id") or "")
+        fire_at = float(wake.get("fire_at") or 0.0)
+        if not sid:
+            continue
+        sched = store.get(sid)
+        if sched is None:
+            store.delete_pending_wake(sid, fire_at)
+            continue
+        if sched.claim_owner and sched.claim_lease_until > now_ts:
+            continue
+        if sched.last_fire_at and fire_at <= sched.last_fire_at:
+            store.delete_pending_wake(sid, fire_at)
+            continue
+        outcome = MissedFireOutcome(
+            policy=parse_missed_policy(getattr(sched, "missed_policy", None)),
+            slots_considered=1,
+            slots_fired=1,
+            skipped=False,
+        )
+        run = _run_one(
+            sched,
+            store,
+            notifier,
+            session_factory,
+            budget_factory,
+            fire_at=fire_at,
+            owner=owner,
+            active_schedule_holder=active_schedule_holder,
+            missed_outcome=outcome,
+        )
+        results.append(run)
+        refreshed = store.get(sid)
+        if refreshed is not None and refreshed.last_fire_at and fire_at <= refreshed.last_fire_at:
+            store.delete_pending_wake(sid, fire_at)
+        elif run.get("status") == "blocked":
+            live = (
+                refreshed is not None
+                and refreshed.claim_owner
+                and refreshed.claim_lease_until > now_ts
+            )
+            if not live:
+                store.delete_pending_wake(sid, fire_at)
+    return results
+
+
 def run_due(
     store: ScheduleStore,
     now: Optional[datetime] = None,
@@ -300,11 +372,12 @@ def run_due(
     owner: Optional[str] = None,
     active_schedule_holder: Optional[dict] = None,
 ) -> List[dict]:
-    """Run every due-and-enabled schedule ONCE. Returns the list of run dicts.
+    """Run every due slot on every enabled schedule. Returns the list of run dicts.
 
-    Each due schedule is claimed before run_auto. Failures are isolated: one
+    Each due slot is claimed before run_auto. Failures are isolated: one
     schedule raising never aborts the others. Same-minute double ticks share a
-    fire identity so at most one claim wins.
+    fire identity so at most one claim wins. ``all`` may fire several isolated
+    slots in one tick; ``skip`` / ``once`` remain zero or one.
     """
     now = now or datetime.now()
     notifier = notifier or LogNotifier()
@@ -315,21 +388,23 @@ def run_due(
     results: List[dict] = []
     for schedule in store.list(enabled_only=True):
         _mark_invalid_cron(store, schedule)
-        fire = due_fire_at(schedule, now)
-        if fire is None:
+        slots, outcome = due_fire_plan(schedule, now)
+        if not slots:
             continue
-        results.append(
-            _run_one(
-                schedule,
-                store,
-                notifier,
-                session_factory,
-                budget_factory,
-                fire_at=fire_at_timestamp(fire),
-                owner=owner,
-                active_schedule_holder=active_schedule_holder,
+        for fire in slots:
+            results.append(
+                _run_one(
+                    schedule,
+                    store,
+                    notifier,
+                    session_factory,
+                    budget_factory,
+                    fire_at=fire_at_timestamp(fire),
+                    owner=owner,
+                    active_schedule_holder=active_schedule_holder,
+                    missed_outcome=outcome,
+                )
             )
-        )
     return results
 
 
@@ -378,6 +453,7 @@ def _run_one(
     owner: str,
     active_schedule_holder: Optional[dict] = None,
     force_claim: bool = False,
+    missed_outcome: Optional[MissedFireOutcome] = None,
 ) -> dict:
     lease_seconds = claim_lease_seconds(schedule.max_seconds)
     claim = store.try_claim(
@@ -405,6 +481,10 @@ def _run_one(
 
     run_id = claim["run_id"]
     started_at = claim["started_at"]
+    missed_fields = {}
+    if missed_outcome is not None:
+        missed_fields["missed_outcome"] = missed_outcome.policy
+        missed_fields["missed_slots"] = int(missed_outcome.slots_considered)
     if active_schedule_holder is not None:
         active_schedule_holder["schedule_id"] = schedule.id
         active_schedule_holder["run_id"] = run_id
@@ -432,6 +512,7 @@ def _run_one(
                 status="refused", halt_reason=refusal, fire_at=fire_at,
                 ended_at=run["ended_at"],
                 advance_last_fire=not force_claim,
+                **missed_fields,
             ):
                 run["status"] = "superseded"
                 run["halt_reason"] = "ownership_lost"
@@ -516,6 +597,7 @@ def _run_one(
                         status=status, halt_reason=halt_reason, fire_at=fire_at,
                         ended_at=ended,
                         advance_last_fire=not force_claim,
+                        **missed_fields,
                     )
                     try:
                         notifier.notify(schedule, run)
@@ -616,6 +698,9 @@ def _run_one(
             "fire_at": fire_at,
             "run_id": run_id,
         }
+        if missed_outcome is not None:
+            run["missed_outcome"] = missed_outcome.policy
+            run["missed_slots"] = int(missed_outcome.slots_considered)
         if not store.complete_claim(
             schedule.id,
             run_id,
@@ -627,6 +712,7 @@ def _run_one(
             ended_at=ended_at,
             fire_at=fire_at,
             advance_last_fire=not force_claim,
+            **missed_fields,
         ):
             run["status"] = "superseded"
             run["halt_reason"] = "ownership_lost"
@@ -705,7 +791,17 @@ class SchedulerDaemon:
             except Exception:
                 pass
 
+    def _redeliver(self) -> List[dict]:
+        return redeliver_pending_wakes(
+            self.store,
+            notifier=self.notifier,
+            session_factory=self.session_factory,
+            budget_factory=self.budget_factory,
+            active_schedule_holder=self._active,
+        )
+
     def tick(self, now: Optional[datetime] = None) -> List[dict]:
+        self._redeliver()
         return run_due(
             self.store,
             now,
@@ -726,6 +822,10 @@ class SchedulerDaemon:
     def serve(self, tick_seconds: int = 30) -> None:
         print(f"scheduler daemon started (tick={tick_seconds}s); Ctrl-C to stop")
         try:
+            try:
+                self._redeliver()
+            except Exception as exc:
+                print(f"redeliver error (continuing): {type(exc).__name__}: {exc}")
             while not self._stop:
                 try:
                     runs = self.tick()

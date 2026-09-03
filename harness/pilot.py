@@ -2125,7 +2125,10 @@ def build_tools_schema(
     # MCP tools — use mcp_{server}__{tool} so underscores in either segment
     # round-trip (legacy mcp_{server}_{tool} still parses via fallback).
     if mcp_tools:
+        from .tool_discovery import tool_schema_is_usable
         for tool in mcp_tools:
+            if not tool_schema_is_usable(tool.input_schema, tool.name):
+                continue
             mcp_name = f"mcp_{tool.server}__{tool.name}"
             schema.append({
                 "type": "function",

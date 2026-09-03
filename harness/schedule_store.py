@@ -35,7 +35,7 @@ import uuid
 from pathlib import Path
 from typing import List, Optional, Union
 
-from .schedule_core import SCHEDULE_FIELDS, Schedule
+from .schedule_core import SCHEDULE_FIELDS, Schedule, parse_missed_policy
 from .sqlite_journal import configure_sqlite_connection, host_scoped_state_path
 
 DEFAULT_LEASE_SECONDS = 3600
@@ -216,7 +216,8 @@ class ScheduleStore:
                 claim_fire_at REAL NOT NULL DEFAULT 0,
                 claim_run_id TEXT NOT NULL DEFAULT '',
                 cancel_requested INTEGER NOT NULL DEFAULT 0,
-                timezone TEXT NOT NULL DEFAULT ''
+                timezone TEXT NOT NULL DEFAULT '',
+                missed_policy TEXT NOT NULL DEFAULT 'once'
             )
             """
         )
@@ -233,11 +234,24 @@ class ScheduleStore:
                 tokens_used INTEGER NOT NULL DEFAULT 0,
                 swarms_used INTEGER NOT NULL DEFAULT 0,
                 fire_at REAL NOT NULL DEFAULT 0,
-                owner TEXT NOT NULL DEFAULT ''
+                owner TEXT NOT NULL DEFAULT '',
+                missed_outcome TEXT NOT NULL DEFAULT '',
+                missed_slots INTEGER NOT NULL DEFAULT 0
             )
             """
         )
         self._migrate_schema()
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pending_wakes (
+                schedule_id TEXT NOT NULL,
+                fire_at REAL NOT NULL,
+                run_id TEXT NOT NULL DEFAULT '',
+                created_at REAL NOT NULL DEFAULT 0,
+                PRIMARY KEY (schedule_id, fire_at)
+            )
+            """
+        )
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_runs_sched "
             "ON schedule_runs(schedule_id, started_at)"
@@ -260,6 +274,7 @@ class ScheduleStore:
             ("cancel_requested", "INTEGER NOT NULL DEFAULT 0"),
             ("timezone", "TEXT NOT NULL DEFAULT ''"),
             ("delivery_mode", "TEXT NOT NULL DEFAULT ''"),
+            ("missed_policy", "TEXT NOT NULL DEFAULT 'once'"),
         ):
             if col not in sched_cols:
                 self._conn.execute(
@@ -272,6 +287,8 @@ class ScheduleStore:
         for col, decl in (
             ("fire_at", "REAL NOT NULL DEFAULT 0"),
             ("owner", "TEXT NOT NULL DEFAULT ''"),
+            ("missed_outcome", "TEXT NOT NULL DEFAULT ''"),
+            ("missed_slots", "INTEGER NOT NULL DEFAULT 0"),
         ):
             if col not in run_cols:
                 self._conn.execute(
@@ -296,6 +313,7 @@ class ScheduleStore:
         CronExpr.parse(schedule.cron)  # validate; raises ValueError
         # IANA deferred: persist empty timezone; evaluation is always host-local.
         schedule.timezone = validate_timezone(schedule.timezone or "")
+        schedule.missed_policy = parse_missed_policy(schedule.missed_policy)
         now = time.time()
         if not schedule.id:
             schedule.id = uuid.uuid4().hex[:8]
@@ -354,6 +372,11 @@ class ScheduleStore:
                     self._conn.execute("ROLLBACK")
                     return False
                 sched = Schedule.from_row(dict(row))
+                if not sched.claim_owner:
+                    self._conn.execute(
+                        "DELETE FROM pending_wakes WHERE schedule_id = ?",
+                        (schedule_id,),
+                    )
                 if sched.claim_owner:
                     now_ts = time.time()
                     if sched.claim_lease_until <= now_ts:
@@ -385,6 +408,10 @@ class ScheduleStore:
                             WHERE id = ?
                             """,
                             (now_ts, schedule_id),
+                        )
+                        self._conn.execute(
+                            "DELETE FROM pending_wakes WHERE schedule_id = ?",
+                            (schedule_id,),
                         )
                         self._conn.execute("COMMIT")
                         return REMOVE_STALE_RECOVERED
@@ -446,6 +473,7 @@ class ScheduleStore:
         allowed = {
             "name", "objective", "cron", "repo", "driver", "swarm_adapter",
             "max_tokens", "max_seconds", "max_swarms", "timezone",
+            "missed_policy",
         }
         updates = {k: v for k, v in fields.items() if k in allowed and v is not None}
         if not updates:
@@ -456,6 +484,8 @@ class ScheduleStore:
         if "timezone" in updates:
             # IANA deferred: only empty (host-local) is accepted.
             updates["timezone"] = validate_timezone(str(updates["timezone"]))
+        if "missed_policy" in updates:
+            updates["missed_policy"] = parse_missed_policy(updates["missed_policy"])
         cols = ", ".join(f"{k} = ?" for k in updates)
         vals = list(updates.values()) + [schedule_id]
         with self._lock:
@@ -578,6 +608,10 @@ class ScheduleStore:
                             "UPDATE schedules SET last_status = ? WHERE id = ?",
                             ("interrupted", schedule_id),
                         )
+                    self._conn.execute(
+                        "DELETE FROM pending_wakes WHERE schedule_id = ? AND run_id = ?",
+                        (schedule_id, sched.claim_run_id),
+                    )
 
                 run_id = uuid.uuid4().hex[:8]
                 self._conn.execute(
@@ -602,6 +636,14 @@ class ScheduleStore:
                     WHERE id = ?
                     """,
                     (owner, now_ts, lease_until, float(fire_at), run_id, schedule_id),
+                )
+                self._conn.execute(
+                    """
+                    INSERT OR REPLACE INTO pending_wakes
+                        (schedule_id, fire_at, run_id, created_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (schedule_id, float(fire_at), run_id, now_ts),
                 )
                 self._conn.execute("COMMIT")
             except Exception:
@@ -737,6 +779,8 @@ class ScheduleStore:
         fire_at: Optional[float] = None,
         advance_last_fire: bool = True,
         history_keep: Optional[int] = None,
+        missed_outcome: str = "",
+        missed_slots: int = 0,
     ) -> bool:
         """Atomically finish a run, release the claim, and update last_*.
 
@@ -771,15 +815,21 @@ class ScheduleStore:
                     """
                     UPDATE schedule_runs SET
                         ended_at = ?, status = ?, halt_reason = ?,
-                        cycles = ?, tokens_used = ?, swarms_used = ?
+                        cycles = ?, tokens_used = ?, swarms_used = ?,
+                        missed_outcome = ?, missed_slots = ?
                     WHERE id = ? AND status = 'running'
                     """,
                     (end_ts, status, halt_reason, int(cycles), int(tokens_used),
-                     int(swarms_used), run_id),
+                     int(swarms_used), str(missed_outcome or ""),
+                     int(missed_slots or 0), run_id),
                 )
                 if cur.rowcount != 1:
                     self._conn.execute("ROLLBACK")
                     return False
+                self._conn.execute(
+                    "DELETE FROM pending_wakes WHERE schedule_id = ? AND fire_at = ?",
+                    (schedule_id, fire_ts),
+                )
                 if advance_last_fire:
                     cur = self._conn.execute(
                         """
@@ -894,6 +944,24 @@ class ScheduleStore:
                 (schedule_id, int(limit)),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def list_pending_wakes(self) -> List[dict]:
+        """All pending wakes, oldest claim first (restart-immediate recovery)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT schedule_id, fire_at, run_id, created_at "
+                "FROM pending_wakes ORDER BY created_at ASC, fire_at ASC"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_pending_wake(self, schedule_id: str, fire_at: float) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM pending_wakes WHERE schedule_id = ? AND fire_at = ?",
+                (schedule_id, float(fire_at)),
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
 
     def close(self) -> None:
         with self._lock:

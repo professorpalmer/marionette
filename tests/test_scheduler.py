@@ -10,12 +10,13 @@ from pathlib import Path
 
 import pytest
 
-from harness.schedule_core import Schedule, fire_at_timestamp
+from harness.schedule_core import MISSED_POLICY_ALL, MISSED_POLICY_SKIP, Schedule, fire_at_timestamp
 from harness.schedule_store import ScheduleStore
 from harness.scheduler import (
     Notifier,
     SchedulerDaemon,
     check_schedule_workspace,
+    redeliver_pending_wakes,
     run_due,
     run_one_now,
 )
@@ -809,6 +810,96 @@ def test_complete_claim_false_on_refusal_returns_superseded(tmp_path):
     assert run["status"] == "superseded"
     assert run["halt_reason"] == "ownership_lost"
     assert notifier.calls == []
+
+
+def test_redeliver_after_claim_without_complete(tmp_path):
+    """Crash mid-run: pending wake is replayed once the lease is gone."""
+    store = _store(tmp_path)
+    s = _add_due(store, tmp_path, "crash-wake")
+    t0 = 1_000_000.0
+    claim = store.try_claim(
+        s.id, fire_at=fire_at_timestamp(_now()), owner="crashed",
+        lease_seconds=10, now=t0,
+    )
+    assert claim is not None
+    assert store.list_pending_wakes()
+    # Live lease must not be double-run.
+    live = redeliver_pending_wakes(
+        store, notifier=_CountingNotifier(),
+        session_factory=_session_factory(),
+        budget_factory=_budget_factory,
+        now=t0 + 5,
+    )
+    assert live == []
+    assert store.get(s.id).claim_run_id == claim["run_id"]
+    # Expired lease: replay immediately (do not wait for due math).
+    notifier = _CountingNotifier()
+    runs = redeliver_pending_wakes(
+        store, notifier=notifier,
+        session_factory=_session_factory(),
+        budget_factory=_budget_factory,
+        now=t0 + 11,
+    )
+    real = [r for r in runs if r.get("status") != "blocked"]
+    assert real and real[0]["status"] == "ok"
+    assert store.list_pending_wakes() == []
+    assert store.get(s.id).claim_owner == ""
+    assert len(notifier.calls) == 1
+
+
+def test_all_fires_multiple_run_one(tmp_path):
+    store = _store(tmp_path)
+    created = datetime(2024, 1, 1, 0, 0).timestamp()
+    s = store.add(Schedule(
+        id="", name="all-gaps", objective="o", cron="0 * * * *",
+        repo=_git_repo(tmp_path, "all-repo"),
+        missed_policy=MISSED_POLICY_ALL,
+        created_at=created, enabled_at=created,
+        last_fire_at=datetime(2024, 1, 1, 1, 0).timestamp(),
+    ))
+    now = datetime(2024, 1, 1, 4, 15)
+    runs = run_due(
+        store, now, notifier=_CountingNotifier(),
+        session_factory=_session_factory(),
+        budget_factory=_budget_factory,
+    )
+    real = [r for r in runs if r.get("status") != "blocked"]
+    assert len(real) == 3
+    assert len(store.list_runs(s.id)) == 3
+    assert store.get(s.id).last_fire_at == fire_at_timestamp(
+        datetime(2024, 1, 1, 4, 0)
+    )
+
+
+def test_skip_does_not_catch_up_missed_hour(tmp_path):
+    store = _store(tmp_path)
+    created = datetime(2024, 1, 1, 0, 0).timestamp()
+    s = store.add(Schedule(
+        id="", name="skip-gaps", objective="o", cron="0 * * * *",
+        repo=_git_repo(tmp_path, "skip-repo"),
+        missed_policy=MISSED_POLICY_SKIP,
+        created_at=created, enabled_at=created,
+        last_fire_at=datetime(2024, 1, 1, 1, 0).timestamp(),
+    ))
+    runs = run_due(
+        store, datetime(2024, 1, 1, 3, 30),
+        notifier=_CountingNotifier(),
+        session_factory=_session_factory(),
+        budget_factory=_budget_factory,
+    )
+    assert [r for r in runs if r.get("schedule_id") == s.id] == []
+    assert store.list_runs(s.id) == []
+    runs = run_due(
+        store, datetime(2024, 1, 1, 4, 0),
+        notifier=_CountingNotifier(),
+        session_factory=_session_factory(),
+        budget_factory=_budget_factory,
+    )
+    real = [r for r in runs if r.get("status") != "blocked"]
+    assert len(real) == 1
+    assert store.get(s.id).last_fire_at == fire_at_timestamp(
+        datetime(2024, 1, 1, 4, 0)
+    )
 
 
 def test_daemon_stop_releases_live_claim(tmp_path):

@@ -29,17 +29,19 @@ Timezone / DST:
     ``datetime.now()`` / ``datetime.fromtimestamp``. Per-schedule IANA
     zones (``zoneinfo.ZoneInfo``) are deferred — ``Schedule.timezone`` may
     exist as an unused store column for forward compatibility but is ignored
-    for evaluation (always empty on write). Host-local DST: spring-forward
+    for evaluation (always empty on write).     Host-local DST: spring-forward
     skips non-existent wall minutes (epoch round-trip differs); fall-back
     fires a repeated local minute at most once via minute-stable
-    ``last_fire_at`` identity. Missed windows coalesce to a single catch-up
-    fire (latest missed minute <= now), never one run per gap.
+    ``last_fire_at`` identity. Missed windows follow ``Schedule.missed_policy``:
+    ``once`` (default) coalesces to the latest missed minute; ``skip`` drops
+    strictly-past slots and only fires the current matching minute; ``all``
+    walks every real missed minute (oldest first, capped at ``STAMPEDE_CAP``).
 """
 
 import calendar
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 
 # Field bounds as (low, high) inclusive, in cron field order.
@@ -56,6 +58,30 @@ _FIELD_NAMES = ["minute", "hour", "day-of-month", "month", "day-of-week"]
 # With field jumping this bounds *candidate advances*, not wall-clock minutes.
 # 4 years of day-steps still covers a Feb-29-only schedule safely.
 _MAX_SEARCH_STEPS = 4 * 366 * 24 * 60
+
+# Missed-window policies. Default ``once`` preserves today's coalesce.
+MISSED_POLICY_SKIP = "skip"
+MISSED_POLICY_ONCE = "once"
+MISSED_POLICY_ALL = "all"
+STAMPEDE_CAP = 100
+
+
+def parse_missed_policy(value: object) -> str:
+    """Normalize a missed-window policy; unknown or empty becomes once."""
+    raw = str(value or "").strip().lower()
+    if raw in (MISSED_POLICY_SKIP, MISSED_POLICY_ONCE, MISSED_POLICY_ALL):
+        return raw
+    return MISSED_POLICY_ONCE
+
+
+@dataclass(frozen=True)
+class MissedFireOutcome:
+    """How a tick treated missed cron slots for one schedule."""
+
+    policy: str
+    slots_considered: int
+    slots_fired: int
+    skipped: bool
 
 
 def _parse_field(spec: str, low: int, high: int, name: str) -> frozenset:
@@ -333,13 +359,14 @@ def next_real_fire_after(cron: CronExpr, wall: datetime) -> datetime:
     )
 
 
-def _coalesce_latest_fire(
+def _coalesce_latest_counted(
     cron: CronExpr,
     first: datetime,
     now_min: datetime,
-) -> datetime:
+) -> Tuple[datetime, int]:
     """Walk from first missed fire to the latest real fire at or before now_min."""
     latest = first
+    count = 1
     cur = first
     for _ in range(_MAX_SEARCH_STEPS):
         try:
@@ -349,33 +376,54 @@ def _coalesce_latest_fire(
         if nxt > now_min:
             break
         latest = nxt
+        count += 1
         cur = nxt
+    return latest, count
+
+
+def _coalesce_latest_fire(
+    cron: CronExpr,
+    first: datetime,
+    now_min: datetime,
+) -> datetime:
+    """Walk from first missed fire to the latest real fire at or before now_min."""
+    latest, _count = _coalesce_latest_counted(cron, first, now_min)
     return latest
 
 
-def due_fire_at(schedule: "Schedule", now: datetime) -> Optional[datetime]:
-    """Return the minute-stable fire identity to dispatch, or None if not due.
+def _collect_missed_slots(
+    cron: CronExpr,
+    first: datetime,
+    now_min: datetime,
+    cap: int,
+) -> List[datetime]:
+    """Real fire minutes from first through now_min, oldest first, capped."""
+    slots = [first]
+    cur = first
+    limit = max(1, int(cap))
+    while len(slots) < limit:
+        try:
+            nxt = next_real_fire_after(cron, cur)
+        except ValueError:
+            break
+        if nxt > now_min:
+            break
+        slots.append(nxt)
+        cur = nxt
+    return slots
 
-    Same-minute correctness: once ``last_fire_at`` records a fire minute, a
-    later tick in that same minute is not due (``next_after`` moves forward).
 
-    Catch-up: when one or more fire windows were missed, return a single
-    coalesced fire (the latest missed minute <= now), never one run per gap.
+def _first_missed_fire(
+    schedule: "Schedule",
+    cron: CronExpr,
+    now_min: datetime,
+) -> Optional[datetime]:
+    """Earliest real missed fire minute at or before now_min, or None.
 
-    Never-run: anchor on ``enabled_at`` or ``created_at`` so a schedule that
-    missed its first window still catches up once.
-
-    Always host-local naive; ``schedule.timezone`` is ignored (IANA deferred).
+    ``last_fire_at`` is the cron-slot identity. Never-run anchors on
+    ``enabled_at`` / ``created_at``. A future anchor is ignored except that
+    the current matching minute remains due (clock-skew / test inject).
     """
-    if not schedule.enabled:
-        return None
-    try:
-        cron = CronExpr.parse(schedule.cron)
-    except ValueError:
-        return None
-
-    now_min = _as_naive_wall(now)
-
     if schedule.last_fire_at and schedule.last_fire_at > 0:
         anchor = _wall_from_epoch(schedule.last_fire_at)
         try:
@@ -384,29 +432,116 @@ def due_fire_at(schedule: "Schedule", now: datetime) -> Optional[datetime]:
             return None
         if first_missed > now_min:
             return None
-        return _coalesce_latest_fire(cron, first_missed, now_min)
+        return first_missed
 
-    # Never-run: the current matching minute is due when it exists locally.
+    current = None
     if cron.matches(now_min) and _host_wall_exists(now_min):
-        return now_min
+        current = now_min
 
-    # Catch up a missed first window once, anchored on enable/create time.
+    # Catch up a missed first window, anchored on enable/create time.
     # Ignore anchors in the future relative to ``now`` (clock skew / test inject).
     anchor_ts = schedule.enabled_at or schedule.created_at
     if anchor_ts and anchor_ts > 0:
         anchor = _wall_from_epoch(anchor_ts)
-        if floor_minute(anchor) > now_min:
-            return None
-        search_from = floor_minute(anchor) - timedelta(minutes=1)
-        try:
-            first = next_real_fire_after(cron, search_from)
-        except ValueError:
-            return None
-        if first > now_min:
-            return None
-        return _coalesce_latest_fire(cron, first, now_min)
+        if floor_minute(anchor) <= now_min:
+            search_from = floor_minute(anchor) - timedelta(minutes=1)
+            try:
+                first = next_real_fire_after(cron, search_from)
+            except ValueError:
+                first = None
+            if first is not None and first <= now_min:
+                return first
+    return current
 
-    return None
+
+def due_fire_plan(
+    schedule: "Schedule", now: datetime,
+) -> Tuple[List[datetime], MissedFireOutcome]:
+    """Slots to dispatch this tick (oldest first) plus the missed-window outcome.
+
+    Skip conceptually advances past strictly-past slots and only returns the
+    current matching minute (or nothing). Once coalesces to the latest missed
+    minute. All returns every remaining real slot, capped at ``STAMPEDE_CAP``.
+    """
+    policy = parse_missed_policy(getattr(schedule, "missed_policy", None))
+    empty = MissedFireOutcome(
+        policy=policy, slots_considered=0, slots_fired=0, skipped=False,
+    )
+    if not schedule.enabled:
+        return [], empty
+    try:
+        cron = CronExpr.parse(schedule.cron)
+    except ValueError:
+        return [], empty
+
+    now_min = _as_naive_wall(now)
+    first = _first_missed_fire(schedule, cron, now_min)
+    if first is None:
+        return [], empty
+
+    if policy == MISSED_POLICY_SKIP:
+        now_is_slot = cron.matches(now_min) and _host_wall_exists(now_min)
+        raw = _collect_missed_slots(cron, first, now_min, STAMPEDE_CAP)
+        if now_is_slot:
+            return [now_min], MissedFireOutcome(
+                policy=policy,
+                slots_considered=len(raw),
+                slots_fired=1,
+                skipped=first < now_min,
+            )
+        return [], MissedFireOutcome(
+            policy=policy,
+            slots_considered=len(raw),
+            slots_fired=0,
+            skipped=True,
+        )
+
+    if policy == MISSED_POLICY_ALL:
+        slots = _collect_missed_slots(cron, first, now_min, STAMPEDE_CAP)
+        return slots, MissedFireOutcome(
+            policy=policy,
+            slots_considered=len(slots),
+            slots_fired=len(slots),
+            skipped=False,
+        )
+
+    latest, considered = _coalesce_latest_counted(cron, first, now_min)
+    return [latest], MissedFireOutcome(
+        policy=MISSED_POLICY_ONCE,
+        slots_considered=considered,
+        slots_fired=1,
+        skipped=False,
+    )
+
+
+def due_fire_slots(schedule: "Schedule", now: datetime) -> List[datetime]:
+    """Due fire minutes for this tick, oldest first (empty if not due)."""
+    slots, _outcome = due_fire_plan(schedule, now)
+    return slots
+
+
+def due_fire_at(schedule: "Schedule", now: datetime) -> Optional[datetime]:
+    """Return one minute-stable fire identity to dispatch, or None if not due.
+
+    Same-minute correctness: once ``last_fire_at`` records a fire minute, a
+    later tick in that same minute is not due (``next_after`` moves forward).
+
+    Policy (see ``due_fire_slots``):
+      * ``once`` (default): coalesce to the latest missed minute <= now.
+      * ``skip``: None when the only due slots are strictly in the past;
+        the current matching minute still fires.
+      * ``all``: the earliest remaining slot so a single-fire caller can
+        walk catch-up one tick at a time.
+
+    Never-run: anchor on ``enabled_at`` or ``created_at`` so a schedule that
+    missed its first window still catches up (Once/All) or waits (Skip).
+
+    Always host-local naive; ``schedule.timezone`` is ignored (IANA deferred).
+    """
+    slots = due_fire_slots(schedule, now)
+    if not slots:
+        return None
+    return slots[0]
 
 
 # Production successful auto_halt reasons (exact prefix, case-insensitive).
@@ -479,6 +614,7 @@ SCHEDULE_FIELDS = [
     "timezone",
     # Opt-in busy-session inject (auto|steer|follow_up). Empty = legacy spawn.
     "delivery_mode",
+    "missed_policy",
 ]
 
 
@@ -507,6 +643,9 @@ class Schedule:
     timezone: str = ""
     # Opt-in DeliveryMode for busy target sessions. Empty keeps spawn+run_auto.
     delivery_mode: str = ""
+    # Missed-window policy: skip | once (default) | all. last_fire_at is the
+    # cron-slot identity; last_run_at is wall-clock completion.
+    missed_policy: str = MISSED_POLICY_ONCE
     # Claim / fencing fields (managed by ScheduleStore; shown by list).
     claim_owner: str = ""
     claim_at: float = 0.0
@@ -521,6 +660,7 @@ class Schedule:
         d["enabled"] = 1 if self.enabled else 0
         d["cancel_requested"] = 1 if self.cancel_requested else 0
         d["timezone"] = (self.timezone or "").strip()
+        d["missed_policy"] = parse_missed_policy(self.missed_policy)
         return d
 
     @classmethod
@@ -545,6 +685,7 @@ class Schedule:
             last_status=str(row.get("last_status") or ""),
             timezone=str(row.get("timezone") or ""),
             delivery_mode=str(row.get("delivery_mode") or ""),
+            missed_policy=parse_missed_policy(row.get("missed_policy")),
             claim_owner=str(row.get("claim_owner") or ""),
             claim_at=float(row.get("claim_at") or 0.0),
             claim_lease_until=float(row.get("claim_lease_until") or 0.0),

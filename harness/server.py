@@ -2781,6 +2781,19 @@ class Handler(BaseHTTPRequestHandler):
         if not self._token_ok() and not self._legacy_stream_token_ok(u):
             return self._send(403, json.dumps({"error": "missing or bad token"}))
         q = parse_qs(u.query)
+        path = u.path
+        if (
+            path.startswith("/api/jobs/")
+            and path.endswith("/events")
+            and path != "/api/jobs/events"
+        ):
+            job_id = path[len("/api/jobs/"):-len("/events")].strip("/")
+            if job_id and "/" not in job_id:
+                q = dict(q)
+                q.setdefault("job_id", [job_id])
+                route = _get_routes().get("/api/jobs/events")
+                if route is not None:
+                    return route(self, u, q)
         route = _get_routes().get(u.path)
         if route is None:
             return self._send(404, json.dumps({"error": "not found"}))
@@ -3192,6 +3205,12 @@ def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False) -> Non
                         pass
         except Exception:
             pass
+
+    try:
+        from .backend_restart_signal import record_boot_restart_outcome
+        record_boot_restart_outcome()
+    except Exception as e:
+        _diag("server.boot_restart_outcome", e)
 
     # allow quick restarts without TIME_WAIT blocking the bind. POSIX-only:
     # on Windows SO_REUSEADDR means "two live sockets may bind the same port",

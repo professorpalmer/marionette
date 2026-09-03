@@ -9,6 +9,7 @@ from ..schedule_core import (
     CronExpr,
     Schedule,
     next_real_fire_after,
+    parse_missed_policy,
     timezone_mode,
 )
 from ..schedule_store import (
@@ -64,6 +65,7 @@ def _schedule_payload(schedule: Schedule) -> Dict[str, Any]:
         "last_fire_at": schedule.last_fire_at,
         "created_at": schedule.created_at,
         "enabled_at": schedule.enabled_at,
+        "missed_policy": parse_missed_policy(schedule.missed_policy),
         "next_fires": _next_fire_previews(schedule),
     }
 
@@ -149,6 +151,7 @@ def post_schedules_add(body: dict) -> tuple[int, JsonPayload]:
         max_seconds=int(body.get("max_seconds") or 0),
         max_swarms=int(body.get("max_swarms") or 0),
         timezone="",
+        missed_policy=parse_missed_policy(body.get("missed_policy")),
     )
     store = _store()
     try:
@@ -172,7 +175,7 @@ def post_schedules_update(body: dict) -> tuple[int, JsonPayload]:
     fields: Dict[str, Any] = {}
     for key in (
         "name", "objective", "cron", "repo", "driver", "swarm_adapter",
-        "max_tokens", "max_seconds", "max_swarms",
+        "max_tokens", "max_seconds", "max_swarms", "missed_policy",
     ):
         if key in body:
             fields[key] = body[key]
