@@ -709,6 +709,55 @@ test("describeMainProcessUpdate: no shell change means nothing extra to require"
   assert.equal(verdict.note, undefined);
 });
 
+test("refreshWebappNodeModules: npm ci failure does not restore Electron", async () => {
+  const calls = [];
+  const result = await bridge.refreshWebappNodeModules({
+    webappDir: "/tmp/webapp",
+    env: { PATH: "/bin" },
+    runNpm: async (args, opts) => {
+      calls.push({ kind: "npm", args, cwd: opts.cwd });
+      return { code: 1, tail: "npm ERR! peer" };
+    },
+    runNode: async (args, opts) => {
+      calls.push({ kind: "node", args, cwd: opts.cwd });
+      return { code: 0, tail: "" };
+    },
+  });
+  assert.deepEqual(result, { ok: false, error: "npm ERR! peer" });
+  assert.deepEqual(calls, [{ kind: "npm", args: ["ci"], cwd: "/tmp/webapp" }]);
+});
+
+test("refreshWebappNodeModules: Electron restore failure blocks relaunch", async () => {
+  const calls = [];
+  const result = await bridge.refreshWebappNodeModules({
+    webappDir: "/tmp/webapp",
+    env: { PATH: "/bin" },
+    runNpm: async (args, opts) => {
+      calls.push({ kind: "npm", args, cwd: opts.cwd });
+      return { code: 0, tail: "" };
+    },
+    runNode: async (args, opts) => {
+      calls.push({ kind: "node", args, cwd: opts.cwd });
+      return { code: 1, tail: "Cannot find module 'electron'" };
+    },
+  });
+  assert.deepEqual(result, { ok: false, error: "Cannot find module 'electron'" });
+  assert.deepEqual(calls, [
+    { kind: "npm", args: ["ci"], cwd: "/tmp/webapp" },
+    { kind: "node", args: bridge.ELECTRON_RUNTIME_RESTORE_ARGS, cwd: "/tmp/webapp" },
+  ]);
+  assert.deepEqual(bridge.ELECTRON_RUNTIME_RESTORE_ARGS, ["-e", "require('electron')"]);
+});
+
+test("refreshWebappNodeModules: successful ci then restore is ok", async () => {
+  const result = await bridge.refreshWebappNodeModules({
+    webappDir: "/tmp/webapp",
+    runNpm: async () => ({ code: 0, tail: "" }),
+    runNode: async () => ({ code: 0, tail: "" }),
+  });
+  assert.deepEqual(result, { ok: true });
+});
+
 test("emptyApplyPlanResult: authoritative no-update is a no_update code", () => {
   const result = bridge.emptyApplyPlanResult({
     gitResult: { available: false, behind: 0 },
