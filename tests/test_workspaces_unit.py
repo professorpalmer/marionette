@@ -4,6 +4,7 @@ API peel tests mock this module; these exercise the real git-backed helpers.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -33,6 +34,31 @@ def _init_repo(tmp_path: Path, *, branch: str = "main") -> Path:
     _git(repo, "add", "README.md")
     _git(repo, "commit", "-qm", "initial")
     return repo
+
+
+def test_list_workspaces_stays_clean_when_commit_used_autocrlf(tmp_path):
+    """Wiping system/global gitconfig drops autocrlf and dirties Windows trees."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def run(*args: str) -> None:
+        subprocess.run(
+            ["git", "-C", str(repo), "-c", "core.autocrlf=true", *args],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=os.environ.copy(),
+        )
+
+    run("init", "-q", "-b", "main")
+    run("config", "user.name", "Test")
+    run("config", "user.email", "t@example.com")
+    (repo / "README.md").write_text("hello\n", encoding="utf-8")
+    run("add", "README.md")
+    run("commit", "-qm", "initial")
+    rows = list_workspaces(str(repo))
+    assert rows
+    assert rows[0]["dirty"] is False
 
 
 def test_list_workspaces_empty_without_repo():

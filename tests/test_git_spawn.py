@@ -7,23 +7,23 @@ from harness.git_spawn import git_extra_args, git_spawn_env
 from harness.workspaces import _git
 
 
-def test_git_spawn_env_sets_nosystem_and_null_global():
-    env = git_spawn_env()
-    assert env["GIT_CONFIG_NOSYSTEM"] == "1"
-    assert env["GIT_CONFIG_GLOBAL"] in {"/dev/null", "NUL", "nul"}
-
-
-def test_git_spawn_env_copies_base_and_overrides_inherited_keys():
+def test_git_spawn_env_copies_base_and_keeps_inherited_gitconfig():
     env = git_spawn_env(
         {
             "PATH": "/bin",
             "GIT_CONFIG_NOSYSTEM": "0",
-            "GIT_CONFIG_GLOBAL": "/tmp/evil.gitconfig",
+            "GIT_CONFIG_GLOBAL": "/tmp/user.gitconfig",
         }
     )
     assert env["PATH"] == "/bin"
-    assert env["GIT_CONFIG_NOSYSTEM"] == "1"
-    assert env["GIT_CONFIG_GLOBAL"] in {"/dev/null", "NUL", "nul"}
+    assert env["GIT_CONFIG_NOSYSTEM"] == "0"
+    assert env["GIT_CONFIG_GLOBAL"] == "/tmp/user.gitconfig"
+
+
+def test_git_spawn_env_does_not_wipe_system_or_global_gitconfig():
+    env = git_spawn_env({"PATH": "/bin"})
+    assert "GIT_CONFIG_NOSYSTEM" not in env
+    assert "GIT_CONFIG_GLOBAL" not in env
 
 
 def test_git_spawn_env_never_raises_on_unusable_base():
@@ -35,8 +35,7 @@ def test_git_spawn_env_never_raises_on_unusable_base():
             raise RuntimeError("nope")
 
     env = git_spawn_env(_Boom())  # type: ignore[arg-type]
-    assert env["GIT_CONFIG_NOSYSTEM"] == "1"
-    assert env["GIT_CONFIG_GLOBAL"] in {"/dev/null", "NUL", "nul"}
+    assert env == {}
 
 
 def test_git_extra_args_disable_hooks_fsmonitor_and_help_alias():
@@ -58,6 +57,6 @@ def test_workspaces_git_passes_hooks_path_neutralize():
     pairs = list(zip(argv, argv[1:]))
     assert ("-c", "core.hooksPath=") in pairs
     assert argv[-2:] == ["status", "--porcelain"]
-    env = mocked.call_args.kwargs["env"]
-    assert env["GIT_CONFIG_NOSYSTEM"] == "1"
-    assert env["GIT_CONFIG_GLOBAL"] in {"/dev/null", "NUL", "nul"}
+    env = mocked.call_args.kwargs.get("env") or {}
+    assert env.get("GIT_CONFIG_NOSYSTEM") != "1"
+    assert env.get("GIT_CONFIG_GLOBAL") not in {"/dev/null", "NUL", "nul"}

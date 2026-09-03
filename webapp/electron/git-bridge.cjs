@@ -11,18 +11,6 @@ const {
   loadWorkspaceAllowedRoots,
 } = require("./path-confine.cjs");
 
-function gitNullGlobalConfig() {
-  return process.platform === "win32" ? "NUL" : "/dev/null";
-}
-
-function gitSpawnEnv() {
-  return {
-    ...process.env,
-    GIT_CONFIG_NOSYSTEM: "1",
-    GIT_CONFIG_GLOBAL: gitNullGlobalConfig(),
-  };
-}
-
 const GIT_EXTRA_ARGS = [
   "-c", "core.hooksPath=",
   "-c", "core.fsmonitor=",
@@ -35,7 +23,7 @@ function git(repo, args) {
     execFile(
       "git",
       ["-C", repo, ...GIT_EXTRA_ARGS, ...args],
-      { maxBuffer: 10_000_000, windowsHide: true, env: gitSpawnEnv() },
+      { maxBuffer: 10_000_000, windowsHide: true },
       (err, stdout, stderr) => {
         if (err) return resolve({ ok: false, error: stderr || String(err) });
         resolve({ ok: true, out: stdout });

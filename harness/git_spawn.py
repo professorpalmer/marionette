@@ -1,9 +1,10 @@
-"""Neutralize inherited git config on dest-repo git spawns.
+"""Neutralize dest-repo git hooks and fsmonitor on dest spawns.
 
 Path confinement is not enough: ``git -C repo`` still reads that repo's
-``.git/config`` (aliases, hooksPath, fsmonitor, diff.external) plus
-system/global gitconfig. Dest spawns copy git_spawn_env and prefix
-git_extra_args. Never raises.
+``.git/config`` (aliases, hooksPath, fsmonitor, diff.external). Dest
+spawns prefix ``git_extra_args``. Do not wipe system/global gitconfig —
+that drops Windows ``core.autocrlf`` and makes a just-committed tree
+look dirty. Never raises.
 """
 from __future__ import annotations
 
@@ -22,19 +23,12 @@ _GIT_EXTRA_ARGS = (
 )
 
 
-def _null_gitconfig() -> str:
-    return "NUL" if os.name == "nt" else "/dev/null"
-
-
 def git_spawn_env(base: Optional[Mapping[str, str]] = None) -> dict:
-    """Copy ``base`` (default ``os.environ``) and pin system/global gitconfig off."""
+    """Copy ``base`` (default ``os.environ``) for dest git spawns."""
     try:
-        env = dict(os.environ if base is None else base)
+        return dict(os.environ if base is None else base)
     except Exception:
-        env = {}
-    env["GIT_CONFIG_NOSYSTEM"] = "1"
-    env["GIT_CONFIG_GLOBAL"] = _null_gitconfig()
-    return env
+        return {}
 
 
 def git_extra_args() -> Tuple[str, ...]:
