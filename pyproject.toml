@@ -11,7 +11,7 @@ dependencies = [
     "pypdf",
     # Runtime ownership: a standalone `pip install pm-harness` must pull the
     # pinned Puppetmaster bridge. Desktop/Electron still re-checks the same pin.
-    "puppetmaster-ai==1.22.44",
+    "puppetmaster-ai==1.22.45",
 ]
 
 [project.scripts]
