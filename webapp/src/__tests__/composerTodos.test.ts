@@ -89,6 +89,27 @@ describe("composerTodos", () => {
     expect([...litTodoContents(snapshot, liveJobTodoLabels(jobs, "sess-1"))]).toEqual(["hosted pari"]);
   });
 
+  it("lights a matching in_progress todo when a live job correlates", () => {
+    const jobs = [
+      {
+        id: "j1",
+        goal: "nested todo lighting",
+        status: "running",
+        session_id: "sess-1",
+        tasks: [{ id: "t1", role: "explore", instruction: "hosted pari service", status: "running" }],
+      },
+    ] as Job[];
+    const snapshot: SessionTodoSnapshot = {
+      phases: [
+        {
+          name: "WP-02",
+          tasks: [task("hosted pari", "in_progress"), task("unrelated cutover", "pending")],
+        },
+      ],
+    };
+    expect([...litTodoContents(snapshot, liveJobTodoLabels(jobs, "sess-1"))]).toEqual(["hosted pari"]);
+  });
+
   it("keeps lit pending todos in the folded viewport", () => {
     const tasks = [
       task("old-1", "completed"),
