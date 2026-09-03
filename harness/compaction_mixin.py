@@ -1040,7 +1040,8 @@ class CompactionContextMixin:
         """Return inject section plus optional transcript cite payload.
 
         Lives here so ``_send_locked_inner`` does not grow past its fence.
-        Empty FTS stays empty (no cite). Never raises.
+        Inject only a real hit (fts or recap_plan) with snippets.
+        Otherwise return empty section and no cite. Never raises.
         """
         if append_only:
             return "", None
@@ -1049,13 +1050,13 @@ class CompactionContextMixin:
             section = cite.get("section") or ""
             snippets = list(cite.get("snippets") or [])
             route = str(cite.get("route") or "empty")
-            if snippets and route != "empty":
+            if route in ("fts", "recap_plan") and snippets:
                 return section, {
                     "route": route,
                     "snippets": snippets,
                     "query": (user_message or "")[:120],
                 }
-            return section, None
+            return "", None
         except Exception:
             return "", None
 

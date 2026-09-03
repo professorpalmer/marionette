@@ -429,3 +429,102 @@ def test_vault_redacts_secrets(tmp_path):
     )
     blob = "\n".join(hits)
     assert "sk-abcdefghijklmnopqrstuvwx" not in blob
+
+
+def test_vault_rae_no_overlap_empty_query_and_overlapping_cite(tmp_path):
+    """Fail-closed retrieve: inject only when topic tokens overlap."""
+    buried = [
+        {
+            "role": "user",
+            "content": (
+                "please keep this docs only: ship the canary to the spare "
+                "region before Friday."
+            ),
+        },
+        {"role": "assistant", "content": "Noted the ship plan."},
+    ]
+    index_elided_messages(str(tmp_path), "sess-rae", buried)
+
+    miss = build_turn_vault_cite(
+        str(tmp_path),
+        "sess-rae",
+        "please keep the changelog warmer",
+    )
+    assert miss["route"] == "empty"
+    assert miss["snippets"] == []
+    assert miss["section"] == ""
+
+    empty_q = build_turn_vault_cite(str(tmp_path), "sess-rae", "")
+    assert empty_q["route"] == "empty"
+    assert empty_q["snippets"] == []
+    assert empty_q["section"] == ""
+    empty_retrieve = retrieve_vault_result(str(tmp_path), "sess-rae", "")
+    assert empty_retrieve["route"] == "empty"
+    assert empty_retrieve["hits"] == []
+
+    hit = build_turn_vault_cite(
+        str(tmp_path),
+        "sess-rae",
+        "Where does the canary ship before Friday?",
+    )
+    assert hit["route"] == "fts"
+    assert any("spare region" in snippet.lower() for snippet in hit["snippets"])
+    assert VAULT_HEADING in hit["section"]
+
+
+def test_vault_recap_without_plan_hits_stays_empty(tmp_path):
+    """Recap does not fall through to FTS when no plan chunk exists."""
+    index_elided_messages(
+        str(tmp_path),
+        "sess-noplan",
+        [{
+            "role": "tool",
+            "content": (
+                "We decided earlier to keep omega-cache-token-9f3a "
+                "in the measurement log."
+            ),
+        }],
+    )
+    recap = retrieve_vault_result(
+        str(tmp_path),
+        "sess-noplan",
+        "Remind me what we decided earlier.",
+    )
+    assert recap["route"] == "empty"
+    assert recap["hits"] == []
+
+
+def test_turn_vault_context_never_returns_section_without_cite():
+    from harness.compaction_mixin import CompactionContextMixin
+
+    class _Harness(CompactionContextMixin):
+        def __init__(self):
+            self._cite = {"section": "", "route": "empty", "snippets": []}
+
+        def _build_turn_vault_cite(self, user_message):
+            return self._cite
+
+    h = _Harness()
+    h._cite = {"section": "### leftover", "route": "empty", "snippets": ["x"]}
+    assert h._turn_vault_context("ask", False) == ("", None)
+
+    h._cite = {"section": "### leftover", "route": "fts", "snippets": []}
+    assert h._turn_vault_context("ask", False) == ("", None)
+
+    h._cite = {"section": "### vault", "route": "fts", "snippets": ["omega"]}
+    section, cite = h._turn_vault_context("ask", False)
+    assert section == "### vault"
+    assert cite["route"] == "fts"
+    assert cite["snippets"] == ["omega"]
+
+    h._cite = {
+        "section": "### vault",
+        "route": "recap_plan",
+        "snippets": ["plan"],
+    }
+    section, cite = h._turn_vault_context("ask", False)
+    assert section == "### vault"
+    assert cite["route"] == "recap_plan"
+
+    assert h._turn_vault_context("ask", True) == ("", None)
+

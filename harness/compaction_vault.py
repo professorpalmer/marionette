@@ -387,6 +387,18 @@ def _fit_budget(hits: List[str], budget: int) -> List[str]:
     return out
 
 
+def _hits_overlapping_query(query: str, hits: List[str]) -> List[str]:
+    """Keep hits that share at least one topic token with the ask."""
+    query_topics = topic_tokens(query)
+    if not query_topics:
+        return []
+    kept: List[str] = []
+    for hit in hits:
+        if topic_tokens(hit) & query_topics:
+            kept.append(hit)
+    return kept
+
+
 def retrieve_vault_chunks(
     state_dir: str,
     session_id: str,
@@ -411,9 +423,16 @@ def retrieve_vault_result(
     limit: int = _DEFAULT_HIT_LIMIT,
     char_budget: int = _DEFAULT_CHAR_BUDGET,
 ) -> dict:
-    """Retrieve plus the route that selected the hits. Never raises."""
+    """Retrieve plus the route that selected the hits. Never raises.
+
+    Fail-closed: empty ask, zero topic overlap, or recap without an
+    overlapping plan hit returns route=empty. FTS is not a fallback
+    when recap has no plan hits.
+    """
     empty = {"hits": [], "route": "empty"}
     if not state_dir or not vault_enabled():
+        return empty
+    if not (query or "").strip():
         return empty
     sid = _safe_session_id(session_id)
     match = vault_match_query(query)
@@ -431,10 +450,16 @@ def retrieve_vault_result(
     except Exception:
         return empty
     recap = is_recap_ask(query)
-    if recap and plan_hits:
-        return {"hits": _fit_budget(plan_hits, budget), "route": "recap_plan"}
-    if fts_hits:
-        return {"hits": _fit_budget(fts_hits, budget), "route": "fts"}
+    if recap:
+        kept_plan = _hits_overlapping_query(query, plan_hits)
+        if kept_plan:
+            return {"hits": _fit_budget(kept_plan, budget), "route": "recap_plan"}
+        return empty
+    if not match:
+        return empty
+    kept_fts = _hits_overlapping_query(query, fts_hits)
+    if kept_fts:
+        return {"hits": _fit_budget(kept_fts, budget), "route": "fts"}
     return empty
 
 
