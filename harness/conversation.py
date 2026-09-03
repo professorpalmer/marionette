@@ -771,6 +771,13 @@ class ConversationalSession(
         self._on_wiki_ingest = None
         from .tool_discovery import ToolCatalog
         self._tool_catalog = ToolCatalog()
+        # Frozen tools[] for prompt-cache prefix stability. First successful
+        # visible_schema build is reused until an explicit hatch (manage_mcp
+        # add/remove/reload, /reload-mcp, discovery_enabled toggle) or the
+        # activated set changes (search_tools / lazy activate).
+        self._tools_schema_snapshot: Optional[list] = None
+        self._tools_schema_discovery: Optional[bool] = None
+        self._tools_schema_activated: Optional[frozenset] = None
         self._checkpoints = CheckpointStore(config.repo)
         self._session_actions = SessionActionStore()
         self._steer_queue = SteerQueueView(self._session_actions)
@@ -2116,14 +2123,69 @@ class ConversationalSession(
         lines.append("ASSISTANT:")
         return "\n\n".join(lines)
 
+    def _invalidate_tools_schema(self) -> None:
+        """Drop the frozen tools[] snapshot so the next build refreshes."""
+        self._tools_schema_snapshot = None
+        self._tools_schema_discovery = None
+        self._tools_schema_activated = None
+
+    def reload_mcp_tools(self) -> dict:
+        """Reconnect configured MCP servers and drop the frozen tools[] snapshot.
+
+        User hatch for ``/reload-mcp``. Conversation-scoped: the next send
+        rebuilds visible tools from live discovery. Does not freeze for the
+        process lifetime.
+        """
+        report: dict = {}
+        mcp = getattr(self, "_mcp", None)
+        if mcp is not None:
+            names: list = []
+            try:
+                cfg_fn = getattr(mcp, "effective_config", None)
+                cfg = cfg_fn() if callable(cfg_fn) else {}
+                if isinstance(cfg, dict):
+                    names = list(cfg)
+            except Exception:
+                names = []
+            refresh = getattr(mcp, "refresh_server", None)
+            if callable(refresh):
+                for name in names:
+                    try:
+                        tools = refresh(name)
+                        report[name] = len(tools) if tools is not None else 0
+                    except Exception as exc:
+                        report[name] = "error: %s" % exc
+        self._invalidate_tools_schema()
+        return {"ok": True, "reloaded": True, "servers": report}
+
     def _build_visible_tools_schema(self) -> list:
+        from .tool_discovery import discovery_enabled
+
+        enabled = discovery_enabled()
+        try:
+            activated = frozenset(self._tool_catalog.activated)
+        except Exception:
+            activated = frozenset()
+        snap = getattr(self, "_tools_schema_snapshot", None)
+        if snap is not None:
+            if (
+                getattr(self, "_tools_schema_discovery", None) == enabled
+                and getattr(self, "_tools_schema_activated", None) == activated
+            ):
+                return snap
+            self._invalidate_tools_schema()
         mcp_tools = self._mcp.discovered_tools() if self._mcp else None
-        return self._tool_catalog.visible_schema(
+        schema = self._tool_catalog.visible_schema(
             mcp_tools=mcp_tools,
             no_delegation=getattr(self.config, "no_delegation", False),
             browser_enabled=getattr(self.config, "browser_enabled", True),
             profile=getattr(self, "_task_profile", None) or None,
         )
+        if schema:
+            self._tools_schema_snapshot = schema
+            self._tools_schema_discovery = enabled
+            self._tools_schema_activated = activated
+        return schema
 
     def _context_usage_prefix_tokens(self) -> dict:
         """Token estimates for standing prefix categories (excludes tools)."""

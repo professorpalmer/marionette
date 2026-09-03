@@ -10,7 +10,7 @@ URL server is started — unchanged by this peel.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
 from ..mcp_manager import CATALOG
 from .redaction import redact_secret_text
@@ -21,11 +21,23 @@ def _lifecycle_error(exc: BaseException) -> str:
     return redact_secret_text(str(exc))
 
 
+def _fire_tools_changed(svc: "McpServices") -> None:
+    """Hatch: drop the conversation tools[] snapshot after MCP lifecycle."""
+    cb = getattr(svc, "on_tools_changed", None)
+    if not callable(cb):
+        return
+    try:
+        cb()
+    except Exception:
+        pass
+
+
 @dataclass
 class McpServices:
     """Explicit deps for MCP HTTP handlers (injected by ``server.py``)."""
 
     mcp: Any
+    on_tools_changed: Optional[Any] = None
 
 
 def get_mcp(svc: McpServices) -> tuple[int, dict]:
@@ -64,14 +76,17 @@ def post_mcp_add(body: dict, svc: McpServices) -> tuple[int, dict]:
     svc.mcp.save_server(name, server)
     try:
         tools = svc.mcp.start_server(name)
+        _fire_tools_changed(svc)
         return 200, {"ok": True, "tools": len(tools)}
     except Exception as e:
+        _fire_tools_changed(svc)
         return 200, {"ok": False, "error": _lifecycle_error(e)}
 
 
 def post_mcp_remove(body: dict, svc: McpServices) -> tuple[int, dict]:
     """POST /api/mcp/remove — drop config and stop the server."""
     svc.mcp.remove_server(body.get("name", ""))
+    _fire_tools_changed(svc)
     return 200, {"ok": True}
 
 
@@ -79,6 +94,7 @@ def post_mcp_start(body: dict, svc: McpServices) -> tuple[int, dict]:
     """POST /api/mcp/start — start a configured server."""
     try:
         tools = svc.mcp.start_server(body.get("name", ""))
+        _fire_tools_changed(svc)
         return 200, {"ok": True, "tools": len(tools)}
     except Exception as e:
         return 200, {"ok": False, "error": _lifecycle_error(e)}
@@ -87,6 +103,7 @@ def post_mcp_start(body: dict, svc: McpServices) -> tuple[int, dict]:
 def post_mcp_stop(body: dict, svc: McpServices) -> tuple[int, dict]:
     """POST /api/mcp/stop — stop a running server."""
     svc.mcp.stop_server(body.get("name", ""))
+    _fire_tools_changed(svc)
     return 200, {"ok": True}
 
 
@@ -94,8 +111,10 @@ def post_mcp_refresh(body: dict, svc: McpServices) -> tuple[int, dict]:
     """POST /api/mcp/refresh — force reconnect (stop then start)."""
     try:
         tools = svc.mcp.refresh_server(body.get("name", ""))
+        _fire_tools_changed(svc)
         return 200, {"ok": True, "tools": len(tools)}
     except Exception as e:
+        _fire_tools_changed(svc)
         return 200, {"ok": False, "error": _lifecycle_error(e)}
 
 

@@ -864,9 +864,34 @@ class SendLoopMixin:
         from .conversation import ConvEvent
         self._state = "thinking"
         try:
+            if not resume and (user_message or "").strip().lower() == "/reload-mcp":
+                yield from self._dispatch_reload_mcp()
+                return
             yield from self._send_locked_inner(user_message, images=images, plan=plan, resume=resume)
         finally:
             self._state = "idle"
+
+    def _dispatch_reload_mcp(self) -> Iterator[Any]:
+        """User hatch: reconnect MCP and drop the frozen tools[] snapshot."""
+        from .conversation import ConvEvent
+
+        try:
+            payload = self.reload_mcp_tools()
+            text = "Reloaded MCP tools schema."
+            servers = payload.get("servers") or {}
+            if servers:
+                bits = ["%s=%s" % (name, servers[name]) for name in servers]
+                text += " " + ", ".join(bits)
+        except Exception as exc:
+            inv = getattr(self, "_invalidate_tools_schema", None)
+            if callable(inv):
+                try:
+                    inv()
+                except Exception:
+                    pass
+            text = "Reloaded MCP tools schema (refresh failed: %s)." % exc
+        yield ConvEvent("message", {"role": "assistant", "text": text})
+        yield ConvEvent("assistant_done", {"turns": 0, "swarms": 0})
 
     def _get_codegraph_context(self, query: str) -> str:
         """Build a relevance-ranked CodeGraph context block for ``query``.

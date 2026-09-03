@@ -274,10 +274,12 @@ def test_post_mcp_refresh_handler(tmp_path):
     cfgp = tmp_path / "mcp.json"
     m = McpManager(config_path=str(cfgp))
     m.save_server("fake", {"command": sys.executable, "args": [FAKE]})
-    svc = McpServices(mcp=m)
+    hatches: list = []
+    svc = McpServices(mcp=m, on_tools_changed=lambda: hatches.append(True))
     try:
         code, body = post_mcp_refresh({"name": "fake"}, svc)
         assert code == 200 and body["ok"] and body["tools"] == 2
+        assert hatches, "refresh must hatch the frozen tools[] snapshot"
         code, body = post_mcp_refresh({"name": "missing"}, svc)
         assert code == 200 and not body["ok"] and "error" in body
     finally:
