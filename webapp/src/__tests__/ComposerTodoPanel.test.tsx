@@ -52,4 +52,17 @@ describe("ComposerTodoPanel", () => {
     expect(screen.queryByText("TODO 0/1")).not.toBeInTheDocument();
     expect(screen.queryByText("arena leftover")).not.toBeInTheDocument();
   });
+
+  it("does not present durable in-progress plan state as a running job", () => {
+    publishSessionTodos({
+      phases: [
+        { name: "Implement", tasks: [{ content: "rewrite the DAG", status: "in_progress" }] },
+      ],
+    }, "sess-plan");
+
+    render(<ComposerTodoPanel sessionId="sess-plan" />);
+
+    const taskRow = screen.getByText("rewrite the DAG").parentElement;
+    expect(taskRow?.querySelector("svg")?.classList.contains("animate-spin")).toBe(false);
+  });
 });
