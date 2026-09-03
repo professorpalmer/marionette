@@ -3546,6 +3546,7 @@ class ConversationalSession(
         writes. Session-level Stop quarantine is enforced by callers of the
         automatic apply path; this method only checks the per-job Event so
         intentional ``apply_review`` after Stop still works for held patches.
+        Read-only local-job roles (analysis/QA) are refused before ``git apply``.
         """
         import os
         import tempfile
@@ -3563,6 +3564,13 @@ class ConversationalSession(
                     )
             except Exception:
                 pass
+            from .local_job_artifacts import is_read_only_job_role
+
+            job = (getattr(self, "_local_jobs", None) or {}).get(job_id) or {}
+            role = job.get("role") if isinstance(job, dict) else ""
+            if is_read_only_job_role(role):
+                self._last_checkpoint_id = None
+                return False, [], "analysis/QA role cannot write"
 
         if not self.config.repo or not os.path.exists(self.config.repo):
             self._last_checkpoint_id = None

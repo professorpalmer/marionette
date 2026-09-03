@@ -24,6 +24,7 @@ BOOKKEEPING_ARTIFACT_TYPES = frozenset({
 # Job roles that can only ever produce analysis, never a patch.
 READ_ONLY_JOB_ROLES = frozenset({
     "analysis", "review", "explore", "read_only", "readonly", "audit", "search",
+    "qa",
 })
 
 # Terminal artifact types.
