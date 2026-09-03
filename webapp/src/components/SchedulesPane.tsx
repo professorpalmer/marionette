@@ -146,6 +146,16 @@ export default function SchedulesPane() {
                   next: {s.next_fires.slice(0, 2).join(", ")}
                 </div>
               )}
+              {(s.monitor_mode || s.failure_deliver === "suppress") && (
+                <div className="text-faint text-[9px] mt-1 font-mono">
+                  {[
+                    s.monitor_mode ? "monitor" : "",
+                    s.failure_deliver === "suppress" ? "fail-suppress" : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </div>
+              )}
               {expanded === s.id && (
                 <div className="mt-1.5 border-t border-edge/20 pt-1.5 space-y-0.5 max-h-24 overflow-y-auto">
                   {(history[s.id] || []).length === 0 ? (

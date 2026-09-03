@@ -38,7 +38,9 @@ from typing import List, Optional
 from .schedule_core import (
     CronExpr,
     Schedule,
+    clip_notepad,
     next_real_fire_after,
+    parse_failure_deliver,
     parse_missed_policy,
     timezone_mode,
 )
@@ -107,6 +109,9 @@ def _cmd_add(args) -> int:
         max_swarms=args.max_swarms,
         timezone="",
         missed_policy=parse_missed_policy(getattr(args, "missed_policy", None)),
+        notepad=clip_notepad(getattr(args, "notepad", None)),
+        monitor_mode=bool(getattr(args, "monitor_mode", False)),
+        failure_deliver=parse_failure_deliver(getattr(args, "failure_deliver", None)),
     )
     try:
         store.add(sched)
@@ -132,6 +137,8 @@ def _cmd_list(args) -> int:
         print(
             f"    cron={s.cron!r} tz=host-local ({mode}) "
             f"missed={parse_missed_policy(s.missed_policy)} "
+            f"fail={parse_failure_deliver(s.failure_deliver)} "
+            f"monitor={int(bool(s.monitor_mode))} "
             f"adapter={s.swarm_adapter} status={status}"
         )
         print(f"    objective: {s.objective}")
@@ -172,6 +179,12 @@ def _cmd_edit(args) -> int:
         fields["max_swarms"] = args.max_swarms
     if getattr(args, "missed_policy", None) is not None:
         fields["missed_policy"] = args.missed_policy
+    if getattr(args, "notepad", None) is not None:
+        fields["notepad"] = args.notepad
+    if getattr(args, "monitor_mode", None) is not None:
+        fields["monitor_mode"] = args.monitor_mode
+    if getattr(args, "failure_deliver", None) is not None:
+        fields["failure_deliver"] = args.failure_deliver
     if not fields:
         print(_c("31", "nothing to update; pass at least one field"))
         return 1
@@ -317,6 +330,23 @@ def _run_schedule(argv) -> int:
         default="once",
         help="missed-window policy: once (default, coalesce), skip, all",
     )
+    p_add.add_argument(
+        "--notepad",
+        default="",
+        help="small persisted note injected on later fires (cap 4k)",
+    )
+    p_add.add_argument(
+        "--monitor-mode",
+        dest="monitor_mode",
+        action="store_true",
+        help="inject last digest + notepad into the next fire prompt",
+    )
+    p_add.add_argument(
+        "--failure-deliver",
+        dest="failure_deliver",
+        default="route",
+        help="failure notice routing: route (default) or suppress",
+    )
     p_add.set_defaults(func=_cmd_add)
 
     p_list = sub.add_parser("list", help="list schedules")
@@ -336,7 +366,17 @@ def _run_schedule(argv) -> int:
     p_edit.add_argument(
         "--missed-policy", dest="missed_policy", default=None,
     )
-    p_edit.set_defaults(func=_cmd_edit)
+    p_edit.add_argument("--notepad", default=None)
+    p_edit.add_argument(
+        "--monitor-mode", dest="monitor_mode", action="store_true",
+    )
+    p_edit.add_argument(
+        "--no-monitor-mode", dest="monitor_mode", action="store_false",
+    )
+    p_edit.add_argument(
+        "--failure-deliver", dest="failure_deliver", default=None,
+    )
+    p_edit.set_defaults(func=_cmd_edit, monitor_mode=None)
 
     p_rm = sub.add_parser("remove", help="remove a schedule")
     p_rm.add_argument("id")

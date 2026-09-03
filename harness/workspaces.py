@@ -15,6 +15,8 @@ import os
 from dataclasses import dataclass, asdict
 from typing import Optional
 
+from .git_spawn import git_extra_args, git_spawn_env
+
 
 @dataclass
 class Workspace:
@@ -29,7 +31,15 @@ class Workspace:
 
 
 def _git(repo: str, *args: str, timeout: int = 15) -> tuple[int, str, str]:
-    p = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+    p = subprocess.run(
+        ["git", "-C", repo, *git_extra_args(), *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+        env=git_spawn_env(),
+    )
     return p.returncode, p.stdout.strip(), p.stderr.strip()
 
 
@@ -50,12 +60,13 @@ def _dirty_tracked_paths(repo: str) -> list[str]:
     leading porcelain space (`` M README.md`` becomes ``M README.md``).
     """
     p = subprocess.run(
-        ["git", "-C", repo, "status", "--porcelain", "-uno"],
+        ["git", "-C", repo, *git_extra_args(), "status", "--porcelain", "-uno"],
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
         timeout=15,
+        env=git_spawn_env(),
     )
     if p.returncode != 0 or not (p.stdout or "").strip():
         return []

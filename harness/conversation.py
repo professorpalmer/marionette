@@ -308,6 +308,11 @@ def load_workspace_rules(repo: Optional[str]) -> str:
 
 
 from .skill_store import SkillStore
+from .skill_retrieve import (
+    format_retrieved_skill_bodies,
+    format_skill_catalog,
+    select_skill_bodies,
+)
 from .rule_store import RuleStore
 from .memory_store import MemoryStore
 
@@ -690,10 +695,11 @@ class ConversationalSession(
             ensure_shared_browser_env()
         except Exception:
             pass
-        # self-learning: load ACTIVE skills into the pilot's system context so
-        # the loop compounds (procedural memory). Pending skills are NOT loaded.
-        # Enabled Agent Plugins v1 skills are appended alongside (namespaced);
-        # SkillStore files are never mutated by portable plugins.
+        # self-learning: catalog ACTIVE skills in the frozen prefix (name,
+        # description, slug). Bodies are retrieved per turn, not stuffed into
+        # history[0]. Pending skills are NOT cataloged. Enabled Agent Plugins
+        # v1 skills are cataloged alongside (namespaced); SkillStore files are
+        # never mutated by portable plugins.
         self._skills = SkillStore()
         system = WORKER_SYSTEM if getattr(config, "no_delegation", False) else PILOT_SYSTEM
         active = self._skills.list("active")
@@ -703,25 +709,10 @@ class ConversationalSession(
             plugin_skills = list(list_enabled_plugin_skills() or [])
         except Exception:
             plugin_skills = []
-        skill_parts = [
-            f"## Skill: {s.name}\n{s.description}\n{s.body}" for s in active
-        ]
-        skill_parts.extend(
-            f"## Skill: {s.name}\n{s.description}\n{s.body}" for s in plugin_skills
-        )
-        if skill_parts:
-            skills_block = "\n\n".join(skill_parts)
-            # Skills are distilled from PAST runs. Framed as bare knowledge they
-            # get replayed as present-tense findings ("the router still drops
-            # alternatives") with no dispatch behind them, so say plainly that
-            # they are method, not evidence.
-            system = (system + "\n\n# Learned skills (METHOD ONLY -- how to "
-                      "approach work, distilled from earlier sessions). These "
-                      "are never evidence about the current code and never "
-                      "current findings: re-verify anything you intend to "
-                      "claim against this session's own tool results, and "
-                      "report what you could not check as not verified.\n"
-                      + skills_block)
+        self._retrievable_skills = list(active) + list(plugin_skills)
+        catalog = format_skill_catalog(self._retrievable_skills)
+        if catalog:
+            system = system + "\n\n" + catalog
         # standing conventions (always-on, terse) -- distinct from task skills
         self._rules = RuleStore()
         active_rules = self._rules.list("active")
@@ -780,6 +771,13 @@ class ConversationalSession(
         self._on_wiki_ingest = None
         from .tool_discovery import ToolCatalog
         self._tool_catalog = ToolCatalog()
+        # Frozen tools[] for prompt-cache prefix stability. First successful
+        # visible_schema build is reused until an explicit hatch (manage_mcp
+        # add/remove/reload, /reload-mcp, discovery_enabled toggle) or the
+        # activated set changes (search_tools / lazy activate).
+        self._tools_schema_snapshot: Optional[list] = None
+        self._tools_schema_discovery: Optional[bool] = None
+        self._tools_schema_activated: Optional[frozenset] = None
         self._checkpoints = CheckpointStore(config.repo)
         self._session_actions = SessionActionStore()
         self._steer_queue = SteerQueueView(self._session_actions)
@@ -1061,6 +1059,11 @@ class ConversationalSession(
         # Compaction summarizer: after timeout/fail, skip LLM and use extractive
         # fallback until this monotonic deadline (Hermes-style cooldown).
         self._compaction_fail_until: float = 0.0
+        # Restore a still-live deadline from the journal. Expired → 0.
+        try:
+            self._restore_compaction_fail_until()
+        except Exception:
+            self._compaction_fail_until = 0.0
         # Latest compaction attempt diagnostic (reason code for manual compact API).
         self._last_compaction_attempt: dict = {"reason": "below_trigger"}
         # Reload any persisted provider-worker / command-job history from a
@@ -2125,14 +2128,69 @@ class ConversationalSession(
         lines.append("ASSISTANT:")
         return "\n\n".join(lines)
 
+    def _invalidate_tools_schema(self) -> None:
+        """Drop the frozen tools[] snapshot so the next build refreshes."""
+        self._tools_schema_snapshot = None
+        self._tools_schema_discovery = None
+        self._tools_schema_activated = None
+
+    def reload_mcp_tools(self) -> dict:
+        """Reconnect configured MCP servers and drop the frozen tools[] snapshot.
+
+        User hatch for ``/reload-mcp``. Conversation-scoped: the next send
+        rebuilds visible tools from live discovery. Does not freeze for the
+        process lifetime.
+        """
+        report: dict = {}
+        mcp = getattr(self, "_mcp", None)
+        if mcp is not None:
+            names: list = []
+            try:
+                cfg_fn = getattr(mcp, "effective_config", None)
+                cfg = cfg_fn() if callable(cfg_fn) else {}
+                if isinstance(cfg, dict):
+                    names = list(cfg)
+            except Exception:
+                names = []
+            refresh = getattr(mcp, "refresh_server", None)
+            if callable(refresh):
+                for name in names:
+                    try:
+                        tools = refresh(name)
+                        report[name] = len(tools) if tools is not None else 0
+                    except Exception as exc:
+                        report[name] = "error: %s" % exc
+        self._invalidate_tools_schema()
+        return {"ok": True, "reloaded": True, "servers": report}
+
     def _build_visible_tools_schema(self) -> list:
+        from .tool_discovery import discovery_enabled
+
+        enabled = discovery_enabled()
+        try:
+            activated = frozenset(self._tool_catalog.activated)
+        except Exception:
+            activated = frozenset()
+        snap = getattr(self, "_tools_schema_snapshot", None)
+        if snap is not None:
+            if (
+                getattr(self, "_tools_schema_discovery", None) == enabled
+                and getattr(self, "_tools_schema_activated", None) == activated
+            ):
+                return snap
+            self._invalidate_tools_schema()
         mcp_tools = self._mcp.discovered_tools() if self._mcp else None
-        return self._tool_catalog.visible_schema(
+        schema = self._tool_catalog.visible_schema(
             mcp_tools=mcp_tools,
             no_delegation=getattr(self.config, "no_delegation", False),
             browser_enabled=getattr(self.config, "browser_enabled", True),
             profile=getattr(self, "_task_profile", None) or None,
         )
+        if schema:
+            self._tools_schema_snapshot = schema
+            self._tools_schema_discovery = enabled
+            self._tools_schema_activated = activated
+        return schema
 
     def _context_usage_prefix_tokens(self) -> dict:
         """Token estimates for standing prefix categories (excludes tools)."""
@@ -2142,25 +2200,10 @@ class ConversationalSession(
             else ""
         )
 
-        active_skills = getattr(self, "_skills", None)
         skills_text = ""
-        skill_parts = []
-        if active_skills:
-            active = active_skills.list("active")
-            skill_parts.extend(
-                f"## Skill: {s.name}\n{s.description}\n{s.body}" for s in active
-            )
-        try:
-            from .plugin_registry import list_enabled_plugin_skills
-            for s in list_enabled_plugin_skills() or []:
-                skill_parts.append(
-                    f"## Skill: {s.name}\n{s.description}\n{s.body}"
-                )
-        except Exception:
-            pass
-        if skill_parts:
-            skills_block = "\n\n".join(skill_parts)
-            skills_text = "\n\n# Learned skills (apply when relevant)\n" + skills_block
+        catalog = format_skill_catalog(getattr(self, "_retrievable_skills", None) or [])
+        if catalog:
+            skills_text = "\n\n" + catalog
 
         rules_text_list = []
         active_rules = getattr(self, "_rules", None)
@@ -2654,6 +2697,16 @@ class ConversationalSession(
                 vault_section = self._build_turn_vault_section(user_message)
                 if vault_section:
                     parts.append(vault_section)
+            except Exception:
+                pass
+            try:
+                retrieved = select_skill_bodies(
+                    user_message,
+                    getattr(self, "_retrievable_skills", None) or [],
+                )
+                skill_section = format_retrieved_skill_bodies(retrieved)
+                if skill_section:
+                    parts.append(skill_section)
             except Exception:
                 pass
             turn_note = self._turn_budget_system_note()
@@ -3493,6 +3546,7 @@ class ConversationalSession(
         writes. Session-level Stop quarantine is enforced by callers of the
         automatic apply path; this method only checks the per-job Event so
         intentional ``apply_review`` after Stop still works for held patches.
+        Read-only local-job roles (analysis/QA) are refused before ``git apply``.
         """
         import os
         import tempfile
@@ -3510,6 +3564,13 @@ class ConversationalSession(
                     )
             except Exception:
                 pass
+            from .local_job_artifacts import is_read_only_job_role
+
+            job = (getattr(self, "_local_jobs", None) or {}).get(job_id) or {}
+            role = job.get("role") if isinstance(job, dict) else ""
+            if is_read_only_job_role(role):
+                self._last_checkpoint_id = None
+                return False, [], "analysis/QA role cannot write"
 
         if not self.config.repo or not os.path.exists(self.config.repo):
             self._last_checkpoint_id = None

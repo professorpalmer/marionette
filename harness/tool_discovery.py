@@ -566,7 +566,13 @@ class ToolCatalog:
         browser_enabled: Optional[bool] = None,
         profile: Optional[str] = None,
     ) -> List[dict]:
-        """Build the tool schema exposed to the pilot for this turn."""
+        """Build the tool schema exposed to the pilot for this turn.
+
+        ``ConversationalSession`` snapshots the first successful result and
+        reuses it on later sends until ``_invalidate_tools_schema``
+        (manage_mcp add/remove/reload, /reload-mcp, discovery_enabled
+        toggle) or the activated set changes.
+        """
         self.refresh(
             mcp_tools=mcp_tools,
             no_delegation=self._last_no_delegation if no_delegation is None else no_delegation,

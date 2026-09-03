@@ -8,7 +8,9 @@ from typing import Any, Dict, List, Optional, Union
 from ..schedule_core import (
     CronExpr,
     Schedule,
+    clip_notepad,
     next_real_fire_after,
+    parse_failure_deliver,
     parse_missed_policy,
     timezone_mode,
 )
@@ -66,6 +68,10 @@ def _schedule_payload(schedule: Schedule) -> Dict[str, Any]:
         "created_at": schedule.created_at,
         "enabled_at": schedule.enabled_at,
         "missed_policy": parse_missed_policy(schedule.missed_policy),
+        "continuity_digest": str(schedule.continuity_digest or ""),
+        "notepad": clip_notepad(schedule.notepad),
+        "monitor_mode": bool(schedule.monitor_mode),
+        "failure_deliver": parse_failure_deliver(schedule.failure_deliver),
         "next_fires": _next_fire_previews(schedule),
     }
 
@@ -152,6 +158,9 @@ def post_schedules_add(body: dict) -> tuple[int, JsonPayload]:
         max_swarms=int(body.get("max_swarms") or 0),
         timezone="",
         missed_policy=parse_missed_policy(body.get("missed_policy")),
+        notepad=clip_notepad(body.get("notepad")),
+        monitor_mode=bool(body.get("monitor_mode")),
+        failure_deliver=parse_failure_deliver(body.get("failure_deliver")),
     )
     store = _store()
     try:
@@ -176,6 +185,7 @@ def post_schedules_update(body: dict) -> tuple[int, JsonPayload]:
     for key in (
         "name", "objective", "cron", "repo", "driver", "swarm_adapter",
         "max_tokens", "max_seconds", "max_swarms", "missed_policy",
+        "notepad", "monitor_mode", "failure_deliver",
     ):
         if key in body:
             fields[key] = body[key]

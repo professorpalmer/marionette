@@ -32,6 +32,7 @@ import uuid
 from typing import TYPE_CHECKING, Any, Iterator, Optional
 
 from harness.diag import note as _diag
+from harness.git_spawn import git_extra_args, git_spawn_env
 
 if TYPE_CHECKING:
     from harness.config import HarnessConfig
@@ -685,8 +686,9 @@ def finalize_worktree_patch(wt_path: str) -> tuple[str, list[str]]:
 
     diff_args = ("diff", "--cached", "--no-color")
     p_diff = subprocess.run(
-        ["git", "-C", wt_path, *diff_args],
+        ["git", "-C", wt_path, *git_extra_args(), *diff_args],
         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
+        env=git_spawn_env(),
     )
     if p_diff.returncode != 0:
         _raise_git_failed(
@@ -696,8 +698,9 @@ def finalize_worktree_patch(wt_path: str) -> tuple[str, list[str]]:
 
     name_args = ("diff", "--cached", "--name-only")
     p_files = subprocess.run(
-        ["git", "-C", wt_path, *name_args],
+        ["git", "-C", wt_path, *git_extra_args(), *name_args],
         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
+        env=git_spawn_env(),
     )
     if p_files.returncode != 0:
         _raise_git_failed(

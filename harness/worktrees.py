@@ -14,6 +14,7 @@ from typing import Optional
 from .paths import path_within
 from .secure_files import restrict_to_owner
 from .diag import note as _diag
+from .git_spawn import git_extra_args, git_spawn_env
 
 logger = logging.getLogger("pmharness.worktrees")
 
@@ -124,7 +125,15 @@ def clear_managed_process_registry_for_tests() -> None:
 def _git(repo: str, *args: str, timeout: int = 15) -> tuple[int, str, str]:
     if not repo:
         return 1, "", "No repository configured"
-    p = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+    p = subprocess.run(
+        ["git", "-C", repo, *git_extra_args(), *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+        env=git_spawn_env(),
+    )
     return p.returncode, p.stdout.strip(), p.stderr.strip()
 
 def _is_repo(repo: str) -> bool:
@@ -702,14 +711,7 @@ def _upstream_gone_names(repo: str) -> set:
 def _prune_stale_origin_refs(repo: str) -> None:
     """Drop origin/* tracking refs GitHub already deleted (best-effort)."""
     try:
-        subprocess.run(
-            ["git", "-C", repo, "remote", "prune", "origin"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=10,
-        )
+        _git(repo, "remote", "prune", "origin", timeout=10)
     except Exception:
         pass
 
@@ -764,17 +766,10 @@ def delete_branch(
         return
     if branch == _current_branch(repo):
         return
-    proc = subprocess.run(
-        ["git", "-C", repo, "branch", "-D", branch],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=15,
-    )
-    if proc.returncode == 0:
+    rc, out, err = _git(repo, "branch", "-D", branch)
+    if rc == 0:
         return
-    err = ((proc.stderr or "") + "\n" + (proc.stdout or "")).strip()
+    err = ((err or "") + "\n" + (out or "")).strip()
     lowered = err.lower()
     if "not found" in lowered or "does not exist" in lowered or "doesn't exist" in lowered:
         return
@@ -856,14 +851,7 @@ def prune_orphan_edit_branches(repo: str) -> dict:
                 try:
                     remove_worktree(repo, wt_path, force=True)
                 except Exception:
-                    subprocess.run(
-                        ["git", "-C", repo, "worktree", "remove", "--force", wt_path],
-                        capture_output=True,
-                        text=True,
-                        encoding="utf-8",
-                        errors="replace",
-                        timeout=15,
-                    )
+                    _git(repo, "worktree", "remove", "--force", wt_path)
                     _git(repo, "worktree", "prune")
         before = _branch_exists(repo, branch)
         if not before:

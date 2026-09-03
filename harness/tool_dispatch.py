@@ -21,7 +21,7 @@ import os
 import re
 import subprocess
 import tempfile
-from typing import Any
+from typing import Any, Optional
 
 from ._exec import _puppetmaster_cmd
 from .internal_uri import InternalUriContext, InternalUriError, is_internal_uri, resolve_internal_uri
@@ -1289,10 +1289,23 @@ class ToolDispatchMixin:
         except Exception as e:
             return False, "exception", str(e)
 
+    def _refuse_read_only_role_write(self) -> Optional[tuple[bool, str, str]]:
+        """Refuse a disk write when the active job role is analysis/QA."""
+        from .local_job_artifacts import is_read_only_job_role
+
+        role = getattr(self, "job_role", "") or getattr(self, "_active_job_role", "")
+        if is_read_only_job_role(role):
+            return False, "read_only_role", "analysis/QA role cannot write"
+        return None
+
     def _do_hash_edit(self, act: PilotAction, *, write: bool = True) -> tuple[bool, str, str]:
         """Validate (and optionally apply) hash-anchored edits from act.arguments['ops']."""
         from .hash_edit import HashEditOp, apply_hash_edits, atomic_write_text, hash_edit_enabled
 
+        if write:
+            refused = self._refuse_read_only_role_write()
+            if refused is not None:
+                return refused
         if not hash_edit_enabled():
             return False, "disabled", "hash_edit is disabled (set HARNESS_HASH_EDIT=1 to enable)"
         if not self.config.repo:
@@ -1356,6 +1369,10 @@ class ToolDispatchMixin:
         failure, or ``bytes_written`` (int) on a successful write. Dry-run
         (``write=False``) returns ``0`` on success after path checks.
         """
+        if write:
+            refused = self._refuse_read_only_role_write()
+            if refused is not None:
+                return refused
         if not self.config.repo:
             return False, "repo_not_open", "No workspace directory (config.repo) is open."
         if write:
@@ -1397,6 +1414,10 @@ class ToolDispatchMixin:
 
     def _do_edit_file(self, act: PilotAction, *, write: bool = True) -> tuple[bool, str, str]:
         """Validate (and optionally apply) a unique-substring edit_file action."""
+        if write:
+            refused = self._refuse_read_only_role_write()
+            if refused is not None:
+                return refused
         if not self.config.repo:
             return False, "repo_not_open", "No workspace directory (config.repo) is open."
         if write:

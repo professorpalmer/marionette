@@ -50,6 +50,24 @@ def test_cli_history_and_edit(tmp_path, capsys):
     assert got.max_tokens == 1000
     assert got.missed_policy == "all"
 
+    rc = _run_schedule([
+        "--db", db, "edit", sid,
+        "--monitor-mode",
+        "--notepad", "watch flake rate",
+        "--failure-deliver", "suppress",
+    ])
+    assert rc == 0
+    got = store.get(sid)
+    assert got.monitor_mode is True
+    assert got.notepad == "watch flake rate"
+    assert got.failure_deliver == "suppress"
+
+    rc = _run_schedule(["--db", db, "list"])
+    assert rc == 0
+    listed = capsys.readouterr().out
+    assert "fail=suppress" in listed
+    assert "monitor=1" in listed
+
     store.record_run(sid, 1.0, 2.0, "ok", halt_reason="objective met", cycles=1)
     rc = _run_schedule(["--db", db, "history", sid, "--limit", "10"])
     assert rc == 0

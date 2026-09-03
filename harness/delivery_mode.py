@@ -9,6 +9,7 @@ Actions: run_auto | enqueue_steer | enqueue_prompt | interrupt_then_queue
 from enum import Enum
 from typing import Any, Optional, Sequence, Tuple
 
+from .schedule_core import schedule_fire_prompt
 from .session_actions import (
     ActionKind,
     DeliveryPolicy,
@@ -264,7 +265,7 @@ def deliver_schedule_to_session(
         return {"ok": False, "error": "no delivery_mode", "spawn": True}
     if not session_busy:
         return {"ok": False, "error": "session not busy", "spawn": True}
-    objective = str(getattr(schedule, "objective", "") or "").strip()
+    objective = schedule_fire_prompt(schedule).strip()
     return apply_delivery(
         session,
         objective,

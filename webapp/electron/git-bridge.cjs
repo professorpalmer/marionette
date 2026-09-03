@@ -11,12 +11,24 @@ const {
   loadWorkspaceAllowedRoots,
 } = require("./path-confine.cjs");
 
+const GIT_EXTRA_ARGS = [
+  "-c", "core.hooksPath=",
+  "-c", "core.fsmonitor=",
+  "-c", "core.fsmonitorHook=",
+  "-c", "alias.help=help",
+];
+
 function git(repo, args) {
   return new Promise((resolve) => {
-    execFile("git", ["-C", repo, ...args], { maxBuffer: 10_000_000, windowsHide: true }, (err, stdout, stderr) => {
-      if (err) return resolve({ ok: false, error: stderr || String(err) });
-      resolve({ ok: true, out: stdout });
-    });
+    execFile(
+      "git",
+      ["-C", repo, ...GIT_EXTRA_ARGS, ...args],
+      { maxBuffer: 10_000_000, windowsHide: true },
+      (err, stdout, stderr) => {
+        if (err) return resolve({ ok: false, error: stderr || String(err) });
+        resolve({ ok: true, out: stdout });
+      },
+    );
   });
 }
 

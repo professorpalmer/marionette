@@ -3888,14 +3888,22 @@ def dispatch_local_action(
         from .mcp_manager import redact_mcp_secrets
         args = act.arguments if isinstance(act.arguments, dict) else {}
         try:
+            action = str(args.get("action") or "").strip().lower()
             out = session._mcp.manage(
-                str(args.get("action") or ""),
+                action,
                 name=str(args.get("name") or act.path or ""),
                 url=str(args.get("url") or act.url or ""),
                 command=str(args.get("command") or act.command or ""),
                 args=args.get("args") if isinstance(args.get("args"), list) else None,
                 env=args.get("env") if isinstance(args.get("env"), dict) else None,
             )
+            if action in ("add", "remove", "refresh", "reload", "start", "stop"):
+                inv = getattr(session, "_invalidate_tools_schema", None)
+                if callable(inv):
+                    try:
+                        inv()
+                    except Exception:
+                        pass
             # Never echo mcp.json env/headers secrets into the transcript.
             text = _json_mcp.dumps(redact_mcp_secrets(out), indent=2)[:4000]
         except Exception as e:

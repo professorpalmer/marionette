@@ -9,15 +9,18 @@ import os
 import subprocess
 from typing import Any
 
+from .git_spawn import git_extra_args, git_spawn_env
+
 
 def _git(repo: str, *args: str, timeout: int = 30) -> tuple[int, str, str]:
     p = subprocess.run(
-        ["git", "-C", repo, *args],
+        ["git", "-C", repo, *git_extra_args(), *args],
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
         timeout=timeout,
+        env=git_spawn_env(),
     )
     return p.returncode, p.stdout, p.stderr.strip()
 

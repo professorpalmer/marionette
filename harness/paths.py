@@ -24,6 +24,8 @@ import time
 from collections import OrderedDict
 from typing import Optional
 
+from .git_spawn import git_extra_args, git_spawn_env
+
 # Cache git toplevel lookups by resolved workspace path. Nested workspaces under
 # the same clone hit this on every read_file; subprocess cost is not worth repeating.
 # Bounded + TTL so a long-lived backend that touches many workspaces cannot leak
@@ -199,12 +201,13 @@ def git_toplevel(repo: str) -> Optional[str]:
     toplevel: Optional[str] = None
     try:
         proc = subprocess.run(
-            ["git", "-C", key, "rev-parse", "--show-toplevel"],
+            ["git", "-C", key, *git_extra_args(), "rev-parse", "--show-toplevel"],
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             timeout=10,
+            env=git_spawn_env(),
         )
         if proc.returncode == 0:
             out = (proc.stdout or "").strip()

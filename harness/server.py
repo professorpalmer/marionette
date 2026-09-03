@@ -1594,10 +1594,20 @@ def _wiki_services():
     )
 
 
+def _invalidate_pilot_tools_schema() -> None:
+    """Hatch: drop the live conversation's frozen tools[] snapshot."""
+    fn = getattr(_pilot, "_invalidate_tools_schema", None)
+    if callable(fn):
+        try:
+            fn()
+        except Exception:
+            pass
+
+
 def _mcp_services():
     """Build McpServices from live server module globals (call-time lookup)."""
     from .api.mcp import McpServices
-    return McpServices(mcp=_mcp)
+    return McpServices(mcp=_mcp, on_tools_changed=_invalidate_pilot_tools_schema)
 
 
 def _plugin_services():

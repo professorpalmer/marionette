@@ -13,22 +13,23 @@ import os
 import subprocess
 from typing import Optional
 
+from .git_spawn import git_extra_args, git_spawn_env
+
 
 def _git(repo: str, *args: str, timeout: float = 8.0) -> tuple[int, str]:
     try:
+        env = git_spawn_env()
+        env["GIT_PAGER"] = "cat"
+        env["PAGER"] = "cat"
+        env["GIT_TERMINAL_PROMPT"] = "0"
         proc = subprocess.run(
-            ["git", "-C", repo, *args],
+            ["git", "-C", repo, *git_extra_args(), *args],
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
-            env={
-                **os.environ,
-                "GIT_PAGER": "cat",
-                "PAGER": "cat",
-                "GIT_TERMINAL_PROMPT": "0",
-            },
+            env=env,
         )
     except Exception:
         return 1, ""

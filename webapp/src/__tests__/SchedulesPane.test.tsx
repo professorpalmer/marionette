@@ -126,4 +126,28 @@ describe("SchedulesPane", () => {
       expect(screen.getByText(/objective met and verified/)).toBeInTheDocument();
     });
   });
+
+  it("shows monitor and fail-suppress when those policies are set", async () => {
+    getSchedules.mockResolvedValue({
+      schedules: [
+        {
+          id: "abc",
+          name: "watch",
+          objective: "check",
+          cron: "* * * * *",
+          enabled: true,
+          display_status: "ok",
+          monitor_mode: true,
+          failure_deliver: "suppress",
+        },
+      ],
+    });
+
+    render(<SchedulesPane />);
+    await waitFor(() => {
+      expect(screen.getByText("watch")).toBeInTheDocument();
+    });
+    expect(screen.getByText(/monitor/)).toBeInTheDocument();
+    expect(screen.getByText(/fail-suppress/)).toBeInTheDocument();
+  });
 });
