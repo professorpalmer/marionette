@@ -395,6 +395,26 @@ function runNpmStreamed(args, opts, onLine) {
     : runStreamed("npm", args, opts, onLine);
 }
 
+const ELECTRON_RUNTIME_RESTORE_ARGS = ["-e", "require('electron')"];
+
+/**
+ * npm ci deletes the Electron platform binary that is currently executing
+ * Marionette. Electron 44 restores it lazily when required from plain Node.
+ */
+async function refreshWebappNodeModules({
+  webappDir,
+  env,
+  onLine,
+  runNpm = runNpmStreamed,
+  runNode = (args, opts, line) => runStreamed("node", args, opts, line),
+} = {}) {
+  const npmci = await runNpm(["ci"], { cwd: webappDir, env }, onLine);
+  if (npmci.code !== 0) return { ok: false, error: npmci.tail || "npm ci failed" };
+  const electron = await runNode(ELECTRON_RUNTIME_RESTORE_ARGS, { cwd: webappDir, env }, onLine);
+  if (electron.code !== 0) return { ok: false, error: electron.tail || "Electron runtime install failed" };
+  return { ok: true };
+}
+
 function runStreamed(cmd, args, opts, onLine) {
   return new Promise((resolve) => {
     let tail = "";
@@ -680,14 +700,12 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff",
     }
     if (nodeChanged) {
       progress("deps", "Updating node dependencies", 0.7);
-      const webappDir = path.join(repoRoot, "webapp");
-      const onNodeLine = (l) => { appendUpdateLog(`[deps] ${l}`); progress("deps", "Updating node dependencies", 0.8); };
-      const npmci = await runNpmStreamed(["ci"], { cwd: webappDir, env: childEnv }, onNodeLine);
-      if (npmci.code !== 0) return { ok: false, error: npmci.tail || "npm ci failed" };
-      // npm ci removes the Electron.app executing Marionette; Electron 44
-      // restores its platform runtime lazily when required from plain Node.
-      const electron = await runStreamed("node", ["-e", "require('electron')"], { cwd: webappDir, env: childEnv }, onNodeLine);
-      if (electron.code !== 0) return { ok: false, error: electron.tail || "Electron runtime install failed" };
+      const refreshed = await refreshWebappNodeModules({
+        webappDir: path.join(repoRoot, "webapp"),
+        env: childEnv,
+        onLine: (l) => { appendUpdateLog(`[deps] ${l}`); progress("deps", "Updating node dependencies", 0.8); },
+      });
+      if (!refreshed.ok) return refreshed;
     }
 
     // Puppetmaster -- the one integral runtime dep -- ships independently of this
@@ -1035,6 +1053,8 @@ module.exports = {
   registerUpdateBridge,
   checkForUpdate,
   applyUpdate,
+  refreshWebappNodeModules,
+  ELECTRON_RUNTIME_RESTORE_ARGS,
   isTrackedSelfEditLine,
   statusPath,
   isUnmergedStatusLine,
