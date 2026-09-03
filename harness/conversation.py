@@ -1059,6 +1059,11 @@ class ConversationalSession(
         # Compaction summarizer: after timeout/fail, skip LLM and use extractive
         # fallback until this monotonic deadline (Hermes-style cooldown).
         self._compaction_fail_until: float = 0.0
+        # Restore a still-live deadline from the journal. Expired → 0.
+        try:
+            self._restore_compaction_fail_until()
+        except Exception:
+            self._compaction_fail_until = 0.0
         # Latest compaction attempt diagnostic (reason code for manual compact API).
         self._last_compaction_attempt: dict = {"reason": "below_trigger"}
         # Reload any persisted provider-worker / command-job history from a

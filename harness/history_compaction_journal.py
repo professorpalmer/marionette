@@ -3,10 +3,13 @@
 Records when the pilot replaces a block of messages with a compressed summary,
 mirroring the tool-output savings ledger pattern. Also stores conservative
 cache-read / cache-bust telemetry and USD-ready slots (never fabricated cost).
+Session-state rows persist the shared fail-until deadline and a cheap
+transcript fingerprint (count + role/content lengths, never full bodies).
 Stdlib-only; never raises on the hot path.
 """
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -45,6 +48,23 @@ CREATE INDEX IF NOT EXISTS idx_history_compactions_session
     ON compactions(session_id);
 """
 
+# Session-scoped cooldown / idle-ungrown state (one row per session_id).
+_SESSION_STATE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS session_state (
+    session_id TEXT PRIMARY KEY,
+    fail_until REAL NOT NULL DEFAULT 0,
+    transcript_fp TEXT NOT NULL DEFAULT '',
+    transcript_len INTEGER NOT NULL DEFAULT 0
+);
+"""
+
+# Best-effort additive columns for DBs created before session-state fields landed.
+_SESSION_STATE_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("fail_until", "REAL NOT NULL DEFAULT 0"),
+    ("transcript_fp", "TEXT NOT NULL DEFAULT ''"),
+    ("transcript_len", "INTEGER NOT NULL DEFAULT 0"),
+)
+
 # Best-effort additive columns for DBs created before telemetry fields landed.
 _TELEMETRY_COLUMNS: tuple[tuple[str, str], ...] = (
     ("event_kind", "TEXT NOT NULL DEFAULT 'compact'"),
@@ -57,6 +77,13 @@ _TELEMETRY_COLUMNS: tuple[tuple[str, str], ...] = (
     ("savings_pct", "REAL"),
     ("compact_policy", "TEXT"),
 )
+
+
+@dataclass(frozen=True)
+class CompactionSessionState:
+    fail_until: float = 0.0
+    transcript_fp: str = ""
+    transcript_len: int = 0
 
 
 @dataclass(frozen=True)
@@ -89,6 +116,37 @@ def _table_columns(conn: sqlite3.Connection) -> set[str]:
         return set()
 
 
+def _session_state_columns(conn: sqlite3.Connection) -> set[str]:
+    """Return current ``session_state`` column names (empty on failure)."""
+    try:
+        return {
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(session_state)").fetchall()
+        }
+    except Exception:
+        return set()
+
+
+def _ensure_session_state_schema(conn: sqlite3.Connection) -> set[str]:
+    """Create session_state and add any missing columns (never raises)."""
+    try:
+        conn.executescript(_SESSION_STATE_SCHEMA)
+    except Exception:
+        pass
+    existing = _session_state_columns(conn)
+    if not existing:
+        return existing
+    for name, decl in _SESSION_STATE_COLUMNS:
+        if name in existing:
+            continue
+        try:
+            conn.execute(f"ALTER TABLE session_state ADD COLUMN {name} {decl}")
+            existing.add(name)
+        except Exception:
+            pass
+    return existing
+
+
 def _ensure_schema(conn: sqlite3.Connection) -> set[str]:
     """Create table and add any missing telemetry columns (never raises).
 
@@ -98,6 +156,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> set[str]:
     """
     try:
         conn.executescript(_SCHEMA)
+    except Exception:
+        pass
+    try:
+        _ensure_session_state_schema(conn)
     except Exception:
         pass
     existing = _table_columns(conn)
@@ -113,6 +175,160 @@ def _ensure_schema(conn: sqlite3.Connection) -> set[str]:
             # Leave ``existing`` unchanged for this column; INSERT will omit it.
             pass
     return existing
+
+
+def _content_length(content: object) -> int:
+    """Length of a history ``content`` field without reading body text."""
+    if content is None:
+        return 0
+    if isinstance(content, str):
+        return len(content)
+    try:
+        return len(content)  # type: ignore[arg-type]
+    except Exception:
+        return 0
+
+
+def fingerprint_transcript(messages: Optional[list] = None) -> tuple[str, int]:
+    """Cheap fingerprint: message count + sha256 of role+content lengths.
+
+    Full bodies are never hashed. Failures return ``("", 0)``.
+    """
+    try:
+        rows = list(messages or [])
+    except Exception:
+        return "", 0
+    try:
+        count = len(rows)
+        hasher = hashlib.sha256()
+        hasher.update(str(count).encode("utf-8"))
+        hasher.update(b"\n")
+        for msg in rows:
+            role = ""
+            content: object = None
+            if isinstance(msg, dict):
+                role = str(msg.get("role") or "")
+                content = msg.get("content")
+            hasher.update(role.encode("utf-8", errors="replace"))
+            hasher.update(b":")
+            hasher.update(str(_content_length(content)).encode("utf-8"))
+            hasher.update(b"\n")
+        return f"{count}:{hasher.hexdigest()}", count
+    except Exception:
+        return "", 0
+
+
+def load_compaction_session_state(
+    state_dir: str,
+    session_id: str,
+) -> CompactionSessionState:
+    """Load one session-state row. Missing/corrupt data yields defaults."""
+    if not state_dir:
+        return CompactionSessionState()
+    sid = session_id or "default"
+    try:
+        path = _db_path(state_dir)
+        if not path.is_file():
+            return CompactionSessionState()
+        conn = sqlite3.connect(str(path), timeout=5.0)
+        try:
+            cols = _ensure_session_state_schema(conn)
+            if not cols:
+                return CompactionSessionState()
+            select_parts = []
+            for name in ("fail_until", "transcript_fp", "transcript_len"):
+                if name in cols:
+                    select_parts.append(name)
+                else:
+                    select_parts.append("NULL")
+            row = conn.execute(
+                f"SELECT {', '.join(select_parts)} FROM session_state "
+                f"WHERE session_id = ?",
+                (sid,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return CompactionSessionState()
+        fail_until = 0.0
+        try:
+            fail_until = float(row[0] or 0.0)
+        except Exception:
+            fail_until = 0.0
+        transcript_fp = ""
+        try:
+            if row[1] is not None:
+                transcript_fp = str(row[1])
+        except Exception:
+            transcript_fp = ""
+        transcript_len = 0
+        try:
+            transcript_len = int(row[2] or 0)
+        except Exception:
+            transcript_len = 0
+        return CompactionSessionState(
+            fail_until=fail_until,
+            transcript_fp=transcript_fp,
+            transcript_len=transcript_len,
+        )
+    except Exception:
+        return CompactionSessionState()
+
+
+def save_compaction_session_state(
+    state_dir: str,
+    session_id: str,
+    *,
+    fail_until: Optional[float] = None,
+    transcript_fp: Optional[str] = None,
+    transcript_len: Optional[int] = None,
+) -> None:
+    """UPSERT session-state fields. ``None`` keeps the existing value.
+
+    Never raises. No-ops when ``state_dir`` is empty or no field is provided.
+    """
+    if not state_dir:
+        return
+    if fail_until is None and transcript_fp is None and transcript_len is None:
+        return
+    sid = session_id or "default"
+    try:
+        current = load_compaction_session_state(state_dir, sid)
+        until = current.fail_until if fail_until is None else float(fail_until)
+        fp = current.transcript_fp if transcript_fp is None else str(transcript_fp)
+        tlen = current.transcript_len if transcript_len is None else int(transcript_len)
+        path = _db_path(state_dir)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(path), timeout=5.0)
+        try:
+            cols = _ensure_session_state_schema(conn)
+            if not cols:
+                return
+            fields = ["session_id"]
+            values: list = [sid]
+            optional = (
+                ("fail_until", until),
+                ("transcript_fp", fp),
+                ("transcript_len", tlen),
+            )
+            for name, value in optional:
+                if name in cols:
+                    fields.append(name)
+                    values.append(value)
+            placeholders = ",".join("?" * len(fields))
+            updates = [f"{name}=excluded.{name}" for name in fields if name != "session_id"]
+            sql = (
+                f"INSERT INTO session_state ({', '.join(fields)}) "
+                f"VALUES ({placeholders})"
+            )
+            if updates:
+                sql += f" ON CONFLICT(session_id) DO UPDATE SET {', '.join(updates)}"
+            conn.execute(sql, tuple(values))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
 
 
 def _coerce_savings_ratio(savings_pct: Optional[float]) -> Optional[float]:

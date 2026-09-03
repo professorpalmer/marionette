@@ -75,6 +75,7 @@ REASON_THRASH_COOLDOWN = "thrash_cooldown"
 REASON_CACHE_DEFERRED = "cache_deferred"
 REASON_RESIDUAL_OFF = "residual_off"
 REASON_WATERMARK_FENCE = "watermark_fence"
+REASON_IDLE_UNGROWN = "idle_ungrown"
 
 
 def _active_message_id(message, index: int) -> int:
@@ -336,6 +337,92 @@ class CompactionContextMixin:
         except Exception:
             pass
 
+    def _compaction_journal_session_id(self) -> str:
+        return getattr(self, "harness_session_id", None) or "default"
+
+    def _set_compaction_fail_until(self, deadline: float) -> None:
+        """Assign the shared fail-until plane and persist it. Never raises."""
+        try:
+            self._compaction_fail_until = float(deadline or 0.0)
+        except Exception:
+            try:
+                self._compaction_fail_until = 0.0
+            except Exception:
+                pass
+        try:
+            from .history_compaction_journal import save_compaction_session_state
+
+            save_compaction_session_state(
+                getattr(self, "state_dir", "") or "",
+                self._compaction_journal_session_id(),
+                fail_until=float(getattr(self, "_compaction_fail_until", 0.0) or 0.0),
+            )
+        except Exception:
+            pass
+
+    def _restore_compaction_fail_until(self, *, only_if_unset: bool = False) -> None:
+        """Load persisted fail-until. Expired deadlines become 0. Never raises."""
+        try:
+            now = time.time()
+            if only_if_unset:
+                current = float(getattr(self, "_compaction_fail_until", 0.0) or 0.0)
+                if current > now:
+                    return
+            from .history_compaction_journal import load_compaction_session_state
+
+            state = load_compaction_session_state(
+                getattr(self, "state_dir", "") or "",
+                self._compaction_journal_session_id(),
+            )
+            until = float(state.fail_until or 0.0)
+            self._compaction_fail_until = until if until > now else 0.0
+        except Exception:
+            try:
+                if not only_if_unset:
+                    self._compaction_fail_until = 0.0
+            except Exception:
+                pass
+
+    def _persist_compaction_transcript_fingerprint(self) -> None:
+        """Persist the current transcript fingerprint after a residual. Never raises."""
+        try:
+            from .history_compaction_journal import (
+                fingerprint_transcript,
+                save_compaction_session_state,
+            )
+
+            fp, n = fingerprint_transcript(getattr(self, "_history", None) or [])
+            save_compaction_session_state(
+                getattr(self, "state_dir", "") or "",
+                self._compaction_journal_session_id(),
+                transcript_fp=fp,
+                transcript_len=n,
+            )
+        except Exception:
+            pass
+
+    def _idle_ungrown_blocked(self) -> bool:
+        """True when auto compact should skip: fingerprint matches last residual."""
+        try:
+            from .history_compaction_journal import (
+                fingerprint_transcript,
+                load_compaction_session_state,
+            )
+
+            current_fp, _current_len = fingerprint_transcript(
+                getattr(self, "_history", None) or []
+            )
+            if not current_fp:
+                return False
+            state = load_compaction_session_state(
+                getattr(self, "state_dir", "") or "",
+                self._compaction_journal_session_id(),
+            )
+            last_fp = (state.transcript_fp or "").strip()
+            return bool(last_fp) and last_fp == current_fp
+        except Exception:
+            return False
+
     def _anti_thrash_blocked(self, *, force: bool) -> bool:
         """True when automatic compaction must wait out an anti-thrash cooldown.
 
@@ -382,7 +469,7 @@ class CompactionContextMixin:
                 strikes = strikes + 1
                 self._compaction_ineffective_count = strikes
                 if strikes >= ANTI_THRASH_STRIKES:
-                    self._compaction_fail_until = (
+                    self._set_compaction_fail_until(
                         time.time() + _compaction_cooldown_s()
                     )
             else:
@@ -1003,7 +1090,17 @@ class CompactionContextMixin:
             self._set_compaction_attempt(REASON_RESIDUAL_OFF)
             return
 
+        # Late-bound harness_session_id: adopt a still-live journal deadline
+        # when this process has not already armed the in-memory plane.
+        self._restore_compaction_fail_until(only_if_unset=True)
+
         self._set_compaction_attempt(REASON_BELOW_TRIGGER)
+
+        # Idle-ungrown: skip automatic compact when the transcript fingerprint
+        # is unchanged since the last residual. force / emergency still run.
+        if not force and not emergency and self._idle_ungrown_blocked():
+            self._set_compaction_attempt(REASON_IDLE_UNGROWN)
+            return
 
         # Hermes anti-thrash: after repeated ineffective reclamations, skip
         # automatic compaction until the shared _compaction_fail_until window
@@ -1389,13 +1486,13 @@ class CompactionContextMixin:
                             )
                 else:
                     summary = _use_extractive_fallback()
-                    self._compaction_fail_until = time.time() + _compact_cooldown
+                    self._set_compaction_fail_until(time.time() + _compact_cooldown)
             except TimeoutError:
                 summary = _use_extractive_fallback()
-                self._compaction_fail_until = time.time() + _compact_cooldown
+                self._set_compaction_fail_until(time.time() + _compact_cooldown)
             except Exception:
                 summary = _use_extractive_fallback()
-                self._compaction_fail_until = time.time() + _compact_cooldown
+                self._set_compaction_fail_until(time.time() + _compact_cooldown)
 
         # Degenerate model output is not a reason to strand an over-limit
         # session. Retry once with the bounded deterministic extractive summary;
@@ -1592,10 +1689,7 @@ class CompactionContextMixin:
         # shared fail-until plane (strikes already cleared above). Do not clear
         # after timeout/error fallback — that cooldown must stick.
         if thrash_strikes == 0 and summarizer_ok:
-            try:
-                self._compaction_fail_until = 0.0
-            except Exception:
-                pass
+            self._set_compaction_fail_until(0.0)
         # History rewrite invalidates the prompt-cache prefix. Journal the
         # busted tokens once on a dedicated cache_bust row (not also on the
         # compact row). Do not invent cache-read events from an unpopulated
@@ -1655,6 +1749,7 @@ class CompactionContextMixin:
         except Exception:
             pass
 
+        self._persist_compaction_transcript_fingerprint()
         self._set_compaction_attempt(
             REASON_OK,
             before_tokens=before_tokens,

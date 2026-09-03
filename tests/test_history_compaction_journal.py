@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 import tempfile
+import time
 
 import pytest
 
@@ -10,9 +11,12 @@ from harness.history_compaction_journal import (
     EVENT_CACHE_BUST,
     EVENT_CACHE_READ,
     EVENT_COMPACT,
+    fingerprint_transcript,
     history_compaction_payload,
+    load_compaction_session_state,
     record_cache_signal,
     record_history_compaction,
+    save_compaction_session_state,
     summarize_history_compactions,
 )
 
@@ -560,3 +564,59 @@ def test_compaction_journal_written_during_history_compact():
         assert payload["history_compaction_ran"] is True
         assert payload["history_cache_bust_tokens"] > 0
         assert "history_compaction_cost_usd" not in payload
+
+
+def test_session_state_table_schema_and_round_trip():
+    """session_state is created additively; load/save never raise."""
+    with tempfile.TemporaryDirectory() as state_dir:
+        fp, n = fingerprint_transcript([
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "yo"},
+        ])
+        until = time.time() + 90
+        save_compaction_session_state(
+            state_dir,
+            "sess-state",
+            fail_until=until,
+            transcript_fp=fp,
+            transcript_len=n,
+        )
+        conn = sqlite3.connect(f"{state_dir}/history_compaction.sqlite")
+        try:
+            cols = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(session_state)").fetchall()
+            }
+        finally:
+            conn.close()
+        for required in ("session_id", "fail_until", "transcript_fp", "transcript_len"):
+            assert required in cols
+        loaded = load_compaction_session_state(state_dir, "sess-state")
+        assert loaded.fail_until == pytest.approx(until)
+        assert loaded.transcript_fp == fp
+        assert loaded.transcript_len == n
+
+        save_compaction_session_state(state_dir, "sess-state", fail_until=0.0)
+        loaded2 = load_compaction_session_state(state_dir, "sess-state")
+        assert loaded2.fail_until == 0.0
+        assert loaded2.transcript_fp == fp
+
+        same_fp, same_n = fingerprint_transcript([
+            {"role": "user", "content": "ab"},
+            {"role": "assistant", "content": "cd"},
+        ])
+        assert same_fp == fp
+        assert same_n == n
+        grown_fp, grown_n = fingerprint_transcript([
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "yo"},
+            {"role": "user", "content": "more"},
+        ])
+        assert grown_fp != fp
+        assert grown_n == n + 1
+
+        assert load_compaction_session_state("", "x").fail_until == 0.0
+        save_compaction_session_state("", "x", fail_until=1.0)
+        missing = load_compaction_session_state("/no/such/marionette-state", "x")
+        assert missing.transcript_fp == ""
+        assert missing.transcript_len == 0
