@@ -627,3 +627,107 @@ def test_legacy_wal_row_migrated_via_backup(tmp_path, monkeypatch):
     names = {s.name for s in store.list()}
     assert "wal-legacy" in names
     store.close()
+
+
+def test_pending_wake_inserted_on_claim_removed_on_complete(tmp_path):
+    store = ScheduleStore(str(tmp_path / "s.sqlite"))
+    s = store.add(_mk())
+    claim = store.try_claim(s.id, fire_at=50.0, owner="o1", lease_seconds=60)
+    assert claim is not None
+    wakes = store.list_pending_wakes()
+    assert len(wakes) == 1
+    assert wakes[0]["schedule_id"] == s.id
+    assert wakes[0]["fire_at"] == 50.0
+    assert wakes[0]["run_id"] == claim["run_id"]
+    assert store.complete_claim(
+        s.id, claim["run_id"],
+        status="ok", halt_reason="done",
+        ended_at=123.0, fire_at=50.0,
+        missed_outcome="once", missed_slots=1,
+    )
+    assert store.list_pending_wakes() == []
+    run = store.list_runs(s.id)[0]
+    assert run["missed_outcome"] == "once"
+    assert run["missed_slots"] == 1
+
+
+def test_migrate_old_sqlite_adds_missed_policy_and_pending_wakes(tmp_path):
+    path = tmp_path / "old.sqlite"
+    conn = sqlite3.connect(str(path))
+    conn.execute(
+        """
+        CREATE TABLE schedules (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            objective TEXT NOT NULL,
+            cron TEXT NOT NULL,
+            repo TEXT NOT NULL DEFAULT '',
+            swarm_adapter TEXT NOT NULL DEFAULT 'agentic',
+            driver TEXT NOT NULL DEFAULT '',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            max_tokens INTEGER NOT NULL DEFAULT 0,
+            max_seconds INTEGER NOT NULL DEFAULT 0,
+            max_swarms INTEGER NOT NULL DEFAULT 0,
+            created_at REAL NOT NULL DEFAULT 0,
+            enabled_at REAL NOT NULL DEFAULT 0,
+            last_run_at REAL NOT NULL DEFAULT 0,
+            last_fire_at REAL NOT NULL DEFAULT 0,
+            last_status TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE schedule_runs (
+            id TEXT PRIMARY KEY,
+            schedule_id TEXT NOT NULL,
+            started_at REAL NOT NULL,
+            ended_at REAL NOT NULL DEFAULT 0,
+            status TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO schedules
+            (id, name, objective, cron, created_at, enabled_at, enabled)
+        VALUES ('old01', 'legacy', 'obj', '* * * * *', 1, 1, 1)
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    store = ScheduleStore(str(path))
+    sched_cols = {
+        row[1] for row in store._conn.execute("PRAGMA table_info(schedules)")
+    }
+    run_cols = {
+        row[1] for row in store._conn.execute("PRAGMA table_info(schedule_runs)")
+    }
+    tables = {
+        row[0] for row in store._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    assert "missed_policy" in sched_cols
+    assert "missed_outcome" in run_cols
+    assert "missed_slots" in run_cols
+    assert "pending_wakes" in tables
+    got = store.get("old01")
+    assert got is not None
+    assert got.missed_policy == "once"
+    store.close()
+
+
+def test_add_and_update_persist_missed_policy(tmp_path):
+    store = ScheduleStore(str(tmp_path / "s.sqlite"))
+    s = store.add(_mk())
+    assert s.missed_policy == "once"
+    assert store.get(s.id).missed_policy == "once"
+    updated = store.update_fields(s.id, missed_policy="all")
+    assert updated is not None
+    assert updated.missed_policy == "all"
+    assert store.get(s.id).missed_policy == "all"
+    closed = store.update_fields(s.id, missed_policy="nope")
+    assert closed is not None
+    assert closed.missed_policy == "once"

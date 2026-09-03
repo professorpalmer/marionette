@@ -171,6 +171,30 @@ def test_store_since_overflow_sets_gap():
     assert batch["cursor"] == 8
 
 
+def test_maybe_stamp_host_lifecycle_from_last_record(monkeypatch):
+    """Optional fail-soft: mirror PM's last HostStartRecord; never record."""
+    from types import SimpleNamespace
+
+    from harness.api import session_events as se
+
+    rec = SimpleNamespace(
+        kind="host.recovered",
+        boot_id="boot_1",
+        pid=9,
+        host="box",
+        reason="crash",
+        started_at="t0",
+    )
+    monkeypatch.setattr(se, "_peek_last_host_start_record", lambda: rec)
+    store = SessionEventStore()
+    assert store.maybe_stamp_host_lifecycle("s1") == 1
+    assert store.maybe_stamp_host_lifecycle("s1") == 0
+    batch = store.since("s1", 0)
+    kinds = [e["kind"] for e in batch["events"]]
+    assert kinds == ["host.recovered"]
+    assert batch["events"][0]["data"]["boot_id"] == "boot_1"
+
+
 def test_read_events_since_overflow_emits_cursor_gap_miss():
     reset_default_store_for_tests()
     store = SessionEventStore(cap=2)

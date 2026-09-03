@@ -365,14 +365,8 @@ class StdioMcpClient:
     # ---- MCP methods --------------------------------------------------------
     def list_tools(self) -> List[McpTool]:
         result = self._request("tools/list", {})
-        out = []
-        for t in result.get("tools", []):
-            out.append(McpTool(
-                server=self.name, name=t.get("name", ""),
-                description=t.get("description", ""),
-                input_schema=t.get("inputSchema", {}) or {},
-            ))
-        return out
+        from .tool_discovery import mcp_tools_from_list_result
+        return mcp_tools_from_list_result(self.name, result)
 
     def call_tool(self, tool_name: str, arguments: dict, timeout: float = 120.0) -> dict:
         result = self._request("tools/call", {"name": tool_name, "arguments": arguments or {}},

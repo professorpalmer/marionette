@@ -10,6 +10,7 @@ import json
 import os
 import signal
 import threading
+import time
 from typing import Any, Callable, Optional
 from urllib.parse import parse_qs, urlparse
 
@@ -275,6 +276,8 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
             _sessions_api.post_sessions_detach, services=svc.session_services),
         "/api/chat/stash": post_json(
             _sc_api.post_chat_stash, services=svc.session_control_services),
+        "/api/session/fork": post_json(
+            _sessions_api.post_session_fork, services=svc.session_services),
         "/api/session/interrupt": _bind_post_session_interrupt(svc),
         "/api/session/rewind": post_json(
             _sc_api.post_session_rewind, services=svc.session_control_services),
@@ -431,10 +434,26 @@ def _bind_post_restart(svc: Any) -> PostHandler:
 
 def _post_restart(handler: Any, body: dict, svc: Any, mcp_factory: Any) -> Any:
     from .api import session_control as _sc_api
-    from .backend_restart_signal import write_intentional_restart_signal
+    from .backend_restart_signal import (
+        read_intentional_restart_signal,
+        write_intentional_restart_signal,
+        write_restart_outcome,
+    )
     ok, err = _sc_api.prepare_session_restart(svc.session_control_services())
     if not ok:
-        svc.diag("server.self_edit_restart_persist", Exception(err or "persist failed"))
+        persist_err = err or "persist failed"
+        svc.diag("server.self_edit_restart_persist", Exception(persist_err))
+        try:
+            write_restart_outcome(
+                requested_at=int(time.time() * 1000),
+                requested_pid=os.getpid(),
+                prepared_ok=False,
+                outcome="failed",
+                error=persist_err,
+            )
+        except Exception as exc:
+            svc.diag("server.self_edit_restart_outcome", exc)
+        return send_json(handler, 500, {"ok": False, "error": persist_err})
     try:
         mcp_svc = mcp_factory()
         mcp_svc.mcp.stop_all()
@@ -446,6 +465,19 @@ def _post_restart(handler: Any, body: dict, svc: Any, mcp_factory: Any) -> Any:
         write_intentional_restart_signal()
     except Exception as exc:
         svc.diag("server.self_edit_restart_signal", exc)
+    # Optional pending so Settings can show "restarting" until boot records ok.
+    # record_boot_restart_outcome upgrades pending for the same requested_at.
+    try:
+        signal_payload = read_intentional_restart_signal()
+        if signal_payload:
+            write_restart_outcome(
+                requested_at=signal_payload.get("at") or int(time.time() * 1000),
+                requested_pid=signal_payload.get("pid") or os.getpid(),
+                prepared_ok=True,
+                outcome="pending",
+            )
+    except Exception as exc:
+        svc.diag("server.self_edit_restart_outcome", exc)
     handler._send(200, json.dumps({"ok": True, "restarting": True}))
 
     def _delayed_self_terminate():
@@ -500,6 +532,7 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
     from .api import collab_presence as _collab_presence_api
     from .api import metaharness as _mh_api
     from .api import local_models as _local_models_api
+    from .backend_restart_signal import get_restart_last as _get_restart_last
 
     def _get_git_diff(handler: Any, u: Any, qs: dict) -> Any:
         staged = qs.get("staged", ["0"])[0].strip().lower() in ("1", "true", "yes")
@@ -686,6 +719,7 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
             _sc_api.get_session_state,
             services=svc.session_control_services,
             pass_qs=True),
+        "/api/restart/last": get_json(_get_restart_last),
         "/api/session/performance": get_json(
             _session_perf_api.get_session_performance,
             services=svc.session_control_services,
@@ -789,6 +823,8 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
         "/api/platform": get_json(
             _plat_api.get_platform, services=svc.platform_services),
         "/api/jobs": _get_jobs,
+        "/api/jobs/events": get_json(
+            _jobs_api.get_job_events, services=svc.job_services, pass_qs=True),
         "/api/usage": get_json(
             _usage_api.get_usage, services=svc.usage_services, qs_arg="repo"),
         "/api/economics": get_json(

@@ -13,6 +13,81 @@ from typing import Any, Optional
 from puppetmaster.store_factory import create_store
 from .diag import note as _diag
 
+_EVENT_INCLUDE_MODES = frozenset({"lifecycle", "quiet", "all"})
+
+
+def normalize_event_include(include: Any) -> str:
+    """Unknown or empty ``include`` fails closed to lifecycle (drop heartbeats)."""
+    mode = str(include or "lifecycle").strip() or "lifecycle"
+    if mode not in _EVENT_INCLUDE_MODES:
+        return "lifecycle"
+    return mode
+
+
+def read_job_events_since(
+    store: Any,
+    job_id: str,
+    cursor: int = 0,
+    include: str = "lifecycle",
+) -> list:
+    """Read job events with lifecycle-default filtering.
+
+    Prefer ``store.read_lifecycle_events`` when present. Otherwise filter
+    ``read_events_since`` via ``puppetmaster.host_lifecycle.filter_events``.
+    Missing helpers fail-soft to empty (except ``include=all``, which keeps
+    the unfiltered ``read_events_since`` list).
+    """
+    if store is None or not job_id:
+        return []
+    mode = normalize_event_include(include)
+    try:
+        since = int(cursor or 0)
+    except (TypeError, ValueError):
+        since = 0
+
+    reader = getattr(store, "read_lifecycle_events", None)
+    if callable(reader):
+        try:
+            return list(reader(job_id, since=since, include=mode) or [])
+        except TypeError:
+            try:
+                return list(reader(job_id, since, mode) or [])
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    try:
+        raw = store.read_events_since(job_id, since)
+    except Exception:
+        raw = None
+    if raw is None:
+        try:
+            raw = store.read_events(job_id) if hasattr(store, "read_events") else []
+        except Exception:
+            raw = []
+        if since and isinstance(raw, list):
+            raw = [
+                rec for rec in raw
+                if int(rec.get("id") or 0) > since
+            ] if raw and isinstance(raw[0], dict) else raw
+
+    filter_events = None
+    try:
+        from puppetmaster.host_lifecycle import filter_events as _filter_events
+        filter_events = _filter_events
+    except Exception:
+        filter_events = None
+
+    if filter_events is not None:
+        try:
+            return list(filter_events(raw or [], include=mode))
+        except Exception:
+            pass
+    if mode == "all":
+        return list(raw or [])
+    return []
+
 
 def _normalize_rejected(
     rejected: Any,
@@ -321,10 +396,22 @@ class DurableState:
     def job_artifacts(self, job_id: str) -> list:
         return self.format_artifacts(self.store.list_artifacts(job_id))
 
-    def events_since(self, job_id: str, cursor: int = 0) -> dict:
+    def events_since(
+        self,
+        job_id: str,
+        cursor: int = 0,
+        include: str = "lifecycle",
+    ) -> dict:
+        """Job event poll. Default ``include=lifecycle`` drops per-turn heartbeats."""
         try:
-            events = self.store.read_events_since(job_id, cursor)
+            events = read_job_events_since(
+                self.store, job_id, cursor=cursor, include=include,
+            )
             new_cursor = self.store.event_cursor(job_id)
         except Exception:
             events, new_cursor = [], cursor
         return {"events": events, "cursor": new_cursor}
+
+
+# Brief / tracker name for the job-event read facade.
+JobStore = DurableState

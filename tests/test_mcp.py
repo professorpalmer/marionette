@@ -7,12 +7,58 @@ import pytest
 
 from harness.mcp_client import StdioMcpClient, McpError
 from harness.mcp_manager import CATALOG, McpManager
+from harness.tool_discovery import mcp_tools_from_list_result
 
 FAKE = str(Path(__file__).parent / "fixtures" / "fake_mcp_server.py")
 
 
 def _client():
     return StdioMcpClient(name="fake", command=sys.executable, args=[FAKE])
+
+
+def test_mixed_tools_list_payload_keeps_only_valid_rows():
+    result = {
+        "tools": [
+            {
+                "name": "good",
+                "description": "ok",
+                "inputSchema": {"type": "object", "properties": {}},
+            },
+            {
+                "name": "missing_type",
+                "description": "ok",
+                "inputSchema": {"properties": {}},
+            },
+            {"name": "", "description": "missing name", "inputSchema": {"type": "object"}},
+            {"description": "no name key", "inputSchema": {"type": "object"}},
+            {"name": "string_params", "inputSchema": {"type": "object", "parameters": "{}"}},
+            {"name": "list_props", "inputSchema": {"type": "object", "properties": []}},
+            {"name": "not_object", "inputSchema": {"type": "string"}},
+            {"name": "schema_is_string", "inputSchema": "object"},
+            "not-a-dict",
+        ]
+    }
+    tools = mcp_tools_from_list_result("mixed", result)
+    assert [t.name for t in tools] == ["good", "missing_type"]
+    assert all(t.server == "mixed" for t in tools)
+
+
+def test_list_tools_mixed_payload_skips_unusable():
+    c = StdioMcpClient(name="mixed", command="x")
+
+    def fake_request(method, params, timeout=60.0):
+        assert method == "tools/list"
+        return {
+            "tools": [
+                {"name": "good", "inputSchema": {"type": "object", "properties": {}}},
+                {"name": "bad", "inputSchema": {"type": "string"}},
+                {"name": "also_good", "inputSchema": {}},
+            ]
+        }
+
+    c._request = fake_request
+    tools = c.list_tools()
+    assert [t.name for t in tools] == ["good", "also_good"]
 
 
 def test_client_handshake_and_list():

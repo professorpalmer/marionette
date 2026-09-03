@@ -9,12 +9,18 @@ from datetime import datetime
 import pytest
 
 from harness.schedule_core import (
+    MISSED_POLICY_ALL,
+    MISSED_POLICY_ONCE,
+    MISSED_POLICY_SKIP,
+    STAMPEDE_CAP,
     CronExpr,
     Schedule,
     due_fire_at,
+    due_fire_slots,
     fire_at_timestamp,
     floor_minute,
     next_real_fire_after,
+    parse_missed_policy,
     status_from_halt_reason,
     timezone_mode,
     validate_timezone,
@@ -187,6 +193,7 @@ def test_schedule_from_row_defaults():
     assert s.swarm_adapter == "agentic"
     assert s.max_tokens == 0
     assert s.last_fire_at == 0.0
+    assert s.missed_policy == MISSED_POLICY_ONCE
 
 
 def test_due_fire_same_minute_once():
@@ -370,3 +377,100 @@ def test_schedule_timezone_column_roundtrip_empty():
     back = Schedule.from_row(s.to_row())
     assert back.timezone == ""
     assert timezone_mode(back) == "host_local"
+
+
+def test_parse_missed_policy_default_and_unknown():
+    assert parse_missed_policy(None) == MISSED_POLICY_ONCE
+    assert parse_missed_policy("") == MISSED_POLICY_ONCE
+    assert parse_missed_policy("  ") == MISSED_POLICY_ONCE
+    assert parse_missed_policy("nope") == MISSED_POLICY_ONCE
+    assert parse_missed_policy("ONCE") == MISSED_POLICY_ONCE
+    assert parse_missed_policy("skip") == MISSED_POLICY_SKIP
+    assert parse_missed_policy("all") == MISSED_POLICY_ALL
+
+
+def test_schedule_default_missed_policy_once():
+    s = Schedule(id="a", name="n", objective="o", cron="0 * * * *")
+    assert s.missed_policy == MISSED_POLICY_ONCE
+    created = _dt(2024, 1, 1, 0, 0).timestamp()
+    s.created_at = created
+    s.enabled_at = created
+    s.last_fire_at = _dt(2024, 1, 1, 1, 0).timestamp()
+    now = _dt(2024, 1, 1, 4, 15)
+    assert due_fire_slots(s, now) == [_dt(2024, 1, 1, 4, 0)]
+    assert due_fire_at(s, now) == _dt(2024, 1, 1, 4, 0)
+
+
+def test_unknown_missed_policy_fail_closed_once():
+    created = _dt(2024, 1, 1, 0, 0).timestamp()
+    s = Schedule(
+        id="a", name="n", objective="o", cron="0 * * * *",
+        created_at=created, enabled_at=created,
+        last_fire_at=_dt(2024, 1, 1, 1, 0).timestamp(),
+        missed_policy="bogus",
+    )
+    now = _dt(2024, 1, 1, 4, 15)
+    assert parse_missed_policy(s.missed_policy) == MISSED_POLICY_ONCE
+    assert due_fire_slots(s, now) == [_dt(2024, 1, 1, 4, 0)]
+
+
+def test_skip_drops_past_slots():
+    created = _dt(2024, 1, 1, 0, 0).timestamp()
+    s = Schedule(
+        id="a", name="n", objective="o", cron="0 * * * *",
+        created_at=created, enabled_at=created,
+        last_fire_at=_dt(2024, 1, 1, 1, 0).timestamp(),
+        missed_policy=MISSED_POLICY_SKIP,
+    )
+    # Missed 02:00, 03:00, 04:00 — skip does not catch up at :15.
+    assert due_fire_slots(s, _dt(2024, 1, 1, 4, 15)) == []
+    assert due_fire_at(s, _dt(2024, 1, 1, 4, 15)) is None
+    # Current matching minute still fires; past slots stay dropped.
+    assert due_fire_slots(s, _dt(2024, 1, 1, 4, 0)) == [_dt(2024, 1, 1, 4, 0)]
+    assert due_fire_at(s, _dt(2024, 1, 1, 4, 0)) == _dt(2024, 1, 1, 4, 0)
+
+
+def test_once_coalesces_due_fire_slots():
+    created = _dt(2024, 1, 1, 0, 0).timestamp()
+    s = Schedule(
+        id="a", name="n", objective="o", cron="0 * * * *",
+        created_at=created, enabled_at=created,
+        last_fire_at=_dt(2024, 1, 1, 1, 0).timestamp(),
+        missed_policy=MISSED_POLICY_ONCE,
+    )
+    now = _dt(2024, 1, 1, 4, 15)
+    assert due_fire_slots(s, now) == [_dt(2024, 1, 1, 4, 0)]
+    assert due_fire_at(s, now) == _dt(2024, 1, 1, 4, 0)
+
+
+def test_all_returns_many_slots_oldest_first():
+    created = _dt(2024, 1, 1, 0, 0).timestamp()
+    s = Schedule(
+        id="a", name="n", objective="o", cron="0 * * * *",
+        created_at=created, enabled_at=created,
+        last_fire_at=_dt(2024, 1, 1, 1, 0).timestamp(),
+        missed_policy=MISSED_POLICY_ALL,
+    )
+    now = _dt(2024, 1, 1, 4, 15)
+    assert due_fire_slots(s, now) == [
+        _dt(2024, 1, 1, 2, 0),
+        _dt(2024, 1, 1, 3, 0),
+        _dt(2024, 1, 1, 4, 0),
+    ]
+    # Single-value helper returns the earliest remaining slot.
+    assert due_fire_at(s, now) == _dt(2024, 1, 1, 2, 0)
+
+
+def test_all_caps_at_stampede_cap():
+    created = _dt(2024, 1, 1, 0, 0).timestamp()
+    s = Schedule(
+        id="a", name="n", objective="o", cron="* * * * *",
+        created_at=created, enabled_at=created,
+        last_fire_at=_dt(2024, 1, 1, 0, 0).timestamp(),
+        missed_policy=MISSED_POLICY_ALL,
+    )
+    now = _dt(2024, 1, 1, 3, 0)  # 180 missed minutes
+    slots = due_fire_slots(s, now)
+    assert len(slots) == STAMPEDE_CAP
+    assert slots[0] == _dt(2024, 1, 1, 0, 1)
+    assert slots[-1] == _dt(2024, 1, 1, 1, 40)

@@ -362,6 +362,45 @@ def get_jobs(repo_override: str | None, svc: JobServices) -> tuple[int, list]:
     return 200, svc.scoped_jobs_snapshot(repo_root=repo_override or None)
 
 
+def get_job_events(qs: dict, svc: JobServices) -> tuple[int, Any]:
+    """GET /api/jobs/events and GET /api/jobs/<id>/events — ``?include=``."""
+    qs = qs or {}
+    job_id = (
+        (qs.get("job_id") or qs.get("id") or [""])[0] or ""
+    ).strip()
+    if not job_id:
+        return 400, {"error": "missing job id"}
+    include = ((qs.get("include") or ["lifecycle"])[0] or "lifecycle").strip()
+    since_raw = (qs.get("since") or qs.get("cursor") or ["0"])[0]
+    try:
+        cursor = int(since_raw or 0)
+    except (TypeError, ValueError):
+        cursor = 0
+    owned = _job_access_owned(job_id, svc)
+    durable = None
+    if owned is False:
+        return _unknown_job_refusal(job_id)
+    if owned is None:
+        sibling_owned, sibling_durable = _inspect_sibling_job(job_id)
+        if sibling_owned is not True:
+            return _unknown_job_refusal(job_id)
+        durable = sibling_durable
+    else:
+        try:
+            durable = svc.get_session().state()
+        except Exception:
+            durable = None
+    if durable is None or not hasattr(durable, "events_since"):
+        return 200, {"events": [], "cursor": cursor}
+    try:
+        payload = durable.events_since(job_id, cursor, include=include)
+    except TypeError:
+        payload = durable.events_since(job_id, cursor)
+    if not isinstance(payload, dict):
+        payload = {"events": payload or [], "cursor": cursor}
+    return 200, payload
+
+
 def get_artifacts(job_id: str | None, svc: JobServices) -> tuple[int, Any]:
     """GET /api/artifacts — owned dual-store resolve (harness, then CLI durable).
 

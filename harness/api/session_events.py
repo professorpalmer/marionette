@@ -54,6 +54,7 @@ class SessionEventStore:
         self._mirrored_ring_generation: Dict[str, int] = {}
         self._state_fp: Dict[str, str] = {}
         self._last_ring_miss_fp: Dict[str, str] = {}
+        self._host_lifecycle_stamped: set = set()
 
     def clear_session(self, session_id: str) -> None:
         sid = (session_id or "").strip()
@@ -66,6 +67,7 @@ class SessionEventStore:
             self._mirrored_ring_generation.pop(sid, None)
             self._state_fp.pop(sid, None)
             self._last_ring_miss_fp.pop(sid, None)
+            self._host_lifecycle_stamped.discard(sid)
 
     def event_cursor(self, session_id: str) -> int:
         sid = (session_id or "").strip()
@@ -113,6 +115,34 @@ class SessionEventStore:
             self._mirrored_ring_generation.pop(victim, None)
             self._state_fp.pop(victim, None)
             self._last_ring_miss_fp.pop(victim, None)
+            self._host_lifecycle_stamped.discard(victim)
+
+    def maybe_stamp_host_lifecycle(self, session_id: str) -> int:
+        """Append one host.started / host.recovered from PM's last HostStartRecord.
+
+        Fail-soft. Never calls ``record_host_start`` (SwarmStore.init already
+        does). At most one stamp per session per process.
+        """
+        sid = (session_id or "").strip()
+        if not sid:
+            return 0
+        with self._lock:
+            if sid in self._host_lifecycle_stamped:
+                return 0
+            rec = _peek_last_host_start_record()
+            if rec is None:
+                return 0
+            kind = str(getattr(rec, "kind", "") or "")
+            if kind not in ("host.started", "host.recovered"):
+                return 0
+            self._host_lifecycle_stamped.add(sid)
+            return self._append_unlocked(sid, kind, {
+                "boot_id": getattr(rec, "boot_id", ""),
+                "pid": getattr(rec, "pid", 0),
+                "host": getattr(rec, "host", ""),
+                "reason": getattr(rec, "reason", ""),
+                "started_at": getattr(rec, "started_at", ""),
+            })
 
     def since(self, session_id: str, cursor: int = 0) -> dict:
         """Return events with id > ``cursor`` plus the high-water cursor.
@@ -184,6 +214,29 @@ class SessionEventStore:
                 self._last_ring_miss_fp[sid] = fp
             else:
                 self._last_ring_miss_fp.pop(sid, None)
+
+
+def _peek_last_host_start_record() -> Any:
+    """Last HostStartRecord written by Puppetmaster, if any. Never records."""
+    try:
+        from puppetmaster import host_lifecycle as hl
+    except Exception:
+        return None
+    getter = getattr(hl, "last_host_start_record", None)
+    if callable(getter):
+        try:
+            rec = getter()
+            if rec is not None:
+                return rec
+        except Exception:
+            return None
+    records = getattr(hl, "_last_records", None)
+    if isinstance(records, dict) and records:
+        try:
+            return next(reversed(list(records.values())))
+        except Exception:
+            return None
+    return None
 
 
 _default_store = SessionEventStore()
@@ -360,6 +413,10 @@ def read_events_since(
             "events": [],
         }
 
+    try:
+        store.maybe_stamp_host_lifecycle(sid)
+    except Exception:
+        pass
     _mirror_ring_into_store(store, sse_svc, sid, generation)
     _sample_runners_into_store(store, session_control_svc, sid)
 

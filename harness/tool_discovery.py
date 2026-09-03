@@ -13,7 +13,10 @@ import math
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional, Sequence, Set
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .mcp_client import McpTool
 
 from .diag import note as _diag_note
 from .pilot import _parse_mcp_wire_name, build_tools_schema
@@ -151,6 +154,73 @@ def discovery_enabled() -> bool:
     """Return False when ``HARNESS_TOOL_DISCOVERY=0|false|no``."""
     raw = os.environ.get("HARNESS_TOOL_DISCOVERY", "1").strip().lower()
     return raw not in ("0", "false", "no", "off")
+
+
+def tool_schema_is_usable(schema: Any, name: str = "") -> bool:
+    """True when *schema* is a JSON-object tool parameter schema providers accept.
+
+    Missing ``type`` is treated as ``object``. Empty or missing ``properties``
+    is fine. Reject a non-dict, a present ``type`` that is not ``object``,
+    a string ``parameters`` field, or list-valued ``properties``. *name* is
+    accepted for callers that log the tool being checked.
+    """
+    del name  # API for callers; unused in the predicate itself.
+    if not isinstance(schema, dict):
+        return False
+    schema_type = schema.get("type")
+    if schema_type is not None and schema_type != "object":
+        return False
+    if isinstance(schema.get("parameters"), str):
+        return False
+    if isinstance(schema.get("properties"), list):
+        return False
+    return True
+
+
+def mcp_tools_from_list_result(server: str, result: Any) -> List["McpTool"]:
+    """Parse a ``tools/list`` result, skipping nameless or unusable entries.
+
+    Fail-soft: one broken tool must not drop the rest of the list. Skipped
+    names are recorded via diagnostics.
+    """
+    from .mcp_client import McpTool
+
+    raw_tools: list = []
+    if isinstance(result, dict):
+        maybe = result.get("tools", [])
+        if isinstance(maybe, list):
+            raw_tools = maybe
+    out: List[McpTool] = []
+    skipped: List[str] = []
+    for entry in raw_tools:
+        if not isinstance(entry, dict):
+            skipped.append("<non-object>")
+            continue
+        raw_name = entry.get("name")
+        name = raw_name.strip() if isinstance(raw_name, str) else ""
+        if not name:
+            skipped.append("<missing-name>")
+            continue
+        schema = entry.get("inputSchema", {})
+        if schema is None:
+            schema = {}
+        if not tool_schema_is_usable(schema, name):
+            skipped.append(name)
+            continue
+        out.append(
+            McpTool(
+                server=server,
+                name=name,
+                description=entry.get("description", "") or "",
+                input_schema=schema,
+            )
+        )
+    if skipped:
+        _diag_note(
+            "tool_discovery.mcp_list_skip",
+            msg=f"{server}: skipped unusable MCP tools: {', '.join(skipped)}",
+        )
+    return out
 
 
 def _browser_tools_usable() -> bool:
