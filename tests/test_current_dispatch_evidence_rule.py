@@ -75,6 +75,7 @@ class TestPilotSystemPrompt:
             name="audit-the-router",
             description="How to audit routing decisions.",
             body="Start from harness/router.py and follow the receipt.",
+            slug="audit-the-router",
         )
 
         class _OneSkillStore:
@@ -84,6 +85,10 @@ class TestPilotSystemPrompt:
         monkeypatch.setattr(
             "harness.conversation.SkillStore", lambda *_a, **_k: _OneSkillStore(),
         )
+        monkeypatch.setattr(
+            "harness.plugin_registry.list_enabled_plugin_skills",
+            lambda: [],
+        )
         cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
         cfg.repo = str(tmp_path)
         return ConversationalSession(cfg)
@@ -91,7 +96,10 @@ class TestPilotSystemPrompt:
     def test_active_skills_still_load(self, monkeypatch, tmp_path):
         system = _system_prompt(self._session_with_active_skill(monkeypatch, tmp_path))
         assert "audit-the-router" in system
-        assert "Start from harness/router.py" in system
+        assert "How to audit routing decisions." in system
+        assert "slug: audit-the-router" in system
+        assert "Start from harness/router.py" not in system
+        assert "follow the receipt" not in system
 
     def test_active_skills_are_framed_as_method_not_evidence(
         self, monkeypatch, tmp_path,
@@ -109,6 +117,10 @@ class TestPilotSystemPrompt:
 
         monkeypatch.setattr(
             "harness.conversation.SkillStore", lambda *_a, **_k: _EmptyStore(),
+        )
+        monkeypatch.setattr(
+            "harness.plugin_registry.list_enabled_plugin_skills",
+            lambda: [],
         )
         cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
         cfg.repo = str(tmp_path)

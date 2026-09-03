@@ -308,6 +308,11 @@ def load_workspace_rules(repo: Optional[str]) -> str:
 
 
 from .skill_store import SkillStore
+from .skill_retrieve import (
+    format_retrieved_skill_bodies,
+    format_skill_catalog,
+    select_skill_bodies,
+)
 from .rule_store import RuleStore
 from .memory_store import MemoryStore
 
@@ -690,10 +695,11 @@ class ConversationalSession(
             ensure_shared_browser_env()
         except Exception:
             pass
-        # self-learning: load ACTIVE skills into the pilot's system context so
-        # the loop compounds (procedural memory). Pending skills are NOT loaded.
-        # Enabled Agent Plugins v1 skills are appended alongside (namespaced);
-        # SkillStore files are never mutated by portable plugins.
+        # self-learning: catalog ACTIVE skills in the frozen prefix (name,
+        # description, slug). Bodies are retrieved per turn, not stuffed into
+        # history[0]. Pending skills are NOT cataloged. Enabled Agent Plugins
+        # v1 skills are cataloged alongside (namespaced); SkillStore files are
+        # never mutated by portable plugins.
         self._skills = SkillStore()
         system = WORKER_SYSTEM if getattr(config, "no_delegation", False) else PILOT_SYSTEM
         active = self._skills.list("active")
@@ -703,25 +709,10 @@ class ConversationalSession(
             plugin_skills = list(list_enabled_plugin_skills() or [])
         except Exception:
             plugin_skills = []
-        skill_parts = [
-            f"## Skill: {s.name}\n{s.description}\n{s.body}" for s in active
-        ]
-        skill_parts.extend(
-            f"## Skill: {s.name}\n{s.description}\n{s.body}" for s in plugin_skills
-        )
-        if skill_parts:
-            skills_block = "\n\n".join(skill_parts)
-            # Skills are distilled from PAST runs. Framed as bare knowledge they
-            # get replayed as present-tense findings ("the router still drops
-            # alternatives") with no dispatch behind them, so say plainly that
-            # they are method, not evidence.
-            system = (system + "\n\n# Learned skills (METHOD ONLY -- how to "
-                      "approach work, distilled from earlier sessions). These "
-                      "are never evidence about the current code and never "
-                      "current findings: re-verify anything you intend to "
-                      "claim against this session's own tool results, and "
-                      "report what you could not check as not verified.\n"
-                      + skills_block)
+        self._retrievable_skills = list(active) + list(plugin_skills)
+        catalog = format_skill_catalog(self._retrievable_skills)
+        if catalog:
+            system = system + "\n\n" + catalog
         # standing conventions (always-on, terse) -- distinct from task skills
         self._rules = RuleStore()
         active_rules = self._rules.list("active")
@@ -2142,25 +2133,10 @@ class ConversationalSession(
             else ""
         )
 
-        active_skills = getattr(self, "_skills", None)
         skills_text = ""
-        skill_parts = []
-        if active_skills:
-            active = active_skills.list("active")
-            skill_parts.extend(
-                f"## Skill: {s.name}\n{s.description}\n{s.body}" for s in active
-            )
-        try:
-            from .plugin_registry import list_enabled_plugin_skills
-            for s in list_enabled_plugin_skills() or []:
-                skill_parts.append(
-                    f"## Skill: {s.name}\n{s.description}\n{s.body}"
-                )
-        except Exception:
-            pass
-        if skill_parts:
-            skills_block = "\n\n".join(skill_parts)
-            skills_text = "\n\n# Learned skills (apply when relevant)\n" + skills_block
+        catalog = format_skill_catalog(getattr(self, "_retrievable_skills", None) or [])
+        if catalog:
+            skills_text = "\n\n" + catalog
 
         rules_text_list = []
         active_rules = getattr(self, "_rules", None)
@@ -2654,6 +2630,16 @@ class ConversationalSession(
                 vault_section = self._build_turn_vault_section(user_message)
                 if vault_section:
                     parts.append(vault_section)
+            except Exception:
+                pass
+            try:
+                retrieved = select_skill_bodies(
+                    user_message,
+                    getattr(self, "_retrievable_skills", None) or [],
+                )
+                skill_section = format_retrieved_skill_bodies(retrieved)
+                if skill_section:
+                    parts.append(skill_section)
             except Exception:
                 pass
             turn_note = self._turn_budget_system_note()
