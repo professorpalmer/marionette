@@ -532,17 +532,17 @@ class ConversationJobsMixin:
             pass
         return None
 
-    def _await_and_apply_job(self, job_id: str, state_dir: Optional[str] = None, objective: str = "") -> dict:
+    def _await_and_apply_job(
+        self, job_id: str, state_dir: Optional[str] = None,
+        objective: str = "", target_repo: str = "",
+    ) -> dict:
         import json
         import subprocess
         from .repo_resolve import resolve_effective_repo
 
         # Per-operation only — do not persist the resolved child onto config.repo.
-        effective_repo = (
-            resolve_effective_repo(self.config.repo or "")
-            if (self.config.repo or "").strip()
-            else (self.config.repo or "")
-        )
+        repo = target_repo or self.config.repo or ""
+        effective_repo = resolve_effective_repo(repo) if repo.strip() else repo
 
         # 1. Await job
         if state_dir:
@@ -650,6 +650,7 @@ class ConversationJobsMixin:
             pending_review = {
                 "id": review_id,
                 "job_id": job_id,
+                "target_repo": effective_repo,
                 "objective": objective or "Implement edits",
                 "files": parsed_files,
                 "created_at": time.time()
@@ -677,7 +678,7 @@ class ConversationJobsMixin:
             else:
                 with self._apply_lock:
                     applied, applied_files, apply_msg = self._apply_worker_patch(
-                        artifacts, job_id,
+                        artifacts, job_id, repo=effective_repo,
                     )
                     cp_id = getattr(self, "_last_checkpoint_id", None)
 
@@ -1232,6 +1233,7 @@ class ConversationJobsMixin:
                     pending_review = {
                         "id": review_id,
                         "job_id": job_id,
+                        "target_repo": target_repo,
                         "objective": objective or "Implement edits",
                         "files": parsed_files,
                         "created_at": time.time()
@@ -1258,7 +1260,9 @@ class ConversationJobsMixin:
                     else:
                         with self._apply_lock:
                             applied, applied_files, apply_msg = (
-                                self._apply_worker_patch(artifacts, job_id)
+                                self._apply_worker_patch(
+                                    artifacts, job_id, repo=target_repo,
+                                )
                             )
                             cp_id = getattr(self, "_last_checkpoint_id", None)
 

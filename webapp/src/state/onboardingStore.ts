@@ -118,10 +118,19 @@ export function subscribeOnboarding(listener: Listener): () => void {
   };
 }
 
+function inspectFixtureActive(): boolean {
+  try {
+    return (window as Window & { __HARNESS_INSPECT__?: boolean }).__HARNESS_INSPECT__ === true;
+  } catch {
+    return false;
+  }
+}
+
 /** True when the first-run wizard should auto-open on launch. */
 export function shouldAutoOpenOnboardingWizard(
   s: OnboardingState = state,
 ): boolean {
+  if (inspectFixtureActive()) return false;
   if (s.firstRunSkipped || s.manual) return false;
   if (s.configured === true) return false;
   return true;

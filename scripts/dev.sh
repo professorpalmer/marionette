@@ -1,6 +1,11 @@
 #!/bin/bash
-# Launch Marionette in dev mode (source build, hot-reload). Just run: marionette
-# or: bash scripts/dev.sh from any checkout.
+# Replace-the-running-instance dev launcher (source build, hot-reload).
+# Stops stale Electron/Vite, removes the machine backend marker, and uses
+# the normal durable HARNESS_STATE_DIR / account context.
+#
+# This is intentionally not a side-by-side preview. For a feature checkout
+# alongside the installed app, use scripts/inspect.sh -- isolated state,
+# isolated Electron userData, no credential copy, fixture onboarding skip.
 set -euo pipefail
 
 REPO_ROOT="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )"
