@@ -1293,9 +1293,9 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
           </div>
           <p className="text-[10px] text-muted">
             Blanket reasoning for swarm, implement, and parallel workers. Factory
-            default is medium (the StrongOrc floor). The composer picker is the
-            chat pilot only. Omit the tool argument to use this setting; ask the
-            pilot to pass reasoning_effort to pin one run.
+            default is medium. The composer Workers chip writes this same setting;
+            the pilot picker stays chat-only. Omit the tool argument to use this
+            setting; ask the pilot to pass reasoning_effort to pin one run.
           </p>
         </div>
 

@@ -15,6 +15,9 @@ vi.mock("../lib/api", () => ({
 vi.mock("../components/PilotPicker", () => ({
   default: () => <div data-testid="pilot-picker" />,
 }));
+vi.mock("../components/SwarmReasoningPicker", () => ({
+  default: () => <div data-testid="swarm-reasoning-picker" />,
+}));
 vi.mock("../components/conversation/WorkspaceChip", () => ({
   default: () => <div data-testid="workspace-chip" />,
 }));
