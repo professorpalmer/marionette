@@ -6,6 +6,7 @@ const path = require("node:path");
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const {
+  buildPuppetmasterBackendEnv,
   isInspectMode,
   resolveHarnessStateDir,
   resolveInspectUserDataDir,
@@ -17,6 +18,26 @@ test("preload inspect flag stays env-only and never requires inspect-isolation",
   assert.match(preload, /__HARNESS_INSPECT__/);
   assert.doesNotMatch(preload, /inspect-isolation/);
   assert.doesNotMatch(preload, /node:fs/);
+});
+
+test("backend Puppetmaster env replaces inherited standalone policy", () => {
+  const env = buildPuppetmasterBackendEnv(
+    {
+      PATH: "/usr/bin",
+      PUPPETMASTER_STATE_DIR: "/global/state",
+      PUPPETMASTER_MODELS_PATH: "/global/models.json",
+      PUPPETMASTER_ONLY_ADAPTERS: "codex",
+    },
+    {
+      stateDir: "/mari/state",
+      modelsPath: "/mari/marionette-models.json",
+    },
+  );
+
+  assert.equal(env.PATH, "/usr/bin");
+  assert.equal(env.PUPPETMASTER_STATE_DIR, "/mari/state");
+  assert.equal(env.PUPPETMASTER_MODELS_PATH, "/mari/marionette-models.json");
+  assert.equal("PUPPETMASTER_ONLY_ADAPTERS" in env, false);
 });
 
 test("isInspectMode accepts 1/true/yes only", () => {

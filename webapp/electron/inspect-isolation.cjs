@@ -35,6 +35,16 @@ function resolveInspectUserDataDir(env = process.env) {
   return "";
 }
 
+function buildPuppetmasterBackendEnv(env, { stateDir, modelsPath }) {
+  const out = {
+    ...env,
+    PUPPETMASTER_STATE_DIR: stateDir,
+    PUPPETMASTER_MODELS_PATH: modelsPath,
+  };
+  delete out.PUPPETMASTER_ONLY_ADAPTERS;
+  return out;
+}
+
 function stateFileSearchDirs(env = process.env) {
   const explicit = resolveHarnessStateDir(env);
   if (isInspectMode(env)) {
@@ -48,6 +58,7 @@ function stateFileSearchDirs(env = process.env) {
 }
 
 module.exports = {
+  buildPuppetmasterBackendEnv,
   isInspectMode,
   pmharnessHome,
   resolveHarnessStateDir,
