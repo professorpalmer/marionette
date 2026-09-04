@@ -378,3 +378,19 @@ def test_strip_inline_tool_calls():
     assert strip_inline_tool_calls(normal) == normal
     assert parse_inline_tool_calls(normal) == []
 
+
+def test_strip_inline_tool_calls_stream_cut_glm_markup():
+    from harness.pilot import strip_inline_tool_calls
+
+    cut = "Visible prefix\n<tool_call>\n<arg_key>path</arg_key>\n<arg_value>/tmp"
+    assert strip_inline_tool_calls(cut) == "Visible prefix"
+
+    leftover_lines = "Visible prefix\n<arg_key>\n<arg_value>"
+    assert strip_inline_tool_calls(leftover_lines) == "Visible prefix"
+
+    plural_cut = "Hi\n<tool_calls>\n<tool_call>"
+    assert strip_inline_tool_calls(plural_cut) == "Hi"
+
+    prose = "Talk about <arg_key> as a word in a sentence."
+    assert strip_inline_tool_calls(prose) == prose
+

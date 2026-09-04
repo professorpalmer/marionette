@@ -2478,12 +2478,23 @@ def parse_inline_tool_calls(
     return actions
 
 
+_INLINE_TOOL_MARKUP = (
+    r"<function=[^>\s]+>.*?(?:</function>|$)",
+    r"<tool_calls?>.*?(?:</tool_calls?>|$)",
+    r"<function_calls?>.*?(?:</function_calls?>|$)",
+    r"<tool_result>.*?(?:</tool_result>|$)",
+)
+_INLINE_TOOL_CLOSERS = re.compile(r"</(?:tool_calls?|function_calls?|tool_result)>")
+_GLM_ARG_LINE = re.compile(r"^\s*</?(?:arg_key|arg_value)>\s*$", re.MULTILINE)
+
+
 def strip_inline_tool_calls(content: str) -> str:
     if not content:
         return ""
-    content = re.sub(r'<function=[^>\s]+>.*?(?:</function>|$)', '', content, flags=re.DOTALL)
-    content = re.sub(r'<tool_call>.*?(?:</tool_call>|$)', '', content, flags=re.DOTALL)
-    content = re.sub(r'</tool_call>', '', content)
+    for pattern in _INLINE_TOOL_MARKUP:
+        content = re.sub(pattern, "", content, flags=re.DOTALL)
+    content = _INLINE_TOOL_CLOSERS.sub("", content)
+    content = _GLM_ARG_LINE.sub("", content)
     return content.strip()
 
 
