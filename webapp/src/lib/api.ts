@@ -48,6 +48,8 @@ export type Config = {
   /** Any keyed harness provider, including Pilot-only cursor-cli. */
   pilot_ready?: boolean;
   reasoning_effort?: ReasoningEffort;
+  /** Settings blanket for swarm/implement/parallel workers (factory medium). */
+  swarm_reasoning_effort?: ReasoningEffort;
   /** Per-model-spec reasoning-effort support map (keyed by "provider:model"). */
   reasoning_support?: Record<string, boolean>;
   /** Silent key-bootstrap failures from startup (server kept running). */
@@ -71,6 +73,7 @@ export type Settings = {
   pilotToolBudget?: string;
   workerTokenBudget?: string;
   reasoning_effort?: ReasoningEffort;
+  swarm_reasoning_effort?: ReasoningEffort;
   compactionResidual?: "summary" | "hybrid" | "catalog";
   wiki_auto?: boolean;
   state_dir: string;

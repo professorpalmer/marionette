@@ -192,6 +192,62 @@ def test_agentic_swarm_stamps_token_budget_from_env(monkeypatch, tmp_path):
     assert payload.get("token_budget") == 12345
 
 
+def _capture_agentic_swarm(monkeypatch, tmp_path, intent, **env):
+    _CapturingWorkerSpec._last_captured = []
+    monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")
+    monkeypatch.setenv("HARNESS_REPO", str(tmp_path))
+    for key, value in env.items():
+        if value is None:
+            monkeypatch.delenv(key, raising=False)
+        else:
+            monkeypatch.setenv(key, value)
+    _pin_agentic_only_allowlist(monkeypatch)
+    monkeypatch.setattr("puppetmaster.workers.WorkerSpec", _CapturingWorkerSpec)
+    monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _FakeOrchestrator)
+    monkeypatch.setattr(bridge, "_warn_if_unindexed", lambda *_a, **_k: None)
+    result = bridge.execute_intent(intent, state_dir=str(tmp_path / "state"))
+    assert result is not None
+    assert _CapturingWorkerSpec._last_captured
+    return _CapturingWorkerSpec._last_captured[0].payload
+
+
+def test_agentic_swarm_stamps_medium_reasoning_when_unset(monkeypatch, tmp_path):
+    intent = DriverIntent(
+        action="run_swarm",
+        goal="Trace the live scoring pipeline for a points flicker",
+        roles=["pipeline-mapper"],
+    )
+    payload = _capture_agentic_swarm(
+        monkeypatch, tmp_path, intent, HARNESS_SWARM_REASONING_EFFORT=None,
+    )
+    assert payload.get("reasoning_effort") == "medium"
+
+
+def test_agentic_swarm_intent_pin_wins_over_settings(monkeypatch, tmp_path):
+    intent = DriverIntent(
+        action="run_swarm",
+        goal="Trace the live scoring pipeline for a points flicker",
+        roles=["pipeline-mapper"],
+        reasoning_effort="high",
+    )
+    payload = _capture_agentic_swarm(
+        monkeypatch, tmp_path, intent, HARNESS_SWARM_REASONING_EFFORT="low",
+    )
+    assert payload.get("reasoning_effort") == "high"
+
+
+def test_agentic_swarm_settings_low_stamps_low(monkeypatch, tmp_path):
+    intent = DriverIntent(
+        action="run_swarm",
+        goal="Trace the live scoring pipeline for a points flicker",
+        roles=["pipeline-mapper"],
+    )
+    payload = _capture_agentic_swarm(
+        monkeypatch, tmp_path, intent, HARNESS_SWARM_REASONING_EFFORT="low",
+    )
+    assert payload.get("reasoning_effort") == "low"
+
+
 def test_agentic_swarm_explicit_model_pin_disables_auto_route(monkeypatch, tmp_path):
     _CapturingWorkerSpec._last_captured = []
     monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")

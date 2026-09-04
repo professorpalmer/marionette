@@ -82,6 +82,23 @@ def test_valid_run_swarm():
     assert i.model is None
 
 
+def test_run_swarm_reasoning_effort_optional():
+    bare = validate_intent({"action": "run_swarm", "goal": "audit repo"})
+    assert bare.reasoning_effort is None
+    pinned = validate_intent({
+        "action": "run_swarm",
+        "goal": "audit repo",
+        "reasoning_effort": "high",
+    })
+    assert pinned.reasoning_effort == "high"
+    invalid = validate_intent({
+        "action": "run_swarm",
+        "goal": "audit repo",
+        "reasoning_effort": "ludicrous",
+    })
+    assert invalid.reasoning_effort is None
+
+
 def test_run_swarm_accepts_model_pin():
     i = validate_intent({
         "action": "run_swarm",

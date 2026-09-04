@@ -25,6 +25,7 @@ import WindowGlassSettings from "./WindowGlassSettings";
 import ProviderConfigModal from "./ProviderConfigModal";
 import SettingsOptIns from "./SettingsOptIns";
 import type { ProviderConfigValues } from "../lib/providerConfig";
+import { REASONING_LEVELS } from "../lib/reasoningSupport";
 
 export type SettingsSection = "general" | "safety" | "providers" | "notifications" | "plugins" | "advanced";
 
@@ -1269,6 +1270,32 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             is governing the tree (default 250k — 40–50k starves analysis workers).
             Swarm/implement payloads stamp the same value as token_budget. Applies on
             the next worker spawn -- no restart needed.
+          </p>
+          <div className="flex items-center gap-2 pt-1">
+            <label className="text-[11px] text-muted shrink-0">Worker reasoning</label>
+            <select
+              value={settings.swarm_reasoning_effort || "medium"}
+              onChange={(e) => {
+                const next = e.target.value as Settings["swarm_reasoning_effort"];
+                if (next && next !== settings.swarm_reasoning_effort) {
+                  update({ swarm_reasoning_effort: next });
+                }
+              }}
+              disabled={saving}
+              className="flex-1 px-2 py-1 rounded border border-edge bg-panel2 text-[11px] text-txt disabled:opacity-50"
+            >
+              {REASONING_LEVELS.map((level) => (
+                <option key={level.value} value={level.value}>
+                  {level.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <p className="text-[10px] text-muted">
+            Blanket reasoning for swarm, implement, and parallel workers. Factory
+            default is medium (the StrongOrc floor). The composer picker is the
+            chat pilot only. Omit the tool argument to use this setting; ask the
+            pilot to pass reasoning_effort to pin one run.
           </p>
         </div>
 

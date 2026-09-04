@@ -21,6 +21,7 @@ export function toSafeSettingsSnapshot(s: Settings): Settings {
     pilotToolBudget: s.pilotToolBudget,
     workerTokenBudget: s.workerTokenBudget,
     reasoning_effort: s.reasoning_effort,
+    swarm_reasoning_effort: s.swarm_reasoning_effort,
     compactionResidual: s.compactionResidual,
     wiki_auto: s.wiki_auto,
     state_dir: s.state_dir,
