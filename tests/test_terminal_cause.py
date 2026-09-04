@@ -12,6 +12,7 @@ from harness.terminal_cause import (
     TERMINAL_TOOL_CALLS,
     TERMINAL_TRANSPORT_ERROR,
     TERMINAL_UNSPECIFIED,
+    blocking_terminal_message,
     classify_provider_terminal,
     finalize_stop_cause,
     provider_tools_are_executable,
@@ -44,6 +45,7 @@ def _resp(text="", error=None, **meta):
          TERMINAL_CONTENT_FILTER),
         ({"finish_reason": "incomplete"}, TERMINAL_INCOMPLETE),
         ({"finish_reason": "failed"}, TERMINAL_TRANSPORT_ERROR),
+        ({"finish_reason": "error"}, TERMINAL_PROVIDER_EOF),
         ({"finish_reason": "STOP"}, TERMINAL_NATURAL),
         ({"finish_reason": "MAX_TOKENS"}, TERMINAL_LENGTH),
         ({"finish_reason": "SAFETY"}, TERMINAL_CONTENT_FILTER),
@@ -152,6 +154,30 @@ def test_truncated_args_in_tool_calls_cannot_execute():
     )
     assert provider_tools_are_executable(resp) is False
     assert classify_provider_terminal(resp).allows_tool_execution is False
+
+
+def test_finish_reason_error_is_provider_eof_not_transport():
+    classified = classify_provider_terminal(_resp(
+        "",
+        error="OpenAI chat finished with finish_reason=error",
+        finish_reason="error",
+        stream_terminal="incomplete",
+        stream_started=True,
+    ))
+    assert classified.cause == TERMINAL_PROVIDER_EOF
+    assert classified.finish_reason == "error"
+    assert classified.blocks_clean_finalize is True
+    assert classified.allows_tool_execution is False
+    copy = blocking_terminal_message(classified)
+    assert "connection" not in copy.lower()
+    assert "lost" not in copy.lower()
+    assert "Provider stream ended before a clean finish." in copy
+
+    stream_err = classify_provider_terminal(_resp(
+        "hello", error="HTTP 502: upstream", stream_terminal="error",
+        stream_started=True,
+    ))
+    assert stream_err.cause == TERMINAL_TRANSPORT_ERROR
 
 
 def test_transport_error_string_and_wave1_error_terminal():

@@ -120,6 +120,7 @@ def test_mixin_calls_new_phase_helpers():
     assert "drain_idle_turn(" in src
     assert "apply_provider_terminal(" in src
     assert "emit_classified_provider_error(" in src
+    assert "finalize_blocked_provider_turn(" in src
     assert "emit_loop_exit_close(" in src
     assert "emit_stagnation_halt(" in src
     assert "classified_finish_kwargs(" in src

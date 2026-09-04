@@ -385,6 +385,24 @@ def test_unknown_finish_reason_fails_closed_and_names_the_reason(monkeypatch):
     assert resp.text == "ok"
 
 
+def test_finish_reason_error_is_known_terminal(monkeypatch):
+    lines = [
+        _data({"choices": [{"delta": {"content": "hi"}}]}),
+        _data({"choices": [{"delta": {"content": "!"}, "finish_reason": "error"}]}),
+        b"data: [DONE]\n",
+    ]
+    resp = _run_stream(monkeypatch, _driver(), lines)
+    assert resp.error
+    assert "unrecognized" not in resp.error
+    assert "finish_reason=error" in resp.error
+    assert resp.text == "hi!"
+    assert resp.meta["finish_reason"] == "error"
+    assert resp.meta["stream_terminal"] in ("incomplete", "provider_eof")
+    assert resp.meta.get("tool_calls") == []
+    assert resp.tokens_in == 0
+    assert resp.tokens_out == 0
+
+
 def _run_chat(monkeypatch, driver, payload):
     class _JsonResp:
         def __init__(self, body):

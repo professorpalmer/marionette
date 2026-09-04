@@ -407,6 +407,29 @@ def emit_classified_provider_error(session: Any, resp: Any) -> Iterator[Any]:
     ))
 
 
+def finalize_blocked_provider_turn(
+    session: Any,
+    classified: Any,
+    *,
+    user_message: str,
+    step: int,
+    swarms: Any,
+    turn_prose: list,
+    turn_findings: list,
+) -> Iterator[Any]:
+    """Dirty assistant_done after a blocked provider close. Never pretends natural."""
+    yield from finalize_assistant_turn(
+        session,
+        user_message=user_message,
+        step=step,
+        swarms=swarms,
+        turn_prose=turn_prose,
+        turn_findings=turn_findings,
+        stop_cause=finalize_stop_cause(classified),
+        **classified_finish_kwargs(classified),
+    )
+
+
 def _response_error_text(resp: Any) -> str:
     try:
         error = getattr(resp, "error", None)

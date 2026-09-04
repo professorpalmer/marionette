@@ -10,7 +10,18 @@ from harness.send_loop_phases import (
     dispatch_pilot_provider_call,
     stamp_sync_complete_terminal,
 )
+from harness.stream_performance_store import StreamPerformanceReceiptStore
 from pmharness.drivers.base import DriverResponse
+
+
+def _assert_dirty_settle(events, tmp_path, sid, *, cause):
+    kinds = [e.kind for e in events]
+    assert "error" in kinds
+    done = next(e for e in events if e.kind == "assistant_done")
+    assert done.data.get("stop_cause") == cause
+    rows = StreamPerformanceReceiptStore(str(tmp_path)).list_receipts(sid)
+    assert rows
+    assert rows[-1].get("assistant_done_emitted") is True
 
 
 def _session(tmp_path, monkeypatch, pilot, *, sid="sess-term"):
@@ -83,7 +94,7 @@ def _done(**meta):
     )
 
 
-def test_length_after_visible_text_never_emits_assistant_done(tmp_path, monkeypatch):
+def test_length_after_visible_text_emits_dirty_assistant_done(tmp_path, monkeypatch):
     executed = {"n": 0}
 
     def boom(*_a, **_k):
@@ -105,16 +116,14 @@ def test_length_after_visible_text_never_emits_assistant_done(tmp_path, monkeypa
         ),
     ]))
     events = list(session.send("write a long essay"))
-    kinds = [e.kind for e in events]
-    assert "assistant_done" not in kinds
-    assert "error" in kinds
     err = next(e for e in events if e.kind == "error")
     assert err.data.get("terminal_cause") == "length"
     assert err.data.get("finish_reason") == "length"
     assert executed["n"] == 0
+    _assert_dirty_settle(events, tmp_path, "sess-term", cause="length")
 
 
-def test_provider_eof_after_visible_text_never_emits_assistant_done(tmp_path, monkeypatch):
+def test_provider_eof_after_visible_text_emits_dirty_assistant_done(tmp_path, monkeypatch):
     session = _session(tmp_path, monkeypatch, _Scripted([
         DriverResponse(
             text="visible then drop",
@@ -127,11 +136,9 @@ def test_provider_eof_after_visible_text_never_emits_assistant_done(tmp_path, mo
         ),
     ]))
     events = list(session.send("hello"))
-    kinds = [e.kind for e in events]
-    assert "assistant_done" not in kinds
-    assert "error" in kinds
     err = next(e for e in events if e.kind == "error")
     assert err.data.get("terminal_cause") == "provider_eof"
+    _assert_dirty_settle(events, tmp_path, "sess-term", cause="provider_eof")
 
 
 def test_named_incomplete_stream_terminal_is_not_provider_eof(tmp_path, monkeypatch):
@@ -150,7 +157,31 @@ def test_named_incomplete_stream_terminal_is_not_provider_eof(tmp_path, monkeypa
     events = list(session.send("hello"))
     err = next(e for e in events if e.kind == "error")
     assert err.data.get("terminal_cause") == "incomplete"
-    assert "assistant_done" not in [e.kind for e in events]
+    _assert_dirty_settle(events, tmp_path, "sess-term", cause="incomplete")
+
+
+def test_finish_reason_error_emits_dirty_assistant_done(tmp_path, monkeypatch):
+    session = _session(tmp_path, monkeypatch, _Scripted([
+        DriverResponse(
+            text="",
+            error="OpenAI chat finished with finish_reason=error",
+            tokens_out=0,
+            tokens_in=0,
+            latency_ms=204700.0,
+            meta={
+                "finish_reason": "error",
+                "stream_terminal": "incomplete",
+                "stream_started": True,
+                "tool_calls": [],
+            },
+        ),
+    ]), sid="sess-drop")
+    events = list(session.send("hello"))
+    err = next(e for e in events if e.kind == "error")
+    assert err.data.get("terminal_cause") == "provider_eof"
+    assert err.data.get("finish_reason") == "error"
+    assert "connection" not in str(err.data.get("error") or "").lower()
+    _assert_dirty_settle(events, tmp_path, "sess-drop", cause="provider_eof")
 
 
 def test_text_only_missing_finish_is_unspecified_error(tmp_path, monkeypatch):
@@ -163,9 +194,9 @@ def test_text_only_missing_finish_is_unspecified_error(tmp_path, monkeypatch):
         ),
     ]))
     events = list(session.send("hello"))
-    kinds = [e.kind for e in events]
-    assert "assistant_done" not in kinds
-    assert "error" in kinds
+    err = next(e for e in events if e.kind == "error")
+    assert err.data.get("terminal_cause") == "unspecified"
+    _assert_dirty_settle(events, tmp_path, "sess-term", cause="unspecified")
 
 
 def test_natural_stop_emits_assistant_done_with_cause(tmp_path, monkeypatch):
@@ -393,8 +424,8 @@ def test_incomplete_tool_args_never_reach_execute(tmp_path, monkeypatch):
     ]))
     events = list(session.send("read it"))
     assert called["n"] == 0
-    assert "assistant_done" not in [e.kind for e in events]
     assert any(e.kind == "error" for e in events)
+    _assert_dirty_settle(events, tmp_path, "sess-term", cause="incomplete")
 
 
 def test_context_usage_cannot_be_confused_with_output_terminal(tmp_path, monkeypatch):
@@ -587,8 +618,8 @@ def test_sync_complete_preserves_explicit_length(tmp_path, monkeypatch):
         ),
     ]))
     events = list(session.send("hi"))
-    assert "assistant_done" not in [e.kind for e in events]
     assert any(e.kind == "error" for e in events)
+    _assert_dirty_settle(events, tmp_path, "sess-term", cause="length")
 
 
 class _CursorLike:
@@ -650,8 +681,6 @@ class _CursorAcpLike:
 def test_cursor_acp_stamped_success_emits_assistant_done_and_records_wire(
     tmp_path, monkeypatch,
 ):
-    from harness.stream_performance_store import StreamPerformanceReceiptStore
-
     session = _session(tmp_path, monkeypatch, _CursorAcpLike([
         DriverResponse(
             text="The handler should land here.",
@@ -684,7 +713,7 @@ def test_cursor_acp_stamped_success_emits_assistant_done_and_records_wire(
     assert rows[0]["terminal_cause"] == "natural"
 
 
-def test_cursor_acp_incomplete_and_error_do_not_emit_assistant_done(
+def test_cursor_acp_incomplete_and_error_emit_dirty_assistant_done(
     tmp_path, monkeypatch,
 ):
     executed = {"n": 0}
@@ -714,10 +743,10 @@ def test_cursor_acp_incomplete_and_error_do_not_emit_assistant_done(
         ),
     ]), sid="sess-acp-len")
     length_events = list(length.send("write a long essay"))
-    assert "assistant_done" not in [e.kind for e in length_events]
     length_err = next(e for e in length_events if e.kind == "error")
     assert length_err.data.get("terminal_cause") == "length"
     assert executed["n"] == 0
+    _assert_dirty_settle(length_events, tmp_path, "sess-acp-len", cause="length")
 
     failed = _session(tmp_path, monkeypatch, _CursorAcpLike([
         DriverResponse(
@@ -739,10 +768,10 @@ def test_cursor_acp_incomplete_and_error_do_not_emit_assistant_done(
         ),
     ]), sid="sess-acp-err")
     fail_events = list(failed.send("continue"))
-    assert "assistant_done" not in [e.kind for e in fail_events]
     fail_err = next(e for e in fail_events if e.kind == "error")
     assert fail_err.data.get("terminal_cause") == "transport_error"
     assert executed["n"] == 0
+    _assert_dirty_settle(fail_events, tmp_path, "sess-acp-err", cause="transport_error")
 
 
 def test_requires_explicit_terminal_rejects_implicit_envelope_natural(tmp_path, monkeypatch):
@@ -760,10 +789,9 @@ def test_requires_explicit_terminal_rejects_implicit_envelope_natural(tmp_path, 
 
     session = _session(tmp_path, monkeypatch, _NetworkPilot())
     events = list(session.send("hi"))
-    kinds = [e.kind for e in events]
-    assert "assistant_done" not in kinds
     err = next(e for e in events if e.kind == "error")
     assert err.data.get("terminal_cause") == "unspecified"
+    _assert_dirty_settle(events, tmp_path, "sess-term", cause="unspecified")
 
 
 def test_named_model_error_carries_terminal_cause_not_generic(tmp_path, monkeypatch):
@@ -785,7 +813,7 @@ def test_named_model_error_carries_terminal_cause_not_generic(tmp_path, monkeypa
     assert err.data.get("terminal_cause") == "length"
     assert err.data.get("finish_reason") == "length"
     assert "connection" not in str(err.data.get("error") or "").lower()
-    assert "assistant_done" not in [e.kind for e in events]
+    _assert_dirty_settle(events, tmp_path, "sess-term", cause="length")
 
 
 def test_production_drivers_use_explicit_terminal_flag_not_class_names():

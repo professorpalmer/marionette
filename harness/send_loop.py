@@ -60,6 +60,7 @@ from .send_loop_phases import (
     dispatch_pilot_provider_call,
     emit_classified_provider_error,
     drain_idle_turn,
+    finalize_blocked_provider_turn,
     emit_loop_exit_close,
     emit_stagnation_halt,
     finalize_assistant_turn,
@@ -1358,10 +1359,28 @@ class SendLoopMixin:
 
             if resp and resp.error:
                 yield from emit_classified_provider_error(self, resp)
+                yield from finalize_blocked_provider_turn(
+                    self,
+                    getattr(self, "_last_provider_terminal", None),
+                    user_message=user_message,
+                    step=step,
+                    swarms=swarms,
+                    turn_prose=turn_prose,
+                    turn_findings=turn_findings,
+                )
                 return
 
             last_classified, blocked = yield from apply_provider_terminal(self, resp)
             if blocked:
+                yield from finalize_blocked_provider_turn(
+                    self,
+                    last_classified,
+                    user_message=user_message,
+                    step=step,
+                    swarms=swarms,
+                    turn_prose=turn_prose,
+                    turn_findings=turn_findings,
+                )
                 return
 
             is_native = False

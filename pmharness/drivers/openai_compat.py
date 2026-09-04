@@ -29,7 +29,7 @@ _SUCCESS_CHAT_FINISH = frozenset({"stop", "stop_sequence", "end_turn"})
 _TOOL_CHAT_FINISH = frozenset({"tool_calls", "function_call"})
 _LENGTH_CHAT_FINISH = frozenset({"length", "max_tokens", "max_output_tokens"})
 _FILTER_CHAT_FINISH = frozenset({"content_filter"})
-_INCOMPLETE_CHAT_FINISH = frozenset({"incomplete", "empty"})
+_INCOMPLETE_CHAT_FINISH = frozenset({"incomplete", "empty", "error"})
 
 
 def _norm_chat_finish(finish) -> str:
