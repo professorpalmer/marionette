@@ -430,6 +430,44 @@ def finalize_blocked_provider_turn(
     )
 
 
+def settle_provider_step_terminal(
+    session: Any,
+    resp: Any,
+    *,
+    user_message: str,
+    step: int,
+    swarms: Any,
+    turn_prose: list,
+    turn_findings: list,
+) -> Iterator[Any]:
+    """Classify the provider close; dirty-finalize when the step is blocked."""
+    if resp and getattr(resp, "error", None):
+        yield from emit_classified_provider_error(session, resp)
+        classified = getattr(session, "_last_provider_terminal", None)
+        yield from finalize_blocked_provider_turn(
+            session,
+            classified,
+            user_message=user_message,
+            step=step,
+            swarms=swarms,
+            turn_prose=turn_prose,
+            turn_findings=turn_findings,
+        )
+        return classified, True
+    classified, blocked = yield from apply_provider_terminal(session, resp)
+    if blocked:
+        yield from finalize_blocked_provider_turn(
+            session,
+            classified,
+            user_message=user_message,
+            step=step,
+            swarms=swarms,
+            turn_prose=turn_prose,
+            turn_findings=turn_findings,
+        )
+    return classified, blocked
+
+
 def _response_error_text(resp: Any) -> str:
     try:
         error = getattr(resp, "error", None)
