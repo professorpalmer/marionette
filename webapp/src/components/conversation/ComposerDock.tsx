@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { api, type Config, type ContextUsageResponse, type Job } from "../../lib/api";
 import PilotPicker from "../PilotPicker";
+import SwarmReasoningPicker from "../SwarmReasoningPicker";
 import WorkspaceChip from "./WorkspaceChip";
 import ComposerContextMenu from "./ComposerContextMenu";
 import ComposerActivityRail from "./ComposerActivityRail";
@@ -1041,6 +1042,7 @@ export default function ComposerDock({
             <div className="pilot-picker-slot">
               <PilotPicker config={config} />
             </div>
+            <SwarmReasoningPicker config={config} />
             <button
               type="button"
               onClick={() => {
