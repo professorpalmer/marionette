@@ -73,6 +73,9 @@ def test_get_config_and_settings(monkeypatch):
     assert payload["agentic_ready"] is False
     assert isinstance(payload.get("model_labels"), dict)
     assert isinstance(payload.get("key_bootstrap_issues"), list)
+    assert payload.get("swarm_reasoning_effort") in (
+        "none", "low", "medium", "high", "xhigh", "max",
+    )
     assert get_settings(svc)[1]["budget"] == 3
 
 
@@ -220,6 +223,13 @@ def test_post_settings_browser_real_profile_roundtrip(monkeypatch):
     assert code == 200
     assert dict(calls["persist"])["HARNESS_BROWSER_REAL_PROFILE"] == "0"
     assert cleaned == [True]
+
+
+def test_post_settings_persists_swarm_reasoning_effort():
+    svc, _, _, calls = _svc()
+    code, _ = post_settings({"swarm_reasoning_effort": "high"}, svc)
+    assert code == 200
+    assert dict(calls["persist"])["HARNESS_SWARM_REASONING_EFFORT"] == "high"
 
 
 def test_post_settings_bad_budget():

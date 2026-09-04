@@ -267,6 +267,10 @@ class PilotAction:
     # so the product path keeps its inline default (env key wiring). Never
     # inferred from goal prose.
     worker_mode: str = ""
+    # run_swarm / run_implement / run_parallel: optional per-dispatch worker
+    # reasoning override. Empty means the Settings blanket (factory medium).
+    # Not the chat-pilot picker.
+    reasoning_effort: str = ""
     # Optional explicit acceptance criteria for swarm/parallel analysis.
     # Never inferred from goal prose — only an explicit list/string field.
     acceptance_criteria: list = field(default_factory=list)
@@ -522,6 +526,32 @@ def _coerce_swarm_worker_mode(raw: Optional[dict], arguments: Optional[dict]) ->
     return ""
 
 
+def _coerce_worker_reasoning_effort(raw: Optional[dict], arguments: Optional[dict]) -> str:
+    """Explicit worker reasoning pin only. Invalid or missing becomes empty."""
+    from harness.reasoning_effort import REASONING_EFFORT_LEVELS
+
+    blob = raw if isinstance(raw, dict) else {}
+    args = arguments if isinstance(arguments, dict) else {}
+    cand = str(
+        blob.get("reasoning_effort") or args.get("reasoning_effort") or ""
+    ).strip().lower()
+    if cand in REASONING_EFFORT_LEVELS:
+        return cand
+    return ""
+
+
+def _worker_reasoning_effort_schema() -> dict:
+    return {
+        "type": "string",
+        "enum": ["none", "low", "medium", "high", "xhigh", "max"],
+        "description": (
+            "Optional per-dispatch worker reasoning override. Omit to use the "
+            "Settings swarm/worker effort (factory medium). This is not the "
+            "chat-pilot picker."
+        ),
+    }
+
+
 def from_wire(
     kind: str,
     raw: Optional[dict] = None,
@@ -723,6 +753,9 @@ def from_wire(
     worker_mode = ""
     if kind == "run_swarm":
         worker_mode = _coerce_swarm_worker_mode(raw, arguments)
+    reasoning_effort = ""
+    if kind in ("run_swarm", "run_implement", "run_parallel"):
+        reasoning_effort = _coerce_worker_reasoning_effort(raw, arguments)
 
     memory_action = ""
     memory_content = ""
@@ -805,6 +838,7 @@ def from_wire(
         repo=str(repo_arg),
         model=str(model),
         worker_mode=str(worker_mode),
+        reasoning_effort=str(reasoning_effort),
         acceptance_criteria=list(acceptance_criteria),
         start_line=_optional_int(raw.get("start_line")),
         limit=_optional_int(raw.get("limit")),
@@ -1427,6 +1461,7 @@ def build_tools_schema(
                                 "subprocess only when isolated workers are required."
                             ),
                         },
+                        "reasoning_effort": _worker_reasoning_effort_schema(),
                         "model": {
                             "type": "string",
                             "description": _run_swarm_model_pin_description(),
@@ -1648,6 +1683,7 @@ def build_tools_schema(
                         "adapter": {"type": "string", "description": "Optional edit engine. Default is 'agentic' -- Puppetmaster's standalone keys-only worker (routes directly through your provider API, no external CLI). 'native' forces Marionette's own richer pilot loop. 'cursor'/'codex'/'claude-code' use those external agent CLIs when installed."},
                         "model": {"type": "string", "description": "Optional strict agentic worker model pin (registry id or provider/model, for example openrouter/stealth/ox-alpha). A model pin implies adapter=agentic, never falls back, and must be omitted for normal auto-routing."},
                         "mode": {"type": "string", "enum": ["implement", "analysis", "review"], "description": "Worker execution mode: 'implement' (expects a patch; default) or 'analysis'/'review' (read-only report; empty diff is success)."},
+                        "reasoning_effort": _worker_reasoning_effort_schema(),
                         "repo": {"type": "string", "description": "Optional absolute path to a DIFFERENT git repository to run this implementation in (defaults to the open workspace). Use when the task edits a repo other than the current one. Must be a git work tree."}
                     },
                     "required": ["goal"]
@@ -1683,6 +1719,7 @@ def build_tools_schema(
                         "adapter": {"type": "string", "description": "Optional edit engine (default 'agentic' -- standalone keys-only; 'native' for the richer pilot; 'cursor'/'codex'/'claude-code' for external CLIs when installed)"},
                         "model": {"type": "string", "description": "Optional strict agentic model pin shared by every child goal (registry id or provider/model). Implies adapter=agentic and disables fallback/auto-substitution."},
                         "mode": {"type": "string", "enum": ["implement", "analysis", "review"], "description": "Worker execution mode: 'implement' (can edit) or 'analysis'/'review' (read-only)"},
+                        "reasoning_effort": _worker_reasoning_effort_schema(),
                         "repo": {"type": "string", "description": "Optional absolute path to a DIFFERENT git repository to run this implementation in (defaults to the open workspace). Use when the task edits a repo other than the current one. Must be a git work tree."},
                         "acceptance_criteria": {
                             "type": "array",
@@ -2791,6 +2828,7 @@ You have direct access to a local CodeGraph-indexed workspace and can explore/ed
 - `run_swarm`: dispatch a parallel agent swarm for complex/broad investigations. Requires `goal`. One worker runs per role -- for a broad ask (audit, "review the platform", "find ways to improve quality/robustness/scale") pass SEVERAL `roles` (explore, pipeline-mapper, decision-explainer, conflict-auditor, test-coverage-reviewer) so it fans out into real parallel coverage; pass all five for a full audit. Omit roles only for a single narrow question. Prefer omitting `model` so the harness auto-routes among currently keyed agentic worker providers (ChatGPT Codex OAuth, OpenCode Go, OpenRouter, …). Pass `model` only when the user names a worker from the live agentic catalog in the tool schema; session pilot ids (openai-codex:…, cursor/…, codex/…) remap to matching worker rows when present. Unknown pins demote to auto-route; they do not fail the swarm. Prompt text alone does not pin a model. To audit a DIFFERENT checkout than the open workspace, pass `repo`=<absolute git path>: the workers read that subject, while your own writes/edits/commands stay in the open session workspace.
 - `run_implement`: dispatch an edit-capable worker that edits the repo in an isolated worktree and produces a reviewable patch. Requires `goal`. Default engine is standalone `agentic` (routes directly through your provider keys, no external CLI); pass `adapter` only to force a specific engine. Optional `mode` (`implement` default, or `analysis`/`review` for read-only reports).
 - `run_parallel`: dispatch multiple Puppetmaster workers concurrently. Requires `goals` as a JSON array of 2-8 independent goal strings (example: ["Add unit tests for auth.py", "Document the API routes in README"]), optional `adapter`, optional `mode`.
+- Worker `reasoning_effort` (`none`/`low`/`medium`/`high`/`xhigh`/`max`) on `run_swarm` / `run_implement` / `run_parallel` pins that one dispatch. Omit it to use Settings worker reasoning (factory medium). This is not the chat-pilot picker.
 - `route_task`: preview which model the router would pick + estimated cost for a given instruction without executing it. Requires `instruction`.
 - `web_search`: search the internet and return top results. Requires `query`.
 - `web_fetch`: read a web page's text contents. Requires `url`.

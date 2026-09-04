@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 DEFAULT_SESSION_LIMIT = 20
-PIN_FALLBACK = "puppetmaster-ai==1.22.46"
+PIN_FALLBACK = "puppetmaster-ai==1.22.47"
 _PIN_RE = re.compile(r"puppetmaster-ai==[0-9]+(?:\.[0-9]+)*")
 _SECRET_KEY_FRAGMENTS = (
     "api_key",

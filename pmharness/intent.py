@@ -21,6 +21,8 @@ VALID_ACTIONS = ("run_swarm", "run_prewalk", "answer", "stop")
 # Actions that dispatch real Puppetmaster work (vs terminal answer/stop).
 DISPATCH_ACTIONS = frozenset({"run_swarm", "run_prewalk"})
 
+VALID_REASONING_EFFORTS = ("none", "low", "medium", "high", "xhigh", "max")
+
 # Goal phrasing that means plan-then-implement (prewalk), not a read-only swarm.
 # Deterministic substring match -- no model, no PM -- so classification stays a
 # pure function of the goal text (unit-testable, hermetic).
@@ -226,6 +228,9 @@ class DriverIntent:
     # workspace. Read-only for the pilot: it pins worker cwd and brief, never
     # the session's own write surface.
     repo: Optional[str] = None
+    # Optional per-dispatch worker reasoning override. Empty means the harness
+    # Settings blanket (factory medium). Not the chat-pilot picker.
+    reasoning_effort: Optional[str] = None
     # Free-form, model-supplied; never trusted for control flow, kept for audit.
     raw: Optional[dict] = field(default=None, compare=False, repr=False)
 
@@ -310,6 +315,13 @@ def validate_intent(payload: Any) -> DriverIntent:
 
     subject_repo = str(payload.get("repo") or "").strip() or None
 
+    reasoning_effort = None
+    effort_raw = payload.get("reasoning_effort")
+    if effort_raw is not None:
+        cand = str(effort_raw).strip().lower()
+        if cand in VALID_REASONING_EFFORTS:
+            reasoning_effort = cand
+
     return DriverIntent(
         action=action,
         goal=goal,
@@ -319,6 +331,7 @@ def validate_intent(payload: Any) -> DriverIntent:
         model=model,
         acceptance_criteria=acceptance_criteria,
         repo=subject_repo,
+        reasoning_effort=reasoning_effort,
         raw=payload if isinstance(payload, dict) else None,
     )
 

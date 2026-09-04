@@ -26,6 +26,7 @@ from harness.pilot import (
 )
 from harness.send_loop_actions import execute_turn_actions
 from harness.send_loop_dispatch import (
+    _intent_worker_kwargs,
     dispatch_implement_action,
     dispatch_parallel_action,
     dispatch_swarm_action,
@@ -463,6 +464,37 @@ def test_run_swarm_from_wire_copies_worker_mode():
     assert bad.worker_mode == ""
     omitted = from_wire("run_swarm", {"goal": "audit auth"})
     assert omitted.worker_mode == ""
+
+
+def test_dispatch_from_wire_copies_reasoning_effort():
+    act = from_wire(
+        "run_swarm",
+        {"goal": "audit auth", "reasoning_effort": "high"},
+    )
+    assert act.reasoning_effort == "high"
+    nested = from_wire(
+        "run_implement",
+        {"goal": "fix cache", "arguments": {"reasoning_effort": "xhigh"}},
+    )
+    assert nested.reasoning_effort == "xhigh"
+    bad = from_wire(
+        "run_parallel",
+        {"goals": ["a", "b"], "reasoning_effort": "ludicrous"},
+    )
+    assert bad.reasoning_effort == ""
+    omitted = from_wire("run_swarm", {"goal": "audit auth"})
+    assert omitted.reasoning_effort == ""
+    assert _intent_worker_kwargs(act) == {"reasoning_effort": "high"}
+    assert _intent_worker_kwargs(omitted) == {}
+
+
+def test_dispatch_schema_includes_worker_reasoning_effort():
+    schema = build_tools_schema(no_delegation=False)
+    for name in ("run_swarm", "run_implement", "run_parallel"):
+        tool = next(t for t in schema if (t.get("function") or {}).get("name") == name)
+        effort = tool["function"]["parameters"]["properties"]["reasoning_effort"]
+        assert effort["enum"] == ["none", "low", "medium", "high", "xhigh", "max"]
+        assert "Settings" in effort["description"]
 
 
 def test_run_parallel_schema_states_goals_array_contract():
