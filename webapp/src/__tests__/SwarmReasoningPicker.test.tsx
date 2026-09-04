@@ -27,6 +27,7 @@ describe("SwarmReasoningPicker", () => {
         }}
       />,
     );
+    expect(screen.getByTestId("swarm-reasoning-picker")).toBeInTheDocument();
     expect(screen.getByText("Workers")).toBeInTheDocument();
     expect(screen.getByText("High")).toBeInTheDocument();
     expect(screen.queryByText("Low")).not.toBeInTheDocument();

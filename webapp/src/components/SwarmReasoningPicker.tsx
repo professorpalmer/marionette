@@ -4,7 +4,6 @@ import { api, type Config, type ReasoningEffort } from "../lib/api";
 import { REASONING_LEVELS, labelForEffort } from "../lib/reasoningSupport";
 import { useOverlayFocus } from "../lib/overlayFocus";
 
-/** Composer chip for swarm/worker effort. Separate from the pilot picker. */
 export default function SwarmReasoningPicker({ config }: { config: Config | null }) {
   const [effort, setEffort] = useState<ReasoningEffort>("medium");
   const [open, setOpen] = useState(false);
@@ -47,7 +46,7 @@ export default function SwarmReasoningPicker({ config }: { config: Config | null
   };
 
   return (
-    <div ref={rootRef} className="relative shrink-0">
+    <div ref={rootRef} className="relative shrink-0" data-testid="swarm-reasoning-picker">
       <button
         type="button"
         onClick={() => setOpen((prev) => !prev)}
