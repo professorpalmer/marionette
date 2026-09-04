@@ -35,13 +35,18 @@ function resolveInspectUserDataDir(env = process.env) {
   return "";
 }
 
-function buildPuppetmasterBackendEnv(env, { stateDir, modelsPath }) {
+function buildPuppetmasterBackendEnv(env, options = {}) {
   const out = {
     ...env,
-    PUPPETMASTER_STATE_DIR: stateDir,
-    PUPPETMASTER_MODELS_PATH: modelsPath,
+    PUPPETMASTER_MODELS_PATH: options.modelsPath,
   };
   delete out.PUPPETMASTER_ONLY_ADAPTERS;
+  delete out.PUPPETMASTER_DISABLED_PROVIDERS;
+  if (options.stateDir) {
+    out.PUPPETMASTER_STATE_DIR = options.stateDir;
+  } else {
+    delete out.PUPPETMASTER_STATE_DIR;
+  }
   return out;
 }
 

@@ -844,8 +844,8 @@ async function _startBackendOnce() {
     // from boot restore + PROJECTS recents so Marionette never auto-opens itself.
     MARIONETTE_APP_ROOT: repoRoot,
   }, {
-    stateDir: harnessStateDir,
     modelsPath: marionetteModels,
+    ...(isInspectMode(process.env) ? { stateDir: harnessStateDir } : {}),
   });
   try {
     const { safeStorage } = require("electron");
