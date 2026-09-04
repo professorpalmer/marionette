@@ -182,7 +182,7 @@ def test_cancelled_worker_adds_late_provenance_without_enqueuing_or_applying(
         "cancelled-worker", "audit", role="analysis", cwd=str(repo), engine="native"
     )
     apply_calls = []
-    host._apply_worker_patch = lambda *args: apply_calls.append(args)
+    host._apply_worker_patch = lambda *args, **kwargs: apply_calls.append((args, kwargs))
 
     def run_worker(*_args, **_kwargs):
         assert host.cancel_local_job("cancelled-worker") is True

@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.46` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.411, deliberately pre-1.0. Rides puppetmaster-ai==1.22.46. `scripts/dev.sh` stays the replace launcher; `scripts/inspect.sh` is the supported side-by-side fixture (isolated state/userData, no credential fold, no production backend marker). Worker patches land in the validated target repo, including `run_parallel`. Package scripts pin `NODE_ENV` so a production parent shell cannot empty the dest renderer or trip React `act`. 1.22.46 names selected-model usage cost instead of actual spend.
+> Status: v0.9.411, deliberately pre-1.0. Rides puppetmaster-ai==1.22.46. `scripts/dev.sh` stays the replace launcher; `scripts/inspect.sh` is the supported side-by-side fixture (isolated state/userData, no credential fold, no production backend marker). Worker patches land in the validated target repo, including `run_parallel`. Package scripts pin `NODE_ENV` so a production parent shell cannot empty the dev renderer or trip React `act`. 1.22.46 names selected-model usage cost instead of actual spend.
 
 ## Documentation
 

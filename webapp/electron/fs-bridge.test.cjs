@@ -41,6 +41,7 @@ describe("fs-bridge revealInFolder", () => {
           webUtils: { getPathForFile: () => "" },
         };
       },
+      process: { env: {} },
       Uint8Array,
     });
     assert.ok(exposed, "preload must expose harnessIPC inside Electron's sandbox");

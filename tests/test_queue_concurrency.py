@@ -124,7 +124,7 @@ def test_queue_drains_while_swarm_pending(tmp_path):
         
         original_await_and_apply = session._await_and_apply_job
         
-        def mock_await_and_apply(job_id, state_dir=None, objective=""):
+        def mock_await_and_apply(job_id, state_dir=None, objective="", **_kwargs):
             block_event.wait()
             return {
                 "job_id": job_id,
@@ -204,7 +204,7 @@ def test_apply_lock_serializes_background_applies(tmp_path):
     lock = threading.Lock()
     
     # We instrument _apply_worker_patch to record active parallel applications
-    def mock_apply_worker_patch(artifacts, job_id=""):
+    def mock_apply_worker_patch(artifacts, job_id="", repo=""):
         nonlocal active_applies
         with lock:
             active_applies += 1

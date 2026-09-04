@@ -12,6 +12,13 @@ const {
   stateFileSearchDirs,
 } = require("./inspect-isolation.cjs");
 
+test("preload inspect flag stays env-only and never requires inspect-isolation", () => {
+  const preload = fs.readFileSync(path.join(__dirname, "preload.cjs"), "utf8");
+  assert.match(preload, /__HARNESS_INSPECT__/);
+  assert.doesNotMatch(preload, /inspect-isolation/);
+  assert.doesNotMatch(preload, /node:fs/);
+});
+
 test("isInspectMode accepts 1/true/yes only", () => {
   assert.equal(isInspectMode({}), false);
   assert.equal(isInspectMode({ HARNESS_INSPECT: "0" }), false);
