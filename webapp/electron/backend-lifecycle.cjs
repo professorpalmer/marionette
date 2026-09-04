@@ -18,10 +18,11 @@ function shouldUnlinkBackendMarker(backendOwned) {
 }
 
 /**
- * Classify a backend child exit for logging + respawn policy.
+ * Classify a backend child exit for logging + next action.
  * - ignore: adopted, intentional Electron teardown, or quit in progress
  * - intentional_restart: backend wrote a restart signal (POST /api/restart)
- * - unexpected: owned crash — respawn + crash-loop accounting
+ *   — relaunch the whole Electron app (backend + renderer boot together)
+ * - unexpected: owned crash — respawn the Python child only
  */
 function classifyBackendExit({
   backendRef,
@@ -38,13 +39,27 @@ function classifyBackendExit({
 }
 
 /**
- * True when a backend child exit should trigger auto-respawn.
+ * What Electron should do after classifyBackendExit.
+ * Crash keeps the window and respawns Python. Self-edit /api/restart quits
+ * and reopens so the renderer cannot come up against a half-booted backend.
+ */
+function actionAfterBackendExit(kind) {
+  if (kind === "unexpected") return "respawn_backend";
+  if (kind === "intentional_restart") return "relaunch_app";
+  return "none";
+}
+
+/**
+ * True when a backend child exit should spawn a replacement Python child.
  * Intentional Electron teardown nulls `backend` before exit; adopted backends
  * are never owned and must not fight another instance's marker.
  */
 function shouldRespawnAfterBackendExit(args) {
-  const kind = classifyBackendExit(args);
-  return kind === "unexpected" || kind === "intentional_restart";
+  return actionAfterBackendExit(classifyBackendExit(args)) === "respawn_backend";
+}
+
+function shouldRelaunchAppAfterBackendExit(args) {
+  return actionAfterBackendExit(classifyBackendExit(args)) === "relaunch_app";
 }
 
 /**
@@ -188,7 +203,9 @@ module.exports = {
   WINDOWS_SHUTDOWN_GRACE_MS,
   shouldUnlinkBackendMarker,
   classifyBackendExit,
+  actionAfterBackendExit,
   shouldRespawnAfterBackendExit,
+  shouldRelaunchAppAfterBackendExit,
   isFreshIntentionalRestartSignal,
   shouldCountTowardCrashLoop,
   windowsBackendShutdownPlan,

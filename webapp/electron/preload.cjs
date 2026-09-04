@@ -108,10 +108,9 @@ contextBridge.exposeInMainWorld("harnessIPC", {
       return () => ipcRenderer.removeListener("updates:available", handler);
     },
   },
-  // Live self-editing (Hermes-style): toggle running the backend from the
-  // editable source checkout, and restart it to apply self-edits without a
-  // full app relaunch. restart() reloads the renderer once the fresh backend
-  // is up; the conversation resumes from the persisted transcript.
+  // Live self-editing: the backend always runs from the source checkout.
+  // restart() persists, then quits and reopens the whole app so backend +
+  // renderer boot together. The conversation comes back from the transcript.
   selfDev: {
     get: () => ipcRenderer.invoke("harness:selfDev:get"),
     set: (enabled) => ipcRenderer.invoke("harness:selfDev:set", enabled),

@@ -5,7 +5,9 @@ const assert = require("node:assert/strict");
 const {
   shouldUnlinkBackendMarker,
   classifyBackendExit,
+  actionAfterBackendExit,
   shouldRespawnAfterBackendExit,
+  shouldRelaunchAppAfterBackendExit,
   isFreshIntentionalRestartSignal,
   shouldCountTowardCrashLoop,
   windowsBackendShutdownPlan,
@@ -83,17 +85,19 @@ test("shouldRespawnAfterBackendExit: owned unexpected exit", () => {
   );
 });
 
-test("shouldRespawnAfterBackendExit: intentional /api/restart still respawns", () => {
-  assert.equal(
-    shouldRespawnAfterBackendExit({
-      backendRef: {},
-      backendOwned: true,
-      quitting: false,
-      restarting: false,
-      intentionalRestart: true,
-    }),
-    true,
-  );
+test("actionAfterBackendExit: crash respawns backend; /api/restart relaunches the app", () => {
+  const restartArgs = {
+    backendRef: {},
+    backendOwned: true,
+    quitting: false,
+    restarting: false,
+    intentionalRestart: true,
+  };
+  assert.equal(actionAfterBackendExit("intentional_restart"), "relaunch_app");
+  assert.equal(actionAfterBackendExit("unexpected"), "respawn_backend");
+  assert.equal(actionAfterBackendExit("ignore"), "none");
+  assert.equal(shouldRespawnAfterBackendExit(restartArgs), false);
+  assert.equal(shouldRelaunchAppAfterBackendExit(restartArgs), true);
   assert.equal(shouldCountTowardCrashLoop("intentional_restart"), false);
   assert.equal(shouldCountTowardCrashLoop("unexpected"), true);
 });

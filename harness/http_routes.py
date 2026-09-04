@@ -460,7 +460,7 @@ def _post_restart(handler: Any, body: dict, svc: Any, mcp_factory: Any) -> Any:
     except Exception as exc:
         svc.diag("server.self_edit_restart_mcp", exc)
     # Signal Electron before self-terminate so the child-exit handler treats
-    # this as an intentional restart (not an unexpected crash).
+    # this as an intentional restart and relaunches the app (not a crash).
     try:
         write_intentional_restart_signal()
     except Exception as exc:

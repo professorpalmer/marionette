@@ -240,7 +240,7 @@ def test_session_state_reports_resume_pending_after_explicit_latch():
 
 
 def test_resume_latch_survives_same_app_run_reload(monkeypatch, tmp_path):
-    """Self-edit backend respawn: same HARNESS_APP_RUN_ID still adopts the latch."""
+    """Same-process crash respawn: same HARNESS_APP_RUN_ID still adopts the latch."""
     import harness.server as srv
 
     monkeypatch.setenv("HARNESS_APP_RUN_ID", "run-same")
@@ -261,7 +261,7 @@ def test_resume_latch_survives_same_app_run_reload(monkeypatch, tmp_path):
 
 
 def test_resume_latch_rejected_after_app_relaunch(monkeypatch, tmp_path):
-    """Update / full quit: new HARNESS_APP_RUN_ID must clear a leftover latch."""
+    """Settings / update / full quit: new HARNESS_APP_RUN_ID clears a leftover latch."""
     import harness.server as srv
 
     monkeypatch.setenv("HARNESS_APP_RUN_ID", "run-old")
