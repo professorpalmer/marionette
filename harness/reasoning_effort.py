@@ -15,6 +15,8 @@ REASONING_EFFORT_LEVELS: Tuple[str, ...] = (
 )
 
 DEFAULT_CODEX_REASONING_EFFORT = "low"
+DEFAULT_SWARM_REASONING_EFFORT = "medium"
+SWARM_REASONING_EFFORT_ENV = "HARNESS_SWARM_REASONING_EFFORT"
 
 REASONING_EFFORT_LABELS = {
     "none": "None",
@@ -57,6 +59,13 @@ def current_reasoning_effort() -> str:
     return normalize_reasoning_effort(
         os.environ.get("HARNESS_CODEX_REASONING_EFFORT"),
         default=DEFAULT_CODEX_REASONING_EFFORT,
+    )
+
+
+def current_swarm_reasoning_effort() -> str:
+    return normalize_reasoning_effort(
+        os.environ.get(SWARM_REASONING_EFFORT_ENV),
+        default=DEFAULT_SWARM_REASONING_EFFORT,
     )
 
 

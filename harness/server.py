@@ -3016,7 +3016,10 @@ def _settings_compaction_residual():
 def _get_settings_dict():
     from harness.browser_real_profile import real_profile_enabled
     from harness.hash_edit import hash_edit_enabled
-    from harness.reasoning_effort import current_reasoning_effort
+    from harness.reasoning_effort import (
+        current_reasoning_effort,
+        current_swarm_reasoning_effort,
+    )
     from harness.session_trace import session_trace_export_enabled
 
     reach = _cfg.reach
@@ -3054,6 +3057,7 @@ def _get_settings_dict():
             os.environ.get("HARNESS_WORKER_TOKEN_BUDGET", "").strip() or "250000"
         ),
         "reasoning_effort": current_reasoning_effort(),
+        "swarm_reasoning_effort": current_swarm_reasoning_effort(),
         "reasoning_support": reasoning_support,
         "compactionResidual": _settings_compaction_residual(),
         "state_dir": _session.state_dir,

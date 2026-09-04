@@ -423,8 +423,14 @@ def _explicit_swarm_worker_mode(act) -> str:
 
 
 def _intent_worker_kwargs(act) -> dict:
+    out = {}
     wm = _explicit_swarm_worker_mode(act)
-    return {"worker_mode": wm} if wm else {}
+    if wm:
+        out["worker_mode"] = wm
+    effort = str(getattr(act, "reasoning_effort", "") or "").strip().lower()
+    if effort:
+        out["reasoning_effort"] = effort
+    return out
 
 
 def _no_tool_calls_degrade_note(arts) -> str:

@@ -1308,6 +1308,29 @@ def _build_prewalk_cli_argv(
     return cmd
 
 
+def _payload_with_swarm_reasoning(payload: dict, intent: DriverIntent) -> dict:
+    """Stamp worker reasoning: explicit intent pin, else Settings blanket."""
+    out = dict(payload or {})
+    pin = getattr(intent, "reasoning_effort", None)
+    try:
+        from harness.reasoning_effort import (
+            DEFAULT_SWARM_REASONING_EFFORT,
+            current_swarm_reasoning_effort,
+            normalize_reasoning_effort,
+        )
+    except Exception:
+        if pin:
+            out.setdefault("reasoning_effort", str(pin))
+        return out
+    if pin:
+        out["reasoning_effort"] = normalize_reasoning_effort(
+            pin, default=DEFAULT_SWARM_REASONING_EFFORT,
+        )
+    else:
+        out.setdefault("reasoning_effort", current_swarm_reasoning_effort())
+    return out
+
+
 def _execute_prewalk(
     intent: DriverIntent,
     *,
@@ -1362,7 +1385,9 @@ def _execute_prewalk(
         if criteria and not normalize_acceptance_criteria(payload.get("acceptance_criteria")):
             payload["acceptance_criteria"] = list(criteria)
         stamped = stamp_task_payload(
-            payload, session_id=session_id or "", cwd=repo_cwd or ""
+            _payload_with_swarm_reasoning(payload, intent),
+            session_id=session_id or "",
+            cwd=repo_cwd or "",
         )
         try:
             spec.payload = stamped
@@ -1534,7 +1559,9 @@ def execute_intent(
                     ),
                     adapter="cursor",
                     payload=stamp_task_payload(
-                        cursor_payload, session_id=session_id or "", cwd=repo_cwd
+                        _payload_with_swarm_reasoning(cursor_payload, intent),
+                        session_id=session_id or "",
+                        cwd=repo_cwd,
                     ),
                 ))
             result = Orchestrator(store).run(
@@ -1657,7 +1684,9 @@ def execute_intent(
                     ),
                     adapter=pin_adapter,
                     payload=stamp_task_payload(
-                        base_payload, session_id=session_id or "", cwd=repo_cwd
+                        _payload_with_swarm_reasoning(base_payload, intent),
+                        session_id=session_id or "",
+                        cwd=repo_cwd,
                     ),
                 ))
             result = Orchestrator(store).run(
@@ -1694,7 +1723,9 @@ def execute_intent(
                     ),
                     adapter="openai",
                     payload=stamp_task_payload(
-                        openai_payload, session_id=session_id or "", cwd=repo_cwd
+                        _payload_with_swarm_reasoning(openai_payload, intent),
+                        session_id=session_id or "",
+                        cwd=repo_cwd,
                     ),
                 ))
             # inline: the analysis worker runs in-process so the env-based key

@@ -54,10 +54,15 @@ def get_config(svc: SettingsServices) -> tuple[int, JsonPayload]:
     except Exception:
         edit_engine, agentic_ready, workers, pilot = "native", False, False, False
     try:
-        from ..reasoning_effort import current_reasoning_effort
+        from ..reasoning_effort import (
+            current_reasoning_effort,
+            current_swarm_reasoning_effort,
+        )
         reasoning_effort = current_reasoning_effort()
+        swarm_reasoning_effort = current_swarm_reasoning_effort()
     except Exception:
         reasoning_effort = "low"
+        swarm_reasoning_effort = "medium"
     identity = _backend_source_identity()
     try:
         from ..keys import get_key_bootstrap_issues
@@ -85,6 +90,7 @@ def get_config(svc: SettingsServices) -> tuple[int, JsonPayload]:
         "pilot_ready": pilot,
         "preflight": session.preflight(),
         "reasoning_effort": reasoning_effort,
+        "swarm_reasoning_effort": swarm_reasoning_effort,
         "package_version": identity.get("package_version", ""),
         "checkout_sha": identity.get("checkout_sha", ""),
         "session_trace_export": _session_trace_export_enabled(),
@@ -276,6 +282,17 @@ def post_settings(body: dict, svc: SettingsServices) -> tuple[int, JsonPayload]:
         from ..reasoning_effort import normalize_reasoning_effort
         normalized = normalize_reasoning_effort(body["reasoning_effort"])
         _set_env_setting("HARNESS_CODEX_REASONING_EFFORT", normalized)
+    if "swarm_reasoning_effort" in body:
+        from ..reasoning_effort import (
+            DEFAULT_SWARM_REASONING_EFFORT,
+            SWARM_REASONING_EFFORT_ENV,
+            normalize_reasoning_effort,
+        )
+        normalized = normalize_reasoning_effort(
+            body["swarm_reasoning_effort"],
+            default=DEFAULT_SWARM_REASONING_EFFORT,
+        )
+        _set_env_setting(SWARM_REASONING_EFFORT_ENV, normalized)
     if "compactionResidual" in body:
         from ..compaction_residual import SETTINGS_RESIDUAL_CHOICES
 
