@@ -89,7 +89,11 @@ class ReviewMemoryMixin:
         ]
 
         with self._apply_lock:
-            applied, files_changed, apply_msg = self._apply_worker_patch(mock_artifacts, review.get("job_id", ""))
+            applied, files_changed, apply_msg = self._apply_worker_patch(
+                mock_artifacts,
+                review.get("job_id", ""),
+                repo=review.get("target_repo", ""),
+            )
             cp_id = getattr(self, "_last_checkpoint_id", None)
 
         if applied:

@@ -3535,10 +3535,13 @@ class ConversationalSession(
             self._accumulate_session_meters(cache_read_tokens=sum_cached)
         return (sum_in, sum_out, sum_cached)
 
-    def _apply_worker_patch(self, artifacts: list, job_id: str = "") -> tuple[bool, list[str], str]:
+    def _apply_worker_patch(
+        self, artifacts: list, job_id: str = "", repo: str = "",
+    ) -> tuple[bool, list[str], str]:
         """Finds the patch artifact (type=="patch"), extracts its unified_diff,
         and applies it cleanly/idempotently via git apply to the effective git
-        checkout for ``self.config.repo`` (Home parent → single git child).
+        checkout for the worker repo, falling back to ``self.config.repo``
+        (Home parent → single git child).
         Returns (applied_bool, files_changed, message). Checkpoint id (if any) is stashed on self._last_checkpoint_id.
 
         Resolution is per-operation only — never mutates ``config.repo``.
@@ -3572,13 +3575,14 @@ class ConversationalSession(
                 self._last_checkpoint_id = None
                 return False, [], "analysis/QA role cannot write"
 
-        if not self.config.repo or not os.path.exists(self.config.repo):
+        target_repo = repo or self.config.repo
+        if not target_repo or not os.path.exists(target_repo):
             self._last_checkpoint_id = None
             return False, [], "no workspace directory (config.repo) is open"
 
         # Home / workspace root may not be a git checkout; workers already
         # dispatch into the resolved child — apply must use the same target.
-        repo_root = resolve_effective_repo(self.config.repo)
+        repo_root = resolve_effective_repo(target_repo)
         if not repo_root or not os.path.exists(repo_root):
             self._last_checkpoint_id = None
             return False, [], "no workspace directory (config.repo) is open"
@@ -3884,12 +3888,18 @@ class ConversationalSession(
         except Exception:
             pass
 
-    def _run_swarm_background(self, job_id: str, objective: str, state_dir: Optional[str] = None) -> None:
+    def _run_swarm_background(
+        self, job_id: str, objective: str, state_dir: Optional[str] = None,
+        target_repo: str = "",
+    ) -> None:
         try:
             # CORRECTNESS: Do NOT touch self._history here to maintain single-writer invariant.
             # Background threads are strictly read-only or local-variable-only with respect to transcript memory,
             # ensuring that the self._history shared list is never corrupted by concurrent modifications.
-            res_dict = self._await_and_apply_job(job_id, state_dir=state_dir, objective=objective)
+            res_dict = self._await_and_apply_job(
+                job_id, state_dir=state_dir, objective=objective,
+                target_repo=target_repo,
+            )
             
             # Put result in queue
             self._swarm_results.put({
