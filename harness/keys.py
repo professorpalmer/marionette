@@ -46,6 +46,18 @@ def is_placeholder_credential(value: Optional[str]) -> bool:
 
 _KEYS_FILE = os.path.join(os.path.expanduser("~/.pmharness"), "keys.json")
 
+
+def inspect_mode(env: Optional[dict] = None) -> bool:
+    """True when this process is a fixture inspect instance.
+
+    Inspect instances own an isolated ``HARNESS_STATE_DIR`` and must not fold
+    machine credentials from ``~/.pmharness/keys.json``.
+    """
+    source = env if env is not None else os.environ
+    raw = str(source.get("HARNESS_INSPECT") or "").strip().lower()
+    return raw in ("1", "true", "yes")
+
+
 def get_keys_file_path() -> str:
     """The canonical keys.json Marionette reads and WRITES.
 
@@ -86,6 +98,8 @@ def legacy_keys_file_path() -> str:
     state dirs (same rule as disconnected.json), so tests cannot read the
     developer's actual credentials.
     """
+    if inspect_mode():
+        return ""
     state_dir = os.environ.get("HARNESS_STATE_DIR")
     if not state_dir:
         return ""

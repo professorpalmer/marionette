@@ -1698,6 +1698,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                             job_id,
                             sub_goal,
                             state_dir,
+                            effective_repo,
                             admission_group=f"parallel-{aid}",
                             admission_size=len(goals),
                         ):

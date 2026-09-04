@@ -335,6 +335,70 @@ def test_dispatch_implement_keeps_target_repo_for_patch_landing(tmp_path, monkey
     )
 
 
+def test_dispatch_parallel_keeps_target_repo_for_patch_landing(tmp_path, monkeypatch):
+    import subprocess
+    import harness.send_loop_dispatch as dispatch
+
+    target = tmp_path / "terraform"
+    subprocess.run(["git", "init", str(target)], check=True, capture_output=True)
+    act = PilotAction(
+        kind="run_parallel",
+        goals=["edit terraform"],
+        repo=str(target),
+        adapter="codex",
+    )
+    submit = MagicMock(return_value=True)
+    background = MagicMock()
+    session = SimpleNamespace(
+        config=SimpleNamespace(repo=str(tmp_path), driver="test"),
+        _session_job_ids=[],
+        _append_action_result=MagicMock(),
+        _validate_target_repo=MagicMock(return_value=(str(target), "")),
+        _resolve_requested_implement_adapter=MagicMock(return_value=("codex", "")),
+        _external_adapter_available=MagicMock(return_value=True),
+        _submit_swarm=submit,
+        _run_swarm_background=background,
+        _job_dispatch_label_args=MagicMock(return_value=[]),
+        _swarm_submit_reject_message=MagicMock(return_value="at capacity"),
+        _last_swarm_submit_reason="",
+    )
+    proc = SimpleNamespace(
+        stdout=iter(["started job_abcdef123456\n"]),
+        wait=MagicMock(return_value=0),
+        returncode=0,
+        kill=MagicMock(),
+    )
+
+    def fake_read(p_info):
+        p_info["job_id"] = "job_abcdef123456"
+        p_info["lines"].append("started job_abcdef123456\n")
+
+    monkeypatch.setattr(dispatch, "_puppetmaster_available", lambda: True)
+    monkeypatch.setattr(dispatch, "_non_git_workspace_error", lambda _repo: None)
+    monkeypatch.setattr(dispatch, "read_stdout_thread", fake_read)
+    monkeypatch.setattr(dispatch.subprocess, "Popen", MagicMock(return_value=proc))
+    monkeypatch.setattr(
+        "harness.implement_guards.check_implement_workspace", lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        "harness.implement_guards.check_oversized_single_file_rewrite",
+        lambda *_a, **_k: None,
+    )
+
+    list(dispatch_parallel_action(
+        session, act, "a-par", True, turn_actions=[act], action_idx=0,
+        action_seq=1, step=0, swarms=0,
+    ))
+
+    assert submit.call_args is not None
+    args, kwargs = submit.call_args
+    assert args[0] is background
+    assert args[1] == "job_abcdef123456"
+    assert args[2] == "edit terraform"
+    assert args[4] == str(target)
+    assert kwargs["admission_group"] == "parallel-a-par"
+
+
 def test_dispatch_parallel_requires_goals():
     act = PilotAction(kind="run_parallel", goals=[])
     session = SimpleNamespace(

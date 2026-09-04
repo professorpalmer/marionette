@@ -1,4 +1,6 @@
-# Launch Marionette in dev mode (Vite hot-reload).
+# Replace-the-running-instance dev launcher (Vite hot-reload).
+# For side-by-side feature inspection without touching production, use
+# scripts/inspect.ps1.
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path

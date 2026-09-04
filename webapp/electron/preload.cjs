@@ -2,6 +2,9 @@
 // (lib/transport.ts checks for window.harnessIPC and routes through it). Plus
 // native fs/git bridges for the file-tree and source-control panels.
 const { contextBridge, ipcRenderer, webUtils } = require("electron");
+const { isInspectMode } = require("./inspect-isolation.cjs");
+
+contextBridge.exposeInMainWorld("__HARNESS_INSPECT__", isInspectMode());
 
 let streamSeq = 0;
 
