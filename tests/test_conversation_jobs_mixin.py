@@ -65,8 +65,7 @@ def test_local_jobs_not_folded_into_conversation_jobs():
         assert name not in ConversationJobsMixin.__dict__
 
 
-def test_await_and_apply_job_still_on_session_surface(tmp_path):
-    """Public surface unchanged: session._await_and_apply_job still applies patches."""
+def test_background_job_applies_patch_to_worker_repo(tmp_path):
     subprocess.run(["git", "init"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
@@ -76,8 +75,10 @@ def test_await_and_apply_job_still_on_session_surface(tmp_path):
     subprocess.run(["git", "add", "hello.txt"], cwd=tmp_path, check=True)
     subprocess.run(["git", "commit", "-m", "initial commit"], cwd=tmp_path, check=True)
 
+    active_repo = tmp_path / "active"
+    subprocess.run(["git", "init", str(active_repo)], check=True)
     cfg = HarnessConfig()
-    cfg.repo = str(tmp_path)
+    cfg.repo = str(active_repo)
     session = ConversationalSession(cfg)
     assert session._tokens_used == 0
 
@@ -114,7 +115,10 @@ def test_await_and_apply_job_still_on_session_surface(tmp_path):
         return original_run(cmd, *args, **kwargs)
 
     with patch("subprocess.run", side_effect=mock_subprocess_run):
-        res = session._await_and_apply_job("job_mixin_char_001")
+        session._run_swarm_background(
+            "job_mixin_char_001", "cross-repo edit", target_repo=str(tmp_path),
+        )
+        res = session._swarm_results.get_nowait()["result"]
 
     assert res["job_id"] == "job_mixin_char_001"
     assert res["applied"] is True
@@ -125,8 +129,7 @@ def test_await_and_apply_job_still_on_session_surface(tmp_path):
     assert res["error"] is None
     assert session._tokens_used == 150
     assert file_path.read_text() == "Hello World\nHello New World\n"
-
-
+    assert not (active_repo / "hello.txt").exists()
 def test_drain_swarm_results_characterization():
     """Drain still yields swarm_result + pilot_resume and appends history."""
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())

@@ -41,6 +41,18 @@ const {
 } = require("./renderer-fallback.cjs");
 const { createTranslucencyController } = require("./translucency.cjs");
 const secretVault = require("./secret-vault.cjs");
+const {
+  isInspectMode,
+  pmharnessHome,
+  resolveHarnessStateDir,
+  resolveInspectUserDataDir,
+  stateFileSearchDirs,
+} = require("./inspect-isolation.cjs");
+
+const inspectUserDataDir = resolveInspectUserDataDir();
+if (inspectUserDataDir) {
+  app.setPath("userData", inspectUserDataDir);
+}
 
 // Must run before any git/npm/uv child spawns: on Windows the portable tools
 // installed by first-run bootstrap are only on PATH in-memory, per process.
@@ -68,36 +80,17 @@ app.commandLine.appendSwitch("disable-background-timer-throttling");
 // Must run before app `ready`.
 app.commandLine.appendSwitch("disable-blink-features", "AutomationControlled");
 
-function pmharnessHome() {
-  return path.join(os.homedir(), ".pmharness");
-}
-
-// Mirror harness.server._state_home(): honor HARNESS_STATE_DIR (canonical absolute
-// expansion), then prefer ~/.pmharness/state, then legacy flat ~/.pmharness.
-function resolveHarnessStateDir() {
-  const explicit = (process.env.HARNESS_STATE_DIR || "").trim();
-  if (explicit) {
-    return path.resolve(explicit);
-  }
-  const stateSub = path.join(pmharnessHome(), "state");
-  try {
-    if (fs.statSync(stateSub).isDirectory()) {
-      return stateSub;
-    }
-  } catch {}
-  return pmharnessHome();
-}
-
 // server.py anchors HARNESS_STATE_DIR to ~/.pmharness/state when unset and writes
 // token, backend.json, workspace.json, etc. there. Older installs used flat
 // ~/.pmharness/*. Prefer state/ on read (state first, then legacy) so a second
 // window reusing a live backend adopts the same files the server wrote.
+// Inspect mode is fail-closed: never adopt production backend.json / token.
 function pmharnessStateDir() {
   return resolveHarnessStateDir();
 }
 
 function readPmHarnessStateFile(name) {
-  for (const dir of [resolveHarnessStateDir(), pmharnessHome()]) {
+  for (const dir of stateFileSearchDirs()) {
     try {
       return fs.readFileSync(path.join(dir, name), "utf8");
     } catch {}
@@ -124,7 +117,7 @@ function reinjectBackendIntoRenderer() {
       // Port only — auth stays in main (IPC + onBeforeSendHeaders). Do not
       // expose the loopback token to renderer page scripts (XSS blast radius).
       win.webContents.executeJavaScript(
-        `window.__HARNESS_PORT__=${backendPort};`
+        `window.__HARNESS_PORT__=${backendPort};window.__HARNESS_INSPECT__=${isInspectMode() ? "true" : "false"};`
       ).catch(() => {});
       win.webContents.send("backend:respawned", backendPort);
     }
@@ -671,7 +664,11 @@ function markerPath() {
 }
 
 function unlinkMarker() {
-  for (const p of [markerPath(), path.join(pmharnessHome(), "backend.json")]) {
+  const paths = [markerPath()];
+  if (!isInspectMode()) {
+    paths.push(path.join(pmharnessHome(), "backend.json"));
+  }
+  for (const p of paths) {
     try { fs.unlinkSync(p); } catch {}
   }
 }
@@ -715,7 +712,7 @@ function consumeIntentionalRestartSignal() {
   const raw = readPmHarnessStateFile(INTENTIONAL_RESTART_SIGNAL);
   const intentional = isFreshIntentionalRestartSignal(raw);
   if (!raw) return false;
-  for (const dir of [pmharnessStateDir(), pmharnessHome()]) {
+  for (const dir of stateFileSearchDirs()) {
     try { fs.unlinkSync(path.join(dir, INTENTIONAL_RESTART_SIGNAL)); } catch {}
   }
   return intentional;
@@ -1651,7 +1648,7 @@ function createWindow() {
   // main (harnessIPC + webRequest header injection) — never a renderer global.
   win.webContents.on("did-finish-load", () => {
     win.webContents.executeJavaScript(
-      `window.__HARNESS_PORT__=${backendPort};`
+      `window.__HARNESS_PORT__=${backendPort};window.__HARNESS_INSPECT__=${isInspectMode() ? "true" : "false"};`
     ).catch(() => {});
   });
   if (saved && saved.maximized) {

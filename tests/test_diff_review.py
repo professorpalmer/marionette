@@ -190,9 +190,11 @@ def test_legacy_plain_id_decisions_still_resolve():
     assert decision_for_hunk({}, hunk, "f.py") == "reject"
 
 
-def test_apply_review(temp_git_repo):
+def test_apply_review(temp_git_repo, tmp_path):
+    active_repo = tmp_path / "active"
+    subprocess.run(["git", "init", str(active_repo)], check=True)
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
-    cfg.repo = temp_git_repo
+    cfg.repo = str(active_repo)
     session = ConversationalSession(cfg)
     session._review_edits_before_apply = True
     
@@ -241,7 +243,10 @@ def test_apply_review(temp_git_repo):
 
     with patch("subprocess.run", side_effect=mock_run):
         # Process job which triggers review hold since review_edits_before_apply is True
-        res = session._await_and_apply_job("job-123", state_dir=None, objective="Test edits")
+        res = session._await_and_apply_job(
+            "job-123", state_dir=None, objective="Test edits",
+            target_repo=temp_git_repo,
+        )
         assert res["held_for_review"] is True
         assert res["applied"] is False
         
@@ -276,6 +281,7 @@ def test_apply_review(temp_git_repo):
         with open(os.path.join(temp_git_repo, "file2.txt")) as f:
             content2 = f.read()
         assert "Delta" not in content2
+        assert not (active_repo / "file1.txt").exists()
         
         # Verify the pending review was cleared
         assert review_id not in session._pending_reviews

@@ -341,6 +341,32 @@ def test_sibling_prefix_home_does_not_read_legacy_disconnected(monkeypatch, tmp_
     assert K.get_disconnected() == set()
 
 
+def test_inspect_mode_does_not_fold_legacy_keys(monkeypatch, tmp_path):
+    """HARNESS_INSPECT under ~/.pmharness/inspect must not inherit machine keys."""
+    home = tmp_path / ".pmharness"
+    home.mkdir()
+    inspect_state = home / "inspect" / "checkout" / "state"
+    inspect_state.mkdir(parents=True)
+    legacy_file = home / "keys.json"
+    legacy_file.write_text(
+        json.dumps({"openrouter": "sk-or-production-secret"}), encoding="utf-8"
+    )
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(inspect_state))
+    monkeypatch.setenv("HARNESS_INSPECT", "1")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+    import importlib
+    from harness import keys as K
+    importlib.reload(K)
+    monkeypatch.setattr(K, "_KEYS_FILE", str(legacy_file))
+
+    assert K.inspect_mode() is True
+    assert K.legacy_keys_file_path() == ""
+    assert K.get_keys_file_path() == str(inspect_state / "keys.json")
+    assert K._read_keys() == {}
+
+
 def test_ephemeral_state_dir_has_no_legacy_keys_path(monkeypatch, tmp_path):
     """Temp / test state dirs must never resolve a legacy keys path."""
     state_dir = tmp_path / "ephemeral-state"

@@ -3,6 +3,14 @@
 // native fs/git bridges for the file-tree and source-control panels.
 const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
+const inspectFlag = String((process.env && process.env.HARNESS_INSPECT) || "")
+  .trim()
+  .toLowerCase();
+contextBridge.exposeInMainWorld(
+  "__HARNESS_INSPECT__",
+  inspectFlag === "1" || inspectFlag === "true" || inspectFlag === "yes",
+);
+
 let streamSeq = 0;
 
 contextBridge.exposeInMainWorld("harnessIPC", {

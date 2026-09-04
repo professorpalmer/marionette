@@ -20,6 +20,7 @@ describe("onboardingStore", () => {
   });
 
   afterEach(() => {
+    delete (window as Window & { __HARNESS_INSPECT__?: boolean }).__HARNESS_INSPECT__;
     resetOnboardingForTests(true);
   });
 
@@ -86,6 +87,12 @@ describe("onboardingStore", () => {
 
   it("auto-opens when unconfigured and not skipped", () => {
     expect(shouldAutoOpenOnboardingWizard()).toBe(true);
+  });
+
+  it("skips auto-open in inspect fixture mode without credentials", () => {
+    (window as Window & { __HARNESS_INSPECT__?: boolean }).__HARNESS_INSPECT__ = true;
+    expect(shouldAutoOpenOnboardingWizard()).toBe(false);
+    delete (window as Window & { __HARNESS_INSPECT__?: boolean }).__HARNESS_INSPECT__;
   });
 
   it("updates flow and mode", () => {

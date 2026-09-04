@@ -1380,7 +1380,13 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                     pass
             if job_id:
                 session._session_job_ids.append(job_id)
-                if not session._submit_swarm(session._run_swarm_background, job_id, act.goal, None):
+                if not session._submit_swarm(
+                    session._run_swarm_background,
+                    job_id,
+                    act.goal,
+                    None,
+                    effective_repo,
+                ):
                     cap_msg = session._swarm_submit_reject_message()
                     session._release_objective(act.goal)
                     yield ConvEvent('action_result', {'id': aid, 'error': cap_msg})
@@ -1692,6 +1698,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                             job_id,
                             sub_goal,
                             state_dir,
+                            effective_repo,
                             admission_group=f"parallel-{aid}",
                             admission_size=len(goals),
                         ):
