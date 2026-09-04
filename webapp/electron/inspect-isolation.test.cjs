@@ -6,6 +6,7 @@ const path = require("node:path");
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const {
+  buildPuppetmasterBackendEnv,
   isInspectMode,
   resolveHarnessStateDir,
   resolveInspectUserDataDir,
@@ -17,6 +18,51 @@ test("preload inspect flag stays env-only and never requires inspect-isolation",
   assert.match(preload, /__HARNESS_INSPECT__/);
   assert.doesNotMatch(preload, /inspect-isolation/);
   assert.doesNotMatch(preload, /node:fs/);
+});
+
+test("normal backend spawn relocates Puppetmaster state only in inspect", () => {
+  const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+  assert.match(main, /buildPuppetmasterBackendEnv/);
+  assert.match(main, /isInspectMode\(process\.env\) \? \{ stateDir: harnessStateDir \}/);
+});
+
+test("backend Puppetmaster env replaces inherited standalone policy", () => {
+  const env = buildPuppetmasterBackendEnv(
+    {
+      PATH: "/usr/bin",
+      PUPPETMASTER_STATE_DIR: "/global/state",
+      PUPPETMASTER_MODELS_PATH: "/global/models.json",
+      PUPPETMASTER_ONLY_ADAPTERS: "codex",
+      PUPPETMASTER_DISABLED_PROVIDERS: "agentic,openrouter",
+    },
+    {
+      modelsPath: "/mari/marionette-models.json",
+    },
+  );
+
+  assert.equal(env.PATH, "/usr/bin");
+  assert.equal("PUPPETMASTER_STATE_DIR" in env, false);
+  assert.equal(env.PUPPETMASTER_MODELS_PATH, "/mari/marionette-models.json");
+  assert.equal("PUPPETMASTER_ONLY_ADAPTERS" in env, false);
+  assert.equal("PUPPETMASTER_DISABLED_PROVIDERS" in env, false);
+});
+
+test("inspect backend Puppetmaster env pins isolated state dir", () => {
+  const env = buildPuppetmasterBackendEnv(
+    {
+      HARNESS_INSPECT: "1",
+      PUPPETMASTER_STATE_DIR: "/global/state",
+      PUPPETMASTER_ONLY_ADAPTERS: "codex",
+    },
+    {
+      stateDir: "/inspect/state",
+      modelsPath: "/mari/marionette-models.json",
+    },
+  );
+
+  assert.equal(env.PUPPETMASTER_STATE_DIR, "/inspect/state");
+  assert.equal(env.PUPPETMASTER_MODELS_PATH, "/mari/marionette-models.json");
+  assert.equal("PUPPETMASTER_ONLY_ADAPTERS" in env, false);
 });
 
 test("isInspectMode accepts 1/true/yes only", () => {
