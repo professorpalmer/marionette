@@ -64,6 +64,7 @@ PHASE_HELPERS = (
     "apply_provider_terminal",
     "classified_finish_kwargs",
     "emit_classified_provider_error",
+    "settle_provider_step_terminal",
     "emit_loop_exit_close",
     "emit_stagnation_halt",
     "stamp_sync_complete_terminal",
@@ -118,8 +119,7 @@ def test_mixin_calls_new_phase_helpers():
     assert "account_provider_attempt(" in src
     assert "record_provider_dispatch_error_receipt(" in src
     assert "drain_idle_turn(" in src
-    assert "apply_provider_terminal(" in src
-    assert "emit_classified_provider_error(" in src
+    assert "settle_provider_step_terminal(" in src
     assert "emit_loop_exit_close(" in src
     assert "emit_stagnation_halt(" in src
     assert "classified_finish_kwargs(" in src

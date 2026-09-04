@@ -891,7 +891,7 @@ def test_cursor_acp_prose_send_emits_natural_and_records_stream_wire(
     drv.close()
 
 
-def test_cursor_acp_incomplete_send_does_not_finalize_or_run_tools(
+def test_cursor_acp_incomplete_send_does_not_run_tools(
     tmp_path, monkeypatch,
 ):
     from harness.config import HarnessConfig
@@ -920,8 +920,10 @@ def test_cursor_acp_incomplete_send_does_not_finalize_or_run_tools(
     monkeypatch.setattr(session, "_maybe_compact_history", lambda **k: iter(()))
     events = list(session.send("write a long essay"))
     kinds = [e.kind for e in events]
-    assert "assistant_done" not in kinds
     err = next(e for e in events if e.kind == "error")
     assert err.data.get("terminal_cause") == "length"
     assert err.data.get("finish_reason") == "length"
+    done = next(e for e in events if e.kind == "assistant_done")
+    assert done.data.get("stop_cause") == "length"
+    assert "assistant_done" in kinds
     drv.close()

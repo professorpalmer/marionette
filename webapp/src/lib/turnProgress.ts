@@ -741,6 +741,18 @@ export function formatBusyElapsed(ms: number): string {
   return mRem ? `${hr}h ${mRem}m` : `${hr}h`;
 }
 
+/** Latch the Waiting-on-provider clock; clear when chrome leaves that phase. */
+export function latchWaitingPhaseStartedAt(
+  prevStartedAt: number | null | undefined,
+  phase: string,
+  nowMs: number,
+  status?: string | null,
+): number | null {
+  if (status === "awaiting_swarm") return null;
+  if (phase === "waiting") return prevStartedAt ?? nowMs;
+  return null;
+}
+
 function turnHasAssistantText(items: TurnItem[]): boolean {
   for (const it of itemsInCurrentTurn(items)) {
     if (it.kind === "msg") {
@@ -878,7 +890,11 @@ export function deriveBusyProgress(
   items: TurnItem[],
   status: BusyStatus,
   elapsedMs?: number | null,
-  opts?: { modelLabel?: string | null; waitHint?: string | null },
+  opts?: {
+    modelLabel?: string | null;
+    waitHint?: string | null;
+    providerElapsedMs?: number | null;
+  },
 ): BusyProgress {
   const awaitingSwarm = status === "awaiting_swarm";
   const busy =
@@ -913,6 +929,12 @@ export function deriveBusyProgress(
   else if (busy && !hasSignal) phase = "waiting";
   else if (status === "thinking" || busy) phase = "thinking";
 
+  const waitClockMs =
+    opts && opts.providerElapsedMs != null ? opts.providerElapsedMs : elapsedMs;
+  const waitElapsed =
+    busy && waitClockMs != null && waitClockMs >= 1000
+      ? formatBusyElapsed(waitClockMs)
+      : "";
   const elapsed =
     busy && elapsedMs != null && elapsedMs >= 1000
       ? formatBusyElapsed(elapsedMs)
@@ -982,7 +1004,7 @@ export function deriveBusyProgress(
   if (hint && !running) {
     const model = shortPilotModelLabel(opts?.modelLabel || "");
     const who = model ? `Waiting on ${model}` : "Waiting on provider";
-    let waiting = elapsed ? `${who}… · ${elapsed}` : `${who}…`;
+    let waiting = waitElapsed ? `${who}… · ${waitElapsed}` : `${who}…`;
     waiting = `${waiting} · ${hint}`;
     return {
       phase: "waiting",
@@ -997,7 +1019,7 @@ export function deriveBusyProgress(
   if (!hasSignal) {
     const model = shortPilotModelLabel(opts?.modelLabel || "");
     const who = model ? `Waiting on ${model}` : "Waiting on provider";
-    let waiting = elapsed ? `${who}… · ${elapsed}` : `${who}…`;
+    let waiting = waitElapsed ? `${who}… · ${waitElapsed}` : `${who}…`;
     return {
       phase: "waiting",
       label: waiting,

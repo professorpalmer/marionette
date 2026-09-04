@@ -5,6 +5,7 @@ import {
   cardHasDurableJob,
   deriveBusyProgress,
   formatBusyElapsed,
+  latchWaitingPhaseStartedAt,
   investigatingHeadline,
   itemsInCurrentTurn,
   resolveCardCliInput,
@@ -137,6 +138,49 @@ describe("deriveBusyProgress", () => {
     expect(p.label).toContain("Waiting on provider");
     expect(p.label).toContain("Provider still working — stream idle");
     expect(p.label.toLowerCase()).not.toContain("thinking");
+  });
+
+  it("Waiting-on-model elapsed uses providerElapsedMs after finished cards", () => {
+    const items: Item[] = [
+      msg("user", "go"),
+      ...Array.from({ length: 18 }, (_, i) =>
+        card(String(i + 1), `f${i}.ts`, "read_file", false),
+      ),
+      { kind: "thinking", text: "Executing Wave 1A…", streaming: false },
+    ];
+    const turnMs = 24 * 60 * 1000 + 53 * 1000;
+    const p = deriveBusyProgress(items, "thinking", turnMs, {
+      modelLabel: "openrouter:google/gemini-3.7-flash",
+      waitHint: "Provider still working — stream idle",
+      providerElapsedMs: 4000,
+    });
+    expect(p.phase).toBe("waiting");
+    expect(p.label).toContain("Waiting on gemini-3.7-flash");
+    expect(p.pill).toContain("Waiting on gemini-3.7-flash");
+    expect(p.label).toContain("4s");
+    expect(p.pill).toContain("4s");
+    expect(p.label).not.toContain("24m");
+    expect(p.pill).not.toContain("24m");
+    expect(p.label).not.toContain("Still working");
+    expect(p.pill).not.toContain("Still working");
+  });
+
+  it("footer and pill both Waiting on model when waitHint and modelLabel are passed", () => {
+    const items: Item[] = [
+      msg("user", "go"),
+      card("1", "a.ts", "read_file", false),
+      { kind: "thinking", text: "Executing Wave 1A…", streaming: false },
+    ];
+    const p = deriveBusyProgress(items, "thinking", 8_000, {
+      modelLabel: "openrouter:google/gemini-3.7-flash",
+      waitHint: "Provider still working — stream idle",
+    });
+    expect(p.label).toContain("Waiting on gemini-3.7-flash");
+    expect(p.pill).toContain("Waiting on gemini-3.7-flash");
+    expect(p.label).toContain("8s");
+    expect(p.pill).toContain("8s");
+    expect(p.label).not.toContain("Still working");
+    expect(p.pill).not.toContain("Still working");
   });
 
   it("clears busy labels when pure-chat answer is complete despite lagging status (T5)", () => {
@@ -799,6 +843,24 @@ describe("formatBusyElapsed", () => {
   it("formats seconds and minutes", () => {
     expect(formatBusyElapsed(4_000)).toBe("4s");
     expect(formatBusyElapsed(65_000)).toBe("1m 5s");
+  });
+});
+
+describe("latchWaitingPhaseStartedAt", () => {
+  it("latches now when chrome enters waiting and keeps that stamp", () => {
+    expect(latchWaitingPhaseStartedAt(null, "waiting", 1000)).toBe(1000);
+    expect(latchWaitingPhaseStartedAt(1000, "waiting", 5000)).toBe(1000);
+  });
+
+  it("clears when chrome leaves waiting", () => {
+    expect(latchWaitingPhaseStartedAt(1000, "thinking", 5000)).toBe(null);
+    expect(latchWaitingPhaseStartedAt(null, "running", 5000)).toBe(null);
+  });
+
+  it("does not latch swarm-await as a provider-wait clock", () => {
+    expect(latchWaitingPhaseStartedAt(null, "waiting", 1000, "awaiting_swarm")).toBe(null);
+    expect(latchWaitingPhaseStartedAt(1000, "waiting", 5000, "awaiting_swarm")).toBe(null);
+    expect(latchWaitingPhaseStartedAt(null, "waiting", 1000, "thinking")).toBe(1000);
   });
 });
 

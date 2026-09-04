@@ -1357,6 +1357,10 @@ export type TranscriptListProps = {
   plan: boolean;
   /** Wall-clock ms since the current busy turn began (for elapsed on the footer). */
   busyElapsedMs?: number | null;
+  modelLabel?: string | null;
+  waitHint?: string | null;
+  /** Waiting-on-provider clock; defaults to busyElapsedMs when omitted. */
+  providerElapsedMs?: number | null;
   /**
    * Sticky open-turn latch from Conversation (true until assistant_done / Stop).
    * Keeps mid-turn narration folded into Investigating between tool batches.
@@ -1393,6 +1397,9 @@ export const TranscriptList = memo(function TranscriptList({
   auto,
   plan,
   busyElapsedMs = null,
+  modelLabel = "",
+  waitHint = null,
+  providerElapsedMs = null,
   turnOpen = false,
   holdSwarmAwait = false,
   feedSettled = true,
@@ -2045,7 +2052,11 @@ export const TranscriptList = memo(function TranscriptList({
     </div>
   ) : null;
 
-  const busyProgress = deriveBusyProgress(items, status, busyElapsedMs);
+  const busyProgress = deriveBusyProgress(items, status, busyElapsedMs, {
+    modelLabel,
+    waitHint,
+    providerElapsedMs,
+  });
   // Latch the step/timer line to the open agent loop. Do not hide it just
   // because a card or stream is already on screen — that gap is the flicker
   // between tool calls (and while the current tool is still running).

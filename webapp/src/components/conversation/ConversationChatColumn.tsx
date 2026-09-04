@@ -28,6 +28,9 @@ export default function ConversationChatColumn({
   auto,
   plan,
   busyElapsedMs,
+  modelLabel = "",
+  waitHint = null,
+  providerElapsedMs = null,
   turnOpen,
   holdSwarmAwait = false,
   feedSettled = true,
@@ -56,6 +59,9 @@ export default function ConversationChatColumn({
   auto: boolean;
   plan: boolean;
   busyElapsedMs: number | null;
+  modelLabel?: string | null;
+  waitHint?: string | null;
+  providerElapsedMs?: number | null;
   turnOpen: boolean;
   /** Same hold as Conversation — pending jobs keep transcript latch through idle flaps. */
   holdSwarmAwait?: boolean;
@@ -130,6 +136,9 @@ export default function ConversationChatColumn({
             auto={auto}
             plan={plan}
             busyElapsedMs={busyElapsedMs}
+            modelLabel={modelLabel}
+            waitHint={waitHint}
+            providerElapsedMs={providerElapsedMs}
             turnOpen={turnOpen}
             holdSwarmAwait={holdSwarmAwait}
             feedSettled={feedSettled}

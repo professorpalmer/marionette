@@ -10,6 +10,7 @@ import {
 } from "./TranscriptList";
 import {
   deriveBusyProgress,
+  latchWaitingPhaseStartedAt,
   turnHasLiveInvestigation,
 } from "../lib/turnProgress";
 import {
@@ -473,6 +474,7 @@ export default function Conversation({
     return () => window.clearInterval(id);
   }, [busyStartedAt]);
   const busyElapsedMs = busyStartedAt != null ? Math.max(0, busyNow - busyStartedAt) : null;
+  const waitingPhaseStartedAtRef = useRef<number | null>(null);
   // status idle/done/error clears busyStartedAt; keep the last tick so a
   // just-sealed Worked for row still has a real duration.
   const [lastBusyElapsedMs, setLastBusyElapsedMs] = useState<number | null>(null);
@@ -585,9 +587,21 @@ export default function Conversation({
   const agentLoopOpen =
     isAgentLoopOpen(turnOpen, status) || holdSwarmAwait;
   const liveInvestigation = turnHasLiveInvestigation(items, agentLoopOpen);
+  const chromeOpts = { modelLabel: config?.driver || "", waitHint };
+  const chromePhase = deriveBusyProgress(items, status, busyElapsedMs, chromeOpts).phase;
+  waitingPhaseStartedAtRef.current = latchWaitingPhaseStartedAt(
+    waitingPhaseStartedAtRef.current,
+    chromePhase,
+    busyNow,
+    status,
+  );
+  const phaseElapsedMs =
+    waitingPhaseStartedAtRef.current != null
+      ? Math.max(0, busyNow - waitingPhaseStartedAtRef.current)
+      : null;
   const busyProgress = deriveBusyProgress(items, status, busyElapsedMs, {
-    modelLabel: config?.driver || "",
-    waitHint,
+    ...chromeOpts,
+    providerElapsedMs: phaseElapsedMs,
   });
   // Runner/SSE can briefly report idle while a card is still running (or the
   // reverse). Prefer investigation / open-turn truth for the header pill.
@@ -3662,6 +3676,9 @@ export default function Conversation({
           auto={auto}
           plan={plan}
           busyElapsedMs={busyElapsedMs ?? lastBusyElapsedMs}
+          modelLabel={config?.driver || ""}
+          waitHint={waitHint}
+          providerElapsedMs={phaseElapsedMs}
           turnOpen={turnOpen}
           holdSwarmAwait={holdSwarmAwait}
           feedSettled={feedSettled}

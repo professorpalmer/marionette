@@ -55,11 +55,10 @@ from .send_loop_actions import execute_turn_actions
 from .repeat_tool_reminder import reset_repeat_chain
 from .send_loop_phases import (
     account_provider_attempt,
-    apply_provider_terminal,
     classified_finish_kwargs,
     dispatch_pilot_provider_call,
-    emit_classified_provider_error,
     drain_idle_turn,
+    settle_provider_step_terminal,
     emit_loop_exit_close,
     emit_stagnation_halt,
     finalize_assistant_turn,
@@ -1356,11 +1355,15 @@ class SendLoopMixin:
                 # If there's no error or it is not context overflow, we're done
                 break
 
-            if resp and resp.error:
-                yield from emit_classified_provider_error(self, resp)
-                return
-
-            last_classified, blocked = yield from apply_provider_terminal(self, resp)
+            last_classified, blocked = yield from settle_provider_step_terminal(
+                self,
+                resp,
+                user_message=user_message,
+                step=step,
+                swarms=swarms,
+                turn_prose=turn_prose,
+                turn_findings=turn_findings,
+            )
             if blocked:
                 return
 

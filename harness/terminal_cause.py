@@ -318,8 +318,11 @@ def _map_finish_reason(
     if finish in _TOOL_REASONS or finish.lower() in {r.lower() for r in _TOOL_REASONS}:
         return TERMINAL_TOOL_CALLS
     if finish in _FAILED_REASONS or finish.lower() in {r.lower() for r in _FAILED_REASONS}:
-        if finish.lower() == "failed":
+        lowered = finish.lower()
+        if lowered == "failed":
             return TERMINAL_TRANSPORT_ERROR
+        if lowered == "error":
+            return TERMINAL_PROVIDER_EOF
         return TERMINAL_INCOMPLETE
     if finish.lower() in _INCOMPLETE_REASONS:
         inc = incomplete_reason.lower()
@@ -409,6 +412,8 @@ def classify_provider_terminal(
                     cause = TERMINAL_LENGTH
                 elif mapped_finish == TERMINAL_CONTENT_FILTER:
                     cause = TERMINAL_CONTENT_FILTER
+                elif mapped_finish == TERMINAL_PROVIDER_EOF:
+                    cause = TERMINAL_PROVIDER_EOF
                 else:
                     inc = incomplete_reason.lower()
                     if inc in ("max_output_tokens", "length", "max_tokens"):
@@ -532,7 +537,7 @@ def blocking_terminal_message(classified: TerminalClassification) -> str:
     if cause == TERMINAL_CONTENT_FILTER:
         return "Provider refused the response (content filter)."
     if cause == TERMINAL_PROVIDER_EOF:
-        return "Provider stream ended without a finish_reason (incomplete)."
+        return "Provider stream ended before a clean finish."
     if cause == TERMINAL_TRANSPORT_ERROR:
         return "Provider transport failed before a clean stop."
     if cause == TERMINAL_CANCELLED:
