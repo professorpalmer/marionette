@@ -1571,7 +1571,7 @@ _BACKEND_RESTART_MESSAGE = (
     "equivalent) during an active turn — it drops the live SSE connection and "
     "aborts the chat. For Docker/local MCP: use manage_mcp (localhost HTTP is "
     "allowed without a restart). For harness/** code that needs a reload: finish "
-    "the turn and tell the user to use Settings → Advanced → Restart backend. "
+    "the turn and tell the user to use Settings → Advanced → Relaunch Marionette. "
     "Kill switch if you truly must: HARNESS_ALLOW_MID_TURN_RESTART=1."
 )
 

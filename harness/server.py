@@ -1244,8 +1244,8 @@ def _load_resume_latch() -> None:
             armed, stored_run_id, stored_sid = _parse_resume_latch_file(f.read())
         current_run_id = _resume_latch_app_run_id()
         # Electron stamps HARNESS_APP_RUN_ID once per shell process. Same-process
-        # backend respawn (self-edit restart) keeps the id; update relaunch /
-        # full quit mints a new one — reject those leftover latches.
+        # crash respawn keeps the id; Settings / update / full quit mint a new
+        # one — reject leftover latches from the previous app run.
         if armed and current_run_id:
             adopt = stored_run_id == current_run_id
         elif armed and not current_run_id:

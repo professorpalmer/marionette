@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.22.45` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.408, deliberately pre-1.0. Rides puppetmaster-ai==1.22.45. Source-update npm ci rehydrates Electron 44 before relaunch; TODO markers spin only when a live job correlates; incomplete-reply chips stay on their owning turn after hydrate. Skill catalog stays in the frozen prefix (bodies retrieve per turn); git spawns neutralize repo hooks; tools[] freeze across sends with a `/reload-mcp` hatch; cron keeps a continuity digest and can suppress failure notices; compaction fail-until persists and idle ungrown transcripts skip auto-compact; vault retrieve is fail-closed; analysis/QA roles cannot write. Pi TUI/pilot package (not a worker adapter).
+> Status: v0.9.409, deliberately pre-1.0. Rides puppetmaster-ai==1.22.45. Settings, `/api/restart`, and diagnostic recovery quit and reopen the app so backend and UI boot together; unexpected backend death still respawns Python only. Source-update npm ci rehydrates Electron 44 before relaunch; TODO markers spin only when a live job correlates; incomplete-reply chips stay on their owning turn after hydrate. Skill catalog stays in the frozen prefix (bodies retrieve per turn); git spawns neutralize repo hooks; tools[] freeze across sends with a `/reload-mcp` hatch; cron keeps a continuity digest and can suppress failure notices; compaction fail-until persists and idle ungrown transcripts skip auto-compact; vault retrieve is fail-closed; analysis/QA roles cannot write. Pi TUI/pilot package (not a worker adapter).
 
 ## Documentation
 

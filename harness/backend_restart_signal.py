@@ -3,7 +3,8 @@
 POST /api/restart self-terminates after persisting. Electron's child-exit
 handler would otherwise treat that exit as an unexpected crash. Writing this
 marker lets Electron classify the exit as an intentional restart, unlink the
-owned backend.json marker, and respawn without crash-loop accounting.
+owned backend.json marker, and relaunch the whole app (not a Python-only
+respawn, and not crash-loop accounting).
 
 A sibling outcome file records whether prepare succeeded and whether the new
 process came back. Electron still consumes the signal; boot must not delete it.

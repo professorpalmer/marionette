@@ -7,7 +7,7 @@
  * Electron after the old Vite owner exits, but the new process still has that
  * URL. A process-local latch abandons the configured origin after the first
  * non-aborted main-frame failure matching it; loadRenderer then uses dist and
- * never returns to the dead URL (including later restartBackend reloads).
+ * never returns to the dead URL (including later loadRenderer calls).
  *
  * Does not flip isDev, delete env, start Vite, or change relaunch.
  */

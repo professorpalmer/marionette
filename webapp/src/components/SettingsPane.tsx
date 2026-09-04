@@ -216,8 +216,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
       const res = await _selfDevIpc.set(!selfDev.enabled);
       const next = await _selfDevIpc.get();
       setSelfDev(next);
-      // A runtime change only takes effect on the next backend start, so offer
-      // an immediate restart to apply it now.
+      // Vite on/off is read at process start, so relaunch the app to apply it.
       if (res && _restartIpc) {
         setRestarting(true);
         try { await _restartIpc(); } finally { setRestarting(false); }
@@ -227,7 +226,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
     }
   };
 
-  const restartBackend = async () => {
+  const relaunchMarionette = async () => {
     if (!_restartIpc) return;
     setRestarting(true);
     try { await _restartIpc(); } finally { setRestarting(false); }
@@ -2137,17 +2136,18 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
-        {gate("advanced", "live ui vite hmr hot reload self dev restart") && _selfDevIpc && (<>
+        {gate("advanced", "live ui vite hmr hot reload self dev restart relaunch") && _selfDevIpc && (<>
         {/* Live UI Section (Vite HMR). The backend always runs from source. */}
         <div className="border-t border-edge pt-3 space-y-2">
           <span className="uppercase tracking-wider text-[10px] text-faint font-semibold flex items-center gap-1">
             <span className="w-1.5 h-1.5 rounded-full bg-accent inline-block"></span> Live UI (Vite HMR)
           </span>
           <p className="text-[10px] text-muted">
-            Marionette always runs its backend from the source checkout, so backend
-            edits (harness/**) go live on the next restart and the conversation resumes
-            across it. Turn this on to also serve the React UI from a Vite dev server,
-            so edits to webapp/src hot-reload instantly instead of needing a rebuild.
+            Marionette always runs its backend from the source checkout, so
+            harness/** edits are the running code after a full relaunch. The
+            conversation comes back from the persisted transcript. Turn this on
+            to also serve the React UI from a Vite dev server, so edits to
+            webapp/src hot-reload instantly instead of needing a rebuild.
           </p>
           <button
             onClick={toggleSelfDev}
@@ -2170,12 +2170,15 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             </p>
           )}
           <button
-            onClick={restartBackend}
+            onClick={relaunchMarionette}
             disabled={restarting || selfDevBusy}
             className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded border border-edge bg-panel2 text-[11px] text-muted hover:text-txt hover:border-accent/30 transition disabled:opacity-50"
           >
-            {restarting ? "Restarting backend..." : "Restart backend (apply self-edits)"}
+            {restarting ? "Relaunching..." : "Relaunch Marionette"}
           </button>
+          <p className="text-[10px] text-muted">
+            Quits and reopens so the backend and UI boot together.
+          </p>
         </div>
         </>)}
         {gate("advanced", "schedules cron timezone daemon autonomy") && (<>

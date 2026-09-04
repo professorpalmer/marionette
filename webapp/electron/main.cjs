@@ -110,7 +110,7 @@ const {
   INTENTIONAL_RESTART_SIGNAL,
   shouldUnlinkBackendMarker,
   classifyBackendExit,
-  shouldRespawnAfterBackendExit,
+  actionAfterBackendExit,
   isFreshIntentionalRestartSignal,
   shouldCountTowardCrashLoop,
   shutdownOwnedBackendTree,
@@ -576,7 +576,7 @@ function cleanupVite() {
 // Point the window at the right renderer source: the classic dev server, the
 // self-dev Vite HMR server (live React), or the prebuilt dist/ bundle.
 // After a matching classic-dev fail-load, the process-local latch stays on
-// dist for this process (including later restartBackend reloads).
+// dist for this process (including later loadRenderer calls).
 async function loadRenderer() {
   if (!win) return;
   if (isDev) {
@@ -897,11 +897,11 @@ async function _startBackendOnce() {
   backendOwned = true;
 
   backend.on("error", (e) => _dbg(`spawn error: ${e.message}`));
-  // Recover from an unexpected backend death (or honor POST /api/restart) instead
-  // of leaving the window stranded against a dead port. cleanupBackend() nulls
-  // `backend` on Electron-driven teardown, so a non-null ref here means the exit
-  // was NOT us. Capture ownership BEFORE clearing the global so we can still
-  // unlink our marker (adopted markers stay untouched).
+  // Unexpected death keeps the window and respawns Python. POST /api/restart
+  // relaunches the whole app so backend + renderer boot together. cleanupBackend()
+  // nulls `backend` on Electron-driven teardown, so a non-null ref here means
+  // the exit was NOT us. Capture ownership BEFORE clearing the global so we can
+  // still unlink our marker (adopted markers stay untouched).
   backend.on("exit", (code, signal) => {
     const wasOurs = backend;   // non-null => not cleanupBackend/quit
     const owned = backendOwned;
@@ -915,32 +915,26 @@ async function _startBackendOnce() {
       restarting,
       intentionalRestart,
     });
-    if (!shouldRespawnAfterBackendExit({
-      backendRef: wasOurs,
-      backendOwned: owned,
-      quitting,
-      restarting,
-      intentionalRestart,
-    })) {
+    const next = actionAfterBackendExit(exitKind);
+    if (next === "none") {
       return;
     }
     // Unlink using the captured ownership snapshot — the global is already false.
     unlinkMarkerIfOwned(owned);
-    if (exitKind === "intentional_restart") {
-      _dbg(`[backend] intentional restart (api/restart) code=${code} signal=${signal} -- respawning`);
-    } else {
-      _dbg(`[backend EXITED unexpectedly] code=${code} signal=${signal} -- respawning`);
-      // Crash-loop guard: only unexpected exits count. Intentional /api/restart
-      // must not pause auto-respawn or look like a crash storm.
-      const now = Date.now();
-      respawnTimes = respawnTimes.filter((t) => now - t < 60000);
-      if (shouldCountTowardCrashLoop(exitKind)) {
-        respawnTimes.push(now);
-      }
-      if (respawnTimes.length > 5) {
-        _dbg("[backend] too many respawns in 60s -- pausing auto-respawn until next activate");
-        return;
-      }
+    if (next === "relaunch_app") {
+      _dbg(`[backend] intentional restart (api/restart) code=${code} signal=${signal} -- relaunching app`);
+      relaunchMarionette();
+      return;
+    }
+    _dbg(`[backend EXITED unexpectedly] code=${code} signal=${signal} -- respawning`);
+    const now = Date.now();
+    respawnTimes = respawnTimes.filter((t) => now - t < 60000);
+    if (shouldCountTowardCrashLoop(exitKind)) {
+      respawnTimes.push(now);
+    }
+    if (respawnTimes.length > 5) {
+      _dbg("[backend] too many respawns in 60s -- pausing auto-respawn until next activate");
+      return;
     }
     startBackend()
       .then(() => {
@@ -1075,44 +1069,36 @@ ipcMain.handle("secrets:presence", (_e, payload) => {
   });
 });
 
-// Guards against overlapping restarts (double-click / rapid toggle).
+// Guards against overlapping relaunches (double-click / rapid toggle).
 let restarting = false;
 
-// Graceful backend restart: the Hermes-style "apply self-edits" action. Persist
-// the live transcript, tear down the current backend (intentional -> the exit
-// handler sees `backend === null` and does NOT auto-respawn), spawn a fresh one
-// (which, in self-dev mode, imports the just-edited source), then reload the
-// renderer so it re-fetches the persisted transcript. The backend flags an
-// unanswered user turn via /api/session/state.resume_pending so the UI auto-
-// continues -- the conversation survives the swap instead of being dropped.
-async function restartBackend() {
-  if (restarting) return { ok: false, error: "restart already in progress" };
+// Quit and reopen the whole app. Hermes CLI uses process replace (os.execvp);
+// Electron's equivalent is app.relaunch + exit. Shared by Settings, diagnostic
+// "Relaunch Marionette", POST /api/restart, and source-update apply.
+function relaunchMarionette() {
+  Promise.resolve(cleanupBackend())
+    .catch(() => {})
+    .finally(() => {
+      app.relaunch();
+      app.exit(0);
+    });
+}
+
+// Persist, then quit and reopen so harness/** and the renderer boot together.
+// The conversation comes back from the persisted transcript on the next launch.
+async function persistAndRelaunch() {
+  if (restarting) return { ok: false, error: "relaunch already in progress" };
   restarting = true;
   try {
-    // Best-effort: flush the current transcript before we kill the backend, so
-    // the fresh process restores exactly where we left off.
     try { await backendRequest("POST", "/api/session/persist", {}); } catch { /* older backend: relies on per-turn saves */ }
-    try { await cleanupBackend(); } catch { /* already gone */ }
-    // cleanupBackend already awaited the graceful shutdown window; a short beat
-    // covers lingering OS handle release before we bind the replacement.
-    await new Promise((r) => setTimeout(r, 300));
-    await startBackend();
-    try {
-      if (win && win.webContents && !win.webContents.isDestroyed()) {
-        // Re-navigate to the correct renderer source. This also applies a
-        // self-dev toggle: on -> Vite HMR (live React), off -> prebuilt dist.
-        // did-finish-load re-injects the new backend port/token either way.
-        await loadRenderer();
-      }
-    } catch { /* window gone */ }
-    return { ok: true, port: backendPort };
+    relaunchMarionette();
+    return { ok: true, relaunching: true };
   } catch (e) {
-    return { ok: false, error: (e && e.message) || String(e) };
-  } finally {
     restarting = false;
+    return { ok: false, error: (e && e.message) || String(e) };
   }
 }
-ipcMain.handle("harness:restart", () => restartBackend());
+ipcMain.handle("harness:restart", () => persistAndRelaunch());
 ipcMain.handle("harness:selfDev:get", () => ({ enabled: selfDevEnabled(), viable: viteDevViable(resolveRepoRoot()) }));
 ipcMain.handle("harness:selfDev:set", (_e, enabled) => ({ ok: setSelfDevEnabled(!!enabled), enabled: selfDevEnabled() }));
 ipcMain.handle("translucency:get", () => ({
@@ -1285,14 +1271,7 @@ registerUpdateBridge(ipcMain, app, shell, {
   // (same recovery the backend uses) so its child tools resolve like a terminal.
   getEnv: () => (isDev ? process.env : buildUpdaterEnv({ processEnv: process.env, shellEnv: loginShellEnv() })),
   packagedUpdater,
-  relaunch: () => {
-    Promise.resolve(cleanupBackend())
-      .catch(() => {})
-      .finally(() => {
-        app.relaunch();
-        app.exit(0);
-      });
-  },
+  relaunch: () => { relaunchMarionette(); },
 });
 
 // Packaged thin shell: bootstrap a source checkout on first launch, streaming

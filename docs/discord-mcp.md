@@ -97,7 +97,7 @@ not ship it.
 | --- | --- |
 | `Unsafe MCP URL: blocked loopback` | Update to v0.9.74+ or unset `PMHARNESS_MCP_ALLOW_PRIVATE=0`. |
 | State → MCP empty / 0 tools | Container down, wrong URL, or server never `start`ed. Check `docker ps` and Play in the MCP pane. |
-| Pilot tries `POST /api/restart` mid-turn | Soft-refused on purpose. Finish the turn; use Settings → Restart only if you really need a backend reload. |
+| Pilot tries `POST /api/restart` mid-turn | Soft-refused on purpose. Finish the turn; use Settings → Advanced → Relaunch Marionette if you need a full reload. |
 | Token leaked in chat | Rotate the bot token in the Developer Portal; recreate the container env. |
 
 ## Related
