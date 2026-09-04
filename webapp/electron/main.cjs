@@ -42,6 +42,7 @@ const {
 const { createTranslucencyController } = require("./translucency.cjs");
 const secretVault = require("./secret-vault.cjs");
 const {
+  buildPuppetmasterBackendEnv,
   isInspectMode,
   pmharnessHome,
   resolveHarnessStateDir,
@@ -831,20 +832,21 @@ async function _startBackendOnce() {
     ".pmharness",
     "marionette-models.json",
   );
-  const customEnv = {
+  const harnessStateDir = process.env.HARNESS_STATE_DIR || resolveHarnessStateDir();
+  const customEnv = buildPuppetmasterBackendEnv({
     ..._shellEnv,
     ...process.env,
     PYTHONUNBUFFERED: "1",
     HARNESS_TOKEN: harnessToken,
     HARNESS_APP_RUN_ID: harnessAppRunId,
-    HARNESS_STATE_DIR: process.env.HARNESS_STATE_DIR || resolveHarnessStateDir(),
+    HARNESS_STATE_DIR: harnessStateDir,
     // App source root (not the user's project). Backend excludes this path
     // from boot restore + PROJECTS recents so Marionette never auto-opens itself.
     MARIONETTE_APP_ROOT: repoRoot,
-    // Prefer an explicit shell override; otherwise pin the isolated catalog.
-    PUPPETMASTER_MODELS_PATH:
-      process.env.PUPPETMASTER_MODELS_PATH || marionetteModels,
-  };
+  }, {
+    modelsPath: marionetteModels,
+    ...(isInspectMode(process.env) ? { stateDir: harnessStateDir } : {}),
+  });
   try {
     const { safeStorage } = require("electron");
     secretVault.injectEnv({
