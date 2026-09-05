@@ -283,6 +283,34 @@ def maybe_retry_reasoning_mandatory(session, resp) -> bool:
         return False
 
 
+PROVIDER_ATTEMPT_RETRY = "retry"
+PROVIDER_ATTEMPT_ABORT = "abort"
+PROVIDER_ATTEMPT_SETTLE = "settle"
+
+
+def iter_provider_attempt_recovery(session, resp, attempt, timing):
+    """Classify a failed provider attempt: retry the loop, abort, or settle.
+
+    Yields overflow persist/compaction events. Return value is one of
+    ``PROVIDER_ATTEMPT_*``.
+    """
+    if not (resp and getattr(resp, "error", None)):
+        return PROVIDER_ATTEMPT_SETTLE
+    from pmharness.drivers import error_classifier
+
+    err_cls = error_classifier.classify(None, resp.error)
+    if err_cls == error_classifier.ErrorClass.CONTEXT_OVERFLOW:
+        retry = yield from iter_overflow_byte_recovery(
+            session, resp, attempt, timing,
+        )
+        if retry:
+            return PROVIDER_ATTEMPT_RETRY
+        return PROVIDER_ATTEMPT_ABORT
+    if maybe_retry_reasoning_mandatory(session, resp):
+        return PROVIDER_ATTEMPT_RETRY
+    return PROVIDER_ATTEMPT_SETTLE
+
+
 class SendLoopMixin:
     """Mixin holding send-loop orchestration for ConversationalSession.
 
@@ -1368,20 +1396,13 @@ class SendLoopMixin:
                     provider_step=step, provider_attempt=attempt,
                 )
 
-                if resp and resp.error:
-                    from pmharness.drivers import error_classifier
-                    err_cls = error_classifier.classify(None, resp.error)
-                    if err_cls == error_classifier.ErrorClass.CONTEXT_OVERFLOW:
-                        retry = yield from iter_overflow_byte_recovery(
-                            self, resp, attempt, timing,
-                        )
-                        if retry:
-                            continue
-                        return
-                    if maybe_retry_reasoning_mandatory(self, resp):
-                        continue
-
-                # Overflow / reasoning-mandatory retries continue; otherwise settle.
+                action = yield from iter_provider_attempt_recovery(
+                    self, resp, attempt, timing,
+                )
+                if action == PROVIDER_ATTEMPT_RETRY:
+                    continue
+                if action == PROVIDER_ATTEMPT_ABORT:
+                    return
                 break
 
             last_classified, blocked = yield from settle_provider_step_terminal(
