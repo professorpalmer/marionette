@@ -42,12 +42,19 @@ class ProviderServices:
 # Models (visibility / catalog)
 # ---------------------------------------------------------------------------
 
+def _sync_worker_catalog_after_picker_change() -> None:
+    """Settings enable is the worker allowlist. Refresh the isolated catalog now."""
+    from ..auto_registry import sync_agentic_registry_safe
+    sync_agentic_registry_safe()
+
+
 def post_models_toggle(body: dict, svc: ProviderServices) -> tuple[int, dict]:
     """POST /api/models/toggle — enable/disable one provider:model spec."""
     from .. import model_visibility as _mv
     spec = body.get("spec", "")
     on = svc.parse_bool(body.get("enabled", True))
     enabled = _mv.toggle(spec, on)
+    _sync_worker_catalog_after_picker_change()
     sync = svc.resync_driver_after_model_curation()
     return 200, {
         "ok": True,
@@ -61,6 +68,7 @@ def post_models_set(body: dict, svc: ProviderServices) -> tuple[int, dict]:
     """POST /api/models/set — replace the enabled model set."""
     from .. import model_visibility as _mv
     enabled = _mv.set_enabled(body.get("enabled") or [])
+    _sync_worker_catalog_after_picker_change()
     sync = svc.resync_driver_after_model_curation()
     return 200, {
         "ok": True,
