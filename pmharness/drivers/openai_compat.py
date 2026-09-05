@@ -645,7 +645,17 @@ class OpenAICompatDriver:
             body.setdefault("max_completion_tokens", limit)
         body.pop("reasoning", None)
         if body.get("tools"):
-            body["reasoning_effort"] = "none"
+            if getattr(self, "_omit_reasoning_disable", False):
+                raw = body.get("reasoning_effort")
+                if raw is not None:
+                    try:
+                        token = str(raw).strip().lower()
+                    except Exception:
+                        token = ""
+                    if token in ("none", "off", "0"):
+                        body.pop("reasoning_effort", None)
+            else:
+                body["reasoning_effort"] = "none"
 
     def _pool_rotate_backoff(
         self,

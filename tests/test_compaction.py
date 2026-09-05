@@ -486,16 +486,19 @@ def test_advisory_compact_once_per_user_turn_not_per_tool_step(monkeypatch, tmp_
     import inspect
     import json
 
-    from harness.send_loop import iter_overflow_byte_recovery
+    from harness.send_loop import (
+        iter_overflow_byte_recovery,
+        iter_provider_attempt_recovery,
+    )
     from pmharness.drivers.openai_compat import DriverResponse
 
     # Call-site contract: advisory compact is before the step loop; emergency
-    # overflow path stays inside the loop (via iter_overflow_byte_recovery).
+    # overflow path stays inside the loop (via iter_provider_attempt_recovery).
     # Timing may wrap the advisory call in yield_timed_phase — do not require
     # the obsolete bare yield-from.
     src = inspect.getsource(ConversationalSession._send_locked_inner)
     advisory_idx = src.find("self._maybe_compact_history()")
-    force_idx = src.find("iter_overflow_byte_recovery")
+    force_idx = src.find("iter_provider_attempt_recovery")
     step_loop_idx = src.find("for step in _step_iter:")
     assert advisory_idx != -1, "advisory _maybe_compact_history() must remain"
     assert force_idx != -1, "CONTEXT_OVERFLOW recovery must remain in the send loop"
@@ -509,7 +512,9 @@ def test_advisory_compact_once_per_user_turn_not_per_tool_step(monkeypatch, tmp_
     # No per-step no-arg advisory call after the loop starts (only emergency).
     after_loop = src[step_loop_idx:]
     assert "self._maybe_compact_history()" not in after_loop
-    assert "iter_overflow_byte_recovery" in after_loop
+    assert "iter_provider_attempt_recovery" in after_loop
+    recovery = inspect.getsource(iter_provider_attempt_recovery)
+    assert "iter_overflow_byte_recovery" in recovery
     helper = inspect.getsource(iter_overflow_byte_recovery)
     assert "emergency=True" in helper
     assert "force=True" in helper

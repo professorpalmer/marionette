@@ -304,6 +304,29 @@ def test_openai_compat_gpt_5_omits_openrouter_reasoning_without_tools(monkeypatc
     assert "reasoning_effort" not in captured
 
 
+def test_openai_compat_gpt_5_tools_omit_reasoning_disable(monkeypatch):
+    driver = OpenAICompatDriver(
+        name="openai:gpt-5.6-luna",
+        model="gpt-5.6-luna",
+        base_url="https://api.openai.com/v1",
+        api_key_env="OPENAI_API_KEY",
+        enable_reasoning=True,
+    )
+    driver._key = lambda: "fake-key"
+    driver._omit_reasoning_disable = True
+    captured = {}
+    _capturing_openai_response(monkeypatch, captured)
+
+    response = driver.chat(
+        [{"role": "user", "content": "hi"}],
+        tools=[{"type": "function", "function": {"name": "noop", "parameters": {}}}],
+    )
+
+    assert response.error is None
+    assert "reasoning_effort" not in captured
+    assert "reasoning" not in captured
+
+
 def test_openai_compat_gpt_5_tools_keep_reasoning_effort_none_after_extra_body(monkeypatch):
     driver = OpenAICompatDriver(
         name="openai:gpt-5.6-luna",

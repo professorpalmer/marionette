@@ -14,6 +14,7 @@ from harness.reasoning_effort import (
     codex_api_effort,
     current_reasoning_effort,
     current_swarm_reasoning_effort,
+    is_reasoning_mandatory_error,
     model_supports_anthropic_thinking,
     normalize_reasoning_effort,
     reasoning_effort_label,
@@ -97,3 +98,27 @@ def test_apply_anthropic_thinking_skips_haiku(monkeypatch):
     body = {"model": "claude-haiku-4-5", "max_tokens": 8000}
     apply_anthropic_thinking(body, "claude-haiku-4-5", max_tokens=8000)
     assert "thinking" not in body
+
+
+@pytest.mark.parametrize("text", [
+    "Reasoning is mandatory for this model",
+    "HTTP 400: reasoning cannot be disabled",
+    "thinking is required when tools are present",
+    "REASONING IS MANDATORY",
+])
+def test_is_reasoning_mandatory_error_true(text):
+    assert is_reasoning_mandatory_error(text) is True
+
+
+@pytest.mark.parametrize("text", [
+    None,
+    "",
+    "   ",
+    "cannot be disabled",
+    "streaming cannot be disabled",
+    "HTTP 400: invalid_request — unknown parameter foo",
+    "context length exceeded",
+    "rate limit",
+])
+def test_is_reasoning_mandatory_error_false(text):
+    assert is_reasoning_mandatory_error(text) is False
