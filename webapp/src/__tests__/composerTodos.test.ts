@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   collapseTodoTasks,
   litTodoContents,
+  litTodoContentsFromGroups,
+  liveJobTodoLabelGroups,
   liveJobTodoLabels,
   todoHasWork,
   todoMatchesAnyDescription,
@@ -76,7 +78,6 @@ describe("composerTodos", () => {
     expect(liveJobTodoLabels(jobs, "sess-1")).toEqual([
       "nested todo lighting",
       "hosted pari service",
-      "explore",
     ]);
     const snapshot: SessionTodoSnapshot = {
       phases: [
@@ -108,6 +109,130 @@ describe("composerTodos", () => {
       ],
     };
     expect([...litTodoContents(snapshot, liveJobTodoLabels(jobs, "sess-1"))]).toEqual(["hosted pari"]);
+  });
+
+  it("does not treat a generic implement role as a match", () => {
+    expect(todoMatchesAnyDescription("Implement station management server actions", ["implement"])).toBe(false);
+    expect(todoMatchesAnyDescription("Implement dedicated live spectator TV", ["implement", "agentic"])).toBe(false);
+    expect(todoMatchesAnyDescription("implement (agentic) WAVE 1B (Part 1 - Actions only):", ["WAVE 1B"])).toBe(true);
+  });
+
+  it("lights only the running wave when one implement job is live", () => {
+    const jobs = [
+      {
+        id: "j-wave-1b",
+        goal: "WAVE 1B (Part 1 - Actions only)",
+        status: "running",
+        session_id: "sess-1",
+        role: "implement",
+        tasks: [
+          { id: "t1", role: "implement", instruction: "Implement station management server actions", status: "running" },
+          { id: "t2", role: "implement", instruction: "Implement dedicated live spectator TV", status: "pending" },
+          { id: "t3", role: "implement", instruction: "Implement versioned ruleset validator", status: "pending" },
+        ],
+      },
+    ] as Job[];
+    const snapshot: SessionTodoSnapshot = {
+      phases: [
+        {
+          name: "Wave 1 — Station & Stadium Operations",
+          tasks: [
+            task("Ship station inventory read path", "completed"),
+            task("Implement station management server actions", "in_progress"),
+            task("Validate station ops", "pending"),
+          ],
+        },
+        {
+          name: "Wave 2 — Live Spectator",
+          tasks: [
+            task("Implement dedicated live spectator TV", "pending"),
+            task("Validate spectator display", "pending"),
+          ],
+        },
+        {
+          name: "Wave 3 — Ruleset",
+          tasks: [task("Implement versioned ruleset validator", "pending")],
+        },
+        {
+          name: "Tasks",
+          tasks: [task("implement (agentic) WAVE 1B (Part 1 - Actions only):", "pending")],
+        },
+      ],
+    };
+    expect(liveJobTodoLabels(jobs, "sess-1")).toEqual([
+      "WAVE 1B (Part 1 - Actions only)",
+      "Implement station management server actions",
+    ]);
+    expect([...litTodoContents(snapshot, liveJobTodoLabels(jobs, "sess-1"))]).toEqual([
+      "Implement station management server actions",
+    ]);
+  });
+
+  it("lights one todo per actually-running job", () => {
+    const jobs = [
+      {
+        id: "j1",
+        goal: "pari cutover",
+        status: "running",
+        session_id: "sess-1",
+        tasks: [{ id: "t1", instruction: "hosted pari service", status: "running" }],
+      },
+      {
+        id: "j2",
+        goal: "station board",
+        status: "running",
+        session_id: "sess-1",
+        tasks: [{ id: "t2", instruction: "station board ui", status: "running" }],
+      },
+    ] as Job[];
+    const snapshot: SessionTodoSnapshot = {
+      phases: [
+        {
+          name: "Work",
+          tasks: [task("hosted pari", "pending"), task("station board", "pending")],
+        },
+      ],
+    };
+    expect([...litTodoContentsFromGroups(snapshot, liveJobTodoLabelGroups(jobs, "sess-1"))].sort()).toEqual([
+      "hosted pari",
+      "station board",
+    ]);
+  });
+
+  it("lights the wave handle from a running parent before child statuses arrive", () => {
+    const jobs = [
+      {
+        id: "j-wave-1b",
+        goal: "WAVE 1B (Part 1 - Actions only)",
+        status: "running",
+        session_id: "sess-1",
+        role: "implement",
+        tasks: [
+          { id: "t1", role: "implement", instruction: "Implement station management server actions", status: "pending" },
+          { id: "t2", role: "implement", instruction: "Implement dedicated live spectator TV", status: "pending" },
+        ],
+      },
+    ] as Job[];
+    const snapshot: SessionTodoSnapshot = {
+      phases: [
+        {
+          name: "Wave 1",
+          tasks: [task("Implement station management server actions", "in_progress")],
+        },
+        {
+          name: "Wave 2",
+          tasks: [task("Implement dedicated live spectator TV", "pending")],
+        },
+        {
+          name: "Tasks",
+          tasks: [task("implement (agentic) WAVE 1B (Part 1 - Actions only):", "pending")],
+        },
+      ],
+    };
+    expect(liveJobTodoLabels(jobs, "sess-1")).toEqual(["WAVE 1B (Part 1 - Actions only)"]);
+    expect([...litTodoContents(snapshot, liveJobTodoLabels(jobs, "sess-1"))]).toEqual([
+      "implement (agentic) WAVE 1B (Part 1 - Actions only):",
+    ]);
   });
 
   it("keeps lit pending todos in the folded viewport", () => {

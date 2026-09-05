@@ -47,6 +47,24 @@ export function collapseTodoTasks(
   return { items, hidden: Math.max(0, tasks.length - items.length) };
 }
 
+export const TODO_DESCRIPTION_MIN_OVERLAP = 6;
+
+const GENERIC_TODO_LABEL_TOKENS = new Set([
+  "implement",
+  "explore",
+  "audit",
+  "review",
+  "architect",
+  "worker",
+  "swarm",
+  "plan",
+  "agentic",
+  "analysis",
+  "parallel",
+  "wave",
+  "coder",
+]);
+
 export function normalizeForTodoMatch(value: string): string {
   return (value || "")
     .toLowerCase()
@@ -54,56 +72,114 @@ export function normalizeForTodoMatch(value: string): string {
     .trim();
 }
 
+export function isGenericTodoLabel(value: string): boolean {
+  const tokens = normalizeForTodoMatch(value).split(/\s+/).filter(Boolean);
+  const substantive = tokens.filter((token) => token.length >= 3 || /\d/.test(token));
+  if (!substantive.length) return true;
+  return substantive.every((token) => GENERIC_TODO_LABEL_TOKENS.has(token));
+}
+
+function usableTodoLabel(value: string): boolean {
+  const normalized = normalizeForTodoMatch(value);
+  return normalized.length >= TODO_DESCRIPTION_MIN_OVERLAP && !isGenericTodoLabel(value);
+}
+
+function todoMatchScore(content: string, descriptions: readonly string[]): number {
+  const target = normalizeForTodoMatch(content);
+  if (!target) return 0;
+  let best = 0;
+  for (const desc of descriptions) {
+    if (!usableTodoLabel(desc)) continue;
+    const candidate = normalizeForTodoMatch(desc);
+    if (target === candidate) return Math.max(best, target.length + 1_000);
+    if (target.length >= TODO_DESCRIPTION_MIN_OVERLAP && candidate.includes(target)) {
+      best = Math.max(best, target.length);
+    }
+    if (candidate.length >= TODO_DESCRIPTION_MIN_OVERLAP && target.includes(candidate)) {
+      best = Math.max(best, candidate.length);
+    }
+  }
+  return best;
+}
+
 export function todoMatchesAnyDescription(
   content: string,
   descriptions: readonly string[],
 ): boolean {
-  const target = normalizeForTodoMatch(content);
-  if (!target) return false;
-  for (const desc of descriptions) {
-    const candidate = normalizeForTodoMatch(desc);
-    if (!candidate) continue;
-    if (target === candidate) return true;
-    if (target.length >= TODO_DESCRIPTION_MIN_OVERLAP && candidate.includes(target)) return true;
-    if (candidate.length >= TODO_DESCRIPTION_MIN_OVERLAP && target.includes(candidate)) return true;
-  }
-  return false;
+  return todoMatchScore(content, descriptions) > 0;
 }
 
-export const TODO_DESCRIPTION_MIN_OVERLAP = 6;
-
-export function liveJobTodoLabels(jobs: readonly Job[], sessionId: string): string[] {
-  const labels: string[] = [];
-  for (const job of jobs) {
-    if (!jobInActiveSession(job, sessionId)) continue;
-    const jobLive = taskState(job.status) === "in_progress" || taskState(job.status) === "pending";
-    const liveTasks = (job.tasks || []).filter((task) => {
-      const state = taskState(task.status);
-      return state === "in_progress" || state === "pending";
-    });
-    if (!jobLive && !liveTasks.length) continue;
-    if (job.goal) labels.push(job.goal);
-    if (job.role) labels.push(job.role);
-    for (const task of liveTasks) {
-      if (task.instruction) labels.push(String(task.instruction));
-      if (task.role) labels.push(String(task.role));
+function openTodoItems(snapshot: SessionTodoSnapshot | null | undefined): SessionTodoItem[] {
+  const open: SessionTodoItem[] = [];
+  for (const phase of snapshot?.phases || []) {
+    for (const task of phase.tasks) {
+      if (task.status === "pending" || task.status === "in_progress") open.push(task);
     }
   }
-  return labels;
+  return open;
+}
+
+function bestMatchingOpenTodo(
+  snapshot: SessionTodoSnapshot | null | undefined,
+  descriptions: readonly string[],
+): string | null {
+  let winner: SessionTodoItem | null = null;
+  let bestScore = 0;
+  for (const task of openTodoItems(snapshot)) {
+    const score = todoMatchScore(task.content, descriptions);
+    if (score <= 0) continue;
+    if (
+      score > bestScore
+      || (score === bestScore && task.status === "in_progress" && winner?.status !== "in_progress")
+    ) {
+      winner = task;
+      bestScore = score;
+    }
+  }
+  return winner?.content ?? null;
+}
+
+export function liveJobTodoLabelGroups(jobs: readonly Job[], sessionId: string): string[][] {
+  const groups: string[][] = [];
+  for (const job of jobs) {
+    if (!jobInActiveSession(job, sessionId)) continue;
+    const jobLive = taskState(job.status) === "in_progress";
+    const runningTasks = (job.tasks || []).filter((task) => taskState(task.status) === "in_progress");
+    if (!jobLive && !runningTasks.length) continue;
+    if (runningTasks.length) {
+      for (const task of runningTasks) {
+        const labels: string[] = [];
+        if (job.goal && usableTodoLabel(job.goal)) labels.push(job.goal);
+        const instruction = String(task.instruction || "");
+        if (usableTodoLabel(instruction)) labels.push(instruction);
+        if (labels.length) groups.push(labels);
+      }
+      continue;
+    }
+    if (job.goal && usableTodoLabel(job.goal)) groups.push([job.goal]);
+  }
+  return groups;
+}
+
+export function liveJobTodoLabels(jobs: readonly Job[], sessionId: string): string[] {
+  return liveJobTodoLabelGroups(jobs, sessionId).flat();
 }
 
 export function litTodoContents(
   snapshot: SessionTodoSnapshot | null | undefined,
   descriptions: readonly string[],
 ): Set<string> {
+  return litTodoContentsFromGroups(snapshot, descriptions.length ? [descriptions] : []);
+}
+
+export function litTodoContentsFromGroups(
+  snapshot: SessionTodoSnapshot | null | undefined,
+  groups: readonly (readonly string[])[],
+): Set<string> {
   const lit = new Set<string>();
-  for (const phase of snapshot?.phases || []) {
-    for (const task of phase.tasks) {
-      if (task.status !== "pending" && task.status !== "in_progress") continue;
-      if (todoMatchesAnyDescription(task.content, descriptions)) {
-        lit.add(task.content);
-      }
-    }
+  for (const group of groups) {
+    const winner = bestMatchingOpenTodo(snapshot, group);
+    if (winner) lit.add(winner);
   }
   return lit;
 }
