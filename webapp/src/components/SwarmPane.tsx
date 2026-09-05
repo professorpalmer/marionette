@@ -1151,10 +1151,6 @@ export default function SwarmPane() {
   const [nowTick, setNowTick] = useState(() => Date.now());
 
   useEffect(() => {
-    if (!scopedRepo) {
-      setActiveSessionId("");
-      return;
-    }
     let cancelled = false;
     api.sessions(scopedRepo).then((rows) => {
       if (cancelled) return;

@@ -2124,6 +2124,60 @@ describe("SwarmPane worker outcome hierarchy", () => {
   });
 });
 
+describe("SwarmPane session scope before a project event", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    localStorage.setItem("marionette.jobScope.v1", "session");
+    sessionStorage.clear();
+    clearSWRCache();
+    dispatchProjectSelected("");
+    mockArtifacts.mockResolvedValue([]);
+  });
+
+  it("resolves the backend active session and keeps its running swarm visible", async () => {
+    vi.mocked(api.sessions).mockResolvedValue([
+      { id: "sess-test", title: "Active chat", active: true, created: 1 },
+    ]);
+    mockSwarmLive.mockResolvedValue(liveJob({ goal: "Running before project event" }));
+
+    render(<SwarmPane />);
+
+    expect(await screen.findByText("Running before project event")).toBeInTheDocument();
+    expect(api.sessions).toHaveBeenCalledWith(undefined);
+  });
+
+  it("ignores the bootstrap response after a project selection", async () => {
+    const repo = "/repo-selected";
+    let resolveBootstrap: ((rows: Awaited<ReturnType<typeof api.sessions>>) => void) | undefined;
+    vi.mocked(api.sessions).mockImplementation((root?: string) => {
+      if (!root) {
+        return new Promise((resolve) => { resolveBootstrap = resolve; });
+      }
+      return Promise.resolve([
+        { id: "sess-selected", title: "Selected chat", active: true, created: 2 },
+      ]);
+    });
+    mockSwarmLive.mockResolvedValue(liveJob({
+      session_id: "sess-selected",
+      goal: "Selected project running swarm",
+    }));
+
+    render(<SwarmPane />);
+    await waitFor(() => expect(api.sessions).toHaveBeenCalledWith(undefined));
+    dispatchProjectSelected(repo);
+    expect(await screen.findByText("Selected project running swarm")).toBeInTheDocument();
+
+    resolveBootstrap?.([
+      { id: "sess-stale", title: "Stale chat", active: true, created: 1 },
+    ]);
+    await Promise.resolve();
+
+    expect(screen.getByText("Selected project running swarm")).toBeInTheDocument();
+    expect(api.sessions).toHaveBeenCalledWith(repo);
+  });
+});
+
 describe("SwarmPane tracker header", () => {
   beforeEach(() => {
     vi.clearAllMocks();
