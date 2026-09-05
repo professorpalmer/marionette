@@ -17,6 +17,15 @@ from .diag import note as _diag
 
 # Prefer agentic (API-billed) remaps before platform cursor when both match.
 _PIN_ADAPTER_ORDER = ("agentic", "cursor", "openai")
+_GENERIC_MODEL_TOKENS = frozenset({
+    "pro", "mini", "nano", "fast", "high", "low", "max", "latest",
+    "free", "exp", "preview", "flash", "plus", "chat", "code",
+})
+_PIN_PROVIDER_ALIASES = {
+    "codex": "openai-codex",
+    "chatgpt-codex": "openai-codex",
+    "codex-plan": "openai-codex",
+}
 
 
 @dataclass(frozen=True)
@@ -44,21 +53,119 @@ class AgenticModelPin:
         }
 
 
-def _direct_agentic_provider_model(pin: str) -> Optional[AgenticModelPin]:
-    """Resolve ``provider/model`` when a keyed live model is not in the registry."""
+def _model_family_token(model_id: str) -> str:
+    """Distinctive last token (``astra``, ``luna``), or empty for generic tails."""
+    bare = (model_id or "").rsplit("/", 1)[-1].strip().lower()
+    parts = [p for p in re.split(r"[-_.]+", bare) if p]
+    if not parts:
+        return ""
+    token = parts[-1]
+    if token.isdigit() or token in _GENERIC_MODEL_TOKENS or len(token) < 3:
+        return ""
+    return token
 
-    requested = (pin or "").strip()
-    body = requested
+
+def _normalize_pin_provider(provider: str) -> str:
+    raw = (provider or "").strip().lower()
+    return _PIN_PROVIDER_ALIASES.get(raw, raw)
+
+
+def _parse_pin_provider_model(pin: str) -> tuple[str, str]:
+    """Best-effort ``(provider, model)`` from a pilot-supplied pin."""
+    body = (pin or "").strip()
     if body.lower().startswith("agentic/"):
         body = body.split("/", 1)[1].strip()
     if ":" in body:
         provider, model = body.split(":", 1)
-    elif "/" in body:
-        provider, model = body.split("/", 1)
+        return _normalize_pin_provider(provider), model.strip()
+    known = {
+        "cursor",
+        "cursor-cli",
+        "codex",
+        "openai",
+        "openai-codex",
+        "opencode-go",
+        "opencode-zen",
+        "openrouter",
+        "native",
+    }
+    if "/" in body:
+        head, rest = body.split("/", 1)
+        if head.lower() in known:
+            return _normalize_pin_provider(head), rest.strip()
+    return "", body
+
+
+def settings_enabled_pin_specs(
+    pin: str,
+    *,
+    enabled: Optional[list[str]] = None,
+) -> list[str]:
+    """Settings specs for the same enabled model — never a different sibling.
+
+    ``gpt-5.6-astra`` maps to enabled ``openai-codex:gpt-6-astra``. It does
+    not map to Sol or Luna. Generic tails (``pro``, ``mini``) match exact ids
+    only.
+    """
+    requested = (pin or "").strip()
+    if not requested:
+        return []
+    if enabled is None:
+        try:
+            from .model_visibility import get_enabled
+            enabled = get_enabled()
+        except Exception as exc:
+            _diag("swarm_model_pin.enabled_specs", exc)
+            enabled = []
+    pin_provider, pin_model = _parse_pin_provider_model(requested)
+    pin_model_l = (pin_model or "").strip().lower()
+    pin_token = _model_family_token(pin_model or requested)
+    out: list[str] = []
+    seen: set[str] = set()
+    for spec in enabled or []:
+        raw = str(spec or "").strip()
+        if ":" not in raw:
+            continue
+        prov, mid = raw.split(":", 1)
+        prov = _normalize_pin_provider(prov)
+        mid = mid.strip()
+        if not prov or not mid:
+            continue
+        if pin_provider and prov != pin_provider:
+            continue
+        exact = bool(pin_model_l) and mid.lower() == pin_model_l
+        token = bool(pin_token) and _model_family_token(mid) == pin_token
+        if not (exact or token):
+            continue
+        key = raw.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(raw)
+    return out
+
+
+def _direct_agentic_provider_model(pin: str) -> Optional[AgenticModelPin]:
+    """Resolve ``provider/model`` when a keyed live model is not in the registry."""
+
+    requested = (pin or "").strip()
+    matches = settings_enabled_pin_specs(requested)
+    if len(matches) == 1:
+        provider, model = matches[0].split(":", 1)
+        provider = _normalize_pin_provider(provider)
+        model = model.strip()
     else:
-        return None
-    provider = provider.strip().lower()
-    model = model.strip()
+        body = requested
+        if body.lower().startswith("agentic/"):
+            body = body.split("/", 1)[1].strip()
+        if ":" in body:
+            provider, model = body.split(":", 1)
+        elif "/" in body:
+            provider, model = body.split("/", 1)
+        else:
+            return None
+        provider = _normalize_pin_provider(provider)
+        model = model.strip()
     if not provider or not model:
         return None
     try:
@@ -348,7 +455,16 @@ def resolve_swarm_model_pin(
         _diag("swarm_model_pin.health", e)
 
     adapters = _allowed_pin_adapters(allowed_adapters)
-    for candidate in pin_candidates(requested):
+    candidates = list(pin_candidates(requested))
+    seen_cands = {c.lower() for c in candidates}
+    for spec in settings_enabled_pin_specs(requested):
+        for extra in pin_candidates(spec):
+            key = extra.lower()
+            if key in seen_cands:
+                continue
+            seen_cands.add(key)
+            candidates.append(extra)
+    for candidate in candidates:
         for adapter in adapters:
             stamped = _try_apply_pin(candidate, adapter=adapter)
             if not stamped:

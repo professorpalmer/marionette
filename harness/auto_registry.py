@@ -497,15 +497,12 @@ def _get_provider_models_from_discovery(
                     return f"openai-codex/{name}"
                 return name
 
+            # Settings toggles are the worker allowlist. Keep every enabled
+            # id even when this live fetch omitted it; do not add extras.
             selected = [(m, _tier_of_known(m), _slug_for(m)) for m in enabled]
             live_models = fetch_models(provider, provider_key, force=force)
-            if live_models:
-                if provider_name == "openrouter":
-                    selected = _promote_openrouter_snapshots(selected, live_models)
-                selected = [
-                    item for item in selected
-                    if _in_live_catalog(item[0], item[2], live_models)
-                ]
+            if live_models and provider_name == "openrouter":
+                selected = _promote_openrouter_snapshots(selected, live_models)
             return selected
 
         # Per-provider only: another provider's Models toggles must not empty

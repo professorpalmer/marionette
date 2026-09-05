@@ -1282,3 +1282,33 @@ def test_zen_explicit_enabled_set_does_not_auto_enable_ox(monkeypatch, tmp_path)
     assert ids == {"agentic/big-pickle"}
     assert "agentic/x-preview-f-free" not in ids
     assert "agentic/gpt-5.5" not in ids
+
+
+def test_enabled_codex_astra_stays_when_live_listing_omits_it(monkeypatch, tmp_path):
+    """Settings enable is the worker allowlist. A stale Codex listing must not
+    drop an explicitly enabled model (gpt-6-astra) that the picker already showed."""
+    models_path = tmp_path / "models.json"
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
+
+    def mock_get_provider_key(provider):
+        return "fake-codex" if provider.name == "openai-codex" else None
+
+    live = ["gpt-5.6-sol", "gpt-5.6-luna"]
+    with patch("harness.registry_wizard.get_provider_key", mock_get_provider_key), \
+         patch("harness.keys.get_disconnected", lambda: set()), \
+         patch("harness.model_fetch.fetch_models", lambda *_a, **_k: list(live)), \
+         patch(
+             "harness.auto_registry._enabled_picker_models",
+             lambda name: (
+                 ["gpt-6-astra", "gpt-5.6-sol"] if name == "openai-codex" else []
+             ),
+         ):
+        from harness.auto_registry import sync_agentic_registry
+        result = sync_agentic_registry()
+
+    assert result["synced"] is True
+    ids = {m["id"] for m in json.loads(models_path.read_text())["models"]}
+    assert "agentic/openai-codex/gpt-6-astra" in ids
+    assert "agentic/openai-codex/gpt-5.6-sol" in ids
+    assert "agentic/openai-codex/gpt-5.6-luna" not in ids

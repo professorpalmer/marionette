@@ -348,6 +348,122 @@ def test_resolve_cursor_pin_across_adapter_union(monkeypatch, tmp_path):
     assert out["resolved"] == "cursor/grok-4-5"
 
 
+def test_settings_enabled_pin_specs_maps_astra_generation_not_sol():
+    from harness.swarm_model_pin import settings_enabled_pin_specs
+
+    enabled = [
+        "openai-codex:gpt-5.6-sol",
+        "openai-codex:gpt-5.6-luna",
+        "openai-codex:gpt-6-astra",
+    ]
+    assert settings_enabled_pin_specs(
+        "agentic/openai-codex/gpt-5.6-astra", enabled=enabled,
+    ) == ["openai-codex:gpt-6-astra"]
+    assert settings_enabled_pin_specs(
+        "openai-codex:gpt-6-astra", enabled=enabled,
+    ) == ["openai-codex:gpt-6-astra"]
+    assert settings_enabled_pin_specs(
+        "agentic/openai-codex/gpt-5.6-sol", enabled=enabled,
+    ) == ["openai-codex:gpt-5.6-sol"]
+    assert settings_enabled_pin_specs("agentic/openai-codex/gpt-5.6-astra", enabled=[
+        "openai-codex:gpt-5.6-sol",
+        "openai-codex:gpt-5.6-luna",
+    ]) == []
+
+
+def test_resolve_gpt56_astra_pin_to_enabled_gpt6_astra(monkeypatch, tmp_path):
+    """Pilot 'GPT 5.6 Astra' pins must resolve to the Settings-enabled wire id."""
+    models_path = tmp_path / "models.json"
+    models_path.write_text(
+        json.dumps(
+            {
+                "models": [
+                    {
+                        "id": "agentic/openai-codex/gpt-5.6-sol",
+                        "adapter": "agentic",
+                        "adapter_model_name": "gpt-5.6-sol",
+                        "payload_defaults": {"provider": "openai-codex"},
+                    },
+                    {
+                        "id": "agentic/openai-codex/gpt-6-astra",
+                        "adapter": "agentic",
+                        "adapter_model_name": "gpt-6-astra",
+                        "payload_defaults": {"provider": "openai-codex"},
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setattr(
+        "harness.auto_registry.ensure_keyed_provider_registry_health",
+        lambda: {"ready": True},
+    )
+    monkeypatch.setattr(
+        "harness.auto_registry.keyed_agentic_providers",
+        lambda: {"openai-codex"},
+    )
+    monkeypatch.setattr(
+        "harness.model_visibility.get_enabled",
+        lambda: [
+            "openai-codex:gpt-5.6-sol",
+            "openai-codex:gpt-6-astra",
+        ],
+    )
+
+    def _fake_pin(payload, model, *, adapter, registry=None):
+        if adapter != "agentic":
+            return {**(payload or {}), "model": model}
+        if model in (
+            "gpt-6-astra",
+            "openai-codex/gpt-6-astra",
+            "agentic/openai-codex/gpt-6-astra",
+        ):
+            return {
+                **(payload or {}),
+                "model": "gpt-6-astra",
+                "provider": "openai-codex",
+                "pinned_model": "agentic/openai-codex/gpt-6-astra",
+                "pinned_adapter_model_name": "gpt-6-astra",
+            }
+        if model in (
+            "gpt-5.6-sol",
+            "openai-codex/gpt-5.6-sol",
+            "agentic/openai-codex/gpt-5.6-sol",
+        ):
+            return {
+                **(payload or {}),
+                "model": "gpt-5.6-sol",
+                "provider": "openai-codex",
+                "pinned_model": "agentic/openai-codex/gpt-5.6-sol",
+                "pinned_adapter_model_name": "gpt-5.6-sol",
+            }
+        return {**(payload or {}), "model": model}
+
+    monkeypatch.setattr("puppetmaster.model_registry.apply_model_pin", _fake_pin)
+    monkeypatch.setattr(
+        "harness.swarm_worker_allowlist.resolve_swarm_worker_allowlist",
+        lambda **_k: {
+            "allowed_adapters": ["agentic"],
+            "prefer_plan_billed": False,
+            "primary_adapter": "agentic",
+        },
+    )
+
+    from harness.swarm_model_pin import resolve_agentic_model_pin, resolve_swarm_model_pin
+
+    out = resolve_swarm_model_pin("agentic/openai-codex/gpt-5.6-astra")
+    assert out["demoted"] is False
+    assert out["resolved"] == "agentic/openai-codex/gpt-6-astra"
+    assert out["pin_fields"].get("provider") == "openai-codex"
+    pin, error = resolve_agentic_model_pin("agentic/openai-codex/gpt-5.6-astra")
+    assert error == ""
+    assert pin is not None
+    assert pin.model == "gpt-6-astra"
+    assert pin.router_model_id == "agentic/openai-codex/gpt-6-astra"
+
+
 def test_opencode_go_curated_bound_into_auto_registry():
     from harness.auto_registry import _CURATED_MODELS
     from harness.opencode_go import CURATED_MODELS
