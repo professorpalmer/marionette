@@ -55,6 +55,33 @@ def normalize_reasoning_effort(raw: object, *, default: str = DEFAULT_CODEX_REAS
     return default
 
 
+_REASONING_MANDATORY_MARKERS = (
+    "is mandatory",
+    "cannot be disabled",
+    "is required",
+)
+
+
+def is_reasoning_mandatory_error(text: object) -> bool:
+    """True when provider text says reasoning or thinking cannot be disabled.
+
+    Pure classifier: never raises. Empty / missing / unreadable text is False.
+    Bare "cannot be disabled" without reasoning/thinking is False.
+    """
+    try:
+        raw = str(text if text is not None else "").strip().lower()
+    except Exception:
+        return False
+    if not raw:
+        return False
+    if "reasoning" not in raw and "thinking" not in raw:
+        return False
+    for marker in _REASONING_MANDATORY_MARKERS:
+        if marker in raw:
+            return True
+    return False
+
+
 def current_reasoning_effort() -> str:
     return normalize_reasoning_effort(
         os.environ.get("HARNESS_CODEX_REASONING_EFFORT"),

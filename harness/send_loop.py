@@ -256,6 +256,33 @@ def iter_overflow_byte_recovery(session, resp, attempt, timing):
     return True
 
 
+def maybe_retry_reasoning_mandatory(session, resp) -> bool:
+    """One-shot retry when the provider rejects disabled reasoning.
+
+    First matching error on this session sets ``_omit_reasoning_disable``
+    on the pilot and returns True so the attempt loop continues. A second
+    hit returns False and the existing settle path terminals as today.
+    Never raises.
+    """
+    from .reasoning_effort import is_reasoning_mandatory_error
+
+    try:
+        if getattr(session, "_reasoning_disable_rejected", False):
+            return False
+        if not is_reasoning_mandatory_error(getattr(resp, "error", None)):
+            return False
+        session._reasoning_disable_rejected = True
+        pilot = getattr(session, "pilot", None)
+        if pilot is not None:
+            try:
+                pilot._omit_reasoning_disable = True
+            except Exception:
+                pass
+        return True
+    except Exception:
+        return False
+
+
 class SendLoopMixin:
     """Mixin holding send-loop orchestration for ConversationalSession.
 
@@ -1351,8 +1378,10 @@ class SendLoopMixin:
                         if retry:
                             continue
                         return
+                    if maybe_retry_reasoning_mandatory(self, resp):
+                        continue
 
-                # If there's no error or it is not context overflow, we're done
+                # Overflow / reasoning-mandatory retries continue; otherwise settle.
                 break
 
             last_classified, blocked = yield from settle_provider_step_terminal(
