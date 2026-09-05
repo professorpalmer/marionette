@@ -86,4 +86,48 @@ describe("ComposerTodoPanel", () => {
     const taskRow = screen.getByText("rewrite the DAG").parentElement;
     expect(taskRow?.querySelector("svg")?.classList.contains("animate-spin")).toBe(true);
   });
+
+  it("spins only the todo that matches the live wave job", () => {
+    publishSessionTodos({
+      phases: [
+        {
+          name: "Wave 1 — Station & Stadium Operations",
+          tasks: [
+            { content: "Ship station inventory read path", status: "completed" },
+            { content: "Implement station management server actions", status: "in_progress" },
+            { content: "Validate station ops", status: "pending" },
+          ],
+        },
+        {
+          name: "Wave 2 — Live Spectator",
+          tasks: [
+            { content: "Implement dedicated live spectator TV", status: "pending" },
+            { content: "Validate spectator display", status: "pending" },
+          ],
+        },
+        {
+          name: "Tasks",
+          tasks: [{ content: "implement (agentic) WAVE 1B (Part 1 - Actions only):", status: "pending" }],
+        },
+      ],
+    }, "sess-wave");
+    const job = {
+      id: "j-wave-1b",
+      goal: "WAVE 1B (Part 1 - Actions only)",
+      status: "running",
+      session_id: "sess-wave",
+      role: "implement",
+      tasks: [
+        { id: "t1", role: "implement", instruction: "Implement station management server actions", status: "running" },
+        { id: "t2", role: "implement", instruction: "Implement dedicated live spectator TV", status: "pending" },
+      ],
+    } as Job;
+
+    render(<ComposerTodoPanel sessionId="sess-wave" jobs={[job]} />);
+
+    const lit = document.querySelectorAll("[data-todo-lit='1']");
+    expect(lit).toHaveLength(1);
+    expect(lit[0]?.textContent).toContain("Implement station management server actions");
+    expect(document.querySelectorAll(".animate-spin")).toHaveLength(1);
+  });
 });

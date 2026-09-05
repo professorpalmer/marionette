@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Ban, CheckCircle2, ChevronDown, ChevronRight, Circle, ListTree, Loader2, MinusCircle } from "lucide-react";
 import { api, type Job, type SessionTodoItem, type SessionTodoSnapshot } from "../../lib/api";
 import {
-  litTodoContents,
-  liveJobTodoLabels,
+  litTodoContentsFromGroups,
+  liveJobTodoLabelGroups,
   todoHasWork,
   todoPhaseProgress,
   todoSnapshotProgress,
@@ -62,7 +62,7 @@ export default function ComposerTodoPanel({
   const [open, setOpen] = useState(true);
   const [collapsedPhaseKeys, setCollapsedPhaseKeys] = useState<Set<string>>(() => new Set());
   const lit = useMemo(
-    () => litTodoContents(snapshot, liveJobTodoLabels(jobs, sessionId)),
+    () => litTodoContentsFromGroups(snapshot, liveJobTodoLabelGroups(jobs, sessionId)),
     [jobs, sessionId, snapshot],
   );
 
