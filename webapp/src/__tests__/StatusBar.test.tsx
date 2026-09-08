@@ -27,7 +27,8 @@ vi.mock("../lib/api", () => ({
   },
 }));
 
-vi.mock("../lib/transport", () => ({
+vi.mock("../lib/transport", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../lib/transport")>(),
   isDesktop: () => false,
 }));
 

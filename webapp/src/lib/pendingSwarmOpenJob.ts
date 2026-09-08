@@ -1,48 +1,73 @@
-/**
- * Queue a Swarm Tracker deep-link when SwarmPane is not yet mounted.
- *
- * openAgentSwarmJob fires harness-focus-tab then harness-open-swarm-job
- * synchronously. SwarmPane may mount only after the right pane opens / the
- * swarm tab activates, so the event can be missed — stash the target until
- * SwarmPane consumes it on mount (same idea as App.pendingRightTab).
- */
+import type { Job } from './api';
+import type { MetadataSelection } from './jobMetadata';
+import { metadataSelectionKey } from './jobMetadata';
+import type { LocalRef } from './localJobMetadata';
+import { localKey } from './localJobMetadata';
 
-let pendingOpenJobId: string | null = null;
-let pendingOpenArtifactId: string | null = null;
+export type NavigationContext = Readonly<{ repo: string; session_id: string; contextEpoch: number }>;
+type Destination =
+  | { kind: 'pm'; selection: Readonly<MetadataSelection> }
+  | { kind: 'native'; localRef: Readonly<LocalRef> }
+  | { kind: 'unresolved'; metadataKey?: string };
+export type SwarmNavigationTarget = Readonly<Destination & {
+  jobId: string;
+  context: NavigationContext | null;
+  artifactId?: string;
+}>;
+let pending: SwarmNavigationTarget | null = null;
 
-/** Stash a job and optional artifact for a late-mounted SwarmPane to consume. */
+/** Capture only ownership actually carried by the clicked/observed row. */
+export function swarmNavigationTarget(jobId: string, context: NavigationContext | null, job?: Job, artifactId?: string, metadataKey?: string): SwarmNavigationTarget {
+  const scope = context ? Object.freeze({ ...context }) : null;
+  const base = { jobId: jobId.trim(), context: scope, ...(artifactId?.trim() ? { artifactId: artifactId.trim() } : {}) };
+  if (job?.id === base.jobId && scope) {
+    if (job.local_ref) return Object.freeze({ ...base, kind: 'native', localRef: Object.freeze({ ...job.local_ref }) });
+    if (job.job_ref && (job.source === 'harness' || job.source === 'cli')) return Object.freeze({ ...base, kind: 'pm', selection: Object.freeze({ repo: scope.repo, session_id: scope.session_id, source: job.source, job_ref: Object.freeze({ ...job.job_ref }) }) });
+  }
+  return Object.freeze({ ...base, kind: 'unresolved', ...(metadataKey ? { metadataKey } : {}) });
+}
+export function navigationMatches(target: SwarmNavigationTarget, context: NavigationContext | null, job: Job): boolean {
+  if (!target.context || !context || target.context.repo !== context.repo || target.context.session_id !== context.session_id || job.id !== target.jobId) return false;
+  switch (target.kind) {
+    case 'pm': return job.metadata_key === metadataSelectionKey(target.selection);
+    case 'native': return !!job.local_ref && localKey(job.local_ref) === localKey(target.localRef);
+    case 'unresolved': return target.context.contextEpoch === context.contextEpoch && !!target.metadataKey && job.metadata_key === target.metadataKey;
+  }
+}
+export function queuePendingSwarmNavigation(target: SwarmNavigationTarget): SwarmNavigationTarget {
+  const context = target.context ? Object.freeze({ ...target.context }) : null;
+  switch (target.kind) {
+    case 'pm': pending = Object.freeze({ ...target, context, selection: Object.freeze({ ...target.selection, job_ref: Object.freeze({ ...target.selection.job_ref }) }) }); break;
+    case 'native': pending = Object.freeze({ ...target, context, localRef: Object.freeze({ ...target.localRef }) }); break;
+    case 'unresolved': pending = Object.freeze({ ...target, context }); break;
+  }
+  return pending;
+}
+export function peekPendingSwarmNavigation(): SwarmNavigationTarget | null { return pending; }
+/** Compare the actual click object: equal destination fields are still different clicks. */
+export function takePendingSwarmNavigation(target: SwarmNavigationTarget): SwarmNavigationTarget | null {
+  if (pending !== target) return null;
+  pending = null;
+  return target;
+}
+
+/** Compatibility projections use the same slot; they never grant context authority. */
 export function queuePendingSwarmOpenJob(jobId: string, artifactId?: string): void {
-  const id = (jobId || "").trim();
-  pendingOpenJobId = id || null;
-  pendingOpenArtifactId = id ? (artifactId || "").trim() || null : null;
+  pending = jobId.trim() ? swarmNavigationTarget(jobId, null, undefined, artifactId) : null;
 }
-
-/** Peek without clearing (tests / race guards). */
-export function peekPendingSwarmOpenJob(): string | null {
-  return pendingOpenJobId;
-}
-
-/** Take and clear the pending job id (null when none). */
+export function peekPendingSwarmOpenJob(): string | null { return pending?.jobId ?? null; }
+export function peekPendingSwarmOpenArtifact(): string | null { return pending?.artifactId ?? null; }
 export function takePendingSwarmOpenJob(): string | null {
-  const id = pendingOpenJobId;
-  pendingOpenJobId = null;
-  return id;
+  const target = pending;
+  // Opening the job does not render its artifact. Leave the atomic target intact.
+  if (target && !target.artifactId) takePendingSwarmNavigation(target);
+  return target?.jobId ?? null;
 }
-
-/** Peek the optional artifact target without clearing it. */
-export function peekPendingSwarmOpenArtifact(): string | null {
-  return pendingOpenArtifactId;
-}
-
-/** Take and clear the optional artifact target paired with the pending job. */
 export function takePendingSwarmOpenArtifact(): string | null {
-  const id = pendingOpenArtifactId;
-  pendingOpenArtifactId = null;
-  return id;
+  const target = pending;
+  if (target) takePendingSwarmNavigation(target);
+  return target?.artifactId ?? null;
 }
-
-/** Test helper: drop any stashed deep-link. */
-export function clearPendingSwarmOpenJob(): void {
-  pendingOpenJobId = null;
-  pendingOpenArtifactId = null;
+export function clearPendingSwarmOpenJob(target: SwarmNavigationTarget | null = pending): void {
+  if (target) takePendingSwarmNavigation(target);
 }

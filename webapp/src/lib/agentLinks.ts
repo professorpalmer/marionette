@@ -14,7 +14,8 @@ import {
   seedAgentTerminalCommand,
   syncAgentTerminalSnapshot,
 } from "./agentTerminalStream";
-import { queuePendingSwarmOpenJob } from "./pendingSwarmOpenJob";
+import { queuePendingSwarmNavigation, swarmNavigationTarget } from "./pendingSwarmOpenJob";
+import type { SwarmNavigationTarget } from "./pendingSwarmOpenJob";
 
 export type OpenFileDetail = {
   path: string;
@@ -506,16 +507,16 @@ export function openAgentWorkspace(path: string): void {
  * expands/scrolls (harness-open-swarm-job is easy to miss when the pane
  * mounts only after harness-focus-tab opens the right rail).
  */
-export function openAgentSwarmJob(jobId: string, artifactId?: string): void {
-  const id = (jobId || "").trim();
-  const artifact = (artifactId || "").trim();
-  if (!id || !looksLikeJobId(id)) return;
+export function openAgentSwarmJob(jobId: string | SwarmNavigationTarget, artifactId?: string): void {
+  const target = typeof jobId === "string" ? swarmNavigationTarget(jobId, null, undefined, artifactId) : jobId;
+  const id = target.jobId;
+  if (!id || (typeof jobId === "string" && !looksLikeJobId(id))) return;
   try {
-    queuePendingSwarmOpenJob(id, artifact);
+    const queued = queuePendingSwarmNavigation(target);
     window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: "swarm" }));
     window.dispatchEvent(
       new CustomEvent("harness-open-swarm-job", {
-        detail: { jobId: id, ...(artifact ? { artifactId: artifact } : {}) },
+        detail: { jobId: id, ...(target.artifactId ? { artifactId: target.artifactId } : {}), target: queued },
       }),
     );
   } catch {
@@ -524,11 +525,11 @@ export function openAgentSwarmJob(jobId: string, artifactId?: string): void {
 }
 
 /** Awaiting swarms own tracker navigation; other live work owns Terminal. */
-export function openAgentBusyDetail(status: string, jobIds: readonly string[]): void {
+export function openAgentBusyDetail(status: string, jobIds: readonly string[], openJob: (jobId: string) => void = openAgentSwarmJob): void {
   if (status === "awaiting_swarm") {
     const jobId = jobIds.find((id) => looksLikeJobId(String(id || "").trim()));
     if (jobId) {
-      openAgentSwarmJob(jobId);
+      openJob(jobId);
       return;
     }
   }

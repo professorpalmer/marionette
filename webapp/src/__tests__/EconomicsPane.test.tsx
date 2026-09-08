@@ -481,7 +481,7 @@ describe("EconomicsPane", () => {
 
     render(<EconomicsPane />);
     fireEvent.click(await screen.findByRole("button", { name: "job_abcdef012345" }));
-    expect(mockOpenAgentSwarmJob).toHaveBeenCalledWith("job_abcdef012345");
+    expect(mockOpenAgentSwarmJob).toHaveBeenCalledWith({ kind: "unresolved", context: null, jobId: "job_abcdef012345" });
   });
 
   it("keeps this-open spend off This repo even when receipts are unavailable", async () => {

@@ -1,7 +1,10 @@
+import { useOpenSwarmJob } from '../../lib/useOpenSwarmJob';
+import JobCancellationControl from "../JobCancellationControl";
+import { lastSelectedProjectRoot, useProjectSwitching } from "../../lib/panelTransition";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { ChevronDown, ChevronRight, CheckCircle2, Loader2, X, XCircle } from "lucide-react";
 import { api, type Job } from "../../lib/api";
-import { openAgentCommand, openAgentSwarmJob } from "../../lib/agentLinks";
+import { openAgentCommand } from "../../lib/agentLinks";
 import {
   dismissAgentCommandSession,
   getAgentCommandIndexVersion,
@@ -45,13 +48,22 @@ function StatusStackGroup({
   cancelling,
   onCancel,
   defaultCollapsed = false,
+  swarmJobs,
+  sessionId,
+  repo,
+  switching,
 }: {
   kind: ComposerStatusStackRow["kind"];
   rows: ComposerStatusStackRow[];
   cancelling: ReadonlySet<string>;
   onCancel: (ids: string[]) => void;
   defaultCollapsed?: boolean;
+  swarmJobs: readonly Job[];
+  sessionId: string;
+  repo: string;
+  switching: boolean;
 }) {
+  const openSwarmJob = useOpenSwarmJob(sessionId);
   const runningIds = rows.filter((row) => row.state === "running").map((row) => row.id);
   const [userOpen, setUserOpen] = useState<boolean | null>(null);
   const open = userOpen ?? (!defaultCollapsed && runningIds.length > 0);
@@ -74,7 +86,7 @@ function StatusStackGroup({
             {rows.length}
           </span>
         </button>
-        {runningIds.length > 0 && (
+        {kind === "terminal" && runningIds.length > 0 && (
           runningIds.every((id) => cancelling.has(id)) ? (
             <span className="shrink-0 px-1.5 text-[9px] italic text-risk/70">cancelling...</span>
           ) : (
@@ -97,7 +109,7 @@ function StatusStackGroup({
             const openLabel = row.kind === "swarm" ? "Open swarm" : "Open terminal";
             const onOpen = () => {
               if (row.kind === "swarm") {
-                openAgentSwarmJob(row.id);
+                openSwarmJob(row.id);
                 return;
               }
               openAgentCommand(row.command || row.label, {
@@ -118,7 +130,13 @@ function StatusStackGroup({
                   <span className="min-w-0 flex-1 truncate">{row.label}</span>
                   <ChevronRight size={11} className="shrink-0 text-faint" aria-hidden />
                 </button>
-                {row.state === "running" && (
+                {row.kind === "swarm" && !row.id.startsWith("local-") && (() => {
+                  const matches = swarmJobs.filter(job => job.id === row.id);
+                  return matches.length === 1
+                    ? <JobCancellationControl job={matches[0]} repo={repo} sessionId={sessionId} disabled={switching} />
+                    : <span role="status">Stop unavailable: ambiguous job identity.</span>;
+                })()}
+                {(row.kind === "terminal" || row.id.startsWith("local-")) && row.state === "running" && (
                   stopping ? (
                     <span className="shrink-0 px-1 text-[9px] italic text-risk/70">cancelling...</span>
                   ) : (
@@ -149,6 +167,13 @@ export default function ComposerStatusStack({
   swarmJobs: readonly Job[];
   sessionId?: string;
 }) {
+  const [repo, setRepo] = useState(lastSelectedProjectRoot);
+  const switching = useProjectSwitching();
+  useEffect(() => {
+    const update = () => setRepo(lastSelectedProjectRoot);
+    window.addEventListener("harness-project-selected", update);
+    return () => window.removeEventListener("harness-project-selected", update);
+  }, []);
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [cancelling, setCancelling] = useState<Set<string>>(() => new Set());
   const commandIndexVersion = useSyncExternalStore(
@@ -239,6 +264,10 @@ export default function ComposerStatusStack({
             kind={group.kind}
             rows={group.rows}
             cancelling={cancelling}
+            swarmJobs={swarmJobs}
+            sessionId={sessionId}
+            repo={repo}
+            switching={switching}
             onCancel={onCancel}
             defaultCollapsed={group.kind === "terminal" && Boolean(taskSource)}
           />

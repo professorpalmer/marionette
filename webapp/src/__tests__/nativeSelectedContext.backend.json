@@ -1,0 +1,430 @@
+{
+  "descriptor": {
+    "available": true,
+    "incarnation": "fixture-native",
+    "version": 1,
+    "lanes": [
+      "active",
+      "history"
+    ],
+    "active_statuses": [
+      "in_progress",
+      "pending",
+      "queued",
+      "registered",
+      "running",
+      "started",
+      "stitching"
+    ],
+    "attention_statuses": [
+      "failed",
+      "partial",
+      "stalled",
+      "timed_out",
+      "timeout",
+      "truncated",
+      "unknown"
+    ]
+  },
+  "active": {
+    "version": 1,
+    "page": {
+      "outcome": "complete",
+      "revision": 3,
+      "checkpoint": 3,
+      "scanned": 1,
+      "next_cursor": null
+    },
+    "rows": [
+      {
+        "local_ref": {
+          "job_id": "local-selected",
+          "incarnation": "fixture-native"
+        },
+        "lifecycle": "running",
+        "activity": "active",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": 1,
+        "action_count": 0,
+        "artifact_count": 0,
+        "child_count": 1,
+        "created_at": 1788727751.5056891,
+        "updated_at": 1788727751.5056891,
+        "receipts": {
+          "terminal": false,
+          "launch": false,
+          "recovery": false,
+          "child": false
+        },
+        "display": {
+          "model": "",
+          "adapter": "command",
+          "label": "Command",
+          "truncated": false
+        },
+        "usage": {
+          "kind": "unknown"
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "accounting": {
+          "kind": "declared",
+          "aggregation_authority": false
+        },
+        "deleted": false,
+        "revision": 3
+      }
+    ],
+    "coverage": {
+      "membership": "retained_local_active",
+      "ordering": "id",
+      "historical": "unavailable",
+      "metadata": "live_during_traversal"
+    },
+    "missing": [
+      "unretained_history"
+    ],
+    "incarnation": "fixture-native",
+    "lane": "active",
+    "context": {
+      "session_id": "session-A",
+      "repo": "/repo",
+      "view_generation": "generation-1",
+      "scope": "session"
+    }
+  },
+  "history": {
+    "version": 1,
+    "page": {
+      "outcome": "complete",
+      "revision": 3,
+      "checkpoint": 3,
+      "scanned": 1,
+      "next_cursor": null
+    },
+    "rows": [
+      {
+        "local_ref": {
+          "job_id": "local-selected",
+          "incarnation": "fixture-native"
+        },
+        "lifecycle": "running",
+        "activity": "active",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": 1,
+        "action_count": 0,
+        "artifact_count": 0,
+        "child_count": 1,
+        "created_at": 1788727751.5056891,
+        "updated_at": 1788727751.5056891,
+        "receipts": {
+          "terminal": false,
+          "launch": false,
+          "recovery": false,
+          "child": false
+        },
+        "display": {
+          "model": "",
+          "adapter": "command",
+          "label": "Command",
+          "truncated": false
+        },
+        "usage": {
+          "kind": "unknown"
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "accounting": {
+          "kind": "declared",
+          "aggregation_authority": false
+        },
+        "deleted": false,
+        "revision": 3
+      }
+    ],
+    "coverage": {
+      "membership": "retained_local_history",
+      "ordering": "id",
+      "historical": "unavailable"
+    },
+    "missing": [
+      "unretained_history"
+    ],
+    "incarnation": "fixture-native",
+    "lane": "history",
+    "context": {
+      "session_id": "session-A",
+      "repo": "/repo",
+      "view_generation": "generation-1",
+      "scope": "session"
+    }
+  },
+  "detail": {
+    "version": 1,
+    "page": {
+      "outcome": "complete",
+      "revision": 3,
+      "checkpoint": 3,
+      "scanned": 0,
+      "next_cursor": null
+    },
+    "rows": [],
+    "coverage": {
+      "membership": "retained_local_history",
+      "ordering": "id",
+      "historical": "unavailable"
+    },
+    "missing": [
+      "unretained_history"
+    ],
+    "local_ref": {
+      "job_id": "local-selected",
+      "incarnation": "fixture-native"
+    },
+    "lane": "actions",
+    "cancellation_authority": false,
+    "summary": {
+      "local_ref": {
+        "job_id": "local-selected",
+        "incarnation": "fixture-native"
+      },
+      "lifecycle": "running",
+      "activity": "active",
+      "kind": "run_command",
+      "session_id": "session-A",
+      "parent_ref": null,
+      "task_count": 1,
+      "action_count": 0,
+      "artifact_count": 0,
+      "child_count": 1,
+      "created_at": 1788727751.5056891,
+      "updated_at": 1788727751.5056891,
+      "receipts": {
+        "terminal": false,
+        "launch": false,
+        "recovery": false,
+        "child": false
+      },
+      "display": {
+        "model": "",
+        "adapter": "command",
+        "label": "Command",
+        "truncated": false
+      },
+      "usage": {
+        "kind": "unknown"
+      },
+      "economics": {
+        "kind": "unavailable"
+      },
+      "accounting": {
+        "kind": "declared",
+        "aggregation_authority": false
+      },
+      "deleted": false,
+      "revision": 3
+    },
+    "selected_context": {
+      "source": "command_preview",
+      "request": {
+        "text": "printf selected-context",
+        "truncated": false
+      },
+      "cwd": {
+        "text": "/repo",
+        "truncated": false
+      },
+      "omission": "raw_command_not_retained"
+    },
+    "total": 0,
+    "context": {
+      "session_id": "session-A",
+      "repo": "/repo",
+      "view_generation": "generation-1",
+      "scope": "session"
+    }
+  },
+  "children": {
+    "version": 1,
+    "page": {
+      "outcome": "complete",
+      "revision": 3,
+      "checkpoint": 3,
+      "scanned": 1,
+      "next_cursor": null
+    },
+    "rows": [
+      {
+        "local_ref": {
+          "job_id": "local-child",
+          "incarnation": "fixture-native"
+        }
+      }
+    ],
+    "coverage": {
+      "membership": "retained_local_history",
+      "ordering": "id",
+      "historical": "unavailable"
+    },
+    "missing": [
+      "unretained_history"
+    ],
+    "local_ref": {
+      "job_id": "local-selected",
+      "incarnation": "fixture-native"
+    },
+    "lane": "children",
+    "cancellation_authority": false,
+    "summary": {
+      "local_ref": {
+        "job_id": "local-selected",
+        "incarnation": "fixture-native"
+      },
+      "lifecycle": "running",
+      "activity": "active",
+      "kind": "run_command",
+      "session_id": "session-A",
+      "parent_ref": null,
+      "task_count": 1,
+      "action_count": 0,
+      "artifact_count": 0,
+      "child_count": 1,
+      "created_at": 1788727751.5056891,
+      "updated_at": 1788727751.5056891,
+      "receipts": {
+        "terminal": false,
+        "launch": false,
+        "recovery": false,
+        "child": false
+      },
+      "display": {
+        "model": "",
+        "adapter": "command",
+        "label": "Command",
+        "truncated": false
+      },
+      "usage": {
+        "kind": "unknown"
+      },
+      "economics": {
+        "kind": "unavailable"
+      },
+      "accounting": {
+        "kind": "declared",
+        "aggregation_authority": false
+      },
+      "deleted": false,
+      "revision": 3
+    },
+    "selected_context": {
+      "source": "command_preview",
+      "request": {
+        "text": "printf selected-context",
+        "truncated": false
+      },
+      "cwd": {
+        "text": "/repo",
+        "truncated": false
+      },
+      "omission": "raw_command_not_retained"
+    },
+    "total": 1,
+    "context": {
+      "session_id": "session-A",
+      "repo": "/repo",
+      "view_generation": "generation-1",
+      "scope": "session"
+    }
+  },
+  "cancelled": {
+    "version": 1,
+    "page": {
+      "outcome": "unavailable",
+      "revision": 4,
+      "checkpoint": 0,
+      "scanned": 0,
+      "next_cursor": null
+    },
+    "rows": [],
+    "coverage": {
+      "membership": "retained_local_history",
+      "ordering": "id",
+      "historical": "unavailable"
+    },
+    "missing": [
+      "unretained_history",
+      "selected_lane_unavailable"
+    ],
+    "local_ref": {
+      "job_id": "local-selected",
+      "incarnation": "fixture-native"
+    },
+    "lane": "children",
+    "cancellation_authority": false,
+    "summary": {
+      "local_ref": {
+        "job_id": "local-selected",
+        "incarnation": "fixture-native"
+      },
+      "lifecycle": "cancelled",
+      "activity": "terminal",
+      "kind": "run_command",
+      "session_id": "session-A",
+      "parent_ref": null,
+      "task_count": 1,
+      "action_count": 0,
+      "artifact_count": 0,
+      "child_count": null,
+      "created_at": 1788727751.5056891,
+      "updated_at": 1788727751.5056891,
+      "receipts": {
+        "terminal": false,
+        "launch": false,
+        "recovery": false,
+        "child": false
+      },
+      "display": {
+        "model": "",
+        "adapter": "command",
+        "label": "Command",
+        "truncated": false
+      },
+      "usage": {
+        "kind": "unknown"
+      },
+      "economics": {
+        "kind": "unavailable"
+      },
+      "accounting": {
+        "kind": "declared",
+        "aggregation_authority": false
+      },
+      "deleted": false,
+      "revision": 4
+    },
+    "selected_context": {
+      "source": "command_preview",
+      "request": {
+        "text": "printf selected-context",
+        "truncated": false
+      },
+      "cwd": {
+        "text": "/repo",
+        "truncated": false
+      },
+      "omission": "raw_command_not_retained"
+    },
+    "context": {
+      "session_id": "session-A",
+      "repo": "/repo",
+      "view_generation": "generation-1",
+      "scope": "session"
+    }
+  }
+}

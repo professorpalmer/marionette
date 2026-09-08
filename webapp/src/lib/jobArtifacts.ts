@@ -1,8 +1,10 @@
+import { jobRefQuery } from './publicJobRef';
+import type { PublicJobRef } from './publicJobRef';
 import type { Artifact, Job } from './api';
 import { getJSON } from './transport';
 
 export type SelectedJobRef = {
-  job_ref: { job_id: string; state_id: string };
+  job_ref: PublicJobRef;
   source: string;
   repo: string;
   session_id: string;
@@ -23,12 +25,12 @@ export function selectJobRef(job: Job, repo: string, sessionId: string): Selecte
 
 export function jobArtifactKey(selection: SelectedJobRef): string {
   return JSON.stringify([selection.job_ref.job_id, selection.job_ref.state_id,
-    selection.source, selection.repo, selection.session_id]);
+    selection.source, selection.repo, selection.session_id, ...(selection.job_ref.version === 2 ? [2, selection.job_ref.incarnation] : [])]);
 }
 
 export async function fetchJobArtifacts(selection: SelectedJobRef): Promise<Artifact[]> {
   selection = { ...selection, job_ref: { ...selection.job_ref } };
-  const query = new URLSearchParams({ ...selection.job_ref, source: selection.source,
+  const query = new URLSearchParams({ ...jobRefQuery(selection.job_ref), source: selection.source,
     repo: selection.repo, session_id: selection.session_id });
   const result = await getJSON<JobArtifactsResult>(`/api/jobs/artifacts/v1?${query}`, {
     sessionId: selection.session_id, repo: selection.repo,

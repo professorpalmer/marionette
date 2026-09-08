@@ -11,9 +11,19 @@ import {
   resolveActivityGroupOpen,
   type Item,
 } from "../components/TranscriptList";
+import { navigationFixture } from "./navigationProducer.fixtures";
+import { clearPendingSwarmOpenJob, peekPendingSwarmNavigation } from "../lib/pendingSwarmOpenJob";
+import type { SwarmNavigationTarget } from "../lib/pendingSwarmOpenJob";
 import { _resetAgentCommandIndexForTests } from "../lib/agentCommandIndex";
 
-afterEach(() => cleanup());
+let navigation: Awaited<ReturnType<typeof navigationFixture>> | undefined;
+afterEach(() => {
+  cleanup();
+  navigation?.dispose();
+  navigation = undefined;
+  clearPendingSwarmOpenJob();
+  vi.restoreAllMocks();
+});
 
 function listProps(items: Item[]) {
   return {
@@ -783,10 +793,12 @@ describe("investigation UX residual debts (nested / fold prefs / workerStream)",
 });
 
 describe("job_id → Swarm Tracker deep-link chrome", () => {
-  it("renders swarm_pending job ids as clickable chips that open the tracker", () => {
+  it("renders swarm_pending job ids as clickable chips that open the tracker", async () => {
+    navigation = await navigationFixture(["job_abcdef012345"]);
     const spy = vi.spyOn(window, "dispatchEvent");
     render(
-      <TranscriptList
+      <navigation.Provider><TranscriptList
+        sessionId="session-A"
         {...listProps([
           {
             kind: "swarm_pending",
@@ -795,7 +807,7 @@ describe("job_id → Swarm Tracker deep-link chrome", () => {
             status: "running",
           },
         ])}
-      />,
+      /></navigation.Provider>,
     );
     fireEvent.click(screen.getByRole("button", { name: /Swarm|Investigating/i }));
     const chips = screen.getAllByTestId("swarm-pending-job-chip");
@@ -807,7 +819,20 @@ describe("job_id → Swarm Tracker deep-link chrome", () => {
     const openEv = spy.mock.calls
       .map((c) => c[0] as CustomEvent)
       .find((e) => e.type === "harness-open-swarm-job");
-    expect(openEv?.detail).toEqual({ jobId: "job_abcdef012345" });
+    expect(openEv?.detail).toEqual({ jobId: "job_abcdef012345", target: {
+      kind: "pm", jobId: "job_abcdef012345", context: navigation.context(),
+      selection: navigation.selection("job_abcdef012345"),
+    } satisfies SwarmNavigationTarget });
+    expect(chips[0]).toHaveTextContent("job_abcdef012345");
+    const captured = peekPendingSwarmNavigation();
+    await navigation.switchOwner({ repo: "/other", session_id: "session-B" });
+    expect(peekPendingSwarmNavigation()).toBe(captured);
+    spy.mockClear();
+    fireEvent.click(screen.getAllByTestId("swarm-pending-job-chip")[0]);
+    expect(peekPendingSwarmNavigation()).toEqual({
+      kind: "unresolved", jobId: "job_abcdef012345", context: null,
+    } satisfies SwarmNavigationTarget);
+    expect(spy.mock.calls.some(([event]) => event.type === "harness-focus-tab")).toBe(true);
     spy.mockRestore();
   });
 
@@ -908,7 +933,8 @@ describe("job_id → Swarm Tracker deep-link chrome", () => {
     spy.mockRestore();
   });
 
-  it("renders complete and partial machine-owned swarm delivery receipts", () => {
+  it("renders complete and partial machine-owned swarm delivery receipts", async () => {
+    navigation = await navigationFixture(["job_111111111111"]);
     const spy = vi.spyOn(window, "dispatchEvent");
     const completeArtifacts = Array.from({ length: 17 }, (_, i) => ({
       id: `artifact-${i}`,
@@ -960,7 +986,7 @@ describe("job_id → Swarm Tracker deep-link chrome", () => {
     // Hydration/reload must retain the machine-owned receipt and warning.
     const hydratedItems = JSON.parse(JSON.stringify(persistedItems)) as Item[];
 
-    render(<TranscriptList {...listProps(hydratedItems)} />);
+    render(<navigation.Provider><TranscriptList {...listProps(hydratedItems)} sessionId="session-A" /></navigation.Provider>);
 
     fireEvent.click(screen.getByRole("button", { name: /Swarm · 2 results/i }));
 
@@ -990,7 +1016,22 @@ describe("job_id → Swarm Tracker deep-link chrome", () => {
     const openEvent = spy.mock.calls
       .map((call) => call[0] as CustomEvent)
       .find((event) => event.type === "harness-open-swarm-job");
-    expect(openEvent?.detail).toEqual({ jobId: "job_111111111111", artifactId: "artifact-0" });
+    expect(openEvent?.detail).toEqual({ jobId: "job_111111111111", artifactId: "artifact-0", target: {
+      kind: "pm", jobId: "job_111111111111", artifactId: "artifact-0",
+      context: navigation.context(), selection: navigation.selection("job_111111111111"),
+    } satisfies SwarmNavigationTarget });
+    spy.mockClear();
+    fireEvent.click(artifactLinks[17]);
+    const unresolvedEvent = spy.mock.calls.map(([event]) => event)
+      .find((event) => event.type === "harness-open-swarm-job");
+    expect(unresolvedEvent instanceof CustomEvent && unresolvedEvent.detail).toEqual({
+      jobId: "job_222222222222", artifactId: "artifact-0", target: {
+        kind: "unresolved", jobId: "job_222222222222", artifactId: "artifact-0", context: navigation.context(),
+      } satisfies SwarmNavigationTarget,
+    });
+    const captured = peekPendingSwarmNavigation();
+    await navigation.switchOwner({ repo: "/other", session_id: "session-B" }, ["job_222222222222"]);
+    expect(peekPendingSwarmNavigation()).toBe(captured);
     spy.mockRestore();
   });
 });

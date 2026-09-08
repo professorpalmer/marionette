@@ -1,6 +1,10 @@
 import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import LeftRail from "../components/LeftRail";
+import { JobMetadataContext } from '../lib/jobMetadataContext';
+import { JobMetadataStore } from '../lib/useJobMetadata';
+import { context, summary, view } from './jobMetadata.fixtures';
+import { nativeSummary } from './metadataMigration.fixtures';
 import { clearSWRCache } from "../lib/useStaleWhileRevalidate";
 
 vi.mock("../lib/api", () => ({
@@ -51,4 +55,29 @@ describe("LeftRail branch layout", () => {
     expect(jobsPanel).toHaveClass("mt-auto");
     expect(jobScopes).toHaveClass("grid", "grid-cols-3");
   });
+});
+
+it('keeps observed active PM and native jobs above finished history in the capped sidebar', async () => {
+  localStorage.clear(); clearSWRCache();
+  const store = new JobMetadataStore();
+  const target = { ...context, repo: '/workspace', session_id: 'session-1' };
+  const queued = summary();
+  const snapshot = store.getSnapshot();
+  const activeNative = { ...nativeSummary(100), session_id: target.session_id, kind: 'run_command', lifecycle: 'running' };
+  const retained = Array.from({ length: 30 }, (_, i) => ({ ...nativeSummary(i + 1), session_id: target.session_id, kind: 'provider', lifecycle: 'completed' }));
+  vi.spyOn(store, 'getSnapshot').mockReturnValue({ ...snapshot,
+    view: { kind: 'view', target, context: target, view: { ...view(), context: target }, refresh: 'idle' },
+    observations: [{ row: { ...queued, lifecycle: 'queued', ownership: { ...queued.ownership, session_id: target.session_id } }, freshness: 'observed' }],
+    local: { ...snapshot.local, observations: [activeNative, ...retained].map(row => ({ row, freshness: 'observed', observedAt: 1 })) },
+  });
+  const mounted = render(<JobMetadataContext.Provider value={store}><LeftRail jobsRefresh={0} /></JobMetadataContext.Provider>);
+  try {
+    await screen.findByRole('button', { name: 'Show all (32)' });
+    expect(screen.getByRole('button', { name: 'PM harness job', exact: true })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'run command', exact: true })).toBeVisible();
+    const list = mounted.container.querySelector('[data-slot="left-rail-jobs"]');
+    const labels = [...(list?.querySelectorAll('button') ?? [])].map(button => button.textContent?.trim());
+    expect(labels.indexOf('PM harness job')).toBeLessThan(labels.indexOf('provider'));
+    expect(labels.indexOf('run command')).toBeLessThan(labels.indexOf('provider'));
+  } finally { mounted.unmount(); vi.restoreAllMocks(); store.dispose(); }
 });

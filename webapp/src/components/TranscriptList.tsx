@@ -1,3 +1,4 @@
+import { SwarmLinkSessionContext, useOpenSwarmJob } from '../lib/useOpenSwarmJob';
 import { captureSessionViewport, sessionViewportOffset, type TranscriptViewportHandle } from "./conversation/sessionViewport";
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, useDeferredValue, useSyncExternalStore, useMemo, memo, forwardRef, type ReactNode } from "react";
 import { useVirtualizer, type VirtualItem } from "@tanstack/react-virtual";
@@ -13,7 +14,6 @@ import {
   openAgentCommand,
   openAgentImage,
   openAgentWorkspace,
-  openAgentSwarmJob,
   openAgentSpill,
   syncAgentCommandOutput,
   isExternalUrl,
@@ -2134,6 +2134,7 @@ export const TranscriptList = memo(function TranscriptList({
   );
 
   return (
+    <SwarmLinkSessionContext.Provider value={sessionId}>
     <div
       role="log"
       aria-live="polite"
@@ -2172,6 +2173,7 @@ export const TranscriptList = memo(function TranscriptList({
         </div>
       )}
     </div>
+    </SwarmLinkSessionContext.Provider>
   );
 });
 
@@ -3228,13 +3230,15 @@ function FencedCodeBlock({ className, children, commandIndexVersion = 0, ...prop
 // Route a clicked markdown link to the right surface instead of a raw
 // new-window navigation: http(s) opens an in-app Browser tab, a file-ish path
 // opens in the editor, and everything else is blocked (no javascript: in Electron).
-function openMarkdownHref(href: string, e: React.MouseEvent): void {
-  openAgentLink(href, e);
-}
 
 // Pretty tree only. Streaming wrappers pass a deferred `flushed` string so
 // highlight.js never remounts on a fence the next token can still extend.
 const PrettyMarkdown = memo(function PrettyMarkdown({ text }: { text: string }) {
+  const openSwarmJob = useOpenSwarmJob();
+  const openMarkdownHref = (href: string, event: React.MouseEvent) => {
+    if (looksLikeJobId(href)) { event.preventDefault(); event.stopPropagation(); openSwarmJob(href); }
+    else openAgentLink(href, event);
+  };
   const commandIndexVersion = useSyncExternalStore(
     subscribeAgentCommandIndex,
     getAgentCommandIndexVersion,
@@ -3656,6 +3660,7 @@ function ActionCard({
   /** Inside Ran N fold: paint as `Ran {goal}` instead of tool-kind chrome. */
   ranLine?: boolean;
 }) {
+  const openSwarmJob = useOpenSwarmJob();
   const toolName = toolRowLabel(card.kind || "");
   // Prefer the real CLI input (path/command/query), recovering from nested
   // goals / artifact headlines when the stream left ``goal`` empty.
@@ -3732,7 +3737,7 @@ function ActionCard({
     else if (linkKind === "command") openCommandReveal(goalValue);
     else if (linkKind === "image") openAgentImage(goalValue);
     else if (linkKind === "workspace") openAgentWorkspace(goalValue);
-    else if (linkKind === "job") openAgentSwarmJob(goalValue);
+    else if (linkKind === "job") openSwarmJob(goalValue);
     else if (linkKind === "spill") openAgentSpill(goalValue);
   };
 
@@ -3862,7 +3867,7 @@ function ActionCard({
                       else if (nestedLink.linkKind === "command") openAgentCommand(v, { id: v, run: false });
                       else if (nestedLink.linkKind === "image") openAgentImage(v);
                       else if (nestedLink.linkKind === "workspace") openAgentWorkspace(v);
-                      else if (nestedLink.linkKind === "job") openAgentSwarmJob(v);
+                      else if (nestedLink.linkKind === "job") openSwarmJob(v);
                       else if (nestedLink.linkKind === "spill") openAgentSpill(v);
                     }}
                     className="truncate text-accent/75 hover:underline underline-offset-2 bg-transparent border-0 p-0 text-left cursor-pointer font-sans text-[11px]"
@@ -4055,6 +4060,7 @@ const KV = ({
   linkKind?: AgentLinkKind;
   onCommandClick?: () => void;
 }) => {
+  const openSwarmJob = useOpenSwarmJob();
   const clickable =
     linkKind === "file"
     || linkKind === "url"
@@ -4090,7 +4096,7 @@ const KV = ({
             else if (linkKind === "url") openAgentUrl(v);
             else if (linkKind === "image") openAgentImage(v);
             else if (linkKind === "workspace") openAgentWorkspace(v);
-            else if (linkKind === "job") openAgentSwarmJob(v);
+            else if (linkKind === "job") openSwarmJob(v);
             else if (linkKind === "spill") openAgentSpill(v);
             else if (onCommandClick) onCommandClick();
             else openAgentCommand(v, { id: v, run: false });
@@ -4107,6 +4113,7 @@ const KV = ({
 
 /** Clickable job-id chips for swarm_pending pills (tracker deep-link). */
 function SwarmJobIdChips({ jobIds }: { jobIds: string[] }) {
+  const openSwarmJob = useOpenSwarmJob();
   const ids = jobIds.map((id) => String(id || "").trim()).filter(Boolean);
   if (ids.length === 0) return null;
   return (
@@ -4124,7 +4131,7 @@ function SwarmJobIdChips({ jobIds }: { jobIds: string[] }) {
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                openAgentSwarmJob(id);
+                openSwarmJob(id);
               }}
             >
               {id}
@@ -4233,6 +4240,7 @@ function SwarmJobIdButton({
   jobId: string;
   className?: string;
 }) {
+  const openSwarmJob = useOpenSwarmJob();
   const id = (jobId || "").trim();
   if (!id) return null;
   if (!looksLikeJobId(id)) {
@@ -4247,7 +4255,7 @@ function SwarmJobIdButton({
       onClick={(e) => {
         e.preventDefault();
         e.stopPropagation();
-        openAgentSwarmJob(id);
+        openSwarmJob(id);
       }}
     >
       {id}
@@ -4274,6 +4282,7 @@ function SwarmResultCard({ jobId, applied, files, summary, error, objective, cwd
   duplicateCount?: number;
 }) {
   const [open, setOpen] = useState(false);
+  const openSwarmJob = useOpenSwarmJob();
   const [artifactsOpen, setArtifactsOpen] = useState(false);
   const obj = objective ? (objective.length > 70 ? objective.slice(0, 70) + "..." : objective) : "swarm";
   const reuseLabel = reuseStatusLabel(reuseStatus);
@@ -4463,7 +4472,7 @@ function SwarmResultCard({ jobId, applied, files, summary, error, objective, cwd
                       data-testid="swarm-artifact-link"
                       data-artifact-id={artifact.id || ""}
                       data-artifact-sha256={artifact.sha256 || ""}
-                      onClick={() => primaryJobId && openAgentSwarmJob(primaryJobId, artifact.id)}
+                      onClick={() => primaryJobId && openSwarmJob(primaryJobId, artifact.id)}
                       className="block w-full rounded border border-edge/30 bg-panel/30 px-2 py-1.5 text-left hover:bg-panel2/35 transition-colors"
                       title={artifact.id ? `Inspect ${artifact.id} in Swarm Tracker` : "Inspect swarm artifacts"}
                     >

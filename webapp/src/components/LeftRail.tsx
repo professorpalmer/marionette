@@ -1,7 +1,11 @@
+import { metadataSelectionKey } from '../lib/jobMetadata';
+import { nativeActiveStatuses } from '../lib/localJobMetadata';
+import { useSharedJobMetadata, metadataJobs } from '../lib/jobMetadataContext';
+import { MetadataInspection, MetadataStatus } from './MetadataJobs';
 import { useCallback, useEffect, useRef, useState } from "react";
 import { GitBranch, Plus, MessageSquare, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2, CheckCircle2, Circle, Trash2, Brush, Search, X, Square } from "lucide-react";
-import { api, type Workspace, type WorkspaceInfo, type Session, type Job, type Artifact } from "../lib/api";
-import { fetchJobArtifacts, jobArtifactKey, selectJobRef, type ArtifactLoad, type SelectedJobRef } from "../lib/jobArtifacts";
+import { api, type Workspace, type WorkspaceInfo, type Session, type Job } from "../lib/api";
+import { jobArtifactKey, selectJobRef, type ArtifactLoad, type SelectedJobRef } from "../lib/jobArtifacts";
 import { pickFolder } from "../lib/transport";
 import { dispatchProjectSelected, dispatchProjectSwitching, panelOpacityClass } from "../lib/panelTransition";
 import { repoPathsEqual } from "../lib/pathNormalize";
@@ -69,7 +73,6 @@ import {
   patchActiveSessionInCaches,
   purgeSessionFromRootCaches,
   workspacesCacheKey,
-  jobsCacheKey,
   shouldOfferBackgroundStop,
   collectUnreadFinishedSessionIds,
   isRailWideSwitching,
@@ -84,6 +87,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   jobsRefresh: number;
   onSessionChange?: (id: string | null, expectedPreviousId?: string) => void;
 }) {
+  const { store: metadataStore, state: metadata } = useSharedJobMetadata();
   const [forkTarget, setForkTarget] = useState<Pick<Session, "id" | "title" | "forked_from"> | null>(null);
   const contextTrigger = useRef<HTMLElement | null>(null);
   const [forkTrigger, setForkTrigger] = useState<HTMLElement | null>(null);
@@ -275,18 +279,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   }, []);
 
   const loadJobArtifacts = (selection: SelectedJobRef) => {
-    const key = `${artifactEpoch.current}:${jobArtifactKey(selection)}`;
-    const epoch = artifactEpoch.current;
-    setArtifactsByJob(previous => ({ ...previous, [key]: { kind: "loading" } }));
-    fetchJobArtifacts(selection).then(artifacts => {
-      if (epoch !== artifactEpoch.current) return;
-      setArtifactsByJob(previous => ({ ...previous, [key]: { kind: "loaded", artifacts } }));
-    }).catch(() => {
-      if (epoch !== artifactEpoch.current) return;
-      setArtifactsByJob(previous => ({ ...previous, [key]: {
-        kind: "error", message: "Artifacts could not be loaded.",
-      } }));
-    });
+    const match = metadata.observations.find(o => metadataSelectionKey(o.row.selection) === metadataSelectionKey({ ...selection, source: o.row.selection.source }) && o.row.selection.source === selection.source);
+    if (match && !metadata.working) { metadataStore.select(match.row.selection); void metadataStore.readDetail(); }
   };
 
   const toggleJobCard = (key: string, selection: SelectedJobRef | null) => {
@@ -468,15 +462,9 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     },
   );
 
-  const {
-    data: jobs = [],
-    isTransitioning: jobsValidating,
-    revalidate: revalidateJobs,
-  } = useStaleWhileRevalidate<Job[]>(
-    jobsCacheKey(selectedProjectPath, sessions.find((session) => session.active)?.id),
-    () => api.jobs(selectedProjectPath || undefined),
-    { enabled: !!selectedProjectPath },
-  );
+  const browseMetadataSupported = metadata.view.kind !== 'idle' && repoPathsEqual(selectedProjectPath, metadata.view.target.repo);
+  const jobs = browseMetadataSupported ? metadataJobs(metadata) : [];
+  const jobsValidating = metadata.working;
 
   // Dim only on real workspace/session activation — never on jobs fetch that
   // follows browse-select of an already-listed project (that was the PROJECTS blink).
@@ -650,13 +638,12 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       // lists on their own paths.
       void revalidateWorkspaces();
       void revalidateWorkspace();
-      void revalidateJobs();
     };
     window.addEventListener("harness-config-changed", handleConfigChanged);
     return () => {
       window.removeEventListener("harness-config-changed", handleConfigChanged);
     };
-  }, [revalidateWorkspace, revalidateJobs, revalidateWorkspaces]);
+  }, [revalidateWorkspace, revalidateWorkspaces]);
 
   // Poll workspace status while CodeGraph indexes (or waits on scope) so the
   // badge flips without opening a session or switching directories.
@@ -1317,13 +1304,6 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     setExpandedProjects((prev) => ({ ...prev, [currentRepo]: true }));
   }, [currentRepo]);
 
-  const previousJobsRefresh = useRef(jobsRefresh);
-  useEffect(() => {
-    if (previousJobsRefresh.current === jobsRefresh) return;
-    previousJobsRefresh.current = jobsRefresh;
-    void revalidateJobs(true);
-  }, [jobsRefresh, revalidateJobs]);
-
   // Poll runner statuses so session rows can show running/idle without opening
   // a conversation. Same endpoint Conversation already uses for resume/swarm.
   usePolling(() => api.getSessionState().then((res) => {
@@ -1372,19 +1352,22 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     artifactContextRef.current = artifactContext;
     artifactEpoch.current += 1;
   }
-  const sortedJobs = filterJobsByScope(jobs.slice().reverse(), "session", activeSessionId);
+  const sortedJobs = filterJobsByScope(jobs.slice().reverse(), jobScope, activeSessionId).sort((a, b) =>
+    Number(b.read_status !== 'unavailable' && nativeActiveStatuses.includes(b.status))
+    - Number(a.read_status !== 'unavailable' && nativeActiveStatuses.includes(a.status)),
+  );
   const visibleJobs = sortedJobs.filter(
-    (j) => !hiddenJobIds.has(j.id) || !isTerminalJob(j),
+    (j) => !hiddenJobIds.has(j.metadata_key ?? j.id) || !isTerminalJob(j),
   );
   const hiddenJobCount = sortedJobs.filter(
-    (j) => hiddenJobIds.has(j.id) && isTerminalJob(j),
+    (j) => hiddenJobIds.has(j.metadata_key ?? j.id) && isTerminalJob(j),
   ).length;
   const terminalVisibleJobs = visibleJobs.filter((j) => isTerminalJob(j));
 
   const clearFinishedJobs = () => {
     setHiddenJobIds((prev) => {
       const next = new Set(prev);
-      for (const j of terminalVisibleJobs) next.add(j.id);
+      for (const j of terminalVisibleJobs) next.add(j.metadata_key ?? j.id);
       return next;
     });
   };
@@ -2108,6 +2091,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
             <div className="w-8 h-0.5 rounded-full bg-edge/80 group-hover:bg-muted/80 transition-colors" />
           </div>
         )}
+        {!sessionJobsCollapsed && (browseMetadataSupported ? <MetadataStatus /> : <p role="status" className="p-2 text-xs text-muted">Job metadata is available for the active workspace only. This project remains selected for browsing.</p>)}
         <div
           data-slot="left-rail-jobs-header"
           className={`shrink-0 min-w-0 ${sessionJobsCollapsed ? "mt-2" : ""}`}
@@ -2186,14 +2170,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                   const st = jobStatus(j);
                   const selection = selectJobRef(j, selectedProjectPath, activeSessionId);
                   const key = selection ? `${artifactEpoch.current}:${jobArtifactKey(selection)}`
-                    : JSON.stringify([j.id, j.source, selectedProjectPath, activeSessionId]);
+                    : JSON.stringify([j.metadata_key ?? j.id, j.source, selectedProjectPath, activeSessionId]);
                   const isOpen = !!expandedJobs[key];
-                  const detail = jobDetailBits(j);
-                  const load = artifactsByJob[key];
-                  const loadedArts = load?.kind === "loaded" ? load.artifacts : [];
-                  const arts = loadedArts.filter(a => a.headline?.trim());
-                  const summarylessCount = loadedArts.length - arts.length;
-                  const diff = jobDiffstat(loadedArts);
                   return (
                     <div key={key} className="border-b border-edge/35 overflow-hidden min-w-0">
                       <button
@@ -2207,61 +2185,10 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                         >
                           {j.goal}
                         </span>
-                        {diff && (
-                          <span
-                            className="shrink-0 flex items-center gap-1 text-[10px] tabular-nums font-medium"
-                            title={`${diff.files} file${diff.files === 1 ? "" : "s"} changed, ${diff.insertions} insertion${diff.insertions === 1 ? "" : "s"}, ${diff.deletions} deletion${diff.deletions === 1 ? "" : "s"}`}
-                          >
-                            {diff.insertions > 0 && <span className="text-good">+{diff.insertions}</span>}
-                            {diff.deletions > 0 && <span className="text-red-400/90">-{diff.deletions}</span>}
-                          </span>
-                        )}
                         <ChevronDown size={11} className={`text-faint shrink-0 transition-transform ${isOpen ? "rotate-180" : ""}`} />
                       </button>
-                      {isOpen && (
-                        <div className="px-1.5 pb-1.5 pt-1 border-t border-edge/35 space-y-1.5 min-w-0 max-h-48 overflow-y-auto overflow-x-hidden">
-                          <p className={`rail-job-title leading-snug break-words whitespace-normal ${st === "completed" ? "text-muted" : st === "cancelled" ? "text-red-400/90" : "text-txt"}`}>
-                            {j.goal}
-                          </p>
-                          {detail.length > 0 && (
-                            <div className="flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-faint">
-                              {detail.map((d, i) => (
-                                <span key={i} className="tabular-nums">{d}</span>
-                              ))}
-                            </div>
-                          )}
-                          {diff && (
-                            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] tabular-nums text-faint">
-                              <span>{diff.files} file{diff.files === 1 ? "" : "s"} changed</span>
-                              {diff.insertions > 0 && <span className="text-good">+{diff.insertions}</span>}
-                              {diff.deletions > 0 && <span className="text-red-400/90">-{diff.deletions}</span>}
-                            </div>
-                          )}
-                          {arts.length > 0 ? (
-                            <div className="space-y-0.5">
-                              {arts.map((a, i) => (
-                                <div key={a.id || i} className="rail-job-detail text-txt/90 flex items-start gap-1.5 leading-snug min-w-0">
-                                  <span className="text-good mt-[3px] shrink-0">·</span>
-                                  <span className="flex-1 min-w-0 break-words whitespace-normal">{a.headline}</span>
-                                </div>
-                              ))}
-                            </div>
-                          ) : null}
-                          {!selection ? (
-                            <div className="text-[10px] text-faint">Artifacts unavailable for this job in the selected workspace and session.</div>
-                          ) : load?.kind === "error" ? (
-                            <div role="alert" className="text-[10px] text-faint">
-                              {load.message} <button onClick={() => loadJobArtifacts(selection)} className="text-accent underline">Retry</button>
-                            </div>
-                          ) : !load || load.kind === "loading" ? (
-                            <div className="text-[10px] text-faint italic">Loading artifacts...</div>
-                          ) : loadedArts.length === 0 ? (
-                            <div className="text-[10px] text-faint italic">No artifacts recorded</div>
-                          ) : summarylessCount > 0 ? (
-                            <div className="text-[10px] text-faint">{summarylessCount} artifact{summarylessCount === 1 ? "" : "s"} recorded without a summary</div>
-                          ) : null}
-                        </div>
-                      )}
+                      {isOpen && <MetadataInspection job={j} />}
+
                     </div>
                   );
                 })}
@@ -2556,35 +2483,7 @@ function jobStatus(j: Job): JobStatus {
 
 // Compact metadata chips shown when a job card is expanded -- role/adapter and
 // usage so the card carries real signal instead of a truncated goal line.
-function jobDetailBits(j: Job): string[] {
-  const bits: string[] = [];
-  const status = (j.status || "").split(".").pop();
-  if (status) bits.push(status);
-  if (j.role) bits.push(j.role);
-  // Full resolved model id when present (pinned Muse runs, etc.).
-  if (j.model) bits.push(j.model);
-  if (j.adapter && j.adapter !== j.model) bits.push(j.adapter);
-  if (typeof j.task_count === "number" && j.task_count > 0) bits.push(`${j.task_count} task${j.task_count === 1 ? "" : "s"}`);
-  if (typeof j.tokens === "number" && j.tokens > 0) bits.push(`${j.tokens.toLocaleString()} tok`);
-  if (typeof j.est_cost_usd === "number" && j.est_cost_usd > 0) bits.push(`$${j.est_cost_usd.toFixed(3)}`);
-  return bits;
-}
 
 // Aggregate diffstat across a job's patch artifacts so a card can show a
 // git-style "+40 -12" summary at a glance. Returns null when the job produced
 // no patch (audits, reviews) so the caller can skip the row entirely.
-function jobDiffstat(artifacts: Artifact[]): { files: number; insertions: number; deletions: number } | null {
-  const patches = artifacts.filter((a) => a && a.diffstat);
-  if (patches.length === 0) return null;
-  let files = 0;
-  let insertions = 0;
-  let deletions = 0;
-  for (const a of patches) {
-    const d = a.diffstat!;
-    files += d.files || 0;
-    insertions += d.insertions || 0;
-    deletions += d.deletions || 0;
-  }
-  if (!(files || insertions || deletions)) return null;
-  return { files, insertions, deletions };
-}

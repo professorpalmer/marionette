@@ -41,10 +41,6 @@ import { cancelStreamPaint, cancelTypewriterWithoutFlush } from "./streamTypewri
 import { gatherSessionArtifacts } from "./sessionArtifacts";
 import { releaseAllTranscriptPreviewBlobs } from "./transcriptImageBlobs";
 import {
-  foldSwarmLiveJobsAfterReload,
-  shouldApplySwarmLiveMerge,
-} from "./streamApply";
-import {
   hydratePendingJobIdsAfterReload,
   sessionStateShowsAwaitingSwarm,
   SWARM_AWAIT_HINT,
@@ -574,82 +570,16 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
         setTranscriptStale(false);
         // Successful hydrate — drop sticky SESSION_* fail banner from a prior flake.
         setEditNotice((prev) => clearRecoveredSessionFailNotice(prev));
-        // Pending ids come from the live snapshot after reload — session
-        // job_ids are historical and must not re-arm Still working… on a
-        // completed turn. Unresolved swarm_pending cards are fallback only
-        // when swarmLive itself fails.
-
-        // Nested worker actions survive restart on local jobs; fold onto cards
-        // after display hydrate so investigation rows stay complete on reload.
-        // Same shouldApplySwarmLiveMerge fence as the busy-poll path in Conversation.
-        const liveRead = api.swarmLive(artifactRepo || undefined);
-        void liveRead.then((live) => {
-          const pollSid = activeSessionId;
-          if (!shouldApplySwarmLiveMerge({
-            pollGen: loadGen,
-            currentGen: transcriptLoadGenRef.current,
-            pollSessionId: pollSid,
-            cachedSessionId: cachedSessionIdRef.current,
-            activeSessionId: cachedSessionIdRef.current,
-          })) {
-            return;
-          }
-          const jobs = Array.isArray(live?.jobs) ? live.jobs : [];
-          setPendingJobIds(
-            hydratePendingJobIdsAfterReload({
-              liveJobs: jobs,
-              items: loadedItems,
-              activeSessionId,
-            }),
-          );
-          setItems((prev) => {
-            if (!shouldApplySwarmLiveMerge({
-              pollGen: loadGen,
-              currentGen: transcriptLoadGenRef.current,
-              pollSessionId: pollSid,
-              cachedSessionId: cachedSessionIdRef.current,
-              activeSessionId: cachedSessionIdRef.current,
-            })) {
-              return prev;
-            }
-            // Empty swarmLive must not orphan-settle tool-prep / non-job cards —
-            // that races mid-turn chatEvents reattach. Only fold authoritative
-            // actions/terminal job rows; orphan settle is assistant_done/Stop.
-            const next = foldSwarmLiveJobsAfterReload(prev, jobs);
-            if (next === prev) return prev;
-            itemsRef.current = next;
-            transcriptFpRef.current = transcriptFingerprint(next);
-            writeTranscriptCache(activeSessionId, next);
-            return next;
-          });
-        }).catch(() => {
-          const pollSid = activeSessionId;
-          if (!shouldApplySwarmLiveMerge({
-            pollGen: loadGen,
-            currentGen: transcriptLoadGenRef.current,
-            pollSessionId: pollSid,
-            cachedSessionId: cachedSessionIdRef.current,
-            activeSessionId: cachedSessionIdRef.current,
-          })) {
-            return;
-          }
-          setPendingJobIds(
-            hydratePendingJobIdsAfterReload({
-              liveJobs: null,
-              items: loadedItems,
-              activeSessionId,
-            }),
-          );
-        });
+        // A partial metadata window cannot settle unresolved transcript work.
+        setPendingJobIds(hydratePendingJobIdsAfterReload({ liveJobs: null, items: loadedItems, activeSessionId }));
 
         // Reuse the live read for JobRefs; never resolve a transcript id alone.
         const artifactCurrent = () => !cancelled && loadGen === transcriptLoadGenRef.current
           && cachedSessionIdRef.current === activeSessionId
           && lastSelectedProjectRoot() === artifactRepo;
-        void liveRead.catch(() => null).then(live => gatherSessionArtifacts({
+        void Promise.resolve(gatherSessionArtifacts({
           display: res.display,
-          jobIds: res.job_ids,
-          jobs: live?.jobs,
+          jobIds: undefined,
           repo: artifactRepo,
           sessionId: activeSessionId,
           stillCurrent: artifactCurrent,

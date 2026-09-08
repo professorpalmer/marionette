@@ -1,3 +1,4 @@
+import { useSharedJobMetadata, metadataActivity } from '../lib/jobMetadataContext';
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Database,
@@ -17,9 +18,7 @@ import {
 } from "lucide-react";
 import { api } from "../lib/api";
 import { lastSelectedProjectRoot } from "../lib/panelTransition";
-import { writeSWRCache } from "../lib/useStaleWhileRevalidate";
-import { countRunningTrackerJobs } from "../lib/jobClassification";
-import { filterJobsByScope, JOB_SCOPE_CHANGED_EVENT, loadJobScope } from "../lib/jobScope";
+import { JOB_SCOPE_CHANGED_EVENT } from "../lib/jobScope";
 
 /** Curated destinations for the floating tool windows — Cursor-style icon strip.
  *  Settings is pinned to the foot of the floating pill. */
@@ -98,7 +97,9 @@ export default function RightDock({
   const [reviewCount, setReviewCount] = useState(0);
   // Live swarm activity dot: the collapsed pill must show running jobs just
   // like the expanded tracker tab does, or background swarms go invisible.
-  const [swarmRunning, setSwarmRunning] = useState(0);
+  const { state: metadata } = useSharedJobMetadata();
+  const activity = metadataActivity(metadata);
+
   const [swarmRepo, setSwarmRepo] = useState<string | undefined>(
     () => lastSelectedProjectRoot() || undefined,
   );
@@ -171,22 +172,7 @@ export default function RightDock({
           if (current()) setReviewCount(Array.isArray(rows) ? rows.length : 0);
         })
         .catch(() => {});
-      api.swarmLive(swarmRepo)
-        .then((data) => {
-          if (!current()) return;
-          // Parity with RightPane: seed SwarmPane's SWR cache from the dock poll
-          // so expanding into the tracker after a collapsed session is warm too.
-          writeSWRCache(`swarm:${swarmRepo || "__default__"}`, data);
-          const jobs = Array.isArray(data?.jobs) ? data.jobs : [];
-          setSwarmRunning(
-            countRunningTrackerJobs(
-              filterJobsByScope(jobs, loadJobScope(), activitySessionId),
-            ),
-          );
-        })
-        .catch(() => {
-          /* keep last known; dot is best-effort */
-        });
+
     };
     load();
     const t = setInterval(load, 5000);
@@ -292,10 +278,10 @@ export default function RightDock({
             className="relative flex h-7 w-7 items-center justify-center rounded-xl text-faint hover:text-muted hover:bg-panel2/50 transition-colors focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
           >
             {link.icon}
-            {link.id === "swarm" && swarmRunning > 0 && (
+            {link.id === "swarm" && (
               <span
-                title={`${swarmRunning} swarm job${swarmRunning === 1 ? "" : "s"} running`}
-                className="absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full bg-accent animate-pulse"
+                title={activity.label} aria-label={activity.label}
+                className={`absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full ${activity.count ? "bg-accent" : "border border-muted"}`}
               />
             )}
             {link.id === "review" && reviewCount > 0 && (

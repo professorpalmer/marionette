@@ -1,0 +1,553 @@
+{
+  "provenance": "PM a213c406 SQLite store through expert-backend-closure MetadataReader and get_job_metadata_detail; generated from real fixture state",
+  "context": {
+    "session_id": "session-a",
+    "repo": "/var/folders/wb/l_d00bm97410byywwl5th49r0000gn/T/expert-ui-wire-s6fsaasz/repo",
+    "view_generation": "view-a",
+    "scope": "session"
+  },
+  "selection": {
+    "job_ref": {
+      "job_id": "job_441599280228",
+      "state_id": "state_8b6f6510e269dbed",
+      "version": 2,
+      "incarnation": "76fab344-228f-4c3f-8578-2ea26528bedb"
+    },
+    "source": "harness",
+    "session_id": "session-a",
+    "repo": "/var/folders/wb/l_d00bm97410byywwl5th49r0000gn/T/expert-ui-wire-s6fsaasz/repo"
+  },
+  "detail": {
+    "version": 1,
+    "selection": {
+      "job_ref": {
+        "job_id": "job_441599280228",
+        "state_id": "state_8b6f6510e269dbed",
+        "version": 2,
+        "incarnation": "76fab344-228f-4c3f-8578-2ea26528bedb"
+      },
+      "source": "harness",
+      "session_id": "session-a",
+      "repo": "/var/folders/wb/l_d00bm97410byywwl5th49r0000gn/T/expert-ui-wire-s6fsaasz/repo"
+    },
+    "context": {
+      "session_id": "session-a",
+      "repo": "/var/folders/wb/l_d00bm97410byywwl5th49r0000gn/T/expert-ui-wire-s6fsaasz/repo",
+      "view_generation": "view-a",
+      "scope": "session"
+    },
+    "lifecycle": "complete",
+    "tasks": {
+      "page": {
+        "outcome": "complete",
+        "revision": 16,
+        "next_cursor": null,
+        "scanned": 0,
+        "checkpoint": 16
+      },
+      "rows": []
+    },
+    "artifacts": {
+      "page": {
+        "outcome": "complete",
+        "revision": 16,
+        "next_cursor": null,
+        "scanned": 1,
+        "checkpoint": 16
+      },
+      "rows": [
+        {
+          "id": "artifact_86f87d44e951",
+          "status": "completed",
+          "stamp": "known",
+          "revision": 14,
+          "task_id": "task-a",
+          "type": "verification",
+          "sha256": "b4f2a19867b4c2dedba0c6f3e92226fd0d21096ee9186f68e374f58d168626a9",
+          "presence": "recorded",
+          "check_result": "unavailable"
+        }
+      ]
+    },
+    "display": {
+      "kind": "available",
+      "goal_preview": "expert goal",
+      "goal_preview_truncated": false,
+      "delivery": "unverified",
+      "quality": "unverified"
+    },
+    "task_count": 0,
+    "artifact_count": 1,
+    "history": {
+      "kind": "available",
+      "counts": {
+        "captured_attempts": 3,
+        "captured_runs": 3,
+        "captured_process_outcomes": 3,
+        "captured_observations": 3,
+        "outcome": "available",
+        "coverage": "captured",
+        "complete_invocation_history": false
+      },
+      "missing": [],
+      "attempts": {
+        "page": {
+          "outcome": "complete",
+          "next_cursor": null,
+          "scanned": 3,
+          "captured_count": 3,
+          "coverage": "captured",
+          "complete_invocation_history": false
+        },
+        "rows": [
+          {
+            "job_ref": {
+              "job_id": "job_441599280228",
+              "state_id": "state_8b6f6510e269dbed",
+              "version": 2,
+              "incarnation": "76fab344-228f-4c3f-8578-2ea26528bedb"
+            },
+            "kind": "attempt",
+            "sequence": 2,
+            "facts": {
+              "attempt_id": "attempt_0",
+              "task_id": "task_0",
+              "run_id": "run_0",
+              "started_at": "now",
+              "adapter": "codex",
+              "model": "model-a",
+              "provider": "provider-a",
+              "job_id": "job_441599280228"
+            }
+          },
+          {
+            "job_ref": {
+              "job_id": "job_441599280228",
+              "state_id": "state_8b6f6510e269dbed",
+              "version": 2,
+              "incarnation": "76fab344-228f-4c3f-8578-2ea26528bedb"
+            },
+            "kind": "attempt",
+            "sequence": 6,
+            "facts": {
+              "attempt_id": "attempt_1",
+              "task_id": "task_1",
+              "run_id": "run_1",
+              "started_at": "now",
+              "adapter": "codex",
+              "model": "model-a",
+              "provider": "provider-a",
+              "job_id": "job_441599280228"
+            }
+          },
+          {
+            "job_ref": {
+              "job_id": "job_441599280228",
+              "state_id": "state_8b6f6510e269dbed",
+              "version": 2,
+              "incarnation": "76fab344-228f-4c3f-8578-2ea26528bedb"
+            },
+            "kind": "attempt",
+            "sequence": 10,
+            "facts": {
+              "attempt_id": "attempt_2",
+              "task_id": "task_2",
+              "run_id": "run_2",
+              "started_at": "now",
+              "adapter": "codex",
+              "model": "model-a",
+              "provider": "provider-a",
+              "job_id": "job_441599280228"
+            }
+          }
+        ]
+      },
+      "runs": {
+        "page": {
+          "outcome": "complete",
+          "next_cursor": null,
+          "scanned": 3,
+          "captured_count": 3,
+          "coverage": "captured",
+          "complete_invocation_history": false
+        },
+        "rows": [
+          {
+            "job_ref": {
+              "job_id": "job_441599280228",
+              "state_id": "state_8b6f6510e269dbed",
+              "version": 2,
+              "incarnation": "76fab344-228f-4c3f-8578-2ea26528bedb"
+            },
+            "kind": "run",
+            "sequence": 1,
+            "facts": {
+              "id": "run_0",
+              "task_id": "task_0",
+              "role": "worker",
+              "worker_id": "worker-a",
+              "status": "running",
+              "started_at": "2026-09-08T02:17:44+00:00",
+              "completed_at": null,
+              "job_id": "job_441599280228"
+            },
+            "completion": {
+              "job_ref": {
+                "job_id": "job_441599280228",
+                "state_id": "state_8b6f6510e269dbed",
+                "version": 2,
+                "incarnation": "76fab344-228f-4c3f-8578-2ea26528bedb"
+              },
+              "run_id": "run_0",
+              "intent_digest": null,
+              "outcome": "legacy_unknown"
+            }
+          },
+          {
+            "job_ref": {
+              "job_id": "job_441599280228",
+              "state_id": "state_8b6f6510e269dbed",
+              "version": 2,
+              "incarnation": "76fab344-228f-4c3f-8578-2ea26528bedb"
+            },
+            "kind": "run",
+            "sequence": 5,
+            "facts": {
+              "id": "run_1",
+              "task_id": "task_1",
+              "role": "worker",
+              "worker_id": "worker-a",
+              "status": "running",
+              "started_at": "2026-09-08T02:17:44+00:00",
+              "completed_at": null,
+              "job_id": "job_441599280228"
+            },
+            "completion": {
+              "job_ref": {
+                "job_id": "job_441599280228",
+                "state_id": "state_8b6f6510e269dbed",
+                "version": 2,
+                "incarnation": "76fab344-228f-4c3f-8578-2ea26528bedb"
+              },
+              "run_id": "run_1",
+              "intent_digest": null,
+              "outcome": "legacy_unknown"
+            }
+          },
+          {
+            "job_ref": {
+              "job_id": "job_441599280228",
+              "state_id": "state_8b6f6510e269dbed",
+              "version": 2,
+              "incarnation": "76fab344-228f-4c3f-8578-2ea26528bedb"
+            },
+            "kind": "run",
+            "sequence": 9,
+            "facts": {
+              "id": "run_2",
+              "task_id": "task_2",
+              "role": "worker",
+              "worker_id": "worker-a",
+              "status": "running",
+              "started_at": "2026-09-08T02:17:44+00:00",
+              "completed_at": null,
+              "job_id": "job_441599280228"
+            },
+            "completion": {
+              "job_ref": {
+                "job_id": "job_441599280228",
+                "state_id": "state_8b6f6510e269dbed",
+                "version": 2,
+                "incarnation": "76fab344-228f-4c3f-8578-2ea26528bedb"
+              },
+              "run_id": "run_2",
+              "intent_digest": null,
+              "outcome": "legacy_unknown"
+            }
+          }
+        ]
+      },
+      "process_outcomes": {
+        "page": {
+          "outcome": "complete",
+          "next_cursor": null,
+          "scanned": 3,
+          "captured_count": 3,
+          "coverage": "captured",
+          "complete_invocation_history": false
+        },
+        "rows": [
+          {
+            "job_ref": {
+              "job_id": "job_441599280228",
+              "state_id": "state_8b6f6510e269dbed",
+              "version": 2,
+              "incarnation": "76fab344-228f-4c3f-8578-2ea26528bedb"
+            },
+            "kind": "outcome",
+            "sequence": 3,
+            "facts": {
+              "attempt_id": "attempt_0",
+              "observation_id": "observation_0",
+              "source": "sdk",
+              "observed_at": "now",
+              "usage_state": "measured",
+              "tokens_in": 10,
+              "tokens_out": 0,
+              "cache_read_tokens": null,
+              "cache_write_tokens": null,
+              "cost_state": "measured",
+              "cost_usd": 0.0,
+              "cost_basis": "api",
+              "returncode": 0,
+              "timed_out": false,
+              "job_id": "job_441599280228",
+              "task_id": "task_0",
+              "run_id": "run_0",
+              "identity_state": "available"
+            }
+          },
+          {
+            "job_ref": {
+              "job_id": "job_441599280228",
+              "state_id": "state_8b6f6510e269dbed",
+              "version": 2,
+              "incarnation": "76fab344-228f-4c3f-8578-2ea26528bedb"
+            },
+            "kind": "outcome",
+            "sequence": 7,
+            "facts": {
+              "attempt_id": "attempt_1",
+              "observation_id": "observation_1",
+              "source": "sdk",
+              "observed_at": "now",
+              "usage_state": "measured",
+              "tokens_in": 10,
+              "tokens_out": 0,
+              "cache_read_tokens": null,
+              "cache_write_tokens": null,
+              "cost_state": "measured",
+              "cost_usd": 0.0,
+              "cost_basis": "api",
+              "returncode": 0,
+              "timed_out": false,
+              "job_id": "job_441599280228",
+              "task_id": "task_1",
+              "run_id": "run_1",
+              "identity_state": "available"
+            }
+          },
+          {
+            "job_ref": {
+              "job_id": "job_441599280228",
+              "state_id": "state_8b6f6510e269dbed",
+              "version": 2,
+              "incarnation": "76fab344-228f-4c3f-8578-2ea26528bedb"
+            },
+            "kind": "outcome",
+            "sequence": 11,
+            "facts": {
+              "attempt_id": "attempt_2",
+              "observation_id": "observation_2",
+              "source": "sdk",
+              "observed_at": "now",
+              "usage_state": "measured",
+              "tokens_in": 10,
+              "tokens_out": 0,
+              "cache_read_tokens": null,
+              "cache_write_tokens": null,
+              "cost_state": "measured",
+              "cost_usd": 0.0,
+              "cost_basis": "api",
+              "returncode": 0,
+              "timed_out": false,
+              "job_id": "job_441599280228",
+              "task_id": "task_2",
+              "run_id": "run_2",
+              "identity_state": "available"
+            }
+          }
+        ]
+      },
+      "observations": {
+        "page": {
+          "outcome": "complete",
+          "next_cursor": null,
+          "scanned": 3,
+          "captured_count": 3,
+          "coverage": "captured",
+          "complete_invocation_history": false
+        },
+        "rows": [
+          {
+            "job_ref": {
+              "job_id": "job_441599280228",
+              "state_id": "state_8b6f6510e269dbed",
+              "version": 2,
+              "incarnation": "76fab344-228f-4c3f-8578-2ea26528bedb"
+            },
+            "kind": "observation",
+            "sequence": 4,
+            "facts": {
+              "attempt_id": "attempt_0",
+              "observation_id": "observation_0",
+              "source": "sdk",
+              "observed_at": "now",
+              "usage_state": "measured",
+              "tokens_in": 10,
+              "tokens_out": 0,
+              "cache_read_tokens": null,
+              "cache_write_tokens": null,
+              "cost_state": "measured",
+              "cost_usd": 0.0,
+              "cost_basis": "api",
+              "returncode": 0,
+              "timed_out": false,
+              "job_id": "job_441599280228",
+              "task_id": "task_0",
+              "run_id": "run_0",
+              "identity_state": "available"
+            }
+          },
+          {
+            "job_ref": {
+              "job_id": "job_441599280228",
+              "state_id": "state_8b6f6510e269dbed",
+              "version": 2,
+              "incarnation": "76fab344-228f-4c3f-8578-2ea26528bedb"
+            },
+            "kind": "observation",
+            "sequence": 8,
+            "facts": {
+              "attempt_id": "attempt_1",
+              "observation_id": "observation_1",
+              "source": "sdk",
+              "observed_at": "now",
+              "usage_state": "measured",
+              "tokens_in": 10,
+              "tokens_out": 0,
+              "cache_read_tokens": null,
+              "cache_write_tokens": null,
+              "cost_state": "measured",
+              "cost_usd": 0.0,
+              "cost_basis": "api",
+              "returncode": 0,
+              "timed_out": false,
+              "job_id": "job_441599280228",
+              "task_id": "task_1",
+              "run_id": "run_1",
+              "identity_state": "available"
+            }
+          },
+          {
+            "job_ref": {
+              "job_id": "job_441599280228",
+              "state_id": "state_8b6f6510e269dbed",
+              "version": 2,
+              "incarnation": "76fab344-228f-4c3f-8578-2ea26528bedb"
+            },
+            "kind": "observation",
+            "sequence": 12,
+            "facts": {
+              "attempt_id": "attempt_2",
+              "observation_id": "observation_2",
+              "source": "sdk",
+              "observed_at": "now",
+              "usage_state": "measured",
+              "tokens_in": 10,
+              "tokens_out": 0,
+              "cache_read_tokens": null,
+              "cache_write_tokens": null,
+              "cost_state": "measured",
+              "cost_usd": 0.0,
+              "cost_basis": "api",
+              "returncode": 0,
+              "timed_out": false,
+              "job_id": "job_441599280228",
+              "task_id": "task_2",
+              "run_id": "run_2",
+              "identity_state": "available"
+            }
+          }
+        ]
+      }
+    },
+    "cost": {
+      "kind": "available",
+      "job_ref": {
+        "job_id": "job_441599280228",
+        "state_id": "state_8b6f6510e269dbed",
+        "version": 2,
+        "incarnation": "76fab344-228f-4c3f-8578-2ea26528bedb"
+      },
+      "outcome": "available",
+      "summary_revision": 16,
+      "receipt_digest": "c5e214d512394d12fdd020339f58e2b86f0b87e4219dff46ae344a8bc8d2a444",
+      "source": "terminal_receipt",
+      "coverage": "selected_receipt",
+      "selected_count": 1,
+      "totals": {
+        "tokens_in": {
+          "total": 12,
+          "state": "measured",
+          "known_selected": 1,
+          "unknown_selected": 0,
+          "estimated_selected": 0,
+          "conflicting_selected": 0
+        },
+        "tokens_out": {
+          "total": 0,
+          "state": "measured",
+          "known_selected": 1,
+          "unknown_selected": 0,
+          "estimated_selected": 0,
+          "conflicting_selected": 0
+        },
+        "cache_read_tokens": {
+          "total": null,
+          "state": "unknown",
+          "known_selected": 0,
+          "unknown_selected": 1,
+          "estimated_selected": 0,
+          "conflicting_selected": 0
+        },
+        "cache_write_tokens": {
+          "total": null,
+          "state": "unknown",
+          "known_selected": 0,
+          "unknown_selected": 1,
+          "estimated_selected": 0,
+          "conflicting_selected": 0
+        },
+        "api_cost_usd": {
+          "total": null,
+          "state": "unknown",
+          "known_selected": 0,
+          "unknown_selected": 1,
+          "estimated_selected": 0,
+          "conflicting_selected": 0
+        },
+        "plan_marginal_cost_usd": {
+          "total": null,
+          "state": "unknown",
+          "known_selected": 0,
+          "unknown_selected": 1,
+          "estimated_selected": 0,
+          "conflicting_selected": 0
+        },
+        "api_equivalent_cost_usd": {
+          "total": null,
+          "state": "unknown",
+          "known_selected": 0,
+          "unknown_selected": 1,
+          "estimated_selected": 0,
+          "conflicting_selected": 0
+        }
+      },
+      "reason": null,
+      "retry_after_ms": null
+    },
+    "cancellation_authority": false,
+    "missing": []
+  }
+}

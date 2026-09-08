@@ -1,17 +1,14 @@
+import { evidenceFixture, evidenceHash, evidenceSelection } from './frontend52-evidence.fixtures';
+import { expertDetail } from './metadataExpert.fixtures';
+import { parseMetadataDetail } from '../lib/jobMetadata';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import SwarmPane from '../components/SwarmPane';
-import { api } from '../lib/api';
-import { dispatchProjectSelected } from '../lib/panelTransition';
-import { clearSWRCache } from '../lib/useStaleWhileRevalidate';
+import { navigationFixture } from './navigationProducer.fixtures';
 import JobEvidence from '../components/JobEvidence';
 import { fetchJobEvidence, type JobEvidenceData, type ConsumptionMetric } from '../lib/jobEvidence';
 
 vi.mock('../lib/jobEvidence', () => ({ fetchJobEvidence: vi.fn() }));
-vi.mock('../lib/api', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../lib/api')>();
-  return { ...actual, api: { ...actual.api, swarmLive: vi.fn(), sessions: vi.fn() } };
-});
 const unknownMetric = {
   total: null, known_subtotal: null, status: 'unknown', known_attempts: 0,
   unknown_attempts: 0, estimated_attempts: 0, conflicting_attempts: 0,
@@ -31,6 +28,8 @@ const fixture: JobEvidenceData = {
   missing: ['No durable request link.'], provenance: 'Public store records.',
 };
 beforeEach(() => vi.clearAllMocks());
+let navigation: Awaited<ReturnType<typeof navigationFixture>> | undefined;
+afterEach(() => { navigation?.dispose(); navigation = undefined; });
 
 it('loads lazily and shows recorded failure and unknown cost despite completed status', async () => {
   vi.mocked(fetchJobEvidence).mockResolvedValue(fixture);
@@ -61,23 +60,38 @@ it('keeps unavailable reads explicit', async () => {
 });
 
 
-it('opens Evidence from the real expanded job detail', async () => {
-  localStorage.clear();
-  sessionStorage.clear();
-  clearSWRCache();
-  dispatchProjectSelected('/repo');
-  vi.mocked(api.sessions).mockResolvedValue([{ id: 'session-a', active: true, title: 'Fixture' }]);
-  vi.mocked(api.swarmLive).mockResolvedValue({
-    session: { tokens_used: 0, est_cost_usd: 0 },
-    jobs: [{ id: 'job-a', job_ref: { job_id: 'job-a', state_id: 'state-a' }, goal: 'Inspect evidence', status: 'running', session_id: 'session-a', source: 'harness' }],
-  });
-  vi.mocked(fetchJobEvidence).mockResolvedValue(fixture);
-  render(<SwarmPane />);
-  const job = await screen.findByRole('button', { name: /Inspect evidence/ });
-  if (job.getAttribute('aria-expanded') === 'false') fireEvent.click(job);
-  fireEvent.click(await screen.findByRole('button', { name: 'Evidence' }));
-  expect(await screen.findByText('Recorded checks failed: 1')).toBeInTheDocument();
-  expect(fetchJobEvidence).toHaveBeenCalledWith({ jobId: 'job-a', stateId: 'state-a', sessionId: 'session-a', repo: '/repo', source: 'harness' });
+it("opens bounded inspection with verification identity and hash without a check verdict", async () => {
+  const fixture = await evidenceFixture('Evidence entry');
+  const detail = expertDetail(evidenceSelection, fixture.context());
+  detail.lifecycle = 'complete';
+  detail.artifacts.rows[0] = { ...detail.artifacts.rows[0], id: 'verification-evidence', type: 'verification', sha256: evidenceHash };
+  fixture.selected.mockResolvedValue(detail);
+  try {
+    localStorage.clear(); sessionStorage.clear();
+    const view = render(<fixture.Provider><SwarmPane /></fixture.Provider>);
+    fireEvent.click(await screen.findByRole('button', { name: 'Evidence entry · complete' }));
+    expect(fixture.selected).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
+    await screen.findByRole('region', { name: 'Selected job inspector' });
+    expect(fixture.selected).toHaveBeenCalledWith(evidenceSelection, expect.objectContaining({ task_cursor: null, artifact_cursor: null }));
+    fireEvent.click(screen.getByRole('button', { name: 'Artifacts', exact: true }));
+    fireEvent.click(screen.getByText('verification / verification-evidence: unknown'));
+    expect(screen.getByText(evidenceHash)).toBeVisible();
+    expect(screen.getByText('task-1')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Checks', exact: true }));
+    expect(screen.getByRole('region', { name: 'Checks' })).toHaveTextContent('Recorded artifacts and completed lifecycle do not establish that checks passed');
+    expect(screen.getByRole('region', { name: 'Checks' })).toHaveTextContent('verification / verification-evidence: recorded');
+    const cursors = { task_cursor: null, artifact_cursor: null };
+    expect(parseMetadataDetail(detail, fixture.context(), evidenceSelection, cursors).artifacts.rows[0].id).toBe('verification-evidence');
+    for (const unsupported of [
+      { ...detail, artifacts: { ...detail.artifacts, rows: [{ ...detail.artifacts.rows[0], check_result: 'failed' }] } },
+      { ...detail, tasks: { ...detail.tasks, rows: [{ ...detail.tasks.rows[0], model: 'gpt-5.3-codex' }] } },
+      { ...detail, tasks: { ...detail.tasks, rows: [{ ...detail.tasks.rows[0], tokens: 120000, est_cost_usd: 0.14 }] } },
+      { ...detail, display: { kind: 'available', goal_preview: 'Evidence entry', goal_preview_truncated: false, delivery: 'unverified', quality: 'degraded' } },
+    ]) expect(() => parseMetadataDetail(unsupported, fixture.context(), evidenceSelection, cursors)).toThrow('invalid_metadata');
+    expect(fetchJobEvidence).not.toHaveBeenCalled();
+    view.unmount();
+  } finally { fixture.dispose(); }
 });
 
 

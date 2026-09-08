@@ -1,3 +1,4 @@
+import MetadataActivity from './MetadataActivity';
 import { useMemo, useSyncExternalStore } from "react";
 import type { Job } from "../../lib/api";
 import {
@@ -21,6 +22,8 @@ export default function ComposerActivityRail({
   jobs: readonly Job[];
   sessionId: string;
 }) {
+  const bodyJobs = jobs.filter(job => !job.metadata_only);
+  const observedJobs = jobs.filter(job => job.metadata_only && job.session_id === sessionId);
   const commandIndexVersion = useSyncExternalStore(
     subscribeAgentCommandIndex,
     getAgentCommandIndexVersion,
@@ -31,8 +34,8 @@ export default function ComposerActivityRail({
     [commandIndexVersion, sessionId],
   );
   const stackRows = useMemo(
-    () => buildComposerStatusStackRows({ swarmJobs: jobs, commandSessions, sessionId }),
-    [commandSessions, jobs, sessionId],
+    () => buildComposerStatusStackRows({ swarmJobs: bodyJobs, commandSessions, sessionId }),
+    [commandSessions, bodyJobs, sessionId],
   );
   const todos = useSyncExternalStore(subscribeSessionTodos, getSessionTodos, getSessionTodos);
   const todoSessionId = useSyncExternalStore(
@@ -41,18 +44,19 @@ export default function ComposerActivityRail({
     getSessionTodosSessionId,
   );
   const showTodos = todoHasWork(todos) && todoSessionId === sessionId;
-  const showTasks = !!pickTaskSourceJob(jobs, sessionId);
-  if (!showTasks && !showTodos && !stackRows.length) return null;
+  const showTasks = !!pickTaskSourceJob(bodyJobs, sessionId);
+  const hasOverview = showTasks || showTodos || stackRows.length > 0 || observedJobs.length > 0;
 
   return (
     <div
-      className={`mb-1 overflow-hidden ${COMPOSER_FAMILY_SURFACE}`}
-      data-slot="composer-activity-rail"
+      className={hasOverview ? `mb-1 overflow-hidden ${COMPOSER_FAMILY_SURFACE}` : undefined}
+      data-slot={hasOverview ? "composer-activity-rail" : undefined}
     >
-      <div className="space-y-0.5 p-0.5">
-        <ComposerTodoPanel jobs={jobs} sessionId={sessionId} />
-        <ComposerTasksPanel jobs={jobs} sessionId={sessionId} />
-        <ComposerStatusStack swarmJobs={jobs} sessionId={sessionId} />
+      <div className={hasOverview ? "space-y-0.5 p-0.5" : undefined}>
+        <ComposerTodoPanel jobs={bodyJobs} sessionId={sessionId} />
+        <ComposerTasksPanel jobs={bodyJobs} sessionId={sessionId} />
+        <MetadataActivity key={sessionId} jobs={observedJobs} />
+        <ComposerStatusStack swarmJobs={bodyJobs} sessionId={sessionId} />
       </div>
     </div>
   );

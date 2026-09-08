@@ -1,3 +1,4 @@
+import { useSharedJobMetadata, metadataActivity } from '../lib/jobMetadataContext';
 import { Activity, useCallback, useState, useEffect, useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import { X, GripVertical } from "lucide-react";
 import StatePane from "./StatePane";
@@ -14,9 +15,7 @@ import EconomicsPane from "./EconomicsPane";
 import ErrorBoundary from "./ErrorBoundary";
 import { api, type PendingReview } from "../lib/api";
 import { lastSelectedProjectRoot } from "../lib/panelTransition";
-import { writeSWRCache } from "../lib/useStaleWhileRevalidate";
-import { countRunningTrackerJobs } from "../lib/jobClassification";
-import { filterJobsByScope, JOB_SCOPE_CHANGED_EVENT, loadJobScope } from "../lib/jobScope";
+import { JOB_SCOPE_CHANGED_EVENT } from "../lib/jobScope";
 import {
   isSettingsOverlayOpen,
   setSettingsOverlayOpen,
@@ -609,7 +608,8 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
   const [reviewsLoadError, setReviewsLoadError] = useState<string | null>(null);
   // Live swarm activity for the Swarm tab light -- so a running job is visible
   // even when the tracker tab itself is not open.
-  const [swarmRunning, setSwarmRunning] = useState(0);
+  const { state: metadata } = useSharedJobMetadata();
+  const activity = metadataActivity(metadata);
   const [swarmRepo, setSwarmRepo] = useState<string | undefined>(
     () => lastSelectedProjectRoot() || undefined,
   );
@@ -653,7 +653,6 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
     if (!visible) return;
     let active = true;
     let reviewRequest = 0;
-    let swarmRequest = 0;
     let timer: ReturnType<typeof setTimeout>;
     const epoch = activityEpoch.current;
     const current = () => active && epoch === activityEpoch.current;
@@ -672,21 +671,9 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
         }
       }
     };
-    const loadSwarm = async () => {
-      const request = ++swarmRequest;
-      try {
-        const data = await api.swarmLive(swarmRepo);
-        if (!current() || request !== swarmRequest) return;
-        writeSWRCache(`swarm:${swarmRepo || "__default__"}`, data);
-        const jobs = Array.isArray(data?.jobs) ? data.jobs : [];
-        setSwarmRunning(countRunningTrackerJobs(
-          filterJobsByScope(jobs, loadJobScope(), activitySessionId),
-        ));
-      } catch { /* Keep the last known activity. */ }
-    };
     const poll = async () => {
       if (!current()) return;
-      if (!document.hidden) await Promise.all([loadReviews(), loadSwarm()]);
+      if (!document.hidden) await loadReviews();
       if (current()) timer = setTimeout(poll, 4000);
     };
     refreshReviews.current = loadReviews;
@@ -882,7 +869,7 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
               >
                 <div className="flex items-center gap-0.5 shrink-0 ml-auto">
                   {tabName === "review" && reviews.length > 0 && <span className="right-pane-badge">{reviews.length}</span>}
-                  {tabName === "swarm" && swarmRunning > 0 && <span className="right-pane-live" title={`${swarmRunning} swarm jobs running`} />}
+                  {tabName === "swarm" && <span className={activity.count ? "right-pane-live" : "text-muted text-xs"} title={activity.label} aria-label={activity.label} />}
                   <button
                     type="button"
                     draggable

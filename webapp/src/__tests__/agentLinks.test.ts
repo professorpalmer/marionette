@@ -488,7 +488,7 @@ describe("openAgentLink events", () => {
     const kinds = events.map((e) => e.type);
     expect(kinds).toEqual(["harness-focus-tab", "harness-open-swarm-job"]);
     expect(events[0]?.detail).toBe("swarm");
-    expect(events[1]?.detail).toEqual({ jobId: "job_abcdef012345" });
+    expect(events[1]?.detail).toEqual({ jobId: "job_abcdef012345", target: { kind: "unresolved", context: null, jobId: "job_abcdef012345" } });
   });
 
   it("awaiting-swarm busy chrome opens its exact job instead of Terminal", () => {
@@ -502,7 +502,7 @@ describe("openAgentLink events", () => {
       "harness-open-swarm-job",
     ]);
     expect(events[0]?.detail).toBe("swarm");
-    expect(events[1]?.detail).toEqual({ jobId: "job_abcdef012345" });
+    expect(events[1]?.detail).toEqual({ jobId: "job_abcdef012345", target: { kind: "unresolved", context: null, jobId: "job_abcdef012345" } });
     expect(events.some((event) => event.detail === "terminal")).toBe(false);
   });
 
@@ -516,7 +516,7 @@ describe("openAgentLink events", () => {
       "harness-focus-tab",
       "harness-open-swarm-job",
     ]);
-    expect(events[1]?.detail).toEqual({ jobId: "job_abcdef012345" });
+    expect(events[1]?.detail).toEqual({ jobId: "job_abcdef012345", target: { kind: "unresolved", context: null, jobId: "job_abcdef012345" } });
     expect(events.some((event) => event.detail === "terminal")).toBe(false);
   });
 

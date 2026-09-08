@@ -1,5 +1,5 @@
 import type { EconomicsData, EconomicsJobRow } from "../lib/api";
-import { openAgentSwarmJob } from "../lib/agentLinks";
+import { useOpenSwarmJob } from "../lib/useOpenSwarmJob";
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
@@ -43,6 +43,7 @@ export default function EconomicsDurable({
 }: {
   data: EconomicsData | null;
 }) {
+  const openSwarmJob = useOpenSwarmJob('', data?.repo);
   const referenceId = data?.counterfactual?.reference_model_id
     || data?.savings?.counterfactual?.reference_model_id
     || "";
@@ -229,7 +230,7 @@ export default function EconomicsDurable({
                     <button
                       type="button"
                       className="min-w-0 truncate text-left text-accent/80 hover:text-accent hover:underline underline-offset-2"
-                      onClick={() => openAgentSwarmJob(job.job_id || "")}
+                      onClick={() => openSwarmJob(job.job_id || "")}
                     >
                       {job.job_id}
                     </button>

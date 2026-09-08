@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { Profiler, useState } from "react";
+import { Profiler, useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import RightPane from "../components/RightPane";
 import RightDock from "../components/RightDock";
@@ -7,6 +7,10 @@ import css from "../index.css?raw";
 import { api } from "../lib/api";
 import { dispatchProjectSelected } from "../lib/panelTransition";
 import { clearSWRCache, readSWRCache } from "../lib/useStaleWhileRevalidate";
+import { JobMetadataContext, JobMetadataOwner, useSharedJobMetadata } from "../lib/jobMetadataContext";
+import { JobMetadataStore } from "../lib/useJobMetadata";
+import { CombinedMetadataFixture } from "./metadataMigration.fixtures";
+import { context } from "./jobMetadata.fixtures";
 import { resetSettingsOverlay, setSettingsOverlayOpen } from "../lib/settingsOverlay";
 
 vi.mock("../lib/api", () => ({
@@ -67,6 +71,30 @@ const baseProps = {
   onOpenWizard: vi.fn(),
   onCollapse: vi.fn(),
 };
+
+function CaptureMetadataStore({ capture }: { capture: (store: JobMetadataStore) => void }) {
+  capture(useSharedJobMetadata().store);
+  return null;
+}
+
+function OwnedActivity({ fixture, capture, children }: {
+  fixture: CombinedMetadataFixture;
+  capture: (store: JobMetadataStore) => void;
+  children: ReactNode;
+}) {
+  return <JobMetadataOwner repo={fixture.target.repo} sessionId={fixture.target.session_id}>
+    <CaptureMetadataStore capture={capture} />
+    {children}
+  </JobMetadataOwner>;
+}
+
+function expectBoundedActivity(fixture: CombinedMetadataFixture) {
+  expect(api.swarmLive).not.toHaveBeenCalled();
+  expect(fixture.calls.every(({ method, path }) => method === "GET"
+    && ["/api/endpoint", "/api/jobs/metadata/view", "/api/jobs/metadata", "/api/jobs/metadata/local"]
+      .includes(new URL(path, "http://fixture").pathname))).toBe(true);
+  expect(fixture.maximumActive).toBe(1);
+}
 
 function seedBoardTabOrder(openCards: string[] = ["state", "terminal"]) {
   localStorage.setItem(
@@ -672,39 +700,47 @@ describe("RightPane reviews-load failure honesty", () => {
   });
 });
 
-describe("RightPane swarm activity poll seeds SWR cache", () => {
+describe("RightPane shared activity observation stays warm", () => {
   const REPO = "C:\\Users\\pwall\\Projects\\warm-swarm";
 
-  beforeEach(() => {
+  it("reuses already-observed metadata in pane and dock without a SwarmPane payload cache", async () => {
     vi.clearAllMocks();
     localStorage.clear();
     sessionStorage.clear();
     clearSWRCache();
-    Element.prototype.scrollIntoView = vi.fn();
-    localStorage.setItem(
-      "pmharness.tabOrder",
-      JSON.stringify([
-        "state", "swarm", "files", "git", "worktrees", "terminal",
-        "review", "checkpoints", "browser", "settings",
-      ]),
-    );
-    localStorage.setItem("pmharness.tabOrder.swarm2nd", "1");
-    localStorage.setItem("pmharness.tabOrder.mcpMerged", "1");
+    seedBoardTabOrder(["swarm"]);
     dispatchProjectSelected(REPO);
     vi.mocked(api.getReviews).mockResolvedValue([]);
-  });
-
-  it("writes swarmLive payload to the SwarmPane cache key", async () => {
-    const payload = {
-      session: { tokens_used: 0, est_cost_usd: 0 },
-      jobs: [{ id: "job-1", goal: "Warm me", status: "running" }],
-    };
-    vi.mocked(api.swarmLive).mockResolvedValue(payload as never);
-
-    render(<RightPane {...baseProps} />);
-
-    await waitFor(() => expect(api.swarmLive).toHaveBeenCalledWith(REPO));
-    expect(readSWRCache(`swarm:${REPO}`)).toEqual(payload);
+    const fixture = new CombinedMetadataFixture();
+    fixture.total = 1;
+    fixture.switchTarget(context.session_id, REPO);
+    fixture.installIPC();
+    const store = new JobMetadataStore();
+    try {
+      store.setTarget({ ...context, repo: REPO });
+      expect(await store.readView()).toBe("applied");
+      for (let i = 0; i < 8; i++) expect(await store.advance()).toBe("applied");
+      const observed = store.getSnapshot();
+      const before = fixture.calls.length;
+      const mount = (visible: boolean) => <JobMetadataContext.Provider value={store}>
+        <RightDock panelsOpen={visible} onOpenTab={vi.fn()} onExpand={vi.fn()} onCollapse={vi.fn()} />
+        <RightPane {...baseProps} visible={visible} />
+      </JobMetadataContext.Provider>;
+      const rendered = render(mount(true));
+      expect(screen.getAllByTitle("At least 2 active jobs; coverage incomplete")).toHaveLength(2);
+      rendered.rerender(mount(false));
+      expect(store.getSnapshot()).toBe(observed);
+      rendered.rerender(mount(true));
+      expect(screen.getAllByTitle("At least 2 active jobs; coverage incomplete")).toHaveLength(2);
+      expect(store.getSnapshot()).toBe(observed);
+      expect(fixture.calls).toHaveLength(before);
+      expect(readSWRCache(`swarm:${REPO}`)).toBeUndefined();
+      expectBoundedActivity(fixture);
+    } finally {
+      cleanup();
+      store.dispose();
+      Reflect.deleteProperty(window, "harnessIPC");
+    }
   });
 });
 
@@ -759,6 +795,9 @@ describe("RightPane add-panel menu", () => {
 
 
 describe("RightPane and RightDock polling ownership", () => {
+  let fixture: CombinedMetadataFixture;
+  let store: JobMetadataStore;
+  const capture = (value: JobMetadataStore) => { store = value; };
   beforeEach(() => {
     vi.useFakeTimers();
     vi.clearAllMocks();
@@ -770,56 +809,73 @@ describe("RightPane and RightDock polling ownership", () => {
     seedBoardTabOrder(["review", "swarm"]);
     localStorage.setItem("marionette.jobScope.v1", "repo");
     vi.mocked(api.getReviews).mockResolvedValue([]);
-    vi.mocked(api.swarmLive).mockResolvedValue({ jobs: [] });
+    fixture = new CombinedMetadataFixture();
+    fixture.total = 1;
+    fixture.installIPC();
+    vi.spyOn(document, "hidden", "get").mockReturnValue(false);
   });
   afterEach(() => {
     cleanup();
+    store?.dispose();
     vi.useRealTimers();
+    vi.restoreAllMocks();
+    Reflect.deleteProperty(window, "harnessIPC");
   });
   const tick = (ms = 0) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
   const dock = <RightDock panelsOpen={false} onOpenTab={vi.fn()} onExpand={vi.fn()} onCollapse={vi.fn()} />;
+  const owned = (children: ReactNode) => <OwnedActivity fixture={fixture} capture={capture}>{children}</OwnedActivity>;
 
   it("leaves only dock scans while hidden, including refresh and session changes", async () => {
-    render(<>{dock}<RightPane {...baseProps} visible={false} /></>);
+    const rendered = render(owned(<>{dock}<RightPane {...baseProps} visible={false} /></>));
     await tick(20000);
-    expect(api.swarmLive).toHaveBeenCalledTimes(5);
     expect(api.getReviews).toHaveBeenCalledTimes(5);
+    const before = fixture.calls.length;
+    await tick(2000);
+    expect(fixture.calls).toHaveLength(before + 1);
     act(() => {
+      fixture.switchTarget("next", context.repo);
       window.dispatchEvent(new CustomEvent("harness-session-changed", { detail: { sessionId: "next" } }));
     });
+    rendered.rerender(owned(<>{dock}<RightPane {...baseProps} visible={false} /></>));
     await tick();
-    expect(api.swarmLive).toHaveBeenCalledTimes(6);
+    expect(api.getReviews).toHaveBeenCalledTimes(6);
+    const refreshed = fixture.calls.length;
     act(() => { window.dispatchEvent(new Event("harness-reviews-refresh")); });
     await tick();
     expect(api.getReviews).toHaveBeenCalledTimes(7);
-    expect(api.swarmLive).toHaveBeenCalledTimes(7);
+    expect(fixture.calls).toHaveLength(refreshed);
+    expectBoundedActivity(fixture);
   });
 
-  it("polls once on opening, refreshes visible badges, and retains warm cache on collapse", async () => {
-    const payload = { jobs: [{ id: "live", session_id: "s", status: "running" }] };
-    vi.mocked(api.swarmLive).mockResolvedValue(payload);
-    const view = render(<RightPane {...baseProps} visible={false} />);
+  it("observes once at the owner, refreshes visible badges, and retains warm cache on collapse", async () => {
+    const view = render(owned(<>{dock}<RightPane {...baseProps} visible={false} /></>));
     await tick(8000);
-    expect(api.swarmLive).not.toHaveBeenCalled();
-    view.rerender(<RightPane {...baseProps} />);
+    expect(store.getSnapshot().observations.length).toBeGreaterThan(0);
+    const before = fixture.calls.length;
+    view.rerender(owned(<>{dock}<RightPane {...baseProps} /></>));
     await tick();
-    expect(api.swarmLive).toHaveBeenCalledTimes(1);
-    expect(screen.getByTitle("1 swarm jobs running")).toBeInTheDocument();
+    expect(fixture.calls).toHaveLength(before);
+    expect(screen.getAllByTitle("At least 1 active jobs; coverage incomplete")).toHaveLength(2);
     await tick(4000);
-    expect(api.swarmLive).toHaveBeenCalledTimes(2);
-    view.rerender(<RightPane {...baseProps} visible={false} />);
+    expect(fixture.calls).toHaveLength(before + 2);
+    expect(screen.getAllByTitle("At least 2 active jobs; coverage incomplete")).toHaveLength(2);
+    const observations = store.getSnapshot().observations;
+    view.rerender(owned(<>{dock}<RightPane {...baseProps} visible={false} /></>));
+    expect(store.getSnapshot().observations).toBe(observations);
     await tick(8000);
-    expect(api.swarmLive).toHaveBeenCalledTimes(2);
-    expect(readSWRCache("swarm:__default__")).toEqual(payload);
-    view.rerender(<RightPane {...baseProps} />);
-    expect(screen.getByTitle("1 swarm jobs running")).toBeInTheDocument();
+    expect(fixture.calls).toHaveLength(before + 6);
+    view.rerender(owned(<>{dock}<RightPane {...baseProps} /></>));
+    expect(screen.getAllByTitle("At least 2 active jobs; coverage incomplete")).toHaveLength(2);
     await tick();
-    expect(api.swarmLive).toHaveBeenCalledTimes(3);
+    expect(fixture.calls).toHaveLength(before + 6);
+    expect(readSWRCache(`swarm:${context.repo}`)).toBeUndefined();
+    expectBoundedActivity(fixture);
   });
 
   it("refreshes visible review counts immediately on review events", async () => {
-    render(<RightPane {...baseProps} />);
+    render(owned(<RightPane {...baseProps} />));
     await tick();
+    const before = fixture.calls.length;
     vi.mocked(api.getReviews).mockResolvedValue([
       { id: "new", job_id: "new", objective: "new", files: [], created_at: 0 },
     ]);
@@ -827,56 +883,129 @@ describe("RightPane and RightDock polling ownership", () => {
     await tick();
     expect(screen.getByText("1")).toBeInTheDocument();
     expect(api.getReviews).toHaveBeenCalledTimes(2);
-    expect(api.swarmLive).toHaveBeenCalledTimes(1);
+    expect(fixture.calls).toHaveLength(before);
+    expectBoundedActivity(fixture);
   });
 
-  it("ignores an in-flight pane response after collapse", async () => {
-    let resolveOld: (value: Awaited<ReturnType<typeof api.swarmLive>>) => void = () => {};
-    vi.mocked(api.swarmLive).mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve; }));
-    const view = render(<RightPane {...baseProps} />);
+  it("keeps an in-flight owner response valid after pane collapse without a stale pane write", async () => {
+    const view = render(owned(<>{dock}<RightPane {...baseProps} /></>));
     await tick();
-    view.rerender(<RightPane {...baseProps} visible={false} />);
-    await act(async () => { resolveOld({ jobs: [] }); });
-    expect(readSWRCache("swarm:__default__")).toBeUndefined();
+    fixture.total = 2;
+    fixture.holdNext = true;
+    await tick(2000);
+    expect(fixture.nextRelease).not.toBeNull();
+    const before = fixture.calls.length;
+    view.rerender(owned(<>{dock}<RightPane {...baseProps} visible={false} /></>));
+    await tick(2000);
+    expect(fixture.calls).toHaveLength(before);
+    // Collapse ends pane-owned review work, not the dock's still-current metadata
+    // owner. Its held result may warm the shared store, never a private SWR payload.
+    await act(async () => { fixture.nextRelease?.(); });
+    const warm = store.getSnapshot();
+    expect(warm.observations).toHaveLength(2);
+    expect(within(screen.getByRole("complementary", { name: "Floating panel shortcuts" })).getByTitle("At least 2 active jobs; coverage incomplete")).toBeInTheDocument();
+    expect(readSWRCache(`swarm:${context.repo}`)).toBeUndefined();
+    view.rerender(owned(<>{dock}<RightPane {...baseProps} /></>));
+    expect(store.getSnapshot()).toBe(warm);
+    expect(screen.getAllByTitle("At least 2 active jobs; coverage incomplete")).toHaveLength(2);
+    await tick();
+    expect(fixture.calls).toHaveLength(before);
     await tick(8000);
-    expect(api.swarmLive).toHaveBeenCalledTimes(1);
+    expect(fixture.calls).toHaveLength(before + 4);
+    expectBoundedActivity(fixture);
+  });
+
+  it("ignores an in-flight pane review response after collapse while the dock remains live", async () => {
+    let resolveOld: (value: Awaited<ReturnType<typeof api.getReviews>>) => void = () => {};
+    vi.mocked(api.getReviews).mockResolvedValueOnce([]).mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve; }));
+    const view = render(owned(<>{dock}<RightPane {...baseProps} /></>));
+    await tick();
+    view.rerender(owned(<>{dock}<RightPane {...baseProps} visible={false} /></>));
+    await tick();
+    await act(async () => {
+      resolveOld([{ id: "old", job_id: "old", objective: "old", files: [], created_at: 0 }]);
+    });
+    view.rerender(owned(<>{dock}<RightPane {...baseProps} /></>));
+    expect(screen.queryByText("1")).toBeNull();
+    await tick();
+    expect(api.getReviews).toHaveBeenCalledTimes(3);
+    expect(screen.queryByText("1")).toBeNull();
+    expectBoundedActivity(fixture);
+  });
+
+  it("stops new metadata requests while document-hidden and after owner disposal", async () => {
+    const mounted = render(owned(<>{dock}<RightPane {...baseProps} /></>));
+    await tick(8000);
+    const before = fixture.calls.length;
+    vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    await tick(10000);
+    expect(fixture.calls).toHaveLength(before);
+    vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    await tick();
+    expect(fixture.calls).toHaveLength(before + 1);
+    mounted.unmount();
+    const stopped = fixture.calls.length;
+    await tick(10000);
+    expect(fixture.calls).toHaveLength(stopped);
+    expectBoundedActivity(fixture);
   });
 
   for (const surface of ["pane", "dock"]) {
     it(`${surface} keeps a newer review count when an older refresh resolves last`, async () => {
       let resolveOld: (value: Awaited<ReturnType<typeof api.getReviews>>) => void = () => {};
       vi.mocked(api.getReviews).mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve; }));
-      render(surface === "pane" ? <RightPane {...baseProps} /> : dock);
+      render(owned(surface === "pane" ? <RightPane {...baseProps} /> : dock));
       await tick();
       act(() => { window.dispatchEvent(new Event("harness-reviews-refresh")); });
       await tick();
+      expect(api.getReviews).toHaveBeenCalledTimes(2);
       await act(async () => {
         resolveOld([{ id: "old", job_id: "old", objective: "old", files: [], created_at: 0 }]);
       });
       expect(screen.queryByText("1")).toBeNull();
+      expectBoundedActivity(fixture);
     });
     for (const change of ["session", "repo"]) {
       it(`${surface} rejects late ${change} responses before cache and badge writes`, async () => {
-        let resolveOld: (value: Awaited<ReturnType<typeof api.swarmLive>>) => void = () => {};
         let rejectReviews: (reason: Error) => void = () => {};
-        vi.mocked(api.swarmLive).mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve; }));
         vi.mocked(api.getReviews).mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectReviews = reject; }));
-        render(surface === "pane" ? <RightPane {...baseProps} /> : dock);
+        const content = surface === "pane" ? <RightPane {...baseProps} /> : dock;
+        const mounted = render(owned(content));
         await tick();
-        act(() => {
-          window.dispatchEvent(change === "repo"
-            ? new CustomEvent("harness-project-selected", { detail: "/next" })
-            : new CustomEvent("harness-session-changed", { detail: { sessionId: "next" } }));
-        });
+        fixture.holdNext = true;
+        await tick(2000);
+        expect(fixture.nextRelease).not.toBeNull();
+        const oldEpoch = store.getSnapshot().contextEpoch;
+        const switchTarget = (session: string, repo: string) => {
+          act(() => {
+            fixture.switchTarget(session, repo);
+            window.dispatchEvent(change === "repo"
+              ? new CustomEvent("harness-project-selected", { detail: repo })
+              : new CustomEvent("harness-session-changed", { detail: { sessionId: session } }));
+          });
+          mounted.rerender(owned(content));
+        };
+        switchTarget(change === "session" ? "next" : context.session_id, change === "repo" ? "/next" : context.repo);
         await tick();
+        switchTarget(context.session_id, context.repo);
+        await tick();
+        expect(api.getReviews).toHaveBeenCalledTimes(3);
+        expect(store.getSnapshot().contextEpoch).toBeGreaterThan(oldEpoch);
         await act(async () => {
-          resolveOld({ jobs: [{ id: "obsolete", session_id: "old", status: "running" }] });
+          fixture.nextRelease?.();
           rejectReviews(new Error("obsolete failure"));
         });
-        expect(screen.queryByTitle(/swarm jobs? running/)).toBeNull();
+        expect(screen.queryByTitle(/At least .*active jobs/)).toBeNull();
         expect(screen.queryByTestId("reviews-load-error")).toBeNull();
-        expect(readSWRCache(change === "repo" ? "swarm:/next" : "swarm:__default__")).toEqual({ jobs: [] });
-        if (change === "repo") expect(readSWRCache("swarm:__default__")).toBeUndefined();
+        expect(store.getSnapshot().observations).toEqual([]);
+        expect(store.getSnapshot().local.observations).toEqual([]);
+        expect(readSWRCache(`swarm:${context.repo}`)).toBeUndefined();
+        expect(readSWRCache("swarm:/next")).toBeUndefined();
+        await tick(4000);
+        expect(screen.getByTitle(/At least .*active jobs; coverage incomplete/)).toBeInTheDocument();
+        expectBoundedActivity(fixture);
       });
     }
   }

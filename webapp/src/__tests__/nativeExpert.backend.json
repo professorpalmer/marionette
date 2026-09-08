@@ -1,0 +1,347 @@
+{
+  "tasks": {
+    "version": 1,
+    "page": {
+      "outcome": "complete",
+      "revision": 1,
+      "checkpoint": 1,
+      "scanned": 1,
+      "next_cursor": null
+    },
+    "rows": [
+      {
+        "role": "implement (agentic)",
+        "instruction": "Keyboard disclosure",
+        "status": "running",
+        "adapter": "agentic",
+        "model": "",
+        "truncated": false,
+        "task_id": "local-native-w0",
+        "model_kind": "unavailable"
+      }
+    ],
+    "coverage": {
+      "membership": "retained_local_history",
+      "ordering": "id",
+      "historical": "unavailable"
+    },
+    "missing": [
+      "unretained_history"
+    ],
+    "local_ref": {
+      "job_id": "local-native",
+      "incarnation": "0a891d0521a015634597a341d947b0ac"
+    },
+    "lane": "tasks",
+    "cancellation_authority": false,
+    "summary": {
+      "local_ref": {
+        "job_id": "local-native",
+        "incarnation": "0a891d0521a015634597a341d947b0ac"
+      },
+      "lifecycle": "running",
+      "activity": "active",
+      "kind": "provider",
+      "session_id": "A",
+      "parent_ref": null,
+      "task_count": 1,
+      "action_count": 0,
+      "artifact_count": 1,
+      "child_count": null,
+      "created_at": 1788837959.249842,
+      "updated_at": 1788837959.249842,
+      "receipts": {
+        "terminal": false,
+        "launch": false,
+        "recovery": false,
+        "child": true
+      },
+      "display": {
+        "model": "",
+        "adapter": "agentic",
+        "label": "Provider worker",
+        "truncated": false
+      },
+      "usage": {
+        "kind": "unknown"
+      },
+      "economics": {
+        "kind": "unavailable"
+      },
+      "accounting": {
+        "kind": "unresolved",
+        "aggregation_authority": false
+      },
+      "deleted": false,
+      "revision": 1
+    },
+    "total": 1,
+    "context": {
+      "session_id": "A",
+      "repo": "/var/folders/wb/l_d00bm97410byywwl5th49r0000gn/T/tmpif40oltm/forecast",
+      "view_generation": "generation",
+      "scope": "session"
+    }
+  },
+  "routing": {
+    "version": 1,
+    "page": {
+      "outcome": "complete",
+      "revision": 1,
+      "checkpoint": 1,
+      "scanned": 1,
+      "next_cursor": null
+    },
+    "rows": [
+      {
+        "model": "cheap-model",
+        "role": "implement",
+        "policy": "balanced",
+        "adapter": "agentic",
+        "created_by": "router",
+        "detail": "Policy chose forecast",
+        "truncated": false,
+        "ordinal": 0,
+        "task_id": "local-native-w0",
+        "association": "explicit",
+        "model_kind": "forecast",
+        "est_cost_usd": 0.01
+      }
+    ],
+    "coverage": {
+      "membership": "retained_local_history",
+      "ordering": "id",
+      "historical": "unavailable"
+    },
+    "missing": [
+      "unretained_history"
+    ],
+    "local_ref": {
+      "job_id": "local-native",
+      "incarnation": "0a891d0521a015634597a341d947b0ac"
+    },
+    "lane": "routing",
+    "cancellation_authority": false,
+    "summary": {
+      "local_ref": {
+        "job_id": "local-native",
+        "incarnation": "0a891d0521a015634597a341d947b0ac"
+      },
+      "lifecycle": "running",
+      "activity": "active",
+      "kind": "provider",
+      "session_id": "A",
+      "parent_ref": null,
+      "task_count": 1,
+      "action_count": 0,
+      "artifact_count": 1,
+      "child_count": null,
+      "created_at": 1788837959.249842,
+      "updated_at": 1788837959.249842,
+      "receipts": {
+        "terminal": false,
+        "launch": false,
+        "recovery": false,
+        "child": true
+      },
+      "display": {
+        "model": "",
+        "adapter": "agentic",
+        "label": "Provider worker",
+        "truncated": false
+      },
+      "usage": {
+        "kind": "unknown"
+      },
+      "economics": {
+        "kind": "unavailable"
+      },
+      "accounting": {
+        "kind": "unresolved",
+        "aggregation_authority": false
+      },
+      "deleted": false,
+      "revision": 1
+    },
+    "total": 1,
+    "context": {
+      "session_id": "A",
+      "repo": "/var/folders/wb/l_d00bm97410byywwl5th49r0000gn/T/tmpif40oltm/forecast",
+      "view_generation": "generation",
+      "scope": "session"
+    }
+  },
+  "configured_tasks": {
+    "version": 1,
+    "page": {
+      "outcome": "complete",
+      "revision": 1,
+      "checkpoint": 1,
+      "scanned": 1,
+      "next_cursor": null
+    },
+    "rows": [
+      {
+        "role": "implement (native)",
+        "instruction": "Configured task",
+        "status": "running",
+        "adapter": "native",
+        "model": "native/configured-model",
+        "truncated": false,
+        "task_id": "local-native-w0",
+        "model_kind": "assigned"
+      }
+    ],
+    "coverage": {
+      "membership": "retained_local_history",
+      "ordering": "id",
+      "historical": "unavailable"
+    },
+    "missing": [
+      "unretained_history"
+    ],
+    "local_ref": {
+      "job_id": "local-native",
+      "incarnation": "7e1cc43815c95d70905029efc4d7d5b3"
+    },
+    "lane": "tasks",
+    "cancellation_authority": false,
+    "summary": {
+      "local_ref": {
+        "job_id": "local-native",
+        "incarnation": "7e1cc43815c95d70905029efc4d7d5b3"
+      },
+      "lifecycle": "running",
+      "activity": "active",
+      "kind": "provider",
+      "session_id": "A",
+      "parent_ref": null,
+      "task_count": 1,
+      "action_count": 0,
+      "artifact_count": 0,
+      "child_count": null,
+      "created_at": 1788837959.251922,
+      "updated_at": 1788837959.251922,
+      "receipts": {
+        "terminal": false,
+        "launch": false,
+        "recovery": false,
+        "child": true
+      },
+      "display": {
+        "model": "native/configured-model",
+        "adapter": "native",
+        "label": "Provider worker",
+        "truncated": false
+      },
+      "usage": {
+        "kind": "unknown"
+      },
+      "economics": {
+        "kind": "unavailable"
+      },
+      "accounting": {
+        "kind": "unresolved",
+        "aggregation_authority": false
+      },
+      "deleted": false,
+      "revision": 1
+    },
+    "total": 1,
+    "context": {
+      "session_id": "A",
+      "repo": "/var/folders/wb/l_d00bm97410byywwl5th49r0000gn/T/tmpif40oltm/configured",
+      "view_generation": "generation",
+      "scope": "session"
+    }
+  },
+  "reconciled_routing": {
+    "version": 1,
+    "page": {
+      "outcome": "complete",
+      "revision": 11,
+      "checkpoint": 11,
+      "scanned": 2,
+      "next_cursor": null
+    },
+    "rows": [
+      {
+        "model": "actual-model",
+        "role": "implement",
+        "policy": "balanced",
+        "adapter": "agentic",
+        "created_by": "router",
+        "detail": "",
+        "truncated": false,
+        "ordinal": 0,
+        "task_id": "local-native-w0",
+        "association": "explicit",
+        "model_kind": "realized",
+        "est_cost_usd": 0.01
+      }
+    ],
+    "coverage": {
+      "membership": "retained_local_history",
+      "ordering": "id",
+      "historical": "unavailable"
+    },
+    "missing": [
+      "unretained_history"
+    ],
+    "local_ref": {
+      "job_id": "local-native",
+      "incarnation": "0a891d0521a015634597a341d947b0ac"
+    },
+    "lane": "routing",
+    "cancellation_authority": false,
+    "summary": {
+      "local_ref": {
+        "job_id": "local-native",
+        "incarnation": "0a891d0521a015634597a341d947b0ac"
+      },
+      "lifecycle": "completed",
+      "activity": "terminal",
+      "kind": "provider",
+      "session_id": "A",
+      "parent_ref": null,
+      "task_count": 1,
+      "action_count": 0,
+      "artifact_count": 2,
+      "child_count": null,
+      "created_at": 1788837959.249842,
+      "updated_at": 1788837959.2530618,
+      "receipts": {
+        "terminal": false,
+        "launch": false,
+        "recovery": false,
+        "child": true
+      },
+      "display": {
+        "model": "agentic/actual-model",
+        "adapter": "agentic",
+        "label": "Provider worker",
+        "truncated": false
+      },
+      "usage": {
+        "kind": "unknown"
+      },
+      "economics": {
+        "kind": "unavailable",
+        "route_forecast_usd": 0.01
+      },
+      "accounting": {
+        "kind": "unresolved",
+        "aggregation_authority": false
+      },
+      "deleted": false,
+      "revision": 11
+    },
+    "total": 2,
+    "context": {
+      "session_id": "A",
+      "repo": "/var/folders/wb/l_d00bm97410byywwl5th49r0000gn/T/tmpif40oltm/forecast",
+      "view_generation": "generation",
+      "scope": "session"
+    }
+  }
+}

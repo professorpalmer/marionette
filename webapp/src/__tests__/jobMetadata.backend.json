@@ -1,0 +1,1694 @@
+{
+  "context": {
+    "session_id": "session-A",
+    "repo": "/fixture-repo",
+    "view_generation": "fixture-generation",
+    "scope": "session"
+  },
+  "source": {
+    "source": "harness",
+    "state_id": "state_5d7dbbf8d62793cd"
+  },
+  "selection": {
+    "job_ref": {
+      "job_id": "job_0702b2970859",
+      "state_id": "state_5d7dbbf8d62793cd"
+    },
+    "source": "harness",
+    "session_id": "session-A",
+    "repo": "/fixture-repo"
+  },
+  "first": {
+    "version": 1,
+    "context": {
+      "session_id": "session-A",
+      "repo": "/fixture-repo",
+      "view_generation": "fixture-generation",
+      "scope": "session"
+    },
+    "store": {
+      "source": "harness",
+      "state_id": "state_5d7dbbf8d62793cd"
+    },
+    "mode": "snapshot",
+    "page": {
+      "outcome": "partial",
+      "revision": 55,
+      "next_cursor": "R5HBntHYyL6x1t7_CT6acVql-shg9e9jyLmbyeSWexF7ImJpbmRpbmciOlt7InNlc3Npb25faWQiOiJzZXNzaW9uLUEiLCJyZXBvIjoiL2ZpeHR1cmUtcmVwbyIsInZpZXdfZ2VuZXJhdGlvbiI6ImZpeHR1cmUtZ2VuZXJhdGlvbiIsInNjb3BlIjoic2Vzc2lvbiJ9LHsic291cmNlIjoiaGFybmVzcyIsInN0YXRlX2lkIjoic3RhdGVfNWQ3ZGJiZjhkNjI3OTNjZCJ9LCJzbmFwc2hvdCIsMCxudWxsLG51bGxdLCJjdXJzb3IiOiIwRl9BMHZlaW5uLUo2S082ZEFVWU1iLUlqd2dlNnBiQkxtam5qWWc4VnFkN0ltVndiMk5vSWpvaU1DSXNJbXhoYzNRaU9pSnFiMkpmWmpVeE4yUXdPRFF6WVdJd0lpd2ljbVYyYVhOcGIyNGlPalUxTENKelkyOXdaU0k2SWpsa1pUbGpNek16TW1OaVpEUXlPVEEyTm1Fd05qWTROR1U1WW1OaU1qZGtNbUkwWlRJME5UVmpNbVJoWlRKa09HVm1NamMzWWpGaE5qZzRaR1ExWmpFaUxDSjJJam94ZlE9PSJ9",
+      "scanned": 51,
+      "checkpoint": 0
+    },
+    "rows": [
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_0702b2970859",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 55,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 1,
+        "artifact_count": 1,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_0a111aa5b3b3",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 4,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_0d13ca48ec89",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 21,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_0dd974ccf67c",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 50,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_0ee3a717a642",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 48,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_134175e4f0d6",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 36,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_14f52f54ab93",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 8,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_18599567e770",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 6,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_1a2478bad38f",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 39,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_1de02b9dab76",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 42,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_2fedbfbf10a3",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 20,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_304ac65b8357",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 10,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_32168ddf2e48",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 5,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_323c7e0ddf91",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 3,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_327fc1749795",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 25,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_36b2b44f2c13",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 28,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_3efbd3eee6e1",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 12,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_4e0208fcad05",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 2,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_58dc4bfac9cf",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 31,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_59ac5ee82cb0",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 16,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_60299821bed6",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 46,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_65932ed8e3bf",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 41,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_6ad7f0c57be9",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 27,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_7469e1ddac93",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 43,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_79b517dbd0dc",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 34,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_7d0d86f8b908",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 19,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_81f5cb21ae40",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 17,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_827d02949930",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 14,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_875d2be2443e",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 33,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_8b6a99f4749b",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 18,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_8c7c94ab35eb",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 23,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_987684f8f611",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 26,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_9c4d3cefc0b9",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 29,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_a6d1585a78ff",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 45,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_b104604291d0",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 40,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_b111f29c8da5",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 51,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_b54cafbf1343",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 24,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_ba6d1553f470",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 7,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_c288ae75a416",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 32,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_c724c1188683",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 13,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_cb15fa0d7d82",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 47,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_d3b70bfcfc46",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 22,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_d4d8abf9f016",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 37,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_d54f147decb5",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 30,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_da34659bc987",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 35,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_dc27eba6a574",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 44,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_dfc368b985df",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 49,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_e5a364b13d52",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 9,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_ee3823944868",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 38,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      },
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_f517d0843ab0",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 11,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      }
+    ],
+    "coverage": {
+      "membership": "known_metadata",
+      "legacy": "unavailable",
+      "ordering": "id",
+      "store_set": "known_sources"
+    },
+    "missing": [
+      "legacy_ownership",
+      "display",
+      "economics"
+    ]
+  },
+  "second": {
+    "version": 1,
+    "context": {
+      "session_id": "session-A",
+      "repo": "/fixture-repo",
+      "view_generation": "fixture-generation",
+      "scope": "session"
+    },
+    "store": {
+      "source": "harness",
+      "state_id": "state_5d7dbbf8d62793cd"
+    },
+    "mode": "snapshot",
+    "page": {
+      "outcome": "complete",
+      "revision": 55,
+      "next_cursor": null,
+      "scanned": 1,
+      "checkpoint": 55
+    },
+    "rows": [
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_fcdad99747ad",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 15,
+        "deleted": false,
+        "lifecycle": "queued",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-A",
+          "project_id": null
+        },
+        "task_count": 0,
+        "artifact_count": 0,
+        "stamp": "known",
+        "display": {
+          "kind": "unavailable"
+        },
+        "economics": {
+          "kind": "unavailable"
+        }
+      }
+    ],
+    "coverage": {
+      "membership": "known_metadata",
+      "legacy": "unavailable",
+      "ordering": "id",
+      "store_set": "known_sources"
+    },
+    "missing": [
+      "legacy_ownership",
+      "display",
+      "economics"
+    ]
+  },
+  "detail": {
+    "version": 1,
+    "selection": {
+      "job_ref": {
+        "job_id": "job_0702b2970859",
+        "state_id": "state_5d7dbbf8d62793cd"
+      },
+      "source": "harness",
+      "session_id": "session-A",
+      "repo": "/fixture-repo"
+    },
+    "context": {
+      "session_id": "session-A",
+      "repo": "/fixture-repo",
+      "view_generation": "fixture-generation",
+      "scope": "session"
+    },
+    "lifecycle": "queued",
+    "tasks": {
+      "page": {
+        "outcome": "complete",
+        "revision": 55,
+        "next_cursor": null,
+        "scanned": 1,
+        "checkpoint": 55
+      },
+      "rows": [
+        {
+          "id": "task_ac61850e5d61",
+          "status": "queued",
+          "stamp": "known",
+          "revision": 52,
+          "binding": {
+            "task_id": "task_ac61850e5d61",
+            "generation": 0,
+            "lease_id": null,
+            "owner": null
+          }
+        }
+      ]
+    },
+    "artifacts": {
+      "page": {
+        "outcome": "complete",
+        "revision": 55,
+        "next_cursor": null,
+        "scanned": 1,
+        "checkpoint": 55
+      },
+      "rows": [
+        {
+          "id": "artifact_ed43ad48318b",
+          "status": "unknown",
+          "stamp": "known",
+          "revision": 54,
+          "task_id": "task_ac61850e5d61",
+          "type": "finding",
+          "sha256": "364aa0df1bf05f67dab7b4656a6ee20a2e328596db3b6fee02f126c7edd69e9a",
+          "presence": "recorded",
+          "check_result": "unavailable"
+        }
+      ]
+    },
+    "history": {
+      "kind": "unavailable",
+      "reason": "public_read_unbounded"
+    },
+    "cost": {
+      "kind": "unavailable",
+      "reason": "not_in_metadata"
+    },
+    "cancellation_authority": false,
+    "missing": [
+      "history",
+      "cost"
+    ]
+  },
+  "pins": {
+    "version": 1,
+    "context": {
+      "session_id": "session-A",
+      "repo": "/fixture-repo",
+      "view_generation": "fixture-generation",
+      "scope": "session"
+    },
+    "results": [
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_0702b2970859",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "result": {
+          "kind": "present",
+          "row": {
+            "selection": {
+              "job_ref": {
+                "job_id": "job_0702b2970859",
+                "state_id": "state_5d7dbbf8d62793cd"
+              },
+              "source": "harness",
+              "session_id": "session-A",
+              "repo": "/fixture-repo"
+            },
+            "revision": 55,
+            "deleted": false,
+            "lifecycle": "queued",
+            "ownership": {
+              "origin": "marionette",
+              "session_id": "session-A",
+              "project_id": null
+            },
+            "task_count": 1,
+            "artifact_count": 1,
+            "stamp": "known",
+            "display": {
+              "kind": "unavailable"
+            },
+            "economics": {
+              "kind": "unavailable"
+            }
+          }
+        }
+      }
+    ]
+  },
+  "changes": {
+    "version": 1,
+    "context": {
+      "session_id": "session-A",
+      "repo": "/fixture-repo",
+      "view_generation": "fixture-generation",
+      "scope": "session"
+    },
+    "store": {
+      "source": "harness",
+      "state_id": "state_5d7dbbf8d62793cd"
+    },
+    "mode": "changes",
+    "page": {
+      "outcome": "complete",
+      "revision": 56,
+      "next_cursor": null,
+      "scanned": 1,
+      "checkpoint": 56
+    },
+    "rows": [
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_0702b2970859",
+            "state_id": "state_5d7dbbf8d62793cd"
+          },
+          "source": "harness",
+          "session_id": "session-A",
+          "repo": "/fixture-repo"
+        },
+        "revision": 56,
+        "deleted": true
+      }
+    ],
+    "coverage": {
+      "membership": "known_metadata",
+      "legacy": "unavailable",
+      "ordering": "id",
+      "store_set": "known_sources"
+    },
+    "missing": [
+      "legacy_ownership",
+      "display",
+      "economics"
+    ]
+  }
+}

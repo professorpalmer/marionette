@@ -1,9 +1,11 @@
+import { useOpenSwarmJob } from '../lib/useOpenSwarmJob';
+import { useSharedJobMetadata, metadataJobs } from '../lib/jobMetadataContext';
 import { inputFailureMessage } from "../lib/inputFailure";
 import { imagePath } from "../lib/transport";
 import { InputRetryKeys, receiptDraft, requireImageCapacity } from "./conversation/inputDraft";
 import type { SessionViewport, TranscriptViewportHandle } from "./conversation/sessionViewport";
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, type SetStateAction } from "react";
-import { api, type Config, type Job, type InputReceipt, type InputDocument, type InputSubmission, type ServerQueueItem } from "../lib/api";
+import { api, type Config, type InputReceipt, type InputDocument, type InputSubmission, type ServerQueueItem } from "../lib/api";
 import { usePolling } from "../lib/usePolling";
 import FileEditorPane from "./FileEditorPane";
 import {
@@ -251,6 +253,8 @@ export default function Conversation({
   onArtifacts: (a: { type: string; headline: string }[]) => void;
   onJobChange: () => void;
 }) {
+  const { store: metadataStore, state: metadata } = useSharedJobMetadata();
+  const openSwarmJob = useOpenSwarmJob(activeSessionId ?? "");
   const [items, setRenderedItems] = useState<Item[]>([]);
   // Mirror of items for session-switch cache writes without stale closures.
   const itemsRef = useRef<Item[]>([]);
@@ -594,7 +598,32 @@ export default function Conversation({
   useEffect(() => { pendingJobIdsRef.current = pendingJobIds; }, [pendingJobIds]);
   const processedSwarmJobIdsRef = useRef<string[]>([]);
   const [backendPendingSwarms, setBackendPendingSwarms] = useState(false);
-  const [swarmLiveJobs, setSwarmLiveJobs] = useState<Job[]>([]);
+  const swarmLiveJobs = metadataJobs(metadata);
+  useEffect(() => {
+    if (metadata.view.kind !== 'view' || metadata.view.context.session_id !== activeSessionId) return;
+    const pending = new Set(pendingJobIds);
+    const knownNative = new Map(metadata.followedLocal.filter(r => pending.has(r.job_id)).map(r => [r.job_id, r]));
+    for (const o of metadata.local.observations) if (o.row.session_id === activeSessionId && pending.has(o.row.local_ref.job_id) && (o.row.action_count ?? 0) > 0) knownNative.set(o.row.local_ref.job_id, o.row.local_ref);
+    const selected = [...knownNative.values()].slice(0, 4);
+    const knownPM = new Map(metadata.pins.filter(p => pending.has(p.selection.job_ref.job_id)).map(p => [JSON.stringify(p.selection), p.selection]));
+    for (const o of metadata.observations) if (o.row.ownership.session_id === activeSessionId && pending.has(o.row.selection.job_ref.job_id)) knownPM.set(JSON.stringify(o.row.selection), o.row.selection);
+    const pins = [...knownPM.values()].slice(0, 8 - selected.length);
+    metadataStore.setPendingSelections(pins, selected);
+  }, [metadataStore, metadata.local.observations, metadata.observations, activeSessionId, pendingJobIds]);
+  useEffect(() => {
+    const page = metadata.actionPage;
+    if (!page || page.observation.lane !== 'actions' || metadata.view.kind !== 'view'
+      || metadata.view.context.session_id !== activeSessionId || cachedSessionIdRef.current !== activeSessionId
+      || !['partial', 'complete'].includes(page.observation.page.outcome)) return;
+    const exact = metadata.local.observations.find(o => o.row.local_ref.job_id === page.selection.job_id
+      && o.row.local_ref.incarnation === page.selection.incarnation && o.row.session_id === activeSessionId);
+    const collision = metadata.observations.some(o => o.row.selection.job_ref.job_id === page.selection.job_id);
+    if (!exact || collision) return;
+    const epoch = metadata.epoch;
+    const jobs = [{ id: page.selection.job_id, session_id: activeSessionId, actions: page.observation.rows }];
+    setItems(prev => metadataStore.getSnapshot().epoch === epoch ? mergeJobActionsIntoItems(prev, jobs) : prev);
+  }, [metadata.actionPage, activeSessionId, metadataStore]);
+
 
   // Hold investigation / Still working… after switch/hydrate while background
   // jobs fly, even if status briefly flaps idle before awaiting_swarm paints.
@@ -1797,7 +1826,6 @@ export default function Conversation({
     setPendingJobIds([]);
     processedSwarmJobIdsRef.current = [];
     setBackendPendingSwarms(false);
-    setSwarmLiveJobs([]);
     if (activeSessionId) {
       // Peek first for pending_swarms / latch visibility. Consume only once we
       // commit to scheduling resume so a mid-flight switch cannot steal it.
@@ -2513,9 +2541,8 @@ export default function Conversation({
       processedSwarmJobIdsRef.current.push(job_id);
     }
 
-    setPendingJobIds((p) => p.filter(id => id !== job_id));
-
     setItems((prevItems) => applySwarmResultToItems(prevItems, d));
+    setPendingJobIds((p) => p.filter(id => id !== job_id));
   };
 
   const swarmResultsPending = pendingJobIds.length > 0 || backendPendingSwarms;
@@ -2527,12 +2554,68 @@ export default function Conversation({
     () => {
       const pollSid = activeSessionId;
       const pollGen = transcriptLoadGenRef.current;
+      const metadataEpoch = metadataStore.getSnapshot().contextEpoch;
       let pollResumeFired = false;
+      const deliveredThisPoll = new Set<string>();
+      const applyPolledResults = (events: Awaited<ReturnType<typeof api.getSwarmResults>>['results']) => {
+        events.forEach((evt) => {
+          if (metadataStore.getSnapshot().contextEpoch !== metadataEpoch || !shouldApplySwarmLiveMerge({
+            pollGen,
+            currentGen: transcriptLoadGenRef.current,
+            pollSessionId: pollSid,
+            cachedSessionId: cachedSessionIdRef.current,
+            activeSessionId: cachedSessionIdRef.current,
+          })) {
+            return;
+          }
+          const action = classifySwarmPollEvent(evt);
+          if (action.kind === "swarm_result") {
+            deliveredThisPoll.add(String(action.data.job_id));
+            handleSwarmResult(action.data);
+          } else if (action.kind === "pending_review") {
+            setItems((p) => appendPendingReview(p, action.data));
+            focusReviewTabAndRefresh();
+          } else if (action.kind === "pilot_resume") {
+            // Background job finished while the session was idle / awaiting.
+            // Backend already extended history; kick keep-alive so the pilot
+            // continues ("looking…") without a user prompt. Stop must not
+            // leave Looking… painted when the kick is suppressed.
+            const resumeAct = pilotResumePollAction({
+              userStopped: userStoppedRef.current,
+              alreadyFired: pollResumeFired,
+            });
+            if (resumeAct === "suppress_clear_hint") {
+              setWaitHint((prev) => clearSwarmAwaitWaitHint(prev));
+            } else if (resumeAct === "fire_looking") {
+              pollResumeFired = true;
+              setWaitHint(PILOT_LOOKING_HINT);
+              resumeTriggerRef.current();
+            } else {
+              resumeQueuedRef.current = true;
+            }
+          } else if (action.kind === "distilled" || action.kind === "wiki_auto") {
+            const notice = action.notice;
+            setDistillNotice(notice);
+            setSafeTimeout(() => setDistillNotice((cur) => (cur === notice ? null : cur)), 8000);
+          } else if (action.kind === "wiki_prepare") {
+            setWikiPrepared({ pages: action.pages, autoIngested: false });
+          } else if (action.kind === "memory_propose") {
+            setMemoryProposals((prev) =>
+              appendMemoryProposal(prev, {
+                id: action.id,
+                text: action.text,
+                category: action.category,
+                refine: action.refine,
+              }),
+            );
+          }
+        });
+      };
       return api.getSwarmResults()
         .then((res) => {
           // Same session+gen fence as swarmLive: do not apply pilot_resume /
           // swarm_result / wiki / memory into a session we already left.
-          if (!shouldApplySwarmLiveMerge({
+          if (metadataStore.getSnapshot().contextEpoch !== metadataEpoch || !shouldApplySwarmLiveMerge({
             pollGen,
             currentGen: transcriptLoadGenRef.current,
             pollSessionId: pollSid,
@@ -2541,68 +2624,11 @@ export default function Conversation({
           })) {
             return null;
           }
-          if (res && res.results && res.results.length > 0) {
-            // At most one triggerResume per poll tick (first pilot_resume wins;
-            // extras only set resumeQueuedRef). Mid-stream path already coalesces.
-            res.results.forEach((evt) => {
-              if (!shouldApplySwarmLiveMerge({
-                pollGen,
-                currentGen: transcriptLoadGenRef.current,
-                pollSessionId: pollSid,
-                cachedSessionId: cachedSessionIdRef.current,
-                activeSessionId: cachedSessionIdRef.current,
-              })) {
-                return;
-              }
-              const action = classifySwarmPollEvent(evt);
-              if (action.kind === "swarm_result") {
-                handleSwarmResult(action.data);
-              } else if (action.kind === "pending_review") {
-                setItems((p) => appendPendingReview(p, action.data));
-                focusReviewTabAndRefresh();
-              } else if (action.kind === "pilot_resume") {
-                // Background job finished while the session was idle / awaiting.
-                // Backend already extended history; kick keep-alive so the pilot
-                // continues ("looking…") without a user prompt. Stop must not
-                // leave Looking… painted when the kick is suppressed.
-                const resumeAct = pilotResumePollAction({
-                  userStopped: userStoppedRef.current,
-                  alreadyFired: pollResumeFired,
-                });
-                if (resumeAct === "suppress_clear_hint") {
-                  setWaitHint((prev) => clearSwarmAwaitWaitHint(prev));
-                } else if (resumeAct === "fire_looking") {
-                  pollResumeFired = true;
-                  setWaitHint(PILOT_LOOKING_HINT);
-                  resumeTriggerRef.current();
-                } else {
-                  resumeQueuedRef.current = true;
-                }
-              } else if (action.kind === "distilled" || action.kind === "wiki_auto") {
-                const notice = action.notice;
-                setDistillNotice(notice);
-                setSafeTimeout(() => setDistillNotice((cur) => (cur === notice ? null : cur)), 8000);
-              } else if (action.kind === "wiki_prepare") {
-                setWikiPrepared({ pages: action.pages, autoIngested: false });
-              } else if (action.kind === "memory_propose") {
-                setMemoryProposals((prev) =>
-                  appendMemoryProposal(prev, {
-                    id: action.id,
-                    text: action.text,
-                    category: action.category,
-                    refine: action.refine,
-                  }),
-                );
-              }
-            });
-          }
-          // Progressive nested worker actions land on local jobs via
-          // /api/swarm/live; fold them under run_implement / run_parallel cards.
-          // Fence with the same generation + active-session guards as
-          // useSessionSwitch so a late poll from a prior session cannot mutate
-          // the current transcript.
-          return api.swarmLive().then((live) => {
-            if (!shouldApplySwarmLiveMerge({
+          applyPolledResults(res?.results || []);
+          // Lifecycle metadata can request recovery; only delivered results
+          // authorize pending removal. Selected native actions use the shared lane.
+          return Promise.resolve(metadataStore.getSnapshot()).then((observation) => {
+            if (metadataStore.getSnapshot().contextEpoch !== metadataEpoch || !shouldApplySwarmLiveMerge({
               pollGen,
               currentGen: transcriptLoadGenRef.current,
               pollSessionId: pollSid,
@@ -2611,8 +2637,10 @@ export default function Conversation({
             })) {
               return null;
             }
-            const jobs = Array.isArray(live?.jobs) ? live.jobs : [];
-            setSwarmLiveJobs(jobs);
+            if (observation.contextEpoch !== metadataEpoch || observation.view.kind !== 'view' || observation.view.context.session_id !== pollSid || observation.view.context.repo !== config?.repo) return api.getSessionState();
+            const candidates = metadataJobs(observation).filter(j => j.read_status !== 'unavailable' && j.session_id === pollSid);
+            // Raw transcript IDs cannot resolve collisions across native and PM sources.
+            const jobs = candidates.filter(j => candidates.filter(other => other.id === j.id).length === 1);
             const hasActions = jobs.some(
               (j) => Array.isArray(j.actions) && j.actions.length > 0,
             );
@@ -2626,7 +2654,10 @@ export default function Conversation({
             const pruneTerminalTrackers = () => {
               if (!hasTerminal) return;
               setPendingJobIds((prev) => {
-                const next = pruneTerminalJobIds(prev, terminalIds);
+                if (metadataStore.getSnapshot().contextEpoch !== metadataEpoch || transcriptLoadGenRef.current !== pollGen || cachedSessionIdRef.current !== pollSid) return prev;
+                const delivered = new Set(itemsRef.current.flatMap(item => item.kind === 'swarm_result' && item.job_id ? [item.job_id] : []));
+                const confirmed = terminalIds.filter(id => delivered.has(id) || deliveredThisPoll.has(id));
+                const next = pruneTerminalJobIds(prev, confirmed);
                 // Sync ref so same-tick getSessionState chrome clear sees the
                 // pruned count (useEffect would lag one paint).
                 pendingJobIdsRef.current = next;
@@ -2643,7 +2674,7 @@ export default function Conversation({
               setItems((prev) => {
                 // Re-fence inside the updater: a session switch between the
                 // await and React applying this update must not mutate items.
-                if (!shouldApplySwarmLiveMerge({
+                if (metadataStore.getSnapshot().contextEpoch !== metadataEpoch || !shouldApplySwarmLiveMerge({
                   pollGen,
                   currentGen: transcriptLoadGenRef.current,
                   pollSessionId: pollSid,
@@ -2656,10 +2687,9 @@ export default function Conversation({
               });
             }
             if (recoveryIds.length > 0) {
-              const recoverySet = new Set(recoveryIds);
               return api.getSwarmResults()
                 .then((recovered) => {
-                  if (!shouldApplySwarmLiveMerge({
+                  if (metadataStore.getSnapshot().contextEpoch !== metadataEpoch || !shouldApplySwarmLiveMerge({
                     pollGen,
                     currentGen: transcriptLoadGenRef.current,
                     pollSessionId: pollSid,
@@ -2668,33 +2698,10 @@ export default function Conversation({
                   })) {
                     return;
                   }
-                  for (const evt of recovered?.results || []) {
-                    const action = classifySwarmPollEvent(evt);
-                    if (
-                      action.kind === "swarm_result"
-                      && recoverySet.has(String(action.data?.job_id || ""))
-                    ) {
-                      handleSwarmResult(action.data);
-                    } else if (action.kind === "pilot_resume") {
-                      const resumeAct = pilotResumePollAction({
-                        userStopped: userStoppedRef.current,
-                        alreadyFired: pollResumeFired,
-                      });
-                      if (resumeAct === "suppress_clear_hint") {
-                        setWaitHint((prev) => clearSwarmAwaitWaitHint(prev));
-                      } else if (resumeAct === "fire_looking") {
-                        pollResumeFired = true;
-                        setWaitHint(PILOT_LOOKING_HINT);
-                        resumeTriggerRef.current();
-                      } else {
-                        resumeQueuedRef.current = true;
-                      }
-                    }
-                  }
+                  applyPolledResults(recovered?.results || []);
                 })
-                .catch(() => {})
                 .then(() => {
-                  if (!shouldApplySwarmLiveMerge({
+                  if (metadataStore.getSnapshot().contextEpoch !== metadataEpoch || !shouldApplySwarmLiveMerge({
                     pollGen,
                     currentGen: transcriptLoadGenRef.current,
                     pollSessionId: pollSid,
@@ -2715,6 +2722,7 @@ export default function Conversation({
           // session-B busy chrome (pending_swarms / awaiting_swarm / Looking…).
           if (
             !stateRes
+            || metadataStore.getSnapshot().contextEpoch !== metadataEpoch
             || !shouldApplySwarmLiveMerge({
               pollGen,
               currentGen: transcriptLoadGenRef.current,
@@ -3880,7 +3888,7 @@ export default function Conversation({
         }
         recoveryAction={recoveryAction}
         onBusyDetailClick={() => {
-          openAgentBusyDetail(pillStatus, pendingJobIdsRef.current);
+          openAgentBusyDetail(pillStatus, pendingJobIdsRef.current, openSwarmJob);
         }}
       />
 

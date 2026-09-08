@@ -1,4 +1,6 @@
-import type { JobControlSelection } from "./jobControl";
+import { jobRefQuery } from './publicJobRef';
+import type { PublicJobRef } from './publicJobRef';
+import { parseCancellationResult, type JobControlSelection, type CancellationRequest, type CancellationView, type TaskBinding } from "./jobControl";
 // Typed harness API -- thin wrappers over the transport seam.
 import { getActiveDiagnostic, clearDiagnostic } from "./operationalDiagnosticBus";
 import { normalizeContextUsage } from "../components/conversation/contextUsageColors";
@@ -216,6 +218,7 @@ export type PendingReview = {
   error?: string;
 };
 export type Task = {
+  binding?: TaskBinding;
   id: string;
   role: string;
   instruction: string;
@@ -241,10 +244,14 @@ export type Task = {
   retryable?: boolean;
 };
 export type Job = {
+  local_ref?: { job_id: string; incarnation: string };
+  metadata_key?: string;
+  metadata_only?: boolean;
+  cancellation_view?: CancellationView;
   read_status?: "unavailable";
   unavailable_fields?: ("artifacts" | "tasks")[];
   id: string;
-  job_ref?: { job_id: string; state_id: string };
+  job_ref?: PublicJobRef;
   goal: string;
   /** running | completed | partial | failed | cancelled | timed_out | … */
   status: string;
@@ -1549,11 +1556,33 @@ export const api = {
     return getJSON<SwarmLive>(path);
   },
   swarmCancel: (selection: JobControlSelection | string) => {
+    if (typeof selection !== "string" && selection.version !== 1) {
+      return Promise.reject(new Error("Use a bound cancellation request with a retained request ID."));
+    }
+    if (typeof selection !== "string" && selection.source === "local"
+      && Object.hasOwn(selection, "local_incarnation")
+      && (typeof selection.local_incarnation !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(selection.local_incarnation))) {
+      return Promise.reject(new Error("Native stop requires the captured process incarnation."));
+    }
     const captured = typeof selection === "string" ? selection
       : { ...selection, job_ref: { ...selection.job_ref } };
     return postJSON<{ ok: boolean; job_id?: string; error?: string }>(withToken("/api/swarm/cancel"),
       typeof captured === "string" ? { job_id: captured } : { selection: captured },
       typeof captured === "string" ? undefined : { sessionId: captured.session_id, repo: captured.repo });
+  },
+  requestCancellation: (request: CancellationRequest) => {
+    const captured: CancellationRequest = structuredClone(request);
+    return postJSON<unknown>(withToken("/api/swarm/cancel"), captured,
+      { sessionId: captured.selection.session_id, repo: captured.selection.repo })
+      .then(value => parseCancellationResult(value, captured));
+  },
+  cancellationReceipt: (request: CancellationRequest) => {
+    request = structuredClone(request);
+    const s = request.selection;
+    const query = new URLSearchParams({ ...jobRefQuery(s.job_ref), source: s.source, repo: s.repo,
+      session_id: s.session_id, request_id: request.request_id });
+    return getJSON<unknown>(`/api/swarm/cancellation-receipt?${query}`,
+      { sessionId: s.session_id, repo: s.repo }).then(value => parseCancellationResult(value, request));
   },
   artifacts: (jobId: string) => getJSON<Artifact[]>(`/api/artifacts?job_id=${encodeURIComponent(jobId)}`),
   workspaces: () => getJSON<Workspace[]>("/api/workspaces"),

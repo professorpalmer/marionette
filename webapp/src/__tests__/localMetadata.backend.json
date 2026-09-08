@@ -1,0 +1,1892 @@
+{
+  "context": {
+    "session_id": "session-A",
+    "repo": "/repo",
+    "scope": "session",
+    "view_generation": "generation-1"
+  },
+  "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f",
+  "page": {
+    "version": 1,
+    "page": {
+      "outcome": "partial",
+      "revision": 130,
+      "checkpoint": 0,
+      "scanned": 47,
+      "next_cursor": "WQjgiZiaPy2YTqyifCvL4JErS3rw7DywLzVfyMK9PCBbIjIzYTIzOWNkNTUyODY3NDkzODY1M2E0OGRjMzViZjlhY2FiOWYyZWUzYjNlMjIzNjMxOGNiNzdjMWMxZjJlNjkiLCAxMzAsIDQ2LCAzMDg0ODA4XQ=="
+    },
+    "rows": [
+      {
+        "local_ref": {
+          "job_id": "local-command-000",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 1
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-001",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 2
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-002",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 3
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-003",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 4
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-004",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 5
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-005",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 6
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-006",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 7
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-007",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 8
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-008",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 9
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-009",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 10
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-010",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 11
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-011",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 12
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-012",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 13
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-013",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 14
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-014",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 15
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-015",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 16
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-016",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 17
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-017",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 18
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-018",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 19
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-019",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 20
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-020",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 21
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-021",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 22
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-022",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 23
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-023",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 24
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-024",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 25
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-025",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 26
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-026",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 27
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-027",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 28
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-028",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 29
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-029",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 30
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-030",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 31
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-031",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 32
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-032",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 33
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-033",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 34
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-034",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 35
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-035",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 36
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-036",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 37
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-037",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 38
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-038",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 39
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-039",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 40
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-040",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 41
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-041",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 42
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-042",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 43
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-043",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 44
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-044",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 45
+      },
+      {
+        "local_ref": {
+          "job_id": "local-command-045",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        },
+        "lifecycle": "running",
+        "kind": "run_command",
+        "session_id": "session-A",
+        "parent_ref": null,
+        "task_count": null,
+        "action_count": 80,
+        "artifact_count": null,
+        "child_count": 1,
+        "created_at": null,
+        "updated_at": null,
+        "receipts": {
+          "terminal": false,
+          "launch": true,
+          "recovery": false,
+          "child": false
+        },
+        "economics": {
+          "kind": "unavailable"
+        },
+        "deleted": false,
+        "revision": 46
+      }
+    ],
+    "coverage": {
+      "membership": "retained_local_history",
+      "ordering": "id",
+      "historical": "unavailable"
+    },
+    "missing": [
+      "unretained_history"
+    ],
+    "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f",
+    "context": {
+      "session_id": "session-A",
+      "repo": "/repo",
+      "scope": "session",
+      "view_generation": "generation-1"
+    }
+  },
+  "actions": {
+    "version": 1,
+    "page": {
+      "outcome": "partial",
+      "revision": 1,
+      "checkpoint": 0,
+      "scanned": 50,
+      "next_cursor": "3Hf6E6gXb0qYqzIJUUsbPMqA-ZrlIBv8auqTyFrsyn5bImFmOWE2NDcxMjM1MWIxNGQyMGNlYjdmZmQ5YmUyNzJiMzlkZDU5N2Y2MDc0NWZhZjMwZDU4NjUxNmNhODIxZDkiLCAxLCA1MCwgMzA4NDgwOF0="
+    },
+    "rows": [
+      {
+        "action_id": "a-0",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-0",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-1",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-1",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-2",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-2",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-3",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-3",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-4",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-4",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-5",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-5",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-6",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-6",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-7",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-7",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-8",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-8",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-9",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-9",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-10",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-10",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-11",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-11",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-12",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-12",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-13",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-13",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-14",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-14",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-15",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-15",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-16",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-16",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-17",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-17",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-18",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-18",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-19",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-19",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-20",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-20",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-21",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-21",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-22",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-22",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-23",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-23",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-24",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-24",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-25",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-25",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-26",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-26",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-27",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-27",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-28",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-28",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-29",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-29",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-30",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-30",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-31",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-31",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-32",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-32",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-33",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-33",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-34",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-34",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-35",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-35",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-36",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-36",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-37",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-37",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-38",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-38",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-39",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-39",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-40",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-40",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-41",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-41",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-42",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-42",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-43",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-43",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-44",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-44",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-45",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-45",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-46",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-46",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-47",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-47",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-48",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-48",
+        "duration_ms": 1,
+        "truncated": false
+      },
+      {
+        "action_id": "a-49",
+        "kind": "read_file",
+        "goal": "bounded actual writer",
+        "status": "complete",
+        "error": "",
+        "worker_id": "local-child-49",
+        "duration_ms": 1,
+        "truncated": false
+      }
+    ],
+    "coverage": {
+      "membership": "retained_local_history",
+      "ordering": "id",
+      "historical": "unavailable"
+    },
+    "missing": [
+      "unretained_history"
+    ],
+    "local_ref": {
+      "job_id": "local-command-000",
+      "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+    },
+    "lane": "actions",
+    "cancellation_authority": false,
+    "total": 80,
+    "context": {
+      "session_id": "session-A",
+      "repo": "/repo",
+      "scope": "session",
+      "view_generation": "generation-1"
+    }
+  },
+  "output": {
+    "version": 1,
+    "page": {
+      "outcome": "partial",
+      "revision": 1,
+      "checkpoint": 0,
+      "scanned": 1,
+      "next_cursor": "7u7IU1NLXb3RBXV4KKL5tFqvxhaOTfmoOod85UKNC9ZbIjRkOTRkMjNjZTQxZjRlZjg0MTVkZDUyMWI1NWU4NGRkYWU2YWFjNWI0ZjE4MzkwYTMyN2YwZTc5YzkxYzI3MGUiLCAxLCAyMDQ4LCAzMDg0ODA4XQ=="
+    },
+    "rows": [
+      {
+        "offset": 0,
+        "text": "actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actual output actu"
+      }
+    ],
+    "coverage": {
+      "membership": "retained_local_history",
+      "ordering": "id",
+      "historical": "unavailable"
+    },
+    "missing": [
+      "unretained_history"
+    ],
+    "local_ref": {
+      "job_id": "local-command-000",
+      "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+    },
+    "lane": "output",
+    "cancellation_authority": false,
+    "total": 14000,
+    "output": {
+      "coverage": "in_memory_only",
+      "source_chars": null,
+      "spilled": false
+    },
+    "context": {
+      "session_id": "session-A",
+      "repo": "/repo",
+      "scope": "session",
+      "view_generation": "generation-1"
+    }
+  },
+  "children": {
+    "version": 1,
+    "page": {
+      "outcome": "complete",
+      "revision": 1,
+      "checkpoint": 1,
+      "scanned": 1,
+      "next_cursor": null
+    },
+    "rows": [
+      {
+        "local_ref": {
+          "job_id": "local-child-1",
+          "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+        }
+      }
+    ],
+    "coverage": {
+      "membership": "retained_local_history",
+      "ordering": "id",
+      "historical": "unavailable"
+    },
+    "missing": [
+      "unretained_history"
+    ],
+    "local_ref": {
+      "job_id": "local-command-000",
+      "incarnation": "7a5cb6a38cf343f38bb3b637ea49262f"
+    },
+    "lane": "children",
+    "cancellation_authority": false,
+    "total": 1,
+    "context": {
+      "session_id": "session-A",
+      "repo": "/repo",
+      "scope": "session",
+      "view_generation": "generation-1"
+    }
+  }
+}

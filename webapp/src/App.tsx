@@ -1,3 +1,4 @@
+import { JobMetadataOwner } from './lib/jobMetadataContext';
 import { useCallback, useEffect, useRef, useState } from "react";
 import { setSettingsOverlayOpen } from "./lib/settingsOverlay";
 import { api, type Config } from "./lib/api";
@@ -301,6 +302,7 @@ export default function App() {
   }, []);
 
   return (
+    <JobMetadataOwner repo={config?.repo || ""} sessionId={activeSessionId}>
     <div className="h-full flex flex-col bg-[var(--shell-chrome)]">
       <UpdateBanner onAvailabilityChange={setAvailableUpdate} />
       {/* Keyless nudge: agentic is the shipped default, so instead of a demo run
@@ -434,5 +436,6 @@ export default function App() {
         onToggleRight={toggleRight}
       />
     </div>
+    </JobMetadataOwner>
   );
 }
