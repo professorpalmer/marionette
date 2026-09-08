@@ -190,4 +190,3 @@ def test_native_active_changes_freeze_upper_and_preserve_revision_order(tmp_path
     assert later['rows'][0]['revision'] > max(revisions)
     # Later payload revisions never move the earlier coverage checkpoint forward.
     assert later['page']['checkpoint'] == index.active_revision
-

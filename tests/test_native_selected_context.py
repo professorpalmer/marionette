@@ -137,5 +137,3 @@ def test_selected_command_retains_writer_redaction_and_never_reads_payloads(tmp_
     assert 'REDACTED' in result['selected_context']['request']['text']
     runner._local_jobs[row['id']]['provider_payload'] = NoTraversal(secret='hidden')
     assert selected(runner, row['id'], include_context=True)['selected_context'] == result['selected_context']
-
-
