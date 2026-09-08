@@ -964,27 +964,11 @@ function endpointRequestHeaders(value) {
   return headers;
 }
 
-function _backendRequestOnce(method, apiPath, body, correlationId = "", identityHeaders) {
-  return new Promise((resolve, reject) => {
-    const data = body === undefined ? null : JSON.stringify(body);
-    const req = http.request({
-      host: "127.0.0.1", port: backendPort, path: apiPath, method,
-      headers: { ...endpointRequestHeaders(identityHeaders), "Content-Type": "application/json", "X-Harness-Token": authToken(), ...(correlationId ? { "X-Correlation-Id": correlationId } : {}), ...(data ? { "Content-Length": Buffer.byteLength(data) } : {}) },
-    }, (res) => {
-      let buf = "";
-      res.setEncoding("utf8");
-      res.on("data", (c) => (buf += c));
-      res.on("error", reject);
-      res.on("aborted", () => reject(Object.assign(new Error("Backend response aborted"), { code: "ECONNRESET" })));
-      res.on("end", () => resolve({
-        kind: "response", status: res.statusCode, text: buf,
-        correlationId: String(res.headers["x-correlation-id"] || ""),
-      }));
-    });
-    req.on("error", reject);
-    if (data) req.write(data);
-    req.end();
-  });
+function _backendRequestOnce(method, apiPath, body, correlationId = "", identityHeaders, policy) {
+  return require("./json-request.cjs").requestJSONOnce({
+    host: "127.0.0.1", port: backendPort, path: apiPath, method,
+    headers: { ...endpointRequestHeaders(identityHeaders), "Content-Type": "application/json", "X-Harness-Token": authToken(), ...(correlationId ? { "X-Correlation-Id": correlationId } : {}) },
+  }, body, { request: http.request, ...policy });
 }
 
 function _isTransientBackendConnError(err) {
@@ -1002,14 +986,18 @@ function _isTransientBackendConnError(err) {
 // this the renderer paints a raw "harness:getJSON ECONNREFUSED" that clears on
 // the next manual refresh. A few short retries cover the usual gap.
 async function backendRequest(method, apiPath, body, { retries = 5, delayMs = 200, responseEnvelope = false, correlationId = "", identityHeaders } = {}) {
+  const policy = require("./job-metadata-policy.cjs").jobMetadataPolicy(method, apiPath);
+  // Metadata must settle within one absolute deadline, including during a
+  // backend restart. Legacy read recovery may wait on startInFlight indefinitely.
+  const maxRetries = policy ? 0 : retries;
   let lastErr;
-  for (let attempt = 0; attempt <= retries; attempt++) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const response = await _backendRequestOnce(method, apiPath, body, correlationId, identityHeaders);
+      const response = await _backendRequestOnce(method, apiPath, body, correlationId, identityHeaders, policy);
       return responseEnvelope ? response : require("./json-response.mjs").parseJSONResponse(response, apiPath);
     } catch (err) {
       lastErr = err;
-      if ((method !== "GET" && method !== "HEAD") || err.status || !_isTransientBackendConnError(err) || attempt === retries) break;
+      if ((method !== "GET" && method !== "HEAD") || err.status || !_isTransientBackendConnError(err) || attempt === maxRetries) break;
       // Marker may already list a new port (respawn / other window) while our
       // in-memory backendPort is still the dead one -- adopt before retrying.
       tryRefreshBackendPortFromMarker();

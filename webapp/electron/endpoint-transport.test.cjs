@@ -40,11 +40,15 @@ test('actual preload/main IPC passes only identity headers for JSON, upload and 
   const identity={'X-Harness-Protocol':'1','X-Harness-Endpoint':'endpoint','X-Harness-Boot':'boot','X-Harness-Token':'forbidden','Other':'ignored'};
   const bridge=exposed.harnessIPC;
   assert.equal(bridge.endpointHeaders,true);
+  assert.throws(() => bridge.requestJSON('DELETE','/write',{},'correlation',identity), /Unsupported JSON request method/);
+  assert.equal(requests.length,0);
   await bridge.requestJSON('POST','/write',{},'correlation',identity);
   await bridge.uploadFile({name:'a.txt',type:'text/plain',bytes:Buffer.from('a')},identity);
   await new Promise((resolve,reject)=>bridge.stream('/stream',()=>{},resolve,reject,identity));
   assert.equal(requests.length,3);
   for(const request of requests){
+    assert.equal(request.host,'127.0.0.1');
+    assert.equal(request.port,1);
     assert.equal(request.headers['X-Harness-Endpoint'],'endpoint');
     assert.equal(request.headers['X-Harness-Boot'],'boot');
     assert.equal(request.headers['X-Harness-Protocol'],'1');

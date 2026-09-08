@@ -9,6 +9,7 @@ const { EventEmitter } = require('node:events');
 function seam(port, client = http) {
   const source = fs.readFileSync(__dirname + '/main.cjs', 'utf8');
   const context = vm.createContext({ http: client, Buffer, setTimeout, backendPort: port,
+    ipcMain: { on() {}, handle() {} },
     harnessToken: '', startInFlight: null, tryRefreshBackendPortFromMarker() {},
     require: (name) => require(require('node:path').resolve(__dirname, name)),
   });
@@ -20,6 +21,7 @@ async function fixture(t, handler) {
     return seam(0, { request(options, callback) {
       const req = new EventEmitter();
       req.write = () => {};
+      req.destroy = () => {};
       req.end = () => queueMicrotask(() => {
         const res = new PassThrough();
         res.statusCode = 200;
@@ -86,6 +88,7 @@ for (const code of ['ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'ETIMEDOUT']) {
     const ctx = seam(0, { request(_options, callback) {
       const req = new EventEmitter();
       req.write = () => {};
+      req.destroy = () => {};
       req.end = () => queueMicrotask(() => {
         attempts++;
         if (attempts === 1) req.emit('error', Object.assign(new Error(code), {code}));
@@ -111,6 +114,7 @@ test('response abort rejects instead of hanging or resolving partial data', asyn
   const ctx = seam(0, { request(_options, callback) {
     const req = new EventEmitter();
     req.write = () => {};
+    req.destroy = () => {};
     req.end = () => queueMicrotask(() => {
       const res = Object.assign(new PassThrough(), {statusCode:200, headers:{}});
       callback(res);
