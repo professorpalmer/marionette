@@ -54,13 +54,14 @@ def get_json(
     qs_args: Optional[tuple[str, ...]] = None,
     empty_as_none: bool = False,
     pass_qs: bool = False,
+    keep_blank_values: bool = False,
 ) -> GetHandler:
     """Wrap an api.* GET that returns ``(status, payload)``."""
 
     def handle(handler: Any, u: Any, qs: dict) -> Any:
         args: list[Any] = []
         if pass_qs:
-            args.append(qs)
+            args.append(parse_qs(u.query, keep_blank_values=True) if keep_blank_values else qs)
         elif qs_args:
             for key in qs_args:
                 val = qs.get(key, [""])[0]
@@ -868,6 +869,8 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
         "/api/artifacts": get_json(
             _jobs_api.get_artifacts, services=svc.job_services, qs_arg="job_id",
             empty_as_none=True),
+        "/api/swarm/cancellation-receipt": get_json(
+            _jobs_api.get_cancellation_receipt, services=svc.job_services, pass_qs=True, keep_blank_values=True),
         "/api/swarm/live": _get_swarm_live,
         "/api/providers": get_json(_prov_api.get_providers),
         "/api/secrets/presence": get_json(

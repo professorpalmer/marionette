@@ -213,6 +213,24 @@ class LocalJobsMixin:
     instance state of its own.
     """
 
+    def local_metadata_handle(self):
+        """Capture only; initialization belongs to boot/load and writer seams."""
+        return getattr(self, '_local_metadata', None)
+
+
+    def _initialize_local_metadata_locked(self):
+        from .local_job_metadata import LocalMetadataIndex, ObservedJobs
+        if not hasattr(self, '_local_metadata'):
+            self._local_metadata = LocalMetadataIndex(self)
+            self._local_jobs = ObservedJobs(self._local_jobs, self._local_metadata)
+
+
+    def _publish_local_metadata_locked(self):
+        self._initialize_local_metadata_locked()
+        for jid, row in self._local_jobs.items():
+            self._local_metadata.publish(jid, row)
+
+
     def _register_command_job(
         self,
         job_id: str,
@@ -635,6 +653,7 @@ class LocalJobsMixin:
                 "review_required": False,
             }
             self._local_jobs[wave_id] = row
+            row = self._local_jobs[wave_id]
             for cid in ids:
                 child = self._local_jobs.get(cid)
                 if isinstance(child, dict):
@@ -1289,7 +1308,8 @@ class LocalJobsMixin:
 
                 # Explicit id at creation: artifact://local-*/<id> must survive
                 # the headline/model rewrite _finish_local_job performs later.
-                routing_arts.append({**art, "id": routing_artifact_id(job_id)})
+                routing_arts.append({**art, "id": routing_artifact_id(job_id),
+                                     "task_id": f"{job_id}-w0", "model_kind": "forecast"})
         # Never stamp bare agentic/native as job.model — that reads as a chosen
         # model in the Swarm Tracker. Leave empty until a real id is known.
         if model_id and not is_engine_only_model_id(model_id):
@@ -1311,6 +1331,8 @@ class LocalJobsMixin:
         if display_model:
             task_row["model"] = display_model
         with self._local_jobs_lock:
+            if job_id in self._local_jobs:
+                raise ValueError("Local job identity conflict")
             self._local_job_cancels[job_id] = threading.Event()
             now = time.time()
             row = {
@@ -1655,6 +1677,7 @@ class LocalJobsMixin:
                     updated["id"] = routing_artifact_id(job_id)
                     if model_id:
                         updated = _reconcile_routing_artifact(updated, model_id)
+                        updated["model_kind"] = "realized"
                     # Preserve attested policy; default balanced for router stamps.
                     if not (updated.get("policy") or "").strip():
                         if updated.get("created_by") == "router":
@@ -1960,6 +1983,7 @@ class LocalJobsMixin:
         crash mid-write never leaves a half-written (corrupt) file. Command
         barriers require success; provider bookkeeping remains best-effort."""
         import json
+        self._publish_local_metadata_locked()
         try:
             items = list(self._local_jobs.values())
             # Both unresolved checkpoints and settled receipts prevent replay.
@@ -2001,23 +2025,29 @@ class LocalJobsMixin:
         facts into unknown outcomes; only unlaunched work is cancelled.
         """
         import json
+        with self._local_jobs_lock:
+            self._initialize_local_metadata_locked()
         try:
             with open(self._local_jobs_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
         except FileNotFoundError:
             return
         except Exception:
-            # Corrupt/unreadable file: start empty rather than crash on restart.
+            # Execution recovery remains tolerant; observation cannot claim empty.
+            self._local_metadata.available = False
             return
         jobs = data.get("jobs") if isinstance(data, dict) else None
         if not isinstance(jobs, list):
+            self._local_metadata.available = False
             return
         with self._local_jobs_lock:
             for job in jobs:
                 if not isinstance(job, dict):
+                    self._local_metadata.available = False
                     continue
                 jid = job.get("id")
-                if not jid:
+                if not isinstance(jid, str) or not jid:
+                    self._local_metadata.available = False
                     continue
                 is_command_job = (
                     job.get("job_kind") == "run_command"
@@ -2171,7 +2201,7 @@ class LocalJobsMixin:
         # Rewrite so the healed statuses are the new on-disk baseline.
         self._persist_local_jobs()
 
-    def cancel_local_job(self, job_id: str) -> bool:
+    def cancel_local_job(self, job_id: str, *, incarnation: Optional[str] = None) -> bool:
         """Cooperatively cancel a running local (provider-worker) job.
 
         Sets the per-job cancel Event (best-effort: a Python thread cannot be
@@ -2184,6 +2214,8 @@ class LocalJobsMixin:
         Returns True if the job existed and was not already terminal.
         """
         with self._local_jobs_lock:
+            if incarnation is not None and getattr(self.local_metadata_handle(), 'incarnation', None) != incarnation:
+                return False
             job = self._local_jobs.get(job_id)
             if job is None:
                 return False

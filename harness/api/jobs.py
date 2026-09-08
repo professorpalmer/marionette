@@ -278,56 +278,48 @@ def _artifacts_from_durable(durable: Any, job_id: str, svc: JobServices, state_o
     return []
 
 
-def _legacy_cancel_selection(job_id: str, svc: JobServices) -> dict | None:
-    """Resolve an id only when exactly one known local/primary store contains it."""
-    from puppetmaster.state import state_identity
-    from ..cli_job_merge import resolve_cli_state_dir
-    from puppetmaster.store_factory import create_store
-
-    repo = svc.cfg.repo or ""
-    sid = getattr(svc.sessions, "active", None)
-    if not repo or not sid:
-        return None
-    candidates = []
-    pilot = svc.get_pilot()
-    getter = getattr(pilot, "get_local_job", None)
-    if callable(getter) and getter(job_id) is not None:
-        candidates.append({"source": "local", "job_ref": {"job_id": job_id, "state_id": None}})
-    primary = svc.get_session().state()
-    cli_root = resolve_cli_state_dir(repo)
-    cli_store = create_store("sqlite", cli_root, mode="attach") if cli_root else None
-    seen = set()
-    for source, store in (("harness", primary.store), ("cli", cli_store)):
-        if store is None:
-            continue
-        state_id = state_identity(store.root)
-        if state_id in seen:
-            continue
-        seen.add(state_id)
-        attach = getattr(store, "attach", None)
-        if callable(attach):
-            attach()
-        try:
-            job = store.get_job(job_id)
-        except (KeyError, FileNotFoundError):
-            continue
-        if job is not None:
-            candidates.append({"source": source, "job_ref": {"job_id": job_id, "state_id": state_id}})
-    if len(candidates) != 1:
-        return None
-    return {"version": 1, "repo": repo, "session_id": sid, **candidates[0]}
+def get_cancellation_receipt(qs: dict, svc: JobServices) -> tuple[int, dict]:
+    """Read an existing receipt; never create or retry cancellation."""
+    fields = ("job_id", "state_id", "source", "repo", "session_id", "request_id")
+    if not isinstance(qs, dict):
+        return 400, {"ok": False, "code": "invalid_cancellation_query"}
+    if any(not isinstance(qs.get(k), list) or len(qs[k]) != 1 for k in fields):
+        return 400, {"ok": False, "code": "invalid_cancellation_query",
+                     "error": "Invalid receipt query."}
+    if (set(qs) - set(fields) - {'version', 'incarnation'}
+            or any(not isinstance(qs[k], list) or len(qs[k]) != 1 for k in ('version', 'incarnation') if k in qs)):
+        return 400, {"ok": False, "code": "invalid_cancellation_query"}
+    values = {k: qs[k][0] for k in fields}
+    ref_fields = {}
+    if 'version' in qs:
+        if qs['version'][0] not in ('1', '2'):
+            return 400, {"ok": False, "code": "invalid_cancellation_query"}
+        ref_fields['version'] = int(qs['version'][0])
+    if 'incarnation' in qs:
+        ref_fields['incarnation'] = qs['incarnation'][0]
+    selection = {"version": 2, "job_ref": {"job_id": values.pop("job_id"),
+                 "state_id": values.pop("state_id"), **ref_fields},
+                 **{k: values[k] for k in ("source", "repo", "session_id")}}
+    return _scoped_cancel({"selection": selection, "request_id": values["request_id"]}, svc,
+                          read_only=True)
 
 
 def post_swarm_cancel(body: dict, svc: JobServices) -> tuple[int, dict]:
+    return _scoped_cancel(body, svc, read_only=False)
+
+
+def _scoped_cancel(body: dict, svc: JobServices, *, read_only: bool) -> tuple[int, dict]:
     """Cancel one versioned selection without using PM's global job-id flag.
 
-    PM 1.23.0 request_cancel has no state identity. Running durable jobs
-    require a scoped kernel cancellation API and must remain unchanged.
-    Local workers have a pilot-owned per-job event.
+    Durable requests carry the rendered generations into PM's atomic comparison.
+    Local workers retain their pilot-owned per-job event.
     """
+    from dataclasses import asdict
+    from .scoped_cancellation import parse_bindings, parse_job_ref, task_page, runtime_available
+    identity_errors = ()
     from puppetmaster.state import state_identity
     from ..cli_job_merge import resolve_cli_state_dir
-    from ..job_scoping import job_owned_by_marionette, parse_job_session_id
+    from ..job_scoping import job_owned_by_marionette
     from ..paths import same_workspace_path
     from puppetmaster.store_factory import create_store
 
@@ -338,16 +330,10 @@ def post_swarm_cancel(body: dict, svc: JobServices) -> tuple[int, dict]:
     if "selection" not in body and not body.get("job_id"):
         return 400, {"ok": False, "error": "missing job_id"}
     selection = body.get("selection")
-    if "selection" not in body and isinstance(body.get("job_id"), str) and body["job_id"].strip():
-        try:
-            selection = _legacy_cancel_selection(body["job_id"], svc)
-        except Exception as exc:
-            svc.diag("server.swarm_cancel_resolve", exc)
-            return 503, {"ok": False, "error": "Job selection could not be resolved."}
-    if not isinstance(selection, dict) or type(selection.get("version")) is not int or selection["version"] != 1:
+    if not isinstance(selection, dict) or type(selection.get("version")) is not int or selection["version"] not in (1, 2):
         return refused
     ref = selection.get("job_ref")
-    if not isinstance(ref, dict) or "state_id" not in ref:
+    if not isinstance(ref, dict) or not {"job_id", "state_id"} <= ref.keys():
         return refused
     jid, state_id = ref.get("job_id"), ref.get("state_id")
     sid, repo, source = (selection.get(k) for k in ("session_id", "repo", "source"))
@@ -355,6 +341,32 @@ def post_swarm_cancel(body: dict, svc: JobServices) -> tuple[int, dict]:
             or source not in ("harness", "cli", "local")
             or ("job_id" in body and body["job_id"] != jid)):
         return refused
+    local_incarnation = selection.get("local_incarnation")
+    if "local_incarnation" in selection and (
+            source != "local" or not isinstance(local_incarnation, str)
+            or not 1 <= len(local_incarnation) <= 128):
+        return refused
+    if source == "local":
+        if not local_incarnation:
+            return refused
+        if set(ref) != {"job_id", "state_id"}:
+            return refused
+        job_ref = None
+    else:
+        if ref.get('version') != 2:
+            return 409, {"ok": False, "code": "scoped_kernel_cancellation_required",
+                         "error": "Refresh the task view: an incarnation-bound job reference is required."}
+        if not runtime_available():
+            return 503, {"ok": False, "code": "scoped_cancellation_unsupported"}
+        from puppetmaster.identity import StoreIdentityError
+        identity_errors = (StoreIdentityError,)
+        try:
+            job_ref = parse_job_ref(ref)
+        except (ValueError, TypeError):
+            return refused
+        if not read_only and job_ref.version != 2:
+            return 409, {"ok": False, "code": "scoped_kernel_cancellation_required",
+                         "error": "Refresh the task view: cancellation requires an incarnation-bound job reference."}
     captured_repo = svc.cfg.repo or ""
     captured_sid = getattr(svc.sessions, "active", None)
     if sid != captured_sid or not same_workspace_path(repo, captured_repo):
@@ -363,12 +375,28 @@ def post_swarm_cancel(body: dict, svc: JobServices) -> tuple[int, dict]:
         pilot = svc.get_pilot()
 
         def context_matches() -> bool:
-            return (getattr(svc.sessions, "active", None) == captured_sid
-                    and same_workspace_path(svc.cfg.repo or "", captured_repo)
-                    and (source != "local" or svc.get_pilot() is pilot))
+            if (getattr(svc.sessions, "active", None) != captured_sid
+                    or not same_workspace_path(svc.cfg.repo or "", captured_repo)
+                    or (source == "local" and svc.get_pilot() is not pilot)):
+                return False
+            if source == "local" and local_incarnation is not None:
+                index = getattr(pilot, "_local_metadata", None)
+                if getattr(index, "incarnation", None) != local_incarnation:
+                    return False
+            if source == "harness":
+                session = svc.get_session()
+                root = getattr(session, "state_dir", None)
+                if root is None:
+                    root = getattr(session.state().store, "root", None)
+                return bool(root) and state_identity(root) == state_id
+            return True
 
         if source == "local":
+            if read_only or selection["version"] != 1:
+                return refused
             if state_id is not None or not jid.startswith("local-"):
+                return refused
+            if not context_matches():
                 return refused
             job = pilot.get_local_job(jid)
             if (not isinstance(job, dict) or job.get("id") != jid
@@ -377,8 +405,8 @@ def post_swarm_cancel(body: dict, svc: JobServices) -> tuple[int, dict]:
                     or getattr(pilot, "harness_session_id", None) != sid
                     or not context_matches()):
                 return refused
-            accepted = pilot.cancel_local_job(jid)
-            if not accepted:
+            accepted = pilot.cancel_local_job(jid, incarnation=local_incarnation)
+            if not accepted or not context_matches():
                 return refused
             return 200, {"ok": True, "job_id": jid, "selection": selection,
                          "cancellation": "local_event"}
@@ -394,34 +422,80 @@ def post_swarm_cancel(body: dict, svc: JobServices) -> tuple[int, dict]:
             if state_identity(root) != state_id:
                 return refused
             store = create_store("sqlite", root, mode="attach")
+        if not runtime_available(store):
+            return 503, {"ok": False, "code": "scoped_cancellation_unsupported"}
         if state_identity(store.root) != state_id:
             return refused
         attach = getattr(store, "attach", None)
         if callable(attach):
             attach()
+        def owned_summary():
+            page = store.list_job_summaries(job_ref=job_ref, limit=1, max_scan=2, max_bytes=8192)
+            if page.outcome != 'complete' or len(page.items) != 1:
+                return None
+            row = page.items[0]
+            if (row.deleted or row.job_ref != job_ref or row.session_id != sid
+                    or not job_owned_by_marionette(session_id=row.session_id, origin=row.origin or '',
+                                                   source=source, allow_registered_heal=False)):
+                return None
+            return row
+
+        job = owned_summary()
+        if job is None:
+            return refused
+        if selection["version"] != 2:
+            return 409, {"ok": False, "code": "scoped_kernel_cancellation_required",
+                         "error": "Refresh the task view: durable cancellation requires bound v2 selections."}
+        request_id = body.get("request_id")
+        if not isinstance(request_id, str) or not request_id.strip() or len(request_id) > 256:
+            return refused
+        receipt = store.get_cancellation_receipt(job_ref, request_id)
+        if read_only and receipt is None:
+            if not context_matches():
+                return refused
+            return 404, {"ok": False, "code": "cancellation_receipt_missing",
+                         "error": "No receipt found. Stop is unconfirmed; an explicit retry must reuse the original request."}
         try:
-            job = store.get_job(jid)
-        except (KeyError, FileNotFoundError):
+            bindings = parse_bindings([asdict(b) for b in receipt.bindings] if read_only else selection.get("bindings"))
+        except (TypeError, ValueError):
             return refused
-        if (job is None or parse_job_session_id(job.label, []) != sid
-                or not job_owned_by_marionette(label=job.label, job_id=jid,
-                    source=source, registered_job_ids=[])):
-            return refused
-        tasks = store.list_tasks(jid)
-        if not tasks or any(
-            task.payload.get("session_id") != sid or not task.payload.get("cwd")
-            or not same_workspace_path(task.payload["cwd"], repo) for task in tasks
-        ):
-            return refused
-        if (not context_matches()
-                or (source == "harness" and svc.get_session().state().store is not store)):
-            return refused
-        if str(job.status) in ("completed", "complete", "failed", "cancelled"):
-            return 200, {"ok": True, "job_id": jid, "selection": selection,
-                         "durable": True, "marked": False, "cancellation": "already_terminal"}
-        return 409, {"ok": False, "code": "scoped_kernel_cancellation_required",
-                     "error": "Cancel is unavailable: the worker was not stopped. "
-                              "Scoped kernel cancellation is required; the job remains running."}
+        selection = {**selection, "bindings": [asdict(b) for b in bindings]}
+
+        def authority_matches(*, require_complete_view: bool):
+            if (not context_matches() or state_identity(store.root) != state_id
+                    or (source == "cli" and state_identity(resolve_cli_state_dir(captured_repo)) != state_id)):
+                return False
+            current_job = owned_summary()
+            if current_job is None or any(getattr(current_job, field) != getattr(job, field)
+                                         for field in ("origin", "project_id", "session_id")):
+                return False
+            if require_complete_view:
+                page = task_page(store, job_ref)
+                if page.outcome != "complete" or {t.id for t in page.items} != {b.task_id for b in bindings}:
+                    return False
+            for binding in bindings:
+                task = store.get_task_by_id(binding.task_id)
+                if (task.job_id != jid or task.payload.get("session_id") != sid
+                        or not task.payload.get("cwd")
+                        or not same_workspace_path(task.payload["cwd"], repo)):
+                    return False
+            return (context_matches()
+                    and (source != "cli" or state_identity(resolve_cli_state_dir(captured_repo)) == state_id))
+
+        if not authority_matches(require_complete_view=not read_only and receipt is None):
+            return 409, {"ok": False, "code": "cancellation_view_unavailable",
+                         "error": "Task scope changed or is incomplete (maximum 200). Refresh the view; no new stop request was sent."}
+        if not read_only:
+            receipt = store.request_cancellation(job_ref, request_id, bindings)
+        if (not authority_matches(require_complete_view=False) or receipt.job_ref != job_ref or receipt.request_id != request_id
+                or (receipt.outcome != "conflict" and receipt.bindings != bindings)):
+            return 409, {"ok": False, "code": "cancellation_context_changed",
+                         "error": "Cancellation acknowledgement is unavailable for this context. Reconcile the original request."}
+        return 200, {"ok": True, "job_id": jid, "selection": selection,
+                     "request_id": request_id, "receipt": {**asdict(receipt), "job_ref": receipt.job_ref.as_dict()}}
+
+    except identity_errors:
+        return refused
     except Exception as exc:
         svc.diag("server.swarm_cancel_scoped", exc)
         return 503, {"ok": False, "error": "Job cancellation could not be completed."}
@@ -497,7 +571,7 @@ def get_scoped_artifacts(qs: dict, svc: JobServices) -> tuple[int, Any]:
     from puppetmaster.models import JobRef
     from puppetmaster.state import state_identity
     from ..cli_job_merge import resolve_cli_state_dir
-    from ..job_scoping import job_owned_by_marionette, parse_job_session_id
+    from ..job_scoping import job_owned_by_marionette
     from ..paths import same_workspace_path
     from ..state import DurableState
 
