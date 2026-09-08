@@ -215,6 +215,9 @@ class WorkspaceServices:
     is_app_install_root: Callable[[str], bool]
     diag: Callable[..., Any]
     # POST /api/workspace/open
+    invalidate_metadata_view: Optional[Callable[[], Any]] = None
+    restore_metadata_view: Optional[Callable[[Any], None]] = None
+    invalidate_metadata_sources: Optional[Callable[[], None]] = None
     sessions: Any = None
     save_active_transcript: Optional[Callable[[], None]] = None
     note_boot_repo: Optional[Callable[[str], None]] = None
@@ -274,6 +277,7 @@ def post_workspace_open(body: dict, svc: WorkspaceServices) -> tuple[int, JsonPa
     prev_env_repo = os.environ.get("HARNESS_REPO")
 
     old_repo = (prev_repo or "").strip()
+    metadata_transition = svc.invalidate_metadata_view() if svc.invalidate_metadata_view else None
     svc.cfg.repo = target_repo
     os.environ["HARNESS_REPO"] = target_repo
     if old_repo != target_repo:
@@ -323,15 +327,17 @@ def post_workspace_open(body: dict, svc: WorkspaceServices) -> tuple[int, JsonPa
         ]
         if target_sessions:
             newest_session = max(target_sessions, key=lambda s: s.get("created", 0))
-            svc.sessions.switch(newest_session["id"])
+            target_session_id = newest_session["id"]
+            svc.sessions.switch(target_session_id)
         else:
             basename = os.path.basename(os.path.abspath(target_repo)) or "Workspace"
-            svc.sessions.create(title=basename, repo=target_repo, branch=branch)
+            created = svc.sessions.create(title=basename, repo=target_repo, branch=branch)
+            target_session_id = created["id"]
             created_session = True
 
-        if svc.sessions.active and svc.attach_view is not None:
+        if target_session_id and svc.attach_view is not None:
             try:
-                svc.attach_view(svc.sessions.active, defer_cold_build=True)
+                svc.attach_view(target_session_id, defer_cold_build=True, view_repo=target_repo)
             except Exception as e:
                 lease_cls = svc.lease_exhausted_error
                 if lease_cls is not None and isinstance(e, lease_cls):
@@ -353,6 +359,8 @@ def post_workspace_open(body: dict, svc: WorkspaceServices) -> tuple[int, JsonPa
                         if svc.lease_exhausted_body is not None
                         else {"error": "lease exhausted"}
                     )
+                    if metadata_transition is not None and svc.restore_metadata_view is not None:
+                        svc.restore_metadata_view(metadata_transition)
                     return 409, body_payload
                 raise
 
@@ -397,6 +405,8 @@ def post_workspace_forget(body: dict, svc: WorkspaceServices) -> tuple[int, Json
         # Clear live process state when forgetting the open workspace so
         # the rail does not keep re-appending currentRepo after forget.
         if repo and svc.paths_same_workspace(repo, target_repo):
+            if svc.invalidate_metadata_view is not None:
+                svc.invalidate_metadata_view()
             svc.cfg.repo = ""
             os.environ.pop("HARNESS_REPO", None)
             cleared_active = True
@@ -415,11 +425,17 @@ def post_workspace_forget(body: dict, svc: WorkspaceServices) -> tuple[int, Json
 def post_workspaces_switch(body: dict, svc: WorkspaceServices) -> tuple[int, JsonPayload]:
     """POST /api/workspaces/switch."""
     name = body.get("name", "")
-    result = svc.ws.switch_workspace(
-        svc.cfg.repo,
-        name,
-        allow_dirty=svc.parse_bool(body.get("allow_dirty")),
-    )
+    if svc.invalidate_metadata_sources is not None:
+        svc.invalidate_metadata_sources()
+    try:
+        result = svc.ws.switch_workspace(
+            svc.cfg.repo,
+            name,
+            allow_dirty=svc.parse_bool(body.get("allow_dirty")),
+        )
+    finally:
+        if svc.invalidate_metadata_sources is not None:
+            svc.invalidate_metadata_sources()
     if isinstance(result, dict) and result.get("ok") is not False:
         try:
             from ..context_switch_guard import note_switch
@@ -447,11 +463,17 @@ def post_workspaces_confirm(body: dict, svc: WorkspaceServices) -> tuple[int, Js
 
 def post_workspaces_create(body: dict, svc: WorkspaceServices) -> tuple[int, JsonPayload]:
     """POST /api/workspaces/create."""
-    return 200, svc.ws.create_workspace(
-        svc.cfg.repo,
-        body.get("name", ""),
-        body.get("branch") or None,
-    )
+    if svc.invalidate_metadata_sources is not None:
+        svc.invalidate_metadata_sources()
+    try:
+        return 200, svc.ws.create_workspace(
+            svc.cfg.repo,
+            body.get("name", ""),
+            body.get("branch") or None,
+        )
+    finally:
+        if svc.invalidate_metadata_sources is not None:
+            svc.invalidate_metadata_sources()
 
 
 def get_workspaces(svc: WorkspaceServices) -> tuple[int, JsonPayload]:

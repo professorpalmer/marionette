@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 from typing import Any, Callable, Optional
 from .pilot_replacement import replacement_gate
+from .job_metadata_view import MetadataView
 
 DEFAULT_MAX_CONCURRENT_SESSIONS = 3
 
@@ -153,6 +154,7 @@ class SessionRunnerRegistry:
         self._runners: dict[str, Any] = {}
         self._order: list[str] = []
         self._active_view_id: Optional[str] = None
+        self.metadata_view = MetadataView()
         # Optional hook (e.g. fold boot cost meters) when a runner leaves the
         # registry via drop/evict. Rebuild/swap pass notify=False to skip it.
         self._on_drop = on_drop
@@ -163,7 +165,8 @@ class SessionRunnerRegistry:
 
     @property
     def active_view_id(self) -> Optional[str]:
-        return self._active_view_id
+        with self.metadata_view.lock:
+            return self._active_view_id
 
     def get(self, session_id: str) -> Optional[Any]:
         return self._runners.get(session_id)
@@ -192,8 +195,12 @@ class SessionRunnerRegistry:
             )
 
         runner = factory()
-        self._runners[session_id] = runner
-        self._order.append(session_id)
+        with self.metadata_view.lock:
+            self._runners[session_id] = runner
+            self._order.append(session_id)
+            if self._active_view_id == session_id:
+                self.metadata_view.replace_root(getattr(runner, 'state_dir', '') or '',
+                                                local_handle=getattr(runner, '_local_metadata', None))
         return runner
 
     def drop(self, session_id: str, *, notify: bool = True) -> Optional[Any]:
@@ -211,13 +218,15 @@ class SessionRunnerRegistry:
             if getattr(runner, '_input_admissions', 0):
                 raise RuntimeError('input admission in progress -- retry removing the session')
             runner._replacement_retired = True
-            self._runners.pop(session_id, None)
+            with self.metadata_view.lock:
+                self._runners.pop(session_id, None)
+                if self._active_view_id == session_id:
+                    self._active_view_id = None
+                    self.metadata_view.invalidate()
         try:
             self._order.remove(session_id)
         except ValueError:
             pass
-        if self._active_view_id == session_id:
-            self._active_view_id = None
         # S3: session-switch / eviction owns this runner — close warm ACP so
         # Windows cannot retain orphan agent acp children after drop.
         try:
@@ -255,14 +264,22 @@ class SessionRunnerRegistry:
                 raise LeaseExhaustedError(
                     "session runner lease exhausted: all concurrent sessions are busy"
                 )
-            self._runners[session_id] = runner
-            self._order.append(session_id)
+            with self.metadata_view.lock:
+                self._runners[session_id] = runner
+                self._order.append(session_id)
+                if self._active_view_id == session_id:
+                    self.metadata_view.replace_root(getattr(runner, 'state_dir', '') or '',
+                                                local_handle=getattr(runner, '_local_metadata', None))
             return None
         with replacement_gate(old):
             if getattr(old, '_input_admissions', 0):
                 raise RuntimeError('input admission in progress -- retry replacing the runner')
             old._replacement_retired = True
-            self._runners[session_id] = runner
+            with self.metadata_view.lock:
+                self._runners[session_id] = runner
+                if self._active_view_id == session_id:
+                    self.metadata_view.replace_root(getattr(runner, 'state_dir', '') or '',
+                                                    local_handle=getattr(runner, '_local_metadata', None))
         if notify and self._on_drop is not None:
             try:
                 self._on_drop(session_id, old)
@@ -270,15 +287,25 @@ class SessionRunnerRegistry:
                 pass
         return old
 
-    def set_active_view(self, session_id: str) -> None:
-        self._active_view_id = session_id
+    def set_active_view(self, session_id: str, *, repo: Optional[str] = None) -> None:
+        with self.metadata_view.lock:
+            runner = self._runners.get(session_id)
+            if repo is None:
+                repo = getattr(getattr(runner, 'config', None), 'repo', '') or ''
+            root = getattr(runner, 'state_dir', '') or ''
+            changed = self._active_view_id != session_id
+            self._active_view_id = session_id
+            self.metadata_view.select(session_id, repo, root, force=changed,
+                                      local_handle=getattr(runner, '_local_metadata', None))
 
     def detach_view(self, session_id: str) -> bool:
         """Clear active view when the UI detaches; runner keeps executing."""
-        if self._active_view_id == session_id:
-            self._active_view_id = None
-            return True
-        return False
+        with self.metadata_view.lock:
+            if self._active_view_id == session_id:
+                self._active_view_id = None
+                self.metadata_view.invalidate()
+                return True
+            return False
 
     def status(self, session_id: str) -> str:
         runner = self._runners.get(session_id)

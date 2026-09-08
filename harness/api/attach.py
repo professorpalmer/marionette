@@ -64,6 +64,7 @@ def attach_view(
     factory=None,
     load_transcript_on_create: bool = True,
     defer_cold_build: Optional[bool] = None,
+    view_repo: Optional[str] = None,
 ) -> Any:
     """Point the UI at ``session_id`` via the runner registry.
 
@@ -84,6 +85,8 @@ def attach_view(
     if not session_id:
         raise ValueError("session_id required to attach view")
 
+    view_repo = (svc.cfg.repo or "") if view_repo is None else view_repo
+
     # --- Warm fast path: never rebuild; never interrupt other runners. ---
     existing = svc.runners.get(session_id)
     if existing is not None:
@@ -99,7 +102,7 @@ def attach_view(
             with svc.pilot_swap_lock:
                 if isinstance(existing, ConversationalSession):
                     existing.bind_prompt_queue(svc.sessions_state_dir(), session_id)
-                svc.runners.set_active_view(session_id)
+                svc.runners.set_active_view(session_id, repo=view_repo)
                 svc.set_pilot(existing)
                 try:
                     svc.get_session().state_dir = svc.get_pilot().state_dir
@@ -139,7 +142,9 @@ def attach_view(
     transcript_payload = normalize_transcript_payload(history)
 
     if want_defer:
-        config = _fork_runner_config(session_id, svc, svc.runner_config_snapshot())
+        config = svc.runner_config_snapshot()
+        config.repo = view_repo
+        config = _fork_runner_config(session_id, svc, config)
         placeholder = DeferredPilotPlaceholder(
             session_id=session_id,
             state_dir=config.state_dir,
@@ -152,7 +157,7 @@ def attach_view(
 
         runner = svc.runners.get_or_create(session_id, _factory)
         with svc.pilot_swap_lock:
-            svc.runners.set_active_view(session_id)
+            svc.runners.set_active_view(session_id, repo=view_repo)
             svc.set_pilot(runner)
             try:
                 svc.get_session().state_dir = svc.get_pilot().state_dir
@@ -235,15 +240,17 @@ def attach_view(
             runner = factory()
         else:
             # New runners start at zero meters -- boot pill sums carry + live.
+            config = svc.runner_config_snapshot()
+            config.repo = view_repo
             runner = svc.build_conversational_pilot(
-                config=_fork_runner_config(session_id, svc, svc.runner_config_snapshot()))
+                config=_fork_runner_config(session_id, svc, config))
         if isinstance(runner, ConversationalSession):
             runner.bind_prompt_queue(svc.sessions_state_dir(), session_id)
         return runner
 
     runner = svc.runners.get_or_create(session_id, _factory)
     with svc.pilot_swap_lock:
-        svc.runners.set_active_view(session_id)
+        svc.runners.set_active_view(session_id, repo=view_repo)
         svc.set_pilot(runner)
         # Keep tracker/jobs pointed at the store this runner writes to.
         try:

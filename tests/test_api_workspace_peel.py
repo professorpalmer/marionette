@@ -203,7 +203,7 @@ def _bind_workspace_open(svc, sessions, tmp_path):
     svc.record_recent_workspace = lambda r, as_active=True: []
     svc.sessions_state_dir = lambda: str(tmp_path)
     svc.session_visible_for_workspace = lambda s, r, d: True
-    svc.attach_view = lambda sid, defer_cold_build=False: attached.__setitem__(
+    svc.attach_view = lambda sid, defer_cold_build=False, view_repo=None: attached.__setitem__(
         "n", attached["n"] + 1
     )
     svc.puppetmaster_available = lambda: False
@@ -350,7 +350,7 @@ def test_workspace_open_existing_sessions_does_not_create(tmp_path):
     svc.record_recent_workspace = lambda r, as_active=True: []
     svc.sessions_state_dir = lambda: str(tmp_path)
     svc.session_visible_for_workspace = lambda s, r, d: True
-    svc.attach_view = lambda sid, defer_cold_build=False: None
+    svc.attach_view = lambda sid, defer_cold_build=False, view_repo=None: None
     svc.puppetmaster_available = lambda: False
     svc.set_codegraph_status = lambda status, reason=None: None
     svc.index_codegraph_bg = lambda r: None
@@ -400,7 +400,7 @@ def test_workspace_open_lease_exhausted_rolls_back(tmp_path):
     svc.record_recent_workspace = lambda r, as_active=True: []
     svc.sessions_state_dir = lambda: str(tmp_path)
     svc.session_visible_for_workspace = lambda s, r, d: True
-    svc.attach_view = lambda sid, defer_cold_build=False: (_ for _ in ()).throw(
+    svc.attach_view = lambda sid, defer_cold_build=False, view_repo=None: (_ for _ in ()).throw(
         _LeaseErr("full")
     )
     svc.lease_exhausted_error = _LeaseErr

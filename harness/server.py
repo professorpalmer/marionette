@@ -164,6 +164,7 @@ def _clear_active_pilot() -> None:
         if active_id:
             _runners.detach_view(active_id)
         _pilot = None
+        _runners.metadata_view.invalidate()
 
 
 def _sync_pilot_session_id() -> None:
@@ -1386,6 +1387,7 @@ def _attach_view(
     factory=None,
     load_transcript_on_create: bool = True,
     defer_cold_build: Optional[bool] = None,
+    view_repo: Optional[str] = None,
 ) -> Any:
     """Point the UI at ``session_id`` via the runner registry.
 
@@ -1399,6 +1401,7 @@ def _attach_view(
         factory=factory,
         load_transcript_on_create=load_transcript_on_create,
         defer_cold_build=defer_cold_build,
+        view_repo=view_repo,
     )
 
 
@@ -1826,6 +1829,9 @@ def _workspace_services():
 
     return WorkspaceServices(
         cfg=_cfg,
+        invalidate_metadata_view=_runners.metadata_view.invalidate,
+        restore_metadata_view=_runners.metadata_view.restore,
+        invalidate_metadata_sources=_runners.metadata_view.invalidate_sources,
         parse_bool=_parse_bool,
         ws=_ws,
         paths_same_workspace=_paths_same_workspace,
@@ -2283,7 +2289,7 @@ _migrate_orphan_sessions_to_home()
 if _sessions.active:
     _startup_history = load_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active)
     _runners.get_or_create(_sessions.active, lambda: _pilot)
-    _runners.set_active_view(_sessions.active)
+    _runners.set_active_view(_sessions.active, repo=_cfg.repo or "")
     # Session ownership before hydrate so pending DANGER approval restore
     # validates display rows against the owning session.
     _sync_pilot_session_id()
@@ -2561,6 +2567,7 @@ def _route_services():
         endpoint_identity=lambda: _endpoint_identity(),
         review_services=_review_services,
         job_services=_job_services,
+        metadata_view=lambda: _runners.metadata_view,
         session_control_services=_session_control_services,
         checkpoint_services=_checkpoint_services,
         codegraph_services=_codegraph_services,
@@ -2798,19 +2805,24 @@ class Handler(BaseHTTPRequestHandler):
                     return
         return self._send(404, json.dumps({"error": "not found"}))
 
-    def _read_json(self) -> dict:
+    def _read_json(self, *, max_bytes=None) -> dict:
         """Parse the request JSON body, rejecting oversized Content-Length first.
 
         Cap mirrors the upload DoS gate style: refuse before ``rfile.read`` so a
         huge POST cannot exhaust memory on the thread-per-request server.
         """
+        if max_bytes is not None:
+            lengths = self.headers.get_all('Content-Length', [])
+            if (len(lengths) != 1 or not lengths[0].isascii() or not lengths[0].isdigit()
+                    or self.headers.get('Transfer-Encoding')):
+                raise json.JSONDecodeError('invalid request framing', doc='', pos=0)
         try:
             n = int(self.headers.get("Content-Length", 0) or 0)
         except (TypeError, ValueError):
             n = 0
         if not n:
             return {}
-        limit = _json_body_max_bytes()
+        limit = min(_json_body_max_bytes(), max_bytes) if max_bytes is not None else _json_body_max_bytes()
         if n > limit:
             raise _JsonBodyTooLarge(n, limit)
         data = self.rfile.read(n)
@@ -2822,7 +2834,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_post_json(self, path):
         try:
-            body = self._read_json()
+            if path in ('/api/jobs/metadata/pins', '/api/jobs/metadata/view/refresh'):
+                if urlparse(self.path).query:
+                    return self._send(400, json.dumps({'code': 'invalid_read_request'}))
+                body = self._read_json(max_bytes=65536)
+            else:
+                body = self._read_json()
         except _JsonBodyTooLarge as exc:
             return self._send(
                 413,

@@ -54,13 +54,14 @@ def get_json(
     qs_args: Optional[tuple[str, ...]] = None,
     empty_as_none: bool = False,
     pass_qs: bool = False,
+    keep_blank_values: bool = False,
 ) -> GetHandler:
     """Wrap an api.* GET that returns ``(status, payload)``."""
 
     def handle(handler: Any, u: Any, qs: dict) -> Any:
         args: list[Any] = []
         if pass_qs:
-            args.append(qs)
+            args.append(parse_qs(u.query, keep_blank_values=True) if keep_blank_values else qs)
         elif qs_args:
             for key in qs_args:
                 val = qs.get(key, [""])[0]
@@ -95,6 +96,8 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
     from .api import git as _git_api
     from .api import hooks as _hooks_api
     from .api import jobs as _jobs_api
+    from .job_metadata_capability import metadata_handler
+    from . import job_metadata_view as _metadata_view
     from .api import mcp as _mcp_api
     from .api import platform as _plat_api
     from .api import plugins as _plugins_api
@@ -117,6 +120,10 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
     from .api import local_models as _local_models_api
 
     routes: dict[str, PostHandler] = {
+        "/api/jobs/metadata/pins": post_json(
+            metadata_handler("post_job_metadata_pins"), services=lambda: svc.metadata_view()),
+        "/api/jobs/metadata/view/refresh": post_json(
+            _metadata_view.refresh_view, services=lambda: svc.metadata_view()),
         "/api/browser/relay": post_json(_browser_api.post_browser_relay),
         "/api/collab/presence/heartbeat": post_json(
             _collab_presence_api.post_presence_heartbeat),
@@ -511,6 +518,8 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
     from .api import hooks as _hooks_api
     from .api import job_evidence as _job_evidence_api
     from .api import jobs as _jobs_api
+    from .job_metadata_capability import metadata_handler
+    from . import job_metadata_view as _metadata_view
     from .api import mcp as _mcp_api
     from .api import platform as _plat_api
     from .api import plugins as _plugins_api
@@ -739,6 +748,21 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
             handler, qs, svc.session_services())
 
     return {
+        "/api/jobs/metadata": get_json(
+            metadata_handler("get_job_metadata"), services=lambda: svc.metadata_view(),
+            pass_qs=True, keep_blank_values=True),
+        "/api/jobs/metadata/detail": get_json(
+            metadata_handler("get_job_metadata_detail"), services=lambda: svc.metadata_view(),
+            pass_qs=True, keep_blank_values=True),
+        "/api/jobs/metadata/local/detail": get_json(
+            metadata_handler("get_local_metadata_detail"), services=lambda: svc.metadata_view(),
+            pass_qs=True, keep_blank_values=True),
+        "/api/jobs/metadata/local": get_json(
+            metadata_handler("get_local_metadata"), services=lambda: svc.metadata_view(),
+            pass_qs=True, keep_blank_values=True),
+        "/api/jobs/metadata/view": get_json(
+            _metadata_view.get_view, services=lambda: svc.metadata_view(),
+            pass_qs=True, keep_blank_values=True),
         "/api/git/status": get_json(
             _git_api.get_git_status, services=svc.git_services, qs_arg="repo"),
         "/api/git/branches": get_json(

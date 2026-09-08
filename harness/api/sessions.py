@@ -205,6 +205,7 @@ def handle_session_relocate(body: dict, svc: SessionServices) -> tuple[int, dict
         pass
 
     with svc.pilot_swap_lock or nullcontext():
+        metadata_transition = svc.runners.metadata_view.invalidate()
         relocated = svc.sessions.relocate(
             sid,
             target_repo,
@@ -214,6 +215,7 @@ def handle_session_relocate(body: dict, svc: SessionServices) -> tuple[int, dict
             make_active=True,
         )
     if not relocated:
+        svc.runners.metadata_view.restore(metadata_transition)
         return 404, {"ok": False, "error": "unknown session"}
 
     svc.cfg.repo = target_repo
@@ -242,7 +244,7 @@ def handle_session_relocate(body: dict, svc: SessionServices) -> tuple[int, dict
             svc.set_codegraph_status("unsupported")
 
     try:
-        svc.attach_view(sid)
+        svc.attach_view(sid, view_repo=target_repo)
     except LeaseExhaustedError as e:
         if prev_active:
             try:
@@ -256,6 +258,7 @@ def handle_session_relocate(body: dict, svc: SessionServices) -> tuple[int, dict
                 os.environ.pop("HARNESS_REPO", None)
             else:
                 os.environ["HARNESS_REPO"] = prev_env_repo
+        svc.runners.metadata_view.restore(metadata_transition)
         return 409, svc.lease_exhausted_body(e)
 
     return 200, {
@@ -301,6 +304,7 @@ def post_sessions_create(body: dict, svc: SessionServices) -> tuple[int, dict]:
         except Exception:
             pass
     with svc.pilot_swap_lock or nullcontext():
+        metadata_transition = svc.runners.metadata_view.invalidate()
         res = svc.sessions.create(title, repo=repo, branch=branch, workspace_root=repo)
     sid = res.get("id", "")
     if sid:
@@ -311,6 +315,7 @@ def post_sessions_create(body: dict, svc: SessionServices) -> tuple[int, dict]:
                 sid,
                 load_transcript_on_create=False,
                 defer_cold_build=True,
+                view_repo=repo,
             )
             svc.get_pilot().load_history([])
         except LeaseExhaustedError as e:
@@ -325,6 +330,7 @@ def post_sessions_create(body: dict, svc: SessionServices) -> tuple[int, dict]:
                         svc.sessions.switch(prev_active)
                 except Exception as roll_e:
                     svc.diag("server.session_create_lease_rollback", roll_e)
+            svc.runners.metadata_view.restore(metadata_transition)
             return 409, svc.lease_exhausted_body(e)
 
     from ..hooks import run_hooks
@@ -344,6 +350,7 @@ def post_sessions_switch(body: dict, svc: SessionServices) -> tuple[int, dict]:
     prev_repo = svc.cfg.repo
     prev_env_repo = os.environ.get("HARNESS_REPO")
     with svc.pilot_swap_lock or nullcontext():
+        metadata_transition = svc.runners.metadata_view.invalidate()
         res = svc.sessions.switch(target_id)
     if res.get("ok") and svc.sessions.active:
         target_sess = None
@@ -357,6 +364,10 @@ def post_sessions_switch(body: dict, svc: SessionServices) -> tuple[int, dict]:
                 session_stored_root(target_sess)
                 or (target_sess.get("repo") or "").strip()
             )
+
+        view_repo = prev_repo or ""
+        if target_repo and os.path.isdir(target_repo) and not svc.is_app_install_root(target_repo):
+            view_repo = target_repo
 
         # Never let a stale app-checkout session yank the live workspace
         # back to ~/.marionette/marionette (or the running source tree).
@@ -401,7 +412,7 @@ def post_sessions_switch(body: dict, svc: SessionServices) -> tuple[int, dict]:
                     svc.set_codegraph_status("unsupported")
 
         try:
-            svc.attach_view(svc.sessions.active, defer_cold_build=True)
+            svc.attach_view(target_id, defer_cold_build=True, view_repo=view_repo)
         except LeaseExhaustedError as e:
             if prev_active:
                 try:
@@ -415,6 +426,7 @@ def post_sessions_switch(body: dict, svc: SessionServices) -> tuple[int, dict]:
                     os.environ.pop("HARNESS_REPO", None)
                 else:
                     os.environ["HARNESS_REPO"] = prev_env_repo
+            svc.runners.metadata_view.restore(metadata_transition)
             return 409, svc.lease_exhausted_body(e)
 
         res["repo"] = svc.cfg.repo
@@ -430,6 +442,8 @@ def post_sessions_switch(body: dict, svc: SessionServices) -> tuple[int, dict]:
             svc.get_pilot(), active_id
         )
 
+    if not res.get("ok"):
+        svc.runners.metadata_view.restore(metadata_transition)
     return 200, res
 
 
@@ -788,14 +802,18 @@ def post_sessions_attach(body: dict, svc: SessionServices) -> tuple[int, dict]:
     target_id = (body.get("id") or body.get("session_id") or "").strip()
     if not target_id:
         return 400, {"ok": False, "error": "session id required"}
+    target = next((row for row in svc.sessions.rows() if row.get("id") == target_id), {})
+    view_repo = session_stored_root(target) or svc.cfg.repo or ""
     svc.save_active_transcript()
     previous_active = svc.sessions.active
     with svc.pilot_swap_lock or nullcontext():
+        metadata_transition = svc.runners.metadata_view.invalidate()
         res = svc.sessions.switch(target_id)
     if not res.get("ok"):
+        svc.runners.metadata_view.restore(metadata_transition)
         return 404, res
     try:
-        svc.attach_view(svc.sessions.active, defer_cold_build=True)
+        svc.attach_view(target_id, defer_cold_build=True, view_repo=view_repo)
     except LeaseExhaustedError as exc:
         if previous_active:
             with svc.pilot_swap_lock or nullcontext():
@@ -804,6 +822,7 @@ def post_sessions_attach(body: dict, svc: SessionServices) -> tuple[int, dict]:
             with svc.pilot_swap_lock or nullcontext(), svc.sessions._lock:
                 svc.sessions._active = None
                 svc.sessions._save(immediate=True)
+        svc.runners.metadata_view.restore(metadata_transition)
         return 409, svc.lease_exhausted_body(exc)
     transcript = svc.attach_view_transcript_payload(svc.get_pilot(), target_id)
     return 200, {
