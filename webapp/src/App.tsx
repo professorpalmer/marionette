@@ -368,7 +368,7 @@ export default function App() {
               />
           )}
           <div className="relative flex-1 min-w-0 min-h-0 flex flex-col">
-            <div className="flex-1 min-h-0 min-w-0">
+            <div className="flex-1 min-h-0 min-w-0 h-full flex flex-col">
               <ErrorBoundary label="Chat">
                 <Conversation
                   config={config}

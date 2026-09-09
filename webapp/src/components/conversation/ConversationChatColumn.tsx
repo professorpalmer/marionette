@@ -16,6 +16,11 @@ import {
   type Item,
 } from "../TranscriptList";
 import TranscriptEmptyState from "./TranscriptEmptyState";
+import {
+  FEED_CONTENT_PADDING_BOTTOM_PX,
+  feedContentLayoutClass,
+  feedScrollportStyle,
+} from "./feedScroll";
 
 export default function ConversationChatColumn({
   feedRef,
@@ -90,16 +95,20 @@ export default function ConversationChatColumn({
       <div className="relative flex-1 min-h-0 flex flex-col">
         <div
           ref={feedRef}
-          className={`flex-1 min-h-0 overflow-y-auto overscroll-contain [overflow-anchor:auto] [scrollbar-gutter:stable] scroll-pb-6 ${panelOpacityClass(transcriptStale)}`}
+          data-testid="transcript-feed-scrollport"
+          className={`flex-1 min-h-0 overflow-y-auto overscroll-contain [scrollbar-gutter:stable] ${panelOpacityClass(transcriptStale)}`}
+          style={feedScrollportStyle()}
         >
-        {/* overflow-anchor:auto — browser tail anchoring during growth; scroll-padding-bottom
-            matches the feed padding; composer height is already outside the scrollport. nextFeedPinState
-            hysteresis still owns stick/unstick. scrollbar-gutter avoids a 15px jump when the bar
-            appears. overscroll-contain stops rubber-band from yanking the window.
-            Composer sits outside this scrollport; do not move it inside. */}
+        {/* overflow-anchor:auto + scroll-padding-bottom only. Content is
+            min-h-full / justify-start so short sessions sit mid/upper, not
+            flex-end against the dock. Matching content padding-bottom keeps
+            the live tail clear when stick-to-bottom writes scrollTop=max.
+            Composer stays a sibling outside this scrollport. */}
         <div
           ref={feedContentRef}
-          className="max-w-3xl mx-auto px-6 py-6 flex flex-col gap-1"
+          data-testid="transcript-feed-content"
+          className={feedContentLayoutClass()}
+          style={{ paddingBottom: FEED_CONTENT_PADDING_BOTTOM_PX }}
         >
           <TranscriptEmptyState
             transcriptStale={transcriptStale}

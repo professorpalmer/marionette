@@ -40,6 +40,32 @@ export function chooseFeedFollowFlush(): "before_paint" {
 /** Feed scrollport overflow-anchor — auto; pin hysteresis owns unstick (never "none"). */
 export const FEED_SCROLLPORT_OVERFLOW_ANCHOR = "auto" as const;
 
+/**
+ * Reserved space above the composer dock. Applied as scroll-padding-bottom on
+ * the scrollport (scrollIntoView / snap) and matching padding-bottom on the
+ * feed content so stick-to-bottom via scrollTop=max still leaves a gap.
+ * Short sessions stay top-aligned — this is not a flex-end spacer.
+ */
+export const FEED_COMPOSER_CLEARANCE_PX = 64;
+export const FEED_SCROLLPORT_SCROLL_PADDING_BOTTOM_PX = FEED_COMPOSER_CLEARANCE_PX;
+export const FEED_CONTENT_PADDING_BOTTOM_PX = FEED_COMPOSER_CLEARANCE_PX;
+
+/** Scrollport style: overflow-anchor + scroll-padding-bottom only. */
+export function feedScrollportStyle(): {
+  overflowAnchor: typeof FEED_SCROLLPORT_OVERFLOW_ANCHOR;
+  scrollPaddingBottom: number;
+} {
+  return {
+    overflowAnchor: FEED_SCROLLPORT_OVERFLOW_ANCHOR,
+    scrollPaddingBottom: FEED_SCROLLPORT_SCROLL_PADDING_BOTTOM_PX,
+  };
+}
+
+/** Feed inner column: fill the scrollport, pack from the top, never flex-end. */
+export function feedContentLayoutClass(): string {
+  return "max-w-3xl mx-auto px-6 pt-6 min-h-full flex flex-col justify-start gap-1";
+}
+
 /** Authoritative scrollTop for stick-to-bottom (not scrollToIndex align:end). */
 export function scrollToFeedEnd(scrollHeight: number, clientHeight: number): number {
   return Math.max(0, scrollHeight - clientHeight);

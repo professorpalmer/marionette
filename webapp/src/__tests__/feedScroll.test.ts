@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  FEED_COMPOSER_CLEARANCE_PX,
+  FEED_CONTENT_PADDING_BOTTOM_PX,
   FEED_GESTURE_IDLE_MS,
   FEED_REPIN_THRESHOLD_PX,
   FEED_SCROLLPORT_OVERFLOW_ANCHOR,
+  FEED_SCROLLPORT_SCROLL_PADDING_BOTTOM_PX,
   FEED_TAIL_EPSILON_PX,
+  feedContentLayoutClass,
+  feedScrollportStyle,
   chooseFeedFollowFlush,
   feedResizeScrollFollowDecision,
   isAtFeedTail,
@@ -666,6 +671,32 @@ describe("feedScroll user-gesture deferral", () => {
 
 describe("feedScroll layout contracts", () => {
   const client = 400;
+
+  it("locks overflow-anchor auto and composer clearance as scroll-padding-bottom", () => {
+    expect(FEED_SCROLLPORT_OVERFLOW_ANCHOR).toBe("auto");
+    expect(FEED_COMPOSER_CLEARANCE_PX).toBeGreaterThanOrEqual(48);
+    expect(FEED_SCROLLPORT_SCROLL_PADDING_BOTTOM_PX).toBe(FEED_COMPOSER_CLEARANCE_PX);
+    expect(FEED_CONTENT_PADDING_BOTTOM_PX).toBe(FEED_COMPOSER_CLEARANCE_PX);
+    expect(feedScrollportStyle()).toEqual({
+      overflowAnchor: "auto",
+      scrollPaddingBottom: FEED_COMPOSER_CLEARANCE_PX,
+    });
+  });
+
+  it("top-aligns the feed column and never flex-end / column-reverse", () => {
+    const cls = feedContentLayoutClass();
+    expect(cls).toContain("min-h-full");
+    expect(cls).toContain("justify-start");
+    expect(cls).toContain("flex-col");
+    expect(cls).not.toContain("justify-end");
+    expect(cls).not.toContain("flex-col-reverse");
+    expect(cls).not.toContain("mt-auto");
+  });
+
+  it("short content does not create a stick-to-bottom offset", () => {
+    expect(scrollToFeedEnd(120, client)).toBe(0);
+    expect(scrollToFeedEnd(client, client)).toBe(0);
+  });
 
   it("scrollToEnd lands at scrollHeight - clientHeight", () => {
     expect(scrollToFeedEnd(2000, client)).toBe(1600);

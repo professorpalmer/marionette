@@ -200,9 +200,12 @@ describe("feed Motion", () => {
     expect(column).not.toContain("layoutScroll");
     expect(column).not.toContain("motion.div");
     expect(column).not.toContain('from "motion/react"');
-    expect(column).toContain("[overflow-anchor:auto]");
-    expect(column).toContain("scroll-pb-6");
+    expect(column).toContain("feedScrollportStyle");
+    expect(column).toContain("feedContentLayoutClass");
+    expect(column).not.toContain("scroll-pb-6");
     expect(column).not.toContain("overflow-anchor:none");
+    expect(column).not.toContain("justify-end");
+    expect(column).not.toContain("flex-col-reverse");
     expect(helpers).toContain("VIRTUAL_ROW_LAYOUT_ENABLED = false");
     expect(VIRTUAL_ROW_LAYOUT_ENABLED).toBe(false);
     expect(helpers).not.toContain('mode="popLayout"');
