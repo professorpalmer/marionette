@@ -21,7 +21,7 @@
 
 const path = require("node:path");
 
-const DEFAULT_PUPPETMASTER_SPEC = "puppetmaster-ai==1.27.6";
+const DEFAULT_PUPPETMASTER_SPEC = "puppetmaster-ai==1.27.7";
 const PUPPETMASTER_DIST_NAME = "puppetmaster-ai";
 const HARNESS_DIST_NAME = "pm-harness";
 
@@ -95,7 +95,7 @@ function installedPuppetmasterVersion(pipShowOutput) {
 // Decide whether the updater should upgrade Puppetmaster, given the environment
 // and the current install's `pip show` text. Returns either
 //   { skip: true, reason }                       -- leave the install untouched
-//   { skip: false, spec: "puppetmaster-ai==1.27.6" }    -- install the pinned PyPI release
+//   { skip: false, spec: "puppetmaster-ai==1.27.7" }    -- install the pinned PyPI release
 function planPuppetmasterUpgrade({ specEnv, pipShowOutput, pinnedSpec } = {}) {
   const spec = String(specEnv || "").trim();
   if (spec) {
