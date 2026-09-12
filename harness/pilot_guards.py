@@ -739,6 +739,42 @@ def _is_cross_platform_compare(text: str) -> bool:
     return bool(_WINDOWS_OS_RE.search(text) and _OTHER_OS_RE.search(text))
 
 
+SWARM_POLICY_SOLO = "solo"
+SWARM_POLICY_BROAD = "broad"
+SWARM_POLICY_EXPLICIT = "explicit"
+
+
+def swarm_policy_for_message(message: str) -> str:
+    """Deterministic solo vs swarm-first policy for this user turn."""
+    if is_explicit_swarm_user_message(message):
+        return SWARM_POLICY_EXPLICIT
+    if is_broad_intent_user_message(message):
+        return SWARM_POLICY_BROAD
+    return SWARM_POLICY_SOLO
+
+
+def swarm_policy_turn_note(message: str) -> str:
+    """Per-turn trailer. Frozen system prompt cannot change mid-conversation."""
+    policy = swarm_policy_for_message(message)
+    if policy == SWARM_POLICY_EXPLICIT:
+        return (
+            "TURN POLICY: the user asked for a swarm. Call run_swarm or "
+            "run_parallel now. Do not substitute git or Puppetmaster CLI theater."
+        )
+    if policy == SWARM_POLICY_BROAD:
+        return (
+            "TURN POLICY: this user message is broad-intent "
+            "(audit/review/find-all/sweep). Open with run_swarm using multiple "
+            "roles. search_codegraph stays available for symbol lookups."
+        )
+    return (
+        "TURN POLICY: this user message is not broad-intent and did not ask "
+        "for a swarm. Do not open with run_swarm. Answer with search_codegraph "
+        "and search_files (keyword coverage, 'do we have X', opinion). Dispatch "
+        "a swarm only if those tools cannot cover the ask."
+    )
+
+
 def is_broad_intent_user_message(message: str) -> bool:
     """Classify user text for broad audit/review/investigate tasks (pure function)."""
     text = _norm_whitespace(message or "")

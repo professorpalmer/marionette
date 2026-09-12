@@ -855,6 +855,25 @@ def test_promote_trailing_reasoning_empty_say():
     )
 
 
+def test_resolve_emit_promotes_long_non_cursor_reasoning_when_say_empty():
+    body = (
+        "Coverage map. ACE is in modules/cloud-ai-agent. RCE is not a first-class "
+        "playbook. Command injection is named in source-review. That is the inventory."
+    )
+    assert len(body) >= 120
+    resp = SimpleNamespace(
+        text="",
+        assistant_phase="final_answer",
+        meta={"reasoning": body, "finish_reason": "stop"},
+    )
+    cleaned, commentary, promoted = resolve_emit_say_texts(
+        cleaned_say_text="", resp=resp,
+    )
+    assert cleaned == ""
+    assert commentary == ""
+    assert promoted == body
+
+
 def test_resolve_emit_does_not_promote_non_cursor_reasoning():
     resp = SimpleNamespace(
         text="",

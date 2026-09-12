@@ -448,6 +448,8 @@ def test_pilot_system_requires_redispatch_on_shallow_swarm():
     assert "NEVER open a broad inline exploration campaign" in PILOT_SYSTEM
     assert "thin results mean sharpen and re-dispatch" in PILOT_SYSTEM
     assert "do NOT \"validate with native tools\"" in PILOT_SYSTEM
+    assert "TURN POLICY" in PILOT_SYSTEM
+    assert "do we have X" in PILOT_SYSTEM
     # Old abuse-prone phrasing must not remain as the sole post-swarm guidance.
     assert "use native exploration only to validate specific findings." not in PILOT_SYSTEM
 
@@ -464,6 +466,25 @@ def test_swarm_gate_not_active_for_narrow_message():
     assert state.broad_intent is False
     verdict = check_swarm_gate(state, "list_dir", _Act(kind="list_dir", path="."))
     assert verdict.suppress is False
+
+
+def test_ace_rce_opinion_is_solo_not_swarm_first():
+    from harness.pilot_guards import swarm_policy_for_message, swarm_policy_turn_note
+    from harness.task_profile import classify_task_profile
+
+    msg = (
+        "so opinion, is our kit really strong breach kit? "
+        "do we have ACE/RCE elements? thats super relevant these days with AI products."
+    )
+    assert is_broad_intent_user_message(msg) is False
+    assert is_explicit_swarm_user_message(msg) is False
+    assert swarm_policy_for_message(msg) == "solo"
+    assert classify_task_profile(msg) == "STANDARD"
+    note = swarm_policy_turn_note(msg)
+    assert "Do not open with run_swarm" in note
+    state = new_turn_guard_state(msg)
+    assert state.broad_intent is False
+    assert check_swarm_gate(state, "search_files", _Act(kind="search_files", query="ACE|RCE")).suppress is False
 
 
 def test_iteration_budget_blocks_after_cap():
