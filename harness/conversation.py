@@ -1985,7 +1985,26 @@ class ConversationalSession(
             "workspace_notice": None,
         }
 
-    def rewind_to_user_ordinal(self, user_ordinal: int) -> dict:
+    def _display_user_rows(self):
+        """(index, ordinal, text) for each display user message."""
+        rows = []
+        seen = 0
+        for i, row in enumerate(self._display_transcript or []):
+            if not isinstance(row, dict):
+                continue
+            rtype = row.get("type") or "message"
+            if rtype not in ("message", ""):
+                continue
+            if (row.get("role") or "") != "user":
+                continue
+            text = row.get("text") or row.get("content") or ""
+            if not isinstance(text, str):
+                text = str(text or "")
+            rows.append((i, seen, text))
+            seen += 1
+        return rows
+
+    def rewind_to_user_ordinal(self, user_ordinal: int, text_hint: Optional[str] = None) -> dict:
         """Hermes-style undo for message edit: truncate at the Nth user turn (0-based).
 
         Soft-stashes the discarded tail on ``_rewind_stash`` so the UI can offer
@@ -1996,6 +2015,10 @@ class ConversationalSession(
         later-turn pre-mutation checkpoint), also restores workspace files to
         that snapshot. If none exists, transcript rewind still succeeds with an
         honest notice that disk was not restored.
+
+        After a mid-turn model swap the UI can count one extra optimistic user
+        row. A past-end ordinal clamps to the latest user turn; ``text_hint``
+        matches the last display user with that text.
         """
         if self.is_turn_busy():
             return {
@@ -2007,25 +2030,27 @@ class ConversationalSession(
             return {"ok": False, "error": "user_ordinal out of range"}
 
         display = list(self._display_transcript or [])
+        users = self._display_user_rows()
         display_index = None
-        seen = 0
         prefill = ""
-        for i, row in enumerate(display):
-            if not isinstance(row, dict):
-                continue
-            rtype = row.get("type") or "message"
-            if rtype not in ("message", ""):
-                continue
-            if (row.get("role") or "") != "user":
-                continue
+        resolved_ordinal = user_ordinal
+        ordinal_clamped = False
+        for i, seen, text in users:
             if seen == user_ordinal:
                 display_index = i
-                prefill = row.get("text") or row.get("content") or ""
-                if not isinstance(prefill, str):
-                    prefill = str(prefill or "")
+                prefill = text
                 break
-            seen += 1
-
+        if display_index is None:
+            hint = (text_hint or "").strip()
+            if hint:
+                for i, seen, text in users:
+                    if text.strip() == hint:
+                        display_index = i
+                        prefill = text
+                        resolved_ordinal = seen
+            if display_index is None and users:
+                display_index, resolved_ordinal, prefill = users[-1]
+                ordinal_clamped = True
         if display_index is None:
             return {"ok": False, "error": "user_ordinal out of range"}
 
@@ -2035,19 +2060,19 @@ class ConversationalSession(
             if hi == 0:
                 continue
             if (m.get("role") or "") == "user":
-                if seen_h == user_ordinal:
+                if seen_h == resolved_ordinal:
                     cut_hist = hi
                     break
                 seen_h += 1
 
-        workspace = self._restore_workspace_for_rewind(user_ordinal)
+        workspace = self._restore_workspace_for_rewind(resolved_ordinal)
 
         self._rewind_stash = {
             "history": self.export_history(),
             "display": list(display),
             "job_ids": list(self._session_job_ids or []),
             "display_index": display_index,
-            "user_ordinal": user_ordinal,
+            "user_ordinal": resolved_ordinal,
             "prefill": prefill,
             "workspace_auto_snapshot_id": workspace.get("auto_snapshot_id"),
             "workspace_restored": bool(workspace.get("workspace_restored")),
@@ -2076,6 +2101,12 @@ class ConversationalSession(
                 f"{honesty} "
                 "Resubmit the edited text to start a new turn, or Cancel to restore the transcript."
             )
+        if ordinal_clamped:
+            notice = (
+                "Editing the latest user message "
+                f"(requested turn {user_ordinal} was past the transcript). "
+                + notice
+            )
         return {
             "ok": True,
             "prefill": prefill,
@@ -2083,6 +2114,8 @@ class ConversationalSession(
             "removed_count": removed,
             "kept_display": len(self._display_transcript),
             "display_index": display_index,
+            "user_ordinal": resolved_ordinal,
+            "ordinal_clamped": ordinal_clamped,
             "workspace_restored": bool(workspace.get("workspace_restored")),
             "checkpoint_id": workspace.get("checkpoint_id"),
             "restored_files": list(workspace.get("restored_files") or []),

@@ -2886,7 +2886,7 @@ describe("composerSend module", () => {
 
     expect(stopLocal).not.toHaveBeenCalled();
     expect(interruptSession).not.toHaveBeenCalled();
-    expect(rewindSession).toHaveBeenCalledWith(2);
+    expect(rewindSession).toHaveBeenCalledWith(2, { text: "draft" });
     expect(result.kind).toBe("success");
     if (result.kind === "success") {
       expect(result.workspace_restored).toBe(false);
