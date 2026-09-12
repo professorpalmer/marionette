@@ -171,6 +171,84 @@ def _wiki_safe_urlopen(req: urllib.request.Request, timeout: float):
     return opener.open(req, timeout=timeout)
 
 
+def search_hit_snippet(hit):
+    """Map a /wiki/search row to Marionette's internal snippet.
+
+    Portable LLM Wiki's live contract carries page text in ``excerpt``.
+    Older or compatible servers may still send snippet/description/body.
+    """
+    if not isinstance(hit, dict):
+        return ""
+    raw = (
+        hit.get("snippet")
+        or hit.get("excerpt")
+        or hit.get("description")
+        or hit.get("body")
+        or ""
+    )
+    return str(raw).strip()
+
+
+_WINDOW_STOP = frozenset({
+    "the", "and", "for", "with", "what", "about", "this", "that", "from",
+    "your", "have", "been", "were", "they", "them", "than", "then", "into",
+    "just", "like", "some", "more", "did", "does", "how", "why", "who",
+    "when", "where", "can", "could", "should", "would", "will", "not",
+    "but", "are", "was", "you", "our", "any", "all", "its",
+})
+
+
+def query_relevant_passage(body, query, max_chars):
+    """Pick a bounded window around query terms. Prefix is last resort.
+
+    Deterministic and key-free: no second /wiki/query LLM call. Title-only
+    matches (no body term) keep the page head so the 280-char excerpt path
+    still has a fallback.
+    """
+    text = str(body or "")
+    if not text:
+        return ""
+    limit = max(1, int(max_chars))
+    if len(text) <= limit:
+        return text
+    tokens = []
+    seen = set()
+    for raw in re.findall(r"[A-Za-z0-9_]{3,}", str(query or "").lower()):
+        if raw in _WINDOW_STOP or raw in seen:
+            continue
+        seen.add(raw)
+        tokens.append(raw)
+        if len(tokens) >= 12:
+            break
+    if not tokens:
+        return text[:limit]
+    hay = text.lower()
+    best_i = 0
+    best = -1
+    step = max(64, limit // 3)
+    last = max(0, len(text) - limit)
+    i = 0
+    while i <= last:
+        window = hay[i:i + limit]
+        score = 0
+        for tok in tokens:
+            score += window.count(tok)
+        if score > best:
+            best = score
+            best_i = i
+        if i == last:
+            break
+        i = min(last, i + step)
+    if best <= 0:
+        return text[:limit]
+    start = text.rfind("\n", 0, best_i + 1)
+    if start == -1 or (best_i - start) > (limit // 2):
+        start = best_i
+    else:
+        start += 1
+    return text[start:start + limit]
+
+
 @dataclass
 class WikiResult:
     ok: bool
@@ -334,20 +412,35 @@ class WikiClient:
                     continue
                 slug = str(hit.get("slug") or "")
                 title = str(hit.get("title") or slug)
-                snippet = (
-                    hit.get("snippet")
-                    or hit.get("description")
-                    or hit.get("body")
-                    or ""
-                )
                 hits.append({
                     "title": title,
                     "slug": slug,
-                    "snippet": str(snippet).strip(),
+                    "snippet": search_hit_snippet(hit),
                 })
             return hits
         except Exception:
             return []
+
+    def page_body(self, slug: str) -> str:
+        """Fetch one page body through GET /wiki/page/{slug}. Never raises."""
+        if not self.configured or not (slug or "").strip():
+            return ""
+        try:
+            safe_slug = urllib.parse.quote(slug.strip(), safe="")
+            req = urllib.request.Request(
+                "%s/wiki/page/%s" % (self.base_url, safe_slug),
+                method="GET",
+                headers=self._auth_headers(),
+            )
+            with _wiki_safe_urlopen(req, timeout=self.timeout) as r:
+                if r.status != 200:
+                    return ""
+                data = json.loads(r.read().decode("utf-8", "replace"))
+            if not isinstance(data, dict):
+                return ""
+            return str(data.get("body") or data.get("content") or "").strip()
+        except Exception:
+            return ""
 
     def query(self, question: str) -> str:
         """Query the wiki's LLM query/search surface.
@@ -412,7 +505,7 @@ class WikiClient:
                             if isinstance(hit, dict):
                                 title = hit.get("title") or hit.get("slug", "")
                                 slug = hit.get("slug", "")
-                                snip = hit.get("snippet") or hit.get("description") or ""
+                                snip = search_hit_snippet(hit)
                                 lines.append(f"- {title} ({slug}): {snip}")
                         return self._prepend_tier_caveat("\n".join(lines)[:4000])
         except Exception:
