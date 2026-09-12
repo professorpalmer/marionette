@@ -1373,10 +1373,18 @@ class OpenAICompatDriver:
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     idle_armed = False
                     keepalives = 0
+                    # OpenCode Go / llama.cpp keepalives reset a long urlopen
+                    # timeout. OpenRouter DeepSeek pauses between reasoning
+                    # and the visible summary -- do not cut that stream.
+                    arm_go_idle = (
+                        self._is_opencode_go_host() or self._is_llama_cpp_host()
+                    )
                     for line in resp:
                         if not acc.feed(line):
                             break
                         if not acc.stream_started:
+                            continue
+                        if not arm_go_idle:
                             continue
                         raw = (
                             line.decode("utf-8", "replace").strip()

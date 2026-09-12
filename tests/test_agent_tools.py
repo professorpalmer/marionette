@@ -222,6 +222,27 @@ def test_read_file_can_read_spilled_result_outside_repo():
         assert bad[0] is False and bad[1] == "path_traversal"
 
 
+def test_read_file_allows_bound_operator_extra_root(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    extra = tmp_path / "Downloads" / "kit"
+    extra.mkdir(parents=True)
+    target = extra / "note.md"
+    target.write_text("VISITOR\n", encoding="utf-8")
+    cfg = HarnessConfig(
+        repo=os.path.realpath(str(repo)),
+        swarm_adapter="demo",
+        state_dir=os.path.realpath(str(tmp_path / "state")),
+    )
+    session = ConversationalSession(cfg)
+    session._extra_read_roots = [os.path.realpath(str(extra))]
+    ok, status, val = session._do_read_file(_ReadAct(path=str(target)))
+    assert ok, f"expected extra-root read, got {status}: {val}"
+    assert "VISITOR" in val
+    still_bad = session._do_read_file(_ReadAct(path="/etc/passwd"))
+    assert still_bad[0] is False and still_bad[1] == "path_traversal"
+
+
 def test_read_file_on_directory_returns_listing():
     """read_file on a real directory should succeed with a listing, not IsADirectoryError."""
     with tempfile.TemporaryDirectory() as repo:

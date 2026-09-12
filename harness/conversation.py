@@ -2785,6 +2785,30 @@ class ConversationalSession(
             turn_note = self._turn_budget_system_note()
             if turn_note:
                 parts.append(turn_note)
+            try:
+                from .operator_read_roots import (
+                    collect_operator_read_roots,
+                    export_extra_read_roots_env,
+                    load_workspace_recents,
+                )
+
+                extra = collect_operator_read_roots(
+                    user_message,
+                    recents=load_workspace_recents(),
+                    home=os.path.expanduser("~"),
+                )
+                self._extra_read_roots = extra
+                export_extra_read_roots_env(extra)
+            except Exception:
+                pass
+            try:
+                from .pilot_guards import swarm_policy_turn_note
+
+                policy_note = swarm_policy_turn_note(user_message)
+                if policy_note:
+                    parts.append(policy_note)
+            except Exception:
+                pass
             # Sticky session goal is supplemental turn context — never folded
             # into the frozen system prompt prefix.
             try:
@@ -3241,11 +3265,24 @@ class ConversationalSession(
                 # monorepo). Allow reading siblings / parent README under the
                 # git root; true escapes outside toplevel + spill still fail.
                 roots.append(toplevel)
+            try:
+                spill_root = os.path.join(
+                    os.path.abspath(self._state_dir_or_tempdir), "pmharness-results"
+                )
+                roots.append(spill_root)
+            except Exception:
+                pass
         try:
-            spill_root = os.path.join(
-                os.path.abspath(self._state_dir_or_tempdir), "pmharness-results"
-            )
-            roots.append(spill_root)
+            extra = getattr(self, "_extra_read_roots", None) or []
+            for root in extra:
+                text = os.path.abspath(str(root or "").strip())
+                if not text:
+                    continue
+                if any(
+                    path_within(text, existing, allow_equal=True) for existing in roots
+                ):
+                    continue
+                roots.append(text)
         except Exception:
             pass
         return roots
