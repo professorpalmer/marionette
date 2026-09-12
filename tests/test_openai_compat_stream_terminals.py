@@ -901,6 +901,28 @@ def test_stream_finish_aliases_are_case_insensitive(monkeypatch, finish, termina
     assert "without a finish_reason" not in str(resp.error or "")
 
 
+def test_openrouter_keepalives_do_not_cut_visible_answer(monkeypatch):
+    """OpenRouter DeepSeek pauses after reasoning; comment keepalives must not seal."""
+    lines = [
+        _data({"choices": [{"delta": {"reasoning_content": "drafting summary"}}]}),
+    ]
+    lines.extend([b": keepalive\n"] * 10)
+    lines.extend(
+        [
+            _data({"choices": [{"delta": {"content": "here is the map"}, "finish_reason": "stop"}]}),
+            b"data: [DONE]\n",
+        ]
+    )
+    resp = _run_stream(
+        monkeypatch,
+        _driver(base_url="https://openrouter.ai/api/v1", model="deepseek/deepseek-v4.1-flash"),
+        lines,
+    )
+    assert resp.error is None
+    assert resp.text == "here is the map"
+    assert resp.meta["finish_reason"] == "stop"
+
+
 def test_finish_reason_without_done_settles_when_end_on_finish():
     """llama.cpp can send finish_reason=stop then keepalives with no [DONE]."""
     def _lines():

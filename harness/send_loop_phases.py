@@ -1375,15 +1375,16 @@ def resolve_emit_say_texts(
     resp_meta = getattr(resp, "meta", None) or {}
     if not isinstance(resp_meta, dict):
         resp_meta = {}
-    # Only Cursor transports have the legacy contract that a thought-channel
-    # terminal may be rendered as the assistant's final readout. Other
-    # providers (including OpenAI-compatible DeepSeek) keep reasoning private.
+    # Cursor thought-channel terminals may be the only readout. OpenAI-compat
+    # DeepSeek often dumps the same finale into reasoning and then dies
+    # without a say bubble -- promote only substantial reasoning so short
+    # private CoT stays private.
     is_cursor_transport = (
         resp_meta.get("cursor_cli") is True
         or resp_meta.get("cursor_acp") is True
     )
     promoted_say = ""
-    if is_cursor_transport and not resp_meta.get("tool_calls"):
+    if not resp_meta.get("tool_calls"):
         promoted_say = promote_trailing_reasoning_to_say(
             say_text=cleaned_say_text,
             streamed_reasoning=str(resp_meta.get("streamed_reasoning") or ""),
@@ -1394,6 +1395,12 @@ def resolve_emit_say_texts(
                 resp_meta.get("reasoning") or turn_thinking or ""
             ),
         )
+        if (
+            promoted_say
+            and not is_cursor_transport
+            and len(promoted_say.strip()) < 120
+        ):
+            promoted_say = ""
     if resp_phase == "commentary":
         promoted_say = ""
     if promoted_say:

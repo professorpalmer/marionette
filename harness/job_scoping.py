@@ -92,6 +92,16 @@ def stamp_task_payload(
     if run_id:
         out.setdefault("app_run_id", run_id)
         out.setdefault("app_instance_id", run_id)
+    if not out.get("extra_read_roots"):
+        env_roots = [
+            part.strip()
+            for part in (os.environ.get("PUPPETMASTER_EXTRA_READ_ROOTS") or "").split(
+                os.pathsep
+            )
+            if part.strip()
+        ]
+        if env_roots:
+            out["extra_read_roots"] = env_roots
     return out
 
 
