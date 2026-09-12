@@ -21,7 +21,7 @@ import os
 import re
 
 from .skill_distiller import distill_session, distill_rules
-from .wiki import session_digest
+from .wiki import query_relevant_passage, session_digest
 
 
 def _slugify(s: str) -> str:
@@ -99,6 +99,17 @@ class WikiDistillMixin:
             lines = [authoritative, "### Wiki grounding (auto-injected)"]
             budget = max_chars - len(authoritative) - 40
             per_hit = max(120, budget // max(1, len(hits)))
+            # Hydrate the top-ranked page, then keep a query-matched window —
+            # not the page prefix. Failed fetch keeps the search excerpt.
+            try:
+                top_slug = str(hits[0].get("slug") or "").strip()
+                top_body = self._wiki.page_body(top_slug) if top_slug else ""
+                if top_body:
+                    passage = query_relevant_passage(top_body, user_message, per_hit)
+                    if passage:
+                        hits[0] = dict(hits[0], snippet=passage)
+            except Exception:
+                pass
             for hit in hits:
                 title = str(hit.get("title") or hit.get("slug") or "").strip()
                 slug = str(hit.get("slug") or "").strip()

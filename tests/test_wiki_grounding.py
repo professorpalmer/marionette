@@ -55,6 +55,7 @@ def test_wiki_section_non_empty_with_mocked_search(tmp_path, monkeypatch):
         ]
 
     monkeypatch.setattr(s._wiki, "search_pages", fake_search)
+    monkeypatch.setattr(s._wiki, "page_body", lambda slug: "")
     section = s._build_turn_wiki_section("what about the default driver?")
     assert section
     assert "WIKI HAS ALREADY BEEN QUERIED" in section
@@ -103,6 +104,7 @@ def test_ledger_record_written_on_successful_inject(tmp_path, monkeypatch):
             {"title": "B", "slug": "b", "snippet": "beta"},
         ],
     )
+    monkeypatch.setattr(s._wiki, "page_body", lambda slug: "")
 
     section = s._build_turn_wiki_section("prior release decision?")
     assert section
@@ -194,6 +196,7 @@ def test_wiki_section_standard_profile_uses_tighter_budget(tmp_path, monkeypatch
         ]
 
     monkeypatch.setattr(s._wiki, "search_pages", fake_search)
+    monkeypatch.setattr(s._wiki, "page_body", lambda slug: "")
     section = s._build_turn_wiki_section("what about the default driver?")
     assert captured["limit"] == 3
     assert section
@@ -222,6 +225,7 @@ def test_wiki_section_deep_profile_keeps_full_budget(tmp_path, monkeypatch):
         ]
 
     monkeypatch.setattr(s._wiki, "search_pages", fake_search)
+    monkeypatch.setattr(s._wiki, "page_body", lambda slug: "")
     section = s._build_turn_wiki_section("audit authentication architecture")
     assert captured["limit"] == 5
     assert section
@@ -256,3 +260,69 @@ def test_wiki_client_search_pages_parses_results(monkeypatch):
     hits = client.search_pages("auth flow", limit=3)
     assert hits == [{"title": "T", "slug": "t", "snippet": "snippet text"}]
     assert "/wiki/search?q=" in captured["url"]
+
+
+def test_wiki_section_hydrates_query_window_not_page_prefix(tmp_path, monkeypatch):
+    s = _session(
+        tmp_path,
+        wiki_url="https://wiki.example.com",
+        wiki_token="tok",
+        repo=str(tmp_path / "marionette"),
+    )
+    s._task_profile = STANDARD
+    fetched = []
+
+    def fake_search(query, *, limit=5):
+        return [
+            {
+                "title": "Incident",
+                "slug": "incident",
+                "snippet": "Introduction to the incident and why it started.",
+            },
+            {
+                "title": "Secondary",
+                "slug": "secondary",
+                "snippet": "Neighbor page stays an excerpt.",
+            },
+        ]
+
+    def fake_page(slug):
+        fetched.append(slug)
+        return (
+            "Introduction to the incident and why it started.\n"
+            + ("A" * 3500)
+            + "\nThe prevention is reserving a unique path for each worker.\n"
+            + ("Z" * 2000)
+        )
+
+    monkeypatch.setattr(s._wiki, "search_pages", fake_search)
+    monkeypatch.setattr(s._wiki, "page_body", fake_page)
+    section = s._build_turn_wiki_section(
+        "what prevention did we choose for unique worker paths?"
+    )
+    assert fetched == ["incident"]
+    assert "prevention is reserving a unique path" in section
+    assert "Neighbor page stays an excerpt" in section
+    assert len(section) <= s._WIKI_GROUNDING_STANDARD_MAX_CHARS
+
+
+def test_wiki_section_keeps_excerpt_when_page_fetch_fails(tmp_path, monkeypatch):
+    s = _session(
+        tmp_path,
+        wiki_url="https://wiki.example.com",
+        wiki_token="tok",
+        repo=str(tmp_path / "marionette"),
+    )
+
+    monkeypatch.setattr(
+        s._wiki,
+        "search_pages",
+        lambda q, *, limit=5: [{
+            "title": "Incident",
+            "slug": "incident",
+            "snippet": "Search excerpt stayed after a failed hydrate.",
+        }],
+    )
+    monkeypatch.setattr(s._wiki, "page_body", lambda slug: "")
+    section = s._build_turn_wiki_section("what prevention did we choose?")
+    assert "Search excerpt stayed after a failed hydrate" in section
