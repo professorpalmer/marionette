@@ -1366,10 +1366,31 @@ class OpenAICompatDriver:
 
             req = http_request(self, url, data=data, headers=headers, method="POST")
             try:
+                from pmharness.drivers.codex_responses import (
+                    _arm_post_answer_idle_timeout,
+                )
+
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    idle_armed = False
+                    keepalives = 0
                     for line in resp:
                         if not acc.feed(line):
                             break
+                        if not acc.stream_started:
+                            continue
+                        raw = (
+                            line.decode("utf-8", "replace").strip()
+                            if isinstance(line, bytes)
+                            else str(line).strip()
+                        )
+                        if not raw or not raw.startswith("data:"):
+                            keepalives += 1
+                            if keepalives >= 8:
+                                break
+                            continue
+                        keepalives = 0
+                        idle_armed = True
+                        _arm_post_answer_idle_timeout(resp, 2.0)
             except urllib.error.HTTPError as e:
                 detail = e.read().decode("utf-8", "replace")[:500]
                 # Endpoint rejected the `reasoning` field: disable it for the

@@ -256,6 +256,44 @@ def test_rewind_without_checkpoint_does_not_claim_disk_restore(tmp_path):
     assert target.read_text(encoding="utf-8") == "stale agent edit\n"
 
 
+def test_rewind_clamps_past_end_ordinal_to_last_user(tmp_path):
+    s = _sess(tmp_path)
+    s._display_transcript = [
+        {"type": "message", "role": "user", "text": "one"},
+        {"type": "message", "role": "assistant", "text": "a1"},
+    ]
+    s._history = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "one"},
+        {"role": "assistant", "content": "a1"},
+    ]
+    res = s.rewind_to_user_ordinal(1)
+    assert res["ok"] is True
+    assert res["prefill"] == "one"
+    assert res.get("ordinal_clamped") is True
+    assert "latest user message" in (res.get("notice") or "").lower()
+    assert s._display_transcript == []
+
+
+def test_rewind_text_hint_finds_user_when_ordinal_misses(tmp_path):
+    s = _sess(tmp_path)
+    s._display_transcript = [
+        {"type": "message", "role": "user", "text": "alpha"},
+        {"type": "message", "role": "assistant", "text": "a1"},
+        {"type": "message", "role": "user", "text": "beta"},
+    ]
+    s._history = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "alpha"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "beta"},
+    ]
+    res = s.rewind_to_user_ordinal(9, text_hint="beta")
+    assert res["ok"] is True
+    assert res["prefill"] == "beta"
+    assert len(s._display_transcript) == 2
+
+
 def test_find_rewind_checkpoint_prefers_exact_then_later_ordinal(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
