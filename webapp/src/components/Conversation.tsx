@@ -40,6 +40,7 @@ import { notifyWorkspaceMutated } from "../lib/workspaceMutationEvents";
 import { publishSessionTodos } from "../lib/sessionTodos";
 
 import { writeTranscriptCache } from "./conversation/transcriptCache";
+import { retainSessionPanes } from "./conversation/sessionPanes";
 import {
   mergeTranscriptItems,
   transcriptFingerprint,
@@ -278,6 +279,18 @@ export default function Conversation({
   }, [activeSessionId]);
   // Tracks which session the visible transcript belongs to (for warm-cache save).
   const cachedSessionIdRef = useRef<string | null>(null);
+  const [retainedPaneIds, setRetainedPaneIds] = useState<string[]>(() => (
+    activeSessionId ? [activeSessionId] : []
+  ));
+  const retainedPaneIdsRef = useRef<string[]>(retainedPaneIds);
+  useLayoutEffect(() => {
+    const next = retainSessionPanes({
+      prev: retainedPaneIdsRef.current,
+      activeId: activeSessionId,
+    });
+    retainedPaneIdsRef.current = next;
+    setRetainedPaneIds(next);
+  }, [activeSessionId]);
   // Monotonic id so a slow sessionTranscript response for a prior switch is ignored.
   const transcriptLoadGenRef = useRef(0);
   // Busy-poll fingerprint: skip setItems when disk payload matches what's on screen
@@ -1721,6 +1734,7 @@ export default function Conversation({
   }, [activeTab]);
 
   const contextUsageFetchGenRef = useRef(0);
+  const contextUsageBySessionRef = useRef(new Map<string, import("../lib/api").ContextUsageResponse>());
   const fetchContextUsage = () => {
     if (!activeSessionId) return;
     const fetchSid = activeSessionId;
@@ -1730,6 +1744,7 @@ export default function Conversation({
         if (fetchGen !== contextUsageFetchGenRef.current) return;
         if (activeSessionIdRef.current !== fetchSid || res.session_id !== fetchSid) return;
         if (!res.available) {
+          contextUsageBySessionRef.current.delete(fetchSid);
           setContextUsage(null);
           return;
         }
@@ -1739,16 +1754,21 @@ export default function Conversation({
         if (!usage) {
           console.warn("Ignoring malformed context usage payload:", res);
         }
+        if (usage) contextUsageBySessionRef.current.set(fetchSid, usage);
         setContextUsage(usage);
       })
       .catch((err) => console.error("Failed to fetch context usage:", err));
   };
 
   useEffect(() => {
-    // Blank prior session meters immediately (StatusBar tok/$ already clears
-    // on harness-session-changed); fence ignores late responses for A under B.
+    // Last-good meter for this session — do not null on switch (that blinks
+    // the context chip). Fence still ignores late responses for A under B.
     contextUsageFetchGenRef.current += 1;
-    setContextUsage(null);
+    setContextUsage(
+      activeSessionId
+        ? contextUsageBySessionRef.current.get(activeSessionId) ?? null
+        : null,
+    );
     fetchContextUsage();
 
     const h = () => fetchContextUsage();
@@ -4024,6 +4044,8 @@ export default function Conversation({
           showJumpToBottom={showJumpToBottom}
           onJumpToBottom={jumpToLatest}
           sessionId={activeSessionId ?? ""}
+          itemSessionId={cachedSessionIdRef.current ?? ""}
+          paneIds={retainedPaneIds}
           composerDock={(
       <ComposerDock
         config={config}

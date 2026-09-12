@@ -53,6 +53,7 @@ export {
   patchActiveSessionInCaches,
   purgeSessionFromRootCaches,
   workspacesCacheKey,
+  seedWorkspacesCache,
   jobsCacheKey,
   shouldOfferBackgroundStop,
   collectUnreadFinishedSessionIds,
@@ -78,6 +79,7 @@ import {
   patchActiveSessionInCaches,
   purgeSessionFromRootCaches,
   workspacesCacheKey,
+  seedWorkspacesCache,
   shouldOfferBackgroundStop,
   collectUnreadFinishedSessionIds,
   isRailWideSwitching,
@@ -414,7 +416,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     revalidate: revalidateWorkspaces,
   } = useStaleWhileRevalidate<Workspace[]>(
     workspacesCacheKey(currentRepo),
-    () => api.workspaces(),
+    () => api.workspaces(currentRepo || undefined),
     { enabled: !!currentRepo && !!workspaceInfo?.is_git },
   );
 
@@ -1230,6 +1232,27 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     });
     return () => { cancelled = true; };
     // projects is rebuilt each render from workspaceInfo; join for stable dep.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projects.join("\0")]);
+
+  // Eager per-root BRANCHES lists. GET /api/workspaces is cfg.repo unless
+  // ?repo= is passed; without this, first visit of another project blanks.
+  useEffect(() => {
+    let cancelled = false;
+    const roots = projects.filter(Boolean);
+    if (roots.length === 0) return;
+    void Promise.all(
+      roots.map(async (root) => {
+        try {
+          const rows = await api.workspaces(root);
+          if (cancelled || !Array.isArray(rows)) return;
+          seedWorkspacesCache(root, rows);
+        } catch {
+          // Keep last-good cache on a failed prefetch.
+        }
+      }),
+    );
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projects.join("\0")]);
 

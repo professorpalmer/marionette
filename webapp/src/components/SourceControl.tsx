@@ -5,6 +5,7 @@ import { api } from "../lib/api";
 import { lastSelectedProjectRoot } from "../lib/panelTransition";
 import { subscribeWorkspaceMutations } from "../lib/workspaceMutationEvents";
 import { usePanelNotice } from "../lib/useOperationalDiagnostic";
+import { gitStatusPaintOnRepoChange, type GitStatusSnapshot } from "../lib/gitStatusPaint";
 
 interface ChangedFile {
   status: string;
@@ -26,6 +27,7 @@ export default function SourceControl() {
   const loadGenRef = useRef(0);
   const repoPathRef = useRef(repoPath);
   repoPathRef.current = repoPath;
+  const lastGoodByRepoRef = useRef<Map<string, GitStatusSnapshot>>(new Map());
 
   // Diff states
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
@@ -44,9 +46,18 @@ export default function SourceControl() {
   const commitNotice = usePanelNotice(commitError);
   const readOnly = !gitWritesAvailable();
 
-  const clearGitUiState = useCallback(() => {
+  const paintRepoLists = useCallback((path: string) => {
+    const paint = gitStatusPaintOnRepoChange(lastGoodByRepoRef.current.get(path));
+    if (paint.kind === "keep" && paint.snapshot) {
+      setChangedFiles(paint.snapshot.files);
+      setBranches(paint.snapshot.branches);
+      return;
+    }
     setBranches([]);
     setChangedFiles([]);
+  }, []);
+
+  const resetRepoLocalChrome = useCallback(() => {
     setSelectedFile(null);
     setViewingStagedDiff(false);
     setDiffText(null);
@@ -78,6 +89,14 @@ export default function SourceControl() {
       if (branchesRes.ok) {
         setBranches(branchesRes.branches || []);
       }
+
+      if (statusRes.ok || branchesRes.ok) {
+        const prev = lastGoodByRepoRef.current.get(path);
+        lastGoodByRepoRef.current.set(path, {
+          files: statusRes.ok ? (statusRes.files || []) : (prev?.files || []),
+          branches: branchesRes.ok ? (branchesRes.branches || []) : (prev?.branches || []),
+        });
+      }
     } catch (err: any) {
       if (gen !== loadGenRef.current) return;
       setError(err.message || "Error running git operations");
@@ -91,12 +110,13 @@ export default function SourceControl() {
       const cfg = await api.config();
       const path = cfg.repo || ".";
       setRepoPath(path);
-      clearGitUiState();
+      resetRepoLocalChrome();
+      paintRepoLists(path);
       await loadGitStatus(path);
     } catch (err: any) {
       setError(err.message || "Error getting config");
     }
-  }, [clearGitUiState, loadGitStatus]);
+  }, [loadGitStatus, paintRepoLists, resetRepoLocalChrome]);
 
   useEffect(() => {
     void reloadFromConfig();
@@ -104,8 +124,9 @@ export default function SourceControl() {
     const onProject = (e: Event) => {
       const path = (e as CustomEvent<string>).detail;
       if (typeof path !== "string") return;
-      clearGitUiState();
       setRepoPath(path);
+      resetRepoLocalChrome();
+      paintRepoLists(path);
       void loadGitStatus(path);
     };
 
@@ -132,7 +153,7 @@ export default function SourceControl() {
       window.removeEventListener("harness-config-changed", onConfig);
       unsubMutations();
     };
-  }, [clearGitUiState, loadGitStatus, reloadFromConfig]);
+  }, [loadGitStatus, paintRepoLists, reloadFromConfig, resetRepoLocalChrome]);
 
   const refreshDiff = async (file: string, isStaged: boolean) => {
     setDiffLoading(true);

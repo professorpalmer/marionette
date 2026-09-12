@@ -474,6 +474,27 @@ def test_prune_orphan_edit_branches_deletes_gone_absorb_and_dest():
         shutil.rmtree(remote, ignore_errors=True)
 
 
+def test_add_worktree_cleans_to_max(tmp_path, monkeypatch):
+    monkeypatch.setattr(_wt, "_WORKTREES_JSON", str(tmp_path / "worktrees.json"))
+    _wt.set_max_worktrees(1)
+    repo = create_temp_git_repo()
+    managed_dir = os.path.abspath(os.path.join(repo, "..", ".pmharness-worktrees"))
+    try:
+        first = _wt.add_worktree(repo, "pmedit-cap-a")
+        second = _wt.add_worktree(repo, "pmedit-cap-b")
+        paths = {
+            os.path.realpath(wt["path"])
+            for wt in _wt.list_worktrees(repo)
+            if not wt["is_main"]
+        }
+        assert os.path.realpath(second["path"]) in paths
+        assert os.path.realpath(first["path"]) not in paths
+        assert not os.path.exists(first["path"])
+    finally:
+        shutil.rmtree(repo, ignore_errors=True)
+        shutil.rmtree(managed_dir, ignore_errors=True)
+
+
 def test_prune_edit_branches_endpoint():
     repo = create_temp_git_repo()
     httpd, port, srv = _server(repo)

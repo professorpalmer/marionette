@@ -345,3 +345,69 @@ def test_enrich_uses_summary_when_finish_reason_empty():
     assert prov["failure_stage"] == "agentic_error"
     assert "events: worker.tool_error" in prov["failure_reason"]
     assert prov["retryable"] is False
+
+
+def test_restart_cancelled_wave_relaunches_once(tmp_path, monkeypatch):
+    from harness.config import HarnessConfig
+    from harness.conversation import ConversationalSession
+
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path))
+    cfg.repo = str(tmp_path)
+    first = ConversationalSession(cfg)
+    first.harness_session_id = "sess-wave"
+    first._register_local_job("retry-me", "retry goal", cwd=str(tmp_path))
+    first._local_jobs["retry-me"]["artifacts"].append(
+        {"type": "finding", "headline": "partial finding"},
+    )
+    first._persist_local_jobs()
+    first._register_parallel_wave(
+        "local-wave-restart",
+        child_job_ids=["retry-me"],
+        objective="retry",
+    )
+
+    launched = []
+
+    def _fake_submit(*args, **kwargs):
+        launched.extend(a for a in args if a == "retry-me")
+        return True
+
+    monkeypatch.setattr(ConversationalSession, "_submit_swarm", _fake_submit)
+    second = ConversationalSession(cfg)
+    second.harness_session_id = "sess-wave"
+    child = second._local_jobs["retry-me"]
+    parent = second._local_jobs["local-wave-restart"]
+    assert any(
+        a.get("headline") == "partial finding" for a in (child.get("artifacts") or [])
+    )
+    assert child.get("interrupted_by_restart") is True
+    assert child["status"] == "queued"
+    assert parent.get("wave_auto_retry_attempted") is True
+    assert launched == ["retry-me"]
+
+
+def test_user_cancelled_wave_does_not_relaunch_on_reload(tmp_path, monkeypatch):
+    from harness.config import HarnessConfig
+    from harness.conversation import ConversationalSession
+
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path))
+    cfg.repo = str(tmp_path)
+    first = ConversationalSession(cfg)
+    first.harness_session_id = "sess-wave"
+    first._register_local_job("stay-dead", "user cancelled", cwd=str(tmp_path))
+    first._register_parallel_wave(
+        "local-wave-user-cancel",
+        child_job_ids=["stay-dead"],
+        objective="cancel",
+    )
+    assert first.cancel_local_job("stay-dead") is True
+
+    launched = []
+    monkeypatch.setattr(
+        ConversationalSession, "_submit_swarm", lambda *a, **k: launched.append(a) or True,
+    )
+    second = ConversationalSession(cfg)
+    assert second._local_jobs["stay-dead"]["status"] == "cancelled"
+    assert second._local_jobs["stay-dead"].get("interrupted_by_restart") is not True
+    assert launched == []
+    assert second._local_jobs["local-wave-user-cancel"].get("wave_auto_retry_attempted") is not True

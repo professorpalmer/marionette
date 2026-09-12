@@ -406,11 +406,19 @@ def test_restart_reload_heals_then_projects(tmp_path):
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path))
     first = ConversationalSession(cfg)
     first._register_local_job("local-restart", "long job")
+    first._local_jobs["local-restart"]["artifacts"].append(
+        {"type": "finding", "headline": "partial finding"},
+    )
+    first._persist_local_jobs()
     assert first._local_jobs["local-restart"]["status"] == "running"
 
     second = ConversationalSession(cfg)
     reloaded = second._local_jobs["local-restart"]
     assert reloaded["status"] == "cancelled"
+    assert reloaded.get("interrupted_by_restart") is True
+    headlines = [a.get("headline") for a in (reloaded.get("artifacts") or [])]
+    assert "partial finding" in headlines
+    assert "Interrupted by backend restart" in headlines
 
     row = project_local_job_for_swarm_live(reloaded)
     assert row["status"] == "cancelled"
@@ -418,6 +426,7 @@ def test_restart_reload_heals_then_projects(tmp_path):
         a.get("headline") == "Interrupted by backend restart"
         for a in row["artifacts"]
     )
+    assert any(a.get("headline") == "partial finding" for a in row["artifacts"])
 
 
 def _server(tmp_state_dir):

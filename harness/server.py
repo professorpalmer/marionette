@@ -3494,6 +3494,14 @@ def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False,
         # Connect configured MCP servers (incl. local Docker HTTP) without
         # blocking the GUI bind. Failures land on status().error for State→MCP.
         threading.Thread(target=boot_mcp_servers, name="mcp-boot", daemon=True).start()
+        def _boot_dashboard():
+            try:
+                from .pm_dashboard import resolve_dashboard_state_dir, try_warm_local_dashboard
+                token = resolve_dashboard_state_dir(_cfg.repo or "", "") or ""
+                try_warm_local_dashboard(token)
+            except Exception:
+                pass
+        threading.Thread(target=_boot_dashboard, name="pm-dashboard-warm", daemon=True).start()
         def _boot_archive():
             try:
                 from .chat_archive import maybe_boot_ingest

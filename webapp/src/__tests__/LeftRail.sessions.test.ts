@@ -6,7 +6,7 @@ import {
   peekTranscriptCacheEntry,
   writeTranscriptCache,
 } from "../components/conversation/transcriptCache";
-import { buildProjectsList, canSettleSessionsForProject, collectUnreadFinishedSessionIds, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, jobsCacheKey, partitionProjectSessions, patchActiveSessionInCaches, patchSessionArchivedInCaches, patchSessionSettledInCaches, patchSessionTitleInCaches, pickFallbackProjectAfterForget, preferLastGoodSessionList, projectSessionsEmptyState, purgeSessionFromRootCaches, readSessionSettledFromCaches, SESSION_LEASE_EXHAUSTED_MESSAGE, shouldOfferBackgroundStop, shouldOpenBlankSessionAfterRemove, writeSessionListCache, workspacesCacheKey } from "../components/LeftRail";
+import { buildProjectsList, canSettleSessionsForProject, collectUnreadFinishedSessionIds, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, jobsCacheKey, partitionProjectSessions, patchActiveSessionInCaches, patchSessionArchivedInCaches, patchSessionSettledInCaches, patchSessionTitleInCaches, pickFallbackProjectAfterForget, preferLastGoodSessionList, projectSessionsEmptyState, purgeSessionFromRootCaches, readSessionSettledFromCaches, SESSION_LEASE_EXHAUSTED_MESSAGE, seedWorkspacesCache, shouldOfferBackgroundStop, shouldOpenBlankSessionAfterRemove, writeSessionListCache, workspacesCacheKey } from "../components/LeftRail";
 import type { Session } from "../lib/api";
 
 /**
@@ -451,6 +451,15 @@ describe("LeftRail session list contracts", () => {
       workspacesCacheKey("C:\\Projects\\dugout"),
     );
     expect(workspacesCacheKey("")).toBe("workspaces:__none__");
+  });
+
+  it("seedWorkspacesCache writes the per-root BRANCHES key", () => {
+    const root = "C:\\Projects\\pentest-playbook-kit";
+    const rows = [{ name: "main", branch: "main", active: true }];
+    seedWorkspacesCache(root, rows);
+    expect(readSWRCache(workspacesCacheKey(root))).toEqual(rows);
+    seedWorkspacesCache("", [{ name: "nope", branch: "nope", active: true }]);
+    expect(readSWRCache(workspacesCacheKey(""))).toBeUndefined();
   });
 
   it("jobs SWR key is stable per selected project and confirmed active session", () => {

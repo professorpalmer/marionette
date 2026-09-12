@@ -5,6 +5,7 @@ from harness.pm_dashboard import (
     ensure_local_dashboard,
     is_dashboard_job_id,
     resolve_dashboard_state_dir,
+    try_warm_local_dashboard,
 )
 from harness.api.dashboard import get_dashboard
 from harness.api.jobs import make_job_services
@@ -144,3 +145,24 @@ def test_resolve_dashboard_state_dir_falls_back_to_cli_dir(monkeypatch):
         lambda repo: "/tmp/from-repo" if repo == "/work" else None,
     )
     assert resolve_dashboard_state_dir("/work", "") == "/tmp/from-repo"
+
+
+def test_try_warm_local_dashboard_skips_empty_state_dir():
+    assert try_warm_local_dashboard("") == {
+        "ok": False,
+        "error": "state_dir_unavailable",
+    }
+    assert try_warm_local_dashboard("   ")["error"] == "state_dir_unavailable"
+
+
+def test_try_warm_local_dashboard_reuses_ensure(monkeypatch):
+    seen = {}
+
+    def _ensure(**kwargs):
+        seen.update(kwargs)
+        return {"ok": True, "reused": True, "state_dir": kwargs["state_dir"]}
+
+    monkeypatch.setattr("harness.pm_dashboard.ensure_local_dashboard", _ensure)
+    out = try_warm_local_dashboard("/tmp/pm-state")
+    assert out["ok"] is True
+    assert seen["state_dir"] == "/tmp/pm-state"

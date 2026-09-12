@@ -730,7 +730,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
         }
         return;
       }
-      const settle = settleFromStreamError(d.error, d.terminal_cause);
+      const settle = settleFromStreamError(d, d.terminal_cause);
       paintTurnSettle(settle);
       setCompactingStatus(null);
       const liveIds = pendingJobIdsRef.current.filter(

@@ -916,7 +916,7 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
             lambda session_id, usage: _usage_api.get_context_usage(usage, session_id),
             services=svc.usage_services, qs_arg="session_id"),
         "/api/workspaces": get_json(
-            _ws_api.get_workspaces, services=svc.workspace_services),
+            _ws_api.get_workspaces, services=svc.workspace_services, pass_qs=True),
         "/api/worktrees": get_json(
             lambda qs, services: _wt_api.get_worktrees(services, qs.get("repo", [""])[0]),
             services=svc.worktree_services, pass_qs=True),

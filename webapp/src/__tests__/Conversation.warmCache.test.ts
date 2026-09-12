@@ -22,7 +22,9 @@ import {
   clearRecoveredSessionFailNotice,
   shouldRetryEmptyTranscript,
   emptyTranscriptAfterRetryDecision,
+  transcriptRefreshApplyDecision,
   transcriptRefreshFailureDecision,
+  transcriptFingerprint,
   resetCrossSessionLatchesOnSwitch,
 } from "../components/Conversation";
 import type { Item } from "../components/TranscriptList";
@@ -50,6 +52,12 @@ describe("transcript warm cache", () => {
     // Mutating the source array must not corrupt the cache entry.
     a.push(makeMsg("assistant", "world"));
     expect(peekTranscriptCache("sess-a")).toEqual([makeMsg("user", "hello")]);
+  });
+
+  it("retainRef keeps the same array identity for keep-alive panes", () => {
+    const a = [makeMsg("user", "hello")];
+    writeTranscriptCache("sess-keep", a, { retainRef: true });
+    expect(peekTranscriptCache("sess-keep")).toBe(a);
   });
 
   it("transcriptResponseToItems maps display rows and dedupes assistant bubbles", () => {
@@ -143,6 +151,23 @@ describe("transcript warm cache", () => {
       loadedCount: 0, attempt: 3, maxAttempts: 4, cachedCount: 2,
     })).toBe(false);
     expect(shouldRetryEmptyTranscript({ loadedCount: 2, attempt: 0, maxAttempts: 4 })).toBe(false);
+  });
+
+  it("skips remount when switch refresh fingerprint matches the warm paint", () => {
+    const rows = [makeMsg("user", "long"), makeMsg("assistant", "reply")];
+    const fp = transcriptFingerprint(rows);
+    expect(transcriptRefreshApplyDecision({
+      currentFingerprint: fp,
+      loadedFingerprint: fp,
+    }).kind).toBe("unchanged");
+    expect(transcriptRefreshApplyDecision({
+      currentFingerprint: fp,
+      loadedFingerprint: transcriptFingerprint([makeMsg("user", "other")]),
+    }).kind).toBe("replace");
+    expect(transcriptRefreshApplyDecision({
+      currentFingerprint: "",
+      loadedFingerprint: "",
+    }).kind).toBe("replace");
   });
 
   it("does not retry empty only for explicit New Session seed", () => {

@@ -118,4 +118,38 @@ describe("chat column feed alignment", () => {
     expect(content.className).toContain("min-h-full");
     expect(content.className).toContain("justify-start");
   });
+
+  it("keeps the outgoing transcript mounted when a second pane is retained", () => {
+    const feedRef = createRef<HTMLDivElement>();
+    render(
+      <div style={{ height: 640, display: "flex", flexDirection: "column" }}>
+        <ConversationChatColumn
+          feedRef={feedRef}
+          transcriptStale={false}
+          items={[{ kind: "msg", msg: { role: "user", text: "from B" } }]}
+          status="idle"
+          compactingStatus={null}
+          editingIndex={null}
+          auto={false}
+          plan={false}
+          busyElapsedMs={null}
+          turnOpen={false}
+          onEditMessage={vi.fn()}
+          onExecuteSend={vi.fn()}
+          onImageClick={vi.fn()}
+          onSetCard={vi.fn()}
+          onExecutePlan={vi.fn()}
+          onCommandApproval={vi.fn()}
+          sessionId="sess-b"
+          itemSessionId="sess-b"
+          paneIds={["sess-b", "sess-a"]}
+          composerDock={<div data-testid="fake-composer">composer</div>}
+        />
+      </div>,
+    );
+    expect(document.querySelectorAll("[data-session-pane]")).toHaveLength(2);
+    expect(document.querySelector('[data-session-pane="sess-a"]')).toHaveAttribute("aria-hidden", "true");
+    expect(document.querySelector('[data-session-pane="sess-b"]')).toHaveAttribute("data-testid", "transcript-feed-scrollport");
+    expect(screen.getByText("from B")).toBeTruthy();
+  });
 });

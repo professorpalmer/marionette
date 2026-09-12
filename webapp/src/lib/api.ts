@@ -1604,7 +1604,12 @@ export const api = {
       { sessionId: s.session_id, repo: s.repo }).then(value => parseCancellationResult(value, request));
   },
   artifacts: (jobId: string) => getJSON<Artifact[]>(`/api/artifacts?job_id=${encodeURIComponent(jobId)}`),
-  workspaces: () => getJSON<Workspace[]>("/api/workspaces"),
+  workspaces: (repoRoot?: string) => {
+    const path = repoRoot
+      ? `/api/workspaces?repo=${encodeURIComponent(repoRoot)}`
+      : "/api/workspaces";
+    return getJSON<Workspace[]>(path);
+  },
   switchWorkspace: (name: string, opts?: { allow_dirty?: boolean }) =>
     postJSON<{
       ok: boolean;

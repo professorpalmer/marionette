@@ -86,7 +86,7 @@
         "api_key_env": "DEEPSEEK_API_KEY"
       },
       "vision": false,
-      "context_window": 128000
+      "context_window": 1000000
     },
     {
       "name": "deepseek-v4-flash",
@@ -102,7 +102,7 @@
         "api_key_env": "DEEPSEEK_API_KEY"
       },
       "vision": false,
-      "context_window": 128000
+      "context_window": 1000000
     },
     {
       "name": "glm-4.7-flash",

@@ -198,6 +198,39 @@ def test_persist_live_transcript_exports_after_busy_meta(session):
     assert disk["history"][0].get("_compressed_summary") is True
 
 
+def test_fat_go_persist_then_list_does_not_kill_live_publish(session):
+    """Session 574a8561f4f0: one long Go thread, not every send.
+
+    persist_live_transcript writes the new input_id before publish_injected.
+    Hydrate list() used to reconcile that same-instance delivering row and
+    the next publish raised ``Input has no current delivery attempt.``
+    Other sends on the same session that won the race stayed fine.
+    """
+    from harness.input_receipts import publish_session_injected, session_input_store
+
+    _fat_opencode_history(session)
+    save_transcript(session.state_dir, session.harness_session_id, session.export_transcript_data())
+    store = session_input_store(session)
+    row = store.admit(
+        "no I will handle the fixes separately go ahead and do the next audit "
+        "of the harness looking for improvements optimizations bugs breaks Etc "
+        "as we wereuse the open router deepseek V 4.1"
+    )
+    store.prepare_delivery(row["id"])
+    session._history.append({
+        "role": "user",
+        "content": row["original_text"],
+        "input_id": row["id"],
+    })
+    persist_live_transcript(session, session.state_dir, session.harness_session_id)
+    listed = next(r for r in store.list() if r["id"] == row["id"])
+    assert listed["status"] == "delivering"
+    publish_session_injected(session, [row["id"]])
+    published = next(r for r in store.list() if r["id"] == row["id"])
+    assert published["status"] == "injected"
+    assert published.get("reason") != "exact_native_input_id_reconciled"
+
+
 def test_opencode_responses_input_keeps_steer_after_assistant():
     """Go Responses / Grok / Luna must replay the injected user row."""
     inp = _messages_to_responses_input([

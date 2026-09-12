@@ -244,3 +244,14 @@ def ensure_local_dashboard(
         "url": url,
         "embed_url": url,
     }
+
+
+def try_warm_local_dashboard(state_dir: str = "") -> dict[str, Any]:
+    """Start or reuse the stock board. Empty state dir is a no-op, not a spawn."""
+    token = (state_dir or "").strip()
+    if not token:
+        return {"ok": False, "error": "state_dir_unavailable"}
+    try:
+        return ensure_local_dashboard(state_dir=token)
+    except Exception as exc:
+        return {"ok": False, "error": "dashboard_warm_failed", "detail": str(exc)}

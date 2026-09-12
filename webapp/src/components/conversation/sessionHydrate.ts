@@ -188,10 +188,26 @@ export function emptyTranscriptAfterRetryDecision(opts: {
 }
 
 /**
+ * Background sessionTranscript refresh after a warm-cache paint.
+ * Busy-poll / reattach already skip identical fingerprints; switch must too
+ * so a long flip-flop does not remount markdown, command chips, or GitHub hrefs.
+ */
+export function transcriptRefreshApplyDecision(opts: {
+  currentFingerprint: string;
+  loadedFingerprint: string;
+}): { kind: "unchanged" } | { kind: "replace" } {
+  if (opts.loadedFingerprint && opts.loadedFingerprint === opts.currentFingerprint) {
+    return { kind: "unchanged" };
+  }
+  return { kind: "replace" };
+}
+
+/**
  * Transcript refresh exception path. Cache hit: keep rows + stale + notice.
  * Cache miss: clear relics but mark stale (Loading…) + notice — never look
  * like a legitimate first-run empty session with no honesty signal.
  */
+
 export function transcriptRefreshFailureDecision(hadCache: boolean): {
   kind: "keep_warm_with_notice" | "clear_stale_with_notice";
   clearItems: boolean;

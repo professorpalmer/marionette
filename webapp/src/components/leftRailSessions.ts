@@ -1,4 +1,4 @@
-import { type Session } from "../lib/api";
+import { type Session, type Workspace } from "../lib/api";
 import { repoPathsEqual } from "../lib/pathNormalize";
 import { readSWRCache, writeSWRCache } from "../lib/useStaleWhileRevalidate";
 
@@ -303,6 +303,16 @@ export function purgeSessionFromRootCaches(
  *  do not flash another project's branches, and revisits stay warm. */
 export function workspacesCacheKey(repo: string): string {
   return `workspaces:${repo || "__none__"}`;
+}
+
+/** Seed BRANCHES SWR so a first visit of another project is not a blank list. */
+export function seedWorkspacesCache(
+  root: string,
+  rows: Workspace[],
+  write: (key: string, data: Workspace[]) => void = writeSWRCache,
+): void {
+  if (!root) return;
+  write(workspacesCacheKey(root), rows);
 }
 
 /** SWR cache key for jobs scoped to both the selected project and active session. */

@@ -2,6 +2,10 @@ import type { TranscriptViewportHandle } from "./sessionViewport";
 /**
  * Chat-mode column: scrollable transcript feed + composer dock.
  * Conversation owns all state; this is a presentational peel.
+ *
+ * Last N session transcripts stay mounted (hidden) so a click back does not
+ * teardown markdown / the virtualizer. Live `items` bind only to the session
+ * that currently owns them — never paint session A rows under B's id.
  */
 
 import { type MutableRefObject, type ReactNode, type RefObject } from "react";
@@ -22,6 +26,19 @@ import {
   feedScrollportStyle,
   feedSeatingReservePx,
 } from "./feedScroll";
+import { peekTranscriptCache } from "./transcriptCache";
+import { retainSessionPanes } from "./sessionPanes";
+
+const DORMANT_SCROLL_REF: RefObject<HTMLDivElement | null> = { current: null };
+
+type SessionStatus =
+  | "idle"
+  | "thinking"
+  | "executing"
+  | "done"
+  | "error"
+  | "streaming"
+  | "awaiting_swarm";
 
 export default function ConversationChatColumn({
   feedRef,
@@ -54,13 +71,15 @@ export default function ConversationChatColumn({
   showJumpToBottom = false,
   onJumpToBottom,
   sessionId,
+  itemSessionId = "",
+  paneIds = [],
 }: {
   feedRef: RefObject<HTMLDivElement | null>;
   /** Direct child of the feed scrollport — observed for height-driven stick. */
   feedContentRef?: RefObject<HTMLDivElement | null>;
   transcriptStale: boolean;
   items: Item[];
-  status: "idle" | "thinking" | "executing" | "done" | "error" | "streaming" | "awaiting_swarm";
+  status: SessionStatus;
   compactingStatus: string | null;
   editingIndex: number | null;
   auto: boolean;
@@ -88,7 +107,15 @@ export default function ConversationChatColumn({
   showJumpToBottom?: boolean;
   onJumpToBottom?: () => void;
   sessionId?: string;
+  /** Session that currently owns `items` (may lag activeSessionId by one frame). */
+  itemSessionId?: string;
+  paneIds?: string[];
 }) {
+  const ids = retainSessionPanes({
+    prev: paneIds,
+    activeId: sessionId,
+  });
+  const paneList = ids.length > 0 ? ids : [sessionId || ""];
   const paintCount = countPaintableTranscriptItems(items);
   const seatingReservePx = feedSeatingReservePx({
     liveStreamOpen: feedLiveStreamOpen(status, turnOpen),
@@ -101,67 +128,70 @@ export default function ConversationChatColumn({
       className="chat-column flex flex-col flex-1 min-h-0 min-w-0"
     >
       <div className="relative flex-1 min-h-0 flex flex-col">
-        <div
-          ref={feedRef}
-          data-testid="transcript-feed-scrollport"
-          aria-busy={transcriptStale && paintCount === 0 ? true : undefined}
-          className={`flex-1 min-h-0 overflow-y-auto overscroll-contain [scrollbar-gutter:stable] ${panelOpacityClass(false, feedDimmed)}`}
-          style={feedScrollportStyle()}
-        >
-        {/* Locked pair: overflow-anchor:auto + scroll-padding-bottom.
-            Content is min-h-full / justify-start so idle short sessions
-            sit mid/upper. Content padding-bottom always keeps the Cursor-
-            like composer clearance (idle and live). Composer is a sibling
-            outside this scrollport. */}
-        <div
-          ref={feedContentRef}
-          data-testid="transcript-feed-content"
-          className={feedContentLayoutClass()}
-          style={{ paddingBottom: seatingReservePx }}
-        >
-          <TranscriptEmptyState
-            transcriptStale={transcriptStale}
-            itemCount={paintCount}
-          />
-          {/*
-            PERF: The transcript is rendered by TranscriptList, a React.memo
-            component whose props are deliberately independent of the composer
-            `input` state. Because typing only mutates `input` (which lives in
-            this parent) and none of TranscriptList's props change per keystroke,
-            React skips re-rendering the transcript on every keystroke. This
-            breaks the old coupling where items.map ran on the ENTIRE transcript
-            for each character typed (cost grew with message count). Row mounting
-            is further bounded by @tanstack/react-virtual inside TranscriptList.
-          */}
-          <TranscriptList
-            items={items}
-            status={status}
-            compactingStatus={compactingStatus}
-            editingIndex={editingIndex}
-            auto={auto}
-            plan={plan}
-            busyElapsedMs={busyElapsedMs}
-            modelLabel={modelLabel}
-            waitHint={waitHint}
-            providerElapsedMs={providerElapsedMs}
-            turnOpen={turnOpen}
-            holdSwarmAwait={holdSwarmAwait}
-            feedSettled={feedSettled}
-            scrollContainerRef={feedRef}
-            scrollToEndRef={scrollToEndRef}
-            viewportRef={viewportRef}
-            onEditMessage={onEditMessage}
-            onExecuteSend={onExecuteSend}
-            onImageClick={onImageClick}
-            onSetCard={onSetCard}
-            onExecutePlan={onExecutePlan}
-            onCommandApproval={onCommandApproval}
-            onSecretRequest={onSecretRequest}
-            onAuthFailureRetry={onAuthFailureRetry}
-            sessionId={sessionId}
-          />
-        </div>
-      </div>
+        {paneList.map((id) => {
+          const visible = !id || id === sessionId;
+          const live = id === itemSessionId;
+          const paneItems = live ? items : (peekTranscriptCache(id) || []);
+          const panePaint = live ? paintCount : countPaintableTranscriptItems(paneItems);
+          return (
+            <div
+              key={id}
+              ref={visible ? feedRef : undefined}
+              data-testid={visible ? "transcript-feed-scrollport" : undefined}
+              data-session-pane={id}
+              aria-hidden={!visible}
+              inert={!visible || undefined}
+              aria-busy={visible && transcriptStale && paintCount === 0 ? true : undefined}
+              className={
+                visible
+                  ? `flex-1 min-h-0 overflow-y-auto overscroll-contain [scrollbar-gutter:stable] ${panelOpacityClass(false, feedDimmed)}`
+                  : "absolute inset-0 overflow-y-auto overscroll-contain invisible pointer-events-none [scrollbar-gutter:stable]"
+              }
+              style={feedScrollportStyle()}
+            >
+              <div
+                ref={visible ? feedContentRef : undefined}
+                data-testid={visible ? "transcript-feed-content" : undefined}
+                className={feedContentLayoutClass()}
+                style={{ paddingBottom: seatingReservePx }}
+              >
+                {visible ? (
+                  <TranscriptEmptyState
+                    transcriptStale={live ? transcriptStale : panePaint === 0}
+                    itemCount={panePaint}
+                  />
+                ) : null}
+                <TranscriptList
+                  items={paneItems}
+                  status={live ? status : "idle"}
+                  compactingStatus={live ? compactingStatus : null}
+                  editingIndex={live ? editingIndex : null}
+                  auto={auto}
+                  plan={plan}
+                  busyElapsedMs={live ? busyElapsedMs : null}
+                  modelLabel={live ? modelLabel : ""}
+                  waitHint={live ? waitHint : null}
+                  providerElapsedMs={live ? providerElapsedMs : null}
+                  turnOpen={live ? turnOpen : false}
+                  holdSwarmAwait={live ? holdSwarmAwait : false}
+                  feedSettled={live ? feedSettled : true}
+                  scrollContainerRef={visible ? feedRef : DORMANT_SCROLL_REF}
+                  scrollToEndRef={visible ? scrollToEndRef : undefined}
+                  viewportRef={visible ? viewportRef : undefined}
+                  onEditMessage={onEditMessage}
+                  onExecuteSend={onExecuteSend}
+                  onImageClick={onImageClick}
+                  onSetCard={onSetCard}
+                  onExecutePlan={onExecutePlan}
+                  onCommandApproval={onCommandApproval}
+                  onSecretRequest={onSecretRequest}
+                  onAuthFailureRetry={onAuthFailureRetry}
+                  sessionId={id}
+                />
+              </div>
+            </div>
+          );
+        })}
       {showJumpToBottom ? (
         <button
           type="button"

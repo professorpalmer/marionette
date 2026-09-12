@@ -1,3 +1,5 @@
+import { inputFailureMessage } from "./inputFailure";
+
 /**
  * Authoritative frontend turn lifecycle + terminal-cause vocabulary.
  *
@@ -440,7 +442,23 @@ export function settleFromStreamError(
       explanation: terminalCauseCopy(CAUSE_PROVIDER_EOF),
     };
   }
-  const raw = String(errorText || "").trim();
+  const mapped = inputFailureMessage(errorText);
+  if (mapped) {
+    return {
+      kind: "settle",
+      lifecycle: TURN_ERROR,
+      cause: named === CAUSE_UNSPECIFIED ? CAUSE_TRANSPORT_ERROR : named,
+      status: "error",
+      turnOpen: false,
+      explanation: `[error] ${mapped}`,
+    };
+  }
+  const rawObj = (errorText && typeof errorText === "object")
+    ? String((errorText as { error?: string; message?: string }).error
+      || (errorText as { message?: string }).message
+      || "").trim()
+    : "";
+  const raw = rawObj || String(errorText || "").trim();
   const explanation = raw
     ? (raw.startsWith("[error]") || raw.startsWith("[aborted]")
       ? raw

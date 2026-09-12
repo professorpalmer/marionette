@@ -6,7 +6,7 @@ import type { Job } from './api';
 import { canonicalExpertSelection, canonicalPMReplacesLocal, metadataSelectionKey, pmActiveStatuses } from './jobMetadata';
 import type { LocalObservation } from './localJobMetadata';
 import { localKey, nativeActiveStatuses } from './localJobMetadata';
-import { isCommandJob } from './jobClassification';
+import { isCommandJob, isTrackerHire, isWaveCoordinator } from './jobClassification';
 
 /** Prefer the freshest local observation when the same job_id appears under multiple keys. */
 function preferFresherLocal(a: LocalObservation, b: LocalObservation): LocalObservation {
@@ -57,11 +57,35 @@ export function useSharedJobMetadata() {
 export function isJobsListRow(job: Pick<Job, "job_kind" | "id" | "role" | "adapter">): boolean {
   return job.job_kind !== "provider" && !isCommandJob(job);
 }
+/** Live-dot / Jobs pulse: real swarm/implement hires only, never run_command. */
+function isObservedTrackerHire(
+  freshness: string,
+  lifecycle: string | null | undefined,
+  signals: { id?: string | null; job_kind?: string | null; role?: string | null; adapter?: string | null },
+): boolean {
+  const status = String(lifecycle || '').toLowerCase();
+  return freshness === 'observed'
+    && nativeActiveStatuses.includes(status)
+    && isTrackerHire(signals)
+    && !isWaveCoordinator(signals);
+}
+
 export function metadataActivity(state: JobMetadataState): { count: number; label: string } {
-  const active = new Set(nativeActiveStatuses);
-  const count = state.observations.filter(o => o.freshness === 'observed' && active.has(o.row.lifecycle ?? '')).length
-    + state.local.observations.filter(o => o.freshness === 'observed' && active.has(o.row.lifecycle)
-      && !canonicalPMReplacesLocal(o, state.observations)).length;
+  const count = state.observations.filter(o => isObservedTrackerHire(
+    o.freshness,
+    o.row.lifecycle,
+    { id: o.row.selection.job_ref.job_id },
+  )).length
+    + state.local.observations.filter(o => isObservedTrackerHire(
+      o.freshness,
+      o.row.lifecycle,
+      {
+        id: o.row.local_ref.job_id,
+        job_kind: o.row.kind,
+        role: o.row.kind,
+        adapter: o.row.display?.adapter,
+      },
+    ) && !canonicalPMReplacesLocal(o, state.observations)).length;
   return { count, label: count ? `At least ${count} active jobs; coverage incomplete` : 'Job activity unknown; coverage incomplete' };
 }
 /** Current selected facts are valid only for this exact source and revision. */

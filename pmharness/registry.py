@@ -655,7 +655,12 @@ _STATIC_WINDOWS = {
     "kimi": 200000,
     "minimaxm2": 1000000,
     "minimax": 1000000,
-    "deepseekv4": 128000,
+    # DeepSeek V4 / V4.1 Flash are 1M input (128k is V3-and-older, and was
+    # also confused with max output). Longest-prefix: deepseekflash /
+    # deepseekv4 beat the leftover "deepseek" 128k family. Go's live id is
+    # deepseek-flash — no 'v4' token — so it needs its own key.
+    "deepseekflash": 1000000,
+    "deepseekv4": 1000000,
     "deepseek": 128000,
 }
 

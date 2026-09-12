@@ -520,6 +520,17 @@ describe("Wave 3 last-mile: one terminal explanation", () => {
     expect(settle.lifecycle).toBe("error");
   });
 
+  it("maps input receipt codes instead of leaking delivery-attempt copy", () => {
+    const settle = settleFromStreamError({
+      ok: false,
+      code: "input_transition_invalid",
+      error: "Input has no current delivery attempt.",
+    });
+    expect(settle.explanation).toMatch(/\[error\]/);
+    expect(settle.explanation).toMatch(/interrupted|fresh|draft/i);
+    expect(settle.explanation).not.toContain("delivery attempt");
+  });
+
   it("named model terminals are not relabeled as connection lost", () => {
     for (const cause of ["length", "content_filter", "incomplete"] as const) {
       const settle = settleFromStreamError(

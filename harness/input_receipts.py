@@ -446,7 +446,14 @@ class InputReceiptStore:
                 if retry_key is not None and row.get('retry_key') == retry_key:
                     if row['payload_digest'] != digest:
                         raise InputReceiptError('input_retry_conflict', 'This retry key already belongs to a different payload.')
-                    return copy.deepcopy(row)
+                    reusable = (
+                        row['status'] == 'accepted'
+                        and row.get('owner_instance') == self.instance
+                    )
+                    if reusable:
+                        return copy.deepcopy(row)
+                    row['retry_key'] = None
+                    continue
                 if input_id is not None and row['id'] == input_id:
                     if row['payload_digest'] != digest:
                         raise InputReceiptError('input_id_conflict', 'Input identity has different originals.')
@@ -546,7 +553,10 @@ class InputReceiptStore:
                 ids = self._durable_ids()
                 changed = False
                 for row in pending:
-                    if row['id'] in ids:
+                    # Same-instance delivering is still the live attempt.
+                    # Only a foreign owner (backend restart / new store) may
+                    # be reconciled from durable transcript evidence.
+                    if row['id'] in ids and row.get('owner_instance') != self.instance:
                         row.update(status='injected', reason='exact_native_input_id_reconciled')
                         changed = True
                 if changed:
@@ -607,7 +617,12 @@ class InputReceiptStore:
         with self.transaction():
             data = self._read()
             selected = [r for r in data['inputs'] if r['id'] in input_ids]
-            if len(selected) != len(set(input_ids)) or any(r['status'] != 'delivering' for r in selected):
+            if len(selected) != len(set(input_ids)):
+                raise InputReceiptError('input_transition_invalid', 'Input has no current delivery attempt.')
+            statuses = {r['status'] for r in selected}
+            if statuses <= {'injected'}:
+                return
+            if any(r['status'] not in ('delivering', 'injected') for r in selected):
                 raise InputReceiptError('input_transition_invalid', 'Input has no current delivery attempt.')
             try:
                 recover_compaction_commit(self.root, self.session_id)

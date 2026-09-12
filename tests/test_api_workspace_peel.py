@@ -37,7 +37,7 @@ def _svc(cfg, tmp_path, *, forget_fn=None):
 
         @staticmethod
         def list_workspaces(repo):
-            return [{"name": "default"}]
+            return [{"name": "default", "repo": repo}]
 
     return WorkspaceServices(
         cfg=cfg,
@@ -115,8 +115,17 @@ def test_workspaces_switch_create_list(tmp_path):
     assert code == 200 and sw["switched"] == "a" and sw["allow_dirty"] is True
     code2, cr = post_workspaces_create({"name": "b", "branch": "main"}, svc)
     assert code2 == 200 and cr["created"] == "b"
-    code3, listing = get_workspaces(svc)
+    code3, listing = get_workspaces({}, svc)
     assert code3 == 200 and listing[0]["name"] == "default"
+
+
+def test_get_workspaces_repo_query_lists_without_switching_cfg(tmp_path):
+    cfg = SimpleNamespace(repo="/active")
+    svc, _, _, _ = _svc(cfg, tmp_path)
+    code, listing = get_workspaces({"repo": ["/other/root"]}, svc)
+    assert code == 200
+    assert listing[0]["repo"] == "/other/root"
+    assert cfg.repo == "/active"
 
 
 def test_workspace_symbols_no_repo(tmp_path):

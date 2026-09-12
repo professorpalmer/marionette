@@ -246,7 +246,14 @@ def add_worktree(repo: str, branch: str, base: str = "HEAD", path: Optional[str]
     rc, out, err = _git(repo, *args)
     if rc != 0:
         raise RuntimeError(err or out)
-        
+
+    try:
+        cleanup_old_worktrees(
+            repo, max_count=get_max_worktrees(), keep_paths=[path],
+        )
+    except Exception:
+        pass
+
     return {"path": path, "branch": branch}
 
 def _cwd_under(cwd: str, worktree: str) -> bool:

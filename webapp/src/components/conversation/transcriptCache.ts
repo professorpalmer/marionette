@@ -70,6 +70,11 @@ export function peekTranscriptCacheEntry(
 export type WriteTranscriptCacheOpts = {
   /** Mark New Session seed — skip empty-transcript retry / fail banner. */
   seededEmpty?: boolean;
+  /**
+   * Keep the same array identity so a retained TranscriptList can resume
+   * without remounting markdown (session-pane keep-alive).
+   */
+  retainRef?: boolean;
 };
 
 /** Seed or overwrite the warm cache for a session. */
@@ -80,7 +85,7 @@ export function writeTranscriptCache(
 ) {
   const seededEmpty = opts?.seededEmpty === true && items.length === 0;
   transcriptCacheBySessionId.set(sessionId, {
-    items: [...items],
+    items: opts?.retainRef ? items : [...items],
     ...(seededEmpty ? { seededEmpty: true } : {}),
   });
 }

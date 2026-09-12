@@ -321,8 +321,8 @@ def test_placeholder_load_history_writes_through_to_real():
     assert loaded == turns
 
 
-def test_switch_response_includes_idle_transcript(tmp_path, monkeypatch):
-    """ /api/sessions/switch returns state + transcript without waiting on build."""
+def test_switch_response_omits_transcript_and_does_not_wait_on_build(tmp_path, monkeypatch):
+    """ /api/sessions/switch returns state without embedding the transcript body."""
     import harness.server as srv
 
     monkeypatch.setenv("HARNESS_DEFER_COLD_ATTACH", "1")
@@ -366,7 +366,7 @@ def test_switch_response_includes_idle_transcript(tmp_path, monkeypatch):
             assert payload.get("ok") is True
             assert payload.get("active") == sid_b
             assert payload.get("state") == "attaching"
-            assert payload.get("transcript", {}).get("history", [])[0]["content"] == "from-disk"
+            assert "transcript" not in payload
             assert is_deferred_placeholder(srv._pilot)
             # Build still blocked — proves switch did not wait on ConversationalSession.
             assert not gate.is_set()

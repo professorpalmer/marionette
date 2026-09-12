@@ -70,7 +70,7 @@ export function inputFailureMessage(error: unknown): string | null {
       return "Input restore could not complete safely. Keep your draft and review it before sending again.";
     case "input_transition_invalid":
     case "input_unknown":
-      return "This input is no longer available. Review your draft before sending again.";
+      return "This turn's input delivery was interrupted. Continue or Retry to send a fresh attempt.";
     default:
       return code.startsWith("input_")
         ? "The input needs review. Review your draft before sending again."

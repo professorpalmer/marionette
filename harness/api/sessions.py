@@ -450,14 +450,12 @@ def post_sessions_switch(body: dict, svc: SessionServices) -> tuple[int, dict]:
         res["codegraph"] = (
             svc.get_codegraph_status(svc.cfg.repo) if svc.cfg.repo else "none"
         )
-        # Hermes-style: runner status + transcript on the switch response
-        # so the UI can paint before deferred ConversationalSession lands.
-        # Building placeholders report running (lease/busy honesty).
+        # Runner status only. Do not embed the full transcript: LeftRail and
+        # Conversation paint from warm cache + GET /api/sessions/transcript.
+        # Serializing a long incoming history here blocked the click POST
+        # (rail spinner) and the UI never read the payload.
         active_id = svc.sessions.active or ""
         res["state"] = svc.runners.status(active_id) if active_id else "missing"
-        res["transcript"] = svc.attach_view_transcript_payload(
-            svc.get_pilot(), active_id
-        )
 
     if not res.get("ok"):
         svc.runners.metadata_view.restore(metadata_transition)

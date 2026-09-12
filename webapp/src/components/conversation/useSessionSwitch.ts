@@ -7,7 +7,7 @@ import { setActiveMemoryProposalSession } from "../../lib/memoryProposalResoluti
 import { useEffect, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { api, type InputDocument } from "../../lib/api";
 import { clearSessionTodos } from "../../lib/sessionTodos";
-import { clearActivityFoldPrefs, type Item } from "../TranscriptList";
+import { type Item } from "../TranscriptList";
 import {
   captureTranscriptRead,
   peekTranscriptCacheEntry,
@@ -26,6 +26,7 @@ import {
   shouldPreserveBusyStatus,
   shouldResetBusyChromeOnSwitch,
   shouldRetryEmptyTranscript,
+  transcriptRefreshApplyDecision,
   transcriptRefreshFailureDecision,
 } from "./sessionHydrate";
 import { resolveComposerDraftOnSwitch } from "./composerDraftCache";
@@ -40,7 +41,6 @@ import { beginChatStreamGeneration } from "./chatEvents";
 import { createChatEventsReattach } from "./chatEventsReattach";
 import { cancelStreamPaint, cancelTypewriterWithoutFlush } from "./streamTypewriter";
 import { gatherSessionArtifacts } from "./sessionArtifacts";
-import { releaseAllTranscriptPreviewBlobs } from "./transcriptImageBlobs";
 import {
   hydratePendingJobIdsAfterReload,
   sessionStateShowsAwaitingSwarm,
@@ -217,8 +217,9 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
     setActiveMemoryProposalSession(activeSessionId || "");
     if (prevId && prevId !== activeSessionId && !transcriptStaleRef.current) {
       // Only cache when the visible rows belong to prevId. Stale bleed (prior
-      // session still painted) must not poison the warm cache.
-      writeTranscriptCache(prevId, itemsRef.current);
+      // session still painted) must not poison the warm cache. Keep the same
+      // array identity so a retained pane can resume without remounting.
+      writeTranscriptCache(prevId, itemsRef.current, { retainRef: true });
     }
 
     // Rewind-edit chrome is session-local; never carry Revert/prefill across ids.
@@ -262,12 +263,8 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
       setAttachedImages(restoredAttachments);
     }
     if (switchedSession) {
-      // Owned sent-image blob previews belong to the outgoing session; durable
-      // /api/image paths remain on warm-cache rows for reload recovery.
-      releaseAllTranscriptPreviewBlobs();
-      // Investigation / reasoning fold prefs are session-scoped — stable ids
-      // must not reopen folds from the previous conversation.
-      clearActivityFoldPrefs();
+      // Keep-alive panes stay mounted: do not revoke image blobs or wipe fold
+      // prefs (prefs are session-prefixed). Warm cache uses durable /api/image.
       // Composer chrome is session-local (match R8 edit/queue clear style).
       setWikiPrepared(null);
       setMemoryProposals([]);
@@ -565,9 +562,21 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
             return;
           }
         }
+        const loadedFp = transcriptFingerprint(loadedItems);
+        if (
+          transcriptRefreshApplyDecision({
+            currentFingerprint: transcriptFpRef.current,
+            loadedFingerprint: loadedFp,
+          }).kind === "unchanged"
+        ) {
+          writeTranscriptCache(activeSessionId, itemsRef.current);
+          setTranscriptStale(false);
+          setEditNotice((prev) => clearRecoveredSessionFailNotice(prev));
+          return;
+        }
         setItems(loadedItems);
         itemsRef.current = loadedItems;
-        transcriptFpRef.current = transcriptFingerprint(loadedItems);
+        transcriptFpRef.current = loadedFp;
         writeTranscriptCache(activeSessionId, loadedItems);
         setTranscriptStale(false);
         // Successful hydrate — drop sticky SESSION_* fail banner from a prior flake.

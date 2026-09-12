@@ -5,7 +5,10 @@ export const PANEL_TRANSITION =
   "transition-opacity duration-200 ease-[cubic-bezier(0.23,1,0.32,1)]";
 
 export function panelOpacityClass(switching: boolean, stale = false): string {
-  return `${PANEL_TRANSITION} ${switching || stale ? "opacity-60" : "opacity-100"}`;
+  // High-frequency session/project clicks: no opacity fade. Stale honesty-dim
+  // still applies when painted rows are known-wrong.
+  void switching;
+  return stale ? `${PANEL_TRANSITION} opacity-60` : "opacity-100";
 }
 
 export function dispatchProjectSwitching(switching: boolean): void {

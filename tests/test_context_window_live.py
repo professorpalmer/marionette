@@ -107,7 +107,7 @@ def test_native_slash_id_is_not_explicit_openrouter(monkeypatch):
 
 
 def test_id_only_openrouter_metadata_does_not_use_static_128k(monkeypatch):
-    """deepseek/deepseek-v4-flash-0731 id-only cache must not inherit deepseekv4=128K."""
+    """deepseek/deepseek-v4-flash-0731 id-only cache must not inherit the V4 family table."""
     import pmharness.registry as reg
 
     slug = "deepseek/deepseek-v4-flash-0731"
@@ -120,7 +120,7 @@ def test_id_only_openrouter_metadata_does_not_use_static_128k(monkeypatch):
     )
     monkeypatch.setattr(reg, "_try_refresh_openrouter_rich_metadata", lambda name: None)
 
-    assert reg._static_window(slug) == 128000  # family table still exists…
+    assert reg._static_window(slug) == 1000000  # family table still exists…
     assert reg.context_window(slug) == 0       # …but explicit OR must not use it
     assert reg.metadata_source(slug) == "unknown"
     with pytest.raises(ValueError, match="metadata unavailable"):

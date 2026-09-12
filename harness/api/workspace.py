@@ -483,9 +483,13 @@ def post_workspaces_create(body: dict, svc: WorkspaceServices) -> tuple[int, Jso
             svc.invalidate_metadata_sources()
 
 
-def get_workspaces(svc: WorkspaceServices) -> tuple[int, JsonPayload]:
-    """GET /api/workspaces."""
-    return 200, svc.ws.list_workspaces(svc.cfg.repo)
+def get_workspaces(qs: dict, svc: WorkspaceServices) -> tuple[int, JsonPayload]:
+    """GET /api/workspaces. Optional ?repo= lists another recent root without switching."""
+    repo_override = ""
+    if qs:
+        repo_override = (qs.get("repo", [""])[0] or "").strip()
+    root = repo_override or (svc.cfg.repo or "")
+    return 200, svc.ws.list_workspaces(root)
 
 
 def get_workspace(svc: WorkspaceServices) -> tuple[int, JsonPayload]:

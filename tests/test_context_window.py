@@ -36,6 +36,20 @@ def test_glm_5_3_static_window_is_1m_not_128k():
     assert context_window("zai:glm-5.3") == 1000000
 
 
+def test_deepseek_v4_and_v41_flash_static_window_is_1m_not_128k():
+    """128k is leftover V3 / max-output confusion. V4 and V4.1 Flash are 1M.
+
+    OpenCode Go's live id is ``deepseek-flash`` (no 'v4' token). That used to
+    inherit the generic ``deepseek`` 128k family and starve the usage pill.
+    """
+    assert context_window("deepseek-flash") == 1000000
+    assert context_window("opencode-go:deepseek-flash") == 1000000
+    assert context_window("deepseek-v4.1-flash") == 1000000
+    assert context_window("deepseek-v4-flash") == 1000000
+    assert context_window("deepseek-v4-pro") == 1000000
+    assert context_window("deepseek-chat") == 128000
+
+
 def test_config_resolves_window_from_driver(monkeypatch):
     monkeypatch.delenv("HARNESS_MAX_CONTEXT_TOKENS", raising=False)
     monkeypatch.setenv("HARNESS_DRIVER", "claude-frontier")

@@ -52,6 +52,18 @@ it.each(['queue_session_unbound', 'pilot_not_ready'])('surfaces workspace messag
   expect(streamErrorText({ status: 409, code })).toBe(`[error] ${message}`);
 });
 
+it('maps a leaked delivery-attempt body to recovery copy', () => {
+  const native = {
+    ok: false,
+    code: 'input_transition_invalid',
+    error: 'Input has no current delivery attempt.',
+  };
+  const message = inputFailureMessage(native);
+  expect(message).toBeTruthy();
+  expect(message).not.toContain('delivery attempt');
+  expect(streamErrorText(native)).toBe(`[error] ${message}`);
+});
+
 it('keeps the vague default only for truly unknown input_* codes', () => {
   expect(inputFailureMessage({ code: 'input_totally_novel_future_code' }))
     .toBe('The input needs review. Review your draft before sending again.');

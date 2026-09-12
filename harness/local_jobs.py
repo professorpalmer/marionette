@@ -168,10 +168,46 @@ def _child_retry_count(child: dict) -> int:
 def _child_is_retryable(child: dict) -> bool:
     if not isinstance(child, dict):
         return False
+    if child.get("interrupted_by_restart"):
+        return True
     if child.get("retryable") is True:
         return True
     prov = child.get("worker_provenance")
     return isinstance(prov, dict) and prov.get("retryable") is True
+
+
+def wave_parent_is_retryable(parent: dict, children: Optional[list] = None) -> bool:
+    """Retry timed-out/failed waves, plus restart-cancelled ones only."""
+    if not isinstance(parent, dict):
+        return False
+    st = str(parent.get("status") or "")
+    if st in _WAVE_RETRY_PARENT_STATUSES:
+        return True
+    if st != "cancelled":
+        return False
+    if parent.get("interrupted_by_restart"):
+        return True
+    for child in children or []:
+        if isinstance(child, dict) and child.get("interrupted_by_restart"):
+            return True
+    return False
+
+
+def _heal_restart_artifacts(artifacts: Any, summary: str) -> list:
+    kept = []
+    seen = False
+    for art in artifacts or []:
+        if not isinstance(art, dict):
+            continue
+        kept.append(art)
+        if (
+            (art.get("type") or "").strip().lower() == "error"
+            and (art.get("headline") or "") == summary
+        ):
+            seen = True
+    if not seen:
+        kept.append({"type": "error", "headline": summary})
+    return kept
 
 
 def _reconcile_routing_artifact(art: dict, selected_model: str) -> dict:
@@ -840,6 +876,11 @@ class LocalJobsMixin:
         parent["status"] = aggregate
         parent["mixed_terminal"] = mixed
         parent["review_required"] = review_required
+        if aggregate == "cancelled" and any(
+            isinstance(child, dict) and child.get("interrupted_by_restart")
+            for child in child_rows
+        ):
+            parent["interrupted_by_restart"] = True
         counts: dict = {}
         for s in statuses:
             counts[s] = counts.get(s, 0) + 1
@@ -864,10 +905,11 @@ class LocalJobsMixin:
         """Reopen retryable children once after the parent first settles."""
         if parent.get("wave_auto_retry_attempted"):
             return []
-        if str(parent.get("status") or "") not in _WAVE_RETRY_PARENT_STATUSES:
+        child_ids = [str(x) for x in (parent.get("child_job_ids") or []) if str(x)]
+        children = [self._local_jobs.get(cid) for cid in child_ids]
+        if not wave_parent_is_retryable(parent, children):
             return []
         parent["wave_auto_retry_attempted"] = True
-        child_ids = [str(x) for x in (parent.get("child_job_ids") or []) if str(x)]
         success_files = set()
         for cid in child_ids:
             child = self._local_jobs.get(cid) or {}
@@ -2157,23 +2199,16 @@ class LocalJobsMixin:
                     else:
                         summary = "Interrupted by backend restart"
                     job["status"] = "cancelled"
+                    job["interrupted_by_restart"] = True
                     job["updated_at"] = job.get("updated_at") or job.get("created_at")
                     if job.get("tasks"):
                         try:
                             job["tasks"][0]["status"] = "cancelled"
                         except Exception:
                             pass
-                    # Keep ROUTING cards so policy/basis labels match live jobs
-                    # after reload (do not wipe attested attribution).
-                    keep_routing = [
-                        a for a in (job.get("artifacts") or [])
-                        if isinstance(a, dict)
-                        and (a.get("type") or "").strip().upper() == "ROUTING"
-                    ]
-                    job["artifacts"] = keep_routing + [{
-                        "type": "error",
-                        "headline": summary,
-                    }]
+                    job["artifacts"] = _heal_restart_artifacts(
+                        job.get("artifacts"), summary,
+                    )
                     if is_command_job:
                         job["terminal_receipt"] = {
                             "status": "cancelled",
@@ -2215,6 +2250,7 @@ class LocalJobsMixin:
                     reason="interrupted by restart",
                 )
                 self._local_jobs[jid] = job
+            retry_waves = []
             for job in list(self._local_jobs.values()):
                 if isinstance(job, dict) and job.get("job_kind") == "parallel_wave":
                     self._sync_parallel_wave_locked(job)
@@ -2222,12 +2258,18 @@ class LocalJobsMixin:
                     theirs = str(job.get("session_id") or "")
                     if theirs == mine:
                         self._upsert_display_parallel_wave_locked(job)
+                    ids = self._collect_parallel_wave_retries_locked(job)
+                    if ids:
+                        retry_waves.append((str(job.get("id") or ""), ids))
             batch_ids = [str(job["id"]) for job in self._local_jobs.values()
                          if job.get("job_kind") == "run_command_batch" or job.get("role") == "command_batch"]
         for batch_id in batch_ids:
             self._sync_command_batch_from_children(batch_id)
         # Rewrite so the healed statuses are the new on-disk baseline.
         self._persist_local_jobs()
+        for wave_id, ids in retry_waves:
+            if wave_id:
+                self._launch_parallel_wave_retries(wave_id, ids)
 
     def cancel_local_job(self, job_id: str, *, incarnation: Optional[str] = None) -> bool:
         """Cooperatively cancel a running local (provider-worker) job.

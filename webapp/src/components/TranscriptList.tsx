@@ -933,8 +933,8 @@ function objKey(obj: object): string {
 // Persist Investigated-toggle open state across remounts. Card patches used to
 // replace the lead item's object identity, which changed the React key, remounted
 // ActivityGroup, and reset useState(false) -- the "blinks itself closed" bug.
-// Session-scoped only — clearActivityFoldPrefs() on session switch so stable
-// ids cannot leak open/closed prefs across conversations.
+// Session-prefixed keys (`sessionId::groupId`) so keep-alive panes do not
+// share open/closed prefs. clearActivityFoldPrefs() remains for tests.
 const __activityOpen = new Map<string, boolean>();
 // Reasoning expand preference (user click) survives remounts / live→idle flips.
 const __thinkingExpanded = new Map<string, boolean>();
@@ -964,6 +964,12 @@ export function clearActivityFoldPrefs(): void {
  * Investigation folds default CLOSED (Cursor/Hermes). Only an explicit user
  * toggle (sticky in ``prefs``) opens them — never live tools/reasoning.
  */
+/** Prefix fold prefs so two mounted sessions cannot share one toggle. */
+export function sessionFoldPrefKey(sessionId: string | undefined, groupId: string): string {
+  const sid = String(sessionId || "").trim();
+  return sid ? `${sid}::${groupId}` : groupId;
+}
+
 export function resolveActivityGroupOpen(
   groupId: string,
   prefs: Map<string, boolean> = __activityOpen,
@@ -2033,7 +2039,7 @@ export const TranscriptList = memo(function TranscriptList({
         </div>
       );
     } else if (it.kind === "activity_group") {
-      const openId = activityGroupStableId(it.items, i);
+      const openId = sessionFoldPrefKey(sessionId, activityGroupStableId(it.items, i));
       return (
         <ActivityGroup
           key={key}
