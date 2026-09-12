@@ -134,3 +134,158 @@ def test_wiki_safe_urlopen_blocks_metadata_literal():
     req = urllib.request.Request("https://169.254.169.254/latest/meta-data/")
     with pytest.raises(urllib.error.URLError):
         _wiki_safe_urlopen(req, timeout=1)
+
+
+def test_search_hit_snippet_maps_excerpt_and_aliases():
+    from harness.wiki import search_hit_snippet
+
+    assert search_hit_snippet({"excerpt": "  protocol text  "}) == "protocol text"
+    assert search_hit_snippet({"snippet": "old", "excerpt": "new"}) == "old"
+    assert search_hit_snippet({"description": "compat"}) == "compat"
+    assert search_hit_snippet({"body": "full"}) == "full"
+    assert search_hit_snippet({}) == ""
+    assert search_hit_snippet("nope") == ""
+
+
+def test_query_relevant_passage_picks_match_past_prefix():
+    from harness.wiki import query_relevant_passage
+
+    body = (
+        "Introduction to the incident.\n"
+        + ("A" * 3500)
+        + "\nThe prevention is reserving a unique path for each worker.\n"
+        + ("Z" * 2000)
+    )
+    query = "what prevention did we choose for unique worker paths?"
+    window = query_relevant_passage(body, query, 400)
+    assert "prevention is reserving a unique path" in window
+    assert window[:400] != body[:400]
+
+
+def test_query_relevant_passage_head_fallback_when_no_body_terms():
+    from harness.wiki import query_relevant_passage
+
+    body = ("alpha " * 200) + "omega"
+    window = query_relevant_passage(body, "zzzz notpresent", 80)
+    assert window == body[:80]
+
+
+def test_wiki_client_search_pages_maps_excerpt(monkeypatch):
+    captured = {}
+
+    class FakeResp:
+        status = 200
+
+        def read(self):
+            return json.dumps({
+                "results": [
+                    {
+                        "title": "Incident",
+                        "slug": "incident",
+                        "excerpt": "The prevention is reserving a unique path.",
+                    }
+                ]
+            }).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(req, timeout=20):
+        captured["url"] = req.full_url
+        captured["auth"] = req.headers.get("Authorization")
+        return FakeResp()
+
+    monkeypatch.setattr("harness.wiki._wiki_safe_urlopen", fake_urlopen)
+    client = WikiClient(base_url="https://wiki.example.com", token="secret")
+    hits = client.search_pages("prevention", limit=3)
+    assert hits == [{
+        "title": "Incident",
+        "slug": "incident",
+        "snippet": "The prevention is reserving a unique path.",
+    }]
+    assert "/wiki/search?q=" in captured["url"]
+    assert captured["auth"] == "Bearer secret"
+
+
+def test_wiki_client_page_body_reads_body_not_excerpt(monkeypatch):
+    captured = {}
+
+    class FakeResp:
+        status = 200
+
+        def read(self):
+            return json.dumps({
+                "slug": "incident",
+                "excerpt": "intro only",
+                "body": "full page body with the prevention below the fold",
+            }).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(req, timeout=20):
+        captured["url"] = req.full_url
+        captured["auth"] = req.headers.get("Authorization")
+        return FakeResp()
+
+    monkeypatch.setattr("harness.wiki._wiki_safe_urlopen", fake_urlopen)
+    client = WikiClient(base_url="https://wiki.example.com", token="secret")
+    assert client.page_body("decisions/incident page") == (
+        "full page body with the prevention below the fold"
+    )
+    assert captured["url"] == (
+        "https://wiki.example.com/wiki/page/decisions%2Fincident%20page"
+    )
+    assert captured["auth"] == "Bearer secret"
+
+
+def test_wiki_client_page_body_ignores_excerpt_only_payload(monkeypatch):
+    class FakeResp:
+        status = 200
+
+        def read(self):
+            return json.dumps({"excerpt": "not a full page"}).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr("harness.wiki._wiki_safe_urlopen", lambda req, timeout=20: FakeResp())
+    client = WikiClient(base_url="https://wiki.example.com", token="secret")
+    assert client.page_body("incident") == ""
+
+
+def test_wiki_client_query_search_fallback_maps_excerpt(monkeypatch):
+    class FakeResp:
+        status = 200
+
+        def read(self):
+            return json.dumps({
+                "results": [
+                    {"title": "T", "slug": "t", "excerpt": "excerpt text"},
+                ]
+            }).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(req, timeout=20):
+        if "/wiki/search" in req.full_url:
+            return FakeResp()
+        raise RuntimeError("no rag")
+
+    monkeypatch.setattr("harness.wiki._wiki_safe_urlopen", fake_urlopen)
+    client = WikiClient(base_url="https://wiki.example.com", token="secret")
+    out = client.query("prevention")
+    assert "excerpt text" in out

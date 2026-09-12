@@ -144,6 +144,7 @@ def test_send_standard_wiki_uses_tighter_budget(tmp_path, monkeypatch):
         ]
 
     monkeypatch.setattr(s._wiki, "search_pages", fake_search)
+    monkeypatch.setattr(s._wiki, "page_body", lambda slug: "")
     events = list(s.send("add OAuth support"))
     prof = next(e for e in events if e.kind == "task_profile")
     assert prof.data["profile"] == STANDARD
