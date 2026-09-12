@@ -91,11 +91,16 @@ _CODEX_MAX_INCOMPLETE_RETRIES = 3
 # timeout, which left Electron on Still working until Stop sealed the
 # already-buffered summary. Drain a short idle for in-flight summary tokens,
 # then finish. Non-ChatGPT Responses hosts (OpenCode Go Muse, etc.) must
-# wait for an authoritative terminal instead of forging completed.
+# not forge completed. They still arm a short idle so comment keepalives
+# cannot reset urlopen's long timeout forever after reasoning or answer
+# tokens; that path settles incomplete.
 _POST_ANSWER_SLICE_SECONDS = 0.25
 _POST_ANSWER_IDLE_SECONDS = 0.5
 _POST_ANSWER_MAX_SECONDS = 2.0
 _POST_ANSWER_KEEPALIVE_LIMIT = 3
+_NON_CHATGPT_IDLE_SLICE_SECONDS = 2.0
+_NON_CHATGPT_IDLE_MAX_SECONDS = 20.0
+_NON_CHATGPT_IDLE_KEEPALIVE_LIMIT = 8
 _INCOMPLETE_ANSWER_SUFFIXES = (":", ",", ";", "—", "–", "-", "/", "(", "[", "{")
 _CONTENT_FILTER_MSG = (
     "Model declined to respond (content filter). Try rephrasing the request "
@@ -756,6 +761,7 @@ def _consume_codex_sse(
     drain_started = 0.0
     last_meaningful = 0.0
     keepalive_streak = 0
+    go_idle_armed = False
 
     def _finish_tool_free_answer():
         nonlocal saw_terminal, terminal_status
@@ -796,11 +802,33 @@ def _consume_codex_sse(
             return True
         return False
 
+    def _begin_non_chatgpt_idle_watch():
+        """Arm a short read timeout after Go/OpenAI activity. Never forges completed."""
+        nonlocal go_idle_armed, last_meaningful, keepalive_streak
+        if chatgpt_backend:
+            return
+        last_meaningful = time.monotonic()
+        keepalive_streak = 0
+        go_idle_armed = True
+        _arm_post_answer_idle_timeout(resp_fp, _NON_CHATGPT_IDLE_SLICE_SECONDS)
+
+    def _should_finish_go_idle():
+        if chatgpt_backend or not go_idle_armed:
+            return False
+        if keepalive_streak >= _NON_CHATGPT_IDLE_KEEPALIVE_LIMIT:
+            return True
+        if last_meaningful and (
+            time.monotonic() - last_meaningful >= _NON_CHATGPT_IDLE_MAX_SECONDS
+        ):
+            return True
+        return False
+
     def _begin_post_answer_drain():
         """Start the short post-answer drain. False means caller should stop."""
         nonlocal post_answer_drain, drain_started, last_meaningful
         nonlocal keepalive_streak
         if not chatgpt_backend:
+            _begin_non_chatgpt_idle_watch()
             return True
         if not _idle_drain_allowed():
             return True
@@ -830,7 +858,11 @@ def _consume_codex_sse(
             ):
                 _finish_tool_free_answer()
                 break
-            if not collected_items and not text_deltas:
+            if (
+                not collected_items
+                and not text_deltas
+                and not reasoning_deltas
+            ):
                 return {
                     "status": "failed",
                     "output": [],
@@ -849,6 +881,10 @@ def _consume_codex_sse(
                 if keepalive_streak >= _POST_ANSWER_KEEPALIVE_LIMIT or _should_finish_drain():
                     _finish_tool_free_answer()
                     break
+            elif go_idle_armed:
+                keepalive_streak += 1
+                if _should_finish_go_idle():
+                    break
             continue
         data_str = line[5:].strip()
         if not data_str or data_str == "[DONE]":
@@ -858,6 +894,10 @@ def _consume_codex_sse(
                 keepalive_streak += 1
                 if keepalive_streak >= _POST_ANSWER_KEEPALIVE_LIMIT or _should_finish_drain():
                     _finish_tool_free_answer()
+                    break
+            elif go_idle_armed:
+                keepalive_streak += 1
+                if _should_finish_go_idle():
                     break
             continue
         try:
@@ -895,6 +935,7 @@ def _consume_codex_sse(
                 # Codex keeps the SSE open for a trailing summary.
                 if channel == "answer":
                     _seal_open_channels(("progress", "reasoning"), sid)
+            _begin_non_chatgpt_idle_watch()
             if _drain_tick():
                 break
             continue
@@ -957,6 +998,7 @@ def _consume_codex_sse(
             reasoning_text = event.get("delta") or ""
             if isinstance(reasoning_text, str) and reasoning_text:
                 reasoning_deltas.append(reasoning_text)
+                _begin_non_chatgpt_idle_watch()
                 item_id = event.get("item_id") or event.get("id")
                 out_idx = event.get("output_index")
                 sid, channel, oi_int = _resolve_channel(
@@ -1065,7 +1107,7 @@ def _consume_codex_sse(
     else:
         output = []
 
-    if not saw_terminal and not output:
+    if not saw_terminal and not output and not reasoning_deltas:
         return {
             "status": "failed",
             "output": [],

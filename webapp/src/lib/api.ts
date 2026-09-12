@@ -1755,7 +1755,7 @@ export const api = {
       "/api/session/interrupt",
       sessionId ? { session_id: sessionId } : {},
     ),
-  rewindSession: (userOrdinal: number) =>
+  rewindSession: (userOrdinal: number, opts?: { text?: string }) =>
     postJSON<{
       ok: boolean;
       prefill?: string;
@@ -1766,7 +1766,10 @@ export const api = {
       workspace_restored?: boolean;
       checkpoint_id?: string | null;
       restored_files?: string[];
-    }>("/api/session/rewind", { user_ordinal: userOrdinal }),
+    }>("/api/session/rewind", {
+      user_ordinal: userOrdinal,
+      ...(opts?.text ? { text: opts.text } : {}),
+    }),
   restoreRewind: () =>
     postJSON<{
       ok: boolean;

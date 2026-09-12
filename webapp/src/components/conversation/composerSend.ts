@@ -315,7 +315,10 @@ export async function runEditMessageFlow(opts: {
   originalText: string;
   stopLocal: () => void;
   interruptSession: () => Promise<InterruptSessionResponse>;
-  rewindSession: (userOrdinal: number) => Promise<RewindSessionResponse>;
+  rewindSession: (
+    userOrdinal: number,
+    extra?: { text?: string },
+  ) => Promise<RewindSessionResponse>;
 }): Promise<EditMessageFlowResult> {
   if (opts.composerBusy) {
     const stopResult = await runStopFlow({
@@ -328,7 +331,9 @@ export async function runEditMessageFlow(opts: {
   }
 
   try {
-    const res = await opts.rewindSession(opts.userOrdinal);
+    const res = await opts.rewindSession(opts.userOrdinal, {
+      text: opts.originalText,
+    });
     if (!res?.ok) {
       return {
         kind: "rewind_failed",

@@ -953,6 +953,49 @@ def test_consume_sse_opencode_empty_eof_after_item_added_names_host():
     assert "codex" not in err
 
 
+class _GoKeepaliveFp:
+    """OpenCode Go keepalives reset a long urlopen timeout unless consume arms one."""
+
+    def __init__(self):
+        self.timeout = None
+        self._n = 0
+
+    def settimeout(self, seconds):
+        self.timeout = seconds
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self._n == 0:
+            self._n += 1
+            return (
+                b'data: {"type":"response.reasoning.delta","delta":"worth it? nah."}\n'
+            )
+        if self.timeout is not None and float(self.timeout) <= 5.0:
+            raise TimeoutError("go idle")
+        self._n += 1
+        if self._n > 40:
+            raise AssertionError(
+                "consume_codex_sse did not arm a short Go idle timeout"
+            )
+        return b": keepalive\n"
+
+
+def test_consume_sse_go_reasoning_keepalives_settle_incomplete():
+    raw = _consume_codex_sse(
+        _GoKeepaliveFp(),
+        chatgpt_backend=False,
+        stream_label="OpenCode Responses",
+    )
+    assert raw["status"] == "incomplete"
+    assert raw["status"] != "completed"
+    assert "worth it? nah." in str(raw.get("reasoning") or "")
+    err = str(raw.get("error") or "").lower()
+    assert "opencode responses" in err
+    assert "codex" not in err
+
+
 def test_consume_sse_chatgpt_still_seals_after_answer_timeout():
     """ChatGPT anti-hang drain must not regress when chatgpt_backend defaults."""
 
