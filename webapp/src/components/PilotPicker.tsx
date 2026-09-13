@@ -156,7 +156,7 @@ export default function PilotPicker({ config }: {
   };
 
   return (
-    <div className="relative flex flex-col gap-0.5 min-w-0 w-full" ref={containerRef}>
+    <div className="relative inline-flex flex-col items-stretch gap-0.5 min-w-0" ref={containerRef}>
       {rerouteNotice ? (
         <div
           role="status"
@@ -166,8 +166,8 @@ export default function PilotPicker({ config }: {
           {rerouteNotice}
         </div>
       ) : null}
-      <div className="pilot-picker-controls relative flex items-center gap-1 min-w-0 w-full">
-      <div className="pilot-model-slot relative min-w-0 flex-1">
+      <div className="pilot-picker-controls relative inline-flex items-center gap-1 min-w-0">
+      <div className="pilot-model-slot relative min-w-0">
         <button
           ref={modelTriggerRef}
           onClick={() => {
@@ -175,9 +175,9 @@ export default function PilotPicker({ config }: {
             setModelOpen((prev) => !prev);
           }}
           title={current || "Pilot model"}
-          className="flex items-center gap-1 min-w-0 w-full text-[11px] text-muted hover:text-txt rounded-md px-2 h-[22px] bg-transparent hover:bg-panel2 border border-edge/40 transition select-none"
+          className="flex items-center gap-1 min-w-0 text-[11px] text-muted hover:text-txt rounded-md px-2 h-[22px] bg-transparent hover:bg-panel2 border border-edge/40 transition select-none"
         >
-          <span className="truncate min-w-0 flex-1 text-left">{currentLabel}</span>
+          <span className="pilot-picker-trigger-label text-left">{currentLabel}</span>
           <ChevronDown size={11} className="shrink-0 opacity-60" />
         </button>
 

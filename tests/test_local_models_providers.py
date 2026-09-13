@@ -181,6 +181,43 @@ def test_disconnected_local_is_unavailable(tmp_path, monkeypatch):
         unmark_disconnected("local")
 
 
+def test_activate_reconnects_disconnected_local(tmp_path, monkeypatch):
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    from harness.keys import mark_disconnected, unmark_disconnected
+    reset_manager_for_tests()
+    monkeypatch.setattr(mv, "_store_path", lambda: str(tmp_path / "models.json"))
+    catalog = {
+        "version": 1,
+        "runtime": {"id": "llama.cpp", "release": "t", "binary": "llama-server", "assets": {}},
+        "models": [],
+    }
+    mgr = LocalModelManager(root=str(tmp_path / "local-models"), catalog=catalog)
+    spec = "local:ollama-127-0-0-1-11434/llama3"
+    state = mgr._state()
+    state["externals"] = [{
+        "id": "ollama-127-0-0-1-11434",
+        "name": "ollama",
+        "vendor": "ollama",
+        "base_url": "http://127.0.0.1:11434/v1",
+        "models": ["llama3"],
+        "selected_model": "llama3",
+        "healthy": True,
+        "kind": "loopback",
+        "requires_key": False,
+    }]
+    mgr._save(state)
+    monkeypatch.setattr("harness.local_model_manager.get_manager", lambda: mgr)
+    mv.set_enabled(["openrouter:foo"])
+    try:
+        mark_disconnected("local")
+        assert prov.get_provider("local").available is False
+        mgr.activate(spec)
+        assert prov.get_provider("local").available is True
+        assert spec in mv.enabled_pilots()
+    finally:
+        unmark_disconnected("local")
+
+
 def test_keyless_lan_builds_and_public_requires_key(tmp_path, monkeypatch):
     monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
     reset_manager_for_tests()

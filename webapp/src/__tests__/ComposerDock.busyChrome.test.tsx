@@ -135,11 +135,15 @@ describe("ComposerDock busy chrome", () => {
   });
 
   it("keeps send actions in a non-shrinking cluster so the picker can truncate", () => {
-    const { container } = renderBusyDock("");
+    const { container } = renderBusyDock("pivot to auth");
     expect(container.querySelector(".composer-toolbar")).toBeTruthy();
     expect(container.querySelector(".composer-toolbar-actions")).toBeTruthy();
     expect(container.querySelector(".composer-toolbar-send")).toBeTruthy();
     expect(container.querySelector(".pilot-picker-slot")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /queue/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /interrupt/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /steer/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /stop/i })).toBeInTheDocument();
   });
 });
 
@@ -165,7 +169,7 @@ describe("ComposerDock picker layout and accessibility", () => {
     expect(screen.getByTestId("swarm-reasoning-picker")).toHaveTextContent("Workers");
   });
 
-  it("allocates uncapped picker space and wraps within narrow containers", () => {
+  it("keeps the picker content-sized so Queue/Interrupt/Steer stay on one row", () => {
     const root = postcss.parse(css);
     const declarations = (selector: string) => {
       const result: Record<string, string> = {};
@@ -174,13 +178,15 @@ describe("ComposerDock picker layout and accessibility", () => {
     };
     expect(declarations(".composer-dock")["container-type"]).toBe("inline-size");
     expect(declarations(".pilot-picker-slot")["max-width"]).toBeUndefined();
-    expect(declarations(".pilot-picker-slot").flex).toBe("1 1 20rem");
-    expect(declarations(".composer-toolbar-actions")["flex-wrap"]).toBe("wrap");
-    expect(declarations(".pilot-picker-controls")["flex-wrap"]).toBe("wrap");
-    expect(declarations(".pilot-model-slot").flex).toBe("1 1 12rem");
-    expect(css).not.toMatch(/\.composer-toolbar-label\s*\{\s*display:\s*none/);
-    const { container } = renderBusyDock("");
+    expect(declarations(".pilot-picker-slot").flex).toBe("0 1 auto");
+    expect(declarations(".composer-toolbar-actions")["flex-wrap"]).toBe("nowrap");
+    expect(declarations(".pilot-picker-controls")["flex-wrap"]).toBe("nowrap");
+    expect(declarations(".pilot-model-slot").flex).toBe("0 1 auto");
+    const { container } = renderBusyDock("pivot to auth");
     expect(container.querySelector(".pilot-picker-slot .pilot-picker-controls .pilot-model-slot button")).toHaveTextContent("GPT-6 Astra Long Model Name");
+    expect(screen.getByRole("button", { name: /queue/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /interrupt/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /steer/i })).toBeInTheDocument();
   });
 });
 

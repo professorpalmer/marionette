@@ -380,7 +380,25 @@ def test_normalize_tool_calling_defaults_unverified():
 def test_tool_calling_request_is_non_streaming():
     body = lm.tool_calling_request_body("llama3")
     assert body["stream"] is False
+    assert body["max_tokens"] == lm.TOOL_CALLING_MAX_TOKENS
+    assert body["max_tokens"] >= 256
     assert body["tool_choice"]["function"]["name"] == lm.TOOL_CALLING_FUNCTION_NAME
+
+
+def test_classify_tool_calling_length_truncated_empty():
+    status, reason = lm.classify_tool_calling_payload({
+        "choices": [{
+            "finish_reason": "length",
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": None,
+                "reasoning_content": "planning the call",
+            },
+        }],
+    })
+    assert status == "error"
+    assert "token limit" in reason.lower()
 
 
 def test_trusted_lan_is_keyless_public_requires_key():

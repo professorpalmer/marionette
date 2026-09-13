@@ -61,7 +61,8 @@ export {
   projectSessionsEmptyState,
   preferLastGoodSessionList,
   writeSessionListCache,
-  shouldOpenBlankSessionAfterRemove,
+  actionAfterSessionRemove,
+  remainingOpenAfterRemoveFromCache,
 } from "./leftRailSessions";
 
 import {
@@ -86,7 +87,8 @@ import {
   projectSessionsEmptyState,
   preferLastGoodSessionList,
   writeSessionListCache,
-  shouldOpenBlankSessionAfterRemove,
+  actionAfterSessionRemove,
+  remainingOpenAfterRemoveFromCache,
   type RunnerStatus,
 } from "./leftRailSessions";
 import { Section, IconBtn, Empty, JobStatusIcon, RunnerStatusDot, type JobStatus } from "./leftRailPrimitives";
@@ -1013,20 +1015,43 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     window.addEventListener("harness-new-session", onNew);
     return () => window.removeEventListener("harness-new-session", onNew);
   }, []);
+  const followUpAfterSessionRemove = async (id: string, viewingId: string, projectPath: string) => {
+    const remaining = remainingOpenAfterRemoveFromCache(projectPath, id);
+    const action = actionAfterSessionRemove({
+      removedId: id,
+      activeId: viewingId,
+      remainingOpen: remaining,
+    });
+    switch (action.kind) {
+      case "blank":
+        await newSession(projectPath || currentRepo);
+        return;
+      case "switch":
+        await switchSession(action.sessionId);
+        return;
+      case "noop":
+        return;
+      default: {
+        const _exhaustive: never = action;
+        return _exhaustive;
+      }
+    }
+  };
+
   const handleDeleteSession = async (id: string) => {
     // Optimistic: drop the id from every per-root cache immediately so phantom
     // titles cannot linger under a non-active project while the network round
     // trip completes (the bug that produced "merged dir" ghosts).
+    const viewingId = sessions.find((session) => session.active)?.id || "";
+    const removed = sessions.find((session) => session.id === id);
+    const projectPath = (removed?.workspace_root || removed?.repo || currentRepo || "").trim();
     purgeSessionFromRootCaches(projectsRef.current, id);
     setSessionsCacheEpoch((n) => n + 1);
 
     try {
-      const viewingId = sessions.find((session) => session.active)?.id || "";
       await api.deleteSession(id);
       await refreshSessionsRef.current();
-      if (shouldOpenBlankSessionAfterRemove(id, viewingId)) {
-        await newSession(currentRepo);
-      }
+      await followUpAfterSessionRemove(id, viewingId, projectPath);
     } catch (err) {
       await refreshSessionsRef.current();
       if (typeof err === "object" && err !== null
@@ -1142,12 +1167,14 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     patchSessionArchivedInCaches(roots, sid, archived);
     setSessionsCacheEpoch((n) => n + 1);
     const viewingId = sessions.find((session) => session.active)?.id || "";
+    const removed = sessions.find((session) => session.id === sid);
+    const projectPath = (removed?.workspace_root || removed?.repo || currentRepo || "").trim();
     try {
       await api.archiveSession(sid, archived);
       await refreshSessionsRef.current();
       if (railTab === "sessions") void refreshBankSessions();
-      if (archived && shouldOpenBlankSessionAfterRemove(sid, viewingId)) {
-        await newSession(currentRepo);
+      if (archived) {
+        await followUpAfterSessionRemove(sid, viewingId, projectPath);
       }
     } catch (err) {
       console.error(err);
@@ -1723,6 +1750,18 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                   <span className={`text-[12px] truncate flex-1 ${isSelected ? "text-txt font-medium" : "text-muted group-hover:text-txt"}`}>
                     {basename}
                   </span>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void newSession(projectPath);
+                    }}
+                    title={`New session in ${basename}`}
+                    aria-label={`New session in ${basename}`}
+                    className="p-0.5 rounded text-faint hover:text-txt hover:bg-panel2 shrink-0 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
+                  >
+                    <Plus size={12} />
+                  </button>
 
                   {/* CodeGraph attention state; ready is intentionally silent. */}
                   {cgLabel && (

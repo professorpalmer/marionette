@@ -26,6 +26,7 @@ vi.mock("../lib/api", () => ({
       { id: "session-1", title: "Current", active: true, repo: "/workspace" },
     ]),
     jobs: vi.fn().mockResolvedValue([]),
+    createSession: vi.fn().mockResolvedValue({ id: "session-new" }),
   },
 }));
 
@@ -59,6 +60,17 @@ describe("LeftRail branch layout", () => {
     expect(screen.queryByRole("button", { name: "Retry updates" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Refresh sources" })).toBeNull();
     expect(screen.queryByText("Coverage")).toBeNull();
+  });
+
+  it("offers a plus on each project row to open a session in that dir", async () => {
+    render(<LeftRail jobsRefresh={0} />);
+    await waitFor(() => expect(api.getWorkspace).toHaveBeenCalled());
+    const plusButtons = await screen.findAllByRole("button", { name: /New session in / });
+    expect(plusButtons.length).toBeGreaterThanOrEqual(1);
+    const workspacePlus = plusButtons.find((btn) => btn.getAttribute("aria-label")?.includes("workspace"));
+    expect(workspacePlus).toBeTruthy();
+    workspacePlus?.click();
+    await waitFor(() => expect(api.createSession).toHaveBeenCalled());
   });
 });
 
