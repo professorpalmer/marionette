@@ -2,6 +2,7 @@ import { cleanup, renderHook, waitFor, act } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PendingReview } from "../lib/api";
 import { api } from "../lib/api";
+import * as reviewExtension from "../components/inFileReviewExtension";
 import { useInFileReview } from "../components/useInFileReview";
 import { reviewHunkDecisionKey } from "../lib/reviewDecisions";
 
@@ -94,4 +95,42 @@ describe("useInFileReview", () => {
       "infile_b#0": "reject",
     }, "selected");
   });
+});
+
+it('restarts editor generations, ignores old results, and refreshes on events', async () => {
+  vi.useFakeTimers();
+  let finish: (rows: PendingReview[]) => void = () => {};
+  vi.mocked(api.getReviews).mockReset().mockImplementationOnce(() => new Promise(resolve => { finish = resolve; })).mockResolvedValue([]);
+  const { result, rerender } = renderHook(({ path }) => useInFileReview(path), { initialProps: { path: 'src/target.ts' } });
+  try {
+    await act(() => vi.advanceTimersByTimeAsync(12000));
+    expect(api.getReviews).toHaveBeenCalledTimes(1);
+    rerender({ path: 'other.ts' });
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(api.getReviews).toHaveBeenCalledTimes(2);
+    rerender({ path: 'src/target.ts' });
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    await act(async () => finish([review]));
+    expect(result.current.pendingCount).toBe(0);
+    const calls = vi.mocked(api.getReviews).mock.calls.length;
+    await act(async () => window.dispatchEvent(new Event('harness-reviews-refresh')));
+    expect(api.getReviews).toHaveBeenCalledTimes(calls + 1);
+  } finally { cleanup(); vi.useRealTimers(); }
+});
+
+
+it('refreshes immediately after a successful in-file decision', async () => {
+  vi.mocked(api.getReviews).mockReset().mockResolvedValue([review]);
+  vi.mocked(api.applyReview).mockResolvedValue({ ok: true, message: "ok", applied_files: [], rejected_hunks: [], checkpoint_id: null });
+  const extension = vi.spyOn(reviewExtension, "createInFileReviewExtension").mockReturnValue([]);
+  try {
+    const { result } = renderHook(() => useInFileReview("src/target.ts"));
+    await waitFor(() => expect(result.current.pendingCount).toBe(2));
+    const call = extension.mock.calls.at(-1);
+    if (!call || !call[0][0]) throw new Error("Expected a pending hunk");
+    const [hunks, handlers] = call;
+    const before = vi.mocked(api.getReviews).mock.calls.length;
+    await act(async () => { await handlers.onAccept(hunks[0]); });
+    expect(api.getReviews).toHaveBeenCalledTimes(before + 1);
+  } finally { extension.mockRestore(); }
 });

@@ -1262,3 +1262,23 @@ describe("RightPane pointer resize scheduling", () => {
   }
 
 });
+
+it('keeps collapsed dock polling serialized and restarts project scope immediately', async () => {
+  vi.useFakeTimers();
+  let finish: (rows: Awaited<ReturnType<typeof api.getReviews>>) => void = () => {};
+  vi.mocked(api.getReviews).mockReset().mockImplementationOnce(() => new Promise(resolve => { finish = resolve; })).mockResolvedValue([]);
+  try {
+    render(<RightDock panelsOpen={false} onOpenTab={() => {}} onExpand={() => {}} onCollapse={() => {}} />);
+    await act(() => vi.advanceTimersByTimeAsync(15000));
+    expect(api.getReviews).toHaveBeenCalledTimes(1);
+    await act(async () => window.dispatchEvent(new CustomEvent('harness-project-selected', { detail: '/new-project' })));
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(api.getReviews).toHaveBeenCalledTimes(2);
+    await act(async () => finish([{ id: 'old', job_id: 'old', objective: 'old', created_at: 1, files: [] }]));
+    expect(screen.queryByText('1')).toBeNull();
+    await act(async () => window.dispatchEvent(new Event('harness-reviews-refresh')));
+    expect(api.getReviews).toHaveBeenCalledTimes(3);
+    await act(() => vi.advanceTimersByTimeAsync(5000));
+    expect(api.getReviews).toHaveBeenCalledTimes(4);
+  } finally { cleanup(); vi.useRealTimers(); }
+});

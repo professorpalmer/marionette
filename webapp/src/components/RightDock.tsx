@@ -1,3 +1,4 @@
+import { usePolling } from "../lib/usePolling";
 import { useSharedJobMetadata, metadataActivity } from '../lib/jobMetadataContext';
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
@@ -160,29 +161,42 @@ export default function RightDock({
     return () => window.removeEventListener("harness-project-selected", onProject);
   }, []);
 
+  const reviewPoll = useRef<() => Promise<unknown> | void>(() => {});
   useEffect(() => {
     let active = true;
     let request = 0;
     const epoch = activityEpoch.current;
+    let pending: Promise<unknown> | undefined;
     const load = () => {
       const generation = ++request;
       const current = () => active && epoch === activityEpoch.current && generation === request;
-      api.getReviews()
+      const requestPromise = api.getReviews()
         .then((rows) => {
           if (current()) setReviewCount(Array.isArray(rows) ? rows.length : 0);
         })
         .catch(() => {});
-
+      pending = requestPromise;
+      void requestPromise.finally(() => {
+        if (pending === requestPromise) pending = undefined;
+      });
+      return requestPromise;
     };
-    load();
-    const t = setInterval(load, 5000);
+    let initial: Promise<unknown> | undefined = load();
+    reviewPoll.current = () => {
+      const first = initial;
+      initial = undefined;
+      return first ?? pending ?? load();
+    };
+    const onVisible = () => { if (!document.hidden) initial = undefined; };
+    document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("harness-reviews-refresh", load);
     return () => {
       active = false;
-      clearInterval(t);
+      document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("harness-reviews-refresh", load);
     };
   }, [swarmRepo, activitySessionId, scopeEpoch]);
+  usePolling(() => reviewPoll.current(), 5000, { scopeKey: scopeEpoch });
 
   return (
     <aside

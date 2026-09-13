@@ -129,3 +129,25 @@ it('does not paint a hop error when queueList returns another session id', async
   expect(screen.queryByText('Active session changed. Queue refresh is pending.')).toBeNull();
   expect(screen.queryByText('other session row')).toBeNull();
 });
+
+it('serializes queue discovery and pauses periodic reads while hidden', async () => {
+  vi.useFakeTimers();
+  let finish: (value: Awaited<ReturnType<typeof api.queueList>>) => void = () => {};
+  const read = vi.spyOn(api, 'queueList').mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }))
+    .mockResolvedValue({ ok: true, session_id: 'queue-ui', items: [{ id: 'external', text: 'externally queued' }], recovery: [] });
+  let hidden = false;
+  vi.spyOn(document, 'hidden', 'get').mockImplementation(() => hidden);
+  try {
+    await mount();
+    await act(() => vi.advanceTimersByTimeAsync(12000));
+    expect(read).toHaveBeenCalledTimes(1);
+    await act(async () => finish({ ok: true, session_id: 'queue-ui', items: [], recovery: [] }));
+    hidden = true;
+    await act(() => vi.advanceTimersByTimeAsync(12000));
+    expect(read).toHaveBeenCalledTimes(1);
+    hidden = false;
+    await act(async () => document.dispatchEvent(new Event('visibilitychange')));
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(screen.getByText('externally queued')).toBeTruthy();
+  } finally { cleanup(); vi.useRealTimers(); }
+});

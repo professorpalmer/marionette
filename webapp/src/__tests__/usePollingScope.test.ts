@@ -1,0 +1,40 @@
+import { act, cleanup, renderHook } from '@testing-library/react';
+import { afterEach, expect, it, vi } from 'vitest';
+import { usePolling } from '../lib/usePolling';
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
+it('starts a new scope while the old request is pending and serializes each scope', async () => {
+  vi.useFakeTimers();
+  const releases: (() => void)[] = [];
+  const poll = vi.fn(() => new Promise<void>(resolve => { releases.push(resolve); }));
+  const { rerender } = renderHook(({ scopeKey }) => usePolling(poll, 100, { scopeKey }), { initialProps: { scopeKey: 'a' } });
+  await act(() => vi.advanceTimersByTimeAsync(1000));
+  expect(poll).toHaveBeenCalledTimes(1);
+  rerender({ scopeKey: 'b' });
+  await act(() => vi.advanceTimersByTimeAsync(0));
+  expect(poll).toHaveBeenCalledTimes(2);
+  await act(async () => releases[0]());
+  await act(() => vi.advanceTimersByTimeAsync(1000));
+  expect(poll).toHaveBeenCalledTimes(2);
+});
+it('pauses hidden polling and resumes immediately on visibility', async () => {
+  vi.useFakeTimers();
+  let hidden = true;
+  vi.spyOn(document, 'hidden', 'get').mockImplementation(() => hidden);
+  const poll = vi.fn(async () => {});
+  renderHook(() => usePolling(poll, 100));
+  await act(() => vi.advanceTimersByTimeAsync(1000));
+  expect(poll).not.toHaveBeenCalled();
+  hidden = false;
+  await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+  expect(poll).toHaveBeenCalledTimes(1);
+});
+it('retains the same-scope request lock when disabled and re-enabled', async () => {
+  vi.useFakeTimers();
+  const poll = vi.fn(() => new Promise<void>(() => {}));
+  const { rerender } = renderHook(({ enabled }) => usePolling(poll, 100, { enabled, scopeKey: 'same' }), { initialProps: { enabled: true } });
+  await act(() => vi.advanceTimersByTimeAsync(0));
+  rerender({ enabled: false });
+  rerender({ enabled: true });
+  await act(() => vi.advanceTimersByTimeAsync(1000));
+  expect(poll).toHaveBeenCalledTimes(1);
+});
