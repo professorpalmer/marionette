@@ -245,6 +245,7 @@ export type Task = {
   retryable?: boolean;
 };
 export type Job = {
+  canonical_aliases?: string[];
   local_ref?: { job_id: string; incarnation: string };
   parent_ref?: { job_id: string; incarnation: string };
   metadata_key?: string;
@@ -842,6 +843,8 @@ export type RecommendResult = {
 
 export type UsageData = {
   session: {
+    accounting_scope?: 'conversation';
+    list_price_complete?: boolean;
     read_status?: "unavailable";
     job_coverage?: { expected: number | null; read: number };
     tokens_used: number;
@@ -956,7 +959,7 @@ export type UsageData = {
   };
   // Lifetime running total for the active chat session (persisted across
   // app restarts/updates, unlike `session` which is boot-scoped).
-  session_total?: {
+  session_total?: Partial<UsageData['session']> & {
     read_status?: "unavailable";
     session_id?: string;
     est_cost_usd: number;
@@ -1565,10 +1568,11 @@ export const api = {
       : "/api/jobs";
     return getJSON<Job[]>(path);
   },
-  dashboard: (jobId?: string, repoRoot?: string) => {
+  dashboard: (jobId?: string, repoRoot?: string, jobRef?: PublicJobRef) => {
     const params = new URLSearchParams();
     if (jobId) params.set("job", jobId);
     if (repoRoot) params.set("repo", repoRoot);
+    if (jobRef) for (const [key, value] of Object.entries(jobRefQuery(jobRef))) params.set(key, value);
     const qs = params.toString();
     return getJSONSoft<{
       ok: boolean;

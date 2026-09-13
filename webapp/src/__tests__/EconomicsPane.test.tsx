@@ -516,8 +516,8 @@ describe("EconomicsPane", () => {
     expect(await screen.findByText(/job reports do not agree/)).toBeTruthy();
     expect(screen.queryByText("Spend")).toBeNull();
     expect(screen.queryByText("At list price")).toBeNull();
-    expect(screen.getByText("Why list-price is lower")).toBeTruthy();
-    expect(screen.getByText("Prompt-cache value")).toBeTruthy();
+    expect(screen.queryByText("Why list-price is lower")).toBeNull();
+    expect(screen.queryByText("Prompt-cache value")).toBeNull();
   });
 
   it("does not stack a this-open spend hero on a scoped receipt hero", async () => {
@@ -549,13 +549,13 @@ describe("EconomicsPane", () => {
     expect(screen.getByText("Estimated frontier cost")).toBeTruthy();
     expect(screen.queryByText("At list price")).toBeNull();
     expect(screen.queryByText("Less than list price")).toBeNull();
-    expect(screen.getByText("Why list-price is lower")).toBeTruthy();
-    expect(screen.getByText("Prompt-cache value")).toBeTruthy();
-    expect(screen.getByText("Compact tool outputs")).toBeTruthy();
-    expect(screen.getByText(/since you opened Marionette/)).toBeTruthy();
+    expect(screen.queryByText("Why list-price is lower")).toBeNull();
+    expect(screen.queryByText("Prompt-cache value")).toBeNull();
+    expect(screen.queryByText("Compact tool outputs")).toBeNull();
+    expect(screen.queryByText(/since you opened Marionette/)).toBeNull();
   });
 
-  it("shows this-open cache and compact value even when the session has no owned jobs", async () => {
+  it("shows session spend without importing app-run cache and compaction value", async () => {
     mockGetUsage.mockResolvedValue({
       session: {
         tokens_used: 229_800,
@@ -587,8 +587,9 @@ describe("EconomicsPane", () => {
 
     render(<EconomicsPane />);
 
-    expect(await screen.findByText("Prompt-cache value")).toBeTruthy();
-    expect(screen.getByText("Compact tool outputs")).toBeTruthy();
+    expect((await screen.findAllByText("~$0.21")).length).toBeGreaterThan(0);
+    expect(screen.queryByText("Prompt-cache value")).toBeNull();
+    expect(screen.queryByText("Compact tool outputs")).toBeNull();
     expect(screen.getByText("Spend")).toBeTruthy();
     expect(screen.getByText("At list price")).toBeTruthy();
     expect(await screen.findByText("No owned jobs for this session.")).toBeTruthy();
@@ -635,7 +636,7 @@ describe("EconomicsPane", () => {
 
 });
 
-it("keeps healthy app-run spend when only the session total is unavailable", async () => {
+it("never substitutes app-run spend for an unavailable session total", async () => {
   _resetProcessUsageForTests();
   clearSWRCache();
   mockGetEconomics.mockResolvedValue({ available: false, repo: "/repo-a", scope: "conversation", counterfactual: null });
@@ -645,7 +646,7 @@ it("keeps healthy app-run spend when only the session total is unavailable", asy
   render(<EconomicsPane />);
   await chooseScope("conversation");
   const retry = await screen.findByRole("button", { name: "Session total partial / unavailable. Retry" });
-  expect(screen.getAllByText("~$4.00").length).toBeGreaterThan(0);
+  expect(screen.queryByText("~$4.00")).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "App-run usage partial / unavailable. Retry" })).not.toBeInTheDocument();
   mockGetUsage.mockResolvedValue(emptyUsage);
   fireEvent.click(retry);

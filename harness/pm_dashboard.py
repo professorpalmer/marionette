@@ -67,18 +67,18 @@ def build_dashboard_url(
     return f"http://{host}:{int(port)}/" + (f"?{query}" if query else "")
 
 
-def resolve_dashboard_state_dir(repo: str = "", job_id: str = "") -> Optional[str]:
-    """Prefer the store that owns ``job_id``, else the workspace CLI state dir."""
+def resolve_dashboard_state_dir(repo: str = "", job_id: str = "", *, job_ref=None, default_dir=None) -> Optional[str]:
+    """Resolve a durable job only to its owner; empty selections use the workspace."""
     token = (job_id or "").strip()
-    if token and is_dashboard_job_id(token):
-        try:
-            from puppetmaster.state import find_state_dir_for_job
+    if job_ref is not None:
+        from puppetmaster.state import resolve_job_state
 
-            found = find_state_dir_for_job(token)
-            if found:
-                return str(found)
-        except Exception:
-            pass
+        return str(resolve_job_state(job_id=token, job_ref=job_ref, cwd=repo or None, default_dir=default_dir))
+    if token and is_dashboard_job_id(token):
+        from puppetmaster.state import find_state_dir_for_job
+
+        found = find_state_dir_for_job(token)
+        return str(found) if found else None
     from .cli_job_merge import resolve_cli_state_dir
 
     return resolve_cli_state_dir(repo or "")

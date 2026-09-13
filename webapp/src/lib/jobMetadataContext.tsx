@@ -203,5 +203,12 @@ export function metadataJobs(state: JobMetadataState): Job[] {
         ...(row.task_count === null ? {} : { task_count: row.task_count }),
       };
     });
+  for (const job of pm) {
+    const row = observed.get(job.metadata_key ?? '');
+    if (!row) continue;
+    job.canonical_aliases = [...nativeByJobId.values()]
+      .filter(alias => canonicalPMReplacesLocal(alias, [row]))
+      .map(alias => alias.row.local_ref.job_id);
+  }
   return [...pm, ...local];
 }

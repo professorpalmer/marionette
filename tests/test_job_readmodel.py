@@ -737,3 +737,17 @@ def test_all_scope_snapshot_prepends_known_canonical_beyond_page_scan(env):
     assert len(result['rows']) <= result['page']['scanned']
     assert all(row['revision'] <= result['page']['revision'] for row in result['rows'])
     assert len(ids) == len(set(ids))
+
+
+@pytest.mark.parametrize('statuses, expected', [(['complete'] * 3, 'complete'), (['complete', 'failed', 'complete'], 'failed')])
+def test_complete_task_page_settles_lagging_running_parent(env, statuses, expected):
+    from puppetmaster.models import TaskStatus
+    store, reader, ctx, source, _ = env
+    parent = job(store)
+    store.update_job_status(parent.id, JobStatus.RUNNING)
+    for status in statuses:
+        store.save_task(Task(job_id=parent.id, role='worker', instruction='terminal', status=TaskStatus(status)))
+    selection = PMSelection(ctx, source, store.job_ref(parent.id))
+    detail = reader.read_selected_metadata(selection)
+    assert detail['tasks']['page']['outcome'] == 'complete'
+    assert detail['lifecycle'] == expected

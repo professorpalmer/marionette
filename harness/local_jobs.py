@@ -2503,9 +2503,61 @@ class LocalJobsMixin:
         except Exception:
             pass
 
+    def _reconcile_canonical_local_jobs(self) -> None:
+        from puppetmaster.models import JobRef
+        from puppetmaster.state import state_identity
+        from puppetmaster.store_factory import create_store
+        from .job_lifecycle import terminal_task_lifecycle
+
+        with self._local_jobs_lock:
+            candidates = [(jid, copy.deepcopy(job.get('canonical'))) for jid, job in self._local_jobs.items()
+                          if job.get('canonical') and job.get('status') not in _TERMINAL_LOCAL_JOB_STATUSES]
+        for jid, canonical in candidates:
+            try:
+                ref = JobRef(**canonical['job_ref'])
+                if ref.version != 2 or canonical.get('session_id') != self.harness_session_id:
+                    continue
+                root = self.state_dir
+                if state_identity(root) != ref.state_id:
+                    continue
+                store = create_store('sqlite', root, mode='deferred')
+                page = store.list_job_summaries(job_ref=ref, limit=1, max_scan=2, max_bytes=8192)
+                if page.outcome != 'complete' or len(page.items) != 1:
+                    continue
+                row = page.items[0]
+                if row.deleted or row.job_ref != ref or row.session_id != self.harness_session_id or row.origin != 'marionette':
+                    continue
+                lifecycle = row.status if row.status in ('complete', 'failed', 'cancelled', 'stalled') else None
+                if lifecycle is None and row.status != 'stitching':
+                    tasks = store.list_task_refs(ref, limit=200, max_scan=201, max_bytes=65536)
+                    current = store.list_job_summaries(job_ref=ref, limit=1, max_scan=2, max_bytes=8192)
+                    if (tasks.outcome != 'complete' or len(tasks.items) != row.task_count
+                            or current.outcome != 'complete' or len(current.items) != 1
+                            or current.items[0] != row or any(task.job_ref != ref for task in tasks.items)):
+                        continue
+                    lifecycle = terminal_task_lifecycle(task.status for task in tasks.items)
+                if lifecycle is None:
+                    continue
+                terminal = 'completed' if lifecycle == 'complete' else 'failed' if lifecycle == 'stalled' else lifecycle
+                with self._local_jobs_lock:
+                    local = self._local_jobs.get(jid)
+                    if (not local or local.get('canonical') != canonical
+                            or local.get('status') in _TERMINAL_LOCAL_JOB_STATUSES):
+                        continue
+                    local['status'] = terminal
+                    local['terminal_receipt'] = dict(source='canonical_workers', job_ref=ref.as_dict(), status=terminal)
+                    for task in local.get('tasks', []):
+                        task['status'] = terminal
+                    local['actions'] = self._settle_post_terminal_actions(local.get('actions', []), terminal)
+                    self._persist_local_jobs_locked()
+            except (OSError, ValueError, KeyError, AttributeError):
+                # A failed identity or snapshot read cannot authorize a terminal transition.
+                continue
+
     def live_local_jobs(self) -> list:
         """Snapshot of in-process provider-native worker jobs for /api/swarm/live.
         Returns deep copies so the server can merge without holding the session lock."""
+        self._reconcile_canonical_local_jobs()
         with self._local_jobs_lock:
             out = []
             for job in self._local_jobs.values():

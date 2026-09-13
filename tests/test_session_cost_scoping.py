@@ -135,3 +135,17 @@ def test_active_session_total_survives_priced_job_errors(tmp_path, monkeypatch):
     total = server._active_session_total(["job_a"], lambda jid: [], registry=[])
     assert total is not None
     assert total["est_cost_usd"] == 0.75
+
+
+def test_active_session_total_uses_persisted_tokens_once_and_exposes_cache_scope(tmp_path, monkeypatch):
+    store, sid = _session_store_with_active(tmp_path, cost=1.5)
+    store.accumulate_meters(sid, input_tokens=800, output_tokens=200, cache_read_tokens=400)
+    monkeypatch.setattr(server, '_sessions', store)
+    monkeypatch.setattr(server, '_job_swarm_accounting', lambda arts, registry: (100, 0.25))
+    total = server._active_session_total(['job_a', 'job_a'], lambda jid: [], [])
+    assert total['est_cost_usd'] == 1.75
+    assert total['tokens_used'] == 1000  # persisted tokens already include drained worker usage
+    assert total['prompt_input_tokens'] == 800
+    assert total['prompt_cache_read_tokens'] == 400
+    assert total['prompt_cache_hit_ratio'] == 0.5
+    assert total['accounting_scope'] == 'conversation'

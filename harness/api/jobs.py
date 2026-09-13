@@ -319,6 +319,7 @@ def _scoped_cancel(body: dict, svc: JobServices, *, read_only: bool) -> tuple[in
     identity_errors = ()
     from puppetmaster.state import state_identity
     from ..cli_job_merge import resolve_cli_state_dir
+    from puppetmaster.state import resolve_job_state
     from ..job_scoping import job_owned_by_marionette
     from ..paths import same_workspace_path
     from puppetmaster.store_factory import create_store
@@ -417,8 +418,15 @@ def _scoped_cancel(body: dict, svc: JobServices, *, read_only: bool) -> tuple[in
             store = svc.get_session().state().store
         else:
             root = resolve_cli_state_dir(captured_repo)
-            if not root:
-                return 503, {"ok": False, "error": "Job store is unavailable."}
+            if not root or state_identity(root) != state_id:
+                try:
+                    root = resolve_job_state(
+                        job_ref=job_ref,
+                        default_dir=root,
+                        cwd=captured_repo,
+                    )
+                except Exception:
+                    return refused
             if state_identity(root) != state_id:
                 return refused
             store = create_store("sqlite", root, mode="attach")
@@ -462,8 +470,7 @@ def _scoped_cancel(body: dict, svc: JobServices, *, read_only: bool) -> tuple[in
         selection = {**selection, "bindings": [asdict(b) for b in bindings]}
 
         def authority_matches(*, require_complete_view: bool):
-            if (not context_matches() or state_identity(store.root) != state_id
-                    or (source == "cli" and state_identity(resolve_cli_state_dir(captured_repo)) != state_id)):
+            if (not context_matches() or state_identity(store.root) != state_id):
                 return False
             current_job = owned_summary()
             if current_job is None or any(getattr(current_job, field) != getattr(job, field)
@@ -479,8 +486,7 @@ def _scoped_cancel(body: dict, svc: JobServices, *, read_only: bool) -> tuple[in
                         or not task.payload.get("cwd")
                         or not same_workspace_path(task.payload["cwd"], repo)):
                     return False
-            return (context_matches()
-                    and (source != "cli" or state_identity(resolve_cli_state_dir(captured_repo)) == state_id))
+            return context_matches() and state_identity(store.root) == state_id
 
         if not authority_matches(require_complete_view=not read_only and receipt is None):
             return 409, {"ok": False, "code": "cancellation_view_unavailable",

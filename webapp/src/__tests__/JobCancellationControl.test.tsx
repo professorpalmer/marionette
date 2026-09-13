@@ -100,3 +100,17 @@ it('requires an explicit new selection after a stale binding before targeting a 
   expect(next.request_id).not.toBe(original.request_id);
   expect(next.selection.bindings[0].generation).toBe(2);
 });
+
+it('retains exact bindings through a transient unavailable task read', async () => {
+  const row = job();
+  vi.mocked(api.requestCancellation).mockImplementation(async request => response(request));
+  const view = render(<JobCancellationControl job={row} repo="/repo" sessionId="s" />);
+  view.rerender(<JobCancellationControl job={{ ...row, unavailable_fields: ['tasks'],
+    cancellation_view: { status: 'unavailable', limit: 200 } }} repo="/repo" sessionId="s" />);
+  const stop = screen.getByRole('button', { name: 'Stop selected workers' });
+  expect(stop).toHaveAttribute('aria-disabled', 'false');
+  fireEvent.click(stop);
+  await waitFor(() => expect(api.requestCancellation).toHaveBeenCalledTimes(1));
+  expect(vi.mocked(api.requestCancellation).mock.calls[0][0].selection.bindings).toEqual(
+    row.cancellation_view?.status === 'complete' ? row.cancellation_view.bindings : []);
+});

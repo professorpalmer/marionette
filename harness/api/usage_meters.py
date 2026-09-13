@@ -386,19 +386,30 @@ def _active_session_total(session_job_ids, arts_getter, registry) -> Any:
         return None
     swarm_cost = 0.0
     job_acct = _server_attr("_job_swarm_accounting", _job_swarm_accounting)
-    for jid in session_job_ids:
+    for jid in dict.fromkeys(session_job_ids):
         try:
             _tokens, cost = job_acct(arts_getter(jid), registry)
             swarm_cost += cost
         except Exception as e:
             _diag("server.session_total_job", e, msg=f"job={jid}")
+    tokens_in = int(row.get("input_tokens") or 0)
+    tokens_out = int(row.get("output_tokens") or 0)
+    cached = int(row.get("cache_read_tokens") or 0)
     return {
         "session_id": sid,
+        "accounting_scope": "conversation",
+        "tokens_used": tokens_in + tokens_out,
+        "tokens_cached": cached,
+        "prompt_input_tokens": tokens_in,
+        "prompt_cache_read_tokens": cached,
+        "prompt_cache_hit_ratio": min(1.0, cached / tokens_in) if tokens_in > 0 else None,
+        "estimated": True,
+        "cost_source": "estimated",
         "est_cost_usd": round(
             float(row.get("estimated_cost_usd") or 0.0) + swarm_cost, 6
         ),
-        "input_tokens": int(row.get("input_tokens") or 0),
-        "output_tokens": int(row.get("output_tokens") or 0),
+        "input_tokens": tokens_in,
+        "output_tokens": tokens_out,
     }
 
 

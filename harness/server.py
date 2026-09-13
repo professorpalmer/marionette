@@ -1948,6 +1948,7 @@ def _usage_services():
         diag=_diag,
         get_pilot=lambda: _pilot,
         get_runner=_runners.get,
+        active_session_id=lambda: _sessions.active or "",
     )
 
 

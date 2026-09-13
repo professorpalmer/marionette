@@ -66,6 +66,21 @@ export function getProcessUsage(): ProcessUsageSnapshot {
   return snapshot;
 }
 
+/** The footer and This session / All time share this persisted session projection. */
+export function activeSessionUsage(current: ProcessUsageSnapshot): ProcessUsageSession | null {
+  const total = current.sessionTotal;
+  if (!total?.session_id) return null;
+  return {
+    ...total,
+    accounting_scope: 'conversation',
+    tokens_used: total.tokens_used ?? total.input_tokens + total.output_tokens,
+    driver: '', price_in: 0, price_out: 0,
+    estimated: total.estimated ?? true,
+    cost_source: total.cost_source ?? 'estimated',
+    list_price_complete: total.list_price_complete ?? false,
+  };
+}
+
 export function refreshProcessUsage(): Promise<void> {
   if (inFlight) return inFlight;
   const owner = scopeGeneration;

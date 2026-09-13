@@ -1563,6 +1563,7 @@ class ConversationJobsMixin:
         # for the 600s reaper (busy-held starve after has_pending_swarms clears).
         from .conversation import ConvEvent
 
+        self._reconcile_canonical_local_jobs()
         self._reap_stuck_turn()
         acquired_here = False
         if not already_holding_busy:
