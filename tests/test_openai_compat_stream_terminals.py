@@ -430,6 +430,56 @@ def test_opencode_go_retries_tool_finish_without_assembled_call(monkeypatch):
     assert resp.meta["tool_calls"][0]["function"]["name"] == "run_parallel"
 
 
+def test_opencode_go_incomplete_tool_retry_preserves_explicit_filter(monkeypatch):
+    first = [
+        _data({"choices": [{
+            "delta": {"content": "Working"},
+            "finish_reason": "tool_calls",
+        }]}),
+        b"data: [DONE]\n",
+    ]
+    second = {
+        "choices": [{
+            "message": {"content": ""},
+            "finish_reason": "content_filter",
+        }],
+    }
+
+    class _JsonResp:
+        def read(self):
+            return json.dumps(second).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    calls = []
+
+    def urlopen(req, timeout=None):
+        body = json.loads(req.data.decode("utf-8"))
+        calls.append(body)
+        return _SseResp(first) if body.get("stream") else _JsonResp()
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    resp = _driver(
+        base_url="https://opencode.ai/zen/go/v1", model="deepseek-flash",
+    ).chat_stream(
+        [{"role": "user", "content": "do the protocol test"}],
+        tools=[{"type": "function", "function": {
+            "name": "run_parallel", "parameters": {"type": "object"},
+        }}],
+        on_delta=lambda _text: None,
+    )
+
+    assert len(calls) == 2
+    assert resp.error and "content_filter" in resp.error
+    assert resp.meta["finish_reason"] == "content_filter"
+    assert resp.meta["stream_terminal"] == "content_filter"
+    assert resp.meta["incomplete_retry_recovered"] is False
+
+
 def test_reasoning_content_presence_survives_stream_parser(monkeypatch):
     """DeepSeek's native field must remain distinct from normalized reasoning."""
     lines = [
