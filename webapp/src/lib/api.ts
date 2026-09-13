@@ -1124,7 +1124,8 @@ export type LocalModelCommand =
   | { type: "restart" }
   | { type: "remove"; target: "model" | "runtime" | "all"; endpoint_id?: string }
   | { type: "activate"; spec: string }
-  | { type: "verify_tool_calling"; spec: string };
+  | { type: "verify_tool_calling"; spec: string }
+  | { type: "set_policy"; idle_timeout_minutes: number };
 
 export const LOCAL_TOOL_CALLING_STATUSES = [
   "unverified",
@@ -1189,7 +1190,21 @@ export type LocalModelDownload = {
   phase?: string;
 };
 
-export type LocalManagedState = {
+export type LocalManagedLifecycle = {
+  idle_timeout_minutes: number;
+  idle_timeout_enabled: boolean;
+  active_requests: number;
+  last_activity_at: number | null;
+  idle_deadline_at: number | null;
+  idle_remaining_seconds: number | null;
+  observed_at: number;
+  lifecycle_error: string | null;
+} & (
+  | { residency: "stopped"; stop_reason: "inactivity" | null }
+  | { residency: "running" | "starting" | "stopping" | "unknown" | "error"; stop_reason: null }
+);
+
+export type LocalManagedState = LocalManagedLifecycle & {
   runtime: { status: string; path?: string; error?: string | null; platform?: string; release?: string };
   model: { status: string; id?: string; path?: string; error?: string | null };
   process?: {
@@ -1219,7 +1234,7 @@ export type LocalExternalEndpoint = {
   requires_key?: boolean;
   last_error?: string | null;
   healthy?: boolean;
-  tool_calling?: LocalToolCalling;
+  tool_calling?: unknown;
 };
 
 export type LocalModelsSnapshot = {
@@ -2258,23 +2273,23 @@ export const api = {
       `/api/schedules/history?id=${encodeURIComponent(id)}&limit=${limit}`,
     ),
 
-  getLocalModels: () => getJSON<LocalModelsSnapshot>("/api/local-models"),
+  getLocalModels: () => getJSON<unknown>("/api/local-models"),
   localModelCommand: (command: LocalModelCommand) =>
-    postJSON<LocalModelsSnapshot | LocalModelProbeResult>("/api/local-models", command),
+    postJSON<unknown>("/api/local-models", command),
   getLocalModelEvents: (since = 0) =>
     getJSON<{ ok: boolean; events: LocalModelEvent[]; cursor: number; snapshot: LocalModelsSnapshot }>(
       `/api/local-models/events?since=${encodeURIComponent(String(since))}`,
     ),
   watchLocalModelEvents: (opts: {
     since?: number;
-    onEvent: (ev: LocalModelStreamFrame) => void;
+    onEvent: (ev: unknown) => void;
     onDone?: () => void;
     onError?: (e: unknown) => void;
   }) =>
     stream(
       `/api/local-models/events?watch=1&since=${encodeURIComponent(String(opts.since ?? 0))}`,
       (ev) => {
-        opts.onEvent(ev as LocalModelStreamFrame);
+        opts.onEvent(ev);
       },
       opts.onDone,
       opts.onError,

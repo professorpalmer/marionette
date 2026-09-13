@@ -312,3 +312,21 @@ def test_stream_events_snapshot_then_wait(tmp_path):
     assert "snapshot" in first
     assert waits
     assert all(value >= 2.0 for value in waits)
+
+
+def test_idle_policy_command_snapshot_and_replay_agree(tmp_path):
+    svc, rebuilt = _svc(tmp_path, clock=lambda: 1234.0)
+    status, command = post_local_models({'type': 'set_policy', 'idle_timeout_minutes': 5}, svc)
+    assert status == 200
+    _, current = get_local_models(svc)
+    _, replay = get_local_model_events(svc)
+    assert command['managed'] == current['managed'] == replay['snapshot']['managed']
+    assert current['managed']['idle_timeout_minutes'] == 5
+    assert current['managed']['observed_at'] == 1234
+    assert current['managed']['idle_deadline_at'] is None
+    assert any(e['kind'] == 'policy_changed' for e in replay['events'])
+    assert rebuilt['n'] == 0
+    for value in (True, False, -1, 0.5, 1.0, 1441, '5', None):
+        status, _ = post_local_models({'type': 'set_policy', 'idle_timeout_minutes': value}, svc)
+        assert status == 400
+    assert svc.manager.snapshot()['managed']['idle_timeout_minutes'] == 5

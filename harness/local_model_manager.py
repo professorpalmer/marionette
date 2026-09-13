@@ -58,6 +58,7 @@ from .local_models import (
     tool_calling_error_reason,
     tool_calling_request_body,
     usable_local_specs,
+    validate_idle_timeout,
 )
 from .url_safety import is_safe_url_pinned, normalize_url_for_request
 from .web_tools import _PinnedIP, _PinnedIPHTTPHandler, _PinnedIPHTTPSHandler
@@ -742,6 +743,8 @@ class LocalModelManager:
         popen: Optional[PopenFactory] = None,
         sleeper: Optional[Callable[[float], None]] = None,
         clock: Optional[Callable[[], float]] = None,
+        monotonic_clock: Optional[Callable[[], float]] = None,
+        scheduler: Optional[Callable[[float, Callable[[], None]], Any]] = None,
         ready_timeout: float = 90.0,
         probe_transport: Optional[Callable[..., Any]] = None,
     ) -> None:
@@ -752,6 +755,8 @@ class LocalModelManager:
         self.popen = popen or subprocess.Popen
         self.sleep = sleeper or time.sleep
         self.clock = clock or time.time
+        self._idle_clock = monotonic_clock or time.monotonic
+        self._idle_scheduler = scheduler or self._schedule_idle_callback
         self.ready_timeout = ready_timeout
         self.probe_transport = probe_transport
         seeded = 0
@@ -776,6 +781,14 @@ class LocalModelManager:
         self._start_in_progress = False
         self._install_in_progress = False
         self._shutdown = False
+        self._idle_timer_token = 0
+        self._idle_timer = None
+        self._idle_deadline = None
+        self._idle_deadline_at = None
+        self._last_activity_at = None
+        self._last_release_monotonic = None
+        self._idle_stop_pending = False
+        self._stopped_after_idle = False
         if seeded > 0:
             self._emit("snapshot", {"reason": "replay_unavailable"})
 
@@ -831,12 +844,21 @@ class LocalModelManager:
             managed = snapshot["managed"]
             process = state["managed"].get("process") or {}
             managed["active_requests"] = self._active_requests
+            managed["idle_timeout_enabled"] = bool(managed.get("idle_timeout_minutes", 0))
+            managed["last_activity_at"] = self._last_activity_at
+            managed["idle_deadline_at"] = self._idle_deadline_at
+            managed["observed_at"] = self.clock()
+            managed["idle_remaining_seconds"] = (
+                max(0.0, self._idle_deadline - self._idle_clock())
+                if self._idle_deadline is not None else None
+            )
             managed["residency"] = (
                 "error" if self._stop_error else "stopping" if self._stopping
                 else "starting" if self._start_in_progress
                 else "running" if process.get("healthy") else "unknown" if process else "stopped"
             )
             managed["lifecycle_error"] = self._stop_error or None
+            managed["stop_reason"] = "inactivity" if self._stopped_after_idle else None
             if self._stopping or self._shutdown:
                 managed["usable"] = False
             return snapshot
@@ -1255,6 +1277,84 @@ class LocalModelManager:
         with self._lock:
             return self._active_requests
 
+    @staticmethod
+    def _schedule_idle_callback(delay: float, callback: Callable[[], None]) -> Any:
+        timer = threading.Timer(delay, callback)
+        timer.daemon = True
+        timer.start()
+        return timer
+
+    def _cancel_idle_timer(self) -> None:
+        self._idle_timer_token += 1
+        if self._idle_timer is not None:
+            self._idle_timer.cancel()
+        self._idle_timer = None
+        self._idle_deadline = None
+        self._idle_deadline_at = None
+
+    def set_idle_policy(self, idle_timeout_minutes: int) -> dict:
+        try:
+            minutes = validate_idle_timeout(idle_timeout_minutes)
+        except ValueError as exc:
+            raise LocalModelError(str(exc), code="invalid_policy") from exc
+        with self._condition:
+            self._check_lifecycle_available()
+            self._update_state(lambda state: state["managed"].update({
+                "idle_timeout_minutes": minutes,
+            }))
+            self._cancel_idle_timer()
+            self._arm_idle_timer()
+            self._emit("policy_changed", {"idle_timeout_minutes": minutes})
+        return self.snapshot()
+
+    def _idle_eligible(self, state: dict) -> bool:
+        process = state["managed"].get("process") or {}
+        handle = self._procs.get(process.get("pid"))
+        return bool(
+            state["managed"]["idle_timeout_minutes"] and handle
+            and process.get("healthy") and handle[0].poll() is None
+            and not self._active_requests and not self._stopping
+            and not self._start_in_progress and not self._shutdown
+            and not self._removing and not self._install_in_progress
+        )
+
+    def _arm_idle_timer(self) -> None:
+        # Caller holds the lifecycle lock; only a completed request seeds idle time.
+        state = self._state()
+        if self._last_release_monotonic is None or not self._idle_eligible(state):
+            return
+        minutes = state["managed"]["idle_timeout_minutes"]
+        self._idle_deadline = self._last_release_monotonic + minutes * 60
+        self._idle_deadline_at = self._last_activity_at + minutes * 60
+        token, generation = self._idle_timer_token, self._generation
+        pid = state["managed"]["process"]["pid"]
+        self._idle_timer = self._idle_scheduler(
+            max(0.0, self._idle_deadline - self._idle_clock()),
+            lambda: self._idle_expired(pid, generation, token),
+        )
+
+    def _idle_expired(self, pid: int, generation: int, token: int) -> None:
+        with self._condition:
+            if token != self._idle_timer_token or generation != self._generation:
+                return
+            state = self._state()
+            process = state["managed"].get("process") or {}
+            if (self._idle_deadline is None or process.get("pid") != pid
+                    or not self._idle_eligible(state)):
+                self._cancel_idle_timer()
+                self._emit("idle_cancelled", {})
+                return
+            remaining = self._idle_deadline - self._idle_clock()
+            if remaining > 0:
+                self._idle_timer = self._idle_scheduler(
+                    remaining, lambda: self._idle_expired(pid, generation, token),
+                )
+                return
+            self._reserve_stop()
+            self._idle_stop_pending = True
+            self._emit("idle_expired", {})
+        self._finish_stop(raise_errors=False)
+
     @contextmanager
     def request_scope(self, spec: str):
         # Admission and endpoint capture must be atomic with stop/restart.
@@ -1278,7 +1378,11 @@ class LocalModelManager:
                 proc, _log = self._procs[process["pid"]]
                 if proc.poll() is not None:
                     raise LocalModelError("Managed server has exited", code="not_ready")
+                self._cancel_idle_timer()
+                self._last_release_monotonic = None
+                self._last_activity_at = self.clock()
                 self._active_requests += 1
+                self._emit("request_admitted", {"active_requests": self._active_requests})
                 thread_id = threading.get_ident()
                 self._request_threads[thread_id] = self._request_threads.get(thread_id, 0) + 1
             endpoint = ManagedEndpoint(resolved["endpoint_id"], resolved["model"],
@@ -1293,6 +1397,11 @@ class LocalModelManager:
                     if not self._request_threads[thread_id]:
                         del self._request_threads[thread_id]
                     self._condition.notify_all()
+                    self._last_activity_at = self.clock()
+                    if self._active_requests == 0:
+                        self._last_release_monotonic = self._idle_clock()
+                        self._arm_idle_timer()
+                    self._emit("request_released", {"active_requests": self._active_requests})
                 self._finish_stop(raise_errors=False)
 
     def reconcile_process(self) -> dict:
@@ -1328,18 +1437,26 @@ class LocalModelManager:
                     self._procs.pop(pid, None)
                     handle[1].close()
                 self._generation += 1
+                self._cancel_idle_timer()
+                self._last_release_monotonic = None
                 state["managed"]["process"] = None
                 self._emit("stale_pid_cleared", {"pid": pid})
-            return self._save(state)
+            saved = self._save(state)
+            if healthy and self._idle_timer is None:
+                self._arm_idle_timer()
+            return saved
 
     def start(self) -> dict:
         with self._lock:
             self._check_lifecycle_available()
             if self._start_in_progress or self._install_in_progress:
                 raise LocalModelError("Server start is already running", code="busy")
+            self._cancel_idle_timer()
+            self._stopped_after_idle = False
             self._start_in_progress = True
             self._generation += 1
             generation = self._generation
+            self._emit("starting", {})
         return self._run_start(generation)
 
     def _run_start(self, generation: int) -> dict:
@@ -1348,6 +1465,8 @@ class LocalModelManager:
         finally:
             with self._condition:
                 self._start_in_progress = False
+                self._arm_idle_timer()
+                self._emit("lifecycle_changed", {})
                 self._condition.notify_all()
             self._finish_stop()
         return self.snapshot()
@@ -1526,7 +1645,11 @@ class LocalModelManager:
             raise LocalModelError("Managed server is stopping or being removed", code="busy")
 
     def _reserve_stop(self, *, restart: bool = False) -> None:
+        self._cancel_idle_timer()
+        self._last_release_monotonic = None
         if not self._stopping:
+            self._idle_stop_pending = False
+            self._stopped_after_idle = False
             self._generation += 1
         self._stopping = True
         self._restart_pending = restart
@@ -1569,6 +1692,9 @@ class LocalModelManager:
             self._stopping = False
             self._stop_in_progress = False
             self._stop_error = ""
+            self._stopped_after_idle = self._idle_stop_pending
+            self._idle_stop_pending = False
+            self._last_release_monotonic = None
             restart = self._restart_pending and not self._shutdown
             self._restart_pending = False
             if restart:

@@ -16,10 +16,10 @@ import {
   type LocalExternalEndpoint,
   type LocalModelCommand,
   type LocalModelProbeResult,
-  type LocalModelStreamFrame,
   type LocalModelsSnapshot,
   type LocalToolCallingStatus,
 } from "../lib/api";
+import { isRecord, isLocalModelsSnapshot, parseIdleMinutes, residencyLabel } from "../lib/localModelParsing";
 
 const TOOL_CALLING_LABELS: Record<LocalToolCallingStatus, string> = {
   unverified: "Unverified",
@@ -40,8 +40,7 @@ function formatBytes(value?: number | null): string {
   return `${size.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
 }
 
-function statusLabel(status: string, healthy?: boolean): string {
-  if (status === "ready" && healthy) return "Ready";
+function statusLabel(status: string): string {
   if (status === "ready") return "Installed";
   if (status === "downloading") return "Downloading";
   if (status === "extracting") return "Extracting";
@@ -49,18 +48,6 @@ function statusLabel(status: string, healthy?: boolean): string {
   if (status === "paused") return "Paused";
   if (status === "absent") return "Not installed";
   return status || "Unknown";
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function isLocalModelsSnapshot(value: unknown): value is LocalModelsSnapshot {
-  return isRecord(value) && isRecord(value.managed) && isRecord(value.hardware);
-}
-
-function isLocalModelStreamFrame(value: unknown): value is LocalModelStreamFrame {
-  return isRecord(value) && typeof value.kind === "string";
 }
 
 function isProbeResult(value: unknown): value is LocalModelProbeResult {
@@ -120,15 +107,20 @@ export default function LocalModelsSettingsPage() {
   const [probe, setProbe] = useState<LocalModelProbeResult | null>(null);
   const [selectedDiscovered, setSelectedDiscovered] = useState("");
   const [selectedCatalogId, setSelectedCatalogId] = useState("");
+  const [idleTimeout, setIdleTimeout] = useState("0");
+  const idleEdited = useRef(false);
+  const idleEditRevision = useRef(0);
+  const latestSnapshot = useRef<LocalModelsSnapshot | null>(null);
   const liveSnapshot = useRef(false);
   const eventCursorRef = useRef(0);
   const pollStarted = useRef(false);
   const loadErrorRef = useRef(false);
 
   const acceptSnapshot = (
-    next: LocalModelsSnapshot,
+    next: unknown,
     source: "get" | "live" | "command",
   ): boolean => {
+    if (!isLocalModelsSnapshot(next)) throw new Error("Invalid local model snapshot");
     if (!shouldAcceptSnapshot(next, eventCursorRef.current, {
       source,
       live: liveSnapshot.current,
@@ -136,7 +128,11 @@ export default function LocalModelsSettingsPage() {
       return false;
     }
     eventCursorRef.current = Math.max(eventCursorRef.current, snapshotCursor(next));
+    if (!idleEdited.current) {
+      setIdleTimeout(String(next.managed.idle_timeout_minutes));
+    }
     if (source !== "get") liveSnapshot.current = true;
+    latestSnapshot.current = next;
     setSnapshot(next);
     setLoading(false);
     if (source === "live" && loadErrorRef.current) {
@@ -153,7 +149,7 @@ export default function LocalModelsSettingsPage() {
         const next = await api.getLocalModels();
         if (cancelled) return;
         if (acceptSnapshot(next, "get")) {
-          const models = catalogModels(next);
+          const models = isLocalModelsSnapshot(next) ? catalogModels(next) : [];
           if (models[0]?.id) setSelectedCatalogId(models[0].id);
         }
       } catch (err) {
@@ -185,7 +181,7 @@ export default function LocalModelsSettingsPage() {
           if (res.snapshot && isLocalModelsSnapshot(res.snapshot)) {
             acceptSnapshot(res.snapshot, "live");
           }
-          since = Math.max(since, res.cursor || 0, snapshotCursor(res.snapshot));
+          if (isLocalModelsSnapshot(res.snapshot)) since = Math.max(since, snapshotCursor(res.snapshot));
           pollTimer = window.setTimeout(tick, 4000);
         }).catch(() => {
           if (!cancelled) pollTimer = window.setTimeout(tick, 4000);
@@ -197,10 +193,10 @@ export default function LocalModelsSettingsPage() {
     stopWatch = api.watchLocalModelEvents({
       since: 0,
       onEvent: (ev) => {
-        if (cancelled || !isLocalModelStreamFrame(ev)) return;
+        if (cancelled || !isRecord(ev)) return;
         if (ev.kind === "snapshot" && ev.snapshot && isLocalModelsSnapshot(ev.snapshot)) {
           acceptSnapshot(ev.snapshot, "live");
-          since = Math.max(since, ev.cursor ?? 0, snapshotCursor(ev.snapshot));
+          since = Math.max(since, snapshotCursor(ev.snapshot));
         }
       },
       onError: () => {
@@ -219,6 +215,7 @@ export default function LocalModelsSettingsPage() {
   }, []);
 
   const run = async (command: LocalModelCommand, label: string) => {
+    const submittedIdleRevision = idleEditRevision.current;
     setBusy(label);
     setError("");
     try {
@@ -228,10 +225,16 @@ export default function LocalModelsSettingsPage() {
         setSelectedDiscovered(result.models[0] || "");
       } else if (isLocalModelsSnapshot(result)) {
         acceptSnapshot(result, "command");
+        if (command.type === "set_policy" && idleEditRevision.current === submittedIdleRevision) {
+          idleEdited.current = false;
+          setIdleTimeout(String((latestSnapshot.current ?? result).managed.idle_timeout_minutes));
+        }
         if (command.type === "save_external") setApiKey("");
         if (command.type === "activate" || command.type === "start") {
           window.dispatchEvent(new Event("harness-config-changed"));
         }
+      } else {
+        throw new Error("Invalid local model response");
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : "Local model command failed";
@@ -260,7 +263,9 @@ export default function LocalModelsSettingsPage() {
     || ["downloading", "extracting"].includes(modelStatus);
   const paused = runtimeStatus === "paused" || modelStatus === "paused";
   const installed = runtimeStatus === "ready" && modelStatus === "ready";
-  const running = Boolean(process?.pid && process.healthy);
+  const running = managed?.residency === "running";
+  const lifecycleBusy = managed?.residency === "starting" || managed?.residency === "stopping";
+  const idleMinutes = parseIdleMinutes(idleTimeout);
   const download = managed?.downloads?.model || managed?.downloads?.runtime;
   const progress = download?.total
     ? Math.min(100, Math.round(((download.bytes || 0) / download.total) * 100))
@@ -349,9 +354,42 @@ export default function LocalModelsSettingsPage() {
         ) : null}
         <p className="text-[12px] text-muted mb-2" data-testid="local-models-managed-status">
           Runtime {statusLabel(runtimeStatus)} · Model {statusLabel(modelStatus)}
-          {running ? " · Server running" : installed ? " · Server stopped" : ""}
+          {` · Server ${managed ? residencyLabel(managed) : "Status unknown"}`}
           {process?.context_length ? ` · ${process.context_length} context` : ""}
         </p>
+        {managed?.residency === "stopped" && managed.stop_reason === "inactivity" ? (
+          <p className="text-[12px] text-muted mb-2">Start to use this model.</p>
+        ) : null}
+        {installed ? (
+          <div className="mb-3 flex flex-wrap items-end gap-2 text-[12px]" data-testid="local-models-idle-policy">
+            <label className="text-muted">
+              Unload after inactivity (minutes; 0 disables)
+              <input
+                className="mt-1 block w-32 px-2 py-1 rounded-md bg-panel2 border border-edge/50 text-txt"
+                type="number"
+                min={0}
+                max={1440}
+                step={1}
+                value={idleTimeout}
+                onChange={(event) => { idleEdited.current = true; idleEditRevision.current += 1; setIdleTimeout(event.target.value); }}
+                aria-describedby="local-idle-help"
+              />
+            </label>
+            <button
+              type="button"
+              className="px-2.5 py-1.5 rounded-md border border-edge/40 text-txt"
+              disabled={busy !== null || lifecycleBusy || idleMinutes === null}
+              onClick={() => {
+                if (idleMinutes !== null) void run({ type: "set_policy", idle_timeout_minutes: idleMinutes }, "policy");
+              }}
+            >
+              Apply
+            </button>
+            <p id="local-idle-help" className="basis-full text-faint">
+              Only Marionette requests count. Keep auto-stop disabled when shared external clients use this server.
+            </p>
+          </div>
+        ) : null}
         {download && (installing || paused) ? (
           <div className="mb-3" data-testid="local-models-progress">
             <div className="h-1.5 rounded bg-panel2 overflow-hidden">
@@ -413,7 +451,7 @@ export default function LocalModelsSettingsPage() {
               </span>
             </button>
           ) : null}
-          {installed && !running ? (
+          {installed && !running && !lifecycleBusy ? (
             <button
               type="button"
               className="px-2.5 py-1.5 rounded-md border border-edge/40 text-[12px] text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"

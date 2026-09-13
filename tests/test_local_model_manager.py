@@ -2063,6 +2063,22 @@ def test_request_scope_drains_before_stop_and_rejects_new_work(tmp_path, monkeyp
     assert mgr._state()['managed']['process'] is None
 
 
+def test_idle_policy_expires_owned_child_after_final_request(tmp_path, monkeypatch):
+    mgr, proc, _log = _lease_manager(tmp_path, monkeypatch)
+    now = [100.0]
+    scheduled = []
+    mgr._idle_clock = lambda: now[0]
+    mgr._idle_scheduler = lambda delay, callback: scheduled.append((delay, callback))
+    mgr.set_idle_policy(1)
+    with mgr.request_scope('local:managed/qwen-test'):
+        assert mgr.active_requests == 1
+    assert scheduled and scheduled[0][0] == 60
+    now[0] = 160.0
+    scheduled[0][1]()
+    assert proc.exited
+    assert mgr._state()['managed']['process'] is None
+
+
 def test_failed_stop_retains_owned_handle_and_can_retry(tmp_path, monkeypatch):
     mgr, proc, log = _lease_manager(tmp_path, monkeypatch)
     monkeypatch.setattr('harness.local_model_manager.stop_process_tree', lambda *a, **k: None)
@@ -2489,3 +2505,290 @@ def test_shutdown_waits_for_competing_stop_after_admission(tmp_path, monkeypatch
     assert bool(errors) == fails
     if fails:
         assert errors[0].code == 'stop_failed'
+
+
+class _IdleScheduler:
+    class Call:
+        def __init__(self, delay, callback):
+            self.delay = delay
+            self.callback = callback
+            self.cancelled = False
+
+        def cancel(self):
+            self.cancelled = True
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, delay, callback):
+        call = self.Call(delay, callback)
+        self.calls.append(call)
+        return call
+
+
+def _idle_fixture(tmp_path, monkeypatch):
+    mgr, proc, log = _lease_manager(tmp_path, monkeypatch)
+    wall, mono = [1000.0], [10.0]
+    scheduler = _IdleScheduler()
+    mgr.clock = lambda: wall[0]
+    mgr._idle_clock = lambda: mono[0]
+    mgr._idle_scheduler = scheduler
+    mgr.set_idle_policy(1)
+    return mgr, proc, wall, mono, scheduler
+
+
+def test_idle_deadline_uses_last_release_and_monotonic_time(tmp_path, monkeypatch):
+    mgr, proc, wall, mono, scheduler = _idle_fixture(tmp_path, monkeypatch)
+    assert not scheduler.calls
+    with mgr.request_scope('local:managed/qwen-test'):
+        with mgr.request_scope('local:managed/qwen-test'):
+            mono[0] = 20
+            wall[0] = 1010
+        assert not scheduler.calls
+        mono[0] = 30
+        wall[0] = 1020
+    before = mgr.snapshot()['managed']
+    assert before['last_activity_at'] == 1020
+    assert before['idle_deadline_at'] == 1080
+    assert before['observed_at'] == 1020
+    assert scheduler.calls[-1].delay == 60
+    wall[0] = 999999
+    mono[0] = 89
+    for _ in range(3):
+        assert mgr.snapshot()['managed']['idle_deadline_at'] == 1080
+        mgr.events_since(0)
+    scheduler.calls[-1].callback()
+    assert not proc.exited
+    assert scheduler.calls[-1].delay == 1
+    mono[0] = 90
+    scheduler.calls[-1].callback()
+    assert proc.exited
+    stopped = mgr.snapshot()['managed']
+    assert stopped['residency'] == 'stopped'
+    assert stopped['stop_reason'] == 'inactivity'
+    assert stopped['idle_deadline_at'] is None
+    assert len([e for e in mgr.events_since(0) if e['kind'] == 'stopped']) == 1
+    scheduler.calls[-1].callback()
+    assert len([e for e in mgr.events_since(0) if e['kind'] == 'stopped']) == 1
+    with pytest.raises(LocalModelError):
+        with mgr.request_scope('local:managed/qwen-test'):
+            pass
+
+
+def test_idle_admission_wins_and_cancels_expiry(tmp_path, monkeypatch):
+    mgr, proc, wall, mono, scheduler = _idle_fixture(tmp_path, monkeypatch)
+    with mgr.request_scope('local:managed/qwen-test'):
+        pass
+    old = scheduler.calls[-1]
+    mono[0] = 70
+    with mgr.request_scope('local:managed/qwen-test'):
+        assert old.cancelled
+        assert mgr.snapshot()['managed']['idle_deadline_at'] is None
+        old.callback()
+        assert not proc.exited
+        mono[0] = 100
+    assert scheduler.calls[-1].delay == 60
+    old.callback()
+    assert not proc.exited
+    mono[0] = 160
+    scheduler.calls[-1].callback()
+    assert proc.exited
+
+
+def test_idle_expiry_reserves_before_later_admission(tmp_path, monkeypatch):
+    mgr, proc, wall, mono, scheduler = _idle_fixture(tmp_path, monkeypatch)
+    with mgr.request_scope('local:managed/qwen-test'):
+        pass
+    entered, release = threading.Event(), threading.Event()
+    original = mgr._finish_stop
+    def finish(**kwargs):
+        entered.set()
+        assert release.wait(2)
+        original(**kwargs)
+    monkeypatch.setattr(mgr, '_finish_stop', finish)
+    mono[0] = 70
+    thread = threading.Thread(target=scheduler.calls[-1].callback)
+    thread.start()
+    try:
+        assert entered.wait(2)
+        assert mgr.snapshot()['managed']['residency'] == 'stopping'
+        with pytest.raises(LocalModelError):
+            with mgr.request_scope('local:managed/qwen-test'):
+                pass
+        assert not proc.exited
+    finally:
+        release.set()
+        thread.join(2)
+    assert proc.exited
+
+
+def test_idle_stale_timer_cannot_stop_restarted_child(tmp_path, monkeypatch):
+    mgr, proc, wall, mono, scheduler = _idle_fixture(tmp_path, monkeypatch)
+    with mgr.request_scope('local:managed/qwen-test'):
+        pass
+    stale = scheduler.calls[-1]
+    replacement = _LeaseProcess()
+    def start(generation):
+        mgr._procs[replacement.pid] = (replacement, io.BytesIO())
+        state = mgr._state()
+        state['managed']['process'] = dict(pid=replacement.pid, port=12345,
+            host='127.0.0.1', healthy=True, alias='new-generation')
+        mgr._save(state)
+    monkeypatch.setattr(mgr, '_start_locked', start)
+    mgr.restart()
+    assert stale.cancelled
+    assert mgr.snapshot()['managed']['idle_deadline_at'] is None
+    mono[0] = 1000
+    stale.callback()
+    assert not replacement.exited
+    assert mgr.snapshot()['managed']['residency'] == 'running'
+
+
+@pytest.mark.parametrize('operation', ['disable', 'stop', 'shutdown', 'unhealthy', 'adopted'])
+def test_idle_cancellation_and_unowned_guards(tmp_path, monkeypatch, operation):
+    mgr, proc, wall, mono, scheduler = _idle_fixture(tmp_path, monkeypatch)
+    with mgr.request_scope('local:managed/qwen-test'):
+        pass
+    stale = scheduler.calls[-1]
+    if operation == 'disable':
+        mgr.set_idle_policy(0)
+    elif operation == 'stop':
+        mgr.stop()
+    elif operation == 'shutdown':
+        mgr.shutdown()
+    elif operation == 'unhealthy':
+        state = mgr._state()
+        state['managed']['process']['healthy'] = False
+        mgr._save(state)
+    else:
+        mgr._procs.clear()
+    mono[0] = 1000
+    stale.callback()
+    if operation in ('disable', 'stop', 'shutdown'):
+        assert stale.cancelled
+    if operation not in ('stop', 'shutdown'):
+        assert not proc.exited
+    assert mgr.snapshot()['managed']['idle_deadline_at'] is None
+
+
+def test_idle_policy_and_activity_are_not_rehydrated_as_a_timer(tmp_path, monkeypatch):
+    mgr, proc, wall, mono, scheduler = _idle_fixture(tmp_path, monkeypatch)
+    with mgr.request_scope('local:managed/qwen-test'):
+        pass
+    state = mgr._state()['managed']
+    assert state['idle_timeout_minutes'] == 1
+    assert 'idle_deadline_at' not in state
+    restarted = LocalModelManager(root=mgr.root, catalog=mgr.catalog,
+        clock=lambda: 2000, monotonic_clock=lambda: 5, scheduler=scheduler)
+    snap = restarted.snapshot()['managed']
+    assert snap['idle_timeout_minutes'] == 1
+    assert snap['idle_deadline_at'] is None
+    assert snap['last_activity_at'] is None
+    assert len(scheduler.calls) == 1
+
+
+def test_idle_policy_changes_use_last_release_without_extending_activity(tmp_path, monkeypatch):
+    mgr, proc, wall, mono, scheduler = _idle_fixture(tmp_path, monkeypatch)
+    with mgr.request_scope('local:managed/qwen-test'):
+        pass
+    old = scheduler.calls[-1]
+    mono[0] = 40
+    wall[0] = 1030
+    mgr.set_idle_policy(2)
+    assert old.cancelled
+    assert scheduler.calls[-1].delay == 90
+    assert mgr.snapshot()['managed']['last_activity_at'] == 1000
+    assert mgr.snapshot()['managed']['idle_deadline_at'] == 1120
+
+
+def test_idle_disabled_release_and_external_request_never_arm(tmp_path, monkeypatch):
+    mgr, proc, wall, mono, scheduler = _idle_fixture(tmp_path, monkeypatch)
+    mgr.set_idle_policy(0)
+    with mgr.request_scope('local:managed/qwen-test'):
+        pass
+    assert not scheduler.calls
+    state = mgr._state()
+    state['externals'] = [dict(id='box', base_url='http://127.0.0.1:9999/v1',
+        models=['qwen'], selected_model='qwen', healthy=True, kind='loopback')]
+    mgr._save(state)
+    with mgr.request_scope('local:box/qwen'):
+        assert mgr.active_requests == 0
+    assert not scheduler.calls
+
+
+def test_idle_release_during_explicit_start_still_arms(tmp_path, monkeypatch):
+    mgr, proc, wall, mono, scheduler = _idle_fixture(tmp_path, monkeypatch)
+    entered, resume = threading.Event(), threading.Event()
+    def start(generation):
+        entered.set()
+        assert resume.wait(2)
+    monkeypatch.setattr(mgr, '_start_locked', start)
+    with mgr.request_scope('local:managed/qwen-test'):
+        thread = threading.Thread(target=mgr.start)
+        thread.start()
+        assert entered.wait(2)
+    resume.set()
+    thread.join(2)
+    assert not thread.is_alive()
+    assert scheduler.calls and scheduler.calls[-1].delay == 60
+
+
+def test_idle_stop_failure_does_not_claim_inactivity_stop(tmp_path, monkeypatch):
+    mgr, proc, wall, mono, scheduler = _idle_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr('harness.local_model_manager.stop_process_tree', lambda *a, **k: None)
+    with mgr.request_scope('local:managed/qwen-test'):
+        pass
+    mono[0] = 70
+    scheduler.calls[-1].callback()
+    state = mgr.snapshot()['managed']
+    assert state['residency'] == 'error'
+    assert state['stop_reason'] is None
+    assert state['process']['pid'] == proc.pid
+    assert not proc.exited
+    assert not [e for e in mgr.events_since(0) if e['kind'] == 'stopped']
+
+
+def test_idle_redundant_start_preserves_release_baseline(tmp_path, monkeypatch):
+    mgr, proc, wall, mono, scheduler = _idle_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(mgr, '_probe_health', lambda *a, **k: True)
+    with mgr.request_scope('local:managed/qwen-test'):
+        pass
+    old = scheduler.calls[-1]
+    mono[0] = 40
+    wall[0] = 9000
+    mgr.start()
+    assert old.cancelled
+    assert scheduler.calls[-1] is not old
+    assert scheduler.calls[-1].delay == 30
+    assert mgr.snapshot()['managed']['idle_deadline_at'] == 1060
+    mono[0] = 70
+    old.callback()
+    assert not proc.exited
+    scheduler.calls[-1].callback()
+    assert proc.exited
+
+
+def test_idle_health_recovery_rearms_expired_baseline(tmp_path, monkeypatch):
+    mgr, proc, wall, mono, scheduler = _idle_fixture(tmp_path, monkeypatch)
+    healthy = [False]
+    monkeypatch.setattr(mgr, '_probe_health', lambda *a, **k: healthy[0])
+    with mgr.request_scope('local:managed/qwen-test'):
+        pass
+    old = scheduler.calls[-1]
+    mono[0] = 70
+    mgr.reconcile_process()
+    old.callback()
+    assert not proc.exited
+    healthy[0] = True
+    wall[0] = 9000
+    mgr.reconcile_process()
+    assert scheduler.calls[-1] is not old
+    assert scheduler.calls[-1].delay == 0
+    assert mgr.snapshot()['managed']['idle_deadline_at'] == 1060
+    count = len(scheduler.calls)
+    mgr.reconcile_process()
+    assert len(scheduler.calls) == count
+    old.callback()
+    assert not proc.exited
+    scheduler.calls[-1].callback()
+    assert proc.exited
