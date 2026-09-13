@@ -24,6 +24,7 @@ type DetailState =
   ));
 type RetainedMetadataObservation = MetadataObservation & { activeRemovalRevision?: number };
 export type JobMetadataState = {
+  canonicalTerminal?: Record<string, string>;
   headerError: MetadataErrorCode | null;
   headerReads: Record<string, { retryAt: number; failures: number }>;
   headers: Record<string, { observation: MetadataObservation; refreshedAt: number }>; nextHeader: number; selectedRefreshedAt: number;
@@ -155,6 +156,15 @@ export class JobMetadataStore {
       const retained = Object.entries(state.detailCache).filter(([cached]) => cached !== key).slice(-7);
       state = { ...state, detailCache: Object.fromEntries([...retained, [key, selected]]) };
     }
+    const canonicalTerminal = { ...state.canonicalTerminal };
+    for (const cached of Object.values(state.detailCache)) {
+      const lifecycle = cached.observation?.lifecycle;
+      if (cached.freshness === 'observed' && !cached.error && lifecycle
+        && ['complete', 'completed', 'done', 'failed', 'cancelled', 'timeout', 'timed_out', 'truncated', 'interrupted', 'stalled'].includes(lifecycle)) {
+        canonicalTerminal[metadataSelectionKey(cached.selection)] = lifecycle;
+      }
+    }
+    state = { ...state, canonicalTerminal };
     const revisions = new Map<string, number>();
     for (const observation of [...state.observations, ...state.pins.flatMap(p => p.observation ? [p.observation] : [])]) {
       const key = metadataSelectionKey(observation.row.selection);

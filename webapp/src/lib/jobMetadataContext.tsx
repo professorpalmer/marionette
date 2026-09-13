@@ -17,11 +17,14 @@ function preferFresherLocal(a: LocalObservation, b: LocalObservation): LocalObse
       : (a.observedAt >= b.observedAt ? a : b);
   const other = winner === a ? b : a;
   // localDetail summaries are inserted as stale/observedAt 0; keep list freshness when they win on revision.
-  if (winner.freshness === 'stale' && winner.observedAt === 0 && other.freshness === 'observed'
+  const merged = winner.row.revision === other.row.revision && !winner.row.canonical && other.row.canonical
+    ? { ...winner, row: { ...winner.row, canonical: other.row.canonical } }
+    : winner;
+  if (merged.freshness === 'stale' && merged.observedAt === 0 && other.freshness === 'observed'
     && other.row.local_ref.job_id === winner.row.local_ref.job_id) {
-    return { ...winner, freshness: 'observed', observedAt: other.observedAt };
+    return { ...merged, freshness: 'observed', observedAt: other.observedAt };
   }
-  return winner;
+  return merged;
 }
 
 function localGoalFallback(row: LocalObservation['row'], selectedContextRequest?: string): string {
@@ -88,10 +91,13 @@ export function metadataActivity(state: JobMetadataState): { count: number; labe
     ) && !canonicalPMReplacesLocal(o, state.observations)).length;
   return { count, label: count ? `At least ${count} active jobs; coverage incomplete` : 'Job activity unknown; coverage incomplete' };
 }
-/** Current selected facts are valid only for this exact source and revision. */
+/** Retained presentation facts; callers must check freshness separately for actions. */
 export function currentExpert(state: JobMetadataState, key: string) {
   const selected = state.detail.kind === 'selected' && metadataSelectionKey(state.detail.selection) === key ? state.detail : state.detailCache[key];
-  if (!selected?.observation || selected.error) return undefined;
+  if (!selected?.observation) return undefined;
+  const expert = selected.observation.expert;
+  if (expert && expert.kind !== 'unavailable' && expert.tasks.length > 0) return expert;
+  if (selected.error) return undefined;
   const listed = state.observations.find(o => metadataSelectionKey(o.row.selection) === key);
   if (listed?.freshness === 'stale') return undefined;
   // An unrelated lane failure stamps every cached detail stale; a hydrated expert
@@ -136,7 +142,9 @@ export function metadataJobs(state: JobMetadataState): Job[] {
     id: row.selection.job_ref.job_id, job_ref: row.selection.job_ref, source: row.selection.source,
     metadata_key: metadataSelectionKey(row.selection), metadata_only: true,
     goal: row.display.kind === 'available' && row.display.goal_preview ? row.display.goal_preview : `${row.selection.source === 'cli' ? 'PM CLI job' : 'PM harness job'}`,
-    status: row.lifecycle ?? 'unknown', session_id: row.ownership.session_id ?? undefined,
+    status: row.lifecycle && !pmActiveStatuses.some(status => status === row.lifecycle)
+      ? row.lifecycle : state.canonicalTerminal?.[metadataSelectionKey(row.selection)] ?? row.lifecycle ?? 'unknown',
+    session_id: row.ownership.session_id ?? undefined,
     cross_project: sources.find(s => s.state_id === row.selection.job_ref.state_id)?.cross_project,
     ...(freshness === 'stale' ? { read_status: 'unavailable' } : {}),
     unavailable_fields: ['artifacts', 'tasks'], artifacts_complete: false,
@@ -180,7 +188,7 @@ export function metadataJobs(state: JobMetadataState): Job[] {
       const sameDetail = selectedSummary && localKey(selectedSummary.local_ref) === localKey(row.local_ref);
       // The canonical detail is re-read on a 4s cadence while the alias is live; once it
       // reports a terminal lifecycle the row is finished even if the list lanes lag.
-      const detailLifecycle = detailObservation?.lifecycle ?? null;
+      const detailLifecycle = state.canonicalTerminal?.[canonKey] ?? detailObservation?.lifecycle ?? null;
       const settledByDetail = detailLifecycle !== null && !pmActiveStatuses.some(status => status === detailLifecycle);
       return {
         id: row.local_ref.job_id, local_ref: row.local_ref, source: 'local' as const, metadata_only: true as const,

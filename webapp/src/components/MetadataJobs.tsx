@@ -230,7 +230,8 @@ function SelectedInspection({ job, navigation, compact, onReveal, onOpenDashboar
     void store.readDetail();
   }, [compact, deferAutoRead, navigation, selectedPM, state.working, state.view, store]);
   const observation = selectedPM ?? canonicalSelection ? detail?.observation : undefined;
-  const detailFresh = detail?.freshness === 'observed' && (!observation?.expert || !!currentExpert(state, metadataSelectionKey(observation.selection)));
+  const detailFresh = detail?.freshness === 'observed' && !detail.error
+    && !state.observations.some(o => observation && metadataSelectionKey(o.row.selection) === metadataSelectionKey(observation.selection) && o.freshness === 'stale');
   const bindings = observation?.tasks.rows.flatMap(t => t.binding ? [t.binding] : []) ?? [];
   const authorizedJob: Job = { ...job, unavailable_fields: ['artifacts'], cancellation_view:
     observation && detailFresh && detail?.kind === 'selected' && !detail.cursors.task_cursor && observation.tasks.page.outcome === 'complete'
