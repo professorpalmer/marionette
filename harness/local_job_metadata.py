@@ -49,6 +49,31 @@ def identity(value):
         c.isalnum() or c in '_-' for c in value)
 
 
+def wire_local_id(value):
+    """Map a writer id onto the identity charset. Empty or non-text stays empty."""
+    if not isinstance(value, str) or not value:
+        return ''
+    cleaned = ''.join(c if c.isalnum() or c in '_-' else '_' for c in value if c.isascii())
+    return cleaned[:256]
+
+
+def local_swarm_id(action_id):
+    return 'local-swarm-' + wire_local_id(action_id)
+
+
+def omissible_identity(jid, row):
+    """A well-formed execution row whose id fails the wire charset is omitted.
+
+    Empty ids, missing ownership, and non-dict rows stay fatal so a corrupt
+    cold load cannot claim a complete empty roster.
+    """
+    if not isinstance(jid, str) or not jid or not isinstance(row, dict):
+        return False
+    if row.get('id') != jid or identity(jid):
+        return False
+    return jid.isascii() and len(jid) <= 256
+
+
 def number(value):
     return value if type(value) in (int, float) and abs(value) < 1e18 and math.isfinite(value) else None
 
@@ -266,6 +291,8 @@ class LocalMetadataIndex:
         try:
             projected = self.project(jid, row) if row is not None else None
         except (ValueError, TypeError):
+            if row is not None and omissible_identity(jid, row):
+                return
             with self.lock:
                 self.invalid.add(jid)
             return

@@ -4,6 +4,7 @@
  */
 
 import type { Dispatch, SetStateAction } from "react";
+import { localSwarmJobId } from "../../lib/localJobMetadata";
 import { publishTaskProfile } from "../../lib/taskProfileChrome";
 import type { Card, Item } from "../TranscriptList";
 import {
@@ -525,7 +526,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
         return next;
       });
       if (d.error && d.id) {
-        const localId = `local-swarm-${d.id}`;
+        const localId = localSwarmJobId(d.id);
         setPendingJobIds((ids) => ids.filter((id) => id !== localId));
       }
       // Fallback: if the card carries an auth_failure but the dedicated

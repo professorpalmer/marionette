@@ -27,6 +27,7 @@ from .swarm_run_facts import (
     render_evidence_boundary,
 )
 from .goal_mode import stash_turn_swarm_facts
+from .local_job_metadata import local_swarm_id
 
 DISPATCH_ACTION_KINDS: frozenset[str] = frozenset({
     "run_swarm", "run_implement", "run_parallel", "route_task", "memory",
@@ -674,7 +675,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         except Exception:
             _acceptance_criteria = _acceptance_criteria or []
             _prior_findings = []
-    _sync_local_id = f'local-swarm-{aid}'
+    _sync_local_id = local_swarm_id(aid)
     # An explicit subject repo audits a DIFFERENT checkout read-only. It fails
     # closed on a non-git/missing path (same contract as run_implement) and
     # never becomes the pilot's own write surface — session.config.repo, and

@@ -28,6 +28,7 @@ from pmharness.bridge import execute_intent
 from pmharness.drivers.base import known_assistant_phase
 
 from .goal_mode import reset_turn_goal_state
+from .local_job_metadata import local_swarm_id
 from .log_reconstruction import check_outbound_reconstruction
 from .request_snapshot import FrozenRequest
 from .pilot import PilotAction, StreamingSayExtractor
@@ -1271,7 +1272,7 @@ def stream_swarm(
             repo=_cwd,
             worker_mode=worker_mode,
             on_job_created=lambda association: session._associate_local_job_with_pm(
-                f"local-swarm-{dispatch_id}", association,
+                local_swarm_id(dispatch_id), association,
             ),
             on_delta=lambda wid, kind, text: delta_q.put(
                 ("delta", (wid, kind, text))

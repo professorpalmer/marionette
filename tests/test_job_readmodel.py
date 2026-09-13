@@ -697,3 +697,43 @@ def test_session_snapshot_prepends_known_canonical_beyond_page_scan(env):
                                      other_reader)
     assert code == 200
     assert all(row['selection']['job_ref']['job_id'] != target.id for row in foreign['rows'])
+
+
+def test_all_scope_snapshot_prepends_known_canonical_beyond_page_scan(env):
+    """Tracker always queries scope=all; current-session jobs still prepend."""
+    store, _, ctx, _, active = env
+    ctx = replace(ctx, scope='all')
+    jobs = []
+    for i in range(70):
+        created = store.create_job(f'foreign-{i}', origin='marionette', session_id='other')
+        store.save_job(replace(created, status=JobStatus.RUNNING))
+        jobs.append(created)
+    target = max(jobs, key=lambda item: item.id)
+    store.save_job(replace(target, session_id=ctx.session_id, goal='session-owned-beyond-page',
+                           status=JobStatus.RUNNING))
+    ref = store.job_ref(target.id)
+    local = SimpleNamespace(lock=threading.RLock(), rows={
+        'local-swarm-target': dict(
+            session_id=ctx.session_id, deleted=False,
+            canonical=dict(source='harness', job_ref=ref.as_dict(),
+                           session_id=ctx.session_id, dispatch_id='dispatch-target'),
+        ),
+    })
+    sources = KnownSources.from_roots([
+        ('harness', store.root, store.backend_name, False),
+    ])
+    selection = sources.stores[0].selection
+    reader = MetadataReader(lambda: active[0], sources, local)
+
+    without = store.list_job_summaries(
+        session_id=None, status='running', **dict(limit=50, max_scan=51, max_bytes=32768))
+    assert without.outcome == 'partial' and without.scanned == 51
+    assert target.id not in [item.job_ref.job_id for item in without.items]
+
+    code, result = get_job_metadata(query(ctx, selection, mode='snapshot', status='running'), reader)
+    assert code == 200
+    ids = [row['selection']['job_ref']['job_id'] for row in result['rows']]
+    assert target.id in ids
+    assert len(result['rows']) <= result['page']['scanned']
+    assert all(row['revision'] <= result['page']['revision'] for row in result['rows'])
+    assert len(ids) == len(set(ids))

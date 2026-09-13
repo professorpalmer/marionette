@@ -38,6 +38,18 @@ export type LocalDetail = { selected_context?: SelectedContext; summary?: LocalS
   | { lane: 'output'; rows: { offset: number; text: string }[]; output: { coverage: 'in_memory_only'; source_chars: number | null; spilled: boolean } | null }
 );
 export function localKey(ref: LocalRef): string { return JSON.stringify(['local', ref.incarnation, ref.job_id]); }
+export function wireLocalId(value: string): string {
+  let out = '';
+  for (const c of value) {
+    if (c.charCodeAt(0) > 127) continue;
+    out += /[a-zA-Z0-9_-]/.test(c) ? c : '_';
+    if (out.length >= 256) break;
+  }
+  return out;
+}
+export function localSwarmJobId(actionId: string): string {
+  return `local-swarm-${wireLocalId(actionId)}`;
+}
 function fail(): never { throw new MetadataError('invalid_metadata'); }
 function isRecord(v: unknown): v is Record<string, unknown> { return v !== null && typeof v === 'object' && !Array.isArray(v); }
 function obj(v: unknown): Record<string, unknown> { if (!isRecord(v)) return fail(); return v; }

@@ -12,6 +12,7 @@ from typing import Any, Iterable, Optional
 
 from harness.job_scoping import ACCOUNTING_SCOPE_MARIONETTE
 from harness.local_job_artifacts import artifacts_are_complete
+from harness.local_job_metadata import local_swarm_id
 
 _TERMINAL_STATUSES = frozenset({
     "completed", "failed", "cancelled", "complete", "done",
@@ -309,7 +310,7 @@ def merge_local_jobs_into_swarm_live(
         out.append(job)
     existing_ids = {j.get("id") for j in out if j.get("id")}
     replaced_local_ids = {
-        f"local-swarm-{str(job.get('dispatch_id') or '').strip()}"
+        local_swarm_id(str(job.get('dispatch_id') or '').strip())
         for job in out
         if isinstance(job, dict)
         and str(job.get("id") or "").startswith("job_")

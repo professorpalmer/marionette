@@ -373,7 +373,7 @@ class MetadataReader:
         # Exact reads run before the scan so every prepended row's revision is
         # <= the scan page revision (the client parser requires it).
         prepended = []
-        if (mode == 'snapshot' and pm_cursor is None and ctx.scope == 'session'
+        if (mode == 'snapshot' and pm_cursor is None
                 and selection.source == 'harness' and not known.cross_project):
             for ref in self._session_known_job_refs(ctx, selection):
                 row = self._exact_owned_row(store, ref, known, ctx, status)
