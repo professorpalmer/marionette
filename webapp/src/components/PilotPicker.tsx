@@ -166,8 +166,8 @@ export default function PilotPicker({ config }: {
           {rerouteNotice}
         </div>
       ) : null}
-      <div className="relative flex items-center gap-1 min-w-0 w-full">
-      <div className="relative min-w-0 flex-1">
+      <div className="pilot-picker-controls relative flex items-center gap-1 min-w-0 w-full">
+      <div className="pilot-model-slot relative min-w-0 flex-1">
         <button
           ref={modelTriggerRef}
           onClick={() => {

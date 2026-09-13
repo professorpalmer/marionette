@@ -1072,10 +1072,10 @@ export default function ComposerDock({
                 if (next) onSetPlan(false);
                 return next;
               });
-            }} title="Autopilot: the pilot plans and executes autonomously (vs. you steering each step)"
+            }} aria-label="Autopilot" aria-pressed={auto} title="Autopilot: the pilot plans and executes autonomously (vs. you steering each step)"
               className={`px-1.5 h-[20px] rounded-md text-[10.5px] flex items-center gap-1 shrink-0 transition
                 ${auto ? "bg-warn/15 text-warn" : "text-faint hover:text-muted"}`}>
-              <Zap size={11} /> <span className="composer-toolbar-label">Autopilot</span>
+              <Zap size={11} aria-hidden="true" />
             </button>
             <button type="button" onClick={() => {
               onSetPlan((p) => {
@@ -1083,10 +1083,10 @@ export default function ComposerDock({
                 if (next) onSetAuto(false);
                 return next;
               });
-            }} title="Plan mode -- get an actionable plan instead of execution (read-only)"
+            }} aria-label="Plan mode" aria-pressed={plan} title="Plan mode -- get an actionable plan instead of execution (read-only)"
               className={`px-1.5 h-[20px] rounded-md text-[10.5px] flex items-center gap-1 shrink-0 transition
                 ${plan ? "bg-accent/15 text-accent" : "text-faint hover:text-muted"}`}>
-              <ListChecks size={11} /> <span className="composer-toolbar-label">Plan</span>
+              <ListChecks size={11} aria-hidden="true" />
             </button>
             <div className="pilot-picker-slot">
               <PilotPicker config={config} />

@@ -44,6 +44,7 @@ from .stream_performance_store import (
     copy_stream_performance,
 )
 from .terminal_cause import (
+    TERMINAL_CANCELLED,
     TERMINAL_CONTENT_FILTER,
     TERMINAL_DRIVER_SWAP,
     TERMINAL_EMPTY_LOOP,
@@ -452,6 +453,16 @@ def settle_provider_step_terminal(
     turn_findings: list,
 ) -> Iterator[Any]:
     """Classify the provider close; dirty-finalize when the step is blocked."""
+    cancel = getattr(session, "_cancel", None)
+    if cancel is not None and cancel.is_set():
+        cancelled_terminal = classify_provider_terminal(resp)
+        executable_tools = provider_tools_are_executable(resp)
+        # Preserve a completed tool-call envelope so the action layer can
+        # insert interruption results for every unstarted sibling. All other
+        # late provider terminals yield to the user's Stop immediately.
+        if not (cancelled_terminal.is_intermediate and executable_tools):
+            yield from yield_session_interrupted(session)
+            return None, True
     if resp and getattr(resp, "error", None):
         yield from emit_classified_provider_error(session, resp)
         classified = getattr(session, "_last_provider_terminal", None)
@@ -816,6 +827,38 @@ def _attach_request_receipt(resp: Any, receipt: dict) -> None:
         pass
 
 
+def _recover_transport_timeout(session: Any, resp: Any, request: FrozenRequest) -> Any:
+    from pmharness.drivers.base import DriverResponse
+    from pmharness.drivers.retry import (
+        is_transport_timeout, merge_recovery_response,
+        recovery_response_is_authoritative, single_attempt,
+    )
+
+    cancel = getattr(session, "_cancel", None)
+    if (cancel is not None and cancel.is_set()) or not is_transport_timeout(resp):
+        return resp
+    # Native agent pilots own execution inside the request and cannot replay safely.
+    if callable(getattr(session.pilot, "apply_host_mode", None)):
+        return resp
+    chat = request.recovery_method
+    if not callable(chat):
+        return resp
+    outbound, kwargs = request.materialize()
+    # Replay the frozen inputs silently. No action has been dispatched yet.
+    params = inspect.signature(chat).parameters
+    if "max_attempts" in params:
+        kwargs["max_attempts"] = 1
+    try:
+        with single_attempt():
+            retry = chat(outbound, **kwargs)
+    except Exception as exc:
+        retry = DriverResponse(text="", error=repr(exc))
+    authoritative = recovery_response_is_authoritative(retry)
+    return merge_recovery_response(
+        resp, retry, recovered=not retry.error, prefer_retry=authoritative,
+    )
+
+
 def dispatch_sync_pilot_chat(
     session: Any,
     tools_schema: Any,
@@ -833,9 +876,18 @@ def dispatch_sync_pilot_chat(
             pass
     check_outbound_reconstruction(session, outbound, request=request, request_kwargs=chat_kwargs)
     receipt = dict(session._last_log_reconstruction)
+    params = inspect.signature(request.method).parameters
+    cancel = getattr(session, "_cancel", None)
+    if "is_cancelled" in params and cancel is not None:
+        chat_kwargs["is_cancelled"] = cancel.is_set
     _mark_provider_dispatch_invoked(session)
     try:
-        resp = request.method(outbound, **chat_kwargs)
+        try:
+            resp = request.method(outbound, **chat_kwargs)
+        except TimeoutError as exc:
+            from pmharness.drivers.base import DriverResponse
+            resp = DriverResponse(text="", error=repr(exc), meta={"stream_terminal": "error"})
+        resp = _recover_transport_timeout(session, resp, request)
     finally:
         receipt.update(request.wire_receipt())
         session._last_log_reconstruction = dict(receipt)
@@ -878,7 +930,11 @@ def run_stream(
             except Exception:
                 pass
 
+        visible_parts = []
+
         def _on_delta(delta: Any) -> None:
+            text, _ = normalize_delta_payload(delta)
+            visible_parts.append(text)
             if acc is not None:
                 try:
                     acc.note("delta", delta)
@@ -907,6 +963,10 @@ def run_stream(
             params = inspect.signature(request.method).parameters
         except Exception:
             params = {}
+        if "is_cancelled" in params:
+            cancel = getattr(session, "_cancel", None)
+            if cancel is not None:
+                kwargs["is_cancelled"] = cancel.is_set
         if "on_wait_notice" in params:
             kwargs["on_wait_notice"] = (
                 lambda msg: q.put(("wait", msg))
@@ -924,7 +984,15 @@ def run_stream(
         receipt = dict(session._last_log_reconstruction)
         _mark_provider_dispatch_invoked(session)
         try:
-            r = request.method(outbound, **kwargs)
+            try:
+                r = request.method(outbound, **kwargs)
+            except TimeoutError as exc:
+                from pmharness.drivers.base import DriverResponse
+                r = DriverResponse(
+                    text="".join(visible_parts), error=repr(exc),
+                    meta={"stream_terminal": "error", "stream_started": bool(visible_parts)},
+                )
+            r = _recover_transport_timeout(session, r, request)
         finally:
             receipt.update(request.wire_receipt())
             session._last_log_reconstruction = dict(receipt)
@@ -1962,6 +2030,7 @@ def yield_session_interrupted(session: Any) -> Iterator[Any]:
     """Stop unwind: keep ``interrupted`` for old tests, also emit assistant_done."""
     from .conversation import ConvEvent
 
+    session._last_stop_cause = TERMINAL_CANCELLED
     yield ConvEvent("interrupted", {"reason": "session interrupted"})
     try:
         mark_latest_receipt_assistant_done(session, stop_cause="cancelled")

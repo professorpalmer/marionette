@@ -75,7 +75,7 @@ def test_unsupported_driver_has_explicit_scope():
     assert request.wire_receipt()['wire_status'] == 'unsupported'
 
 
-def test_retry_body_rewrite_is_reported_as_mismatch(monkeypatch):
+def test_reasoning_fallback_is_an_authorized_wire_boundary(monkeypatch):
     import io
     import urllib.error
     driver = OpenAICompatDriver('test', 'original', 'https://example.invalid/v1',
@@ -96,8 +96,95 @@ def test_retry_body_rewrite_is_reported_as_mismatch(monkeypatch):
     with pytest.raises(Captured):
         request.method(value, **kwargs)
     assert 'reasoning' in bodies[0] and 'reasoning' not in bodies[1]
-    assert request.wire_receipt()['wire_status'] == 'mismatch'
+    assert request.wire_receipt()['wire_status'] == 'verified'
     assert request.wire_receipt()['wire_attempts'] == 2
+    assert request.wire_receipt()['fallback_wire'][0]['wire_status'] == 'verified'
+
+
+def test_length_continuation_keeps_captured_provider_settings(monkeypatch):
+    driver = OpenAICompatDriver(
+        'test', 'original', 'https://example.invalid/v1', 'TEST_REQUEST_KEY',
+        extra_body={'top_p': 0.9},
+    )
+    monkeypatch.setattr(OpenAICompatDriver, '_key', lambda self: 'fresh-token')
+    request = FrozenRequest.capture(
+        driver.chat_stream, [{'role': 'user', 'content': 'hello'}], {},
+    )
+    driver.extra_body['top_p'] = 0.1
+    bodies = []
+
+    class Stream:
+        def __init__(self, finish):
+            self.finish = finish
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def __iter__(self):
+            payload = {'choices': [{
+                'delta': {'content': 'part'},
+                'finish_reason': self.finish,
+            }]}
+            yield ('data: ' + json.dumps(payload) + '\n').encode()
+
+    def transport(req, **kwargs):
+        bodies.append(json.loads(req.data))
+        return Stream('length' if len(bodies) < 3 else 'stop')
+
+    monkeypatch.setattr('urllib.request.urlopen', transport)
+    value, kwargs = request.materialize()
+    response = request.method(value, on_delta=lambda _text: None, **kwargs)
+
+    assert response.error is None
+    assert [body['top_p'] for body in bodies] == [0.9, 0.9, 0.9]
+    assert request.wire_receipt()['wire_status'] == 'verified'
+
+
+def test_cached_claude_stream_keeps_immutable_comparison_baseline(monkeypatch):
+    driver = OpenAICompatDriver(
+        'test', 'anthropic/claude-sonnet-4',
+        'https://openrouter.ai/api/v1', 'TEST_REQUEST_KEY',
+    )
+    monkeypatch.setenv('HARNESS_PROMPT_CACHE', '1')
+    monkeypatch.setattr(OpenAICompatDriver, '_key', lambda self: 'fresh-token')
+    request = FrozenRequest.capture(
+        driver.chat_stream,
+        [{'role': 'user', 'content': 'hello'}],
+        {'system': 'system text'},
+    )
+    calls = []
+
+    class Stream:
+        def __init__(self, finish):
+            self.finish = finish
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def __iter__(self):
+            payload = {'choices': [{
+                'delta': {'content': 'ok'},
+                'finish_reason': self.finish,
+            }]}
+            yield ('data: ' + json.dumps(payload) + '\n').encode()
+
+    def transport(*args, **kwargs):
+        calls.append(1)
+        return Stream('length' if len(calls) < 3 else 'stop')
+
+    monkeypatch.setattr('urllib.request.urlopen', transport)
+    value, kwargs = request.materialize()
+    response = request.method(value, on_delta=lambda _text: None, **kwargs)
+
+    assert response.error is None
+    assert calls == [1, 1, 1]
+    assert request.wire_receipt()['wire_status'] == 'verified'
 
 
 def test_dispatch_attaches_transport_receipt(monkeypatch):
