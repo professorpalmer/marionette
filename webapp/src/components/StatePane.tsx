@@ -1,3 +1,4 @@
+import { usePolling } from "../lib/usePolling";
 import { useCallback, useEffect, useState } from "react";
 import { ChevronDown, ChevronRight, Loader2, RefreshCw, ExternalLink } from "lucide-react";
 import { api, type CodegraphStatus, type EnvironmentReadiness, type WikiGraphData, type WikiStatusData } from "../lib/api";
@@ -43,7 +44,8 @@ function topWikiNodesByLinkCount(
     });
 }
 
-export default function StatePane({ artifacts }: {
+export default function StatePane({ artifacts, networkEnabled = true }: {
+  networkEnabled?: boolean;
   artifacts: { type: string; headline: string; confidence?: number; id?: string; created_by?: string; [key: string]: any }[];
   embedded?: boolean;
 }) {
@@ -66,7 +68,7 @@ export default function StatePane({ artifacts }: {
   } = useStaleWhileRevalidate<CodegraphStatus>(
     `codegraph:${projectRoot || "__none__"}`,
     () => api.getCodegraph(),
-    { enabled: !!projectRoot },
+    { enabled: networkEnabled && !!projectRoot },
   );
 
   // Wiki connection is process-global (wiki.json), not per-project — keep the
@@ -81,7 +83,7 @@ export default function StatePane({ artifacts }: {
   } = useStaleWhileRevalidate<WikiStatusData>(
     `wiki-status:${WIKI_SWR_KEY}`,
     () => api.getWikiStatus(),
-    { enabled: true },
+    { enabled: networkEnabled },
   );
 
   // Which status cards are on-screen (distinct from per-card expand/collapse).
@@ -119,7 +121,7 @@ export default function StatePane({ artifacts }: {
   } = useStaleWhileRevalidate<WikiGraphData>(
     `wiki-graph:${WIKI_SWR_KEY}`,
     () => api.getWikiGraph(),
-    { enabled: wikiOpen && wikiOkForGraph },
+    { enabled: networkEnabled && wikiOpen && wikiOkForGraph },
   );
 
   const wikiTopLinked = wikiGraph?.status === "ok" && wikiGraph.nodes?.length
@@ -143,6 +145,7 @@ export default function StatePane({ artifacts }: {
   const toggleEnv = () => setEnvOpen((v) => { localStorage.setItem("pmharness.statePane.envOpen", v ? "0" : "1"); return !v; });
 
   const refreshEnvReady = useCallback((opts?: { refresh?: boolean }) => {
+    if (!networkEnabled) return Promise.resolve(null);
     setEnvLoading(true);
     setEnvFetchError("");
     // Cached endpoint by default; only the explicit Refresh button passes refresh=true.
@@ -158,7 +161,7 @@ export default function StatePane({ artifacts }: {
         return null;
       })
       .finally(() => setEnvLoading(false));
-  }, []);
+  }, [networkEnabled]);
 
   useEffect(() => {
     const onProject = (e: Event) => {
@@ -263,24 +266,17 @@ export default function StatePane({ artifacts }: {
     return () => window.removeEventListener("harness-expand-mcp", onExpandMcp);
   }, [revealCard]);
 
-  useEffect(() => {
-    const load = () => {
-      api.mcp().then((d) => {
-        const servers = Array.isArray(d?.servers) ? d.servers : [];
-        setMcpSummary({
-          total: servers.length,
-          running: servers.filter((s: { running?: boolean }) => !!s.running).length,
-        });
-      }).catch(() => {});
-    };
-    load();
-    const t = setInterval(load, 4000);
-    return () => clearInterval(t);
+  const updateMcpSummary = useCallback((data: Awaited<ReturnType<typeof api.mcp>>) => {
+    const servers = Array.isArray(data?.servers) ? data.servers : [];
+    setMcpSummary({ total: servers.length, running: servers.filter((server: { running?: boolean }) => !!server.running).length });
   }, []);
+  usePolling(() => api.mcp().then(updateMcpSummary).catch(() => {}), 4000, {
+    enabled: networkEnabled && !(visibleCards.mcp && mcpOpen),
+  });
 
   useEffect(() => {
     let timer: ReturnType<typeof setInterval> | null = null;
-    if (cg?.status === "indexing") {
+    if (networkEnabled && cg?.status === "indexing") {
       timer = setInterval(() => {
         void revalidateCg();
       }, 2000);
@@ -288,7 +284,7 @@ export default function StatePane({ artifacts }: {
     return () => {
       if (timer) clearInterval(timer);
     };
-  }, [cg?.status, revalidateCg]);
+  }, [networkEnabled, cg?.status, revalidateCg]);
 
   const handleReindex = async () => {
     setReindexing(true);
@@ -970,7 +966,7 @@ export default function StatePane({ artifacts }: {
           </button>
           {mcpOpen && (
             <div className="flex-1 min-h-0 overflow-hidden border-t border-edge/30">
-              <McpPane embedded />
+              <McpPane embedded networkEnabled={networkEnabled} onStatus={updateMcpSummary} />
             </div>
           )}
         </div>

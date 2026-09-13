@@ -26,6 +26,7 @@ interface PollOptions {
  * ref so callers don't need to memoize it.
  */
 export function usePolling(fn: PollFn, intervalMs: number, opts: PollOptions = {}) {
+  const inFlight = useRef(false);
   const fnRef = useRef(fn);
   fnRef.current = fn;
   const enabled = opts.enabled ?? true;
@@ -35,7 +36,6 @@ export function usePolling(fn: PollFn, intervalMs: number, opts: PollOptions = {
     if (!enabled) return;
     let active = true;
     let timer: number | undefined;
-    let inFlight = false;
 
     const schedule = (ms: number) => {
       if (active) timer = window.setTimeout(tick, ms);
@@ -45,16 +45,16 @@ export function usePolling(fn: PollFn, intervalMs: number, opts: PollOptions = {
       // No point polling a tab nobody is looking at -- and it stops us piling
       // load on a busy backend while the user is elsewhere.
       if (document.hidden) { schedule(Math.max(intervalMs, 3000)); return; }
-      if (inFlight) { schedule(500); return; }
-      inFlight = true;
+      if (inFlight.current) { schedule(500); return; }
+      inFlight.current = true;
       const startedAt = performance.now();
       // Promise.resolve().then flattens whatever fn returns, so we wait for an
       // async fn's own promise before scheduling the next tick.
       Promise.resolve()
-        .then(() => fnRef.current())
+        .then(() => active ? fnRef.current() : undefined)
         .catch(() => { /* pollers own their error handling; never crash the loop */ })
         .finally(() => {
-          inFlight = false;
+          inFlight.current = false;
           if (!active) return;
           const elapsed = performance.now() - startedAt;
           const extra = backoff && elapsed > 1500 ? Math.min(elapsed, 8000) : 0;
@@ -67,7 +67,7 @@ export function usePolling(fn: PollFn, intervalMs: number, opts: PollOptions = {
     // next task, preserving immediate polling without duplicate backend work.
     schedule(0);
     const onVisible = () => {
-      if (!document.hidden && !inFlight) { window.clearTimeout(timer); tick(); }
+      if (!document.hidden && !inFlight.current) { window.clearTimeout(timer); tick(); }
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {

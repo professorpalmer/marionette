@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { usePolling } from "../lib/usePolling";
+import { useState } from "react";
 import { Brain, Trash2, Plus } from "lucide-react";
 import { api } from "../lib/api";
 import { usePanelNotice } from "../lib/useOperationalDiagnostic";
@@ -59,11 +60,7 @@ export default function MemoryPane({ embedded = false }: { embedded?: boolean })
     }
   };
 
-  useEffect(() => {
-    refresh();
-    const t = setInterval(refresh, 15000);
-    return () => clearInterval(t);
-  }, []);
+  usePolling(refresh, 15000);
 
   const handleAdd = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();

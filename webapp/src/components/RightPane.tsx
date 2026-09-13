@@ -731,7 +731,7 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
 
   const renderCardBody = (tabName: Tab) => (
     <ErrorBoundary label={TAB_CONFIG[tabName]?.label || tabName} inline>
-      {tabName === "state" ? <StatePane artifacts={artifacts} embedded /> : renderTabInner(tabName)}
+      {tabName === "state" ? <StatePane artifacts={artifacts} embedded networkEnabled={visible} /> : renderTabInner(tabName)}
     </ErrorBoundary>
   );
 
@@ -945,7 +945,7 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
       <div className="hidden" aria-hidden>
         {!openCards.includes("state") && (
           <div data-testid="state-pane-slot">
-            <StatePane artifacts={artifacts} embedded />
+            <StatePane artifacts={artifacts} embedded networkEnabled={false} />
           </div>
         )}
         {!openCards.includes("terminal") && (

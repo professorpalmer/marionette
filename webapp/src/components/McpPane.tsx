@@ -1,3 +1,4 @@
+import { usePolling } from "../lib/usePolling";
 import { useEffect, useRef, useState } from "react";
 import { Plug, Play, Square, Trash2, Plus, Check, X, ChevronDown, ChevronRight, RefreshCw } from "lucide-react";
 import { api } from "../lib/api";
@@ -100,7 +101,11 @@ function formatMcpHeaderSummary(servers: { running?: boolean; lifecycle?: string
   return `${counts.running}/${servers.length} running`;
 }
 
-export default function McpPane({ embedded = false }: { embedded?: boolean }) {
+export default function McpPane({ embedded = false, networkEnabled = true, onStatus }: {
+  embedded?: boolean;
+  networkEnabled?: boolean;
+  onStatus?: (data: Awaited<ReturnType<typeof api.mcp>>) => void;
+}) {
   const [servers, setServers] = useState<any[]>([]);
   const [tools, setTools] = useState<any[]>([]);
   const [catalog, setCatalog] = useState<Record<string, any>>({});
@@ -118,13 +123,15 @@ export default function McpPane({ embedded = false }: { embedded?: boolean }) {
   const resizeDragRef = useRef<{ startY: number; startH: number } | null>(null);
   toolsHeightRef.current = toolsHeight;
 
-  const refresh = () => api.mcp().then((d) => { setServers(d.servers); setTools(d.tools); }).catch(() => {});
+  const refresh = () => {
+    if (!networkEnabled) return Promise.resolve();
+    return api.mcp().then((d) => { setServers(d.servers); setTools(d.tools); onStatus?.(d); }).catch(() => {});
+  };
+  usePolling(refresh, 4000, { enabled: networkEnabled });
   useEffect(() => {
-    refresh();
+    if (!networkEnabled) return;
     api.mcpCatalog().then((d) => setCatalog(d.catalog)).catch(() => {});
-    const t = setInterval(refresh, 4000);
-    return () => clearInterval(t);
-  }, []);
+  }, [networkEnabled]);
 
   const getMaxToolsHeight = () => {
     const pane = paneRef.current;
