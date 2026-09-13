@@ -95,3 +95,27 @@ def test_puppetmaster_install_and_packaging_pins_match():
         pins = re.findall(r"puppetmaster-ai==\d+\.\d+\.\d+", _read(path))
         assert pins, f"{path} has no Puppetmaster pin"
         assert set(pins) == {expected}, f"{path}: {pins} differs from {expected}"
+
+
+def test_uv_lock_matches_project_version_and_puppetmaster_pin():
+    packages = {}
+    for block in re.split(r"(?m)^\[\[package\]\]\s*$", _read("uv.lock"))[1:]:
+        name = re.search(r'(?m)^name = "([^"]+)"$', block)
+        assert name, "uv.lock package has no name"
+        packages.setdefault(name.group(1), []).append(block)
+    assert len(packages.get("pm-harness", [])) == 1
+    assert len(packages.get("puppetmaster-ai", [])) == 1
+    project = packages["pm-harness"][0]
+    runtime = packages["puppetmaster-ai"][0]
+    pin = re.search(r'"puppetmaster-ai==([^" ]+)"', _read("pyproject.toml"))
+    assert pin, "pyproject.toml has no Puppetmaster pin"
+    version = re.search(r'(?m)^version = "([^"]+)"$', project)
+    resolved = re.search(r'(?m)^version = "([^"]+)"$', runtime)
+    metadata = project.split("[package.metadata]", 1)[1]
+    requirement = re.search(
+        r'\{ name = "puppetmaster-ai", specifier = "([^"]+)" \}', metadata,
+    )
+    assert version and resolved and requirement
+    actual = (version.group(1), requirement.group(1), resolved.group(1))
+    expected = (_pyproject_version(), "==" + pin.group(1), pin.group(1))
+    assert actual == expected, f"uv.lock version/requirement/resolution drift: {actual} != {expected}"

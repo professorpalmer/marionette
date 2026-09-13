@@ -251,8 +251,8 @@ def add_worktree(repo: str, branch: str, base: str = "HEAD", path: Optional[str]
         cleanup_old_worktrees(
             repo, max_count=get_max_worktrees(), keep_paths=[path],
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("worktree cleanup after add failed for %s: %s", repo, exc)
 
     return {"path": path, "branch": branch}
 
@@ -931,4 +931,3 @@ def prune_orphan_edit_branches(repo: str) -> dict:
                             "reason": "Branch could not be deleted"})
 
     return {"deleted": deleted, "count": len(deleted), "skipped": skipped}
-
