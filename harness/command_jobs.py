@@ -6,7 +6,8 @@ returns a pending receipt without holding the pilot turn open. Foreground
 ``run_command`` stays on the synchronous ``_do_run_command`` path but also
 gets a ``local-cmd-*`` tracker row so Stop / search_state can find it.
 
-Never infers background from duration, timeout, or command text.
+Never infers background from duration or timeout. Dispatch promotes simple
+CodeGraph initialization/indexing commands for observable indexing.
 """
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ import glob
 import hashlib
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import threading
@@ -117,6 +119,62 @@ def secret_free_command_preview(command: str, *, max_chars: int = _COMMAND_PREVI
     if len(cleaned) <= max_chars:
         return cleaned
     return cleaned[: max_chars - 3] + "..."
+
+
+def normalize_codegraph_index_command(command: str) -> Optional[str]:
+    """Recognize a simple indexing invocation without rewriting shell quoting.
+
+    Reject shell operators/expansions and ambiguous quoting on either platform.
+    Keep raw tokens so Windows paths and quoted argument values survive intact.
+    """
+    if not command or any(c in command for c in '\n\r;&|<>`$%!^()'):
+        return None
+    token_pattern = r'''(?:[^\s'"\\]+|\\[^\s'"\\]|'[^'\n]*'|"[^"\n]*")+'''
+    tokens: list[str] = []
+    end = 0
+    for match in re.finditer(token_pattern, command):
+        if command[end:match.start()].strip():
+            return None
+        tokens.append(match.group())
+        end = match.end()
+    if command[end:].strip() or not tokens:
+        return None
+    offset = 1
+    if tokens[0] != 'codegraph':
+        if (not re.fullmatch(r'python(?:3(?:\.\d+)?)?(?:\.exe)?', tokens[0])
+                or tokens[1:4] != ['-m', 'puppetmaster', 'codegraph']):
+            return None
+        offset = 4
+    if len(tokens) <= offset or tokens[offset] not in {'init', 'index'}:
+        return None
+    if any(token.replace("'", '').replace('"', '') in {'-h', '--help', 'help'}
+           for token in tokens[offset + 1:]):
+        return None
+    # A terminator makes subsequent quiet-looking tokens positional arguments.
+    normalized: list[str] = tokens[:offset + 1]
+    positional = False
+    for token in tokens[offset + 1:]:
+        if token == '--':
+            positional = True
+        if positional or token not in {'-q', '--quiet'}:
+            normalized.append(token)
+    return ' '.join(normalized)
+
+
+def codegraph_index_runtime_command(
+    command: str,
+    puppetmaster_prefix: list[str],
+) -> Optional[str]:
+    """Normalize indexing and route a bare binary through Puppetmaster."""
+    normalized = normalize_codegraph_index_command(command)
+    if normalized is None or not normalized.startswith("codegraph"):
+        return normalized
+    prefix = (
+        subprocess.list2cmdline(puppetmaster_prefix)
+        if os.name == "nt"
+        else shlex.join(puppetmaster_prefix)
+    )
+    return prefix + normalized[len("codegraph"):]
 
 
 def is_background_run_command(act: Any) -> bool:

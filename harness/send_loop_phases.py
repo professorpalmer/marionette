@@ -3582,8 +3582,7 @@ def dispatch_local_action(
             })
             session._append_action_result(act, aid, f"(run_command {aid} failed: {error_msg})", is_native)
             return
-        # Wave 2: explicit background mode returns a durable pending receipt
-        # and never holds the turn on run_cancellable. Opt-in only.
+        # Indexing uses the same durable receipt as explicit background work.
         from harness.command_jobs import (
             release_command_job_launch,
             build_pending_receipt,
@@ -3591,13 +3590,30 @@ def dispatch_local_action(
             finish_foreground_command_job,
             lookup_command_job,
             is_background_run_command,
+            codegraph_index_runtime_command,
             register_foreground_command_job,
             secret_free_command_preview,
             start_background_run_command,
         )
+        from harness._exec import _puppetmaster_cmd
+
+        indexing_command = codegraph_index_runtime_command(
+            command,
+            _puppetmaster_cmd("codegraph"),
+        )
+        if indexing_command is not None:
+            from dataclasses import replace
+
+            act = replace(act, command=indexing_command, background=True)
+            command = indexing_command
         if is_background_run_command(act):
             try:
                 receipt = start_background_run_command(session, act, aid)
+                if indexing_command is not None:
+                    receipt['message'] = (
+                        'Marionette backgrounded CodeGraph for observable indexing; '
+                        'quiet mode was removed. Inspect the tracked job output.'
+                    )
             except Exception as exc:
                 yield ConvEvent("action_result", {
                     "id": aid,
