@@ -297,7 +297,8 @@ async function mountCanonicalAlias(options: {
   quality?: 'unverified' | 'degraded' | 'ok';
 } = {}) {
   let pmPresent = options.includePmList === true;
-  const lifecycle = options.lifecycle ?? 'running';
+  let lifecycle = options.lifecycle ?? 'running';
+  let failDetail = false;
   const quality = options.quality ?? 'unverified';
   const c = context();
   const selected = pmSelection(c);
@@ -398,6 +399,7 @@ async function mountCanonicalAlias(options: {
       };
     }
     if (url.pathname.endsWith('/detail')) {
+      if (failDetail) throw new MetadataError('unavailable');
       return {
         kind: 'response',
         status: 200,
@@ -430,6 +432,8 @@ async function mountCanonicalAlias(options: {
     store,
     requestJSON,
     setPmPresent(value: boolean) { pmPresent = value; },
+    setLifecycle(value: string) { lifecycle = value; },
+    setFailDetail(value: boolean) { failDetail = value; },
     ...ui,
   };
 }
@@ -529,14 +533,38 @@ describe('metadataJobs alias dedupe', () => {
     expect(metadataJobs(stalePM).map(job => [job.id, job.status])).toEqual([[canonical.job_ref.job_id, 'complete']]);
   });
 
-  it('keeps a hydrated expert when detail freshness is stale from an unrelated lane error', () => {
+  it('keeps the canonical link from selected detail when the equal-revision list row omits it', () => {
+    const c = context();
+    const selected = pmSelection(c);
+    const key = metadataSelectionKey(selected);
+    const listed = localSummary({ canonical: undefined });
+    const detailSummary = localSummary();
+    const state = {
+      view: { kind: 'view', target: { repo: c.repo, session_id: c.session_id, scope: 'all' }, context: c, view: view(c.view_generation), refresh: 'idle' },
+      observations: [],
+      pins: [],
+      local: { observations: [{ row: listed, freshness: 'observed', observedAt: 1 }] satisfies LocalObservation[], traversal: { mode: 'snapshot', after_revision: 0, cursor: null }, state: 'complete', missing: [], observedAt: 1 },
+      localDetail: {
+        selection: detailSummary.local_ref,
+        lane: 'tasks',
+        observation: { lane: 'tasks', local_ref: detailSummary.local_ref, summary: detailSummary, rows: [], page: { outcome: 'complete', revision: detailSummary.revision, checkpoint: detailSummary.revision, scanned: 0, next_cursor: null }, missing: [], total: 0 },
+        summaryFreshness: 'observed', laneFreshness: 'observed', error: null,
+      },
+      detail: { kind: 'none' },
+      detailCache: { [key]: { kind: 'selected', selection: selected, cursors: { task_cursor: null, artifact_cursor: null }, observation: { ...fourTaskDetail(selected, c), lifecycle: 'complete' }, freshness: 'observed', error: null } },
+      headers: {}, working: false, error: null,
+    } as unknown as JobMetadataState;
+    expect(metadataJobs(state).map(job => [job.id, job.status])).toEqual([[listed.local_ref.job_id, 'complete']]);
+  });
+
+  it.each([null, 'unavailable'] as const)('keeps a hydrated expert through stale list and detail errors (%s)', (error) => {
     const c = context();
     const selected = pmSelection(c);
     const key = metadataSelectionKey(selected);
     const detail = fourTaskDetail(selected, c);
     const state = {
       view: { kind: 'view', target: { repo: c.repo, session_id: c.session_id, scope: 'all' }, context: c, view: view(c.view_generation), refresh: 'idle' },
-      observations: [{ row: pmRow(c), freshness: 'observed' }],
+      observations: [{ row: pmRow(c), freshness: 'stale' }],
       pins: [],
       detail: { kind: 'none' },
       detailCache: {
@@ -546,7 +574,8 @@ describe('metadataJobs alias dedupe', () => {
           cursors: { task_cursor: null, artifact_cursor: null },
           observation: detail,
           freshness: 'stale',
-          error: null,
+          error,
+          presentationRetained: error !== null,
         },
       },
       headers: {},
@@ -580,6 +609,36 @@ describe('metadataJobs alias dedupe', () => {
 });
 
 describe('SwarmPane canonical alias presentation', () => {
+  it('retains running workers through a failed refresh and keeps terminal aliases finished after weaker refreshes', async () => {
+    const fixture = await mountCanonicalAlias();
+    const selected = pmSelection(context());
+    try {
+      const row = await screen.findByTestId(`inspect-local-${localSummary().local_ref.job_id}`);
+      fireEvent.click(within(row).getByRole('button', { name: /Provider worker|canonical swarm goal|Synthetic alias/ }));
+      await screen.findByRole('group', { name: 'Workers' });
+      expect(metadataJobs(fixture.store.getSnapshot())[0].status).toBe('running');
+      fixture.setFailDetail(true);
+      await act(async () => { await fixture.store.hydrateDetail(selected, { prefetch: true }); });
+      expect(fixture.store.getSnapshot().detailCache[metadataSelectionKey(selected)].freshness).toBe('stale');
+      expect(within(screen.getByRole('group', { name: 'Workers' })).getByText('Worker 4')).toBeVisible();
+      fixture.setFailDetail(false);
+      fixture.setLifecycle('complete');
+      await act(async () => { await fixture.store.hydrateDetail(selected, { prefetch: true }); });
+      expect(metadataJobs(fixture.store.getSnapshot())[0].status).toBe('complete');
+      expect(screen.getByRole('button', { name: /Finished/ })).toBeVisible();
+      fixture.setLifecycle('running');
+      await act(async () => {
+        await fixture.store.hydrateDetail(selected, { prefetch: true });
+        fixture.store.restartTraversal();
+      });
+      for (let turn = 0; turn < 24; turn++) {
+        await act(async () => { await fixture.store.advance(); });
+      }
+      expect(metadataJobs(fixture.store.getSnapshot())[0].status).toBe('complete');
+      expect(screen.getByRole('button', { name: /Finished/ })).toBeVisible();
+    } finally { fixture.unmount(); }
+  });
+
   it('titles a closed alias from PM hydrate without a click', async () => {
     const fixture = await mountCanonicalAlias({ includePmList: false });
     try {
