@@ -1165,7 +1165,10 @@ def build_tools_schema(
                 "run a terminal shell command. Requires `command`. "
                 "Default is foreground (synchronous). Set background=true only "
                 "when you explicitly want a durable background job that returns "
-                "a pending receipt immediately; never rely on duration alone."
+                "a pending receipt immediately; never rely on duration alone. "
+                "Simple CodeGraph init/index commands (including python -m "
+                "puppetmaster codegraph) are automatically tracked in background. "
+                "Do not use quiet mode for indexing; inspect the job output."
             ),
             "parameters": {
                 "type": "object",
@@ -1179,7 +1182,8 @@ def build_tools_schema(
                         "description": (
                             "Opt-in durable background execution. When true, "
                             "registers a local command job before launch and "
-                            "returns a pending receipt with job_id. Default false."
+                            "returns a pending receipt with job_id. Default false; "
+                            "CodeGraph init/index is automatically backgrounded."
                         ),
                     },
                 },
@@ -2908,7 +2912,7 @@ You have direct access to a local CodeGraph-indexed workspace and can explore/ed
 - `read_file`: read a file's contents from the workspace (and, when nested, anywhere under the git toplevel — prefer that over shell `cd`/`type`). Requires `path`, with optional `start_line` and `limit` for large files.
 - `edit_file`: make a targeted edit to an existing file by replacing an exact substring. Requires `path`, `old_str`, and `new_str`. STRONGLY PREFERRED over write_file for editing existing files.
 - `write_file`: write/create a file atomically. Requires `path` and `content`. Use ONLY to create brand-new files.
-- `run_command`: run a terminal shell command. Requires `command`.
+- `run_command`: run a terminal shell command. Requires `command`. Simple CodeGraph init/index commands are automatically tracked in background for observable indexing. Do not use quiet mode; inspect the returned job output.
 - `run_command_batch`: run 1-6 independent shell commands as one batch. Requires `commands`.
 - `run_ipython`: execute Python in a session-scoped persistent REPL (variables survive across turns). Prefer read_file/hash_edit/run_command/swarms for normal coding; use this for stateful probes. Requires `code`.
 - `wait`: stay on this turn while background jobs run (Cursor-style Await). Sleeps up to `seconds` (default 2, max 30) and returns whether jobs settled. After run_implement / run_parallel, call wait instead of ending the turn.
@@ -3041,7 +3045,7 @@ You have direct access to the workspace and can explore/edit it using these real
 - `read_file`: read a file's contents from the workspace. Requires `path`, with optional `start_line` and `limit` for large files.
 - `edit_file`: make a targeted edit to an existing file by replacing an exact substring. Requires `path`, `old_str`, and `new_str`. STRONGLY PREFERRED over write_file for editing existing files.
 - `write_file`: write/create a file atomically. Requires `path` and `content`. Use ONLY to create brand-new files.
-- `run_command`: run a terminal shell command. Requires `command`.
+- `run_command`: run a terminal shell command. Requires `command`. Simple CodeGraph init/index commands are automatically tracked in background for observable indexing. Do not use quiet mode; inspect the returned job output.
 - `list_dir`: list the files and folders inside a directory. `path` is optional.
 - `route_task`: preview which model the router would pick + estimated cost for a given instruction without executing it. Requires `instruction`.
 - `web_search`: search the internet and return top results. Requires `query`.
@@ -3069,4 +3073,3 @@ Rules:
 - Always verify your work by running tests via `run_command` after editing.
 - Be concise and concrete. Never invent file contents; read the files first.
 """
-

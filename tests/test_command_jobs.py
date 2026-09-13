@@ -650,3 +650,74 @@ def test_load_local_jobs_does_not_upsert_foreign_parallel_wave(tmp_path):
         isinstance(row, dict) and row.get("type") == "swarm_pending"
         for row in exported
     )
+
+
+@pytest.mark.parametrize(('command', 'expected'), [
+    ('codegraph index --quiet', 'codegraph index'),
+    ('codegraph init --index -q', 'codegraph init --index'),
+    ('python -m puppetmaster codegraph index --quiet', 'python -m puppetmaster codegraph index'),
+    ('python3 -m puppetmaster codegraph init --index --quiet', 'python3 -m puppetmaster codegraph init --index'),
+    ('codegraph index --path "C:\\my repo" --quiet', 'codegraph index --path "C:\\my repo"'),
+    ('codegraph index --path "--quiet" --quiet', 'codegraph index --path "--quiet"'),
+    ('codegraph status', None), ('codegraph search index', None),
+    ('codegraph index --help', None), ('codegraph init -h', None),
+    ('codegraph index "--help"', None),
+    ('codegraph index -- --quiet', 'codegraph index -- --quiet'),
+    ('codegraph init', 'codegraph init'),
+    ('python.exe -m puppetmaster codegraph index -q', 'python.exe -m puppetmaster codegraph index'),
+    ('codegraph index && echo done', None), ('codegraph index > out', None),
+    ('codegraph index\necho done', None), ('sleep 999', None),
+    ('pytest -q', None), ('echo codegraph index', None),
+    ('codegraph index "unterminated', None),
+])
+def test_normalize_codegraph_index_command(command, expected):
+    from harness.command_jobs import normalize_codegraph_index_command
+    assert normalize_codegraph_index_command(command) == expected
+
+
+def test_bare_codegraph_index_uses_puppetmaster_runtime():
+    from harness.command_jobs import codegraph_index_runtime_command
+
+    command = codegraph_index_runtime_command(
+        "codegraph index --quiet",
+        ["/runtime/python", "-m", "puppetmaster", "codegraph"],
+    )
+
+    assert command == "/runtime/python -m puppetmaster codegraph index"
+
+
+def test_explicit_puppetmaster_index_keeps_its_runtime():
+    from harness.command_jobs import codegraph_index_runtime_command
+
+    command = codegraph_index_runtime_command(
+        "python -m puppetmaster codegraph init --index --quiet",
+        ["/runtime/python", "-m", "puppetmaster", "codegraph"],
+    )
+
+    assert command == "python -m puppetmaster codegraph init --index"
+
+
+@pytest.mark.parametrize('command', [
+    'codegraph index --quiet',
+    'python -m puppetmaster codegraph init --index --quiet',
+])
+def test_codegraph_dispatch_auto_background(session, command):
+    sess, _, repo = session
+    act = PilotAction(kind='run_command', command=command, repo=repo)
+    sess._do_run_command = MagicMock()
+    with patch('harness.command_jobs.threading.Thread') as thread:
+        events = list(dispatch_local_action(sess, act, 'a-index', True, []))
+    sess._do_run_command.assert_not_called()
+    data = events[0].data
+    assert data['mode'] == 'background'
+    assert data['cwd'] == repo
+    assert data['action_id'] == 'a-index'
+    assert 'observable indexing' in data['message']
+    runtime_command = thread.call_args.kwargs['args'][2]
+    if command.startswith('codegraph'):
+        assert '-m puppetmaster codegraph index' in runtime_command
+        assert data['command_preview'] == runtime_command
+    else:
+        assert runtime_command == command.replace(' --quiet', '')
+    assert '--quiet' not in runtime_command
+    assert data['command_fingerprint'] == command_fingerprint(runtime_command)
