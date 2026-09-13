@@ -51,7 +51,7 @@ from typing import Any, Optional
 
 # Thresholds (override via env for tuning in the field).
 LOOP_REPEAT_CAP = int(os.environ.get("HARNESS_LOOP_REPEAT_CAP", "3"))
-DELEGATE_THRESHOLD = int(os.environ.get("HARNESS_DELEGATE_THRESHOLD", "4"))
+DELEGATE_THRESHOLD = int(os.environ.get("HARNESS_DELEGATE_THRESHOLD", "8"))
 SWARM_GATE_READ_ALLOWANCE = int(os.environ.get("HARNESS_SWARM_GATE_READ_ALLOWANCE", "2"))
 # How many full swarm-gate redirect messages to emit per turn before switching
 # to a short cached replay (stops broad-intent turns burning N unique SUPPRESSED

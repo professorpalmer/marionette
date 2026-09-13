@@ -691,6 +691,16 @@ def test_delegate_gate_trips_after_threshold():
     assert "run_swarm" in verdict.message
 
 
+def test_delegate_gate_default_allows_more_than_four_exploration_calls():
+    assert DELEGATE_THRESHOLD >= 8
+
+    state = new_turn_guard_state()
+    for i in range(5):
+        act = _Act(kind="read_file", path=f"doc-{i}.md")
+        assert check_delegate_gate(state, "read_file", act).suppress is False
+        record_action_execution(state, "read_file", act)
+
+
 def test_write_file_fingerprint_includes_content():
     a = _Act(kind="write_file", path="wiki/README.md", content="first draft")
     b = _Act(kind="write_file", path="wiki/README.md", content="rewritten body")
