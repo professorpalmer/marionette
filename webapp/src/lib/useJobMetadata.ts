@@ -158,7 +158,17 @@ export class JobMetadataStore {
     }
     const canonicalTerminal = { ...state.canonicalTerminal };
     for (const cached of Object.values(state.detailCache)) {
-      const lifecycle = cached.observation?.lifecycle;
+      const detail = cached.observation;
+      let lifecycle = detail?.lifecycle;
+      if (detail && lifecycle && pmActiveStatuses.some(status => status === lifecycle) && lifecycle !== 'stitching'
+        && !cached.cursors.task_cursor && !cached.cursors.artifact_cursor
+        && detail.tasks.page.outcome === 'complete'
+        && detail.tasks.page.revision === detail.artifacts.page.revision
+        && detail.tasks.rows.length > 0 && detail.tasks.rows.length === detail.task_count
+        && detail.tasks.rows.every(task => ['complete', 'failed', 'skipped', 'cancelled'].includes(task.status ?? ''))) {
+        lifecycle = detail.tasks.rows.some(task => task.status === 'failed') ? 'failed'
+          : detail.tasks.rows.some(task => task.status === 'skipped' || task.status === 'cancelled') ? 'cancelled' : 'complete';
+      }
       if (cached.freshness === 'observed' && !cached.error && lifecycle
         && ['complete', 'completed', 'done', 'failed', 'cancelled', 'timeout', 'timed_out', 'truncated', 'interrupted', 'stalled'].includes(lifecycle)) {
         canonicalTerminal[metadataSelectionKey(cached.selection)] = lifecycle;

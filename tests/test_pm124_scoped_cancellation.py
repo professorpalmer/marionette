@@ -390,3 +390,15 @@ def test_recreated_store_path_cannot_cancel_same_id_successor(case, tmp_path, mo
     assert post_swarm_cancel(body, svc)[0] == 409
     assert get_cancellation_receipt(query(body), svc)[0] == 409
     assert replacement.get_cancellation_receipt(new_ref, body['request_id']) is None
+
+
+def test_cli_selection_uses_owning_store_not_workspace_default(case, tmp_path, monkeypatch):
+    store, task, svc, body = case
+    wrong = create_store('sqlite', tmp_path / 'workspace-default')
+    monkeypatch.setattr('harness.cli_job_merge.resolve_cli_state_dir', lambda repo: str(wrong.root))
+    monkeypatch.setattr('puppetmaster.state.list_project_state_dirs', lambda: [store.root, wrong.root])
+    body['selection']['source'] = 'cli'
+    code, result = post_swarm_cancel(body, svc)
+    assert code == 200, result
+    assert result['receipt']['outcome'] == 'requested'
+    assert receipt(store, body) is not None

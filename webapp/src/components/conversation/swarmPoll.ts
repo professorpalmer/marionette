@@ -19,6 +19,7 @@ export type SwarmLiveJobRow = {
   id?: string;
   status?: string;
   session_id?: string | null;
+  canonical_aliases?: string[];
 };
 
 function liveJobId(job: SwarmLiveJobRow): string {
@@ -211,6 +212,9 @@ export function terminalJobIdsFromSwarmLive(
     if (!isTerminalJobStatus(job?.status)) continue;
     const id = liveJobId(job);
     if (id) out.push(id);
+    for (const alias of job.canonical_aliases ?? []) {
+      if (alias && !out.includes(alias)) out.push(alias);
+    }
   }
   return out;
 }

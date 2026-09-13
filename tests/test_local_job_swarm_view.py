@@ -672,3 +672,26 @@ def test_session_savings_mixed_store_and_local_dedupes_ids():
     routing_mixed = sum(float(j.get("routing_saved_usd") or 0.0) for j in mixed)
     assert abs(routing_mixed - 0.43) < 1e-9
     assert {j["id"] for j in mixed} == {"job-store", "local-extra"}
+
+
+def test_canonical_terminal_workers_settle_local_wrapper_monotonically(tmp_path):
+    from harness.config import HarnessConfig
+    from harness.conversation import ConversationalSession
+    from puppetmaster.models import TaskStatus, JobStatus
+    pilot = ConversationalSession(HarnessConfig(driver='stub-oracle-v2', state_dir=str(tmp_path / 'state')))
+    pilot.harness_session_id = 'session-terminal'
+    store = create_store('sqlite', tmp_path / 'state')
+    job = store.create_job('all terminal', origin='marionette', session_id=pilot.harness_session_id)
+    store.update_job_status(job.id, JobStatus.RUNNING)
+    tasks = [Task(job_id=job.id, role='worker', instruction='terminal', status=TaskStatus.COMPLETE) for _ in range(3)]
+    for task in tasks:
+        store.save_task(task)
+    alias = 'local-swarm-terminal'
+    pilot._register_local_job(alias, 'all terminal', cwd=str(tmp_path), dispatch_id='dispatch-terminal', skip_routing_preview=True)
+    pilot._associate_local_job_with_pm(alias, dict(source='harness', job_ref=store.job_ref(job.id).as_dict(),
+        session_id=pilot.harness_session_id, dispatch_id='dispatch-terminal'))
+    assert pilot.get_local_job(alias).get('canonical')
+    assert pilot.live_local_jobs()[0]['status'] == 'completed'
+    from dataclasses import replace
+    store.save_task(replace(tasks[0], status=TaskStatus.RUNNING))
+    assert pilot.live_local_jobs()[0]['status'] == 'completed'

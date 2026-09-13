@@ -562,6 +562,17 @@ class MetadataReader:
         # job's summary revision advances under every worker write; that is the same
         # selection, and the lane pages already carry their own revisions.
         _, current, reason = self._selected(selection)
+        if (not reason and current.job_ref == row.job_ref and current.revision == row.revision
+                and row.status in RUNNING and row.status != 'stitching'
+                and not task_cursor and not artifact_cursor
+                and selected_pages['tasks'].outcome == 'complete'
+                and selected_pages['tasks'].revision == selected_pages['artifacts'].revision
+                and len(selected_pages['tasks'].items) == row.task_count):
+            from .job_lifecycle import terminal_task_lifecycle
+
+            terminal = terminal_task_lifecycle(item.status for item in selected_pages['tasks'].items)
+            if terminal:
+                result['lifecycle'] = terminal
         if reason or current.job_ref != row.job_ref:
             result.update(lifecycle=None, display=dict(kind='unavailable', reason='selection_changed'),
                           task_count=None, artifact_count=None,

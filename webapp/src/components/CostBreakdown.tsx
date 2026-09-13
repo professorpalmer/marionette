@@ -9,6 +9,8 @@
 import type { UsageData } from "../lib/api";
 
 export type CostBreakdownData = {
+  accounting_scope?: 'conversation';
+  list_price_complete?: boolean;
   read_status?: "unavailable";
   tokens_used: number;
   est_cost_usd: number;
@@ -53,6 +55,8 @@ export function usageToCostBreakdownData(
   session: UsageData["session"],
 ): CostBreakdownData {
   return {
+    accounting_scope: session.accounting_scope,
+    list_price_complete: session.list_price_complete,
     read_status: session.read_status,
     tokens_used: session.tokens_used,
     est_cost_usd: session.est_cost_usd,
@@ -299,6 +303,7 @@ export function listPriceValueWeakestBasis(
     | "routing_saved_usd"
     | "routing_savings_basis"
     | "tool_output_savings_usd"
+    | "list_price_complete"
   >,
 ): ListPriceEvidenceBasis | null {
   const positive = (value: unknown) =>
@@ -323,7 +328,7 @@ export function listPriceValueWeakestBasis(
     : (delegation > 0 ? delegation : routing);
   const compact = positive(data.tool_output_savings_usd);
 
-  let weakest: ListPriceEvidenceBasis | null = null;
+  let weakest: ListPriceEvidenceBasis | null = data.list_price_complete === false ? 'partial' : null;
   if (pilotCache > 0) {
     weakest = weakerEvidence(
       weakest,
@@ -396,7 +401,7 @@ export default function CostBreakdown({
 }) {
   if (data.read_status === "unavailable") {
     return <div role="status" className="px-3 py-3 text-[11px] text-muted">
-      App-run usage is partial / unavailable.
+      {data.accounting_scope === 'conversation' ? 'Session usage' : 'App-run usage'} is partial / unavailable.
       {data.est_cost_usd > 0 ? ` Known spend subtotal: ${fmtCost(data.est_cost_usd)}.` : " Spend total unavailable."}
     </div>;
   }
@@ -470,8 +475,14 @@ export default function CostBreakdown({
   return (
     <div className="w-full min-h-0 px-3 py-3 text-[11px] text-txt">
       <p className="text-[10px] text-muted mb-2 leading-snug">
-        Spend and list-price value since you opened Marionette.
+        {data.accounting_scope === 'conversation'
+          ? 'This session, all time. Tokens and cache hits are recorded session usage; job spend includes owned worker receipts. List-price value includes attributable job evidence only.'
+          : 'Spend and list-price value since you opened Marionette.'}
       </p>
+      {data.accounting_scope === 'conversation' && <div className="mb-2 flex justify-between tabular-nums text-muted">
+        <span>{fmtTokens(data.tokens_used)} tok</span>
+        <span>{cacheHitDisplay(data).percent ?? '—'} prompt cache</span>
+      </div>}
       {hero ? (
       <div className="mb-3 rounded-md border border-edge/50 bg-panel2/20 px-2.5 py-2.5">
         <div className="grid grid-cols-2 gap-x-3 gap-y-2.5">

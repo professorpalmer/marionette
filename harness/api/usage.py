@@ -40,6 +40,7 @@ class UsageServices:
     diag: Callable[..., Any]
     get_pilot: Callable[[], Any]
     get_runner: Callable[[str], Any] = lambda session_id: None
+    active_session_id: Callable[[], str] = lambda: ""
 
 
 JsonPayload = Union[dict, list]
@@ -250,6 +251,9 @@ def _get_usage_body(repo_override: str, svc: UsageServices) -> tuple[int, JsonPa
             job_stores_for_read,
         )
         from ..job_scoping import filter_accountable_jobs
+        from .economics import _conversation_jobs
+
+        session_id = svc.active_session_id() or getattr(svc.get_pilot(), 'harness_session_id', '') or ''
 
         # Boot-pill swarm dollars: merge epoch-windowed jobs across every
         # workspace opened this process (not only active _cfg.repo).
@@ -297,8 +301,14 @@ def _get_usage_body(repo_override: str, svc: UsageServices) -> tuple[int, JsonPa
         jids = [key for key, job in all_jobs_by_key.items()
                 if key in boot_keys and svc.job_in_cost_window(job.get("created_at"))
                 and filter_accountable_jobs([job])]
-        session_jids = list(dict.fromkeys(key for key in active_keys
-                                        if filter_accountable_jobs([all_jobs_by_key[key]])))
+        session_jids = list(dict.fromkeys(
+            key for key in active_keys
+            if (
+                _conversation_jobs([all_jobs_by_key[key]], session_id)
+                if session_id
+                else filter_accountable_jobs([all_jobs_by_key[key]])
+            )
+        ))
         job_coverage["expected"] = None if usage_incomplete else len(jids)
         registry = svc.swarm_registry()
         arts_by_job: dict = {}
@@ -436,6 +446,16 @@ def _get_usage_body(repo_override: str, svc: UsageServices) -> tuple[int, JsonPa
         session_incomplete = session_incomplete or bool(unavailable.intersection(session_jids))
         try:
             session_total = svc.active_session_total([k for k in session_jids if k not in unavailable], _job_arts, registry)
+            if isinstance(session_total, dict):
+                if session_id and session_total.get('session_id') != session_id:
+                    session_total = {'read_status': 'unavailable'}
+                    session_incomplete = True
+                else:
+                    session_total.update(svc.sum_job_set_savings_detail(
+                        [k for k in session_jids if k not in unavailable], _job_arts, registry))
+                    # Persisted session meters do not retain historical pilot model prices.
+                    # Only attributable job value is credited; no app-run fallback.
+                    session_total['list_price_complete'] = False
         except Exception as e:
             session_incomplete = True
             svc.diag("server.usage_session_aggregate", e)

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Coins } from "lucide-react";
 import { api, type EconomicsData, type EconomicsScope } from "../lib/api";
-import { refreshProcessUsage, useProcessUsage } from "../lib/processUsage";
+import { activeSessionUsage, refreshProcessUsage, useProcessUsage } from "../lib/processUsage";
 import { usePolling } from "../lib/usePolling";
 import { readSWRCache, writeSWRCache } from "../lib/useStaleWhileRevalidate";
 import { lastSelectedProjectRoot } from "../lib/panelTransition";
@@ -10,7 +10,7 @@ import CostBreakdown, {
   listPriceValueTotal,
   usageToCostBreakdownData,
 } from "./CostBreakdown";
-import EconomicsDurable, { durableReceiptHeroAvailable } from "./EconomicsDurable";
+import EconomicsDurable from "./EconomicsDurable";
 
 type EconomicsPaneScope = Exclude<EconomicsScope, "window30">;
 
@@ -154,8 +154,10 @@ export default function EconomicsPane() {
     && (periodDays === 30 ? economics.window_days === 30 : !economics.window_days),
   );
   const projectLabel = projectRoot.split(/[\\/]/).filter(Boolean).at(-1) || "this repo";
-  const processMeters = processUsage.session
-    ? usageToCostBreakdownData(processUsage.session)
+  const sessionAllTime = scope === 'conversation' && periodDays === null;
+  const sessionUsage = activeSessionUsage(processUsage);
+  const processMeters = sessionAllTime && sessionUsage
+    ? usageToCostBreakdownData(sessionUsage)
     : null;
   const showProcessMeters = Boolean(
     processMeters
@@ -166,8 +168,6 @@ export default function EconomicsPane() {
       || listPriceValueTotal(processMeters) > 0
     ),
   );
-  const durableHero = economicsMatchesSelection && durableReceiptHeroAvailable(economics);
-  const processHero = scope === "conversation" && !durableHero;
   return (
     <div className="flex flex-col h-full overflow-hidden bg-transparent">
       <div className="shrink-0 flex items-center px-3 py-2 border-b border-[var(--shell-panel-border)] select-none">
@@ -213,22 +213,23 @@ export default function EconomicsPane() {
         </select>
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto">
-        {processUsage.readStatus === "unavailable" && (
+        {sessionAllTime && processUsage.readStatus === "unavailable" && (
           <button type="button" className="px-3 py-2 text-[11px] text-risk" onClick={() => void refreshProcessUsage()}>
-            App-run usage partial / unavailable. Retry
+            Session usage partial / unavailable. Retry
           </button>
         )}
-        {scope === "conversation" && processUsage.sessionTotal?.read_status === "unavailable" && (
+        {sessionAllTime && processUsage.sessionTotal?.read_status === "unavailable" && (
           <button type="button" className="px-3 py-2 text-[11px] text-risk" onClick={() => void refreshProcessUsage()}>
             Session total partial / unavailable. Retry
           </button>
         )}
         {showProcessMeters && processMeters ? (
-          <CostBreakdown data={processMeters} hero={processHero} />
+          <CostBreakdown data={processMeters} />
         ) : null}
         {economicsMatchesSelection ? (
           <EconomicsDurable
             data={economics}
+            hero={!sessionAllTime}
           />
         ) : (
           <p className="px-3 py-3 text-[11px] text-muted">Updating {projectLabel}…</p>

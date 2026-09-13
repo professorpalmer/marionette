@@ -22,13 +22,20 @@ export default function JobCancellationControl({ job, repo, sessionId, disabled 
 }) {
   const key = jobControlKey(job, repo, sessionId);
   const attempt = useSyncExternalStore(subscribe, () => attempts.get(key), () => undefined);
-  const selection = selectJobControl(job, repo, sessionId);
+  const freshSelection = selectJobControl(job, repo, sessionId);
+  const lastSelection = useRef({ key, selection: freshSelection });
+  if (lastSelection.current.key !== key || freshSelection
+    || (job.cancellation_view?.status !== 'unavailable' && !job.unavailable_fields?.includes('tasks'))) {
+    lastSelection.current = { key, selection: freshSelection };
+  }
+  // The kernel compares these exact generations and leases atomically before stopping.
+  const selection = freshSelection ?? lastSelection.current.selection;
   const context = useRef({ key, disabled, epoch: 0 });
   if (context.current.key !== key || context.current.disabled !== disabled) {
     context.current = { key, disabled, epoch: context.current.epoch + 1 };
   }
   useEffect(() => {
-    const invalidate = () => { context.current.epoch += 1; };
+    const invalidate = () => { context.current.epoch += 1; lastSelection.current = { key: '', selection: null }; };
     window.addEventListener('harness-session-changed', invalidate);
     window.addEventListener('harness-project-selected', invalidate);
     return () => {
@@ -42,7 +49,7 @@ export default function JobCancellationControl({ job, repo, sessionId, disabled 
     if (disabled || attempts.get(key)?.kind === 'pending') return;
     const previous = attempts.get(key);
     const retained = operation === 'replacement' ? undefined : previous?.request;
-    const request = retained ?? (selection?.version === 2 ? {
+    const request = retained ?? (lastSelection.current.key === key && selection?.version === 2 ? {
       selection, request_id: crypto.randomUUID(),
     } : null);
     if (!request) return;

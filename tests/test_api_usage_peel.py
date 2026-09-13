@@ -192,3 +192,22 @@ def test_context_usage_route_during_real_cold_attach(tmp_path, monkeypatch):
     assert payload["available"] is True
     assert payload["session_id"] == "cold-child"
     assert payload["total"] == real.get_context_usage()["total"]
+
+
+def test_session_usage_filters_foreign_session_jobs_before_aggregation(tmp_path, monkeypatch):
+    from puppetmaster.store_factory import create_store
+    store = create_store('sqlite', tmp_path / 'store')
+    mine = store.create_job('mine', origin='marionette', session_id='session-a')
+    other = store.create_job('other', origin='marionette', session_id='session-b')
+    svc, _ = _svc(pilot=SimpleNamespace(harness_session_id='session-a'))
+    svc.scoped_jobs_with_stores = lambda repo_root=None: ([
+        dict(id=j.id, source='harness', accounting_owned=True, session_id=sid, origin='marionette')
+        for j, sid in [(mine, 'session-a'), (other, 'session-b')]
+    ], store, None)
+    seen = []
+    def total(ids, arts, registry):
+        seen.extend(key[-1] for key in ids)
+        return dict(session_id='session-a', est_cost_usd=0, input_tokens=0, output_tokens=0)
+    svc.active_session_total = total
+    get_usage('', svc)
+    assert seen == [mine.id]

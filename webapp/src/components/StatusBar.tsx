@@ -16,7 +16,7 @@ import {
   X,
 } from "lucide-react";
 import { api, type Config, type SessionGoal, type SessionState } from "../lib/api";
-import { refreshProcessUsage, useProcessUsage } from "../lib/processUsage";
+import { activeSessionUsage, refreshProcessUsage, useProcessUsage } from "../lib/processUsage";
 import {
   subscribeTaskProfile,
   taskProfileTitle,
@@ -227,7 +227,7 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
   const sessionGoal = sessionGoalForChip(sessionState?.goal);
   const usageBusy = runtimeStatus === "busy" || runtimeStatus === "thinking";
   const processUsage = useProcessUsage({ busy: usageBusy });
-  const usage = processUsage.session;
+  const usage = activeSessionUsage(processUsage);
 
   useEffect(() => {
     const onSessionChanged = (event: Event) => {
@@ -386,9 +386,9 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
           </button>
         </span>
       )}
-      {processUsage.readStatus === "unavailable" && (
+      {(processUsage.readStatus === "unavailable" || processUsage.sessionTotal?.read_status === "unavailable") && (
         <button type="button" className="text-risk" onClick={() => void refreshProcessUsage()}>
-          App-run usage partial / unavailable. Retry
+          Session usage partial / unavailable. Retry
         </button>
       )}
       {showUsage && usage && (
@@ -396,7 +396,7 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
           <span className="w-px h-3 bg-edge/40 shrink-0" />
           <span
             className="flex items-center gap-1.5 text-muted/80 min-w-0"
-            title="Pilot and worker spend since this app open (survives backend restart; resets on full quit). Click the dollar for this conversation's Puppetmaster receipts."
+            title="This session, all time: persisted pilot and worker usage plus owned job spend. Click for the same session accounting."
           >
             <Coins size={10} className="text-faint shrink-0" />
             <span className="status-bar-optional-xs">{formatTokens(usage.tokens_used)} tok</span>
@@ -442,13 +442,13 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
                   type="button"
                   onClick={openSessionEconomics}
                   className="status-bar-optional-sm inline-flex items-center gap-1 px-1.5 py-px text-good/65 hover:text-good/80"
-                  title={`List-price value, not a cash refund. ${detail}`}
+                  title={`List-price value${usage.list_price_complete === false ? ' (partial)' : ''}, not a cash refund. ${detail}`}
                 >
                   {hit.percent != null ? <span>{hit.percent} {hit.label}</span> : null}
                   {hit.percent != null && savedUsd > 0 ? (
                     <span className="text-good/50" aria-hidden="true">·</span>
                   ) : null}
-                  {savedUsd > 0 ? `~${formatCost(savedUsd)} list-price` : null}
+                  {savedUsd > 0 ? `~${formatCost(savedUsd)} list-price${usage.list_price_complete === false ? ' (partial)' : ''}` : null}
                 </button>
               );
             })()}
@@ -457,8 +457,8 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
               onClick={openSessionEconomics}
               title={
                 !spendIsEstimated(usage)
-                  ? "Billed spend since app launch (pilot + workers). Click for this conversation's Puppetmaster receipts."
-                  : "Estimated spend since app launch (pilot + workers). Click for this conversation's Puppetmaster receipts."
+                  ? "Billed spend for this session, all time. Click for session accounting."
+                  : "Estimated spend for this session, all time. Click for session accounting."
               }
               className="inline-flex items-center gap-1 px-1.5 py-px rounded-full bg-panel2 border border-edge text-txt/90 font-medium hover:border-edge hover:text-txt transition cursor-pointer"
             >
@@ -467,7 +467,7 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
                 ? usage.est_cost_usd > 0 ? `${formatCost(usage.est_cost_usd)} known subtotal` : "Spend unavailable"
                 : formatCost(usage.est_cost_usd)}
             </button>
-            <span className="text-faint/70 normal-case font-sans tracking-normal">this open</span>
+            <span className="text-faint/70 normal-case font-sans tracking-normal">this session</span>
           </span>
         </>
       )}

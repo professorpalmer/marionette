@@ -40,8 +40,10 @@ export function jobHeadlineTotal(job: Pick<EconomicsJobRow, "measured_cost_usd" 
 
 export default function EconomicsDurable({
   data,
+  hero = true,
 }: {
   data: EconomicsData | null;
+  hero?: boolean;
 }) {
   const openSwarmJob = useOpenSwarmJob('', data?.repo);
   const referenceId = data?.counterfactual?.reference_model_id
@@ -93,7 +95,7 @@ export default function EconomicsDurable({
         </p>
       ) : null}
 
-      {durableReceiptHeroAvailable(data) ? (
+      {hero && durableReceiptHeroAvailable(data) ? (
         <section className="mx-3 mb-3 rounded-md border border-edge/50 bg-panel2/20 px-3 py-2.5">
           <p className="text-[10px] text-muted mb-2 leading-snug">
             Job receipts for the selected scope and period. Not this-open process spend.
@@ -152,7 +154,7 @@ export default function EconomicsDurable({
             <p className="mt-2 text-[10px] leading-snug text-warn">{financialIssue}</p>
           ) : null}
         </section>
-      ) : isRoutingForecast && hasReceipt ? (
+      ) : hero && isRoutingForecast && hasReceipt ? (
         <section className="mx-3 mb-3 rounded-md border border-edge/50 bg-panel2/20 px-3 py-2.5">
           <div className="text-[10px] text-muted">Cost unavailable</div>
           <div className="mt-1 text-[10px] leading-snug text-faint">No terminal job receipts for this scope.</div>

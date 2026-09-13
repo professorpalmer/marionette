@@ -233,7 +233,7 @@ function SelectedInspection({ job, navigation, compact, onReveal, onOpenDashboar
   const detailFresh = detail?.freshness === 'observed' && !detail.error
     && !state.observations.some(o => observation && metadataSelectionKey(o.row.selection) === metadataSelectionKey(observation.selection) && o.freshness === 'stale');
   const bindings = observation?.tasks.rows.flatMap(t => t.binding ? [t.binding] : []) ?? [];
-  const authorizedJob: Job = { ...job, unavailable_fields: ['artifacts'], cancellation_view:
+  const authorizedJob: Job = { ...job, ...(canonicalSelection ? { id: canonicalSelection.job_ref.job_id, job_ref: canonicalSelection.job_ref, source: canonicalSelection.source, session_id: canonicalSelection.session_id } : {}), unavailable_fields: ['artifacts'], cancellation_view:
     observation && detailFresh && detail?.kind === 'selected' && !detail.cursors.task_cursor && observation.tasks.page.outcome === 'complete'
       && bindings.length > 0 && bindings.length === observation.tasks.rows.length
       ? { status: 'complete', limit: 200, bindings } : { status: 'unavailable', limit: 200 } };
@@ -388,8 +388,8 @@ function SelectedInspection({ job, navigation, compact, onReveal, onOpenDashboar
       {local && <><button className={button} onClick={() => inspect('tasks')}>Inspect workers</button><button className={button} onClick={() => inspect('routing')}>Inspect routing</button><button className={button} onClick={() => inspect('output')}>Inspect output</button><button className={button} onClick={() => inspect('children')}>Inspect children</button></>}
     </div>}
     {!compact && !local && !selectedPM && <p>Artifact preview is unavailable for this selection.</p>}
-    {view.kind === 'view' && !local && !deferAutoRead && <JobCancellationControl job={authorizedJob} repo={view.context.repo} sessionId={view.context.session_id} disabled={job.read_status === 'unavailable' || state.working} />}
-    {!compact && !deferAutoRead && local && view.kind === 'view' && job.session_id === view.context.session_id && <button className={button} disabled={!nativeSelection || !nativeFresh || (nativeSummary && terminal.has(nativeSummary.lifecycle)) || state.working || stopping} onClick={() => void nativeStop()}>Request native stop</button>}
+    {view.kind === 'view' && (!local || canonicalSelection) && !deferAutoRead && <JobCancellationControl job={authorizedJob} repo={view.context.repo} sessionId={view.context.session_id} disabled={terminal.has(job.status) || view.refresh !== 'idle'} />}
+    {!compact && !deferAutoRead && local && !canonicalSelection && view.kind === 'view' && job.session_id === view.context.session_id && <button className={button} disabled={!nativeSelection || !nativeFresh || (nativeSummary && terminal.has(nativeSummary.lifecycle)) || state.working || stopping} onClick={() => void nativeStop()}>Request native stop</button>}
     {local && !nativeSelection && <p>Native stop unavailable: this identity is not supported by the current execution control API.</p>}
     {stopNotice && <p role="status">{stopNotice}</p>}
     {detail?.error && <div><p role="alert">Selected read unavailable. Retry inspection.</p><button className={button} disabled={state.working} onClick={() => { if (compact) { if (selectedPM) { store.select(selectedPM); void store.readDetail(); } } else inspect(); }}>Retry</button></div>}
@@ -602,9 +602,12 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
     setPreferences(p => ({ ...p, dismissed: [...new Set([...p.dismissed, ...finishedRows.filter(j => j.read_status !== 'unavailable').flatMap(j => j.metadata_key ? [j.metadata_key] : [])])].slice(-200) }));
   };
   const popOutBoard = (job: Job) => {
-    const deepLink = dashboardJobId(job);
+    const native = state.local.observations.find(o => o.row.local_ref.job_id === job.id)?.row
+      ?? (state.localDetail?.selection.job_id === job.id ? state.localDetail.observation?.summary : undefined);
+    const ref = native?.canonical?.job_ref ?? job.job_ref;
+    const deepLink = ref?.job_id ?? dashboardJobId(job);
     const repo = lastSelectedProjectRoot() || undefined;
-    void api.dashboard(deepLink.startsWith('job_') ? deepLink : undefined, repo)
+    void api.dashboard(deepLink.startsWith('job_') ? deepLink : undefined, repo, ref)
       .then((payload) => {
         const url = payload.url || payload.embed_url || '';
         if (!payload.ok || !url) {

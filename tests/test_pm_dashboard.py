@@ -166,3 +166,81 @@ def test_try_warm_local_dashboard_reuses_ensure(monkeypatch):
     out = try_warm_local_dashboard("/tmp/pm-state")
     assert out["ok"] is True
     assert seen["state_dir"] == "/tmp/pm-state"
+
+
+def test_dashboard_resolves_harness_store_before_workspace_fallback(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from puppetmaster.store_factory import create_store
+    store = create_store('sqlite', tmp_path / 'harness')
+    job = store.create_job('dashboard owner')
+    monkeypatch.setattr('puppetmaster.state.find_state_dir_for_job', lambda jid: None)
+    monkeypatch.setattr('harness.cli_job_merge.resolve_cli_state_dir', lambda repo: str(tmp_path / 'wrong'))
+    seen = {}
+    def ensure(**kwargs):
+        seen.update(kwargs)
+        return dict(ok=True, host='127.0.0.1', port=8787)
+    monkeypatch.setattr('harness.api.dashboard.ensure_local_dashboard', ensure)
+    svc = make_job_services(cfg=SimpleNamespace(repo='/work'),
+        get_session=lambda: SimpleNamespace(state=lambda: SimpleNamespace(store=store)))
+    status, _ = get_dashboard({'job': [job.id]}, svc)
+    assert status == 200
+    assert seen['state_dir'] == str(store.root)
+    assert seen['job_id'] == job.id
+
+
+def test_dashboard_unknown_job_never_falls_back_to_unowned_store(monkeypatch):
+    monkeypatch.setattr('puppetmaster.state.find_state_dir_for_job', lambda jid: None)
+    monkeypatch.setattr('harness.cli_job_merge.resolve_cli_state_dir', lambda repo: '/tmp/wrong')
+    assert resolve_dashboard_state_dir('/work', 'job_missing') is None
+
+
+def test_dashboard_ambiguous_job_lookup_is_not_silently_retargeted(monkeypatch):
+    def ambiguous(jid):
+        raise ValueError('ambiguous job_id')
+    monkeypatch.setattr('puppetmaster.state.find_state_dir_for_job', ambiguous)
+    import pytest
+    with pytest.raises(ValueError, match='ambiguous'):
+        resolve_dashboard_state_dir('/work', 'job_duplicate')
+
+
+def test_dashboard_full_ref_selects_owner_among_duplicate_job_ids(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from puppetmaster.store_factory import create_store
+    primary = create_store('sqlite', tmp_path / 'primary')
+    sibling = create_store('sqlite', tmp_path / 'sibling')
+    monkeypatch.setattr('puppetmaster.models.new_id', lambda prefix: 'job_duplicate')
+    primary.create_job('primary')
+    job = sibling.create_job('sibling')
+    monkeypatch.setattr('puppetmaster.state.list_project_state_dirs', lambda: [primary.root, sibling.root])
+    seen = {}
+    def ensure(**kwargs):
+        seen.update(kwargs)
+        return dict(ok=True, host='127.0.0.1', port=8787)
+    monkeypatch.setattr('harness.api.dashboard.ensure_local_dashboard', ensure)
+    svc = make_job_services(cfg=SimpleNamespace(repo=str(tmp_path)),
+        get_session=lambda: SimpleNamespace(state=lambda: SimpleNamespace(store=primary)))
+    query = {key: [str(value)] for key, value in sibling.job_ref(job.id).as_dict().items()}
+    status, payload = get_dashboard(query, svc)
+    assert status == 200, payload
+    assert seen['state_dir'] == str(sibling.root)
+    assert seen['job_id'] == job.id
+
+
+def test_dashboard_local_alias_uses_captured_canonical_ref(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from puppetmaster.store_factory import create_store
+    store = create_store('sqlite', tmp_path / 'harness')
+    job = store.create_job('canonical')
+    seen = {}
+    def ensure(**kwargs):
+        seen.update(kwargs)
+        return dict(ok=True, host='127.0.0.1', port=8787)
+    monkeypatch.setattr('harness.api.dashboard.ensure_local_dashboard', ensure)
+    monkeypatch.setattr('puppetmaster.state.list_project_state_dirs', lambda: [])
+    svc = make_job_services(cfg=SimpleNamespace(repo=str(tmp_path)),
+        get_session=lambda: SimpleNamespace(state=lambda: SimpleNamespace(store=store)),
+        get_pilot=lambda: SimpleNamespace(get_local_job=lambda jid: {'canonical': {'job_ref': store.job_ref(job.id).as_dict()}}))
+    status, payload = get_dashboard({'job': ['local-swarm-alias']}, svc)
+    assert status == 200, payload
+    assert seen['state_dir'] == str(store.root)
+    assert seen['job_id'] == job.id

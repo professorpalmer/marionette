@@ -299,6 +299,7 @@ async function mountCanonicalAlias(options: {
   let pmPresent = options.includePmList === true;
   let lifecycle = options.lifecycle ?? 'running';
   let failDetail = false;
+  let tasksTerminal = false;
   const quality = options.quality ?? 'unverified';
   const c = context();
   const selected = pmSelection(c);
@@ -404,7 +405,11 @@ async function mountCanonicalAlias(options: {
         kind: 'response',
         status: 200,
         correlationId: '',
-        text: JSON.stringify(fourTaskDetail(selected, c, { lifecycle, quality })),
+        text: JSON.stringify((() => {
+          const detail = fourTaskDetail(selected, c, { lifecycle, quality });
+          if (tasksTerminal) detail.tasks.rows.forEach(task => { task.status = 'complete'; });
+          return detail;
+        })()),
       };
     }
     throw Error(`unexpected ${path}`);
@@ -434,6 +439,7 @@ async function mountCanonicalAlias(options: {
     setPmPresent(value: boolean) { pmPresent = value; },
     setLifecycle(value: string) { lifecycle = value; },
     setFailDetail(value: boolean) { failDetail = value; },
+    setTasksTerminal(value: boolean) { tasksTerminal = value; },
     ...ui,
   };
 }
@@ -815,4 +821,16 @@ describe('SwarmPane canonical alias presentation', () => {
     const err = new MetadataError('invalid_metadata', 'expert:routing');
     expect(err.detail).toBe('expert:routing');
   });
+});
+
+
+it('settles an all-terminal canonical roster and never reopens the alias on a weaker read', async () => {
+  const fixture = await mountCanonicalAlias();
+  fixture.setTasksTerminal(true);
+  await act(async () => { await fixture.store.hydrateDetail(pmSelection(), { prefetch: true }); });
+  expect(metadataJobs(fixture.store.getSnapshot())[0].status).toBe('complete');
+  fixture.setTasksTerminal(false);
+  await act(async () => { await fixture.store.hydrateDetail(pmSelection(), { prefetch: true }); });
+  expect(metadataJobs(fixture.store.getSnapshot())[0].status).toBe('complete');
+  fixture.unmount();
 });

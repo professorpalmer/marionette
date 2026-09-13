@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import StatusBar, {
@@ -171,7 +171,7 @@ describe("StatusBar usage pills", () => {
     mockSessions.mockResolvedValue([]);
   });
 
-  it("shows process tokens and billed cash from /api/usage, not frozen job receipts", async () => {
+  it("shows persisted session tokens and spend from the shared usage source", async () => {
     const onOpenEconomics = vi.fn();
     const selections: unknown[] = [];
     const onSelection = (event: Event) => selections.push((event as CustomEvent).detail);
@@ -193,8 +193,8 @@ describe("StatusBar usage pills", () => {
     try {
       render(<StatusBar {...statusBarProps} onOpenEconomics={onOpenEconomics} />);
 
-      expect(await screen.findByText("2.7M tok")).toBeTruthy();
-      const pill = await screen.findByRole("button", { name: "$0.55" });
+      expect(await screen.findByText("2 tok")).toBeTruthy();
+      const pill = await screen.findByRole("button", { name: "~$33.60" });
       expect(screen.queryByRole("button", { name: "$2.31" })).toBeNull();
       fireEvent.click(pill);
       await waitFor(() => expect(selections).toEqual([{ scope: "conversation", period: "all" }]));
@@ -232,13 +232,13 @@ describe("StatusBar usage pills", () => {
     }));
 
     render(<Harness />);
-    fireEvent.click(await screen.findByRole("button", { name: "$0.55" }));
+    fireEvent.click(await screen.findByRole("button", { name: "~$33.60" }));
 
     expect(await screen.findByLabelText("Economics ownership")).toHaveValue("conversation");
     expect(screen.getByLabelText("Economics period")).toHaveValue("all");
   });
 
-  it("footer and pane spend the same process-usage snapshot", async () => {
+  it("footer and pane spend the same session-usage snapshot", async () => {
     (window as unknown as { __pmPendingEconomicsSelection?: { scope: string; period: string } })
       .__pmPendingEconomicsSelection = { scope: "conversation", period: "all" };
 
@@ -249,23 +249,23 @@ describe("StatusBar usage pills", () => {
       </>,
     );
 
-    expect(await screen.findByRole("button", { name: "$0.55" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "~$33.60" })).toBeTruthy();
     expect(await screen.findByText("Spend")).toBeTruthy();
-    expect(screen.getAllByText("$0.55").length).toBeGreaterThan(1);
-    expect(screen.getByText("this open")).toBeTruthy();
-    expect(screen.getByText("~$6.67 list-price")).toBeTruthy();
+    expect(screen.getAllByText("~$33.60").length).toBeGreaterThan(1);
+    expect(screen.getByText("this session")).toBeTruthy();
+    expect(screen.queryByText("~$6.67 list-price")).toBeNull();
 
     mockGetUsage.mockResolvedValue({
       ...processUsage,
-      session: { ...processUsage.session, est_cost_usd: 0.99 },
+      session_total: { ...processUsage.session_total, est_cost_usd: 0.99 },
     });
     await act(async () => {
       window.dispatchEvent(new Event("harness-usage-refresh"));
     });
 
-    expect(await screen.findByRole("button", { name: "$0.99" })).toBeTruthy();
-    expect(screen.getAllByText("$0.99").length).toBeGreaterThan(1);
-    expect(screen.queryByRole("button", { name: "$0.55" })).toBeNull();
+    expect(await screen.findByRole("button", { name: "~$0.99" })).toBeTruthy();
+    expect(screen.getAllByText("~$0.99").length).toBeGreaterThan(1);
+    expect(screen.queryByRole("button", { name: "~$33.60" })).toBeNull();
   });
 });
 
@@ -694,14 +694,43 @@ it("fences late goal mutations and state reads across session switches", async (
 });
 
 it("shows incomplete usage instead of known zero and recovers on retry", async () => {
-  mockGetUsage.mockResolvedValue({ ...processUsage, session: {
-    ...processUsage.session, tokens_used: 0, est_cost_usd: 0, read_status: "unavailable",
+  mockGetUsage.mockResolvedValue({ ...processUsage, session_total: {
+    ...processUsage.session_total, input_tokens: 0, output_tokens: 0, est_cost_usd: 0, read_status: "unavailable",
   } });
   render(<><StatusBar {...statusBarProps} /><EconomicsPane /></>);
-  const retries = await screen.findAllByRole("button", { name: "App-run usage partial / unavailable. Retry" });
+  const retries = await screen.findAllByRole("button", { name: "Session usage partial / unavailable. Retry" });
   expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
   mockGetUsage.mockResolvedValue(processUsage);
   fireEvent.click(retries[0]);
-  await waitFor(() => expect(screen.queryByRole("button", { name: "App-run usage partial / unavailable. Retry" })).not.toBeInTheDocument());
-  expect(screen.getAllByText("$0.55").length).toBeGreaterThan(0);
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Session usage partial / unavailable. Retry" })).not.toBeInTheDocument());
+  expect(screen.getAllByText("~$33.60").length).toBeGreaterThan(0);
+});
+
+
+it('uses identical session accounting in the footer and session-all-time panel', async () => {
+  mockWorkspaces.mockResolvedValue([]);
+  mockGetSessionState.mockResolvedValue({ state: 'idle', pending_swarms: false });
+  mockSessions.mockResolvedValue([]);
+  mockGetUsage.mockResolvedValue({ ...processUsage, session_total: {
+    session_id: 'sess-1', est_cost_usd: 1.75, input_tokens: 800, output_tokens: 200,
+    tokens_used: 1000, tokens_cached: 400, prompt_input_tokens: 800,
+    prompt_cache_read_tokens: 400, prompt_cache_hit_ratio: 0.5,
+    cache_saved_usd_swarm: 0.5, swarm_cache_savings_basis: 'actual_usage',
+    accounting_scope: 'conversation', list_price_complete: false,
+  } });
+  mockGetEconomics.mockResolvedValue({ available: true, scope: 'conversation',
+    counterfactual: { actual_cost_usd: 99, naive_cost_usd: 100, avoided_usd: 1 } });
+  Reflect.set(window, '__pmPendingEconomicsSelection', { scope: 'conversation', period: 'all' });
+  render(<><div data-testid="footer"><StatusBar {...statusBarProps} /></div>
+    <div data-testid="economics"><EconomicsPane /></div></>);
+  const footer = within(screen.getByTestId('footer'));
+  const panel = within(screen.getByTestId('economics'));
+  expect(await footer.findByRole('button', { name: '~$1.75' })).toBeVisible();
+  expect(await panel.findByText('~$1.75')).toBeVisible();
+  expect(footer.getByText('1k tok')).toBeVisible();
+  expect(panel.getByText('1k tok')).toBeVisible();
+  expect(footer.getByText(/50%/)).toBeVisible();
+  expect(panel.getByText(/50%/)).toBeVisible();
+  expect(panel.queryByText('$99.00')).not.toBeInTheDocument();
+  expect(panel.queryByText(/since you opened Marionette/)).not.toBeInTheDocument();
 });

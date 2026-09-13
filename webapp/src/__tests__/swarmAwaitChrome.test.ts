@@ -694,3 +694,12 @@ describe("swarm await chrome", () => {
     })).toBe(true);
   });
 });
+
+it('reconciles the local wrapper id when the canonical terminal row replaces it', () => {
+  const terminalIds = terminalJobIdsFromSwarmLive([{
+    id: 'job_canonical', status: 'complete', session_id: 'session-a',
+    canonical_aliases: ['local-worker-alias'],
+  }], 'session-a');
+  expect(terminalIds).toEqual(['job_canonical', 'local-worker-alias']);
+  expect(pruneTerminalJobIds(['local-worker-alias'], terminalIds)).toEqual([]);
+});
