@@ -5,6 +5,7 @@ import { api } from "../lib/api";
 import { lastSelectedProjectRoot } from "../lib/panelTransition";
 import { subscribeWorkspaceMutations } from "../lib/workspaceMutationEvents";
 import { usePanelNotice } from "../lib/useOperationalDiagnostic";
+import { createGitRefreshCoordinator, type GitRefreshContext } from "../lib/gitRefreshCoordinator";
 import { gitStatusPaintOnRepoChange, type GitStatusSnapshot } from "../lib/gitStatusPaint";
 
 interface ChangedFile {
@@ -18,15 +19,12 @@ interface Branch {
 }
 
 export default function SourceControl() {
-  const [repoPath, setRepoPath] = useState<string>(() => lastSelectedProjectRoot() || ".");
   const [branches, setBranches] = useState<Branch[]>([]);
   const [changedFiles, setChangedFiles] = useState<ChangedFile[]>([]);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const loadGenRef = useRef(0);
-  const repoPathRef = useRef(repoPath);
-  repoPathRef.current = repoPath;
+  const contextRef = useRef<GitRefreshContext | null>(null);
   const lastGoodByRepoRef = useRef<Map<string, GitStatusSnapshot>>(new Map());
 
   // Diff states
@@ -62,116 +60,128 @@ export default function SourceControl() {
     setViewingStagedDiff(false);
     setDiffText(null);
     setDiffError(null);
+    setDiffLoading(false);
+    setCommitLoading(false);
     setError(null);
     setCommitMessage("");
     setCommitError(null);
     setCommitStatus(null);
   }, []);
 
-  const loadGitStatus = useCallback(async (path: string) => {
-    const gen = ++loadGenRef.current;
-    setLoading(true);
-    setError(null);
-    try {
-      const [statusRes, branchesRes] = await Promise.all([
-        nativeGit.status(path),
-        nativeGit.branches(path),
-      ]);
+  const [coordinator] = useState(() => {
+    let reportedBranch: { epoch: number; branch: string } | null = null;
+    const refresh = createGitRefreshCoordinator({
+      onBusy: setLoading,
+      onError: (error) => setError(error instanceof Error ? error.message : "Error running git operations"),
+      run: async (lane, context, priority): Promise<void> => {
+        if (lane === "status") {
+          setError(null);
+          const result = await nativeGit.status(context.path);
+          if (!refresh.isCurrent(context)) return;
+          if (!result.ok) {
+            setError(result.error || "Failed to load git status");
+            return;
+          }
+          const files: ChangedFile[] = result.files || [];
+          setChangedFiles(files);
+          const previous = lastGoodByRepoRef.current.get(context.path);
+          lastGoodByRepoRef.current.set(context.path, { files, branches: previous?.branches || [] });
+          if (typeof result.branch === "string") {
+            const changed = reportedBranch?.epoch === context.epoch && reportedBranch.branch !== result.branch;
+            reportedBranch = { epoch: context.epoch, branch: result.branch };
+            if (priority === "automatic" && changed) void refresh.request(context, ["branches"]);
+          }
+        } else {
+          const result = await nativeGit.branches(context.path);
+          if (!refresh.isCurrent(context)) return;
+          if (result.ok) {
+            const nextBranches: Branch[] = result.branches || [];
+            setBranches(nextBranches);
+            const previous = lastGoodByRepoRef.current.get(context.path);
+            lastGoodByRepoRef.current.set(context.path, { files: previous?.files || [], branches: nextBranches });
+          }
+        }
+      },
+    });
+    return refresh;
+  });
 
-      if (gen !== loadGenRef.current) return;
-
-      if (statusRes.ok) {
-        setChangedFiles(statusRes.files || []);
-      } else {
-        setError(statusRes.error || "Failed to load git status");
-      }
-
-      if (branchesRes.ok) {
-        setBranches(branchesRes.branches || []);
-      }
-
-      if (statusRes.ok || branchesRes.ok) {
-        const prev = lastGoodByRepoRef.current.get(path);
-        lastGoodByRepoRef.current.set(path, {
-          files: statusRes.ok ? (statusRes.files || []) : (prev?.files || []),
-          branches: branchesRes.ok ? (branchesRes.branches || []) : (prev?.branches || []),
-        });
-      }
-    } catch (err: any) {
-      if (gen !== loadGenRef.current) return;
-      setError(err.message || "Error running git operations");
-    } finally {
-      if (gen === loadGenRef.current) setLoading(false);
-    }
-  }, []);
-
-  const reloadFromConfig = useCallback(async () => {
-    try {
-      const cfg = await api.config();
-      const path = cfg.repo || ".";
-      setRepoPath(path);
-      resetRepoLocalChrome();
-      paintRepoLists(path);
-      await loadGitStatus(path);
-    } catch (err: any) {
-      setError(err.message || "Error getting config");
-    }
-  }, [loadGitStatus, paintRepoLists, resetRepoLocalChrome]);
+  const loadGitStatus = useCallback((context: GitRefreshContext | null, both = false) => {
+    if (!context) return Promise.resolve();
+    return coordinator.request(context, both ? ["status", "branches"] : ["status"]);
+  }, [coordinator]);
 
   useEffect(() => {
-    void reloadFromConfig();
-
-    const onProject = (e: Event) => {
-      const path = (e as CustomEvent<string>).detail;
-      if (typeof path !== "string") return;
-      setRepoPath(path);
+    const activate = (path: string) => {
+      const context = coordinator.activate(path);
+      contextRef.current = context;
       resetRepoLocalChrome();
       paintRepoLists(path);
-      void loadGitStatus(path);
+      return context;
     };
-
-    // Debounce: open_project + relocate_session both fire config-changed in one
-    // turn; one refresh after the dust settles is enough.
-    let debounceTimer: number | null = null;
+    const reloadFromConfig = async (context: GitRefreshContext) => {
+      try {
+        const cfg = await api.config();
+        if (!coordinator.isCurrent(context)) return;
+        const next = activate(cfg.repo || ".");
+        await coordinator.request(next, ["status", "branches"]);
+      } catch (error: unknown) {
+        if (coordinator.isCurrent(context)) setError(error instanceof Error ? error.message : "Error getting config");
+      }
+    };
+    void reloadFromConfig(activate(lastSelectedProjectRoot() || "."));
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const onProject = (event: Event) => {
+      if (!(event instanceof CustomEvent) || typeof event.detail !== "string") return;
+      if (debounceTimer !== null) clearTimeout(debounceTimer);
+      debounceTimer = null;
+      void coordinator.request(activate(event.detail), ["status", "branches"]);
+    };
     const onConfig = () => {
-      if (debounceTimer != null) window.clearTimeout(debounceTimer);
-      debounceTimer = window.setTimeout(() => {
-        void reloadFromConfig();
+      if (debounceTimer !== null) clearTimeout(debounceTimer);
+      const context = activate(contextRef.current?.path || ".");
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        void reloadFromConfig(context);
       }, 180);
     };
-
-    // Agent edits / checkpoints / tree saves — refresh SCM like Cursor/Hermes.
     const unsubMutations = subscribeWorkspaceMutations(() => {
-      void loadGitStatus(repoPathRef.current);
-    }, { debounceMs: 180 });
-
+      const context = contextRef.current;
+      if (context) void coordinator.request(context, ["status"], "automatic");
+    });
     window.addEventListener("harness-project-selected", onProject);
     window.addEventListener("harness-config-changed", onConfig);
     return () => {
-      if (debounceTimer != null) window.clearTimeout(debounceTimer);
+      coordinator.deactivate();
+      contextRef.current = null;
+      if (debounceTimer !== null) clearTimeout(debounceTimer);
       window.removeEventListener("harness-project-selected", onProject);
       window.removeEventListener("harness-config-changed", onConfig);
       unsubMutations();
     };
-  }, [loadGitStatus, paintRepoLists, reloadFromConfig, resetRepoLocalChrome]);
+  }, [coordinator, paintRepoLists, resetRepoLocalChrome]);
 
   const refreshDiff = async (file: string, isStaged: boolean) => {
+    const context = contextRef.current;
+    if (!context) return;
     setDiffLoading(true);
     setDiffError(null);
     setDiffText(null);
     try {
       const res = isStaged
-        ? await nativeGit.diffStaged(repoPath, file)
-        : await nativeGit.diff(repoPath, file);
+        ? await nativeGit.diffStaged(context.path, file)
+        : await nativeGit.diff(context.path, file);
+      if (!coordinator.isCurrent(context)) return;
       if (res.ok) {
         setDiffText(res.out || "No changes / empty diff");
       } else {
         setDiffError(res.error || "Failed to get diff");
       }
-    } catch (err: any) {
-      setDiffError(err.message || "Error generating diff");
+    } catch (err: unknown) {
+      if (!coordinator.isCurrent(context)) return;
+      setDiffError(err instanceof Error ? err.message : "Error generating diff");
     } finally {
-      setDiffLoading(false);
+      if (coordinator.isCurrent(context)) setDiffLoading(false);
     }
   };
 
@@ -182,102 +192,131 @@ export default function SourceControl() {
   };
 
   const handleStageFile = async (e: React.MouseEvent, file: string) => {
+    const context = contextRef.current;
+    if (!context) return;
     e.stopPropagation();
     setError(null);
     try {
-      const res = await nativeGit.stageFile(repoPath, file);
+      const res = await nativeGit.stageFile(context.path, file);
+      if (!coordinator.isCurrent(context)) return;
       if (res.ok) {
-        await loadGitStatus(repoPath);
+        await loadGitStatus(context);
+        if (!coordinator.isCurrent(context)) return;
         if (selectedFile === file) {
           await handleFileClick(file, true);
         }
       } else {
         setError(res.error || "Failed to stage file");
       }
-    } catch (err: any) {
-      setError(err.message || "Error staging file");
+    } catch (err: unknown) {
+      if (!coordinator.isCurrent(context)) return;
+      setError(err instanceof Error ? err.message : "Error staging file");
     }
   };
 
   const handleUnstageFile = async (e: React.MouseEvent, file: string) => {
+    const context = contextRef.current;
+    if (!context) return;
     e.stopPropagation();
     setError(null);
     try {
-      const res = await nativeGit.unstageFile(repoPath, file);
+      const res = await nativeGit.unstageFile(context.path, file);
+      if (!coordinator.isCurrent(context)) return;
       if (res.ok) {
-        await loadGitStatus(repoPath);
+        await loadGitStatus(context);
+        if (!coordinator.isCurrent(context)) return;
         if (selectedFile === file) {
           await handleFileClick(file, false);
         }
       } else {
         setError(res.error || "Failed to unstage file");
       }
-    } catch (err: any) {
-      setError(err.message || "Error unstaging file");
+    } catch (err: unknown) {
+      if (!coordinator.isCurrent(context)) return;
+      setError(err instanceof Error ? err.message : "Error unstaging file");
     }
   };
 
   const handleStageAll = async () => {
+    const context = contextRef.current;
+    if (!context) return;
     setError(null);
     try {
-      const res = await nativeGit.stageAll(repoPath);
+      const res = await nativeGit.stageAll(context.path);
+      if (!coordinator.isCurrent(context)) return;
       if (res.ok) {
-        await loadGitStatus(repoPath);
+        await loadGitStatus(context);
+        if (!coordinator.isCurrent(context)) return;
         if (selectedFile) {
           await handleFileClick(selectedFile, true);
         }
       } else {
         setError(res.error || "Failed to stage all files");
       }
-    } catch (err: any) {
-      setError(err.message || "Error staging all files");
+    } catch (err: unknown) {
+      if (!coordinator.isCurrent(context)) return;
+      setError(err instanceof Error ? err.message : "Error staging all files");
     }
   };
 
   const handleUnstageAll = async () => {
+    const context = contextRef.current;
+    if (!context) return;
     setError(null);
     try {
-      const res = await nativeGit.unstageAll(repoPath);
+      const res = await nativeGit.unstageAll(context.path);
+      if (!coordinator.isCurrent(context)) return;
       if (res.ok) {
-        await loadGitStatus(repoPath);
+        await loadGitStatus(context);
+        if (!coordinator.isCurrent(context)) return;
         if (selectedFile) {
           await handleFileClick(selectedFile, false);
         }
       } else {
         setError(res.error || "Failed to unstage all files");
       }
-    } catch (err: any) {
-      setError(err.message || "Error unstaging all files");
+    } catch (err: unknown) {
+      if (!coordinator.isCurrent(context)) return;
+      setError(err instanceof Error ? err.message : "Error unstaging all files");
     }
   };
 
   const handleCommit = async () => {
+    const context = contextRef.current;
+    if (!context) return;
     if (!commitMessage.trim()) return;
     setCommitLoading(true);
     setCommitError(null);
     setCommitStatus("Committing...");
     try {
-      const res = await nativeGit.commit(repoPath, commitMessage);
+      const res = await nativeGit.commit(context.path, commitMessage);
+      if (!coordinator.isCurrent(context)) return;
       if (res.ok) {
         setCommitMessage("");
         setCommitStatus("Committed successfully");
         setSelectedFile(null);
         setDiffText(null);
-        await loadGitStatus(repoPath);
-        setTimeout(() => setCommitStatus(null), 4000);
+        await loadGitStatus(context, true);
+        if (!coordinator.isCurrent(context)) return;
+        setTimeout(() => {
+          if (coordinator.isCurrent(context)) setCommitStatus(null);
+        }, 4000);
       } else {
         setCommitError(res.error || "Failed to commit");
         setCommitStatus(null);
       }
-    } catch (err: any) {
-      setCommitError(err.message || "Error running commit");
+    } catch (err: unknown) {
+      if (!coordinator.isCurrent(context)) return;
+      setCommitError(err instanceof Error ? err.message : "Error running commit");
       setCommitStatus(null);
     } finally {
-      setCommitLoading(false);
+      if (coordinator.isCurrent(context)) setCommitLoading(false);
     }
   };
 
-  const handleApplyHunk = async (hunk: any, isStaged: boolean) => {
+  const handleApplyHunk = async (hunk: { lines: string[] }, isStaged: boolean) => {
+    const context = contextRef.current;
+    if (!context) return;
     if (!selectedFile) return;
     setError(null);
     setDiffLoading(true);
@@ -294,17 +333,20 @@ export default function SourceControl() {
       const patch = headerText + hunkText;
 
       const reverse = isStaged;
-      const res = await nativeGit.applyHunk(repoPath, patch, reverse);
+      const res = await nativeGit.applyHunk(context.path, patch, reverse);
+      if (!coordinator.isCurrent(context)) return;
       if (res.ok) {
-        await loadGitStatus(repoPath);
+        await loadGitStatus(context);
+        if (!coordinator.isCurrent(context)) return;
         await refreshDiff(selectedFile, isStaged);
       } else {
         setDiffError(res.error || "Failed to apply hunk patch");
       }
-    } catch (err: any) {
-      setDiffError(err.message || "Error applying hunk patch");
+    } catch (err: unknown) {
+      if (!coordinator.isCurrent(context)) return;
+      setDiffError(err instanceof Error ? err.message : "Error applying hunk patch");
     } finally {
-      setDiffLoading(false);
+      if (coordinator.isCurrent(context)) setDiffLoading(false);
     }
   };
 
@@ -411,7 +453,7 @@ export default function SourceControl() {
       <div className="text-[10px] text-muted px-3 pt-2 uppercase tracking-wider flex items-center justify-between shrink-0">
         <span>Git Status</span>
         <button
-          onClick={() => loadGitStatus(repoPath)}
+          onClick={() => loadGitStatus(contextRef.current, true)}
           disabled={loading}
           className="text-muted hover:text-txt transition disabled:opacity-50"
           title="Refresh Git status"
