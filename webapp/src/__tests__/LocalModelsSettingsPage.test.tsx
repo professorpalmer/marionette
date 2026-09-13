@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import LocalModelsSettingsPage from "../components/LocalModelsSettingsPage";
 import { api, type LocalModelsSnapshot } from "../lib/api";
@@ -46,19 +46,19 @@ function snapshot(overrides: Partial<LocalModelsSnapshot> = {}): LocalModelsSnap
       }],
       model: { id: "qwen3-4b", name: "Qwen3 4B", size: 2497280256, context_length: 40960 },
     },
-    managed: {
-      runtime: { status: "absent" },
-      model: { status: "absent" },
-      process: null,
-      downloads: {},
-      usable: false,
-      spec: "local:managed/qwen3-4b",
-    },
     externals: [],
     active_spec: "",
     usable_specs: [],
     event_cursor: 0,
     ...overrides,
+    managed: {
+      runtime: { status: "absent" }, model: { status: "absent" },
+      idle_timeout_minutes: 0, idle_timeout_enabled: false, active_requests: 0,
+      last_activity_at: null, idle_deadline_at: null, idle_remaining_seconds: null,
+      observed_at: 1000, lifecycle_error: null, stop_reason: null,
+      residency: overrides.managed?.process?.healthy ? "running" : "stopped",
+      ...overrides.managed,
+    },
   };
 }
 
@@ -674,4 +674,98 @@ describe("LocalModelsSettingsPage", () => {
     expect(screen.getByTestId("local-external-tool-calling-runpod-box").textContent).toMatch(/API key/);
     expect(screen.getByRole("button", { name: /^Activate$/i })).not.toBeDisabled();
   });
+});
+
+describe("managed idle policy", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    watchLocalModelEvents.mockImplementation(() => () => {});
+  });
+  function installed(minutes = 0): LocalModelsSnapshot {
+    return snapshot({managed: {
+      ...snapshot().managed,
+      runtime: {status: "ready"}, model: {status: "ready", id: "qwen3-4b"},
+      process: null, idle_timeout_minutes: minutes, idle_timeout_enabled: minutes > 0,
+    }});
+  }
+
+  it.each([
+    ["running", null, "Running"], ["starting", null, "Starting"],
+    ["stopping", null, "Stopping"], ["stopped", "inactivity", "Stopped after inactivity"],
+    ["unknown", null, "Status unknown"], ["error", null, "Status unknown"],
+  ])("labels %s residency separately from installation", async (residency, reason, label) => {
+    const state = installed();
+    getLocalModels.mockResolvedValue({...state, managed: {...state.managed,
+      residency, stop_reason: reason,
+      process: residency === "running" ? {pid: 9, healthy: true} : null,
+    }});
+    render(<LocalModelsSettingsPage />);
+    await waitFor(() => expect(screen.getByTestId("local-models-managed-status")).toHaveTextContent(label));
+    expect(screen.getByTestId("local-models-managed-status")).toHaveTextContent("Model Installed");
+    if (reason === "inactivity") {
+      expect(screen.getByText("Start to use this model.")).toBeTruthy();
+      expect(screen.getByRole("button", {name: "Start"})).toBeTruthy();
+    }
+    expect(screen.getByText(/Only Marionette requests count/)).toBeTruthy();
+    expect(screen.getByText(/shared external clients/i)).toBeTruthy();
+  });
+
+  it.each(["", "-1", "1.5", "1441"])("does not send invalid minutes %s", async (value) => {
+    getLocalModels.mockResolvedValue(installed());
+    render(<LocalModelsSettingsPage />);
+    const input = await screen.findByRole("spinbutton");
+    fireEvent.change(input, {target: {value}});
+    fireEvent.click(screen.getByRole("button", {name: "Apply"}));
+    expect(localModelCommand).not.toHaveBeenCalled();
+  });
+
+  it("synchronizes live policy and preserves unsaved edits across activity snapshots", async () => {
+    let onEvent: ((event: unknown) => void) | undefined;
+    watchLocalModelEvents.mockImplementation((opts) => {onEvent = opts.onEvent; return () => {};});
+    getLocalModels.mockResolvedValue(installed());
+    localModelCommand.mockResolvedValue({...installed(7), event_cursor: 3});
+    render(<LocalModelsSettingsPage />);
+    const input = await screen.findByRole("spinbutton");
+    act(() => onEvent?.({kind: "snapshot", cursor: 1, snapshot: {...installed(5), event_cursor: 1}}));
+    expect(input).toHaveValue(5);
+    fireEvent.change(input, {target: {value: "7"}});
+    act(() => onEvent?.({kind: "snapshot", cursor: 2, snapshot: {...installed(5), event_cursor: 2}}));
+    expect(input).toHaveValue(7);
+    fireEvent.click(screen.getByRole("button", {name: "Apply"}));
+    await waitFor(() => expect(localModelCommand).toHaveBeenCalledWith({type: "set_policy", idle_timeout_minutes: 7}));
+    act(() => onEvent?.({kind: "snapshot", cursor: 4, snapshot: {...installed(10), event_cursor: 4}}));
+    expect(input).toHaveValue(10);
+  });
+
+  it.each([false, true])("acknowledges stale policy responses while preserving newer edits: %s", async (editPending) => {
+    let onEvent: ((event: unknown) => void) | undefined;
+    watchLocalModelEvents.mockImplementation((opts) => {onEvent = opts.onEvent; return () => {};});
+    getLocalModels.mockResolvedValue(installed());
+    let resolvePolicy: ((value: LocalModelsSnapshot) => void) | undefined;
+    localModelCommand.mockImplementation(() => new Promise<LocalModelsSnapshot>((resolve) => {resolvePolicy = resolve;}));
+    render(<LocalModelsSettingsPage />);
+    const input = await screen.findByRole("spinbutton");
+    fireEvent.change(input, {target: {value: "7"}});
+    fireEvent.click(screen.getByRole("button", {name: "Apply"}));
+    await waitFor(() => expect(localModelCommand).toHaveBeenCalled());
+    if (editPending) {
+      fireEvent.change(input, {target: {value: "8"}});
+      fireEvent.change(input, {target: {value: "7"}});
+    }
+    act(() => onEvent?.({kind: "snapshot", cursor: 4, snapshot: {...installed(10), event_cursor: 4}}));
+    await act(async () => resolvePolicy?.({...installed(7), event_cursor: 3}));
+    expect(input).toHaveValue(editPending ? 7 : 10);
+    act(() => onEvent?.({kind: "snapshot", cursor: 5, snapshot: {...installed(12), event_cursor: 5}}));
+    expect(input).toHaveValue(editPending ? 7 : 12);
+  });
+
+  it.each([{residency: "invented"}, {active_requests: -1}, {idle_timeout_minutes: 0.5},
+    {observed_at: "yesterday"}, {idle_deadline_at: Infinity}, {residency: "running", process: null}])(
+    "rejects malformed lifecycle snapshots %j", async (bad) => {
+      getLocalModels.mockResolvedValue({...installed(), managed: {...installed().managed, ...bad}});
+      render(<LocalModelsSettingsPage />);
+      await waitFor(() => expect(screen.getByTestId("local-models-error")).toHaveTextContent(/invalid/i));
+      expect(screen.queryByRole("spinbutton")).toBeNull();
+    },
+  );
 });

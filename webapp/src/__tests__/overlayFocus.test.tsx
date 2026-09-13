@@ -93,3 +93,23 @@ describe("useOverlayFocus", () => {
     expect(onBottom).not.toHaveBeenCalled();
   });
 });
+
+it("keeps focus across callback changes and restores the original trigger", async () => {
+  const trigger = document.createElement("button");
+  document.body.append(trigger);
+  trigger.focus();
+  const oldClose = vi.fn();
+  const latestClose = vi.fn();
+  const view = render(<OverlayTrapFixture open onClose={() => oldClose()} />);
+  await waitFor(() => expect(screen.getByText("First")).toHaveFocus());
+  screen.getByText("Second").focus();
+  view.rerender(<OverlayTrapFixture open onClose={() => latestClose()} />);
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
+  expect(screen.getByText("Second")).toHaveFocus();
+  fireEvent.keyDown(window, { key: "Escape" });
+  expect(latestClose).toHaveBeenCalledOnce();
+  expect(oldClose).not.toHaveBeenCalled();
+  view.rerender(<OverlayTrapFixture open={false} onClose={latestClose} />);
+  expect(trigger).toHaveFocus();
+  trigger.remove();
+});

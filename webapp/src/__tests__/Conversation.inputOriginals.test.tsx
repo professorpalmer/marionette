@@ -41,6 +41,9 @@ async function send() {
   fireEvent.click(screen.getByRole('button', { name: 'Send', exact: true }));
 }
 async function copy() {
+  const summary = await screen.findByText(/Saved inputs/);
+  fireEvent.click(summary);
+  fireEvent.click(await screen.findByText(/Delivery uncertain.*held for review/));
   fireEvent.click(await screen.findByRole('button', { name: 'Copy original to draft' }));
 }
 function streamMock() {
@@ -67,12 +70,12 @@ it('shows held originals after reload and copies exact text, images and document
   const save = vi.spyOn(api, 'queueAdd').mockRejectedValue(new Error('keep draft'));
   const stream = streamMock();
   const { input } = await mount([], [original]);
-  expect(screen.queryByText(/Saved inputs/)).toBeNull();
+  expect(await screen.findByText(/Saved inputs/)).toBeTruthy();
   fireEvent.change(input, { target: { value: 'existing' } });
   await copy();
   expect(input).toHaveValue('existing\n\n' + original.original_text);
   expect(screen.getByRole('button', { name: 'Remove document notes.txt' })).toBeTruthy();
-  expect(screen.getAllByAltText('photo.png')).toHaveLength(1);
+  expect(screen.getAllByAltText('photo.png')).toHaveLength(2);
   expect(handoff).not.toHaveBeenCalled(); expect(stream.chat).not.toHaveBeenCalled(); expect(save).not.toHaveBeenCalled();
   queue();
   await waitFor(() => expect(save).toHaveBeenCalledWith('existing\n\n' + original.original_text, ['input:A:image'], 'A', {
@@ -319,4 +322,94 @@ it('auto carries exact literal text and expanded delivery separately', async () 
   expect(auto.mock.calls[0][0]).toBe('  inspect ```terminal\nauto output\n```\n\t');
   expect(auto.mock.calls[0][5]).toMatchObject({ session_id: 'A', original_text: raw, retry_key: expect.any(String) });
   expect(input).toHaveValue(raw);
+});
+
+it.each(["thinking", "idle", "awaiting_swarm"] as const)("reconciles failed Stop against authoritative %s state", async state => {
+  const stream = streamMock();
+  const handoff = vi.spyOn(api, 'queueHandoff');
+  const { input } = await mount([{ id: 'queued', text: 'must stay queued' }]);
+  fireEvent.change(input, { target: { value: 'start' } }); await send();
+  vi.spyOn(api, 'interruptSession').mockRejectedValue(new Error('transport failed'));
+  const read = vi.spyOn(api, 'getSessionState').mockResolvedValue({ state, pending_swarms: false, runners: { A: state === 'idle' ? 'idle' : 'running' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Stop', exact: true }));
+  await waitFor(() => expect(read).toHaveBeenCalledWith({ sessionId: 'A' }));
+  if (state === 'thinking') expect(screen.getByRole('button', { name: 'Stop', exact: true })).toBeEnabled();
+  else expect(screen.queryByRole('button', { name: 'Stop', exact: true })).toBeNull();
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 90)); });
+  expect(handoff).not.toHaveBeenCalled();
+  expect(stream.chat).toHaveBeenCalledTimes(1);
+});
+
+it.each(['switch', 'roundtrip', 'replacement'])("ignores delayed failed-Stop state after %s", async change => {
+  streamMock();
+  const { input, switchTo } = await mount();
+  fireEvent.change(input, { target: { value: 'start' } }); await send();
+  vi.spyOn(api, 'interruptSession').mockResolvedValue({ ok: false });
+  let resolve: (state: Awaited<ReturnType<typeof api.getSessionState>>) => void = () => {};
+  const read = vi.spyOn(api, 'getSessionState').mockImplementationOnce(() => new Promise(r => { resolve = r; }));
+  fireEvent.click(screen.getByRole('button', { name: 'Stop', exact: true }));
+  await waitFor(() => expect(read).toHaveBeenCalled());
+  if (change === 'replacement') {
+    fireEvent.change(input, { target: { value: 'replacement' } }); await send();
+    vi.mocked(api.interruptSession).mockResolvedValue({ ok: true });
+    fireEvent.click(screen.getByRole('button', { name: 'Stop', exact: true }));
+  } else {
+    await switchTo('B');
+    if (change === 'roundtrip') await switchTo('A');
+  }
+  await act(async () => resolve({ state: 'thinking', pending_swarms: false, runners: { A: 'running' } }));
+  expect(screen.queryByRole('button', { name: 'Stop', exact: true })).toBeNull();
+});
+
+it("does not replay a rendered partial assistant frame after failed Stop recovery", async () => {
+  vi.spyOn(api, 'getSessionState').mockResolvedValue({ state: 'thinking', pending_swarms: false, runners: { A: 'running' } });
+  vi.spyOn(api, 'interruptSession').mockResolvedValue({ ok: false });
+  const live = vi.spyOn(api, 'chatEventsLive').mockReturnValue(() => {});
+  await mount();
+  await waitFor(() => expect(live).toHaveBeenCalled());
+  const originalEvent = live.mock.calls.at(-1)?.[1];
+  await act(async () => {
+    originalEvent?.({ kind: 'message_delta', data: { text: 'Already rendered.' }, cursor: 7 });
+  });
+  await screen.findByText('Already rendered.');
+  live.mockClear();
+  fireEvent.click(screen.getByRole('button', { name: 'Stop', exact: true }));
+  await waitFor(() => expect(live).toHaveBeenCalledTimes(1));
+  const recovered = live.mock.calls[0];
+  await act(async () => {
+    if ((recovered[0].since ?? 0) < 7) {
+      recovered[1]({ kind: 'message_delta', data: { text: 'Already rendered.' }, cursor: 7 });
+    }
+    originalEvent?.({ kind: 'message_delta', data: { text: 'Stale callback.' }, cursor: 8 });
+    recovered[1]({ kind: 'message_delta', data: { text: ' Continuing.' }, cursor: 8 });
+    recovered[1]({ kind: 'assistant_done', data: {}, cursor: 9 });
+  });
+  expect(document.body.textContent?.match(/Already rendered\./g)).toHaveLength(1);
+  expect(document.body.textContent).toContain('Continuing.');
+  expect(document.body.textContent).not.toContain('Stale callback.');
+  expect(recovered[0]).toMatchObject({ session: 'A', since: 7 });
+  expect(screen.queryByRole('button', { name: 'Stop', exact: true })).toBeNull();
+});
+
+it("observes terminal recovery after failed Stop without draining or resuming queued work", async () => {
+  const stream = streamMock();
+  const handoff = vi.spyOn(api, 'queueHandoff');
+  const live = vi.spyOn(api, 'chatEventsLive').mockReturnValue(() => {});
+  const { input } = await mount([{ id: 'queued', text: 'stay queued' }]);
+  fireEvent.change(input, { target: { value: 'start' } }); await send();
+  vi.spyOn(api, 'interruptSession').mockResolvedValue({ ok: false });
+  vi.spyOn(api, 'getSessionState').mockResolvedValue({ state: 'thinking', pending_swarms: false, runners: { A: 'running' } });
+  live.mockClear();
+  fireEvent.click(screen.getByRole('button', { name: 'Stop', exact: true }));
+  await waitFor(() => expect(live).toHaveBeenCalled());
+  expect(screen.getByRole('button', { name: 'Stop', exact: true })).toBeEnabled();
+  expect(screen.queryByTestId('turn-terminal-chip')).toBeNull();
+  const onEvent = live.mock.calls.at(-1)?.[1];
+  await act(async () => {
+    onEvent?.({ kind: 'pilot_resume', data: {} });
+    onEvent?.({ kind: 'assistant_done', data: { stop_cause: 'natural' } });
+    await new Promise(resolve => setTimeout(resolve, 100));
+  });
+  expect(screen.queryByRole('button', { name: 'Stop', exact: true })).toBeNull();
+  expect(handoff).not.toHaveBeenCalled(); expect(stream.chat).toHaveBeenCalledTimes(1);
 });

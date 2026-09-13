@@ -275,6 +275,7 @@ def test_process_matches_identity_requires_alias():
 
 
 def test_start_uses_injected_popen_and_ready(tmp_path, monkeypatch):
+    monkeypatch.setattr("harness.local_model_manager.find_free_port", lambda *a: 12345)
     catalog, _, model_bytes = _tiny_catalog(tmp_path)
     root = tmp_path / "lm"
     mgr = LocalModelManager(
@@ -580,6 +581,7 @@ def test_stop_never_signals_unmatched(tmp_path, monkeypatch):
 
 
 def test_readiness_requires_alias(tmp_path, monkeypatch):
+    monkeypatch.setattr("harness.local_model_manager.find_free_port", lambda *a: 12345)
     catalog, _, model_bytes = _tiny_catalog(tmp_path)
     root = tmp_path / "lm"
     ticks = {"n": 0}
@@ -631,6 +633,7 @@ def test_readiness_requires_alias(tmp_path, monkeypatch):
 
 
 def test_readiness_fails_if_child_exits(tmp_path, monkeypatch):
+    monkeypatch.setattr("harness.local_model_manager.find_free_port", lambda *a: 12345)
     catalog, _, model_bytes = _tiny_catalog(tmp_path)
     root = tmp_path / "lm"
     stopped = []
@@ -669,7 +672,7 @@ def test_readiness_fails_if_child_exits(tmp_path, monkeypatch):
     with pytest.raises(LocalModelError) as exc:
         mgr.start()
     assert exc.value.code == "not_ready"
-    assert stopped == [88]
+    assert stopped == []  # Already-exited children must never be signaled by PID.
     assert mgr._procs == {}
 
 
@@ -1208,6 +1211,7 @@ def test_stop_kills_owned_handle_when_ps_fails(tmp_path, monkeypatch):
 
 
 def test_start_restarts_unhealthy_matching_process(tmp_path, monkeypatch):
+    monkeypatch.setattr("harness.local_model_manager.find_free_port", lambda *a: 12345)
     catalog, _, model_bytes = _tiny_catalog(tmp_path)
     root = tmp_path / "lm"
     mgr = LocalModelManager(
@@ -1464,6 +1468,7 @@ def test_concurrent_install_and_start_rejected(tmp_path, monkeypatch):
 
 
 def test_cpu_asset_keeps_ngl_zero_when_nvidia_present(tmp_path, monkeypatch):
+    monkeypatch.setattr("harness.local_model_manager.find_free_port", lambda *a: 12345)
     catalog, _, model_bytes = _tiny_catalog(tmp_path)
     for key, asset in catalog["runtime"]["assets"].items():
         asset["backend"] = "cpu"
@@ -1503,6 +1508,7 @@ def test_cpu_asset_keeps_ngl_zero_when_nvidia_present(tmp_path, monkeypatch):
 
 
 def test_metal_asset_keeps_ngl_99(tmp_path, monkeypatch):
+    monkeypatch.setattr("harness.local_model_manager.find_free_port", lambda *a: 12345)
     catalog, _, model_bytes = _tiny_catalog(tmp_path)
     for key, asset in catalog["runtime"]["assets"].items():
         asset["backend"] = "metal"
@@ -1645,6 +1651,7 @@ def test_windows_unmatched_pid_does_not_taskkill(tmp_path, monkeypatch):
 
 
 def test_concurrent_start_second_is_busy(tmp_path, monkeypatch):
+    monkeypatch.setattr("harness.local_model_manager.find_free_port", lambda *a: 12345)
     catalog, _, model_bytes = _tiny_catalog(tmp_path)
     monkeypatch.setattr(
         "harness.local_model_manager.detect_hardware",
@@ -1991,3 +1998,797 @@ def test_verify_rejects_managed_spec(tmp_path):
     with pytest.raises(LocalModelError) as exc:
         mgr.verify_tool_calling("local:managed/qwen3-4b")
     assert exc.value.code == "managed"
+
+
+class _LeaseProcess:
+    pid = 424242
+
+    def __init__(self):
+        self.exited = False
+
+    def poll(self):
+        return 0 if self.exited else None
+
+    def wait(self, timeout=None):
+        if not self.exited:
+            raise subprocess.TimeoutExpired('llama-server', timeout)
+        return 0
+
+
+def _lease_manager(tmp_path, monkeypatch):
+    catalog, _, _ = _tiny_catalog(tmp_path)
+    mgr = LocalModelManager(root=str(tmp_path / 'leases'), catalog=catalog)
+    proc = _LeaseProcess()
+    log = io.BytesIO()
+    mgr._procs[proc.pid] = (proc, log)
+    mgr._set_component('runtime', status='ready')
+    mgr._set_component('model', id='qwen-test', status='ready')
+    state = mgr._state()
+    state['managed']['process'] = dict(pid=proc.pid, port=12345, host='127.0.0.1',
+                                       healthy=True, alias='marionette-test')
+    mgr._save(state)
+    monkeypatch.setattr(mgr, '_probe_health', lambda *a, **k: True)
+    monkeypatch.setattr('harness.local_model_manager.stop_process_tree',
+                        lambda *a, **k: setattr(proc, 'exited', True))
+    return mgr, proc, log
+
+
+def test_request_scope_drains_before_stop_and_rejects_new_work(tmp_path, monkeypatch):
+    mgr, proc, log = _lease_manager(tmp_path, monkeypatch)
+    errors = []
+    def stop():
+        try:
+            mgr.stop()
+        except Exception as exc:
+            errors.append(exc)
+    with mgr.request_scope('local:managed/qwen-test') as endpoint:
+        assert endpoint.base_url == 'http://127.0.0.1:12345/v1'
+        with pytest.raises(AttributeError):
+            endpoint.generation = 999
+        assert mgr.active_requests == 1
+        worker = threading.Thread(target=stop)
+        worker.start()
+        with mgr._condition:
+            assert mgr._condition.wait_for(lambda: mgr._stopping, timeout=2)
+        assert not proc.exited
+        with pytest.raises(LocalModelError):
+            with mgr.request_scope('local:managed/qwen-test'):
+                pass
+        with pytest.raises(LocalModelError):
+            mgr.start()
+    worker.join(2)
+    assert not worker.is_alive() and not errors
+    assert proc.exited and log.closed
+    assert mgr.active_requests == 0
+    assert mgr._state()['managed']['process'] is None
+
+
+def test_idle_policy_expires_owned_child_after_final_request(tmp_path, monkeypatch):
+    mgr, proc, _log = _lease_manager(tmp_path, monkeypatch)
+    now = [100.0]
+    scheduled = []
+    mgr._idle_clock = lambda: now[0]
+    mgr._idle_scheduler = lambda delay, callback: scheduled.append((delay, callback))
+    mgr.set_idle_policy(1)
+    with mgr.request_scope('local:managed/qwen-test'):
+        assert mgr.active_requests == 1
+    assert scheduled and scheduled[0][0] == 60
+    now[0] = 160.0
+    scheduled[0][1]()
+    assert proc.exited
+    assert mgr._state()['managed']['process'] is None
+
+
+def test_failed_stop_retains_owned_handle_and_can_retry(tmp_path, monkeypatch):
+    mgr, proc, log = _lease_manager(tmp_path, monkeypatch)
+    monkeypatch.setattr('harness.local_model_manager.stop_process_tree', lambda *a, **k: None)
+    with pytest.raises(LocalModelError, match='exit'):
+        mgr.stop()
+    assert proc.pid in mgr._procs and not log.closed
+    assert mgr._state()['managed']['process']['pid'] == proc.pid
+    with pytest.raises(LocalModelError):
+        with mgr.request_scope('local:managed/qwen-test'):
+            pass
+    proc.exited = True
+    mgr.stop()
+    assert log.closed and not mgr._procs
+
+
+def test_reconcile_does_not_resurrect_stopped_generation(tmp_path, monkeypatch):
+    mgr, proc, _ = _lease_manager(tmp_path, monkeypatch)
+    entered, release = threading.Event(), threading.Event()
+    def probe(*a, **k):
+        entered.set()
+        assert release.wait(2)
+        return True
+    monkeypatch.setattr(mgr, '_probe_health', probe)
+    worker = threading.Thread(target=mgr.reconcile_process)
+    worker.start()
+    assert entered.wait(2)
+    mgr.stop()
+    release.set()
+    worker.join(2)
+    assert not worker.is_alive()
+    assert mgr._state()['managed']['process'] is None
+
+
+def test_shutdown_blocks_new_start_and_model_removal_stops_child(tmp_path, monkeypatch):
+    mgr, proc, _ = _lease_manager(tmp_path, monkeypatch)
+    mgr.remove('model')
+    assert proc.exited
+    mgr.shutdown()
+    with pytest.raises(LocalModelError, match='shut'):
+        mgr.start()
+
+
+def test_only_one_stop_can_own_a_drain(tmp_path, monkeypatch):
+    mgr, proc, _ = _lease_manager(tmp_path, monkeypatch)
+    calls = []
+    def terminate(*a, **k):
+        calls.append(proc.pid)
+        proc.exited = True
+    monkeypatch.setattr('harness.local_model_manager.stop_process_tree', terminate)
+    with mgr.request_scope('local:managed/qwen-test'):
+        worker = threading.Thread(target=mgr.stop)
+        worker.start()
+        worker.join(2)
+        assert not worker.is_alive()
+        assert mgr.stop()['managed']['residency'] == 'stopping'
+        assert not calls
+    assert calls == [proc.pid]
+
+
+def test_shutdown_waits_for_start_then_reaps_child(tmp_path, monkeypatch):
+    mgr, old, _ = _lease_manager(tmp_path, monkeypatch)
+    mgr.stop()
+    exe = tmp_path / 'server'
+    model = tmp_path / 'model.gguf'
+    exe.write_text('fixture')
+    model.write_text('fixture')
+    mgr._set_component('runtime', status='ready', path=str(exe))
+    mgr._set_component('model', status='ready', id='qwen-test', path=str(model))
+    entered, release = threading.Event(), threading.Event()
+    child = _LeaseProcess()
+    def popen(*a, **k):
+        entered.set()
+        assert release.wait(2)
+        return child
+    mgr.popen = popen
+    monkeypatch.setattr('harness.local_model_manager.find_free_port', lambda *a: 12346)
+    monkeypatch.setattr('harness.local_model_manager.read_process_start_key', lambda *a: '')
+    monkeypatch.setattr('harness.local_model_manager.stop_process_tree',
+                        lambda *a, **k: setattr(child, 'exited', True))
+    start = threading.Thread(target=mgr.start)
+    start.start()
+    assert entered.wait(2)
+    shutdown = threading.Thread(target=mgr.shutdown)
+    shutdown.start()
+    with mgr._condition:
+        assert mgr._condition.wait_for(lambda: mgr._shutdown, timeout=2)
+    with pytest.raises(LocalModelError):
+        mgr.remove('all')
+    release.set()
+    start.join(2)
+    shutdown.join(2)
+    assert not start.is_alive() and not shutdown.is_alive()
+    assert child.exited and not mgr._procs
+    assert mgr._state()['managed']['process'] is None
+
+
+def test_install_reservation_blocks_remove_and_shutdown_waits(tmp_path, monkeypatch):
+    mgr, _, _ = _lease_manager(tmp_path, monkeypatch)
+    mgr.stop()
+    entered, release = threading.Event(), threading.Event()
+    monkeypatch.setattr('harness.local_model_manager.detect_hardware', lambda *a: {'supported': True})
+    def install():
+        entered.set()
+        assert release.wait(2)
+    monkeypatch.setattr(mgr, '_install_runtime', install)
+    mgr.install('runtime', background=True)
+    assert entered.wait(2)
+    with pytest.raises(LocalModelError):
+        mgr.remove('runtime')
+    with pytest.raises(LocalModelError):
+        mgr.start()
+    shutdown = threading.Thread(target=mgr.shutdown)
+    shutdown.start()
+    with mgr._condition:
+        assert mgr._condition.wait_for(lambda: mgr._shutdown, timeout=2)
+    assert shutdown.is_alive()
+    release.set()
+    shutdown.join(2)
+    assert not shutdown.is_alive()
+
+
+
+def test_manager_replacement_retains_owner_if_shutdown_fails(tmp_path, monkeypatch):
+    import harness.local_model_manager as module
+    mgr, proc, log = _lease_manager(tmp_path, monkeypatch)
+    monkeypatch.setattr(module, '_MANAGER', mgr)
+    monkeypatch.setattr(module, 'state_root', lambda: str(tmp_path / 'other'))
+    monkeypatch.setattr(module, 'stop_process_tree', lambda *a, **k: None)
+    with pytest.raises(LocalModelError, match='exit'):
+        module.get_manager()
+    assert module._MANAGER is mgr
+    assert proc.pid in mgr._procs and not log.closed
+
+
+def test_stop_observes_real_owned_child_exit(tmp_path):
+    import sys
+    mgr = LocalModelManager(root=str(tmp_path / 'real-child'), catalog={'models': []})
+    log = io.BytesIO()
+    proc = subprocess.Popen(
+        [sys.executable, '-c', 'import time; time.sleep(60)'],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        **spawn_popen_kwargs(),
+    )
+    try:
+        mgr._procs[proc.pid] = (proc, log)
+        state = mgr._state()
+        state['managed']['process'] = dict(pid=proc.pid, port=12345, healthy=True)
+        mgr._save(state)
+        mgr.stop()
+        assert proc.poll() is not None
+        assert log.closed and not mgr._procs
+        assert mgr._state()['managed']['process'] is None
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=5)
+
+
+def test_manager_replacement_does_not_lock_out_draining_callbacks(tmp_path, monkeypatch):
+    import harness.local_model_manager as module
+    mgr, _, _ = _lease_manager(tmp_path, monkeypatch)
+    monkeypatch.setattr(module, '_MANAGER', mgr)
+    monkeypatch.setattr(module, 'state_root', lambda: (
+        str(tmp_path / 'other') if threading.current_thread().name == 'replace-manager' else mgr.root
+    ))
+    returned = threading.Event()
+    with mgr.request_scope('local:managed/qwen-test'):
+        replacement = threading.Thread(target=module.get_manager, name='replace-manager')
+        replacement.start()
+        with mgr._condition:
+            assert mgr._condition.wait_for(lambda: mgr._shutdown, timeout=2)
+        def callback():
+            module.get_manager()
+            returned.set()
+        reader = threading.Thread(target=callback)
+        reader.start()
+        completed_during_drain = returned.wait(0.5)
+    replacement.join(2)
+    reader.join(2)
+    assert completed_during_drain
+
+
+def test_stop_returns_stopping_snapshot_before_request_release(tmp_path, monkeypatch):
+    mgr, proc, _ = _lease_manager(tmp_path, monkeypatch)
+    snapshots = []
+    with mgr.request_scope('local:managed/qwen-test'):
+        worker = threading.Thread(target=lambda: snapshots.append(mgr.stop()))
+        worker.start()
+        worker.join(0.5)
+        returned = not worker.is_alive()
+        assert not proc.exited
+    worker.join(2)
+    assert returned, 'Stop must return while the admitted request is still running'
+    assert snapshots[0]['managed']['residency'] == 'stopping'
+    assert snapshots[0]['managed']['usable'] is False
+    assert proc.exited
+
+
+def test_stop_during_start_cannot_publish_late_ready(tmp_path, monkeypatch):
+    mgr, _, _ = _lease_manager(tmp_path, monkeypatch)
+    mgr.stop()
+    exe, model = tmp_path / 'server', tmp_path / 'model.gguf'
+    exe.write_text('fixture')
+    model.write_text('fixture')
+    mgr._set_component('runtime', status='ready', path=str(exe))
+    mgr._set_component('model', status='ready', id='qwen-test', path=str(model))
+    child = _LeaseProcess()
+    mgr.popen = lambda *a, **k: child
+    entered, release = threading.Event(), threading.Event()
+    def ready(*a):
+        entered.set()
+        assert release.wait(2)
+        return True
+    monkeypatch.setattr(mgr, '_wait_ready', ready)
+    monkeypatch.setattr('harness.local_model_manager.find_free_port', lambda *a: 12346)
+    monkeypatch.setattr('harness.local_model_manager.read_process_start_key', lambda *a: '')
+    monkeypatch.setattr('harness.local_model_manager.stop_process_tree',
+                        lambda *a, **k: setattr(child, 'exited', True))
+    errors = []
+    def start():
+        try:
+            mgr.start()
+        except Exception as exc:
+            errors.append(exc)
+    worker = threading.Thread(target=start)
+    worker.start()
+    assert entered.wait(2)
+    try:
+        snapshot = mgr.stop()
+        assert snapshot['managed']['residency'] == 'stopping'
+    finally:
+        release.set()
+        worker.join(2)
+    assert not worker.is_alive() and not errors
+    assert child.exited and not mgr._procs
+    assert mgr._state()['managed']['process'] is None
+    assert not any(event['kind'] == 'started' for event in mgr.events_since(0))
+
+
+def test_failed_stop_is_unavailable_and_reports_error(tmp_path, monkeypatch):
+    mgr, _, _ = _lease_manager(tmp_path, monkeypatch)
+    monkeypatch.setattr('harness.local_model_manager.stop_process_tree', lambda *a, **k: None)
+    with pytest.raises(LocalModelError):
+        mgr.stop()
+    assert mgr.resolve_spec('local:managed/qwen-test') is None
+    assert 'local:managed/qwen-test' not in mgr.usable_specs()
+    assert mgr.snapshot()['managed']['residency'] == 'error'
+
+
+def test_request_rejects_changed_installed_model(tmp_path, monkeypatch):
+    mgr, _, _ = _lease_manager(tmp_path, monkeypatch)
+    with pytest.raises(LocalModelError):
+        with mgr.request_scope('local:managed/different-model'):
+            pytest.fail('old driver must not reach a different installed model')
+
+
+def test_termination_wait_does_not_hold_manager_lock(tmp_path, monkeypatch):
+    mgr, proc, _ = _lease_manager(tmp_path, monkeypatch)
+    entered, release = threading.Event(), threading.Event()
+    def terminate(*a, **k):
+        entered.set()
+        assert release.wait(2)
+        proc.exited = True
+    monkeypatch.setattr('harness.local_model_manager.stop_process_tree', terminate)
+    worker = threading.Thread(target=mgr.stop)
+    worker.start()
+    assert entered.wait(2)
+    observed = threading.Event()
+    observer = threading.Thread(target=lambda: (mgr.snapshot(), observed.set()))
+    observer.start()
+    available = observed.wait(0.5)
+    release.set()
+    worker.join(2)
+    observer.join(2)
+    assert available, 'snapshot blocked behind termination wait'
+
+
+def test_manual_stop_cancels_restart_reserved_during_request(tmp_path, monkeypatch):
+    mgr, proc, _ = _lease_manager(tmp_path, monkeypatch)
+    mgr.popen = lambda *a, **k: pytest.fail('cancelled restart spawned a child')
+    with mgr.request_scope('local:managed/qwen-test'):
+        assert mgr.restart()['managed']['residency'] == 'stopping'
+        assert mgr.stop()['managed']['residency'] == 'stopping'
+        assert not proc.exited
+    assert proc.exited
+    assert mgr.snapshot()['managed']['residency'] == 'stopped'
+
+
+def test_start_after_reconcile_clears_dead_child(tmp_path, monkeypatch):
+    mgr, old, _ = _lease_manager(tmp_path, monkeypatch)
+    old.exited = True
+    exe, model = tmp_path / 'server', tmp_path / 'model.gguf'
+    exe.write_text('fixture')
+    model.write_text('fixture')
+    mgr._set_component('runtime', status='ready', path=str(exe))
+    mgr._set_component('model', status='ready', id='qwen-test', path=str(model))
+    child = _LeaseProcess()
+    mgr.popen = lambda *a, **k: child
+    monkeypatch.setattr('harness.local_model_manager.find_free_port', lambda *a: 12346)
+    monkeypatch.setattr('harness.local_model_manager.read_process_start_key', lambda *a: '')
+    assert mgr.start()['managed']['usable'] is True
+    assert mgr._procs[child.pid][0] is child
+
+
+def test_drain_failure_does_not_replace_request_error(tmp_path, monkeypatch):
+    mgr, proc, log = _lease_manager(tmp_path, monkeypatch)
+    monkeypatch.setattr('harness.local_model_manager.stop_process_tree', lambda *a, **k: None)
+    with pytest.raises(ValueError, match='transport failed'):
+        with mgr.request_scope('local:managed/qwen-test'):
+            mgr.stop()
+            raise ValueError('transport failed')
+    assert mgr.active_requests == 0
+    assert mgr.snapshot()['managed']['residency'] == 'error'
+    assert proc.pid in mgr._procs and not log.closed
+
+
+def test_reset_does_not_lock_out_draining_callback(tmp_path, monkeypatch):
+    import harness.local_model_manager as module
+    mgr, _, _ = _lease_manager(tmp_path, monkeypatch)
+    monkeypatch.setattr(module, '_MANAGER', mgr)
+    monkeypatch.setattr(module, 'state_root', lambda: mgr.root)
+    returned = threading.Event()
+    with mgr.request_scope('local:managed/qwen-test'):
+        worker = threading.Thread(target=module.reset_manager_for_tests)
+        worker.start()
+        with mgr._condition:
+            assert mgr._condition.wait_for(lambda: mgr._shutdown, timeout=2)
+        reader = threading.Thread(target=lambda: (module.get_manager(), returned.set()))
+        reader.start()
+        available = returned.wait(0.2)
+    worker.join(2)
+    reader.join(2)
+    assert available
+
+
+def test_remove_retains_files_when_stop_is_still_in_progress(tmp_path, monkeypatch):
+    mgr, proc, _ = _lease_manager(tmp_path, monkeypatch)
+    from pathlib import Path
+    marker = Path(mgr.models_dir()) / 'keep.gguf'
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text('model')
+    entered, release = threading.Event(), threading.Event()
+    def terminate(*a, **k):
+        entered.set()
+        assert release.wait(2)
+        proc.exited = True
+    monkeypatch.setattr('harness.local_model_manager.stop_process_tree', terminate)
+    finish = mgr._finish_stop
+    worker = threading.Thread(target=finish)
+    def competing_finish():
+        worker.start()
+        assert entered.wait(2)
+        finish()
+    monkeypatch.setattr(mgr, '_finish_stop', competing_finish)
+    try:
+        with pytest.raises(LocalModelError) as error:
+            mgr.remove()
+        assert error.value.code == 'busy'
+        assert marker.exists() and not proc.exited
+    finally:
+        release.set()
+        worker.join(2)
+    assert not worker.is_alive()
+
+
+def test_remove_retains_files_on_termination_failure(tmp_path, monkeypatch):
+    mgr, proc, _ = _lease_manager(tmp_path, monkeypatch)
+    from pathlib import Path
+    marker = Path(mgr.models_dir()) / 'keep.gguf'
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text('model')
+    monkeypatch.setattr('harness.local_model_manager.stop_process_tree', lambda *a, **k: None)
+    with pytest.raises(LocalModelError):
+        mgr.remove()
+    assert marker.exists() and not proc.exited
+
+
+@pytest.mark.parametrize('fails', [False, True])
+@pytest.mark.parametrize('already_stopping', [False, True])
+def test_shutdown_waits_for_competing_stop_after_admission(tmp_path, monkeypatch, fails, already_stopping):
+    mgr, proc, _ = _lease_manager(tmp_path, monkeypatch)
+    entered, release, returned = threading.Event(), threading.Event(), threading.Event()
+    errors = []
+    calls = []
+    def terminate(*a, **k):
+        calls.append(1)
+        entered.set()
+        assert release.wait(3)
+        if fails:
+            raise LocalModelError('competing stop failed', code='stop_failed')
+        proc.exited = True
+    monkeypatch.setattr('harness.local_model_manager.stop_process_tree', terminate)
+    finish = mgr._finish_stop
+    competitor = threading.Thread(target=lambda: finish(raise_errors=False))
+    def race():
+        competitor.start()
+        assert entered.wait(2)
+        finish()
+    if already_stopping:
+        with mgr._condition:
+            mgr._reserve_stop()
+        competitor.start()
+        assert entered.wait(2)
+    else:
+        monkeypatch.setattr(mgr, '_finish_stop', race)
+    def shutdown():
+        try:
+            mgr.shutdown()
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            returned.set()
+    worker = threading.Thread(target=shutdown)
+    worker.start()
+    try:
+        assert entered.wait(2)
+        assert not returned.wait(.1)
+    finally:
+        release.set()
+        worker.join(3)
+        competitor.join(3)
+    assert not worker.is_alive()
+    assert len(calls) == 1
+    assert bool(errors) == fails
+    if fails:
+        assert errors[0].code == 'stop_failed'
+
+
+class _IdleScheduler:
+    class Call:
+        def __init__(self, delay, callback):
+            self.delay = delay
+            self.callback = callback
+            self.cancelled = False
+
+        def cancel(self):
+            self.cancelled = True
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, delay, callback):
+        call = self.Call(delay, callback)
+        self.calls.append(call)
+        return call
+
+
+def _idle_fixture(tmp_path, monkeypatch):
+    mgr, proc, log = _lease_manager(tmp_path, monkeypatch)
+    wall, mono = [1000.0], [10.0]
+    scheduler = _IdleScheduler()
+    mgr.clock = lambda: wall[0]
+    mgr._idle_clock = lambda: mono[0]
+    mgr._idle_scheduler = scheduler
+    mgr.set_idle_policy(1)
+    return mgr, proc, wall, mono, scheduler
+
+
+def test_idle_deadline_uses_last_release_and_monotonic_time(tmp_path, monkeypatch):
+    mgr, proc, wall, mono, scheduler = _idle_fixture(tmp_path, monkeypatch)
+    assert not scheduler.calls
+    with mgr.request_scope('local:managed/qwen-test'):
+        with mgr.request_scope('local:managed/qwen-test'):
+            mono[0] = 20
+            wall[0] = 1010
+        assert not scheduler.calls
+        mono[0] = 30
+        wall[0] = 1020
+    before = mgr.snapshot()['managed']
+    assert before['last_activity_at'] == 1020
+    assert before['idle_deadline_at'] == 1080
+    assert before['observed_at'] == 1020
+    assert scheduler.calls[-1].delay == 60
+    wall[0] = 999999
+    mono[0] = 89
+    for _ in range(3):
+        assert mgr.snapshot()['managed']['idle_deadline_at'] == 1080
+        mgr.events_since(0)
+    scheduler.calls[-1].callback()
+    assert not proc.exited
+    assert scheduler.calls[-1].delay == 1
+    mono[0] = 90
+    scheduler.calls[-1].callback()
+    assert proc.exited
+    stopped = mgr.snapshot()['managed']
+    assert stopped['residency'] == 'stopped'
+    assert stopped['stop_reason'] == 'inactivity'
+    assert stopped['idle_deadline_at'] is None
+    assert len([e for e in mgr.events_since(0) if e['kind'] == 'stopped']) == 1
+    scheduler.calls[-1].callback()
+    assert len([e for e in mgr.events_since(0) if e['kind'] == 'stopped']) == 1
+    with pytest.raises(LocalModelError):
+        with mgr.request_scope('local:managed/qwen-test'):
+            pass
+
+
+def test_idle_admission_wins_and_cancels_expiry(tmp_path, monkeypatch):
+    mgr, proc, wall, mono, scheduler = _idle_fixture(tmp_path, monkeypatch)
+    with mgr.request_scope('local:managed/qwen-test'):
+        pass
+    old = scheduler.calls[-1]
+    mono[0] = 70
+    with mgr.request_scope('local:managed/qwen-test'):
+        assert old.cancelled
+        assert mgr.snapshot()['managed']['idle_deadline_at'] is None
+        old.callback()
+        assert not proc.exited
+        mono[0] = 100
+    assert scheduler.calls[-1].delay == 60
+    old.callback()
+    assert not proc.exited
+    mono[0] = 160
+    scheduler.calls[-1].callback()
+    assert proc.exited
+
+
+def test_idle_expiry_reserves_before_later_admission(tmp_path, monkeypatch):
+    mgr, proc, wall, mono, scheduler = _idle_fixture(tmp_path, monkeypatch)
+    with mgr.request_scope('local:managed/qwen-test'):
+        pass
+    entered, release = threading.Event(), threading.Event()
+    original = mgr._finish_stop
+    def finish(**kwargs):
+        entered.set()
+        assert release.wait(2)
+        original(**kwargs)
+    monkeypatch.setattr(mgr, '_finish_stop', finish)
+    mono[0] = 70
+    thread = threading.Thread(target=scheduler.calls[-1].callback)
+    thread.start()
+    try:
+        assert entered.wait(2)
+        assert mgr.snapshot()['managed']['residency'] == 'stopping'
+        with pytest.raises(LocalModelError):
+            with mgr.request_scope('local:managed/qwen-test'):
+                pass
+        assert not proc.exited
+    finally:
+        release.set()
+        thread.join(2)
+    assert proc.exited
+
+
+def test_idle_stale_timer_cannot_stop_restarted_child(tmp_path, monkeypatch):
+    mgr, proc, wall, mono, scheduler = _idle_fixture(tmp_path, monkeypatch)
+    with mgr.request_scope('local:managed/qwen-test'):
+        pass
+    stale = scheduler.calls[-1]
+    replacement = _LeaseProcess()
+    def start(generation):
+        mgr._procs[replacement.pid] = (replacement, io.BytesIO())
+        state = mgr._state()
+        state['managed']['process'] = dict(pid=replacement.pid, port=12345,
+            host='127.0.0.1', healthy=True, alias='new-generation')
+        mgr._save(state)
+    monkeypatch.setattr(mgr, '_start_locked', start)
+    mgr.restart()
+    assert stale.cancelled
+    assert mgr.snapshot()['managed']['idle_deadline_at'] is None
+    mono[0] = 1000
+    stale.callback()
+    assert not replacement.exited
+    assert mgr.snapshot()['managed']['residency'] == 'running'
+
+
+@pytest.mark.parametrize('operation', ['disable', 'stop', 'shutdown', 'unhealthy', 'adopted'])
+def test_idle_cancellation_and_unowned_guards(tmp_path, monkeypatch, operation):
+    mgr, proc, wall, mono, scheduler = _idle_fixture(tmp_path, monkeypatch)
+    with mgr.request_scope('local:managed/qwen-test'):
+        pass
+    stale = scheduler.calls[-1]
+    if operation == 'disable':
+        mgr.set_idle_policy(0)
+    elif operation == 'stop':
+        mgr.stop()
+    elif operation == 'shutdown':
+        mgr.shutdown()
+    elif operation == 'unhealthy':
+        state = mgr._state()
+        state['managed']['process']['healthy'] = False
+        mgr._save(state)
+    else:
+        mgr._procs.clear()
+    mono[0] = 1000
+    stale.callback()
+    if operation in ('disable', 'stop', 'shutdown'):
+        assert stale.cancelled
+    if operation not in ('stop', 'shutdown'):
+        assert not proc.exited
+    assert mgr.snapshot()['managed']['idle_deadline_at'] is None
+
+
+def test_idle_policy_and_activity_are_not_rehydrated_as_a_timer(tmp_path, monkeypatch):
+    mgr, proc, wall, mono, scheduler = _idle_fixture(tmp_path, monkeypatch)
+    with mgr.request_scope('local:managed/qwen-test'):
+        pass
+    state = mgr._state()['managed']
+    assert state['idle_timeout_minutes'] == 1
+    assert 'idle_deadline_at' not in state
+    restarted = LocalModelManager(root=mgr.root, catalog=mgr.catalog,
+        clock=lambda: 2000, monotonic_clock=lambda: 5, scheduler=scheduler)
+    snap = restarted.snapshot()['managed']
+    assert snap['idle_timeout_minutes'] == 1
+    assert snap['idle_deadline_at'] is None
+    assert snap['last_activity_at'] is None
+    assert len(scheduler.calls) == 1
+
+
+def test_idle_policy_changes_use_last_release_without_extending_activity(tmp_path, monkeypatch):
+    mgr, proc, wall, mono, scheduler = _idle_fixture(tmp_path, monkeypatch)
+    with mgr.request_scope('local:managed/qwen-test'):
+        pass
+    old = scheduler.calls[-1]
+    mono[0] = 40
+    wall[0] = 1030
+    mgr.set_idle_policy(2)
+    assert old.cancelled
+    assert scheduler.calls[-1].delay == 90
+    assert mgr.snapshot()['managed']['last_activity_at'] == 1000
+    assert mgr.snapshot()['managed']['idle_deadline_at'] == 1120
+
+
+def test_idle_disabled_release_and_external_request_never_arm(tmp_path, monkeypatch):
+    mgr, proc, wall, mono, scheduler = _idle_fixture(tmp_path, monkeypatch)
+    mgr.set_idle_policy(0)
+    with mgr.request_scope('local:managed/qwen-test'):
+        pass
+    assert not scheduler.calls
+    state = mgr._state()
+    state['externals'] = [dict(id='box', base_url='http://127.0.0.1:9999/v1',
+        models=['qwen'], selected_model='qwen', healthy=True, kind='loopback')]
+    mgr._save(state)
+    with mgr.request_scope('local:box/qwen'):
+        assert mgr.active_requests == 0
+    assert not scheduler.calls
+
+
+def test_idle_release_during_explicit_start_still_arms(tmp_path, monkeypatch):
+    mgr, proc, wall, mono, scheduler = _idle_fixture(tmp_path, monkeypatch)
+    entered, resume = threading.Event(), threading.Event()
+    def start(generation):
+        entered.set()
+        assert resume.wait(2)
+    monkeypatch.setattr(mgr, '_start_locked', start)
+    with mgr.request_scope('local:managed/qwen-test'):
+        thread = threading.Thread(target=mgr.start)
+        thread.start()
+        assert entered.wait(2)
+    resume.set()
+    thread.join(2)
+    assert not thread.is_alive()
+    assert scheduler.calls and scheduler.calls[-1].delay == 60
+
+
+def test_idle_stop_failure_does_not_claim_inactivity_stop(tmp_path, monkeypatch):
+    mgr, proc, wall, mono, scheduler = _idle_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr('harness.local_model_manager.stop_process_tree', lambda *a, **k: None)
+    with mgr.request_scope('local:managed/qwen-test'):
+        pass
+    mono[0] = 70
+    scheduler.calls[-1].callback()
+    state = mgr.snapshot()['managed']
+    assert state['residency'] == 'error'
+    assert state['stop_reason'] is None
+    assert state['process']['pid'] == proc.pid
+    assert not proc.exited
+    assert not [e for e in mgr.events_since(0) if e['kind'] == 'stopped']
+
+
+def test_idle_redundant_start_preserves_release_baseline(tmp_path, monkeypatch):
+    mgr, proc, wall, mono, scheduler = _idle_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(mgr, '_probe_health', lambda *a, **k: True)
+    with mgr.request_scope('local:managed/qwen-test'):
+        pass
+    old = scheduler.calls[-1]
+    mono[0] = 40
+    wall[0] = 9000
+    mgr.start()
+    assert old.cancelled
+    assert scheduler.calls[-1] is not old
+    assert scheduler.calls[-1].delay == 30
+    assert mgr.snapshot()['managed']['idle_deadline_at'] == 1060
+    mono[0] = 70
+    old.callback()
+    assert not proc.exited
+    scheduler.calls[-1].callback()
+    assert proc.exited
+
+
+def test_idle_health_recovery_rearms_expired_baseline(tmp_path, monkeypatch):
+    mgr, proc, wall, mono, scheduler = _idle_fixture(tmp_path, monkeypatch)
+    healthy = [False]
+    monkeypatch.setattr(mgr, '_probe_health', lambda *a, **k: healthy[0])
+    with mgr.request_scope('local:managed/qwen-test'):
+        pass
+    old = scheduler.calls[-1]
+    mono[0] = 70
+    mgr.reconcile_process()
+    old.callback()
+    assert not proc.exited
+    healthy[0] = True
+    wall[0] = 9000
+    mgr.reconcile_process()
+    assert scheduler.calls[-1] is not old
+    assert scheduler.calls[-1].delay == 0
+    assert mgr.snapshot()['managed']['idle_deadline_at'] == 1060
+    count = len(scheduler.calls)
+    mgr.reconcile_process()
+    assert len(scheduler.calls) == count
+    old.callback()
+    assert not proc.exited
+    scheduler.calls[-1].callback()
+    assert proc.exited

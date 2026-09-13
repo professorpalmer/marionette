@@ -67,6 +67,18 @@ def test_state_migration_fills_v1(tmp_path, monkeypatch):
     assert migrated["managed"]["runtime"]["status"] == "ready"
     assert migrated["managed"]["model"]["status"] == "absent"
     assert migrated["externals"] == []
+    assert migrated["managed"]["idle_timeout_minutes"] == 0
+
+
+@pytest.mark.parametrize("value", [True, -1, 1.5, 1441, "1"])
+def test_idle_policy_requires_bounded_integer(value):
+    with pytest.raises(ValueError):
+        lm.parse_command({"type": "set_policy", "idle_timeout_minutes": value})
+
+
+def test_idle_policy_command_accepts_zero_and_max():
+    assert lm.parse_command({"type": "set_policy", "idle_timeout_minutes": 0})["idle_timeout_minutes"] == 0
+    assert lm.parse_command({"type": "set_policy", "idle_timeout_minutes": 1440})["idle_timeout_minutes"] == 1440
 
 
 def test_state_roundtrip(tmp_path, monkeypatch):
@@ -418,3 +430,19 @@ def test_trusted_lan_is_keyless_public_requires_key():
         "kind": "public",
     })
     assert public["requires_key"] is True
+
+
+@pytest.mark.parametrize('value', [True, False, -1, 1.5, 1.0, 1441, '5', None])
+def test_idle_policy_save_rejects_invalid_values(tmp_path, value):
+    state = lm.empty_state()
+    state['managed']['idle_timeout_minutes'] = value
+    with pytest.raises(ValueError):
+        lm.save_state(state, str(tmp_path))
+
+
+def test_idle_policy_legacy_migration_and_roundtrip(tmp_path):
+    assert lm.migrate_state({'managed': {}})['managed']['idle_timeout_minutes'] == 0
+    state = lm.empty_state()
+    state['managed']['idle_timeout_minutes'] = 1440
+    lm.save_state(state, str(tmp_path))
+    assert lm.load_state(str(tmp_path))['managed']['idle_timeout_minutes'] == 1440

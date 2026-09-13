@@ -38,7 +38,9 @@ COMMAND_TYPES = (
     "remove",
     "activate",
     "verify_tool_calling",
+    "set_policy",
 )
+IDLE_TIMEOUT_MAX_MINUTES = 1440
 TOOL_CALLING_STATUSES = (
     "unverified",
     "verified",
@@ -107,6 +109,7 @@ def empty_state() -> dict:
             },
             "process": None,
             "downloads": {},
+            "idle_timeout_minutes": 0,
         },
         "externals": [],
         "active_spec": "",
@@ -139,7 +142,16 @@ def load_state(root: Optional[str] = None) -> dict:
     return empty_state()
 
 
+def validate_idle_timeout(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= IDLE_TIMEOUT_MAX_MINUTES:
+        raise ValueError("idle_timeout_minutes must be an integer from 0 to 1440")
+    return value
+
+
 def save_state(data: dict, root: Optional[str] = None) -> dict:
+    managed = data.get("managed")
+    if isinstance(managed, dict) and "idle_timeout_minutes" in managed:
+        validate_idle_timeout(managed["idle_timeout_minutes"])
     normalized = migrate_state(data)
     _atomic_write_json(state_path(root), normalized)
     return normalized
@@ -191,6 +203,11 @@ def migrate_state(raw: Any) -> dict:
         key: value for key, value in downloads.items() if isinstance(value, dict)
     }
     base["managed"]["process"] = _normalize_process(process) if process else None
+    try:
+        timeout = validate_idle_timeout(managed.get("idle_timeout_minutes", 0))
+    except ValueError:
+        timeout = 0
+    base["managed"]["idle_timeout_minutes"] = timeout
     base["externals"] = externals
     base["active_spec"] = str(raw.get("active_spec") or "")
     base["event_cursor"] = max(0, cursor)
@@ -1051,6 +1068,8 @@ def parse_command(body: Any) -> dict:
         if not spec:
             raise ValueError("verify_tool_calling requires a spec")
         command["spec"] = spec
+    elif command_type == "set_policy":
+        command["idle_timeout_minutes"] = validate_idle_timeout(body.get("idle_timeout_minutes"))
     return command
 
 
@@ -1217,6 +1236,7 @@ def snapshot_from_state(
             "model": managed.get("model") or {},
             "process": process,
             "downloads": managed.get("downloads") or {},
+            "idle_timeout_minutes": managed.get("idle_timeout_minutes", 0),
             "usable": managed_usable(state),
             "spec": canonical_spec(MANAGED_ENDPOINT_ID, (model or {}).get("id") or "") if model else "",
         },

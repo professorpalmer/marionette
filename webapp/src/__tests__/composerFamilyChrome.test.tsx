@@ -218,7 +218,7 @@ describe("composer-family chrome", () => {
     expect(rail.queryByText(/observed jobs/)).toBeNull();
   });
 
-  it("does not mount Saved inputs above the composer", () => {
+  it("mounts saved input receipts in the composer dock", () => {
     renderDock({
       receipts: [{
         id: "receipt",
@@ -233,10 +233,10 @@ describe("composer-family chrome", () => {
       }],
       onCopyReceipt: () => {},
     });
-    expect(screen.queryByText(/Saved inputs/)).toBeNull();
-    expect(screen.queryByText(/Originals remain available/)).toBeNull();
-    expect(screen.queryByText(/Recorded in conversation/)).toBeNull();
-    expect(screen.queryByText(/can u pick back up/)).toBeNull();
+    expect(screen.getByText("Saved inputs · 1")).toBeTruthy();
+    expect(screen.getByText(/Originals remain available/)).toBeTruthy();
+    expect(screen.getByText(/Recorded in conversation/)).toBeTruthy();
+    expect(screen.getAllByText(/can u pick back up/)).toHaveLength(2);
   });
 
   it("renders a nested session TODO tree on the activity rail", () => {

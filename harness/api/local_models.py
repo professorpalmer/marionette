@@ -91,6 +91,8 @@ def post_local_models(body: dict, svc: LocalModelServices) -> tuple[int, JsonPay
             return 200, snapshot
         if kind == "verify_tool_calling":
             return 200, manager.verify_tool_calling(command["spec"])
+        if kind == "set_policy":
+            return 200, manager.set_idle_policy(command["idle_timeout_minutes"])
         return 400, {"error": "Unknown local-model command"}
     except LocalModelError as exc:
         return 400, redact_mapping({"error": str(exc), "code": exc.code})

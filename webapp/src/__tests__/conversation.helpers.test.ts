@@ -157,7 +157,6 @@ import {
   classifyLocalSlashCommand,
   composerEnterAction,
   composerEnterBusy,
-  editNoticeAfterSend,
   EDIT_BUSY_PROGRESS_NOTICE,
   STOP_INTERRUPT_FAILED_NOTICE,
   executeSendGate,
@@ -2675,10 +2674,6 @@ describe("composerSend module", () => {
         Object.assign(new Error("rejected"), { reason: "summary_rejected" }),
       ),
     ).toMatch(/rejected/i);
-    // Post-send edit chrome is cleared so Resubmit starts a live turn without
-    // a leftover Revert? banner sitting on an idle composer.
-    expect(editNoticeAfterSend(true)).toBeNull();
-    expect(editNoticeAfterSend(false)).toBeNull();
   });
 
   it("shouldApplyCompactSettle fences mid-flight A→B session switch", () => {
@@ -2800,7 +2795,7 @@ describe("composerSend module", () => {
     });
     expect(result).toEqual({
       kind: "interrupt_failed",
-      notice: "network down",
+      notice: STOP_INTERRUPT_FAILED_NOTICE,
     });
   });
 

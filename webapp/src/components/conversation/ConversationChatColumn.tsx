@@ -199,8 +199,7 @@ export default function ConversationChatColumn({
           title="Jump to latest"
           aria-label="Jump to latest"
           onClick={onJumpToBottom}
-          className="transcript-fold-chrome select-none absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full border border-edge2 text-muted hover:text-txt hover:bg-panel2/80 transition-colors"
-          style={{ backgroundColor: "#0f1113" }}
+          className="transcript-fold-chrome select-none absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full border border-edge2 bg-bg text-muted hover:text-txt hover:bg-panel2/80 transition-colors"
         >
           <ChevronDown size={16} />
         </button>

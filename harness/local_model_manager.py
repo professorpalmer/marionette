@@ -8,6 +8,8 @@ Identity-safe PID adoption never kills an unrelated process.
 from __future__ import annotations
 
 import atexit
+from contextlib import contextmanager
+from dataclasses import dataclass
 import hashlib
 import json
 import os
@@ -56,6 +58,7 @@ from .local_models import (
     tool_calling_error_reason,
     tool_calling_request_body,
     usable_local_specs,
+    validate_idle_timeout,
 )
 from .url_safety import is_safe_url_pinned, normalize_url_for_request
 from .web_tools import _PinnedIP, _PinnedIPHTTPHandler, _PinnedIPHTTPSHandler
@@ -720,6 +723,14 @@ class EventLog:
         return events
 
 
+@dataclass(frozen=True)
+class ManagedEndpoint:
+    endpoint_id: str
+    model: str
+    base_url: str
+    generation: int
+
+
 class LocalModelManager:
     """Single-owner control plane for managed llama.cpp and external endpoints."""
 
@@ -732,6 +743,8 @@ class LocalModelManager:
         popen: Optional[PopenFactory] = None,
         sleeper: Optional[Callable[[float], None]] = None,
         clock: Optional[Callable[[], float]] = None,
+        monotonic_clock: Optional[Callable[[], float]] = None,
+        scheduler: Optional[Callable[[float, Callable[[], None]], Any]] = None,
         ready_timeout: float = 90.0,
         probe_transport: Optional[Callable[..., Any]] = None,
     ) -> None:
@@ -742,6 +755,8 @@ class LocalModelManager:
         self.popen = popen or subprocess.Popen
         self.sleep = sleeper or time.sleep
         self.clock = clock or time.time
+        self._idle_clock = monotonic_clock or time.monotonic
+        self._idle_scheduler = scheduler or self._schedule_idle_callback
         self.ready_timeout = ready_timeout
         self.probe_transport = probe_transport
         seeded = 0
@@ -751,12 +766,29 @@ class LocalModelManager:
             seeded = 0
         self.events = EventLog(cursor=seeded)
         self._lock = threading.RLock()
+        self._condition = threading.Condition(self._lock)
+        self._generation = 0
+        self._active_requests = 0
+        self._request_threads = {}
+        self._stopping = False
+        self._stop_in_progress = False
+        self._restart_pending = False
+        self._stop_error = ""
+        self._removing = False
         self._cancel = {key: threading.Event() for key in ("runtime", "model", "all")}
         self._workers = {}
         self._procs = {}
         self._start_in_progress = False
         self._install_in_progress = False
         self._shutdown = False
+        self._idle_timer_token = 0
+        self._idle_timer = None
+        self._idle_deadline = None
+        self._idle_deadline_at = None
+        self._last_activity_at = None
+        self._last_release_monotonic = None
+        self._idle_stop_pending = False
+        self._stopped_after_idle = False
         if seeded > 0:
             self._emit("snapshot", {"reason": "replay_unavailable"})
 
@@ -803,12 +835,33 @@ class LocalModelManager:
         with self._lock:
             state = load_state(self.root)
             hardware = detect_hardware(self.root, self.catalog)
-            return snapshot_from_state(
+            snapshot = snapshot_from_state(
                 state,
                 catalog=self.catalog,
                 hardware=hardware,
                 events=self.events.since(max(0, int(state.get("event_cursor") or 0) - 32)),
             )
+            managed = snapshot["managed"]
+            process = state["managed"].get("process") or {}
+            managed["active_requests"] = self._active_requests
+            managed["idle_timeout_enabled"] = bool(managed.get("idle_timeout_minutes", 0))
+            managed["last_activity_at"] = self._last_activity_at
+            managed["idle_deadline_at"] = self._idle_deadline_at
+            managed["observed_at"] = self.clock()
+            managed["idle_remaining_seconds"] = (
+                max(0.0, self._idle_deadline - self._idle_clock())
+                if self._idle_deadline is not None else None
+            )
+            managed["residency"] = (
+                "error" if self._stop_error else "stopping" if self._stopping
+                else "starting" if self._start_in_progress
+                else "running" if process.get("healthy") else "unknown" if process else "stopped"
+            )
+            managed["lifecycle_error"] = self._stop_error or None
+            managed["stop_reason"] = "inactivity" if self._stopped_after_idle else None
+            if self._stopping or self._shutdown:
+                managed["usable"] = False
+            return snapshot
 
     def events_since(self, cursor: int) -> list:
         return self.events.since(cursor)
@@ -1079,6 +1132,9 @@ class LocalModelManager:
             )
         overlapping = ("runtime", "model", "all") if target == "all" else (target, "all")
         with self._lock:
+            self._check_lifecycle_available()
+            if (self._state().get("managed") or {}).get("process"):
+                raise LocalModelError("Stop the managed server before installing", code="busy")
             for key in overlapping:
                 worker = self._workers.get(key)
                 if worker is not None and worker.is_alive():
@@ -1089,6 +1145,7 @@ class LocalModelManager:
                     code="busy",
                 )
             self._clear_cancel(target)
+            self._install_in_progress = True
             if background:
                 worker = threading.Thread(
                     target=self._install_worker,
@@ -1096,15 +1153,15 @@ class LocalModelManager:
                     daemon=True,
                 )
                 self._workers[target] = worker
-                worker.start()
+                try:
+                    worker.start()
+                except BaseException:
+                    self._install_in_progress = False
+                    self._condition.notify_all()
+                    raise
                 return self.snapshot()
-            self._install_in_progress = True
-        try:
-            self._install_worker(target, chosen)
-            return self.snapshot()
-        finally:
-            with self._lock:
-                self._install_in_progress = False
+        self._install_worker(target, chosen)
+        return self.snapshot()
 
     def _install_worker(self, target: str, model_id: str = "") -> None:
         failed = None
@@ -1136,6 +1193,10 @@ class LocalModelManager:
             self._emit("error", {"target": kind, "error": str(exc), "code": "error"})
             if kind in ("runtime", "model"):
                 self._set_component(kind, status="error", error=str(exc))
+        finally:
+            with self._condition:
+                self._install_in_progress = False
+                self._condition.notify_all()
 
     def _install_runtime(self) -> None:
         current = (self._state().get("managed") or {}).get("runtime") or {}
@@ -1211,62 +1272,224 @@ class LocalModelManager:
         model = (state.get("managed") or {}).get("model") or {}
         return str(runtime.get("path") or ""), str(model.get("path") or ""), str(model.get("id") or "")
 
+    @property
+    def active_requests(self) -> int:
+        with self._lock:
+            return self._active_requests
+
+    @staticmethod
+    def _schedule_idle_callback(delay: float, callback: Callable[[], None]) -> Any:
+        timer = threading.Timer(delay, callback)
+        timer.daemon = True
+        timer.start()
+        return timer
+
+    def _cancel_idle_timer(self) -> None:
+        self._idle_timer_token += 1
+        if self._idle_timer is not None:
+            self._idle_timer.cancel()
+        self._idle_timer = None
+        self._idle_deadline = None
+        self._idle_deadline_at = None
+
+    def set_idle_policy(self, idle_timeout_minutes: int) -> dict:
+        try:
+            minutes = validate_idle_timeout(idle_timeout_minutes)
+        except ValueError as exc:
+            raise LocalModelError(str(exc), code="invalid_policy") from exc
+        with self._condition:
+            self._check_lifecycle_available()
+            self._update_state(lambda state: state["managed"].update({
+                "idle_timeout_minutes": minutes,
+            }))
+            self._cancel_idle_timer()
+            self._arm_idle_timer()
+            self._emit("policy_changed", {"idle_timeout_minutes": minutes})
+        return self.snapshot()
+
+    def _idle_eligible(self, state: dict) -> bool:
+        process = state["managed"].get("process") or {}
+        handle = self._procs.get(process.get("pid"))
+        return bool(
+            state["managed"]["idle_timeout_minutes"] and handle
+            and process.get("healthy") and handle[0].poll() is None
+            and not self._active_requests and not self._stopping
+            and not self._start_in_progress and not self._shutdown
+            and not self._removing and not self._install_in_progress
+        )
+
+    def _arm_idle_timer(self) -> None:
+        # Caller holds the lifecycle lock; only a completed request seeds idle time.
+        state = self._state()
+        if self._last_release_monotonic is None or not self._idle_eligible(state):
+            return
+        minutes = state["managed"]["idle_timeout_minutes"]
+        self._idle_deadline = self._last_release_monotonic + minutes * 60
+        self._idle_deadline_at = self._last_activity_at + minutes * 60
+        token, generation = self._idle_timer_token, self._generation
+        pid = state["managed"]["process"]["pid"]
+        self._idle_timer = self._idle_scheduler(
+            max(0.0, self._idle_deadline - self._idle_clock()),
+            lambda: self._idle_expired(pid, generation, token),
+        )
+
+    def _idle_expired(self, pid: int, generation: int, token: int) -> None:
+        with self._condition:
+            if token != self._idle_timer_token or generation != self._generation:
+                return
+            state = self._state()
+            process = state["managed"].get("process") or {}
+            if (self._idle_deadline is None or process.get("pid") != pid
+                    or not self._idle_eligible(state)):
+                self._cancel_idle_timer()
+                self._emit("idle_cancelled", {})
+                return
+            remaining = self._idle_deadline - self._idle_clock()
+            if remaining > 0:
+                self._idle_timer = self._idle_scheduler(
+                    remaining, lambda: self._idle_expired(pid, generation, token),
+                )
+                return
+            self._reserve_stop()
+            self._idle_stop_pending = True
+            self._emit("idle_expired", {})
+        self._finish_stop(raise_errors=False)
+
+    @contextmanager
+    def request_scope(self, spec: str):
+        # Admission and endpoint capture must be atomic with stop/restart.
+        with self._condition:
+            state = self._state()
+            parsed = parse_local_spec(spec)
+            managed = bool(parsed and parsed[0] == MANAGED_ENDPOINT_ID)
+            process = (state.get("managed") or {}).get("process") or {}
+            owned = managed and process.get("pid") in self._procs
+            if managed and (self._shutdown or self._stopping or self._start_in_progress
+                            or self._removing or self._install_in_progress):
+                raise LocalModelError("Managed server is stopping or busy", code="busy")
+            resolved = resolve_local_endpoint(state, spec)
+            if not resolved:
+                raise LocalModelError("Start or activate the local server first", code="not_ready")
+            if managed and parsed[1] != (state["managed"].get("model") or {}).get("id"):
+                raise LocalModelError("The installed managed model has changed", code="model_changed")
+            if managed and not owned:
+                raise LocalModelError("Managed child ownership has changed", code="not_ready")
+            if owned:
+                proc, _log = self._procs[process["pid"]]
+                if proc.poll() is not None:
+                    raise LocalModelError("Managed server has exited", code="not_ready")
+                self._cancel_idle_timer()
+                self._last_release_monotonic = None
+                self._last_activity_at = self.clock()
+                self._active_requests += 1
+                self._emit("request_admitted", {"active_requests": self._active_requests})
+                thread_id = threading.get_ident()
+                self._request_threads[thread_id] = self._request_threads.get(thread_id, 0) + 1
+            endpoint = ManagedEndpoint(resolved["endpoint_id"], resolved["model"],
+                                       resolved["base_url"], self._generation)
+        try:
+            yield endpoint
+        finally:
+            if owned:
+                with self._condition:
+                    self._active_requests -= 1
+                    self._request_threads[thread_id] -= 1
+                    if not self._request_threads[thread_id]:
+                        del self._request_threads[thread_id]
+                    self._condition.notify_all()
+                    self._last_activity_at = self.clock()
+                    if self._active_requests == 0:
+                        self._last_release_monotonic = self._idle_clock()
+                        self._arm_idle_timer()
+                    self._emit("request_released", {"active_requests": self._active_requests})
+                self._finish_stop(raise_errors=False)
+
     def reconcile_process(self) -> dict:
-        """Adopt our llama-server or clear stale PID state without killing strangers."""
+        """Publish a probe only while its captured generation is still current."""
         with self._lock:
             state = self._state()
             process = (state.get("managed") or {}).get("process")
-            if not process or not process.get("pid"):
+            if not process or not process.get("pid") or self._stopping:
                 return state
             pid = int(process["pid"])
-            owned = int(pid) in self._procs
+            handle = self._procs.get(pid)
             identity = dict(process)
-        matched = owned or process_matches_identity(pid, identity)
-        if matched:
-            identity["healthy"] = self._probe_health(
-                "http://%s:%s/v1" % (identity.get("host") or "127.0.0.1", identity.get("port")),
-                required_alias=str(identity.get("alias") or ""),
-            )
-            with self._lock:
-                state = self._state()
-                state["managed"]["process"] = identity
-                return self._save(state)
+            generation = self._generation
+        if handle:
+            poll = getattr(handle[0], "poll", None)
+            matched = not callable(poll) or poll() is None
+        else:
+            matched = process_matches_identity(pid, identity)
+        healthy = matched and self._probe_health(
+            "http://%s:%s/v1" % (identity.get("host") or "127.0.0.1", identity.get("port")),
+            required_alias=str(identity.get("alias") or ""),
+        )
         with self._lock:
             state = self._state()
-            current = (state.get("managed") or {}).get("process") or {}
-            if current.get("pid") != pid:
+            if (generation != self._generation or self._stopping
+                    or state["managed"].get("process") != process):
                 return state
-            state["managed"]["process"] = None
-            self._emit("stale_pid_cleared", {"pid": pid})
-            return self._save(state)
+            if matched:
+                identity["healthy"] = healthy
+                state["managed"]["process"] = identity
+            else:
+                if handle:
+                    self._procs.pop(pid, None)
+                    handle[1].close()
+                self._generation += 1
+                self._cancel_idle_timer()
+                self._last_release_monotonic = None
+                state["managed"]["process"] = None
+                self._emit("stale_pid_cleared", {"pid": pid})
+            saved = self._save(state)
+            if healthy and self._idle_timer is None:
+                self._arm_idle_timer()
+            return saved
 
     def start(self) -> dict:
         with self._lock:
+            self._check_lifecycle_available()
             if self._start_in_progress or self._install_in_progress:
                 raise LocalModelError("Server start is already running", code="busy")
-            for worker in self._workers.values():
-                if worker is not None and worker.is_alive():
-                    raise LocalModelError("An install is already running", code="busy")
+            self._cancel_idle_timer()
+            self._stopped_after_idle = False
             self._start_in_progress = True
-        try:
-            return self._start_locked()
-        finally:
-            with self._lock:
-                self._start_in_progress = False
+            self._generation += 1
+            generation = self._generation
+            self._emit("starting", {})
+        return self._run_start(generation)
 
-    def _start_locked(self) -> dict:
+    def _run_start(self, generation: int) -> dict:
+        try:
+            self._start_locked(generation)
+        finally:
+            with self._condition:
+                self._start_in_progress = False
+                self._arm_idle_timer()
+                self._emit("lifecycle_changed", {})
+                self._condition.notify_all()
+            self._finish_stop()
+        return self.snapshot()
+
+    def _start_current(self, generation: int) -> bool:
+        return generation == self._generation and not self._stopping and not self._shutdown
+
+    def _start_locked(self, generation: int) -> None:
         self.reconcile_process()
-        state = self._state()
-        process = (state.get("managed") or {}).get("process")
-        pid = process.get("pid") if process else None
-        owned = bool(pid and int(pid) in self._procs)
-        matched = bool(pid and process_matches_identity(int(pid), process))
-        if process and pid and (owned or matched):
-            if process.get("healthy"):
-                return self.snapshot()
-            self.stop()
+        with self._lock:
+            if self._stopping or self._shutdown:
+                return
+            generation = self._generation
             state = self._state()
             process = (state.get("managed") or {}).get("process")
+            if process:
+                if process.get("healthy"):
+                    return
+                self._reserve_stop(restart=True)
+                return
+            if self._active_requests:
+                self._reserve_stop(restart=True)
+                return
         exe, model_path, model_id = self._managed_paths()
         if not exe or not os.path.isfile(exe):
             raise LocalModelError("Install the llama.cpp runtime before starting", code="missing_runtime")
@@ -1299,6 +1522,10 @@ class LocalModelManager:
         ]
         env = os.environ.copy()
         env["MARIONETTE_LOCAL_NONCE"] = nonce
+        with self._lock:
+            if not self._start_current(generation):
+                log_handle.close()
+                return
         try:
             proc = self.popen(
                 argv,
@@ -1325,29 +1552,40 @@ class LocalModelManager:
             "healthy": False,
             "context_length": ctx,
         }
-        self._procs[identity["pid"]] = (proc, log_handle)
-
-        def _store_process(state: dict) -> None:
+        with self._lock:
+            self._procs[identity["pid"]] = (proc, log_handle)
+            state = self._state()
             state["managed"]["process"] = identity
-
-        def _clear_process(state: dict) -> None:
-            state["managed"]["process"] = None
-
-        self._update_state(_store_process)
-        if not self._wait_ready(identity, proc):
-            self._release_spawn(identity["pid"], process=identity)
-            self._update_state(_clear_process)
-            raise LocalModelError("llama-server did not become ready", code="not_ready")
-        identity["healthy"] = True
-        self._update_state(_store_process)
-        self._emit("started", {"port": port, "pid": identity["pid"]})
-        return self.snapshot()
+            self._save(state)
+            if not self._start_current(generation):
+                return
+        try:
+            ready = self._wait_ready(identity, proc)
+        except BaseException:
+            with self._lock:
+                if self._start_current(generation):
+                    self._reserve_stop()
+            raise
+        with self._lock:
+            if not self._start_current(generation):
+                return
+            if not ready:
+                self._reserve_stop()
+                raise LocalModelError("llama-server did not become ready", code="not_ready")
+            identity["healthy"] = True
+            state = self._state()
+            state["managed"]["process"] = identity
+            self._save(state)
+            self._emit("started", {"port": port, "pid": identity["pid"]})
 
     def _wait_ready(self, identity: dict, proc: Any = None) -> bool:
         url = "http://%s:%s/v1" % (identity.get("host") or "127.0.0.1", identity.get("port"))
         alias = str(identity.get("alias") or "")
         deadline = self.clock() + self.ready_timeout
         while self.clock() < deadline:
+            with self._lock:
+                if self._stopping or self._shutdown:
+                    return False
             if proc is not None:
                 poll = getattr(proc, "poll", None)
                 if callable(poll) and poll() is not None:
@@ -1379,120 +1617,155 @@ class LocalModelManager:
         return False
 
     def _release_spawn(self, pid: int, process: Optional[dict] = None) -> None:
-        handle = self._procs.pop(int(pid), None) if pid else None
-        proc = log_handle = None
+        with self._lock:
+            handle = self._procs.get(int(pid)) if pid else None
         if handle:
             proc, log_handle = handle
-        identity = process or {}
-        if handle:
-            try:
+            poll = getattr(proc, "poll", None)
+            if not callable(poll) or poll() is None:
                 stop_process_tree(int(pid), proc, sleeper=self.sleep)
-            except Exception:
-                pass
-        elif pid and process_matches_identity(int(pid), identity):
             try:
-                stop_process_tree(int(pid), proc, sleeper=self.sleep)
-            except Exception:
-                pass
-        elif proc is not None:
-            try:
-                poll = getattr(proc, "poll", None)
-                if callable(poll) and poll() is None:
-                    proc.kill()
-            except Exception:
-                pass
-        if log_handle is not None:
-            try:
+                proc.wait(timeout=5.0)
+            except Exception as exc:
+                raise LocalModelError("Could not observe managed child exit", code="stop_failed") from exc
+            with self._lock:
+                if self._procs.get(int(pid)) is handle:
+                    self._procs.pop(int(pid))
+            if log_handle is not None:
                 log_handle.close()
-            except Exception:
-                pass
+        elif pid and process_matches_identity(int(pid), process or {}):
+            stop_process_tree(int(pid), None, sleeper=self.sleep)
+            if _pid_alive(int(pid)):
+                raise LocalModelError("Could not observe adopted child exit", code="stop_failed")
 
-    def _close_all_logs(self) -> None:
-        for pid in list(self._procs):
-            handle = self._procs.pop(pid, None)
-            if not handle:
-                continue
-            _proc, log_handle = handle
+    def _check_lifecycle_available(self) -> None:
+        if self._shutdown:
+            raise LocalModelError("Local model manager is shut down", code="shutdown")
+        if self._stopping or self._removing:
+            raise LocalModelError("Managed server is stopping or being removed", code="busy")
+
+    def _reserve_stop(self, *, restart: bool = False) -> None:
+        self._cancel_idle_timer()
+        self._last_release_monotonic = None
+        if not self._stopping:
+            self._idle_stop_pending = False
+            self._stopped_after_idle = False
+            self._generation += 1
+        self._stopping = True
+        self._restart_pending = restart
+        self._stop_error = ""
+        state = self._state()
+        process = state["managed"].get("process")
+        if process:
+            process["healthy"] = False
+            self._save(state)
+        self._condition.notify_all()
+
+    def _finish_stop(self, *, raise_errors: bool = True) -> None:
+        with self._lock:
+            if (not self._stopping or self._stop_in_progress
+                    or self._active_requests or self._start_in_progress):
+                return
+            self._stop_in_progress = True
+            state = self._state()
+            process = state["managed"].get("process") or {}
+            pids = list(self._procs)
+            if process.get("pid") and int(process["pid"]) not in pids:
+                pids.append(int(process["pid"]))
+        try:
+            for pid in pids:
+                self._release_spawn(pid, process=process)
+        except Exception as exc:
+            with self._condition:
+                self._stop_error = str(exc)
+                self._stop_in_progress = False
+                self._restart_pending = False
+                self._condition.notify_all()
+                self._emit("error", {"code": "stop_failed", "error": str(exc)})
+            if raise_errors:
+                raise
+            return
+        with self._condition:
+            state = self._state()
+            state["managed"]["process"] = None
+            self._save(state)
+            self._stopping = False
+            self._stop_in_progress = False
+            self._stop_error = ""
+            self._stopped_after_idle = self._idle_stop_pending
+            self._idle_stop_pending = False
+            self._last_release_monotonic = None
+            restart = self._restart_pending and not self._shutdown
+            self._restart_pending = False
+            if restart:
+                self._start_in_progress = True
+                self._generation += 1
+                generation = self._generation
+            self._condition.notify_all()
+            self._emit("stopped", {})
+        if restart:
             try:
-                log_handle.close()
+                self._run_start(generation)
             except Exception:
-                pass
+                if raise_errors:
+                    raise
 
     def shutdown(self) -> None:
-        """Idempotent stop of the owned process tree (atexit / harness exit)."""
-        with self._lock:
-            if self._shutdown:
-                return
+        with self._condition:
+            if self._request_threads.get(threading.get_ident()):
+                raise LocalModelError("Cannot shut down inside an admitted request", code="busy")
             self._shutdown = True
-            owned_pids = list(self._procs)
-            process = ((load_state(self.root).get("managed") or {}).get("process") or {})
-        if owned_pids:
-            for pid in owned_pids:
-                try:
-                    self._release_spawn(int(pid), process=process)
-                except Exception:
-                    pass
-            try:
-                def _clear_process(state: dict) -> None:
-                    state["managed"]["process"] = None
-                self._update_state(_clear_process)
-            except Exception:
-                pass
-        elif process.get("pid"):
-            try:
-                self.stop()
-            except Exception:
-                pass
-        self._close_all_logs()
+            self._cancel_unlocked("all")
+            self._reserve_stop()
+            self._condition.wait_for(lambda: not self._start_in_progress
+                                     and not self._install_in_progress and not self._removing
+                                     and not self._stop_in_progress and not self._active_requests)
+            if self._stop_error:
+                raise LocalModelError(self._stop_error, code="stop_failed")
+        self._finish_stop()
+        with self._condition:
+            self._condition.wait_for(lambda: not self._stop_in_progress)
+            if self._stop_error:
+                raise LocalModelError(self._stop_error, code="stop_failed")
 
     def stop(self) -> dict:
         with self._lock:
-            return self._stop_unlocked()
-
-    def _stop_unlocked(self) -> dict:
-        state = self._state()
-        process = (state.get("managed") or {}).get("process") or {}
-        pid = process.get("pid")
-        handle = self._procs.get(int(pid)) if pid else None
-        if handle:
-            proc, log_handle = handle
-            self._procs.pop(int(pid), None)
-            try:
-                stop_process_tree(int(pid), proc, sleeper=self.sleep)
-            except Exception:
-                pass
-            if log_handle is not None:
-                try:
-                    log_handle.close()
-                except Exception:
-                    pass
-        elif pid and process_matches_identity(int(pid), process):
-            try:
-                stop_process_tree(int(pid), None, sleeper=self.sleep)
-            except Exception:
-                pass
-        elif pid:
-            self._emit("stale_pid_cleared", {"pid": pid, "reason": "stop_unmatched"})
-            leftover = self._procs.pop(int(pid), None)
-            if leftover:
-                _proc, log_handle = leftover
-                try:
-                    log_handle.close()
-                except Exception:
-                    pass
-        state = self._state()
-        state["managed"]["process"] = None
-        self._save(state)
-        self._emit("stopped", {})
+            if self._removing:
+                raise LocalModelError("Managed removal is running", code="busy")
+            self._reserve_stop()
+        self._finish_stop()
         return self.snapshot()
 
     def restart(self) -> dict:
-        self.stop()
-        return self.start()
+        with self._lock:
+            self._check_lifecycle_available()
+            if self._start_in_progress or self._install_in_progress:
+                raise LocalModelError("Managed lifecycle operation is running", code="busy")
+            self._reserve_stop(restart=True)
+        self._finish_stop()
+        return self.snapshot()
 
     def remove(self, target: str = "all", endpoint_id: str = "") -> dict:
         with self._lock:
-            return self._remove_unlocked(target, endpoint_id)
+            if endpoint_id:
+                return self._remove_unlocked(target, endpoint_id)
+            self._check_lifecycle_available()
+            if self._start_in_progress or self._install_in_progress or self._active_requests:
+                raise LocalModelError("Managed lifecycle operation or request is running", code="busy")
+            self._removing = True
+            self._reserve_stop()
+        try:
+            self._finish_stop()
+            with self._lock:
+                if self._stop_error:
+                    raise LocalModelError(self._stop_error, code="stop_failed")
+                if self._stopping or self._stop_in_progress:
+                    raise LocalModelError("Managed server is still stopping", code="busy")
+                return self._remove_unlocked(target, endpoint_id)
+        finally:
+            with self._condition:
+                self._removing = False
+                self._condition.notify_all()
 
     def _remove_unlocked(self, target: str = "all", endpoint_id: str = "") -> dict:
         if endpoint_id:
@@ -1511,7 +1784,6 @@ class LocalModelManager:
             self._emit("removed", {"endpoint_id": endpoint_id})
             return self.snapshot()
         if target in ("runtime", "all"):
-            self.stop()
             shutil.rmtree(self.runtime_dir(), ignore_errors=True)
             self._set_component("runtime", status="absent", path="", sha256="", error=None)
         if target in ("model", "all"):
@@ -1813,7 +2085,18 @@ class LocalModelManager:
             pass
 
     def resolve_spec(self, spec: str) -> Optional[dict]:
-        return resolve_local_endpoint(self.reconcile_process(), spec)
+        parsed = parse_local_spec(spec)
+        if parsed and parsed[0] == MANAGED_ENDPOINT_ID:
+            self.reconcile_process()
+        with self._lock:
+            state = self._state()
+            if parsed and parsed[0] == MANAGED_ENDPOINT_ID and (self._stopping or self._shutdown):
+                return None
+            resolved = resolve_local_endpoint(state, spec)
+            if resolved and parsed and parsed[0] == MANAGED_ENDPOINT_ID:
+                process = state["managed"].get("process") or {}
+                resolved["managed_owned"] = process.get("pid") in self._procs
+            return resolved
 
     def usable_specs(self) -> list:
         return usable_local_specs(self.reconcile_process(), self.catalog)
@@ -1957,29 +2240,36 @@ def _atexit_shutdown() -> None:
 def get_manager() -> LocalModelManager:
     global _MANAGER, _ATEXIT_REGISTERED
     root = state_root()
-    with _MANAGER_LOCK:
-        if _MANAGER is None or os.path.normcase(_MANAGER.root) != os.path.normcase(root):
-            if _MANAGER is not None:
-                try:
-                    _MANAGER.shutdown()
-                except Exception:
-                    pass
-            _MANAGER = LocalModelManager(root=root)
-            if not _ATEXIT_REGISTERED:
-                atexit.register(_atexit_shutdown)
-                _ATEXIT_REGISTERED = True
-        return _MANAGER
+    while True:
+        with _MANAGER_LOCK:
+            previous = _MANAGER
+            if previous is None:
+                _MANAGER = LocalModelManager(root=root)
+                if not _ATEXIT_REGISTERED:
+                    atexit.register(_atexit_shutdown)
+                    _ATEXIT_REGISTERED = True
+                return _MANAGER
+            if os.path.normcase(previous.root) == os.path.normcase(root):
+                return previous
+        # Draining callbacks may themselves look up the current manager.
+        previous.shutdown()
+        with _MANAGER_LOCK:
+            if _MANAGER is previous:
+                _MANAGER = None
 
 
 def reset_manager_for_tests() -> None:
     global _MANAGER
     with _MANAGER_LOCK:
-        if _MANAGER is not None:
-            try:
-                _MANAGER.shutdown()
-            except Exception:
-                pass
-        _MANAGER = None
+        previous = _MANAGER
+    if previous is not None:
+        try:
+            previous.shutdown()
+        except Exception:
+            pass
+    with _MANAGER_LOCK:
+        if _MANAGER is previous:
+            _MANAGER = None
 
 
 def local_provider_available() -> bool:
