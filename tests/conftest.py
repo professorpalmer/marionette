@@ -103,8 +103,10 @@ def force_throwaway_harness_state_dir() -> str:
     """Ensure ``HARNESS_STATE_DIR`` is a process-unique throwaway state root.
 
     Forces a fresh temp dir when the env var is unset/blank OR resolves under
-    the real ``~/.pmharness`` tree. Never uses ``setdefault`` — a contaminated
-    live value must be overwritten, not preserved.
+    the real ``~/.pmharness`` tree. Xdist workers receive separate children of
+    the controller's throwaway root so collection-time SQLite setup cannot
+    contend across processes. Never uses ``setdefault`` — a contaminated live
+    value must be overwritten, not preserved.
     """
     live_root = os.path.expanduser("~/.pmharness")
     current = (os.environ.get("HARNESS_STATE_DIR") or "").strip()
@@ -113,6 +115,13 @@ def force_throwaway_harness_state_dir() -> str:
         os.environ["HARNESS_STATE_DIR"] = tempfile.mkdtemp(
             prefix="pmharness-test-state-"
         )
+    worker_id = (os.environ.get("PYTEST_XDIST_WORKER") or "").strip()
+    if worker_id:
+        current = os.environ["HARNESS_STATE_DIR"]
+        if Path(current).name != worker_id:
+            worker_root = Path(current) / worker_id
+            worker_root.mkdir(parents=True, exist_ok=True)
+            os.environ["HARNESS_STATE_DIR"] = str(worker_root)
     return os.environ["HARNESS_STATE_DIR"]
 
 

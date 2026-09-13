@@ -609,7 +609,24 @@ def test_force_throwaway_harness_state_dir_preserves_non_live_preset(
     preset = tmp_path / "explicit-state"
     preset.mkdir()
     monkeypatch.setenv("HARNESS_STATE_DIR", str(preset))
+    monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
     assert force_throwaway_harness_state_dir() == str(preset)
+
+
+def test_force_throwaway_harness_state_dir_scopes_xdist_worker(
+    monkeypatch, tmp_path
+):
+    from conftest import force_throwaway_harness_state_dir
+
+    preset = tmp_path / "controller-state"
+    preset.mkdir()
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(preset))
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw2")
+
+    effective = force_throwaway_harness_state_dir()
+
+    assert effective == str(preset / "gw2")
+    assert os.path.isdir(effective)
 
 
 def test_tmp_path_session_store_persists_under_pytest(tmp_path):
