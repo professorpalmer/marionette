@@ -218,27 +218,6 @@ describe("composer-family chrome", () => {
     expect(rail.queryByText(/observed jobs/)).toBeNull();
   });
 
-  it("mounts saved input receipts in the composer dock", () => {
-    renderDock({
-      receipts: [{
-        id: "receipt",
-        original_text: "can u pick back up?",
-        attachments: [],
-        model: "stamped",
-        payload_digest: "payload",
-        created_at: 1,
-        status: "injected",
-        reason: "recorded",
-        held: false,
-      }],
-      onCopyReceipt: () => {},
-    });
-    expect(screen.getByText("Saved inputs · 1")).toBeTruthy();
-    expect(screen.getByText(/Originals remain available/)).toBeTruthy();
-    expect(screen.getByText(/Recorded in conversation/)).toBeTruthy();
-    expect(screen.getAllByText(/can u pick back up/)).toHaveLength(2);
-  });
-
   it("renders a nested session TODO tree on the activity rail", () => {
     publishSessionTodos({
       phases: [

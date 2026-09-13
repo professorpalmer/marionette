@@ -1,4 +1,3 @@
-import InputReceipts from "./InputReceipts";
 /**
  * Bottom composer dock: wiki/memory notices, queues, autocomplete, textarea.
  * State and send/stop wiring stay owned by Conversation.tsx.
@@ -7,7 +6,7 @@ import InputReceipts from "./InputReceipts";
 import { ImageResource } from "./ImageResource";
 import { imagePath } from "../../lib/transport";
 import QueueRecoveryNotice from "./QueueRecoveryNotice";
-import type { InputReceipt, InputDocument, QueueRecovery } from "../../lib/api";
+import type { InputDocument, QueueRecovery } from "../../lib/api";
 import type { RefObject } from "react";
 import {
   ChevronDown,
@@ -78,8 +77,6 @@ export default function ComposerDock({
   swarmLiveJobs = [],
   sessionId = "",
   queueLoadError,
-  receipts = [],
-  onCopyReceipt,
   attachedDocuments = [],
   onRemoveDocument,
   queueRecovery = [],
@@ -177,8 +174,6 @@ export default function ComposerDock({
   swarmLiveJobs?: Job[];
   sessionId?: string;
   queueLoadError?: string | null;
-  receipts?: InputReceipt[];
-  onCopyReceipt?: (receipt: InputReceipt) => void;
   attachedDocuments?: InputDocument[];
   onRemoveDocument?: (index: number) => void;
   queueRecovery?: QueueRecovery[];
@@ -532,7 +527,6 @@ export default function ComposerDock({
         {/* Server-side PROMPT QUEUE, stacked ABOVE the composer (Cursor-style)
             so the "runs next" items are always visible right over the input.
             These prompts are drained by the backend one full turn at a time. */}
-        {onCopyReceipt && <InputReceipts receipts={receipts} onCopy={onCopyReceipt} sessionId={sessionId} />}
         <QueueRecoveryNotice entries={queueRecovery} onCopy={onCopyQueueRecovery} />
         {queueItems.length > 0 && (
           <div className="mb-2 space-y-1">

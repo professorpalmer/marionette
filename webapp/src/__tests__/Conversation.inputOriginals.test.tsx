@@ -40,12 +40,6 @@ async function send() {
   await waitFor(() => expect(screen.getByRole('button', { name: 'Send', exact: true })).toBeEnabled());
   fireEvent.click(screen.getByRole('button', { name: 'Send', exact: true }));
 }
-async function copy() {
-  const summary = await screen.findByText(/Saved inputs/);
-  fireEvent.click(summary);
-  fireEvent.click(await screen.findByText(/Delivery uncertain.*held for review/));
-  fireEvent.click(await screen.findByRole('button', { name: 'Copy original to draft' }));
-}
 function streamMock() {
   let event: Parameters<typeof api.chat>[1] = () => {};
   let done: () => void = () => {};
@@ -65,34 +59,18 @@ function streamMock() {
   };
 }
 
-it('shows held originals after reload and copies exact text, images and documents locally without draining', async () => {
-  const handoff = vi.spyOn(api, 'queueHandoff');
-  const save = vi.spyOn(api, 'queueAdd').mockRejectedValue(new Error('keep draft'));
-  const stream = streamMock();
-  const { input } = await mount([], [original]);
-  expect(await screen.findByText(/Saved inputs/)).toBeTruthy();
-  fireEvent.change(input, { target: { value: 'existing' } });
-  await copy();
-  expect(input).toHaveValue('existing\n\n' + original.original_text);
-  expect(screen.getByRole('button', { name: 'Remove document notes.txt' })).toBeTruthy();
-  expect(screen.getAllByAltText('photo.png')).toHaveLength(2);
-  expect(handoff).not.toHaveBeenCalled(); expect(stream.chat).not.toHaveBeenCalled(); expect(save).not.toHaveBeenCalled();
-  queue();
-  await waitFor(() => expect(save).toHaveBeenCalledWith('existing\n\n' + original.original_text, ['input:A:image'], 'A', {
-    documents: [{ ref: 'input:A:document', name: 'notes.txt' }], retry_key: expect.any(String), original_text: 'existing\n\n' + original.original_text,
-  }));
-  expect(input).toHaveValue('existing\n\n' + original.original_text);
+it('does not surface saved input receipts in the composer', async () => {
+  await mount([], [original]);
+  expect(screen.queryByText(/Saved inputs/)).toBeNull();
 });
 
 it('refuses image overflow before changing the draft or removing a queued original', async () => {
-  const many = { ...original, attachments: Array.from({ length: 8 }, (_, i) => ({ ...original.attachments[0], ref: `input:A:${i}` })) };
+  const many = { ...original, attachments: Array.from({ length: 9 }, (_, i) => ({ ...original.attachments[0], ref: `input:A:${i}` })) };
   const remove = vi.spyOn(api, 'queueRemove');
   const { input } = await mount([{ id: original.id, text: 'converted' }], [many]);
-  await copy();
-  const before = original.original_text;
   fireEvent.click(screen.getByRole('button', { name: 'Edit queued prompt 1: converted' }));
   expect(screen.getByText(/Maximum 8 images per message/)).toBeTruthy();
-  expect(input).toHaveValue(before); expect(remove).not.toHaveBeenCalled();
+  expect(input).toHaveValue(''); expect(remove).not.toHaveBeenCalled();
 });
 
 it('queue edit keeps the receipt original, retained attachments and existing draft on removal failure', async () => {
@@ -120,36 +98,12 @@ it('keeps an uncertain submission retry key and gives changed payloads a new ide
   expect(save.mock.calls[0][0]).toBe('  exact\ntext  ');
 });
 
-it('normal send retains text and attachments until explicit admission, preserving newer edits', async () => {
-  const stream = streamMock();
-  const { input } = await mount([], [original]);
-  await copy(); await send();
-  expect(stream.chat.mock.calls[0][0]).toBe(original.original_text);
-  expect(stream.chat.mock.calls[0][5]).toEqual(['input:A:image']);
-  expect(stream.chat.mock.calls[0][6]?.documents).toEqual([{ ref: 'input:A:document', name: 'notes.txt' }]);
-  expect(input).toHaveValue(original.original_text);
-  fireEvent.change(input, { target: { value: 'new draft' } });
-  await stream.accept();
-  expect(input).toHaveValue('new draft');
-  expect(screen.queryByRole('button', { name: 'Remove document notes.txt' })).toBeNull();
-});
-
 it('unaccepted stream failure retains the exact draft and key for explicit retry', async () => {
   const stream = streamMock(); const { input } = await mount();
   fireEvent.change(input, { target: { value: '  retry me  ' } }); await send();
   const first = stream.chat.mock.calls[0][6]?.retry_key;
   await stream.fail(); expect(input).toHaveValue('  retry me  ');
   await send(); expect(stream.chat.mock.calls[1][6]?.retry_key).toBe(first);
-});
-
-it('restores A attachments after a switch and ignores late A acceptance in B', async () => {
-  const stream = streamMock(); const { input, switchTo } = await mount([], [original]);
-  await copy(); await send(); await switchTo('B');
-  fireEvent.change(input, { target: { value: 'B draft' } }); await stream.accept();
-  expect(input).toHaveValue('B draft');
-  expect(screen.queryByRole('button', { name: 'Remove document notes.txt' })).toBeNull();
-  await switchTo('A'); expect(input).toHaveValue(original.original_text);
-  expect(screen.getByRole('button', { name: 'Remove document notes.txt' })).toBeTruthy();
 });
 
 it('swaps the stamped model before handing off and passes the exact one-use identity to chat', async () => {
@@ -209,21 +163,6 @@ it('does not let a late queue admission clear an A draft after A-B-A switching',
   await act(async () => complete()); expect(input).toHaveValue('A original');
 });
 
-it('busy steer sends exact originals and documents, retaining them when admission fails', async () => {
-  const stream = streamMock();
-  const steer = vi.spyOn(api, 'steerSession').mockRejectedValue(new Error('input admission refused'));
-  const { input } = await mount([], [original]);
-  fireEvent.change(input, { target: { value: 'start turn' } }); await send(); await stream.accept();
-  await copy();
-  fireEvent.keyDown(input, { key: 'Enter', altKey: true });
-  await waitFor(() => expect(steer).toHaveBeenCalled());
-  expect(steer.mock.calls[0][0]).toBe(original.original_text);
-  expect(steer.mock.calls[0][1]).toEqual(['input:A:image']);
-  expect(steer.mock.calls[0][3]).toMatchObject({ sessionId: 'A', documents: [{ ref: 'input:A:document', name: 'notes.txt' }], retry_key: expect.any(String) });
-  expect(input).toHaveValue(original.original_text);
-  expect(screen.getByRole('button', { name: 'Remove document notes.txt' })).toBeTruthy();
-});
-
 it('an uncertain handoff is never requested again automatically after another turn finishes', async () => {
   const handoff = vi.spyOn(api, 'queueHandoff').mockRejectedValue(new Error('handoff response lost'));
   const stream = streamMock(); const { input } = await mount([{ id: 'next', text: 'queued' }]);
@@ -278,21 +217,6 @@ it('queues literal tokens and changes retry identity when either representation 
   queue(); await waitFor(() => expect(save).toHaveBeenCalledTimes(4));
   expect(save.mock.calls[3][0]).toBe(save.mock.calls[2][0]);
   expect(save.mock.calls[3][3]?.retry_key).not.toBe(save.mock.calls[2][3]?.retry_key);
-});
-
-it('sends literal terminal draft separately and Copy never expands or submits it', async () => {
-  const stream = streamMock();
-  const raw = '  inspect @terminal:"zsh:1"\n\t';
-  const receipt = { ...original, original_text: raw, delivery_text: 'old frozen output' };
-  const { input } = await mount([], [receipt]);
-  putTerminalSelection('A', 'zsh:1', 'current output');
-  await copy();
-  expect(input).toHaveValue(raw);
-  expect(stream.chat).not.toHaveBeenCalled();
-  await send();
-  expect(stream.chat.mock.calls[0][0]).toBe('  inspect ```terminal\ncurrent output\n```\n\t');
-  expect(stream.chat.mock.calls[0][6]?.original_text).toBe(raw);
-  expect(stream.chat.mock.calls[0][6]?.documents).toEqual([{ ref: 'input:A:document', name: 'notes.txt' }]);
 });
 
 it('busy steer carries the literal draft and the current frozen terminal expansion', async () => {
