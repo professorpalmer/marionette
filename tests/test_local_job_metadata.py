@@ -233,6 +233,21 @@ def test_retained_history_and_classifications(tmp_path):
     assert kinds == {'run_command', 'run_command_batch', 'parallel_wave', 'provider'}
 
 
+def test_colon_identity_does_not_poison_retained_roster(tmp_path):
+    runner = Runner(tmp_path)
+    seed(runner, 3)
+    index = runner.local_metadata_handle()
+    runner._local_jobs['local-swarm-run_swarm:3'] = dict(
+        row('local-swarm-run_swarm:3'), job_kind='', role='explore',
+    )
+    assert index.describe()['available'] is True
+    page = index.read_page(ctx())
+    assert page['page']['outcome'] == 'complete'
+    ids = [r['local_ref']['job_id'] for r in page['rows']]
+    assert 'local-0000' in ids
+    assert 'local-swarm-run_swarm:3' not in ids
+
+
 def test_invalid_and_missing_index_not_empty(tmp_path):
     runner = Runner(tmp_path)
     index = runner.local_metadata_handle()

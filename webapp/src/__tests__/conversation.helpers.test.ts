@@ -1812,6 +1812,20 @@ describe("streamApply module", () => {
     expect(next[0]).toMatchObject({ status: "failed", resolved: true });
   });
 
+  it("failSwarmPendingForActionError matches a sanitized colon tool id", () => {
+    const items: Item[] = [
+      {
+        kind: "swarm_pending",
+        job_ids: ["local-swarm-run_swarm_3"],
+        objective: "audit",
+        status: "running",
+        terminal_job_ids: [],
+      },
+    ];
+    const next = failSwarmPendingForActionError(items, "run_swarm:3");
+    expect(next[0]).toMatchObject({ status: "failed", resolved: true });
+  });
+
   it("60 identical swarm_pending replays keep one lifecycle row (scroll-stable)", () => {
     let items: Item[] = [];
     for (let i = 0; i < 60; i++) {

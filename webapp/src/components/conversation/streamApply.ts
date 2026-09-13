@@ -28,6 +28,7 @@ import {
   swarmPendingStatusOf,
   swarmPendingStatusRank,
 } from "./swarmPendingIdentity";
+import { localSwarmJobId } from "../../lib/localJobMetadata";
 import {
   boundActionField,
   isTerminalJobStatus,
@@ -2164,7 +2165,7 @@ export function failSwarmPendingForActionError(
   actionId: string | undefined,
 ): Item[] {
   if (!actionId) return items;
-  const localId = `local-swarm-${actionId}`;
+  const localId = localSwarmJobId(actionId);
   return items.map((item) => {
     if (item.kind !== "swarm_pending" || isSwarmPendingTerminal(item)) return item;
     if (!item.job_ids.includes(localId)) return item;

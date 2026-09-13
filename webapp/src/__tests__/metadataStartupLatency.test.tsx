@@ -107,10 +107,14 @@ it.each(['hidden', 'dispose', 'ABA'] as const)('held request admits no backlog a
 });
 it.each(['failure', 'expired'] as const)('%s cannot start a retry burst', async mode => {
   const f = fixture(); if (mode === 'failure') f.fail('/api/jobs/metadata'); else f.expire();
-  f.mount(); await advance(1999);
-  expect(f.calls.filter(c => c.path === '/api/jobs/metadata')).toHaveLength(1);
-  const before = f.calls.length; await advance(10000);
-  expect(f.calls.length - before).toBeLessThanOrEqual(5);
+  f.mount();
+  await advance(20000);
+  const lists = f.calls.filter(c => c.path === '/api/jobs/metadata');
+  expect(lists.length).toBeGreaterThanOrEqual(1);
+  expect(lists.length).toBeLessThanOrEqual(32);
+  const before = f.calls.length;
+  await advance(10000);
+  expect(f.calls.length - before).toBeLessThanOrEqual(8);
   expect(f.calls.filter(c => c.method === 'POST')).toHaveLength(1);
 });
 

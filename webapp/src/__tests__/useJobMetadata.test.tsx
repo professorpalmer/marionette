@@ -118,6 +118,28 @@ it.each(['same', 'repo', 'session', 'event'])('discards pending A-B-A result for
   wait.resolve(response(list()));
   expect(await first).toBe('discarded'); expect(store.getSnapshot().observations).toEqual([]);
 });
+it('ownerTick keeps initializing remaining primary streams after one unavailable page', async () => {
+  await open();
+  let lists = 0;
+  request.mockImplementation(async (path: string) => {
+    if (path === '/api/endpoint') return response(handshake);
+    if (String(path).endsWith('/view')) return response(view());
+    lists += 1;
+    const url = new URL(path, 'http://fixture');
+    const status = url.searchParams.get('status');
+    if (lists === 1) {
+      return response({
+        ...list([]),
+        page: { outcome: 'unavailable', revision: 0, checkpoint: 0, scanned: 0, next_cursor: null },
+      });
+    }
+    const row = { ...summary(), lifecycle: status ?? 'running' };
+    return response({ ...list([row]), page: { ...list([row]).page, scanned: 1 } });
+  });
+  await store.ownerTick();
+  expect(lists).toBeGreaterThan(1);
+  expect(store.getSnapshot().observations.length).toBeGreaterThan(0);
+});
 it('ownerTick keeps discovering after one invalid metadata page', async () => {
   await open();
   let lists = 0;
