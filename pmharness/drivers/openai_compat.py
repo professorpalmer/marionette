@@ -23,7 +23,10 @@ from .prompt_cache import (
     maybe_attach_openrouter_session_id,
     maybe_attach_opencode_session_header,
 )
-from .retry import with_retry
+from .retry import (
+    with_retry, is_transport_timeout, merge_recovery_response,
+    recovery_response_is_authoritative,
+)
 from pmharness.reasoning import extract_reasoning, strip_think_blocks
 from pmharness.think_scrubber import StreamingThinkScrubber
 from pmharness.stream_snapshot import absorb_stream_snapshot
@@ -62,6 +65,44 @@ def _length_continue_eligible(resp: DriverResponse) -> bool:
     if terminal not in _LENGTH_CHAT_FINISH:
         return False
     return bool((resp.text or "").strip())
+
+
+def _length_attempt_meta(responses: list[DriverResponse], terminal: DriverResponse) -> dict:
+    """Preserve terminal provenance while summing per-request accounting."""
+    meta = dict(terminal.meta or {})
+    source_meta = [response.meta or {} for response in responses]
+    for key in (
+        "cache_read_tokens", "cache_write_tokens",
+        "cache_write_5m_tokens", "cache_write_1h_tokens",
+    ):
+        values = [item.get(key) for item in source_meta]
+        if any(isinstance(value, int) and not isinstance(value, bool) for value in values):
+            meta[key] = sum(
+                value for value in values
+                if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            )
+    costs = [
+        float(item["provider_cost_usd"]) for item in source_meta
+        if isinstance(item.get("provider_cost_usd"), (int, float))
+        and not isinstance(item.get("provider_cost_usd"), bool)
+        and float(item["provider_cost_usd"]) >= 0.0
+    ]
+    if costs:
+        meta["provider_cost_usd"] = sum(costs)
+    ttl_bases = {
+        str(item.get("cache_write_ttl_basis") or "").strip().lower()
+        for item in source_meta if str(item.get("cache_write_ttl_basis") or "").strip()
+    }
+    if ttl_bases:
+        meta["cache_write_ttl_basis"] = next(iter(ttl_bases)) if len(ttl_bases) == 1 else "inferred"
+    performance = {}
+    for item in source_meta:
+        for key, value in (item.get("stream_performance") or {}).items():
+            if isinstance(value, int) and not isinstance(value, bool):
+                performance[key] = performance.get(key, 0) + value
+    if performance:
+        meta["stream_performance"] = performance
+    return meta
 
 
 def _tool_arguments_are_complete(arguments) -> bool:
@@ -577,7 +618,8 @@ class OpenAICompatDriver:
         meta = resp.meta if isinstance(resp.meta, dict) else {}
         stream_terminal = _norm_chat_finish(meta.get("stream_terminal"))
         finish_reason = _norm_chat_finish(meta.get("finish_reason"))
-        if stream_terminal in {"error", "transport_error"}:
+        if (stream_terminal in {"error", "transport_error", "length", "content_filter"}
+                or finish_reason in _LENGTH_CHAT_FINISH | _FILTER_CHAT_FINISH):
             return False
         if meta.get("incomplete_tool_calls"):
             return (
@@ -1120,6 +1162,8 @@ class OpenAICompatDriver:
         tools: list | None = None,
         system: str | None = None,
         session_id: str | None = None,
+        max_attempts: int = 4,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> DriverResponse:
         url = f"{self.base_url}/chat/completions"
         body = self._build_chat_body(
@@ -1127,9 +1171,12 @@ class OpenAICompatDriver:
         )
 
         data = json.dumps(body).encode("utf-8")
+        request_attempts = 0
+        fallback_attempted = False
 
         def _call() -> DriverResponse:
-            nonlocal data
+            nonlocal data, fallback_attempted, request_attempts
+            request_attempts += 1
             headers = {
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {self._key()}",
@@ -1145,54 +1192,56 @@ class OpenAICompatDriver:
                     raw = json.loads(resp.read().decode("utf-8"))
             except urllib.error.HTTPError as e:
                 detail = e.read().decode("utf-8", "replace")[:500]
-                if self._reasoning_unsupported(e.code, detail) and body.get("reasoning") is not None:
+                if (max_attempts > 1 and request_attempts == 1
+                        and self._reasoning_unsupported(e.code, detail)
+                        and body.get("reasoning") is not None):
                     # Drop the unsupported reasoning field for the rest of the
                     # session and retry once so the pilot turn succeeds.
                     self.enable_reasoning = False
                     body.pop("reasoning", None)
                     data = json.dumps(body).encode("utf-8")
+                    if is_cancelled is not None and is_cancelled():
+                        return DriverResponse(
+                            text="", model=self.name,
+                            error="cancelled before provider fallback",
+                            latency_ms=(time.time() - t0) * 1000.0,
+                        )
                     try:
+                        request_attempts += 1
+                        fallback_attempted = True
                         req = http_request(self, url, data=data, headers=headers, method="POST")
                         with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                             raw = json.loads(resp.read().decode("utf-8"))
                     except urllib.error.HTTPError as e2:
                         d2 = e2.read().decode("utf-8", "replace")[:500]
-                        nxt = self._pool_rotate_on_http_error(e2.code, d2)
-                        if nxt:
-                            headers["Authorization"] = f"Bearer {self._key()}"
-                            try:
-                                req = http_request(
-                                    self,
-                                    url, data=data, headers=headers, method="POST",
-                                )
-                                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                                    raw = json.loads(resp.read().decode("utf-8"))
-                            except urllib.error.HTTPError as e3:
-                                d3 = e3.read().decode("utf-8", "replace")[:500]
-                                return DriverResponse(
-                                    text="", model=self.name,
-                                    error=f"HTTP {e3.code}: {d3}",
-                                    latency_ms=(time.time() - t0) * 1000.0,
-                                )
-                            except Exception as e3:
-                                return DriverResponse(
-                                    text="", model=self.name, error=repr(e3),
-                                    latency_ms=(time.time() - t0) * 1000.0,
-                                )
-                        else:
-                            return DriverResponse(
-                                text="", model=self.name,
-                                error=f"HTTP {e2.code}: {d2}",
-                                latency_ms=(time.time() - t0) * 1000.0,
-                            )
+                        return DriverResponse(
+                            text="", model=self.name,
+                            error=f"HTTP {e2.code}: {d2}",
+                            latency_ms=(time.time() - t0) * 1000.0,
+                            meta={"recovery_attempted": True,
+                                  "retry_attempts": request_attempts},
+                        )
                     except Exception as e2:
                         return DriverResponse(text="", model=self.name, error=repr(e2),
-                                              latency_ms=(time.time() - t0) * 1000.0)
+                                              latency_ms=(time.time() - t0) * 1000.0,
+                                              meta={"recovery_attempted": True,
+                                                    "retry_attempts": request_attempts})
                 else:
-                    nxt = self._pool_rotate_on_http_error(e.code, detail)
+                    nxt = (
+                        self._pool_rotate_on_http_error(e.code, detail)
+                        if max_attempts > 1 and request_attempts == 1 else None
+                    )
                     if nxt:
                         headers["Authorization"] = f"Bearer {self._key()}"
+                        if is_cancelled is not None and is_cancelled():
+                            return DriverResponse(
+                                text="", model=self.name,
+                                error="cancelled before provider fallback",
+                                latency_ms=(time.time() - t0) * 1000.0,
+                            )
                         try:
+                            request_attempts += 1
+                            fallback_attempted = True
                             req = http_request(
                                 self,
                                 url, data=data, headers=headers, method="POST",
@@ -1205,11 +1254,15 @@ class OpenAICompatDriver:
                                 text="", model=self.name,
                                 error=f"HTTP {e2.code}: {d2}",
                                 latency_ms=(time.time() - t0) * 1000.0,
+                                meta={"recovery_attempted": True,
+                                      "retry_attempts": request_attempts},
                             )
                         except Exception as e2:
                             return DriverResponse(
                                 text="", model=self.name, error=repr(e2),
                                 latency_ms=(time.time() - t0) * 1000.0,
+                                meta={"recovery_attempted": True,
+                                      "retry_attempts": request_attempts},
                             )
                     else:
                         return DriverResponse(
@@ -1291,7 +1344,16 @@ class OpenAICompatDriver:
                 meta=meta,
             )
 
-        return with_retry(_call)
+        result = with_retry(
+            _call, max_attempts=max_attempts, is_cancelled=is_cancelled,
+        )
+        result.meta = dict(result.meta or {})
+        result.meta["retry_attempts"] = max(
+            request_attempts, int(result.meta.get("retry_attempts", 0) or 0),
+        )
+        if fallback_attempted:
+            result.meta["recovery_attempted"] = True
+        return result
 
     def chat_stream(
         self,
@@ -1303,10 +1365,21 @@ class OpenAICompatDriver:
         session_id: str | None = None,
         on_reasoning_delta: Callable[[str], None] | None = None,
         on_tool_hint: Callable[[str], None] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> DriverResponse:
         url = f"{self.base_url}/chat/completions"
         body: dict = {}
         data = b""
+        stream_request_attempts = 0
+
+        def _mark_http_fallback(response: DriverResponse) -> DriverResponse:
+            response.meta = dict(response.meta or {})
+            nested_attempts = response.meta.get("retry_attempts", 1)
+            if not isinstance(nested_attempts, int) or isinstance(nested_attempts, bool):
+                nested_attempts = 1
+            response.meta["retry_attempts"] = stream_request_attempts + nested_attempts
+            response.meta["recovery_attempted"] = True
+            return response
 
         def _response_from_acc(
             acc: _OpenAIChatSseAccumulator,
@@ -1349,6 +1422,8 @@ class OpenAICompatDriver:
             )
 
         def _call() -> DriverResponse:
+            nonlocal stream_request_attempts
+            stream_request_attempts += 1
             headers = {
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {self._key()}",
@@ -1365,6 +1440,8 @@ class OpenAICompatDriver:
             )
 
             req = http_request(self, url, data=data, headers=headers, method="POST")
+            local_cutoff = ""
+            idle_armed = False
             try:
                 from pmharness.drivers.codex_responses import (
                     _arm_post_answer_idle_timeout,
@@ -1373,11 +1450,10 @@ class OpenAICompatDriver:
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     idle_armed = False
                     keepalives = 0
-                    # OpenCode Go / llama.cpp keepalives reset a long urlopen
-                    # timeout. OpenRouter DeepSeek pauses between reasoning
-                    # and the visible summary -- do not cut that stream.
+                    # Go can pause between reasoning and its real terminal.
+                    # Only local llama.cpp keeps the short post-answer cutoff.
                     arm_go_idle = (
-                        self._is_opencode_go_host() or self._is_llama_cpp_host()
+                        self._is_llama_cpp_host()
                     )
                     for line in resp:
                         if not acc.feed(line):
@@ -1394,102 +1470,123 @@ class OpenAICompatDriver:
                         if not raw or not raw.startswith("data:"):
                             keepalives += 1
                             if keepalives >= 8:
+                                local_cutoff = "local_keepalive_cutoff_count"
                                 break
                             continue
                         keepalives = 0
-                        idle_armed = True
-                        _arm_post_answer_idle_timeout(resp, 2.0)
+                        idle_armed = _arm_post_answer_idle_timeout(resp, 2.0) or idle_armed
             except urllib.error.HTTPError as e:
                 detail = e.read().decode("utf-8", "replace")[:500]
                 # Endpoint rejected the `reasoning` field: disable it for the
                 # session and fall back to the non-streaming chat() (which shares
                 # the retry path) so the turn still succeeds. Only safe before any
                 # tokens streamed -- otherwise a partial stream would double-emit.
-                if (not acc.stream_started and self._reasoning_unsupported(e.code, detail)
+                if (stream_request_attempts == 1 and not acc.stream_started
+                        and self._reasoning_unsupported(e.code, detail)
                         and body.get("reasoning") is not None):
                     self.enable_reasoning = False
-                    return self.chat(
+                    return _mark_http_fallback(self.chat(
                         messages, tools=tools, system=system, session_id=session_id,
-                    )
+                        max_attempts=1,
+                        is_cancelled=is_cancelled,
+                    ))
                 # Muse/OpenCode Go sometimes 400s a stream with an empty
                 # chat.completion stub and no error text. Retry once via
                 # non-streaming chat() (drops stream-only fields) before any
                 # content/reasoning/tool delta. Never after stream activity;
                 # never for an actionable 400; never via chat_stream.
-                if not acc.stream_started and self._is_empty_chat_completion_400_stub(
-                    e.code, detail,
-                ):
-                    return self.chat(
+                if (stream_request_attempts == 1 and not acc.stream_started
+                        and self._is_empty_chat_completion_400_stub(e.code, detail)):
+                    return _mark_http_fallback(self.chat(
                         messages, tools=tools, system=system, session_id=session_id,
-                    )
+                        max_attempts=1,
+                        is_cancelled=is_cancelled,
+                    ))
                 # Pool rotate only before any tokens streamed (same safety rule).
-                if not acc.stream_started:
+                if stream_request_attempts == 1 and not acc.stream_started:
                     nxt = self._pool_rotate_on_http_error(e.code, detail)
                     if nxt:
-                        return self.chat_stream(
-                            messages,
-                            tools=tools,
-                            system=system,
-                            on_delta=on_delta,
-                            session_id=session_id,
-                            on_reasoning_delta=on_reasoning_delta,
-                            on_tool_hint=on_tool_hint,
-                        )
+                        return _mark_http_fallback(self.chat(
+                            messages, tools=tools, system=system,
+                            session_id=session_id, max_attempts=1,
+                            is_cancelled=is_cancelled,
+                        ))
                 return _response_from_acc(
                     acc, t0=t0, transport_error=f"HTTP {e.code}: {detail}",
                 )
             except Exception as e:
-                return _response_from_acc(acc, t0=t0, transport_error=repr(e))
+                result = _response_from_acc(acc, t0=t0, transport_error=repr(e))
+                if idle_armed and isinstance(e, TimeoutError):
+                    result.meta["stream_performance"] = {"local_idle_cutoff_count": 1}
+                return result
 
-            return _response_from_acc(acc, t0=t0)
+            result = _response_from_acc(acc, t0=t0)
+            if local_cutoff:
+                result.meta["stream_performance"] = {local_cutoff: 1}
+            return result
 
         def _one_stream(msgs: list) -> DriverResponse:
-            nonlocal body, data, messages
+            nonlocal body, data, messages, stream_request_attempts
             messages = msgs
+            stream_request_attempts = 0
             body = self._build_chat_body(
                 msgs, tools=tools, system=system, session_id=session_id, stream=True,
             )
             data = json.dumps(body).encode("utf-8")
-            return with_retry(_call)
+            return with_retry(_call, is_cancelled=is_cancelled)
 
-        first = _one_stream(list(messages))
-        if self._incomplete_tool_retry_eligible(first, tools=tools):
+        def _recover_one_stream(
+            first_response: DriverResponse, request_messages: list,
+        ) -> tuple[DriverResponse, bool]:
+            first_meta = first_response.meta or {}
+            if (first_meta.get("recovery_attempted")
+                    or first_meta.get("incomplete_retry_attempted")):
+                return first_response, False
+            tool_retry = self._incomplete_tool_retry_eligible(
+                first_response, tools=tools,
+            )
+            missing_terminal = (
+                self._is_opencode_go_host()
+                and first_meta.get("stream_terminal") in {"incomplete", "empty"}
+                and not first_meta.get("finish_reason")
+                and not first_meta.get("tool_calls")
+                and not first_meta.get("incomplete_tool_calls")
+                and bool(first_response.text or first_meta.get("reasoning"))
+            )
+            if not (tool_retry or missing_terminal or is_transport_timeout(first_response)):
+                return first_response, False
+            if is_cancelled and is_cancelled():
+                return first_response, False
             retry = self.chat(
-                messages,
-                tools=tools,
-                system=system,
-                session_id=session_id,
+                request_messages, tools=tools, system=system, session_id=session_id,
+                max_attempts=1,
+                is_cancelled=is_cancelled,
             )
-            first_meta = dict(first.meta or {})
-            first_meta["incomplete_retry_attempted"] = True
-            recovered_tool_calls = (
+            retry_meta = retry.meta or {}
+            recovered = (
                 retry.error is None
-                and isinstance(retry.meta, dict)
-                and bool(retry.meta.get("tool_calls"))
+                and not retry_meta.get("incomplete_tool_calls")
+                and retry_meta.get("stream_terminal") in {"stop", "tool_calls"}
+                and (not tool_retry or bool(retry_meta.get("tool_calls")))
+            ) if tool_retry else not retry.error
+            authoritative = (
+                recovered or recovery_response_is_authoritative(retry)
+                if tool_retry else recovery_response_is_authoritative(retry)
             )
-            first_meta["incomplete_retry_recovered"] = recovered_tool_calls
-            if recovered_tool_calls:
-                retry_meta = dict(retry.meta or {})
-                retry_meta["incomplete_retry_attempted"] = True
-                retry_meta["incomplete_retry_recovered"] = True
-                return DriverResponse(
-                    text="" if first.text else retry.text,
-                    tokens_in=first.tokens_in + retry.tokens_in,
-                    tokens_out=first.tokens_out + retry.tokens_out,
-                    latency_ms=first.latency_ms + retry.latency_ms,
-                    model=retry.model or first.model,
-                    error=None,
-                    meta=retry_meta,
-                )
-            return DriverResponse(
-                text=first.text,
-                tokens_in=first.tokens_in,
-                tokens_out=first.tokens_out,
-                latency_ms=first.latency_ms,
-                model=first.model,
-                error=first.error,
-                meta=first_meta,
+            result = merge_recovery_response(
+                first_response, retry,
+                recovered=recovered, prefer_retry=authoritative,
             )
+            if tool_retry:
+                result.meta["incomplete_retry_attempted"] = True
+                result.meta["incomplete_retry_recovered"] = recovered
+                if recovered and first_response.text:
+                    result.text = ""
+            return result, tool_retry
+
+        first, tool_retry = _recover_one_stream(_one_stream(list(messages)), list(messages))
+        if tool_retry:
+            return first
         if not _length_continue_eligible(first):
             return first
 
@@ -1497,49 +1594,82 @@ class OpenAICompatDriver:
         tin = first.tokens_in
         tout = first.tokens_out
         last = first
+        attempts = [first]
+        latency = first.latency_ms
         working = list(messages)
         for attempt in range(_OPENAI_MAX_LENGTH_CONTINUES):
-            working = list(working)
-            working.append({"role": "assistant", "content": last.text})
-            working.append({"role": "user", "content": _OPENAI_LENGTH_CONTINUE})
-            nxt = _one_stream(working)
-            tin += nxt.tokens_in
-            tout += nxt.tokens_out
-            if (nxt.meta or {}).get("incomplete_tool_calls"):
-                return nxt
-            if nxt.error and not _length_continue_eligible(nxt):
-                meta = dict(first.meta or {})
+            if is_cancelled is not None and is_cancelled():
+                meta = _length_attempt_meta(attempts, last)
                 meta["length_continues"] = attempt
                 return DriverResponse(
                     text="".join(parts),
                     tokens_in=tin,
                     tokens_out=tout,
-                    latency_ms=first.latency_ms + nxt.latency_ms,
+                    latency_ms=latency,
                     model=self.name,
-                    error=first.error,
+                    error=last.error,
                     meta=meta,
                 )
+            working = list(working)
+            working.append({"role": "assistant", "content": last.text})
+            working.append({"role": "user", "content": _OPENAI_LENGTH_CONTINUE})
+            prior = last
+            nxt, tool_retry = _recover_one_stream(_one_stream(working), working)
+            attempts.append(nxt)
+            tin += nxt.tokens_in
+            tout += nxt.tokens_out
+            latency += nxt.latency_ms
             parts.append(nxt.text or "")
             last = nxt
+            if tool_retry:
+                meta = _length_attempt_meta(attempts, nxt)
+                meta["length_continues"] = attempt + 1
+                return DriverResponse(
+                    text="".join(parts), tokens_in=tin, tokens_out=tout,
+                    latency_ms=latency, model=self.name, error=nxt.error,
+                    meta=meta,
+                )
+            if (nxt.meta or {}).get("incomplete_tool_calls"):
+                return DriverResponse(
+                    text="".join(parts), tokens_in=tin, tokens_out=tout,
+                    latency_ms=latency, model=self.name, error=nxt.error,
+                    meta=_length_attempt_meta(attempts, nxt),
+                )
+            if nxt.error and not _length_continue_eligible(nxt):
+                authoritative = recovery_response_is_authoritative(nxt)
+                terminal = nxt if authoritative else prior
+                meta = _length_attempt_meta(attempts, terminal)
+                meta["length_continues"] = attempt
+                if not authoritative:
+                    meta["continuation_error"] = nxt.error
+                return DriverResponse(
+                    text="".join(parts),
+                    tokens_in=tin,
+                    tokens_out=tout,
+                    latency_ms=latency,
+                    model=self.name,
+                    error=terminal.error,
+                    meta=meta,
+                )
             if not _length_continue_eligible(nxt):
-                meta = dict(nxt.meta or {})
+                meta = _length_attempt_meta(attempts, nxt)
                 meta["length_continues"] = attempt + 1
                 return DriverResponse(
                     text="".join(parts),
                     tokens_in=tin,
                     tokens_out=tout,
-                    latency_ms=first.latency_ms + nxt.latency_ms,
+                    latency_ms=latency,
                     model=self.name,
                     error=nxt.error,
                     meta=meta,
                 )
-        meta = dict(first.meta or {})
+        meta = _length_attempt_meta(attempts, last)
         meta["length_continues"] = _OPENAI_MAX_LENGTH_CONTINUES
         return DriverResponse(
             text="".join(parts),
             tokens_in=tin,
             tokens_out=tout,
-            latency_ms=first.latency_ms,
+            latency_ms=latency,
             model=self.name,
             error=(
                 "response remained incomplete after "

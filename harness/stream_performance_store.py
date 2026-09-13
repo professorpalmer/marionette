@@ -65,8 +65,12 @@ _MAX_JSON_DEPTH = 8
 _MAX_NONNEG_INT = 1_000_000_000
 _THROUGHPUT_BASIS_ALLOWED = frozenset({THROUGHPUT_BASIS})
 
+_PERF_COUNT_KEYS = frozenset({
+    "content_delta_count", "recovery_attempt_count", "recovery_success_count",
+    "recovery_failure_count", "local_idle_cutoff_count", "local_keepalive_cutoff_count",
+})
 _KNOWN_PERF_KEYS = frozenset({
-    "content_delta_count",
+    *_PERF_COUNT_KEYS,
     FIRST_CONTENT_CALLBACK_MS,
     FIRST_ANSWER_CALLBACK_MS,
     FIRST_VISIBLE_ANSWER_MS,
@@ -447,7 +451,7 @@ def copy_stream_performance(raw: Any) -> Dict[str, Any]:
         value = raw[key]
         if isinstance(value, (dict, list, tuple, set)):
             continue
-        if key == "content_delta_count":
+        if key in _PERF_COUNT_KEYS:
             number = _bounded_nonneg_int(value)
             if number is None:
                 continue

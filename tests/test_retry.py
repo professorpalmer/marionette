@@ -85,3 +85,63 @@ def test_with_retry_gives_up_after_max_attempts():
     assert resp.error == "HTTP 503: overloaded"
     assert resp.meta.get("retry_attempts") == 3
     assert resp.meta.get("error_class") == "retryable"
+
+
+def test_timeout_retry_preserves_explicit_length_terminal():
+    responses = iter([
+        DriverResponse(text="", error="TimeoutError(read timed out)"),
+        DriverResponse(
+            text="Part one",
+            error="OpenAI chat finished with finish_reason=length",
+            meta={"finish_reason": "length", "stream_terminal": "length"},
+        ),
+    ])
+    resp = with_retry(lambda: next(responses), sleep=lambda _: None)
+    assert resp.text == "Part one"
+    assert resp.meta["finish_reason"] == "length"
+    assert resp.meta["recovery_attempted"] is True
+
+
+def test_timeout_retry_preserves_failed_retry_stream_progress():
+    responses = iter([
+        DriverResponse(text="", error="TimeoutError(first)"),
+        DriverResponse(
+            text="visible retry text", error="TimeoutError(second)",
+            meta={"stream_started": True, "stream_terminal": "error"},
+        ),
+    ])
+    resp = with_retry(lambda: next(responses), sleep=lambda _: None)
+    assert resp.text == "visible retry text"
+    assert resp.error == "TimeoutError(second)"
+    assert resp.meta["stream_started"] is True
+    assert resp.meta["stream_performance"]["recovery_failure_count"] == 1
+
+
+def test_timeout_retry_preserves_actionable_http_failure():
+    responses = iter([
+        DriverResponse(text="", error="TimeoutError(first)"),
+        DriverResponse(text="", error="HTTP 401: invalid API key"),
+    ])
+    resp = with_retry(lambda: next(responses), sleep=lambda _: None)
+    assert resp.error == "HTTP 401: invalid API key"
+
+
+def test_cancel_interrupts_long_retry_after_sleep():
+    calls = []
+    cancelled = [False]
+    sleeps = []
+
+    def nap(seconds):
+        sleeps.append(seconds)
+        cancelled[0] = True
+
+    resp = with_retry(
+        lambda: calls.append(1) or DriverResponse(
+            text="", error="HTTP 429: retry after 120 seconds",
+        ),
+        sleep=nap,
+        is_cancelled=lambda: cancelled[0],
+    )
+    assert calls == [1]
+    assert sleeps == [0.1]
+    assert resp.error

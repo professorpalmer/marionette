@@ -296,7 +296,8 @@ def iter_provider_attempt_recovery(session, resp, attempt, timing):
     Yields overflow persist/compaction events. Return value is one of
     ``PROVIDER_ATTEMPT_*``.
     """
-    if not (resp and getattr(resp, "error", None)):
+    cancel = getattr(session, "_cancel", None)
+    if (cancel is not None and cancel.is_set()) or not (resp and getattr(resp, "error", None)):
         return PROVIDER_ATTEMPT_SETTLE
     from pmharness.drivers import error_classifier
 
@@ -1443,6 +1444,9 @@ class SendLoopMixin:
                     record_provider_dispatch_error_receipt(
                         self, timing, provider_step=step, provider_attempt=attempt,
                     )
+                    if self._cancel.is_set():
+                        yield from yield_session_interrupted(self)
+                        return
                     try:
                         msg = self._humanize_pilot_error(str(e))
                     except Exception:
