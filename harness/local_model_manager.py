@@ -1757,6 +1757,7 @@ class LocalModelManager:
             others.append(record)
             state["externals"] = others
             self._save(state)
+        self._reconnect_local_provider()
         self._emit("external_saved", {"id": endpoint_id, "model": selected})
         return self.snapshot()
 
@@ -1792,6 +1793,7 @@ class LocalModelManager:
                         item["selected_model"] = found["selected_model"]
             state["active_spec"] = spec
             self._save(state)
+        self._reconnect_local_provider()
         try:
             from . import model_visibility as visibility
             curated = visibility.get_enabled()
@@ -1801,6 +1803,14 @@ class LocalModelManager:
             pass
         self._emit("activated", {"spec": spec})
         return self.snapshot()
+
+    def _reconnect_local_provider(self) -> None:
+        """Clear a leftover Settings disconnect so saved locals can appear."""
+        try:
+            from .keys import unmark_disconnected
+            unmark_disconnected("local")
+        except Exception:
+            pass
 
     def resolve_spec(self, spec: str) -> Optional[dict]:
         return resolve_local_endpoint(self.reconcile_process(), spec)

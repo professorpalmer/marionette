@@ -6,7 +6,7 @@ import {
   peekTranscriptCacheEntry,
   writeTranscriptCache,
 } from "../components/conversation/transcriptCache";
-import { buildProjectsList, canSettleSessionsForProject, collectUnreadFinishedSessionIds, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, jobsCacheKey, partitionProjectSessions, patchActiveSessionInCaches, patchSessionArchivedInCaches, patchSessionSettledInCaches, patchSessionTitleInCaches, pickFallbackProjectAfterForget, preferLastGoodSessionList, projectSessionsEmptyState, purgeSessionFromRootCaches, readSessionSettledFromCaches, SESSION_LEASE_EXHAUSTED_MESSAGE, seedWorkspacesCache, shouldOfferBackgroundStop, shouldOpenBlankSessionAfterRemove, writeSessionListCache, workspacesCacheKey } from "../components/LeftRail";
+import { actionAfterSessionRemove, buildProjectsList, canSettleSessionsForProject, collectUnreadFinishedSessionIds, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, jobsCacheKey, partitionProjectSessions, patchActiveSessionInCaches, patchSessionArchivedInCaches, patchSessionSettledInCaches, patchSessionTitleInCaches, pickFallbackProjectAfterForget, preferLastGoodSessionList, projectSessionsEmptyState, purgeSessionFromRootCaches, readSessionSettledFromCaches, remainingOpenAfterRemoveFromCache, SESSION_LEASE_EXHAUSTED_MESSAGE, seedWorkspacesCache, shouldOfferBackgroundStop, writeSessionListCache, workspacesCacheKey } from "../components/LeftRail";
 import type { Session } from "../lib/api";
 
 /**
@@ -42,10 +42,38 @@ describe("LeftRail session list contracts", () => {
     expect(readSWRCache<Session[]>(`sessions:${dugout}`)).toEqual([]);
   });
 
-  it("delete or archive of the current session opens a blank New session", () => {
-    expect(shouldOpenBlankSessionAfterRemove("sess-a", "sess-a")).toBe(true);
-    expect(shouldOpenBlankSessionAfterRemove("sess-a", "sess-b")).toBe(false);
-    expect(shouldOpenBlankSessionAfterRemove("sess-a", "")).toBe(false);
+  it("blank New stand-in only after the last open session in that dir", () => {
+    const sibling = { id: "sess-b", created: 2 };
+    expect(actionAfterSessionRemove({
+      removedId: "sess-a",
+      activeId: "sess-a",
+      remainingOpen: [],
+    })).toEqual({ kind: "blank" });
+    expect(actionAfterSessionRemove({
+      removedId: "sess-a",
+      activeId: "sess-a",
+      remainingOpen: [sibling],
+    })).toEqual({ kind: "switch", sessionId: "sess-b" });
+    expect(actionAfterSessionRemove({
+      removedId: "sess-a",
+      activeId: "sess-b",
+      remainingOpen: [sibling],
+    })).toEqual({ kind: "noop" });
+    expect(actionAfterSessionRemove({
+      removedId: "sess-a",
+      activeId: "",
+      remainingOpen: [],
+    })).toEqual({ kind: "noop" });
+  });
+
+  it("remainingOpenAfterRemoveFromCache uses the purged per-root list", () => {
+    const root = "C:\\Projects\\kit";
+    writeSWRCache(`sessions:${root}`, [
+      { id: "keep", title: "Https://github.com/fore", created: 2, repo: root, workspace_root: root },
+    ]);
+    expect(remainingOpenAfterRemoveFromCache(root, "gone").map((s) => s.id)).toEqual(["keep"]);
+    writeSWRCache(`sessions:${root}`, []);
+    expect(remainingOpenAfterRemoveFromCache(root, "gone")).toEqual([]);
   });
 
   it("reads cached sessions for a non-active root from sessions:${path}", () => {

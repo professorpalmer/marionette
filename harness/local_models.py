@@ -47,6 +47,10 @@ TOOL_CALLING_STATUSES = (
 )
 TOOL_CALLING_FUNCTION_NAME = "marionette_capability_probe"
 TOOL_CALLING_REASON_LIMIT = 240
+# Reasoning models emit thinking before the tool call. 64 completion tokens
+# truncates them (finish_reason=length, empty content, tool_calls=null).
+TOOL_CALLING_MAX_TOKENS = 512
+_LENGTH_FINISH_REASONS = frozenset({"length", "max_tokens", "max_output_tokens"})
 INSTALL_TARGETS = ("runtime", "model", "all")
 REMOVE_TARGETS = ("model", "runtime", "all")
 VENDORS = (
@@ -271,7 +275,7 @@ def tool_calling_request_body(model: str) -> dict:
     return {
         "model": str(model or "").strip(),
         "stream": False,
-        "max_tokens": 64,
+        "max_tokens": TOOL_CALLING_MAX_TOKENS,
         "messages": [{
             "role": "user",
             "content": (
@@ -341,6 +345,12 @@ def classify_tool_calling_payload(payload: Any) -> tuple:
         return "unsupported", "This model replied with text instead of a tool call."
     if isinstance(content, list) and content:
         return "unsupported", "This model replied with text instead of a tool call."
+    finish = str(first.get("finish_reason") or "").strip().lower()
+    if finish in _LENGTH_FINISH_REASONS:
+        return (
+            "error",
+            "The endpoint hit the output token limit before a tool call.",
+        )
     return "error", "The endpoint returned a completion without tool_calls."
 
 

@@ -379,7 +379,46 @@ export function projectSessionsEmptyState(
   return showRowLoading ? "loading" : "pending";
 }
 
-/** Delete/archive of the current session must open a blank New session, never another transcript. */
-export function shouldOpenBlankSessionAfterRemove(removedId: string, activeId: string | undefined): boolean {
-  return Boolean(removedId && activeId && removedId === activeId);
+export type AfterSessionRemoveAction =
+  | { kind: "blank" }
+  | { kind: "switch"; sessionId: string }
+  | { kind: "noop" };
+
+/** Open inbox rows still listed for a project after delete/archive of `removedId`. */
+export function remainingOpenAfterRemoveFromCache(
+  projectPath: string,
+  removedId: string,
+  read: (key: string) => Session[] | undefined = readSWRCache,
+): Session[] {
+  if (!projectPath) return [];
+  const rows = read(`sessions:${projectPath}`) || [];
+  return partitionProjectSessions(rows, projectPath, true).open.filter((s) => s.id !== removedId);
+}
+
+function newestRemainingSessionId(
+  remainingOpen: readonly { id: string; created: number }[],
+): string | null {
+  if (!remainingOpen.length) return null;
+  let best = remainingOpen[0];
+  for (const row of remainingOpen) {
+    if (row.created > best.created) best = row;
+  }
+  return best.id;
+}
+
+/**
+ * After delete/archive: a blank New stand-in only when that directory's last
+ * open session is gone. Remaining siblings stay; the viewing session switches
+ * to the newest leftover instead of inventing a placeholder.
+ */
+export function actionAfterSessionRemove(opts: {
+  removedId: string;
+  activeId: string | undefined;
+  remainingOpen: readonly { id: string; created: number }[];
+}): AfterSessionRemoveAction {
+  const wasViewing = Boolean(opts.removedId && opts.activeId && opts.removedId === opts.activeId);
+  if (!wasViewing) return { kind: "noop" };
+  const nextId = newestRemainingSessionId(opts.remainingOpen);
+  if (!nextId) return { kind: "blank" };
+  return { kind: "switch", sessionId: nextId };
 }

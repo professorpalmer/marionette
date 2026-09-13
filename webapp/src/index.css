@@ -230,7 +230,7 @@ body {
 
 .composer-toolbar {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 0.375rem;
   min-width: 0;
@@ -238,11 +238,11 @@ body {
 
 .composer-toolbar-actions {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 0.375rem;
   min-width: 0;
-  flex: 1 1 28rem;
+  flex: 1 1 auto;
 }
 
 .composer-toolbar-send {
@@ -253,9 +253,22 @@ body {
   flex: 0 0 auto;
 }
 
+.composer-toolbar-send > * {
+  flex: 0 0 auto;
+}
+
 .pilot-picker-slot {
   min-width: 0;
-  flex: 1 1 20rem;
+  flex: 0 1 auto;
+}
+
+.pilot-picker-trigger-label {
+  display: block;
+  min-width: 0;
+  max-width: 10.625rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @container (max-width: 1180px) {
@@ -287,11 +300,30 @@ body {
 }
 
 .pilot-picker-controls {
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
 .pilot-model-slot {
-  flex: 1 1 12rem;
+  flex: 0 1 auto;
+}
+
+@container (max-width: 560px) {
+  .composer-toolbar-label { display: none; }
+  .pilot-picker-trigger-label { max-width: 8rem; }
+}
+
+@container (max-width: 480px) {
+  .composer-toolbar-label { display: none; }
+  .pilot-picker-trigger-label { max-width: 7.5rem; }
+}
+
+@container (max-width: 420px) {
+  .composer-toolbar-send-label { display: none; }
+  .pilot-picker-trigger-label { max-width: 6.5rem; }
+}
+
+@container (max-width: 360px) {
+  .pilot-picker-trigger-label { max-width: 5.25rem; }
 }
 
 .right-pane-board {

@@ -14,6 +14,28 @@ vi.mock("../lib/api", async () => {
   };
 });
 
+describe("PilotPicker trigger chrome", () => {
+  it("sizes the model trigger to the label instead of filling the toolbar", () => {
+    render(
+      <PilotPicker
+        config={{
+          driver: "openrouter:deepseek/deepseek-v4-flash",
+          reach: "cloud",
+          budget: 1,
+          models: ["openrouter:deepseek/deepseek-v4-flash"],
+          model_labels: { "openrouter:deepseek/deepseek-v4-flash": "DeepSeek V4 Flash" },
+        }}
+      />,
+    );
+    const trigger = screen.getByTitle("openrouter:deepseek/deepseek-v4-flash");
+    expect(trigger.className).not.toMatch(/\bw-full\b/);
+    expect(trigger.className).not.toMatch(/\bflex-1\b/);
+    const label = trigger.querySelector("span");
+    expect(label?.className).toMatch(/pilot-picker-trigger-label|max-w-/);
+    expect(label?.className).not.toMatch(/\bflex-1\b/);
+  });
+});
+
 describe("PilotPicker reroute notice", () => {
   it("shows a visible notice when configured driver is unavailable", () => {
     render(
