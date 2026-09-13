@@ -87,7 +87,7 @@ jobs:
       - name: Run the offline test suite (shard)
         env:
           PYTEST_SHARD: ${{ matrix.shard }}/4
-        run: python -m pytest -q -p no:cacheprovider
+        run: python -m pytest -q -p no:cacheprovider -n 0
 
   frontend-build:
     needs: reuse-green-tree
@@ -135,5 +135,5 @@ jobs:
           pip install -e ".[dev]" "puppetmaster-ai==1.27.16"
 
       - name: Run offline pmharness/intent/registry units
-        run: python -m pytest -q -p no:cacheprovider tests/test_intent.py tests/test_registry.py tests/test_registry_wizard.py tests/test_pilot_driver_templates.py
+        run: python -m pytest -q -p no:cacheprovider -n 0 tests/test_intent.py tests/test_registry.py tests/test_registry_wizard.py tests/test_pilot_driver_templates.py
 

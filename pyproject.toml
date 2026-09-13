@@ -32,6 +32,7 @@ harness = ["data/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = ["-n", "auto", "--dist", "loadscope"]
 markers = [
     "network: test requires real network access",
     "swarm: test drives real Puppetmaster (slow subprocess spawns)",
