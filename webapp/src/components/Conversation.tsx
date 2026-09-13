@@ -928,11 +928,12 @@ export default function Conversation({
   // PROMPT QUEUE: light refresh -- on session change, on a small poll interval,
   // and after any local mutation (add/remove/reorder/clear). Soft-fail: never
   // treat an errored fetch as authoritative empty; fence by session + gen.
+  const queuePollRequest = useRef<Promise<unknown> | undefined>(undefined);
   const refreshQueue = (forSessionId: string | null = activeSessionIdRef.current) => {
     const requestSessionId = forSessionId;
     const requestGen = ++queueFetchGenRef.current;
     if (!requestSessionId) return;
-    api.queueList()
+    const pending = api.queueList()
       .then((res) => {
         if (!shouldApplyQueueRefresh({
           requestSessionId,
@@ -969,6 +970,11 @@ export default function Conversation({
         queueReadBlockedRef.current = true;
         setQueueLoadError(err instanceof Error ? err.message : sharedReadinessNotice(QUEUE_LOAD_FAIL_NOTICE, getActiveDiagnostic()));
       });
+    queuePollRequest.current = pending;
+    void pending.finally(() => {
+      if (queuePollRequest.current === pending) queuePollRequest.current = undefined;
+    });
+    return pending;
   };
 
   useEffect(() => {
@@ -984,11 +990,15 @@ export default function Conversation({
     queueReadBlockedRef.current = true;
     setQueueDragIndex(null);
     setQueueDragOverIndex(null);
+    queuePollRequest.current = undefined;
     refreshQueue(activeSessionId);
-    const t = window.setInterval(() => refreshQueue(activeSessionIdRef.current), 3000);
-    return () => window.clearInterval(t);
+
     // refreshQueue closes over refs; re-arm only when the active pilot changes.
   }, [activeSessionId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  usePolling(() => queuePollRequest.current ?? refreshQueue(activeSessionIdRef.current), 3000, {
+    scopeKey: activeSessionId ?? "",
+  });
 
   const moveQueueItem = (index: number, direction: "up" | "down") => {
     setMsgQueue((prev) => moveItem(prev, index, direction));

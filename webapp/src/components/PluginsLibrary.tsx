@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { usePolling } from "../lib/usePolling";
+import { useState } from "react";
 import { FolderPlus, Power, PowerOff, Puzzle } from "lucide-react";
 import { api, type AgentPlugin } from "../lib/api";
 import { usePanelNotice } from "../lib/useOperationalDiagnostic";
@@ -14,7 +15,7 @@ export default function PluginsLibrary({ embedded = false }: { embedded?: boolea
   const errorNotice = usePanelNotice(error || null);
 
   const refresh = () => {
-    api.plugins()
+    return api.plugins()
       .then((r) => {
         setPlugins(r.plugins || []);
         setError(r.error || "");
@@ -24,11 +25,7 @@ export default function PluginsLibrary({ embedded = false }: { embedded?: boolea
       });
   };
 
-  useEffect(() => {
-    refresh();
-    const t = setInterval(refresh, 5000);
-    return () => clearInterval(t);
-  }, []);
+  usePolling(refresh, 5000);
 
   const toggle = async (plugin: AgentPlugin) => {
     setBusy(plugin.id);
@@ -43,7 +40,7 @@ export default function PluginsLibrary({ embedded = false }: { embedded?: boolea
         return;
       }
       setMsg(plugin.enabled ? `Disabled ${plugin.name}` : `Enabled ${plugin.name}`);
-      refresh();
+      await refresh();
     } catch {
       setError("toggle failed");
     } finally {
@@ -127,9 +124,9 @@ export default function PluginsLibrary({ embedded = false }: { embedded?: boolea
         open={installOpen}
         onClose={() => setInstallOpen(false)}
         onInstalled={() => refresh()}
-        onEnabled={() => {
+        onEnabled={async () => {
           setMsg("Enabled plugin");
-          refresh();
+          await refresh();
         }}
       />
     </div>

@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { usePolling } from "../lib/usePolling";
+import { useState } from "react";
 import { GraduationCap, Check, X, Archive, Sparkles, Plus } from "lucide-react";
 import { api } from "../lib/api";
 
@@ -18,11 +19,11 @@ export default function SkillsPane({ embedded = false }: { embedded?: boolean })
   const [newSkillBody, setNewSkillBody] = useState("");
   const [formError, setFormError] = useState("");
 
-  const refresh = () => {
-    api.skills().then(setSkills).catch(() => {});
-    api.rules().then(setRules).catch(() => {});
-  };
-  useEffect(() => { refresh(); const t = setInterval(refresh, 5000); return () => clearInterval(t); }, []);
+  const refresh = () => Promise.all([
+    api.skills().then(setSkills).catch(() => {}),
+    api.rules().then(setRules).catch(() => {}),
+  ]);
+  usePolling(refresh, 5000);
 
   const distill = async () => {
     setBusy("distill"); setMsg("");

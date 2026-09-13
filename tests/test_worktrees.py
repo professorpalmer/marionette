@@ -511,3 +511,29 @@ def test_prune_edit_branches_endpoint():
     finally:
         httpd.shutdown()
         shutil.rmtree(repo, ignore_errors=True)
+
+
+def test_add_worktree_returns_created_tree_when_cleanup_fails(monkeypatch, caplog):
+    repo = create_temp_git_repo()
+    failure = RuntimeError("cleanup unavailable")
+
+    def fail_cleanup(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(_wt, "cleanup_old_worktrees", fail_cleanup)
+    try:
+        with caplog.at_level("WARNING", logger="pmharness.worktrees"):
+            created = _wt.add_worktree(repo, "feature-cleanup-failure")
+        assert created == {
+            "path": os.path.join(_wt._get_managed_dir(repo), "feature-cleanup-failure"),
+            "branch": "feature-cleanup-failure",
+        }
+        assert os.path.isfile(os.path.join(created["path"], "test.txt"))
+        records = [r for r in caplog.records if r.name == "pmharness.worktrees"]
+        assert len(records) == 1
+        assert records[0].levelname == "WARNING"
+        assert repo in records[0].getMessage()
+        assert str(failure) in records[0].getMessage()
+        assert "cleanup" in records[0].getMessage().lower()
+    finally:
+        shutil.rmtree(os.path.dirname(repo), ignore_errors=True)

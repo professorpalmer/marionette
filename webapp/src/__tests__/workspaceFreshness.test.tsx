@@ -129,7 +129,7 @@ describe("workspace freshness fan-out", () => {
     const afterFileEdited = vi.mocked(nativeGit.status).mock.calls.length;
     await act(async () => {
       window.dispatchEvent(new Event(HARNESS_REPO_MUTATED));
-      await vi.advanceTimersByTimeAsync(200);
+      await vi.advanceTimersByTimeAsync(500);
     });
     expect(vi.mocked(nativeGit.status).mock.calls.length).toBeGreaterThan(
       afterFileEdited,

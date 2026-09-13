@@ -874,6 +874,19 @@ def test_resolve_emit_promotes_long_non_cursor_reasoning_when_say_empty():
     assert promoted == body
 
 
+@pytest.mark.parametrize("transport", [None, "cursor_cli", "cursor_acp"])
+@pytest.mark.parametrize("length", [119, 120])
+@pytest.mark.parametrize("channel", ["reasoning", "streamed_reasoning"])
+def test_resolve_emit_empty_say_reasoning_boundary(transport, length, channel):
+    body = "x" * length
+    meta = {channel: " \n" + body + "\t "}
+    if transport:
+        meta[transport] = True
+    resp = SimpleNamespace(text="", assistant_phase="final_answer", meta=meta)
+    expected = body if transport or length == 120 else ""
+    assert resolve_emit_say_texts(cleaned_say_text="", resp=resp) == ("", "", expected)
+
+
 def test_resolve_emit_does_not_promote_non_cursor_reasoning():
     resp = SimpleNamespace(
         text="",
