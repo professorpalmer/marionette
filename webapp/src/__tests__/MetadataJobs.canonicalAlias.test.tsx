@@ -575,6 +575,7 @@ describe('metadataJobs alias dedupe', () => {
           observation: detail,
           freshness: 'stale',
           error,
+          presentationRetained: error !== null,
         },
       },
       headers: {},

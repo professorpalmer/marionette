@@ -18,7 +18,7 @@ type ViewState =
   | { kind: 'view'; target: MetadataTarget; context: MetadataContext; view: MetadataView; refresh: 'idle' | 'pending' | 'ambiguous' };
 type DetailState =
   | { kind: 'none' }
-  | ({ kind: 'selected'; selection: MetadataSelection; refreshedAt?: number; cursors: DetailCursors; error: MetadataErrorCode | null } & (
+  | ({ kind: 'selected'; selection: MetadataSelection; refreshedAt?: number; cursors: DetailCursors; error: MetadataErrorCode | null; presentationRetained?: boolean } & (
     | { observation: null; freshness: 'stale' }
     | { observation: MetadataDetail; freshness: 'stale' | 'observed' }
   ));
@@ -263,17 +263,21 @@ export class JobMetadataStore {
         refreshedAt: listScope?.kind === 'detail' && listScope.key === key ? Date.now() : cached.refreshedAt,
         freshness: 'stale' as const,
         error: detailError(key, cached.error),
+        presentationRetained: listScope?.kind === 'detail' && listScope.key === key && !!cached.observation
+          ? true : cached.presentationRetained,
       }]));
       if (listScope?.kind === 'detail' && listScope.selection && !detailCache[listScope.key]) {
         detailCache[listScope.key] = {
           kind: 'selected', selection: listScope.selection, observation: null, freshness: 'stale',
-          cursors: { task_cursor: null, artifact_cursor: null }, error: errorCode, refreshedAt: Date.now(),
+          cursors: { task_cursor: null, artifact_cursor: null }, error: errorCode, refreshedAt: Date.now(), presentationRetained: false,
         };
       }
       this.publish({ ...this.state, error: metadataBannerAfterError(listScope, errorCode, this.state.error), errorDetail: detail ?? this.state.errorDetail, headers: Object.fromEntries(Object.entries(this.state.headers).map(([key, h]) => [key, pmAffected(h.observation) ? { ...h, observation: { ...h.observation, freshness: 'stale' } } : h])), local: { ...this.state.local, observations: this.state.local.observations.map(o => localAffected(o) ? { ...o, freshness: 'stale' } : o) }, observations: this.state.observations.map(o => pmAffected(o) ? { ...o, freshness: 'stale' } : o),
         detailCache,
         pins: this.state.pins.map(p => p.observation && pmAffected(p.observation) ? { ...p, observation: { ...p.observation, freshness: 'stale' } } : p),
-        detail: this.state.detail.kind === 'none' ? this.state.detail : { ...this.state.detail, freshness: 'stale', error: detailError(metadataSelectionKey(this.state.detail.selection), this.state.detail.error) } });
+        detail: this.state.detail.kind === 'none' ? this.state.detail : { ...this.state.detail, freshness: 'stale', error: detailError(metadataSelectionKey(this.state.detail.selection), this.state.detail.error),
+          presentationRetained: listScope?.kind === 'detail' && listScope.key === metadataSelectionKey(this.state.detail.selection) && !!this.state.detail.observation
+            ? true : this.state.detail.presentationRetained } });
       if (errorCode === 'view_changed' || errorCode === 'endpoint_changed') {
         const view = this.state.view;
         if (errorCode === 'endpoint_changed') this.client = new JobMetadataClient();
@@ -885,7 +889,7 @@ export class JobMetadataStore {
       // An unavailable selected lookup retains the last observation visibly stale.
       const observation = incomplete && detail.observation ? detail.observation : carryExpert(response, detail.observation);
       this.publish({ ...this.state, selectedRefreshedAt: Date.now(), advanceNumber: this.state.advanceNumber + Number(scheduled), detail: { ...detail, observation, cursors: incomplete ? detail.cursors : captured,
-        freshness: incomplete ? 'stale' : 'observed', error: incomplete ? 'unavailable' : null } });
+        freshness: incomplete ? 'stale' : 'observed', error: incomplete ? 'unavailable' : null, presentationRetained: false } });
     }, () => { if (scheduled) this.publish({ ...this.state, selectedRefreshedAt: Date.now(), advanceNumber: this.state.advanceNumber + 1 }); },
     { kind: 'detail', key: metadataSelectionKey(detail.selection) });
   }

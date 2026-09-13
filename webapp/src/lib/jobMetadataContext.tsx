@@ -96,8 +96,8 @@ export function currentExpert(state: JobMetadataState, key: string) {
   const selected = state.detail.kind === 'selected' && metadataSelectionKey(state.detail.selection) === key ? state.detail : state.detailCache[key];
   if (!selected?.observation) return undefined;
   const expert = selected.observation.expert;
+  if (selected.error && !selected.presentationRetained) return undefined;
   if (expert && expert.kind !== 'unavailable' && expert.tasks.length > 0) return expert;
-  if (selected.error) return undefined;
   const listed = state.observations.find(o => metadataSelectionKey(o.row.selection) === key);
   if (listed?.freshness === 'stale') return undefined;
   // An unrelated lane failure stamps every cached detail stale; a hydrated expert
