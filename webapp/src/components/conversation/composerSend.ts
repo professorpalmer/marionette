@@ -2,6 +2,7 @@
  * Pure composer / send-path helpers. Conversation.tsx keeps the React wiring.
  */
 
+import { inputFailureMessage } from "../../lib/inputFailure";
 import type { CommandPaletteActionId } from "../../lib/commandPalette";
 import { isPilotMouthBusy } from "./runnersBusy";
 
@@ -111,27 +112,19 @@ export function formatCompactErrorMessage(err: unknown): string {
   if (reason === "summary_rejected") {
     return "System Note: Compaction summary was rejected; history left unchanged. You can try again or continue.";
   }
-  const message =
-    err && typeof err === "object" && "message" in err
-      ? String((err as { message?: unknown }).message || err)
-      : String(err || "");
-  return "[error] Compaction failed: " + message;
+  return formatComposerActionError(err, "Compaction");
+}
+
+function formatComposerActionError(err: unknown, action: string): string {
+  return inputFailureMessage(err) || `[error] ${action} failed. Please try again.`;
 }
 
 export function formatSteerErrorMessage(err: unknown): string {
-  const message =
-    err && typeof err === "object" && "message" in err
-      ? String((err as { message?: unknown }).message || err)
-      : String(err || "");
-  return "[error] Steer failed: " + message;
+  return formatComposerActionError(err, "Steer");
 }
 
 export function formatInterruptErrorMessage(err: unknown): string {
-  const message =
-    err && typeof err === "object" && "message" in err
-      ? String((err as { message?: unknown }).message || err)
-      : String(err || "");
-  return "[error] Interrupt failed: " + message;
+  return formatComposerActionError(err, "Interrupt");
 }
 
 /**
@@ -181,21 +174,7 @@ export type InterruptSessionResponse = {
 };
 
 export function formatRenderCommandErrorMessage(err: unknown): string {
-  const message =
-    err && typeof err === "object" && "message" in err
-      ? String((err as { message?: unknown }).message || err)
-      : String(err || "");
-  return "[error] Render failed: " + message;
-}
-
-/** Edit-notice chrome after rewind-edit send.
-
-  Resubmit starts the new turn; the Revert/restore affordance is only offered
-  while the composer is still in edit mode (Cancel). Lingering "Revert?" after
-  send left a dead chrome that restored the old branch without starting a loop.
-*/
-export function editNoticeAfterSend(_canRevertEdit: boolean): string | null {
-  return null;
+  return formatComposerActionError(err, "Render");
 }
 
 /** Shown while auto stop+rewind runs after edit during an active turn. */
@@ -295,10 +274,10 @@ export async function runStopFlow(opts: {
       }
     }
     return { kind: "ok", notices: interruptRes.notices || [] };
-  } catch (err) {
+  } catch {
     return {
       kind: "interrupt_failed",
-      notice: editFlowErrorMessage(err, STOP_INTERRUPT_FAILED_NOTICE),
+      notice: STOP_INTERRUPT_FAILED_NOTICE,
     };
   }
 }

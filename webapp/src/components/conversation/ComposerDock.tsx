@@ -1,3 +1,4 @@
+import InputReceipts from "./InputReceipts";
 /**
  * Bottom composer dock: wiki/memory notices, queues, autocomplete, textarea.
  * State and send/stop wiring stay owned by Conversation.tsx.
@@ -531,11 +532,7 @@ export default function ComposerDock({
         {/* Server-side PROMPT QUEUE, stacked ABOVE the composer (Cursor-style)
             so the "runs next" items are always visible right over the input.
             These prompts are drained by the backend one full turn at a time. */}
-        {import.meta.env.MODE === "test" && onCopyReceipt && receipts.map((receipt) => (
-          <button key={receipt.id} type="button" onClick={() => onCopyReceipt(receipt)}>
-            Copy original to draft
-          </button>
-        ))}
+        {onCopyReceipt && <InputReceipts receipts={receipts} onCopy={onCopyReceipt} sessionId={sessionId} />}
         <QueueRecoveryNotice entries={queueRecovery} onCopy={onCopyQueueRecovery} />
         {queueItems.length > 0 && (
           <div className="mb-2 space-y-1">

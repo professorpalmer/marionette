@@ -188,7 +188,6 @@ export {
   steerResultChrome,
   steerTranscriptItem,
   formatRenderCommandErrorMessage,
-  editNoticeAfterSend,
   EDIT_BUSY_PROGRESS_NOTICE,
   STOP_INTERRUPT_FAILED_NOTICE,
   userOrdinalBeforeIndex,

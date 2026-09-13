@@ -22,6 +22,8 @@ export function useOverlayFocus(
     restoreFocus?: boolean;
   },
 ) {
+  const onCloseRef = useRef(opts?.onClose);
+  useEffect(() => { onCloseRef.current = opts?.onClose; }, [opts?.onClose]);
   const triggerRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
@@ -51,7 +53,7 @@ export function useOverlayFocus(
       if (e.key === "Escape") {
         e.preventDefault();
         e.stopPropagation();
-        opts?.onClose?.();
+        onCloseRef.current?.();
         return;
       }
       if (e.key !== "Tab" || !root) return;
@@ -85,5 +87,5 @@ export function useOverlayFocus(
         }
       }
     };
-  }, [open, opts?.initialFocusRef, opts?.onClose, opts?.restoreFocus, rootRef]);
+  }, [open, opts?.initialFocusRef, opts?.restoreFocus, rootRef]);
 }

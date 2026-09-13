@@ -92,7 +92,6 @@ import {
 import {
   classifyLocalSlashCommand,
   composerEnterAction,
-  editNoticeAfterSend,
   EDIT_BUSY_PROGRESS_NOTICE,
   executeSendGate,
   formatCompactCompleteMessage,
@@ -559,6 +558,9 @@ export default function Conversation({
   // User hit Stop: suppress runners-poll "thinking" re-arm and keep-alive resume
   // until the next real user send (not an auto pilot_resume).
   const userStoppedRef = useRef(false);
+  // Failed Stop may resume observation, but only an explicit send releases queued work.
+  const stopInputHoldRef = useRef(false);
+  useEffect(() => { stopInputHoldRef.current = false; }, [activeSessionId]);
   // True once this turn got a real terminal SSE event (assistant_done / error /
   // auto_halt) or the user hit Stop. When the EventSource dies without that,
   // we surface an explicit abort bubble instead of silently leaving "thinking"
@@ -2997,7 +2999,7 @@ export default function Conversation({
     const gate = executeSendGate({
       transcriptStale,
       resume,
-      userStopped: userStoppedRef.current,
+      userStopped: userStoppedRef.current || stopInputHoldRef.current,
     });
     if (gate === "stale") {
       recoveryDispatchingRef.current = false;
@@ -3012,6 +3014,7 @@ export default function Conversation({
     if (!resume) {
       // Real user/autopilot send clears the Stop hold so thinking can run again.
       userStoppedRef.current = false;
+      stopInputHoldRef.current = false;
     }
     planTurnRef.current = usePlan;
     turnSettledRef.current = false;
@@ -3260,14 +3263,14 @@ export default function Conversation({
   // background-job continuation is pending, let it run first (it re-enters here
   // when it finishes).
   const maybeDrainQueue = () => {
-    if (queueDrainPendingRef.current || queueReadBlockedRef.current || userStoppedRef.current) return;
+    if (queueDrainPendingRef.current || queueReadBlockedRef.current || userStoppedRef.current || stopInputHoldRef.current) return;
     if (cancelRef.current || resumeQueuedRef.current) return;
     const next = queueItemsRef.current[0];
     const kickSid = activeSessionIdRef.current;
     if (!next || !kickSid || attemptedHandoffs.current.has(`${kickSid}:${next.id}`)) return;
     const generation = streamGenRef.current;
     const canKick = () => activeSessionIdRef.current === kickSid
-      && streamGenRef.current === generation && !userStoppedRef.current
+      && streamGenRef.current === generation && !(userStoppedRef.current || stopInputHoldRef.current)
       && !cancelRef.current && !resumeQueuedRef.current && !queueReadBlockedRef.current;
     setSafeTimeout(() => {
       if (!canKick() || queueDrainPendingRef.current) return;
@@ -3312,7 +3315,7 @@ export default function Conversation({
   // Chains naturally: each continuation can dispatch more work whose completion
   // queues the next resume, so the pilot "runs run runs" until the work is done.
   const maybeRunQueuedResume = () => {
-    if (userStoppedRef.current) {
+    if (userStoppedRef.current || stopInputHoldRef.current) {
       resumeQueuedRef.current = false;
       return;
     }
@@ -3324,8 +3327,8 @@ export default function Conversation({
     const kickSid = activeSessionIdRef.current;
     setSafeTimeout(() => {
       if (activeSessionIdRef.current !== kickSid) return;
-      if (userStoppedRef.current || cancelRef.current) {
-        if (!userStoppedRef.current) resumeQueuedRef.current = true;
+      if (userStoppedRef.current || stopInputHoldRef.current || cancelRef.current) {
+        if (!(userStoppedRef.current || stopInputHoldRef.current)) resumeQueuedRef.current = true;
         return;
       }
       executeSendRef.current("", false, false, true);
@@ -3335,12 +3338,12 @@ export default function Conversation({
 
   const maybeRunApprovedCommandRetry = () => {
     const command = approvedCommandRetryRef.current;
-    if (!command || cancelRef.current || userStoppedRef.current) return;
+    if (!command || cancelRef.current || userStoppedRef.current || stopInputHoldRef.current) return;
     const kickSid = activeSessionIdRef.current;
     approvedCommandRetryRef.current = null;
     setSafeTimeout(() => {
       if (activeSessionIdRef.current !== kickSid) return;
-      if (cancelRef.current || userStoppedRef.current) return;
+      if (cancelRef.current || userStoppedRef.current || stopInputHoldRef.current) return;
       executeSendRef.current(
         "The operator approved one execution of this exact command. Retry it "
           + "without changing any character, then continue the objective:\n\n"
@@ -3356,7 +3359,7 @@ export default function Conversation({
   // idle (the common background-job case). Trigger a continuation immediately.
   const triggerResume = () => {
     const gate = triggerResumeGate({
-      userStopped: userStoppedRef.current,
+      userStopped: userStoppedRef.current || stopInputHoldRef.current,
       cancelArmed: !!cancelRef.current,
     });
     if (gate === "suppress_clear_hint") {
@@ -3603,7 +3606,7 @@ export default function Conversation({
     const resubmitEdit = editingIndex !== null || canRevertEdit;
     setEditingIndex(null);
     setCanRevertEdit(false);
-    setEditNotice(editNoticeAfterSend(false));
+    setEditNotice(null);
 
     if (composerBusy && !resubmitEdit) {
       // Attachments alone are also human input; retain them through admission.
@@ -3693,6 +3696,7 @@ export default function Conversation({
   };
 
   const stopLocal = () => {
+    stopInputHoldRef.current = true;
     userStoppedRef.current = true;
     turnSettledRef.current = true;
     resumeQueuedRef.current = false;
@@ -3724,6 +3728,8 @@ export default function Conversation({
   const stop = () => {
     const sid = activeSessionId;
     const epoch = sessionEpochRef.current;
+    const stoppedRingCursor = lastAppliedRingCursorRef.current;
+    const stoppedRingGeneration = ringGenerationRef.current;
     let stoppedGeneration: number | undefined;
     const stopLive = () => activeSessionIdRef.current === sid && sessionEpochRef.current === epoch
       && streamGenRef.current === stoppedGeneration;
@@ -3752,10 +3758,31 @@ export default function Conversation({
             });
           }
         : undefined,
-    }).then((result) => {
+    }).then(async (result) => {
       if (!stopLive()) return;
       if (result.kind === "interrupt_failed") {
         setEditNotice(result.notice);
+        if (!sid) return;
+        try {
+          const state = await api.getSessionState({ sessionId: sid });
+          if (!stopLive()) return;
+          const running = state.state !== "awaiting_swarm"
+            && (state.state === "thinking" || state.runners?.[sid] === "running");
+          if (!running) return;
+          lastAppliedRingCursorRef.current = stoppedRingCursor;
+          ringGenerationRef.current = stoppedRingGeneration;
+          userStoppedRef.current = false;
+          turnSettledRef.current = false;
+          detachedBusyRef.current = true;
+          lastSettleRef.current = null;
+          recoveryContextRef.current = null;
+          setItems(prev => prev.filter(item => item.kind !== "turn_terminal" || item.id !== `turn-term-${stoppedGeneration}`));
+          setTurnLifecycle("running");
+          setTerminalCause(null);
+          setTurnOpen(true);
+          setStatus("thinking");
+          ensureChatEventsReattachRef.current();
+        } catch {}
         return;
       }
       // Belt-and-suspenders: interrupt body notices if refresh missed them.
