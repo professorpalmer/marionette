@@ -94,17 +94,51 @@ it("MCP action publishes refreshed status to its parent", async () => {
   fireEvent.click(screen.getByTitle("Start")); await advance(0);
   expect(onStatus).toHaveBeenLastCalledWith(fresh);
 });
-it("State transfers polling ownership when MCP collapses and expands", async () => {
+it.each(["0", "1"])("State serializes MCP reads through expansion changes from %s", async (open) => {
+  localStorage.setItem("pmharness.statePane.mcpOpen", open);
+  type Status = Awaited<ReturnType<typeof api.mcp>>;
+  let resolveOld!: (data: Status) => void;
+  let resolveNew!: (data: Status) => void;
+  const old = new Promise<Status>(resolve => { resolveOld = resolve; });
+  const fresh = new Promise<Status>(resolve => { resolveNew = resolve; });
+  vi.mocked(api.mcp).mockReturnValueOnce(old).mockReturnValueOnce(fresh);
   const view = render(<StatePane artifacts={[]} />);
   await advance(0);
-  fireEvent.click(screen.getByTitle("Hide MCP servers")); await advance(0);
+  const toggle = () => fireEvent.click(screen.getByTitle(
+    screen.queryByTitle("Hide MCP servers") ? "Hide MCP servers" : "Show MCP servers"));
+  toggle(); await advance(0);
+  toggle(); await advance(0);
+  expect(api.mcp).toHaveBeenCalledTimes(1);
+  // Resolve the newer response first: it cannot publish until the owner starts its next read.
+  await act(async () => { resolveNew({ servers: [{ name: "fresh", running: true, tools: 0 }], tools: [] }); });
+  expect(api.mcp).toHaveBeenCalledTimes(1);
+  await act(async () => { resolveOld({ servers: [], tools: [] }); });
+  await advance(4000);
   expect(api.mcp).toHaveBeenCalledTimes(2);
-  await advance(4000); expect(api.mcp).toHaveBeenCalledTimes(3);
-  fireEvent.click(screen.getByTitle("Show MCP servers")); await advance(0);
-  expect(api.mcp).toHaveBeenCalledTimes(4);
-  await advance(4000); expect(api.mcp).toHaveBeenCalledTimes(5);
+  expect(screen.getByTestId("state-card-mcp")).toHaveTextContent("1/1");
+  toggle(); await advance(0);
+  expect(api.mcp).toHaveBeenCalledTimes(2);
+  expect(screen.getByTestId("state-card-mcp")).toHaveTextContent("1/1");
   view.rerender(<StatePane artifacts={[]} networkEnabled={false} />);
-  await advance(20000); expect(api.mcp).toHaveBeenCalledTimes(5);
+  await advance(20000); expect(api.mcp).toHaveBeenCalledTimes(2);
+});
+it("queues a fresh MCP read when an action lands during an older poll", async () => {
+  type Status = Awaited<ReturnType<typeof api.mcp>>;
+  const initial: Status = { servers: [{ name: "test", running: false, tools: 0 }], tools: [] };
+  let resolveOld!: (data: Status) => void;
+  const old = new Promise<Status>(resolve => { resolveOld = resolve; });
+  const fresh: Status = { servers: [{ name: "test", running: true, tools: 2 }], tools: [] };
+  vi.mocked(api.mcp).mockResolvedValueOnce(initial).mockReturnValueOnce(old).mockResolvedValueOnce(fresh);
+  render(<StatePane artifacts={[]} />);
+  await advance(0);
+  await advance(4000);
+  fireEvent.click(screen.getByTitle("Start"));
+  await advance(0);
+  expect(api.mcp).toHaveBeenCalledTimes(2);
+  await act(async () => { resolveOld(initial); });
+  await advance(0);
+  expect(api.mcp).toHaveBeenCalledTimes(3);
+  expect(screen.getByTestId("state-card-mcp")).toHaveTextContent("1/1");
 });
 it("Memory waits for its graph request too", async () => {
   vi.mocked(api.memoryGraph).mockImplementationOnce(() => new Promise(() => {}));

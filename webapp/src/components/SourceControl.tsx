@@ -73,7 +73,7 @@ export default function SourceControl() {
     const refresh = createGitRefreshCoordinator({
       onBusy: setLoading,
       onError: (error) => setError(error instanceof Error ? error.message : "Error running git operations"),
-      run: async (lane, context, priority): Promise<void> => {
+      run: async (lane, context): Promise<void> => {
         if (lane === "status") {
           setError(null);
           const result = await nativeGit.status(context.path);
@@ -89,7 +89,7 @@ export default function SourceControl() {
           if (typeof result.branch === "string") {
             const changed = reportedBranch?.epoch === context.epoch && reportedBranch.branch !== result.branch;
             reportedBranch = { epoch: context.epoch, branch: result.branch };
-            if (priority === "automatic" && changed) void refresh.request(context, ["branches"]);
+            if (changed) void refresh.request(context, ["branches"]);
           }
         } else {
           const result = await nativeGit.branches(context.path);

@@ -194,3 +194,20 @@ it("late branches cannot repaint a new context", async () => {
   expect(nativeGit.branches).toHaveBeenCalledTimes(2);
   expect(screen.queryByText("main")).not.toBeInTheDocument();
 });
+
+it("immediate stage status discovers an external checkout once before automatic refresh", async () => {
+  vi.mocked(nativeGit.status).mockResolvedValue({ ...status, files: [{ status: " M", path: "a.ts" }] });
+  await mount();
+  const pending = deferred<typeof branches>();
+  vi.mocked(nativeGit.branches).mockReturnValueOnce(pending.promise);
+  vi.mocked(nativeGit.status).mockResolvedValue({ ...status, branch: "dev" });
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Stage all", exact: true })); });
+  expect(nativeGit.status).toHaveBeenCalledTimes(2);
+  expect(nativeGit.branches).toHaveBeenCalledTimes(2);
+  await act(async () => { notifyWorkspaceMutated(); await vi.advanceTimersByTimeAsync(1000); });
+  expect(nativeGit.status).toHaveBeenCalledTimes(4);
+  expect(nativeGit.branches).toHaveBeenCalledTimes(2);
+  await act(async () => { pending.resolve({ ok: true, branches: [{ name: "dev", active: true }] }); });
+  expect(screen.getByText("dev")).toBeInTheDocument();
+  expect(nativeGit.branches).toHaveBeenCalledTimes(2);
+});

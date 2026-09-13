@@ -1,5 +1,5 @@
 import { usePolling } from "../lib/usePolling";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, Loader2, RefreshCw, ExternalLink } from "lucide-react";
 import { api, type CodegraphStatus, type EnvironmentReadiness, type WikiGraphData, type WikiStatusData } from "../lib/api";
 import { lastSelectedProjectRoot, panelOpacityClass, useProjectSwitching } from "../lib/panelTransition";
@@ -133,6 +133,9 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
   // full metrics are one click away. Preference persists per user.
   // MCP defaults open so it fills the State pane dead space under CodeGraph/Wiki.
   const [mcpOpen, setMcpOpen] = useState(() => localStorage.getItem("pmharness.statePane.mcpOpen") !== "0");
+  const [mcpData, setMcpData] = useState<Awaited<ReturnType<typeof api.mcp>>>({ servers: [], tools: [] });
+  const mcpFlight = useRef<Promise<void> | null>(null);
+  const mcpRefreshQueued = useRef(false);
   const [mcpSummary, setMcpSummary] = useState({ total: 0, running: 0 });
   const [envOpen, setEnvOpen] = useState(() => localStorage.getItem("pmharness.statePane.envOpen") === "1");
   const [envReady, setEnvReady] = useState<EnvironmentReadiness | null>(null);
@@ -266,13 +269,29 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
     return () => window.removeEventListener("harness-expand-mcp", onExpandMcp);
   }, [revealCard]);
 
-  const updateMcpSummary = useCallback((data: Awaited<ReturnType<typeof api.mcp>>) => {
-    const servers = Array.isArray(data?.servers) ? data.servers : [];
-    setMcpSummary({ total: servers.length, running: servers.filter((server: { running?: boolean }) => !!server.running).length });
-  }, []);
-  usePolling(() => api.mcp().then(updateMcpSummary).catch(() => {}), 4000, {
-    enabled: networkEnabled && !(visibleCards.mcp && mcpOpen),
-  });
+  const refreshMcp = useCallback((): Promise<void> => {
+    if (!networkEnabled) return Promise.resolve();
+    if (mcpFlight.current) {
+      mcpRefreshQueued.current = true;
+      return mcpFlight.current;
+    }
+    const request = (async () => {
+      do {
+        mcpRefreshQueued.current = false;
+        try {
+          const data = await api.mcp();
+          setMcpData(data);
+          const servers = Array.isArray(data?.servers) ? data.servers : [];
+          setMcpSummary({ total: servers.length, running: servers.filter((server: { running?: boolean }) => !!server.running).length });
+        } catch {
+          // A later queued refresh still gets its own attempt.
+        }
+      } while (mcpRefreshQueued.current);
+    })().finally(() => { mcpFlight.current = null; });
+    mcpFlight.current = request;
+    return request;
+  }, [networkEnabled]);
+  usePolling(refreshMcp, 4000, { enabled: networkEnabled });
 
   useEffect(() => {
     let timer: ReturnType<typeof setInterval> | null = null;
@@ -966,7 +985,7 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
           </button>
           {mcpOpen && (
             <div className="flex-1 min-h-0 overflow-hidden border-t border-edge/30">
-              <McpPane embedded networkEnabled={networkEnabled} onStatus={updateMcpSummary} />
+              <McpPane embedded networkEnabled={networkEnabled} statusSource={{ data: mcpData, refresh: refreshMcp }} />
             </div>
           )}
         </div>

@@ -101,13 +101,16 @@ function formatMcpHeaderSummary(servers: { running?: boolean; lifecycle?: string
   return `${counts.running}/${servers.length} running`;
 }
 
-export default function McpPane({ embedded = false, networkEnabled = true, onStatus }: {
+export default function McpPane({ embedded = false, networkEnabled = true, onStatus, statusSource }: {
   embedded?: boolean;
   networkEnabled?: boolean;
+  statusSource?: { data: Awaited<ReturnType<typeof api.mcp>>; refresh: () => Promise<void> };
   onStatus?: (data: Awaited<ReturnType<typeof api.mcp>>) => void;
 }) {
-  const [servers, setServers] = useState<any[]>([]);
-  const [tools, setTools] = useState<any[]>([]);
+  const [localServers, setServers] = useState<any[]>([]);
+  const [localTools, setTools] = useState<any[]>([]);
+  const servers = statusSource ? statusSource.data.servers : localServers;
+  const tools = statusSource ? statusSource.data.tools : localTools;
   const [catalog, setCatalog] = useState<Record<string, any>>({});
   const [adding, setAdding] = useState(false);
   const [busy, setBusy] = useState("");
@@ -125,9 +128,10 @@ export default function McpPane({ embedded = false, networkEnabled = true, onSta
 
   const refresh = () => {
     if (!networkEnabled) return Promise.resolve();
+    if (statusSource) return statusSource.refresh();
     return api.mcp().then((d) => { setServers(d.servers); setTools(d.tools); onStatus?.(d); }).catch(() => {});
   };
-  usePolling(refresh, 4000, { enabled: networkEnabled });
+  usePolling(refresh, 4000, { enabled: networkEnabled && !statusSource });
   useEffect(() => {
     if (!networkEnabled) return;
     api.mcpCatalog().then((d) => setCatalog(d.catalog)).catch(() => {});
