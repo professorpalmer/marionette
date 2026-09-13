@@ -1101,15 +1101,6 @@ export default function Conversation({
     taRef.current?.focus();
   };
 
-  const copyReceipt = (receipt: InputReceipt) => {
-    try {
-      appendOriginal(receiptDraft(receipt, activeSessionIdRef.current || ""));
-      setQueueWriteError(null);
-    } catch (err) {
-      setQueueWriteError(inputFailureMessage(err) || (err instanceof Error ? err.message : "Original could not be copied."));
-    }
-  };
-
   const handleQueueEdit = (item: { id: string; text: string }) => {
     const sid = activeSessionIdRef.current;
     const generation = streamGenRef.current;
@@ -4102,8 +4093,6 @@ export default function Conversation({
         swarmLiveJobs={swarmLiveJobs}
         sessionId={activeSessionId || cachedSessionIdRef.current || ""}
         queueLoadError={queueWriteError || queueLoadError}
-        receipts={inputReceipts}
-        onCopyReceipt={copyReceipt}
         attachedDocuments={attachedDocuments}
         onRemoveDocument={index => setAttachedDocuments(current => current.filter((_, i) => i !== index))}
         queueRecovery={queueRecovery}
