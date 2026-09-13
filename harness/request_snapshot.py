@@ -156,6 +156,15 @@ def _prepare_boundary(method, value, kwargs):
 
     owner = getattr(method, '__self__', None)
     name = getattr(method, '__name__', '')
+    from harness.managed_local_driver import ManagedLocalDriver
+
+    if (type(owner) is ManagedLocalDriver and name in ('chat', 'chat_stream')
+            and getattr(method, '__func__', None) is getattr(ManagedLocalDriver, name)):
+        prepared, boundary, recovery = _prepare_boundary(
+            getattr(owner._transport(), name), value, kwargs,
+        )
+        return (owner._leased_method(prepared), boundary,
+                owner._leased_method(recovery) if recovery else None)
     if type(owner) not in (OpenAICompatDriver, AnthropicDriver, CodexResponsesDriver):
         return method, None, None
     if name not in ('chat', 'chat_stream'):

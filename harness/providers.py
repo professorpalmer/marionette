@@ -682,7 +682,8 @@ def build_pilot(spec: str, *, max_tokens: int | None = None):
         from .local_model_manager import get_manager
         from .keys import get_env_var_for_reach
         full_spec = spec if spec.startswith("local:") else "local:%s" % model
-        resolved = get_manager().resolve_spec(full_spec)
+        manager = get_manager()
+        resolved = manager.resolve_spec(full_spec)
         if not resolved or not resolved.get("base_url"):
             raise ProviderError(
                 "local endpoint %r is not usable. Start the managed server or save an external endpoint."
@@ -710,8 +711,15 @@ def build_pilot(spec: str, *, max_tokens: int | None = None):
                 raise ProviderError(
                     "public local endpoint %r requires an API key" % full_spec
                 )
+        driver_type = OpenAICompatDriver
+        managed_options = {}
+        if resolved.get("managed_owned"):
+            from .managed_local_driver import ManagedLocalDriver
+            driver_type = ManagedLocalDriver
+            managed_options = {"manager": manager, "spec": full_spec}
         return _finalize_driver(
-            OpenAICompatDriver(
+            driver_type(
+                **managed_options,
                 name=driver_name,
                 model=model,
                 base_url=base_url,

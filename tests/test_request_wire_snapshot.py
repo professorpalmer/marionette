@@ -225,3 +225,47 @@ def test_changed_http_model_is_not_verified(monkeypatch):
     with pytest.raises(Captured):
         request.method(value, **kwargs)
     assert request.wire_receipt()['wire_status'] == 'mismatch'
+
+
+@pytest.mark.parametrize('stream', [False, True])
+def test_managed_frozen_body_and_recovery_keep_request_lease(monkeypatch, stream):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+    from harness.managed_local_driver import ManagedLocalDriver
+    active = []
+    endpoint = SimpleNamespace(model='original', base_url='http://localhost:4321/v1')
+    class Manager:
+        @contextmanager
+        def request_scope(self, spec):
+            active.append(spec)
+            try:
+                yield endpoint
+            finally:
+                active.pop()
+    driver = ManagedLocalDriver(manager=Manager(), spec='local:managed/original',
+        name='local', model='original', base_url='http://localhost:1234/v1',
+        api_key_env='', allow_keyless=True, extra_body={'top_p': .8})
+    request = FrozenRequest.capture(driver.chat_stream if stream else driver.chat,
+                                   [{'role': 'user', 'content': 'hello'}], {})
+    assert request.wire_receipt()['wire_status'] == 'absent'
+    driver.extra_body['top_p'] = .1
+    driver.model = 'mutated'
+    bodies = []
+    def transport(req, **kw):
+        assert active
+        assert req.full_url.startswith(endpoint.base_url)
+        bodies.append(json.loads(req.data))
+        raise Captured()
+    monkeypatch.setattr('urllib.request.urlopen', transport)
+    value, kwargs = request.materialize()
+    with pytest.raises(Captured):
+        request.method(value, **dict(kwargs, **({'on_delta': lambda x: None} if stream else {})))
+    assert not active
+    assert bodies[0]['model'] == 'original' and bodies[0]['top_p'] == .8
+    assert request.wire_receipt()['wire_status'] == 'verified'
+    endpoint.base_url = 'http://localhost:5678/v1'
+    assert callable(request.recovery_method)
+    with pytest.raises(Captured):
+        request.recovery_method(value, **kwargs)
+    assert not active
+    assert request.wire_receipt()['wire_status'] == 'verified'
