@@ -20,7 +20,7 @@ def usage(states, configure=lambda svc, rows: None):
         output_per_mtok_usd=2., billing='metered',
         marginal_cost_usd=lambda tin, tout: (tin + 2*tout)/1e6,
         estimate_cost_usd=lambda tin, tout: (tin + 2*tout)/1e6) for name in ('primary','cli','foreign')]
-    svc.active_session_total = lambda keys, get, reg: {'est_cost_usd': sum(_job_swarm_accounting(get(k), reg)[1] for k in keys)}
+    svc.active_session_total = lambda keys, get, reg, reports: {'est_cost_usd': sum(_job_swarm_accounting(get(k), reg)[1] for k in keys)}
     svc.sum_job_set_savings_detail = lambda keys, get, reg, **kw: {'routing_tokens_compared': sum(_job_swarm_accounting(get(k), reg)[0] for k in keys)}
     configure(svc, rows)
     return get_usage('', svc)[1]

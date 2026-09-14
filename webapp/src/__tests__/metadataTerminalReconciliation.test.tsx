@@ -1,12 +1,12 @@
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
-import { JobMetadataOwner, metadataJobs, useSharedJobMetadata } from '../lib/jobMetadataContext';
+import { JobMetadataOwner, metadataActivity, metadataJobs, useSharedJobMetadata } from '../lib/jobMetadataContext';
 import { context, detail, handshake, list, response, selection, summary, view } from './jobMetadata.fixtures';
 import wire from './metadataActive.backend.json';
 
 function Projection() {
   const { state } = useSharedJobMetadata();
-  return <output>{metadataJobs(state).map(job => `${job.id}:${job.status === 'running' ? 'Active' : job.status === 'done' ? 'Finished' : job.status}`).join(',')}</output>;
+  return <output data-active-count={metadataActivity(state).count}>{metadataJobs(state).map(job => `${job.id}:${job.status === 'running' ? 'Active' : job.status === 'done' ? 'Finished' : job.status}`).join(',')}</output>;
 }
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 async function advance(ms: number) { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); }
@@ -130,4 +130,35 @@ it('an overlapping request skips ticks without stopping future reconciliation', 
   f.settle(); await act(async () => { f.release(); }); await advance(48000);
   expect(f.calls.length).toBeGreaterThan(before);
   expect(screen.getByRole('status')).toHaveTextContent('Finished'); expect(f.maxConcurrent).toBe(1);
+});
+
+
+it('scheduled PM detail completion settles tracker and activity while the list still reports running', async () => {
+  vi.useFakeTimers(); vi.setSystemTime(0); Reflect.deleteProperty(window, 'harnessIPC');
+  const c = { ...context, scope: 'all' };
+  let terminal = false, details = 0;
+  vi.stubGlobal('fetch', vi.fn(async (path: string) => {
+    const url = new URL(path, 'http://fixture');
+    if (url.pathname === '/api/endpoint') return response(handshake);
+    if (url.pathname.endsWith('/view')) return response(view());
+    if (url.pathname.endsWith('/pins')) return response({ version: 1, context: c, results: [] });
+    if (url.pathname.endsWith('/detail')) {
+      details++;
+      return response({ ...detail(), context: c, lifecycle: terminal ? 'complete' : 'running' });
+    }
+    if (url.pathname.endsWith('/metadata')) {
+      const status = url.searchParams.get('status');
+      const rows = !status || status === 'running' ? [summary()] : [];
+      return response({ ...list(rows), context: c, mode: url.searchParams.get('mode') });
+    }
+    throw Error(`Unexpected ${path}`);
+  }));
+  render(<JobMetadataOwner repo={c.repo} sessionId={c.session_id}><Projection /></JobMetadataOwner>);
+  await advance(16000);
+  expect(screen.getByRole('status')).toHaveTextContent('Active');
+  terminal = true;
+  await advance(32000);
+  expect(details).toBeGreaterThan(0);
+  expect(screen.getByRole('status')).toHaveTextContent('job_1:complete');
+  expect(screen.getByRole('status')).toHaveAttribute('data-active-count', '0');
 });

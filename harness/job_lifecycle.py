@@ -9,6 +9,4 @@ def terminal_task_lifecycle(statuses: Iterable[str]) -> Optional[str]:
         return None
     if "failed" in statuses:
         return "failed"
-    if statuses & {"skipped", "cancelled"}:
-        return "cancelled"
     return "complete"

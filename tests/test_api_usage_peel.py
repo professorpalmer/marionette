@@ -30,7 +30,7 @@ def _svc(*, driver="m1", repo="", meters=None, cache=None, pilot=None):
         job_swarm_accounting=lambda arts, reg: (0, 0.0),
         tokens_cached_swarm=lambda arts: 0,
         job_savings_fields=lambda jid: {},
-        active_session_total=lambda ids, arts, reg: None,
+        active_session_total=lambda ids, arts, reg, reports: None,
         sum_job_set_savings=lambda ids, arts, reg, **kw: (0.0, 0.0),
         sum_job_set_savings_detail=lambda ids, arts, reg, **kw: {
             "routing_saved_usd": 0.0,
@@ -205,7 +205,7 @@ def test_session_usage_filters_foreign_session_jobs_before_aggregation(tmp_path,
         for j, sid in [(mine, 'session-a'), (other, 'session-b')]
     ], store, None)
     seen = []
-    def total(ids, arts, registry):
+    def total(ids, arts, registry, reports):
         seen.extend(key[-1] for key in ids)
         return dict(session_id='session-a', est_cost_usd=0, input_tokens=0, output_tokens=0)
     svc.active_session_total = total

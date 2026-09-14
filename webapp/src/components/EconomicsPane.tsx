@@ -213,7 +213,7 @@ export default function EconomicsPane() {
         </select>
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto">
-        {sessionAllTime && processUsage.readStatus === "unavailable" && (
+        {sessionAllTime && !processUsage.sessionTotal && processUsage.readStatus === "unavailable" && (
           <button type="button" className="px-3 py-2 text-[11px] text-risk" onClick={() => void refreshProcessUsage()}>
             Session usage partial / unavailable. Retry
           </button>

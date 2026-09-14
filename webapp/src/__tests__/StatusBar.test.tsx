@@ -751,3 +751,16 @@ it('shows plan inclusion and historical value in both session surfaces', async (
   expect(await panel.findByText('Included in plan')).toBeVisible();
   expect(await panel.findAllByText('~$5.00')).toHaveLength(2);
 });
+
+it("does not show a session Retry banner for an unrelated boot-store failure", async () => {
+  mockWorkspaces.mockResolvedValue([]);
+  mockGetSessionState.mockResolvedValue({});
+  mockSessions.mockResolvedValue({ sessions: [], active: "" });
+  mockGetUsage.mockResolvedValue({ ...processUsage,
+    session: { ...processUsage.session, read_status: "unavailable" },
+  });
+  render(<><StatusBar {...statusBarProps} /><EconomicsPane /></>);
+  fireEvent.change(await screen.findByLabelText("Economics ownership"), { target: { value: "conversation" } });
+  await waitFor(() => expect(screen.getAllByText(/33\.60/).length).toBeGreaterThan(0));
+  expect(screen.queryAllByText(/Session usage partial \/ unavailable/)).toHaveLength(0);
+});
