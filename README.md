@@ -7,7 +7,7 @@ and both the chat **pilot** and agentic **workers** (swarm / implement) run on
 that credential. No Cursor, Claude, or Codex CLI install is required.
 
 Puppetmaster is the bundled kernel — not a second product to set up.
-stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.27.22` is the one
+stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.27.23` is the one
 real dependency the installer puts in the venv.
 
 Current release: **v0.9.497**. Marionette remains deliberately pre-1.0.
@@ -92,7 +92,7 @@ The cost thesis is measured, not asserted:
 |---|---|
 | **Provider-native pilot** | One driver, every OpenAI-compatible endpoint (OpenRouter or native). Frontier control models (Claude, GPT) and open-weights (GLM, DeepSeek, Kimi, Qwen, MiniMax) drive the same loop. |
 | **CodeGraph-first retrieval** | Per-turn structural context is auto-injected (symbols, defs, call sites) before the model acts, so it leans on the graph instead of dumping whole files. Self-healing: the index detects edits, additions, and deletions and refreshes in the background. |
-| **Puppetmaster delegation** | `run_swarm`, `run_implement`, and `run_parallel` run bounded workers as durable jobs. Inspect recorded attempts, acceptance evidence, uncertain outcomes, and measured or estimated consumption. Marionette pins `puppetmaster-ai==1.27.22`; the installer and self-update use the same version. |
+| **Puppetmaster delegation** | `run_swarm`, `run_implement`, and `run_parallel` run bounded workers as durable jobs. Inspect recorded attempts, acceptance evidence, uncertain outcomes, and measured or estimated consumption. Marionette pins `puppetmaster-ai==1.27.23`; the installer and self-update use the same version. |
 | **Portable LLM Wiki** | Cross-session, cross-LLM durable memory. A local model structures a session digest into entity/concept/decision pages (the "backwards" orchestration) cheaply, then ingests them -- human-approved by default. |
 | **Durable memory graph** | Local durable facts/preferences (`MemoryStore`) plus optional relations via `MemoryGraph` (`GET /api/memory/graph`, shape `{nodes,edges}` like the wiki graph; sqlite + append-only jsonl). |
 | **Vision on any driver** | Paste or drop a screenshot and even a text-only driver "sees" it. A VLM sidecar transcribes the image, resolved in tiers: an explicit `HARNESS_VLM_REACH` override, then a dedicated Gemini/OpenRouter vision key, then -- with zero extra setup -- **any provider key you already have that exposes a vision model** (Anthropic, OpenAI, xAI, ...). No separate vision key required if your driver's provider can see. |
