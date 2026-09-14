@@ -138,6 +138,7 @@ class WorkerResult:
     retry_after: str = ""
     provider_request_id: str = ""
     finish_reason: str = ""
+    terminal_diagnostics: dict = field(default_factory=dict)
 
 
 def scope_goal_paths_to_worktree(

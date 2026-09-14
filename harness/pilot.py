@@ -1727,8 +1727,8 @@ def build_tools_schema(
                     "type": "object",
                     "properties": {
                         "goal": {"type": "string", "description": "The coding objective / task description to implement"},
-                        "adapter": {"type": "string", "enum": ["agentic"], "description": "Optional adapter; the only supported value is 'agentic'. Omit it for normal routing among enabled provider/model pairs."},
-                        "model": {"type": "string", "description": "Optional strict agentic worker model pin (registry id or provider/model, for example openrouter/stealth/ox-alpha). A model pin implies adapter=agentic, never falls back, and must be omitted for normal auto-routing."},
+                        "adapter": {"type": "string", "enum": ["agentic", "codex"], "description": "Optional adapter. Native codex requires an explicit codex/model pin; agentic routes among enabled provider/model pairs."},
+                        "model": {"type": "string", "description": "Optional exact worker model pin. codex/gpt-6-astra uses the official Codex CLI; openai-codex:gpt-6-astra uses the direct agentic OAuth provider. Pins never substitute. Omit for auto-routing."},
                         "mode": {"type": "string", "enum": ["implement", "analysis", "review"], "description": "Worker execution mode: 'implement' (expects a patch; default) or 'analysis'/'review' (read-only report; empty diff is success)."},
                         "reasoning_effort": _worker_reasoning_effort_schema(),
                         "repo": {"type": "string", "description": "Optional absolute path to a DIFFERENT git repository to run this implementation in (defaults to the open workspace). Use when the task edits a repo other than the current one. Must be a git work tree."}
@@ -1763,8 +1763,8 @@ def build_tools_schema(
                                 "Example: [\"Fix the flaky login test\", \"Update CONTRIBUTING.md setup steps\"]."
                             ),
                         },
-                        "adapter": {"type": "string", "enum": ["agentic"], "description": "Optional adapter; the only supported value is 'agentic'. Omit it for normal routing among enabled provider/model pairs."},
-                        "model": {"type": "string", "description": "Optional strict agentic model pin shared by every child goal (registry id or provider/model). Implies adapter=agentic and disables fallback/auto-substitution."},
+                        "adapter": {"type": "string", "enum": ["agentic", "codex"], "description": "Optional adapter. Native codex requires an explicit codex/model pin; agentic routes among enabled provider/model pairs."},
+                        "model": {"type": "string", "description": "Optional exact model pin shared by every child goal. codex/model uses the official CLI; openai-codex:model uses the direct agentic provider. Disables fallback and substitution."},
                         "mode": {"type": "string", "enum": ["implement", "analysis", "review"], "description": "Worker execution mode: 'implement' (can edit) or 'analysis'/'review' (read-only)"},
                         "reasoning_effort": _worker_reasoning_effort_schema(),
                         "repo": {"type": "string", "description": "Optional absolute path to a DIFFERENT git repository to run this implementation in (defaults to the open workspace). Use when the task edits a repo other than the current one. Must be a git work tree."},

@@ -178,21 +178,20 @@ class AdapterResolveMixin:
         return "", note
 
     def _active_adapters_system_note(self) -> str:
-        """Report the product worker adapter without advertising CLI fallbacks."""
-        try:
-            from puppetmaster.platform_lock import enabled_adapters
-            enabled = set(enabled_adapters())
-        except Exception:
-            enabled = set()
-        if "agentic" not in enabled:
-            return (
-                "PRODUCT WORKERS: agentic is not enabled by the platform lock. "
-                "Worker dispatch is unavailable; do not substitute another adapter."
-            )
+        """Describe direct provider routing and explicit native Codex pins."""
+        from .swarm_worker_allowlist import native_codex_available
+        codex_note = (
+            " Explicit codex/model pins use the official Codex CLI."
+            if native_codex_available()
+            else " Native Codex pins are unavailable and must fail without substitution."
+        )
+        from .edit_engines import agentic_platform_enabled
+        if not agentic_platform_enabled():
+            return "PRODUCT WORKERS: agentic is disabled by the platform lock." + codex_note
         return (
-            "PRODUCT WORKERS: use only agentic. Omit adapter or set adapter=agentic. "
-            "Auto-routing uses enabled, available provider/model pairs; an explicit "
-            "model pin must identify one of those pairs."
+            "PRODUCT WORKERS: auto-routing uses agentic enabled provider/model pairs. "
+            "openai-codex:model uses the direct agentic OAuth provider."
+            + codex_note
         )
 
     def _detect_default_implement_adapter(self) -> str:

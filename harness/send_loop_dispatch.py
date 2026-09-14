@@ -35,15 +35,18 @@ DISPATCH_ACTION_KINDS: frozenset[str] = frozenset({
 
 
 def _strict_agentic_dispatch(act) -> tuple[object, bool, str]:
-    """Resolve the product action's agentic pin before any fallback.
-
-    Product implement/parallel actions have one adapter contract: agentic.
-    Providers and models are selected beneath that adapter, so an omitted
-    adapter is still strict rather than permission to select another engine.
-    """
+    """Resolve explicit native Codex or direct provider pins without fallback."""
 
     requested_model = str(getattr(act, "model", "") or "").strip()
     requested_adapter = str(getattr(act, "adapter", "") or "").strip().lower()
+    from harness.swarm_model_pin import _parse_pin_provider_model, resolve_worker_model_pin
+    if _parse_pin_provider_model(requested_model)[0] == "codex":
+        if requested_adapter not in ("", "codex"):
+            return None, True, "Native Codex model pin conflicts with the requested adapter"
+        pin, error = resolve_worker_model_pin(
+            requested_model, str(getattr(act, "reasoning_effort", "") or ""),
+        )
+        return pin, True, error
     if requested_adapter not in ("", "agentic"):
         if requested_model:
             return (
@@ -1457,10 +1460,10 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     external_adapters = {'cursor', 'claude-code', 'codex', 'openai', 'hermes', 'antigravity'}
     requested_adapter, adapter_remap_note = session._resolve_requested_implement_adapter(act.adapter or '')
     if strict_adapter:
-        requested_adapter = 'agentic'
+        requested_adapter = agentic_pin.adapter if agentic_pin is not None else 'agentic'
         adapter_remap_note = ''
-    use_external = requested_adapter in external_adapters and _puppetmaster_available() and session._external_adapter_available(requested_adapter)
-    if requested_adapter in external_adapters and (not use_external):
+    use_external = not strict_adapter and requested_adapter in external_adapters and _puppetmaster_available() and session._external_adapter_available(requested_adapter)
+    if not strict_adapter and requested_adapter in external_adapters and (not use_external):
         if not adapter_remap_note:
             adapter_remap_note = f"adapter '{requested_adapter}' unavailable; using standalone agentic/native"
         requested_adapter = ''
@@ -1565,7 +1568,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     else:
         from harness.edit_engines import select_edit_engine
         engine = (
-            'agentic'
+            requested_adapter
             if strict_adapter
             else select_edit_engine(session.config, requested_adapter)
         )
@@ -1727,10 +1730,10 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     external_adapters = {'cursor', 'claude-code', 'codex', 'openai', 'hermes', 'antigravity'}
     requested_adapter, adapter_remap_note = session._resolve_requested_implement_adapter(act.adapter or '')
     if strict_adapter:
-        requested_adapter = 'agentic'
+        requested_adapter = agentic_pin.adapter if agentic_pin is not None else 'agentic'
         adapter_remap_note = ''
-    use_external = requested_adapter in external_adapters and _puppetmaster_available() and session._external_adapter_available(requested_adapter)
-    if requested_adapter in external_adapters and (not use_external):
+    use_external = not strict_adapter and requested_adapter in external_adapters and _puppetmaster_available() and session._external_adapter_available(requested_adapter)
+    if not strict_adapter and requested_adapter in external_adapters and (not use_external):
         if not adapter_remap_note:
             adapter_remap_note = f"adapter '{requested_adapter}' unavailable; using standalone agentic/native"
         requested_adapter = ''
@@ -1904,7 +1907,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     else:
         from harness.edit_engines import select_edit_engine
         engine = (
-            'agentic'
+            requested_adapter
             if strict_adapter
             else select_edit_engine(session.config, requested_adapter)
         )
