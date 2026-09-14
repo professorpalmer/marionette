@@ -300,6 +300,75 @@ def test_boot_and_ladder_never_mutate_shared_models_json(tmp_path, monkeypatch):
     assert "vision" in by_id["agentic/moonshotai/kimi-k3"]["tags"]
 
 
+def test_reconcile_shared_models_adds_new_native_rows_to_existing_registry(tmp_path):
+    from harness.marionette_registry import reconcile_shared_models
+
+    isolated = tmp_path / ".pmharness" / "marionette-models.json"
+    isolated.parent.mkdir()
+    isolated.write_text(
+        json.dumps(
+            {
+                "models": [
+                    {
+                        "id": "codex/gpt-5-6-luna",
+                        "adapter": "codex",
+                        "adapter_model_name": "gpt-5.6-luna",
+                        "capability_score": 91,
+                    },
+                    {
+                        "id": "agentic/example",
+                        "adapter": "agentic",
+                        "adapter_model_name": "example",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    shared = tmp_path / ".puppetmaster" / "models.json"
+    shared.parent.mkdir()
+    shared.write_text(
+        json.dumps(
+            {
+                "models": [
+                    {
+                        "id": "codex/gpt-5-6-luna",
+                        "adapter": "codex",
+                        "capability_score": 1,
+                    },
+                    {
+                        "id": "codex/gpt-6-astra",
+                        "adapter": "codex",
+                        "adapter_model_name": "gpt-6-astra",
+                        "capability_score": 100,
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = reconcile_shared_models(str(isolated))
+
+    rows = json.loads(isolated.read_text(encoding="utf-8"))["models"]
+    by_id = {row["id"]: row for row in rows}
+    assert report["merged"] == 1
+    assert by_id["codex/gpt-5-6-luna"]["capability_score"] == 91
+    assert by_id["codex/gpt-6-astra"]["adapter_model_name"] == "gpt-6-astra"
+    assert by_id["agentic/example"]["adapter"] == "agentic"
+
+    from puppetmaster.routing_authority import resolve_and_bind_explicit_pin
+
+    bound = resolve_and_bind_explicit_pin(
+        {"model": "codex/gpt-6-astra", "reasoning_effort": "low"},
+        adapter="codex",
+        registry_path=isolated,
+    )
+    assert bound["model"] == "gpt-6-astra"
+    assert bound["pinned_model"] == "codex/gpt-6-astra"
+    assert bound["reasoning_effort"] == "low"
+
+
 def test_ladder_updates_canonical_and_flattened_sibling_rows(tmp_path, monkeypatch):
     """Both canonical and flattened alias rows must receive ladder stamps."""
     dest = tmp_path / "marionette-models.json"
