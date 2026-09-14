@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Resolve product worker pins to exact enabled agentic provider/model rows."""
+"""Resolve exact native Codex pins and enabled direct provider/model rows."""
 
 import re
 from dataclasses import dataclass
@@ -9,7 +9,6 @@ from typing import Any, Optional
 from .diag import note as _diag
 
 _PIN_PROVIDER_ALIASES = {
-    "codex": "openai-codex",
     "chatgpt-codex": "openai-codex",
     "codex-plan": "openai-codex",
 }
@@ -105,6 +104,8 @@ def normalize_swarm_model_pin_request(pin: str) -> tuple[str, dict[str, str]]:
     meta: dict[str, str] = {}
     if not requested:
         return "", meta
+    if _parse_pin_provider_model(requested)[0] == "codex":
+        return requested, meta
     if is_luna_max_pin(requested):
         # Preserve an explicit openai-codex / agentic provider prefix when present.
         prov, _model = _parse_pin_provider_model(requested)
@@ -131,7 +132,7 @@ def normalize_swarm_model_pin_request(pin: str) -> tuple[str, dict[str, str]]:
 
 @dataclass(frozen=True)
 class AgenticModelPin:
-    """Immutable provider/model constraint for one agentic dispatch."""
+    """Immutable worker identity; direct providers default to the agentic adapter."""
 
     requested: str
     provider: str
@@ -139,8 +140,19 @@ class AgenticModelPin:
     router_model_id: str
     reason: str = "exact"
     policy: str = "explicit_pin"
+    adapter: str = "agentic"
+    reasoning_effort: str = ""
 
     def payload_fields(self) -> dict[str, Any]:
+        if self.adapter == "codex":
+            return {
+                "model": self.model, "auto_route": False,
+                "allowed_adapters": ["codex"], "pinned_adapter": "codex",
+                "pinned_model": self.router_model_id,
+                "pinned_adapter_model_name": self.model,
+                "requested_model": self.requested, "pin_policy": self.policy,
+                **({"reasoning_effort": self.reasoning_effort} if self.reasoning_effort else {}),
+            }
         return {
             "provider": self.provider,
             "model": self.model,
@@ -409,7 +421,8 @@ def swarm_model_pin_hint(*, limit: int = 16) -> str:
         allow = set()
     available = list_available_worker_models(limit=limit, adapters=allow)
     rule = (
-        "Workers use only adapter=agentic. Omit model for auto-routing within "
+        "Explicit codex/model pins use the native Codex CLI when allowed and available. "
+        "openai-codex:model uses the direct agentic provider. Omit model for auto-routing within "
         "enabled, available provider/model pairs. An explicit model must match "
         "an enabled provider:model pair or registry ID; unavailable pins fail "
         "without choosing a different model."
@@ -601,7 +614,7 @@ def _allowed_pin_adapters(
             allowed_adapters = resolve_swarm_worker_allowlist().get("allowed_adapters") or []
         except Exception:
             return []
-    return ["agentic"] if "agentic" in allowed_adapters else []
+    return [a for a in ("agentic", "codex") if a in allowed_adapters]
 
 
 def resolve_swarm_model_pin(
@@ -640,6 +653,21 @@ def resolve_swarm_model_pin(
         return empty
     if not requested:
         requested = original
+
+    provider, model = _parse_pin_provider_model(requested)
+    if provider == "codex":
+        from .swarm_worker_allowlist import native_codex_available
+        adapters = ["codex"] if allowed_adapters is None else _allowed_pin_adapters(allowed_adapters)
+        if "codex" not in adapters or not native_codex_available() or not model:
+            return {**empty, "auto_route": False, "demoted": True,
+                    "reason": "Native Codex pin requires an allowed, available Codex CLI/platform."}
+        native_pin = AgenticModelPin(
+            requested=original, provider="", model=model,
+            router_model_id=f"codex/{model}", adapter="codex",
+        )
+        return {**empty, "pin_fields": native_pin.payload_fields(),
+                "auto_route": False, "resolved": native_pin.router_model_id,
+                "adapter": "codex", "reason": "exact_native_codex_pin"}
 
     # Refresh catalog against live keys so alias resolution sees OpenCode Go /
     # OpenRouter / etc. as they exist *now*, not a stale peer machine catalog.
@@ -750,6 +778,34 @@ def resolve_agentic_model_pin(pin: str) -> tuple[Optional[AgenticModelPin], str]
         reason = f"pin {requested!r} is not available to the agentic adapter"
     hints = ", ".join(available) if available else "(none keyed)"
     return None, f"{reason}. Available agentic models: {hints}"
+
+
+def resolve_worker_model_pin(pin: str, reasoning_effort: str = "") -> tuple[Optional[AgenticModelPin], str]:
+    """Resolve an explicit native CLI pin or a direct provider pin."""
+    if _parse_pin_provider_model(pin)[0] != "codex":
+        return resolve_agentic_model_pin(pin)
+    resolved = resolve_swarm_model_pin(pin)
+    if resolved.get("demoted"):
+        return None, str(resolved["reason"])
+    fields = resolved["pin_fields"]
+    return AgenticModelPin(
+        requested=pin, provider="", model=fields["model"],
+        router_model_id=resolved["resolved"], adapter="codex",
+        reasoning_effort=reasoning_effort,
+    ), ""
+
+
+def codex_worker_payload(payload: dict, *, expects_diff: bool) -> dict:
+    """Constrain the official CLI and translate effort to its config key."""
+    from .reasoning_effort import current_swarm_reasoning_effort
+    out = dict(payload)
+    out.pop("provider", None)
+    effort = str(out.get("reasoning_effort") or current_swarm_reasoning_effort())
+    out.update(sandbox="workspace-write" if expects_diff else "read-only",
+               approval_policy="never", auto_route=False,
+               allowed_adapters=["codex"], reasoning_effort=effort,
+               extra_args=["-c", f"model_reasoning_effort={effort}"])
+    return out
 
 
 def agentic_pin_matches_routed_model(

@@ -392,7 +392,7 @@ def test_resolve_openai_codex_colon_pin_to_namespaced_row(monkeypatch, tmp_path)
 
     from harness.swarm_model_pin import resolve_swarm_model_pin
 
-    for pin in ("openai-codex:gpt-5.6-luna", "codex/gpt-5.6-luna"):
+    for pin in ("openai-codex:gpt-5.6-luna", "openai-codex/gpt-5.6-luna"):
         out = resolve_swarm_model_pin(pin)
         assert out["demoted"] is False, pin
         assert out["auto_route"] is False, pin
