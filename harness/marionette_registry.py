@@ -434,23 +434,29 @@ def reconcile_shared_models(path: Optional[str] = None) -> dict[str, Any]:
         m for m in models
         if isinstance(m, dict) and m.get("adapter") != "agentic"
     ]
-    if non_agentic:
-        report["skipped"] = True
-        report["reason"] = "non-agentic already present"
-        return report
+    existing_ids = {
+        str(m.get("id") or "")
+        for m in non_agentic
+        if str(m.get("id") or "")
+    }
     shared_non_agentic = [
         m for m in shared_models
-        if isinstance(m, dict) and m.get("adapter") != "agentic" and m.get("id")
+        if (
+            isinstance(m, dict)
+            and m.get("adapter") != "agentic"
+            and m.get("id")
+            and str(m["id"]) not in existing_ids
+        )
     ]
     if not shared_non_agentic:
         report["skipped"] = True
-        report["reason"] = "shared has no non-agentic rows"
+        report["reason"] = "no missing shared non-agentic rows"
         return report
     agentic = [
         m for m in models
         if isinstance(m, dict) and m.get("adapter") == "agentic"
     ]
-    data["models"] = shared_non_agentic + agentic
+    data["models"] = non_agentic + shared_non_agentic + agentic
     try:
         dest.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     except Exception as exc:
