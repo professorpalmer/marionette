@@ -591,7 +591,7 @@ describe("EconomicsPane", () => {
     expect(screen.queryByText("Prompt-cache value")).toBeNull();
     expect(screen.queryByText("Compact tool outputs")).toBeNull();
     expect(screen.getByText("Spend")).toBeTruthy();
-    expect(screen.getByText("At list price")).toBeTruthy();
+    expect(screen.getByText("At list price (partial)")).toBeTruthy();
     expect(await screen.findByText("No owned jobs for this session.")).toBeTruthy();
   });
 

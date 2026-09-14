@@ -154,6 +154,19 @@ def test_goal_mutation_rejects_foreign_session(tmp_path, switch_during_gate):
     assert code == 409
 
 
+def test_goal_request_resolves_registered_background_owner(tmp_path):
+    a, b = goal_session(tmp_path, 'A'), goal_session(tmp_path, 'B')
+    svc = SessionControlServices(
+        cfg=SimpleNamespace(), get_pilot=lambda: b, get_runners=lambda: {'A': a, 'B': b},
+        gate_active_pilot_ready=lambda: {'error': 'unrelated view loading'},
+        stash_put=lambda *a: '', save_active_transcript=lambda: None,
+        upload_dir=str(tmp_path), diag=lambda *a: None)
+    code, _ = post_session_goal({'text': 'alpha', 'session_id': 'A'}, svc)
+    assert code == 200
+    assert get_session_goal('A', svc)[1]['goal']['text'] == 'alpha'
+    assert b.session_goal_dict()['text'] == ''
+
+
 def test_bound_goal_rebind_does_not_copy_previous_owner(tmp_path):
     session = goal_session(tmp_path, 'A')
     session.set_session_goal('alpha')

@@ -401,9 +401,10 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
             <Coins size={10} className="text-faint shrink-0" />
             <span className="status-bar-optional-xs">{formatTokens(usage.tokens_used)} tok</span>
             {(() => {
-              const savedUsd = listPriceValueTotal(usage);
+              const valueUsd = listPriceValueTotal(usage);
+              const listPriceUsd = (usage.nominal_cost_usd ?? usage.est_cost_usd) + valueUsd;
               const hit = cacheHitDisplay(usage);
-              if (savedUsd <= 0 && hit.percent == null) return null;
+              if (listPriceUsd <= 0 && hit.percent == null) return null;
               const cached = usage.tokens_cached || 0;
               const compacted = usage.tool_output_tokens_saved || 0;
               const cacheValue =
@@ -442,13 +443,13 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
                   type="button"
                   onClick={openSessionEconomics}
                   className="status-bar-optional-sm inline-flex items-center gap-1 px-1.5 py-px text-good/65 hover:text-good/80"
-                  title={`List-price value${usage.list_price_complete === false ? ' (partial)' : ''}, not a cash refund. ${detail}`}
+                  title={`At list price${usage.list_price_complete === false ? ' (partial)' : ''}; not a cash charge. ${detail}`}
                 >
                   {hit.percent != null ? <span>{hit.percent} {hit.label}</span> : null}
-                  {hit.percent != null && savedUsd > 0 ? (
+                  {hit.percent != null && listPriceUsd > 0 ? (
                     <span className="text-good/50" aria-hidden="true">·</span>
                   ) : null}
-                  {savedUsd > 0 ? `~${formatCost(savedUsd)} list-price${usage.list_price_complete === false ? ' (partial)' : ''}` : null}
+                  {listPriceUsd > 0 ? `~${formatCost(listPriceUsd)} list-price${usage.list_price_complete === false ? ' (partial)' : ''}` : null}
                 </button>
               );
             })()}
@@ -462,10 +463,11 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
               }
               className="inline-flex items-center gap-1 px-1.5 py-px rounded-full bg-panel2 border border-edge text-txt/90 font-medium hover:border-edge hover:text-txt transition cursor-pointer"
             >
-              {spendIsEstimated(usage) ? "~" : ""}
+              {spendIsEstimated(usage) && usage.cost_source !== "plan_estimated" ? "~" : ""}
               {usage.read_status === "unavailable"
                 ? usage.est_cost_usd > 0 ? `${formatCost(usage.est_cost_usd)} known subtotal` : "Spend unavailable"
-                : formatCost(usage.est_cost_usd)}
+                : usage.cost_source === "plan_estimated" && usage.est_cost_usd === 0
+                  ? "Included in plan · $0 marginal spend" : formatCost(usage.est_cost_usd)}
             </button>
             <span className="text-faint/70 normal-case font-sans tracking-normal">this session</span>
           </span>

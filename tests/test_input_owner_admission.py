@@ -54,6 +54,18 @@ from harness.input_receipts import session_input_store
 from tests.test_input_receipts_integration import services
 
 
+@pytest.mark.parametrize('route,body', [
+    ('post_session_queue', {'text': 'background'}),
+    ('post_session_steer', {'text': 'background'}),
+    ('post_session_queue_reorder', {'ids': []}),
+])
+def test_explicit_queue_owner_without_active_view(session, route, body):
+    svc = services(session)
+    svc.get_pilot = lambda: None
+    status, _ = getattr(session_control, route)({**body, 'session_id': session.harness_session_id}, svc)
+    assert status == 200
+
+
 def owned_services(session):
     svc = services(session)
     box = SimpleNamespace(pilot=session)

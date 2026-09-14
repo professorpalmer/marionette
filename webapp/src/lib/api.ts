@@ -843,6 +843,8 @@ export type RecommendResult = {
 
 export type UsageData = {
   session: {
+    nominal_cost_usd?: number;
+    plan_billing?: boolean;
     accounting_scope?: 'conversation';
     list_price_complete?: boolean;
     read_status?: "unavailable";
@@ -1726,7 +1728,7 @@ export const api = {
     ),
   stopSessionLoop: () =>
     postJSON<{ ok: boolean; loop: SessionLoop }>("/api/session/loop", { action: "stop" }),
-  sessionTodo: (body: { command: string }) =>
+  sessionTodo: (body: { command: string; session_id?: string }) =>
     postJSON<{
       ok: boolean;
       mutated?: boolean;

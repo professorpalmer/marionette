@@ -235,7 +235,7 @@ class _OpenProjectPilot:
         return DriverResponse(text=txt, tokens_out=10, latency_ms=1.0)
 
 
-def test_open_project_action_validates_and_succeeds(monkeypatch, tmp_path):
+def test_open_project_action_refuses_project_promotion(monkeypatch, tmp_path):
     import os
     import pytest
     from harness.conversation import ConversationalSession, ConvEvent
@@ -265,11 +265,6 @@ def test_open_project_action_validates_and_succeeds(monkeypatch, tmp_path):
     events = list(session.send("open the project please"))
     action_results = [e for e in events if e.kind == "action_result"]
     assert len(action_results) == 1
-    assert "error" not in action_results[0].data
-    assert "workspace" in action_results[0].data.get("types", [])
-    assert os.path.normcase(os.path.abspath(action_results[0].data["workspace_root"])) == \
-        os.path.normcase(os.path.abspath(str(existing)))
-    
-    # Check that environment and config are updated
-    assert session.config.repo == str(existing)
-    assert os.environ["HARNESS_REPO"] == str(existing)
+    assert "relocate_session" in action_results[0].data["error"]
+    assert session.config.repo != str(existing)
+    assert os.environ.get("HARNESS_REPO") != str(existing)

@@ -138,6 +138,20 @@ def _is_busy(runner: Any) -> bool:
     return _pending_swarm_busy(runner)
 
 
+def resolve_session_runner(runners: Any, session_id: Any) -> Optional[Any]:
+    """Resolve a named owner, including its cold build, independently of the view."""
+    if runners is None or not isinstance(session_id, str) or not session_id:
+        return None
+    from .deferred_attach import is_deferred_placeholder
+    pilot = runners.get(session_id)
+    if is_deferred_placeholder(pilot):
+        pilot = pilot.ensure_ready()
+    if (pilot is None or runners.get(session_id) is not pilot
+            or getattr(pilot, "harness_session_id", "") != session_id):
+        return None
+    return pilot
+
+
 class SessionRunnerRegistry:
     """dict[session_id -> runner] with a concurrent-session lease."""
 

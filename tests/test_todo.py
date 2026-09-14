@@ -265,6 +265,19 @@ def test_slash_view_done_and_fuzzy_start(tmp_path):
     assert not denied.ok
 
 
+def test_todo_slash_clear_removes_persisted_checklist():
+    phases, _, _ = _apply([], op="init", list=[
+        {"phase": "Release", "items": ["stale step"]},
+    ])
+
+    cleared = handle_todo_slash_command("/todo clear", phases)
+
+    assert cleared.ok
+    assert cleared.mutated
+    assert cleared.phases == []
+    assert cleared.public_dict()["todos"]["phases"] == []
+
+
 def test_todo_matches_live_job_label():
     assert todo_matches_any_description("Sonnet #2: bug scan", ["Sonnet #2"]) is True
     assert todo_matches_any_description("fix", ["fixture loader"]) is False

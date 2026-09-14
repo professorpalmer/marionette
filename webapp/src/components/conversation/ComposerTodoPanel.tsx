@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import { Ban, CheckCircle2, ChevronDown, ChevronRight, Circle, ListTree, Loader2, MinusCircle } from "lucide-react";
+import { Ban, CheckCircle2, ChevronDown, ChevronRight, Circle, ListTree, Loader2, MinusCircle, X } from "lucide-react";
 import { api, type Job, type SessionTodoItem, type SessionTodoSnapshot } from "../../lib/api";
 import {
   litTodoContentsFromGroups,
   liveJobTodoLabelGroups,
+  sessionHasLiveTodoOwner,
   todoHasWork,
   todoPhaseProgress,
   todoSnapshotProgress,
@@ -12,6 +13,7 @@ import {
 import {
   getSessionTodos,
   getSessionTodosSessionId,
+  clearSessionTodos,
   publishSessionTodos,
   subscribeSessionTodos,
 } from "../../lib/sessionTodos";
@@ -45,9 +47,11 @@ function todoPhaseKey(sessionId: string, phaseIndex: number, phaseName: string):
 export default function ComposerTodoPanel({
   jobs = [],
   sessionId,
+  active = true,
 }: {
   jobs?: readonly Job[];
   sessionId: string;
+  active?: boolean;
 }) {
   const snapshot = useSyncExternalStore(
     subscribeSessionTodos,
@@ -65,6 +69,10 @@ export default function ComposerTodoPanel({
     () => litTodoContentsFromGroups(snapshot, liveJobTodoLabelGroups(jobs, sessionId)),
     [jobs, sessionId, snapshot],
   );
+  const hasLiveOwner = useMemo(
+    () => sessionHasLiveTodoOwner(jobs, sessionId),
+    [jobs, sessionId],
+  );
 
   useEffect(() => {
     if (!sessionId) return;
@@ -79,23 +87,39 @@ export default function ComposerTodoPanel({
     };
   }, [sessionId, storedSid]);
 
-  if (!todoHasWork(snapshot) || storedSid !== sessionId) return null;
+  if (!todoHasWork(snapshot) || storedSid !== sessionId || (!active && !hasLiveOwner)) return null;
   const { done, total } = todoSnapshotProgress(snapshot);
   const next = snapshot.next;
 
+  const dismiss = () => {
+    clearSessionTodos();
+    void api.sessionTodo({ command: "/todo clear", session_id: sessionId });
+  };
+
   return (
     <div className={COMPOSER_FAMILY_SECTION} data-slot="composer-todo-panel">
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
-        className="flex w-full items-center gap-1.5 px-2 py-1 text-left text-[10.5px] leading-4 text-txt hover:bg-panel/35"
-      >
-        {open ? <ChevronDown size={11} className="text-faint" /> : <ChevronRight size={11} className="text-faint" />}
-        <ListTree size={11} className="text-faint" />
-        <span className="font-medium tabular-nums">TODO {done}/{total}</span>
-        {next && !open ? <span className="min-w-0 truncate text-faint">{next}</span> : null}
-      </button>
+      <div className="flex items-center">
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen((value) => !value)}
+          className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-left text-[10.5px] leading-4 text-txt hover:bg-panel/35"
+        >
+          {open ? <ChevronDown size={11} className="text-faint" /> : <ChevronRight size={11} className="text-faint" />}
+          <ListTree size={11} className="text-faint" />
+          <span className="font-medium tabular-nums">TODO {done}/{total}</span>
+          {next && !open ? <span className="min-w-0 truncate text-faint">{next}</span> : null}
+        </button>
+        <button
+          type="button"
+          aria-label="Dismiss TODO checklist"
+          title="Dismiss TODO checklist"
+          onClick={dismiss}
+          className="mr-1 rounded p-1 text-faint hover:bg-panel/45 hover:text-txt"
+        >
+          <X size={11} />
+        </button>
+      </div>
       {open && (
         <div className="space-y-1 px-2 pb-1.5">
           {snapshot.phases.map((phase, index) => {

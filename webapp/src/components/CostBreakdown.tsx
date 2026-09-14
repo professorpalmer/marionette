@@ -9,6 +9,8 @@
 import type { UsageData } from "../lib/api";
 
 export type CostBreakdownData = {
+  nominal_cost_usd?: number;
+  plan_billing?: boolean;
   accounting_scope?: 'conversation';
   list_price_complete?: boolean;
   read_status?: "unavailable";
@@ -55,6 +57,8 @@ export function usageToCostBreakdownData(
   session: UsageData["session"],
 ): CostBreakdownData {
   return {
+    nominal_cost_usd: session.nominal_cost_usd,
+    plan_billing: session.plan_billing,
     accounting_scope: session.accounting_scope,
     list_price_complete: session.list_price_complete,
     read_status: session.read_status,
@@ -459,9 +463,12 @@ export default function CostBreakdown({
       ? data.tool_output_tokens_saved
       : 0;
   const valueTotal = listPriceValueTotal(data);
-  const withoutSavings = est + valueTotal;
+  const withoutSavings = (data.nominal_cost_usd ?? est) + valueTotal;
+  const included = data.cost_source === "plan_estimated" && est === 0;
+  const hasPlanValue = included || data.plan_billing === true;
+  const savingsTotal = Math.max(0, withoutSavings - est);
   const savingsPercent = withoutSavings > 0
-    ? Math.max(0, Math.min(100, (valueTotal / withoutSavings) * 100))
+    ? Math.max(0, Math.min(100, (savingsTotal / withoutSavings) * 100))
     : null;
   const showWhySaved = promptCacheSaved > 0
     || modelSelectionSaved > 0
@@ -487,16 +494,16 @@ export default function CostBreakdown({
       <div className="mb-3 rounded-md border border-edge/50 bg-panel2/20 px-2.5 py-2.5">
         <div className="grid grid-cols-2 gap-x-3 gap-y-2.5">
           <div className="min-w-0">
-            <div className="text-[10px] text-muted">Spend</div>
-            <div className="mt-0.5 text-[15px] font-medium tabular-nums text-txt">{spendPrefix}{fmtCost(est)}</div>
+            <div className="text-[10px] text-muted">{included ? "Included in plan" : "Spend"}</div>
+            <div className="mt-0.5 text-[15px] font-medium tabular-nums text-txt">{included ? "$0 marginal spend" : `${spendPrefix}${fmtCost(est)}`}</div>
           </div>
           <div className="min-w-0">
-            <div className="text-[10px] text-muted">At list price</div>
+            <div className="text-[10px] text-muted">At list price{data.list_price_complete === false ? " (partial)" : ""}</div>
             <div className="mt-0.5 text-[15px] font-medium tabular-nums text-txt">~{fmtCost(withoutSavings)}</div>
           </div>
           <div className="min-w-0">
-            <div className="text-[10px] text-muted">{listPriceValueHeading(listPriceValueWeakestBasis(data))}</div>
-            <div className="mt-0.5 text-[15px] font-medium tabular-nums text-good/65">~{fmtCost(valueTotal)}</div>
+            <div className="text-[10px] text-muted">{hasPlanValue ? "Estimated savings" : listPriceValueHeading(listPriceValueWeakestBasis(data))}</div>
+            <div className="mt-0.5 text-[15px] font-medium tabular-nums text-good/65">~{fmtCost(savingsTotal)}</div>
           </div>
           <div className="min-w-0">
             <div className="text-[10px] text-muted">Less than list price</div>

@@ -11,8 +11,46 @@ from tests.test_input_receipts_integration import session
 
 
 @pytest.mark.parametrize('mode', ['chat', 'auto'])
+def test_registered_background_stream_uses_owner_repo(session, monkeypatch, tmp_path, mode):
+    from harness.api.streams import stream_chat, stream_auto
+    from harness.conversation import ConvEvent
+    owner_repo = tmp_path / 'owner'
+    owner_repo.mkdir()
+    session.config.repo = str(owner_repo)
+    viewed = SimpleNamespace(harness_session_id='other')
+    refreshed, finalized, sent = [], [], []
+    def send(text, *args, **kwargs):
+        sent.append(text)
+        yield ConvEvent('assistant_done', {})
+    monkeypatch.setattr(session, 'send', send)
+    monkeypatch.setattr(session, 'run_auto', send)
+    svc = StreamServices(
+        cfg=SimpleNamespace(repo=str(tmp_path / 'other')),
+        sessions=SimpleNamespace(active='other', set_title_if_default=lambda *_: None),
+        get_pilot=lambda: viewed, get_session=lambda: viewed,
+        get_runners=lambda: {session.harness_session_id: session},
+        ensure_pilot_matches_driver=lambda: pytest.fail('must not rebuild the viewed pilot'),
+        maybe_refresh_codegraph=refreshed.append,
+        pilot_preflight=lambda: 'unrelated viewed driver is unavailable',
+        checkpoint_transcript=lambda *_: None, finalize_turn=finalized.append,
+        upload_dir=str(session.state_dir), auto_budget_from_env=lambda: None,
+    )
+    handler = SimpleNamespace(wfile=io.BytesIO(), send_response=lambda *_: None,
+                              send_header=lambda *_: None, _cors=lambda: None,
+                              end_headers=lambda: None)
+    if mode == 'chat':
+        stream_chat(handler, 'owner input', [], svc, session_id=session.harness_session_id)
+    else:
+        stream_auto(handler, 'owner input', svc, session_id=session.harness_session_id)
+    assert sent == ['owner input']
+    assert refreshed == [str(owner_repo)]
+    assert finalized[0]['pilot'] is session
+    assert finalized[0]['config'] is session.config
+
+
+@pytest.mark.parametrize('mode', ['chat', 'auto'])
 @pytest.mark.parametrize('switch_during_ensure', [False, True])
-def test_delayed_request_cannot_admit_into_new_active_session(session, monkeypatch, mode, switch_during_ensure):
+def test_unregistered_request_cannot_admit_into_active_session(session, monkeypatch, mode, switch_during_ensure):
     import harness.server as srv
     from harness.http_routes import build_get_routes
 
@@ -31,6 +69,7 @@ def test_delayed_request_cannot_admit_into_new_active_session(session, monkeypat
         cfg=session.config,
         sessions=SimpleNamespace(active=session.harness_session_id, set_title_if_default=lambda *_: None),
         get_pilot=lambda: session, get_session=lambda: session,
+        get_runners=lambda: {},
         ensure_pilot_matches_driver=lambda: calls.append('ensure'),
         maybe_refresh_codegraph=lambda *_: None, pilot_preflight=lambda: None,
         checkpoint_transcript=lambda *_: None, finalize_turn=lambda *_: None,
@@ -68,7 +107,7 @@ def test_delayed_request_cannot_admit_into_new_active_session(session, monkeypat
     build_get_routes(srv._route_services())[path](handler, urlparse(path), query)
     assert handler.status == 409
     assert handler.body['code'] == 'input_session_changed'
-    assert calls == (['ensure'] if switch_during_ensure else [])
+    assert calls == []
     assert session.input_receipts() == []
 
 

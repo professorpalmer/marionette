@@ -453,9 +453,9 @@ def _get_usage_body(repo_override: str, svc: UsageServices) -> tuple[int, JsonPa
                 else:
                     session_total.update(svc.sum_job_set_savings_detail(
                         [k for k in session_jids if k not in unavailable], _job_arts, registry))
-                    # Persisted session meters do not retain historical pilot model prices.
-                    # Only attributable job value is credited; no app-run fallback.
-                    session_total['list_price_complete'] = False
+                    session_total['list_price_complete'] = bool(
+                        session_total.get('list_price_complete') and not session_incomplete
+                    )
         except Exception as e:
             session_incomplete = True
             svc.diag("server.usage_session_aggregate", e)
