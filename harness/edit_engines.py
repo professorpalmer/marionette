@@ -138,6 +138,11 @@ def _agentic_store_failure_snapshot(store: Any, job_id: str = "") -> dict:
         "worker_failure": "",
         "stop_reason": "",
         "turns": 0,
+        "total_tool_calls": 0,
+        "last_tool_names": [],
+        "mutating_tool_attempts": 0,
+        "mutating_tool_successes": 0,
+        "progress_governor_fired": False,
         "provider": "",
         "model": "",
         "submit_forced_budget": False,
@@ -273,6 +278,14 @@ def _agentic_store_failure_snapshot(store: Any, job_id: str = "") -> dict:
                 snap["turns"] = int(payload.get("turns") or 0)
             except (TypeError, ValueError):
                 pass
+        for key in ("total_tool_calls", "mutating_tool_attempts", "mutating_tool_successes"):
+            if isinstance(payload.get(key), int):
+                snap[key] += payload[key]
+        names = payload.get("last_tool_names")
+        if isinstance(names, list):
+            snap["last_tool_names"] = [str(name)[:120] for name in names[-32:]]
+        if payload.get("progress_governor_fired") is True:
+            snap["progress_governor_fired"] = True
         if not snap["provider"] and payload.get("provider"):
             snap["provider"] = str(payload.get("provider") or "").strip()
         if not snap["model"] and payload.get("model"):
@@ -963,6 +976,17 @@ def run_edit_worker(
     from harness.worker import WorkerResult
 
     requested = (requested_adapter or "").strip().lower()
+    if agentic_pin is not None and agentic_pin.adapter == "codex":
+        from harness.swarm_worker_allowlist import native_codex_available
+        if requested not in ("", "codex") or not native_codex_available():
+            return _stamp_agentic(WorkerResult(
+                ok=False, error=AGENTIC_ROUTE_FAILED,
+                summary="Native Codex pin requires its allowed, available CLI; no substitution.",
+            ), execution_pin=agentic_pin)
+        return run_agentic_edit(
+            config, goal, session_id=session_id, cwd=cwd or config.repo,
+            expects_diff=expects_diff, job_id=job_id, agentic_pin=agentic_pin,
+        )
     strict_agentic = bool(
         strict_adapter or agentic_pin is not None or requested == "agentic"
     )
@@ -1276,6 +1300,7 @@ def run_agentic_edit(
     from harness.cli_job_merge import mark_marionette_host_scratch
     from harness.job_scoping import job_label_for_session, stamp_task_payload
 
+    worker_adapter = agentic_pin.adapter if agentic_pin is not None else "agentic"
     requested_mode = "implement" if expects_diff else "analysis"
     pending = {"wr": None}
     cleanup_errors: list = []
@@ -1300,14 +1325,30 @@ def run_agentic_edit(
                 wr.pm_job_id = str(snap.get("job_id") or "")
             if not wr.task_ids and snap.get("task_ids"):
                 wr.task_ids = list(snap.get("task_ids") or [])
+            wr.terminal_diagnostics = {
+                key: snap[key] for key in (
+                    "stop_reason", "turns", "total_tool_calls", "last_tool_names",
+                    "mutating_tool_attempts", "mutating_tool_successes",
+                    "progress_governor_fired",
+                    "tokens_in", "tokens_out", "usage_known", "worker_failure",
+                ) if key in snap
+            }
+            wr.finish_reason = wr.finish_reason or str(snap.get("stop_reason") or "")
+            if snap.get("usage_known"):
+                wr.tokens_in = int(snap.get("tokens_in") or 0)
+                wr.tokens_out = int(snap.get("tokens_out") or 0)
+                wr.usage_known = True
         wr = _stamp_agentic(wr, pm_result, execution_pin=agentic_pin)
         pending["wr"] = wr
         return wr
 
-    if not agentic_available():
+    from harness.swarm_worker_allowlist import native_codex_available
+    available = native_codex_available() if worker_adapter == "codex" else agentic_available()
+    if not available:
         return finish(WorkerResult(
             ok=False, error=AGENTIC_UNAVAILABLE,
-            summary="No provider key visible for the agentic engine.",
+            summary=("Native Codex CLI/platform is unavailable." if worker_adapter == "codex"
+                     else "No provider key visible for the agentic engine."),
             patch_capture_status="skipped",
         ), worktree_existed=False)
 
@@ -1379,10 +1420,13 @@ def run_agentic_edit(
                 instruction = _analysis_instruction(
                     goal, wt_path, "explore", via_tool=True,
                 )
+                if worker_adapter == "codex":
+                    from harness.swarm_model_pin import codex_worker_payload
+                    payload = codex_worker_payload(payload, expects_diff=expects_diff)
                 spec = WorkerSpec(
                     role="explore",
                     instruction=instruction,
-                    adapter="agentic",
+                    adapter=worker_adapter,
                     payload=payload,
                 )
             else:
@@ -1423,10 +1467,13 @@ def run_agentic_edit(
                 elif not (provider and model):
                     _stamp_settings_model_allowlist(payload)
 
+                if worker_adapter == "codex":
+                    from harness.swarm_model_pin import codex_worker_payload
+                    payload = codex_worker_payload(payload, expects_diff=expects_diff)
                 spec = WorkerSpec(
                     role="implement",
                     instruction=goal,
-                    adapter="agentic",
+                    adapter=worker_adapter,
                     payload=payload,
                 )
             # The PM sqlite store is scratch state for this single inline run.
@@ -1554,6 +1601,8 @@ def run_agentic_edit(
             usage_known = _artifacts_usage_known(result)
             cost_known = False if usage_known else None
             routed_model = _routed_model_id(result)
+            if worker_adapter == "codex":
+                routed_model = str(failure_snap.get("model") or routed_model)
             if agentic_pin is not None:
                 from harness.swarm_model_pin import agentic_pin_matches_routed_model
 
@@ -1565,7 +1614,7 @@ def run_agentic_edit(
                         ok=False,
                         error=AGENTIC_ROUTE_FAILED,
                         summary=(
-                            f"Agentic model mismatch: requested "
+                            f"Worker model mismatch: requested "
                             f"{agentic_pin.router_model_id!r}, routed "
                             f"{routed_model!r}."
                         ),
@@ -1930,13 +1979,15 @@ def _stamp_agentic(
     execution_pin: Optional["AgenticModelPin"] = None,
 ) -> "WorkerResult":
     """Label a WorkerResult as the agentic engine + routed model (best-effort)."""
-    result.engine = "agentic"
-    result.adapter = "agentic"
+    result.engine = execution_pin.adapter if execution_pin is not None else "agentic"
+    result.adapter = result.engine
     if not (result.model or "").strip() and pm_result is not None:
         routed = _routed_model_id(pm_result)
         if routed:
             result.model = routed
     if execution_pin is not None:
+        if not result.model and execution_pin.adapter == "codex":
+            result.model = execution_pin.model
         result.requested_model = execution_pin.requested
         result.provider = execution_pin.provider
         result.routing_policy = execution_pin.policy

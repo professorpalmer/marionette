@@ -1441,6 +1441,9 @@ def _payload_with_swarm_reasoning(payload: dict, intent: DriverIntent) -> dict:
         )
     else:
         out.setdefault("reasoning_effort", current_swarm_reasoning_effort())
+    if out.get("pinned_adapter") == "codex":
+        from harness.swarm_model_pin import codex_worker_payload
+        out = codex_worker_payload(out, expects_diff=False)
     return out
 
 
@@ -1750,11 +1753,15 @@ def execute_intent(
             pin_fields: dict = {}
             pin_adapter = primary_adapter
             if pinned_model:
-                # Resolve against an exact Models-enabled live agentic row.
-                from harness.swarm_model_pin import resolve_swarm_model_pin
+                # Resolve either an explicit native Codex pin or an exact
+                # Models-enabled direct-provider row.
+                from harness.swarm_model_pin import _parse_pin_provider_model, resolve_swarm_model_pin
 
                 resolved = resolve_swarm_model_pin(
-                    pinned_model, allowed_adapters=allowed_adapters,
+                    pinned_model, allowed_adapters=(
+                        None if _parse_pin_provider_model(pinned_model)[0] == "codex"
+                        else allowed_adapters
+                    ),
                 )
                 pin_fields = dict(resolved.get("pin_fields") or {})
                 if resolved.get("demoted"):
@@ -1776,8 +1783,8 @@ def execute_intent(
                     "read_only": True, "no_edit": True, "dry_run": True,
                     "cwd": repo_cwd, "prompt": intent.goal,
                     "auto_route": True,
-                    # Product workers are always agentic; provider/model is
-                    # selected inside that adapter.
+                    # Auto-routing stays within agentic; an explicit native
+                    # Codex pin replaces this allowlist below.
                     "allowed_adapters": list(allowed_adapters),
                     # False whenever API-billed agentic is eligible so OR
                     # cash models are not starved by plan-billed Cursor.

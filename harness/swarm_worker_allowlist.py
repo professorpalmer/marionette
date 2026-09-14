@@ -218,6 +218,17 @@ def _flash_lookup_keys(model: str) -> frozenset:
         return frozenset({n} if n else ())
 
 
+def native_codex_available() -> bool:
+    """Require the native CLI and a readable, permitting platform policy."""
+    import shutil
+    try:
+        from puppetmaster.platform_lock import is_adapter_enabled
+        return bool(is_adapter_enabled("codex") and shutil.which("codex"))
+    except Exception as exc:
+        _diag("swarm_worker_allowlist.codex", exc)
+        return False
+
+
 def resolve_swarm_worker_allowlist(
     *,
     specs: Optional[list[str]] = None,

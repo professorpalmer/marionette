@@ -112,6 +112,7 @@ def _enrich_worker_provenance(
     except (TypeError, ValueError):
         status_i = None
     provenance.update({
+        "terminal_diagnostics": dict(getattr(res, "terminal_diagnostics", None) or {}),
         "failure_stage": stage,
         "failure_reason": failure_reason,
         "http_status": status_i,
