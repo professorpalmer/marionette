@@ -389,28 +389,21 @@ class MetadataReader:
         result['page'] = self._wire_page(page, binding, after_revision)
         if page.reason:
             result['missing'].append(page.reason)
+        if page.outcome not in ('complete', 'partial'):
+            self.check(ctx)
+            return result
         key = (active, ctx.scope, selection, status)
         with self._lock:
             seen = self._seen.get(key, {})
             updates = []
             uncertain = False
-            present = set()
-            for row in prepended:
-                if len(result['rows']) >= 50 or row.job_ref in present:
-                    continue
-                present.add(row.job_ref)
-                result['rows'].append(self._summary(row, ctx, selection))
-                updates.append((row.job_ref, row.revision))
+            # Every scanned row must fit: its cursor already advances past it.
+            # Exact rows supplement spare capacity without consuming scan coverage.
+            scanned_refs = {row.job_ref for row in page.items}
             for row in page.items:
                 owned = not row.deleted and self._owned(row, known, ctx)
                 previous_owned = self._previous_owned(row, known, ctx, status)
                 if owned:
-                    if row.job_ref in present:
-                        updates.append((row.job_ref, row.revision))
-                        continue
-                    if len(result['rows']) >= 50:
-                        continue
-                    present.add(row.job_ref)
                     result['rows'].append(self._summary(row, ctx, selection))
                     updates.append((row.job_ref, row.revision))
                 elif row.job_ref in seen or previous_owned:
@@ -418,6 +411,13 @@ class MetadataReader:
                         result['rows'].append(self._summary(row, ctx, selection, removed=True))
                 elif mode == 'changes' and row.previous_membership == 'unavailable':
                     uncertain = True
+            for row in prepended:
+                if (len(result['rows']) >= 50 or row.job_ref in scanned_refs
+                        or row.revision > page.revision):
+                    continue
+                scanned_refs.add(row.job_ref)
+                result['rows'].append(self._summary(row, ctx, selection))
+                updates.append((row.job_ref, row.revision))
             if uncertain:
                 result.update(page=_page(checkpoint=after_revision), rows=[])
                 result['missing'].append('previous_membership_unavailable')
@@ -567,12 +567,16 @@ class MetadataReader:
                 and not task_cursor and not artifact_cursor
                 and selected_pages['tasks'].outcome == 'complete'
                 and selected_pages['tasks'].revision == selected_pages['artifacts'].revision
+                and selected_pages['tasks'].revision >= row.revision
+                and selected_pages['artifacts'].outcome in ('complete', 'partial')
                 and len(selected_pages['tasks'].items) == row.task_count):
             from .job_lifecycle import terminal_task_lifecycle
 
             terminal = terminal_task_lifecycle(item.status for item in selected_pages['tasks'].items)
             if terminal:
                 result['lifecycle'] = terminal
+        if not reason and current.revision != row.revision:
+            result['lifecycle'] = current.status if current.status in RUNNING else None
         if reason or current.job_ref != row.job_ref:
             result.update(lifecycle=None, display=dict(kind='unavailable', reason='selection_changed'),
                           task_count=None, artifact_count=None,

@@ -1,7 +1,7 @@
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { JobMetadataClient } from '../lib/jobMetadata';
-import { metadataJobs, metadataViewSessionId } from '../lib/jobMetadataContext';
+import { metadataActivity, metadataJobs, metadataViewSessionId } from '../lib/jobMetadataContext';
 import { JobMetadataStore, useJobMetadata } from '../lib/useJobMetadata';
 import { context, detail, handshake, list, response, selection, summary, token, view } from './jobMetadata.fixtures';
 
@@ -386,4 +386,86 @@ it('native transport backpressure skips an untouched stream until the old IPC se
   expect(ipc.mock.calls.length).toBe(calls);
   held.resolve({ kind: 'response', status: 200, correlationId: '', text: JSON.stringify(list()) });
   await vi.advanceTimersByTimeAsync(1);
+});
+
+it('backend terminal projection settles tracker and activity together', async () => {
+  await open(); await store.advance();
+  request.mockResolvedValue(response({ ...detail(), lifecycle: 'complete' }));
+  store.select(selection()); await store.readDetail();
+  expect(metadataJobs(store.getSnapshot())[0].status).toBe('complete');
+  expect(metadataActivity(store.getSnapshot()).count).toBe(0);
+});
+
+it('worker cancellation does not override the backend parent lifecycle', async () => {
+  await open(); await store.advance();
+  const value = detail();
+  request.mockResolvedValue(response({ ...value, task_count: 1,
+    tasks: { ...value.tasks, rows: value.tasks.rows.map(task => ({ ...task, status: 'cancelled' })) } }));
+  store.select(selection()); await store.readDetail();
+  expect(metadataJobs(store.getSnapshot())[0].status).toBe('running');
+});
+
+it('a newer active summary supersedes an older terminal detail', async () => {
+  await open(); await store.advance();
+  request.mockResolvedValue(response({ ...detail(), lifecycle: 'complete' }));
+  store.select(selection()); await store.readDetail();
+  expect(metadataJobs(store.getSnapshot())[0].status).toBe('complete');
+  store.setPins([selection()]);
+  request.mockResolvedValue(response({ version: 1, context, results: [{ selection: selection(),
+    result: { kind: 'present', row: { ...summary(), revision: 101 } } }] }));
+  expect(await store.refreshPins()).toBe('applied');
+  expect(metadataJobs(store.getSnapshot())[0].status).toBe('running');
+  expect(metadataActivity(store.getSnapshot()).count).toBe(1);
+});
+
+
+it('collapsed PM rows refresh the backend terminal lifecycle without a local alias', async () => {
+  await open(); await store.advance();
+  request.mockResolvedValue(response({ ...detail(), lifecycle: 'complete' }));
+  expect(await store.hydrateListedDetails({ retryErrors: true, includePM: true })).toBe('applied');
+  expect(metadataJobs(store.getSnapshot())[0].status).toBe('complete');
+  expect(metadataActivity(store.getSnapshot()).count).toBe(0);
+});
+
+it.each(['unavailable', 'skewed', 'stale'] as const)('does not settle from %s terminal evidence', async mode => {
+  await open(); await store.advance();
+  const value = detail();
+  const tasks = mode === 'unavailable'
+    ? { ...value.tasks, rows: [], page: { ...value.tasks.page, outcome: 'unavailable', next_cursor: null } }
+    : value.tasks;
+  request.mockResolvedValue(response({ ...value, lifecycle: 'complete', tasks,
+    artifacts: mode === 'skewed' ? { ...value.artifacts, page: { ...value.artifacts.page, revision: 101, checkpoint: 101 } } : value.artifacts }));
+  store.select(selection());
+  if (mode === 'stale') {
+    request.mockResolvedValue(response({ error: 'unavailable' }, 503));
+  }
+  await store.readDetail();
+  expect(metadataJobs(store.getSnapshot())[0].status).toBe('running');
+});
+
+it('a stronger running detail supersedes a terminal projection but an equal revision does not', async () => {
+  await open(); await store.advance();
+  store.select(selection());
+  request.mockResolvedValue(response({ ...detail(), lifecycle: 'complete' }));
+  await store.readDetail();
+  request.mockResolvedValue(response(detail()));
+  await store.readDetail();
+  expect(metadataJobs(store.getSnapshot())[0].status).toBe('complete');
+  const value = detail();
+  request.mockResolvedValue(response({ ...value,
+    tasks: { ...value.tasks, page: { ...value.tasks.page, revision: 101, checkpoint: 101 } },
+    artifacts: { ...value.artifacts, page: { ...value.artifacts.page, revision: 101, checkpoint: 101 } } }));
+  await store.readDetail();
+  expect(metadataJobs(store.getSnapshot())[0].status).toBe('running');
+});
+
+it('a raced lifecycle remains stale and eligible for refresh', async () => {
+  await open(); await store.advance();
+  request.mockResolvedValue(response({ ...detail(), lifecycle: null }));
+  store.select(selection()); await store.readDetail();
+  expect(store.getSnapshot().detail).toMatchObject({ freshness: 'stale' });
+  expect(metadataJobs(store.getSnapshot())[0].status).toBe('running');
+  request.mockResolvedValue(response({ ...detail(), lifecycle: 'complete' }));
+  expect(await store.hydrateListedDetails({ retryErrors: true, includePM: true })).toBe('applied');
+  expect(metadataActivity(store.getSnapshot()).count).toBe(0);
 });

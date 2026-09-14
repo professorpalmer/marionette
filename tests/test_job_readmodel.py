@@ -751,3 +751,114 @@ def test_complete_task_page_settles_lagging_running_parent(env, statuses, expect
     detail = reader.read_selected_metadata(selection)
     assert detail['tasks']['page']['outcome'] == 'complete'
     assert detail['lifecycle'] == expected
+
+
+@pytest.mark.parametrize('scan_outcome', ['unavailable', 'cursor_expired'])
+def test_exact_rows_fail_closed_when_scan_unavailable(env, monkeypatch, scan_outcome):
+    store, reader, ctx, source, _ = env
+    parent = job(store)
+    ref = store.job_ref(parent.id)
+    monkeypatch.setattr(reader, '_session_known_job_refs', lambda *_: [ref])
+    handle = reader.sources.stores[0].handle
+    original = handle.list_job_summaries
+    def read(**kwargs):
+        result = original(**kwargs)
+        return result if kwargs.get('job_ref') else replace(
+            result, outcome=scan_outcome, items=(), revision=0, scanned=0,
+            next_cursor=None, reason='read_snapshot_unavailable')
+    monkeypatch.setattr(handle, 'list_job_summaries', read)
+    result = reader.read_job_page(ctx, source)
+    assert result['page']['outcome'] == scan_outcome
+    assert result['rows'] == []
+    assert result['page']['checkpoint'] == 0
+
+
+def test_scanned_newer_revision_replaces_exact_row(env, monkeypatch):
+    store, reader, ctx, source, _ = env
+    parent = job(store)
+    ref = store.job_ref(parent.id)
+    monkeypatch.setattr(reader, '_session_known_job_refs', lambda *_: [ref])
+    handle = reader.sources.stores[0].handle
+    original = handle.list_job_summaries
+    def read(**kwargs):
+        result = original(**kwargs)
+        if kwargs.get('job_ref'):
+            store.update_job_status(parent.id, JobStatus.COMPLETE)
+        return result
+    monkeypatch.setattr(handle, 'list_job_summaries', read)
+    result = reader.read_job_page(ctx, source)
+    expected = original(job_ref=ref).items[0]
+    assert len(result['rows']) == 1
+    assert result['rows'][0]['revision'] == expected.revision
+    assert result['rows'][0]['lifecycle'] == 'complete'
+
+
+def test_exact_rows_cannot_consume_scan_pagination_coverage(env, monkeypatch):
+    store, reader, ctx, source, _ = env
+    parents = [job(store, n) for n in range(65)]
+    refs = [store.job_ref(parent.id) for parent in sorted(parents, key=lambda p: p.id)]
+    monkeypatch.setattr(reader, '_session_known_job_refs', lambda *_: refs[-50:])
+    found = set()
+    cursor = None
+    for _ in range(10):
+        result = reader.read_job_page(ctx, source, cursor=cursor)
+        assert_bounded_page(result)
+        found.update(row['selection']['job_ref']['job_id'] for row in result['rows'])
+        cursor = result['page']['next_cursor']
+        if cursor is None:
+            break
+    assert cursor is None
+    assert found == {parent.id for parent in parents}
+
+
+@pytest.mark.parametrize('statuses', [['complete', 'skipped'], ['skipped']])
+def test_terminal_workers_do_not_authorize_parent_cancellation(env, statuses):
+    from puppetmaster.models import TaskStatus
+    store, reader, ctx, source, _ = env
+    parent = job(store)
+    store.update_job_status(parent.id, JobStatus.RUNNING)
+    for status in statuses:
+        store.save_task(Task(job_id=parent.id, role='worker', instruction='terminal', status=TaskStatus(status)))
+    selection = PMSelection(ctx, source, store.job_ref(parent.id))
+    assert reader.read_selected_metadata(selection)['lifecycle'] == 'complete'
+    store.update_job_status(parent.id, JobStatus.CANCELLED)
+    assert reader.read_selected_metadata(selection)['lifecycle'] == 'cancelled'
+
+
+@pytest.mark.parametrize('statuses', [['complete', 'cancelled'], ['cancelled']])
+def test_cancelled_worker_projection_is_not_parent_cancellation(statuses):
+    from harness.job_lifecycle import terminal_task_lifecycle
+    assert terminal_task_lifecycle(statuses) == 'complete'
+
+
+@pytest.mark.parametrize('guard', ['stale_tasks', 'unavailable_artifacts', 'stitching', 'running_worker', 'summary_changed'])
+def test_terminal_projection_requires_current_complete_worker_evidence(env, monkeypatch, guard):
+    from puppetmaster.models import TaskStatus
+    store, reader, ctx, source, _ = env
+    parent = job(store)
+    store.update_job_status(parent.id, JobStatus.STITCHING if guard == 'stitching' else JobStatus.RUNNING)
+    store.save_task(Task(job_id=parent.id, role='worker', instruction='terminal',
+                         status=TaskStatus.RUNNING if guard == 'running_worker' else TaskStatus.COMPLETE))
+    selection = PMSelection(ctx, source, store.job_ref(parent.id))
+    handle = reader.sources.stores[0].handle
+    if guard in ('stale_tasks', 'unavailable_artifacts'):
+        for name in ('list_task_refs', 'list_artifact_refs'):
+            original = getattr(handle, name)
+            def read(*args, _original=original, _name=name, **kwargs):
+                page = _original(*args, **kwargs)
+                if guard == 'stale_tasks':
+                    return replace(page, revision=0)
+                return replace(page, outcome='unavailable', items=()) if _name == 'list_artifact_refs' else page
+            monkeypatch.setattr(handle, name, read)
+    if guard == 'summary_changed':
+        original = handle.list_task_refs
+        def changed(*args, **kwargs):
+            page = original(*args, **kwargs)
+            store.update_job_status(parent.id, JobStatus.COMPLETE)
+            return page
+        monkeypatch.setattr(handle, 'list_task_refs', changed)
+    lifecycle = reader.read_selected_metadata(selection)['lifecycle']
+    if guard == 'summary_changed':
+        assert lifecycle is None
+    else:
+        assert lifecycle in ('running', 'stitching', None)

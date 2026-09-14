@@ -364,7 +364,7 @@ def _restore_boot_usage() -> bool:
         return False
 
 
-def _active_session_total(session_job_ids, arts_getter, registry) -> Any:
+def _active_session_total(session_job_ids, arts_getter, registry, report_getter=None) -> Any:
     """Lifetime running total for the ACTIVE chat session, surviving restarts.
 
     The boot pill above resets to $0 on every relaunch/update (pilot meters are
@@ -376,7 +376,11 @@ def _active_session_total(session_job_ids, arts_getter, registry) -> Any:
     * dollars for every swarm-store job stamped with this session id, across
       ALL app runs -- store-job dollars are deliberately kept OUT of the
       persisted meters (see _add_worker_tokens_from_artifacts) so pricing them
-      here from artifacts x registry never double-bills.
+      here from canonical PM reports never double-bills.
+
+    Token meters already include drained worker usage; job reports contribute
+    dollars only. Callers without stores retain legacy artifact subtotals with
+    incomplete nominal pricing.
     """
     sid = _sessions().active or ""
     if not sid:
@@ -384,13 +388,37 @@ def _active_session_total(session_job_ids, arts_getter, registry) -> Any:
     row = next((s for s in _sessions().list() if s.get("id") == sid), None)
     if row is None:
         return None
+    from ..financial_receipt import consume_pm_cost_report
+
     swarm_cost = 0.0
+    swarm_nominal = 0.0
     jobs_complete = True
+    list_price_complete = bool(row.get("list_price_complete"))
+    plan_billing = bool(row.get("plan_calls"))
     job_acct = _server_attr("_job_swarm_accounting", _job_swarm_accounting)
     for jid in dict.fromkeys(session_job_ids):
         try:
-            _tokens, cost = job_acct(arts_getter(jid), registry)
-            swarm_cost += cost
+            if report_getter is None:
+                _tokens, cost = job_acct(arts_getter(jid), registry)
+                swarm_cost += cost
+                list_price_complete = False
+                continue
+            report = report_getter(jid)
+            receipt = consume_pm_cost_report(report)
+            actual = report.get("actual_cost") or {}
+            tasks = actual.get("tasks") or []
+            plan_billing = plan_billing or any(t.get("billing") == "plan" for t in tasks)
+            spend = receipt.get("spend_usd")
+            if spend is None or actual.get("unpriced_tasks"):
+                jobs_complete = False
+                swarm_cost += float(actual.get("priced_subtotal_usd") or 0)
+            else:
+                swarm_cost += float(spend)
+            nominal = [t.get("api_equivalent_cost_usd") for t in tasks]
+            swarm_nominal += sum(float(value) for value in nominal if value is not None)
+            list_price_complete = list_price_complete and bool(nominal) and all(
+                value is not None for value in nominal
+            ) and bool(actual.get("priced_tasks")) and not actual.get("unpriced_tasks")
         except Exception as e:
             jobs_complete = False
             _diag("server.session_total_job", e, msg=f"job={jid}")
@@ -404,15 +432,15 @@ def _active_session_total(session_job_ids, arts_getter, registry) -> Any:
         "tokens_cached": cached,
         "prompt_input_tokens": tokens_in,
         "prompt_cache_read_tokens": cached,
-        "prompt_cache_hit_ratio": min(1.0, cached / tokens_in) if tokens_in > 0 else None,
+        "prompt_cache_hit_ratio": cached / tokens_in if tokens_in > 0 and 0 <= cached <= tokens_in else None,
         "estimated": True,
-        "cost_source": "plan_estimated" if row.get("plan_calls") and not row.get("api_calls")
+        "cost_source": "plan_estimated" if plan_billing and not row.get("api_calls")
         and not swarm_cost and not row.get("estimated_cost_usd") else "estimated",
-        "plan_billing": bool(row.get("plan_calls")),
-        "nominal_cost_usd": round(float(row.get("nominal_cost_usd", row.get("estimated_cost_usd", 0)) or 0) + swarm_cost, 6),
+        "plan_billing": plan_billing,
+        "nominal_cost_usd": round(float(row.get("nominal_cost_usd", row.get("estimated_cost_usd", 0)) or 0) + swarm_nominal, 6),
         "cache_savings_gross_usd": float(row.get("cache_savings_usd") or 0),
-        "cache_savings_basis": "catalog" if row.get("list_price_complete") else "unknown",
-        "list_price_complete": bool(row.get("list_price_complete")) and jobs_complete and not session_job_ids,
+        "cache_savings_basis": "catalog" if list_price_complete and jobs_complete else "unknown",
+        "list_price_complete": bool(list_price_complete and jobs_complete),
         **({"read_status": "unavailable"} if not jobs_complete else {}),
         "est_cost_usd": round(
             float(row.get("estimated_cost_usd") or 0.0) + swarm_cost, 6

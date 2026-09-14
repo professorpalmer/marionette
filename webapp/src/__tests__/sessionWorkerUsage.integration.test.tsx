@@ -65,7 +65,8 @@ describe('automatic current headers and session worker usage', () => {
     for (let i = 0; i < 20; i++) await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
     expect(screen.getByTitle('Model: gpt-6-astra')).toBeVisible();
     expect(screen.getByRole('button', { name: 'Automatic worker · running' })).toHaveTextContent('0/1');
-    expect(f.selected).not.toHaveBeenCalled();
+    expect(f.selected).toHaveBeenCalled();
+    expect(f.selected.mock.calls.length).toBeLessThanOrEqual(2);
     expect(f.batches.length).toBeGreaterThan(0);
     expect(Math.max(...f.batches)).toBeLessThanOrEqual(8);
   });
@@ -80,7 +81,8 @@ describe('automatic current headers and session worker usage', () => {
     expect(sessionWorkerUsage(f.store.getSnapshot())).toMatchObject({ kind: 'complete', jobs: 1, workers: 1, tokens: 120, cost: 0 });
     expect(screen.getByLabelText('Session worker usage')).toHaveTextContent('120 tokens');
     expect(screen.getByLabelText('Session worker usage')).toHaveTextContent('Native, pilot and legacy unowned usage excluded');
-    expect(f.selected).not.toHaveBeenCalled();
+    expect(f.selected).toHaveBeenCalled();
+    expect(f.selected.mock.calls.length).toBeLessThanOrEqual(16);
   });
   it('retries partial economics and replaces positive costs and counts on TTL even with unchanged rows', async () => {
     const f = await setup(); let now = Date.now(); vi.spyOn(Date, 'now').mockImplementation(() => now);

@@ -444,8 +444,24 @@ def _get_usage_body(repo_override: str, svc: UsageServices) -> tuple[int, JsonPa
                 unavailable.add(key)
                 svc.diag("server.usage_session_job", e, msg=f"job={key[2]}")
         session_incomplete = session_incomplete or bool(unavailable.intersection(session_jids))
+        failed_reports = set()
+
+        def _job_report(key):
+            from ..financial_receipt import load_pm_cost_report
+
+            try:
+                store = stores_by_key.get(key)
+                if store is None:
+                    raise OSError("Job financial store unavailable")
+                return load_pm_cost_report(store, key[2], registry=registry)
+            except Exception:
+                failed_reports.add(key)
+                raise
+
         try:
-            session_total = svc.active_session_total([k for k in session_jids if k not in unavailable], _job_arts, registry)
+            session_total = svc.active_session_total(
+                [k for k in session_jids if k not in unavailable], _job_arts, registry, _job_report
+            )
             if isinstance(session_total, dict):
                 if session_id and session_total.get('session_id') != session_id:
                     session_total = {'read_status': 'unavailable'}
@@ -465,7 +481,7 @@ def _get_usage_body(repo_override: str, svc: UsageServices) -> tuple[int, JsonPa
         if isinstance(session_total, dict):
             session_total = {**session_total, "job_coverage": {
                 "expected": None if session_incomplete and not session_jids else len(session_jids),
-                "read": len([k for k in session_jids if k not in unavailable]),
+                "read": len([k for k in session_jids if k not in unavailable and k not in failed_reports]),
             }}
         if session_incomplete:
             session_total = {**(session_total or {}), "read_status": "unavailable"}

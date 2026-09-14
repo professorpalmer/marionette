@@ -386,7 +386,7 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
           </button>
         </span>
       )}
-      {(processUsage.readStatus === "unavailable" || processUsage.sessionTotal?.read_status === "unavailable") && (
+      {((processUsage.readStatus === "unavailable" && !processUsage.sessionTotal) || processUsage.sessionTotal?.read_status === "unavailable") && (
         <button type="button" className="text-risk" onClick={() => void refreshProcessUsage()}>
           Session usage partial / unavailable. Retry
         </button>
