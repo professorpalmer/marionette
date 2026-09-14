@@ -1100,7 +1100,8 @@ def test_meter_pilot_step_cursor_cli_full_prompt_and_cache_buckets(monkeypatch):
     expected = _session_cost(
         full_in, tout, cached, 1.0, 5.0, cache_write=write,
     )
-    assert meters["estimated_cost_usd"] == expected
+    assert meters["estimated_cost_usd"] == 0
+    assert meters["nominal_cost_usd"] == expected
     # Clamping bug would bill ~uncached-only and collapse cache to tin=7.
     assert expected > _session_cost(7, tout, 7, 1.0, 5.0)
 

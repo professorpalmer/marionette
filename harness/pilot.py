@@ -970,7 +970,7 @@ def build_tools_schema(
         "type": "function",
         "function": {
             "name": "open_project",
-            "description": "Open a local directory as a project/workspace so its files and graph become available. Use when the user says 'open <dir> as a project' or asks to work in a directory.",
+            "description": "Does not promote projects. Use cwd or absolute paths for cloning, worktrees, and execution-only work. For an explicit user request to move the conversation use relocate_session; UI Open Folder opens a project.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -2936,7 +2936,7 @@ You have direct access to a local CodeGraph-indexed workspace and can explore/ed
 - `lsp`: fetch IDE-style status/diagnostics for Python/TypeScript by invoking locally available tools (pyright/tsc/tsserver). Requires optional `language` ('python'/'typescript'/'auto') and `mode` ('status'/'diagnostics').
 - `search_tools`: search the catalog of available pilot and MCP tools; use `activate` to enable hidden tools for later turns.
 - `query_wiki`: query the durable cross-session architecture and knowledge wiki. Requires `question`.
-- `open_project`: open a local directory as the active project/workspace. Requires `path`.
+- `open_project`: refuses project promotion. Use cwd or absolute paths for cloning, worktrees, and directory-only work. Only explicit user-requested conversation moves use `relocate_session`; UI Open Folder opens a project.
 - `relocate_session`: move the current (or named) conversation into a project without starting a blank session. Requires `workspace_root` (or `path`); optional `session_id`, `title`.
 - `session_bank`: list/search prior sessions across workspaces, or read a transcript summary by `session_id`.
 - `store_scratch` / `load_scratch` / `list_scratch` / `clear_scratch`: session-local scratch bindings (survive compaction). Scratch is NOT durable cross-session memory — use `memory` for lasting user preferences/facts.

@@ -3007,8 +3007,9 @@ def _persist_turn_transcript(ctx) -> None:
                 or getattr(pilot, "_replacement_retired", False)):
             return
         if sid and pilot is not None and _runners.get(sid) is pilot:
+            config = (ctx.get("config") if isinstance(ctx, dict) else None) or getattr(pilot, "config", _cfg)
             persist_live_transcript(
-                pilot, _cfg.state_dir or _tf.gettempdir(), sid,
+                pilot, config.state_dir or _tf.gettempdir(), sid,
                 writer=save_transcript,
             )
 

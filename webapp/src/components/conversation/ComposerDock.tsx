@@ -523,7 +523,7 @@ export default function ComposerDock({
             })}
           </div>
         )}
-        <ComposerActivityRail jobs={swarmLiveJobs} sessionId={sessionId} />
+        <ComposerActivityRail jobs={swarmLiveJobs} sessionId={sessionId} active={composerBusy} />
         {/* Server-side PROMPT QUEUE, stacked ABOVE the composer (Cursor-style)
             so the "runs next" items are always visible right over the input.
             These prompts are drained by the backend one full turn at a time. */}

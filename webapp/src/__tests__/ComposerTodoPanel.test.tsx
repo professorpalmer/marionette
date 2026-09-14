@@ -1,16 +1,69 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import ComposerTodoPanel from "../components/conversation/ComposerTodoPanel";
-import type { Job } from "../lib/api";
+import { api, type Job } from "../lib/api";
 import { clearSessionTodos, publishSessionTodos } from "../lib/sessionTodos";
 
 vi.mock("../lib/api", () => ({
-  api: { getSessionState: vi.fn(async () => ({ todos: { phases: [] } })) },
+  api: {
+    getSessionState: vi.fn(async () => ({ todos: { phases: [] } })),
+    sessionTodo: vi.fn(async () => ({ ok: true, todos: { phases: [] } })),
+  },
 }));
 
 describe("ComposerTodoPanel", () => {
   afterEach(() => {
     clearSessionTodos();
+    vi.clearAllMocks();
+  });
+
+  it("hides a checklist left behind after its session becomes idle", () => {
+    publishSessionTodos({
+      phases: [
+        { name: "Release", tasks: [{ content: "old blocked step", status: "blocked" }] },
+      ],
+    }, "sess-stale");
+
+    render(<ComposerTodoPanel sessionId="sess-stale" active={false} />);
+
+    expect(screen.queryByText("TODO 0/1")).not.toBeInTheDocument();
+    expect(screen.queryByText("old blocked step")).not.toBeInTheDocument();
+  });
+
+  it("keeps the checklist while an owned background job is live", () => {
+    publishSessionTodos({
+      phases: [
+        { name: "Release", tasks: [{ content: "finish installer", status: "in_progress" }] },
+      ],
+    }, "sess-background");
+    const job = {
+      id: "j-background",
+      goal: "finish installer",
+      status: "running",
+      session_id: "sess-background",
+      tasks: [],
+    } as Job;
+
+    render(<ComposerTodoPanel sessionId="sess-background" jobs={[job]} active={false} />);
+
+    expect(screen.getByText("TODO 0/1")).toBeInTheDocument();
+  });
+
+  it("force closes and clears the owning session checklist", async () => {
+    publishSessionTodos({
+      phases: [
+        { name: "Release", tasks: [{ content: "stuck step", status: "pending" }] },
+      ],
+    }, "sess-close");
+
+    render(<ComposerTodoPanel sessionId="sess-close" active />);
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss TODO checklist" }));
+
+    expect(api.sessionTodo).toHaveBeenCalledWith({
+      command: "/todo clear",
+      session_id: "sess-close",
+    });
+    expect(screen.queryByText("stuck step")).not.toBeInTheDocument();
   });
 
   it("collapses one phase's children without hiding another phase", () => {

@@ -385,12 +385,14 @@ def _active_session_total(session_job_ids, arts_getter, registry) -> Any:
     if row is None:
         return None
     swarm_cost = 0.0
+    jobs_complete = True
     job_acct = _server_attr("_job_swarm_accounting", _job_swarm_accounting)
     for jid in dict.fromkeys(session_job_ids):
         try:
             _tokens, cost = job_acct(arts_getter(jid), registry)
             swarm_cost += cost
         except Exception as e:
+            jobs_complete = False
             _diag("server.session_total_job", e, msg=f"job={jid}")
     tokens_in = int(row.get("input_tokens") or 0)
     tokens_out = int(row.get("output_tokens") or 0)
@@ -404,7 +406,14 @@ def _active_session_total(session_job_ids, arts_getter, registry) -> Any:
         "prompt_cache_read_tokens": cached,
         "prompt_cache_hit_ratio": min(1.0, cached / tokens_in) if tokens_in > 0 else None,
         "estimated": True,
-        "cost_source": "estimated",
+        "cost_source": "plan_estimated" if row.get("plan_calls") and not row.get("api_calls")
+        and not swarm_cost and not row.get("estimated_cost_usd") else "estimated",
+        "plan_billing": bool(row.get("plan_calls")),
+        "nominal_cost_usd": round(float(row.get("nominal_cost_usd", row.get("estimated_cost_usd", 0)) or 0) + swarm_cost, 6),
+        "cache_savings_gross_usd": float(row.get("cache_savings_usd") or 0),
+        "cache_savings_basis": "catalog" if row.get("list_price_complete") else "unknown",
+        "list_price_complete": bool(row.get("list_price_complete")) and jobs_complete and not session_job_ids,
+        **({"read_status": "unavailable"} if not jobs_complete else {}),
         "est_cost_usd": round(
             float(row.get("estimated_cost_usd") or 0.0) + swarm_cost, 6
         ),
