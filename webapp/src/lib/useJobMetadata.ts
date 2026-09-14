@@ -22,9 +22,10 @@ type DetailState =
     | { observation: null; freshness: 'stale' }
     | { observation: MetadataDetail; freshness: 'stale' | 'observed' }
   ));
+type DetailRefreshOptions = { retryErrors?: boolean; includePM?: boolean };
 type RetainedMetadataObservation = MetadataObservation & { activeRemovalRevision?: number };
 export type JobMetadataState = {
-  canonicalTerminal?: Record<string, string>;
+  canonicalTerminal?: Record<string, { lifecycle: string; revision: number }>;
   headerError: MetadataErrorCode | null;
   headerReads: Record<string, { retryAt: number; failures: number }>;
   headers: Record<string, { observation: MetadataObservation; refreshedAt: number }>; nextHeader: number; selectedRefreshedAt: number;
@@ -43,6 +44,32 @@ export type JobMetadataState = {
   pins: { selection: MetadataSelection; observation: MetadataObservation | null; result: MetadataPinResult['result'] | null }[];
   detail: DetailState; detailCache: Record<string, Extract<DetailState, { kind: 'selected' }>>; displayLimited: boolean;
 };
+export function metadataTerminalProjection(state: JobMetadataState): NonNullable<JobMetadataState['canonicalTerminal']> {
+  const canonicalTerminal = { ...state.canonicalTerminal };
+  for (const cached of Object.values(state.detailCache)) {
+    const detail = cached.observation;
+    const lifecycle = detail?.lifecycle;
+    const key = metadataSelectionKey(cached.selection);
+    if (detail && cached.freshness === 'observed' && !cached.error && lifecycle
+      && !cached.cursors.task_cursor && !cached.cursors.artifact_cursor
+      && ['complete', 'partial'].includes(detail.tasks.page.outcome)
+      && ['complete', 'partial'].includes(detail.artifacts.page.outcome)
+      && detail.tasks.page.revision === detail.artifacts.page.revision) {
+      const revision = detail.tasks.page.revision;
+      if (revision < (canonicalTerminal[key]?.revision ?? 0)) continue;
+      if (['complete', 'completed', 'done', 'failed', 'cancelled', 'timeout', 'timed_out', 'truncated', 'interrupted', 'stalled'].includes(lifecycle)) {
+        canonicalTerminal[key] = { lifecycle, revision };
+      } else if (revision > (canonicalTerminal[key]?.revision ?? Infinity)) {
+        delete canonicalTerminal[key];
+      }
+    }
+  }
+  for (const observation of [...state.observations, ...state.pins.flatMap(pin => pin.observation ? [pin.observation] : [])]) {
+    const key = metadataSelectionKey(observation.row.selection);
+    if (observation.row.revision > (canonicalTerminal[key]?.revision ?? Infinity)) delete canonicalTerminal[key];
+  }
+  return canonicalTerminal;
+}
 export type MetadataActionResult = 'applied' | 'skipped' | 'discarded' | 'failed';
 function freeze<T>(value: T): T {
   if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
@@ -156,25 +183,7 @@ export class JobMetadataStore {
       const retained = Object.entries(state.detailCache).filter(([cached]) => cached !== key).slice(-7);
       state = { ...state, detailCache: Object.fromEntries([...retained, [key, selected]]) };
     }
-    const canonicalTerminal = { ...state.canonicalTerminal };
-    for (const cached of Object.values(state.detailCache)) {
-      const detail = cached.observation;
-      let lifecycle = detail?.lifecycle;
-      if (detail && lifecycle && pmActiveStatuses.some(status => status === lifecycle) && lifecycle !== 'stitching'
-        && !cached.cursors.task_cursor && !cached.cursors.artifact_cursor
-        && detail.tasks.page.outcome === 'complete'
-        && detail.tasks.page.revision === detail.artifacts.page.revision
-        && detail.tasks.rows.length > 0 && detail.tasks.rows.length === detail.task_count
-        && detail.tasks.rows.every(task => ['complete', 'failed', 'skipped', 'cancelled'].includes(task.status ?? ''))) {
-        lifecycle = detail.tasks.rows.some(task => task.status === 'failed') ? 'failed'
-          : detail.tasks.rows.some(task => task.status === 'skipped' || task.status === 'cancelled') ? 'cancelled' : 'complete';
-      }
-      if (cached.freshness === 'observed' && !cached.error && lifecycle
-        && ['complete', 'completed', 'done', 'failed', 'cancelled', 'timeout', 'timed_out', 'truncated', 'interrupted', 'stalled'].includes(lifecycle)) {
-        canonicalTerminal[metadataSelectionKey(cached.selection)] = lifecycle;
-      }
-    }
-    state = { ...state, canonicalTerminal };
+    state = { ...state, canonicalTerminal: metadataTerminalProjection(state) };
     const revisions = new Map<string, number>();
     for (const observation of [...state.observations, ...state.pins.flatMap(p => p.observation ? [p.observation] : [])]) {
       const key = metadataSelectionKey(observation.row.selection);
@@ -396,7 +405,8 @@ export class JobMetadataStore {
     if (activeAvailable && (initial ? !this.state.localActive.initialized : slot === 0 || slot === 4)) return this.advanceLocal('active');
     if (!initial && slot === 6 && this.state.detail.kind === 'selected' && this.state.detail.observation?.expert !== undefined && Date.now() - this.state.selectedRefreshedAt >= 4000) return this.readDetail('refresh', true);
     if (!initial && turn % 16 === 10 && this.headerBatch().length) return this.refreshHeaders(true);
-    if (!initial && slot === 3 && this.detailHydrateBatch(true).length) return this.hydrateListedDetails(true);
+    if (!initial && slot === 3 && this.detailHydrateBatch({ retryErrors: true, includePM: liveOnly }).length)
+      return this.hydrateListedDetails({ retryErrors: true, includePM: liveOnly });
     if (!initial && turn % 16 === 6 && this.state.pins.length) return this.refreshPins(true);
     if (!initial && slot === 7 && this.state.followedLocal.length) return this.advanceFollowedLocal();
     // Departures retain their lifecycle until history supplies an authoritative successor.
@@ -786,7 +796,7 @@ export class JobMetadataStore {
     }
     return reads;
   }
-  private detailHydrateBatch(retryErrors = false): MetadataSelection[] {
+  private detailHydrateBatch({ retryErrors = false, includePM = false }: DetailRefreshOptions = {}): MetadataSelection[] {
     const view = this.state.view;
     if (view.kind !== 'view' || view.refresh !== 'idle') return [];
     const repo = view.context.repo;
@@ -820,16 +830,22 @@ export class JobMetadataStore {
       const listed = this.state.observations.find(row => metadataSelectionKey(row.row.selection) === metadataSelectionKey(selection));
       consider(selection, listed?.row.revision ?? 0, nativeActiveStatuses.includes(observation.row.lifecycle));
     }
+    for (const observation of includePM ? [...this.state.observations, ...this.state.pins.flatMap(pin => pin.observation ? [pin.observation] : [])] : []) {
+      if (observation.freshness !== 'observed' || observation.row.ownership.session_id !== view.context.session_id
+        || view.view.sources.some(source => source.state_id === observation.row.selection.job_ref.state_id && source.cross_project)
+        || !pmActiveStatuses.some(status => status === observation.row.lifecycle)) continue;
+      consider(observation.row.selection, observation.row.revision, true);
+    }
     return out.sort((a, b) => (this.state.detailCache[metadataSelectionKey(a)]?.refreshedAt ?? -Infinity)
       - (this.state.detailCache[metadataSelectionKey(b)]?.refreshedAt ?? -Infinity)).slice(0, 8);
   }
   /** Prefetch PM detail for local aliases so titles/quality do not wait on a click. */
-  async hydrateListedDetails(retryErrors = false): Promise<MetadataActionResult> {
-    const batch = this.detailHydrateBatch(retryErrors);
+  async hydrateListedDetails(options: DetailRefreshOptions = {}): Promise<MetadataActionResult> {
+    const batch = this.detailHydrateBatch(options);
     if (!batch.length) return Promise.resolve('skipped');
     const epoch = this.state.epoch;
     const result = await this.hydrateDetail(batch[0], { prefetch: true });
-    if (retryErrors && this.current(epoch) && result !== 'skipped')
+    if (options.retryErrors && this.current(epoch) && result !== 'skipped')
       this.publish({ ...this.state, advanceNumber: this.state.advanceNumber + 1 });
     return result;
   }
@@ -857,7 +873,7 @@ export class JobMetadataStore {
       const response = await this.client.detail(view.context, captured, cursors);
       if (this.disposed || this.state.contextEpoch !== contextEpoch || this.state.view.kind !== 'view') return;
       const floor = Math.max(0, ...this.state.observations.filter(o => metadataSelectionKey(o.row.selection) === key).map(o => o.row.revision));
-      const incomplete = response.tasks.page.revision < floor || response.artifacts.page.revision < floor
+      const incomplete = response.lifecycle === null || response.tasks.page.revision < floor || response.artifacts.page.revision < floor
         || [response.tasks.page.outcome, response.artifacts.page.outcome].some(o => o === 'unavailable' || o === 'cursor_expired');
       // A transient unavailable read (store lock, lane skew) keeps the last hydrated roster
       // visibly stale rather than blanking the card; the next tick re-hydrates.
@@ -870,7 +886,7 @@ export class JobMetadataStore {
       const retained = Object.entries(this.state.detailCache).filter(([cached]) => cached !== key).slice(-7);
       this.publish({ ...this.state,
         selectedRefreshedAt: prefetch ? this.state.selectedRefreshedAt : Date.now(),
-        detail: !prefetch && current.kind === 'selected' && metadataSelectionKey(current.selection) === key ? entry : current,
+        detail: current.kind === 'selected' && metadataSelectionKey(current.selection) === key ? entry : current,
         detailCache: Object.fromEntries([...retained, [key, entry]]) });
     }, undefined, { kind: 'detail', key, selection: captured });
   }
@@ -895,7 +911,7 @@ export class JobMetadataStore {
       const selectedHistoryUnavailable = advance !== 'refresh' && advance !== 'tasks' && advance !== 'artifacts'
         && (response.history.kind === 'unavailable' || !['complete', 'partial'].includes(response.history[advance].page.outcome));
       const revisionFloor = Math.max(detail.observation?.tasks.page.revision ?? 0, ...this.state.observations.filter(o => metadataSelectionKey(o.row.selection) === metadataSelectionKey(detail.selection)).map(o => o.row.revision));
-      const incomplete = response.tasks.page.revision < revisionFloor || response.artifacts.page.revision < revisionFloor || selectedHistoryUnavailable || [response.tasks.page.outcome, response.artifacts.page.outcome].some(o => o === 'unavailable' || o === 'cursor_expired');
+      const incomplete = response.lifecycle === null || response.tasks.page.revision < revisionFloor || response.artifacts.page.revision < revisionFloor || selectedHistoryUnavailable || [response.tasks.page.outcome, response.artifacts.page.outcome].some(o => o === 'unavailable' || o === 'cursor_expired');
       // An unavailable selected lookup retains the last observation visibly stale.
       const observation = incomplete && detail.observation ? detail.observation : carryExpert(response, detail.observation);
       this.publish({ ...this.state, selectedRefreshedAt: Date.now(), advanceNumber: this.state.advanceNumber + Number(scheduled), detail: { ...detail, observation, cursors: incomplete ? detail.cursors : captured,

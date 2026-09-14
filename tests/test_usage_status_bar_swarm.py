@@ -403,7 +403,9 @@ def test_duplicate_job_id_across_stores_counted_once(tmp_path, monkeypatch):
         )
         monkeypatch.setattr(server, "_job_savings_fields", lambda jid: {})
         monkeypatch.setattr(server, "_job_in_cost_window", lambda created_at: True)
-        # Price once at a known figure so double-count is obvious.
+        # The process rollup still exercises the legacy helper at a conspicuous
+        # value. The active-session total must instead consume the canonical PM
+        # report, which prices this one 50k/10k task at $0.07 exactly once.
         monkeypatch.setattr(
             server, "_job_swarm_accounting", lambda arts, registry: (60_000, 0.70)
         )
@@ -414,7 +416,7 @@ def test_duplicate_job_id_across_stores_counted_once(tmp_path, monkeypatch):
             _api_get(port, f"/api/usage?repo={scoped}", server._TOKEN).read().decode()
         )
         assert abs(usage["session"]["est_cost_usd"] - 0.70) < 1e-6
-        assert abs(usage["session_total"]["est_cost_usd"] - 0.70) < 1e-6
+        assert abs(usage["session_total"]["est_cost_usd"] - 0.07) < 1e-6
         assert len(usage["jobs"]) == 1
     finally:
         httpd.shutdown()

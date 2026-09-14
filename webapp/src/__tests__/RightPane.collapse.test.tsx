@@ -91,7 +91,7 @@ function OwnedActivity({ fixture, capture, children }: {
 function expectBoundedActivity(fixture: CombinedMetadataFixture) {
   expect(api.swarmLive).not.toHaveBeenCalled();
   expect(fixture.calls.every(({ method, path }) => method === "POST" && path === "/api/jobs/metadata/pins" || method === "GET"
-    && ["/api/endpoint", "/api/jobs/metadata/view", "/api/jobs/metadata", "/api/jobs/metadata/local"]
+    && ["/api/endpoint", "/api/jobs/metadata/view", "/api/jobs/metadata", "/api/jobs/metadata/local", "/api/jobs/metadata/detail"]
       .includes(new URL(path, "http://fixture").pathname))).toBe(true);
   expect(fixture.maximumActive).toBe(1);
 }

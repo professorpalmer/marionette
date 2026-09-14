@@ -407,7 +407,10 @@ async function mountCanonicalAlias(options: {
         correlationId: '',
         text: JSON.stringify((() => {
           const detail = fourTaskDetail(selected, c, { lifecycle, quality });
-          if (tasksTerminal) detail.tasks.rows.forEach(task => { task.status = 'complete'; });
+          if (tasksTerminal) {
+            detail.tasks.rows.forEach(task => { task.status = 'complete'; });
+            detail.lifecycle = 'complete';
+          }
           return detail;
         })()),
       };
@@ -824,7 +827,7 @@ describe('SwarmPane canonical alias presentation', () => {
 });
 
 
-it('settles an all-terminal canonical roster and never reopens the alias on a weaker read', async () => {
+it('settles the backend terminal projection and never reopens the alias on a weaker read', async () => {
   const fixture = await mountCanonicalAlias();
   fixture.setTasksTerminal(true);
   await act(async () => { await fixture.store.hydrateDetail(pmSelection(), { prefetch: true }); });

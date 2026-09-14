@@ -330,7 +330,30 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   // the active project are visible without an extra click. Subsequent
   // currentRepo flips stay user-driven (handleOpenProject / row click).
   const bootExpandedRef = useRef(false);
-  // Assigned after projects + SWR hooks exist; early handlers (rename) call through this.
+  const sessionListGeneration = useRef(0);
+  const sessionScopeGeneration = useRef(0);
+  const sessionScopeRoot = useRef("");
+  const pendingSessionRoots = useRef(new Set<string>());
+  useEffect(() => {
+    const invalidate = (event: Event) => {
+      if (!(event instanceof CustomEvent) || typeof event.detail !== "string") return;
+      if (repoPathsEqual(event.detail, sessionScopeRoot.current)) return;
+      sessionScopeRoot.current = event.detail;
+      sessionScopeGeneration.current += 1;
+      sessionListGeneration.current += 1;
+    };
+    window.addEventListener("harness-project-selected", invalidate);
+    return () => window.removeEventListener("harness-project-selected", invalidate);
+  }, []);
+  const fetchSessionRows = useCallback(async (root: string) => {
+    const generation = sessionListGeneration.current;
+    const rows = await api.sessions(root || undefined);
+    if (generation !== sessionListGeneration.current) {
+      throw new DOMException("Superseded session list", "AbortError");
+    }
+    return preferLastGoodSessionList(root, rows);
+  }, []);
+  // Assigned after projects + SWR hooks exist; early handlers call through this.
   const refreshSessionsRef = useRef<() => Promise<void>>(async () => {});
   // Kept current each render so delete can optimistically purge every root's cache.
   const projectsRef = useRef<string[]>([]);
@@ -370,6 +393,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   };
 
   const onSessionsLoaded = useCallback((sess: Session[], forRepo?: string) => {
+    if (forRepo && sessionScopeRoot.current && !repoPathsEqual(forRepo, sessionScopeRoot.current)) return;
     // Stale-response guard: a late payload for a different root must not
     // promote that root's active id into the conversation pane.
     if (forRepo && currentRepoRef.current && !repoPathsEqual(forRepo, currentRepoRef.current)) {
@@ -430,10 +454,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     mutate: mutateSessions,
   } = useStaleWhileRevalidate<Session[]>(
     `sessions:${currentRepo || "__none__"}`,
-    () =>
-      api.sessions(currentRepo || undefined).then((rows) =>
-        preferLastGoodSessionList(currentRepo, rows),
-      ),
+    () => fetchSessionRows(currentRepo),
     {
       enabled: !!currentRepo,
       onSuccess: (sess) => {
@@ -481,13 +502,30 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     return true;
   };
 
+  const publishCreatedSession = (created: Session, target: string) => {
+    sessionListGeneration.current += 1;
+    writeTranscriptCache(created.id, [], { seededEmpty: true });
+    patchActiveSessionInCaches(projectsRef.current, created.id);
+    const rows = [
+      { ...created, active: true, workspace_root: created.workspace_root || target },
+      ...(readSWRCache<Session[]>(`sessions:${target}`) || []).filter((row) => row.id !== created.id),
+    ];
+    writeSWRCache(`sessions:${target}`, rows);
+    if (repoPathsEqual(target, currentRepoRef.current)) mutateSessions(rows);
+    setExpandedProjects((prev) => ({ ...prev, [target]: true }));
+    setSessionsCacheEpoch((n) => n + 1);
+    onSessionChange?.(created.id);
+  };
+
   const openProjectWorkspace = useCallback(async (
     path: string,
     options?: { quiet?: boolean },
   ): Promise<{ ok: boolean; created_session?: boolean; active_session?: string }> => {
     if (!options?.quiet) setOpening(true);
+    const scope = sessionScopeGeneration.current;
     try {
       const res = await api.openWorkspace(path);
+      if (scope !== sessionScopeGeneration.current) return { ok: false };
       if (res.ok) {
         if (res.codegraph) codegraphByRepoRef.current[res.repo] = res.codegraph;
         mutateWorkspace({
@@ -502,7 +540,10 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
         setExpandedProjects((prev) => ({ ...prev, [res.repo]: true }));
         setSelectedProjectPath(res.repo);
         dispatchProjectSelected(res.repo);
-        await Promise.all([revalidateWorkspace(), revalidateWorkspaces(), revalidateSessions()]);
+        if (res.created_session && res.active_session) {
+          publishCreatedSession({ id: res.active_session, title: "New session", created: Date.now() / 1000, repo: res.repo }, res.repo);
+        }
+        void Promise.all([revalidateWorkspace(), revalidateWorkspaces(), revalidateSessions(true)]);
         window.dispatchEvent(new Event("harness-config-changed"));
         return {
           ok: true,
@@ -818,6 +859,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       delete next[id];
       return next;
     });
+    sessionListGeneration.current += 1;
     // Paint 1:1 active and start transcript hydrate before the switch POST.
     // Waiting for every project's session list was the forever-load + dual-dot.
     const roots = projectsRef.current.filter(Boolean);
@@ -958,7 +1000,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           await revalidateWorkspace();
         } catch { /* ignore */ }
         try {
-          const rows = await api.sessions(root);
+          const rows = await fetchSessionRows(root);
           writeSessionListCache(root, Array.isArray(rows) ? rows : []);
           setSessionsResolvedRoots((prev) => ({ ...prev, [root]: true }));
           setSessionsCacheEpoch((n) => n + 1);
@@ -979,42 +1021,41 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   }, [revalidateWorkspace, revalidateWorkspaces, onSessionChange]);
 
   const newSession = async (inProjectPath?: string) => {
+    const target = (inProjectPath || selectedProjectPath || currentRepo).trim();
+    if (pendingSessionRoots.current.has(target)) return;
+    pendingSessionRoots.current.add(target);
+    sessionListGeneration.current += 1;
+    setSessionsCacheEpoch((n) => n + 1);
+    let scope = sessionScopeGeneration.current;
     try {
-      // createSession always uses the active _cfg.repo. When the user has
-      // selected a different (often empty) project, open that workspace first
-      // so the new session lands there instead of the current active root.
-      const target = (inProjectPath || selectedProjectPath || "").trim();
-      const current = (workspaceInfo?.repo || "").trim();
-      let workspaceCreatedSession = false;
-      let newSessionId = "";
-      if (target && (!current || !repoPathsEqual(target, current))) {
+      let created: Session;
+      if (target && !repoPathsEqual(target, currentRepo)) {
         const opened = await handleOpenProject(target);
         if (!opened.ok) return;
-        workspaceCreatedSession = !!opened.created_session;
-        newSessionId = (opened.active_session || "").trim();
-      } else if (target) {
-        setExpandedProjects((prev) => ({ ...prev, [target]: true }));
+        scope = sessionScopeGeneration.current;
+        if (opened.created_session && opened.active_session) {
+          return;
+        } else {
+          created = await api.createSession();
+        }
+      } else {
+        created = await api.createSession();
       }
-      if (!workspaceCreatedSession) {
-        const created = await api.createSession();
-        newSessionId = (created?.id || "").trim();
-      }
-      // Seed an empty warm-cache entry before Conversation's switch effect runs
-      // so it never paints the previous session's transcript under this id.
-      // seededEmpty marks this as New Session (not an ambiguous zero-row cache).
-      if (newSessionId) {
-        writeTranscriptCache(newSessionId, [], { seededEmpty: true });
-      }
-      await refreshSessionsRef.current();
+      if (scope !== sessionScopeGeneration.current || !created.id) return;
+      publishCreatedSession(created, target);
+      void refreshSessionsRef.current();
     } catch (err) {
       notifySessionActivationBlocked(err);
+    } finally {
+      pendingSessionRoots.current.delete(target);
+      setSessionsCacheEpoch((n) => n + 1);
     }
   };
   useEffect(() => {
     const onNew = () => { void newSession(); };
     window.addEventListener("harness-new-session", onNew);
     return () => window.removeEventListener("harness-new-session", onNew);
-  }, []);
+  });
   const followUpAfterSessionRemove = async (id: string, viewingId: string, projectPath: string) => {
     const remaining = remainingOpenAfterRemoveFromCache(projectPath, id);
     const action = actionAfterSessionRemove({
@@ -1159,6 +1200,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     }
   };
 
+  const [removingSessionRoot, setRemovingSessionRoot] = useState<string | null>(null);
   const archiveSession = async (sid: string, archived: boolean) => {
     const roots = projectsRef.current.filter(Boolean);
     const prior = sessions.find((s) => s.id === sid)?.archived
@@ -1169,13 +1211,16 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     const viewingId = sessions.find((session) => session.active)?.id || "";
     const removed = sessions.find((session) => session.id === sid);
     const projectPath = (removed?.workspace_root || removed?.repo || currentRepo || "").trim();
+    const scope = sessionScopeGeneration.current;
+    sessionListGeneration.current += 1;
+    if (archived && sid === viewingId) setRemovingSessionRoot(projectPath);
     try {
       await api.archiveSession(sid, archived);
-      await refreshSessionsRef.current();
       if (railTab === "sessions") void refreshBankSessions();
-      if (archived) {
+      if (archived && scope === sessionScopeGeneration.current) {
         await followUpAfterSessionRemove(sid, viewingId, projectPath);
       }
+      void refreshSessionsRef.current();
     } catch (err) {
       console.error(err);
       patchSessionArchivedInCaches(roots, sid, !!prior);
@@ -1188,6 +1233,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           : `Could not ${archived ? "archive" : "unarchive"} session`,
       );
       await refreshSessionsRef.current();
+    } finally {
+      setRemovingSessionRoot(null);
     }
   };
 
@@ -1215,11 +1262,12 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   // key). Delete/create/rename under an inactive root otherwise left phantom
   // titles that, when clicked, looked like a "merged" project tree.
   const refreshAllProjectSessions = useCallback(async () => {
+    const scope = sessionScopeGeneration.current;
     const roots = projectsRef.current.filter(Boolean);
     await Promise.all(
       roots.map(async (root) => {
         try {
-          const rows = await api.sessions(root);
+          const rows = await fetchSessionRows(root);
           writeSessionListCache(root, rows);
           setSessionsResolvedRoots((prev) => ({ ...prev, [root]: true }));
         } catch {
@@ -1229,8 +1277,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     );
     setSessionsCacheEpoch((n) => n + 1);
     // Keep the active-repo SWR hook in sync (promotes active id, etc.).
-    await revalidateSessions();
-  }, [revalidateSessions]);
+    if (scope === sessionScopeGeneration.current) await revalidateSessions(true);
+  }, [revalidateSessions, fetchSessionRows]);
   refreshSessionsRef.current = refreshAllProjectSessions;
 
   // Eager per-root lists: prefetch sessions for EVERY project in the rail so
@@ -1243,7 +1291,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     void Promise.all(
       roots.map(async (root) => {
         try {
-          const rows = await api.sessions(root);
+          const rows = await fetchSessionRows(root);
           if (cancelled) return;
           writeSessionListCache(root, rows);
           setSessionsResolvedRoots((prev) => ({ ...prev, [root]: true }));
@@ -1605,7 +1653,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                     type="button"
                     disabled={!!switchingSessionId || opening}
                     onClick={() => { if (!switchingSessionId) void switchSession(row.id); }}
-                    className={`w-full min-h-8 flex flex-col justify-center text-left px-2 rounded transition min-w-0 disabled:opacity-60 ${
+                    className={`w-full min-h-8 flex flex-col justify-center text-left pl-6 pr-2 rounded transition min-w-0 disabled:opacity-60 ${
                       switchingSessionId === row.id ? "bg-panel2/60" : "hover:bg-panel2/30"
                     }`}
                     title={row.snippet ? `${displaySessionListTitle(row.title)}\n${row.snippet}` : displaySessionListTitle(row.title)}
@@ -1669,7 +1717,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                       aria-current={s.active ? "true" : undefined}
                       onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title))}
                       onContextMenu={(e) => handleContextMenu(e, s, canSettleSessionsForProject(root, workspaceInfo?.repo))}
-                      className={`w-full min-h-8 flex flex-col justify-center text-left px-2 rounded transition min-w-0 disabled:opacity-60 ${
+                      className={`w-full min-h-8 flex flex-col justify-center text-left pl-6 pr-2 rounded transition min-w-0 disabled:opacity-60 ${
                         isActive ? "bg-panel2/60" : "hover:bg-panel2/30"
                       }`}
                       title={`${displaySessionListTitle(s.title)}${s.preview ? `\n${s.preview}` : ""}\n${root}`}
@@ -1714,7 +1762,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
             const cgStatus = codegraphStatusFor(projectPath, isCurrentActive);
             const cgLabel = codegraphAttentionLabel(cgStatus);
             const sessionsReady = sessionsResolvedFor(projectPath);
-            const sessionsEmptyState = projectSessionsEmptyState(sessionsReady, isSelected);
+            const sessionsEmptyState = pendingSessionRoots.current.has(projectPath) || removingSessionRoot === projectPath
+              ? "loading" : projectSessionsEmptyState(sessionsReady, isSelected);
 
             return (
               <div
@@ -1758,7 +1807,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                     }}
                     title={`New session in ${basename}`}
                     aria-label={`New session in ${basename}`}
-                    className="p-0.5 rounded text-faint hover:text-txt hover:bg-panel2 shrink-0 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
+                    className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-0.5 rounded text-faint hover:text-txt hover:bg-panel2 shrink-0 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
                   >
                     <Plus size={12} />
                   </button>
@@ -1860,12 +1909,12 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                                 aria-current={s.active ? "true" : undefined}
                                 onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title))}
                                 onContextMenu={(e) => handleContextMenu(e, s, isCurrentActive)}
-                                className={`flex-1 min-w-0 h-7 text-left rounded pl-2.5 pr-1.5 flex items-center gap-1.5 text-[12px] transition disabled:opacity-60
+                                className={`flex-1 min-w-0 h-7 text-left rounded pl-6 pr-1.5 flex items-center gap-1.5 text-[12px] transition disabled:opacity-60
                                   ${s.active ? "text-txt font-medium" : "text-muted group-hover:text-txt"}
                                   ${switchingSessionId === s.id ? "opacity-70" : ""}`}>
                                 {switchingSessionId === s.id
                                   ? <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
-                                  : <MessageSquare size={11} className={`shrink-0 ${s.active ? "text-accent" : "text-faint"}`} />}
+                                  : null}
                                 <span className="flex-1 min-w-0 truncate">{displaySessionListTitle(s.title)}</span>
                               </button>
                               {confirmDeleteId === s.id ? (
@@ -1966,7 +2015,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                                   aria-current={s.active ? "true" : undefined}
                                   onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title))}
                                   onContextMenu={(e) => handleContextMenu(e, s, isCurrentActive)}
-                                  className={`flex-1 min-w-0 h-6 text-left rounded px-1.5 flex items-center gap-1.5 text-[11px] motion-safe:transition opacity-45 hover:opacity-90 disabled:opacity-40
+                                  className={`flex-1 min-w-0 h-6 text-left rounded pl-6 pr-1.5 flex items-center gap-1.5 text-[11px] motion-safe:transition opacity-45 hover:opacity-90 disabled:opacity-40
                                     ${s.active ? "bg-accent/10 text-accent" : "text-faint hover:bg-panel2/50 hover:text-muted"}
                                     ${switchingSessionId === s.id ? "opacity-70" : ""}`}
                                   title={displaySessionListTitle(s.title)}
@@ -2045,13 +2094,13 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                       aria-current={s.active ? "true" : undefined}
                       onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title))}
                       onContextMenu={(e) => handleContextMenu(e, s, true)}
-                      className={`w-full h-7 text-left rounded px-2 flex items-center gap-1.5 text-[12.5px] transition opacity-60 hover:opacity-100 disabled:opacity-40
+                      className={`w-full h-7 text-left rounded pl-6 pr-2 flex items-center gap-1.5 text-[12.5px] transition opacity-60 hover:opacity-100 disabled:opacity-40
                         ${s.active ? "bg-accent/10 text-accent font-semibold" : "hover:bg-panel2/60 text-muted"}
                         ${switchingSessionId === s.id ? "opacity-70" : ""}`}
                     >
                       {switchingSessionId === s.id
                         ? <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
-                        : <MessageSquare size={11} />}
+                        : null}
                       <span className="flex-1 truncate">{displaySessionListTitle(s.title)}</span>
                     </button>
                   )}

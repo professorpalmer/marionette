@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { JobMetadataStore, useJobMetadata } from './useJobMetadata';
+import { JobMetadataStore, metadataTerminalProjection, useJobMetadata } from './useJobMetadata';
 import type { JobMetadataState } from './useJobMetadata';
 import type { Job } from './api';
 import { canonicalExpertSelection, canonicalPMReplacesLocal, metadataSelectionKey, pmActiveStatuses } from './jobMetadata';
@@ -74,21 +74,10 @@ function isObservedTrackerHire(
 }
 
 export function metadataActivity(state: JobMetadataState): { count: number; label: string } {
-  const count = state.observations.filter(o => isObservedTrackerHire(
-    o.freshness,
-    o.row.lifecycle,
-    { id: o.row.selection.job_ref.job_id },
-  )).length
-    + state.local.observations.filter(o => isObservedTrackerHire(
-      o.freshness,
-      o.row.lifecycle,
-      {
-        id: o.row.local_ref.job_id,
-        job_kind: o.row.kind,
-        role: o.row.kind,
-        adapter: o.row.display?.adapter,
-      },
-    ) && !canonicalPMReplacesLocal(o, state.observations)).length;
+  const count = metadataJobs(state).filter(job => isObservedTrackerHire(
+    job.read_status === 'unavailable' ? 'stale' : 'observed', job.status,
+    { id: job.id, job_kind: job.job_kind, role: job.role, adapter: job.adapter },
+  )).length;
   return { count, label: count ? `At least ${count} active jobs; coverage incomplete` : 'Job activity unknown; coverage incomplete' };
 }
 /** Retained presentation facts; callers must check freshness separately for actions. */
@@ -125,10 +114,14 @@ export function metadataViewSessionId(state: JobMetadataState): string {
   if (state.view.kind === 'target') return String(state.view.target.session_id || '').trim();
   return '';
 }
+function terminalLifecycle(projection: NonNullable<JobMetadataState['canonicalTerminal']>, key: string, revision: number): string | null {
+  const terminal = projection[key];
+  return terminal && terminal.revision >= revision ? terminal.lifecycle : null;
+}
 /** Presentation only: missing bodies/economics remain explicitly unavailable. No identity inference. */
 export function metadataJobs(state: JobMetadataState): Job[] {
-  if (state.view.kind === 'idle') return [];
   if (state.view.kind !== 'view' && !state.observations.length && !state.local.observations.length) return [];
+  const terminal = metadataTerminalProjection(state);
   const sources = state.view.kind === 'view' ? state.view.view.sources : [];
   const observed = new Map(state.observations.map(o => [metadataSelectionKey(o.row.selection), o]));
   for (const pin of state.pins) {
@@ -143,7 +136,7 @@ export function metadataJobs(state: JobMetadataState): Job[] {
     metadata_key: metadataSelectionKey(row.selection), metadata_only: true,
     goal: row.display.kind === 'available' && row.display.goal_preview ? row.display.goal_preview : `${row.selection.source === 'cli' ? 'PM CLI job' : 'PM harness job'}`,
     status: row.lifecycle && !pmActiveStatuses.some(status => status === row.lifecycle)
-      ? row.lifecycle : state.canonicalTerminal?.[metadataSelectionKey(row.selection)] ?? row.lifecycle ?? 'unknown',
+      ? row.lifecycle : terminalLifecycle(terminal, metadataSelectionKey(row.selection), row.revision) ?? row.lifecycle ?? 'unknown',
     session_id: row.ownership.session_id ?? undefined,
     cross_project: sources.find(s => s.state_id === row.selection.job_ref.state_id)?.cross_project,
     ...(freshness === 'stale' ? { read_status: 'unavailable' } : {}),
@@ -188,7 +181,7 @@ export function metadataJobs(state: JobMetadataState): Job[] {
       const sameDetail = selectedSummary && localKey(selectedSummary.local_ref) === localKey(row.local_ref);
       // The canonical detail is re-read on a 4s cadence while the alias is live; once it
       // reports a terminal lifecycle the row is finished even if the list lanes lag.
-      const detailLifecycle = state.canonicalTerminal?.[canonKey] ?? detailObservation?.lifecycle ?? null;
+      const detailLifecycle = terminalLifecycle(terminal, canonKey, 0);
       const settledByDetail = detailLifecycle !== null && !pmActiveStatuses.some(status => status === detailLifecycle);
       return {
         id: row.local_ref.job_id, local_ref: row.local_ref, source: 'local' as const, metadata_only: true as const,
