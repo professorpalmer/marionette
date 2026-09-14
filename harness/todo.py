@@ -646,6 +646,7 @@ TODO_SLASH_USAGE = (
     "  /todo copy                         Print todos as Markdown\n"
     "  /todo export [<path>]              Write todos to file (default: TODO.md)\n"
     "  /todo import [<path>]              Replace todos from file (default: TODO.md)\n"
+    "  /todo clear                        Clear the session checklist\n"
     "  /todo append [<phase>] <task...>   Append a task\n"
     "  /todo start  <task>                Mark task in_progress (fuzzy match)\n"
     "  /todo done   [<task|phase>]        Mark task/phase/all completed\n"
@@ -1135,6 +1136,8 @@ def handle_todo_slash_command(
     rest = parts[1].strip() if len(parts) > 1 else ""
     if verb in ("view", "show", "list"):
         return _slash_result(current, notice=format_todo_tree(current))
+    if verb in ("clear", "dismiss"):
+        return _slash_result([], mutated=bool(current), notice="Todos cleared.")
     if verb == "copy":
         md = phases_to_markdown(current)
         return _slash_result(current, markdown=md, notice=md.strip() or "No todos.")

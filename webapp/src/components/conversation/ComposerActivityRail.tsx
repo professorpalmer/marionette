@@ -6,7 +6,7 @@ import {
   subscribeAgentCommandIndex,
 } from "../../lib/agentCommandIndex";
 import { pickTaskSourceJob } from "../../lib/composerTasks";
-import { todoHasWork } from "../../lib/composerTodos";
+import { sessionHasLiveTodoOwner, todoHasWork } from "../../lib/composerTodos";
 import { getSessionTodos, getSessionTodosSessionId, subscribeSessionTodos } from "../../lib/sessionTodos";
 import ComposerStatusStack from "./ComposerStatusStack";
 import ComposerTasksPanel from "./ComposerTasksPanel";
@@ -17,9 +17,11 @@ import { buildComposerStatusStackRows } from "./composerStatusStackData";
 export default function ComposerActivityRail({
   jobs,
   sessionId,
+  active = true,
 }: {
   jobs: readonly Job[];
   sessionId: string;
+  active?: boolean;
 }) {
   const bodyJobs = jobs.filter(job => !job.metadata_only);
   const commandIndexVersion = useSyncExternalStore(
@@ -41,7 +43,9 @@ export default function ComposerActivityRail({
     getSessionTodosSessionId,
     getSessionTodosSessionId,
   );
-  const showTodos = todoHasWork(todos) && todoSessionId === sessionId;
+  const showTodos = todoHasWork(todos)
+    && todoSessionId === sessionId
+    && (active || sessionHasLiveTodoOwner(bodyJobs, sessionId));
   const showTasks = !!pickTaskSourceJob(bodyJobs, sessionId);
   const hasOverview = showTasks || showTodos || stackRows.length > 0;
 
@@ -51,7 +55,7 @@ export default function ComposerActivityRail({
       data-slot={hasOverview ? "composer-activity-rail" : undefined}
     >
       <div className={hasOverview ? "space-y-0.5 p-0.5" : undefined}>
-        <ComposerTodoPanel jobs={bodyJobs} sessionId={sessionId} />
+        <ComposerTodoPanel jobs={bodyJobs} sessionId={sessionId} active={active} />
         <ComposerTasksPanel jobs={bodyJobs} sessionId={sessionId} />
         <ComposerStatusStack swarmJobs={bodyJobs} sessionId={sessionId} />
       </div>

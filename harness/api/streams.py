@@ -176,14 +176,36 @@ def stream_run(handler: Any, prompt: str, images, svc: StreamServices) -> Any:
 
 def _stream_session_pilot(svc, session_id):
     from ..input_receipts import InputReceiptError
-    pilot = svc.get_pilot()
+    from ..session_runners import resolve_session_runner
+    if session_id is None:
+        return svc.get_pilot()
+    if svc.get_runners is None:
+        # Compatibility for focused/embedded stream services that predate the
+        # runner registry.  They may serve only their one current owner; a
+        # mismatched explicit ID is still rejected rather than retargeted.
+        pilot = svc.get_pilot()
+    else:
+        pilot = resolve_session_runner(svc.get_runners(), session_id)
     if session_id is not None and (
         not isinstance(session_id, str) or not session_id
         or getattr(pilot, 'harness_session_id', None) != session_id
-        or svc.sessions.active != session_id
     ):
-        raise InputReceiptError('input_session_changed', 'The active session changed. Your input was not admitted; keep your draft.')
+        raise InputReceiptError('input_session_changed', 'The input owner changed. Your input was not admitted; keep your draft.')
     return pilot
+
+
+def _stream_turn_config(svc, pilot, session_id):
+    """Return the immutable turn owner's config.
+
+    The active runner follows live workspace/settings changes held by the
+    service config.  A background runner must retain its own config so a view
+    switch cannot redirect mentions, CodeGraph, hooks, or persistence.
+    """
+    if (session_id is None
+            or (getattr(svc.sessions, "active", None) == session_id
+                and svc.get_pilot() is pilot)):
+        return svc.cfg
+    return getattr(pilot, "config", svc.cfg)
 
 
 @input_projection
@@ -237,7 +259,6 @@ def _admit_owned_stream_input(svc, pilot, session_id, *args, **kwargs):
     def validate():
         if (_stream_session_pilot(svc, session_id) is not pilot
                 or getattr(pilot, 'harness_session_id', '') != sid
-                or (sid and svc.get_runners is not None and svc.sessions.active != sid)
                 or (sid and svc.get_runners is not None and svc.get_runners().get(sid) is not pilot)):
             raise InputReceiptError('input_session_changed', 'The input owner changed; keep your draft.')
     with input_admission(pilot, svc.pilot_swap_lock, validate):
@@ -249,7 +270,8 @@ def stream_auto(handler: Any, objective: str, svc: StreamServices, images=None, 
     from ..input_receipts import InputReceiptError
     try:
         _stream_session_pilot(svc, session_id)
-        svc.ensure_pilot_matches_driver()
+        if session_id is None:
+            svc.ensure_pilot_matches_driver()
     except InputReceiptError as exc:
         return handler._send(409, json.dumps(exc.payload()))
     except Exception as e:
@@ -274,12 +296,13 @@ def stream_auto(handler: Any, objective: str, svc: StreamServices, images=None, 
         from ..sessions import derive_title
         svc.sessions.set_title_if_default(turn_sid, derive_title(objective))
 
-    if svc.cfg.repo and os.path.isdir(svc.cfg.repo):
-        svc.maybe_refresh_codegraph(svc.cfg.repo)
+    turn_config = _stream_turn_config(svc, turn_pilot, session_id)
+    if turn_config.repo and os.path.isdir(turn_config.repo):
+        svc.maybe_refresh_codegraph(turn_config.repo)
 
     from ..hooks import run_hooks
     # Bind turn identity before any view switch can reassign globals.
-    ctx = {"session_id": turn_sid, "objective": objective, "pilot": turn_pilot}
+    ctx = {"session_id": turn_sid, "objective": objective, "pilot": turn_pilot, "config": turn_config, "repo": turn_config.repo}
     run_hooks("preRun", ctx)
     budget = svc.auto_budget_from_env()
     gen = turn_pilot.run_auto(objective, budget, images=images or None, **receipt_args)
@@ -337,7 +360,8 @@ def stream_chat(
     from ..input_receipts import InputReceiptError
     try:
         _stream_session_pilot(svc, session_id)
-        svc.ensure_pilot_matches_driver()
+        if session_id is None:
+            svc.ensure_pilot_matches_driver()
         turn_pilot = _stream_session_pilot(svc, session_id)
     except InputReceiptError as exc:
         return handler._send(409, json.dumps(exc.payload()))
@@ -371,8 +395,9 @@ def stream_chat(
     # turn, so an index that drifted (files edited/added/DELETED since the last
     # build) reindexes in the background before it misleads the pilot. The
     # debounce in _maybe_refresh_codegraph prevents thrash during rapid turns.
-    if svc.cfg.repo and os.path.isdir(svc.cfg.repo):
-        svc.maybe_refresh_codegraph(svc.cfg.repo)
+    turn_config = _stream_turn_config(svc, turn_pilot, session_id)
+    if turn_config.repo and os.path.isdir(turn_config.repo):
+        svc.maybe_refresh_codegraph(turn_config.repo)
 
     # Resolve @-file, @folder, @symbol, and @codebase mentions in message
     resolved_files = []
@@ -380,7 +405,7 @@ def stream_chat(
     resolved_symbols = []
     resolved_codebases = []
     total_size = 0
-    repo = svc.cfg.repo
+    repo = turn_config.repo
     if repo and os.path.isdir(repo) and message:
         from ..mention_context import (
             MENTION_TOTAL_BUDGET,
@@ -699,7 +724,7 @@ def stream_chat(
         if context_blocks:
             message = "\n\n".join(context_blocks) + "\n\n" + message
 
-    pre = svc.pilot_preflight()
+    pre = svc.pilot_preflight() if session_id is None else None
     if pre:
         handler.wfile.write(f"data: {json.dumps({'kind':'error','data':{'error':pre}})}\n\n".encode())
         handler.wfile.write(b"data: {\"kind\": \"done\"}\n\n")
@@ -708,7 +733,7 @@ def stream_chat(
 
     from ..hooks import run_hooks
     # Bind turn identity before any view switch can reassign globals.
-    ctx = {"session_id": turn_sid, "message": message, "pilot": turn_pilot}
+    ctx = {"session_id": turn_sid, "message": message, "pilot": turn_pilot, "config": turn_config, "repo": turn_config.repo}
     run_hooks("preRun", ctx)
     # Detach != cancel: if the client closes the EventSource mid-turn we keep
     # draining send() so its finally releases _busy. Closing the generator

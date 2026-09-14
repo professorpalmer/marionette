@@ -3477,6 +3477,10 @@ class ConversationalSession(
         output_tokens: int = 0,
         cache_read_tokens: int = 0,
         estimated_cost_usd: float = 0.0,
+        nominal_cost_usd: Optional[float] = None,
+        cache_savings_usd: Optional[float] = None,
+        billing: str = "",
+        value_complete: bool = False,
     ) -> None:
         """Persist cumulative usage on the active harness session (distinct from
         the boot-scoped pricing pill in /api/usage)."""
@@ -3490,6 +3494,10 @@ class ConversationalSession(
                     output_tokens=output_tokens,
                     cache_read_tokens=cache_read_tokens,
                     estimated_cost_usd=estimated_cost_usd,
+                    nominal_cost_usd=nominal_cost_usd,
+                    cache_savings_usd=cache_savings_usd,
+                    billing=billing,
+                    value_complete=value_complete,
                 )
             except Exception:
                 pass

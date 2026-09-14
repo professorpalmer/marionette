@@ -304,6 +304,10 @@ class SessionStore:
         output_tokens: int = 0,
         cache_read_tokens: int = 0,
         estimated_cost_usd: float = 0.0,
+        nominal_cost_usd: Optional[float] = None,
+        cache_savings_usd: Optional[float] = None,
+        billing: str = "",
+        value_complete: bool = False,
     ) -> None:
         """Persist cumulative token/cost meters on a chat session."""
         if not sid:
@@ -312,12 +316,26 @@ class SessionStore:
         tout = int(output_tokens or 0)
         tcached = int(cache_read_tokens or 0)
         cost = float(estimated_cost_usd or 0.0)
-        if not (tin or tout or tcached or cost):
+        if not (tin or tout or tcached or cost or nominal_cost_usd or cache_savings_usd):
             return
         with self._lock:
             for s in self._sessions:
                 if s["id"] != sid:
                     continue
+                had_usage = any(s.get(k) for k in ("input_tokens", "output_tokens", "estimated_cost_usd"))
+                s["list_price_complete"] = bool(
+                    s.get("list_price_complete", not had_usage) and value_complete
+                )
+                s["nominal_cost_usd"] = round(
+                    float(s.get("nominal_cost_usd", s.get("estimated_cost_usd", 0)) or 0)
+                    + (cost if nominal_cost_usd is None else nominal_cost_usd), 6
+                )
+                s["cache_savings_usd"] = round(
+                    float(s.get("cache_savings_usd", 0) or 0) + float(cache_savings_usd or 0), 6
+                )
+                if billing:
+                    key = "plan_calls" if billing == "plan" else "api_calls"
+                    s[key] = int(s.get(key, 0)) + 1
                 s["input_tokens"] = int(s.get("input_tokens", 0) or 0) + tin
                 s["output_tokens"] = int(s.get("output_tokens", 0) or 0) + tout
                 s["cache_read_tokens"] = int(s.get("cache_read_tokens", 0) or 0) + tcached

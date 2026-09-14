@@ -460,10 +460,15 @@ def get_session_state(qs: dict, svc: SessionControlServices) -> tuple[int, JsonP
 
 
 def _goal_pilot(svc: SessionControlServices, session_id: Optional[str] = None) -> tuple[Any, Optional[tuple[int, dict]]]:
+    if session_id is not None:
+        from ..session_runners import resolve_session_runner
+        pilot = resolve_session_runner(svc.get_runners(), session_id)
+        if (not session_id or pilot is None or getattr(pilot, "harness_session_id", "") != session_id
+                or getattr(pilot, "_replacement_pending", False) or getattr(pilot, "_replacement_retired", False)):
+            return None, (409, {"ok": False, "error": "session owner changed", "code": "session_changed"})
+        return pilot, None
     original = svc.get_pilot()
     owner = getattr(original, "harness_session_id", "") or ""
-    if session_id is not None and session_id != owner:
-        return None, (409, {"ok": False, "error": "active session changed", "code": "session_changed"})
     if not original:
         return None, (404, {"ok": False, "error": "no active session"})
     not_ready = (svc.gate_goal_pilot_ready or svc.gate_active_pilot_ready)()
@@ -496,7 +501,8 @@ def post_session_goal(body: dict, svc: SessionControlServices) -> tuple[int, Jso
     if err is not None:
         return err
     with svc.pilot_swap_lock if svc.pilot_swap_lock is not None else nullcontext():
-        if svc.get_pilot() is not pilot:
+        current, _ = _goal_pilot(svc, body.get("session_id")) if body.get("session_id") is not None else (svc.get_pilot(), None)
+        if current is not pilot:
             return 409, {"ok": False, "error": "active session changed", "code": "session_changed"}
         action = str(body.get("action") or "set").strip().lower()
         budget = body.get("token_budget")
@@ -583,11 +589,12 @@ def post_session_loop(body: dict, svc: SessionControlServices) -> tuple[int, Jso
 
 def post_session_todo(body: dict, svc: SessionControlServices) -> tuple[int, JsonPayload]:
     """POST /api/session/todo — local /todo slash (view/export/import/mutate)."""
-    pilot, err = _goal_pilot(svc)
+    pilot, err = _goal_pilot(svc, body.get("session_id"))
     if err is not None:
         return err
     command = str(body.get("command") or body.get("text") or "").strip()
-    workspace = str(getattr(svc.cfg, "repo", "") or "").strip()
+    pilot_config = getattr(pilot, "config", None) or svc.cfg
+    workspace = str(getattr(pilot_config, "repo", "") or "").strip()
     try:
         if not hasattr(pilot, "handle_todo_slash"):
             return 404, {"ok": False, "error": "todo slash is unavailable"}
@@ -822,24 +829,30 @@ def _owned_input_route(fn):
     @wraps(fn)
     def owned(body, svc):
         from ..input_receipts import InputReceiptError
-        pilot = svc.get_pilot()
-        if pilot is None:
-            return fn(body, svc, pilot)
-        not_ready = svc.gate_active_pilot_ready()
-        if not_ready is not None:
-            return 409, not_ready
-        pilot = svc.get_pilot()
-        if pilot is None:
-            return 404, {'error': 'no active session'}
+        from ..session_runners import resolve_session_runner
+        requested = body.get('session_id')
+        if requested is not None:
+            pilot = resolve_session_runner(svc.get_runners(), requested)
+            if pilot is None or not requested or getattr(pilot, 'harness_session_id', '') != requested:
+                return 409, {'ok': False, 'code': 'session_changed',
+                             'error': 'The input owner changed; keep your draft.'}
+        else:
+            pilot = svc.get_pilot()
+            if pilot is None:
+                return fn(body, svc, pilot)
+            not_ready = svc.gate_active_pilot_ready()
+            if not_ready is not None:
+                return 409, not_ready
+            pilot = svc.get_pilot()
+            if pilot is None:
+                return 404, {'error': 'no active session'}
         sid = getattr(pilot, 'harness_session_id', '')
-        if body.get('session_id') is not None and body['session_id'] != sid:
-            return 409, {'ok': False, 'code': 'session_changed',
-                         'error': 'Active session changed. Your queue was not modified.'}
         def validate():
-            if (svc.get_pilot() is not pilot
+            runners = svc.get_runners()
+            if ((requested is None and svc.get_pilot() is not pilot)
                     or getattr(pilot, 'harness_session_id', '') != sid
-                    or (sid and svc.get_runners().get(sid) is not pilot)
-                    or (sid and svc.get_sessions is not None and svc.get_sessions().active != sid)):
+                    or (sid and (runners is None or runners.get(sid) is not pilot))
+                    or (requested is None and sid and svc.get_sessions is not None and svc.get_sessions().active != sid)):
                 raise InputReceiptError('input_session_changed', 'The active session changed; keep your draft.')
         try:
             with input_admission(pilot, svc.pilot_swap_lock, validate):
@@ -859,7 +872,7 @@ def post_session_steer(body: dict, svc: SessionControlServices, pilot=None) -> t
         images = [p for p in images.split("|") if p]
     if not isinstance(text, str) or (not text.strip() and not images and not body.get("documents")):
         return 400, {"error": "missing text"}
-    if not svc.get_pilot():
+    if not pilot:
         return 404, {"error": "no active session"}
     if isinstance(pilot, PromptQueueMixin) and not getattr(pilot, "harness_session_id", ""):
         return 409, {"ok": False, "code": "queue_session_unbound", "error": "Open a workspace or pick a project session before using its prompt queue."}
@@ -1001,7 +1014,7 @@ def post_session_steer(body: dict, svc: SessionControlServices, pilot=None) -> t
 @_owned_input_route
 def post_session_queue(body: dict, svc: SessionControlServices, pilot=None) -> tuple[int, JsonPayload]:
     """POST /api/session/queue."""
-    if not svc.get_pilot():
+    if not pilot:
         return 404, {"error": "no active session"}
     if isinstance(pilot, PromptQueueMixin) and not getattr(pilot, "harness_session_id", ""):
         return 409, {"ok": False, "code": "queue_session_unbound", "error": "Open a workspace or pick a project session before using its prompt queue."}
@@ -1075,14 +1088,11 @@ def post_session_queue(body: dict, svc: SessionControlServices, pilot=None) -> t
 
 
 @_queue_failure_response
+@_owned_input_route
 def post_session_queue_reorder(
-    body: dict, svc: SessionControlServices
+    body: dict, svc: SessionControlServices, pilot=None
 ) -> tuple[int, JsonPayload]:
     """POST /api/session/queue/reorder."""
-    not_ready = svc.gate_active_pilot_ready()
-    if not_ready is not None:
-        return 409, not_ready
-    pilot = svc.get_pilot()
     if isinstance(pilot, PromptQueueMixin) and not getattr(pilot, "harness_session_id", ""):
         return 409, {"ok": False, "code": "queue_session_unbound", "error": "Open a workspace or pick a project session before using its prompt queue."}
     if body.get("session_id") is not None and body["session_id"] != getattr(pilot, "harness_session_id", ""):

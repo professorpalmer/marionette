@@ -734,3 +734,20 @@ it('uses identical session accounting in the footer and session-all-time panel',
   expect(panel.queryByText('$99.00')).not.toBeInTheDocument();
   expect(panel.queryByText(/since you opened Marionette/)).not.toBeInTheDocument();
 });
+
+it('shows plan inclusion and historical value in both session surfaces', async () => {
+  mockGetUsage.mockResolvedValue({ ...processUsage, session_total: {
+    session_id: 'sess-1', accounting_scope: 'conversation', tokens_used: 100,
+    est_cost_usd: 0, nominal_cost_usd: 2, cost_source: 'plan_estimated',
+    cache_savings_gross_usd: 3, cache_savings_basis: 'catalog', list_price_complete: true,
+  } });
+  Reflect.set(window, '__pmPendingEconomicsSelection', { scope: 'conversation', period: 'all' });
+  render(<><div data-testid="plan-footer"><StatusBar {...statusBarProps} /></div>
+    <div data-testid="plan-economics"><EconomicsPane /></div></>);
+  const footer = within(screen.getByTestId('plan-footer'));
+  const panel = within(screen.getByTestId('plan-economics'));
+  expect(await footer.findByRole('button', { name: 'Included in plan · $0 marginal spend' })).toBeVisible();
+  expect(await footer.findByRole('button', { name: '~$5.00 list-price' })).toBeVisible();
+  expect(await panel.findByText('Included in plan')).toBeVisible();
+  expect(await panel.findAllByText('~$5.00')).toHaveLength(2);
+});

@@ -8,6 +8,32 @@ from types import SimpleNamespace
 from harness.api.cost_accounting import _cache_savings
 from harness.send_loop_phases import meter_pilot_step
 from pmharness.drivers.codex_responses import CodexResponsesDriver
+from tests.test_input_receipts_integration import session
+
+
+def test_plan_value_persists_at_each_calls_rates(session, tmp_path, monkeypatch):
+    from harness.sessions import SessionStore
+    from harness.api.cost_accounting import _session_cost
+    store = SessionStore(str(tmp_path / "sessions.json"))
+    sid = store.create()["id"]
+    session.harness_session_id = sid
+    session._session_store = store
+    rate = [3.0]
+    monkeypatch.setattr("pmharness.registry.resolve_price_with_source", lambda _: (rate[0], 15.0, "catalog"))
+    monkeypatch.setattr("harness.server._session_cost", _session_cost)
+    response = SimpleNamespace(tokens_in=10_000, tokens_out=200,
+                               meta={"billing": "plan", "cache_read_tokens": 8_000,
+                                     "provider_cost_usd": 0})
+    meter_pilot_step(session, response, "hello")
+    first_nominal = _session_cost(10_000, 200, 8_000, 3, 15)
+    first_value = _cache_savings(8_000, 3)
+    rate[0] = 6
+    meter_pilot_step(session, response, "hello")
+    row = SessionStore(store.path).list()[0]
+    assert row["estimated_cost_usd"] == 0
+    assert row["nominal_cost_usd"] == round(first_nominal + _session_cost(10_000, 200, 8_000, 6, 15), 6)
+    assert row["cache_savings_usd"] == round(first_value + _cache_savings(8_000, 6), 6)
+    assert row["plan_calls"] == 2
 
 
 def test_response_from_raw_stamps_cache_read_tokens():
@@ -308,6 +334,10 @@ def test_meter_pilot_step_codex_cached_tokens_and_savings(monkeypatch):
     assert session._tokens_in == 10_000
     assert session._tokens_used == 10_000 + 200
     assert session._plan_billing is True
+    assert meters["estimated_cost_usd"] == 0
+    assert meters["nominal_cost_usd"] > 0
+    assert meters["cache_savings_usd"] == _cache_savings(8_000, 3.0)
+    assert meters["billing"] == "plan"
     assert resp.meta.get("provider_cost_usd") is None
     savings = _cache_savings(8_000, 3.0)
     assert savings > 0

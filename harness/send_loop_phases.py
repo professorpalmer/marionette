@@ -2365,7 +2365,8 @@ def meter_pilot_step(
     # driver surfaced it. Otherwise price this step with the same
     # cache-aware formula /api/usage uses -- never full-price the
     # cached slice, and bill writes at the published premium.
-    _provider_step = _meta.get("provider_cost_usd")
+    _billing = str(_meta.get("billing") or "api").lower()
+    _provider_step = _meta.get("provider_cost_usd") if _billing != "plan" else None
     _pilot_cost: Optional[float] = None
     if _provider_step is not None:
         try:
@@ -2404,11 +2405,17 @@ def meter_pilot_step(
                 (_t_in * float(_price_in) + _t_out * float(_price_out))
                 / 1_000_000.0
             )
+    from harness.api.cost_accounting import _cache_savings_gross
     session._accumulate_session_meters(
         input_tokens=_t_in,
         output_tokens=_t_out,
         cache_read_tokens=_cache_delta,
-        estimated_cost_usd=_pilot_cost,
+        estimated_cost_usd=0.0 if _billing == "plan" else _pilot_cost,
+        nominal_cost_usd=_pilot_cost,
+        cache_savings_usd=_cache_savings_gross(_cache_delta, float(_price_in)),
+        billing=_billing,
+        value_complete=_tokens_in_basis == "provider" and _price_src not in ("unknown", "default")
+        and "cache_read_tokens" in _meta,
     )
 
 
@@ -3171,56 +3178,13 @@ def dispatch_local_action(
             session._append_action_result(act, aid, err_msg, is_native)
             return
 
-        # Update active configuration and environment -- but never
-        # let an agent open_project yank the workspace onto the
-        # Marionette app checkout itself.
-        try:
-            from harness.server import _cfg, _record_recent_workspace, _is_app_install_root
-            if _is_app_install_root(target_repo):
-                err_msg = (
-                    "Refusing to open the Marionette app checkout as a "
-                    "project; pick a user repository instead."
-                )
-                yield ConvEvent("action_result", {"id": aid, "error": err_msg})
-                session._append_action_result(act, aid, err_msg, is_native, ok=False)
-                return
-            session.config.repo = target_repo
-            os.environ["HARNESS_REPO"] = target_repo
-            _cfg.repo = target_repo
-            try:
-                from harness.swarm_adapter import ensure_repo_swarm_adapter
-                ensure_repo_swarm_adapter(session.config)
-                ensure_repo_swarm_adapter(_cfg)
-            except Exception:
-                pass
-            try:
-                from harness.cli_job_merge import ensure_workspace_project_store
-
-                ensure_workspace_project_store(target_repo)
-            except Exception:
-                pass
-            _record_recent_workspace(target_repo)
-        except Exception:
-            session.config.repo = target_repo
-            os.environ["HARNESS_REPO"] = target_repo
-            try:
-                from harness.swarm_adapter import ensure_repo_swarm_adapter
-                ensure_repo_swarm_adapter(session.config)
-            except Exception:
-                pass
-
-        basename = os.path.basename(os.path.abspath(target_repo)) or "Workspace"
-        yield ConvEvent("action_result", {
-            "id": aid,
-            "num": 1,
-            "types": ["workspace"],
-            "adapter": "local",
-            "mode": "tool",
-            "path": os.path.abspath(target_repo),
-            "workspace_root": os.path.abspath(target_repo),
-            "artifacts": [{"type": "workspace", "headline": f"Opened project: {basename}"}]
-        })
-        session._append_action_result(act, aid, f"Opened project: {basename}", is_native)
+        err_msg = (
+            "open_project cannot change the selected workspace. Use cwd or absolute paths "
+            "for clones, worktrees, and execution-only work. Use relocate_session only "
+            "when the user explicitly requests moving this conversation, or UI Open Folder."
+        )
+        yield ConvEvent("action_result", {"id": aid, "error": err_msg})
+        session._append_action_result(act, aid, err_msg, is_native, ok=False)
         return
 
     # ---- relocate_session branch ----------------------------------

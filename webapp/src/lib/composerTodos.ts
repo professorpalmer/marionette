@@ -165,6 +165,18 @@ export function liveJobTodoLabels(jobs: readonly Job[], sessionId: string): stri
   return liveJobTodoLabelGroups(jobs, sessionId).flat();
 }
 
+export function sessionHasLiveTodoOwner(jobs: readonly Job[], sessionId: string): boolean {
+  return jobs.some((job) => {
+    if (!jobInActiveSession(job, sessionId)) return false;
+    const state = taskState(job.status);
+    if (state === "pending" || state === "in_progress") return true;
+    return (job.tasks || []).some((task) => {
+      const taskStatus = taskState(task.status);
+      return taskStatus === "pending" || taskStatus === "in_progress";
+    });
+  });
+}
+
 export function litTodoContents(
   snapshot: SessionTodoSnapshot | null | undefined,
   descriptions: readonly string[],

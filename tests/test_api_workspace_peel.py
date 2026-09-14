@@ -464,3 +464,36 @@ def test_workspace_open_lease_exhausted_rolls_back(tmp_path):
     assert cfg.driver == "old-model"
     assert sessions.active == "prev-sid"
     assert os.environ.get("HARNESS_REPO") == str(prev)
+
+
+@pytest.mark.parametrize("newer_selection", [False, True])
+def test_workspace_open_failed_attach_leaves_no_blank_or_recent(tmp_path, newer_selection):
+    from harness.sessions import SessionStore
+    prev, target, newer = (tmp_path / name for name in ("prev", "target", "newer"))
+    for path in (prev, target, newer):
+        path.mkdir()
+    cfg = SimpleNamespace(repo=str(prev), driver="old-model")
+    svc, _, _, _ = _svc(cfg, tmp_path)
+    store = SessionStore(str(tmp_path / "sessions.json"))
+    previous = store.create(repo=str(prev))["id"]
+    other = store.create(repo=str(newer))["id"]
+    store.switch(previous)
+    svc.sessions = store
+    svc.session_visible_for_workspace = lambda s, r, d: s["repo"] == r
+    recents = []
+    svc.record_recent_workspace = lambda r: recents.append(r)
+    class Full(Exception):
+        pass
+    def attach(*args, **kwargs):
+        if newer_selection:
+            cfg.repo = str(newer)
+            store.switch(other)
+        raise Full()
+    svc.attach_view = attach
+    svc.lease_exhausted_error = Full
+    code, _ = post_workspace_open({"path": str(target)}, svc)
+    assert code == 409
+    assert len(store.list()) == 2
+    assert recents == []
+    assert store.active == (other if newer_selection else previous)
+    assert cfg.repo == str(newer if newer_selection else prev)

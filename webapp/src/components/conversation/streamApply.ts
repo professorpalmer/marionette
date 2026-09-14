@@ -1617,6 +1617,13 @@ export function appendCheckpoint(
   items: Item[],
   d: { id?: string; label?: string; trigger?: string },
 ): Item[] {
+  if (d.id) {
+    for (let i = items.length - 1; i >= 0; i--) {
+      const item = items[i];
+      if (item.kind === "msg" && item.msg.role === "user") break;
+      if (item.kind === "checkpoint" && item.id === d.id) return items;
+    }
+  }
   return [
     ...items,
     {

@@ -268,7 +268,13 @@ export function dedupeDisplayItems(items: Item[]): Item[] {
   const swarmIndexById = new Map<string, number>();
   const swarmPendingIndexByKey = new Map<string, number>();
   const approvalIndexByHash = new Map<string, number>();
+  const checkpointIds = new Set<string>();
   for (const item of items) {
+    if (item.kind === "msg" && item.msg.role === "user") checkpointIds.clear();
+    if (item.kind === "checkpoint" && item.id) {
+      if (checkpointIds.has(item.id)) continue;
+      checkpointIds.add(item.id);
+    }
     if (item.kind === "card" && item.card?.id) {
       const id = String(item.card.id);
       const prevIdx = cardIndexById.get(id);
@@ -536,6 +542,9 @@ export function transcriptResponseToItems(res: {
               : [],
           ),
         }];
+      } else if (m.type === "checkpoint") {
+        return [{ kind: "checkpoint", id: String(m.id || ""),
+          label: String(m.label || ""), trigger: String(m.trigger || "") }];
       } else if (m.type === "turn_terminal") {
         const text = String(m.text || "").trim();
         if (!text) return [];

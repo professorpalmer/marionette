@@ -316,12 +316,6 @@ def post_workspace_open(body: dict, svc: WorkspaceServices) -> tuple[int, JsonPa
     except Exception as e:
         svc.diag("server.restore_workspace_driver", e)
 
-    try:
-        if svc.record_recent_workspace is not None:
-            svc.record_recent_workspace(target_repo)
-    except Exception as e:
-        svc.diag("server.record_recent_workspace", e)
-
     # Select/create the target project's session, then attach via registry
     # (do not rebuild in a way that orphans busy runners).
     created_session = False
@@ -348,28 +342,39 @@ def post_workspace_open(body: dict, svc: WorkspaceServices) -> tuple[int, JsonPa
             except Exception as e:
                 lease_cls = svc.lease_exhausted_error
                 if lease_cls is not None and isinstance(e, lease_cls):
-                    svc.cfg.repo = prev_repo
-                    svc.cfg.driver = prev_driver
-                    if svc.apply_model_context_window is not None:
-                        svc.apply_model_context_window()
-                    if prev_env_repo is None:
-                        os.environ.pop("HARNESS_REPO", None)
-                    else:
-                        os.environ["HARNESS_REPO"] = prev_env_repo
-                    if prev_active:
-                        try:
-                            svc.sessions.switch(prev_active)
-                        except Exception as roll_e:
-                            svc.diag("server.workspace_open_lease_rollback", roll_e)
+                    owns_selection = (svc.sessions.active == target_session_id
+                                      and svc.cfg.repo == target_repo)
+                    if created_session:
+                        svc.sessions.delete(target_session_id)
+                    if owns_selection:
+                        svc.cfg.repo = prev_repo
+                        svc.cfg.driver = prev_driver
+                        if svc.apply_model_context_window is not None:
+                            svc.apply_model_context_window()
+                        if prev_env_repo is None:
+                            os.environ.pop("HARNESS_REPO", None)
+                        else:
+                            os.environ["HARNESS_REPO"] = prev_env_repo
+                        if prev_active:
+                            try:
+                                svc.sessions.switch(prev_active)
+                            except Exception as roll_e:
+                                svc.diag("server.workspace_open_lease_rollback", roll_e)
                     body_payload = (
                         svc.lease_exhausted_body(e)
                         if svc.lease_exhausted_body is not None
                         else {"error": "lease exhausted"}
                     )
-                    if metadata_transition is not None and svc.restore_metadata_view is not None:
+                    if owns_selection and metadata_transition is not None and svc.restore_metadata_view is not None:
                         svc.restore_metadata_view(metadata_transition)
                     return 409, body_payload
                 raise
+
+    try:
+        if svc.record_recent_workspace is not None:
+            svc.record_recent_workspace(target_repo)
+    except Exception as e:
+        svc.diag("server.record_recent_workspace", e)
 
     has_codegraph = os.path.isdir(os.path.join(target_repo, ".codegraph"))
     if not has_codegraph:
