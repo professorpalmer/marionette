@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pm-harness"
-version = "0.9.495"
+version = "0.9.496"
 description = "Research rig: which LLMs can drive Puppetmaster as a native harness layer"
 requires-python = ">=3.9"
 dependencies = [
     "pypdf",
     # Runtime ownership: a standalone `pip install pm-harness` must pull the
     # pinned Puppetmaster bridge. Desktop/Electron still re-checks the same pin.
-    "puppetmaster-ai==1.27.21",
+    "puppetmaster-ai==1.27.22",
     "tzdata>=2026.3",
 ]
 
