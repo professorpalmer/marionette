@@ -793,7 +793,8 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
             _sc_api.get_session_swarm_results,
             services=svc.session_control_services),
         "/api/session/queue": get_json(
-            _sc_api.get_session_queue, services=svc.session_control_services),
+            _sc_api.get_session_queue, services=svc.session_control_services,
+            qs_arg="session_id", empty_as_none=True),
         "/api/checkpoints": get_json(
             _ckpt_api.get_checkpoints, services=svc.checkpoint_services),
         "/api/checkpoints/diff": get_json(

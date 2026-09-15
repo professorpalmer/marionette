@@ -379,6 +379,99 @@ def test_switch_response_omits_transcript_and_does_not_wait_on_build(tmp_path, m
         httpd.shutdown()
 
 
+def test_queue_read_before_switch_attaches_existing_session(monkeypatch):
+    import harness.server as srv
+    from harness.api.session_control import get_session_queue
+
+    monkeypatch.setattr(srv, "_runners", SessionRunnerRegistry(max_concurrent_sessions=3))
+    sid = srv._sessions.create(title="Selected before attach")["id"]
+    status, payload = get_session_queue(sid, srv._session_control_services())
+    assert status == 200
+    assert payload == {
+        "ok": True, "state": "loading", "available": False, "session_id": sid,
+    }
+    assert srv._runners.get(sid) is None
+
+
+def test_queue_read_returns_loading_without_waiting_for_deferred_build(tmp_path, monkeypatch):
+    import harness.server as srv
+    from harness.api.session_control import get_session_queue
+
+    monkeypatch.setenv("HARNESS_DEFER_COLD_ATTACH", "1")
+    old_runners = srv._runners
+    old_pilot = srv._pilot
+    old_state = srv._cfg.state_dir
+    gate = threading.Event()
+    try:
+        srv._cfg.state_dir = str(tmp_path)
+        reg = SessionRunnerRegistry(max_concurrent_sessions=3)
+        srv._runners = reg
+        created = srv._sessions.create(title="QueueLoading")
+        sid = created["id"]
+        real = _idle_runner(sid=sid)
+
+        def blocked_build(*, config=None):
+            gate.wait(timeout=5.0)
+            return real
+
+        with patch.object(srv, "_build_conversational_pilot", side_effect=blocked_build):
+            placeholder = srv._attach_view(sid, defer_cold_build=True)
+            assert is_deferred_placeholder(placeholder)
+            status, payload = get_session_queue(sid, srv._session_control_services())
+            assert status == 200
+            assert payload == {
+                "ok": True,
+                "state": "loading",
+                "available": False,
+                "session_id": sid,
+            }
+    finally:
+        gate.set()
+        try:
+            placeholder.ensure_ready(timeout=5.0)
+        except Exception:
+            pass
+        srv._runners = old_runners
+        srv._pilot = old_pilot
+        srv._cfg.state_dir = old_state
+
+
+def test_queue_read_keeps_deferred_build_failure_as_error(tmp_path, monkeypatch):
+    import harness.server as srv
+    from harness.api.session_control import get_session_queue
+
+    monkeypatch.setenv("HARNESS_DEFER_COLD_ATTACH", "1")
+    old_runners = srv._runners
+    old_pilot = srv._pilot
+    old_state = srv._cfg.state_dir
+    try:
+        srv._cfg.state_dir = str(tmp_path)
+        srv._runners = SessionRunnerRegistry(max_concurrent_sessions=3)
+        created = srv._sessions.create(title="QueueFailed")
+        sid = created["id"]
+
+        def failed_build(*, config=None):
+            raise RuntimeError("queue pilot build failed")
+
+        with patch.object(srv, "_build_conversational_pilot", side_effect=failed_build):
+            placeholder = srv._attach_view(sid, defer_cold_build=True)
+            deadline = time.time() + 5.0
+            while time.time() < deadline and placeholder.build_error is None:
+                time.sleep(0.01)
+            assert placeholder.build_error is not None
+            status, payload = get_session_queue(sid, srv._session_control_services())
+            assert status == 503
+            assert payload["ok"] is False
+            assert payload["state"] == "error"
+            assert payload["code"] == "pilot_build_failed"
+            assert payload["session_id"] == sid
+            assert "queue pilot build failed" in payload["error"]
+    finally:
+        srv._runners = old_runners
+        srv._pilot = old_pilot
+        srv._cfg.state_dir = old_state
+
+
 def test_ensure_active_pilot_ready_blocks_until_swap(tmp_path, monkeypatch):
     import harness.server as srv
 

@@ -130,6 +130,55 @@ it('does not paint a hop error when queueList returns another session id', async
   expect(screen.queryByText('other session row')).toBeNull();
 });
 
+it('keeps the composer intact and refreshes a loading queue on the runner-ready event', async () => {
+  let resolveRunnerReady: (value: Awaited<ReturnType<typeof api.readEventsSince>>) => void = () => {};
+  let runnerReady = false;
+  const queueRead = vi.spyOn(api, 'queueList').mockImplementation(async () => (
+    runnerReady ? {
+      ok: true,
+      state: 'ready',
+      available: true,
+      session_id: 'queue-ui',
+      items: [{ id: 'ready', text: 'ready without poll delay' }],
+      recovery: [],
+    } : { ok: true, state: 'loading', available: false, session_id: 'queue-ui' }
+  ));
+  vi.spyOn(api, 'readEventsSince').mockImplementationOnce(() => new Promise(resolve => {
+    resolveRunnerReady = resolve;
+  })).mockResolvedValue({ session_id: 'queue-ui', cursor: 1, events: [] });
+  vi.spyOn(api, 'uploadImage').mockResolvedValue({ path: '/uploads/keep.png', name: 'keep.png' });
+  vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:keep.png');
+
+  const input = await mount([{ id: 'stale', text: 'must not be cleared by loading' }]);
+  fireEvent.change(input, { target: { value: 'draft survives readiness' } });
+  fireEvent.paste(input, {
+    clipboardData: {
+      items: [{ type: 'image/png', getAsFile: () => new File(['image'], 'keep.png', { type: 'image/png' }) }],
+    },
+  });
+  await screen.findByTitle('Remove image');
+  await waitFor(() => expect(queueRead).toHaveBeenCalledWith('queue-ui'));
+  expect(screen.queryByText('No project session is ready yet. Open a workspace or pick a project session.')).toBeNull();
+
+  runnerReady = true;
+  await act(async () => resolveRunnerReady({
+    session_id: 'queue-ui',
+    cursor: 1,
+    events: [{
+      id: 1,
+      kind: 'runners',
+      session_id: 'queue-ui',
+      data: { state: 'idle', runners: { 'queue-ui': 'idle' }, active_view_id: 'queue-ui' },
+    }],
+  }));
+
+  await screen.findByText('ready without poll delay');
+  expect(queueRead.mock.calls.length).toBeGreaterThanOrEqual(2);
+  expect(input).toHaveValue('draft survives readiness');
+  expect(screen.getByTitle('Remove image')).toBeTruthy();
+  expect(screen.queryByText('No project session is ready yet. Open a workspace or pick a project session.')).toBeNull();
+});
+
 it('serializes queue discovery and pauses periodic reads while hidden', async () => {
   vi.useFakeTimers();
   let finish: (value: Awaited<ReturnType<typeof api.queueList>>) => void = () => {};

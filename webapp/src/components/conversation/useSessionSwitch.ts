@@ -82,6 +82,7 @@ export type UseSessionSwitchDeps = {
   flushTypewriterRef: MutableRefObject<() => void>;
   maybeRunQueuedResumeRef: MutableRefObject<() => void>;
   maybeDrainQueueRef: MutableRefObject<() => void>;
+  onRunnerReady: (sessionId: string) => void;
   ensureChatEventsReattachRef: MutableRefObject<() => void>;
   cancelRef: MutableRefObject<null | (() => void)>;
   localStreamActiveRef: MutableRefObject<boolean>;
@@ -162,6 +163,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
     flushTypewriterRef,
     maybeRunQueuedResumeRef,
     maybeDrainQueueRef,
+    onRunnerReady,
     ensureChatEventsReattachRef,
     cancelRef,
     localStreamActiveRef,
@@ -391,6 +393,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
       flushTypewriterRef,
       maybeRunQueuedResumeRef,
       maybeDrainQueueRef,
+      onRunnerReady,
       clearChatEventsPoll,
       setItems,
       setTranscriptStale,
