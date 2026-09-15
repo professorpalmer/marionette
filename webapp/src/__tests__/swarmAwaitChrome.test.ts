@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   clearSwarmAwaitWaitHint,
+  classifySwarmPollEvent,
   confirmedTerminalJobIds,
   hasLiveBackgroundJobIds,
   noteEmptyRecoveryDrain,
@@ -38,6 +39,16 @@ function msg(role: "user" | "assistant", text: string): Item {
 }
 
 describe("swarm await chrome", () => {
+  it("routes command terminal receipts through the action-card lane", () => {
+    expect(classifySwarmPollEvent({
+      kind: "action_result",
+      data: {
+        id: "a-command", job_id: "local-cmd-1", status: "unknown",
+        recovery_receipt: { status: "unknown" },
+      },
+    })).toMatchObject({ kind: "action_result", data: { job_id: "local-cmd-1" } });
+  });
+
   it("treats local-* and job_* as live background ids", () => {
     expect(hasLiveBackgroundJobIds(["local-swarm-a"])).toBe(false);
     expect(hasLiveBackgroundJobIds(["local-bf1b30f4"])).toBe(true);

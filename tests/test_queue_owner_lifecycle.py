@@ -580,6 +580,7 @@ def test_reaped_old_generator_cleanup_cannot_release_replacement(server, monkeyp
     assert next(stream).kind == 'notice'
     monkeypatch.setattr(old, '_turn_deadline_seconds', lambda: 1)
     old._busy_since = time.monotonic() - 10
+    old._busy_last_progress = old._busy_since
     assert old._reap_stuck_turn()
     if operation == 'swap':
         server._perform_pilot_swap('offline-model')

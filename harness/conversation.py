@@ -880,6 +880,8 @@ class ConversationalSession(
         # silently corrupting. (The harness is a local single-user tool.)
         self._busy = threading.Lock()
         self._busy_since = 0.0  # monotonic time the lock was acquired (0 = free)
+        # Monotonic time of the current owner's last real outbound event.
+        self._busy_last_progress = 0.0
         self._interrupt_requested = False  # user hit Stop; allow faster busy recovery
         # After Stop: report runners idle + suppress swarm keep-alive resume until
         # the next real user send (abandoned generator may still hold _busy).

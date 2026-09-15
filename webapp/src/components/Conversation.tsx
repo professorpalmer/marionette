@@ -76,6 +76,7 @@ import {
   appendPendingReview,
   appendStopHonestyNotice,
   appendTurnTerminal,
+  applyActionResultCard,
   applySwarmResultToItems,
   finalizeOrphanSwarmPills,
   focusReviewTabAndRefresh,
@@ -2626,6 +2627,13 @@ export default function Conversation({
           if (action.kind === "swarm_result") {
             deliveredThisPoll.add(String(action.data.job_id));
             handleSwarmResult(action.data);
+          } else if (action.kind === "action_result") {
+            const jobId = String(action.data.job_id || "").trim();
+            setItems((p) => applyActionResultCard(p, action.data));
+            if (jobId) {
+              deliveredThisPoll.add(jobId);
+              setPendingJobIds((ids) => ids.filter((id) => id !== jobId));
+            }
           } else if (action.kind === "pending_review") {
             setItems((p) => appendPendingReview(p, action.data));
             focusReviewTabAndRefresh();

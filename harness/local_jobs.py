@@ -253,6 +253,100 @@ class LocalJobsMixin:
         """Capture only; initialization belongs to boot/load and writer seams."""
         return getattr(self, '_local_metadata', None)
 
+    def has_pending_command_jobs(self) -> bool:
+        """True while this session owns a registered or running command job."""
+        from harness.command_jobs import COMMAND_JOB_KIND, COMMAND_TERMINAL_STATES
+        sid = str(getattr(self, "harness_session_id", "") or "")
+        with self._local_jobs_lock:
+            return any(
+                row.get("job_kind") == COMMAND_JOB_KIND
+                and str(row.get("session_id") or "") == sid
+                and str(row.get("status") or "") not in COMMAND_TERMINAL_STATES | {"unknown"}
+                for row in self._local_jobs.values()
+                if isinstance(row, dict)
+            )
+
+    def _record_command_job_delivery(self, receipt: dict) -> None:
+        """Settle the durable display card for an authoritative command receipt."""
+        transcript = getattr(self, "_display_transcript", None)
+        if not isinstance(transcript, list):
+            return
+        action_id = str(receipt.get("id") or "").strip()
+        job_id = str(receipt.get("job_id") or "").strip()
+        if not action_id or not job_id:
+            return
+        pending = {"", "pending", "registered", "running"}
+        for card in reversed(transcript):
+            if not isinstance(card, dict) or card.get("type") != "card":
+                continue
+            if str(card.get("id") or "") != action_id:
+                continue
+            current = card.get("result")
+            if isinstance(current, dict):
+                current_job = str(current.get("job_id") or "").strip()
+                if current_job and current_job != job_id:
+                    return
+                status = str(current.get("status") or "").strip().lower()
+                if current.get("terminal_receipt") or status not in pending:
+                    return
+            card["result"] = copy.deepcopy(receipt)
+            return
+        transcript.append({
+            "type": "card",
+            "id": action_id,
+            "kind": receipt.get("kind") or "run_command",
+            "goal": receipt.get("goal") or "",
+            "cwd": receipt.get("cwd") or "",
+            "result": copy.deepcopy(receipt),
+        })
+
+    def drain_command_job_receipts(self, *, already_holding_busy: bool = False) -> list:
+        """Project durable terminal/unknown receipts onto their action cards.
+
+        Delivery is idempotent and replayable so a lost HTTP response cannot
+        strand a pending card. This lane never emits ``swarm_result`` or
+        ``pilot_resume``.
+        """
+        from harness.command_jobs import build_command_terminal_delivery
+        busy = getattr(self, "_busy", None)
+        acquired_here = False
+        if busy is not None and not already_holding_busy:
+            try:
+                if not busy.acquire(blocking=False):
+                    return []
+            except (AttributeError, TypeError):
+                return []
+            acquired_here = True
+        sid = str(getattr(self, "harness_session_id", "") or "")
+        delivered = []
+        stamped = False
+        try:
+            with self._local_jobs_lock:
+                for row in self._local_jobs.values():
+                    if not isinstance(row, dict) or str(row.get("session_id") or "") != sid:
+                        continue
+                    prior = row.get("terminal_delivery")
+                    if isinstance(prior, dict):
+                        delivered.append(copy.deepcopy(prior))
+                        continue
+                    receipt = build_command_terminal_delivery(row)
+                    if receipt is None:
+                        continue
+                    row["terminal_delivery"] = copy.deepcopy(receipt)
+                    delivered.append(receipt)
+                    stamped = True
+                if stamped:
+                    self._persist_local_jobs_locked(required=True)
+            for receipt in delivered:
+                self._record_command_job_delivery(receipt)
+            return delivered
+        finally:
+            if acquired_here:
+                try:
+                    busy.release()
+                except RuntimeError:
+                    pass
+
 
     def _initialize_local_metadata_locked(self):
         from .local_job_metadata import LocalMetadataIndex, ObservedJobs

@@ -47,6 +47,7 @@ def test_stale_send_cleanup_preserves_new_owner(tmp_path, monkeypatch):
         old_turn_id = old_context.run(get_approval_turn_id)
         monkeypatch.setattr(session, "_turn_deadline_seconds", lambda: 1)
         session._busy_since -= 2
+        session._busy_last_progress = session._busy_since
         assert session._reap_stuck_turn()
         new_context.run(next, new)
         new_turn_id = new_context.run(get_approval_turn_id)
@@ -190,6 +191,7 @@ def test_reaper_publishes_idle_before_new_owner_can_enter(tmp_path, monkeypatch)
     session._busy.acquire()
     session._mark_busy_acquired()
     session._busy_since -= 2
+    session._busy_last_progress = session._busy_since
     monkeypatch.setattr(session, "_turn_deadline_seconds", lambda: 1)
     released, finish = threading.Event(), threading.Event()
     real_meta = session._busy_meta

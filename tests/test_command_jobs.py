@@ -164,6 +164,31 @@ def test_register_before_start_and_pending_receipt(session):
     assert launched[0][1][1] == job_id
 
 
+def test_terminal_background_command_receipt_is_idempotent_for_its_action(session):
+    sess, _state_dir, repo = session
+    sess._display_transcript = [{
+        "type": "card",
+        "id": "a-delivery",
+        "kind": "run_command",
+        "result": {"status": "running"},
+    }]
+    act = PilotAction(kind="run_command", command="echo receipt", background=True)
+    with patch("harness.command_jobs.threading.Thread", return_value=MagicMock()):
+        pending = start_background_run_command(sess, act, "a-delivery")
+    assert sess._finish_command_job(
+        pending["job_id"], status="completed", summary="exit 0", exit_code=0,
+    ) is True
+
+    first = sess.drain_command_job_receipts()
+    assert first
+    replay = sess.drain_command_job_receipts()
+    assert replay == first
+    assert first[0]["id"] == "a-delivery"
+    assert first[0]["job_id"] == pending["job_id"]
+    assert first[0]["terminal_receipt"]["status"] == "completed"
+    assert sess._display_transcript[0]["result"]["status"] == "completed"
+
+
 def test_terminal_persistence_and_restart_safe_lookup(session):
     sess, state_dir, repo = session
     act = PilotAction(kind="run_command", command="echo done", background=True)

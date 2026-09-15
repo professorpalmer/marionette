@@ -10,6 +10,7 @@ from harness.pilot_wait import (
     note_keep_alive_wait,
     parse_wait_seconds,
     pending_jobs_keep_alive,
+    apply_ready_command_results,
 )
 
 
@@ -44,6 +45,65 @@ def test_pending_jobs_keep_alive():
     assert pending_jobs_keep_alive(
         SimpleNamespace(has_pending_swarms=lambda: True, _cancel=cancel)
     ) is False
+
+
+def test_pending_command_job_keeps_wait_open_and_delivers_receipt():
+    delivered = []
+    session = SimpleNamespace(
+        has_pending_swarms=lambda: False,
+        has_pending_command_jobs=lambda: True,
+        drain_swarm_results=lambda **_k: iter(()),
+        drain_command_job_receipts=lambda: [{
+            "id": "a-command", "job_id": "local-cmd-1",
+            "status": "completed", "terminal_receipt": {"status": "completed"},
+        }],
+        _cancel=SimpleNamespace(is_set=lambda: False),
+    )
+    assert pending_jobs_keep_alive(session) is True
+    delivered.extend(list(apply_ready_command_results(session)))
+    assert delivered[0].kind == "action_result"
+
+
+def test_wait_targets_the_requested_command_job():
+    state = {"status": "running", "terminal_receipt": None}
+
+    def get_local_job(_job_id):
+        return {
+            "id": "local-cmd-target",
+            "job_kind": "run_command",
+            "session_id": "session-1",
+            "action_id": "a-command",
+            **state,
+        }
+
+    session = SimpleNamespace(
+        get_local_job=get_local_job,
+        has_pending_swarms=lambda: False,
+        has_pending_command_jobs=lambda: False,
+        _cancel=SimpleNamespace(is_set=lambda: False),
+    )
+    assert pending_jobs_keep_alive(session, job_id="local-cmd-target") is True
+    state.update(status="completed", terminal_receipt={"status": "completed"})
+    assert pending_jobs_keep_alive(session, job_id="local-cmd-target") is False
+
+
+def test_missing_requested_command_is_not_reported_settled():
+    appended = []
+    session = SimpleNamespace(
+        get_local_job=lambda _job_id: None,
+        has_pending_swarms=lambda: False,
+        has_pending_command_jobs=lambda: False,
+        drain_swarm_results=lambda **_kwargs: iter(()),
+        drain_command_job_receipts=lambda **_kwargs: [],
+        _cancel=SimpleNamespace(is_set=lambda: False),
+        _append_action_result=lambda *args, **kwargs: appended.append((args, kwargs)),
+    )
+    act = SimpleNamespace(arguments={"seconds": 1, "job_id": "local-cmd-missing"})
+    events = list(dispatch_wait_action(session, act, "w-missing", True))
+    result = events[-1]
+    assert result.kind == "action_result"
+    assert result.data["settled"] is False
+    assert "unavailable" in result.data["message"].lower()
 
 
 def test_keep_alive_wait_slice_is_instant_with_fake_clock():
@@ -104,4 +164,3 @@ def test_note_keep_alive_wait_caps():
     assert note_keep_alive_wait(session) is True
     session._keep_alive_waits = 90
     assert note_keep_alive_wait(session) is False
-
