@@ -1231,9 +1231,19 @@ def test_start_restarts_unhealthy_matching_process(tmp_path, monkeypatch):
         "harness.local_model_manager.process_matches_identity",
         lambda pid, ident: True,
     )
+    # pid 11 is an adopted child this test never spawned: model its liveness
+    # instead of reading the host process table. A real pid 11 on a Windows
+    # runner made the post-stop liveness check raise "Could not observe
+    # adopted child exit" (nightly windows 3.11). Neighboring lifecycle tests
+    # patch _pid_alive the same way.
+    live_pids = {11}
+    monkeypatch.setattr(
+        "harness.local_model_manager._pid_alive",
+        lambda pid: int(pid) in live_pids,
+    )
     monkeypatch.setattr(
         "harness.local_model_manager.stop_process_tree",
-        lambda *a, **k: None,
+        lambda pid, *a, **k: live_pids.discard(int(pid)),
     )
     state = mgr._state()
     state["managed"]["process"] = {
