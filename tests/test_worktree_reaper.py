@@ -4,9 +4,21 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import sys
 from types import SimpleNamespace
 
+import pytest
+
 import harness.worktrees as wt
+
+
+@pytest.fixture(autouse=True)
+def _isolate_worktree_module_dependencies(monkeypatch):
+    private_os = SimpleNamespace(**vars(os))
+    private_os.path = SimpleNamespace(**vars(os.path))
+    monkeypatch.setattr(wt, "os", private_os)
+    monkeypatch.setattr(wt, "sys", SimpleNamespace(**vars(sys)))
+    monkeypatch.setattr(wt, "subprocess", SimpleNamespace(**vars(subprocess)))
 
 
 def setup_function():
@@ -45,7 +57,7 @@ def test_reap_no_matches_returns_zero(tmp_path, monkeypatch):
 
 
 def test_reap_posix_signals_only_registered_pids(tmp_path, monkeypatch):
-    monkeypatch.setattr(os, "name", "posix")
+    monkeypatch.setattr(wt.os, "name", "posix")
     wtpath = os.path.realpath(_managed_worktree_path(tmp_path))
     me = os.getpid()
     parent = os.getppid()
@@ -60,7 +72,7 @@ def test_reap_posix_signals_only_registered_pids(tmp_path, monkeypatch):
             raise ProcessLookupError()
         killed.append((pid, sig))
 
-    monkeypatch.setattr(os, "kill", fake_kill)
+    monkeypatch.setattr(wt.os, "kill", fake_kill)
 
     n = wt.reap_worktree_processes(wtpath)
 
@@ -71,8 +83,28 @@ def test_reap_posix_signals_only_registered_pids(tmp_path, monkeypatch):
         assert pid not in (1, me, parent)
 
 
+def test_simulated_process_dependencies_do_not_mutate_host_modules(monkeypatch):
+    host = (os.name, sys.platform, os.kill, subprocess.run)
+
+    def fake_kill(*_args, **_kwargs):
+        return None
+
+    def fake_run(*_args, **_kwargs):
+        return None
+
+    with monkeypatch.context() as patch:
+        patch.setattr(wt.os, "name", "nt")
+        patch.setattr(wt.sys, "platform", "win32")
+        patch.setattr(wt.os, "kill", fake_kill)
+        patch.setattr(wt.subprocess, "run", fake_run)
+        observed = (os.name, sys.platform, os.kill, subprocess.run)
+
+    assert (os.name, sys.platform, os.kill, subprocess.run) == host
+    assert observed == host
+
+
 def test_reap_windows_taskkills_only_registered_pids(tmp_path, monkeypatch):
-    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(wt.os, "name", "nt")
     wtpath = os.path.realpath(_managed_worktree_path(tmp_path))
     me = os.getpid()
     parent = os.getppid()
@@ -101,7 +133,7 @@ def test_reap_windows_taskkills_only_registered_pids(tmp_path, monkeypatch):
 
 def test_reap_skips_foreign_process_with_matching_cwd(tmp_path, monkeypatch):
     """Cwd-under-worktree alone must not cause a kill -- only registered PIDs."""
-    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(wt.os, "name", "nt")
     wtpath = os.path.realpath(_managed_worktree_path(tmp_path))
     foreign = 515151
 
@@ -137,7 +169,7 @@ def test_register_worktree_process_ignores_non_managed_paths(tmp_path):
 
 def test_bind_and_release_worktree_subprocess_spawn_site(tmp_path, monkeypatch):
     """Spawn-site helpers must register on start and unregister on finish."""
-    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(wt.os, "name", "nt")
     wtpath = os.path.realpath(_managed_worktree_path(tmp_path))
     fake_pid = 777001
     proc = SimpleNamespace(pid=fake_pid)
@@ -170,7 +202,7 @@ def test_bind_and_release_worktree_subprocess_spawn_site(tmp_path, monkeypatch):
 
 
 def test_unregister_prevents_pid_reuse_kill(tmp_path, monkeypatch):
-    monkeypatch.setattr(os, "name", "posix")
+    monkeypatch.setattr(wt.os, "name", "posix")
     wtpath = os.path.realpath(_managed_worktree_path(tmp_path))
     pid = 888002
     wt.register_worktree_process(wtpath, pid, kind="worker")
@@ -181,13 +213,13 @@ def test_unregister_prevents_pid_reuse_kill(tmp_path, monkeypatch):
     def fake_kill(pid_arg, sig):
         killed.append((pid_arg, sig))
 
-    monkeypatch.setattr(os, "kill", fake_kill)
+    monkeypatch.setattr(wt.os, "kill", fake_kill)
     assert wt.reap_worktree_processes(wtpath) == 0
     assert killed == []
 
 
 def test_worktree_pid_cwds_routes_to_windows_branch(monkeypatch):
-    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(wt.os, "name", "nt")
     calls: list[str] = []
 
     def fake_windows():
@@ -206,7 +238,7 @@ def test_worktree_pid_cwds_routes_to_windows_branch(monkeypatch):
 
 
 def test_worktree_pid_cwds_routes_to_posix_branch(monkeypatch):
-    monkeypatch.setattr(os, "name", "posix")
+    monkeypatch.setattr(wt.os, "name", "posix")
     calls: list[str] = []
 
     def fake_windows():

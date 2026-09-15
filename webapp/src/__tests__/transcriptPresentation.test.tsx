@@ -88,6 +88,54 @@ describe("normalizePlainTextNarration", () => {
 });
 
 describe("transcript presentation contract", () => {
+  it("renders a complete verdict containing a bold status-like heading", () => {
+    const text = "**Verdict: checks passed.**\n\n**Loading behavior is consistent**\n\nAll recorded results agree.";
+    render(
+      <TranscriptList {...listProps([{ kind: "msg", msg: { role: "assistant", text } }])} />,
+    );
+
+    expect(screen.getByText("Verdict: checks passed.").tagName).toBe("STRONG");
+    expect(screen.getByText("Loading behavior is consistent").tagName).toBe("STRONG");
+    expect(screen.getByText("All recorded results agree.")).toBeVisible();
+  });
+
+  it.each(["\n\n", " "])("renders substantive prose after an opening status with separator %j", (separator) => {
+    const text = `Investigating...${separator}All recorded results agree.`;
+    const { container } = render(
+      <TranscriptList {...listProps([{ kind: "msg", msg: { role: "assistant", text } }])} />,
+    );
+
+    expect(container.textContent).toContain("Investigating...");
+    expect(screen.getByText(/All recorded results agree\./)).toBeVisible();
+  });
+
+  it.each(["Investigating...", "**Investigating...**", "__Investigating...__"])(
+    "preserves a separate paragraph after the opening status %s",
+    (opening) => {
+      const text = `${opening}\n\nLoading behavior is consistent`;
+      render(
+        <TranscriptList {...listProps([{ kind: "msg", msg: { role: "assistant", text } }])} />,
+      );
+
+      expect(screen.getByText("Investigating...")).toBeVisible();
+      expect(screen.getByText("Loading behavior is consistent")).toBeVisible();
+    },
+  );
+
+  it.each([
+    "**Investigating...**",
+    "\n\n**Investigating...**\n\n",
+    "**Loading**",
+    "**Creating concise manifest summaries****Preparing audit manifest files**",
+    "****",
+  ])("hides standalone assistant status or formatting chrome: %s", (text) => {
+    const { container } = render(
+      <TranscriptList {...listProps([{ kind: "msg", msg: { role: "assistant", text } }])} />,
+    );
+
+    expect(container.textContent).toBe("");
+  });
+
   it("keeps collapsed reasoning sentence-case sans without mono/uppercase/bold chrome", () => {
     render(
       <TranscriptList

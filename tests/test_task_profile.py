@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession
 from harness.pilot_guards import check_swarm_gate, new_turn_guard_state
@@ -34,6 +36,51 @@ def test_classify_trivial_ping_is_micro():
 
 def test_classify_add_oauth_is_standard():
     assert classify_task_profile("add OAuth support") == STANDARD
+
+
+@pytest.mark.parametrize("message", [
+    "So? What was the verdict?",
+    "What's the status?",
+    "Any updates?",
+    "Where did we leave off?",
+    "Please recap that.",
+    "Summarize the audit results.",
+    "What were the review findings?",
+])
+def test_conversational_followup_skips_injection_without_micro(message):
+    from harness.task_profile import is_conversational_followup
+
+    assert is_conversational_followup(message)
+    profile = classify_task_profile(message)
+    assert profile == STANDARD
+    assert profile_skips_codegraph(profile, message)
+    assert profile_skips_wiki(profile, message)
+    assert not profile_disables_swarm_gate(profile)
+    assert "run_swarm" in core_visible_names(profile=profile)
+    assert "query_wiki" in core_visible_names(profile=profile)
+
+
+@pytest.mark.parametrize("message", [
+    "Find SmartVerdict",
+    "Where is SmartVerdict defined?",
+    "Find all subprocess launches",
+    "Inspect subprocess launches across the repo",
+    "Re-run the checks",
+    "Verify the verdict",
+    "Audit the status handling",
+    "Summarize the code in SmartVerdict",
+    "What's the status of the production server?",
+    "So? What was the verdict? Re-run the checks.",
+    "Summarize the audit results and verify them.",
+    "What were the review findings? Launch a swarm.",
+])
+def test_followup_classifier_preserves_fresh_work(message):
+    from harness.task_profile import is_conversational_followup
+
+    assert not is_conversational_followup(message)
+    profile = classify_task_profile(message)
+    assert not profile_skips_codegraph(profile, message)
+    assert not profile_skips_wiki(profile, message)
 
 
 def test_classify_audit_architecture_is_deep():

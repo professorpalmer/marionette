@@ -190,6 +190,57 @@ def test_append_only_off_keeps_turn_note_in_system(monkeypatch):
         shutil.rmtree(temp_dir)
 
 
+@pytest.mark.parametrize("append_only", ["on", "off"])
+def test_recap_send_reuses_history_without_fresh_grounding(monkeypatch, append_only):
+    from harness.task_profile import STANDARD
+
+    cg_queries = []
+    wiki_queries = []
+    def context(task, cwd):
+        cg_queries.append(task)
+        return "CG-PRIOR-RESULT"
+    monkeypatch.setattr("puppetmaster.codegraph.codegraph_context", context)
+    session, temp_dir = _make_session(monkeypatch, append_only=append_only)
+    try:
+        monkeypatch.setattr(session, "_get_codegraph_context", lambda query: (
+            cg_queries.append(query) or ""
+        ))
+        session._wiki.base_url = "https://wiki.example.com"
+        session._wiki.token = "fixture-token"
+        monkeypatch.setattr(session, "_build_turn_wiki_section", lambda query: (
+            wiki_queries.append(query) or "WIKI-PRIOR-RESULT"
+        ))
+        pilot = _RecordingPilot([
+            json.dumps({"say": "Prior verdict: the focused checks passed.", "actions": []}),
+            json.dumps({"say": "The focused checks passed.", "actions": []}),
+        ])
+        session.pilot = pilot
+        list(session.send("Inspect the existing results"))
+        assert cg_queries
+        assert wiki_queries
+        cg_queries.clear()
+        wiki_queries.clear()
+
+        events = list(session.send("So? What was the verdict?"))
+        assert not cg_queries
+        assert not wiki_queries
+        assert session._task_profile == STANDARD
+        assert "Prior verdict: the focused checks passed." in pilot.prompts[-1]
+        current_turn = next(
+            row["content"] for row in reversed(session._history)
+            if row.get("role") == "user"
+        )
+        assert "existing conversation" in current_turn
+        assert "Answer with search_codegraph" not in current_turn
+        assert not any(event.kind == "codegraph_context" for event in events)
+
+        list(session.send("Re-run the checks and verify the verdict"))
+        assert cg_queries
+        assert wiki_queries
+    finally:
+        shutil.rmtree(temp_dir)
+
+
 def test_prefix_stable_turns_increments(monkeypatch):
     session, temp_dir = _make_session(monkeypatch, append_only="on")
     try:

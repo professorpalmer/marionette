@@ -4,7 +4,7 @@ import { MetadataStatus } from './MetadataJobs';
 import { openAgentSwarmJob } from '../lib/agentLinks';
 import { jobDisplayTitle } from '../lib/jobDisplayTitle';
 import { useCallback, useEffect, useRef, useState } from "react";
-import { GitBranch, Plus, MessageSquare, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2, CheckCircle2, Circle, Trash2, Brush, Search, X, Square } from "lucide-react";
+import { GitBranch, Plus, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2, Circle, Trash2, Brush, Search, X } from "lucide-react";
 import { api, type Workspace, type WorkspaceInfo, type Session, type Job } from "../lib/api";
 import { pickFolder } from "../lib/transport";
 import { dispatchProjectSelected, dispatchProjectSwitching, panelOpacityClass } from "../lib/panelTransition";
@@ -44,10 +44,7 @@ export {
   buildProjectsList,
   filterForgottenRecent,
   pickFallbackProjectAfterForget,
-  canSettleSessionsForProject,
   partitionProjectSessions,
-  readSessionSettledFromCaches,
-  patchSessionSettledInCaches,
   patchSessionTitleInCaches,
   patchSessionArchivedInCaches,
   patchActiveSessionInCaches,
@@ -71,10 +68,7 @@ import {
   buildProjectsList,
   filterForgottenRecent,
   pickFallbackProjectAfterForget,
-  canSettleSessionsForProject,
   partitionProjectSessions,
-  readSessionSettledFromCaches,
-  patchSessionSettledInCaches,
   patchSessionTitleInCaches,
   patchSessionArchivedInCaches,
   patchActiveSessionInCaches,
@@ -110,25 +104,10 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     session: Pick<Session, "id" | "title" | "forked_from">;
     sessionId: string;
     title: string;
-    settled: boolean;
     archived: boolean;
     running: boolean;
-    /** False when browsing a non-active project (API would 403). */
-    canSettle: boolean;
   } | null>(null);
-  /** Per-project Settled section expand; collapsed by default. */
-  const [expandedSettled, setExpandedSettled] = useState<Record<string, boolean>>(() => {
-    try {
-      const raw = localStorage.getItem(SETTLED_EXPANDED_KEY);
-      if (!raw) return {};
-      const parsed = JSON.parse(raw);
-      return parsed && typeof parsed === "object" ? parsed as Record<string, boolean> : {};
-    } catch {
-      return {};
-    }
-  });
   const [archivedExpanded, setArchivedExpanded] = useState(false);
-  const settleUndoRef = useRef<{ sid: string; priorSettled: boolean } | null>(null);
   const bankAllRef = useRef<Session[]>([]);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [projectContextMenu, setProjectContextMenu] = useState<{
@@ -201,7 +180,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     const jobsOccupied = sessionJobsCollapsed
       ? 48
       : sessionJobsHeightRef.current;
-    // Keep Projects (and a little settled chrome) from being crushed out
+    // Keep Projects from being crushed out
     // of the upper rail when Branches is dragged tall.
     const projectsOccupied = projectsSectionRef.current?.offsetHeight
       ?? BRANCHES_PROJECTS_RESERVE;
@@ -910,8 +889,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       const rows = await api.sessionsBank({ limit: 80 });
       const all = Array.isArray(rows) ? rows : [];
       bankAllRef.current = all;
-      // Recent stays active-primary; settled/archived remain available for search labels.
-      setBankSessions(all.filter((s) => !s.settled && !s.archived));
+      setBankSessions(all.filter((s) => !s.archived));
     } catch {
       bankAllRef.current = [];
       setBankSessions([]);
@@ -944,26 +922,22 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           const hits = await api.searchSessions(trimmed, 20);
           if (reqId !== sessionSearchReqId.current) return;
           const titleById: Record<string, string> = {};
-          const settledById: Record<string, boolean> = {};
           for (const s of bankAllRef.current) {
             if (!s?.id) continue;
             titleById[s.id] = s.title || "";
-            settledById[s.id] = !!s.settled;
           }
           for (const s of sessions) {
             if (!s?.id) continue;
             if (titleById[s.id] == null) titleById[s.id] = s.title || "";
-            if (settledById[s.id] == null) settledById[s.id] = !!s.settled;
           }
           for (const root of projectsRef.current.filter(Boolean)) {
             const cached = readSWRCache<Session[]>(`sessions:${root}`);
             for (const s of cached || []) {
               if (!s?.id) continue;
               if (titleById[s.id] == null) titleById[s.id] = s.title || "";
-              if (settledById[s.id] == null) settledById[s.id] = !!s.settled;
             }
           }
-          setSessionSearchRows(mapSessionSearchHits(hits, titleById, settledById));
+          setSessionSearchRows(mapSessionSearchHits(hits, titleById));
         } catch {
           if (reqId !== sessionSearchReqId.current) return;
           setSessionSearchRows([]);
@@ -1137,7 +1111,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     toast(ok ? `Copied transcript ID ${sid}` : "Could not copy transcript ID");
   };
 
-  const handleContextMenu = (e: React.MouseEvent, s: Pick<Session, "id" | "title" | "forked_from" | "settled" | "archived">, allowSettle: boolean) => {
+  const handleContextMenu = (e: React.MouseEvent, s: Pick<Session, "id" | "title" | "forked_from" | "archived">) => {
     e.preventDefault();
     if (e.currentTarget instanceof HTMLElement) {
       contextTrigger.current = e.currentTarget;
@@ -1149,10 +1123,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       y: Math.max(8, Math.min(e.clientY, window.innerHeight - 400)),
       sessionId: s.id,
       title: displaySessionListTitle(s.title),
-      settled: !!s.settled,
       archived: !!s.archived,
       running: runners[s.id] === "running",
-      canSettle: allowSettle,
     });
   };
 
@@ -1165,40 +1137,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     }
   };
 
-  const settledSessions = sessions.filter((s) => s.settled && !s.archived);
   const archivedSessions = sessions.filter((s) => s.archived);
-
-  const settleSession = async (sid: string, settled: boolean) => {
-    const roots = projectsRef.current.filter(Boolean);
-    const priorSettled = readSessionSettledFromCaches(roots, sid) ?? !settled;
-    patchSessionSettledInCaches(roots, sid, settled);
-    setSessionsCacheEpoch((n) => n + 1);
-    try {
-      await api.settleSession(sid, settled);
-      settleUndoRef.current = { sid, priorSettled };
-      window.dispatchEvent(new CustomEvent("harness-toast", {
-        detail: {
-          message: settled ? "Settled" : "Unsettled",
-          actionLabel: "Undo",
-          actionEvent: "harness-settle-undo",
-        },
-      }));
-      await refreshSessionsRef.current();
-      if (railTab === "sessions") void refreshBankSessions();
-    } catch (err) {
-      console.error(err);
-      patchSessionSettledInCaches(roots, sid, priorSettled);
-      setSessionsCacheEpoch((n) => n + 1);
-      const e = err as { message?: string; error?: string } | undefined;
-      const detail = String(e?.error || e?.message || err || "").trim();
-      toast(
-        detail
-          ? `Could not ${settled ? "settle" : "unsettle"} session: ${detail}`
-          : `Could not ${settled ? "settle" : "unsettle"} session`,
-      );
-      await refreshSessionsRef.current();
-    }
-  };
 
   const [removingSessionRoot, setRemovingSessionRoot] = useState<string | null>(null);
   const archiveSession = async (sid: string, archived: boolean) => {
@@ -1237,19 +1176,6 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       setRemovingSessionRoot(null);
     }
   };
-
-  useEffect(() => {
-    const onUndo = () => {
-      const pending = settleUndoRef.current;
-      if (!pending) return;
-      settleUndoRef.current = null;
-      void settleSession(pending.sid, pending.priorSettled);
-    };
-    window.addEventListener("harness-settle-undo", onUndo);
-    return () => window.removeEventListener("harness-settle-undo", onUndo);
-    // settleSession closes over latest caches/refs; rebind when rail tab changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [railTab]);
 
   const rawRecents = workspaceInfo?.recents || [];
   // Stable PROJECTS order: pin Home first, then recents as-is, append current
@@ -1355,7 +1281,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projects.join("\0"), sessionsCacheEpoch, currentRepo]);
 
-  const projectSessionBuckets = (projectPath: string): { open: Session[]; settled: Session[] } => {
+  const projectSessionsFor = (projectPath: string): Session[] => {
     // sessionsCacheEpoch: force re-read after writeSWRCache from delete/refresh.
     void sessionsCacheEpoch;
     // Always prefer the per-root cache -- never derive other rows from the
@@ -1375,12 +1301,6 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
         : []);
     return partitionProjectSessions(rows, projectPath, isActiveRow);
   };
-
-  const projectSessionsFor = (projectPath: string): Session[] =>
-    projectSessionBuckets(projectPath).open;
-
-  const projectSettledFor = (projectPath: string): Session[] =>
-    projectSessionBuckets(projectPath).settled;
 
   const sessionsResolvedFor = (projectPath: string): boolean =>
     !!sessionsResolvedRoots[projectPath] || readSWRCache<Session[]>(`sessions:${projectPath}`) !== undefined;
@@ -1438,7 +1358,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     clampToViewport();
     window.addEventListener("resize", clampToViewport);
     return () => window.removeEventListener("resize", clampToViewport);
-  }, [archivedExpanded, archivedSessions.length, settledSessions.length, workspaceInfo?.is_git, projects.length, sessionJobsCollapsed, sessionJobsHeight, workspaces.length]);
+  }, [archivedExpanded, archivedSessions.length, workspaceInfo?.is_git, projects.length, sessionJobsCollapsed, sessionJobsHeight, workspaces.length]);
 
   const toggleSessionJobsCollapsed = () => {
     setSessionJobsCollapsed((v) => {
@@ -1648,7 +1568,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                     data-session-row="true"
                     onContextMenu={(event) => {
                       const source = [...sessions, ...bankSessions].find((session) => session.id === row.id);
-                      handleContextMenu(event, source || { id: row.id, title: row.title, settled: row.settled }, false);
+                      handleContextMenu(event, source || { id: row.id, title: row.title });
                     }}
                     type="button"
                     disabled={!!switchingSessionId || opening}
@@ -1665,11 +1585,6 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                       <div className="text-[12.5px] truncate flex-1 text-muted">
                         {displaySessionListTitle(row.title)}
                       </div>
-                      {row.settled ? (
-                        <span className="shrink-0 text-[9px] uppercase tracking-wider text-faint font-medium">
-                          Settled
-                        </span>
-                      ) : null}
                     </div>
                     {row.snippet ? (
                       <div className="text-[10px] text-faint truncate">{row.snippet}</div>
@@ -1716,7 +1631,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                       data-session-row="true"
                       aria-current={s.active ? "true" : undefined}
                       onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title))}
-                      onContextMenu={(e) => handleContextMenu(e, s, canSettleSessionsForProject(root, workspaceInfo?.repo))}
+                      onContextMenu={(e) => handleContextMenu(e, s)}
                       className={`w-full min-h-8 flex flex-col justify-center text-left pl-6 pr-2 rounded transition min-w-0 disabled:opacity-60 ${
                         isActive ? "bg-panel2/60" : "hover:bg-panel2/30"
                       }`}
@@ -1750,15 +1665,13 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       <div className="space-y-0.5 -mx-2">
           {projects.map((projectPath) => {
             const basename = getWorkspaceBasename(projectPath) || "Untitled Project";
-            const isCurrentActive = canSettleSessionsForProject(projectPath, workspaceInfo?.repo);
+            const isCurrentActive = repoPathsEqual(projectPath, workspaceInfo?.repo || "");
             const isSelected = repoPathsEqual(projectPath, selectedProjectPath);
             // Expansion is browsing state; activation paths also expand their
             // landing root so sessions appear without an extra click.
             const isExpanded = !!expandedProjects[projectPath];
             const projectSessions = projectSessionsFor(projectPath);
             projectSessions.sort((a, b) => b.created - a.created);
-            const projectSettled = projectSettledFor(projectPath);
-            projectSettled.sort((a, b) => b.created - a.created);
             const cgStatus = codegraphStatusFor(projectPath, isCurrentActive);
             const cgLabel = codegraphAttentionLabel(cgStatus);
             const sessionsReady = sessionsResolvedFor(projectPath);
@@ -1908,7 +1821,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                                 data-session-row="true"
                                 aria-current={s.active ? "true" : undefined}
                                 onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title))}
-                                onContextMenu={(e) => handleContextMenu(e, s, isCurrentActive)}
+                                onContextMenu={(e) => handleContextMenu(e, s)}
                                 className={`flex-1 min-w-0 h-7 text-left rounded pl-6 pr-1.5 flex items-center gap-1.5 text-[12px] transition disabled:opacity-60
                                   ${s.active ? "text-txt font-medium" : "text-muted group-hover:text-txt"}
                                   ${switchingSessionId === s.id ? "opacity-70" : ""}`}>
@@ -1937,19 +1850,6 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                                 </div>
                               ) : (
                                 <>
-                                  {isCurrentActive ? (
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        void settleSession(s.id, true);
-                                      }}
-                                      title="Settle — move to Settled"
-                                      aria-label="Settle session"
-                                      className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-0.5 rounded text-faint hover:text-good hover:bg-panel2 motion-safe:transition-all shrink-0 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
-                                    >
-                                      <CheckCircle2 size={11} />
-                                    </button>
-                                  ) : null}
                                   <button
                                     onClick={(e) => {
                                       e.stopPropagation();
@@ -1966,82 +1866,6 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                           )}
                         </div>
                       ))
-                    )}
-                    {projectSettled.length > 0 && (
-                      <div className={`${projectSessions.length > 0 ? "mt-1.5 pt-1 border-t border-edge/30" : ""}`}>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setExpandedSettled((prev) => {
-                              const next = { ...prev, [projectPath]: !prev[projectPath] };
-                              try { localStorage.setItem(SETTLED_EXPANDED_KEY, JSON.stringify(next)); } catch { /* ignore */ }
-                              return next;
-                            });
-                          }}
-                          className="w-full h-6 flex items-center gap-1 px-1.5 text-[10px] uppercase tracking-wider text-faint font-medium hover:text-muted focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent rounded"
-                          aria-expanded={!!expandedSettled[projectPath]}
-                        >
-                          {expandedSettled[projectPath]
-                            ? <ChevronDown size={10} className="shrink-0" />
-                            : <ChevronRight size={10} className="shrink-0" />}
-                          <span>Settled · {projectSettled.length}</span>
-                        </button>
-                        {expandedSettled[projectPath] ? (
-                          <div className="space-y-0 motion-safe:transition-opacity">
-                            {projectSettled.map((s) => (
-                              <div key={s.id} className="group relative flex items-center gap-0.5 min-w-0">
-                                {renamingId === s.id ? (
-                                  <input
-                                    type="text"
-                                    value={renamingTitle}
-                                    onChange={(e) => setRenamingTitle(e.target.value)}
-                                    onBlur={() => handleRenameSubmit(s.id)}
-                                    onKeyDown={(e) => {
-                                      if (e.key === "Enter") {
-                                        handleRenameSubmit(s.id);
-                                      } else if (e.key === "Escape") {
-                                        setRenamingId(null);
-                                      }
-                                    }}
-                                    autoFocus
-                                    className="w-full bg-bg border border-accent rounded px-2 py-1 text-[12px] text-txt focus:outline-none"
-                                  />
-                                ) : (
-                                <button
-                                  onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
-                                onPointerEnter={() => { void prefetchSessionTranscript(s.id); }}
-                                  disabled={!!switchingSessionId || opening}
-                                  data-session-row="true"
-                                  aria-current={s.active ? "true" : undefined}
-                                  onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title))}
-                                  onContextMenu={(e) => handleContextMenu(e, s, isCurrentActive)}
-                                  className={`flex-1 min-w-0 h-6 text-left rounded pl-6 pr-1.5 flex items-center gap-1.5 text-[11px] motion-safe:transition opacity-45 hover:opacity-90 disabled:opacity-40
-                                    ${s.active ? "bg-accent/10 text-accent" : "text-faint hover:bg-panel2/50 hover:text-muted"}
-                                    ${switchingSessionId === s.id ? "opacity-70" : ""}`}
-                                  title={displaySessionListTitle(s.title)}
-                                >
-                                  <Square size={10} className="shrink-0" />
-                                  <span className="truncate">{displaySessionListTitle(s.title)}</span>
-                                </button>
-                                )}
-                                {isCurrentActive ? (
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      void settleSession(s.id, false);
-                                    }}
-                                    title="Unsettle — return to open list"
-                                    aria-label="Unsettle session"
-                                    className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-0.5 rounded text-faint hover:text-accent hover:bg-panel2 motion-safe:transition-all shrink-0 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
-                                  >
-                                    <MessageSquare size={11} />
-                                  </button>
-                                ) : null}
-                              </div>
-                            ))}
-                          </div>
-                        ) : null}
-                      </div>
                     )}
                   </div>
                 )}
@@ -2093,7 +1917,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                       data-session-row="true"
                       aria-current={s.active ? "true" : undefined}
                       onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title))}
-                      onContextMenu={(e) => handleContextMenu(e, s, true)}
+                      onContextMenu={(e) => handleContextMenu(e, s)}
                       className={`w-full h-7 text-left rounded pl-6 pr-2 flex items-center gap-1.5 text-[12.5px] transition opacity-60 hover:opacity-100 disabled:opacity-40
                         ${s.active ? "bg-accent/10 text-accent font-semibold" : "hover:bg-panel2/60 text-muted"}
                         ${switchingSessionId === s.id ? "opacity-70" : ""}`}
@@ -2398,20 +2222,6 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           >
             Export as JSON
           </button>
-          {contextMenu.canSettle ? (
-            <>
-              <div className="border-t border-edge my-1" />
-              <button
-                onClick={async () => {
-                  await settleSession(contextMenu.sessionId, !contextMenu.settled);
-                  setContextMenu(null);
-                }}
-                className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-              >
-                {contextMenu.settled ? "Unsettle" : "Settle"}
-              </button>
-            </>
-          ) : null}
           <div className="border-t border-edge my-1" />
           <button
             onClick={async () => {
@@ -2504,7 +2314,6 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
 }
 
 const SESSION_JOBS_COLLAPSED_KEY = "pmharness.leftRail.sessionJobsCollapsed";
-const SETTLED_EXPANDED_KEY = "pmharness.leftRail.settledExpanded";
 const SESSION_JOBS_HEIGHT_KEY = "pmharness.leftRail.sessionJobsHeight.v1";
 const SESSION_JOBS_HIDDEN_KEY = "pmharness.leftRail.hiddenSessionJobs.v1";
 const SESSION_JOBS_DISPLAY_CAP = 20;

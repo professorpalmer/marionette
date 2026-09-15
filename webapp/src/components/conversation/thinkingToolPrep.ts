@@ -94,6 +94,24 @@ export function looksLikeStatusHeadline(text: string): boolean {
   return parts.length >= 2 && parts.every(isTitleFrameCore);
 }
 
+/** Whole-answer suppression requires every fragment to be standalone status chrome. */
+export function isAssistantStatusOnly(text: string): boolean {
+  if (isTrivialAssistantCrumb(text)) return true;
+  // Preserve paragraph boundaries before emphasis splitting can erase them.
+  if (/[\r\n]/.test(text.trim())) return false;
+  const parts = text
+    .split(/\*{2,}|_{2,}/)
+    .map(stripThinkingEmphasisChrome)
+    .filter(Boolean);
+  return parts.length > 0 && parts.every((part) => {
+    const core = part.replace(/(?:\.{3}|…)$/, "");
+    // A leading status word cannot classify later sentences.
+    if (/[.!?…](?:\s|$)/.test(core)) return false;
+    if (core.length > 96 || core.split(/\s+/).length > 12) return false;
+    return isTrivialAssistantCrumb(part) || isTitleFrameCore(core);
+  });
+}
+
 /**
  * Drop `****` / `**` glue between status headlines. Keeps the latest title when
  * two headlines were concatenated; otherwise strips marker runs only.

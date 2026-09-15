@@ -114,6 +114,54 @@ describe("transcriptRowHeight", () => {
     );
   });
 
+  it.each([
+    {
+      name: "embedded bold heading",
+      text: "**Verdict: checks passed.**\n\n**Loading behavior is consistent**\n\nAll recorded results agree.",
+      prose: "Verdict: checks passed.\n\nLoading behavior is consistent\n\nAll recorded results agree.",
+    },
+    {
+      name: "opening status followed by a paragraph",
+      text: "Investigating...\n\nAll recorded results agree.",
+      prose: "Investigating...\n\nAll recorded results agree.",
+    },
+    {
+      name: "opening status followed by a sentence",
+      text: "Investigating... All recorded results agree.",
+      prose: "Investigating... All recorded results agree.",
+    },
+  ])("measures the complete assistant answer with $name", ({ text, prose }) => {
+    expect(assistantTextForMeasure(text)).toBe(text);
+    expect(rowPretextSpec(msg("assistant", text), 600)?.text).toBe(prose);
+  });
+
+  it.each(["Investigating...", "**Investigating...**", "__Investigating...__"])(
+    "measures a separate paragraph after the opening status %s",
+    (opening) => {
+      const text = `${opening}\n\nLoading behavior is consistent`;
+
+      expect(assistantTextForMeasure(text)).toBe(text);
+      expect(rowPretextSpec(msg("assistant", text), 600)?.text).toBe(
+        "Investigating...\n\nLoading behavior is consistent",
+      );
+    },
+  );
+
+  it.each([
+    "**Investigating...**",
+    "\n\n**Investigating...**\n\n",
+    "**Loading**",
+    "**Creating concise manifest summaries****Preparing audit manifest files**",
+    "****",
+  ])("excludes standalone assistant chrome from measurement: %s", (text) => {
+    expect(assistantTextForMeasure(text)).toBe("");
+    expect(rowPretextSpec(msg("assistant", text), 600)?.text.trim()).toBe("");
+  });
+
+  it.each(["...", "…"])("preserves meaningful symbol-only assistant text: %s", (text) => {
+    expect(assistantTextForMeasure(text)).toBe(text);
+  });
+
   it("classifies rows for Pretext vs DOM settle", () => {
     expect(rowNeedsDomMeasure(msg("user", "short note"))).toBe(false);
     expect(rowNeedsDomMeasure(msg("assistant", "```py\nprint(1)\n```"))).toBe(true);

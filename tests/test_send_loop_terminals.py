@@ -27,7 +27,7 @@ def _assert_dirty_settle(events, tmp_path, sid, *, cause):
 def _session(tmp_path, monkeypatch, pilot, *, sid="sess-term"):
     monkeypatch.setattr(
         "harness.send_loop.profile_skips_auto_inject",
-        lambda session: (True, True),
+        lambda session, user_message="": (True, True),
     )
     cfg = HarnessConfig(
         driver="stub-oracle-v2",

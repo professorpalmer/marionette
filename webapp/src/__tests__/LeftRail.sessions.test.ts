@@ -6,7 +6,7 @@ import {
   peekTranscriptCacheEntry,
   writeTranscriptCache,
 } from "../components/conversation/transcriptCache";
-import { actionAfterSessionRemove, buildProjectsList, canSettleSessionsForProject, collectUnreadFinishedSessionIds, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, jobsCacheKey, partitionProjectSessions, patchActiveSessionInCaches, patchSessionArchivedInCaches, patchSessionSettledInCaches, patchSessionTitleInCaches, pickFallbackProjectAfterForget, preferLastGoodSessionList, projectSessionsEmptyState, purgeSessionFromRootCaches, readSessionSettledFromCaches, remainingOpenAfterRemoveFromCache, SESSION_LEASE_EXHAUSTED_MESSAGE, seedWorkspacesCache, shouldOfferBackgroundStop, writeSessionListCache, workspacesCacheKey } from "../components/LeftRail";
+import { actionAfterSessionRemove, buildProjectsList, collectUnreadFinishedSessionIds, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, jobsCacheKey, partitionProjectSessions, patchActiveSessionInCaches, patchSessionArchivedInCaches, patchSessionTitleInCaches, pickFallbackProjectAfterForget, preferLastGoodSessionList, projectSessionsEmptyState, purgeSessionFromRootCaches, remainingOpenAfterRemoveFromCache, SESSION_LEASE_EXHAUSTED_MESSAGE, seedWorkspacesCache, shouldOfferBackgroundStop, writeSessionListCache, workspacesCacheKey } from "../components/LeftRail";
 import type { Session } from "../lib/api";
 
 /**
@@ -78,7 +78,7 @@ describe("LeftRail session list contracts", () => {
 
   it("reads cached sessions for a non-active root from sessions:${path}", () => {
     const otherRoot = "C:\\Projects\\other";
-    const rows: Session[] = [
+    const rows = [
       {
         id: "s-other",
         title: "Other chat",
@@ -87,7 +87,7 @@ describe("LeftRail session list contracts", () => {
         workspace_root: otherRoot,
         active: false,
       },
-    ];
+    ] as Session[];
     writeSWRCache(`sessions:${otherRoot}`, rows);
 
     const cached = readSWRCache<Session[]>(`sessions:${otherRoot}`);
@@ -714,21 +714,10 @@ describe("LeftRail session list contracts", () => {
     expect(projectSessionsEmptyState(false, false)).toBe("pending");
   });
 
-  it("canSettleSessionsForProject gates settle affordances to the active workspace", () => {
-    const active = "C:\\Projects\\marionette";
-    const other = "C:\\Projects\\other";
-    expect(canSettleSessionsForProject(active, active)).toBe(true);
-    expect(canSettleSessionsForProject("C:/Projects/marionette", active)).toBe(true);
-    expect(canSettleSessionsForProject(other, active)).toBe(false);
-    expect(canSettleSessionsForProject(active, undefined)).toBe(false);
-    expect(canSettleSessionsForProject(active, "")).toBe(false);
-    expect(canSettleSessionsForProject("", active)).toBe(false);
-  });
-
-  it("partitionProjectSessions splits open vs settled and scopes rootless orphans", () => {
+  it("partitionProjectSessions keeps legacy settled rows in the normal list", () => {
     const root = "C:\\Projects\\marionette";
     const other = "C:\\Projects\\other";
-    const rows: Session[] = [
+    const rows = [
       { id: "open-1", title: "Live", created: 3, repo: root, workspace_root: root, settled: false },
       { id: "settled-1", title: "Done", created: 2, repo: root, workspace_root: root, settled: true },
       { id: "archived-only", title: "Archived", created: 2.5, repo: root, workspace_root: root, archived: true, settled: false },
@@ -738,48 +727,24 @@ describe("LeftRail session list contracts", () => {
     ];
     const active = partitionProjectSessions(rows, root, true);
     // Archived rows leave the project tree (global Archived section owns them).
-    expect(active.open.map((s) => s.id)).toEqual(["open-1", "orphan"]);
-    expect(active.settled.map((s) => s.id)).toEqual(["settled-1"]);
+    expect(active.map((s) => s.id)).toEqual(["open-1", "settled-1", "orphan"]);
 
     const inactive = partitionProjectSessions(rows, root, false);
-    expect(inactive.open.map((s) => s.id)).toEqual(["open-1"]);
-    expect(inactive.settled.map((s) => s.id)).toEqual(["settled-1"]);
+    expect(inactive.map((s) => s.id)).toEqual(["open-1", "settled-1"]);
   });
 
-  it("patchSessionSettledInCaches flips settled on matching root caches", () => {
-    const marionette = "C:\\Projects\\marionette";
-    const dugout = "C:\\Projects\\dugout";
-    writeSWRCache(`sessions:${marionette}`, [
-      { id: "sess-a", title: "A", created: 1, repo: marionette, workspace_root: marionette, settled: false, archived: false },
-    ]);
-    writeSWRCache(`sessions:${dugout}`, [
-      { id: "sess-b", title: "B", created: 2, repo: dugout, workspace_root: dugout, settled: false },
-    ]);
-
-    expect(patchSessionSettledInCaches([marionette, dugout], "sess-a", true)).toBe(1);
-    expect(readSWRCache<Session[]>(`sessions:${marionette}`)?.[0]?.settled).toBe(true);
-    expect(readSWRCache<Session[]>(`sessions:${marionette}`)?.[0]?.archived).toBe(false);
-    expect(readSWRCache<Session[]>(`sessions:${dugout}`)?.[0]?.settled).toBe(false);
-    expect(readSessionSettledFromCaches([marionette, dugout], "sess-a")).toBe(true);
-
-    expect(patchSessionSettledInCaches([marionette], "sess-a", false)).toBe(1);
-    expect(readSWRCache<Session[]>(`sessions:${marionette}`)?.[0]?.settled).toBe(false);
-  });
-
-  it("patchSessionArchivedInCaches flips archived without touching settled", () => {
+  it("patchSessionArchivedInCaches flips archived", () => {
     const marionette = "C:\\Projects\\marionette";
     writeSWRCache(`sessions:${marionette}`, [
-      { id: "sess-a", title: "A", created: 1, repo: marionette, workspace_root: marionette, settled: true, archived: false },
+      { id: "sess-a", title: "A", created: 1, repo: marionette, workspace_root: marionette, archived: false },
     ]);
 
     expect(patchSessionArchivedInCaches([marionette], "sess-a", true)).toBe(1);
     const row = readSWRCache<Session[]>(`sessions:${marionette}`)?.[0];
     expect(row?.archived).toBe(true);
-    expect(row?.settled).toBe(true);
 
     expect(patchSessionArchivedInCaches([marionette], "sess-a", false)).toBe(1);
     expect(readSWRCache<Session[]>(`sessions:${marionette}`)?.[0]?.archived).toBe(false);
-    expect(readSWRCache<Session[]>(`sessions:${marionette}`)?.[0]?.settled).toBe(true);
   });
 
   it("patchSessionTitleInCaches updates the display title on matching root caches", () => {

@@ -545,28 +545,6 @@ def post_sessions_archive(body: dict, svc: SessionServices) -> tuple[int, dict]:
     return 200, {"ok": True}
 
 
-def post_sessions_settle(body: dict, svc: SessionServices) -> tuple[int, dict]:
-    """Persist independent inbox triage ``settled`` (not ``archived``).
-
-    Stricter than archive: unknown ids 404; sessions outside the active
-    workspace visibility scope 403.
-    """
-    sid = body.get("session") or body.get("id") or ""
-    if not sid:
-        return 400, {"error": "missing session id"}
-    settled = svc.parse_bool(body.get("settled"))
-    row = next((s for s in svc.sessions.rows() if s.get("id") == sid), None)
-    if row is None:
-        return 404, {"error": "unknown session"}
-    workspace_root = (getattr(svc.cfg, "repo", None) or "").strip()
-    if workspace_root and not session_visible_for_workspace(
-        row, workspace_root, svc.sessions_state_dir(),
-    ):
-        return 403, {"error": "session not visible in active workspace"}
-    svc.sessions.settle(sid, settled)
-    return 200, {"ok": True}
-
-
 def post_sessions_rename(body: dict, svc: SessionServices) -> tuple[int, dict]:
     sid = body.get("session") or body.get("id") or ""
     title = body.get("title") or ""

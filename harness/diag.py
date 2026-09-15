@@ -13,6 +13,10 @@ from __future__ import annotations
 
 import logging
 import os
+from logging.handlers import RotatingFileHandler
+
+_MAX_BYTES = 5 * 1024 * 1024
+_BACKUP_COUNT = 3
 
 _logger: logging.Logger | None = None
 
@@ -34,8 +38,11 @@ def _get_logger() -> logging.Logger:
         try:
             base = _diag_dir()
             os.makedirs(base, exist_ok=True)
-            handler: logging.Handler = logging.FileHandler(
-                os.path.join(base, "diagnostics.log")
+            handler: logging.Handler = RotatingFileHandler(
+                os.path.join(base, "diagnostics.log"),
+                maxBytes=_MAX_BYTES,
+                backupCount=_BACKUP_COUNT,
+                encoding="utf-8",
             )
             handler.setFormatter(
                 logging.Formatter("%(asctime)s %(levelname)s %(message)s")

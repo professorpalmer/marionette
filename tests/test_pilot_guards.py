@@ -138,6 +138,46 @@ def test_broad_intent_classification_negatives(message):
     assert is_broad_intent_user_message(message) is False
 
 
+def test_subprocess_mention_does_not_require_a_swarm():
+    from harness.pilot_guards import swarm_policy_for_message
+
+    message = "No? I added all of this between .499 > .500"
+    assert swarm_policy_for_message(message) == "solo"
+    message += "\n# On Windows, default every subprocess to a hidden console"
+    assert swarm_policy_for_message(message) == "solo"
+
+
+@pytest.mark.parametrize("message", [
+    "Audit subprocess launches",
+    "Inspect subprocess handling",
+    "Inspect the default subprocess flags",
+    "Inspect subprocess launches across the repo",
+    "Find all subprocess calls",
+    "Investigate hidden console failures",
+])
+def test_explicit_process_inspection_still_requires_a_swarm(message):
+    from harness.pilot_guards import swarm_policy_for_message
+
+    assert swarm_policy_for_message(message) == "broad"
+
+
+@pytest.mark.parametrize("message", [
+    "So? What was the verdict?",
+    "Summarize the audit results.",
+    "What were the review findings?",
+])
+def test_recap_policy_reuses_results_without_mandatory_search(message):
+    from harness.pilot_guards import swarm_policy_for_message, swarm_policy_turn_note
+
+    assert swarm_policy_for_message(message) == "solo"
+    assert not new_turn_guard_state(message).broad_intent
+    note = swarm_policy_turn_note(message)
+    assert "existing conversation" in note
+    assert "search_codegraph" not in note
+    assert "search_files" not in note
+    assert "Open with run_swarm" not in note
+
+
 @pytest.mark.parametrize(
     "message",
     [

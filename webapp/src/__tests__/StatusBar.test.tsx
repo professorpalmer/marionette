@@ -9,7 +9,7 @@ import StatusBar, {
 import EconomicsPane from "../components/EconomicsPane";
 import UpdateBanner, { type UpdateAvailability } from "../components/UpdateBanner";
 import { api } from "../lib/api";
-import { _resetProcessUsageForTests } from "../lib/processUsage";
+import { _resetProcessUsageForTests, refreshProcessUsage } from "../lib/processUsage";
 import { publishTaskProfile } from "../lib/taskProfileChrome";
 
 vi.mock("../lib/api", () => ({
@@ -693,17 +693,32 @@ it("fences late goal mutations and state reads across session switches", async (
   expect(mockGetSessionState).toHaveBeenLastCalledWith({ sessionId: "C" });
 });
 
+it("keeps incomplete usage quiet while the current session initializes", async () => {
+  mockWorkspaces.mockResolvedValue([]);
+  mockGetSessionState.mockResolvedValue({ state: "idle", active_view_id: "sess-1", runners: {} });
+  mockGetUsage.mockResolvedValue({ ...processUsage, session_total: {
+    ...processUsage.session_total, input_tokens: 0, output_tokens: 0, est_cost_usd: 0, read_status: "unavailable",
+  } });
+  render(<StatusBar {...statusBarProps} />);
+  await act(async () => { await refreshProcessUsage(); });
+  expect(screen.queryByText("Session usage partial / unavailable. Retry")).not.toBeInTheDocument();
+  expect(screen.queryByText("Loading usage…")).not.toBeInTheDocument();
+  expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
+});
+
 it("shows incomplete usage instead of known zero and recovers on retry", async () => {
+  mockWorkspaces.mockResolvedValue([]);
+  mockGetSessionState.mockResolvedValue({ state: "idle", active_view_id: "sess-1", runners: {} });
+  Reflect.set(window, '__pmPendingEconomicsSelection', { scope: 'conversation', period: 'all' });
   mockGetUsage.mockResolvedValue({ ...processUsage, session_total: {
     ...processUsage.session_total, input_tokens: 0, output_tokens: 0, est_cost_usd: 0, read_status: "unavailable",
   } });
   render(<><StatusBar {...statusBarProps} /><EconomicsPane /></>);
-  const retries = await screen.findAllByRole("button", { name: "Session usage partial / unavailable. Retry" });
+  expect((await screen.findAllByText("Loading usage…")).length).toBe(1);
+  expect(screen.queryByText("Session total partial / unavailable. Retry")).not.toBeInTheDocument();
   expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
   mockGetUsage.mockResolvedValue(processUsage);
-  fireEvent.click(retries[0]);
-  await waitFor(() => expect(screen.queryByRole("button", { name: "Session usage partial / unavailable. Retry" })).not.toBeInTheDocument());
-  expect(screen.getAllByText("~$33.60").length).toBeGreaterThan(0);
+  await waitFor(() => expect(screen.getAllByText("~$33.60").length).toBeGreaterThan(0), { timeout: 3000 });
 });
 
 

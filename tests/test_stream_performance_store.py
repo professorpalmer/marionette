@@ -361,7 +361,7 @@ def _send_session(tmp_path, monkeypatch, pilot, *, sid="sess-send"):
 
     monkeypatch.setattr(
         "harness.send_loop.profile_skips_auto_inject",
-        lambda session: (True, True),
+        lambda session, user_message="": (True, True),
     )
     cfg = HarnessConfig(
         driver="stub-oracle-v2",
