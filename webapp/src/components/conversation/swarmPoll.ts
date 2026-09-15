@@ -314,6 +314,7 @@ export function triggerResumeGate(opts: {
 
 export type SwarmPollChrome =
   | { kind: "swarm_result"; data: any }
+  | { kind: "action_result"; data: any }
   | { kind: "pending_review"; data: { id?: string; summary?: string } }
   | { kind: "pilot_resume" }
   | { kind: "distilled"; notice: string }
@@ -327,6 +328,9 @@ export function classifySwarmPollEvent(evt: any): SwarmPollChrome {
   const anyEvt = evt as any;
   if (anyEvt.kind === "swarm_result" && anyEvt.data) {
     return { kind: "swarm_result", data: anyEvt.data };
+  }
+  if (anyEvt.kind === "action_result" && anyEvt.data) {
+    return { kind: "action_result", data: anyEvt.data };
   }
   if (anyEvt.kind === "pending_review" && anyEvt.data) {
     return { kind: "pending_review", data: anyEvt.data };

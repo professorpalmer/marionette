@@ -16,6 +16,8 @@ import {
 import {
   appendActionStartCard,
   applyActionResultCard,
+  isDurableTerminalActionResult,
+  isUpgradeableActionResult,
   appendAuthFailure,
   appendAutoHalt,
   appendAutoStatus,
@@ -525,6 +527,18 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
         if (d.error) next = failSwarmPendingForActionError(next, d.id);
         return next;
       });
+      if (d.kind === "run_command" && d.job_id) {
+        const jobId = String(d.job_id);
+        setPendingJobIds((ids) => {
+          if (isDurableTerminalActionResult(d)) {
+            return ids.filter((id) => id !== jobId);
+          }
+          if (isUpgradeableActionResult(d)) {
+            return [...new Set([...ids, jobId])];
+          }
+          return ids;
+        });
+      }
       if (d.error && d.id) {
         const localId = localSwarmJobId(d.id);
         setPendingJobIds((ids) => ids.filter((id) => id !== localId));

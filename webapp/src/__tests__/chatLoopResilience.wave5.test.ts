@@ -57,6 +57,7 @@ function makeApplyDeps(opts?: {
       | "streaming"
       | "awaiting_swarm",
     turnOpen: true,
+    pendingJobIds: [] as string[],
     turnSettledRef: { current: Boolean(opts?.turnSettled) },
   };
   state.itemsRef.current = state.items;
@@ -101,8 +102,15 @@ function makeApplyDeps(opts?: {
     setTurnOpen: (value: boolean | ((prev: boolean) => boolean)) => {
       state.turnOpen = typeof value === "function" ? value(state.turnOpen) : value;
     },
-    setPendingJobIds: () => {},
-    pendingJobIdsRef: { current: [] as string[] },
+    setPendingJobIds: (
+      value: string[] | ((prev: string[]) => string[]),
+    ) => {
+      state.pendingJobIds = typeof value === "function"
+        ? value(state.pendingJobIds)
+        : value;
+      deps.pendingJobIdsRef.current = state.pendingJobIds;
+    },
+    pendingJobIdsRef: { current: state.pendingJobIds },
     setSafeTimeout: () => {},
     itemsRef: state.itemsRef,
     planTurnRef: { current: false },
@@ -565,6 +573,32 @@ describe("Wave 5: completed swarm plus idle pilot", () => {
       data: { kind: "wait", message: "Provider still working — stream idle" },
     });
     expect(state.waitHint).toBeNull();
+  });
+
+  it("tracks a background command only until its terminal receipt arrives", () => {
+    const { state, apply } = makeApplyDeps({ turnSettled: true });
+    apply({
+      kind: "action_result",
+      data: {
+        id: "bg1",
+        kind: "run_command",
+        status: "running",
+        job_id: "local-cmd-bg",
+      },
+    });
+    expect(state.pendingJobIds).toEqual(["local-cmd-bg"]);
+
+    apply({
+      kind: "action_result",
+      data: {
+        id: "bg1",
+        kind: "run_command",
+        status: "completed",
+        job_id: "local-cmd-bg",
+        terminal_receipt: { status: "completed", summary: "exit 0" },
+      },
+    });
+    expect(state.pendingJobIds).toEqual([]);
   });
 
   it("upgrades a pending background receipt via applyActionResultCard", () => {

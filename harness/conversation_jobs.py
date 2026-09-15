@@ -1526,6 +1526,7 @@ class ConversationJobsMixin:
         with self._busy_meta:
             self._busy_gen += 1
             self._busy_since = 0.0
+            self._busy_last_progress = 0.0
             try:
                 self._busy.release()
             except RuntimeError:

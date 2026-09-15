@@ -49,6 +49,7 @@ def test_reap_recovers_wedged_nonidle_turn(monkeypatch):
     s._busy.acquire(blocking=False)
     s._mark_busy_acquired()
     s._busy_since = time.monotonic() - 100.0  # wedged well past the deadline
+    s._busy_last_progress = s._busy_since
     s._state = "thinking"  # NOT idle -- the case the 1.5s path misses
 
     assert s._reap_stuck_turn() is True
@@ -81,6 +82,7 @@ def test_reaped_turn_release_cannot_steal_a_later_turns_lock(monkeypatch):
     s._busy.acquire(blocking=False)
     gen_a = s._mark_busy_acquired()
     s._busy_since = time.monotonic() - 100.0
+    s._busy_last_progress = s._busy_since
     s._state = "thinking"
     assert s._reap_stuck_turn() is True
 
@@ -139,6 +141,7 @@ def test_send_recovers_wedged_thinking_via_send_stale(monkeypatch):
     s._busy.acquire(blocking=False)
     s._mark_busy_acquired()
     s._busy_since = time.monotonic() - 5.0
+    s._busy_last_progress = s._busy_since
     s._state = "thinking"
 
     events = list(s.send("hello after wedge"))
@@ -177,6 +180,7 @@ def test_send_stale_recovers_even_if_on_interrupt_raises(monkeypatch):
     s._busy.acquire(blocking=False)
     s._mark_busy_acquired()
     s._busy_since = time.monotonic() - 5.0
+    s._busy_last_progress = s._busy_since
     s._state = "thinking"
 
     class BoomPilot:

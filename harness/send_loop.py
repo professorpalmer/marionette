@@ -473,6 +473,8 @@ class SendLoopMixin:
             # forcibly recover it so the user isn't permanently wedged.
             import time as _t
             held_for = _t.monotonic() - self._busy_since if self._busy_since else 0.0
+            progress_at = getattr(self, "_busy_last_progress", 0.0) or self._busy_since
+            inactive_for = _t.monotonic() - progress_at if self._busy_since else 0.0
             stale = self._busy_since and held_for > 1.5 and self._state == "idle"
             # If the user EXPLICITLY interrupted the previous turn, recover the
             # lock even when _state is still 'executing' (the abandoned turn is
@@ -505,7 +507,7 @@ class SendLoopMixin:
             ):
                 driver_spec = str(getattr(getattr(self, "cfg", None), "driver", "") or "")
                 send_stale_s = local_send_stale_seconds(driver_spec)
-                if send_stale_s > 0 and held_for > send_stale_s:
+                if send_stale_s > 0 and inactive_for > send_stale_s:
                     try:
                         pilot = getattr(self, "pilot", None)
                         on_int = getattr(pilot, "on_interrupt", None)
@@ -528,6 +530,7 @@ class SendLoopMixin:
                 with self._busy_meta:
                     self._busy_gen += 1
                     self._busy_since = 0.0
+                    self._busy_last_progress = 0.0
                     try:
                         self._busy.release()
                     except RuntimeError:
@@ -623,6 +626,10 @@ class SendLoopMixin:
                     still_owned = busy_gen == self._busy_gen
                 if not still_owned:
                     return
+                # Synthetic wait/idle notices prove the SSE transport is alive,
+                # not that the provider or tool owner made forward progress.
+                if ev.kind != "notice":
+                    self._note_busy_progress(busy_gen)
                 if ev.kind == "tool_prep":
                     # Cursor-native tools (CLI/ACP) emit tool_prep only — persist
                     # by stable call_id so reload keeps chronological slots.
