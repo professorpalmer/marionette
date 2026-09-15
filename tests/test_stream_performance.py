@@ -1330,7 +1330,7 @@ def test_step0_overflow_retry_keeps_turn_once_phases(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         "harness.send_loop.profile_skips_auto_inject",
-        lambda session: (False, False),
+        lambda session, user_message="": (False, False),
     )
 
     snaps = []

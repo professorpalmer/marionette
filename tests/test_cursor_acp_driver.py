@@ -892,7 +892,7 @@ def test_cursor_acp_prose_send_emits_natural_and_records_stream_wire(
 
     monkeypatch.setattr(
         "harness.send_loop.profile_skips_auto_inject",
-        lambda session: (True, True),
+        lambda session, user_message="": (True, True),
     )
     drv = _acp_driver(monkeypatch)
     cfg = HarnessConfig(
@@ -928,7 +928,7 @@ def test_cursor_acp_incomplete_send_does_not_run_tools(
 
     monkeypatch.setattr(
         "harness.send_loop.profile_skips_auto_inject",
-        lambda session: (True, True),
+        lambda session, user_message="": (True, True),
     )
 
     def boom(*_a, **_k):
