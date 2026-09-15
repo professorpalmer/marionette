@@ -2628,26 +2628,18 @@ def test_idle_expiry_reserves_before_later_admission(tmp_path, monkeypatch):
     mgr, proc, wall, mono, scheduler = _idle_fixture(tmp_path, monkeypatch)
     with mgr.request_scope('local:managed/qwen-test'):
         pass
-    entered, release = threading.Event(), threading.Event()
     original = mgr._finish_stop
     def finish(**kwargs):
-        entered.set()
-        assert release.wait(2)
-        original(**kwargs)
-    monkeypatch.setattr(mgr, '_finish_stop', finish)
-    mono[0] = 70
-    thread = threading.Thread(target=scheduler.calls[-1].callback)
-    thread.start()
-    try:
-        assert entered.wait(2)
+        # Interleave admission at the boundary between reservation and cleanup.
         assert mgr.snapshot()['managed']['residency'] == 'stopping'
         with pytest.raises(LocalModelError):
             with mgr.request_scope('local:managed/qwen-test'):
                 pass
         assert not proc.exited
-    finally:
-        release.set()
-        thread.join(2)
+        original(**kwargs)
+    monkeypatch.setattr(mgr, '_finish_stop', finish)
+    mono[0] = 70
+    scheduler.calls[-1].callback()
     assert proc.exited
 
 
