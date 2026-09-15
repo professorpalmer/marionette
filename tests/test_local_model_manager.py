@@ -563,6 +563,11 @@ def test_stop_never_signals_unmatched(tmp_path, monkeypatch):
         lambda *a, **k: signaled.append(a),
     )
     monkeypatch.setattr("harness.local_model_manager._pid_alive", lambda pid: True)
+    monkeypatch.setattr("harness.local_model_manager.read_process_start_key", lambda pid: "replacement")
+    def alive_probe(pid, sig):
+        assert (pid, sig) == (4242, 0)
+    monkeypatch.setattr(os, "kill", alive_probe)
+    monkeypatch.setattr("harness.local_model_manager._platform_name", lambda: "posix")
     monkeypatch.setattr(
         "harness.local_model_manager.read_process_command",
         lambda pid: "/usr/bin/unrelated",
@@ -573,6 +578,7 @@ def test_stop_never_signals_unmatched(tmp_path, monkeypatch):
         "pid": 4242, "port": 9, "host": "127.0.0.1",
         "exe": "/tmp/llama-server", "model_path": "/tmp/model.gguf",
         "alias": "marionette-deadbeef", "nonce": "deadbeef",
+        "start_key": "original",
     }
     mgr._save(state)
     mgr.stop()
@@ -1210,7 +1216,8 @@ def test_stop_kills_owned_handle_when_ps_fails(tmp_path, monkeypatch):
     assert log.closed
 
 
-def test_start_restarts_unhealthy_matching_process(tmp_path, monkeypatch):
+@pytest.mark.parametrize("stop_exits", [True, False])
+def test_start_restarts_unhealthy_matching_process(tmp_path, monkeypatch, stop_exits):
     monkeypatch.setattr("harness.local_model_manager.find_free_port", lambda *a: 12345)
     catalog, _, model_bytes = _tiny_catalog(tmp_path)
     root = tmp_path / "lm"
@@ -1231,9 +1238,24 @@ def test_start_restarts_unhealthy_matching_process(tmp_path, monkeypatch):
         "harness.local_model_manager.process_matches_identity",
         lambda pid, ident: True,
     )
+    # pid 11 is an adopted child this test never spawned: model its liveness
+    # instead of reading the host process table. A real pid 11 on a Windows
+    # runner made the post-stop liveness check raise "Could not observe
+    # adopted child exit" (nightly windows 3.11). Neighboring lifecycle tests
+    # patch _pid_alive the same way.
+    live_pids = {11}
+    monkeypatch.setattr(
+        "harness.local_model_manager._pid_alive",
+        lambda pid: int(pid) in live_pids,
+    )
+    monkeypatch.setattr(
+        "harness.local_model_manager._adopted_process_state",
+        lambda pid, identity: "same" if int(pid) in live_pids else "gone",
+    )
+    monkeypatch.setattr("harness.local_model_manager.read_process_start_key", lambda pid: "fixture-birth")
     monkeypatch.setattr(
         "harness.local_model_manager.stop_process_tree",
-        lambda *a, **k: None,
+        lambda pid, *a, **k: live_pids.discard(int(pid)) if stop_exits else None,
     )
     state = mgr._state()
     state["managed"]["process"] = {
@@ -1269,8 +1291,15 @@ def test_start_restarts_unhealthy_matching_process(tmp_path, monkeypatch):
         return health["n"] >= 2
 
     mgr._probe_health = probe
+    if not stop_exits:
+        with pytest.raises(LocalModelError) as error:
+            mgr.start()
+        assert error.value.code == "stop_failed"
+        assert not spawned
+        assert mgr._state()["managed"]["process"]["pid"] == 11
+        return
     snap = mgr.start()
-    assert spawned
+    assert len(spawned) == 1
     assert snap["managed"]["process"]["pid"] == 22
     assert snap["managed"]["process"]["healthy"] is True
 
@@ -2792,3 +2821,134 @@ def test_idle_health_recovery_rearms_expired_baseline(tmp_path, monkeypatch):
     assert not proc.exited
     scheduler.calls[-1].callback()
     assert proc.exited
+
+
+@pytest.mark.parametrize('platform', ['nt', 'posix'])
+@pytest.mark.parametrize('operation', ['stop', 'restart'])
+@pytest.mark.parametrize('outcome', [
+    'delayed', 'exiting_unknown', 'grace_exit', 'grace_reuse', 'force_reuse', 'unknown',
+    'unknown_escalation', 'unknown_after_force', 'denied', 'stays_alive',
+    'missing_birth', 'missing_live_birth', 'missing_command', 'command_mismatch',
+    'missing', 'birth_mismatch',
+])
+def test_adopted_stop_observes_identity_and_exit(tmp_path, monkeypatch, platform, operation, outcome):
+    import harness.local_model_manager as module
+    mgr = LocalModelManager(root=str(tmp_path / 'adopted'), catalog={'models': []})
+    mgr.snapshot = mgr._state
+    identity = dict(pid=424242, exe='llama-server', start_key='original', healthy=True)
+    if outcome == 'missing_birth':
+        identity.pop('start_key')
+    state = mgr._state()
+    state['managed']['process'] = identity
+    mgr._save(state)
+    live = dict(alive=True, image='llama-server', start_key='original')
+    if outcome == 'missing':
+        live['alive'] = False
+    elif outcome == 'birth_mismatch':
+        live['start_key'] = 'replacement'
+    elif outcome == 'missing_live_birth':
+        live['start_key'] = ''
+    elif outcome == 'missing_command':
+        live['image'] = ''
+    elif outcome == 'command_mismatch':
+        live['image'] = 'unrelated'
+    now = [0.0]
+    calls = []
+    forced_at = []
+    def query(pid):
+        assert pid == 424242
+        if outcome == 'exiting_unknown' and forced_at and live['alive']:
+            return None
+        if outcome == 'unknown' or (outcome == 'unknown_escalation' and calls) or (outcome == 'unknown_after_force' and forced_at):
+            return None
+        return dict(live)
+    def kill(pid, sig):
+        assert pid == 424242
+        if sig == 0:
+            if query(pid) is None:
+                raise PermissionError()
+            if not live['alive']:
+                raise ProcessLookupError()
+            return
+        calls.append(sig)
+        if sig == module._SIGKILL:
+            forced_at.append(now[0])
+        if outcome == 'denied' and platform == 'posix':
+            raise PermissionError()
+    def taskkill(argv, **kwargs):
+        kill(int(argv[2]), module._SIGKILL if '/F' in argv else module._SIGTERM)
+        return subprocess.CompletedProcess(argv, 1 if outcome == 'denied' else 0)
+    def sleep(seconds):
+        # A separate thread must be able to acquire the manager lock during waits.
+        acquired = []
+        thread = threading.Thread(target=lambda: (mgr._lock.acquire(), acquired.append(True), mgr._lock.release()))
+        thread.start()
+        thread.join(1)
+        assert acquired
+        now[0] += seconds
+        if outcome == 'grace_exit':
+            live['alive'] = False
+        elif outcome == 'grace_reuse' or (outcome == 'force_reuse' and forced_at):
+            live.update(start_key='replacement', image='unrelated')
+        elif outcome in {'delayed', 'exiting_unknown'} and forced_at and now[0] - forced_at[0] >= .2:
+            live['alive'] = False
+    monkeypatch.setattr(module, '_platform_name', lambda: platform)
+    monkeypatch.setattr(module, '_windows_pid_query', query)
+    monkeypatch.setattr(module, 'read_process_start_key', lambda pid: (query(pid) or {}).get('start_key', ''))
+    monkeypatch.setattr(module, 'read_process_command', lambda pid: (query(pid) or {}).get('image', ''))
+    monkeypatch.setattr(module.os, 'kill', kill)
+    monkeypatch.setattr(module.os, 'getpgid', lambda pid: pid, raising=False)
+    monkeypatch.setattr(module.os, 'killpg', kill, raising=False)
+    monkeypatch.setattr(module.subprocess, 'run', taskkill)
+    monkeypatch.setattr(module.time, 'monotonic', lambda: now[0])
+    mgr.sleep = sleep
+    starts = []
+    monkeypatch.setattr(mgr, '_run_start', lambda generation: starts.append(generation))
+    if outcome in {
+        'unknown', 'unknown_escalation', 'unknown_after_force', 'denied',
+        'stays_alive', 'missing_birth', 'missing_live_birth', 'missing_command', 'command_mismatch',
+    }:
+        with pytest.raises(LocalModelError) as error:
+            getattr(mgr, operation)()
+        assert error.value.code == 'stop_failed'
+        assert mgr._stopping and mgr._stop_error and not starts
+        assert mgr._state()['managed']['process']['pid'] == 424242
+        assert now[0] <= 10.1
+        with pytest.raises(LocalModelError):
+            with mgr.request_scope('local:managed/qwen-test'):
+                pytest.fail('failed stop admitted a request')
+        with pytest.raises(LocalModelError) as busy:
+            mgr.start()
+        assert busy.value.code == 'busy'
+        if outcome in {'unknown', 'missing_birth', 'missing_live_birth', 'missing_command', 'command_mismatch'}:
+            assert calls == []
+        if outcome == 'unknown_escalation':
+            assert calls == [module._SIGTERM]
+        outcome = 'grace_exit'
+        live['alive'] = False
+        mgr.stop()
+        assert mgr._state()['managed']['process'] is None
+        assert not mgr._stopping
+    else:
+        getattr(mgr, operation)()
+        assert len(starts) == (1 if operation == 'restart' else 0)
+        assert mgr._state()['managed']['process'] is None
+        assert not mgr._stopping
+        if outcome in {'missing', 'birth_mismatch'}:
+            assert calls == []
+        else:
+            assert calls == ([module._SIGTERM] if outcome.startswith('grace_') else [module._SIGTERM, module._SIGKILL])
+        if outcome in {'delayed', 'exiting_unknown'}:
+            assert forced_at[0] >= 5.0
+            assert now[0] >= forced_at[0] + .2
+
+
+@pytest.mark.parametrize('error, expected', [(87, 'gone'), (5, 'unavailable'), (0, 'unavailable')])
+def test_adopted_windows_open_failure_distinguishes_absence(monkeypatch, error, expected):
+    import ctypes
+    import harness.local_model_manager as module
+    kernel = SimpleNamespace(OpenProcess=lambda *args: 0)
+    monkeypatch.setattr(module, '_platform_name', lambda: 'nt')
+    monkeypatch.setattr(ctypes, 'WinDLL', lambda *a, **k: kernel, raising=False)
+    monkeypatch.setattr(ctypes, 'get_last_error', lambda: error, raising=False)
+    assert module._adopted_process_state(424242, {'start_key': 'original'}) == expected
