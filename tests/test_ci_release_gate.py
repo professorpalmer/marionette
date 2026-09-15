@@ -289,6 +289,7 @@ def test_tests_yml_requires_both_windows_interpreters():
     end = text.index("\n  pytest-macos:", start)
     job = text[start:end]
     assert 'python-version: ["3.9", "3.11"]' in job
+    assert 'name: pytest-windows (${{ matrix.python-version }}, ${{ matrix.shard }})' in job
     assert "python-version: ${{ matrix.python-version }}" in job
     assert "shard: [1, 2, 3, 4]" in job
     assert "PYTEST_SHARD: ${{ matrix.shard }}/4" in job

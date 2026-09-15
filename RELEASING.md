@@ -41,8 +41,9 @@ tagged installer from Releases.
 Tags/versions label what checkouts and installers report via `app.getVersion()`.
 Green CI Before Tag still holds: the `tests` workflow (Ubuntu 3.9 xdist,
 Windows 3.9 and 3.11 four-way shards, macOS 3.11, frontend-build) must be green for
-**this git tree**. `@pytest.mark.resource_soak` runs in `tests-full.yml`
-(nightly / manual) and does not block the tag. The tag may
+**this git tree**. The remaining extended matrix and
+`@pytest.mark.resource_soak` run in `tests-full.yml` (nightly / manual)
+and do not block the tag. The tag may
 point at the dev-into-main merge commit; it does not need a second `tests`
 run on that SHA when `merge^{tree}` equals the already-green dev PR tree.
 
@@ -57,6 +58,13 @@ and must not be adopted. Users wait `max(tests, builds)`, not tests + builds
 
 If a conflict resolution changes the tree, wait for `tests` on the new tree.
 That is the only exception.
+
+When changing job or matrix names, inspect the repository's active rulesets
+as well as classic branch protection. Required Windows checks are named
+`pytest-windows (<python-version>, <shard>)`. Update required check names to
+match the new matrix before merging; keep the other rules and bypass policy
+unchanged. A 404 from the classic protection endpoint does not mean the branch
+has no ruleset protection.
 
 `tests.yml` on push to `main` calls `skip-if-green` first. When
 `merge^{tree}` already has a successful `tests` run (the dev-into-main PR),
