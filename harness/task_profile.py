@@ -61,6 +61,21 @@ _TRIVIAL_MICRO_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Match the entire ask so a recap followed by fresh work keeps normal grounding.
+_CONVERSATIONAL_FOLLOWUP_RE = re.compile(
+    r"(?:so[?!. ,]*\s*)?(?:please\s+)?(?:"
+    r"what(?:\s+(?:is|was|were)|'s)\s+the\s+"
+    r"(?:(?:audit|review|test|check|swarm)\s+)?"
+    r"(?:verdict|status|summary|outcome|results|findings|conclusion)|"
+    r"any\s+updates|status\s+update|"
+    r"where\s+(?:are\s+we|did\s+we\s+leave\s+off)|"
+    r"(?:summarize|recap)(?:\s+(?:that|this|"
+    r"the\s+(?:(?:audit|review|test|check|swarm)\s+)?"
+    r"(?:results|findings|verdict|outcome)))?"
+    r")[.!?]*",
+    re.IGNORECASE,
+)
+
 _MICRO_VISIBLE: FrozenSet[str] = frozenset(
     {
         "read_file",
@@ -107,11 +122,19 @@ def classify_task_profile(message: str, override: Optional[str] = None) -> str:
         return normalized
 
     text = (message or "").strip()
+    if is_conversational_followup(text):
+        return STANDARD
     if _looks_deep(text):
         return DEEP
     if _looks_micro(text):
         return MICRO
     return STANDARD
+
+
+def is_conversational_followup(message: str) -> bool:
+    """A bounded recap/status ask about existing conversation results."""
+    text = " ".join((message or "").split()).replace("’", "'")
+    return bool(_CONVERSATIONAL_FOLLOWUP_RE.fullmatch(text))
 
 
 def _looks_deep(text: str) -> bool:
@@ -166,12 +189,12 @@ def maybe_escalate(
     return nxt
 
 
-def profile_skips_wiki(profile: Optional[str]) -> bool:
-    return (normalize_profile(profile) or "") == MICRO
+def profile_skips_wiki(profile: Optional[str], message: str = "") -> bool:
+    return (normalize_profile(profile) or "") == MICRO or is_conversational_followup(message)
 
 
-def profile_skips_codegraph(profile: Optional[str]) -> bool:
-    return (normalize_profile(profile) or "") == MICRO
+def profile_skips_codegraph(profile: Optional[str], message: str = "") -> bool:
+    return (normalize_profile(profile) or "") == MICRO or is_conversational_followup(message)
 
 
 def profile_disables_swarm_gate(profile: Optional[str]) -> bool:

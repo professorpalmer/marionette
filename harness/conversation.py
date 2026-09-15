@@ -2725,7 +2725,9 @@ class ConversationalSession(
         try:
             from .task_profile import profile_skips_codegraph
 
-            if profile_skips_codegraph(getattr(self, "_task_profile", "") or ""):
+            if profile_skips_codegraph(
+                getattr(self, "_task_profile", "") or "", user_message,
+            ):
                 return cg_section
         except Exception:
             pass
@@ -2755,8 +2757,8 @@ class ConversationalSession(
                 from .task_profile import profile_skips_codegraph, profile_skips_wiki
 
                 profile = getattr(self, "_task_profile", "") or ""
-                skip_cg = profile_skips_codegraph(profile)
-                skip_wiki = profile_skips_wiki(profile)
+                skip_cg = profile_skips_codegraph(profile, user_message)
+                skip_wiki = profile_skips_wiki(profile, user_message)
             except Exception:
                 skip_cg = False
                 skip_wiki = False

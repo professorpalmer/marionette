@@ -49,6 +49,8 @@ import shlex
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from .task_profile import is_conversational_followup
+
 # Thresholds (override via env for tuning in the field).
 LOOP_REPEAT_CAP = int(os.environ.get("HARNESS_LOOP_REPEAT_CAP", "3"))
 DELEGATE_THRESHOLD = int(os.environ.get("HARNESS_DELEGATE_THRESHOLD", "8"))
@@ -223,7 +225,7 @@ _BROAD_INTENT_RE = re.compile(
     r"\binvestigate\b|"
     r"\bimpacting\b|"
     r"\binherit\b|"
-    r"\bsubprocess\b|"
+    r"\binspect\b[^.!?]{0,120}?\bsubprocess(?:es)?\b|"
     r"how\s+does\b.{0,120}?\baffect\b|"
     r"map\s+the\b|"
     r"improve\s+quality|"
@@ -755,6 +757,12 @@ def swarm_policy_for_message(message: str) -> str:
 
 def swarm_policy_turn_note(message: str) -> str:
     """Per-turn trailer. Frozen system prompt cannot change mid-conversation."""
+    if is_conversational_followup(message):
+        return (
+            "TURN POLICY: this is a conversational follow-up. Answer from the "
+            "existing conversation and results. No fresh search or delegation "
+            "is required; state any missing evidence plainly."
+        )
     policy = swarm_policy_for_message(message)
     if policy == SWARM_POLICY_EXPLICIT:
         return (
@@ -778,7 +786,7 @@ def swarm_policy_turn_note(message: str) -> str:
 def is_broad_intent_user_message(message: str) -> bool:
     """Classify user text for broad audit/review/investigate tasks (pure function)."""
     text = _norm_whitespace(message or "")
-    if not text:
+    if not text or is_conversational_followup(text):
         return False
     if _NARROW_INTENT_RE.search(text):
         return False

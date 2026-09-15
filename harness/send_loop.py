@@ -165,13 +165,16 @@ def emit_turn_task_profile(session: Any, user_message: str) -> Iterator[Any]:
         session._task_profile_escalated_from = None
 
 
-def profile_skips_auto_inject(session: Any) -> tuple[bool, bool]:
-    """MICRO skips wiki/CodeGraph auto-inject. Best-effort; never raises."""
+def profile_skips_auto_inject(session: Any, user_message: str = "") -> tuple[bool, bool]:
+    """Skip automatic grounding for MICRO and conversational follow-ups."""
     try:
         from .task_profile import profile_skips_codegraph, profile_skips_wiki
 
         profile = getattr(session, "_task_profile", "") or ""
-        return profile_skips_codegraph(profile), profile_skips_wiki(profile)
+        return (
+            profile_skips_codegraph(profile, user_message),
+            profile_skips_wiki(profile, user_message),
+        )
     except Exception:
         return False, False
 
@@ -1164,6 +1167,15 @@ class SendLoopMixin:
                 processed_message = self._append_turn_context_trailer(
                     processed_message, user_message
                 )
+        else:
+            from .task_profile import is_conversational_followup
+
+            if is_conversational_followup(user_message):
+                from .pilot_guards import swarm_policy_turn_note
+
+                processed_message += (
+                    self._TURN_CONTEXT_TRAILER + swarm_policy_turn_note(user_message)
+                )
 
         if plan:
             from .pilot import PLAN_SYSTEM_SUFFIX
@@ -1221,7 +1233,7 @@ class SendLoopMixin:
         # so the driver sees the most relevant code BEFORE it starts calling tools.
         # Skip for no_delegation worker sessions (they run in a fresh worktree with
         # no CodeGraph index). Degrades to a no-op when codegraph is unavailable.
-        _skip_cg, _ = profile_skips_auto_inject(self)
+        _skip_cg, _ = profile_skips_auto_inject(self, user_message)
         if (
             not getattr(self.config, "no_delegation", False)
             and not self._resolve_append_only()
@@ -1344,7 +1356,7 @@ class SendLoopMixin:
             _no_deleg = getattr(self.config, "no_delegation", False)
             cg_symbol_count = 0
             append_only = self._resolve_append_only()
-            _skip_cg, _skip_wiki = profile_skips_auto_inject(self)
+            _skip_cg, _skip_wiki = profile_skips_auto_inject(self, user_message)
             cg_event = None
             if self.config.repo and not _no_deleg and not append_only and not _skip_cg:
                 with timed_phase(timing, "step_codegraph"):
