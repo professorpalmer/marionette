@@ -1,7 +1,12 @@
-"""Mid-flight producer/parser parity: RUNNING jobs must not trip invalid_metadata."""
+"""Mid-flight producer/parser parity: RUNNING jobs must not trip invalid_metadata.
+
+Set MARIONETTE_REGENERATE_MIDFLIGHT_FIXTURE=1 to regenerate the committed
+frontend fixture. Ordinary test runs write only inside pytest's temporary directory.
+"""
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -82,6 +87,9 @@ def test_timestamp_normalizes_offset_without_colon():
 
 
 def test_midflight_selected_pins_and_running_page_dump_fixture(tmp_path):
+    committed_fixture = FIXTURE.read_bytes()
+    regenerate = os.environ.get('MARIONETTE_REGENERATE_MIDFLIGHT_FIXTURE') == '1'
+    fixture = FIXTURE if regenerate else tmp_path / FIXTURE.name
     store, job, tasks = _midflight_store(tmp_path)
     sources = KnownSources.from_roots([('harness', store.root, 'sqlite', False)])
     ctx = ReadContext('session-A', '/repo', 'generation-1', 'session')
@@ -111,9 +119,11 @@ def test_midflight_selected_pins_and_running_page_dump_fixture(tmp_path):
         'context': asdict(ctx),
         'selection': selection.wire(),
     }
-    FIXTURE.parent.mkdir(parents=True, exist_ok=True)
-    FIXTURE.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str) + '\n')
-    assert FIXTURE.stat().st_size > 1000
+    fixture.parent.mkdir(parents=True, exist_ok=True)
+    fixture.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str) + '\n')
+    assert fixture.stat().st_size > 1000
+    if not regenerate:
+        assert FIXTURE.read_bytes() == committed_fixture
 
 
 def test_lane_revision_skew_degrades_expert_not_lanes(tmp_path):
