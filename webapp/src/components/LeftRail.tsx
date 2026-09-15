@@ -79,7 +79,6 @@ import {
   collectUnreadFinishedSessionIds,
   isRailWideSwitching,
   projectSessionsEmptyState,
-  preferLastGoodSessionList,
   writeSessionListCache,
   actionAfterSessionRemove,
   remainingOpenAfterRemoveFromCache,
@@ -312,39 +311,58 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   const sessionListGeneration = useRef(0);
   const sessionScopeGeneration = useRef(0);
   const sessionScopeRoot = useRef("");
+  const workspaceGeneration = useRef(0);
+  const workspaceOpens = useRef(new Map<string, Promise<Awaited<ReturnType<typeof api.openWorkspace>>>>());
   const pendingSessionRoots = useRef(new Set<string>());
+  const sessionReads = useRef(new Map<string, { generation: number; promise: Promise<Session[]> }>());
+  const [sessionLoadStates, setSessionLoadStates] = useState<Record<string, "loading" | "ready" | "error" | "opening" | "open-error">>({});
+  const [sessionsCacheEpoch, setSessionsCacheEpoch] = useState(0);
   useEffect(() => {
     const invalidate = (event: Event) => {
       if (!(event instanceof CustomEvent) || typeof event.detail !== "string") return;
       if (repoPathsEqual(event.detail, sessionScopeRoot.current)) return;
       sessionScopeRoot.current = event.detail;
       sessionScopeGeneration.current += 1;
-      sessionListGeneration.current += 1;
     };
     window.addEventListener("harness-project-selected", invalidate);
-    return () => window.removeEventListener("harness-project-selected", invalidate);
+    return () => {
+      sessionScopeGeneration.current += 1;
+      sessionListGeneration.current += 1;
+      workspaceGeneration.current += 1;
+      window.removeEventListener("harness-project-selected", invalidate);
+    };
   }, []);
-  const fetchSessionRows = useCallback(async (root: string) => {
+  const fetchSessionRows = useCallback((root: string): Promise<Session[]> => {
     const generation = sessionListGeneration.current;
-    const rows = await api.sessions(root || undefined);
-    if (generation !== sessionListGeneration.current) {
-      throw new DOMException("Superseded session list", "AbortError");
-    }
-    return preferLastGoodSessionList(root, rows);
+    const pending = sessionReads.current.get(root);
+    if (pending?.generation === generation) return pending.promise;
+    setSessionLoadStates((prev) => ({ ...prev, [root]: "loading" }));
+    const promise = (async () => {
+      try {
+        const incoming = await api.sessions(root || undefined);
+        if (generation !== sessionListGeneration.current) {
+          throw new DOMException("Superseded session list", "AbortError");
+        }
+        const rows = writeSessionListCache(root, incoming);
+        setSessionLoadStates((prev) => ({ ...prev, [root]: "ready" }));
+        setSessionsCacheEpoch((n) => n + 1);
+        return rows;
+      } catch (err) {
+        if (sessionReads.current.get(root)?.generation === generation) {
+          setSessionLoadStates((prev) => ({ ...prev, [root]: "error" }));
+        }
+        throw err;
+      } finally {
+        if (sessionReads.current.get(root)?.generation === generation) sessionReads.current.delete(root);
+      }
+    })();
+    sessionReads.current.set(root, { generation, promise });
+    return promise;
   }, []);
   // Assigned after projects + SWR hooks exist; early handlers call through this.
   const refreshSessionsRef = useRef<() => Promise<void>>(async () => {});
   // Kept current each render so delete can optimistically purge every root's cache.
   const projectsRef = useRef<string[]>([]);
-  // Roots whose per-repo sessions fetch has resolved at least once this boot
-  // (or was seeded from cache). Used so we never flash "No sessions" for a
-  // row whose list has not arrived yet.
-  const [sessionsResolvedRoots, setSessionsResolvedRoots] = useState<Record<string, true>>({});
-  // Bumped whenever per-root session caches are rewritten outside the active
-  // SWR hook so projectSessionsFor re-reads (writeSWRCache alone does not
-  // re-render). Without this, deleting a session under an inactive project
-  // left phantom titles until a full reload.
-  const [sessionsCacheEpoch, setSessionsCacheEpoch] = useState(0);
 
   const beginSessionRename = (id: string, title: string) => {
     setRenamingId(id);
@@ -357,6 +375,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       setRenamingId(null);
       return;
     }
+    sessionListGeneration.current += 1;
     const roots = projectsRef.current.filter(Boolean);
     patchSessionTitleInCaches(roots, id, title);
     setSessionsCacheEpoch((n) => n + 1);
@@ -364,6 +383,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     setRenamingId(null);
     try {
       await api.renameSession(id, title);
+      sessionListGeneration.current += 1;
       await refreshSessionsRef.current();
     } catch (err) {
       console.error(err);
@@ -400,7 +420,12 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     mutate: mutateWorkspace,
   } = useStaleWhileRevalidate<WorkspaceInfo>(
     "workspace",
-    () => api.getWorkspace(),
+    async () => {
+      const generation = workspaceGeneration.current;
+      const info = await api.getWorkspace();
+      if (generation !== workspaceGeneration.current) throw new DOMException("Superseded workspace", "AbortError");
+      return info;
+    },
     {
       onSuccess: (info) => {
         if (info.repo && info.codegraph_status) {
@@ -433,13 +458,18 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     mutate: mutateSessions,
   } = useStaleWhileRevalidate<Session[]>(
     `sessions:${currentRepo || "__none__"}`,
-    () => fetchSessionRows(currentRepo),
+    async () => {
+      const scope = sessionScopeGeneration.current;
+      const generation = sessionListGeneration.current;
+      const rows = await fetchSessionRows(currentRepo);
+      if (scope !== sessionScopeGeneration.current || generation !== sessionListGeneration.current) {
+        throw new DOMException("Superseded session view", "AbortError");
+      }
+      return rows;
+    },
     {
       enabled: !!currentRepo,
       onSuccess: (sess) => {
-        if (currentRepo) {
-          setSessionsResolvedRoots((prev) => ({ ...prev, [currentRepo]: true }));
-        }
         onSessionsLoaded(sess, currentRepo);
       },
     },
@@ -459,7 +489,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     targetSessionsCached: !opening && (
       !!switchingSessionId
       || (!!currentRepo && (
-        !!sessionsResolvedRoots[currentRepo]
+        sessionLoadStates[currentRepo] === "ready"
         || readSWRCache<Session[]>(`sessions:${currentRepo}`) !== undefined
       ))
     ),
@@ -481,9 +511,9 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     return true;
   };
 
-  const publishCreatedSession = (created: Session, target: string) => {
+  const publishActiveSession = (created: Session, target: string, seededEmpty = false) => {
     sessionListGeneration.current += 1;
-    writeTranscriptCache(created.id, [], { seededEmpty: true });
+    if (seededEmpty) writeTranscriptCache(created.id, [], { seededEmpty: true });
     patchActiveSessionInCaches(projectsRef.current, created.id);
     const rows = [
       { ...created, active: true, workspace_root: created.workspace_root || target },
@@ -492,6 +522,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     writeSWRCache(`sessions:${target}`, rows);
     if (repoPathsEqual(target, currentRepoRef.current)) mutateSessions(rows);
     setExpandedProjects((prev) => ({ ...prev, [target]: true }));
+    setSessionLoadStates((prev) => ({ ...prev, [target]: "ready" }));
     setSessionsCacheEpoch((n) => n + 1);
     onSessionChange?.(created.id);
   };
@@ -501,10 +532,20 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     options?: { quiet?: boolean },
   ): Promise<{ ok: boolean; created_session?: boolean; active_session?: string }> => {
     if (!options?.quiet) setOpening(true);
-    const scope = sessionScopeGeneration.current;
+    const scope = ++sessionScopeGeneration.current;
+    workspaceGeneration.current += 1;
+    sessionListGeneration.current += 1;
+    setSessionLoadStates((prev) => ({ ...prev, [path]: "opening" }));
     try {
-      const res = await api.openWorkspace(path);
+      let pending = workspaceOpens.current.get(path);
+      if (!pending) {
+        pending = api.openWorkspace(path);
+        workspaceOpens.current.set(path, pending);
+      }
+      const res = await pending;
       if (scope !== sessionScopeGeneration.current) return { ok: false };
+      workspaceGeneration.current += 1;
+      sessionListGeneration.current += 1;
       if (res.ok) {
         if (res.codegraph) codegraphByRepoRef.current[res.repo] = res.codegraph;
         mutateWorkspace({
@@ -513,16 +554,19 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           is_git: res.is_git,
           codegraph_status: res.codegraph,
           recents: workspaceInfo?.recents,
+          home: workspaceInfo?.home,
         });
         // Hermes-style: land inside the opened project — expand + select so
         // sessions are visible without an extra click.
         setExpandedProjects((prev) => ({ ...prev, [res.repo]: true }));
         setSelectedProjectPath(res.repo);
         dispatchProjectSelected(res.repo);
-        if (res.created_session && res.active_session) {
-          publishCreatedSession({ id: res.active_session, title: "New session", created: Date.now() / 1000, repo: res.repo }, res.repo);
+        if (res.active_session) {
+          const saved = readSWRCache<Session[]>(`sessions:${res.repo}`)?.find((row) => row.id === res.active_session);
+          publishActiveSession(saved || { id: res.active_session, title: res.created_session ? "New session" : "Untitled", created: Date.now() / 1000, repo: res.repo }, res.repo, !!res.created_session);
         }
-        void Promise.all([revalidateWorkspace(), revalidateWorkspaces(), revalidateSessions(true)]);
+        void fetchSessionRows(res.repo).catch(() => {});
+        void Promise.all([revalidateWorkspace(true), revalidateWorkspaces()]);
         window.dispatchEvent(new Event("harness-config-changed"));
         return {
           ok: true,
@@ -530,24 +574,29 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           active_session: res.active_session,
         };
       }
-      if ((res as { code?: string }).code === "lease_exhausted") {
+      setSessionLoadStates((prev) => ({ ...prev, [path]: "open-error" }));
+      if (isLeaseExhaustedError(res)) {
         notifySessionActivationBlocked(res);
       } else if (!options?.quiet) {
-        alert("Failed to open directory: " + (res as any).error);
+        alert("Failed to open directory");
       }
       return { ok: false };
-    } catch (err: any) {
+    } catch (err: unknown) {
+      if (scope !== sessionScopeGeneration.current) return { ok: false };
+      setSessionLoadStates((prev) => ({ ...prev, [path]: "open-error" }));
       if (!notifySessionActivationBlocked(err) && !options?.quiet) {
-        alert("Error opening directory: " + (err?.error || err?.message || err));
+        alert("Error opening directory: " + (err instanceof Error ? err.message : String(err)));
       }
       return { ok: false };
     } finally {
+      workspaceOpens.current.delete(path);
+      setSessionLoadStates((prev) => prev[path] === "opening" ? { ...prev, [path]: "ready" } : prev);
       if (!options?.quiet) setOpening(false);
     }
   }, [
     mutateWorkspace,
+    fetchSessionRows,
     notifySessionActivationBlocked,
-    revalidateSessions,
     revalidateWorkspace,
     revalidateWorkspaces,
     workspaceInfo?.recents,
@@ -829,6 +878,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   };
   const switchSession = async (id: string) => {
     if (switchingSessionId || opening) return;
+    const scope = ++sessionScopeGeneration.current;
     const previousActiveId = sessions.find((s) => s.active)?.id || "";
     switchingSessionIdRef.current = id;
     setSwitchingSessionId(id);
@@ -852,6 +902,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     try {
       const prevRepo = currentRepoRef.current;
       const res: any = await api.switchSession(id);
+      sessionListGeneration.current += 1;
+      if (scope !== sessionScopeGeneration.current) return;
       const repo = (res?.repo || "").trim();
       if (repo) {
         setExpandedProjects((prev) => ({ ...prev, [repo]: true }));
@@ -867,6 +919,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
         void refreshBankSessions();
       }
     } catch (err) {
+      if (scope !== sessionScopeGeneration.current) return;
       if (previousActiveId && previousActiveId !== id) {
         patchActiveSessionInCaches(projectsRef.current.filter(Boolean), previousActiveId);
         const revertRows = currentRepoRef.current
@@ -974,14 +1027,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           await revalidateWorkspace();
         } catch { /* ignore */ }
         try {
-          const rows = await fetchSessionRows(root);
-          writeSessionListCache(root, Array.isArray(rows) ? rows : []);
-          setSessionsResolvedRoots((prev) => ({ ...prev, [root]: true }));
-          setSessionsCacheEpoch((n) => n + 1);
-        } catch {
-          setSessionsResolvedRoots((prev) => ({ ...prev, [root]: true }));
-          setSessionsCacheEpoch((n) => n + 1);
-        }
+          await fetchSessionRows(root);
+        } catch { /* Keep last-good rows; failed reads are not empty projects. */ }
         try {
           await refreshSessionsRef.current();
         } catch { /* ignore */ }
@@ -1000,7 +1047,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     pendingSessionRoots.current.add(target);
     sessionListGeneration.current += 1;
     setSessionsCacheEpoch((n) => n + 1);
-    let scope = sessionScopeGeneration.current;
+    let scope = ++sessionScopeGeneration.current;
     try {
       let created: Session;
       if (target && !repoPathsEqual(target, currentRepo)) {
@@ -1016,7 +1063,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
         created = await api.createSession();
       }
       if (scope !== sessionScopeGeneration.current || !created.id) return;
-      publishCreatedSession(created, target);
+      publishActiveSession(created, target, true);
       void refreshSessionsRef.current();
     } catch (err) {
       notifySessionActivationBlocked(err);
@@ -1054,6 +1101,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   };
 
   const handleDeleteSession = async (id: string) => {
+    sessionListGeneration.current += 1;
+    const scope = sessionScopeGeneration.current;
     // Optimistic: drop the id from every per-root cache immediately so phantom
     // titles cannot linger under a non-active project while the network round
     // trip completes (the bug that produced "merged dir" ghosts).
@@ -1065,8 +1114,9 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
 
     try {
       await api.deleteSession(id);
+      sessionListGeneration.current += 1;
       await refreshSessionsRef.current();
-      await followUpAfterSessionRemove(id, viewingId, projectPath);
+      if (scope === sessionScopeGeneration.current) await followUpAfterSessionRemove(id, viewingId, projectPath);
     } catch (err) {
       await refreshSessionsRef.current();
       if (typeof err === "object" && err !== null
@@ -1155,6 +1205,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     if (archived && sid === viewingId) setRemovingSessionRoot(projectPath);
     try {
       await api.archiveSession(sid, archived);
+      sessionListGeneration.current += 1;
       if (railTab === "sessions") void refreshBankSessions();
       if (archived && scope === sessionScopeGeneration.current) {
         await followUpAfterSessionRemove(sid, viewingId, projectPath);
@@ -1188,22 +1239,15 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   // key). Delete/create/rename under an inactive root otherwise left phantom
   // titles that, when clicked, looked like a "merged" project tree.
   const refreshAllProjectSessions = useCallback(async () => {
-    const scope = sessionScopeGeneration.current;
     const roots = projectsRef.current.filter(Boolean);
-    await Promise.all(
-      roots.map(async (root) => {
+    await Promise.all([
+      revalidateSessions(true),
+      ...roots.map(async (root) => {
         try {
-          const rows = await fetchSessionRows(root);
-          writeSessionListCache(root, rows);
-          setSessionsResolvedRoots((prev) => ({ ...prev, [root]: true }));
-        } catch {
-          setSessionsResolvedRoots((prev) => ({ ...prev, [root]: true }));
-        }
+          await fetchSessionRows(root);
+        } catch { /* Keep last-good rows; failed reads are not empty projects. */ }
       }),
-    );
-    setSessionsCacheEpoch((n) => n + 1);
-    // Keep the active-repo SWR hook in sync (promotes active id, etc.).
-    if (scope === sessionScopeGeneration.current) await revalidateSessions(true);
+    ]);
   }, [revalidateSessions, fetchSessionRows]);
   refreshSessionsRef.current = refreshAllProjectSessions;
 
@@ -1211,27 +1255,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   // non-active dirs show their rows without waiting for a click. Seeds the
   // SWR cache under sessions:${path}; projectSessionsFor always reads that.
   useEffect(() => {
-    let cancelled = false;
     const roots = projects.filter(Boolean);
-    if (roots.length === 0) return;
-    void Promise.all(
-      roots.map(async (root) => {
-        try {
-          const rows = await fetchSessionRows(root);
-          if (cancelled) return;
-          writeSessionListCache(root, rows);
-          setSessionsResolvedRoots((prev) => ({ ...prev, [root]: true }));
-          // Active-repo hook already owns promotion; only seed cache here.
-        } catch {
-          if (!cancelled) {
-            setSessionsResolvedRoots((prev) => ({ ...prev, [root]: true }));
-          }
-        }
-      }),
-    ).then(() => {
-      if (!cancelled) setSessionsCacheEpoch((n) => n + 1);
-    });
-    return () => { cancelled = true; };
+    for (const root of roots) void fetchSessionRows(root).catch(() => {});
     // projects is rebuilt each render from workspaceInfo; join for stable dep.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projects.join("\0")]);
@@ -1303,7 +1328,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   };
 
   const sessionsResolvedFor = (projectPath: string): boolean =>
-    !!sessionsResolvedRoots[projectPath] || readSWRCache<Session[]>(`sessions:${projectPath}`) !== undefined;
+    sessionLoadStates[projectPath] === "ready" || readSWRCache<Session[]>(`sessions:${projectPath}`) !== undefined;
 
   const codegraphStatusFor = (projectPath: string, isCurrentActive: boolean) => {
     if (isCurrentActive && workspaceInfo?.codegraph_status) return workspaceInfo.codegraph_status;
@@ -1416,12 +1441,21 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   };
 
   const handleProjectRowClick = (projectPath: string, isExpanded: boolean) => {
-    // Browsing a project only changes its expansion. Activation is a separate
-    // path: a session click, explicit Open folder, or New session.
+    const scope = ++sessionScopeGeneration.current;
     setExpandedProjects((prev) => ({
       ...prev,
       [projectPath]: !isExpanded,
     }));
+    if (isExpanded) return;
+    void (async () => {
+      try {
+        const rows = await fetchSessionRows(projectPath);
+        if (scope !== sessionScopeGeneration.current || pendingSessionRoots.current.has(projectPath)) return;
+        if (partitionProjectSessions(rows, projectPath, repoPathsEqual(projectPath, currentRepoRef.current)).length === 0) {
+          await openProjectWorkspace(projectPath, { quiet: true });
+        }
+      } catch { /* Discovery errors expose retry; they never authorize creation. */ }
+    })();
   };
 
   return (
@@ -1676,7 +1710,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
             const cgLabel = codegraphAttentionLabel(cgStatus);
             const sessionsReady = sessionsResolvedFor(projectPath);
             const sessionsEmptyState = pendingSessionRoots.current.has(projectPath) || removingSessionRoot === projectPath
-              ? "loading" : projectSessionsEmptyState(sessionsReady, isSelected);
+              ? "loading" : projectSessionsEmptyState(sessionsReady, isExpanded);
 
             return (
               <div
@@ -1694,7 +1728,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      setExpandedProjects(prev => ({ ...prev, [projectPath]: !isExpanded }));
+                      handleProjectRowClick(projectPath, isExpanded);
                     }}
                     className="w-5 h-5 p-0 hover:bg-panel2/70 rounded text-faint hover:text-txt transition-colors flex items-center justify-center shrink-0"
                   >
@@ -1752,24 +1786,20 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                 {isExpanded && (
                   <div className={`pl-3 pr-1 pb-1 space-y-0.5 mt-0.5 min-w-0 overflow-hidden ${panelOpacityClass(!sessionsReady && isSelected)}`}>
                     {projectSessions.length === 0 ? (
-                      sessionsEmptyState === "loading" ? (
+                      sessionLoadStates[projectPath] === "error" || sessionLoadStates[projectPath] === "open-error" ? (
+                        <button
+                          type="button"
+                          onClick={() => { handleProjectRowClick(projectPath, false); }}
+                          className="text-[11px] text-muted px-2 py-1"
+                        >
+                          {sessionLoadStates[projectPath] === "open-error" ? "Could not open project. Retry" : "Could not load sessions. Retry"}
+                        </button>
+                      ) : sessionsEmptyState === "loading" || sessionLoadStates[projectPath] === "loading" || sessionLoadStates[projectPath] === "opening" ? (
                         <div className="text-[11px] text-faint italic px-2 py-1 flex items-center gap-1.5">
                           <Loader2 size={10} className="animate-spin shrink-0" />
                           Loading sessions...
                         </div>
-                      ) : sessionsEmptyState === "pending" ? null : (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            void newSession(projectPath);
-                          }}
-                          className="w-full h-7 flex items-center text-left text-[11px] text-accent hover:text-accent/80 px-2 rounded hover:bg-accent/10 transition"
-                          title={`Open ${basename} and start a session`}
-                        >
-                          New session
-                        </button>
-                      )
+                      ) : null
                     ) : (
                       projectSessions.map((s) => (
                         <div key={s.id} className="group relative">
