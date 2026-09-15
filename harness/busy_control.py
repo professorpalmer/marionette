@@ -366,6 +366,7 @@ class BusyControlMixin:
         with self._busy_meta:
             self._busy_gen += 1
             self._busy_since = _t.monotonic()
+            self._busy_last_progress = self._busy_since
             # A new turn owns the lock now; clear any stale interrupt / Stop-hold
             # so they can't spuriously force-recover or suppress this healthy turn.
             was_stopped = bool(self._stop_holds_idle)
@@ -394,6 +395,15 @@ class BusyControlMixin:
                 pass
         return gen
 
+    def _note_busy_progress(self, gen: int) -> bool:
+        """Record outbound turn progress only for the current lock owner."""
+        import time as _t
+        with self._busy_meta:
+            if gen != self._busy_gen or not self._busy_since:
+                return False
+            self._busy_last_progress = _t.monotonic()
+            return True
+
     def _release_busy(self, gen: int) -> None:
         """Release _busy only if this turn (identified by gen) still owns it. If a
         watchdog reaped the turn, the generation advanced and this is a no-op --
@@ -409,6 +419,7 @@ class BusyControlMixin:
             if gen != self._busy_gen or not self._busy_since:
                 return  # reaped (or already released) -- not ours to release
             self._busy_since = 0.0
+            self._busy_last_progress = 0.0
             # Abandoned-generation Stop sets this while _busy is held; once the
             # abandoned owner releases, post-unwind steers are legitimate again.
             self._steer_boundary_drop_on_acquire = False
@@ -418,9 +429,7 @@ class BusyControlMixin:
                 pass
 
     def _turn_deadline_seconds(self) -> float:
-        """Hard wall-clock ceiling after which a still-held _busy is assumed
-        wedged and reaped. Generous by default so a legitimately long turn is
-        never clobbered; 0 disables reaping."""
+        """Maximum inactive period before a still-held turn is reaped."""
         try:
             v = float(os.environ.get("HARNESS_TURN_DEADLINE_SECONDS", "").strip() or 600)
         except ValueError:
@@ -428,12 +437,7 @@ class BusyControlMixin:
         return v if v > 0 else 0.0
 
     def _reap_stuck_turn(self) -> bool:
-        """Force-recover a wedged turn: if _busy has been held past the hard turn
-        deadline, a step-boundary budget check cannot help (the turn is stuck
-        mid-call), so we advance the generation, force-release _busy, and reset
-        state. Queued worker patches can then surface and new turns proceed. The
-        generous deadline keeps this from ever reaping a healthy long turn (audit
-        finding #6). Returns True if a reap happened."""
+        """Force-recover a turn that has made no outbound progress for too long."""
         deadline = self._turn_deadline_seconds()
         if not deadline:
             return False
@@ -441,8 +445,11 @@ class BusyControlMixin:
         with self._busy_meta:
             if not self._busy_since:
                 return False
-            held = _t.monotonic() - self._busy_since
-            if held <= deadline:
+            now = _t.monotonic()
+            held = now - self._busy_since
+            progress_at = getattr(self, "_busy_last_progress", 0.0) or self._busy_since
+            inactive = now - progress_at
+            if inactive <= deadline:
                 return False
             # Reap: bump the generation so the stale holder's _release_busy is a
             # no-op, then free the lock and reset visible state. Clear
@@ -455,11 +462,13 @@ class BusyControlMixin:
             except RuntimeError:
                 return False
             self._busy_since = 0.0
+            self._busy_last_progress = 0.0
             # Publish idle before another owner can finish admission under
             # _busy_meta; a late reaper must not overwrite its streaming state.
             self._state = "idle"
         _diag_note(
             "busy_control.reap_wedged",
-            msg=f"_busy held {held:.0f}s past {deadline:.0f}s deadline",
+            msg=(f"_busy inactive {inactive:.0f}s past {deadline:.0f}s deadline "
+                 f"(held {held:.0f}s)"),
         )
         return True

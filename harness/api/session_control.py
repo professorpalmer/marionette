@@ -635,6 +635,10 @@ def get_session_swarm_results(svc: SessionControlServices) -> tuple[int, JsonPay
     results = []
     for ev in pilot.drain_swarm_results():
         results.append({"kind": ev.kind, "data": ev.data})
+    drain_commands = getattr(pilot, "drain_command_job_receipts", None)
+    if callable(drain_commands):
+        for receipt in drain_commands():
+            results.append({"kind": "action_result", "data": receipt})
     if results and svc.checkpoint_transcript is not None:
         # The drain just appended history + display entries (incl. the
         # swarm outcome badge). This poll path runs while the session is

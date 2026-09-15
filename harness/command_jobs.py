@@ -325,6 +325,45 @@ def command_job_outcome(job: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def build_command_terminal_delivery(job: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Build the one action-card update allowed after a background command ends.
+
+    A missing live row is intentionally not an outcome.  ``unknown`` is only
+    delivered when durable restart recovery recorded that uncertainty.
+    """
+    if not isinstance(job, dict):
+        return None
+    outcome = command_job_outcome(job)
+    status = str(outcome.get("status") or "")
+    if status not in COMMAND_TERMINAL_STATES and status != "unknown":
+        return None
+    action_id = str(job.get("action_id") or "").strip()
+    job_id = str(job.get("id") or "").strip()
+    if not action_id or not job_id:
+        return None
+    receipt = build_pending_receipt(job)
+    receipt.update({
+        "id": action_id,
+        "action_id": action_id,
+        "job_id": job_id,
+        "kind": COMMAND_JOB_KIND,
+        "status": status,
+        "goal": str(job.get("command_preview") or job.get("goal") or ""),
+        "message": str(
+            (
+                outcome.get("terminal_receipt")
+                or outcome.get("recovery_receipt")
+                or {}
+            ).get("summary")
+            or ""
+        ),
+    })
+    if status == "unknown":
+        receipt["terminal_receipt"] = None
+        receipt["recovery_receipt"] = outcome.get("recovery_receipt")
+    return receipt
+
+
 _COMMAND_LAUNCH_LOCK = threading.Lock()
 
 
