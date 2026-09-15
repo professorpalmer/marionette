@@ -273,8 +273,6 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
             _archive_api.post_archive_ingest, services=svc.chat_archive_services),
         "/api/archive/prune": post_json(
             _archive_api.post_archive_prune, services=svc.chat_archive_services),
-        "/api/sessions/settle": post_json(
-            _sessions_api.post_sessions_settle, services=svc.session_services),
         "/api/sessions/rename": post_json(
             _sessions_api.post_sessions_rename, services=svc.session_services),
         "/api/sessions/attach": post_json(

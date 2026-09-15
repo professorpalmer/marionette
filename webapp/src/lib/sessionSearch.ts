@@ -11,7 +11,6 @@ export type SessionSearchRow = {
   title: string;
   snippet: string;
   rank: number;
-  settled?: boolean;
 };
 
 /** Build the query string for `/api/sessions/search`, or null when empty. */
@@ -45,11 +44,10 @@ export function normalizeSessionSearchHits(raw: unknown): SessionSearchHit[] {
   return out;
 }
 
-/** Map FTS hits to display rows, resolving titles / settled from known maps. */
+/** Map FTS hits to display rows, resolving titles from known maps. */
 export function mapSessionSearchHits(
   hits: SessionSearchHit[] | null | undefined,
   titleById: Record<string, string>,
-  settledById: Record<string, boolean> = {},
 ): SessionSearchRow[] {
   if (!hits?.length) return [];
   return hits.map((h) => {
@@ -59,7 +57,6 @@ export function mapSessionSearchHits(
       title: known || "Untitled",
       snippet: h.snippet || "",
       rank: h.rank,
-      settled: !!settledById[h.session_id],
     };
   });
 }

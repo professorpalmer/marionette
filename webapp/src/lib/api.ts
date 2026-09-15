@@ -582,7 +582,7 @@ export type Workspace = {
 };
 export type SessionForkPreview = { revision: string; boundaries: { event_id: number; label: string; role: string }[] };
 
-export type Session = { forked_from?: { parent_id: string; at_event_id: number; revision?: string }; id: string; title: string; created: number; active?: boolean; archived?: boolean; settled?: boolean; repo?: string; branch?: string; workspace_root?: string; input_tokens?: number; output_tokens?: number; cache_read_tokens?: number; estimated_cost_usd?: number; preview?: string };
+export type Session = { forked_from?: { parent_id: string; at_event_id: number; revision?: string }; id: string; title: string; created: number; active?: boolean; archived?: boolean; repo?: string; branch?: string; workspace_root?: string; input_tokens?: number; output_tokens?: number; cache_read_tokens?: number; estimated_cost_usd?: number; preview?: string };
 
 export type SessionGoal = {
   text: string;
@@ -1913,8 +1913,6 @@ export const api = {
     skipped: number;
     archive_db: string;
   }>("/api/archive/prune", {}),
-  /** Persist independent inbox Settle / Unsettle triage. */
-  settleSession: (id: string, settled: boolean) => postJSON<{ ok: boolean }>("/api/sessions/settle", { session: id, settled }),
   renameSession: (id: string, title: string) => postJSON<{ ok: boolean }>("/api/sessions/rename", { session: id, title }),
   swapPilot: (model: string) => getJSON(withToken(`/api/pilot?model=${encodeURIComponent(model)}`)),
   uploadImage: async (file: File | Blob): Promise<{ path: string; name: string }> => {

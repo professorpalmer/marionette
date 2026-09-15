@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 import threading
+from types import SimpleNamespace
 from typing import List, Optional
 
 import pytest
@@ -21,6 +25,15 @@ from pmharness.drivers.cursor_acp import (
     cursor_acp_enabled,
     release_owned_warm_acp,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_cursor_acp_module_dependencies(monkeypatch):
+    private_os = SimpleNamespace(**vars(os))
+    private_os.path = SimpleNamespace(**vars(os.path))
+    monkeypatch.setattr(cursor_acp, "os", private_os)
+    monkeypatch.setattr(cursor_acp, "sys", SimpleNamespace(**vars(sys)))
+    monkeypatch.setattr(cursor_acp, "subprocess", SimpleNamespace(**vars(subprocess)))
 
 
 class _FakePipe:
@@ -441,6 +454,22 @@ def test_windows_close_reaps_owned_child_tree(monkeypatch):
     transport.close()
     assert calls == []
     assert proc.terminate_calls == before_term
+
+
+def test_simulated_platform_dependencies_do_not_mutate_host_modules(monkeypatch):
+    host = (os.name, sys.platform, subprocess.run)
+
+    def fake_run(*_args, **_kwargs):
+        return None
+
+    with monkeypatch.context() as patch:
+        patch.setattr(cursor_acp.os, "name", "nt")
+        patch.setattr(cursor_acp.sys, "platform", "win32")
+        patch.setattr(cursor_acp.subprocess, "run", fake_run)
+        observed = (os.name, sys.platform, subprocess.run)
+
+    assert (os.name, sys.platform, subprocess.run) == host
+    assert observed == host
 
 
 def test_non_windows_close_does_not_taskkill(monkeypatch):

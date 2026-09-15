@@ -261,7 +261,16 @@ def test_tests_yml_is_the_fast_dest_into_main_gate():
     assert "--dist loadscope" in text
     assert "PYTEST_SHARD" in text
     assert "python-version: \"3.9\"" in text
-    assert "macos-latest" not in text
+    mac_start = text.index("  pytest-macos:")
+    mac_end = text.index("\n  frontend-build:", mac_start)
+    mac_job = text[mac_start:mac_end]
+    assert "runs-on: macos-latest" in mac_job
+    assert 'python-version: "3.11"' in mac_job
+    assert '"puppetmaster-ai==1.27.23"' in mac_job
+    assert "run: python -m pytest -q -p no:cacheprovider -n 4 --dist loadscope" in mac_job
+    assert "continue-on-error" not in mac_job
+    assert "needs: reuse-green-tree" in mac_job
+    assert "needs.reuse-green-tree.outputs.skip_suite != 'true'" in mac_job
     assert "reuse-green-tree" in text
     assert "skip-if-green" in text
     assert "skip_suite" in text

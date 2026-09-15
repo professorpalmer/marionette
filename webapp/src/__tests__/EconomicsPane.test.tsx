@@ -645,10 +645,12 @@ it("never substitutes app-run spend for an unavailable session total", async () 
   dispatchProjectSelected("/repo-a");
   render(<EconomicsPane />);
   await chooseScope("conversation");
-  const retry = await screen.findByRole("button", { name: "Session total partial / unavailable. Retry" });
+  expect(await screen.findByText("Loading usage…")).toBeInTheDocument();
+  const retry = await screen.findByRole("button", { name: "Session usage is incomplete or unavailable. Retry" }, { timeout: 4500 });
+  expect(retry).not.toHaveClass("text-risk");
   expect(screen.queryByText("~$4.00")).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "App-run usage partial / unavailable. Retry" })).not.toBeInTheDocument();
   mockGetUsage.mockResolvedValue(emptyUsage);
   fireEvent.click(retry);
-  await waitFor(() => expect(screen.queryByRole("button", { name: "Session total partial / unavailable. Retry" })).not.toBeInTheDocument());
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Session usage is incomplete or unavailable. Retry" })).not.toBeInTheDocument());
 });

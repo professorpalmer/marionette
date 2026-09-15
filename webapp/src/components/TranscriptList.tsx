@@ -64,9 +64,8 @@ import {
 } from "../lib/turnProgress";
 import { isAgentLoopOpen } from "./conversation/runnersBusy";
 import {
+  isAssistantStatusOnly,
   isTrivialAssistantCrumb,
-  looksLikeStatusHeadline,
-  sanitizeThinkingStatusGlue,
 } from "./conversation/thinkingToolPrep";
 import {
   autoHaltPresentation,
@@ -2235,13 +2234,7 @@ function cleanAssistantText(text: string): string {
   if (!result || isWorkingEllipsisFallback(result)) return "";
   // Status headlines / ****-glued title frames belong in fold chrome — never as
   // a spoken Bubble. Keep intentional markdown (**emphasis**) in real prose.
-  if (isTrivialAssistantCrumb(result) || looksLikeStatusHeadline(result)) return "";
-  if (/\*{2,}|_{2,}/.test(result)) {
-    const glued = sanitizeThinkingStatusGlue(result);
-    if (!glued || isTrivialAssistantCrumb(glued) || looksLikeStatusHeadline(glued)) {
-      return "";
-    }
-  }
+  if (isAssistantStatusOnly(result)) return "";
   return result;
 }
 

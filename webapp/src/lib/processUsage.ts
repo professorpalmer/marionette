@@ -5,6 +5,7 @@ export type ProcessUsageSession = UsageData["session"];
 
 export type ProcessUsageSnapshot = {
   session: ProcessUsageSession | null;
+  status: "loading" | "ready" | "unavailable";
   readStatus?: "unavailable";
   sessionTotal?: UsageData["session_total"];
   fetchedAt: number;
@@ -14,18 +15,21 @@ export type ProcessUsageSnapshot = {
 type Listener = (snapshot: ProcessUsageSnapshot) => void;
 
 const listeners = new Set<Listener>();
+const STARTUP_RETRIES = 3;
 
 let snapshot: ProcessUsageSnapshot = emptySnapshot();
 let inFlight: Promise<void> | null = null;
 let acceptZero = false;
 let scopeGeneration = 0;
 let pollTimer: number | undefined;
+let retryTimer: number | undefined;
+let retryAttempts = 0;
 let subscriberCount = 0;
 let busyCount = 0;
 let bridgesInstalled = false;
 
 function emptySnapshot(): ProcessUsageSnapshot {
-  return { session: null, fetchedAt: 0, generation: 0 };
+  return { session: null, status: "loading", fetchedAt: 0, generation: 0 };
 }
 
 function sessionIsZero(session: ProcessUsageSession): boolean {
@@ -44,8 +48,17 @@ function emit(next: ProcessUsageSnapshot): void {
 }
 
 function acceptSession(session: ProcessUsageSession, sessionTotal: UsageData["session_total"]): void {
-  if (session.read_status === "unavailable") {
-    emit({ session, sessionTotal, readStatus: "unavailable", fetchedAt: Date.now(), generation: snapshot.generation + 1 });
+  if (session.read_status === "unavailable" || sessionTotal?.read_status === "unavailable") {
+    emit({
+      session,
+      status: sessionUsageUnavailable(session, sessionTotal)
+        ? retryAttempts >= STARTUP_RETRIES ? "unavailable" : "loading"
+        : "ready",
+      sessionTotal,
+      readStatus: "unavailable",
+      fetchedAt: Date.now(),
+      generation: snapshot.generation + 1,
+    });
     return;
   }
   if (acceptZero) {
@@ -56,6 +69,7 @@ function acceptSession(session: ProcessUsageSession, sessionTotal: UsageData["se
   }
   emit({
     session,
+    status: "ready",
     sessionTotal,
     fetchedAt: Date.now(),
     generation: snapshot.generation + 1,
@@ -69,7 +83,7 @@ export function getProcessUsage(): ProcessUsageSnapshot {
 /** The footer and This session / All time share this persisted session projection. */
 export function activeSessionUsage(current: ProcessUsageSnapshot): ProcessUsageSession | null {
   const total = current.sessionTotal;
-  if (!total?.session_id) return null;
+  if (!total?.session_id || total.read_status === "unavailable") return null;
   return {
     ...total,
     accounting_scope: 'conversation',
@@ -81,7 +95,35 @@ export function activeSessionUsage(current: ProcessUsageSnapshot): ProcessUsageS
   };
 }
 
-export function refreshProcessUsage(): Promise<void> {
+function sessionUsageUnavailable(session: ProcessUsageSession, total: UsageData["session_total"]): boolean {
+  return total?.read_status === "unavailable"
+    || (total === undefined && session.read_status === "unavailable");
+}
+
+function stopRetry(): void {
+  if (typeof window === "undefined" || retryTimer === undefined) return;
+  window.clearTimeout(retryTimer);
+  retryTimer = undefined;
+}
+
+function scheduleStartupRetry(): void {
+  if (typeof window === "undefined" || retryTimer !== undefined
+      || retryAttempts >= STARTUP_RETRIES || subscriberCount <= 0 || document.hidden) return;
+  const owner = scopeGeneration;
+  retryTimer = window.setTimeout(() => {
+    retryTimer = undefined;
+    if (owner !== scopeGeneration || subscriberCount <= 0 || document.hidden || inFlight) return;
+    retryAttempts += 1;
+    void refreshProcessUsage();
+  }, 1000);
+}
+
+export function refreshProcessUsage(opts: { manual?: boolean } = {}): Promise<void> {
+  if (opts.manual) {
+    stopRetry();
+    retryAttempts = 0;
+    emit({ ...snapshot, status: "loading", generation: snapshot.generation + 1 });
+  }
   if (inFlight) return inFlight;
   const owner = scopeGeneration;
   const run = (async () => {
@@ -90,9 +132,15 @@ export function refreshProcessUsage(): Promise<void> {
       if (owner !== scopeGeneration) return;
       if (!data?.session) throw new Error("Usage unavailable");
       acceptSession(data.session, data.session_total);
+      if (sessionUsageUnavailable(data.session, data.session_total)) scheduleStartupRetry();
+      else {
+        stopRetry();
+        retryAttempts = STARTUP_RETRIES;
+      }
     } catch (err) {
       if (owner === scopeGeneration) {
-        emit({ session: null, readStatus: "unavailable", fetchedAt: Date.now(), generation: snapshot.generation + 1 });
+        emit({ session: null, status: retryAttempts >= STARTUP_RETRIES ? "unavailable" : "loading", readStatus: "unavailable", fetchedAt: Date.now(), generation: snapshot.generation + 1 });
+        scheduleStartupRetry();
       }
     } finally {
       if (owner === scopeGeneration) inFlight = null;
@@ -106,8 +154,11 @@ function resetForSessionChange(): void {
   scopeGeneration += 1;
   inFlight = null;
   acceptZero = true;
+  stopRetry();
+  retryAttempts = 0;
   emit({
     session: null,
+    status: "loading",
     fetchedAt: Date.now(),
     generation: snapshot.generation + 1,
   });
@@ -167,7 +218,10 @@ export function subscribeProcessUsage(listener: Listener): () => void {
   return () => {
     listeners.delete(listener);
     subscriberCount = Math.max(0, subscriberCount - 1);
-    if (subscriberCount === 0) stopPolling();
+    if (subscriberCount === 0) {
+      stopPolling();
+      stopRetry();
+    }
   };
 }
 
@@ -188,11 +242,13 @@ export function useProcessUsage(opts?: { busy?: boolean }): ProcessUsageSnapshot
 
 export function _resetProcessUsageForTests(): void {
   stopPolling();
+  stopRetry();
   listeners.clear();
   subscriberCount = 0;
   busyCount = 0;
   inFlight = null;
   acceptZero = false;
+  retryAttempts = 0;
   scopeGeneration += 1;
   snapshot = emptySnapshot();
 }

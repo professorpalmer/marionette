@@ -100,79 +100,17 @@ export function pickFallbackProjectAfterForget(
   return buildProjectsList("", remaining, home)[0] || "";
 }
 
-/**
- * Settle/Unsettle only work for sessions under the active workspace
- * (POST /api/sessions/settle 403s foreign roots). Hide affordances elsewhere.
- */
-export function canSettleSessionsForProject(
-  projectPath: string,
-  activeRepo: string | undefined | null,
-): boolean {
-  return !!(activeRepo && projectPath && repoPathsEqual(projectPath, activeRepo));
-}
-
-/**
- * Split project-scoped sessions into open (inbox) vs settled.
- * `settled` and `archived` are independent durable flags. Archived rows are
- * excluded here — they live in the global Archived section, not the project tree.
- * Rootless orphans only appear under the active workspace row.
- */
+/** Return normal, unarchived sessions for a project. Legacy settled fields are inert. */
 export function partitionProjectSessions(
   rows: Session[],
   projectPath: string,
   isActiveRow: boolean,
-): { open: Session[]; settled: Session[] } {
-  const scoped = (rows || []).filter((s) => {
+): Session[] {
+  return (rows || []).filter((s) => {
     const root = (s.workspace_root || s.repo || "").trim();
     if (!root) return isActiveRow;
     return repoPathsEqual(root, projectPath);
-  });
-  const open: Session[] = [];
-  const settled: Session[] = [];
-  for (const s of scoped) {
-    if (s.archived) continue;
-    if (s.settled) settled.push(s);
-    else open.push(s);
-  }
-  return { open, settled };
-}
-
-/** Read current settled flag for a session id from per-root caches (first hit). */
-export function readSessionSettledFromCaches(
-  roots: string[],
-  sessionId: string,
-  read: (key: string) => Session[] | undefined = readSWRCache,
-): boolean | undefined {
-  for (const root of roots) {
-    if (!root) continue;
-    const cached = read(`sessions:${root}`);
-    const hit = cached?.find((s) => s.id === sessionId);
-    if (hit) return !!hit.settled;
-  }
-  return undefined;
-}
-
-/** Optimistically flip durable `settled` on every per-root sessions cache that holds the id. */
-export function patchSessionSettledInCaches(
-  roots: string[],
-  sessionId: string,
-  settled: boolean,
-  read: (key: string) => Session[] | undefined = readSWRCache,
-  write: (key: string, data: Session[]) => void = writeSWRCache,
-): number {
-  let touched = 0;
-  for (const root of roots) {
-    if (!root) continue;
-    const key = `sessions:${root}`;
-    const cached = read(key);
-    if (!cached || !cached.some((s) => s.id === sessionId)) continue;
-    write(
-      key,
-      cached.map((s) => (s.id === sessionId ? { ...s, settled } : s)),
-    );
-    touched += 1;
-  }
-  return touched;
+  }).filter((s) => !s.archived);
 }
 
 /** Optimistically set the display title on every per-root sessions cache that holds the id. */
@@ -392,7 +330,7 @@ export function remainingOpenAfterRemoveFromCache(
 ): Session[] {
   if (!projectPath) return [];
   const rows = read(`sessions:${projectPath}`) || [];
-  return partitionProjectSessions(rows, projectPath, true).open.filter((s) => s.id !== removedId);
+  return partitionProjectSessions(rows, projectPath, true).filter((s) => s.id !== removedId);
 }
 
 function newestRemainingSessionId(

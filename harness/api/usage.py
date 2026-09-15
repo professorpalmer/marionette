@@ -269,6 +269,13 @@ def _get_usage_body(repo_override: str, svc: UsageServices) -> tuple[int, JsonPa
 
         all_jobs_by_key: dict = {}
         stores_by_key: dict = {}
+        scoped_snapshots: dict = {}
+
+        def scoped_snapshot(repo_root):
+            effective_repo = (repo_root or "").strip() or (svc.cfg.repo or "")
+            if effective_repo not in scoped_snapshots:
+                scoped_snapshots[effective_repo] = svc.scoped_jobs_with_stores(repo_root=repo_root)
+            return scoped_snapshots[effective_repo]
 
         def collect(scoped, st, cli_st):
             resolved = job_stores_for_read(scoped, st, cli_st)
@@ -288,12 +295,12 @@ def _get_usage_body(repo_override: str, svc: UsageServices) -> tuple[int, JsonPa
         boot_keys = set()
         for repo_path in sorted(boot_repos) or [active_repo or None]:
             try:
-                boot_keys.update(collect(*svc.scoped_jobs_with_stores(repo_root=repo_path or None)))
+                boot_keys.update(collect(*scoped_snapshot(repo_path or None)))
             except Exception as e:
                 usage_incomplete = True
                 svc.diag("server.usage_jobs_aggregate", e)
         try:
-            active_keys = collect(*svc.scoped_jobs_with_stores(repo_root=repo_override or None))
+            active_keys = collect(*scoped_snapshot(repo_override or None))
         except Exception as e:
             active_keys = []
             session_incomplete = True
@@ -314,7 +321,8 @@ def _get_usage_body(repo_override: str, svc: UsageServices) -> tuple[int, JsonPa
         arts_by_job: dict = {}
         unavailable = set()
         ids_by_store: dict = {}
-        for key, owning in stores_by_key.items():
+        for key in dict.fromkeys(jids + session_jids):
+            owning = stores_by_key.get(key)
             if owning is None:
                 unavailable.add(key)
             else:

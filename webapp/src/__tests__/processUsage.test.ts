@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../lib/api";
 import {
   _resetProcessUsageForTests,
+  activeSessionUsage,
   getProcessUsage,
   refreshProcessUsage,
   subscribeProcessUsage,
@@ -129,4 +130,129 @@ it("fences an old-scope response while the new request fails", async () => {
   expect(getProcessUsage().session).toBeNull();
   expect(getProcessUsage().readStatus).toBe("unavailable");
   off();
+});
+
+describe("session usage startup retries", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    _resetProcessUsageForTests();
+  });
+
+  afterEach(() => {
+    _resetProcessUsageForTests();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  function unavailable() {
+    const data = session(2);
+    return { ...data, session_total: { ...data.session_total, read_status: "unavailable" as const } };
+  }
+
+  it("recovers after one second instead of waiting for the idle poll", async () => {
+    mockGetUsage.mockResolvedValueOnce(unavailable()).mockResolvedValue(session(2));
+    const off = subscribeProcessUsage(() => {});
+    await refreshProcessUsage();
+    expect(getProcessUsage().status).toBe("loading");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mockGetUsage).toHaveBeenCalledTimes(2);
+    expect(getProcessUsage().status).toBe("ready");
+    off();
+  });
+
+  it("bounds failed startup retries and gives immediate manual retry feedback", async () => {
+    mockGetUsage.mockResolvedValue(unavailable());
+    const off = subscribeProcessUsage(() => {});
+    await refreshProcessUsage();
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(mockGetUsage).toHaveBeenCalledTimes(4);
+    expect(getProcessUsage().status).toBe("unavailable");
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(mockGetUsage).toHaveBeenCalledTimes(4);
+    let resolveRetry!: (value: ReturnType<typeof session>) => void;
+    mockGetUsage.mockImplementationOnce(() => new Promise(resolve => { resolveRetry = resolve; }));
+    const retry = refreshProcessUsage({ manual: true });
+    expect(getProcessUsage().status).toBe("loading");
+    resolveRetry(session(3));
+    await retry;
+    expect(getProcessUsage().status).toBe("ready");
+    off();
+  });
+
+  it("cancels startup retries when the last subscriber leaves", async () => {
+    mockGetUsage.mockResolvedValue(unavailable());
+    const off = subscribeProcessUsage(() => {});
+    await refreshProcessUsage();
+    off();
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(mockGetUsage).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("does not perform quick retries while the page is hidden", async () => {
+    mockGetUsage.mockResolvedValue(unavailable());
+    const off = subscribeProcessUsage(() => {});
+    await refreshProcessUsage();
+    const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(mockGetUsage).toHaveBeenCalledTimes(1);
+    hidden.mockReturnValue(false);
+    document.dispatchEvent(new Event("visibilitychange"));
+    await refreshProcessUsage();
+    expect(mockGetUsage).toHaveBeenCalledTimes(2);
+    off();
+  });
+
+  it("accepts authoritative session totals despite unavailable process usage", async () => {
+    const data = session(2);
+    mockGetUsage.mockResolvedValue({ ...data, session: { ...data.session, read_status: "unavailable" } });
+    const off = subscribeProcessUsage(() => {});
+    await refreshProcessUsage();
+    expect(getProcessUsage().status).toBe("ready");
+    expect(activeSessionUsage(getProcessUsage())?.est_cost_usd).toBe(2);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(mockGetUsage).toHaveBeenCalledTimes(1);
+    off();
+  });
+
+  it("does not expose partial totals as authoritative session usage", async () => {
+    mockGetUsage.mockResolvedValue(unavailable());
+    await refreshProcessUsage();
+    expect(activeSessionUsage(getProcessUsage())).toBeNull();
+  });
+
+  it("treats confirmed no-session and zero totals as ready without fast retries", async () => {
+    mockGetUsage.mockResolvedValue({ ...session(0, 0), session_total: null });
+    const off = subscribeProcessUsage(() => {});
+    await refreshProcessUsage();
+    expect(getProcessUsage().status).toBe("ready");
+    expect(activeSessionUsage(getProcessUsage())).toBeNull();
+    mockGetUsage.mockResolvedValue(session(0, 0));
+    window.dispatchEvent(new Event("harness-session-changed"));
+    await refreshProcessUsage();
+    expect(getProcessUsage().status).toBe("ready");
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(mockGetUsage).toHaveBeenCalledTimes(2);
+    off();
+  });
+
+  it("rejects both old A and B responses after an A-B-A switch", async () => {
+    const resolves: Array<(value: ReturnType<typeof session>) => void> = [];
+    mockGetUsage.mockImplementation(() => new Promise(resolve => { resolves.push(resolve); }));
+    const off = subscribeProcessUsage(() => {});
+    const oldA = refreshProcessUsage();
+    window.dispatchEvent(new Event("harness-session-changed"));
+    const oldB = refreshProcessUsage();
+    window.dispatchEvent(new Event("harness-session-changed"));
+    const newA = refreshProcessUsage();
+    resolves[2](session(3));
+    await newA;
+    resolves[0](session(99));
+    resolves[1](session(88));
+    await Promise.all([oldA, oldB]);
+    expect(activeSessionUsage(getProcessUsage())?.est_cost_usd).toBe(3);
+    expect(getProcessUsage().status).toBe("ready");
+    off();
+  });
 });

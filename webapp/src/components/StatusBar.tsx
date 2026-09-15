@@ -386,9 +386,15 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
           </button>
         </span>
       )}
-      {((processUsage.readStatus === "unavailable" && !processUsage.sessionTotal) || processUsage.sessionTotal?.read_status === "unavailable") && (
-        <button type="button" className="text-risk" onClick={() => void refreshProcessUsage()}>
-          Session usage partial / unavailable. Retry
+      {processUsage.status === "unavailable" && (
+        <button
+          type="button"
+          className="text-faint hover:text-muted"
+          title="Session usage is unavailable. Retry"
+          aria-label="Retry loading session usage"
+          onClick={() => void refreshProcessUsage({ manual: true })}
+        >
+          Usage unavailable
         </button>
       )}
       {showUsage && usage && (
