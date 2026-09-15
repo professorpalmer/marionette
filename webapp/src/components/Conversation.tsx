@@ -77,6 +77,7 @@ import {
   appendStopHonestyNotice,
   appendTurnTerminal,
   applyActionResultCard,
+  isDurableTerminalActionResult,
   applySwarmResultToItems,
   finalizeOrphanSwarmPills,
   focusReviewTabAndRefresh,
@@ -232,6 +233,8 @@ import {
   SWARM_AWAIT_HINT,
   swarmResultsAwaitChromeClear,
   terminalJobIdsFromSwarmLive,
+  terminalCommandJobIdsFromItems,
+  pendingJobIdsAfterCommandResult,
   terminalJobIdsNeedingResultRecovery,
   triggerResumeGate,
 } from "./conversation/swarmPoll";
@@ -622,12 +625,32 @@ export default function Conversation({
   const [queueDragIndex, setQueueDragIndex] = useState<number | null>(null);
   const [queueDragOverIndex, setQueueDragOverIndex] = useState<number | null>(null);
 
-  const [pendingJobIds, setPendingJobIds] = useState<string[]>([]);
+  const [pendingJobIds, setRenderedPendingJobIds] = useState<string[]>([]);
   const pendingJobIdsRef = useRef<string[]>([]);
-  useEffect(() => { pendingJobIdsRef.current = pendingJobIds; }, [pendingJobIds]);
+  // Terminal evidence survives card folding/replacement until the session changes.
+  const terminalJobIdsRef = useRef(new Set<string>());
+  const setPendingJobIds = useCallback((update: SetStateAction<string[]>) => {
+    for (const id of terminalCommandJobIdsFromItems(itemsRef.current)) {
+      terminalJobIdsRef.current.add(id);
+    }
+    const raw = typeof update === 'function' ? update(pendingJobIdsRef.current) : update;
+    const next = raw.filter(id => !terminalJobIdsRef.current.has(id));
+    pendingJobIdsRef.current = next;
+    setRenderedPendingJobIds(next);
+    if (next.length === 0) {
+      setStatus(prev => prev === 'awaiting_swarm' ? 'done' : prev);
+      setWaitHint(prev => clearSwarmAwaitWaitHint(prev));
+    }
+  }, []);
   // Empty result-recovery drains per terminal id; bounded by RESULT_RECOVERY_DRAIN_LIMIT.
   const emptyRecoveryDrainsRef = useRef<Map<string, number>>(new Map());
   const processedSwarmJobIdsRef = useRef<Set<string>>(new Set());
+  useLayoutEffect(() => {
+    terminalJobIdsRef.current.clear();
+    emptyRecoveryDrainsRef.current.clear();
+    pendingJobIdsRef.current = [];
+    setRenderedPendingJobIds([]);
+  }, [activeSessionId]);
   const [backendPendingSwarms, setBackendPendingSwarms] = useState(false);
   const swarmLiveJobs = metadataJobs(metadata);
   useEffect(() => {
@@ -2622,6 +2645,7 @@ export default function Conversation({
     }
 
     setItems((prevItems) => applySwarmResultToItems(prevItems, d));
+    terminalJobIdsRef.current.add(job_id);
     setPendingJobIds((p) => p.filter(id => id !== job_id));
   };
 
@@ -2656,8 +2680,11 @@ export default function Conversation({
             const jobId = String(action.data.job_id || "").trim();
             setItems((p) => applyActionResultCard(p, action.data));
             if (jobId) {
-              deliveredThisPoll.add(jobId);
-              setPendingJobIds((ids) => ids.filter((id) => id !== jobId));
+              if (isDurableTerminalActionResult(action.data)) {
+                deliveredThisPoll.add(jobId);
+                terminalJobIdsRef.current.add(jobId);
+              }
+              setPendingJobIds(ids => pendingJobIdsAfterCommandResult(ids, action.data));
             }
           } else if (action.kind === "pending_review") {
             setItems((p) => appendPendingReview(p, action.data));
@@ -2751,14 +2778,12 @@ export default function Conversation({
                 deliveredJobIds: delivered,
                 emptyDrains: emptyRecoveryDrainsRef.current,
               });
+              for (const id of confirmed) terminalJobIdsRef.current.add(id);
               const prev = pendingJobIdsRef.current;
               const next = pruneTerminalJobIds(prev, confirmed);
-              if (next.length === prev.length) return;
-              // Sync ref so same-tick getSessionState chrome clear sees the
-              // pruned count (useEffect would lag one paint).
-              pendingJobIdsRef.current = next;
               setPendingJobIds(next);
-              setItems((items) => pollFenceHolds() ? finalizeOrphanSwarmPills(items, next) : items);
+              if (pendingJobIdsRef.current.length === prev.length) return;
+              setItems((items) => pollFenceHolds() ? finalizeOrphanSwarmPills(items, pendingJobIdsRef.current) : items);
             };
             // Do not drop the last pending id until the one-shot recovery
             // drain has had a chance to surface swarm_result. Otherwise

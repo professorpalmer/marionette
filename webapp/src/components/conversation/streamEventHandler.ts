@@ -16,8 +16,6 @@ import {
 import {
   appendActionStartCard,
   applyActionResultCard,
-  isDurableTerminalActionResult,
-  isUpgradeableActionResult,
   appendAuthFailure,
   appendAutoHalt,
   appendAutoStatus,
@@ -69,7 +67,7 @@ import { clearDiagnostic } from "../../lib/operationalDiagnosticBus";
 import { notifyWorkspaceMutated } from "../../lib/workspaceMutationEvents";
 import { getActiveMemoryProposalSession, isResolvedMemoryProposal } from "../../lib/memoryProposalResolution";
 import { shouldRefreshBusyChrome } from "./streamTerminal";
-import { waitHintForAssistantDone } from "./swarmPoll";
+import { pendingJobIdsAfterCommandResult, waitHintForAssistantDone } from "./swarmPoll";
 import { publishSessionTodos } from "../../lib/sessionTodos";
 import {
   hasPartialAssistantAnswer,
@@ -104,7 +102,7 @@ export type ApplyStreamEventDeps = {
   >;
   setTurnOpen: Dispatch<SetStateAction<boolean>>;
   setPendingJobIds: Dispatch<SetStateAction<string[]>>;
-  /** Current pending swarm job ids (kept as a ref so turn-close can read live). */
+  /** The setter must update this ref synchronously, before the next event. */
   pendingJobIdsRef: { current: string[] };
   setSafeTimeout: (fn: () => void, ms: number) => void;
   itemsRef: { current: Item[] };
@@ -528,16 +526,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
         return next;
       });
       if (d.kind === "run_command" && d.job_id) {
-        const jobId = String(d.job_id);
-        setPendingJobIds((ids) => {
-          if (isDurableTerminalActionResult(d)) {
-            return ids.filter((id) => id !== jobId);
-          }
-          if (isUpgradeableActionResult(d)) {
-            return [...new Set([...ids, jobId])];
-          }
-          return ids;
-        });
+        setPendingJobIds(ids => pendingJobIdsAfterCommandResult(ids, d));
       }
       if (d.error && d.id) {
         const localId = localSwarmJobId(d.id);
@@ -667,10 +656,8 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       if (turnSettledRef.current) {
         flushTypewriter();
         setCompactingStatus(null);
-        const sealedIds = pendingJobIdsRef.current.filter(
-          (id) => !id.startsWith("local-swarm-"),
-        );
-        setPendingJobIds(sealedIds);
+        setPendingJobIds(ids => ids.filter(id => !id.startsWith("local-swarm-")));
+        const sealedIds = pendingJobIdsRef.current;
         setItems((p) =>
           reconcileOrphanInvestigationCards(
             finalizeOrphanSwarmPills(
@@ -685,10 +672,8 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       // Sync local-swarm-* ids finish inside the turn; anything still spinning
       // for those is an orphan. Background job_*/local-* stay live so their
       // pills keep spinning until swarm_result arrives.
-      const liveIds = pendingJobIdsRef.current.filter(
-        (id) => !id.startsWith("local-swarm-"),
-      );
-      setPendingJobIds(liveIds);
+      setPendingJobIds(ids => ids.filter(id => !id.startsWith("local-swarm-")));
+      const liveIds = pendingJobIdsRef.current;
       const awaitHint = waitHintForAssistantDone(liveIds);
       const settle = settleFromAssistantDone({
         stopCause: d.stop_cause,
@@ -748,10 +733,8 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       const settle = settleFromStreamError(d, d.terminal_cause);
       paintTurnSettle(settle);
       setCompactingStatus(null);
-      const liveIds = pendingJobIdsRef.current.filter(
-        (id) => !id.startsWith("local-swarm-"),
-      );
-      setPendingJobIds(liveIds);
+      setPendingJobIds(ids => ids.filter(id => !id.startsWith("local-swarm-")));
+      const liveIds = pendingJobIdsRef.current;
       setItems((p) =>
         withTerminalChip(
           reconcileOrphanInvestigationCards(
@@ -769,10 +752,8 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       const settle = settleFromInterrupted();
       paintTurnSettle(settle);
       setCompactingStatus(null);
-      const liveIds = pendingJobIdsRef.current.filter(
-        (id) => !id.startsWith("local-swarm-"),
-      );
-      setPendingJobIds(liveIds);
+      setPendingJobIds(ids => ids.filter(id => !id.startsWith("local-swarm-")));
+      const liveIds = pendingJobIdsRef.current;
       flushTypewriter();
       setItems((p) =>
         withTerminalChip(
@@ -790,10 +771,8 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       // Framing-only sentinel: transport, never proof of a completed turn.
       if (turnSettledRef.current) return;
       flushTypewriter();
-      const liveIds = pendingJobIdsRef.current.filter(
-        (id) => !id.startsWith("local-swarm-"),
-      );
-      setPendingJobIds(liveIds);
+      setPendingJobIds(ids => ids.filter(id => !id.startsWith("local-swarm-")));
+      const liveIds = pendingJobIdsRef.current;
       const settle = settleFromFramingDone({
         turnSettled: false,
         hasPartialAnswer: hasPartialAssistantAnswer(itemsRef.current),
