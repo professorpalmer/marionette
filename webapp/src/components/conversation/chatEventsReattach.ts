@@ -80,6 +80,7 @@ export type ChatEventsReattachDeps = {
   flushTypewriterRef: { current: () => void };
   maybeRunQueuedResumeRef: { current: () => void };
   maybeDrainQueueRef: { current: () => void };
+  onRunnerReady?: (sessionId: string) => void;
   clearChatEventsPoll: () => void;
   setItems: (items: Item[] | ((prev: Item[]) => Item[])) => void;
   setTranscriptStale: (v: boolean) => void;
@@ -169,6 +170,7 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
     flushTypewriterRef,
     maybeRunQueuedResumeRef,
     maybeDrainQueueRef,
+    onRunnerReady,
     clearChatEventsPoll,
     setItems,
     setTranscriptStale,
@@ -286,7 +288,9 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
 
     const sid = reattachSid;
     const runners = data?.runners || {};
-    const running = runners[sid] === "running";
+    const runnerState = runners[sid];
+    if (runnerState === "idle" || runnerState === "running") onRunnerReady?.(sid);
+    const running = runnerState === "running";
     const awaitingSwarm = sessionStateShowsAwaitingSwarm({
       state: data?.state,
       pendingSwarms: !!data?.pending_swarms,
@@ -775,7 +779,9 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
           const st = await api.getSessionState({ sessionId: reattachSid });
           if (cancelled() || streamGenRef.current !== reattachGen || localStreamActiveRef.current) return;
           if (cachedSessionIdRef.current !== reattachSid) return;
-          const running = st?.runners?.[reattachSid] === "running";
+          const runnerState = st?.runners?.[reattachSid];
+          const running = runnerState === "running";
+          if (runnerState === "idle" || runnerState === "running") onRunnerReady?.(reattachSid);
           const awaiting = sessionStateShowsAwaitingSwarm({
             state: st?.state,
             pendingSwarms: !!st?.pending_swarms,

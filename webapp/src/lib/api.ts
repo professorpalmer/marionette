@@ -1416,8 +1416,9 @@ export type ServerQueueItem = {
   model?: string;
 };
 export type QueueReadResult =
-  | { ok: true; session_id: string; items: ServerQueueItem[]; recovery: QueueRecovery[]; receipts?: InputReceipt[]; held_items?: ServerQueueItem[] }
-  | { ok: false; session_id: string; code: string; error: string; recovery: QueueRecovery[] };
+  | { ok: true; state?: "ready"; available?: true; session_id: string; items: ServerQueueItem[]; recovery: QueueRecovery[]; receipts?: InputReceipt[]; held_items?: ServerQueueItem[] }
+  | { ok: true; state: "loading"; available: false; session_id: string }
+  | { ok: false; state?: "error"; available?: false; session_id: string; code: string; error: string; recovery: QueueRecovery[] };
 
 export const api = {
   providers: () => getJSON<ProviderInfo[]>("/api/providers"),
@@ -2232,7 +2233,7 @@ export const api = {
   // complete turn one after the previous fully finishes. Distinct from steer
   // (a mid-turn interrupt on the CURRENT running turn). Items can be edited /
   // removed / reordered before they run.
-  queueList: () => getJSON<QueueReadResult>(withToken("/api/session/queue"), { failureKind: "action" }),
+  queueList: (sessionId: string) => getJSON<QueueReadResult>(withToken(`/api/session/queue?session_id=${encodeURIComponent(sessionId)}`), { failureKind: "action" }),
   queueAdd: (text: string, images?: string[], session_id?: string | null, submission: InputSubmission = {}) => postJSON<{ ok: boolean; item: ServerQueueItem }>("/api/session/queue", { text, images: images || [], session_id, ...submission }, { failureKind: "action" }),
   queueHandoff: (id: string, session_id: string) => postJSON<{ ok: true; item: ServerQueueItem & { input_id: string; handoff_token: string } } | { ok: false; error: string }>("/api/session/queue", { handoff: id, session_id }, { failureKind: "action" }),
   queueRemove: (id: string, session_id?: string | null) => postJSON<{ ok: boolean; id: string }>("/api/session/queue", { id, session_id }, { failureKind: "action" }),

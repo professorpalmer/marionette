@@ -5,7 +5,7 @@ import { imagePath } from "../lib/transport";
 import { InputRetryKeys, receiptDraft, requireImageCapacity } from "./conversation/inputDraft";
 import type { SessionViewport, TranscriptViewportHandle } from "./conversation/sessionViewport";
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, type SetStateAction } from "react";
-import { api, type Config, type InputReceipt, type InputDocument, type InputSubmission, type ServerQueueItem } from "../lib/api";
+import { api, type Config, type InputReceipt, type InputDocument, type InputSubmission, type QueueRecovery, type ServerQueueItem } from "../lib/api";
 import { usePolling } from "../lib/usePolling";
 import FileEditorPane from "./FileEditorPane";
 import {
@@ -611,7 +611,7 @@ export default function Conversation({
   const [inputReceipts, setInputReceipts] = useState<InputReceipt[]>([]);
   const inputRetryKeys = useRef(new InputRetryKeys());
   const attemptedHandoffs = useRef(new Set<string>());
-  const [queueRecovery, setQueueRecovery] = useState<Awaited<ReturnType<typeof api.queueList>>["recovery"]>([]);
+  const [queueRecovery, setQueueRecovery] = useState<QueueRecovery[]>([]);
   const [queueWriteError, setQueueWriteError] = useState<string | null>(null);
   const queueReadBlockedRef = useRef(false);
   const queueMutationPendingRef = useRef(false);
@@ -932,11 +932,13 @@ export default function Conversation({
   // and after any local mutation (add/remove/reorder/clear). Soft-fail: never
   // treat an errored fetch as authoritative empty; fence by session + gen.
   const queuePollRequest = useRef<Promise<unknown> | undefined>(undefined);
+  const queueLoadingSessionRef = useRef<string | null>(null);
+  const queueReadySessionRef = useRef<string | null>(null);
   const refreshQueue = (forSessionId: string | null = activeSessionIdRef.current) => {
     const requestSessionId = forSessionId;
     const requestGen = ++queueFetchGenRef.current;
     if (!requestSessionId) return;
-    const pending = api.queueList()
+    const pending = api.queueList(requestSessionId)
       .then((res) => {
         if (!shouldApplyQueueRefresh({
           requestSessionId,
@@ -949,6 +951,18 @@ export default function Conversation({
         if (applyQueueListIdentity(res, requestSessionId) === "drop") {
           return;
         }
+        if (res.state === "loading") {
+          queueLoadingSessionRef.current = requestSessionId;
+          queueReadBlockedRef.current = true;
+          setQueueLoadError(null);
+          if (queueReadySessionRef.current === requestSessionId) {
+            queueLoadingSessionRef.current = null;
+            queueReadySessionRef.current = null;
+            void refreshQueue(requestSessionId);
+          }
+          return;
+        }
+        queueLoadingSessionRef.current = null;
         setQueueRecovery(res.recovery || []);
         if (res.ok) setInputReceipts(res.receipts || []);
         queueReadBlockedRef.current = !res.ok;
@@ -989,6 +1003,8 @@ export default function Conversation({
     setQueueWriteError(null);
     setQueueRecovery([]);
     setInputReceipts([]);
+    queueLoadingSessionRef.current = null;
+    queueReadySessionRef.current = null;
     queueItemsRef.current = [];
     queueReadBlockedRef.current = true;
     setQueueDragIndex(null);
@@ -1802,6 +1818,15 @@ export default function Conversation({
     flushTypewriterRef,
     maybeRunQueuedResumeRef,
     maybeDrainQueueRef,
+    onRunnerReady: (sessionId) => {
+      queueReadySessionRef.current = sessionId;
+      if (
+        queueLoadingSessionRef.current !== sessionId
+        || activeSessionIdRef.current !== sessionId
+      ) return;
+      queueLoadingSessionRef.current = null;
+      refreshQueue(sessionId);
+    },
     ensureChatEventsReattachRef,
     cancelRef,
     localStreamActiveRef,

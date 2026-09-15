@@ -47,7 +47,7 @@ for (const mode of ['web', 'desktop']) {
       respond(503, JSON.stringify({ok: false, code, error: 'Draft retained; queue could not be saved.'}));
       render(<Header sessionId="A" repo="/A" />);
       const requests = [
-        () => api.queueList(),
+        () => api.queueList('queue-ui'),
         () => api.queueAdd('draft', [], 'A'),
         () => api.queueRemove('queued-id', 'A'),
         () => api.queueReorder(['queued-id'], 'A'),
@@ -67,10 +67,10 @@ for (const mode of ['web', 'desktop']) {
     });
     it('keeps cold queue readiness local while preserving real server failures', async () => {
       respond(409, JSON.stringify({ok:false, code:'pilot_not_ready', error:'Session queue is not ready.'}));
-      await expect(api.queueList()).rejects.toMatchObject({status:409, code:'pilot_not_ready'});
+      await expect(api.queueList('queue-ui')).rejects.toMatchObject({status:409, code:'pilot_not_ready'});
       expect(getActiveDiagnostic()).toBeNull();
       respond(500, JSON.stringify({error:'Unexpected server failure'}));
-      await expect(api.queueList()).rejects.toMatchObject({status:500});
+      await expect(api.queueList('queue-ui')).rejects.toMatchObject({status:500});
       expect(getActiveDiagnostic()?.severity).toBe('error');
     });
     it('preserves partial deletion detail without claiming the whole session failed', async () => {
