@@ -298,7 +298,7 @@ q.enqueue_prompt(role)
 def test_gui_poll_before_session_id_does_not_bind_cli_namespace(factory):
     from harness.api.session_control import get_session_queue
     s = factory('')
-    code, body = get_session_queue(services(s))
+    code, body = get_session_queue(None, services(s))
     assert code == 409 and body['code'] == 'queue_session_unbound'
     assert getattr(s, '_prompt_queue_owner', None) is None
     s.harness_session_id = 'A'

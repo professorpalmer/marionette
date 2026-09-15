@@ -1111,9 +1111,57 @@ def post_session_queue_reorder(
 
 
 @_queue_failure_response
-def get_session_queue(svc: SessionControlServices) -> tuple[int, JsonPayload]:
+def get_session_queue(
+    requested_session_id: Optional[str],
+    svc: SessionControlServices,
+) -> tuple[int, JsonPayload]:
     """GET /api/session/queue."""
+    requested = (requested_session_id or "").strip()
     pilot = svc.get_pilot()
+    if requested:
+        runners = svc.get_runners()
+        pilot = runners.get(requested) if runners is not None and hasattr(runners, "get") else None
+        if pilot is None and svc.get_sessions is not None:
+            sessions = svc.get_sessions()
+            if sessions is not None and any(row.get("id") == requested for row in sessions.rows()):
+                return 200, {
+                    "ok": True, "state": "loading", "available": False,
+                    "session_id": requested,
+                }
+        if pilot is None or getattr(pilot, "harness_session_id", "") != requested:
+            return 409, {
+                "ok": False,
+                "state": "error",
+                "code": "session_changed",
+                "error": "The requested session is no longer available.",
+                "session_id": requested,
+                "recovery": [],
+            }
+
+    from ..deferred_attach import is_deferred_placeholder
+    if is_deferred_placeholder(pilot):
+        session_id = getattr(pilot, "harness_session_id", "")
+        build_error = getattr(pilot, "build_error", None)
+        if build_error is not None:
+            return 503, {
+                "ok": False,
+                "state": "error",
+                "available": False,
+                "code": "pilot_build_failed",
+                "error": str(build_error),
+                "session_id": session_id,
+                "recovery": [],
+            }
+        real = getattr(pilot, "real_pilot", None)
+        if real is None:
+            return 200, {
+                "ok": True,
+                "state": "loading",
+                "available": False,
+                "session_id": session_id,
+            }
+        pilot = real
+
     if isinstance(pilot, PromptQueueMixin) and not getattr(pilot, "harness_session_id", ""):
         return 409, {"ok": False, "code": "queue_session_unbound", "error": "Open a workspace or pick a project session before using its prompt queue."}
     if pilot is not None and not hasattr(pilot, "list_prompts"):
@@ -1123,9 +1171,9 @@ def get_session_queue(svc: SessionControlServices) -> tuple[int, JsonPayload]:
     try:
         items = pilot.list_prompts() if pilot else []
     except PromptQueueError as exc:
-        return 200, {**exc.payload(), "recovery": recovery, "session_id": session_id}
+        return 200, {**exc.payload(), "state": "error", "available": False, "recovery": recovery, "session_id": session_id}
     try:
         receipts = pilot.input_receipts() if hasattr(pilot, "input_receipts") else []
     except PromptQueueError as exc:
         return 503, exc.payload()
-    return 200, {"ok": True, "items": items, "receipts": receipts, "held_items": pilot.held_prompts() if hasattr(pilot, "held_prompts") else [], "recovery": recovery, "session_id": session_id}
+    return 200, {"ok": True, "state": "ready", "available": True, "items": items, "receipts": receipts, "held_items": pilot.held_prompts() if hasattr(pilot, "held_prompts") else [], "recovery": recovery, "session_id": session_id}

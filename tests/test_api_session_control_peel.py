@@ -141,10 +141,39 @@ def test_steer_and_queue(tmp_path):
     assert p.steers == ["go"]
     code, enq = post_session_queue({"text": "next"}, svc)
     assert code == 200 and enq["item"]["id"] == "q1"
-    assert get_session_queue(svc)[1]["items"][0]["id"] == "q1"
+    assert get_session_queue(None, svc)[1]["items"][0]["id"] == "q1"
     assert post_session_queue({"clear": True}, svc)[1]["cleared"] == 1
     code2, reo = post_session_queue_reorder({"ids": ["a", "b"]}, svc)
     assert code2 == 200 and [i["id"] for i in reo["items"]] == ["a", "b"]
+
+
+def test_queue_read_uses_requested_runner_instead_of_active_view():
+    class _Queue:
+        def __init__(self, sid, text):
+            self.harness_session_id = sid
+            self.text = text
+
+        def list_prompts(self):
+            return [{"id": self.harness_session_id, "text": self.text}]
+
+    active = _Queue("A", "active queue")
+    requested = _Queue("B", "requested queue")
+    runners = SimpleNamespace(
+        get=lambda sid: {"A": active, "B": requested}.get(sid),
+        statuses=lambda: {"A": "idle", "B": "idle"},
+        active_view_id="A",
+    )
+    svc = _svc(pilot=active, runners=runners)
+    svc.get_sessions = lambda: SimpleNamespace(rows=lambda: [{"id": "A"}, {"id": "B"}])
+
+    code, payload = get_session_queue("B", svc)
+    assert code == 200
+    assert payload["session_id"] == "B"
+    assert payload["items"] == [{"id": "B", "text": "requested queue"}]
+
+    missing_code, missing = get_session_queue("missing", svc)
+    assert missing_code == 409
+    assert missing["code"] == "session_changed"
 
 
 def test_steer_vision_images_reports_enqueue_prompt(tmp_path):
