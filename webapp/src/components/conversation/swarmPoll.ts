@@ -10,7 +10,13 @@ import type { Item } from "../TranscriptList";
 import { jobInActiveSession } from "../../lib/jobScope";
 import { isTerminalJobStatus } from "./nestedActionBounds";
 import { isSwarmPendingTerminal } from "./swarmPendingIdentity";
-import { formatDistilledNotice, formatWikiAutoIngestNotice } from "./streamApply";
+import {
+  formatDistilledNotice,
+  formatWikiAutoIngestNotice,
+  isDurableTerminalActionResult,
+  isUpgradeableActionResult,
+  type ActionResultBody,
+} from "./streamApply";
 import { getActiveMemoryProposalSession, isResolvedMemoryProposal } from "../../lib/memoryProposalResolution";
 
 /** One row from `/api/swarm/live` (id field names vary by store). */
@@ -134,6 +140,32 @@ export function pruneTerminalJobIds(
   }
   if (!terminal.size) return pending.slice();
   return pending.filter((id) => !terminal.has(id));
+}
+
+/** Command receipts share the same lifecycle rules in SSE and result drains. */
+export function pendingJobIdsAfterCommandResult(
+  pending: string[],
+  result: ActionResultBody,
+): string[] {
+  const jobId = String(result?.job_id || "").trim();
+  if (!jobId) return pending;
+  if (isDurableTerminalActionResult(result)) {
+    return pending.filter(id => id !== jobId);
+  }
+  if (isUpgradeableActionResult(result) && !pending.includes(jobId)) {
+    return [...pending, jobId];
+  }
+  return pending;
+}
+
+/** Retained/hydrated command receipts also settle pending chrome. */
+export function terminalCommandJobIdsFromItems(items: readonly Item[]): string[] {
+  return items.flatMap(item => {
+    if (item.kind !== 'card' || item.card.kind !== 'run_command') return [];
+    const result = item.card.result;
+    const jobId = String(result?.job_id || '').trim();
+    return jobId && isDurableTerminalActionResult(result) ? [jobId] : [];
+  });
 }
 
 /**

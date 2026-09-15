@@ -52,7 +52,7 @@ function msg(role: "user" | "assistant", text: string, streaming = false): Item 
   return { kind: "msg", msg: { role, text, streaming } };
 }
 
-function makeApplyDeps(opts?: { turnSettled?: boolean }) {
+function makeApplyDeps(opts?: { turnSettled?: boolean; pendingJobIds?: string[]; reconcilePending?: (ids: string[]) => string[] }) {
   const state = {
     items: [msg("user", "go")] as Item[],
     itemsRef: { current: [] as Item[] },
@@ -69,6 +69,7 @@ function makeApplyDeps(opts?: { turnSettled?: boolean }) {
     turnOpen: true,
     turnSettledRef: { current: Boolean(opts?.turnSettled) },
     settle: null as TurnSettle | null,
+    pendingJobIdsRef: { current: opts?.pendingJobIds ?? [] },
   };
   state.itemsRef.current = state.items;
 
@@ -112,8 +113,11 @@ function makeApplyDeps(opts?: { turnSettled?: boolean }) {
     setTurnOpen: (value: boolean | ((prev: boolean) => boolean)) => {
       state.turnOpen = typeof value === "function" ? value(state.turnOpen) : value;
     },
-    setPendingJobIds: () => {},
-    pendingJobIdsRef: { current: [] as string[] },
+    setPendingJobIds: (value) => {
+      const next = typeof value === 'function' ? value(state.pendingJobIdsRef.current) : value;
+      state.pendingJobIdsRef.current = opts?.reconcilePending?.(next) ?? next;
+    },
+    pendingJobIdsRef: state.pendingJobIdsRef,
     setSafeTimeout: () => {},
     itemsRef: state.itemsRef,
     planTurnRef: { current: false },
@@ -136,6 +140,17 @@ function makeApplyDeps(opts?: { turnSettled?: boolean }) {
 
   return { state, apply };
 }
+
+it('uses reconciled pending IDs when transcript hydration has already settled the command', () => {
+  const { state, apply } = makeApplyDeps({
+    pendingJobIds: ['local-command-hydrated'],
+    reconcilePending: () => [],
+  });
+  apply({ kind: 'assistant_done', data: { stop_cause: 'natural' } });
+  expect(state.pendingJobIdsRef.current).toEqual([]);
+  expect(state.status).toBe('done');
+  expect(state.waitHint).toBeNull();
+});
 
 function terminalChip(items: Item[]): Extract<Item, { kind: "turn_terminal" }> | undefined {
   return items.find((it) => it.kind === "turn_terminal") as
