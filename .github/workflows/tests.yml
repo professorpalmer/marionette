@@ -1,8 +1,10 @@
 name: tests
 
 # Fast dev-into-main gate. Wall clock target is ~5 minutes:
-# Ubuntu 3.9 with xdist, Windows 3.9 split into 4 shards, macOS 3.11,
-# and frontend-build. The 3.9 floor, Windows, and macOS stay required.
+# Ubuntu 3.9 with xdist, Windows 3.9 and 3.11, each split into 4
+# shards, macOS 3.11, and frontend-build. The 3.9 floor, BOTH Windows
+# interpreters, and macOS stay required: a windows-3.11-only failure
+# used to be invisible to this gate and reached the nightly.
 # The million-token soak lives in tests-full.yml (nightly / manual).
 #
 # Push to main reuses a successful tests run for the same git tree
@@ -69,14 +71,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        python-version: ["3.9", "3.11"]
         shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v5
 
-      - name: Set up Python 3.9
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v6
         with:
-          python-version: "3.9"
+          python-version: ${{ matrix.python-version }}
           cache: pip
 
       - name: Install (rig + dev extras + Puppetmaster from PyPI)

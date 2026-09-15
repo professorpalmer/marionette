@@ -40,9 +40,9 @@ tagged installer from Releases.
 
 Tags/versions label what checkouts and installers report via `app.getVersion()`.
 Green CI Before Tag still holds: the `tests` workflow (Ubuntu 3.9 xdist,
-Windows 3.9 four-way shard, macOS 3.11, frontend-build) must be green for
-**this git tree**. The extended matrix and `@pytest.mark.resource_soak` run
-in `tests-full.yml` (nightly / manual) and do not block the tag. The tag may
+Windows 3.9 and 3.11 four-way shards, macOS 3.11, frontend-build) must be green for
+**this git tree**. `@pytest.mark.resource_soak` runs in `tests-full.yml`
+(nightly / manual) and does not block the tag. The tag may
 point at the dev-into-main merge commit; it does not need a second `tests`
 run on that SHA when `merge^{tree}` equals the already-green dev PR tree.
 

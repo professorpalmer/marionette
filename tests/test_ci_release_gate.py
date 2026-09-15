@@ -260,7 +260,9 @@ def test_tests_yml_is_the_fast_dest_into_main_gate():
     assert "-n 4" in text
     assert "--dist loadscope" in text
     assert "PYTEST_SHARD" in text
-    assert "python-version: \"3.9\"" in text
+    lin_start = text.index("  pytest-linux:")
+    lin_end = text.index("\n  pytest-windows:", lin_start)
+    assert 'python-version: "3.9"' in text[lin_start:lin_end]
     mac_start = text.index("  pytest-macos:")
     mac_end = text.index("\n  frontend-build:", mac_start)
     mac_job = text[mac_start:mac_end]
@@ -279,3 +281,16 @@ def test_tests_yml_is_the_fast_dest_into_main_gate():
     full = (ROOT / ".github" / "workflows" / "tests-full.yml").read_text()
     assert "--resource-soak" in full
     assert "macos-latest" in full
+
+
+def test_tests_yml_requires_both_windows_interpreters():
+    text = (ROOT / ".github" / "workflows" / "tests.yml").read_text()
+    start = text.index("  pytest-windows:")
+    end = text.index("\n  pytest-macos:", start)
+    job = text[start:end]
+    assert 'python-version: ["3.9", "3.11"]' in job
+    assert "python-version: ${{ matrix.python-version }}" in job
+    assert "shard: [1, 2, 3, 4]" in job
+    assert "PYTEST_SHARD: ${{ matrix.shard }}/4" in job
+    assert "continue-on-error" not in job
+    assert "vars.CI_WINDOWS_RUNNER" in job
