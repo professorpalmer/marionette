@@ -1950,6 +1950,7 @@ def _summarize_agentic_result(result) -> tuple[int, int, str, str]:
     tokens_in = 0
     failure = ""
     final_text = ""
+    last_message = ""
     for art in getattr(result, "artifacts", []) or []:
         payload = getattr(art, "payload", {}) or {}
         tokens_out += int(payload.get("tokens_out") or 0)
@@ -1959,7 +1960,10 @@ def _summarize_agentic_result(result) -> tuple[int, int, str, str]:
         stdout = payload.get("stdout")
         if stdout and not final_text:
             final_text = str(stdout)[:2000]
-    return tokens_out, tokens_in, failure, final_text
+        message = payload.get("last_message")
+        if isinstance(message, str) and message.strip():
+            last_message = message.strip()[:2000]
+    return tokens_out, tokens_in, failure, last_message or final_text
 
 
 def _routed_model_id(result) -> str:

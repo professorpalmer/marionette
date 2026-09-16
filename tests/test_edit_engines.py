@@ -448,6 +448,24 @@ def test_summarize_agentic_result_truncates_stdout():
     assert len(text) == 2000
 
 
+def test_summarize_native_result_prefers_final_message_over_event_stream():
+    result = _fake_pm_result([
+        _fake_artifact(stdout='{"type":"thread.started"}\n'),
+        _fake_artifact(
+            stdout='{"type":"turn.completed"}\n',
+            last_message="Updated message.txt and verified its contents.",
+        ),
+    ])
+    assert _summarize_agentic_result(result)[3] == (
+        "Updated message.txt and verified its contents."
+    )
+
+
+def test_summarize_native_final_message_is_bounded():
+    result = _fake_pm_result([_fake_artifact(last_message="x" * 3000)])
+    assert _summarize_agentic_result(result)[3] == "x" * 2000
+
+
 # --- pure helpers: select_edit_engine / agentic_available ---
 
 
