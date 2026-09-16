@@ -83,7 +83,7 @@ def _fake_pm_result(artifacts=None):
 
 @contextlib.contextmanager
 def _fake_managed_worktree(*_args, **_kwargs):
-    wt = tempfile.mkdtemp()
+    wt = create_temp_git_repo()
     try:
         yield wt
     finally:
@@ -448,6 +448,24 @@ def test_summarize_agentic_result_truncates_stdout():
     assert len(text) == 2000
 
 
+def test_summarize_native_result_prefers_final_message_over_event_stream():
+    result = _fake_pm_result([
+        _fake_artifact(stdout='{"type":"thread.started"}\n'),
+        _fake_artifact(
+            stdout='{"type":"turn.completed"}\n',
+            last_message="Updated message.txt and verified its contents.",
+        ),
+    ])
+    assert _summarize_agentic_result(result)[3] == (
+        "Updated message.txt and verified its contents."
+    )
+
+
+def test_summarize_native_final_message_is_bounded():
+    result = _fake_pm_result([_fake_artifact(last_message="x" * 3000)])
+    assert _summarize_agentic_result(result)[3] == "x" * 2000
+
+
 # --- pure helpers: select_edit_engine / agentic_available ---
 
 
@@ -788,7 +806,7 @@ def test_agentic_payload_capability_key_and_default_cap(monkeypatch):
 
         monkeypatch.setattr(
             "harness.edit_engines.finalize_worktree_patch",
-            lambda _wt: ("diff content", ["test.txt"]),
+            lambda _wt, _base: ("diff content", ["test.txt"]),
         )
 
         result = run_agentic_edit(cfg, "make a change")
@@ -853,7 +871,7 @@ def test_agentic_payload_stamps_settings_allowlist_not_glm(monkeypatch):
         )
         monkeypatch.setattr(
             "harness.edit_engines.finalize_worktree_patch",
-            lambda _wt: ("diff content", ["test.txt"]),
+            lambda _wt, _base: ("diff content", ["test.txt"]),
         )
 
         result = run_agentic_edit(cfg, "make a change")
@@ -881,7 +899,7 @@ def test_agentic_payload_token_budget_from_env(monkeypatch):
 
         monkeypatch.setattr(
             "harness.edit_engines.finalize_worktree_patch",
-            lambda _wt: ("diff content", ["test.txt"]),
+            lambda _wt, _base: ("diff content", ["test.txt"]),
         )
 
         result = run_agentic_edit(cfg, "make a change")
@@ -922,7 +940,7 @@ def test_agentic_edit_stamps_routed_model_from_routing_artifact(monkeypatch):
         )
         monkeypatch.setattr(
             "harness.edit_engines.finalize_worktree_patch",
-            lambda _wt: ("diff content", ["test.txt"]),
+            lambda _wt, _base: ("diff content", ["test.txt"]),
         )
         result = run_agentic_edit(cfg, "make a change")
         assert result.ok is True
@@ -960,7 +978,7 @@ def test_agentic_payload_max_capability_env_override(monkeypatch):
 
         monkeypatch.setattr(
             "harness.edit_engines.finalize_worktree_patch",
-            lambda _wt: ("patch", ["a.txt"]),
+            lambda _wt, _base: ("patch", ["a.txt"]),
         )
 
         run_agentic_edit(cfg, "goal")
@@ -979,7 +997,7 @@ def test_agentic_payload_deep_mode_omits_capability_cap(monkeypatch):
 
         monkeypatch.setattr(
             "harness.edit_engines.finalize_worktree_patch",
-            lambda _wt: ("patch", ["a.txt"]),
+            lambda _wt, _base: ("patch", ["a.txt"]),
         )
 
         run_agentic_edit(cfg, "goal")
@@ -1002,7 +1020,7 @@ def test_agentic_payload_uses_min_capability_when_router_lacks_ceiling(monkeypat
 
         monkeypatch.setattr(
             "harness.edit_engines.finalize_worktree_patch",
-            lambda _wt: ("patch", ["a.txt"]),
+            lambda _wt, _base: ("patch", ["a.txt"]),
         )
 
         run_agentic_edit(cfg, "goal")
@@ -1024,7 +1042,7 @@ def test_agentic_payload_explicit_provider_and_model(monkeypatch):
 
         monkeypatch.setattr(
             "harness.edit_engines.finalize_worktree_patch",
-            lambda _wt: ("patch", ["a.txt"]),
+            lambda _wt, _base: ("patch", ["a.txt"]),
         )
 
         run_agentic_edit(cfg, "goal")
@@ -1056,7 +1074,7 @@ def test_agentic_payload_uses_immutable_per_action_pin(monkeypatch):
         monkeypatch.setenv("HARNESS_IMPLEMENT_MODEL", "wrong-model")
         monkeypatch.setattr(
             "harness.edit_engines.finalize_worktree_patch",
-            lambda _wt: ("patch", ["a.txt"]),
+            lambda _wt, _base: ("patch", ["a.txt"]),
         )
         pin = AgenticModelPin(
             requested="openrouter/stealth/ox-alpha",
@@ -1095,7 +1113,7 @@ def test_agentic_payload_fails_closed_on_routed_model_mismatch(monkeypatch):
         )
         monkeypatch.setattr(
             "harness.edit_engines.finalize_worktree_patch",
-            lambda _wt: ("patch", ["a.txt"]),
+            lambda _wt, _base: ("patch", ["a.txt"]),
         )
         pin = AgenticModelPin(
             requested="openrouter/stealth/ox-alpha",
@@ -1138,7 +1156,7 @@ def test_agentic_analysis_uses_analyze_payload_not_implement(monkeypatch):
         )
         monkeypatch.setattr(
             "harness.edit_engines.finalize_worktree_patch",
-            lambda _wt: ("", []),
+            lambda _wt, _base: ("", []),
         )
         result = run_agentic_edit(cfg, "audit seed baseline", expects_diff=False)
         assert result.ok is True
@@ -1172,7 +1190,7 @@ def test_agentic_analysis_empty_result_fails_structured_gate(monkeypatch):
         )
         monkeypatch.setattr(
             "harness.edit_engines.finalize_worktree_patch",
-            lambda _wt: ("", []),
+            lambda _wt, _base: ("", []),
         )
         result = run_agentic_edit(cfg, "audit auth", expects_diff=False)
         assert result.ok is False
@@ -1200,7 +1218,7 @@ def test_agentic_analysis_unlabeled_prose_fails_structured_gate(monkeypatch):
         )
         monkeypatch.setattr(
             "harness.edit_engines.finalize_worktree_patch",
-            lambda _wt: ("", []),
+            lambda _wt, _base: ("", []),
         )
         result = run_agentic_edit(cfg, "audit auth", expects_diff=False)
         assert result.ok is False
@@ -1233,7 +1251,7 @@ def test_agentic_analysis_coerces_substantive_unlabeled_prose(monkeypatch):
         )
         monkeypatch.setattr(
             "harness.edit_engines.finalize_worktree_patch",
-            lambda _wt: ("", []),
+            lambda _wt, _base: ("", []),
         )
         result = run_agentic_edit(cfg, "audit auth", expects_diff=False)
         assert result.ok is True
@@ -1274,7 +1292,7 @@ def test_agentic_analysis_promotes_verification_parked_prose(monkeypatch):
         )
         monkeypatch.setattr(
             "harness.edit_engines.finalize_worktree_patch",
-            lambda _wt: ("", []),
+            lambda _wt, _base: ("", []),
         )
         # Prove coerce alone cannot green this fixture (no final_text).
         from harness.worker import coerce_unlabeled_analysis_prose
@@ -1319,7 +1337,7 @@ def test_agentic_analysis_summary_from_artifacts_is_substantive(monkeypatch):
         )
         monkeypatch.setattr(
             "harness.edit_engines.finalize_worktree_patch",
-            lambda _wt: ("", []),
+            lambda _wt, _base: ("", []),
         )
         result = run_agentic_edit(cfg, "audit analyze path", expects_diff=False)
         assert result.ok is True
@@ -1367,7 +1385,7 @@ def test_agentic_edit_empty_diff_no_fallback_error(monkeypatch):
         ]))
         monkeypatch.setattr(
             "harness.edit_engines.finalize_worktree_patch",
-            lambda _wt: ("", []),
+            lambda _wt, _base: ("", []),
         )
 
         result = run_agentic_edit(cfg, "goal")
@@ -1389,7 +1407,7 @@ def test_agentic_edit_empty_diff_route_failure(monkeypatch):
         ]))
         monkeypatch.setattr(
             "harness.edit_engines.finalize_worktree_patch",
-            lambda _wt: ("", []),
+            lambda _wt, _base: ("", []),
         )
 
         result = run_agentic_edit(cfg, "goal")
@@ -1616,7 +1634,7 @@ def test_agentic_edit_maps_store_tool_events_onto_worker_result(monkeypatch):
         )
         monkeypatch.setattr(
             "harness.edit_engines.finalize_worktree_patch",
-            lambda _wt: ("diff --git a/x b/x\n+line", ["x.py"]),
+            lambda _wt, _base: ("diff --git a/x b/x\n+line", ["x.py"]),
         )
 
         result = run_agentic_edit(cfg, "goal")
@@ -1636,7 +1654,7 @@ def test_agentic_edit_success_with_patch(monkeypatch):
         ]))
         monkeypatch.setattr(
             "harness.edit_engines.finalize_worktree_patch",
-            lambda _wt: ("diff --git a/x b/x\n+line", ["x.py"]),
+            lambda _wt, _base: ("diff --git a/x b/x\n+line", ["x.py"]),
         )
 
         result = run_agentic_edit(cfg, "goal")
@@ -1710,7 +1728,7 @@ def test_agentic_edit_marks_scratch_and_stamps_host_dispatch(monkeypatch):
         )
         monkeypatch.setattr(
             "harness.edit_engines.finalize_worktree_patch",
-            lambda _wt: ("diff --git a/x b/x\n+line", ["x.py"]),
+            lambda _wt, _base: ("diff --git a/x b/x\n+line", ["x.py"]),
         )
         result = run_agentic_edit(
             cfg, "goal", session_id="sess-z", job_id="local-host-1",
@@ -1749,7 +1767,7 @@ def test_cursor_edit_marks_scratch_and_stamps_host_dispatch(monkeypatch):
         _install_agentic_mocks(monkeypatch, capture_run=runs)
         monkeypatch.setattr(
             "harness.edit_engines.finalize_worktree_patch",
-            lambda _wt: ("diff --git a/x b/x\n+line", ["x.py"]),
+            lambda _wt, _base: ("diff --git a/x b/x\n+line", ["x.py"]),
         )
         result = run_cursor_edit(
             cfg, "goal", session_id="sess-c", job_id="local-cur-1",
@@ -2048,7 +2066,7 @@ def test_agentic_edit_patch_capture_failed(monkeypatch):
             _fake_artifact(tokens_out=2, tokens_in=1, stdout="ok"),
         ]))
 
-        def boom_finalize(_wt):
+        def boom_finalize(_wt, _base):
             raise RuntimeError(
                 "git -C /tmp/wt diff --cached --name-only failed (exit 1): boom"
             )
@@ -2083,7 +2101,7 @@ def test_agentic_edit_finalize_fail_keeps_orchestrator_error(monkeypatch):
         monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _BoomOrch)
         monkeypatch.setattr(
             "harness.edit_engines.finalize_worktree_patch",
-            lambda _wt: (_ for _ in ()).throw(RuntimeError("git add failed")),
+            lambda _wt, _base: (_ for _ in ()).throw(RuntimeError("git add failed")),
         )
         result = run_agentic_edit(cfg, "implement the thing")
         assert result.error == AGENTIC_ORCHESTRATOR_FAILED
@@ -2203,7 +2221,7 @@ def test_agentic_edit_worktree_remove_failure_keeps_patch(monkeypatch):
         monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _OkOrch)
         monkeypatch.setattr(
             "harness.edit_engines.finalize_worktree_patch",
-            lambda _wt: ("diff --git a/x b/x\n+line", ["x.py"]),
+            lambda _wt, _base: ("diff --git a/x b/x\n+line", ["x.py"]),
         )
 
         def boom_remove(*_a, **_k):
@@ -2254,7 +2272,7 @@ def test_agentic_edit_branch_delete_failure_keeps_patch(monkeypatch):
         monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _OkOrch)
         monkeypatch.setattr(
             "harness.edit_engines.finalize_worktree_patch",
-            lambda _wt: ("diff --git a/x b/x\n+line", ["x.py"]),
+            lambda _wt, _base: ("diff --git a/x b/x\n+line", ["x.py"]),
         )
         monkeypatch.setattr("harness.worktrees.delete_branch", boom_delete)
         result = run_agentic_edit(cfg, "goal")
@@ -2293,7 +2311,7 @@ def test_agentic_edit_no_leaked_pmh_edit_dirs(monkeypatch):
         ]))
         monkeypatch.setattr(
             "harness.edit_engines.finalize_worktree_patch",
-            lambda _wt: ("diff --git a/x b/x\n+line", ["x.py"]),
+            lambda _wt, _base: ("diff --git a/x b/x\n+line", ["x.py"]),
         )
         ok_result = run_agentic_edit(cfg, "goal")
         assert ok_result.ok is True

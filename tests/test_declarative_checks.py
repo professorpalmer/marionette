@@ -356,7 +356,7 @@ def test_failed_post_check_surfaces_in_session_summary(monkeypatch):
         def mock_run_auto(self, objective, budget=None, require_codegraph=True, **kwargs):
             yield from ()
 
-        def mock_finalize(_wt_path):
+        def mock_finalize(_wt_path, _base):
             return "--- a/hello.txt\n+++ b/hello.txt\n", ["hello.txt"]
 
         monkeypatch.setattr(ConversationalSession, "run_auto", mock_run_auto)

@@ -1,20 +1,13 @@
 from __future__ import annotations
 
-"""Hard dispatch guards for run_implement / run_parallel.
-
-The harness's product edge is fanning hard work across workers. A single
-``run_implement`` that asks one worker to REWRITE a 700+ line file is the
-anti-pattern we exist to prevent -- refuse it at the tool layer and tell the
-pilot to split via ``run_parallel``.
-"""
+"""Workspace validation and opt-in rewrite limits for implement workers."""
 
 import os
 import re
 import tempfile
 from typing import Optional
 
-# Default ceiling: one worker may own this many lines of a single-file rewrite
-# before the harness refuses and forces a multi-worker split.
+# Ceiling used when the operator opts into the rewrite limit.
 _DEFAULT_MAX_LINES = 250
 
 # Goals that clearly ask for a full-file rewrite / regenerate, not a small edit.
@@ -104,11 +97,10 @@ def file_line_count(path: str) -> int:
 def check_oversized_single_file_rewrite(goal: str, repo: str) -> Optional[str]:
     """Return a refusal message when ``goal`` asks one worker to rewrite a huge file.
 
-    Returns ``None`` when the goal is fine to dispatch as-is. Disable with
-    ``HARNESS_IMPLEMENT_FANOUT_GUARD=0``.
+    Returns ``None`` unless ``HARNESS_IMPLEMENT_FANOUT_GUARD=1`` opts in.
     """
-    if (os.environ.get("HARNESS_IMPLEMENT_FANOUT_GUARD", "1") or "1").strip() in (
-        "0", "false", "no", "off",
+    if os.environ.get("HARNESS_IMPLEMENT_FANOUT_GUARD", "").strip().lower() not in (
+        "1", "true", "yes", "on",
     ):
         return None
     goal = (goal or "").strip()
@@ -143,11 +135,10 @@ def check_oversized_single_file_rewrite(goal: str, repo: str) -> Optional[str]:
     return (
         f"REFUSED: single-worker rewrite of oversized file(s): {parts}. "
         f"Harness ceiling is {ceiling} lines per worker "
-        f"(HARNESS_IMPLEMENT_MAX_FILE_LINES). Split into run_parallel goals "
-        f"that each own a disjoint section (e.g. lines 1-{ceiling}, "
-        f"{ceiling + 1}-{ceiling * 2}, ...) or supporting files only. "
-        f"This is the fan-out the harness exists to enforce -- do not re-issue "
-        f"the same whole-file rewrite on one worker."
+        f"(HARNESS_IMPLEMENT_MAX_FILE_LINES). Narrow this to a targeted edit, "
+        f"or use sequential steps with one writer for this file. Parallel "
+        f"workers should own disjoint files, not sections of the same file. "
+        f"The configured rewrite limit can be disabled with HARNESS_IMPLEMENT_FANOUT_GUARD=0."
     )
 
 
