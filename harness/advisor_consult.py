@@ -132,6 +132,40 @@ def usage_receipt(response, spec):
     }
 
 
+def _windows_owner_alive(pid: int) -> bool:
+    """Non-signaling Windows probe. Uncertain identity stays alive (PermissionError)."""
+    from .local_model_manager import _windows_pid_query
+
+    info = _windows_pid_query(int(pid))
+    if info is None:
+        return True
+    return bool(info.get("alive"))
+
+
+def _owner_pid_alive(pid) -> bool:
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    # os.kill(pid, 0) is CTRL_C_EVENT on Windows — never a liveness probe.
+    if os.name == "nt":
+        try:
+            return _windows_owner_alive(pid)
+        except Exception:
+            return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
 class AdvisorService:
     def __init__(self, state_dir, resolver=resolve_advisor):
         self.state_dir = state_dir
@@ -145,12 +179,12 @@ class AdvisorService:
         for receipt in receipts:
             if receipt["status"] not in ("pending", "running", "cancelling"):
                 continue
-            try:
-                os.kill(receipt["owner_pid"], 0)
-            except ProcessLookupError:
-                store.update(receipt["request_id"], status="interrupted", error="Backend exited before receipt completion")
-            except PermissionError:
-                pass
+            if not _owner_pid_alive(receipt.get("owner_pid")):
+                store.update(
+                    receipt["request_id"],
+                    status="interrupted",
+                    error="Backend exited before receipt completion",
+                )
         return store.history()
 
     def start(self, session_id, request_id, question, transcript, pilot_spec):

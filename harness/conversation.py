@@ -985,7 +985,7 @@ class ConversationalSession(
         self._edited_paths = set()
         self._mentioned_paths = set()
         self._approval_sweeper = None
-        self._ensure_approval_sweeper()
+        self._approval_sweep_stop = threading.Event()
         self._state = "idle"
         
         import queue
@@ -1508,10 +1508,15 @@ class ConversationalSession(
     def _ensure_approval_sweeper(self) -> None:
         if self._approval_sweeper is not None:
             return
+        stop = getattr(self, "_approval_sweep_stop", None)
+        if stop is None:
+            stop = threading.Event()
+            self._approval_sweep_stop = stop
 
         def _tick() -> None:
-            while not getattr(self, "_closed", False):
-                time.sleep(APPROVAL_SWEEP_SECONDS)
+            while not getattr(self, "_closed", False) and not stop.is_set():
+                if stop.wait(APPROVAL_SWEEP_SECONDS):
+                    return
                 try:
                     with self._command_approval_lock_guard():
                         self._sweep_expired_approvals()

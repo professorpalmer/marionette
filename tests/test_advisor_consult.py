@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from types import SimpleNamespace
@@ -8,6 +9,7 @@ from uuid import uuid4
 
 import pytest
 
+from harness import advisor_consult
 from harness.advisor_consult import (
     AdviceConflict,
     AdviceStore,
@@ -117,6 +119,51 @@ def test_advisor_service_one_tool_free_call_and_cancel(tmp_path, monkeypatch):
         time.sleep(0.05)
     else:
         raise AssertionError(blocker.history("session-A")[0]["status"])
+
+
+def test_history_liveness_does_not_os_kill_on_windows(tmp_path, monkeypatch):
+    killed = []
+
+    def fake_kill(pid, sig):
+        killed.append((pid, sig))
+        raise AssertionError("Windows liveness must not call os.kill")
+
+    class _NtOs:
+        name = "nt"
+
+        def kill(self, pid, sig):
+            return fake_kill(pid, sig)
+
+        def __getattr__(self, name):
+            return getattr(os, name)
+
+    monkeypatch.setattr(advisor_consult, "os", _NtOs())
+    monkeypatch.setattr(advisor_consult, "_windows_owner_alive", lambda pid: True)
+    request_id = str(uuid4())
+    AdviceStore(str(tmp_path), "session-A").create({
+        "request_id": request_id,
+        "question": "still running?",
+        "status": "running",
+        "session_id": "session-A",
+        "owner_pid": os.getpid(),
+    })
+    rows = AdvisorService(str(tmp_path)).history("session-A")
+    assert killed == []
+    assert rows[0]["status"] == "running"
+
+
+def test_history_marks_dead_owner_interrupted_without_signal(tmp_path, monkeypatch):
+    monkeypatch.setattr(advisor_consult, "_owner_pid_alive", lambda pid: False)
+    request_id = str(uuid4())
+    AdviceStore(str(tmp_path), "session-A").create({
+        "request_id": request_id,
+        "question": "gone?",
+        "status": "running",
+        "session_id": "session-A",
+        "owner_pid": 1,
+    })
+    rows = AdvisorService(str(tmp_path)).history("session-A")
+    assert rows[0]["status"] == "interrupted"
 
 
 def test_resolve_advisor_skips_current_pilot_and_needs_an_enabled_cheap_model(monkeypatch):
