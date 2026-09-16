@@ -1136,8 +1136,9 @@ def test_model_failure_does_not_mark_runtime_error(tmp_path):
     assert state["managed"]["model"]["status"] == "error"
 
 
-def test_overlapping_install_is_rejected_while_running(tmp_path):
+def test_overlapping_install_is_rejected_while_running(tmp_path, monkeypatch):
     catalog, runtime_bytes, _ = _tiny_catalog(tmp_path)
+    monkeypatch.setattr('harness.local_model_manager.detect_hardware', lambda *_a, **_k: {'supported': True})
     started = threading.Event()
     release = threading.Event()
     mgr = LocalModelManager(root=str(tmp_path / "lm"), catalog=catalog)
@@ -1145,8 +1146,11 @@ def test_overlapping_install_is_rejected_while_running(tmp_path):
     class _Blocked:
         def read(self, n=-1):
             started.set()
-            release.wait(2)
-            return runtime_bytes if not getattr(self, "sent", False) else b""
+            release.wait()
+            if getattr(self, 'sent', False):
+                return b''
+            self.sent = True
+            return runtime_bytes
 
         def close(self):
             return None
@@ -1169,14 +1173,17 @@ def test_overlapping_install_is_rejected_while_running(tmp_path):
 
     mgr.urlopen = urlopen
     first = mgr.install("runtime", background=True)
-    assert started.wait(1)
-    with pytest.raises(LocalModelError) as exc:
-        mgr.install("runtime", background=True)
-    assert exc.value.code == "busy"
-    alive = [w for w in mgr._workers.values() if w is not None and w.is_alive()]
-    assert len(alive) == 1
-    release.set()
-    alive[0].join(2)
+    worker = mgr._workers['runtime']
+    try:
+        assert started.wait(10), 'background install did not start'
+        with pytest.raises(LocalModelError) as exc:
+            mgr.install("runtime", background=True)
+        assert exc.value.code == "busy"
+        assert [w for w in mgr._workers.values() if w is not None and w.is_alive()] == [worker]
+    finally:
+        release.set()
+        worker.join(10)
+        assert not worker.is_alive(), 'background install did not finish'
     assert first["managed"]
 
 
