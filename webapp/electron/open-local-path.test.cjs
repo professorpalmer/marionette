@@ -24,7 +24,7 @@ test('native open uses exact real fixtures and denies missing or unauthorized re
   try {
     assert.equal(typeof open, 'function');
     for (const p of [file, pathToFileURL(file).href, dir]) assert.equal((await open({ allowed: true }, p)).ok, true);
-    assert.deepEqual(opened, [fs.realpathSync(file), fs.realpathSync(file), fs.realpathSync(dir)]);
+    assert.deepEqual(opened, [fs.realpathSync.native(file), fs.realpathSync.native(file), fs.realpathSync.native(dir)]);
     const localhost = pathToFileURL(file);
     localhost.hostname = 'localhost';
     assert.equal((await open({ allowed: true }, localhost.href)).ok, true);
