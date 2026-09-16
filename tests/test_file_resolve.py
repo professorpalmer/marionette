@@ -51,3 +51,18 @@ def test_file_resolve_never_fuzzes_traversal(tmp_path):
     status, payload = get_file_resolve("../inside.py", _services(tmp_path))
     assert status in (400, 403, 404)
     assert payload.get("ok") is not True
+
+
+def test_home_links_resolve_exactly_without_expanding_workspace_access(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "inside.txt").write_text("fixture", encoding="utf-8")
+    (tmp_path / "outside.txt").write_text("fixture", encoding="utf-8")
+    status, payload = get_file_resolve("~/repo/inside.txt", _services(repo))
+    assert status == 200
+    assert payload == {"ok": True, "path": "inside.txt", "exact": True}
+    status, payload = get_file_resolve("~/outside.txt", _services(repo))
+    assert status == 403
+    assert payload.get("ok") is not True

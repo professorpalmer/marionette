@@ -613,7 +613,20 @@ export async function uploadFile(file: File): Promise<{ path: string; name: stri
 }
 
 // Native desktop bridges (file tree + git). Web build returns not-supported.
+export type NativeOpenResult = { ok: true; action: "opened" | "revealed" } | { ok: false; error: string };
+
 export const nativeFs = {
+  openPath: async (target: string): Promise<NativeOpenResult> => {
+    const bridge = getHarnessIpc();
+    if (typeof bridge?.fs?.openPath !== "function") {
+      return { ok: false, error: "Open this link in the updated Marionette desktop app, or open the path in your file manager." };
+    }
+    try {
+      return await bridge.fs.openPath(target);
+    } catch (error) {
+      return { ok: false, error: String(error) };
+    }
+  },
   readDir: (dir: string): Promise<{ ok: boolean; nodes?: any[]; error?: string }> => {
     const bridge = getHarnessIpc();
     return bridge?.fs?.readDir

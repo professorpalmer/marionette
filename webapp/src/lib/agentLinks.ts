@@ -209,22 +209,28 @@ export function parseFileHref(href: string): ParsedFileHref | null {
   if (!href || !looksLikeFilePath(href)) return null;
   let raw = href
     .trim()
-    .replace(/^file:\/\//i, "")
     .replace(/^["']|["']$/g, "");
-  // file:///C:/foo → C:/foo on Windows; file:///home → /home
-  if (/^\/[A-Za-z]:[\\/]/.test(raw)) {
-    raw = raw.slice(1);
-  }
   let line: number | undefined;
   let col: number | undefined;
-  // path.ext:12 or path.ext:12:3 — require a dotted extension before :line
+  // Strip navigation suffix before URL decoding: an encoded colon is a filename.
   const m = raw.match(/^(.+\.\w{1,8}):(\d+)(?:-\d+)?(?::(\d+))?$/);
   if (m) {
     raw = m[1];
     line = parseInt(m[2], 10);
     if (m[3]) col = parseInt(m[3], 10);
   }
-  raw = raw.trim();
+  if (/^file:/i.test(raw)) {
+    try {
+      const url = new URL(raw);
+      if ((url.hostname && url.hostname !== "localhost") || url.search || url.hash || /%2f|%5c/i.test(url.pathname)) return null;
+      raw = decodeURIComponent(url.pathname);
+    } catch { return null; }
+  } else if (/^[a-z][a-z\d+.-]*:/i.test(raw) && !/^[A-Za-z]:[\\/]/.test(raw)) {
+    return null;
+  }
+  if (/[\x00-\x1f\x7f]/.test(raw)) return null;
+  // file:///C:/foo becomes C:/foo; POSIX absolute paths retain their slash.
+  if (/^\/[A-Za-z]:[\\/]/.test(raw)) raw = raw.slice(1);
   if (!raw) return null;
   // Touch normalize for side-effect-free hygiene check; keep original separators
   // so the file API receives what the user/agent wrote.
@@ -452,9 +458,7 @@ function wantsSystemBrowser(e?: { metaKey?: boolean; ctrlKey?: boolean; button?:
 }
 
 export function openAgentFile(pathOrHref: string, line?: number, col?: number): void {
-  const parsed = parseFileHref(pathOrHref) || (looksLikeFilePath(pathOrHref)
-    ? { path: pathOrHref.trim(), line, col }
-    : null);
+  const parsed = parseFileHref(pathOrHref);
   if (!parsed) return;
   const detail: OpenFileDetail = {
     path: parsed.path,

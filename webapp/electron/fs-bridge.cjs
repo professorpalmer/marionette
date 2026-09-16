@@ -4,6 +4,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { shell } = require("electron");
+const { openLocalPath } = require("./open-local-path.cjs");
 const {
   denyOutsideAllowedRoots,
   loadWorkspaceAllowedRoots,
@@ -14,9 +15,16 @@ const IGNORE = new Set([".git", "node_modules", ".venv", "venv", "__pycache__",
 
 /**
  * @param {import("electron").IpcMain} ipcMain
- * @param {{ getAllowedRoots?: () => string[] }} [opts]
+ * @param {{ getAllowedRoots?: () => string[], isAllowedSender?: (event: import("electron").IpcMainInvokeEvent) => boolean }} [opts]
  */
 function registerFsBridge(ipcMain, opts = {}) {
+  ipcMain.handle("fs:openPath", async (event, target) => {
+    if (typeof opts.isAllowedSender !== "function" || !opts.isAllowedSender(event)) {
+      return { ok: false, error: "Local file opening is restricted to the current desktop window" };
+    }
+    return openLocalPath(target, shell);
+  });
+
   const getAllowedRoots =
     typeof opts.getAllowedRoots === "function"
       ? opts.getAllowedRoots

@@ -3,12 +3,14 @@ import { captureSessionViewport, sessionViewportOffset, type TranscriptViewportH
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, useDeferredValue, useSyncExternalStore, useMemo, memo, forwardRef, type ReactNode } from "react";
 import { useVirtualizer, type VirtualItem } from "@tanstack/react-virtual";
 import { ChevronRight, Loader2, ChevronDown, ChevronUp, Play, Copy, Check, Pencil, RefreshCw, History, Share2, CheckCircle2, XCircle, Eye, Shield } from "lucide-react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github-dark.css";
 import {
   openAgentLink,
+  parseFileHref,
+  fileMarkdownHref,
   openAgentFile,
   openAgentUrl,
   openAgentCommand,
@@ -3258,6 +3260,9 @@ const PrettyMarkdown = memo(function PrettyMarkdown({ text }: { text: string }) 
   const linked = autolinkAgentText(text || "");
   return (
     <ReactMarkdown
+      urlTransform={(url, key, node) => key === "href" && node.tagName === "a" && /^file:/i.test(url) && parseFileHref(url)
+        ? fileMarkdownHref(url)
+        : defaultUrlTransform(url)}
       remarkPlugins={[remarkGfm]}
       rehypePlugins={[rehypeHighlight]}
       components={{

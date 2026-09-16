@@ -120,7 +120,7 @@ test('production main registration and preload cancellation connect to actual he
   const event={sender,senderFrame:sender.mainFrame};
   const source=fs.readFileSync(path.join(__dirname,'main.cjs'),'utf8');
   const fake=fakeHTTP({hang:true});
-  vm.runInNewContext(source.slice(source.indexOf('// Binary images bypass'),source.indexOf('// Native folder picker')), {
+  vm.runInNewContext(source.slice(source.indexOf('function isAllowedSender(event)'),source.indexOf('// Native folder picker')), {
     ipcMain:ipc,backendPort:7788,authToken:()=>backend.token,win:{isDestroyed:()=>false,webContents:sender},
     URL,resolveDistIndex:()=>'/app/index.html',isDev:false,viteUrl:null,
     require:name=>name==='./image-bridge.cjs'?{registerImageBridge:(bus,opts)=>registerImageBridge(bus,{...opts,start:o=>startImageRequest({...o,request:fake.request})})}:require(name),
