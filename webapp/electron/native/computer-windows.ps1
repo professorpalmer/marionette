@@ -16,6 +16,11 @@ using System.Text;
 public static class MarionetteNativeComputer {
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
     [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
+    [StructLayout(LayoutKind.Sequential)] public struct GUITHREADINFO {
+        public uint cbSize, flags;
+        public IntPtr hwndActive, hwndFocus, hwndCapture, hwndMenuOwner, hwndMoveSize, hwndCaret;
+        public RECT rcCaret;
+    }
     [StructLayout(LayoutKind.Sequential)] public struct INPUT { public uint type; public InputUnion U; }
     [StructLayout(LayoutKind.Explicit)] public struct InputUnion {
         [FieldOffset(0)] public MOUSEINPUT mi;
@@ -39,6 +44,8 @@ public static class MarionetteNativeComputer {
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr hwnd, StringBuilder name, int capacity);
     [DllImport("user32.dll", EntryPoint="GetWindowLongW")] static extern int GetWindowLong(IntPtr hwnd, int index);
     [DllImport("user32.dll")] public static extern bool IsChild(IntPtr parent, IntPtr child);
+    [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(POINT point);
+    [DllImport("user32.dll")] static extern bool GetGUIThreadInfo(uint thread, ref GUITHREADINFO info);
     [DllImport("user32.dll")] static extern bool PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);
     [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll", SetLastError=true)] static extern uint SendInput(uint count, INPUT[] inputs, int size);
@@ -80,7 +87,16 @@ public static class MarionetteNativeComputer {
     }
     static INPUT Mouse(uint flags, uint data = 0) { return new INPUT { type = INPUT_MOUSE, U = new InputUnion { mi = new MOUSEINPUT { dwFlags = flags, mouseData = data } } }; }
     static INPUT Key(ushort vk, ushort scan, uint flags) { return new INPUT { type = INPUT_KEYBOARD, U = new InputUnion { ki = new KEYBDINPUT { wVk = vk, wScan = scan, dwFlags = flags } } }; }
-    public static void Click(int x, int y) { if (!SetCursorPos(x, y)) throw new InvalidOperationException("Cannot position pointer"); Send(Mouse(MOUSEEVENTF_LEFTDOWN), Mouse(MOUSEEVENTF_LEFTUP)); }
+    public static IntPtr FocusWindow() {
+        var info = new GUITHREADINFO { cbSize = (uint)Marshal.SizeOf(typeof(GUITHREADINFO)) };
+        return GetGUIThreadInfo(0, ref info) ? info.hwndFocus : IntPtr.Zero;
+    }
+    public static void ClickInWindow(IntPtr window, int x, int y) {
+        var hit = WindowFromPoint(new POINT { X = x, Y = y });
+        if (hit != window && !IsChild(window, hit)) throw new InvalidOperationException("Another window covers the click target");
+        if (!SetCursorPos(x, y)) throw new InvalidOperationException("Cannot position pointer");
+        Send(Mouse(MOUSEEVENTF_LEFTDOWN), Mouse(MOUSEEVENTF_LEFTUP));
+    }
     public static void TypeText(string text) {
         var inputs = new List<INPUT>();
         foreach (char value in text) { inputs.Add(Key(0, value, KEYEVENTF_UNICODE)); inputs.Add(Key(0, value, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP)); }
@@ -263,12 +279,12 @@ function Invoke-Click($Request, $State) {
         if ($element.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) { $pattern.Invoke(); return }
         $bounds = $element.Current.BoundingRectangle
         if ($bounds.IsEmpty -or $bounds.X -lt $State.rect.Left -or $bounds.Y -lt $State.rect.Top -or $bounds.Right -gt $State.rect.Right -or $bounds.Bottom -gt $State.rect.Bottom) { throw "The element cannot be clicked within the selected window" }
-        [MarionetteNativeComputer]::Click([int]($bounds.X + $bounds.Width / 2), [int]($bounds.Y + $bounds.Height / 2)); return
+        [MarionetteNativeComputer]::ClickInWindow($State.hwnd, [int]($bounds.X + $bounds.Width / 2), [int]($bounds.Y + $bounds.Height / 2)); return
     }
     $x = [double]$Request.x; $y = [double]$Request.y
     $width = $State.rect.Right - $State.rect.Left; $height = $State.rect.Bottom - $State.rect.Top
     if ($x -lt 0 -or $y -lt 0 -or $x -ge $width -or $y -ge $height) { throw "Click coordinates are outside the selected window" }
-    [MarionetteNativeComputer]::Click($State.rect.Left + [int]$x, $State.rect.Top + [int]$y)
+    [MarionetteNativeComputer]::ClickInWindow($State.hwnd, $State.rect.Left + [int]$x, $State.rect.Top + [int]$y)
 }
 
 function Get-CheckedElement($State, [string]$Ref) {
@@ -293,7 +309,16 @@ function Invoke-Request($Request) {
                     if ($Request.ref) {
                         $ref = [string]$Request.ref
                         $element = Get-CheckedElement $state $ref
-                        $element.SetFocus()
+                        try { $element.SetFocus() }
+                        catch {
+                            if (-not $element.Current.NativeWindowHandle) { throw }
+                            Invoke-Click $Request $state
+                        }
+                        $focusHandle = [IntPtr]$element.Current.NativeWindowHandle
+                        if ($focusHandle -ne [IntPtr]::Zero) {
+                            for ($attempt = 0; $attempt -lt 25 -and [MarionetteNativeComputer]::FocusWindow() -ne $focusHandle; $attempt++) { Start-Sleep -Milliseconds 10 }
+                            if ([MarionetteNativeComputer]::FocusWindow() -ne $focusHandle) { throw "The selected field did not receive keyboard focus" }
+                        } elseif (-not $element.Current.HasKeyboardFocus) { throw "The selected field did not receive keyboard focus" }
                     }
                     [MarionetteNativeComputer]::TypeText([string]$Request.text)
                 }
