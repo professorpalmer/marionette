@@ -386,6 +386,7 @@ class LocalJobsMixin:
             COMMAND_JOB_ADAPTER,
             COMMAND_JOB_KIND,
             COMMAND_JOB_ROLE,
+            COMMAND_TERMINAL_STATES,
             command_fingerprint as _fingerprint,
             secret_free_command_preview,
         )
@@ -408,14 +409,24 @@ class LocalJobsMixin:
                            and not row.get("batch_id")
                            and row.get("action_id") == action_id]
                 if matches:
-                    if len(matches) != 1:
+                    exact = [
+                        row for row in matches
+                        if row.get("session_id") == session_id
+                        and row.get("command_fingerprint") == fp
+                        and row.get("cwd") == effective_cwd
+                    ]
+                    if len(exact) > 1:
                         raise ValueError("Command action identity conflict: multiple prior jobs")
-                    existing = matches[0]
-                    if (existing.get("session_id") != session_id
-                            or existing.get("command_fingerprint") != fp
-                            or existing.get("cwd") != effective_cwd):
-                        raise ValueError("Command action identity conflict: command, session or cwd changed")
-                    return copy.deepcopy(existing)
+                    if len(exact) == 1:
+                        return copy.deepcopy(exact[0])
+                    live = [
+                        row for row in matches
+                        if str(row.get("status") or "") not in COMMAND_TERMINAL_STATES
+                    ]
+                    if live:
+                        raise ValueError(
+                            "Command action identity conflict: command, session or cwd changed"
+                        )
             if job_id in self._local_jobs:
                 raise ValueError("Command job identity conflict")
             self._local_job_cancels[job_id] = threading.Event()

@@ -3586,7 +3586,15 @@ def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False,
         except Exception:
             pass
 
+    def _shutdown_owned_browsers() -> None:
+        try:
+            from .browser_reap import shutdown_owned_browsers
+            shutdown_owned_browsers()
+        except Exception:
+            pass
+
     atexit.register(_mcp.stop_all)
+    atexit.register(_shutdown_owned_browsers)
     atexit.register(_shutdown_warm_acp)
     atexit.register(_cleanup_marker, marker_path, os.getpid())
     from ._backend_main import ManagedScheduler
@@ -3594,6 +3602,10 @@ def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False,
     atexit.register(scheduler_runtime.stop)
 
     def _graceful(signum, frame):
+        try:
+            _shutdown_owned_browsers()
+        except Exception:
+            pass
         try:
             _shutdown_warm_acp()
         except Exception:

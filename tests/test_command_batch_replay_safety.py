@@ -91,6 +91,17 @@ def test_action_payload_is_immutable(tmp_path, change):
     assert not (tmp_path / 'effect').exists()
 
 
+def test_recycled_batch_action_id_after_terminal_starts_new(tmp_path):
+    sess = _Session(str(tmp_path), str(tmp_path))
+    first = start_command_batch(sess, [effect_command(0)], 'recycle')
+    _wait_batch_terminal(sess, first['batch_id'])
+    second = start_command_batch(sess, [effect_command(0, distinct=True)], 'recycle')
+    assert second['batch_id'] != first['batch_id']
+    _wait_batch_terminal(sess, second['batch_id'])
+    replay = start_command_batch(sess, [effect_command(0)], 'recycle')
+    assert replay['batch_id'] == first['batch_id']
+
+
 @pytest.mark.parametrize('restart', [False, True])
 def test_checkpoint_with_lost_receipt_is_unknown_and_never_repeated(tmp_path, restart):
     sess = _Session(str(tmp_path), str(tmp_path))

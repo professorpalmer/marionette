@@ -63,12 +63,19 @@ def test_replay_and_distinct_action(tmp_path, background):
 
 @pytest.mark.parametrize('background', [False, True])
 @pytest.mark.parametrize('change', ['command', 'cwd', 'session'])
-def test_identity_conflict_refuses_effect(tmp_path, background, change):
+def test_identity_conflict_refuses_inflight_mutation(tmp_path, background, change):
+    from harness.command_jobs import standalone_command_job_id
     s = session_at(tmp_path)
-    assert settle(s, dispatch(s, command(), background))['status'] == 'completed'
-    cmd = command()
+    hold = python_shell_command("import time; time.sleep(8)")
+    jid = standalone_command_job_id('same-action', hold)
+    s._register_command_job(
+        jid, command=hold, action_id='same-action', cwd=str(tmp_path)
+    )
+    s._checkpoint_command_job_launch(jid)
+    s._mark_command_job_running(jid)
+    cmd = hold
     if change == 'command':
-        cmd += ' # changed'
+        cmd = command()
     elif change == 'cwd':
         other = tmp_path / 'other'
         other.mkdir()
@@ -77,8 +84,25 @@ def test_identity_conflict_refuses_effect(tmp_path, background, change):
         s.harness_session_id = 'other-session'
     result = dispatch(s, cmd, background)
     assert result.get('error')
-    assert (tmp_path / 'effect').read_text() == 'x'
+    assert 'identity conflict' in result['error']
+    assert not (tmp_path / 'effect').exists()
     assert len(s._local_jobs) == 1
+
+
+@pytest.mark.parametrize('background', [False, True])
+def test_recycled_action_id_after_terminal_runs_new_command(tmp_path, background):
+    s = session_at(tmp_path)
+    first = dispatch(s, command(), background)
+    assert settle(s, first)['status'] == 'completed'
+    other = python_shell_command(
+        "from pathlib import Path; Path('other').write_text('y')"
+    )
+    second = dispatch(s, other, background)
+    assert not second.get('error')
+    assert second['job_id'] != first['job_id']
+    assert settle(s, second)['status'] == 'completed'
+    assert (tmp_path / 'effect').read_text() == 'x'
+    assert (tmp_path / 'other').read_text() == 'y'
 
 
 @pytest.mark.parametrize('background', [False, True])

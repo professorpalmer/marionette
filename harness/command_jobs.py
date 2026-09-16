@@ -113,6 +113,15 @@ def command_fingerprint(command: str) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def standalone_command_job_id(action_id: str, command: str) -> str:
+    """Durable id for one (action, command) pair.
+
+    Providers reuse ``run_command:0`` every step. Hashing the action id
+    alone made every later shell line collide with the first.
+    """
+    return "local-cmd-" + command_fingerprint("%s\0%s" % (action_id or "", command or ""))
+
+
 def secret_free_command_preview(command: str, *, max_chars: int = _COMMAND_PREVIEW_CHARS) -> str:
     """Redacted, bounded command text safe for receipts / API projection."""
     cleaned = redact_secret_text(command or "").replace("\n", " ").strip()
@@ -426,7 +435,7 @@ def _register_standalone_command(session: Any, act: Any, action_id: str) -> Dict
     if not callable(register):
         raise RuntimeError("session does not support durable command registration")
     return register(
-        "local-cmd-" + command_fingerprint(action_id),
+        standalone_command_job_id(action_id, command),
         command=command,
         action_id=action_id,
         command_fingerprint=command_fingerprint(command),
