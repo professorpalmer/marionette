@@ -187,6 +187,7 @@ def test_real_supervised_command_stops(case, tmp_path, monkeypatch):
     import sys
     import threading
     import time
+    import traceback
     from harness.local_model_manager import _pid_alive
     from puppetmaster.cancellation import cancellation_scope, JobCancelled
     from puppetmaster.adapters._streaming import run_streamed_subprocess
@@ -205,8 +206,8 @@ def test_real_supervised_command_stops(case, tmp_path, monkeypatch):
                                         cwd=str(tmp_path), start_new_session=True)
         except JobCancelled:
             stopped.append(True)
-        except BaseException as exc:
-            errors.append(exc)
+        except BaseException:
+            errors.append(traceback.format_exc())
     thread = threading.Thread(target=worker)
     thread.start()
     try:
@@ -227,7 +228,9 @@ def test_real_supervised_command_stops(case, tmp_path, monkeypatch):
             code, result = post_swarm_cancel(body, svc)
         assert code == 200, result
         thread.join(8)
-        assert not thread.is_alive() and not errors and stopped
+        assert not thread.is_alive(), 'supervised worker did not stop'
+        assert not errors, '\n'.join(errors)
+        assert stopped, 'worker exited without observing cancellation'
         dead_deadline = time.monotonic() + 2
         while _pid_alive(pid) and time.monotonic() < dead_deadline:
             time.sleep(0.05)

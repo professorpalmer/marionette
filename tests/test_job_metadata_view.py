@@ -62,8 +62,8 @@ def test_session_state_not_stable_and_polls_never_construct(tmp_path, monkeypatc
     for _ in range(30):
         assert reg.metadata_view.reader() is reader
         page = reader.read_job_page(ctx, selection)
-        assert len(page['rows']) == 1
-        assert page['page']['outcome'] == 'complete'
+        assert page['page']['outcome'] == 'complete', page
+        assert len(page['rows']) == 1, page
 
 
 def test_registry_aba_detach_drop_replace_invalidate(tmp_path):

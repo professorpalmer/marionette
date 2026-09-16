@@ -91,7 +91,7 @@ def test_http_timeout_overlap(tmp_path, monkeypatch, kind, late_error):
         seen.append((model, body, dict(request.header_items()), timeout))
         if model == "summary-model":
             entered.set()
-            assert finish.wait(5)
+            finish.wait()  # Released by the test's finally, not a transport deadline.
             if late_error:
                 raise ValueError("late local transport failure")
         return io.BytesIO(response_bytes(kind, model))
@@ -161,7 +161,7 @@ def test_acp_timeout_cannot_clear_new_callback_or_close_live_transport(tmp_path,
                 return {"result": {}}
             if "new owner" not in params["prompt"][0]["text"]:
                 entered.set()
-                assert finish.wait(5)
+                finish.wait()  # Released after the live-owner assertions, even on failure.
                 if late_error:
                     raise ValueError("late ACP failure")
             self.handler({"update": {"sessionUpdate": "agent_message_chunk",

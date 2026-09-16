@@ -3,7 +3,7 @@
 Injection seams keep tests hermetic: callers supply urlopen / popen /
 probe_transport so the suite never hits the network or a real llama-server.
 Production install uses the dedicated HTTPS opener with no env gate.
-Identity-safe PID adoption never kills an unrelated process.
+PID adoption checks identity before signaling; numeric PID operations are not atomic.
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ import tarfile
 import threading
 import time
 import zipfile
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Literal, Optional
 from urllib.parse import urlparse
 import urllib.error
 import urllib.request
@@ -316,10 +316,14 @@ def spawn_popen_kwargs() -> dict:
     return kwargs
 
 
-def stop_process_tree(pid: int, proc: Any = None, *, grace: float = 5.0, sleeper=None) -> None:
-    """TERM/taskkill the owned tree, then force-kill after *grace*. Never raises."""
+def stop_process_tree(pid: int, proc: Any = None, *, grace: float = 5.0, sleeper=None,
+                      identity: Optional[dict] = None) -> None:
+    """Stop the tree; adopted identities require confirmed exit or raise stop_failed."""
     sleep = sleeper or time.sleep
     if not pid or int(pid) <= 1:
+        return
+    if proc is None and identity is not None:
+        _stop_adopted_process(int(pid), identity, grace=grace, sleeper=sleep)
         return
     if _platform_name() == "nt":
         flags = _CREATE_NO_WINDOW
@@ -518,6 +522,10 @@ def _windows_pid_query(pid: int) -> Optional[dict]:
         STILL_ACTIVE = 259
         handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
         if not handle:
+            # OpenProcess reports ERROR_INVALID_PARAMETER for a nonexistent PID.
+            # Access denial and other query failures do not prove disappearance.
+            if ctypes.get_last_error() == 87:
+                return {"alive": False, "image": "", "start_key": ""}
             return None
         try:
             code = wintypes.DWORD()
@@ -633,28 +641,18 @@ def read_process_command(pid: int) -> str:
     return ""
 
 
-def process_matches_identity(pid: int, identity: dict) -> bool:
-    """True only when the live process still looks like our llama-server."""
-    if not _pid_alive(pid):
+def _command_matches_identity(command: str, identity: dict) -> bool:
+    if not command:
         return False
-    command = read_process_command(pid)
-    expected_birth = str(identity.get("start_key") or "")
-    live_birth = read_process_start_key(pid)
     exe = os.path.basename(str(identity.get("exe") or ""))
     alias = str(identity.get("alias") or "")
     nonce = str(identity.get("nonce") or "")
     model_name = os.path.basename(str(identity.get("model_path") or ""))
     if _platform_name() == "nt":
-        if not command or not live_birth or not expected_birth:
-            return False
-        if live_birth != expected_birth:
-            return False
         folded = command.lower()
         if exe and exe.lower() not in folded and "llama-server" not in folded:
             return False
         return True
-    if not command:
-        return False
     if alias and alias not in command:
         return False
     if nonce and nonce not in command:
@@ -663,10 +661,117 @@ def process_matches_identity(pid: int, identity: dict) -> bool:
         return False
     if model_name and model_name not in command:
         return False
+    return True
+
+
+def process_matches_identity(pid: int, identity: dict) -> bool:
+    """True only when the live process still looks like our llama-server."""
+    if not _pid_alive(pid):
+        return False
+    command = read_process_command(pid)
+    expected_birth = str(identity.get("start_key") or "")
+    live_birth = read_process_start_key(pid)
+    if not _command_matches_identity(command, identity):
+        return False
+    if _platform_name() == "nt":
+        return bool(live_birth and expected_birth and live_birth == expected_birth)
     if expected_birth:
         if live_birth and live_birth != expected_birth:
             return False
     return True
+
+
+def _adopted_process_state(
+    pid: int, identity: dict,
+) -> Literal["same", "gone", "different", "unavailable"]:
+    """Different requires a proven replacement birth; query failure is unavailable."""
+    if pid <= 1:
+        return "unavailable"
+    expected_birth = str(identity.get("start_key") or "")
+    if _platform_name() == "nt":
+        info = _windows_pid_query(pid)
+        if info is None:
+            return "unavailable"
+        if info.get("alive") is False:
+            return "gone"
+        live_birth = str(info.get("start_key") or "")
+        command = str(info.get("image") or "")
+    else:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return "gone"
+        except OSError:
+            return "unavailable"
+        live_birth = read_process_start_key(pid)
+        command = read_process_command(pid)
+        # An exit or reuse between the independent POSIX queries must not be
+        # mistaken for a matching process (or an unavailable query for exit).
+        latest_birth = read_process_start_key(pid)
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return "gone"
+        except OSError:
+            return "unavailable"
+        if expected_birth and latest_birth and latest_birth != expected_birth:
+            return "different"
+        if latest_birth != live_birth:
+            return "unavailable"
+    if not expected_birth or not live_birth:
+        return "unavailable"
+    if live_birth != expected_birth:
+        return "different"
+    if not _command_matches_identity(command, identity):
+        return "unavailable"
+    return "same"
+
+
+def _stop_adopted_process(pid: int, identity: dict, *, grace: float, sleeper) -> None:
+    for force in (False, True):
+        # Recheck immediately before each signaling stage. This narrows, but
+        # cannot eliminate, the numeric PID check-to-signal race.
+        observed = _adopted_process_state(pid, identity)
+        if observed in {"gone", "different"}:
+            return
+        if observed != "same":
+            raise LocalModelError("Could not verify adopted child identity", code="stop_failed")
+        if _platform_name() == "nt":
+            argv = ["taskkill", "/PID", str(pid), "/T"]
+            if force:
+                argv.append("/F")
+            try:
+                subprocess.run(argv, capture_output=True, timeout=15,
+                               creationflags=_CREATE_NO_WINDOW)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        else:
+            sig = _SIGKILL if force else _SIGTERM
+            try:
+                os.killpg(os.getpgid(pid), sig)
+            except (OSError, AttributeError):
+                # A failed tree signal is another check-to-signal boundary.
+                observed = _adopted_process_state(pid, identity)
+                if observed in {"gone", "different"}:
+                    return
+                if observed != "same":
+                    raise LocalModelError("Could not verify adopted child identity", code="stop_failed")
+                try:
+                    os.kill(pid, sig)
+                except OSError:
+                    pass
+        deadline = time.monotonic() + (5.0 if force else max(0.0, grace))
+        while True:
+            observed = _adopted_process_state(pid, identity)
+            if observed in {"gone", "different"}:
+                return
+            # Exit can briefly make identity unreadable before disappearance.
+            # Observe without signaling; escalation still requires fresh identity.
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            sleeper(min(0.05, remaining))
+    raise LocalModelError("Could not observe adopted child exit", code="stop_failed")
 
 
 class EventLog:
@@ -1633,9 +1738,14 @@ class LocalModelManager:
                     self._procs.pop(int(pid))
             if log_handle is not None:
                 log_handle.close()
-        elif pid and process_matches_identity(int(pid), process or {}):
-            stop_process_tree(int(pid), None, sleeper=self.sleep)
-            if _pid_alive(int(pid)):
+        elif pid:
+            observed = _adopted_process_state(int(pid), process or {})
+            if observed in {"gone", "different"}:
+                return
+            if observed != "same":
+                raise LocalModelError("Could not verify adopted child identity", code="stop_failed")
+            stop_process_tree(int(pid), None, sleeper=self.sleep, identity=process)
+            if _adopted_process_state(int(pid), process or {}) not in {"gone", "different"}:
                 raise LocalModelError("Could not observe adopted child exit", code="stop_failed")
 
     def _check_lifecycle_available(self) -> None:

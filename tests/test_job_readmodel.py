@@ -542,11 +542,15 @@ def test_null_counts_and_independent_detail_cursors(env):
     database = store.root / ('state.sqlite3' if store.backend_name == 'sqlite' else 'metadata.sqlite3')
     with closing(sqlite3.connect(database)) as c, c:
         c.execute("UPDATE projection_current SET task_count=NULL, artifact_count=NULL WHERE kind='job'")
-    _, listed = page(env)
+    code, listed = page(env)
+    assert code == 200, listed
+    assert listed['page']['outcome'] == 'complete', listed
+    assert len(listed['rows']) == 1, listed
     assert listed['rows'][0]['task_count'] is listed['rows'][0]['artifact_count'] is None
-    _, detail = get_job_metadata_detail(query(ctx, selection, job_id=j.id), reader)
+    code, detail = get_job_metadata_detail(query(ctx, selection, job_id=j.id), reader)
+    assert code == 200, detail
     cursor = detail['tasks']['page']['next_cursor']
-    assert cursor
+    assert cursor, detail
     assert get_job_metadata_detail(query(ctx, selection, job_id=j.id, artifact_cursor=cursor), reader)[0] == 400
     other = job(store, 100)
     assert get_job_metadata_detail(query(ctx, selection, job_id=other.id, task_cursor=cursor), reader)[0] == 400
