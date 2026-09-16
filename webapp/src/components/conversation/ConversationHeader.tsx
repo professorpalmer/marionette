@@ -1,6 +1,7 @@
 import type { CSSProperties } from "react";
 import StatusPill from "./StatusPill";
 import TraceCopy from "./TraceCopy";
+import SessionCacheControl from "./SessionCacheControl";
 import {
   TITLEBAR_CHROME_PAD_X_PX,
   TITLEBAR_TRAFFIC_PAD_PX,
@@ -13,12 +14,16 @@ export default function ConversationHeader({
   correlationId,
   onBusyDetailClick,
   recoveryAction,
+  sessionId,
+  busy = false,
 }: {
   pillStatus: string;
   detail?: string;
   correlationId?: string;
   onBusyDetailClick?: () => void;
   recoveryAction?: { label: string; onClick: () => void };
+  sessionId?: string;
+  busy?: boolean;
 }) {
   const dragRegion = { WebkitAppRegion: "drag" } as CSSProperties;
   const noDrag = { WebkitAppRegion: "no-drag" } as CSSProperties;
@@ -45,6 +50,7 @@ export default function ConversationHeader({
         </span>
       </span>
       <div className="shrink-0 flex items-center gap-2 max-w-[55%] min-w-0" style={noDrag}>
+        {sessionId ? <SessionCacheControl key={sessionId} sessionId={sessionId} busy={busy} /> : null}
         {recoveryAction ? (
           <button
             type="button"

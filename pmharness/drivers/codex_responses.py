@@ -24,6 +24,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .request_boundary import http_request
 from .base import tool_result_content, DriverResponse, SYSTEM_PROMPT, known_assistant_phase
+from .reasoning_envelope import capture_reasoning, replay_reasoning
+from .cache_refresh import CacheRefreshDriver, cache_foreground
 from .retry import with_retry
 from pmharness.stream_snapshot import absorb_stream_snapshot
 
@@ -264,7 +266,7 @@ def _assistant_message_item(msg: dict, content: List[dict]) -> dict:
     return item
 
 
-def _messages_to_responses_input(messages: List[dict]) -> List[dict]:
+def _messages_to_responses_input(messages: List[dict], *, endpoint: str = "", model: str = "") -> List[dict]:
     """Minimal chat → Responses input conversion (text + images + tool stubs)."""
     out: List[dict] = []
     for msg in messages:
@@ -272,6 +274,11 @@ def _messages_to_responses_input(messages: List[dict]) -> List[dict]:
         content = msg.get("content")
         if role == "system":
             continue
+        if role == "assistant":
+            replay = replay_reasoning(msg, "responses", endpoint, model)
+            if replay is not None:
+                out.extend(replay)
+                continue
         if role == "tool":
             out.append({
                 "type": "function_call_output",
@@ -1161,7 +1168,7 @@ def _consume_codex_sse(
     return out
 
 
-class CodexResponsesDriver:
+class CodexResponsesDriver(CacheRefreshDriver):
     # ChatGPT Codex backend requires stream=true; expose real SSE to the pilot.
     supports_streaming = True
     # Network driver: never accept implicit JSON-envelope natural.
@@ -1179,6 +1186,7 @@ class CodexResponsesDriver:
         chatgpt_backend: bool = True,
     ) -> None:
         self.name = name
+        self.init_cache_refresh()
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.api_key_env = api_key_env
@@ -1296,8 +1304,9 @@ class CodexResponsesDriver:
         body: Dict[str, Any] = {
             "model": self.model,
             "instructions": instructions,
-            "input": _messages_to_responses_input(payload_messages),
+            "input": _messages_to_responses_input(payload_messages, endpoint=self.base_url, model=self.model),
             "store": False,
+            "include": ["reasoning.encrypted_content"],
             "stream": True,  # required by chatgpt.com/backend-api/codex
         }
         if (
@@ -1367,6 +1376,7 @@ class CodexResponsesDriver:
     ) -> Tuple[Optional[dict], Optional[DriverResponse], bytes]:
         """POST once (with reasoning-strip / pool rotate). Returns (raw, err_resp, data)."""
         for attempt in range(3):
+            self._cache_snapshot = None
             token = self._key()
             headers = self._request_headers(token, session_id=session_id)
             if self.chatgpt_backend:
@@ -1374,6 +1384,7 @@ class CodexResponsesDriver:
                     _codex_session_affinity_headers(body.get("prompt_cache_key"))
                 )
             try:
+                request_started = time.monotonic()
                 req = http_request(
                     self,
                     f"{self.base_url}/responses",
@@ -1394,6 +1405,8 @@ class CodexResponsesDriver:
                         ),
                         allow_post_answer_idle=not responses_input_has_tool_results(body),
                     )
+                if not raw.get("error") and raw.get("status") in {"completed", "incomplete"}:
+                    self.remember_cache_request("responses", body, headers, request_started, raw.get("usage"))
                 return raw, None, data
             except urllib.error.HTTPError as e:
                 detail = e.read().decode("utf-8", "replace")[:800]
@@ -1521,8 +1534,10 @@ class CodexResponsesDriver:
             error=err_msg,
             meta=meta,
             assistant_phase=assistant_phase,
+            reasoning_envelope=capture_reasoning("responses", self.base_url, self.model, raw.get("output") or []) if not err_msg else None,
         )
 
+    @cache_foreground
     def _post_stream(
         self,
         body: dict,

@@ -62,3 +62,14 @@ def metadata_handler(name):
         from .api import job_readmodel
         return getattr(job_readmodel, name)(request, view.reader())
     return handle
+
+
+def worker_operation_handler(name):
+    """Keep worker operations optional on hosts without bounded metadata."""
+    def handle(request, view):
+        if not view.supported:
+            return 503, dict(code="metadata_unavailable", availability="unavailable",
+                             missing=[UNAVAILABLE_REASON])
+        from .api import worker_operations
+        return getattr(worker_operations, name)(request, view.reader())
+    return handle

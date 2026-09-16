@@ -26,6 +26,7 @@ late complete_claim is a no-op, but prior side effects are not undone.
 """
 
 import hashlib
+import json
 import os
 import sqlite3
 import tempfile
@@ -41,6 +42,7 @@ from .schedule_core import (
     clip_notepad,
     parse_failure_deliver,
     parse_missed_policy,
+    validate_recurrence,
 )
 from .sqlite_journal import configure_sqlite_connection, host_scoped_state_path
 
@@ -279,6 +281,7 @@ class ScheduleStore:
             row[1] for row in self._conn.execute("PRAGMA table_info(schedules)")
         }
         for col, decl in (
+            ("interval_seconds", "INTEGER NOT NULL DEFAULT 0"),
             ("enabled_at", "REAL NOT NULL DEFAULT 0"),
             ("last_fire_at", "REAL NOT NULL DEFAULT 0"),
             ("claim_owner", "TEXT NOT NULL DEFAULT ''"),
@@ -305,6 +308,9 @@ class ScheduleStore:
             row[1] for row in self._conn.execute("PRAGMA table_info(schedule_runs)")
         }
         for col, decl in (
+            ("session_id", "TEXT NOT NULL DEFAULT ''"),
+            ("result_text", "TEXT NOT NULL DEFAULT ''"),
+            ("usage_receipt", "TEXT NOT NULL DEFAULT '{}'"),
             ("fire_at", "REAL NOT NULL DEFAULT 0"),
             ("owner", "TEXT NOT NULL DEFAULT ''"),
             ("missed_outcome", "TEXT NOT NULL DEFAULT ''"),
@@ -330,7 +336,7 @@ class ScheduleStore:
         from .schedule_core import CronExpr, validate_timezone
 
         _validate_ceilings(schedule.to_row())
-        CronExpr.parse(schedule.cron)  # validate; raises ValueError
+        validate_recurrence(schedule.cron, schedule.interval_seconds)
         schedule.timezone = validate_timezone(schedule.timezone or "")
         schedule.missed_policy = parse_missed_policy(schedule.missed_policy)
         schedule.failure_deliver = parse_failure_deliver(schedule.failure_deliver)
@@ -488,6 +494,7 @@ class ScheduleStore:
         from .schedule_core import CronExpr, validate_timezone
 
         allowed = {
+            "interval_seconds",
             "name", "objective", "cron", "repo", "driver", "swarm_adapter",
             "max_tokens", "max_seconds", "max_swarms", "timezone",
             "missed_policy",
@@ -503,8 +510,12 @@ class ScheduleStore:
         if not updates:
             return self.get(schedule_id)
         _validate_ceilings(updates)
-        if "cron" in updates:
-            CronExpr.parse(str(updates["cron"]))  # validate; raises ValueError
+        if "cron" in updates or "interval_seconds" in updates:
+            existing = self.get(schedule_id)
+            if existing is None:
+                return None
+            validate_recurrence(updates.get("cron", existing.cron),
+                                updates.get("interval_seconds", existing.interval_seconds))
         if "timezone" in updates:
             updates["timezone"] = validate_timezone(str(updates["timezone"]))
         if "missed_policy" in updates:
@@ -825,6 +836,9 @@ class ScheduleStore:
         missed_outcome: str = "",
         missed_slots: int = 0,
         continuity_digest: Optional[str] = None,
+        session_id: str = "",
+        result_text: str = "",
+        usage_receipt: Optional[dict] = None,
     ) -> bool:
         """Atomically finish a run, release the claim, and update last_*.
 
@@ -860,12 +874,14 @@ class ScheduleStore:
                     UPDATE schedule_runs SET
                         ended_at = ?, status = ?, halt_reason = ?,
                         cycles = ?, tokens_used = ?, swarms_used = ?,
-                        missed_outcome = ?, missed_slots = ?
+                        missed_outcome = ?, missed_slots = ?,
+                        session_id = ?, result_text = ?, usage_receipt = ?
                     WHERE id = ? AND status = 'running'
                     """,
                     (end_ts, status, halt_reason, int(cycles), int(tokens_used),
                      int(swarms_used), str(missed_outcome or ""),
-                     int(missed_slots or 0), run_id),
+                     int(missed_slots or 0), session_id, result_text,
+                     json.dumps(usage_receipt or {"source": "unknown", "cost_usd": None}), run_id),
                 )
                 if cur.rowcount != 1:
                     self._conn.execute("ROLLBACK")
@@ -992,7 +1008,10 @@ class ScheduleStore:
                 "ORDER BY started_at DESC LIMIT ?",
                 (schedule_id, int(limit)),
             ).fetchall()
-        return [dict(r) for r in rows]
+        runs = [dict(r) for r in rows]
+        for run in runs:
+            run["usage_receipt"] = json.loads(run["usage_receipt"])
+        return runs
 
     def list_pending_wakes(self) -> List[dict]:
         """All pending wakes, oldest claim first (restart-immediate recovery)."""

@@ -12,6 +12,7 @@ import os
 from typing import Any, Callable, Optional
 from .pilot_replacement import replacement_gate
 from .job_metadata_view import MetadataView
+from .cache_keep_warm import stop_runner_cache
 
 DEFAULT_MAX_CONCURRENT_SESSIONS = 3
 
@@ -232,6 +233,7 @@ class SessionRunnerRegistry:
             if getattr(runner, '_input_admissions', 0):
                 raise RuntimeError('input admission in progress -- retry removing the session')
             runner._replacement_retired = True
+            stop_runner_cache(runner)
             with self.metadata_view.lock:
                 self._runners.pop(session_id, None)
                 if self._active_view_id == session_id:
@@ -289,6 +291,7 @@ class SessionRunnerRegistry:
             if getattr(old, '_input_admissions', 0):
                 raise RuntimeError('input admission in progress -- retry replacing the runner')
             old._replacement_retired = True
+            stop_runner_cache(old, reason="Session runner replaced.")
             with self.metadata_view.lock:
                 self._runners[session_id] = runner
                 if self._active_view_id == session_id:

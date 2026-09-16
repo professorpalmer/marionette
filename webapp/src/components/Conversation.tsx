@@ -8,6 +8,7 @@ import { useEffect, useLayoutEffect, useRef, useState, useCallback, type SetStat
 import { api, type Config, type InputReceipt, type InputDocument, type InputSubmission, type QueueRecovery, type ServerQueueItem } from "../lib/api";
 import { usePolling } from "../lib/usePolling";
 import FileEditorPane from "./FileEditorPane";
+import SessionToolsPanel, { type SessionToolsView } from "./conversation/SessionToolsPanel";
 import {
   countPaintableTranscriptItems,
   type Card,
@@ -210,6 +211,7 @@ import { createApplyStreamEvent } from "./conversation/streamEventHandler";
 import EditorTabStrip from "./conversation/EditorTabStrip";
 import ComposerDock, { type MemoryProposal } from "./conversation/ComposerDock";
 import ConversationHeader from "./conversation/ConversationHeader";
+import { getSessionCache, updateSessionCache } from "../lib/sessionCache";
 import ImageLightbox from "./conversation/ImageLightbox";
 import SpillPreviewModal, {
   clearedSessionOverlays,
@@ -492,6 +494,9 @@ export default function Conversation({
   }, [input]);
   // Live session id for async queue fences (Clear All / late refresh).
   const activeSessionIdRef = useRef<string | null>(activeSessionId);
+  const [sessionTools, setSessionTools] = useState<SessionToolsView | null>(null);
+  const sessionToolRequests = useRef(new Map<string, string>());
+  useEffect(() => { setSessionTools(null); }, [activeSessionId]);
   const sessionEpochRef = useRef(0);
   useLayoutEffect(() => {
     activeSessionIdRef.current = activeSessionId;
@@ -3458,6 +3463,46 @@ export default function Conversation({
       isBuiltIn: isBuiltInSlashCommand,
       customNames: customCommands.map((c) => c.name),
     });
+    if (slash.kind === "ping") {
+      const sessionId = activeSessionIdRef.current;
+      if (!sessionId) return;
+      setInput("");
+      setEditingIndex(null);
+      const reply = (text: string) => {
+        if (activeSessionIdRef.current === sessionId) setItems(p => [...p, { kind: "msg", msg: { role: "assistant", text } }]);
+      };
+      if (slash.action === "invalid") {
+        reply("Use /ping start, /ping stop, or /ping status.");
+        return;
+      }
+      const operation = slash.action === "status" ? getSessionCache(sessionId) : updateSessionCache(sessionId, { action: slash.action });
+      void operation.then(cache => reply(`Cache ${cache.state}: ${cache.reason} ${cache.refreshes}/${cache.max_refreshes} refreshes; $${cache.reserved_usd.toFixed(2)} reserved of $${cache.max_spend_usd.toFixed(2)}. Idle limit: ${cache.idle_seconds / 60} minutes.`))
+        .catch(() => reply("Cache controls are unavailable for this session."));
+      return;
+    }
+    if (slash.kind === "advise" || slash.kind === "advice" || slash.kind === "routine" || slash.kind === "routines") {
+      const owner = activeSessionIdRef.current;
+      if (!owner) { setEditNotice("Choose a session before using advice or routines."); return; }
+      if (attachedImages.length || attachedDocuments.length) { setEditNotice("Remove attachments before using advice or routine commands."); return; }
+      const kind = slash.kind === "advise" || slash.kind === "advice" ? "advice" : "routines";
+      setSessionTools({ kind, sessionId: owner, error: "" });
+      if (slash.kind === "advice" || slash.kind === "routines") { setInput(""); return; }
+      const key = JSON.stringify([owner, msg]);
+      const requestId = sessionToolRequests.current.get(key) ?? crypto.randomUUID();
+      sessionToolRequests.current.set(key, requestId);
+      const request = slash.kind === "advise"
+        ? api.advise(owner, requestId, slash.question)
+        : api.createRoutine(owner, requestId, slash.prompt, slash.every);
+      void request.then(() => {
+        sessionToolRequests.current.delete(key);
+        if (activeSessionIdRef.current !== owner) return;
+        setInput(current => current === raw ? "" : current);
+        setSessionTools({ kind, sessionId: owner, error: "" });
+      }).catch((error: unknown) => {
+        if (activeSessionIdRef.current === owner) setSessionTools({ kind, sessionId: owner, error: error instanceof Error ? error.message : "Request failed; retry uses the same request ID." });
+      });
+      return;
+    }
     const chrome = localSlashChromeAction(slash);
     if (chrome === "clear_visible") {
       // /clear: reset the visible transcript for the current session — do not
@@ -4063,6 +4108,8 @@ export default function Conversation({
     <main className="flex flex-col h-full min-w-0 bg-transparent" data-active-editor-tab={activeTab}>
       {/* Brand + idle share equal inset so they line up with the floating dock. */}
       <ConversationHeader
+        sessionId={activeSessionId || undefined}
+        busy={composerBusy}
         pillStatus={pillStatus}
         correlationId={
           pillStatus === "error" && operationalDiagnostic?.correlationId
@@ -4269,6 +4316,7 @@ export default function Conversation({
       </div>
 
       <ImageLightbox url={lightboxUrl} onClose={() => setLightboxUrl(null)} />
+      <SessionToolsPanel view={sessionTools?.sessionId === activeSessionId ? sessionTools : null} onClose={() => setSessionTools(null)} />
 
       <SpillPreviewModal
         preview={spillPreview}

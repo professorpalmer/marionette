@@ -129,6 +129,8 @@ class LivePilotReplacement:
             # compaction commits lose their generation before history is copied.
             p._busy_gen = getattr(p, '_busy_gen', 0) + 1
             p._busy_since = 0.0
+        from .cache_keep_warm import stop_runner_cache
+        stop_runner_cache(p, reason="Session runner replacement in progress.", close=False)
         return self
 
     def commit(self):
