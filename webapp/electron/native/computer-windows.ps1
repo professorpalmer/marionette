@@ -38,6 +38,7 @@ public static class MarionetteNativeComputer {
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr hwnd, StringBuilder name, int capacity);
     [DllImport("user32.dll", EntryPoint="GetWindowLongW")] static extern int GetWindowLong(IntPtr hwnd, int index);
+    [DllImport("user32.dll")] public static extern bool IsChild(IntPtr parent, IntPtr child);
     [DllImport("user32.dll")] static extern bool PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);
     [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll", SetLastError=true)] static extern uint SendInput(uint count, INPUT[] inputs, int size);
@@ -53,11 +54,13 @@ public static class MarionetteNativeComputer {
         return result.ToArray();
     }
     public static uint WindowProcessId(IntPtr hwnd) { uint pid; GetWindowThreadProcessId(hwnd, out pid); return pid; }
-    public static bool IsPasswordWindow(IntPtr hwnd) {
-        if (hwnd == IntPtr.Zero) return false;
+    public static string WindowClass(IntPtr hwnd) {
         var name = new StringBuilder(256);
         GetClassName(hwnd, name, name.Capacity);
-        return name.ToString().IndexOf("EDIT", StringComparison.OrdinalIgnoreCase) >= 0 && (GetWindowLong(hwnd, -16) & 0x20) != 0;
+        return name.ToString();
+    }
+    public static bool IsPasswordWindow(IntPtr hwnd) {
+        return hwnd != IntPtr.Zero && WindowClass(hwnd).IndexOf("EDIT", StringComparison.OrdinalIgnoreCase) >= 0 && (GetWindowLong(hwnd, -16) & 0x20) != 0;
     }
     public static void Capture(IntPtr hwnd, string destination) {
         RECT rect; if (!GetWindowRect(hwnd, out rect)) throw new InvalidOperationException("Cannot read selected window bounds");
@@ -184,6 +187,11 @@ function Read-Tree([System.Windows.Automation.AutomationElement]$Root) {
         try {
             $ref = "r" + ($elements.Count + 1)
             $role = $element.Current.ControlType.ProgrammaticName.Replace("ControlType.", "")
+            if ($role -eq "Pane" -and $element.Current.NativeWindowHandle) {
+                $class = [MarionetteNativeComputer]::WindowClass([IntPtr]$element.Current.NativeWindowHandle)
+                if ($class -match "(?i)(^|\.)EDIT(\.|$)") { $role = "Edit" }
+                elseif ($class -match "(?i)(^|\.)BUTTON(\.|$)") { $role = "Button" }
+            }
             $label = Get-ElementLabel $element
             if ($label.Length -gt 160) { $label = $label.Substring(0, 160) }
             if ($label) { $text.Add($label) }
@@ -250,17 +258,26 @@ function Invoke-Click($Request, $State) {
     if ($Request.ref) {
         $ref = [string]$Request.ref
         if (-not $State.references.ContainsKey($ref)) { throw "Stale or unknown element reference" }
-        $element = $State.references[$ref]
+        $element = Get-CheckedElement $State $ref
         $pattern = $null
         if ($element.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) { $pattern.Invoke(); return }
         $bounds = $element.Current.BoundingRectangle
-        if ($bounds.IsEmpty) { throw "The element cannot be clicked" }
+        if ($bounds.IsEmpty -or $bounds.X -lt $State.rect.Left -or $bounds.Y -lt $State.rect.Top -or $bounds.Right -gt $State.rect.Right -or $bounds.Bottom -gt $State.rect.Bottom) { throw "The element cannot be clicked within the selected window" }
         [MarionetteNativeComputer]::Click([int]($bounds.X + $bounds.Width / 2), [int]($bounds.Y + $bounds.Height / 2)); return
     }
     $x = [double]$Request.x; $y = [double]$Request.y
     $width = $State.rect.Right - $State.rect.Left; $height = $State.rect.Bottom - $State.rect.Top
     if ($x -lt 0 -or $y -lt 0 -or $x -ge $width -or $y -ge $height) { throw "Click coordinates are outside the selected window" }
     [MarionetteNativeComputer]::Click($State.rect.Left + [int]$x, $State.rect.Top + [int]$y)
+}
+
+function Get-CheckedElement($State, [string]$Ref) {
+    if (-not $State.references.ContainsKey($Ref)) { throw "Stale or unknown element reference" }
+    $element = $State.references[$Ref]
+    if ($element.Current.ProcessId -ne $State.pid -or -not $element.Current.IsEnabled -or $element.Current.IsOffscreen) { throw "The element is no longer actionable in the selected app" }
+    $hwnd = [IntPtr]$element.Current.NativeWindowHandle
+    if ($hwnd -ne [IntPtr]::Zero -and $hwnd -ne $State.hwnd -and -not [MarionetteNativeComputer]::IsChild($State.hwnd, $hwnd)) { throw "The element moved outside the selected window" }
+    return $element
 }
 
 function Invoke-Request($Request) {
@@ -275,8 +292,8 @@ function Invoke-Request($Request) {
                 elseif ($Request.operation -eq "type") {
                     if ($Request.ref) {
                         $ref = [string]$Request.ref
-                        if (-not $state.references.ContainsKey($ref)) { throw "Stale or unknown element reference" }
-                        $state.references[$ref].SetFocus()
+                        $element = Get-CheckedElement $state $ref
+                        $element.SetFocus()
                     }
                     [MarionetteNativeComputer]::TypeText([string]$Request.text)
                 }

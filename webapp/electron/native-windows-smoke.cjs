@@ -26,7 +26,7 @@ async function main() {
     assert.doesNotMatch(JSON.stringify(state), /NEVER_SNAPSHOT_PASSWORD/);
     assert.ok(fs.existsSync(state.screenshot_path));
     assert.ok((await native.dispatch({ operation: "apps" })).apps.some(app => app.app_id === app_id));
-    const input = state.elements.find(row => row.label === "Fixture name");
+    const input = state.elements.find(row => row.role === "Edit" && row.label !== "[password]");
     assert.ok(input, "Fixture input missing: " + JSON.stringify(state.elements));
     await native.dispatch({ operation: "type", app_id, snapshot_id: state.snapshot_id, ref: input.ref, text: "Marionette" });
     await assert.rejects(native.dispatch({ operation: "click", app_id, snapshot_id: state.snapshot_id, ref: input.ref }), /Stale/);
