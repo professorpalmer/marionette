@@ -11,18 +11,32 @@ from harness.worker import WorkerResult
 from harness.conversation import ConversationalSession, ConvEvent
 from harness.config import HarnessConfig
 
+# Bind the real runner at import so a leaked xdist subprocess.run mock
+# cannot silently skip git init (macOS then emits run_implement without mode).
+_REAL_RUN = subprocess.run
+
 
 def create_temp_git_repo():
-    repo_dir = tempfile.mkdtemp()
-    subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, capture_output=True)
-    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_dir, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_dir, capture_output=True)
-    
+    repo_dir = os.path.realpath(tempfile.mkdtemp())
+    _REAL_RUN(["git", "init", "-b", "main"], cwd=repo_dir, capture_output=True, check=True)
+    _REAL_RUN(["git", "config", "user.name", "Test User"], cwd=repo_dir, capture_output=True, check=True)
+    _REAL_RUN(["git", "config", "user.email", "test@example.com"], cwd=repo_dir, capture_output=True, check=True)
     with open(os.path.join(repo_dir, "test.txt"), "w") as f:
         f.write("hello\n")
-    subprocess.run(["git", "add", "test.txt"], cwd=repo_dir, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "initial commit"], cwd=repo_dir, capture_output=True)
+    _REAL_RUN(["git", "add", "test.txt"], cwd=repo_dir, capture_output=True, check=True)
+    _REAL_RUN(["git", "commit", "-m", "initial commit"], cwd=repo_dir, capture_output=True, check=True)
+    git_marker = os.path.join(repo_dir, ".git")
+    if not (os.path.isdir(git_marker) or os.path.isfile(git_marker)):
+        raise RuntimeError("temp git repo is missing .git: " + repo_dir)
     return repo_dir
+
+
+def _implement_starts(events):
+    return [e for e in events if e.kind == "action_start" and e.data.get("kind") == "run_implement"]
+
+
+def _action_errors(events):
+    return [e.data.get("error") or e.data.get("message") or "" for e in events if e.kind == "action_result"]
 
 
 def test_run_implement_provider_default(monkeypatch):
@@ -81,12 +95,12 @@ def test_run_implement_provider_default(monkeypatch):
         events = list(session.send("start implement"))
 
         # 1. Assert correct start/pending ConvEvents are emitted
-        action_starts = [e for e in events if e.kind == "action_start"]
-        assert len(action_starts) >= 1
-        # The specific action_start should be the last one
+        action_starts = _implement_starts(events)
+        assert action_starts, _action_errors(events)
         specific_start = action_starts[-1]
-        assert specific_start.data["kind"] == "run_implement"
-        assert specific_start.data["mode"] == "agentic"
+        assert specific_start.data.get("mode") == "agentic", (
+            specific_start.data, _action_errors(events)
+        )
 
         swarm_pendings = [e for e in events if e.kind == "swarm_pending"]
         assert len(swarm_pendings) == 1
@@ -158,14 +172,13 @@ def test_run_implement_explicit_external_adapter_is_rejected(monkeypatch):
         events = list(session.send("start implement"))
 
         # Explicit non-agentic adapters fail closed; no CLI fallback is allowed.
-        action_starts = [e for e in events if e.kind == "action_start"]
-        assert len(action_starts) >= 1
+        action_starts = _implement_starts(events)
+        assert action_starts, _action_errors(events)
         specific_start = action_starts[-1]
-        assert specific_start.data["kind"] == "run_implement"
         assert "mode" not in specific_start.data
 
         results = [e for e in events if e.kind == "action_result"]
-        assert any("unsupported" in (e.data.get("error") or "").lower() for e in results)
+        assert any("unsupported" in (e.data.get("error") or "").lower() for e in results), _action_errors(events)
         assert not any(e.kind == "swarm_pending" for e in events)
         assert not pm_cmd_called
 
@@ -213,15 +226,15 @@ def test_run_implement_falls_back_to_provider_when_cli_absent(monkeypatch):
         events = list(session.send("start implement"))
 
         # Rejection starts no worker and emits no engine label.
-        action_starts = [e for e in events if e.kind == "action_start" and e.data.get("kind") == "run_implement"]
-        assert len(action_starts) >= 1
+        action_starts = _implement_starts(events)
+        assert action_starts, _action_errors(events)
         assert "mode" not in action_starts[-1].data
 
         # The external CLI must NOT have been invoked for the implement dispatch.
         assert not any("cursor" in c for c in pm_cmd_called)
 
         results = [e for e in events if e.kind == "action_result"]
-        assert any("unsupported" in (e.data.get("error") or "").lower() for e in results)
+        assert any("unsupported" in (e.data.get("error") or "").lower() for e in results), _action_errors(events)
         assert not any(e.kind == "swarm_pending" for e in events)
     finally:
         shutil.rmtree(repo_dir, ignore_errors=True)
@@ -269,9 +282,11 @@ def test_run_implement_agentic_engine_default(monkeypatch):
 
         events = list(session.send("start implement"))
 
-        action_starts = [e for e in events if e.kind == "action_start" and e.data.get("kind") == "run_implement"]
-        assert len(action_starts) >= 1
-        assert action_starts[-1].data["mode"] == "agentic"
+        action_starts = _implement_starts(events)
+        assert action_starts, _action_errors(events)
+        assert action_starts[-1].data.get("mode") == "agentic", (
+            action_starts[-1].data, _action_errors(events)
+        )
 
         swarm_pendings = [e for e in events if e.kind == "swarm_pending"]
         assert len(swarm_pendings) == 1

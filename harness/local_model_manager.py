@@ -937,9 +937,12 @@ class LocalModelManager:
             save_state(state, self.root)
 
     def snapshot(self) -> dict:
+        # Hardware detect is sysctl / disk_usage / PATH scan. Holding the
+        # manager lock across it serializes save_external against snapshot
+        # and flakes the Windows deadlock test under CI load.
+        hardware = detect_hardware(self.root, self.catalog)
         with self._lock:
             state = load_state(self.root)
-            hardware = detect_hardware(self.root, self.catalog)
             snapshot = snapshot_from_state(
                 state,
                 catalog=self.catalog,

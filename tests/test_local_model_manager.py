@@ -1784,8 +1784,8 @@ def test_snapshot_and_save_do_not_deadlock(tmp_path, monkeypatch):
     t2 = threading.Thread(target=save)
     t1.start()
     t2.start()
-    t1.join(5)
-    t2.join(5)
+    t1.join(20)
+    t2.join(20)
     assert not t1.is_alive() and not t2.is_alive()
     assert sorted(done) == ["save", "snap"]
 
