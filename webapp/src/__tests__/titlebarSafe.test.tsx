@@ -37,6 +37,12 @@ describe("titlebar-safe clearance", () => {
     expect(paddingLeftPx(banner)).toBeGreaterThan(MACOS_TRAFFIC_LIGHT_RIGHT_EDGE_PX);
   });
 
+  it("ConversationHeader does not advertise session cache in the brand strip", () => {
+    render(<ConversationHeader pillStatus="done" />);
+    expect(screen.queryByText(/Cache:/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: /keep warm/i })).toBeNull();
+  });
+
   it("ConversationHeader clears the traffic lights at every root font-size", () => {
     document.documentElement.style.fontSize = "16px";
     render(<ConversationHeader pillStatus="idle" />);

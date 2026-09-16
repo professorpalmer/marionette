@@ -268,7 +268,7 @@ def test_tests_yml_is_the_fast_dest_into_main_gate():
     mac_job = text[mac_start:mac_end]
     assert "runs-on: macos-latest" in mac_job
     assert 'python-version: "3.11"' in mac_job
-    assert '"puppetmaster-ai==1.27.24"' in mac_job
+    assert '"puppetmaster-ai==1.27.25"' in mac_job
     assert "run: python -m pytest -q -p no:cacheprovider -n 4 --dist loadscope" in mac_job
     assert "continue-on-error" not in mac_job
     assert "needs: reuse-green-tree" in mac_job

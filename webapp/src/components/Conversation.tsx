@@ -4173,8 +4173,6 @@ export default function Conversation({
     <main className="flex flex-col h-full min-w-0 bg-transparent" data-active-editor-tab={activeTab}>
       {/* Brand + idle share equal inset so they line up with the floating dock. */}
       <ConversationHeader
-        sessionId={activeSessionId || undefined}
-        busy={composerBusy}
         pillStatus={pillStatus}
         correlationId={
           pillStatus === "error" && operationalDiagnostic?.correlationId

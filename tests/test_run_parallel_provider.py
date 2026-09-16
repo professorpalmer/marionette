@@ -10,17 +10,21 @@ from harness.worker import WorkerResult
 from harness.conversation import ConversationalSession, ConvEvent
 from harness.config import HarnessConfig
 
+_REAL_RUN = subprocess.run
+
 
 def create_temp_git_repo():
-    repo_dir = tempfile.mkdtemp()
-    subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, capture_output=True)
-    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_dir, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_dir, capture_output=True)
-    
+    repo_dir = os.path.realpath(tempfile.mkdtemp())
+    _REAL_RUN(["git", "init", "-b", "main"], cwd=repo_dir, capture_output=True, check=True)
+    _REAL_RUN(["git", "config", "user.name", "Test User"], cwd=repo_dir, capture_output=True, check=True)
+    _REAL_RUN(["git", "config", "user.email", "test@example.com"], cwd=repo_dir, capture_output=True, check=True)
     with open(os.path.join(repo_dir, "test.txt"), "w") as f:
         f.write("hello\n")
-    subprocess.run(["git", "add", "test.txt"], cwd=repo_dir, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "initial commit"], cwd=repo_dir, capture_output=True)
+    _REAL_RUN(["git", "add", "test.txt"], cwd=repo_dir, capture_output=True, check=True)
+    _REAL_RUN(["git", "commit", "-m", "initial commit"], cwd=repo_dir, capture_output=True, check=True)
+    git_marker = os.path.join(repo_dir, ".git")
+    if not (os.path.isdir(git_marker) or os.path.isfile(git_marker)):
+        raise RuntimeError("temp git repo is missing .git: " + repo_dir)
     return repo_dir
 
 
