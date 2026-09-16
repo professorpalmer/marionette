@@ -1251,6 +1251,26 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             (only this cap is disabled). Applies on the next turn — no restart needed.
           </p>
           <div className="flex items-center gap-2 pt-1">
+            <label className="text-[11px] text-muted shrink-0">Full-auto token ceiling</label>
+            <input
+              type="text"
+              defaultValue={settings.autoMaxTokens || "500000"}
+              onBlur={(e) => {
+                const v = e.target.value.trim();
+                if (v !== (settings.autoMaxTokens || "500000")) update({ autoMaxTokens: v });
+              }}
+              disabled={saving}
+              className="flex-1 px-2 py-1 rounded border border-edge bg-panel2 text-[11px] text-txt disabled:opacity-50"
+              placeholder="500000"
+            />
+          </div>
+          <p className="text-[10px] text-muted">
+            Tree-wide token ceiling for a full-auto run (HARNESS_AUTO_MAX_TOKENS, default
+            500k). Use 0 or "unlimited" so tokens do not stop the run. Time, swarm, idle,
+            and killswitch still apply. Takes effect on the next full-auto start — no
+            restart needed.
+          </p>
+          <div className="flex items-center gap-2 pt-1">
             <label className="text-[11px] text-muted shrink-0">Worker run token ceiling</label>
             <input
               type="text"
@@ -1266,9 +1286,11 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
           </div>
           <p className="text-[10px] text-muted">
             Default token ceiling for a single native worker run when no ambient AutoBudget
-            is governing the tree (default 250k). Values below 40k, including 0, reset to
-            250k — this field is not unlimited. Swarm/implement payloads stamp the same
-            value as token_budget. Applies on the next worker spawn -- no restart needed.
+            is governing the tree (default 250k). Use 0 or "unlimited" for no per-worker
+            token cap. Values from 1 through 39999 reset to 250k so a typo cannot
+            force-submit every agentic worker on turn 2. Swarm/implement payloads stamp
+            the same value as token_budget. Applies on the next worker spawn -- no restart
+            needed.
           </p>
           <div className="flex items-center gap-2 pt-1">
             <label className="text-[11px] text-muted shrink-0">Worker reasoning</label>

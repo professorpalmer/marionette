@@ -319,7 +319,14 @@ export default function App() {
     <JobMetadataOwner repo={config?.repo || ""} sessionId={activeSessionId}>
     <div className="h-full flex flex-col bg-[var(--shell-chrome)]">
       <UpdateBanner onAvailabilityChange={setAvailableUpdate} />
-      <ComputerAccess sessionId={activeSessionId || ""} onOpenBrowser={() => openRightTo("browser")} />
+      <ComputerAccess
+        sessionId={activeSessionId || ""}
+        onOpenBrowser={() => openRightTo("browser")}
+        onStealSession={(id) => {
+          handleSessionChange(id);
+          openRightTo("browser");
+        }}
+      />
       {/* Keyless nudge: agentic is the shipped default, so instead of a demo run
           we tell the user to plug in a key. Suppressed while the first-run wizard
           is up (it already covers key setup) to avoid stacking two prompts. */}

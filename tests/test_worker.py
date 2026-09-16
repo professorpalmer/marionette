@@ -114,6 +114,22 @@ def test_worker_default_token_budget_from_env(monkeypatch):
         shutil.rmtree(temp_dir)
 
 
+def test_worker_token_budget_unlimited(monkeypatch):
+    from harness.worker import ambient_budget, set_ambient_budget
+
+    set_ambient_budget(None)
+    monkeypatch.setenv("HARNESS_WORKER_TOKEN_BUDGET", "unlimited")
+    temp_dir = tempfile.mkdtemp()
+    try:
+        with ambient_budget(None):
+            worker = ProviderWorker(repo=temp_dir, goal="x")
+        assert worker.budget.max_tokens == 0
+        worker.budget.add_tokens(10**7)
+        assert worker.budget.check() is None
+    finally:
+        shutil.rmtree(temp_dir)
+
+
 def test_worker_token_budget_floors_one_to_default(monkeypatch):
     from harness.worker import ambient_budget, set_ambient_budget
 

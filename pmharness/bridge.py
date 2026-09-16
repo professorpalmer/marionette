@@ -62,19 +62,24 @@ MIN_WORKER_TOKEN_BUDGET = 40000
 def parse_worker_token_budget(raw: object) -> int:
     """Parse a worker token ceiling.
 
-    ``0`` / ``off`` / ``unlimited`` / empty reset to
-    ``DEFAULT_WORKER_TOKEN_BUDGET``. Values below ``MIN_WORKER_TOKEN_BUDGET``
-    also reset — a 1-token ceiling force-submits every agentic worker on
-    turn 2. Non-numeric input raises ``ValueError``.
+    ``0`` / ``off`` / ``unlimited`` mean no per-worker token cap (Puppetmaster
+    treats a 0 ``token_budget`` as omitted). Empty / ``default`` stay
+    ``DEFAULT_WORKER_TOKEN_BUDGET``. Values in ``1 .. MIN-1`` also reset —
+    a 1-token ceiling force-submits every agentic worker on turn 2.
+    Non-numeric input raises ``ValueError``.
     """
     text = "" if raw is None else str(raw).strip().lower()
-    if text in ("", "0", "off", "none", "unlimited", "default"):
+    if text in ("0", "off", "none", "unlimited"):
+        return 0
+    if text in ("", "default"):
         return DEFAULT_WORKER_TOKEN_BUDGET
     try:
         value = int(text)
     except (TypeError, ValueError):
         raise ValueError("Invalid workerTokenBudget")
-    if value < MIN_WORKER_TOKEN_BUDGET:
+    if value < 0:
+        raise ValueError("Invalid workerTokenBudget")
+    if 0 < value < MIN_WORKER_TOKEN_BUDGET:
         return DEFAULT_WORKER_TOKEN_BUDGET
     return value
 
@@ -83,9 +88,10 @@ def worker_token_budget() -> int:
     """Default token ceiling stamped on analysis/implement worker payloads.
 
     Mirrors the Settings "Worker run token ceiling" control
-    (HARNESS_WORKER_TOKEN_BUDGET, default 250000). Ambient AutoBudget still
-    governs native ProviderWorker spend when present; this value is the
-    agentic payload hint + unsupervised native default.
+    (HARNESS_WORKER_TOKEN_BUDGET, default 250000). 0 means unlimited.
+    Ambient AutoBudget still governs native ProviderWorker spend when
+    present; this value is the agentic payload hint + unsupervised native
+    default.
     """
     import os as _os
     try:

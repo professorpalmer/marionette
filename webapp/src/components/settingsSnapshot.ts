@@ -20,6 +20,7 @@ export function toSafeSettingsSnapshot(s: Settings): Settings {
     maxPilotSteps: s.maxPilotSteps,
     maxOutputTokens: s.maxOutputTokens,
     pilotToolBudget: s.pilotToolBudget,
+    autoMaxTokens: s.autoMaxTokens,
     workerTokenBudget: s.workerTokenBudget,
     reasoning_effort: s.reasoning_effort,
     swarm_reasoning_effort: s.swarm_reasoning_effort,

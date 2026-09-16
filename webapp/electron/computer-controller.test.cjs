@@ -20,10 +20,12 @@ function fixture() {
   return { controller, dispatch, calls, decisions, restart: () => pid++, failVerification: () => { failSnapshot = true; } };
 }
 
-test("computer access requires current session and human app approval", async () => {
+test("computer access requires a session and human app approval", async () => {
   const f = fixture();
-  await assert.rejects(f.dispatch("snapshot", "wrong"), /active conversation/);
+  f.controller.setSession("");
+  await assert.rejects(f.dispatch("snapshot", ""), /active conversation/);
   assert.equal(f.calls.length, 0);
+  f.controller.setSession("session");
   assert.equal((await f.dispatch()).approval, "pending");
   assert.deepEqual(f.calls.map(call => call.operation), ["apps"]);
   f.decisions[0](true);
@@ -32,6 +34,26 @@ test("computer access requires current session and human app approval", async ()
   const result = await f.dispatch("click");
   assert.equal(result.state.snapshot_id, "fresh");
   assert.deepEqual(f.calls.slice(-3).map(call => call.operation), ["apps", "click", "snapshot"]);
+});
+
+test("another conversation steals computer control", async () => {
+  const f = fixture();
+  assert.equal((await f.dispatch()).approval, "pending");
+  f.decisions[0](true);
+  await new Promise(setImmediate);
+  assert.equal((await f.dispatch()).snapshot_id, "fresh");
+  const stolen = await f.dispatch("snapshot", "other");
+  assert.equal(f.controller.getSession(), "other");
+  assert.equal(stolen.approval, "pending");
+});
+
+test("releaseSession only clears the owning conversation", () => {
+  const f = fixture();
+  f.controller.setSession("other");
+  f.controller.releaseSession("session");
+  assert.equal(f.controller.getSession(), "other");
+  f.controller.releaseSession("other");
+  assert.equal(f.controller.getSession(), "");
 });
 
 test("session switches revoke access and ignore late permission decisions", async () => {

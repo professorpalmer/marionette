@@ -27,7 +27,13 @@ function createComputerController({ createNative, requestApproval, onState = () 
     const next = typeof value === "string" && value.length <= 256 ? value : "";
     if (next !== sessionId) { sessionId = next; revoke(); }
   }
+  function releaseSession(value) {
+    const current = typeof value === "string" && value.length <= 256 ? value : "";
+    if (current && current === sessionId) { sessionId = ""; revoke(); }
+  }
   async function dispatch(payload, signal) {
+    const requested = typeof payload.session_id === "string" ? payload.session_id : "";
+    if (requested && requested !== sessionId) setSession(requested);
     if (!sessionId || payload.session_id !== sessionId) throw new Error("Computer control belongs to the active conversation. Switch back before continuing.");
     const args = payload.arguments;
     if (!args || !OPERATIONS.has(args.operation)) throw new Error("Unknown computer operation.");
@@ -94,7 +100,7 @@ function createComputerController({ createNative, requestApproval, onState = () 
       busy = false;
     }
   }
-  return { dispatch, setSession, revoke, close: revoke, getSession: () => sessionId };
+  return { dispatch, setSession, releaseSession, revoke, close: revoke, getSession: () => sessionId };
 }
 
 module.exports = { createComputerController };

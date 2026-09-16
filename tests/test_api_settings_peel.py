@@ -196,14 +196,50 @@ def test_post_settings_bad_worker_token_budget():
     assert post_settings({"workerTokenBudget": "nope"}, svc)[0] == 400
 
 
-def test_post_settings_worker_token_budget_zero_resets_to_default(monkeypatch):
+def test_post_settings_worker_token_budget_zero_is_unlimited(monkeypatch):
     monkeypatch.setattr(
         "harness.auto_registry.sync_agentic_registry_safe", lambda: None
     )
     svc, _, _, calls = _svc()
     code, _ = post_settings({"workerTokenBudget": "0"}, svc)
     assert code == 200
-    assert dict(calls["persist"])["HARNESS_WORKER_TOKEN_BUDGET"] == "250000"
+    assert dict(calls["persist"])["HARNESS_WORKER_TOKEN_BUDGET"] == "0"
+
+
+def test_post_settings_worker_token_budget_unlimited(monkeypatch):
+    monkeypatch.setattr(
+        "harness.auto_registry.sync_agentic_registry_safe", lambda: None
+    )
+    svc, _, _, calls = _svc()
+    code, _ = post_settings({"workerTokenBudget": "unlimited"}, svc)
+    assert code == 200
+    assert dict(calls["persist"])["HARNESS_WORKER_TOKEN_BUDGET"] == "0"
+
+
+def test_post_settings_auto_max_tokens_unlimited(monkeypatch):
+    monkeypatch.setattr(
+        "harness.auto_registry.sync_agentic_registry_safe", lambda: None
+    )
+    svc, _, _, calls = _svc()
+    code, _ = post_settings({"autoMaxTokens": "unlimited"}, svc)
+    assert code == 200
+    assert dict(calls["persist"])["HARNESS_AUTO_MAX_TOKENS"] == "0"
+
+
+def test_post_settings_auto_max_tokens_positive(monkeypatch):
+    monkeypatch.setattr(
+        "harness.auto_registry.sync_agentic_registry_safe", lambda: None
+    )
+    svc, _, _, calls = _svc()
+    code, _ = post_settings({"autoMaxTokens": "2000000"}, svc)
+    assert code == 200
+    assert dict(calls["persist"])["HARNESS_AUTO_MAX_TOKENS"] == "2000000"
+
+
+def test_post_settings_bad_auto_max_tokens():
+    svc, _, _, _ = _svc()
+    assert post_settings({"autoMaxTokens": "nope"}, svc)[0] == 400
+    assert post_settings({"autoMaxTokens": "-1"}, svc)[0] == 400
 
 
 def test_post_settings_worker_token_budget_one_resets_to_default(monkeypatch):

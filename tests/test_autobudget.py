@@ -17,6 +17,12 @@ def test_token_ceiling_halts():
     assert "token ceiling" in (b.check() or "")
 
 
+def test_unlimited_token_ceiling_never_halts_on_tokens():
+    b = AutoBudget(max_tokens=0, max_seconds=10**9, max_swarms=10**9, max_idle_steps=10**9).start()
+    b.add_tokens(10**7)
+    assert b.check() is None
+
+
 def test_swarm_ceiling_halts():
     b = AutoBudget(max_swarms=2).start()
     b.add_swarm(); b.add_swarm()
@@ -64,6 +70,15 @@ def test_from_env(monkeypatch):
     monkeypatch.setenv("HARNESS_AUTO_MAX_SWARMS", "7")
     b = AutoBudget.from_env()
     assert b.max_tokens == 5000 and b.max_swarms == 7
+
+
+def test_from_env_unlimited_tokens(monkeypatch):
+    monkeypatch.setenv("HARNESS_AUTO_MAX_TOKENS", "unlimited")
+    b = AutoBudget.from_env()
+    assert b.max_tokens == 0
+    b.start()
+    b.add_tokens(10**7)
+    assert b.check() is None
 
 
 def test_default_unattended_ceilings():
