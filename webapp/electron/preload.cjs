@@ -123,6 +123,7 @@ contextBridge.exposeInMainWorld("harnessIPC", {
 
   // native bridges
   fs: {
+    openPath: (target) => ipcRenderer.invoke("fs:openPath", target),
     readDir: (dir) => ipcRenderer.invoke("fs:readDir", dir),
     readFile: (file) => ipcRenderer.invoke("fs:readFile", file),
     revealInFolder: (absPath) => ipcRenderer.invoke("fs:revealInFolder", absPath),

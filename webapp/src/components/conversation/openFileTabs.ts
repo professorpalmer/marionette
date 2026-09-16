@@ -66,11 +66,12 @@ export type FileResolvePayload = {
 
 export type FileResolveChoice =
   | { path: string }
-  | { toast: string };
+  | { toast: string }
+  | { external: string };
 
 /**
- * Map /api/file/resolve onto an editor path. Transcript clicks fail closed
- * when the file is missing; file-tree clicks may fall back to the given path.
+ * Prefer a unique workspace editor path. Only explicit local paths may use
+ * the native opener; ambiguous matches and missing relative paths fail closed.
  */
 export function chooseResolvedFilePath(
   requested: string,
@@ -88,5 +89,6 @@ export function chooseResolvedFilePath(
     return { toast: `Multiple files match ${hint}; use a more specific path.` };
   }
   if (opts?.trusted) return { path: hint };
+  if (/^(?:~\/|\/(?!\/)|[A-Za-z]:[\\/]|file:\/\/)/i.test(hint)) return { external: requested };
   return { toast: `Couldn't open ${hint}.` };
 }

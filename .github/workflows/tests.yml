@@ -31,6 +31,8 @@ jobs:
           node-version: "22"
       - name: Verify native Windows computer control on a disposable fixture
         run: node webapp/electron/native-windows-smoke.cjs
+      - name: Verify local file opening on Windows paths
+        run: node --test webapp/electron/open-local-path.test.cjs
 
   reuse-green-tree:
     runs-on: ubuntu-latest
