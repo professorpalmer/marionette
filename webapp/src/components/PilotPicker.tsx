@@ -4,6 +4,7 @@ import { api, type Config, type ReasoningEffort } from "../lib/api";
 import { modelLabelOf, organizePilotModels, providerLabelOf } from "../lib/pilotPickerModels";
 import { REASONING_LEVELS, labelForEffort, showReasoningEffort } from "../lib/reasoningSupport";
 import { useOverlayFocus } from "../lib/overlayFocus";
+import { getSessionCache, updateSessionCache } from "../lib/sessionCache";
 
 export default function PilotPicker({ config, sessionId = "" }: {
   config: Config | null;
@@ -23,7 +24,11 @@ export default function PilotPicker({ config, sessionId = "" }: {
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
   const operation = useRef(0);
   const reasoningOperation = useRef(0);
-  useEffect(() => () => { operation.current++; reasoningOperation.current++; }, [sessionId]);
+  const retainOperation = useRef(0);
+  const [retainReasoning, setRetainReasoning] = useState(false);
+  const [retainReady, setRetainReady] = useState(false);
+  const [savingRetain, setSavingRetain] = useState(false);
+  useEffect(() => () => { operation.current++; reasoningOperation.current++; retainOperation.current++; }, [sessionId]);
 
   useOverlayFocus(modelOpen, modelMenuRef, {
     initialFocusRef: filterRef,
@@ -75,6 +80,21 @@ export default function PilotPicker({ config, sessionId = "" }: {
     return () => document.removeEventListener("mousedown", handleOutsideClick);
   }, [modelOpen, reasonOpen]);
 
+  useEffect(() => {
+    if (!sessionId || !reasonOpen || reasoning === "none") return;
+    let active = true;
+    const generation = ++retainOperation.current;
+    void getSessionCache(sessionId).then((cache) => {
+      if (!active || generation !== retainOperation.current) return;
+      setRetainReasoning(cache.retain_reasoning);
+      setRetainReady(true);
+    }).catch(() => {
+      if (!active || generation !== retainOperation.current) return;
+      setRetainReady(false);
+    });
+    return () => { active = false; };
+  }, [sessionId, reasonOpen, reasoning]);
+
   const swap = async (m: string) => {
     if (!sessionId) return;
     const generation = ++operation.current;
@@ -92,6 +112,28 @@ export default function PilotPicker({ config, sessionId = "" }: {
       window.dispatchEvent(new CustomEvent("harness-toast", {
         detail: "Model switch failed -- try again",
       }));
+    }
+  };
+
+  const setRetainThinking = async (enabled: boolean) => {
+    if (!sessionId) return;
+    const generation = ++retainOperation.current;
+    const prev = retainReasoning;
+    setRetainReasoning(enabled);
+    setSavingRetain(true);
+    try {
+      const cache = await updateSessionCache(sessionId, { action: "preferences", retain_reasoning: enabled });
+      if (generation !== retainOperation.current) return;
+      setRetainReasoning(cache.retain_reasoning);
+      setRetainReady(true);
+    } catch {
+      if (generation !== retainOperation.current) return;
+      setRetainReasoning(prev);
+      window.dispatchEvent(new CustomEvent("harness-toast", {
+        detail: "Could not update thinking retention. Finish the turn and try again.",
+      }));
+    } finally {
+      if (generation === retainOperation.current) setSavingRetain(false);
     }
   };
 
@@ -262,6 +304,21 @@ export default function PilotPicker({ config, sessionId = "" }: {
                   </div>
                 );
               })}
+              {sessionId && retainReady && reasoning !== "none" ? (
+                <label
+                  className="flex items-center gap-2 px-3 py-1.5 text-[11.5px] text-txt/90 border-t border-edge/50 select-none cursor-pointer"
+                  title="Off by default. Retains signed or encrypted provider output in this session for cache reuse. Replay stays with the same provider and model."
+                >
+                  <input
+                    type="checkbox"
+                    aria-label="Keep thinking blocks"
+                    checked={retainReasoning}
+                    disabled={savingRetain}
+                    onChange={(event) => { void setRetainThinking(event.target.checked); }}
+                  />
+                  Keep thinking blocks
+                </label>
+              ) : null}
             </div>
           )}
         </div>
