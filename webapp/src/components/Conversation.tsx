@@ -1514,7 +1514,7 @@ export default function Conversation({
       el.removeEventListener("touchcancel", onTouchEnd);
       el.removeEventListener("keydown", onKeyDown);
     };
-  }, []);
+  }, [activeSessionId]);
   const applyFeedResizeFollow = (
     snapshot: FeedResizeObservationSnapshot | null,
   ) => {
@@ -1542,6 +1542,10 @@ export default function Conversation({
     publishJumpVisibilityRef.current();
   };
   useLayoutEffect(() => {
+    // Session panes replace the DOM nodes while Conversation stays mounted.
+    userScrollGestureRef.current = false;
+    programmaticScrollRef.current = false;
+    prevFeedScrollTopRef.current = null;
     const viewport = feedRef.current;
     if (!viewport) return;
     const content = feedContentRef.current;
@@ -1569,7 +1573,7 @@ export default function Conversation({
     return () => {
       ro?.disconnect();
     };
-  }, []);
+  }, [activeSessionId]);
   useEffect(() => {
     if (typeof ResizeObserver !== "undefined") return;
     const el = feedRef.current;
