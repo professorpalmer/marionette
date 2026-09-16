@@ -77,7 +77,7 @@ function helperCommand({ platform, app, resourcesPath, userDataPath }) {
       : path.join(__dirname, "native", "computer-windows.ps1");
     return {
       file: "powershell.exe",
-      args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-ScreenshotDir", screenshots],
+      args: ["-NoLogo", "-NoProfile", "-Mta", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-ScreenshotDir", screenshots],
       screenshots,
     };
   }
@@ -177,7 +177,7 @@ function createNativeComputer({ app, resourcesPath = process.resourcesPath, user
       if (!command) return null;
       if (platform === "darwin" && !app?.isPackaged) await compileDevelopmentMacHelper(command.file);
       if (platform === "darwin" && !fs.existsSync(command.file)) fail("packaged macOS helper is missing");
-      if (platform === "win32" && !fs.existsSync(command.args[6])) fail("Windows helper script is missing");
+      if (platform === "win32" && !fs.existsSync(command.args[7])) fail("Windows helper script is missing");
       return createProtocolClient(command);
     })();
     return clientPromise;

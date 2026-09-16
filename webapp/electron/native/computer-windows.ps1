@@ -4,8 +4,6 @@ $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 Add-Type -AssemblyName System.Drawing
-$providers = [Reflection.Assembly]::Load("UIAutomationClientsideProviders, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35")
-[System.Windows.Automation.ClientSettings]::RegisterClientSideProviderAssembly($providers.GetName())
 
 Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @'
 using System;
@@ -267,7 +265,7 @@ function Invoke-Click($Request, $State) {
 
 function Invoke-Request($Request) {
     switch ([string]$Request.operation) {
-        "status" { return [pscustomobject]@{ supported = $true; accessibility = $true; screenRecording = $true; setup = "Windows UI Automation and window capture are available. Marionette and the target app must run at the same integrity level." } }
+        "status" { return [pscustomobject]@{ supported = $true; accessibility = $true; screenRecording = $true; apartment = [Threading.Thread]::CurrentThread.GetApartmentState().ToString(); setup = "Windows UI Automation and window capture are available. Marionette and the target app must run at the same integrity level." } }
         "apps" { return [pscustomobject]@{ apps = @(Get-RunningApps) } }
         "snapshot" { return New-Snapshot $Request }
         { $_ -in @("click", "type", "keypress", "scroll") } {

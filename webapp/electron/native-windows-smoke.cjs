@@ -15,7 +15,9 @@ async function main() {
   const native = createNativeComputer({ app: { isPackaged: false }, userDataPath: root });
   const app_id = "exe:" + fixture.toLowerCase();
   try {
-    assert.equal((await native.dispatch({ operation: "status" })).supported, true);
+    const status = await native.dispatch({ operation: "status" });
+    assert.equal(status.supported, true);
+    assert.equal(status.apartment, "MTA");
     let state;
     for (let attempt = 0; attempt < 50; attempt++) {
       try { state = await native.dispatch({ operation: "snapshot", app_id }); break; }
@@ -25,7 +27,7 @@ async function main() {
     assert.ok(fs.existsSync(state.screenshot_path));
     assert.ok((await native.dispatch({ operation: "apps" })).apps.some(app => app.app_id === app_id));
     const input = state.elements.find(row => row.label === "Fixture name");
-    assert.ok(input);
+    assert.ok(input, "Fixture input missing: " + JSON.stringify(state.elements));
     await native.dispatch({ operation: "type", app_id, snapshot_id: state.snapshot_id, ref: input.ref, text: "Marionette" });
     await assert.rejects(native.dispatch({ operation: "click", app_id, snapshot_id: state.snapshot_id, ref: input.ref }), /Stale/);
     state = await native.dispatch({ operation: "snapshot", app_id });

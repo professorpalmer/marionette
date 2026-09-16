@@ -90,9 +90,9 @@ test("native commands use fixed executable arguments and user-data screenshot st
   assert.deepEqual(mac.args, ["--screenshot-dir", path.join(root, "native-computer", "tmp")]);
   const windows = _test.helperCommand({ platform: "win32", app, resourcesPath: path.join(root, "resources"), userDataPath: root });
   assert.equal(windows.file, "powershell.exe");
-  assert.deepEqual(windows.args.slice(0, 6), ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"]);
-  assert.equal(windows.args[6], path.join(root, "resources", "native-computer", "computer-windows.ps1"));
-  assert.deepEqual(windows.args.slice(7), ["-ScreenshotDir", path.join(root, "native-computer", "tmp")]);
+  assert.deepEqual(windows.args.slice(0, 7), ["-NoLogo", "-NoProfile", "-Mta", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"]);
+  assert.equal(windows.args[7], path.join(root, "resources", "native-computer", "computer-windows.ps1"));
+  assert.deepEqual(windows.args.slice(8), ["-ScreenshotDir", path.join(root, "native-computer", "tmp")]);
   assert.equal(_test.helperCommand({ platform: "linux", app, resourcesPath: root, userDataPath: root }), null);
 });
 
