@@ -374,7 +374,8 @@ def test_empty_managed_implement_triggers_one_recovery_when_live_dirty(monkeypat
 
     assert len(calls) == 2
     assert "[recovery]" in calls[1]
-    assert "styles.css" in calls[1]
+    assert "original objective" in calls[1]
+    assert "styles.css" not in calls[1]
     item = session._swarm_results.get_nowait()
     assert session._swarm_results.empty()
     result = item["result"]

@@ -862,15 +862,15 @@ class ProviderWorker:
             # Seed live goal paths (untracked / dirty) so the worker sees them,
             # then commit that baseline so finalize does not mis-report the
             # copies as worker edits (false "applied N files" on analysis).
-            try:
-                from harness.worktree_seed import (
-                    commit_seed_baseline,
-                    seed_worktree_from_goal,
-                )
-                seed_result = seed_worktree_from_goal(self.repo, wt_path, self.goal)
-                commit_seed_baseline(wt_path, seed_result.paths)
-            except Exception:
-                pass
+            from harness.worktree_seed import (
+                commit_seed_baseline,
+                seed_worktree_from_goal,
+            )
+            from harness.edit_engines import worktree_patch_base
+
+            seed_result = seed_worktree_from_goal(self.repo, wt_path, self.goal)
+            commit_seed_baseline(wt_path, seed_result.paths)
+            patch_base = worktree_patch_base(wt_path)
 
             check_results: list = []
             from harness.declarative_checks import declarative_checks_enabled
@@ -1039,7 +1039,7 @@ class ProviderWorker:
             # with the agentic engine so both capture edits identically.
             try:
                 from harness.edit_engines import finalize_worktree_patch
-                patch, files_changed = finalize_worktree_patch(wt_path)
+                patch, files_changed = finalize_worktree_patch(wt_path, patch_base)
                 # Record this before analysis intentionally discards its patch.
                 self._worktree_diff_empty = not bool(patch.strip())
             except RuntimeError as e:

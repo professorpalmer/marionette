@@ -219,7 +219,7 @@ def test_native_reported_substitution_fails(monkeypatch):
         read_events=lambda job: [],
     )
     monkeypatch.setattr('puppetmaster.store_factory.create_store', lambda *args, **kwargs: store)
-    monkeypatch.setattr('harness.edit_engines.finalize_worktree_patch', lambda path: ('patch', ['a.py']))
+    monkeypatch.setattr('harness.edit_engines.finalize_worktree_patch', lambda path, base: ('patch', ['a.py']))
     pin, _ = pins.resolve_worker_model_pin('codex/gpt-6-astra', 'low')
     result = run_implement(_cfg('/unused'), 'Change code', agentic_pin=pin)
     assert not result.ok

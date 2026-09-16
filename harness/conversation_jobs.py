@@ -99,8 +99,8 @@ def _enrich_worker_provenance(
     summary = str(getattr(res, "summary", "") or "") if not ok else ""
     failure_reason = _non_generic_failure_reason(
         finish_reason,
-        summary,
         provenance.get("failure_reason"),
+        summary,
         provenance.get("error"),
     )
     files = [
@@ -165,17 +165,14 @@ def _is_empty_diff_implement_failure(res, *, expects_diff: bool) -> bool:
         return True
 
 
-def _empty_implement_recovery_objective(objective: str, dirty_paths: list) -> str:
-    """Append a one-shot recovery instruction for seeded live dirty files."""
-    shown = [str(p) for p in (dirty_paths or [])[:_WORKER_PROVENANCE_PATH_CAP]]
-    path_hint = ", ".join(shown) if shown else "live dirty files"
-    if len(dirty_paths or []) > len(shown):
-        path_hint = f"{path_hint}, +{len(dirty_paths) - len(shown)} more"
+def _empty_implement_recovery_objective(objective: str) -> str:
+    """Retry the original objective without turning dirty paths into scope."""
     suffix = (
-        "\n\n[recovery] Live checkout had pre-existing dirty/untracked files that "
-        f"were seeded into this disposable managed worktree ({path_hint}). "
-        "A non-empty patch against those seeded files is mandatory — do not "
-        "finish with an empty worktree diff."
+        "\n\n[recovery] The previous attempt returned no worker-authored patch. "
+        "Recheck the files needed for the original objective in this worktree. "
+        "Preserve pre-existing changes; do not edit unrelated files merely to "
+        "produce a diff. If the objective is already satisfied or blocked, "
+        "report the specific evidence instead of inventing changes."
     )
     base = (objective or "").rstrip()
     return f"{base}{suffix}" if base else suffix.strip()
@@ -356,6 +353,11 @@ def _worker_provenance_text(provenance: dict, *, expects_diff: bool = True) -> s
         worker_line = "Worker produced changes in disposable managed worktree"
     else:
         worker_line = "worktree diff could not be determined"
+    reason = _non_generic_failure_reason(provenance.get("failure_reason"))
+    if reason:
+        from harness.api.redaction import redact_secret_text
+        reason = " ".join(redact_secret_text(reason).split())[:180]
+        worker_line = f"{reason}. {worker_line}"
     if error and error in _PROVENANCE_STAGE_CODES and error not in worker_line:
         worker_line = f"{error}: {worker_line}"
     def path_list(paths: list) -> str:
@@ -863,7 +865,7 @@ class ConversationJobsMixin:
             if should_recover:
                 first_res = res
                 recovery_objective = _empty_implement_recovery_objective(
-                    objective, live_dirty_before,
+                    objective,
                 )
                 # Shared lifecycle budget: do not start recovery when the
                 # primary attempt already consumed the total ceiling.
@@ -996,6 +998,7 @@ class ConversationJobsMixin:
                     ),
                 )
                 return
+            _enrich_worker_provenance(provenance, res)
             raw_worker_summary = res.summary or ""
             try:
                 from harness.provenance_sanitize import sanitize_clean_tree_claims

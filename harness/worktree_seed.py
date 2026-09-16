@@ -236,7 +236,7 @@ def commit_seed_baseline(wt_path: str, seeded: Iterable[str]) -> int:
     copies as worker changes — analysis-mode jobs then falsely report
     "applied N files" for pre-existing diagnostics the seeder copied in.
 
-    Returns how many paths were committed. Best-effort; never raises.
+    Returns how many paths were committed. Raises if staging or committing fails.
     """
     paths = []
     seen: set[str] = set()
@@ -253,12 +253,12 @@ def commit_seed_baseline(wt_path: str, seeded: Iterable[str]) -> int:
             subprocess.run(
                 ["git", "-C", wt_path, "add", "--", rel],
                 capture_output=True, text=True, encoding="utf-8",
-                errors="replace", timeout=30,
+                errors="replace", timeout=30, check=True,
             )
         staged = subprocess.run(
             ["git", "-C", wt_path, "diff", "--cached", "--name-only"],
             capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=15,
+            errors="replace", timeout=15, check=True,
         )
         staged_paths = [
             ln.strip() for ln in (staged.stdout or "").splitlines() if ln.strip()
@@ -282,10 +282,13 @@ def commit_seed_baseline(wt_path: str, seeded: Iterable[str]) -> int:
             errors="replace", timeout=30, env=env,
         )
         if commit.returncode != 0:
-            return 0
+            raise RuntimeError(
+                f"seed baseline commit failed (exit {commit.returncode}): "
+                f"{commit.stderr or commit.stdout}"
+            )
         return len(staged_paths)
-    except Exception:
-        return 0
+    except (subprocess.SubprocessError, OSError) as exc:
+        raise RuntimeError(f"seed baseline failed: {exc}") from exc
 
 
 def seed_untracked_matching(

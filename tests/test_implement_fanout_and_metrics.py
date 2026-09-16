@@ -29,7 +29,7 @@ def test_extract_goal_paths_finds_rel_and_basename():
 
 def test_oversized_rewrite_refused(tmp_path, monkeypatch):
     monkeypatch.setenv("HARNESS_IMPLEMENT_MAX_FILE_LINES", "50")
-    monkeypatch.delenv("HARNESS_IMPLEMENT_FANOUT_GUARD", raising=False)
+    monkeypatch.setenv("HARNESS_IMPLEMENT_FANOUT_GUARD", "1")
     big = tmp_path / "huge.py"
     big.write_text("\n".join(f"line {i}" for i in range(200)), encoding="utf-8")
     msg = check_oversized_single_file_rewrite(

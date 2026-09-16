@@ -692,16 +692,26 @@ def managed_worktree_for_goal(
     from harness.worktree_seed import commit_seed_baseline, seed_worktree_from_goal
 
     with managed_worktree(repo, base=base, cleanup_errors=cleanup_errors) as wt_path:
-        with contextlib.suppress(Exception):
-            seed_result = seed_worktree_from_goal(repo, wt_path, goal)
-            commit_seed_baseline(wt_path, seed_result.paths)
+        seed_result = seed_worktree_from_goal(repo, wt_path, goal)
+        commit_seed_baseline(wt_path, seed_result.paths)
         yield wt_path
 
 
-def finalize_worktree_patch(wt_path: str) -> tuple[str, list[str]]:
+def worktree_patch_base(wt_path: str) -> str:
+    """Capture the immutable post-seed commit before executing a worker."""
+    args = ("rev-parse", "--verify", "HEAD^{commit}")
+    rc, out, err = _git(wt_path, *args)
+    if rc != 0:
+        _raise_git_failed(wt_path, args, rc, err, out)
+    return out.strip()
+
+
+def finalize_worktree_patch(wt_path: str, base: str = "HEAD") -> tuple[str, list[str]]:
     """Stage everything in `wt_path`, drop build artifacts, return (patch, files).
 
-    Returns the ``git diff --cached`` unified diff and the list of changed paths.
+    Compare against the post-seed commit captured before worker execution so
+    committed and uncommitted edits are included. The HEAD default preserves
+    compatibility for callers that only collect uncommitted edits.
     Raises RuntimeError when a git step fails so the caller can report honestly.
     """
     from harness.worktrees import _is_repo
@@ -720,12 +730,12 @@ def finalize_worktree_patch(wt_path: str) -> tuple[str, list[str]]:
     for spec in _ARTIFACT_PATHSPECS:
         reset_specs.append(f":(glob){spec}")
         reset_specs.append(f":(glob)**/{spec}")
-    reset_args = ("reset", "-q", "--") + tuple(reset_specs)
+    reset_args = ("reset", "-q", base, "--") + tuple(reset_specs)
     rc_reset, out_reset, err_reset = _git(wt_path, *reset_args)
     if rc_reset != 0:
         _raise_git_failed(wt_path, reset_args, rc_reset, err_reset, out_reset)
 
-    diff_args = ("diff", "--cached", "--no-color")
+    diff_args = ("diff", "--cached", "--no-color", base, "--")
     p_diff = subprocess.run(
         ["git", "-C", wt_path, *git_extra_args(), *diff_args],
         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
@@ -737,7 +747,7 @@ def finalize_worktree_patch(wt_path: str) -> tuple[str, list[str]]:
         )
     patch = p_diff.stdout
 
-    name_args = ("diff", "--cached", "--name-only")
+    name_args = ("diff", "--cached", "--name-only", base, "--")
     p_files = subprocess.run(
         ["git", "-C", wt_path, *git_extra_args(), *name_args],
         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
@@ -1184,6 +1194,7 @@ def run_cursor_edit(
         with _managed_worktree_collecting(
             repo_root, goal, cleanup_errors, pending,
         ) as wt_path:
+            patch_base = worktree_patch_base(wt_path)
             from pmharness.bridge import (
                 _analysis_instruction,
                 _analyze_max_turns,
@@ -1241,7 +1252,7 @@ def run_cursor_edit(
             finally:
                 _cleanup_store_dir(tmp, cleanup_errors)
 
-            patch, files_changed = finalize_worktree_patch(wt_path)
+            patch, files_changed = finalize_worktree_patch(wt_path, patch_base)
             if not expects_diff:
                 patch = ""
                 files_changed = []
@@ -1381,6 +1392,7 @@ def run_agentic_edit(
         with _managed_worktree_collecting(
             repo_root, goal, cleanup_errors, pending,
         ) as wt_path:
+            patch_base = worktree_patch_base(wt_path)
             worktree_entered = True
             from pmharness.bridge import (
                 _analysis_capability_payload,
@@ -1520,7 +1532,7 @@ def run_agentic_edit(
             patch_capture_status = "skipped"
             finalize_exc = None
             try:
-                patch, files_changed = finalize_worktree_patch(wt_path)
+                patch, files_changed = finalize_worktree_patch(wt_path, patch_base)
                 worktree_diff_empty = not bool(patch.strip())
                 patch_capture_status = "ok"
             except Exception as final_exc:
@@ -1938,6 +1950,7 @@ def _summarize_agentic_result(result) -> tuple[int, int, str, str]:
     tokens_in = 0
     failure = ""
     final_text = ""
+    last_message = ""
     for art in getattr(result, "artifacts", []) or []:
         payload = getattr(art, "payload", {}) or {}
         tokens_out += int(payload.get("tokens_out") or 0)
@@ -1947,7 +1960,10 @@ def _summarize_agentic_result(result) -> tuple[int, int, str, str]:
         stdout = payload.get("stdout")
         if stdout and not final_text:
             final_text = str(stdout)[:2000]
-    return tokens_out, tokens_in, failure, final_text
+        message = payload.get("last_message")
+        if isinstance(message, str) and message.strip():
+            last_message = message.strip()[:2000]
+    return tokens_out, tokens_in, failure, last_message or final_text
 
 
 def _routed_model_id(result) -> str:
