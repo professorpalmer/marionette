@@ -160,7 +160,7 @@ def test_core_visible_names_micro_hides_orchestration():
 
 
 def test_swarm_gate_allows_exploration_when_micro(monkeypatch):
-    monkeypatch.delenv("HARNESS_SWARM_GATE", raising=False)
+    monkeypatch.setenv("HARNESS_SWARM_GATE", "1")
     prompt = "audit authentication architecture across the codebase"
     state = new_turn_guard_state(prompt, task_profile=MICRO)
     assert state.broad_intent is True

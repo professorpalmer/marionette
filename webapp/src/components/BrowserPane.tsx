@@ -1,5 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { RotateCw, ExternalLink, ArrowLeft, ArrowRight, Plus, X, Globe } from "lucide-react";
+import { getHarnessIpc } from "../lib/transport";
+
+interface BrowserBridge {
+  setBrowserContext?: (context: { sessionId: string; activeTabId: string; tabs: { tabId: string; webContentsId: number }[] }) => Promise<{ ok: boolean }>;
+  onActivateBrowserTab?: (callback: (payload: { sessionId: string; tabId: string }) => void) => () => void;
+}
 
 // In-app browser pane with multi-tab support.
 // Each tab maintains its own URL, loading state, history, and active iframe/webview.
@@ -49,8 +55,10 @@ interface Tab {
   nonce: number;
 }
 
-export default function BrowserPane() {
+export default function BrowserPane({ sessionId = "" }: { sessionId?: string }) {
   const isDesktop = !!(window as any).harnessIPC;
+  const browserBridge: BrowserBridge | undefined = getHarnessIpc();
+  const [readyEpoch, setReadyEpoch] = useState(0);
 
   const initialIdRef = useRef(Math.random().toString(36).substring(2, 11));
   const [tabs, setTabs] = useState<Tab[]>([
@@ -71,6 +79,12 @@ export default function BrowserPane() {
   const [editing, setEditing] = useState(false);
 
   const webviewsRef = useRef<Record<string, any>>({});
+
+  useEffect(() => {
+    return browserBridge?.onActivateBrowserTab?.((payload) => {
+      if (payload.sessionId === sessionId && tabs.some(tab => tab.id === payload.tabId)) setActiveTabId(payload.tabId);
+    });
+  }, [browserBridge, sessionId, tabs]);
 
   // Open a URL dispatched from elsewhere (e.g. a clicked chat link) in a fresh
   // tab, so following a link never clobbers the tab the user was already on.
@@ -106,6 +120,21 @@ export default function BrowserPane() {
   const loading = activeTab?.loading || false;
   const canBack = activeTab?.canBack || false;
   const canFwd = activeTab?.canFwd || false;
+
+  useLayoutEffect(() => {
+    const registered = [];
+    for (const tab of tabs) {
+      const view = webviewsRef.current[tab.id];
+      if (!view) continue;
+      try { registered.push({ tabId: tab.id, webContentsId: view.getWebContentsId() }); }
+      catch { /* dom-ready will publish this guest when Electron attaches it. */ }
+    }
+    void browserBridge?.setBrowserContext?.({ sessionId, activeTabId, tabs: registered });
+  }, [browserBridge, sessionId, activeTabId, tabs, readyEpoch]);
+
+  useLayoutEffect(() => () => {
+    void browserBridge?.setBrowserContext?.({ sessionId: "", activeTabId: "", tabs: [] });
+  }, [browserBridge]);
 
   useEffect(() => {
     if (!editing && activeTab) {
@@ -336,6 +365,7 @@ export default function BrowserPane() {
                     try {
                       oldEl.removeEventListener("did-start-loading", oldEl._onStart);
                       oldEl.removeEventListener("did-stop-loading", oldEl._onStop);
+                      oldEl.removeEventListener("dom-ready", oldEl._onReady);
                     } catch {}
                   }
 
@@ -380,15 +410,18 @@ export default function BrowserPane() {
 
                   el._onStart = onStart;
                   el._onStop = onStop;
+                  el._onReady = () => setReadyEpoch(epoch => epoch + 1);
 
                   el.addEventListener("did-start-loading", onStart);
                   el.addEventListener("did-stop-loading", onStop);
+                  el.addEventListener("dom-ready", el._onReady);
                 } else {
                   const oldEl = webviewsRef.current[tab.id];
                   if (oldEl) {
                     try {
                       oldEl.removeEventListener("did-start-loading", oldEl._onStart);
                       oldEl.removeEventListener("did-stop-loading", oldEl._onStop);
+                      oldEl.removeEventListener("dom-ready", oldEl._onReady);
                     } catch {}
                   }
                   delete webviewsRef.current[tab.id];

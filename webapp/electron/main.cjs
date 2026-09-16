@@ -8,6 +8,7 @@
 // implementation differs (IPC here vs fetch/SSE on the web).
 
 const { app, BrowserWindow, ipcMain, dialog, shell, session, nativeTheme, Menu, clipboard } = require("electron");
+const { createBrowserBridge } = require("./browser-bridge.cjs");
 app.name = "Marionette";
 const { spawn } = require("node:child_process");
 const http = require("node:http");
@@ -384,6 +385,54 @@ function loginShellEnv() {
 }
 
 let backend = null;
+let desktopBrowserBridge = null;
+const computerController = require("./computer-controller.cjs").createComputerController({
+  createNative: () => require("./native-computer.cjs").createNativeComputer({ app }),
+  requestApproval: async target => {
+    if (!win || win.isDestroyed()) return false;
+    const answer = await dialog.showMessageBox(win, {
+      type: "question", title: "Allow computer control?",
+      message: `Allow this conversation to view and control ${target.name}?`,
+      detail: "The pilot can read this app's accessibility content, capture its selected window, and send mouse and keyboard input. Content is sent to your selected model provider. Access ends when you switch sessions or choose Stop computer control. This does not approve purchases, messages, deletion, or other sensitive actions.",
+      buttons: ["Deny", "Allow for this session"], defaultId: 0, cancelId: 0, noLink: true,
+    });
+    return answer.response === 1;
+  },
+  onState: state => { if (win && !win.isDestroyed()) win.webContents.send("computer:state", state); },
+});
+const browserController = require("./browser-controller.cjs").createBrowserController({
+  resolveGuest: id => {
+    const contents = require("electron").webContents.fromId(id);
+    return contents && !contents.isDestroyed() && win && !win.isDestroyed()
+      && contents.getType() === "webview" && contents.hostWebContents === win.webContents
+      && contents.session === session.fromPartition("persist:browser") ? contents : null;
+  },
+  activateTab: payload => win?.webContents.send("browser:activateTab", payload),
+  focus: contents => { win?.focus(); contents.focus(); },
+  screenshotDir: path.join(app.getPath("temp"), "marionette-browser-shots"),
+});
+
+async function connectDesktopBrowser() {
+  if (!desktopBrowserBridge) {
+    desktopBrowserBridge = createBrowserBridge({ dispatch: async (payload, signal) => {
+      if (payload.action === "computer") return computerController.dispatch(payload, signal);
+      if (computerController.getSession() !== payload.session_id) throw new Error("Browser control belongs to the active conversation.");
+      if (!browserController.readyForSession(payload.session_id)) {
+        win?.webContents.send("browser:openForSession", payload.session_id);
+        while (!signal.aborted && computerController.getSession() === payload.session_id && !browserController.readyForSession(payload.session_id)) await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      if (signal.aborted || computerController.getSession() !== payload.session_id) throw new Error("Browser opening cancelled.");
+      return browserController.dispatch(payload, signal);
+    } });
+    await desktopBrowserBridge.listen();
+  }
+  const response = await _backendRequestOnce("POST", "/api/browser/controller", {
+    port: desktopBrowserBridge.server.address().port,
+    token: desktopBrowserBridge.token,
+  }, "", undefined, { timeoutMs: 5000, maxBytes: 65536 });
+  const result = require("./json-response.mjs").parseJSONResponse(response, "/api/browser/controller");
+  if (result.ok !== true) throw new Error("Desktop browser registration failed.");
+}
 let backendPort = 8799;
 /** True when this Electron process spawned the live backend (vs adopted via marker). */
 let backendOwned = false;
@@ -693,7 +742,7 @@ function startBackend() {
   // Coalesce overlapping starts onto one in-flight promise so we never launch a
   // second backend against the same SQLite while the first is still starting up.
   if (startInFlight) return startInFlight;
-  startInFlight = _startBackendOnce().finally(() => { startInFlight = null; });
+  startInFlight = _startBackendOnce().then(connectDesktopBrowser).finally(() => { startInFlight = null; });
   return startInFlight;
 }
 
@@ -1684,7 +1733,9 @@ function createWindow() {
 
   // Drop the reference when the window is closed so a reopen builds a clean one
   // (and a failed renderer load doesn't leave a half-dead window bound to `win`).
-  win.on("closed", () => { win = null; });
+  win.webContents.on("did-start-loading", () => computerController.setSession(""));
+  win.webContents.on("render-process-gone", () => computerController.setSession(""));
+  win.on("closed", () => { computerController.setSession(""); win = null; });
   // If the renderer fails to load (white screen / error), reload it so a
   // transient failure on reopen self-heals. A matching classic-dev origin
   // failure latches onto dist instead of retrying the dead Vite URL forever.
@@ -2148,6 +2199,19 @@ ipcMain.handle("browser:popout", (_e, url) => {
   }
 });
 
+ipcMain.handle("browser:setContext", (event, payload) => {
+  if (!win || event.sender !== win.webContents) return { ok: false };
+  try { return browserController.setContext(payload); }
+  catch (error) { browserController.clear(); return { ok: false, error: error.message }; }
+});
+ipcMain.handle("computer:setSession", (event, sessionId) => {
+  if (!win || event.sender !== win.webContents) return;
+  computerController.setSession(sessionId);
+});
+ipcMain.handle("computer:revoke", event => {
+  if (!win || event.sender !== win.webContents) return;
+  computerController.revoke();
+});
 // Cheap escape hatch when in-app Google/OAuth still rejects: open the URL in
 // the user's real system browser (outside Electron guest fingerprinting).
 ipcMain.handle("browser:openExternal", async (_e, url) => {
@@ -2324,6 +2388,9 @@ app.on("window-all-closed", () => {
 let quitFinalized = false;
 app.on("before-quit", (e) => {
   quitting = true;
+  browserController.clear();
+  computerController.close();
+  desktopBrowserBridge?.close();
   try { translucency.flush(); } catch { /* persist must not block quit */ }
   if (quitFinalized) return;
   // Hold quit open until the awaited graceful->force shutdown finishes. The

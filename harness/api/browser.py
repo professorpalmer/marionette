@@ -6,6 +6,19 @@ from typing import Union
 JsonPayload = Union[dict, list]
 
 
+def post_browser_controller(body: dict) -> tuple[int, JsonPayload]:
+    """Owner-authenticated registration; never return the bridge credential."""
+    from ..desktop_browser import configure
+
+    if not isinstance(body, dict):
+        return 400, {"error": "invalid browser controller"}
+    try:
+        configure(body.get("port"), body.get("token"))
+    except ValueError as exc:
+        return 400, {"error": str(exc)}
+    return 200, {"ok": True}
+
+
 def get_browser_relay() -> tuple[int, JsonPayload]:
     """GET /api/browser/relay — last recorded tab snapshot (or empty)."""
     from ..browser_relay import last_snapshot, relay_enabled

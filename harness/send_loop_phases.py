@@ -112,6 +112,9 @@ LOCAL_ACTION_KINDS: frozenset[str] = frozenset({
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
     "browser_get_text", "browser_screenshot", "browser_auth_handoff",
+    "browser_tabs", "browser_tab_activate",
+    "computer_use",
+    "browser_input",
     "query_wiki", "call_mcp", "manage_mcp",
     "request_secret",
     "cancel_job",
@@ -130,6 +133,9 @@ PLAN_SKIP_KINDS: frozenset[str] = frozenset({
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
     "browser_get_text", "browser_screenshot", "browser_auth_handoff",
+    "browser_tabs", "browser_tab_activate",
+    "computer_use",
+    "browser_input",
 })
 
 # Cap for run_command SSE ``output`` so the UI card can show an excerpt without
@@ -4058,29 +4064,45 @@ def dispatch_local_action(
     if act.kind in ("browser_navigate", "browser_snapshot", "browser_click",
                     "browser_type", "browser_scroll", "browser_back",
                     "browser_get_text", "browser_screenshot",
-                    "browser_auth_handoff"):
+                    "browser_auth_handoff", "browser_tabs", "browser_tab_activate", "computer_use", "browser_input"):
         try:
             from . import browser as _browser
             bargs = act.arguments or {}
-            if act.kind == "browser_navigate":
-                res = _browser.browser_navigate(bargs.get("url") or act.url or "")
+            browser_session_id = str(getattr(session, "harness_session_id", "") or "")
+            if act.kind == "computer_use":
+                from .desktop_browser import call
+                res = call(browser_session_id, "computer", bargs)
+            elif act.kind == "browser_navigate":
+                res = _browser.browser_navigate(bargs.get("url") or act.url or "", session_id=browser_session_id)
+            elif act.kind == "browser_input":
+                res = _browser.browser_input(session_id=browser_session_id, **bargs)
             elif act.kind == "browser_snapshot":
-                res = _browser.browser_snapshot()
+                res = _browser.browser_snapshot(session_id=browser_session_id)
             elif act.kind == "browser_click":
-                res = _browser.browser_click(bargs.get("ref") or "")
+                res = _browser.browser_click(bargs.get("ref") or "", session_id=browser_session_id)
             elif act.kind == "browser_type":
-                res = _browser.browser_type(bargs.get("ref") or "", bargs.get("text") or "")
+                res = _browser.browser_type(bargs.get("ref") or "", bargs.get("text") or "", session_id=browser_session_id)
             elif act.kind == "browser_scroll":
-                res = _browser.browser_scroll(bargs.get("direction") or "down")
+                res = _browser.browser_scroll(bargs.get("direction") or "down", session_id=browser_session_id)
             elif act.kind == "browser_back":
-                res = _browser.browser_back()
+                res = _browser.browser_back(session_id=browser_session_id)
             elif act.kind == "browser_get_text":
-                res = _browser.browser_get_text()
+                res = _browser.browser_get_text(session_id=browser_session_id)
             elif act.kind == "browser_auth_handoff":
-                from .browser_auth import browser_auth_handoff
-                res = browser_auth_handoff(bargs.get("url") or act.url or "")
+                from . import desktop_browser
+                if desktop_browser.configured():
+                    res = _browser.browser_navigate(bargs.get("url") or act.url or "", session_id=browser_session_id)
+                    if res.startswith("Navigated"):
+                        res += "\nComplete login in the visible Browser pane, then take a new snapshot. Do not paste passwords or cookies into chat."
+                else:
+                    from .browser_auth import browser_auth_handoff
+                    res = browser_auth_handoff(bargs.get("url") or act.url or "")
+            elif act.kind == "browser_tabs":
+                res = _browser.browser_tabs(session_id=browser_session_id)
+            elif act.kind == "browser_tab_activate":
+                res = _browser.browser_tab_activate(bargs.get("tab_id") or "", session_id=browser_session_id)
             else:  # browser_screenshot
-                res = _browser.browser_screenshot()
+                res = _browser.browser_screenshot(session_id=browser_session_id)
         except Exception as e:
             res = f"Error: {e}"
         yield ConvEvent("action_result", {

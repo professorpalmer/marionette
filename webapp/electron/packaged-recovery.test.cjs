@@ -42,6 +42,7 @@ test('startup awaits selected checkout before parity, backend spawn and renderer
     app: { getVersion: () => '0.9.422', whenReady: () => ({ then: cb => { ready = cb(); } }) },
     dialog: { showErrorBox: message => assert.fail(message) },
     startInFlight: null, backend: null, backendOwned: false, backendPort: 0,
+    connectDesktopBrowser: async () => { events.push('browser'); },
     currentBackendIdentity: ({ repoRoot }) => { assert.equal(repoRoot, selected); return {}; },
     readPmHarnessStateFile: () => null, decideBackendReuse: () => ({ action: 'spawn' }),
     readLiveUpdateMarker: () => null, freePort: async () => 12345,
@@ -69,7 +70,7 @@ test('startup awaits selected checkout before parity, backend spawn and renderer
   };
   vm.runInContext(region('app.whenReady().then(async () => {', '  // Re-open: ensure a healthy backend') + '\n});', context);
   await ready;
-  assert.deepEqual(events, ['build-start', 'built', 'parity', 'spawn', 'renderer']);
+  assert.deepEqual(events, ['build-start', 'built', 'parity', 'spawn', 'browser', 'renderer']);
 });
 
 test('managed production updates install the shell without source fetch, stash, pull or relaunch', async () => {
