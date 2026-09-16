@@ -90,6 +90,7 @@ class StreamServices:
     auto_budget_from_env: Callable[[], Any]
     pilot_swap_lock: Any = None
     get_runners: Optional[Callable[[], Any]] = None
+    ensure_session_driver: Optional[Callable[[str], Any]] = None
 
 
 def validate_upload_image_paths(
@@ -272,6 +273,8 @@ def stream_auto(handler: Any, objective: str, svc: StreamServices, images=None, 
         _stream_session_pilot(svc, session_id)
         if session_id is None:
             svc.ensure_pilot_matches_driver()
+        elif svc.ensure_session_driver is not None:
+            svc.ensure_session_driver(session_id)
     except InputReceiptError as exc:
         return handler._send(409, json.dumps(exc.payload()))
     except Exception as e:
@@ -362,6 +365,8 @@ def stream_chat(
         _stream_session_pilot(svc, session_id)
         if session_id is None:
             svc.ensure_pilot_matches_driver()
+        elif svc.ensure_session_driver is not None:
+            svc.ensure_session_driver(session_id)
         turn_pilot = _stream_session_pilot(svc, session_id)
     except InputReceiptError as exc:
         return handler._send(409, json.dumps(exc.payload()))

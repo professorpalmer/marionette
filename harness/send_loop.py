@@ -53,6 +53,7 @@ from .local_models import local_send_stale_seconds
 from .send_image_prep import prepare_turn_images
 from .send_loop_actions import execute_turn_actions
 from .repeat_tool_reminder import reset_repeat_chain
+from .reasoning_effort import session_reasoning
 from .send_loop_phases import (
     account_provider_attempt,
     classified_finish_kwargs,
@@ -544,6 +545,7 @@ class SendLoopMixin:
                 return None
         return self._mark_busy_acquired()
 
+    @session_reasoning
     def send(self, user_message: str, images: Optional[list] = None, plan: bool = False, resume: bool = False, *, input_id=None, handoff_token=None) -> Iterator[ConvEvent]:
         """Process one user message: drive the pilot loop until it yields back.
 

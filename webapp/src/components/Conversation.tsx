@@ -3337,7 +3337,7 @@ export default function Conversation({
       void (async () => {
         try {
           if (next.model) {
-            const swapped = await api.swapPilot(next.model);
+            const swapped = await api.swapPilot(next.model, kickSid);
             if (!canKick()) return;
             if (!swapped.ok || swapped.deferred) throw new Error("Queued model could not be selected. Input remains queued.");
             window.dispatchEvent(new Event("harness-config-changed"));

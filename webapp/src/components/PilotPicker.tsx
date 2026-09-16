@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState, useRef } from "react";
 import { ChevronDown, Check, Search } from "lucide-react";
 import { api, type Config, type ReasoningEffort } from "../lib/api";
-import { fallbackPilot, modelLabelOf, organizePilotModels, providerLabelOf } from "../lib/pilotPickerModels";
+import { modelLabelOf, organizePilotModels, providerLabelOf } from "../lib/pilotPickerModels";
 import { REASONING_LEVELS, labelForEffort, showReasoningEffort } from "../lib/reasoningSupport";
 import { useOverlayFocus } from "../lib/overlayFocus";
 
-export default function PilotPicker({ config }: {
+export default function PilotPicker({ config, sessionId = "" }: {
   config: Config | null;
+  sessionId?: string;
 }) {
   const [models, setModels] = useState<string[]>([]);
   const [current, setCurrent] = useState("");
@@ -20,6 +21,9 @@ export default function PilotPicker({ config }: {
   const reasonMenuRef = useRef<HTMLDivElement>(null);
   const filterRef = useRef<HTMLInputElement>(null);
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
+  const operation = useRef(0);
+  const reasoningOperation = useRef(0);
+  useEffect(() => () => { operation.current++; reasoningOperation.current++; }, [sessionId]);
 
   useOverlayFocus(modelOpen, modelMenuRef, {
     initialFocusRef: filterRef,
@@ -34,19 +38,11 @@ export default function PilotPicker({ config }: {
     const nextModels = config.models?.length ? config.models : [config.driver].filter(Boolean);
     setModels(nextModels);
     setReasoning(config.reasoning_effort || "low");
-    const next = fallbackPilot(nextModels, config.driver);
-    setCurrent(next);
-    if (next && next !== config.driver) {
+    setCurrent(config.driver);
+    if (config.driver && !nextModels.includes(config.driver)) {
       const configuredLabel = modelLabelOf(config.driver, config.model_labels) || config.driver;
-      const fallbackLabel = modelLabelOf(next, config.model_labels) || next;
-      const notice = `Configured pilot ${configuredLabel} is unavailable — using ${fallbackLabel}.`;
+      const notice = `Configured pilot ${configuredLabel} is unavailable. Select a model to change it.`;
       setRerouteNotice(notice);
-      window.dispatchEvent(new CustomEvent("harness-toast", { detail: notice }));
-      api.swapPilot(next).then(() => {
-        window.dispatchEvent(new Event("harness-config-changed"));
-      }).catch(() => {
-        /* next config fetch retries; keep the local fallback label */
-      });
     } else {
       setRerouteNotice(null);
     }
@@ -80,14 +76,18 @@ export default function PilotPicker({ config }: {
   }, [modelOpen, reasonOpen]);
 
   const swap = async (m: string) => {
+    if (!sessionId) return;
+    const generation = ++operation.current;
     const prev = current;
     setCurrent(m);
     setModelOpen(false);
     setRerouteNotice(null);
     try {
-      await api.swapPilot(m);
+      await api.swapPilot(m, sessionId);
+      if (generation !== operation.current) return;
       window.dispatchEvent(new Event("harness-config-changed"));
     } catch {
+      if (generation !== operation.current) return;
       setCurrent(prev);
       window.dispatchEvent(new CustomEvent("harness-toast", {
         detail: "Model switch failed -- try again",
@@ -96,13 +96,17 @@ export default function PilotPicker({ config }: {
   };
 
   const setReasoningEffort = async (level: ReasoningEffort) => {
+    if (!sessionId) return;
+    const generation = ++reasoningOperation.current;
     const prev = reasoning;
     setReasoning(level);
     setReasonOpen(false);
     try {
-      await api.updateSettings({ reasoning_effort: level });
+      await api.setPilotPreferences(sessionId, { reasoning_effort: level });
+      if (generation !== reasoningOperation.current) return;
       window.dispatchEvent(new Event("harness-config-changed"));
     } catch {
+      if (generation !== reasoningOperation.current) return;
       setReasoning(prev);
       window.dispatchEvent(new CustomEvent("harness-toast", {
         detail: "Reasoning setting failed -- try again",

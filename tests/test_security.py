@@ -105,10 +105,11 @@ def test_pilot_swap_requires_token():
         except urllib.error.HTTPError as e:
             assert e.code == 403
 
-        # GET /api/pilot?model=... with valid token -> 200 and model changed
+        # A model mutation must identify the owning active session.
+        session_id = srv._sessions.active
         resp = _get(
             port,
-            f"/api/pilot?model=glm-5.2",
+            f"/api/pilot?model=glm-5.2&session_id={session_id}",
             headers={"X-Harness-Token": srv._TOKEN},
         )
         assert resp.status == 200

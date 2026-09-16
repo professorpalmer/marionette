@@ -1396,14 +1396,31 @@ def _attach_view(
     live module globals so tests can keep patching ``harness.server``.
     """
     from .api.attach import attach_view
-    return attach_view(
-        session_id,
-        _attach_services(),
-        factory=factory,
-        load_transcript_on_create=load_transcript_on_create,
-        defer_cold_build=defer_cold_build,
-        view_repo=view_repo,
-    )
+    with _pilot_swap_lock:
+        outgoing = _runners.active_view_id
+        if outgoing and any(r["id"] == outgoing for r in _sessions.rows()):
+            _sessions.pilot_preferences(outgoing, seed_driver=_cfg.driver)
+        existing = _runners.get(session_id)
+        seed = getattr(getattr(existing, "config", None), "driver", None) or _cfg.driver
+        prefs = _sessions.pilot_preferences(session_id, seed_driver=seed)
+        previous_driver = _cfg.driver
+        _cfg.driver = prefs["driver"]
+        try:
+            _apply_model_context_window()
+            attach_services = _attach_services()
+            attach_services.lock_already_held = True
+            return attach_view(
+                session_id,
+                attach_services,
+                factory=factory,
+                load_transcript_on_create=load_transcript_on_create,
+                defer_cold_build=defer_cold_build,
+                view_repo=view_repo,
+            )
+        except Exception:
+            _cfg.driver = previous_driver
+            _apply_model_context_window()
+            raise
 
 
 def _ensure_active_pilot_ready(*, timeout: float = 120.0) -> Any:
@@ -1581,6 +1598,7 @@ def _stream_services():
         get_pilot=lambda: _pilot,
         get_session=lambda: _session,
         ensure_pilot_matches_driver=_ensure_pilot_matches_driver,
+        ensure_session_driver=_ensure_session_driver,
         maybe_refresh_codegraph=_maybe_refresh_codegraph,
         pilot_preflight=_pilot_preflight,
         checkpoint_transcript=_checkpoint_transcript,
@@ -2130,8 +2148,11 @@ def _perform_pilot_swap(model: str) -> None:
     global _pilot
     from .pilot_replacement import LivePilotReplacement, prepare_replacement
 
+    expected_id = _runners.active_view_id or _sessions.active
     _ensure_active_pilot_ready()
     with _pilot_swap_lock:
+        if (_runners.active_view_id or _sessions.active) != expected_id:
+            raise RuntimeError("active session changed while waiting for pilot")
         old_pilot = _ensure_active_pilot_ready()
         active_id = _runners.active_view_id or _sessions.active
         prev_driver = _cfg.driver
@@ -2177,7 +2198,8 @@ def _perform_pilot_swap(model: str) -> None:
                 release(reason="session_switch")
         except Exception as e:
             _diag("server.pilot_swap_warm_acp_close", e)
-    _save_workspace_driver(_cfg.repo, model)
+        if active_id:
+            _sessions.pilot_preferences(active_id, updates={"driver": model})
 
 
 def _ensure_pilot_matches_driver(target: str | None = None) -> bool:
@@ -2203,6 +2225,40 @@ def _ensure_pilot_matches_driver(target: str | None = None) -> bool:
         return False
     _perform_pilot_swap(want)
     return True
+
+
+def _ensure_session_driver(session_id: str) -> bool:
+    """Apply a session's deferred choice without moving the active view."""
+    from .pilot_replacement import LivePilotReplacement, prepare_replacement
+    from .session_runners import resolve_session_runner
+    from pmharness.registry import apply_context_window
+    old = resolve_session_runner(_runners, session_id)
+    with _pilot_swap_lock:
+        if old is None or _runners.get(session_id) is not old:
+            raise RuntimeError("session has no matching pilot")
+        desired = _sessions.pilot_preferences(session_id, seed_driver=old.config.driver)["driver"]
+        if desired == old.config.driver:
+            return True
+        if old._busy.locked():
+            return False
+        if _runners.active_view_id == session_id:
+            return _ensure_pilot_matches_driver(desired)
+        config = _dc_replace(old.config, driver=desired)
+        if "HARNESS_MAX_CONTEXT_TOKENS" not in os.environ:
+            config.max_context_tokens = apply_context_window(desired, default=200000)
+            config.max_context_tokens_pinned = False
+        with LivePilotReplacement(old) as replacement:
+            new = _build_conversational_pilot(config=config)
+            prepare_replacement(old, new, session_id, _sessions_state_dir(),
+                                _history_for_pilot_swap(old), actions_snapshot=replacement.actions_snapshot)
+            _runners.replace(session_id, new, notify=False)
+            replacement.commit()
+        _freeze_pilot_meters_into_boot_carry(old)
+        try:
+            old.release_warm_acp(reason="session_switch")
+        except Exception as exc:
+            _diag("server.session_driver_warm_acp_close", exc)
+        return True
 
 
 def _rebuild_pilot_and_session():
@@ -2967,14 +3023,60 @@ class Handler(BaseHTTPRequestHandler):
         from .api.streams import stream_auto
         return stream_auto(self, objective, _stream_services(), images=images, **receipt_args)
 
-    def _swap_pilot(self, model: str):
+    def _get_config(self, session_id: Optional[str] = None):
+        from .api.settings import get_config
+        with _pilot_swap_lock:
+            sid = _runners.active_view_id or _sessions.active
+            if session_id is not None and (not session_id or session_id != sid
+                                            or session_id != _sessions.active):
+                return self._send(409, json.dumps({"error": "session changed or missing"}))
+            status, payload = get_config(_settings_services())
+            payload["session_id"] = sid
+            if sid:
+                payload.update(_sessions.pilot_preferences(sid, seed_driver=_cfg.driver))
+        return self._send(status, json.dumps(payload))
+
+    def _set_pilot_preferences(self, body: dict):
+        from .reasoning_effort import REASONING_EFFORT_LEVELS
+        sid = body.get("session_id")
+        updates = {k: body[k] for k in ("reasoning_effort", "swarm_reasoning_effort") if k in body}
+        if not updates or any(v not in REASONING_EFFORT_LEVELS for v in updates.values()):
+            return self._send(400, json.dumps({"error": "valid reasoning effort required"}))
+        with _pilot_swap_lock:
+            if (not sid or sid != _sessions.active or sid != _runners.active_view_id
+                    or _runners.get(sid) is not _pilot):
+                return self._send(409, json.dumps({"error": "session changed or missing"}))
+            prefs = _sessions.pilot_preferences(sid, updates=updates)
+        return self._send(200, json.dumps({"ok": True, "session_id": sid, **prefs}))
+
+    def _swap_pilot(self, model: str, session_id: Optional[str] = None):
         """Hot-swap the pilot model (the whole point: your key -> your pilot).
 
         Body lives in ``harness.api.pilot``; this wrapper injects live globals.
         Hermes-style mid-turn deferral and idle rebuild semantics are unchanged.
         """
         from .api.pilot import get_pilot_swap
-        status, payload = get_pilot_swap(model, _pilot_services())
+        # None is reserved for internal callers; HTTP always supplies a string.
+        sid = (_runners.active_view_id or _sessions.active) if session_id is None else session_id
+        def valid():
+            return (bool(sid) and sid == _sessions.active
+                    and sid == _runners.active_view_id
+                    and _runners.get(sid) is _pilot)
+        with _pilot_swap_lock:
+            if not valid():
+                return self._send(409, json.dumps({"error": "session changed or missing"}))
+        try:
+            _ensure_active_pilot_ready()
+        except Exception as e:
+            return self._send(409, json.dumps({"error": str(e)}))
+        with _pilot_swap_lock:
+            if not valid():
+                return self._send(409, json.dumps({"error": "session changed or missing"}))
+            _sessions.pilot_preferences(sid, seed_driver=_cfg.driver)
+            status, payload = get_pilot_swap(model, _pilot_services())
+            if status == 200:
+                _sessions.pilot_preferences(sid, updates={"driver": model})
+                payload["session_id"] = sid
         return self._send(status, json.dumps(payload))
 
     def _stream_terminal(self, sid: str, start_offset=0):

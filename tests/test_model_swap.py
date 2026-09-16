@@ -14,7 +14,7 @@ class _FakeHandler:
         self.sent = {"code": code, "body": json.loads(body)}
 
 
-def test_swap_preserves_history(tmp_path, monkeypatch):
+def test_swap_preserves_history(tmp_path, monkeypatch, owned_server):
     import harness.server as srv
     from harness.conversation import ConversationalSession
     from harness.config import HarnessConfig
@@ -26,16 +26,20 @@ def test_swap_preserves_history(tmp_path, monkeypatch):
     pilot._history.append({"role": "user", "content": "remember this"})
     monkeypatch.setattr(srv, "_pilot", pilot, raising=False)
     monkeypatch.setattr(srv, "_mcp", None, raising=False)
+    sid = srv._sessions.active
+    pilot.harness_session_id = sid
+    srv._bind_pilot_services(pilot)
+    srv._runners.replace(sid, pilot, notify=False)
 
     h = _FakeHandler()
-    srv.Handler._swap_pilot(h, "glm-5.2")
+    srv.Handler._swap_pilot(h, "glm-5.2", sid)
     assert h.sent["code"] == 200
     assert h.sent["body"]["driver"] == "glm-5.2"
     assert h.sent["body"].get("deferred") is False
     assert any(m.get("content") == "remember this" for m in srv._pilot._history)
 
 
-def test_swap_deferred_while_busy(tmp_path, monkeypatch):
+def test_swap_deferred_while_busy(tmp_path, monkeypatch, owned_server):
     """Mid-turn picker change stages ``_cfg.driver`` without rebuilding the live pilot."""
     import harness.server as srv
     from harness.conversation import ConversationalSession
@@ -47,10 +51,14 @@ def test_swap_deferred_while_busy(tmp_path, monkeypatch):
     pilot._busy.acquire()  # simulate a turn in progress
     monkeypatch.setattr(srv, "_pilot", pilot, raising=False)
     monkeypatch.setattr(srv, "_mcp", None, raising=False)
+    sid = srv._sessions.active
+    pilot.harness_session_id = sid
+    srv._bind_pilot_services(pilot)
+    srv._runners.replace(sid, pilot, notify=False)
 
     h = _FakeHandler()
     live_before = srv._pilot
-    srv.Handler._swap_pilot(h, "deepseek-v4-flash")
+    srv.Handler._swap_pilot(h, "deepseek-v4-flash", sid)
     assert h.sent["code"] == 200
     assert h.sent["body"]["deferred"] is True
     assert h.sent["body"]["driver"] == "deepseek-v4-flash"
