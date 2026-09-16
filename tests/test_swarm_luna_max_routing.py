@@ -44,6 +44,7 @@ def test_http_status_400_never_promotes_and_fails_bridge_status():
 
 
 def test_all_workers_http_400_badge_not_green(monkeypatch):
+    monkeypatch.setattr("harness.edit_engines.workers_ready", lambda: True)
     """Sync swarm with only http_status:400 plumbing must not green-complete."""
     import tempfile
     from harness.config import HarnessConfig

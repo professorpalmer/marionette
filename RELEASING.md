@@ -40,7 +40,8 @@ tagged installer from Releases.
 
 Tags/versions label what checkouts and installers report via `app.getVersion()`.
 Green CI Before Tag still holds: the `tests` workflow (Ubuntu 3.9 xdist,
-Windows 3.9 and 3.11 four-way shards, macOS 3.11, frontend-build) must be green for
+Windows 3.9 and 3.11 four-way shards, macOS 3.11, frontend-build, and the native
+Windows computer-control fixture) must be green for
 **this git tree**. The remaining extended matrix and
 `@pytest.mark.resource_soak` run in `tests-full.yml` (nightly / manual)
 and do not block the tag. The tag may

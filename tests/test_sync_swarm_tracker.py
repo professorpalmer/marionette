@@ -72,6 +72,7 @@ class _SwarmOncePilot:
 
 
 def test_plumbing_only_swarm_marks_failed_and_registers_tracker(monkeypatch):
+    monkeypatch.setattr("harness.edit_engines.workers_ready", lambda: True)
     monkeypatch.setattr(
         "harness.send_loop_phases.execute_intent",
         lambda intent, **kw: _plumbing_result(),
@@ -100,6 +101,7 @@ def test_plumbing_only_swarm_marks_failed_and_registers_tracker(monkeypatch):
 
 
 def test_signal_swarm_marks_applied_true(monkeypatch):
+    monkeypatch.setattr("harness.edit_engines.workers_ready", lambda: True)
     monkeypatch.setattr(
         "harness.send_loop_phases.execute_intent",
         lambda intent, **kw: _signal_result(),

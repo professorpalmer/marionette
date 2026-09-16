@@ -122,8 +122,9 @@ def test_micro_visible_tool_names_contract():
     assert "run_parallel" not in names
 
 
-def test_glm53_explicit_swarm_is_not_micro_and_exposes_run_swarm(tmp_path):
+def test_glm53_explicit_swarm_is_not_micro_and_exposes_run_swarm(tmp_path, monkeypatch):
     """F: GLM 5.3 explicit swarm prompt resolves non-MICRO and sees run_swarm."""
+    monkeypatch.setattr("harness.edit_engines.workers_ready", lambda: True)
     from harness.pilot_guards import is_explicit_swarm_user_message
     from harness.task_profile import classify_task_profile
 
@@ -160,7 +161,7 @@ def test_core_visible_names_micro_hides_orchestration():
 
 
 def test_swarm_gate_allows_exploration_when_micro(monkeypatch):
-    monkeypatch.delenv("HARNESS_SWARM_GATE", raising=False)
+    monkeypatch.setenv("HARNESS_SWARM_GATE", "1")
     prompt = "audit authentication architecture across the codebase"
     state = new_turn_guard_state(prompt, task_profile=MICRO)
     assert state.broad_intent is True

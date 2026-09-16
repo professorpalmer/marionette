@@ -2245,6 +2245,7 @@ class ConversationalSession(
         from .tool_discovery import discovery_enabled
 
         enabled = discovery_enabled()
+        delegation_available = self._worker_delegation_available()
         try:
             activated = frozenset(self._tool_catalog.activated)
         except Exception:
@@ -2254,6 +2255,9 @@ class ConversationalSession(
             if (
                 getattr(self, "_tools_schema_discovery", None) == enabled
                 and getattr(self, "_tools_schema_activated", None) == activated
+                and getattr(
+                    self, "_tools_schema_delegation_available", None
+                ) == delegation_available
             ):
                 return snap
             self._invalidate_tools_schema()
@@ -2264,10 +2268,26 @@ class ConversationalSession(
             browser_enabled=getattr(self.config, "browser_enabled", True),
             profile=getattr(self, "_task_profile", None) or None,
         )
+        if schema and not delegation_available:
+            delegation_names = {"run_swarm", "run_implement", "run_parallel"}
+
+            def _schema_name(item: Any) -> str:
+                if not isinstance(item, dict):
+                    return ""
+                function = item.get("function")
+                if isinstance(function, dict):
+                    return str(function.get("name") or "")
+                return str(item.get("name") or "")
+
+            schema = [
+                item for item in schema
+                if _schema_name(item) not in delegation_names
+            ]
         if schema:
             self._tools_schema_snapshot = schema
             self._tools_schema_discovery = enabled
             self._tools_schema_activated = activated
+            self._tools_schema_delegation_available = delegation_available
         return schema
 
     def _context_usage_prefix_tokens(self) -> dict:
@@ -2560,6 +2580,22 @@ class ConversationalSession(
             pass
         return profile
 
+    def _worker_delegation_available(self) -> bool:
+        """Whether this session currently has a runnable worker route.
+
+        Pilot identity is intentionally irrelevant: local and manual-API pilots
+        can delegate when an independent full-stack worker credential exists.
+        ``no_delegation`` remains the leaf-worker recursion boundary.
+        """
+        if getattr(self.config, "no_delegation", False):
+            return False
+        try:
+            from .edit_engines import workers_ready
+
+            return bool(workers_ready())
+        except Exception:
+            return False
+
     def _maybe_escalate_task_profile(
         self,
         *,
@@ -2808,7 +2844,10 @@ class ConversationalSession(
             try:
                 from .pilot_guards import swarm_policy_turn_note
 
-                policy_note = swarm_policy_turn_note(user_message)
+                policy_note = swarm_policy_turn_note(
+                    user_message,
+                    delegation_available=self._worker_delegation_available(),
+                )
                 if policy_note:
                     parts.append(policy_note)
             except Exception:

@@ -1442,6 +1442,14 @@ class SendLoopMixin:
                         adapter_note = self._active_adapters_system_note()
                         if adapter_note:
                             sys_prompt += "\n\n" + adapter_note
+                        from .pilot_guards import swarm_policy_turn_note
+
+                        policy_note = swarm_policy_turn_note(
+                            user_message,
+                            delegation_available=self._worker_delegation_available(),
+                        )
+                        if policy_note:
+                            sys_prompt += "\n\n" + policy_note
 
                         self._history[0]["content"] = sys_prompt
                         prompt = self._render_history()

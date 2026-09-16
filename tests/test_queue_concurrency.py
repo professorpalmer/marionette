@@ -80,6 +80,7 @@ def test_await_and_apply_job_characterization(tmp_path):
 
 
 def test_queue_drains_while_swarm_pending(tmp_path, monkeypatch):
+    monkeypatch.setattr("harness.edit_engines.workers_ready", lambda: True)
     # Set up a git repo in tmp_path
     subprocess.run(["git", "init"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)

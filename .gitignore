@@ -38,4 +38,5 @@ signing.env
 
 # Generated from the exact packaging checkout by electron-builder beforePack.
 webapp/electron/bootstrap-revision.json
+webapp/electron/native/bin/
 node_modules/

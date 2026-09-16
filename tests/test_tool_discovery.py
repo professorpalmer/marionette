@@ -292,6 +292,7 @@ def test_search_tools_loop_executes_and_activates(monkeypatch):
 
 
 def test_visible_schema_parity_when_discovery_disabled(monkeypatch):
+    monkeypatch.setattr("harness.edit_engines.workers_ready", lambda: True)
     monkeypatch.setenv("HARNESS_TOOL_DISCOVERY", "0")
     # Pin browser capability so parity does not depend on whether the host that
     # runs the suite happens to have a standalone Chrome installed.
@@ -396,7 +397,17 @@ def test_hidden_web_and_browser_not_in_visible_schema(monkeypatch):
     assert is_lazy_activatable_name("web_search")
     assert is_lazy_activatable_name("web_fetch")
     assert is_lazy_activatable_name("browser_navigate")
+    assert not is_lazy_activatable_name("browser_definitely_fake")
     assert not is_lazy_activatable_name("read_file")
+
+
+def test_activate_does_not_fabricate_unknown_browser_tools(monkeypatch):
+    monkeypatch.setattr(
+        "harness.browser.standalone_browser_available", lambda **_k: True,
+    )
+    catalog = ToolCatalog()
+    catalog.refresh(browser_enabled=True)
+    assert catalog.activate(["browser_definitely_fake"]) == []
 
 
 def test_first_activate_resolves_on_empty_catalog(monkeypatch):

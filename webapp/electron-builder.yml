@@ -1,6 +1,6 @@
 appId: com.marionette.app
 productName: Marionette
-beforePack: ./electron/write-bootstrap-revision.cjs
+beforePack: ./electron/before-pack.cjs
 directories:
   output: release
   buildResources: build
@@ -9,6 +9,8 @@ files:
   - dist/**/*
   - electron/**/*
   - "!electron/**/*.test.cjs"
+  - "!electron/*-smoke.cjs"
+  - "!electron/native/**/*"
   - node_modules/**/*
 # Generate latest*.yml (+ blockmap) metadata so electron-updater can find
 # GitHub Release assets. Publish itself is done by .github/workflows/release.yml
@@ -24,6 +26,11 @@ protocols:
     schemes:
       - marionette
 mac:
+  extraResources:
+    - from: electron/native/bin/computer-macos
+      to: native-computer/computer-macos
+  binaries:
+    - Contents/Resources/native-computer/computer-macos
   category: public.app-category.developer-tools
   target:
     - target: dmg
@@ -37,6 +44,9 @@ mac:
   entitlementsInherit: build/entitlements.mac.plist
   # zip is required for Squirrel.Mac / latest-mac.yml generation.
 win:
+  extraResources:
+    - from: electron/native/computer-windows.ps1
+      to: native-computer/computer-windows.ps1
   icon: build/icon.ico
   target:
     - nsis
