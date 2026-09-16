@@ -178,19 +178,20 @@ def test_context_usage_route_during_real_cold_attach(tmp_path, monkeypatch):
         def _send(self, status, body):
             return status, json.loads(body)
     route = build_get_routes(srv._route_services())["/api/context/usage"]
-    shell = srv._attach_view("cold-child", defer_cold_build=True, load_transcript_on_create=False)
+    child_id = srv._sessions.create(title="cold-child")["id"]
+    shell = srv._attach_view(child_id, defer_cold_build=True, load_transcript_on_create=False)
     try:
-        assert route(Handler(), None, {"session_id": ["cold-child"]}) == (
-            200, {"available": False, "reason": "building", "session_id": "cold-child"})
+        assert route(Handler(), None, {"session_id": [child_id]}) == (
+            200, {"available": False, "reason": "building", "session_id": child_id})
         assert route(Handler(), None, {"session_id": ["other"]}) == (
             200, {"available": False, "reason": "no_runner", "session_id": "other"})
     finally:
         release.set()
         shell.ensure_ready(timeout=5)
-    status, payload = route(Handler(), None, {"session_id": ["cold-child"]})
+    status, payload = route(Handler(), None, {"session_id": [child_id]})
     assert status == 200
     assert payload["available"] is True
-    assert payload["session_id"] == "cold-child"
+    assert payload["session_id"] == child_id
     assert payload["total"] == real.get_context_usage()["total"]
 
 

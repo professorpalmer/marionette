@@ -289,7 +289,9 @@ def test_swap_pilot_defers_when_busy():
         assert payload == {"ok": True, "driver": "new-model", "deferred": True}
         assert cfg.driver == "new-model"
         assert calls["window"] == 1
-        assert calls["save"] == [("/r", "new-model")]
+        # Persistence is owned by the session-scoped HTTP wrapper; the peeled
+        # route body only stages the live config.
+        assert calls["save"] == []
         assert calls["swap"] == []
     finally:
         lock.release()

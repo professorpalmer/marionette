@@ -21,6 +21,7 @@ import queue as queue_mod
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from functools import partial
 from typing import Any, Dict, Iterator, Optional
 
@@ -1129,8 +1130,8 @@ def dispatch_pilot_provider_call(
             request = _freeze_chat_request(session, tools_schema, sys_prompt, stream=True)
             q = queue.Queue()
             t = threading.Thread(
-                target=run_stream,
-                args=(session, q, tools_schema, sys_prompt),
+                target=copy_context().run,
+                args=(run_stream, session, q, tools_schema, sys_prompt),
                 kwargs={"accumulator": accumulator, "request": request},
                 daemon=True,
             )

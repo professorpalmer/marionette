@@ -1080,9 +1080,9 @@ export default function ComposerDock({
               <ListChecks size={11} aria-hidden="true" />
             </button>
             <div className="pilot-picker-slot">
-              <PilotPicker config={config} />
+              <PilotPicker key={sessionId} sessionId={sessionId} config={!sessionId || config?.session_id === sessionId ? config : null} />
             </div>
-            <SwarmReasoningPicker config={config} />
+            <SwarmReasoningPicker key={sessionId} sessionId={sessionId} config={!sessionId || config?.session_id === sessionId ? config : null} />
             <button
               type="button"
               onClick={() => {

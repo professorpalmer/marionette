@@ -1710,7 +1710,16 @@ class ConversationalSession(
             if self._swarm_at_capacity():
                 self._last_swarm_submit_reason = "capacity"
                 return False
-            future = self._swarm_pool.submit(fn, *args)
+            # ContextVars do not cross ThreadPoolExecutor boundaries by
+            # default. Capture the active turn context so session-scoped
+            # reasoning preferences follow each swarm submission.
+            from contextvars import copy_context
+            import concurrent.futures
+            if isinstance(self._swarm_pool, concurrent.futures.ThreadPoolExecutor):
+                turn_context = copy_context()
+                future = self._swarm_pool.submit(turn_context.run, fn, *args)
+            else:
+                future = self._swarm_pool.submit(fn, *args)
         except Exception:
             # Never raise from the gate; caller treats this as "not
             # dispatched" the same as an at-capacity reject.

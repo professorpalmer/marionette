@@ -68,9 +68,14 @@ function hasStoredRightPaneCards(): boolean {
 }
 
 export default function App() {
-  const [config, setConfig] = useState<Config | null>(null);
+  const [receivedConfig, setConfig] = useState<Config | null>(null);
   const [availableUpdate, setAvailableUpdate] = useState<UpdateAvailability | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const configRequest = useRef({ sessionId: activeSessionId, generation: 0 });
+  if (configRequest.current.sessionId !== activeSessionId) {
+    configRequest.current = { sessionId: activeSessionId, generation: configRequest.current.generation + 1 };
+  }
+  const config = activeSessionId && receivedConfig?.session_id !== activeSessionId ? null : receivedConfig;
   const handleSessionChange = useCallback((id: string | null, expectedPreviousId?: string) => {
     setActiveSessionId((current) => expectedPreviousId && current !== expectedPreviousId ? current : id);
   }, []);
@@ -121,11 +126,16 @@ export default function App() {
   const [showWizard, setShowWizard] = useState(false);
   const [showOverlay, setShowOverlay] = useState(false);
 
-  const fetchConfig = () => {
-    api.config().then(setConfig).catch(() => {});
-  };
+  const fetchConfig = useCallback(() => {
+    const generation = ++configRequest.current.generation;
+    api.config(activeSessionId).then(value => {
+      if (generation !== configRequest.current.generation || configRequest.current.sessionId !== activeSessionId) return;
+      if (activeSessionId && value.session_id !== activeSessionId) return;
+      setConfig(value);
+    }).catch(() => {});
+  }, [activeSessionId]);
 
-  const fetchDiagnostics = () => {
+  const fetchDiagnostics = useCallback(() => {
     api.diagnostics()
       .then((res) => {
         if (res.correlation_id) setCorrelationId(res.correlation_id);
@@ -134,7 +144,7 @@ export default function App() {
         else if (parsed.status === "absent") clearDiagnostic();
         else publishDiagnostic(malformedBackendDiagnostic(parsed.reason));      })
       .catch(() => {});
-  };
+  }, []);
 
   // Prevent the Electron window from navigating to a file dropped anywhere
   // outside an explicit drop target (the default would replace the whole app
@@ -167,8 +177,11 @@ export default function App() {
 
   useEffect(() => {
     fetchConfig();
+    return () => { configRequest.current.generation++; };
+  }, [fetchConfig]);
+  useEffect(() => {
     fetchDiagnostics();
-  }, []);
+  }, [fetchDiagnostics]);
   useEffect(() => {
     const onRefresh = () => {
       fetchConfig();
@@ -178,7 +191,7 @@ export default function App() {
     return () => {
       window.removeEventListener("harness-config-changed", onRefresh);
     };
-  }, []);
+  }, [fetchConfig, fetchDiagnostics]);
 
   // First-run gate: onboarding store decides whether to auto-open OnboardingOverlay.
   useEffect(() => {

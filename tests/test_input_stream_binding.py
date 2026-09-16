@@ -18,7 +18,7 @@ def test_registered_background_stream_uses_owner_repo(session, monkeypatch, tmp_
     owner_repo.mkdir()
     session.config.repo = str(owner_repo)
     viewed = SimpleNamespace(harness_session_id='other')
-    refreshed, finalized, sent = [], [], []
+    refreshed, finalized, sent, ensured = [], [], [], []
     def send(text, *args, **kwargs):
         sent.append(text)
         yield ConvEvent('assistant_done', {})
@@ -30,6 +30,7 @@ def test_registered_background_stream_uses_owner_repo(session, monkeypatch, tmp_
         get_pilot=lambda: viewed, get_session=lambda: viewed,
         get_runners=lambda: {session.harness_session_id: session},
         ensure_pilot_matches_driver=lambda: pytest.fail('must not rebuild the viewed pilot'),
+        ensure_session_driver=ensured.append,
         maybe_refresh_codegraph=refreshed.append,
         pilot_preflight=lambda: 'unrelated viewed driver is unavailable',
         checkpoint_transcript=lambda *_: None, finalize_turn=finalized.append,
@@ -43,6 +44,7 @@ def test_registered_background_stream_uses_owner_repo(session, monkeypatch, tmp_
     else:
         stream_auto(handler, 'owner input', svc, session_id=session.harness_session_id)
     assert sent == ['owner input']
+    assert ensured == [session.harness_session_id]
     assert refreshed == [str(owner_repo)]
     assert finalized[0]['pilot'] is session
     assert finalized[0]['config'] is session.config

@@ -963,11 +963,12 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     yield ConvEvent('swarm_pending', {'job_ids': [_sync_local_id], 'objective': act.goal})
     import queue as _queue
     import threading as _threading
+    from contextvars import copy_context
     _delta_q: '_queue.Queue' = _queue.Queue()
     _explicit_wm = _explicit_swarm_worker_mode(act) or None
     _swarm_thread = _threading.Thread(
-        target=stream_swarm,
-        args=(session, intent, _delta_q, aid),
+        target=copy_context().run,
+        args=(stream_swarm, session, intent, _delta_q, aid),
         kwargs={"worker_mode": _explicit_wm} if _explicit_wm else {},
         daemon=True,
     )
