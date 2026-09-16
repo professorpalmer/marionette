@@ -19,6 +19,12 @@ from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession, ConvEvent
 
 
+@pytest.fixture(autouse=True)
+def _mock_worker_readiness(monkeypatch):
+    # These tests stub worker execution; host credentials are not a prerequisite.
+    monkeypatch.setattr("harness.edit_engines.workers_ready", lambda: True)
+
+
 def test_build_tools_schema_has_new_tools():
     schemas = build_tools_schema()
     names = [s["function"]["name"] for s in schemas if s.get("type") == "function"]
