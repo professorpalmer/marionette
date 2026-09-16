@@ -24,7 +24,7 @@ export default function SessionCacheControl({ sessionId, busy }: { sessionId: st
     setCache(null);
     setError("");
     setSaving(false);
-    dialog.current?.close();
+    dialog.current?.close?.();
     void refresh();
     const timer = window.setInterval(refresh, 5000);
     window.addEventListener("harness-cache-updated", refresh);
@@ -49,13 +49,13 @@ export default function SessionCacheControl({ sessionId, busy }: { sessionId: st
   const current = cache?.session_id === sessionId ? cache : null;
   return <>
     <button type="button" className="text-[10px] text-muted hover:text-txt shrink-0"
-      title={current?.reason || error || "Session cache controls"} onClick={() => dialog.current?.showModal()}>
+      title={current?.reason || error || "Session cache controls"} onClick={() => dialog.current?.showModal?.()}>
       Cache: {current?.state || "unavailable"}
     </button>
     <dialog ref={dialog} className="m-auto w-96 max-w-[90vw] rounded-lg border border-edge bg-panel p-4 text-txt shadow-xl backdrop:bg-black/40">
       <div className="flex items-center justify-between mb-3">
         <strong className="text-sm">Session cache</strong>
-        <button type="button" className="text-xs text-muted hover:text-txt" onClick={() => dialog.current?.close()}>Close</button>
+        <button type="button" className="text-xs text-muted hover:text-txt" onClick={() => dialog.current?.close?.()}>Close</button>
       </div>
       <p className="text-xs text-muted mb-3">{current?.reason || error}</p>
       <p className="text-xs text-muted mb-3">Keep warm allows up to 3 refreshes, 1 hour idle, and a $5 input/output reserve. Refreshes bill cached reads or writes as well as output. It stops when this runner closes.</p>
