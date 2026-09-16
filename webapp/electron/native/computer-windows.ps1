@@ -4,6 +4,8 @@ $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 Add-Type -AssemblyName System.Drawing
+$providers = [Reflection.Assembly]::Load("UIAutomationClientsideProviders, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35")
+[System.Windows.Automation.ClientSettings]::RegisterClientSideProviderAssembly($providers.GetName())
 
 Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @'
 using System;
@@ -11,6 +13,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
+using System.Text;
 
 public static class MarionetteNativeComputer {
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
@@ -35,6 +38,8 @@ public static class MarionetteNativeComputer {
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr context);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr hwnd, StringBuilder name, int capacity);
+    [DllImport("user32.dll", EntryPoint="GetWindowLongW")] static extern int GetWindowLong(IntPtr hwnd, int index);
     [DllImport("user32.dll")] static extern bool PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);
     [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll", SetLastError=true)] static extern uint SendInput(uint count, INPUT[] inputs, int size);
@@ -50,6 +55,12 @@ public static class MarionetteNativeComputer {
         return result.ToArray();
     }
     public static uint WindowProcessId(IntPtr hwnd) { uint pid; GetWindowThreadProcessId(hwnd, out pid); return pid; }
+    public static bool IsPasswordWindow(IntPtr hwnd) {
+        if (hwnd == IntPtr.Zero) return false;
+        var name = new StringBuilder(256);
+        GetClassName(hwnd, name, name.Capacity);
+        return name.ToString().IndexOf("EDIT", StringComparison.OrdinalIgnoreCase) >= 0 && (GetWindowLong(hwnd, -16) & 0x20) != 0;
+    }
     public static void Capture(IntPtr hwnd, string destination) {
         RECT rect; if (!GetWindowRect(hwnd, out rect)) throw new InvalidOperationException("Cannot read selected window bounds");
         int width = rect.Right - rect.Left, height = rect.Bottom - rect.Top;
@@ -154,7 +165,7 @@ function Get-FrontWindow([System.Diagnostics.Process]$Process) {
 
 function Get-ElementLabel([System.Windows.Automation.AutomationElement]$Element) {
     try {
-        if ($Element.Current.IsPassword) { return [string]$Element.Current.Name }
+        if ($Element.Current.IsPassword -or [MarionetteNativeComputer]::IsPasswordWindow([IntPtr]$Element.Current.NativeWindowHandle)) { return "[password]" }
         if ($Element.Current.Name) { return [string]$Element.Current.Name }
         $pattern = $null
         if ($Element.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) { return [string]$pattern.Current.Value }
