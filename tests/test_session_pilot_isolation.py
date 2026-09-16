@@ -4,6 +4,42 @@ import json
 import pytest
 
 
+def test_deferred_publication_waits_for_swap_lock(owned_server, monkeypatch):
+    import threading
+    import harness.api.attach as attach
+
+    srv = owned_server
+    sid = srv._sessions.create()["id"]
+    callbacks = {}
+    monkeypatch.setenv("HARNESS_DEFER_COLD_ATTACH", "1")
+    monkeypatch.setattr(attach, "schedule_deferred_build",
+                        lambda build, **kwargs: callbacks.update(kwargs))
+    placeholder = srv._attach_view(sid, defer_cold_build=True)
+    real = srv._build_conversational_pilot(config=srv._runner_config_snapshot())
+    entered = threading.Event()
+    finished = threading.Event()
+
+    def publish():
+        entered.set()
+        try:
+            callbacks["on_done"](real)
+        finally:
+            finished.set()
+
+    worker = threading.Thread(target=publish, daemon=True)
+    try:
+        with srv._pilot_swap_lock:
+            worker.start()
+            assert entered.wait(1)
+            assert not finished.wait(0.1)
+            assert srv._runners.get(sid) is placeholder
+        worker.join(timeout=2)
+        assert finished.is_set()
+        assert srv._runners.get(sid) is real
+    finally:
+        worker.join(timeout=2)
+
+
 class Handler:
     def _send(self, code, body):
         self.code = code

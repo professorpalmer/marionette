@@ -193,7 +193,8 @@ def attach_view(
                 svc.diag("server.deferred_pilot_hydrate", e)
                 placeholder.mark_failed(e)
                 return
-            with _pilot_lock(svc):
+            # Completion runs on the builder thread, not the attach caller.
+            with svc.pilot_swap_lock:
                 current = svc.runners.get(session_id)
                 if current is not placeholder:
                     # View dropped or replaced while building — abandon swap.
