@@ -900,7 +900,6 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     setSessionsCacheEpoch((n) => n + 1);
     onSessionChange?.(id);
     try {
-      const prevRepo = currentRepoRef.current;
       const res: any = await api.switchSession(id);
       sessionListGeneration.current += 1;
       if (scope !== sessionScopeGeneration.current) return;
@@ -909,12 +908,11 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
         setExpandedProjects((prev) => ({ ...prev, [repo]: true }));
         setSelectedProjectPath(repo);
       }
-      // Same-root click is a view change. Cross-root still needs workspace /
-      // codegraph / FileTree to follow cfg.repo — do not refetch every rail
-      // list on the click path.
-      if (repo && !repoPathsEqual(repo, prevRepo)) {
-        window.dispatchEvent(new Event("harness-config-changed"));
-      }
+      // A successful switch must refresh the session-scoped config even when
+      // both sessions share a workspace. The optimistic state update above
+      // can make the first request arrive before the backend attach finishes;
+      // this post-attach event is the authoritative retry for every switch.
+      window.dispatchEvent(new Event("harness-config-changed"));
       if (railTab === "sessions") {
         void refreshBankSessions();
       }

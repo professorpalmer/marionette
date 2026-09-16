@@ -355,6 +355,7 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
             _plat_api.post_platform, services=svc.platform_services),
         "/api/settings": post_json(
             _settings_api.post_settings, services=svc.settings_services),
+        "/api/session/pilot-preferences": lambda handler, body: handler._set_pilot_preferences(body),
         "/api/usage": post_json(_usage_api.post_usage),
         "/api/providers/probe": post_json(_prov_api.post_providers_probe),
         "/api/providers/key": post_json(
@@ -728,7 +729,7 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
         )
 
     def _get_pilot(handler: Any, u: Any, qs: dict) -> Any:
-        return handler._swap_pilot(qs.get("model", [""])[0])
+        return handler._swap_pilot(qs.get("model", [""])[0], qs.get("session_id", [""])[0])
 
     def _get_auto(handler: Any, u: Any, qs: dict) -> Any:
         from .api.streams import validate_upload_image_paths
@@ -849,8 +850,7 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
         "/api/local-models/events": _get_local_model_events,
         "/api/codegraph": get_json(
             _cg_api.get_codegraph, services=svc.codegraph_services),
-        "/api/config": get_json(
-            _settings_api.get_config, services=svc.settings_services),
+        "/api/config": lambda handler, u, qs: handler._get_config(qs.get("session_id", [None])[0]),
         "/api/diagnostics": get_json(
             _doctor_api.get_diagnostics, services=svc.doctor_services),
         "/api/diagnostics/bundle": get_json(

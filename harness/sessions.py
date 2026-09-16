@@ -410,6 +410,8 @@ class SessionStore:
             if request_id:
                 origin["request_id"] = request_id
             child["forked_from"] = origin
+            if parent.get("pilot_preferences"):
+                child["pilot_preferences"] = dict(parent["pilot_preferences"])
             payload = {"history": messages[:cutoff]} if isinstance(raw, dict) else messages[:cutoff]
             save_transcript(state_dir, child_id, payload)
             # save_transcript is best-effort for live turns; a fork must be durable
@@ -454,6 +456,24 @@ class SessionStore:
         """Snapshot of the raw session rows (copies; safe to inspect freely)."""
         with self._lock:
             return [dict(s) for s in self._sessions]
+
+    def pilot_preferences(self, sid: str, *, seed_driver: Optional[str] = None,
+                          updates: Optional[dict] = None) -> dict:
+        """Read or durably update the desired pilot, independently of a live turn."""
+        with self._lock:
+            row = next((s for s in self._sessions if s["id"] == sid), None)
+            if row is None:
+                raise ValueError("unknown session")
+            prefs = dict(row.get("pilot_preferences", {}))
+            before = dict(prefs)
+            if seed_driver and not prefs.get("driver"):
+                prefs["driver"] = seed_driver
+            if updates:
+                prefs.update(updates)
+            if prefs != before:
+                row["pilot_preferences"] = prefs
+                self._save(immediate=True)
+            return prefs
 
     def remove_rows(self, sids: list) -> list[str]:
         """Delete several session rows in one pass (boot-migration path).

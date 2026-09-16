@@ -7,6 +7,8 @@ Codex API: omit reasoning for None; otherwise low|medium|high|xhigh|max.
 from __future__ import annotations
 
 import os
+from contextvars import ContextVar
+from functools import wraps
 from typing import Optional, Tuple
 
 # Canonical stored values (also used in env_settings.json via HARNESS_CODEX_REASONING_EFFORT).
@@ -17,6 +19,38 @@ REASONING_EFFORT_LEVELS: Tuple[str, ...] = (
 DEFAULT_CODEX_REASONING_EFFORT = "low"
 DEFAULT_SWARM_REASONING_EFFORT = "medium"
 SWARM_REASONING_EFFORT_ENV = "HARNESS_SWARM_REASONING_EFFORT"
+_turn_efforts: ContextVar[Optional[Tuple[str, str]]] = ContextVar("turn_efforts", default=None)
+
+
+def session_reasoning(fn):
+    """Snapshot session effort for a send, including across generator yields."""
+    @wraps(fn)
+    def scoped(self, *args, **kwargs):
+        prefs = {}
+        store = getattr(self, "_session_store", None)
+        sid = getattr(self, "harness_session_id", None)
+        if store is not None and sid:
+            prefs = store.pilot_preferences(sid)
+        efforts = (prefs.get("reasoning_effort", current_reasoning_effort()),
+                   prefs.get("swarm_reasoning_effort", current_swarm_reasoning_effort()))
+        iterator = fn(self, *args, **kwargs)
+        try:
+            while True:
+                token = _turn_efforts.set(efforts)
+                try:
+                    event = next(iterator)
+                except StopIteration:
+                    return
+                finally:
+                    _turn_efforts.reset(token)
+                yield event
+        finally:
+            token = _turn_efforts.set(efforts)
+            try:
+                iterator.close()
+            finally:
+                _turn_efforts.reset(token)
+    return scoped
 
 REASONING_EFFORT_LABELS = {
     "none": "None",
@@ -83,6 +117,9 @@ def is_reasoning_mandatory_error(text: object) -> bool:
 
 
 def current_reasoning_effort() -> str:
+    scoped = _turn_efforts.get()
+    if scoped is not None:
+        return scoped[0]
     return normalize_reasoning_effort(
         os.environ.get("HARNESS_CODEX_REASONING_EFFORT"),
         default=DEFAULT_CODEX_REASONING_EFFORT,
@@ -90,6 +127,9 @@ def current_reasoning_effort() -> str:
 
 
 def current_swarm_reasoning_effort() -> str:
+    scoped = _turn_efforts.get()
+    if scoped is not None:
+        return scoped[1]
     return normalize_reasoning_effort(
         os.environ.get(SWARM_REASONING_EFFORT_ENV),
         default=DEFAULT_SWARM_REASONING_EFFORT,

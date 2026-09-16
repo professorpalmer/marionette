@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, within, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import App from "../App";
+import { api, type Config } from "../lib/api";
 import { createPortal } from "react-dom";
 import { resetSettingsOverlay } from "../lib/settingsOverlay";
 const sessionSelection = vi.hoisted(() => ({ current: (_id: string) => {} }));
@@ -12,7 +13,7 @@ vi.mock("../components/LeftRail", () => ({ default: ({ onSessionChange }: { onSe
   sessionSelection.current = onSessionChange;
   return <button>Session item</button>;
 } }));
-vi.mock("../components/Conversation", () => ({ default: () => <textarea aria-label="Chat editor" /> }));
+vi.mock("../components/Conversation", () => ({ default: ({ config }: { config: Config | null }) => <><textarea aria-label="Chat editor" /><output data-testid="selected-driver">{config?.driver}</output></> }));
 vi.mock("../components/StatusBar", () => ({ default: () => null }));
 vi.mock("../components/UpdateBanner", () => ({ default: () => null }));
 vi.mock("../components/ProviderKeyBanner", () => ({ default: () => null }));
@@ -48,6 +49,26 @@ beforeEach(() => {
   localStorage.setItem("pmharness.board.openCards", '["state"]');
 });
 afterEach(cleanup);
+afterEach(() => vi.restoreAllMocks());
+
+it("fences delayed config replies across A-B-A and refresh generations", async () => {
+  const pending: { sid: string | null | undefined; resolve: (config: Config) => void }[] = [];
+  vi.spyOn(api, "config").mockImplementation(sid => new Promise(resolve => pending.push({ sid, resolve })));
+  await act(async () => { render(<App />); });
+  await act(async () => sessionSelection.current("a"));
+  await act(async () => sessionSelection.current("b"));
+  await act(async () => sessionSelection.current("a"));
+  expect(pending.map(p => p.sid)).toEqual([null, "a", "b", "a"]);
+  const resolve = (i: number, driver: string) => pending[i].resolve({ session_id: pending[i].sid, driver, reach: "cloud", budget: 1 });
+  await act(async () => resolve(3, "current-a"));
+  expect(screen.getByTestId("selected-driver")).toHaveTextContent("current-a");
+  await act(async () => { resolve(1, "old-a"); resolve(2, "old-b"); resolve(0, "boot"); });
+  expect(screen.getByTestId("selected-driver")).toHaveTextContent("current-a");
+  await act(async () => window.dispatchEvent(new Event("harness-config-changed")));
+  expect(pending[4].sid).toBe("a");
+  await act(async () => resolve(4, "refreshed-a"));
+  expect(screen.getByTestId("selected-driver")).toHaveTextContent("refreshed-a");
+});
 
 
 it.each([360, 640, 1024])("keeps desktop panel management and Settings reachable at %ipx", async width => {

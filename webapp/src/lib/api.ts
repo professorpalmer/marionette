@@ -63,6 +63,7 @@ export type WorktreeCleanup = {
 };
 
 export type Config = {
+  session_id?: string | null;
   driver: string; reach: string; budget: number;
   models?: string[];
   /** Friendly names keyed by ``provider:model`` spec. Wire specs stay unchanged. */
@@ -1546,7 +1547,8 @@ export const api = {
   validatePilot: (driver: string) => postJSON<PilotValidateResult>("/api/pilot/validate", { driver }),
   recommend: () => getJSON<RecommendResult>("/api/registry/recommend"),
 
-  config: () => getJSON<Config>("/api/config"),
+  config: (sessionId?: string | null) => getJSON<Config>(sessionId
+    ? `/api/config?session_id=${encodeURIComponent(sessionId)}` : "/api/config"),
   diagnostics: () => getJSON<{
     ok?: boolean;
     correlation_id?: string;
@@ -1914,7 +1916,9 @@ export const api = {
     archive_db: string;
   }>("/api/archive/prune", {}),
   renameSession: (id: string, title: string) => postJSON<{ ok: boolean }>("/api/sessions/rename", { session: id, title }),
-  swapPilot: (model: string) => getJSON(withToken(`/api/pilot?model=${encodeURIComponent(model)}`)),
+  swapPilot: (model: string, sessionId: string) => getJSON(withToken(`/api/pilot?model=${encodeURIComponent(model)}&session_id=${encodeURIComponent(sessionId)}`)),
+  setPilotPreferences: (sessionId: string, preferences: Partial<Pick<Config, "reasoning_effort" | "swarm_reasoning_effort">>) =>
+    postJSON<{ ok: boolean; session_id: string }>("/api/session/pilot-preferences", { session_id: sessionId, ...preferences }),
   uploadImage: async (file: File | Blob): Promise<{ path: string; name: string }> => {
     let fileObj: File;
     if (file instanceof File) {

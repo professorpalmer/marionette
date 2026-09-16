@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, replace
+from contextlib import nullcontext
 from typing import Any, Callable, Optional
 
 from ..deferred_attach import (
@@ -46,6 +47,11 @@ class AttachServices:
     apply_model_context_window: Callable[[], None]
     freeze_pilot_meters_into_boot_carry: Callable[[Any], None]
     runner_config_snapshot: Callable[[], Any]
+    lock_already_held: bool = False
+
+
+def _pilot_lock(svc: AttachServices):
+    return nullcontext() if getattr(svc, "lock_already_held", False) else svc.pilot_swap_lock
 
 
 def _fork_runner_config(session_id: str, svc: AttachServices, config: Any) -> Any:
@@ -99,7 +105,7 @@ def attach_view(
             svc.runners.drop(session_id, notify=False)
             existing = None
         else:
-            with svc.pilot_swap_lock:
+            with _pilot_lock(svc):
                 if isinstance(existing, ConversationalSession):
                     existing.bind_prompt_queue(svc.sessions_state_dir(), session_id)
                 svc.runners.set_active_view(session_id, repo=view_repo)
@@ -156,7 +162,7 @@ def attach_view(
             return placeholder
 
         runner = svc.runners.get_or_create(session_id, _factory)
-        with svc.pilot_swap_lock:
+        with _pilot_lock(svc):
             svc.runners.set_active_view(session_id, repo=view_repo)
             svc.set_pilot(runner)
             try:
@@ -187,6 +193,7 @@ def attach_view(
                 svc.diag("server.deferred_pilot_hydrate", e)
                 placeholder.mark_failed(e)
                 return
+            # Completion runs on the builder thread, not the attach caller.
             with svc.pilot_swap_lock:
                 current = svc.runners.get(session_id)
                 if current is not placeholder:
@@ -258,7 +265,7 @@ def attach_view(
         return runner
 
     runner = svc.runners.get_or_create(session_id, _factory)
-    with svc.pilot_swap_lock:
+    with _pilot_lock(svc):
         svc.runners.set_active_view(session_id, repo=view_repo)
         svc.set_pilot(runner)
         # Keep tracker/jobs pointed at the store this runner writes to.

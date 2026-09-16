@@ -41,6 +41,7 @@ def test_rematerialize_drops_system_keeps_tool_pairs():
 def test_fork_at_prefix_cutoff_and_parent_unchanged(tmp_path):
     store = SessionStore(str(tmp_path / "harness_sessions.json"))
     parent = store.create(title="Parent", repo=str(tmp_path), workspace_root=str(tmp_path))
+    store.pilot_preferences(parent["id"], updates={"driver": "stub-oracle", "reasoning_effort": "high"})
     history = _five_turn_history()
     save_transcript(str(tmp_path), parent["id"], {"history": history})
 
@@ -50,6 +51,9 @@ def test_fork_at_prefix_cutoff_and_parent_unchanged(tmp_path):
     assert store.active == parent["id"]
     assert child.get("active") is False
     assert child["forked_from"] == {"parent_id": parent["id"], "at_event_id": 3}
+    assert store.pilot_preferences(child["id"]) == store.pilot_preferences(parent["id"])
+    store.pilot_preferences(child["id"], updates={"driver": "stub-oracle-v2"})
+    assert store.pilot_preferences(parent["id"])["driver"] == "stub-oracle"
 
     parent_rows = [r for r in store.rows() if r["id"] == parent["id"]]
     assert parent_rows[0]["forked_to"] == {"child_id": child["id"], "at_event_id": 3}

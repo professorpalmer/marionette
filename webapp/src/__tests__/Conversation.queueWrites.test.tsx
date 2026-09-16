@@ -10,7 +10,7 @@ vi.mock('../components/SwarmReasoningPicker', () => ({ default: () => null }));
 vi.mock('../components/conversation/WorkspaceChip', () => ({ default: () => null }));
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); localStorage.clear(); });
 
-async function mount(items: { id: string; text: string }[] = []) {
+async function mount(items: { id: string; text: string; model?: string }[] = []) {
   vi.stubGlobal('fetch', withEndpointDiscovery(async (input) => {
     const path = String(input).split('?')[0];
     const payload = path === '/api/session/queue' ? { ok: true, session_id: 'queue-ui', items, recovery: [] }
@@ -75,7 +75,8 @@ it('does not start the next turn when queue handoff fails', async () => {
     return () => {};
   });
   const remove = vi.spyOn(api, 'queueHandoff').mockRejectedValue(new Error('Queue handoff failed.'));
-  const input = await mount([{ id: 'later', text: 'must stay queued' }]);
+  const swap = vi.spyOn(api, 'swapPilot').mockResolvedValue({ ok: true, deferred: false });
+  const input = await mount([{ id: 'later', text: 'must stay queued', model: 'stub-oracle' }]);
   await screen.findByText('must stay queued');
   fireEvent.change(input, { target: { value: 'start current turn' } });
   await waitFor(() => expect(screen.getByRole('button', { name: 'Send', exact: true })).toBeEnabled());
@@ -84,6 +85,7 @@ it('does not start the next turn when queue handoff fails', async () => {
   await act(async () => finish());
   await screen.findByText('Queue handoff failed.');
   expect(remove).toHaveBeenCalledWith('later', 'queue-ui');
+  expect(swap).toHaveBeenCalledWith('stub-oracle', 'queue-ui');
   expect(chat).toHaveBeenCalledTimes(1);
   expect(screen.getByText('must stay queued')).toBeTruthy();
 });

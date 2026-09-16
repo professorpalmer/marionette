@@ -18,7 +18,7 @@ const appRequest = async (method: string, path: string, body?: unknown) => {
   const sessions = [{ id: sid, title: 'Metadata fixture', active: true, repo, created_at: 1, updated_at: 2 }];
   if (method !== 'GET') return fixture.response({ ok: false, error: 'Execution is disabled in this read-only fixture.' });
   switch (route) {
-    case '/api/config': return fixture.response({ driver: 'Fixture', reach: 'local', budget: 1, repo, models: [], pilot_ready: true, workers_ready: true });
+    case '/api/config': return fixture.response({ driver: 'Fixture', reach: 'local', budget: 1, repo, session_id: sid, models: [], pilot_ready: true, workers_ready: true });
     case '/api/providers': return fixture.response([{ id: 'fixture', has_key: true, models: [] }]);
     case '/api/workspace': return fixture.response({ repo, branch: 'dev', is_git: true, head_unborn: false, home: '/home', recents: [repo, '/browse-only'], codegraph_status: 'ready' });
     case '/api/workspaces': return fixture.response([{ name: 'dev', active: true, dirty: false }]);

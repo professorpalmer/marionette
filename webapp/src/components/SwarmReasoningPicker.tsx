@@ -4,11 +4,13 @@ import { api, type Config, type ReasoningEffort } from "../lib/api";
 import { REASONING_LEVELS, labelForEffort } from "../lib/reasoningSupport";
 import { useOverlayFocus } from "../lib/overlayFocus";
 
-export default function SwarmReasoningPicker({ config }: { config: Config | null }) {
+export default function SwarmReasoningPicker({ config, sessionId = "" }: { config: Config | null; sessionId?: string }) {
   const [effort, setEffort] = useState<ReasoningEffort>("medium");
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const operation = useRef(0);
+  useEffect(() => () => { operation.current++; }, [sessionId]);
 
   useOverlayFocus(open, menuRef, {
     onClose: () => setOpen(false),
@@ -31,13 +33,17 @@ export default function SwarmReasoningPicker({ config }: { config: Config | null
   }, [open]);
 
   const setWorkerEffort = async (level: ReasoningEffort) => {
+    if (!sessionId || !config) return;
+    const generation = ++operation.current;
     const prev = effort;
     setEffort(level);
     setOpen(false);
     try {
-      await api.updateSettings({ swarm_reasoning_effort: level });
+      await api.setPilotPreferences(sessionId, { swarm_reasoning_effort: level });
+      if (generation !== operation.current) return;
       window.dispatchEvent(new Event("harness-config-changed"));
     } catch {
+      if (generation !== operation.current) return;
       setEffort(prev);
       window.dispatchEvent(new CustomEvent("harness-toast", {
         detail: "Worker reasoning setting failed -- try again",

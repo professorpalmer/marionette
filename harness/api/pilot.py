@@ -31,7 +31,7 @@ def swap_pilot(model: str, svc: PilotServices) -> tuple[int, JsonPayload]:
 
     Preserves the in-flight conversation on idle rebuild via
     ``perform_pilot_swap``. Hermes-style mid-turn: while streaming we stage
-    ``cfg.driver`` + workspace drivers and return ``deferred: true`` without
+    ``cfg.driver`` and return ``deferred: true`` without
     touching the live pilot object.
     """
     if not model:
@@ -47,7 +47,6 @@ def swap_pilot(model: str, svc: PilotServices) -> tuple[int, JsonPayload]:
         try:
             svc.cfg.driver = model
             svc.apply_model_context_window()
-            svc.save_workspace_driver(svc.cfg.repo, model)
         except Exception as e:
             svc.cfg.driver = prev_driver
             try:
