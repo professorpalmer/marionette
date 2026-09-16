@@ -112,6 +112,8 @@ class BusyControlMixin:
         Cooperative quarantine: steps 1–2 arm cancel Events checked by
         write/edit/hash_edit and late patch-apply before further disk writes.
         """
+        from .cache_keep_warm import stop_runner_cache
+        stop_runner_cache(self, reason="Stopped with the session.", close=False)
         # Publish Stop atomically with deadline expiry/cleanup. Keep cancel
         # hooks and process/child teardown outside the non-reentrant lock.
         with getattr(self, "_busy_meta", None) or nullcontext():

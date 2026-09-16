@@ -902,6 +902,9 @@ class ConversationalSession(
         # by SSE view detach (Phase A: detach drains; only interrupt cancels)
         # so run_auto halts promptly instead of burning budget for a gone client.
         self._cancel = threading.Event()
+        from .cache_keep_warm import CacheKeepWarm
+        self.retain_reasoning = False
+        self.cache_keep_warm = CacheKeepWarm(self)
         # auto-distill: when on, run_auto proposes PENDING skill/rule candidates on
         # completion (still human-gated for approval). On by default.
         env_val = os.environ.get("HARNESS_AUTO_DISTILL", "").strip().lower()
@@ -1769,7 +1772,11 @@ class ConversationalSession(
         """Returns the non-system messages (self._history minus the seeded system prompt) as a serializable list."""
         if len(self._history) <= 1:
             return []
-        return [dict(m) for m in self._history[1:]]
+        messages = copy.deepcopy(self._history[1:])
+        if not getattr(self, "retain_reasoning", False):
+            for message in messages:
+                message.pop("reasoning_envelope", None)
+        return messages
 
     def _display_swarm_pending_allowed(self, row: Any) -> bool:
         """True when a persisted swarm_pending row belongs to this session."""
@@ -1860,12 +1867,15 @@ class ConversationalSession(
             "history": self.export_history(),
             "display": self.export_display_transcript(),
             "job_ids": list(self._session_job_ids),
+            "cache_preferences": {"retain_reasoning": getattr(self, "retain_reasoning", False)},
         }
 
     def load_history(self, messages: Any) -> None:
         """Replaces the conversation turns (keep the freshly-built system prompt at index 0 -- which contains current skills/rules -- then append the loaded user/assistant messages). Do NOT persist the system prompt; only persist the user/assistant turns."""
         if isinstance(messages, dict):
             history_list = messages.get("history", [])
+            preferences = messages.get("cache_preferences") or {}
+            self.retain_reasoning = isinstance(preferences, dict) and preferences.get("retain_reasoning") is True
             self._display_transcript = messages.get("display", [])
             self._session_job_ids = messages.get("job_ids", [])
             if isinstance(self._display_transcript, list):
@@ -1875,14 +1885,18 @@ class ConversationalSession(
                 ]
         else:
             history_list = messages
+            self.retain_reasoning = False
             self._display_transcript = []
             self._session_job_ids = []
 
         if not self._history:
             self._history = [{"role": "system", "content": ""}]
         system_prompt = self._history[0]
-        cleaned = [m for m in history_list
+        cleaned = [copy.deepcopy(m) for m in history_list
                    if m.get("role") != "system" or m.get("source") == "goal_mode"]
+        if not self.retain_reasoning:
+            for message in cleaned:
+                message.pop("reasoning_envelope", None)
         self._history = [system_prompt] + cleaned
         self._cold_input_hold = bool(cleaned and cleaned[-1].get('role') == 'user'
                                      and (cleaned[-1].get('input_id') or cleaned[-1].get('input_ids')))
@@ -3358,6 +3372,8 @@ class ConversationalSession(
     def cancel(self) -> None:
         """Signal any in-flight run_auto/send to stop at the next checkpoint."""
         self._cancel.set()
+        from .cache_keep_warm import stop_runner_cache
+        stop_runner_cache(self, reason="Stopped with the session.", close=False)
         # interrupt()/_cancel: best-effort -- on interrupt, set a flag so completed-but-unfolded
         # swarm results are still delivered but no NEW swarm work is started.
         # There is a small gap where background swarm futures already submitted to self._swarm_pool

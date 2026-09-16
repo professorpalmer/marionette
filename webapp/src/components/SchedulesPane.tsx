@@ -54,7 +54,8 @@ export default function SchedulesPane() {
   useEffect(() => {
     mounted.current = true;
     void load();
-    return () => { mounted.current = false; loadGeneration.current++; historyGeneration.current++; };
+    const timer = window.setInterval(() => { if (!busy.current) void load(); }, 3000);
+    return () => { window.clearInterval(timer); mounted.current = false; loadGeneration.current++; historyGeneration.current++; };
   }, [load]);
 
   const mutate = async (id: string, action: () => Promise<string>) => {
@@ -128,7 +129,7 @@ export default function SchedulesPane() {
   };
 
   return <section aria-label="Schedules" className="space-y-3 text-txt">
-    <p className="text-sm text-muted">Recurring runs require the schedule daemon on this host. Run now waits for the run’s result. Pause also requests cancellation of an active run.</p>
+    <p className="text-sm text-muted">Recurring runs fire while the app is open. An external daemon can also run these schedules. Pause requests cancellation and keeps the active claim until execution exits.</p>
     <div className="flex flex-wrap gap-2">
       <button ref={createButton} type="button" disabled={pending !== null || editor.kind !== "closed"} className={scheduleButton} onClick={() => { setError(""); setEditor({ kind: "create" }); }}>Create schedule</button>
       <button type="button" disabled={pending !== null || loading} className={scheduleButton} onClick={() => { setError(""); void load(); }}>Refresh schedules</button>
@@ -152,7 +153,7 @@ export default function SchedulesPane() {
         return <article key={s.id} className="space-y-2 rounded border border-edge bg-panel2 p-3" aria-label={s.name} aria-busy={pending === s.id}>
         <h3 className="text-sm font-medium break-words">{s.name}</h3>
         <p className="text-sm text-muted break-words">{s.objective}</p>
-        <p className="text-sm font-mono break-words">{s.cron} · {s.timezone || "Host-local (daemon timezone)"}</p>
+        <p className="text-sm font-mono break-words">{s.interval_seconds ? `Every ${s.interval_seconds / 60} minutes (elapsed)` : `${s.cron} · ${s.timezone || "Host-local (daemon timezone)"}`}</p>
         <p className="text-sm text-muted break-all">Project: {s.repo || "Not set — edit before running"} · {s.delivery_mode ? `Legacy delivery: ${s.delivery_mode} (daemon target)` : "Fresh session per run"}</p>
         <p className="text-sm text-muted">{s.enabled ? "Enabled" : "Paused"} · {s.display_status || s.last_status || "Never run"}</p>
         {s.enabled && <p className="text-sm text-muted break-words">Next ({s.timezone || "daemon host-local"}): {s.next_fires?.length ? s.next_fires.slice(0, 3).join(", ") : "Unavailable — check the cron and timezone"}</p>}
@@ -181,7 +182,12 @@ export default function SchedulesPane() {
         {history.kind !== "closed" && history.id === s.id && <div className="space-y-2 border-t border-edge pt-2">
           {history.kind === "loading" && <p role="status">Loading history…</p>}
           {history.kind === "error" && <p role="alert" className="text-risk">{history.error}</p>}
-          {history.kind === "ready" && (history.runs.length === 0 ? <p className="text-sm text-muted">No runs yet.</p> : history.runs.map(r => <p key={r.id} className="text-sm text-muted break-words">{r.started_at ? new Date(r.started_at * 1000).toLocaleString() : ""} · {r.status}{r.halt_reason ? ` — ${r.halt_reason}` : ""}</p>))}
+          {history.kind === "ready" && (history.runs.length === 0 ? <p className="text-sm text-muted">No runs yet.</p> : history.runs.map(r => <article key={r.id} className="space-y-1 text-sm text-muted break-words">
+            <p>{r.started_at ? new Date(r.started_at * 1000).toLocaleString() : ""} · {r.status}{r.halt_reason ? ` — ${r.halt_reason}` : ""}</p>
+            {r.session_id && <p>Session: {r.session_id}</p>}
+            <p>{r.tokens_used ?? "Unknown"} tokens · {r.usage_receipt?.cost_usd == null ? "Cost unknown" : `$${r.usage_receipt.cost_usd.toFixed(6)} (${r.usage_receipt.source || "reported"})`}</p>
+            {r.result_text && <p className="whitespace-pre-wrap text-txt">{r.result_text}</p>}
+          </article>))}
         </div>}
       </article>;
       })}

@@ -10,8 +10,11 @@ import os
 import time
 import urllib.request
 import urllib.error
+import copy
 
 from .request_boundary import http_request
+from .reasoning_envelope import capture_reasoning, replay_reasoning
+from .cache_refresh import CacheRefreshDriver, cache_foreground
 from .base import tool_result_content, tool_result_semantics, DriverResponse, SYSTEM_PROMPT
 from .prompt_cache import (
     _can_carry_marker,
@@ -135,7 +138,7 @@ def _anthropic_cache_meta(usage_fields: dict) -> dict:
     }
 
 
-class AnthropicDriver:
+class AnthropicDriver(CacheRefreshDriver):
     supports_streaming = True
     requires_explicit_terminal = True
 
@@ -147,6 +150,7 @@ class AnthropicDriver:
                  send_temperature: bool = False,
                  enable_prompt_cache: bool = True) -> None:
         self.name = name
+        self.init_cache_refresh()
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.api_key_env = api_key_env
@@ -313,6 +317,9 @@ class AnthropicDriver:
                         "input": args
                     })
                 anth_role = "assistant"
+                replay = replay_reasoning(msg, "anthropic", self.base_url, self.model)
+                if replay is not None:
+                    blocks = replay
 
             elif role == "tool":
                 tc_id = msg.get("tool_call_id") or ""
@@ -488,7 +495,9 @@ class AnthropicDriver:
             pass
         return headers
 
+    @cache_foreground
     def chat(self, messages: list, *, tools: list | None = None, system: str | None = None, session_id: str | None = None) -> DriverResponse:
+        self._cache_snapshot = None
         url = f"{self.base_url}/messages"
         body = self._build_body(messages, tools, system)
         data = json.dumps(body).encode("utf-8")
@@ -499,6 +508,7 @@ class AnthropicDriver:
             raw = None
             for attempt in range(2):
                 try:
+                    request_started = time.monotonic()
                     req = http_request(
                         self,
                         url, data=data, headers=headers, method="POST",
@@ -577,6 +587,7 @@ class AnthropicDriver:
                 "reasoning": reasoning,
                 "finish_reason": raw.get("stop_reason") or "",
             })
+            self.remember_cache_request("anthropic", body, headers, request_started, raw.get("usage"))
             return DriverResponse(
                 text=pure_text,
                 tokens_in=usage_fields["tokens_in"],
@@ -584,10 +595,12 @@ class AnthropicDriver:
                 latency_ms=latency,
                 model=self.name,
                 meta=meta,
+                reasoning_envelope=capture_reasoning("anthropic", self.base_url, self.model, blocks),
             )
 
         return with_retry(_call)
 
+    @cache_foreground
     def chat_stream(
         self,
         messages: list,
@@ -607,16 +620,19 @@ class AnthropicDriver:
         url = f"{self.base_url}/messages"
         body = self._build_body(messages, tools, system)
         body["stream"] = True
+        self._cache_snapshot = None
         data = json.dumps(body).encode("utf-8")
         headers = self._headers(session_id=session_id)
         if on_delta is None:
             on_delta = lambda _t: None
 
         t0 = time.time()
+        request_started = time.monotonic()
         full_text_pieces = []
         reasoning_pieces = []
         # tool_use blocks assembled by content-block index.
         tool_blocks: dict = {}
+        native_blocks: dict = {}
         usage_fields = _anthropic_usage_fields({})
         stop_reason = ""
 
@@ -643,6 +659,7 @@ class AnthropicDriver:
                     elif etype == "content_block_start":
                         idx = evt.get("index")
                         block = evt.get("content_block") or {}
+                        native_blocks[idx] = copy.deepcopy(block)
                         if block.get("type") == "tool_use":
                             tool_blocks[idx] = {
                                 "id": block.get("id") or "",
@@ -657,6 +674,10 @@ class AnthropicDriver:
                         idx = evt.get("index")
                         delta = evt.get("delta") or {}
                         dtype = delta.get("type")
+                        native = native_blocks.get(idx)
+                        field = {"text_delta": "text", "thinking_delta": "thinking", "signature_delta": "signature"}.get(dtype)
+                        if native is not None and field:
+                            native[field] = native.get(field, "") + (delta.get(field) or "")
                         if dtype == "text_delta":
                             piece = delta.get("text") or ""
                             if piece:
@@ -788,6 +809,10 @@ class AnthropicDriver:
                 "type": "function",
                 "function": {"name": tb["name"], "arguments": args},
             })
+            try:
+                native_blocks[idx]["input"] = json.loads(args)
+            except (ValueError, KeyError):
+                native_blocks = {}
 
         reasoning = "".join(reasoning_pieces)
         if not reasoning:
@@ -801,6 +826,8 @@ class AnthropicDriver:
             "finish_reason": stop_reason,
             "stream_started": bool(full_text_pieces),
         })
+        if stop_reason:
+            self.remember_cache_request("anthropic", body, headers, request_started, usage_fields.get("raw_usage"))
         return DriverResponse(
             text=pure_text,
             tokens_in=usage_fields["tokens_in"],
@@ -808,4 +835,6 @@ class AnthropicDriver:
             latency_ms=latency,
             model=self.name,
             meta=meta,
+            reasoning_envelope=capture_reasoning("anthropic", self.base_url, self.model,
+                                                 [native_blocks[i] for i in sorted(native_blocks)]) if stop_reason else None,
         )

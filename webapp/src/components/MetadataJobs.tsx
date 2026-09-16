@@ -28,6 +28,7 @@ import { localKey, nativeActiveStatuses, nativeAttentionStatuses } from '../lib/
 import type { LocalDetail, LocalRoute, LocalSummary } from '../lib/localJobMetadata';
 import type { MetadataActionResult } from '../lib/useJobMetadata';
 import JobCancellationControl from './JobCancellationControl';
+import WorkerOperations from './WorkerOperations';
 
 const button = 'px-1.5 py-0.5 text-[10.5px] text-muted hover:text-txt focus-visible:outline focus-visible:outline-accent disabled:opacity-50';
 const compactSelect = 'w-full h-6 rounded border border-edge bg-panel2/40 px-1.5 text-[10px] text-muted focus:outline-none focus:border-accent/60';
@@ -122,6 +123,7 @@ function SelectedInspection({ job, navigation, compact, onReveal, onOpenDashboar
   const candidatePM = pm?.row.selection ?? detail?.selection;
   const previewSelection = state.view.kind === 'view' ? selectJobRef(job, state.view.context.repo, state.view.context.session_id) : null;
   const selectedPM = candidatePM && previewSelection && jobArtifactKey(candidatePM) === jobArtifactKey(previewSelection) ? candidatePM : null;
+  const operationsSelection = selectedPM ?? canonicalSelection;
   const native = local && state.localDetail && localKey(local) === localKey(state.localDetail.selection) ? state.localDetail : null;
   const nativeFresh = nativeSummary && (nativeSummary === selectedSummary
     ? native?.summaryFreshness === 'observed'
@@ -331,6 +333,8 @@ function SelectedInspection({ job, navigation, compact, onReveal, onOpenDashboar
       <p>Lifecycle: {nativeSummary?.lifecycle ?? job.status}. {!local && (!observation || observation.cost.kind === 'unavailable') ? 'Cost unavailable.' : ''} {(local ? !nativeFresh : job.read_status === 'unavailable') ? 'Observation is stale.' : ''}</p>
       {state.working && !observation && state.detail.kind === 'selected' && pm && metadataSelectionKey(state.detail.selection) === metadataSelectionKey(pm.row.selection) && <p role="status">Loading artifacts...</p>}
       {observation && <MetadataExpertPanels compact={compact} key={metadataSelectionKey(observation.selection)} detail={observation} navigation={navigation} store={store} busy={state.working} stale={!detailFresh} />}
+      {state.view.kind === 'view' && operationsSelection?.job_ref.version === 2 && <WorkerOperations
+        context={state.view.context} selection={operationsSelection} />}
       {native?.tasks && <>
         {native.tasks.page.revision !== nativeSummary?.revision && <p>Retained task details are stale. Inspect workers to refresh.</p>}
         {native.routing?.missing.includes('frontend_routing_limit') && <p>Routing display limit reached; final route unavailable.</p>}

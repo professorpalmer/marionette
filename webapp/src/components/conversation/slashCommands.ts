@@ -1,7 +1,11 @@
 export const SLASH_COMMANDS = [
+  { cmd: "/advise", desc: "Request one tool-free second opinion" },
+  { cmd: "/advice", desc: "Open this session's consultation history" },
+  { cmd: "/routines", desc: "List, pause, or edit routines; create with prompt --every 5m" },
   { cmd: "/clear", desc: "Clear visible transcript" },
   { cmd: "/new", desc: "Start a new session" },
   { cmd: "/compact", desc: "Trigger manual context compaction" },
+  { cmd: "/ping", desc: "Session keep warm: start, stop, or status" },
   { cmd: "/refine", desc: "Propose a harness refine (existing controller)" },
   { cmd: "/todo", desc: "View or edit the session nested TODO tree" },
   { cmd: "/model", desc: "Focus model picker to switch models" },

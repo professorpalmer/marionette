@@ -9,6 +9,7 @@ harness's job, identically for every model.
 import json
 from dataclasses import dataclass, field
 from typing import Any, Optional, Protocol
+from .reasoning_envelope import ReasoningEnvelope
 
 KNOWN_ASSISTANT_PHASES = frozenset(("commentary", "final_answer"))
 
@@ -111,12 +112,13 @@ def chat_completions_messages(messages: list) -> list:
     out = []
     for msg in messages:
         if isinstance(msg, dict) and (
-            "phase" in msg or (msg.get("role") == "tool" and (
+            "phase" in msg or "reasoning_envelope" in msg or (msg.get("role") == "tool" and (
                 "status" in msg or "is_error" in msg
             ))
         ):
             copy = dict(msg)
             copy.pop("phase", None)
+            copy.pop("reasoning_envelope", None)
             if msg.get("role") == "tool":
                 copy["content"] = tool_result_content(msg)
                 copy.pop("status", None)
@@ -137,6 +139,7 @@ class DriverResponse:
     error: Optional[str] = None
     meta: dict = field(default_factory=dict)
     assistant_phase: Optional[str] = None
+    reasoning_envelope: Optional[ReasoningEnvelope] = None
 
 
 SYSTEM_PROMPT = """You are the driver loop for Puppetmaster, an orchestration engine.
@@ -170,4 +173,3 @@ class Driver(Protocol):
 
     def chat(self, messages: list, *, tools: Optional[list] = None, system: Optional[str] = None) -> DriverResponse:
         ...
-

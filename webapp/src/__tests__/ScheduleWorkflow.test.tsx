@@ -19,6 +19,7 @@ describe('SchedulesPane workflow', () => {
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'New' } });
     fireEvent.change(screen.getByLabelText('Objective'), { target: { value: 'Check' } });
     fireEvent.change(screen.getByLabelText('Project path'), { target: { value: '/explicit' } });
+    fireEvent.change(screen.getByLabelText('Driver'), { target: { value: 'openai/gpt-5-nano' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save schedule' }));
     fireEvent.click(screen.getByRole('button', { name: 'Saving schedule…' }));
     expect(api.addSchedule).toHaveBeenCalledTimes(1);
@@ -62,6 +63,7 @@ it('ignores an older list response after a successful creation', async () => {
   fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Created' } });
   fireEvent.change(screen.getByLabelText('Objective'), { target: { value: 'Check' } });
   fireEvent.change(screen.getByLabelText('Project path'), { target: { value: '/explicit' } });
+  fireEvent.change(screen.getByLabelText('Driver'), { target: { value: 'openai/gpt-5-nano' } });
   fireEvent.click(screen.getByRole('button', { name: 'Save schedule' }));
   await screen.findByRole('heading', { name: 'Created' });
   await act(async () => oldList({ schedules: [schedule] }));
@@ -112,6 +114,7 @@ it('retains a failed create draft and surfaces server validation', async () => {
   fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'New' } });
   fireEvent.change(screen.getByLabelText('Objective'), { target: { value: 'Check' } });
   fireEvent.change(screen.getByLabelText('Project path'), { target: { value: '/explicit' } });
+  fireEvent.change(screen.getByLabelText('Driver'), { target: { value: 'openai/gpt-5-nano' } });
   fireEvent.change(screen.getByLabelText('Timezone'), { target: { value: 'Bad/Zone' } });
   fireEvent.click(screen.getByRole('button', { name: 'Save schedule' }));
   expect(await screen.findByRole('alert')).toHaveTextContent('Unknown IANA timezone');
@@ -151,6 +154,7 @@ it('reuses the create request key after an uncertain response', async () => {
   fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'New' } });
   fireEvent.change(screen.getByLabelText('Objective'), { target: { value: 'Check' } });
   fireEvent.change(screen.getByLabelText('Project path'), { target: { value: '/explicit' } });
+  fireEvent.change(screen.getByLabelText('Driver'), { target: { value: 'openai/gpt-5-nano' } });
   fireEvent.click(screen.getByRole('button', { name: 'Save schedule' }));
   await screen.findByRole('alert');
   await waitFor(() => expect(screen.getByRole('button', { name: 'Save schedule' })).not.toBeDisabled());
