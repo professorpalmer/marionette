@@ -12,6 +12,7 @@ import RightPane from "./components/RightPane";
 import RightDock from "./components/RightDock";
 import StatusBar from "./components/StatusBar";
 import UpdateBanner, { type UpdateAvailability } from "./components/UpdateBanner";
+import ComputerAccess from "./components/ComputerAccess";
 import ProviderKeyBanner from "./components/ProviderKeyBanner";
 import KeyBootstrapBanner from "./components/KeyBootstrapBanner";
 import { focusSettingsPage } from "./components/SettingsShell";
@@ -305,6 +306,7 @@ export default function App() {
     <JobMetadataOwner repo={config?.repo || ""} sessionId={activeSessionId}>
     <div className="h-full flex flex-col bg-[var(--shell-chrome)]">
       <UpdateBanner onAvailabilityChange={setAvailableUpdate} />
+      <ComputerAccess sessionId={activeSessionId || ""} onOpenBrowser={() => openRightTo("browser")} />
       {/* Keyless nudge: agentic is the shipped default, so instead of a demo run
           we tell the user to plug in a key. Suppressed while the first-run wizard
           is up (it already covers key setup) to avoid stacking two prompts. */}
@@ -408,6 +410,7 @@ export default function App() {
             <ErrorBoundary label="Tool board">
               <RightPane
                 visible={rightOpen}
+                sessionId={activeSessionId || ""}
                 artifacts={artifacts}
                 onOpenWizard={() => {
                   setManual(true);

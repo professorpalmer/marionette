@@ -11,6 +11,7 @@ Public orchestration stays on ``SendLoopMixin``; this helper takes an explicit
 ``session`` plus the small counters the kernel owns.
 """
 
+import os
 from typing import Any, Iterator
 
 from .diag import note as _diag_note
@@ -101,12 +102,30 @@ def execute_turn_actions(
     nested_implement = bool(getattr(session, "_nested_implement_worker", False))
     if prior_guard is None:
         apply_session_pending_swarm_mandate(session, user_message)
+    availability_probe = getattr(session, "_worker_delegation_available", None)
+    if callable(availability_probe):
+        delegation_available = bool(availability_probe())
+    else:
+        # Lightweight test/session doubles predate the capability probe. Real
+        # ConversationalSession instances always use the authoritative method.
+        delegation_available = not bool(
+            getattr(session.config, "no_delegation", False)
+        )
+    spill_root = ""
+    try:
+        spill_root = os.path.join(
+            os.path.abspath(session._state_dir_or_tempdir), "pmharness-results"
+        )
+    except Exception:
+        pass
     guard_state = reuse_or_new_turn_guard_state(
         prior_guard,
         user_message,
         repo_path=action_cwd,
         nested_implement=nested_implement,
         task_profile=getattr(session, "_task_profile", "") or "",
+        delegation_available=delegation_available,
+        spill_root=spill_root,
     )
     if session_pending_swarm_active(session):
         guard_state.explicit_swarm = True
@@ -308,6 +327,28 @@ def execute_turn_actions(
                 "kind": act.kind,
                 "goal": act_goal or act.tool,
                 "error": err_msg
+            })
+            session._append_action_result(act, aid, err_msg, is_native)
+            continue
+
+        if not delegation_available and act.kind in (
+            "run_implement", "run_parallel", "run_swarm",
+        ):
+            if act.kind in ("run_implement", "run_parallel"):
+                yield ConvEvent("action_start", {
+                    "id": aid, "kind": act.kind, "goal": act_goal or act.tool,
+                    "cwd": action_cwd,
+                    "call_id": _tcid or None,
+                })
+            err_msg = (
+                "no working worker route is available for this session; "
+                "continue directly with native tools"
+            )
+            yield ConvEvent("action_result", {
+                "id": aid,
+                "kind": act.kind,
+                "goal": act_goal or act.tool,
+                "error": err_msg,
             })
             session._append_action_result(act, aid, err_msg, is_native)
             continue

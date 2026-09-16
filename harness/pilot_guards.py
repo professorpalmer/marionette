@@ -5,8 +5,8 @@ from __future__ import annotations
 Per-turn guards wired before native tool dispatch:
 
 1. LOOP BREAKER — suppress repeated (tool, normalized-args) calls within a turn.
-2. SWARM GATE — on broad-intent user messages, block native exploration until
-   run_swarm / run_parallel / run_implement is dispatched. Explicit "swarm" /
+2. SWARM GATE — when strict mode is opted in, broad-intent user messages block
+   native exploration until run_swarm / run_parallel / run_implement is dispatched. Explicit "swarm" /
    "multi-worker" asks also block git, launch scripts, and run_implement until
    run_swarm / run_parallel actually fire. After a healthy
    dispatch, list_dir / search_files / exploration run_command stay blocked on
@@ -14,7 +14,7 @@ Per-turn guards wired before native tool dispatch:
    concrete findings); thin swarm results require re-dispatch, not an inline
    campaign. After a kernel failure (HTTP 400 / preflight / PM unavailable)
    the gate lifts so the pilot can diagnose locally instead of deadlocking.
-3. DELEGATE GATE — after too many native exploration calls without delegation,
+3. DELEGATE GATE — in opt-in strict mode, after too many native exploration calls without delegation,
    redirect the pilot to search_codegraph or Puppetmaster dispatch verbs.
    Clipboard / local handoff commands are never exploration. Kernel recovery
    also lifts this gate.
@@ -333,13 +333,13 @@ def loop_guard_enabled() -> bool:
 
 
 def swarm_gate_enabled() -> bool:
-    return os.environ.get("HARNESS_SWARM_GATE", "1").strip().lower() not in (
+    return os.environ.get("HARNESS_SWARM_GATE", "0").strip().lower() not in (
         "0", "false", "no", "off",
     )
 
 
 def delegate_gate_enabled() -> bool:
-    return os.environ.get("HARNESS_DELEGATE_GATE", "1").strip().lower() not in (
+    return os.environ.get("HARNESS_DELEGATE_GATE", "0").strip().lower() not in (
         "0", "false", "no", "off",
     )
 
@@ -703,6 +703,12 @@ class TurnGuardState:
     tiny_workspace: bool = False
     # Nested native implement worker (ProviderWorker expects_diff): edit-first policy.
     nested_implement: bool = False
+    # Independent worker-route capability for the foreground session. This is
+    # not inferred from the pilot model; local/API pilots may have workers.
+    delegation_available: bool = True
+    # Exact session-owned result directory. Physical reads beneath this root
+    # are recall of prior tool output, not new repository exploration.
+    spill_root: str = ""
     # True after edit_file / write_file / hash_edit on a nested implement turn.
     edit_seen: bool = False
     # (objective_key, model_key) pairs for plumbing-only / no-FINDING swarms.
@@ -755,7 +761,9 @@ def swarm_policy_for_message(message: str) -> str:
     return SWARM_POLICY_SOLO
 
 
-def swarm_policy_turn_note(message: str) -> str:
+def swarm_policy_turn_note(
+    message: str, *, delegation_available: bool = True,
+) -> str:
     """Per-turn trailer. Frozen system prompt cannot change mid-conversation."""
     if is_conversational_followup(message):
         return (
@@ -764,12 +772,29 @@ def swarm_policy_turn_note(message: str) -> str:
             "is required; state any missing evidence plainly."
         )
     policy = swarm_policy_for_message(message)
+    if not delegation_available:
+        return (
+            "TURN POLICY: no working worker route is available for this session. "
+            "Proceed directly with the native tools; do not call run_swarm, "
+            "run_parallel, or run_implement. Broad or multi-file scope is advisory, "
+            "not a reason to stop. This supersedes frozen SWARM FIRST/MUST and "
+            "file-count delegation wording. Filesystem, loop, edit-first, and "
+            "total-turn safety limits still apply."
+        )
     if policy == SWARM_POLICY_EXPLICIT:
         return (
             "TURN POLICY: the user asked for a swarm. Call run_swarm or "
             "run_parallel now. Do not substitute git or Puppetmaster CLI theater."
         )
     if policy == SWARM_POLICY_BROAD:
+        if not swarm_gate_enabled():
+            return (
+                "TURN POLICY: this user message is broad-intent. Delegation is "
+                "available and may improve coverage, but it is advisory. Continue "
+                "directly when that is the bounded, useful path; do not invent a "
+                "worker requirement or a file-count threshold. This supersedes "
+                "frozen SWARM FIRST/MUST and multi-file delegation wording."
+            )
         return (
             "TURN POLICY: this user message is broad-intent "
             "(audit/review/find-all/sweep). Open with run_swarm using multiple "
@@ -1396,11 +1421,28 @@ def is_native_exploration(kind: str, act: Any) -> bool:
     return False
 
 
-def _is_durable_recall_read(act: Any) -> bool:
+def _is_physical_spill_read(state: TurnGuardState, path: str) -> bool:
+    root = str(getattr(state, "spill_root", "") or "").strip()
+    target = str(path or "").strip()
+    if not root or not target:
+        return False
+    try:
+        root_real = os.path.normcase(os.path.realpath(root))
+        target_real = os.path.normcase(os.path.realpath(target))
+        return os.path.commonpath((root_real, target_real)) == root_real
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def _is_durable_recall_read(
+    act: Any, state: Optional[TurnGuardState] = None,
+) -> bool:
     """True when read_file targets artifact:// / job:// / spill:// (etc.)."""
     path = getattr(act, "path", None) or ""
     if not path and isinstance(getattr(act, "arguments", None), dict):
         path = act.arguments.get("path") or ""
+    if state is not None and _is_physical_spill_read(state, str(path or "")):
+        return True
     try:
         from harness.validation_reuse import is_durable_recall_uri
         return is_durable_recall_uri(str(path or ""))
@@ -1412,6 +1454,8 @@ def _is_durable_recall_read(act: Any) -> bool:
 
 
 def is_swarm_gate_blocked_exploration(state: TurnGuardState, kind: str, act: Any) -> bool:
+    if not state.delegation_available:
+        return False
     if getattr(state, "explicit_swarm", False):
         if state.kernel_recovery:
             return False
@@ -1420,7 +1464,7 @@ def is_swarm_gate_blocked_exploration(state: TurnGuardState, kind: str, act: Any
                 return False
             if kind in ("search_codegraph", "search_state", "search_archive", "read_archived_chat", "route_task", "query_wiki"):
                 return False
-            if kind == "read_file" and _is_durable_recall_read(act):
+            if kind == "read_file" and _is_durable_recall_read(act, state):
                 return False
             return True
         if not state.broad_intent:
@@ -1438,7 +1482,7 @@ def is_swarm_gate_blocked_exploration(state: TurnGuardState, kind: str, act: Any
     # artifact:// / job:// / spill:// must stay available before redispatch.
     if kind in ("search_state", "search_archive", "read_archived_chat"):
         return False
-    if kind == "read_file" and _is_durable_recall_read(act):
+    if kind == "read_file" and _is_durable_recall_read(act, state):
         return False
 
     # After a swarm/implement/parallel dispatch on a broad turn: still allow
@@ -1582,7 +1626,7 @@ def check_edit_first(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict
             reason="edit_first",
             message=_EDIT_FIRST_SUPPRESS_MESSAGE,
         )
-    if kind == "read_file" and not _is_durable_recall_read(act):
+    if kind == "read_file" and not _is_durable_recall_read(act, state):
         allowance = edit_first_read_allowance()
         if state.read_file_count >= allowance:
             return GuardVerdict(
@@ -1955,6 +1999,13 @@ def check_loop_guard(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict
     if kind == "wait":
         return GuardVerdict(False)
 
+    # Live browser reads are observations, not deterministic pure tool results.
+    # Replaying an old snapshot after a navigation gives the pilot stale refs.
+    if kind in {"browser_snapshot", "browser_get_text", "browser_screenshot", "browser_tabs"}:
+        return GuardVerdict(False)
+    if kind == "computer_use" and (getattr(act, "arguments", None) or {}).get("operation") in {"status", "apps", "snapshot"}:
+        return GuardVerdict(False)
+
     key = (kind, normalize_action_args(kind, act))
     prior = state.execution_counts.get(key, 0)
     if prior < 1:
@@ -1988,6 +2039,12 @@ def check_loop_guard(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict
             message=_loop_suppress_message(kind, prior),
         )
 
+    # Browser state can change between identical actions (back, scroll, reload).
+    # Keep the repeat cap, but never claim a cached action was executed again.
+    if kind in {"browser_navigate", "browser_back", "browser_click", "browser_type",
+                "browser_scroll", "browser_tab_activate", "browser_auth_handoff", "browser_input", "computer_use"}:
+        return GuardVerdict(False)
+
     if cached is not None:
         return GuardVerdict(
             suppress=True,
@@ -2014,7 +2071,12 @@ def record_successful_result(state: TurnGuardState, kind: str, act: Any, content
 
 
 def check_swarm_gate(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict:
-    if not swarm_gate_enabled():
+    if not state.delegation_available:
+        return GuardVerdict(False)
+
+    # Explicit worker intent stays binding when a route exists. Broad-intent
+    # forcing is a separately configurable strict policy and defaults advisory.
+    if not swarm_gate_enabled() and not state.explicit_swarm:
         return GuardVerdict(False)
 
     # MICRO disables swarm-gate suppress (orchestration skip only). INVARIANT:
@@ -2062,7 +2124,7 @@ def check_swarm_gate(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict
 
 
 def check_delegate_gate(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict:
-    if not delegate_gate_enabled():
+    if not delegate_gate_enabled() or not state.delegation_available:
         return GuardVerdict(False)
 
     if kind in DELEGATION_EXEMPT_KINDS:
@@ -2228,10 +2290,10 @@ def record_action_execution(state: TurnGuardState, kind: str, act: Any) -> None:
 
     if kind in DELEGATION_EXEMPT_KINDS:
         state.delegation_seen = True
-    elif is_native_exploration(kind, act):
+    elif is_native_exploration(kind, act) and not _is_durable_recall_read(act, state):
         state.exploration_count += 1
 
-    if kind == "read_file" and not _is_durable_recall_read(act):
+    if kind == "read_file" and not _is_durable_recall_read(act, state):
         # Durable artifact:// / job:// / spill:// reads do not consume the
         # pre-dispatch read allowance — they are validation-reuse recall.
         state.read_file_count += 1
@@ -2246,6 +2308,8 @@ def new_turn_guard_state(
     repo_path: Optional[str] = None,
     nested_implement: bool = False,
     task_profile: str = "",
+    delegation_available: bool = True,
+    spill_root: str = "",
 ) -> TurnGuardState:
     tiny = bool(repo_path) and is_tiny_workspace(repo_path or "")
     # Foreground tiny pilots tighten to 12; nested implement workers keep the
@@ -2263,6 +2327,8 @@ def new_turn_guard_state(
         iteration_budget=IterationBudget(cap) if cap > 0 else None,
         tiny_workspace=tiny,
         nested_implement=bool(nested_implement),
+        delegation_available=bool(delegation_available),
+        spill_root=str(spill_root or ""),
         task_profile=(task_profile or "").strip().upper(),
     )
 
@@ -2274,6 +2340,8 @@ def reuse_or_new_turn_guard_state(
     repo_path: Optional[str] = None,
     nested_implement: bool = False,
     task_profile: str = "",
+    delegation_available: bool = True,
+    spill_root: str = "",
 ) -> TurnGuardState:
     """Reuse prior guard state across model steps / keep-alive resume.
 
@@ -2291,6 +2359,8 @@ def reuse_or_new_turn_guard_state(
         repo_path=repo_path,
         nested_implement=nested_implement,
         task_profile=task_profile,
+        delegation_available=delegation_available,
+        spill_root=spill_root,
     )
 
 

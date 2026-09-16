@@ -45,6 +45,24 @@ contextBridge.exposeInMainWorld("harnessIPC", {
   popoutBrowser: (url) => ipcRenderer.invoke("browser:popout", url),
   // Open a URL in the OS default browser (escape hatch when in-app Google OAuth rejects).
   openExternal: (url) => ipcRenderer.invoke("browser:openExternal", url),
+  setBrowserContext: (payload) => ipcRenderer.invoke("browser:setContext", payload),
+  onOpenBrowser: (cb) => {
+    const handler = (_e, sessionId) => cb(sessionId);
+    ipcRenderer.on("browser:openForSession", handler);
+    return () => ipcRenderer.removeListener("browser:openForSession", handler);
+  },
+  setComputerSession: (sessionId) => ipcRenderer.invoke("computer:setSession", sessionId),
+  revokeComputerAccess: () => ipcRenderer.invoke("computer:revoke"),
+  onComputerState: (cb) => {
+    const handler = (_e, state) => cb(state);
+    ipcRenderer.on("computer:state", handler);
+    return () => ipcRenderer.removeListener("computer:state", handler);
+  },
+  onActivateBrowserTab: (cb) => {
+    const handler = (_e, payload) => cb(payload);
+    ipcRenderer.on("browser:activateTab", handler);
+    return () => ipcRenderer.removeListener("browser:activateTab", handler);
+  },
   closeWindow: () => ipcRenderer.invoke("window:close"),
   onCloseTab: (cb) => {
     const handler = () => { try { cb(); } catch (_) {} };

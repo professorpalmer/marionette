@@ -325,7 +325,7 @@ _GLM53_SWARM_PROMPT = (
 )
 
 
-def _action_session(*, no_delegation=False):
+def _action_session(*, no_delegation=False, worker_available=True):
     return SimpleNamespace(
         _turn_guard_state=None,
         _cancel=threading.Event(),
@@ -341,8 +341,33 @@ def _action_session(*, no_delegation=False):
         config=SimpleNamespace(
             repo="/tmp/r", swarm_adapter="local", no_delegation=no_delegation,
         ),
+        _worker_delegation_available=lambda: worker_available,
         pilot=MagicMock(),
     )
+
+
+def test_unavailable_worker_route_refuses_dispatch_without_leaf_identity(monkeypatch):
+    dispatched = MagicMock(side_effect=AssertionError("must not dispatch"))
+    monkeypatch.setattr(send_loop_actions, "dispatch_swarm_action", dispatched)
+    session = _action_session(no_delegation=False, worker_available=False)
+    events = list(execute_turn_actions(
+        session,
+        turn=PilotTurn(
+            say="",
+            thinking="",
+            actions=[PilotAction(kind="run_swarm", goal="review the module")],
+        ),
+        user_message="review the module",
+        is_native=True,
+        plan=False,
+        counters={"action_seq": 0, "swarms": 0, "demo_swarms": 0},
+        step=0,
+        turn_findings=[],
+    ))
+    result = next(event for event in events if event.kind == "action_result")
+    assert "no working worker route" in result.data.get("error", "")
+    assert session.config.no_delegation is False
+    dispatched.assert_not_called()
 
 
 def test_execute_translates_screenshot_agentic_cli_to_run_swarm(monkeypatch):

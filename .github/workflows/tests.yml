@@ -20,6 +20,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  native-windows:
+    needs: reuse-green-tree
+    if: needs.reuse-green-tree.outputs.skip_suite != 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - name: Verify native Windows computer control on a disposable fixture
+        run: node webapp/electron/native-windows-smoke.cjs
+
   reuse-green-tree:
     runs-on: ubuntu-latest
     outputs:

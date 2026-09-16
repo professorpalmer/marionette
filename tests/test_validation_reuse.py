@@ -1158,7 +1158,8 @@ def test_search_codegraph_schema_includes_affected():
     assert "search_state" in by_name
 
 
-def test_swarm_gate_permits_durable_recall_not_native_exploration():
+def test_swarm_gate_permits_durable_recall_not_native_exploration(monkeypatch):
+    monkeypatch.setenv("HARNESS_SWARM_GATE", "1")
     state = new_turn_guard_state("audit the whole codebase for quality issues")
     assert state.broad_intent is True
 

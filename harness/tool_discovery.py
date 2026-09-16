@@ -142,6 +142,19 @@ CORE_WORKER: Set[str] = CORE_ALWAYS | _WORKER_EXTRAS
 LAZY_ACTIVATE_NAMES: Set[str] = {
     "web_search",
     "web_fetch",
+    "browser_navigate",
+    "browser_snapshot",
+    "browser_click",
+    "browser_type",
+    "browser_scroll",
+    "browser_back",
+    "browser_get_text",
+    "browser_screenshot",
+    "browser_auth_handoff",
+    "browser_tabs",
+    "browser_tab_activate",
+    "computer_use",
+    "browser_input",
 }
 
 
@@ -150,9 +163,7 @@ def is_lazy_activatable_name(name: str) -> bool:
     key = (name or "").strip()
     if not key:
         return False
-    if key in LAZY_ACTIVATE_NAMES:
-        return True
-    return key.startswith("browser_")
+    return key in LAZY_ACTIVATE_NAMES
 
 
 def discovery_enabled() -> bool:
@@ -239,8 +250,9 @@ def _browser_tools_usable() -> bool:
     """
     try:
         from .browser import standalone_browser_available
+        from .desktop_browser import available as desktop_browser_available
 
-        return standalone_browser_available()
+        return desktop_browser_available() or standalone_browser_available()
     except Exception:
         return False
 
@@ -504,8 +516,6 @@ class ToolCatalog:
             if key.startswith("mcp_") and key in by_name:
                 resolved.append(by_name[key])
                 continue
-            if is_lazy_activatable_name(bare):
-                resolved.append(f"builtin:{bare}")
         # Stable dedupe
         out: List[str] = []
         seen: Set[str] = set()
@@ -541,9 +551,6 @@ class ToolCatalog:
                 self._activated.update(resolved)
                 newly.extend(resolved)
                 continue
-            tid = f"builtin:{name}"
-            self._activated.add(tid)
-            newly.append(tid)
         # Stable dedupe
         out: List[str] = []
         seen: Set[str] = set()

@@ -58,7 +58,8 @@ def _browser_chrome_cache_key() -> str:
 
 
 def _readiness_cache_key(workspace: str) -> tuple[str, str]:
-    return (os.path.normcase(workspace), _browser_chrome_cache_key())
+    from .desktop_browser import configured
+    return (os.path.normcase(workspace), _browser_chrome_cache_key() + ("|desktop" if configured() else ""))
 
 
 def browser_remedy(*, available: bool, configured: str = "") -> str:
@@ -120,6 +121,7 @@ def typescript_analyzer_remedy(*, available: bool) -> str:
 
 def _probe_environment_readiness(*, workspace: str, refresh: bool) -> Dict[str, Any]:
     from .browser import standalone_chrome_path
+    from .desktop_browser import available as desktop_browser_available
     from .lsp_code_intelligence import discover_lsp_tools
 
     configured = os.environ.get("PM_BROWSER_CHROME", "").strip()
@@ -128,7 +130,7 @@ def _probe_environment_readiness(*, workspace: str, refresh: bool) -> Dict[str, 
         browser_path = standalone_chrome_path(refresh=refresh)
     except Exception:
         browser_path = None
-    browser_ok = bool(browser_path)
+    browser_ok = bool(browser_path) or desktop_browser_available()
 
     tools = discover_lsp_tools(root=workspace or None)
     py_path = tools.python_pyright or tools.python_pyright_langserver

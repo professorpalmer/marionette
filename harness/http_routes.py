@@ -125,6 +125,7 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
         "/api/jobs/metadata/view/refresh": post_json(
             _metadata_view.refresh_view, services=lambda: svc.metadata_view()),
         "/api/browser/relay": post_json(_browser_api.post_browser_relay),
+        "/api/browser/controller": post_json(_browser_api.post_browser_controller),
         "/api/collab/presence/heartbeat": post_json(
             _collab_presence_api.post_presence_heartbeat),
         "/api/reviews/apply": post_json(

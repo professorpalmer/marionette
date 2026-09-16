@@ -185,8 +185,14 @@ def _guard() -> Optional[str]:
     return None
 
 
-def _call(op_name: str, method_name: str, *args, **kwargs) -> str:
+def _call(op_name: str, method_name: str, *args, session_id: str = "", **kwargs) -> str:
     """Run a CDP engine op; always return a string, never raise on the chat path."""
+    try:
+        from . import desktop_browser
+        if desktop_browser.configured():
+            return desktop_browser.call(session_id, op_name, _desktop_args(op_name, args))
+    except Exception as exc:
+        return f"desktop browser bridge failed: {exc}"
     err = _guard()
     if err:
         return err
@@ -205,42 +211,75 @@ def _call(op_name: str, method_name: str, *args, **kwargs) -> str:
     return result if isinstance(result, str) else str(result)
 
 
-def browser_navigate(url: str) -> str:
-    return _call("navigate", "navigate", url)
+def _desktop_args(op_name: str, args: tuple) -> dict:
+    names = {"navigate": ("url",), "click": ("ref",), "type": ("ref", "text"), "scroll": ("direction",)}.get(op_name, ())
+    return dict(zip(names, args))
 
 
-def browser_snapshot() -> str:
-    return _call("snapshot", "snapshot")
+def browser_navigate(url: str, *, session_id: str = "") -> str:
+    return _call("navigate", "navigate", url, session_id=session_id)
 
 
-def browser_click(ref: str) -> str:
-    return _call("click", "click", ref)
+def browser_snapshot(*, session_id: str = "") -> str:
+    return _call("snapshot", "snapshot", session_id=session_id)
 
 
-def browser_type(ref: str, text: str) -> str:
-    return _call("type", "type_text", ref, text)
+def browser_click(ref: str, *, session_id: str = "") -> str:
+    return _call("click", "click", ref, session_id=session_id)
 
 
-def browser_scroll(direction: str = "down") -> str:
-    return _call("scroll", "scroll", direction)
+def browser_type(ref: str, text: str, *, session_id: str = "") -> str:
+    return _call("type", "type_text", ref, text, session_id=session_id)
 
 
-def browser_back() -> str:
-    return _call("back", "back")
+def browser_scroll(direction: str = "down", *, session_id: str = "") -> str:
+    return _call("scroll", "scroll", direction, session_id=session_id)
 
 
-def browser_get_text() -> str:
-    return _call("get_text", "get_text")
+def browser_back(*, session_id: str = "") -> str:
+    return _call("back", "back", session_id=session_id)
 
 
-def browser_screenshot(out_dir: Optional[str] = None) -> str:
+def browser_get_text(*, session_id: str = "") -> str:
+    return _call("get_text", "get_text", session_id=session_id)
+
+
+def browser_tabs(*, session_id: str = "") -> str:
+    try:
+        from . import desktop_browser
+        if desktop_browser.configured():
+            return desktop_browser.call(session_id, "tabs")
+    except Exception as exc:
+        return f"desktop browser bridge failed: {exc}"
+    return "browser tabs unavailable outside the desktop browser"
+
+
+def browser_input(*, session_id: str = "", **arguments) -> str:
+    from .desktop_browser import call
+    return call(session_id, "input", arguments)
+
+
+def browser_tab_activate(tab_id: str, *, session_id: str = "") -> str:
+    try:
+        from . import desktop_browser
+        if desktop_browser.configured():
+            return desktop_browser.call(session_id, "tab_activate", {"tab_id": tab_id})
+    except Exception as exc:
+        return f"desktop browser bridge failed: {exc}"
+    return "browser tabs unavailable outside the desktop browser"
+
+
+def browser_screenshot(out_dir: Optional[str] = None, *, session_id: str = "") -> str:
+    from . import desktop_browser
+    if desktop_browser.configured():
+        return desktop_browser.call(session_id, "screenshot")
     if out_dir is None or not str(out_dir).strip():
         dest = Path.home() / ".pmharness" / "browser-shots"
         dest.mkdir(parents=True, exist_ok=True)
         resolved = str(dest)
     else:
         resolved = out_dir
-    return _call("screenshot", "screenshot", resolved)
+    return _call("screenshot", "screenshot", resolved, session_id=session_id)
 
 
 def browser_relay_enabled() -> bool:
@@ -255,4 +294,3 @@ def browser_relay_snapshot():
     from .browser_relay import last_snapshot
 
     return last_snapshot()
-

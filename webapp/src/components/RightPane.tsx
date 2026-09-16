@@ -305,8 +305,9 @@ function readInitialOpenCards(): Tab[] {
       CANONICAL_ORDER.includes(tab as Tab) && tab !== PINNED_LAST && list.indexOf(tab) === index);
 }
 
-export default function RightPane({ visible, artifacts, onOpenWizard, initialTab, onEmpty, onRequestMinWidth }: {
+export default function RightPane({ visible, sessionId = "", artifacts, onOpenWizard, initialTab, onEmpty, onRequestMinWidth }: {
   visible: boolean;
+  sessionId?: string;
   artifacts: { type: string; headline: string; confidence?: number }[];
   onOpenWizard: () => void;
   initialTab?: string | null;
@@ -738,7 +739,7 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
   const renderTabInner = (tabName: Tab) => {
     switch (tabName) {
       case "browser":
-        return <BrowserPane />;
+        return <BrowserPane sessionId={visible ? sessionId : ""} />;
       case "files":
         return <FileTree />;
       case "git":

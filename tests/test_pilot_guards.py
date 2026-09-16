@@ -282,8 +282,9 @@ def test_hey_do_a_swarm_blocks_git_until_run_swarm():
     assert after.suppress is False
 
 
-def test_investigate_shaped_turn_swarm_gate_suppresses_exploration():
+def test_investigate_shaped_turn_swarm_gate_suppresses_exploration(monkeypatch):
     """Cross-platform investigate prompt must trip broad intent + swarm gate."""
+    monkeypatch.setenv("HARNESS_SWARM_GATE", "1")
     prompt = (
         "marionette still having the issue with the browser not working on "
         "windows. doesn't have this issue on Mac... Find out for me"
@@ -307,9 +308,9 @@ def test_investigate_shaped_turn_swarm_gate_suppresses_exploration():
 
 def test_swarm_gate_disabled_by_env(monkeypatch):
     monkeypatch.delenv("HARNESS_SWARM_GATE", raising=False)
-    assert swarm_gate_enabled() is True
-    monkeypatch.setenv("HARNESS_SWARM_GATE", "0")
     assert swarm_gate_enabled() is False
+    monkeypatch.setenv("HARNESS_SWARM_GATE", "1")
+    assert swarm_gate_enabled() is True
 
 
 def test_iteration_budget_cap_from_env(monkeypatch):
@@ -350,7 +351,8 @@ def test_turn_tool_budget_default_hermetic_after_import_time_zero(monkeypatch):
         importlib.reload(pilot_guards)
 
 
-def test_swarm_gate_suppresses_list_dir_before_dispatch():
+def test_swarm_gate_suppresses_list_dir_before_dispatch(monkeypatch):
+    monkeypatch.setenv("HARNESS_SWARM_GATE", "1")
     state = new_turn_guard_state("Give me an audit of this directory")
     act = _Act(kind="list_dir", path=".")
     verdict = check_swarm_gate(state, "list_dir", act)
@@ -364,8 +366,9 @@ def test_swarm_gate_suppresses_list_dir_before_dispatch():
         assert role in verdict.message
 
 
-def test_swarm_gate_subsequent_suppressions_use_short_replay():
+def test_swarm_gate_subsequent_suppressions_use_short_replay(monkeypatch):
     """After the first full redirect, further exploration is a cheap cached replay."""
+    monkeypatch.setenv("HARNESS_SWARM_GATE", "1")
     state = new_turn_guard_state("Give me an audit of this directory")
     first = check_swarm_gate(state, "list_dir", _Act(kind="list_dir", path="."))
     assert first.suppress is True
@@ -403,8 +406,9 @@ def test_swarm_gate_replay_does_not_apply_when_narrow():
     assert state.swarm_gate_suppress_count == 0
 
 
-def test_swarm_gate_allows_search_codegraph_on_broad_turn():
+def test_swarm_gate_allows_search_codegraph_on_broad_turn(monkeypatch):
     """search_codegraph stays open even after native exploration is redirected."""
+    monkeypatch.setenv("HARNESS_SWARM_GATE", "1")
     state = new_turn_guard_state("Give me an audit of this directory")
     assert state.broad_intent is True
     blocked = check_swarm_gate(state, "list_dir", _Act(kind="list_dir", path="."))
@@ -418,7 +422,8 @@ def test_swarm_gate_allows_search_codegraph_on_broad_turn():
     assert state.swarm_gate_suppress_count == 1
 
 
-def test_swarm_gate_allows_two_reads_then_blocks():
+def test_swarm_gate_allows_two_reads_then_blocks(monkeypatch):
+    monkeypatch.setenv("HARNESS_SWARM_GATE", "1")
     state = new_turn_guard_state("Review the platform for regressions")
     for i in range(SWARM_GATE_READ_ALLOWANCE):
         act = _Act(kind="read_file", path=f"a{i}.py")
@@ -438,8 +443,9 @@ def test_swarm_gate_allows_two_reads_then_blocks():
     assert again.replay is True
 
 
-def test_swarm_gate_keeps_blocking_sweeps_after_dispatch():
+def test_swarm_gate_keeps_blocking_sweeps_after_dispatch(monkeypatch):
     """After dispatch, list_dir/search_files/grep stay blocked; read_file unlocks."""
+    monkeypatch.setenv("HARNESS_SWARM_GATE", "1")
     state = new_turn_guard_state("Audit the harness directory")
     record_action_execution(state, "run_swarm", _Act(kind="run_swarm", goal="map harness"))
     assert state.swarm_dispatched is True
@@ -472,7 +478,8 @@ def test_swarm_gate_keeps_blocking_sweeps_after_dispatch():
     assert cg_verdict.suppress is False
 
 
-def test_swarm_gate_pre_dispatch_message_forbids_inline_substitute():
+def test_swarm_gate_pre_dispatch_message_forbids_inline_substitute(monkeypatch):
+    monkeypatch.setenv("HARNESS_SWARM_GATE", "1")
     state = new_turn_guard_state("Give me an audit of this directory")
     verdict = check_swarm_gate(state, "list_dir", _Act(kind="list_dir", path="."))
     assert verdict.suppress is True
@@ -481,15 +488,13 @@ def test_swarm_gate_pre_dispatch_message_forbids_inline_substitute():
     assert "list_dir/search_files/grep sweeps stay blocked" in verdict.message
 
 
-def test_pilot_system_requires_redispatch_on_shallow_swarm():
+def test_pilot_system_requires_evidence_not_endless_redispatch():
     from harness.pilot import PILOT_SYSTEM
 
-    assert "re-dispatch a narrowed run_swarm" in PILOT_SYSTEM
-    assert "NEVER open a broad inline exploration campaign" in PILOT_SYSTEM
-    assert "thin results mean sharpen and re-dispatch" in PILOT_SYSTEM
-    assert "do NOT \"validate with native tools\"" in PILOT_SYSTEM
+    assert "either narrow the delegated slice or verify it directly" in PILOT_SYSTEM
+    assert "A worker status alone is not proof" in PILOT_SYSTEM
+    assert "Finish with the user's requested result and a clear verdict" in PILOT_SYSTEM
     assert "TURN POLICY" in PILOT_SYSTEM
-    assert "do we have X" in PILOT_SYSTEM
     # Old abuse-prone phrasing must not remain as the sole post-swarm guidance.
     assert "use native exploration only to validate specific findings." not in PILOT_SYSTEM
 
@@ -563,7 +568,8 @@ def test_per_turn_reset_includes_broad_intent_and_budget():
     assert turn2.iteration_budget.used == 0
 
 
-def test_check_pilot_guards_swarm_gate_before_delegate():
+def test_check_pilot_guards_swarm_gate_before_delegate(monkeypatch):
+    monkeypatch.setenv("HARNESS_SWARM_GATE", "1")
     state = new_turn_guard_state("Give me an audit of this directory")
     verdict = check_pilot_guards(state, "list_dir", _Act(kind="list_dir", path="."))
     assert verdict.suppress is True
@@ -579,9 +585,9 @@ def test_loop_guard_disabled_by_env(monkeypatch):
 
 def test_delegate_gate_disabled_by_env(monkeypatch):
     monkeypatch.delenv("HARNESS_DELEGATE_GATE", raising=False)
-    assert delegate_gate_enabled() is True
-    monkeypatch.setenv("HARNESS_DELEGATE_GATE", "0")
     assert delegate_gate_enabled() is False
+    monkeypatch.setenv("HARNESS_DELEGATE_GATE", "1")
+    assert delegate_gate_enabled() is True
 
 
 def test_guards_active_reflects_either_switch(monkeypatch):
@@ -676,6 +682,31 @@ def test_loop_replays_identical_successful_call():
     assert "SUPPRESSED" not in verdict.message
 
 
+def test_loop_guard_never_replays_browser_observations():
+    from harness.pilot_guards import record_successful_result
+
+    state = new_turn_guard_state()
+    act = _Act(kind="browser_snapshot")
+    record_action_execution(state, "browser_snapshot", act)
+    record_successful_result(state, "browser_snapshot", act, "old about:blank")
+
+    verdict = check_loop_guard(state, "browser_snapshot", act)
+    assert verdict.suppress is False
+    assert verdict.replay is False
+
+
+def test_browser_actions_execute_again_but_keep_repeat_cap():
+    from harness.pilot_guards import record_successful_result, LOOP_REPEAT_CAP
+    state = new_turn_guard_state()
+    act = _Act(kind="browser_back")
+    record_action_execution(state, "browser_back", act)
+    record_successful_result(state, "browser_back", act, "went back")
+    assert not check_loop_guard(state, "browser_back", act).suppress
+    for _ in range(LOOP_REPEAT_CAP - 1):
+        record_action_execution(state, "browser_back", act)
+    assert check_loop_guard(state, "browser_back", act).suppress
+
+
 def test_loop_hard_suppresses_after_repeat_cap():
     """The (LOOP_REPEAT_CAP + 1)th identical call hard-suppresses after replays."""
     from harness.pilot_guards import record_successful_result
@@ -716,7 +747,8 @@ def test_loop_repeat_cap_constant_documented():
     assert LOOP_REPEAT_CAP >= 1
 
 
-def test_delegate_gate_trips_after_threshold():
+def test_delegate_gate_trips_after_threshold(monkeypatch):
+    monkeypatch.setenv("HARNESS_DELEGATE_GATE", "1")
     state = new_turn_guard_state()
     for i in range(DELEGATE_THRESHOLD):
         act = _Act(kind="read_file", path=f"f{i}.py")
@@ -739,6 +771,99 @@ def test_delegate_gate_default_allows_more_than_four_exploration_calls():
         act = _Act(kind="read_file", path=f"doc-{i}.md")
         assert check_delegate_gate(state, "read_file", act).suppress is False
         record_action_execution(state, "read_file", act)
+
+
+def test_delegate_gate_default_allows_nine_useful_reads(monkeypatch):
+    monkeypatch.delenv("HARNESS_DELEGATE_GATE", raising=False)
+    state = new_turn_guard_state()
+    for i in range(DELEGATE_THRESHOLD + 2):
+        act = _Act(kind="read_file", path=f"useful-{i}.py")
+        assert check_delegate_gate(state, "read_file", act).suppress is False
+        record_action_execution(state, "read_file", act)
+
+
+def test_broad_intent_is_advisory_by_default(monkeypatch):
+    from harness.pilot_guards import swarm_policy_turn_note
+
+    monkeypatch.delenv("HARNESS_SWARM_GATE", raising=False)
+    state = new_turn_guard_state("Review this small module for the bug")
+    assert state.broad_intent is True
+    assert check_swarm_gate(
+        state, "read_file", _Act(kind="read_file", path="small.py")
+    ).suppress is False
+    note = swarm_policy_turn_note("Review this small module for the bug")
+    assert "advisory" in note
+    assert "Open with run_swarm" not in note
+
+
+def test_strict_swarm_gate_remains_opt_in(monkeypatch):
+    monkeypatch.setenv("HARNESS_SWARM_GATE", "1")
+    state = new_turn_guard_state("Review this small module for the bug")
+    verdict = check_swarm_gate(
+        state, "list_dir", _Act(kind="list_dir", path=".")
+    )
+    assert verdict.suppress is True
+    assert verdict.reason == "swarm_gate"
+
+
+def test_unavailable_workers_never_force_explicit_dispatch(monkeypatch):
+    from harness.pilot_guards import swarm_policy_turn_note
+
+    monkeypatch.setenv("HARNESS_SWARM_GATE", "1")
+    state = new_turn_guard_state(
+        "Use Puppetmaster workers to review this module",
+        delegation_available=False,
+    )
+    assert state.explicit_swarm is True
+    assert check_swarm_gate(
+        state, "read_file", _Act(kind="read_file", path="small.py")
+    ).suppress is False
+    note = swarm_policy_turn_note(
+        "Use Puppetmaster workers to review this module",
+        delegation_available=False,
+    )
+    assert "Proceed directly" in note
+    assert "do not call run_swarm" in note
+
+
+def test_durable_and_physical_spill_reads_do_not_consume_exploration(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("HARNESS_DELEGATE_GATE", "1")
+    spill_root = tmp_path / "pmharness-results"
+    spill_root.mkdir()
+    state = new_turn_guard_state(spill_root=str(spill_root))
+    for path in (
+        "spill://session/read_file-35",
+        str(spill_root / "read_file:35.txt"),
+    ):
+        act = _Act(kind="read_file", path=path)
+        record_action_execution(state, "read_file", act)
+    assert state.exploration_count == 0
+    assert state.read_file_count == 0
+
+    lookalike = tmp_path / "other" / "pmharness-results" / "read_file:35.txt"
+    act = _Act(kind="read_file", path=str(lookalike))
+    record_action_execution(state, "read_file", act)
+    assert state.exploration_count == 1
+    assert state.read_file_count == 1
+
+
+def test_worker_leaf_limits_do_not_depend_on_route_availability():
+    state = new_turn_guard_state(
+        "IMPLEMENT TASK: fix app.js",
+        nested_implement=True,
+        delegation_available=False,
+    )
+    for i in range(EDIT_FIRST_READ_ALLOWANCE_DEFAULT):
+        act = _Act(kind="read_file", path=f"app{i}.js")
+        assert check_edit_first(state, "read_file", act).suppress is False
+        record_action_execution(state, "read_file", act)
+    verdict = check_edit_first(
+        state, "read_file", _Act(kind="read_file", path="extra.js")
+    )
+    assert verdict.suppress is True
+    assert verdict.reason == "edit_first"
 
 
 def test_write_file_fingerprint_includes_content():
@@ -777,7 +902,8 @@ def test_which_and_where_are_not_exploration():
     assert is_exploration_command("where python") is False
 
 
-def test_delegate_gate_counts_exploration_run_command():
+def test_delegate_gate_counts_exploration_run_command(monkeypatch):
+    monkeypatch.setenv("HARNESS_DELEGATE_GATE", "1")
     state = new_turn_guard_state()
     assert is_exploration_command("rg foo bar")
     assert is_exploration_command("find . -name '*.py'")
@@ -1326,7 +1452,8 @@ def test_echo_and_dir_probes_count_as_exploration(command):
         "dir",
     ],
 )
-def test_swarm_gate_blocks_echo_and_dir_probes_on_broad_turn(command):
+def test_swarm_gate_blocks_echo_and_dir_probes_on_broad_turn(command, monkeypatch):
+    monkeypatch.setenv("HARNESS_SWARM_GATE", "1")
     state = new_turn_guard_state("Give me an audit of this directory")
     act = _Act(kind="run_command", command=command)
     assert is_swarm_gate_blocked_exploration(state, "run_command", act) is True
@@ -1382,7 +1509,9 @@ def test_result_shows_kernel_failure_markers():
     assert result_shows_kernel_failure("") is False
 
 
-def test_kernel_recovery_lifts_swarm_and_delegate_gates():
+def test_kernel_recovery_lifts_swarm_and_delegate_gates(monkeypatch):
+    monkeypatch.setenv("HARNESS_SWARM_GATE", "1")
+    monkeypatch.setenv("HARNESS_DELEGATE_GATE", "1")
     state = new_turn_guard_state("Give me an audit of this directory")
     for i in range(DELEGATE_THRESHOLD):
         record_action_execution(state, "read_file", _Act(kind="read_file", path=f"z{i}.py"))
