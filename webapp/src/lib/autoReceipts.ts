@@ -41,7 +41,9 @@ export function formatAutoBudgetMeters(
   if (typeof snapshot.tokens_used === "number" && Number.isFinite(snapshot.tokens_used)) {
     const used = formatTokens(snapshot.tokens_used);
     const max =
-      typeof snapshot.max_tokens === "number" && Number.isFinite(snapshot.max_tokens)
+      typeof snapshot.max_tokens === "number"
+      && Number.isFinite(snapshot.max_tokens)
+      && snapshot.max_tokens > 0
         ? `/${formatTokens(snapshot.max_tokens)}`
         : "";
     parts.push(`${used}${max} tok`);

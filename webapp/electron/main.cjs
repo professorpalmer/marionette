@@ -417,7 +417,9 @@ async function connectDesktopBrowser() {
   if (!desktopBrowserBridge) {
     desktopBrowserBridge = createBrowserBridge({ dispatch: async (payload, signal) => {
       if (payload.action === "computer") return computerController.dispatch(payload, signal);
-      if (computerController.getSession() !== payload.session_id) throw new Error("Browser control belongs to the active conversation.");
+      if (payload.session_id && computerController.getSession() !== payload.session_id) {
+        computerController.setSession(payload.session_id);
+      }
       if (!browserController.readyForSession(payload.session_id)) {
         win?.webContents.send("browser:openForSession", payload.session_id);
         while (!signal.aborted && computerController.getSession() === payload.session_id && !browserController.readyForSession(payload.session_id)) await new Promise(resolve => setTimeout(resolve, 20));
@@ -2222,6 +2224,10 @@ ipcMain.handle("browser:setContext", (event, payload) => {
 ipcMain.handle("computer:setSession", (event, sessionId) => {
   if (!win || event.sender !== win.webContents) return;
   computerController.setSession(sessionId);
+});
+ipcMain.handle("computer:releaseSession", (event, sessionId) => {
+  if (!win || event.sender !== win.webContents) return;
+  computerController.releaseSession(sessionId);
 });
 ipcMain.handle("computer:revoke", event => {
   if (!win || event.sender !== win.webContents) return;

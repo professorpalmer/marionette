@@ -3272,6 +3272,7 @@ def _get_settings_dict():
         current_reasoning_effort,
         current_swarm_reasoning_effort,
     )
+    from harness.autobudget import format_token_ceiling, parse_auto_token_ceiling
     from harness.session_trace import session_trace_export_enabled
     from pmharness.bridge import worker_token_budget
 
@@ -3307,7 +3308,13 @@ def _get_settings_dict():
         "pilotToolBudget": (
             os.environ.get("HARNESS_PILOT_TOOL_BUDGET", "").strip() or "25"
         ),
-        "workerTokenBudget": str(worker_token_budget()),
+        "autoMaxTokens": format_token_ceiling(
+            parse_auto_token_ceiling(
+                os.environ.get("HARNESS_AUTO_MAX_TOKENS", ""),
+                default=500_000,
+            )
+        ),
+        "workerTokenBudget": format_token_ceiling(worker_token_budget()),
         "reasoning_effort": current_reasoning_effort(),
         "swarm_reasoning_effort": current_swarm_reasoning_effort(),
         "reasoning_support": reasoning_support,

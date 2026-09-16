@@ -26,6 +26,37 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
+_UNLIMITED_TOKEN_ALIASES = ("0", "off", "none", "unlimited")
+
+
+def parse_auto_token_ceiling(raw, default=500_000):
+    """Parse the full-auto token ceiling.
+
+    ``0`` / ``off`` / ``unlimited`` mean no token halt (other AutoBudget
+    ceilings stay). Empty / invalid / negative fall back to ``default``.
+    """
+    return _parse_auto_token_ceiling(raw, default=default)
+
+
+def _parse_auto_token_ceiling(raw, default=500_000):
+    text = "" if raw is None else str(raw).strip().lower()
+    if text in _UNLIMITED_TOKEN_ALIASES:
+        return 0
+    if text in ("", "default"):
+        return int(default)
+    try:
+        value = int(text)
+    except (TypeError, ValueError):
+        return int(default)
+    if value < 0:
+        return int(default)
+    return value
+
+
+def format_token_ceiling(value):
+    n = int(value or 0)
+    return "unlimited" if n <= 0 else str(n)
+
 
 @dataclass
 class AutoBudget:
@@ -158,7 +189,10 @@ class AutoBudget:
                 node = node.parent
         if self.killed():
             return self._halt(f"killswitch tripped ({self.killswitch_path})")
-        if self.tokens_used >= self.max_tokens:
+        # 0 / unlimited: skip the token halt. Time, swarm, idle, and
+        # killswitch still apply. A 0 ceiling used to trip immediately
+        # because tokens_used starts at 0.
+        if self.max_tokens > 0 and self.tokens_used >= self.max_tokens:
             return self._halt(f"token ceiling reached ({self.tokens_used}/{self.max_tokens})")
         if self.elapsed >= self.max_seconds:
             return self._halt(f"time ceiling reached ({int(self.elapsed)}s/{self.max_seconds}s)")
@@ -189,7 +223,10 @@ class AutoBudget:
             except ValueError:
                 return default
         return cls(
-            max_tokens=_i("HARNESS_AUTO_MAX_TOKENS", 500_000),
+            max_tokens=_parse_auto_token_ceiling(
+                os.environ.get("HARNESS_AUTO_MAX_TOKENS", ""),
+                default=500_000,
+            ),
             max_seconds=_i("HARNESS_AUTO_MAX_SECONDS", 3600),
             max_swarms=_i("HARNESS_AUTO_MAX_SWARMS", 20),
             max_idle_steps=_i("HARNESS_AUTO_MAX_IDLE", 3),

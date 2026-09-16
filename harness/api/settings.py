@@ -282,6 +282,18 @@ def post_settings(body: dict, svc: SettingsServices) -> tuple[int, JsonPayload]:
                 _set_env_setting("HARNESS_PILOT_TOOL_BUDGET", str(cap))
             except (ValueError, TypeError):
                 return 400, {"error": "Invalid pilotToolBudget"}
+    if "autoMaxTokens" in body:
+        raw = str(body["autoMaxTokens"]).strip().lower()
+        if raw in ("0", "off", "none", "unlimited"):
+            _set_env_setting("HARNESS_AUTO_MAX_TOKENS", "0")
+        else:
+            try:
+                cap = int(raw)
+                if cap < 1:
+                    return 400, {"error": "Invalid autoMaxTokens"}
+                _set_env_setting("HARNESS_AUTO_MAX_TOKENS", str(cap))
+            except (ValueError, TypeError):
+                return 400, {"error": "Invalid autoMaxTokens"}
     if "workerTokenBudget" in body:
         from pmharness.bridge import parse_worker_token_budget
 

@@ -37,6 +37,8 @@ const sampleSettings: Settings = {
   maxPilotSteps: "40",
   maxOutputTokens: "unlimited",
   pilotToolBudget: "25",
+  autoMaxTokens: "500000",
+  workerTokenBudget: "250000",
 };
 
 describe("SettingsPane pilotToolBudget control", () => {
@@ -56,5 +58,17 @@ describe("SettingsPane pilotToolBudget control", () => {
     expect(screen.getByDisplayValue("40")).toBeInTheDocument();
     expect(screen.getByDisplayValue("unlimited")).toBeInTheDocument();
     expect(screen.getByText(/factory default lets the provider decide/i)).toBeInTheDocument();
+  });
+
+  it("lets full-auto and worker token ceilings be unlimited", async () => {
+    render(<SettingsPane onOpenWizard={vi.fn()} section="safety" />);
+
+    expect(await screen.findByText("Full-auto token ceiling")).toBeInTheDocument();
+    expect(screen.getByText("Worker run token ceiling")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("500000")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("250000")).toBeInTheDocument();
+    expect(screen.getByText(/Use 0 or "unlimited" so tokens do not stop the run/i)).toBeInTheDocument();
+    expect(screen.getByText(/Use 0 or "unlimited" for no per-worker/i)).toBeInTheDocument();
+    expect(screen.queryByText(/this field is not unlimited/i)).not.toBeInTheDocument();
   });
 });

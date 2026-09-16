@@ -365,6 +365,7 @@ def _isolate_pilot_env(monkeypatch):
         "HARNESS_MAX_TOKENS",
         "HARNESS_PILOT_TOOL_BUDGET",
         "HARNESS_WORKER_TOKEN_BUDGET",
+        "HARNESS_AUTO_MAX_TOKENS",
         "HARNESS_AUTO_COMMAND_GUARD",
         "HARNESS_AUTO_DISTILL",
         "HARNESS_REVIEW_EDITS_BEFORE_APPLY",

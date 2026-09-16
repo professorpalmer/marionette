@@ -240,6 +240,27 @@ def test_agentic_swarm_floors_degenerate_token_budget(monkeypatch, tmp_path):
     assert payload.get("token_budget") == 250000
 
 
+def test_agentic_swarm_unlimited_token_budget(monkeypatch, tmp_path):
+    _CapturingWorkerSpec._last_captured = []
+    monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")
+    monkeypatch.setenv("HARNESS_WORKER_TOKEN_BUDGET", "unlimited")
+    monkeypatch.setenv("HARNESS_REPO", str(tmp_path))
+    _pin_agentic_only_allowlist(monkeypatch)
+    monkeypatch.setattr("puppetmaster.workers.WorkerSpec", _CapturingWorkerSpec)
+    monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _FakeOrchestrator)
+    monkeypatch.setattr(bridge, "_warn_if_unindexed", lambda *_a, **_k: None)
+
+    intent = DriverIntent(
+        action="run_swarm",
+        goal="Trace the live scoring pipeline for a points flicker",
+        roles=["pipeline-mapper"],
+    )
+    result = bridge.execute_intent(intent, state_dir=str(tmp_path / "state"))
+    assert result is not None
+    payload = _CapturingWorkerSpec._last_captured[0].payload
+    assert payload.get("token_budget") == 0
+
+
 def _capture_agentic_swarm(monkeypatch, tmp_path, intent, **env):
     _CapturingWorkerSpec._last_captured = []
     monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")

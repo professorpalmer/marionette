@@ -52,6 +52,7 @@ contextBridge.exposeInMainWorld("harnessIPC", {
     return () => ipcRenderer.removeListener("browser:openForSession", handler);
   },
   setComputerSession: (sessionId) => ipcRenderer.invoke("computer:setSession", sessionId),
+  releaseComputerSession: (sessionId) => ipcRenderer.invoke("computer:releaseSession", sessionId),
   revokeComputerAccess: () => ipcRenderer.invoke("computer:revoke"),
   onComputerState: (cb) => {
     const handler = (_e, state) => cb(state);

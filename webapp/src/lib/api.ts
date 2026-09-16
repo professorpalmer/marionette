@@ -102,6 +102,7 @@ export type Settings = {
   maxPilotSteps?: string;
   maxOutputTokens?: string;
   pilotToolBudget?: string;
+  autoMaxTokens?: string;
   workerTokenBudget?: string;
   reasoning_effort?: ReasoningEffort;
   swarm_reasoning_effort?: ReasoningEffort;

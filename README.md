@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.27.25` is the one
 real dependency the installer puts in the venv.
 
-Current release: **v0.9.511**. Marionette remains deliberately pre-1.0.
+Current release: **v0.9.512**. Marionette remains deliberately pre-1.0.
 
 ## Documentation
 
@@ -255,14 +255,14 @@ The driver and keys are set in the app (Settings pane) or via env. Key vars:
 | `HARNESS_STATE_DIR` | State home for sessions, transcripts, prompt queue, keys. Defaults to a stable `~/.pmharness/state` so history survives restarts. |
 | `HARNESS_COMMAND_TIMEOUT` | Per-command shell timeout in seconds; 0/off = unbounded. |
 | `HARNESS_COMMAND_HARD_CEILING` | Safety ceiling (seconds) when command timeout is unbounded; default 900. 0/off disables. |
-| `HARNESS_WORKER_TOKEN_BUDGET` | Default token ceiling for a single unsupervised worker run (default 250000). Values below 40000, including 0, reset to 250000. |
+| `HARNESS_WORKER_TOKEN_BUDGET` | Default token ceiling for a single unsupervised worker run (default 250000). 0/off/unlimited = no per-worker cap. Values from 1 through 39999 reset to 250000. |
 | `FIRECRAWL_API_KEY` | Optional. Enables the Firecrawl MCP catalog entry (State > MCP); not used by native `web_fetch`. |
 | `HARNESS_COMPACTION_RESIDUAL` | Compact residual. Default `catalog` (also the empty/invalid fallback). Settings cycle: catalog, hybrid, summary. `off` is env-only. |
 | `HARNESS_COMPACTION_VAULT` | SQLite FTS retrieve of compacted history (default on). Set `0` to disable inject. |
 | `HARNESS_AUTO_COMMAND_GUARD` | Full-auto danger guard; default on, off to disable. |
 | `HARNESS_BROWSER_REAL_PROFILE` | Consent-gated copy of last-used Chrome/Chromium login data into `~/.pmharness/browser-profile-real`. Default off. Settings > Safety: Use my Chrome login. |
 | `HARNESS_WIKI_ORCHESTRATE` | Local wiki structuring: unset (off), 1/approve (prepare-and-approve), auto (silent ingest). |
-| `HARNESS_AUTO_MAX_SWARMS` / `_TOKENS` / `_SECONDS` / `_MAX_IDLE` | Full-auto budget governor ceilings. |
+| `HARNESS_AUTO_MAX_SWARMS` / `_TOKENS` / `_SECONDS` / `_MAX_IDLE` | Full-auto budget governor ceilings. `HARNESS_AUTO_MAX_TOKENS` default 500000; 0/off/unlimited skips the token halt. |
 | `HARNESS_APPEND_ONLY_CONTEXT` | Force append-only KV-cache context mode (auto-detected for local/cache-discounting endpoints when unset). |
 | `HARNESS_COMPACTION_ADVISOR` | Surface layer-pressure compaction advice in `/api/usage` (default on). |
 | `HARNESS_ADVISOR_COMPACTION` | Proactively run history compaction before the next turn once advice reaches level `now` (default on; set `0` to rely on the hard 75% trigger only). |

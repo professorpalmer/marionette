@@ -60,6 +60,8 @@ def test_settings_get_returns_expected_shape(monkeypatch):
         assert "compactionResidual" in data
         assert data["compactionResidual"] == "catalog"
         assert data["maxOutputTokens"] == "unlimited"
+        assert data["autoMaxTokens"] == "500000"
+        assert data["workerTokenBudget"] == "250000"
         assert "browserRealProfile" in data
         assert data["browserRealProfile"] is False
         assert "state_dir" in data

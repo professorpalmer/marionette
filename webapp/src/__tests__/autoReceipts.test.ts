@@ -32,6 +32,12 @@ describe("autoReceipts quiet copy", () => {
     expect(formatAutoBudgetMeters(snap)).toBe("2/20 swarms · 4.1k/50k tok · 45s");
   });
 
+  it("omits a token denominator when the ceiling is unlimited", () => {
+    expect(formatAutoBudgetMeters({ ...snap, max_tokens: 0 })).toBe(
+      "2/20 swarms · 4.1k tok · 45s",
+    );
+  });
+
   it("auto_status never implies compaction or successful execution", () => {
     const copy = autoStatusPresentation(3, snap);
     expect(copy.label).toBe("Full-auto · cycle 3");
