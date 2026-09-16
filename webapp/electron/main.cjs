@@ -113,6 +113,7 @@ const {
   shutdownOwnedBackendTree,
   WINDOWS_SHUTDOWN_GRACE_MS,
 } = require("./backend-lifecycle.cjs");
+const { reapMarionetteBrowsers } = require("./reap-marionette-browsers.cjs");
 
 /** Re-point renderer globals + notify panels after backendPort/token change. */
 function reinjectBackendIntoRenderer() {
@@ -2390,6 +2391,16 @@ async function cleanupBackend() {
     backend = null;
     backendOwned = false;
     await killBackendTree(b);
+  }
+  // Owned Chrome is a separate process group, so the backend-tree signal
+  // leaves headed popups that lock Cookies for the next boot.
+  try {
+    reapMarionetteBrowsers({
+      spawnSync: require("node:child_process").spawnSync,
+      platform: process.platform,
+    });
+  } catch {
+    /* best-effort */
   }
 }
 app.on("window-all-closed", () => {

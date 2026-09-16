@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import time
 from pathlib import Path
 
 import harness.browser_auth as auth
@@ -100,6 +101,46 @@ def test_snapshot_missing_src_names_path(tmp_path, monkeypatch):
     assert str(missing) in err
 
 
+def test_copy_auth_db_times_out_when_source_is_locked(tmp_path):
+    src = tmp_path / "Cookies"
+    dst = tmp_path / "out" / "Cookies"
+    _write_cookie_db(src, "blocked")
+    locker = sqlite3.connect(str(src))
+    locker.execute("BEGIN EXCLUSIVE")
+    try:
+        started = time.monotonic()
+        assert rp._copy_auth_db(src, dst, timeout_s=0.25) is False
+        assert time.monotonic() - started < 1.5
+    finally:
+        locker.rollback()
+        locker.close()
+
+
+def test_snapshot_reuses_complete_copy_when_auth_copy_fails(tmp_path, monkeypatch):
+    monkeypatch.setenv("HARNESS_BROWSER_REAL_PROFILE", "1")
+    monkeypatch.setattr(rp.Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    src = _make_src(tmp_path / "real", marker="kept")
+    copy_dir, err = rp.snapshot_real_profile("chrome", src=src)
+    assert err is None
+    assert _cookie_marker(Path(copy_dir) / "Default" / "Cookies") == "kept"
+    monkeypatch.setattr(rp, "_copy_auth_db", lambda *a, **k: False)
+    again, err2 = rp.snapshot_real_profile("chrome", src=src)
+    assert err2 is None
+    assert again == copy_dir
+    assert _cookie_marker(Path(copy_dir) / "Default" / "Cookies") == "kept"
+
+
+def test_snapshot_reports_locked_when_copy_fails_without_prior(tmp_path, monkeypatch):
+    monkeypatch.setenv("HARNESS_BROWSER_REAL_PROFILE", "1")
+    monkeypatch.setattr(rp.Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    src = _make_src(tmp_path / "real")
+    monkeypatch.setattr(rp, "_copy_auth_db", lambda *a, **k: False)
+    copy_dir, err = rp.snapshot_real_profile("chrome", src=src)
+    assert copy_dir is None
+    assert err is not None
+    assert err.startswith("profile locked:")
+
+
 def test_snapshot_lock_error(tmp_path, monkeypatch):
     monkeypatch.setenv("HARNESS_BROWSER_REAL_PROFILE", "1")
     monkeypatch.setattr(rp.Path, "home", classmethod(lambda cls: tmp_path / "home"))
@@ -174,6 +215,51 @@ def test_ensure_shared_browser_env_keeps_preset_user_data_dir(tmp_path, monkeypa
     monkeypatch.delenv("PM_BROWSER_CDP_PORT", raising=False)
     applied = auth.ensure_shared_browser_env()
     assert applied["user_data_dir"] == str(preset)
+
+
+def test_ensure_shared_browser_env_snapshot_false_skips_copy(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setattr(rp.Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setattr(auth.Path, "home", classmethod(lambda cls: home))
+    src = _make_src(tmp_path / "real")
+    monkeypatch.setattr(rp, "real_profile_data_dir", lambda browser="chrome", system=None: src)
+    calls = []
+
+    def boom(*a, **k):
+        calls.append(1)
+        raise AssertionError("startup must not snapshot Chrome cookies")
+
+    monkeypatch.setattr(auth, "snapshot_real_profile", boom)
+    monkeypatch.setenv("HARNESS_BROWSER_AUTH", "1")
+    monkeypatch.setenv("HARNESS_BROWSER_REAL_PROFILE", "1")
+    monkeypatch.delenv("PM_BROWSER_USER_DATA_DIR", raising=False)
+    monkeypatch.delenv("PM_BROWSER_CDP_PORT", raising=False)
+    applied = auth.ensure_shared_browser_env(snapshot=False)
+    assert calls == []
+    assert applied["cdp_port"] == auth.DEFAULT_CDP_PORT
+    assert applied["user_data_dir"] == ""
+
+
+def test_ensure_shared_browser_env_snapshot_false_reuses_existing(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setattr(rp.Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setattr(auth.Path, "home", classmethod(lambda cls: home))
+    src = _make_src(tmp_path / "real")
+    monkeypatch.setenv("HARNESS_BROWSER_REAL_PROFILE", "1")
+    copy_dir, err = rp.snapshot_real_profile("chrome", src=src)
+    assert err is None
+    calls = []
+    monkeypatch.setattr(
+        auth,
+        "snapshot_real_profile",
+        lambda *a, **k: calls.append(1) or (None, "nope"),
+    )
+    monkeypatch.setenv("HARNESS_BROWSER_AUTH", "1")
+    monkeypatch.delenv("PM_BROWSER_USER_DATA_DIR", raising=False)
+    monkeypatch.delenv("PM_BROWSER_CDP_PORT", raising=False)
+    applied = auth.ensure_shared_browser_env(snapshot=False)
+    assert calls == []
+    assert applied["user_data_dir"] == copy_dir
 
 
 def test_ensure_shared_browser_env_falls_back_when_snapshot_fails(tmp_path, monkeypatch):

@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 from .browser_real_profile import (
+    existing_real_profile_copy,
     is_live_browser_user_data_dir,
     real_profile_enabled,
     snapshot_real_profile,
@@ -61,11 +62,15 @@ def headed_enabled() -> bool:
     return False
 
 
-def ensure_shared_browser_env(*, headed: Optional[bool] = None) -> dict:
+def ensure_shared_browser_env(*, headed: Optional[bool] = None, snapshot: bool = True) -> dict:
     """Idempotently publish the shared CDP env. Returns the applied map.
 
     Best-effort: never raises. The harness process also marks itself as the
     Chrome janitor so worker atexit does not kill the shared window.
+
+    ``snapshot=False`` publishes CDP/janitor and reuses a prior copy without
+    touching Chrome's Cookies DB — session init must use that so a live
+    Chrome lock cannot block listen.
     """
     applied: dict = {}
     try:
@@ -82,13 +87,19 @@ def ensure_shared_browser_env(*, headed: Optional[bool] = None) -> dict:
             os.environ.pop("PM_BROWSER_USER_DATA_DIR", None)
         if not (os.environ.get("PM_BROWSER_USER_DATA_DIR") or "").strip():
             if real_profile_enabled():
-                copy_dir, _err = snapshot_real_profile()
-                if copy_dir:
-                    os.environ["PM_BROWSER_USER_DATA_DIR"] = copy_dir
+                if snapshot:
+                    copy_dir, _err = snapshot_real_profile()
+                    if copy_dir:
+                        os.environ["PM_BROWSER_USER_DATA_DIR"] = copy_dir
+                else:
+                    existing = existing_real_profile_copy()
+                    if existing:
+                        os.environ["PM_BROWSER_USER_DATA_DIR"] = existing
             if not (os.environ.get("PM_BROWSER_USER_DATA_DIR") or "").strip():
-                path = default_profile_dir()
-                Path(path).mkdir(parents=True, exist_ok=True)
-                os.environ["PM_BROWSER_USER_DATA_DIR"] = path
+                if snapshot or not real_profile_enabled():
+                    path = default_profile_dir()
+                    Path(path).mkdir(parents=True, exist_ok=True)
+                    os.environ["PM_BROWSER_USER_DATA_DIR"] = path
         if not (os.environ.get("PM_BROWSER_CDP_PORT") or "").strip():
             os.environ["PM_BROWSER_CDP_PORT"] = DEFAULT_CDP_PORT
         applied = {

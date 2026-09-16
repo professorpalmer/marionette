@@ -708,7 +708,7 @@ class ConversationalSession(
             publish_swarm_adapter(config.swarm_adapter, repo=config.repo or "")
         try:
             from .browser_auth import ensure_shared_browser_env
-            ensure_shared_browser_env()
+            ensure_shared_browser_env(snapshot=False)
         except Exception:
             pass
         # self-learning: catalog ACTIVE skills in the frozen prefix (name,

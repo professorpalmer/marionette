@@ -120,9 +120,20 @@ def lookup_command_batch(session: Any, batch_id: str) -> Optional[Dict[str, Any]
     return job
 
 
+def _batch_child_fingerprints(row: Dict[str, Any]) -> List[str]:
+    children = row.get("children") or []
+    ordered = [
+        child for child in children
+        if isinstance(child, dict)
+    ]
+    ordered.sort(key=lambda child: int(child.get("index") or 0))
+    return [str(child.get("command_fingerprint") or "") for child in ordered]
+
+
 def find_command_batch_by_action(
     session: Any,
     action_id: str,
+    fingerprints: Optional[Sequence[str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Find the aggregate batch registered for ``action_id`` in this session."""
     aid = str(action_id or "").strip()
@@ -140,6 +151,7 @@ def find_command_batch_by_action(
                 rows = [dict(j) for j in jobs.values()]
         else:
             rows = [dict(j) for j in jobs.values()]
+    found = []
     for row in rows or []:
         if not isinstance(row, dict):
             continue
@@ -151,8 +163,16 @@ def find_command_batch_by_action(
             continue
         if session_id and str(row.get("session_id") or "") not in ("", session_id):
             continue
-        return row
-    return None
+        found.append(row)
+    if not found:
+        return None
+    if fingerprints is not None:
+        want = [str(x) for x in fingerprints]
+        exact = [row for row in found if _batch_child_fingerprints(row) == want]
+        if exact:
+            found = exact
+    found.sort(key=lambda row: float(row.get("created_at") or 0), reverse=True)
+    return found[0]
 
 
 def project_command_batch_fields(job: Dict[str, Any]) -> Dict[str, Any]:
@@ -286,15 +306,24 @@ def start_command_batch(
     else:
         concurrency = max(1, min(concurrency, len(normalized), MAX_COMMAND_BATCH_SIZE))
 
-    existing = find_command_batch_by_action(session, aid)
+    expected_fps = [command_fingerprint(command) for command in normalized]
+    existing = find_command_batch_by_action(session, aid, fingerprints=expected_fps)
+    if existing is None:
+        existing = find_command_batch_by_action(session, aid)
     if existing is not None:
-        return _replay_command_batch(
-            session,
-            existing,
-            normalized,
-            cwd=repo,
-            max_concurrency=concurrency,
-        )
+        try:
+            return _replay_command_batch(
+                session,
+                existing,
+                normalized,
+                cwd=repo,
+                max_concurrency=concurrency,
+            )
+        except ValueError:
+            # Providers reuse run_command_batch:0 after a finished batch.
+            # A live/unknown row still refuses mutation.
+            if str(existing.get("status") or "") not in COMMAND_TERMINAL_STATES:
+                raise
 
 
     # Resource-pressure admit once per logical batch (optional host hook).

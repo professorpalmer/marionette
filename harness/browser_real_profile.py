@@ -7,8 +7,9 @@ Default off, including on desktop, until the user consents. Under pytest/CI
 the flag stays off unless the env is explicitly truthy.
 
 Never logs or returns cookies or passwords. Never kills the user's browser.
-A locked cookie DB (Windows PermissionError) fails closed so we do not launch
-a silently signed-out copy.
+A locked cookie DB fails the copy after a short timeout (Chrome holds Cookies
+open). If a prior snapshot exists, reuse it; otherwise fail closed so we do
+not launch a silently signed-out copy. Never blocks process startup.
 """
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ import os
 import platform
 import shutil
 import sqlite3
+import time
 from pathlib import Path
 from typing import Optional, Tuple
 from urllib.request import pathname2url
@@ -25,6 +27,12 @@ REAL_PROFILE_ENV = "HARNESS_BROWSER_REAL_PROFILE"
 _TRUTHY = ("1", "true", "yes", "on")
 _SNAPSHOT_DONE_MARKER = ".marionette-snapshot-complete"
 _COPY_ROOT_NAME = "browser-profile-real"
+AUTH_DB_COPY_TIMEOUT_S = 2.0
+_PROFILE_LOCKED = (
+    "profile locked: cookie database is in use. Fully quit Chrome "
+    "(including any background/tray instance) and retry. Closing "
+    "Chrome may be required on Windows if the copy fails."
+)
 
 # Profile-dir names skipped on the first copytree. Auth SQLite files are
 # excluded here and copied via online-backup so a live Chrome lock cannot
@@ -157,6 +165,14 @@ def real_profile_copy_dir(browser: str = "chrome") -> Path:
     return Path.home() / ".pmharness" / _COPY_ROOT_NAME / browser
 
 
+def existing_real_profile_copy(browser: str = "chrome") -> Optional[str]:
+    """Return the last complete snapshot dir, or None if none exists."""
+    copy_dir = real_profile_copy_dir(browser)
+    if (copy_dir / _SNAPSHOT_DONE_MARKER).is_file():
+        return str(copy_dir)
+    return None
+
+
 def _last_used_profile(src: Path) -> str:
     """Return ``Local State`` ``profile.last_used``, or Default."""
     try:
@@ -170,8 +186,17 @@ def _last_used_profile(src: Path) -> str:
     return last
 
 
-def _copy_auth_db(src_file: Path, dst_file: Path) -> bool:
-    """Copy one SQLite auth DB via URI readonly + ``Connection.backup``."""
+def _copy_auth_db(
+    src_file: Path,
+    dst_file: Path,
+    timeout_s: Optional[float] = None,
+) -> bool:
+    """Copy one SQLite auth DB via URI readonly + ``Connection.backup``.
+
+    ``Connection.backup`` retries on BUSY/LOCKED with a sleep and has no
+    deadline. Chrome's Network process holds Cookies that way, so a live
+    browser must not stall this copy — abort after ``AUTH_DB_COPY_TIMEOUT_S``.
+    """
     if not src_file.is_file():
         return False
     dst_file.parent.mkdir(parents=True, exist_ok=True)
@@ -180,13 +205,22 @@ def _copy_auth_db(src_file: Path, dst_file: Path) -> bool:
             dst_file.unlink()
     except OSError:
         pass
+    limit = AUTH_DB_COPY_TIMEOUT_S if timeout_s is None else float(timeout_s)
+    if limit <= 0:
+        limit = 0.05
+    deadline = time.monotonic() + limit
     uri = "file:%s?mode=ro" % pathname2url(os.path.abspath(str(src_file)))
+
+    def _progress(_status: int, _remaining: int, _total: int) -> None:
+        if time.monotonic() >= deadline:
+            raise sqlite3.OperationalError(_PROFILE_LOCKED)
+
     try:
-        source = sqlite3.connect(uri, uri=True, timeout=5)
+        source = sqlite3.connect(uri, uri=True, timeout=min(1.0, limit))
         try:
             dest = sqlite3.connect(str(dst_file))
             try:
-                source.backup(dest)
+                source.backup(dest, pages=50, sleep=0.05, progress=_progress)
             finally:
                 dest.close()
         finally:
@@ -212,11 +246,7 @@ def _lock_error(src: Path, source_profile: str) -> Optional[str]:
         with open(db, "rb"):
             return None
     except PermissionError:
-        return (
-            "profile locked: cookie database is in use. Fully quit Chrome "
-            "(including any background/tray instance) and retry. Closing "
-            "Chrome may be required on Windows if the copy fails."
-        )
+        return _PROFILE_LOCKED
     except OSError:
         return None
 
@@ -297,11 +327,9 @@ def snapshot_real_profile(
             if not src_file.is_file():
                 continue
             if not _copy_auth_db(src_file, dst_default / rel):
-                return None, (
-                    "could not copy login data from the %r profile. Fully quit "
-                    "the browser and retry, or turn off Use my Chrome login."
-                    % browser
-                )
+                if marker.is_file() and dst_default.is_dir():
+                    return str(copy_dir), None
+                return None, _PROFILE_LOCKED
         for rel in _AUTH_PLAIN_RELS:
             src_file = src_path / last_used / rel
             if not src_file.is_file():
