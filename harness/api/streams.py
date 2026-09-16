@@ -560,10 +560,17 @@ def stream_chat(
 
             if is_file and file_to_read:
                 block, added = read_file_mention(
-                    file_to_read, token, total_size=total_size,
+                    file_to_read,
+                    token,
+                    total_size=total_size,
+                    state_dir=getattr(turn_pilot, "state_dir", None),
                 )
                 resolved_files.append(block)
                 total_size += added
+                if added > 0:
+                    note = getattr(turn_pilot, "note_working_path", None)
+                    if callable(note):
+                        note(token, edited=False)
             elif not is_symbol_prefix and ("/" in token or "\\" in token):
                 # Path-like bare token that is not an existing workspace file —
                 # do not fall through into symbol search as if it were a name.

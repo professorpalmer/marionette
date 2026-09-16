@@ -2,6 +2,8 @@ export const SLASH_COMMANDS = [
   { cmd: "/clear", desc: "Clear visible transcript" },
   { cmd: "/new", desc: "Start a new session" },
   { cmd: "/compact", desc: "Trigger manual context compaction" },
+  { cmd: "/images-strip", desc: "Drop image attachments from session history" },
+  { cmd: "/privacy", desc: "List or set forbidden file patterns" },
   { cmd: "/refine", desc: "Propose a harness refine (existing controller)" },
   { cmd: "/todo", desc: "View or edit the session nested TODO tree" },
   { cmd: "/model", desc: "Focus model picker to switch models" },

@@ -1739,6 +1739,12 @@ class CompactionContextMixin:
             index_elided_messages(state_dir, sid, middle_block)
         except Exception:
             pass
+        retrack = getattr(self, "_retrack_after_compact", None)
+        if callable(retrack):
+            try:
+                retrack()
+            except Exception:
+                pass
 
         # Compaction replaces the middle with a summary; new length usually
         # differs but not guaranteed (a tiny middle replaced by a summary_msg

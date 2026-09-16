@@ -148,6 +148,22 @@ def build_envelope(
     }
 
 
+def _privacy_redact_envelope(envelope: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from .egress_redact import redact_egress
+        from .anon_install import load_or_create_anon_id
+
+        out = redact_egress(envelope)
+        if isinstance(out, dict):
+            attrs = out.get("attributes")
+            if isinstance(attrs, dict):
+                attrs.setdefault("install.id", load_or_create_anon_id())
+            return out
+    except Exception:
+        pass
+    return envelope
+
+
 def _ensure_worker() -> None:
     global _worker_started
     if _worker_started:
@@ -178,6 +194,7 @@ def _worker_loop() -> None:
 
 
 def _deliver(envelope: dict[str, Any]) -> None:
+    envelope = _privacy_redact_envelope(envelope)
     line = json.dumps(envelope, separators=(",", ":"), ensure_ascii=False) + "\n"
     file_path = (os.environ.get("HARNESS_OBSERVABILITY_EXPORT_FILE") or "").strip()
     endpoint = (os.environ.get("HARNESS_OBSERVABILITY_EXPORT_ENDPOINT") or "").strip()

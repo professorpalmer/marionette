@@ -282,7 +282,7 @@ def build_manifest(
             get_repo=get_repo,
         )
     plugins = collect_plugins()
-    return strip_secrets(
+    payload = strip_secrets(
         {
             "version": str(__version__),
             "os": collect_os_info(),
@@ -296,6 +296,19 @@ def build_manifest(
             "created_at": int(time.time()),
         }
     )
+    try:
+        from .egress_redact import redact_egress
+
+        payload = redact_egress(payload)
+    except Exception:
+        pass
+    try:
+        from .anon_install import load_or_create_anon_id
+
+        payload["install_id"] = load_or_create_anon_id()
+    except Exception:
+        pass
+    return payload
 
 
 def _default_outdir() -> str:
@@ -336,6 +349,14 @@ def write_diag_bundle(
         checks=checks,
     )
     logs = collect_recent_logs(state_dir=root)
+    try:
+        from .egress_redact import redact_egress_text
+
+        logs = {
+            name: redact_egress_text(body) for name, body in logs.items()
+        }
+    except Exception:
+        pass
     settings = manifest.get("settings") or collect_public_settings()
 
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:

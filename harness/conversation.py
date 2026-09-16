@@ -47,6 +47,10 @@ from ._exec import _puppetmaster_python, _puppetmaster_available, _puppetmaster_
 from .paths import git_toplevel, path_within
 from .command_approval_identity import ApprovalExpectation, require_current_approval
 
+MAX_PENDING_APPROVALS = 256
+APPROVAL_TTL_SECONDS = 300
+APPROVAL_SWEEP_SECONDS = 30
+
 from pmharness import registry as reg
 from . import providers as prov
 from pmharness.intent import DriverIntent
@@ -663,6 +667,15 @@ class ConversationalSession(
         self.context_budget_config = budget_for_context_window(config.max_context_tokens)
         self.state_dir = config.state_dir or tempfile.mkdtemp(prefix="pilot-")
         try:
+            from .privacy_paths import (
+                export_forbidden_patterns_env,
+                load_forbidden_patterns,
+            )
+
+            export_forbidden_patterns_env(load_forbidden_patterns(self.state_dir))
+        except Exception:
+            pass
+        try:
             from harness.spill_registry import sweep_expired_spills
 
             raw_retention = os.environ.get("HARNESS_SPILL_RETENTION_DAYS", "").strip().lower()
@@ -966,6 +979,10 @@ class ConversationalSession(
         self._pending_secret_requests = {}
         self._command_approval_lock = threading.Lock()
         self._approved_commands = set()  # command hashes the user one-click approved
+        self._edited_paths = set()
+        self._mentioned_paths = set()
+        self._approval_sweeper = None
+        self._ensure_approval_sweeper()
         self._state = "idle"
         
         import queue
@@ -1470,10 +1487,82 @@ class ConversationalSession(
         }
         if amendment:
             pending["suggested_amendment"] = amendment
+        now = time.time()
+        pending["created_at"] = now
+        pending["expires_at"] = now + APPROVAL_TTL_SECONDS
         with self._command_approval_lock_guard():
+            self._sweep_expired_approvals()
+            if len(self._pending_command_approvals) >= MAX_PENDING_APPROVALS:
+                denied = dict(pending)
+                denied["denied"] = "approval registry full"
+                self._upsert_display_command_approval(denied, status="rejected")
+                return denied
             self._pending_command_approvals[command_hash] = pending
             self._upsert_display_command_approval(pending, status="pending")
+        self._ensure_approval_sweeper()
         return dict(pending)
+
+    def _ensure_approval_sweeper(self) -> None:
+        if self._approval_sweeper is not None:
+            return
+
+        def _tick() -> None:
+            while not getattr(self, "_closed", False):
+                time.sleep(APPROVAL_SWEEP_SECONDS)
+                try:
+                    with self._command_approval_lock_guard():
+                        self._sweep_expired_approvals()
+                except Exception:
+                    pass
+
+        thread = threading.Thread(target=_tick, name="approval-sweep", daemon=True)
+        thread.start()
+        self._approval_sweeper = thread
+
+    def _sweep_expired_approvals(self) -> None:
+        now = time.time()
+        expired = [
+            key for key, item in list(self._pending_command_approvals.items())
+            if float(item.get("expires_at") or 0) and float(item["expires_at"]) <= now
+        ]
+        for key in expired:
+            pending = self._pending_command_approvals.pop(key, None)
+            if pending is not None:
+                self._upsert_display_command_approval(pending, status="rejected")
+
+    def note_working_path(self, path: str, *, edited: bool = False) -> None:
+        from .working_set import remember_path
+
+        repo = getattr(self.config, "repo", "") or ""
+        remember_path(self._edited_paths if edited else self._mentioned_paths, path, repo)
+
+    def _retrack_after_compact(self) -> None:
+        from .working_set import merge_working_set_into_history, working_set_note
+
+        note = working_set_note(self._edited_paths, self._mentioned_paths)
+        merge_working_set_into_history(self._history, note)
+
+    def strip_history_images(self) -> int:
+        """Drop image attachments from provider history and display rows."""
+        removed = 0
+        for message in getattr(self, "_history", []) or []:
+            if isinstance(message, dict) and message.pop("images", None):
+                removed += 1
+            content = message.get("content") if isinstance(message, dict) else None
+            if isinstance(content, list):
+                kept = [
+                    part for part in content
+                    if not (isinstance(part, dict) and part.get("type") in {"image", "image_url", "input_image"})
+                ]
+                if len(kept) != len(content):
+                    message["content"] = kept
+                    removed += 1
+        display = getattr(self, "_display_transcript", None)
+        rows = display if isinstance(display, list) else []
+        for row in rows:
+            if isinstance(row, dict) and row.pop("images", None):
+                removed += 1
+        return removed
 
     def decide_command_approval(
         self,
@@ -2848,6 +2937,15 @@ class ConversationalSession(
                 )
                 self._extra_read_roots = extra
                 export_extra_read_roots_env(extra)
+            except Exception:
+                pass
+            try:
+                from .privacy_paths import (
+                    export_forbidden_patterns_env,
+                    load_forbidden_patterns,
+                )
+
+                export_forbidden_patterns_env(load_forbidden_patterns(self.state_dir))
             except Exception:
                 pass
             try:

@@ -2985,6 +2985,20 @@ describe("composerSend module", () => {
         customNames: [],
       }),
     ).toEqual({ kind: "todo", text: "export TODO.md" });
+    expect(
+      classifyLocalSlashCommand({
+        message: "/privacy add .env",
+        isBuiltIn: builtIn,
+        customNames: [],
+      }),
+    ).toEqual({ kind: "privacy", text: "add .env" });
+    expect(
+      classifyLocalSlashCommand({
+        message: "/images-strip",
+        isBuiltIn: builtIn,
+        customNames: [],
+      }).kind,
+    ).toBe("images-strip");
   });
 
   it("classifies navigation slash commands as local (not sent to the model)", () => {

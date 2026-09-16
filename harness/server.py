@@ -1912,6 +1912,17 @@ def _settings_services():
     )
 
 
+def _privacy_services():
+    """Build privacy services from live server module globals."""
+    from types import SimpleNamespace
+    from .privacy_paths import export_forbidden_patterns_env
+
+    return SimpleNamespace(
+        state_dir=_sessions_state_dir,
+        refresh_workers=lambda patterns: export_forbidden_patterns_env(patterns),
+    )
+
+
 def _session_control_services():
     """Build SessionControlServices from live server module globals."""
     from .api.session_control import SessionControlServices
@@ -2639,6 +2650,7 @@ def _route_services():
         job_services=_job_services,
         metadata_view=lambda: _runners.metadata_view,
         session_control_services=_session_control_services,
+        privacy_services=_privacy_services,
         checkpoint_services=_checkpoint_services,
         codegraph_services=_codegraph_services,
         commands_services=_commands_services,

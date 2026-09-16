@@ -71,7 +71,7 @@ export function formatHelpSlashReply(
   return (
     "Available Slash Commands:\n\n"
     + commands.map((s) => `* \`${s.cmd}\` - ${s.desc}`).join("\n")
-    + "\n\nLocal chrome (not sent to the model): `/swarm` `/terminal` `/settings` `/memory` `/mcp` `/files` `/state` `/refine` `/todo`."
+    + "\n\nLocal chrome (not sent to the model): `/swarm` `/terminal` `/settings` `/memory` `/mcp` `/files` `/state` `/refine` `/todo` `/privacy` `/images-strip`."
     + "\n\nType @ to list and mention files in your message context."
   );
 }
@@ -339,6 +339,8 @@ export type LocalSlashAction =
   | { kind: "clear" }
   | { kind: "new" }
   | { kind: "compact" }
+  | { kind: "images-strip" }
+  | { kind: "privacy"; text: string }
   | { kind: "refine"; text: string }
   | { kind: "todo"; text: string }
   | { kind: "model" }
@@ -407,6 +409,10 @@ export function classifyLocalSlashCommand(opts: {
   if (cmd === "/clear") return { kind: "clear" };
   if (cmd === "/new") return { kind: "new" };
   if (cmd === "/compact") return { kind: "compact" };
+  if (cmd === "/images-strip") return { kind: "images-strip" };
+  if (cmd === "/privacy") {
+    return { kind: "privacy", text: msg.substring(cmd.length).trim() };
+  }
   if (cmd === "/refine") {
     return { kind: "refine", text: msg.substring(cmd.length).trim() };
   }

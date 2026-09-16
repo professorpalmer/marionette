@@ -3599,6 +3599,71 @@ export default function Conversation({
         });
       return;
     }
+    if (slash.kind === "images-strip") {
+      setInput("");
+      setEditingIndex(null);
+      void api.stripSessionImages()
+        .then((res) => {
+          const n = Number(res?.stripped || 0);
+          setItems((p) => [
+            ...p,
+            { kind: "msg", msg: { role: "user", text: msg } },
+            {
+              kind: "msg",
+              msg: {
+                role: "assistant",
+                text: res?.ok
+                  ? (n ? `Removed image attachments from ${n} history row${n === 1 ? "" : "s"}.` : "No image attachments in history.")
+                  : (res?.error || "Could not strip images."),
+              },
+            },
+          ]);
+        })
+        .catch(() => {
+          setItems((p) => [
+            ...p,
+            { kind: "msg", msg: { role: "user", text: msg } },
+            { kind: "msg", msg: { role: "assistant", text: "Could not strip images." } },
+          ]);
+        });
+      return;
+    }
+    if (slash.kind === "privacy") {
+      const rest = (slash.text || "").trim();
+      const parts = rest.split(/\s+/).filter(Boolean);
+      const action = (parts[0] || "list").toLowerCase();
+      const request = action === "add" && parts[1]
+        ? api.setPrivacy({ action: "add", pattern: parts.slice(1).join(" ") })
+        : action === "remove" && parts[1]
+          ? api.setPrivacy({ action: "remove", pattern: parts.slice(1).join(" ") })
+          : action === "set"
+            ? api.setPrivacy({ action: "set", patterns: parts.slice(1) })
+            : api.getPrivacy();
+      setInput("");
+      setEditingIndex(null);
+      void request
+        .then((res) => {
+          const patterns = res?.forbidden_patterns || [];
+          const reply = !res?.ok
+            ? (res?.error || "Could not update privacy.")
+            : (patterns.length
+              ? `Forbidden patterns:\n${patterns.map((p) => `- ${p}`).join("\n")}`
+              : "No forbidden patterns. Add one with /privacy add .env");
+          setItems((p) => [
+            ...p,
+            { kind: "msg", msg: { role: "user", text: msg } },
+            { kind: "msg", msg: { role: "assistant", text: reply } },
+          ]);
+        })
+        .catch(() => {
+          setItems((p) => [
+            ...p,
+            { kind: "msg", msg: { role: "user", text: msg } },
+            { kind: "msg", msg: { role: "assistant", text: "Could not update privacy." } },
+          ]);
+        });
+      return;
+    }
     if (slash.kind === "model") {
       setInput("");
       setEditingIndex(null);
