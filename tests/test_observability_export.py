@@ -104,6 +104,21 @@ def test_file_export_success(monkeypatch, tmp_path):
     assert b"\r\n" not in out.read_bytes()
 
 
+def test_export_redacts_seeded_secret_kinds(monkeypatch, tmp_path):
+    out = tmp_path / "events.jsonl"
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("HARNESS_OBSERVABILITY_EXPORT", "1")
+    monkeypatch.setenv("HARNESS_OBSERVABILITY_EXPORT_FILE", str(out))
+    jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0In0.signaturepadxx"
+    emit_event("harness.test.event", {"note": "keep " + jwt})
+    assert _wait_for_file(out)
+    rec = json.loads(out.read_text(encoding="utf-8").strip().splitlines()[0])
+    assert jwt not in json.dumps(rec)
+    assert rec["attributes"]["note"].startswith("keep ")
+    assert "***" in rec["attributes"]["note"]
+    assert rec["attributes"]["install.id"]
+
+
 def test_http_export_success(monkeypatch):
     received = {"n": 0, "body": None}
 

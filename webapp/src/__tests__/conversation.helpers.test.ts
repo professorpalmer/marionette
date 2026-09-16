@@ -3016,6 +3016,20 @@ describe("composerSend module", () => {
     ).toEqual({ kind: "routine", prompt: "review the board", every: "90m" });
     expect(isBuiltInSlashCommand("/ping")).toBe(true);
     expect(isBuiltInSlashCommand("/advise")).toBe(true);
+    expect(
+      classifyLocalSlashCommand({
+        message: "/privacy add .env",
+        isBuiltIn: builtIn,
+        customNames: [],
+      }),
+    ).toEqual({ kind: "privacy", text: "add .env" });
+    expect(
+      classifyLocalSlashCommand({
+        message: "/images-strip",
+        isBuiltIn: builtIn,
+        customNames: [],
+      }).kind,
+    ).toBe("images-strip");
   });
 
   it("classifies navigation slash commands as local (not sent to the model)", () => {

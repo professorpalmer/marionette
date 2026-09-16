@@ -71,7 +71,7 @@ export function formatHelpSlashReply(
   return (
     "Available Slash Commands:\n\n"
     + commands.map((s) => `* \`${s.cmd}\` - ${s.desc}`).join("\n")
-    + "\n\nLocal chrome (not sent to the model): `/swarm` `/terminal` `/settings` `/memory` `/mcp` `/files` `/state` `/refine` `/todo`."
+    + "\n\nLocal chrome (not sent to the model): `/swarm` `/terminal` `/settings` `/memory` `/mcp` `/files` `/state` `/refine` `/todo` `/advise` `/routines` `/ping` `/privacy` `/images-strip`."
     + "\n\nType @ to list and mention files in your message context."
   );
 }
@@ -344,6 +344,8 @@ export type LocalSlashAction =
   | { kind: "new" }
   | { kind: "compact" }
   | { kind: "ping"; action: "start" | "stop" | "status" | "invalid" }
+  | { kind: "images-strip" }
+  | { kind: "privacy"; text: string }
   | { kind: "refine"; text: string }
   | { kind: "todo"; text: string }
   | { kind: "model" }
@@ -420,6 +422,10 @@ export function classifyLocalSlashCommand(opts: {
   if (cmd === "/ping") {
     const action = parts[1] || "status";
     return { kind: "ping", action: parts.length <= 2 && (action === "start" || action === "stop" || action === "status") ? action : "invalid" };
+  }
+  if (cmd === "/images-strip") return { kind: "images-strip" };
+  if (cmd === "/privacy") {
+    return { kind: "privacy", text: msg.substring(cmd.length).trim() };
   }
   if (cmd === "/refine") {
     return { kind: "refine", text: msg.substring(cmd.length).trim() };

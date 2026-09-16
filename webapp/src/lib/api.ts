@@ -2238,6 +2238,18 @@ export const api = {
       error?: string;
       reason?: string;
     }>("/api/session/compact", {}),
+  stripSessionImages: () =>
+    postJSON<{ ok: boolean; stripped?: number; error?: string }>(
+      "/api/session/images-strip",
+      {},
+    ),
+  getPrivacy: () =>
+    getJSON<{ ok: boolean; forbidden_patterns: string[]; error?: string }>("/api/privacy"),
+  setPrivacy: (body: { action?: string; pattern?: string; patterns?: string[] }) =>
+    postJSON<{ ok: boolean; forbidden_patterns?: string[]; error?: string }>(
+      "/api/privacy",
+      body,
+    ),
   steerSession: (
     text: string,
     images?: string[],

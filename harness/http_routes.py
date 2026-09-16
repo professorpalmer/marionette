@@ -121,6 +121,7 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
     from .api import collab_presence as _collab_presence_api
     from .api import metaharness as _mh_api
     from .api import local_models as _local_models_api
+    from .api import privacy as _privacy_api
 
     routes: dict[str, PostHandler] = {
         "/api/jobs/operations/v1": post_json(
@@ -148,6 +149,12 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
         "/api/session/snapcompact": post_json(
             _sc_api.post_session_snapcompact_routed,
             services=svc.session_control_services),
+        "/api/session/images-strip": post_json(
+            _sc_api.post_session_images_strip,
+            services=svc.session_control_services,
+            needs_body=False),
+        "/api/privacy": post_json(
+            _privacy_api.post_privacy, services=svc.privacy_services),
         "/api/checkpoints/restore": post_json(
             _ckpt_api.post_checkpoints_restore, services=svc.checkpoint_services),
         "/api/checkpoints/snapshot": post_json(
@@ -557,6 +564,7 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
     from .api import collab_presence as _collab_presence_api
     from .api import metaharness as _mh_api
     from .api import local_models as _local_models_api
+    from .api import privacy as _privacy_api
     from .backend_restart_signal import get_restart_last as _get_restart_last
 
     def _get_git_diff(handler: Any, u: Any, qs: dict) -> Any:
@@ -790,6 +798,10 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
         "/api/session/state": get_json(
             _sc_api.get_session_state,
             services=svc.session_control_services,
+            pass_qs=True),
+        "/api/privacy": get_json(
+            _privacy_api.get_privacy,
+            services=svc.privacy_services,
             pass_qs=True),
         "/api/restart/last": get_json(_get_restart_last),
         "/api/session/performance": get_json(

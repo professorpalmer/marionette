@@ -380,6 +380,28 @@ def post_session_compact(svc: SessionControlServices) -> tuple[int, JsonPayload]
     }
 
 
+def post_session_images_strip(svc: SessionControlServices) -> tuple[int, JsonPayload]:
+    """POST /api/session/images-strip — drop image parts from live history."""
+    not_ready = svc.gate_active_pilot_ready()
+    if not_ready is not None:
+        return 409, not_ready
+    pilot = svc.get_pilot()
+    strip = getattr(pilot, "strip_history_images", None)
+    if not callable(strip):
+        return 404, {"ok": False, "error": "images-strip is unavailable"}
+    removed = int(strip() or 0)
+    sessions = svc.get_sessions() if svc.get_sessions is not None else None
+    if sessions is not None and sessions.active and svc.save_transcript is not None:
+        from ..sessions import persist_live_transcript
+        persist_live_transcript(
+            pilot,
+            svc.cfg.state_dir or _tf.gettempdir(),
+            sessions.active,
+            writer=svc.save_transcript,
+        )
+    return 200, {"ok": True, "stripped": removed}
+
+
 def _truthy_qs_flag(qs: dict, key: str) -> bool:
     raw = (qs.get(key, [""])[0] or "").strip().lower()
     return raw in ("1", "true", "yes")
