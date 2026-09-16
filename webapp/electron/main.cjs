@@ -1211,21 +1211,23 @@ ipcMain.handle("harness:uploadFile", async (_e, payload, identityHeaders) => {
   }
 });
 
+function isAllowedSender(event) {
+  if (!win || win.isDestroyed() || event.sender !== win.webContents
+    || event.sender.isDestroyed() || event.senderFrame !== event.sender.mainFrame) return false;
+  try {
+    const url = new URL(event.senderFrame.url);
+    url.hash = "";
+    url.search = "";
+    if (url.href === require("node:url").pathToFileURL(resolveDistIndex()).href) return true;
+    return [isDev && process.env.PMHARNESS_DEV_SERVER, viteUrl].some(source =>
+      source && url.origin === new URL(source).origin);
+  } catch { return false; }
+}
+
 // Binary images bypass renderer CORS without widening the backend origin policy.
 require("./image-bridge.cjs").registerImageBridge(ipcMain, {
   getBackend: () => ({port: backendPort, token: authToken()}),
-  isAllowedSender: event => {
-    if (!win || win.isDestroyed() || event.sender !== win.webContents
-      || event.sender.isDestroyed() || event.senderFrame !== event.sender.mainFrame) return false;
-    try {
-      const url = new URL(event.senderFrame.url);
-      url.hash = "";
-      url.search = "";
-      if (url.href === require("node:url").pathToFileURL(resolveDistIndex()).href) return true;
-      return [isDev && process.env.PMHARNESS_DEV_SERVER, viteUrl].some(source =>
-        source && url.origin === new URL(source).origin);
-    } catch { return false; }
-  },
+  isAllowedSender,
 });
 
 // Native folder picker (Cursor-style "Open Folder"). Returns absolute path or null.
@@ -1299,7 +1301,7 @@ const { registerFsBridge } = require("./fs-bridge.cjs");
 const { registerGitBridge } = require("./git-bridge.cjs");
 const { registerUpdateBridge } = require("./update-bridge.cjs");
 const { registerPackagedUpdater } = require("./packaged-updater.cjs");
-registerFsBridge(ipcMain);
+registerFsBridge(ipcMain, { isAllowedSender });
 registerGitBridge(ipcMain);
 const packagedUpdater = registerPackagedUpdater(ipcMain, app, {
   broadcast: (channel, payload) => {

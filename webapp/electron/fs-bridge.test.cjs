@@ -47,9 +47,10 @@ describe("fs-bridge revealInFolder", () => {
     assert.ok(exposed, "preload must expose harnessIPC inside Electron's sandbox");
     assert.equal(typeof exposed.getJSON, "function");
     assert.equal(typeof exposed.isDirectory, "function");
-    return exposed.isDirectory("/outside/folder").then((result) => {
+    return exposed.isDirectory("/outside/folder").then(async (result) => {
       assert.equal(result, true);
-      assert.deepEqual(invokes, [["fs:isDirectory", "/outside/folder"]]);
+      await exposed.fs.openPath("/outside/file.txt");
+      assert.deepEqual(invokes, [["fs:isDirectory", "/outside/folder"], ["fs:openPath", "/outside/file.txt"]]);
     });
   });
 

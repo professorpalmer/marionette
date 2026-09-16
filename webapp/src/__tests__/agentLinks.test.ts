@@ -587,3 +587,19 @@ describe("openAgentLink events", () => {
   });
 });
 
+
+it('decodes local file URLs exactly once and rejects remote hosts', () => {
+  expect(parseFileHref('file:///tmp/space%20%2520.txt:12:3')).toEqual({ path: '/tmp/space %20.txt', line: 12, col: 3 });
+  expect(parseFileHref('file://localhost/tmp/a%23b.txt')?.path).toBe('/tmp/a#b.txt');
+  expect(parseFileHref('/tmp/literal%20.txt')?.path).toBe('/tmp/literal%20.txt');
+  expect(parseFileHref('file://server/share/a.txt')).toBeNull();
+  expect(parseFileHref('file:///tmp/%00.txt')).toBeNull();
+});
+
+it('preserves encoded filename colons and rejects invalid file clicks', () => {
+  expect(parseFileHref('file:///tmp/a.txt%3A12')?.path).toBe('/tmp/a.txt:12');
+  const dispatch = vi.spyOn(window, 'dispatchEvent');
+  openAgentFile('file://server/share/a.txt');
+  expect(dispatch).not.toHaveBeenCalled();
+  dispatch.mockRestore();
+});

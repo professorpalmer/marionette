@@ -475,6 +475,8 @@ def get_file_resolve(rel_path: str, svc: FileServices) -> tuple[int, dict]:
     query = (rel_path or "").strip()
     if not query:
         return 400, {"error": "Missing path parameter"}
+    if query.startswith("~/"):
+        query = os.path.expanduser(query)
     try:
         full_path, rel_posix = resolve_editor_path(repo, query)
     except ValueError as e:

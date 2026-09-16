@@ -1,7 +1,7 @@
 import { useOpenSwarmJob } from '../lib/useOpenSwarmJob';
 import { useSharedJobMetadata, metadataJobs } from '../lib/jobMetadataContext';
 import { inputFailureMessage } from "../lib/inputFailure";
-import { imagePath } from "../lib/transport";
+import { imagePath, nativeFs } from "../lib/transport";
 import { InputRetryKeys, receiptDraft, requireImageCapacity } from "./conversation/inputDraft";
 import type { SessionViewport, TranscriptViewportHandle } from "./conversation/sessionViewport";
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, type SetStateAction } from "react";
@@ -394,9 +394,15 @@ export default function Conversation({
           window.dispatchEvent(new CustomEvent("harness-toast", { detail: choice.toast }));
           return;
         }
+        if ("external" in choice) {
+          void nativeFs.openPath(choice.external).then((result) => {
+            if (!result.ok) window.dispatchEvent(new CustomEvent("harness-toast", { detail: result.error }));
+          });
+          return;
+        }
         openResolved(choice.path);
       };
-      // Transcript clicks fail closed when resolve cannot find a unique file.
+      // Unresolved explicit local paths use the desktop opener; relative refs fail closed.
       // File-tree clicks are trusted and may open the given path if resolve is down.
       void api.resolveFile(filePath)
         .then((resolved) => {
