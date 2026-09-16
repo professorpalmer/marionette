@@ -54,6 +54,7 @@ from .schedule_core import (
     schedule_fire_prompt,
     should_deliver_notice,
     status_from_halt_reason,
+    validate_recurrence,
 )
 from .schedule_store import ScheduleStore, claim_lease_seconds
 
@@ -84,6 +85,7 @@ class _ClaimLeaseHeartbeat:
         run_id: str,
         lease_seconds: int,
         interval: Optional[float] = None,
+        cancel: Optional[Callable[[], None]] = None,
     ) -> None:
         self._store = store
         self._schedule_id = schedule_id
@@ -96,6 +98,8 @@ class _ClaimLeaseHeartbeat:
         self._stop = threading.Event()
         self._ownership_lost = False
         self._thread: Optional[threading.Thread] = None
+        self._cancel = cancel
+        self.cancelled = False
 
     @property
     def ownership_lost(self) -> bool:
@@ -112,8 +116,19 @@ class _ClaimLeaseHeartbeat:
         self._thread.start()
 
     def _loop(self) -> None:
-        # Wait first so a fast run does not pay an immediate renew round-trip.
-        while not self._stop.wait(self._interval):
+        next_renew = time.monotonic() + self._interval
+        while not self._stop.wait(min(0.1, self._interval)):
+            if self._cancel is not None and not self.cancelled:
+                try:
+                    requested = self._ownership_lost or self._store.cancel_requested(self._schedule_id)
+                    if requested:
+                        self.cancelled = True
+                        self._cancel()
+                except Exception:
+                    self.cancelled = False
+            if time.monotonic() < next_renew:
+                continue
+            next_renew = time.monotonic() + self._interval
             try:
                 ok = self._store.renew_claim(
                     self._schedule_id, self._run_id, self._lease_seconds,
@@ -124,6 +139,9 @@ class _ClaimLeaseHeartbeat:
                 continue
             if not ok:
                 self._ownership_lost = True
+                if self._cancel is not None and not self.cancelled:
+                    self.cancelled = True
+                    self._cancel()
                 return
 
     def stop(self) -> bool:
@@ -228,7 +246,9 @@ def _default_session_factory(schedule: Schedule):
         ensure_repo_swarm_adapter(cfg)
     except Exception:
         pass
-    return ConversationalSession(cfg)
+    session = ConversationalSession(cfg)
+    session.harness_session_id = "routine-" + uuid.uuid4().hex
+    return session
 
 
 def _claim_owner() -> str:
@@ -316,7 +336,7 @@ def _is_due(schedule: Schedule, now: datetime) -> bool:
 
 def _mark_invalid_cron(store: ScheduleStore, schedule: Schedule) -> None:
     try:
-        CronExpr.parse(schedule.cron)
+        validate_recurrence(schedule.cron, schedule.interval_seconds)
     except ValueError:
         if schedule.last_status != "invalid_cron":
             store.update_status(schedule.id, "invalid_cron")
@@ -416,6 +436,8 @@ def run_due(
 
     results: List[dict] = []
     for schedule in store.list(enabled_only=True):
+        if active_schedule_holder is not None and active_schedule_holder.get("stopping"):
+            break
         _mark_invalid_cron(store, schedule)
         slots, outcome = due_fire_plan(schedule, now)
         if not slots:
@@ -428,7 +450,7 @@ def run_due(
                     notifier,
                     session_factory,
                     budget_factory,
-                    fire_at=fire_at_timestamp(fire),
+                    fire_at=fire.timestamp() if schedule.interval_seconds else fire_at_timestamp(fire),
                     owner=owner,
                     active_schedule_holder=active_schedule_holder,
                     missed_outcome=outcome,
@@ -562,6 +584,9 @@ def _run_one(
         swarms_used = 0
         cancel_invoked = False
         ownership_lost = False
+        session_id = ""
+        result_text = ""
+        usage_receipt = {"source": "unknown", "cost_usd": None}
 
         # Renew while blocked inside next()/provider/tool — not only between
         # streamed events. Interval is bounded; disable only in tests via
@@ -638,6 +663,9 @@ def _run_one(
                     return run
 
             session = session_factory(schedule)
+            session_id = getattr(session, "harness_session_id", "") or "routine-" + run_id
+            session.harness_session_id = session_id
+            heartbeat._cancel = getattr(session, "cancel", None)
             budget = budget_factory(schedule)
             last_snapshot: dict = {}
             # Explicit iterator so cancel is observed before advancing for the
@@ -670,6 +698,12 @@ def _run_one(
                     break
 
                 data = getattr(ev, "data", None) or {}
+                if getattr(ev, "kind", "") == "assistant":
+                    result_text = str(data.get("text") or data.get("say") or result_text)
+                if getattr(ev, "kind", "") == "usage":
+                    usage_receipt = dict(data)
+                    usage_receipt.setdefault("cost_usd", None)
+                    usage_receipt["source"] = "session_usage"
                 if getattr(ev, "kind", "") == "auto_status":
                     snap = data.get("snapshot") or {}
                     if snap:
@@ -697,6 +731,7 @@ def _run_one(
                     break
 
             tokens_used = int(last_snapshot.get("tokens_used", 0) or 0)
+            cancel_invoked = cancel_invoked or heartbeat.cancelled
             swarms_used = int(last_snapshot.get("swarms_used", 0) or 0)
             if heartbeat.ownership_lost:
                 ownership_lost = True
@@ -730,6 +765,9 @@ def _run_one(
             "swarms_used": swarms_used,
             "fire_at": fire_at,
             "run_id": run_id,
+            "session_id": session_id,
+            "result_text": result_text,
+            "usage_receipt": usage_receipt,
         }
         if missed_outcome is not None:
             run["missed_outcome"] = missed_outcome.policy
@@ -745,8 +783,11 @@ def _run_one(
             ended_at=ended_at,
             fire_at=fire_at,
             advance_last_fire=not force_claim,
+            session_id=session_id,
+            result_text=result_text,
+            usage_receipt=usage_receipt,
             continuity_digest=_continuity_digest_for_ok(
-                schedule, status, halt_reason,
+                schedule, status, result_text or halt_reason,
             ),
             **missed_fields,
         ):
@@ -797,6 +838,7 @@ class SchedulerDaemon:
 
     def stop(self) -> None:
         self._stop = True
+        self._active["stopping"] = True
         sid = self._active.get("schedule_id")
         if sid:
             try:

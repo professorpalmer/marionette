@@ -716,12 +716,20 @@ describe('SwarmPane canonical alias presentation', () => {
       await screen.findByRole('group', { name: 'Workers' });
       const first = detailCalls();
       expect(first).toBeGreaterThan(0);
-      await act(async () => { await new Promise(resolve => setTimeout(resolve, 4600)); });
-      await waitFor(() => expect(detailCalls()).toBeGreaterThan(first));
+      const later = Date.now() + 5000;
+      vi.spyOn(Date, 'now').mockReturnValue(later);
+      try {
+        await act(async () => {
+          for (let turn = 0; turn < 16; turn++) await fixture.store.advance();
+        });
+        await waitFor(() => expect(detailCalls()).toBeGreaterThan(first));
+      } finally {
+        vi.mocked(Date.now).mockRestore();
+      }
     } finally {
       fixture.unmount();
     }
-  }, 15000);
+  });
 
   it('hides the alias once the canonical PM row is observed', async () => {
     const fixture = await mountCanonicalAlias({ includePmList: false });

@@ -2985,6 +2985,51 @@ describe("composerSend module", () => {
         customNames: [],
       }),
     ).toEqual({ kind: "todo", text: "export TODO.md" });
+    expect(
+      classifyLocalSlashCommand({ message: "/ping", isBuiltIn: builtIn, customNames: [] }),
+    ).toEqual({ kind: "ping", action: "status" });
+    expect(
+      classifyLocalSlashCommand({ message: "/ping start", isBuiltIn: builtIn, customNames: [] }),
+    ).toEqual({ kind: "ping", action: "start" });
+    expect(
+      classifyLocalSlashCommand({ message: "/ping start extra", isBuiltIn: builtIn, customNames: [] }),
+    ).toEqual({ kind: "ping", action: "invalid" });
+    expect(
+      classifyLocalSlashCommand({
+        message: "/advise did I miss a test",
+        isBuiltIn: builtIn,
+        customNames: [],
+      }),
+    ).toEqual({ kind: "advise", question: "did I miss a test" });
+    expect(
+      classifyLocalSlashCommand({ message: "/advice", isBuiltIn: builtIn, customNames: [] }).kind,
+    ).toBe("advice");
+    expect(
+      classifyLocalSlashCommand({ message: "/routines", isBuiltIn: builtIn, customNames: [] }).kind,
+    ).toBe("routines");
+    expect(
+      classifyLocalSlashCommand({
+        message: "review the board --every 90m",
+        isBuiltIn: builtIn,
+        customNames: [],
+      }),
+    ).toEqual({ kind: "routine", prompt: "review the board", every: "90m" });
+    expect(isBuiltInSlashCommand("/ping")).toBe(true);
+    expect(isBuiltInSlashCommand("/advise")).toBe(true);
+    expect(
+      classifyLocalSlashCommand({
+        message: "/privacy add .env",
+        isBuiltIn: builtIn,
+        customNames: [],
+      }),
+    ).toEqual({ kind: "privacy", text: "add .env" });
+    expect(
+      classifyLocalSlashCommand({
+        message: "/images-strip",
+        isBuiltIn: builtIn,
+        customNames: [],
+      }).kind,
+    ).toBe("images-strip");
   });
 
   it("classifies navigation slash commands as local (not sent to the model)", () => {

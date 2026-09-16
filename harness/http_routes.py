@@ -97,6 +97,7 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
     from .api import hooks as _hooks_api
     from .api import jobs as _jobs_api
     from .job_metadata_capability import metadata_handler
+    from .job_metadata_capability import worker_operation_handler
     from . import job_metadata_view as _metadata_view
     from .api import mcp as _mcp_api
     from .api import platform as _plat_api
@@ -105,6 +106,8 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
     from .api import registry as _reg_api
     from .api import reviews as _rev_api
     from .api import schedules as _sched_api
+    from .api import advice as _advice_api
+    from .api import session_cache as _cache_api
     from .api import session_control as _sc_api
     from .api import session_events as _session_events_api
     from .api import sessions as _sessions_api
@@ -118,8 +121,11 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
     from .api import collab_presence as _collab_presence_api
     from .api import metaharness as _mh_api
     from .api import local_models as _local_models_api
+    from .api import privacy as _privacy_api
 
     routes: dict[str, PostHandler] = {
+        "/api/jobs/operations/v1": post_json(
+            worker_operation_handler("post_worker_operation"), services=lambda: svc.metadata_view()),
         "/api/jobs/metadata/pins": post_json(
             metadata_handler("post_job_metadata_pins"), services=lambda: svc.metadata_view()),
         "/api/jobs/metadata/view/refresh": post_json(
@@ -143,6 +149,12 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
         "/api/session/snapcompact": post_json(
             _sc_api.post_session_snapcompact_routed,
             services=svc.session_control_services),
+        "/api/session/images-strip": post_json(
+            _sc_api.post_session_images_strip,
+            services=svc.session_control_services,
+            needs_body=False),
+        "/api/privacy": post_json(
+            _privacy_api.post_privacy, services=svc.privacy_services),
         "/api/checkpoints/restore": post_json(
             _ckpt_api.post_checkpoints_restore, services=svc.checkpoint_services),
         "/api/checkpoints/snapshot": post_json(
@@ -299,6 +311,13 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
             services=svc.session_control_services),
         "/api/session/goal": post_json(
             _sc_api.post_session_goal, services=svc.session_control_services),
+        "/api/session/cache": post_json(_cache_api.post_session_cache, services=svc.session_control_services),
+        "/api/session/advise": post_json(
+            _advice_api.post_advise, services=svc.session_control_services),
+        "/api/session/advice/cancel": post_json(
+            _advice_api.post_advice_cancel, services=svc.session_control_services),
+        "/api/session/routine": post_json(
+            _advice_api.post_routine, services=svc.session_control_services),
         "/api/session/loop": post_json(
             _sc_api.post_session_loop, services=svc.session_control_services),
         "/api/session/todo": post_json(
@@ -520,6 +539,7 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
     from .api import jobs as _jobs_api
     from .api import dashboard as _dashboard_api
     from .job_metadata_capability import metadata_handler
+    from .job_metadata_capability import worker_operation_handler
     from . import job_metadata_view as _metadata_view
     from .api import mcp as _mcp_api
     from .api import platform as _plat_api
@@ -528,6 +548,8 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
     from .api import registry as _reg_api
     from .api import reviews as _rev_api
     from .api import schedules as _sched_api
+    from .api import advice as _advice_api
+    from .api import session_cache as _cache_api
     from .api import session_control as _sc_api
     from .api import session_events as _session_events_api
     from .api import session_performance as _session_perf_api
@@ -542,6 +564,7 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
     from .api import collab_presence as _collab_presence_api
     from .api import metaharness as _mh_api
     from .api import local_models as _local_models_api
+    from .api import privacy as _privacy_api
     from .backend_restart_signal import get_restart_last as _get_restart_last
 
     def _get_git_diff(handler: Any, u: Any, qs: dict) -> Any:
@@ -749,6 +772,9 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
             handler, qs, svc.session_services())
 
     return {
+        "/api/jobs/operations/v1": get_json(
+            worker_operation_handler("get_worker_operations"), services=lambda: svc.metadata_view(),
+            pass_qs=True, keep_blank_values=True),
         "/api/jobs/metadata": get_json(
             metadata_handler("get_job_metadata"), services=lambda: svc.metadata_view(),
             pass_qs=True, keep_blank_values=True),
@@ -773,6 +799,10 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
             _sc_api.get_session_state,
             services=svc.session_control_services,
             pass_qs=True),
+        "/api/privacy": get_json(
+            _privacy_api.get_privacy,
+            services=svc.privacy_services,
+            pass_qs=True),
         "/api/restart/last": get_json(_get_restart_last),
         "/api/session/performance": get_json(
             _session_perf_api.get_session_performance,
@@ -783,6 +813,10 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
         "/api/session/events": _get_session_events,
         "/api/session/goal": get_json(
             _sc_api.get_session_goal, services=svc.session_control_services,
+            qs_arg="session_id", empty_as_none=True),
+        "/api/session/cache": get_json(_cache_api.get_session_cache, services=svc.session_control_services, qs_arg="session_id"),
+        "/api/session/advice": get_json(
+            _advice_api.get_advice, services=svc.session_control_services,
             qs_arg="session_id", empty_as_none=True),
         "/api/session/loop": get_json(
             _sc_api.get_session_loop, services=svc.session_control_services),

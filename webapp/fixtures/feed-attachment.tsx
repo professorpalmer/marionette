@@ -35,6 +35,18 @@ window.fetch = withEndpointDiscovery(async input => {
       display: display(),
     }
     : path === '/api/session/state' ? { state: 'idle', runners: {}, pending_swarms: false }
+    : path === '/api/session/cache' ? {
+      session_id: activeSession,
+      state: 'off',
+      enabled: false,
+      retain_reasoning: false,
+      reason: '',
+      refreshes: 0,
+      max_refreshes: 3,
+      idle_seconds: 0,
+      max_spend_usd: 5,
+      reserved_usd: 0,
+    }
     : path === '/api/context/usage' ? { available: true, session_id: activeSession, total: 0, limit: 10000, categories: [] }
     : path === '/api/commands' ? { commands: [] }
     : path === '/api/swarm/live' ? []

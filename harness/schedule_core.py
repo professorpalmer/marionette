@@ -564,6 +564,20 @@ def due_fire_plan(
     )
     if not schedule.enabled:
         return [], empty
+    if schedule.interval_seconds:
+        step = schedule.interval_seconds
+        anchor = schedule.enabled_at or schedule.created_at
+        elapsed = now.timestamp() - anchor
+        if elapsed < step:
+            return [], empty
+        latest = anchor + int(elapsed // step) * step
+        if latest <= schedule.last_fire_at:
+            return [], empty
+        # Intervals coalesce missed fires; reload never replays a backlog.
+        considered = max(1, int((latest - max(anchor, schedule.last_fire_at)) // step))
+        return [datetime.fromtimestamp(latest, tz=now.tzinfo)], MissedFireOutcome(
+            policy="once", slots_considered=considered, slots_fired=1, skipped=False,
+        )
     try:
         cron = CronExpr.parse(schedule.cron)
     except ValueError:
@@ -718,6 +732,7 @@ SCHEDULE_FIELDS = [
     "notepad",
     "monitor_mode",
     "failure_deliver",
+    "interval_seconds",
 ]
 
 
@@ -765,6 +780,7 @@ class Schedule:
     claim_fire_at: float = 0.0
     claim_run_id: str = ""
     cancel_requested: bool = False
+    interval_seconds: int = 0
 
     def to_row(self) -> Dict[str, object]:
         """Flatten to a sqlite-friendly dict (bool -> int)."""
@@ -787,6 +803,7 @@ class Schedule:
             name=str(row["name"]),
             objective=str(row["objective"]),
             cron=str(row["cron"]),
+            interval_seconds=int(row.get("interval_seconds") or 0),
             repo=str(row.get("repo") or ""),
             swarm_adapter=str(row.get("swarm_adapter") or "agentic"),
             driver=str(row.get("driver") or ""),
@@ -820,7 +837,7 @@ class Schedule:
         import time as _time
         now_ts = _time.time() if now is None else float(now)
         try:
-            CronExpr.parse(self.cron)
+            validate_recurrence(self.cron, self.interval_seconds)
         except ValueError:
             return "invalid_cron"
         try:
@@ -832,3 +849,13 @@ class Schedule:
                 return "running"
             return "stale"
         return self.last_status or "never"
+
+
+def validate_recurrence(cron: str, interval_seconds: int = 0) -> None:
+    if type(interval_seconds) is not int or not 0 <= interval_seconds <= 31536000:
+        raise ValueError("interval_seconds must be an integer from 0 to 31536000")
+    if interval_seconds:
+        if interval_seconds < 60 or cron:
+            raise ValueError("Intervals require at least 60 seconds and an empty cron")
+    else:
+        CronExpr.parse(cron)

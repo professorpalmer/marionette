@@ -585,6 +585,21 @@ export type SessionForkPreview = { revision: string; boundaries: { event_id: num
 
 export type Session = { forked_from?: { parent_id: string; at_event_id: number; revision?: string }; id: string; title: string; created: number; active?: boolean; archived?: boolean; repo?: string; branch?: string; workspace_root?: string; input_tokens?: number; output_tokens?: number; cache_read_tokens?: number; estimated_cost_usd?: number; preview?: string };
 
+export type AdviceReceipt = {
+  session_id: string;
+  request_id: string;
+  question: string;
+  snapshot_sha256: string;
+  status: "pending" | "running" | "cancelling" | "cancelled" | "succeeded" | "failed" | "interrupted";
+  model: string;
+  answer: string;
+  error: string;
+  created_at: number;
+  wire_calls: number;
+  tools_enabled: false;
+  usage: { tokens_in: number | null; tokens_out: number | null; cost_usd: number | null; cost_source: string; usage_source: string };
+};
+
 export type SessionGoal = {
   text: string;
   status: "active" | "paused" | "complete" | "cleared" | string;
@@ -723,6 +738,7 @@ export type Hook = {
 };
 
 export type ScheduleInfo = {
+  interval_seconds?: number;
   id: string;
   name: string;
   objective: string;
@@ -751,6 +767,7 @@ export type ScheduleInfo = {
 };
 
 export type ScheduleWrite = Pick<ScheduleInfo, "name" | "objective" | "cron"> & {
+  interval_seconds?: number;
   request_id?: string;
   repo: string;
   timezone?: string;
@@ -767,6 +784,9 @@ export type ScheduleWrite = Pick<ScheduleInfo, "name" | "objective" | "cron"> & 
 };
 
 export type ScheduleRun = {
+  session_id?: string;
+  result_text?: string;
+  usage_receipt?: { cost_usd?: number | null; source?: string; tokens_in?: number; tokens_out?: number };
   id: string;
   schedule_id?: string;
   status: string;
@@ -1696,6 +1716,14 @@ export const api = {
   },
   getSessionGoal: (sessionId: string) =>
     getJSON<{ ok: boolean; goal: SessionGoal }>(withToken(`/api/session/goal?session_id=${encodeURIComponent(sessionId)}`)),
+  getAdvice: (sessionId: string) =>
+    getJSON<{ session_id: string; receipts: AdviceReceipt[] }>(`/api/session/advice?session_id=${encodeURIComponent(sessionId)}`),
+  advise: (sessionId: string, requestId: string, question: string) =>
+    postJSON<{ receipt: AdviceReceipt }>("/api/session/advise", { session_id: sessionId, request_id: requestId, question }),
+  cancelAdvice: (sessionId: string, requestId: string) =>
+    postJSON<{ receipt: AdviceReceipt }>("/api/session/advice/cancel", { session_id: sessionId, request_id: requestId }),
+  createRoutine: (sessionId: string, requestId: string, prompt: string, every: string) =>
+    postJSON<ScheduleInfo>("/api/session/routine", { session_id: sessionId, request_id: requestId, prompt, every }),
   setSessionGoal: (sessionId: string, text: string, tokenBudget?: number) =>
     postJSON<{ ok: boolean; goal: SessionGoal }>("/api/session/goal", {
       action: "set",
@@ -2210,6 +2238,18 @@ export const api = {
       error?: string;
       reason?: string;
     }>("/api/session/compact", {}),
+  stripSessionImages: () =>
+    postJSON<{ ok: boolean; stripped?: number; error?: string }>(
+      "/api/session/images-strip",
+      {},
+    ),
+  getPrivacy: () =>
+    getJSON<{ ok: boolean; forbidden_patterns: string[]; error?: string }>("/api/privacy"),
+  setPrivacy: (body: { action?: string; pattern?: string; patterns?: string[] }) =>
+    postJSON<{ ok: boolean; forbidden_patterns?: string[]; error?: string }>(
+      "/api/privacy",
+      body,
+    ),
   steerSession: (
     text: string,
     images?: string[],

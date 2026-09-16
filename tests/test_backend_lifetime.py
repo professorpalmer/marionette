@@ -102,7 +102,15 @@ def test_real_serve_publishes_bound_identity_and_cleans_its_receipt(endpoint, tm
     monkeypatch.setattr(endpoint, '_maybe_auto_index_codegraph', lambda: None)
     monkeypatch.setattr(auto_registry, 'ensure_keyed_provider_registry_health', lambda: None)
     monkeypatch.setattr(auto_registry, 'start_registry_auto_refresh', lambda: None)
-    monkeypatch.setattr(endpoint.threading, 'Thread', lambda **kw: SimpleNamespace(start=lambda: None))
+    monkeypatch.setattr(
+        endpoint.threading,
+        'Thread',
+        lambda **kw: SimpleNamespace(
+            start=lambda: None,
+            join=lambda timeout=None: None,
+            is_alive=lambda: False,
+        ),
+    )
     monkeypatch.setattr(atexit, 'register', lambda *args: None)
     monkeypatch.setattr(signal, 'signal', lambda *args: None)
     receipt = tmp_path / 'receipt'

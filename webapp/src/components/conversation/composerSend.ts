@@ -71,7 +71,7 @@ export function formatHelpSlashReply(
   return (
     "Available Slash Commands:\n\n"
     + commands.map((s) => `* \`${s.cmd}\` - ${s.desc}`).join("\n")
-    + "\n\nLocal chrome (not sent to the model): `/swarm` `/terminal` `/settings` `/memory` `/mcp` `/files` `/state` `/refine` `/todo`."
+    + "\n\nLocal chrome (not sent to the model): `/swarm` `/terminal` `/settings` `/memory` `/mcp` `/files` `/state` `/refine` `/todo` `/advise` `/routines` `/ping` `/privacy` `/images-strip`."
     + "\n\nType @ to list and mention files in your message context."
   );
 }
@@ -335,10 +335,17 @@ export async function runEditMessageFlow(opts: {
 }
 
 export type LocalSlashAction =
+  | { kind: "advise"; question: string }
+  | { kind: "advice" }
+  | { kind: "routines" }
+  | { kind: "routine"; prompt: string; every: string }
   | { kind: "none" }
   | { kind: "clear" }
   | { kind: "new" }
   | { kind: "compact" }
+  | { kind: "ping"; action: "start" | "stop" | "status" | "invalid" }
+  | { kind: "images-strip" }
+  | { kind: "privacy"; text: string }
   | { kind: "refine"; text: string }
   | { kind: "todo"; text: string }
   | { kind: "model" }
@@ -401,12 +408,25 @@ export function classifyLocalSlashCommand(opts: {
   customNames: string[];
 }): LocalSlashAction {
   const msg = opts.message;
+  const routine = /^([\s\S]+?)\s+--every\s+(\S+)\s*$/.exec(msg);
+  if (routine && !msg.startsWith("/")) return { kind: "routine", prompt: routine[1].trim(), every: routine[2] };
   if (!msg.startsWith("/")) return { kind: "none" };
   const parts = msg.split(/\s+/);
   const cmd = parts[0] || "";
+  if (cmd === "/advise") return { kind: "advise", question: msg.substring(cmd.length).trim() };
+  if (cmd === "/advice") return { kind: "advice" };
+  if (cmd === "/routines") return { kind: "routines" };
   if (cmd === "/clear") return { kind: "clear" };
   if (cmd === "/new") return { kind: "new" };
   if (cmd === "/compact") return { kind: "compact" };
+  if (cmd === "/ping") {
+    const action = parts[1] || "status";
+    return { kind: "ping", action: parts.length <= 2 && (action === "start" || action === "stop" || action === "status") ? action : "invalid" };
+  }
+  if (cmd === "/images-strip") return { kind: "images-strip" };
+  if (cmd === "/privacy") {
+    return { kind: "privacy", text: msg.substring(cmd.length).trim() };
+  }
   if (cmd === "/refine") {
     return { kind: "refine", text: msg.substring(cmd.length).trim() };
   }

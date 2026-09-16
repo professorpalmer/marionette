@@ -1,8 +1,9 @@
-"""Schedules HTTP route bodies (control plane; daemon stays external)."""
+"""Schedules HTTP route bodies shared by the app and external daemon."""
 
 from __future__ import annotations
 
 from datetime import datetime
+import time
 import os
 import sqlite3
 from uuid import UUID
@@ -18,6 +19,7 @@ from ..schedule_core import (
     timezone_mode,
     validate_timezone,
     schedule_wall,
+    validate_recurrence,
 )
 from ..schedule_store import (
     REMOVE_CANCEL_REQUESTED,
@@ -39,6 +41,12 @@ def _next_fire_previews(schedule: Schedule, count: int = 3) -> List[str]:
     """Wall time with UTC offset for IANA schedules; empty when paused/invalid."""
     if not schedule.enabled:
         return []
+    if schedule.interval_seconds:
+        anchor = schedule.enabled_at or schedule.created_at
+        step = schedule.interval_seconds
+        index = max(1, int((max(time.time(), schedule.last_fire_at) - anchor) // step) + 1)
+        return [datetime.fromtimestamp(anchor + (index + i) * step).isoformat(sep=" ", timespec="seconds")
+                for i in range(count)]
     try:
         cron = CronExpr.parse(schedule.cron)
         validate_timezone(schedule.timezone)
@@ -61,6 +69,7 @@ def _schedule_payload(schedule: Schedule) -> Dict[str, Any]:
         "name": schedule.name,
         "objective": schedule.objective,
         "cron": schedule.cron,
+        "interval_seconds": schedule.interval_seconds,
         "repo": schedule.repo,
         "swarm_adapter": schedule.swarm_adapter,
         "driver": schedule.driver,
@@ -103,7 +112,7 @@ def _write_fields(body: dict, *, creating: bool = False) -> Dict[str, Any]:
         if not isinstance(value, str):
             raise ValueError("%s must be text" % key)
         fields[key] = value.strip() if key != "notepad" else clip_notepad(value)
-    for key in ("name", "objective", "cron"):
+    for key in ("name", "objective"):
         if (creating or key in fields) and not fields.get(key):
             raise ValueError("%s is required" % key)
     if "swarm_adapter" in fields and not fields["swarm_adapter"]:
@@ -112,7 +121,12 @@ def _write_fields(body: dict, *, creating: bool = False) -> Dict[str, Any]:
         repo = fields.get("repo", "")
         if not repo or not os.path.isabs(repo):
             raise ValueError("repo must be an explicit absolute project path; each run starts a fresh session")
-    if "cron" in fields:
+    if "interval_seconds" in body:
+        fields["interval_seconds"] = body["interval_seconds"]
+    if creating or "interval_seconds" in fields:
+        fields.setdefault("cron", "")
+        validate_recurrence(fields["cron"], fields.get("interval_seconds", 0))
+    elif "cron" in fields and fields["cron"]:
         CronExpr.parse(fields["cron"])
     if "timezone" in fields:
         fields["timezone"] = validate_timezone(fields["timezone"])

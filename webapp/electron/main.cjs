@@ -42,6 +42,7 @@ const {
   resolveClassicDevRendererSource,
 } = require("./renderer-fallback.cjs");
 const { createTranslucencyController } = require("./translucency.cjs");
+const { isAllowedBrowserUrl, isAllowedExternalUrl, hardenWebPreferences } = require("./browser-url.cjs");
 const secretVault = require("./secret-vault.cjs");
 const {
   buildPuppetmasterBackendEnv,
@@ -1356,7 +1357,7 @@ function createBootstrapWindow() {
     show: false,
     title: "Marionette Setup",
     backgroundColor: "#0f1113",
-    webPreferences: { contextIsolation: true, nodeIntegration: false },
+    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
   });
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
     body{font-family:system-ui,sans-serif;background:#0f1113;color:#e8eaed;margin:0;padding:24px}
@@ -1571,7 +1572,7 @@ function linkContextMenuTemplate(url) {
     {
       label: "Open in system browser",
       click: () => {
-        if (!isAllowedBrowserUrl(url)) return;
+        if (!isAllowedExternalUrl(url)) return;
         Promise.resolve(shell.openExternal(url)).catch(() => {});
       },
     },
@@ -1654,7 +1655,7 @@ function wireContextMenu(contents) {
       return;
     }
     const url = params && params.linkURL;
-    if (!url || !isAllowedBrowserUrl(url)) return;
+    if (!url || !isAllowedExternalUrl(url)) return;
     try {
       popupMenuForContents(contents, linkContextMenuTemplate(url));
     } catch (err) {
@@ -1695,6 +1696,7 @@ function createWindow() {
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
+      sandbox: true,
       contextIsolation: true,
       webviewTag: true,   // enables the real in-app browser
       // rAF-gated streaming must keep painting while blurred (see the
@@ -2079,6 +2081,17 @@ function injectPopoutClickCatcher(contents) {
 
 app.on("web-contents-created", (_e, contents) => {
   const type = contents.getType();
+  if (type === "window") {
+    contents.setWindowOpenHandler(() => ({
+      action: "allow",
+      overrideBrowserWindowOptions: {
+        webPreferences: hardenWebPreferences({
+          contextIsolation: true,
+          nodeIntegration: false,
+        }),
+      },
+    }));
+  }
   // Webview guests + OAuth popup BrowserWindows (type "window") that land on
   // persist:browser all need the same Chrome UA + hideAutomation belt.
   if (type === "webview") {
@@ -2093,6 +2106,7 @@ app.on("web-contents-created", (_e, contents) => {
         overrideBrowserWindowOptions: {
           webPreferences: {
             partition: "persist:browser",
+            sandbox: true,
             contextIsolation: true,
             nodeIntegration: false,
             // Same trusted preload as will-attach-webview / openPopoutWindow.
@@ -2157,8 +2171,6 @@ app.on("web-contents-created", (_e, contents) => {
 // BrowserWindow on the shared browser partition. Used by BOTH the explicit
 // "Pop out" button/IPC and the injected Cmd/Ctrl+click catcher so every pop-out
 // behaves identically (floats on top, survives switching off the Browser tab).
-const { isAllowedBrowserUrl } = require("./browser-url.cjs");
-
 function openPopoutWindow(url) {
   const raw = typeof url === "string" && url.trim() ? url.trim() : "about:blank";
   // Parity with browser:openExternal — never load file:// / custom schemes
@@ -2177,6 +2189,7 @@ function openPopoutWindow(url) {
     backgroundColor: "#0f1113",
     webPreferences: {
       partition: "persist:browser",
+      sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
       preload: browserPreloadPath(),
@@ -2219,8 +2232,8 @@ ipcMain.handle("computer:revoke", event => {
 ipcMain.handle("browser:openExternal", async (_e, url) => {
   try {
     const target = typeof url === "string" ? url.trim() : "";
-    if (!isAllowedBrowserUrl(target)) {
-      return { ok: false, error: "only http(s) URLs allowed" };
+    if (!isAllowedExternalUrl(target)) {
+      return { ok: false, error: "only http(s) or mailto URLs allowed" };
     }
     await shell.openExternal(target);
     logMain(`[browser] openExternal ${target}`);

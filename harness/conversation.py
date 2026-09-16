@@ -47,6 +47,10 @@ from ._exec import _puppetmaster_python, _puppetmaster_available, _puppetmaster_
 from .paths import git_toplevel, path_within
 from .command_approval_identity import ApprovalExpectation, require_current_approval
 
+MAX_PENDING_APPROVALS = 256
+APPROVAL_TTL_SECONDS = 300
+APPROVAL_SWEEP_SECONDS = 30
+
 from pmharness import registry as reg
 from . import providers as prov
 from pmharness.intent import DriverIntent
@@ -663,6 +667,15 @@ class ConversationalSession(
         self.context_budget_config = budget_for_context_window(config.max_context_tokens)
         self.state_dir = config.state_dir or tempfile.mkdtemp(prefix="pilot-")
         try:
+            from .privacy_paths import (
+                export_forbidden_patterns_env,
+                load_forbidden_patterns,
+            )
+
+            export_forbidden_patterns_env(load_forbidden_patterns(self.state_dir))
+        except Exception:
+            pass
+        try:
             from harness.spill_registry import sweep_expired_spills
 
             raw_retention = os.environ.get("HARNESS_SPILL_RETENTION_DAYS", "").strip().lower()
@@ -902,6 +915,9 @@ class ConversationalSession(
         # by SSE view detach (Phase A: detach drains; only interrupt cancels)
         # so run_auto halts promptly instead of burning budget for a gone client.
         self._cancel = threading.Event()
+        from .cache_keep_warm import CacheKeepWarm
+        self.retain_reasoning = False
+        self.cache_keep_warm = CacheKeepWarm(self)
         # auto-distill: when on, run_auto proposes PENDING skill/rule candidates on
         # completion (still human-gated for approval). On by default.
         env_val = os.environ.get("HARNESS_AUTO_DISTILL", "").strip().lower()
@@ -966,6 +982,10 @@ class ConversationalSession(
         self._pending_secret_requests = {}
         self._command_approval_lock = threading.Lock()
         self._approved_commands = set()  # command hashes the user one-click approved
+        self._edited_paths = set()
+        self._mentioned_paths = set()
+        self._approval_sweeper = None
+        self._approval_sweep_stop = threading.Event()
         self._state = "idle"
         
         import queue
@@ -1470,10 +1490,87 @@ class ConversationalSession(
         }
         if amendment:
             pending["suggested_amendment"] = amendment
+        now = time.time()
+        pending["created_at"] = now
+        pending["expires_at"] = now + APPROVAL_TTL_SECONDS
         with self._command_approval_lock_guard():
+            self._sweep_expired_approvals()
+            if len(self._pending_command_approvals) >= MAX_PENDING_APPROVALS:
+                denied = dict(pending)
+                denied["denied"] = "approval registry full"
+                self._upsert_display_command_approval(denied, status="rejected")
+                return denied
             self._pending_command_approvals[command_hash] = pending
             self._upsert_display_command_approval(pending, status="pending")
+        self._ensure_approval_sweeper()
         return dict(pending)
+
+    def _ensure_approval_sweeper(self) -> None:
+        if self._approval_sweeper is not None:
+            return
+        stop = getattr(self, "_approval_sweep_stop", None)
+        if stop is None:
+            stop = threading.Event()
+            self._approval_sweep_stop = stop
+
+        def _tick() -> None:
+            while not getattr(self, "_closed", False) and not stop.is_set():
+                if stop.wait(APPROVAL_SWEEP_SECONDS):
+                    return
+                try:
+                    with self._command_approval_lock_guard():
+                        self._sweep_expired_approvals()
+                except Exception:
+                    pass
+
+        thread = threading.Thread(target=_tick, name="approval-sweep", daemon=True)
+        thread.start()
+        self._approval_sweeper = thread
+
+    def _sweep_expired_approvals(self) -> None:
+        now = time.time()
+        expired = [
+            key for key, item in list(self._pending_command_approvals.items())
+            if float(item.get("expires_at") or 0) and float(item["expires_at"]) <= now
+        ]
+        for key in expired:
+            pending = self._pending_command_approvals.pop(key, None)
+            if pending is not None:
+                self._upsert_display_command_approval(pending, status="rejected")
+
+    def note_working_path(self, path: str, *, edited: bool = False) -> None:
+        from .working_set import remember_path
+
+        repo = getattr(self.config, "repo", "") or ""
+        remember_path(self._edited_paths if edited else self._mentioned_paths, path, repo)
+
+    def _retrack_after_compact(self) -> None:
+        from .working_set import merge_working_set_into_history, working_set_note
+
+        note = working_set_note(self._edited_paths, self._mentioned_paths)
+        merge_working_set_into_history(self._history, note)
+
+    def strip_history_images(self) -> int:
+        """Drop image attachments from provider history and display rows."""
+        removed = 0
+        for message in getattr(self, "_history", []) or []:
+            if isinstance(message, dict) and message.pop("images", None):
+                removed += 1
+            content = message.get("content") if isinstance(message, dict) else None
+            if isinstance(content, list):
+                kept = [
+                    part for part in content
+                    if not (isinstance(part, dict) and part.get("type") in {"image", "image_url", "input_image"})
+                ]
+                if len(kept) != len(content):
+                    message["content"] = kept
+                    removed += 1
+        display = getattr(self, "_display_transcript", None)
+        rows = display if isinstance(display, list) else []
+        for row in rows:
+            if isinstance(row, dict) and row.pop("images", None):
+                removed += 1
+        return removed
 
     def decide_command_approval(
         self,
@@ -1769,7 +1866,11 @@ class ConversationalSession(
         """Returns the non-system messages (self._history minus the seeded system prompt) as a serializable list."""
         if len(self._history) <= 1:
             return []
-        return [dict(m) for m in self._history[1:]]
+        messages = copy.deepcopy(self._history[1:])
+        if not getattr(self, "retain_reasoning", False):
+            for message in messages:
+                message.pop("reasoning_envelope", None)
+        return messages
 
     def _display_swarm_pending_allowed(self, row: Any) -> bool:
         """True when a persisted swarm_pending row belongs to this session."""
@@ -1860,12 +1961,15 @@ class ConversationalSession(
             "history": self.export_history(),
             "display": self.export_display_transcript(),
             "job_ids": list(self._session_job_ids),
+            "cache_preferences": {"retain_reasoning": getattr(self, "retain_reasoning", False)},
         }
 
     def load_history(self, messages: Any) -> None:
         """Replaces the conversation turns (keep the freshly-built system prompt at index 0 -- which contains current skills/rules -- then append the loaded user/assistant messages). Do NOT persist the system prompt; only persist the user/assistant turns."""
         if isinstance(messages, dict):
             history_list = messages.get("history", [])
+            preferences = messages.get("cache_preferences") or {}
+            self.retain_reasoning = isinstance(preferences, dict) and preferences.get("retain_reasoning") is True
             self._display_transcript = messages.get("display", [])
             self._session_job_ids = messages.get("job_ids", [])
             if isinstance(self._display_transcript, list):
@@ -1875,14 +1979,18 @@ class ConversationalSession(
                 ]
         else:
             history_list = messages
+            self.retain_reasoning = False
             self._display_transcript = []
             self._session_job_ids = []
 
         if not self._history:
             self._history = [{"role": "system", "content": ""}]
         system_prompt = self._history[0]
-        cleaned = [m for m in history_list
+        cleaned = [copy.deepcopy(m) for m in history_list
                    if m.get("role") != "system" or m.get("source") == "goal_mode"]
+        if not self.retain_reasoning:
+            for message in cleaned:
+                message.pop("reasoning_envelope", None)
         self._history = [system_prompt] + cleaned
         self._cold_input_hold = bool(cleaned and cleaned[-1].get('role') == 'user'
                                      and (cleaned[-1].get('input_id') or cleaned[-1].get('input_ids')))
@@ -2851,6 +2959,15 @@ class ConversationalSession(
             except Exception:
                 pass
             try:
+                from .privacy_paths import (
+                    export_forbidden_patterns_env,
+                    load_forbidden_patterns,
+                )
+
+                export_forbidden_patterns_env(load_forbidden_patterns(self.state_dir))
+            except Exception:
+                pass
+            try:
                 from .pilot_guards import swarm_policy_turn_note
 
                 policy_note = swarm_policy_turn_note(
@@ -3358,6 +3475,8 @@ class ConversationalSession(
     def cancel(self) -> None:
         """Signal any in-flight run_auto/send to stop at the next checkpoint."""
         self._cancel.set()
+        from .cache_keep_warm import stop_runner_cache
+        stop_runner_cache(self, reason="Stopped with the session.", close=False)
         # interrupt()/_cancel: best-effort -- on interrupt, set a flag so completed-but-unfolded
         # swarm results are still delivered but no NEW swarm work is started.
         # There is a small gap where background swarm futures already submitted to self._swarm_pool

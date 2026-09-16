@@ -53,6 +53,15 @@ def _strip_ansi(text: str) -> str:
     return _ANSI_ESCAPE.sub("", text)
 
 
+def _forbidden_tool_result(path: str, state_dir: Optional[str]) -> Optional[tuple]:
+    from .privacy_paths import refuse_path
+
+    reason = refuse_path(path, state_dir=state_dir)
+    if reason:
+        return False, "forbidden", reason
+    return None
+
+
 # Directories that never carry searchable source in the Python fallback.
 _SEARCH_SKIP_DIRS = frozenset({
     ".git", "node_modules", "results", "build", "dist", "__pycache__",
@@ -138,9 +147,11 @@ def _format_match_lines(lines: list[str], max_results: int) -> str:
     return text
 
 
-def _walk_searchable_files(root: str):
+def _walk_searchable_files(root: str, state_dir: Optional[str] = None):
     """Yield text-file paths under ``root``, skipping vendor dirs and binaries."""
     if os.path.isfile(root):
+        if _forbidden_tool_result(root, state_dir):
+            return
         try:
             with open(root, "rb") as f:
                 if b"\x00" not in f.read(8000):
@@ -152,6 +163,8 @@ def _walk_searchable_files(root: str):
         dirs[:] = [d for d in dirs if d not in _SEARCH_SKIP_DIRS]
         for name in files:
             file_path = os.path.join(current, name)
+            if _forbidden_tool_result(file_path, state_dir):
+                continue
             try:
                 with open(file_path, "rb") as f:
                     if b"\x00" in f.read(8000):
@@ -305,6 +318,9 @@ class ToolDispatchMixin:
             target_path = os.path.join(self.config.repo, target_path)
         if not any(is_safe_path(target_path, root) for root in self._read_allowed_roots()):
             return False, "path_traversal", f"Path traversal attempt rejected: {act.path}"
+        forbidden = _forbidden_tool_result(target_path, getattr(self, "state_dir", None))
+        if forbidden is not None:
+            return forbidden
         try:
             if not os.path.exists(target_path):
                 raise FileNotFoundError(f"File not found: {act.path}")
@@ -551,6 +567,11 @@ class ToolDispatchMixin:
             ]
             if not files:
                 return False, "invalid_arguments", "search_codegraph kind=affected requires one or more file paths in query"
+            for item in files:
+                target = item if os.path.isabs(item) else os.path.join(self.config.repo, item)
+                forbidden = _forbidden_tool_result(target, getattr(self, "state_dir", None))
+                if forbidden is not None:
+                    return forbidden
             cmd = _puppetmaster_cmd("codegraph", "affected", "-q", *files)
         else:
             subcommand = "query"
@@ -607,13 +628,19 @@ class ToolDispatchMixin:
         # Validate skipped paths too. A missing traversal path must not become
         # harmless merely because another requested path exists and was kept.
         for candidate in (*search_paths, *skipped):
-            if not is_safe_path(self._absolute_repo_path(candidate), self.config.repo):
+            absolute = self._absolute_repo_path(candidate)
+            if not is_safe_path(absolute, self.config.repo):
                 return False, "path_traversal", f"Path traversal attempt rejected: {candidate}"
+            forbidden = _forbidden_tool_result(absolute, getattr(self, "state_dir", None))
+            if forbidden is not None:
+                return forbidden
 
         max_results = _result_limit(act.arguments.get("max_results"))
         ok, status, matches = self._search_matching_lines(query, search_paths, max_results)
         if not ok:
             return ok, status, matches
+        if isinstance(matches, list):
+            matches = self._drop_forbidden_search_hits(matches)
 
         note = skipped_paths_note(skipped)
         if matches:
@@ -629,6 +656,22 @@ class ToolDispatchMixin:
         if os.path.isabs(path):
             return path
         return os.path.join(self.config.repo, path)
+
+    def _drop_forbidden_search_hits(self, matches: list) -> list:
+        kept = []
+        for line in matches:
+            raw = str(line or "")
+            path = raw.split(":", 1)[0] if ":" in raw else raw
+            if _forbidden_tool_result(path, getattr(self, "state_dir", None)):
+                continue
+            kept.append(line)
+        return kept
+
+    def _append_forbidden_search_globs(self, cmd: list) -> None:
+        from .privacy_paths import load_forbidden_patterns
+
+        for pattern in load_forbidden_patterns(getattr(self, "state_dir", None)):
+            cmd.extend(["--glob", "!" + pattern])
 
     def _search_matching_lines(
         self, query: str, paths: list[str], max_results: int
@@ -653,6 +696,7 @@ class ToolDispatchMixin:
         if is_multiline_query(query):
             # A query containing newlines can only match across lines.
             cmd.append("--multiline")
+        self._append_forbidden_search_globs(cmd)
         cmd += ["-e", query] + [p if p else "." for p in paths]
         try:
             p = subprocess.run(
@@ -686,7 +730,10 @@ class ToolDispatchMixin:
 
         matches: list[str] = []
         for path in paths:
-            for file_path in _walk_searchable_files(self._absolute_repo_path(path)):
+            for file_path in _walk_searchable_files(
+                self._absolute_repo_path(path),
+                getattr(self, "state_dir", None),
+            ):
                 rel_path = os.path.relpath(file_path, self.config.repo).replace(os.sep, "/")
                 matches.extend(_file_match_lines(compiled, file_path, rel_path, multiline))
                 if len(matches) > max_results:
@@ -724,6 +771,7 @@ class ToolDispatchMixin:
             return 0
         if is_multiline_query(query):
             cmd.append("--multiline")
+        self._append_forbidden_search_globs(cmd)
         cmd += ["-e", query] + [p if p else "." for p in paths]
         p = subprocess.run(
             cmd,
@@ -750,7 +798,10 @@ class ToolDispatchMixin:
         multiline = is_multiline_query(query)
         found = 0
         for path in paths:
-            for file_path in _walk_searchable_files(self._absolute_repo_path(path)):
+            for file_path in _walk_searchable_files(
+                self._absolute_repo_path(path),
+                getattr(self, "state_dir", None),
+            ):
                 found += len(_file_match_lines(compiled, file_path, "", multiline))
                 if found >= _PROBE_MATCH_CAP:
                     return found
@@ -1551,6 +1602,9 @@ class ToolDispatchMixin:
             target_path = os.path.join(self.config.repo, target_path)
         if not is_safe_path(target_path, self.config.repo):
             return False, "path_traversal", f"Path traversal attempt rejected: {act.path}"
+        forbidden = _forbidden_tool_result(target_path, getattr(self, "state_dir", None))
+        if forbidden is not None:
+            return forbidden
 
         if not os.path.exists(target_path):
             return False, "not_found", f"hash_edit: file not found: {act.path}"
@@ -1589,6 +1643,9 @@ class ToolDispatchMixin:
                         self._last_ast_preview = structural_diff(original, new_text)
                 except Exception:
                     self._last_ast_preview = None
+            note = getattr(self, "note_working_path", None)
+            if callable(note):
+                note(target_path, edited=True)
             return True, "success", result.message
         except UnicodeDecodeError as e:
             return False, "invalid_encoding", f"hash_edit refuses non UTF-8 content: {e}"
@@ -1652,6 +1709,9 @@ class ToolDispatchMixin:
                 _restore_text_file(target_path, original, existed)
                 return False, "verification_failed", mismatch
             bytes_written = len(act.content.encode("utf-8"))
+            note = getattr(self, "note_working_path", None)
+            if callable(note):
+                note(target_path, edited=True)
             return True, "success", bytes_written
         except Exception as e:
             return False, "exception", str(e)
@@ -1748,6 +1808,9 @@ class ToolDispatchMixin:
             if mismatch:
                 _restore_text_file(target_path, original_content, True)
                 return False, "verification_failed", mismatch
+            note = getattr(self, "note_working_path", None)
+            if callable(note):
+                note(target_path, edited=True)
             return True, "success", headline
         except Exception as e:
             return False, "exception", str(e)

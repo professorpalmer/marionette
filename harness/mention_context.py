@@ -257,6 +257,7 @@ def read_file_mention(
     total_size: int,
     per_file_cap: int = FILE_PER_MENTION_CAP,
     total_budget: int = MENTION_TOTAL_BUDGET,
+    state_dir: Optional[str] = None,
 ) -> tuple[str, int]:
     """Read a mentioned file into an honest context block.
 
@@ -270,6 +271,11 @@ def read_file_mention(
             token,
             reason="mention context budget exhausted (150KB total across @-mentions)",
         ), 0
+    from .privacy_paths import refuse_path
+
+    denied = refuse_path(file_path, state_dir=state_dir)
+    if denied:
+        return format_file_mention_skip(token, reason=denied), 0
     try:
         file_size = os.path.getsize(file_path)
         read_cap = min(per_file_cap, budget_left)

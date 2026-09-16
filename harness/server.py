@@ -1912,6 +1912,17 @@ def _settings_services():
     )
 
 
+def _privacy_services():
+    """Build privacy services from live server module globals."""
+    from types import SimpleNamespace
+    from .privacy_paths import export_forbidden_patterns_env
+
+    return SimpleNamespace(
+        state_dir=_sessions_state_dir,
+        refresh_workers=lambda patterns: export_forbidden_patterns_env(patterns),
+    )
+
+
 def _session_control_services():
     """Build SessionControlServices from live server module globals."""
     from .api.session_control import SessionControlServices
@@ -2639,6 +2650,7 @@ def _route_services():
         job_services=_job_services,
         metadata_view=lambda: _runners.metadata_view,
         session_control_services=_session_control_services,
+        privacy_services=_privacy_services,
         checkpoint_services=_checkpoint_services,
         codegraph_services=_codegraph_services,
         commands_services=_commands_services,
@@ -3551,12 +3563,16 @@ def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False,
         """S3: reap owned Cursor warm ACP children on process shutdown."""
         try:
             for runner in list(_runners.runners()):
+                from .cache_keep_warm import stop_runner_cache
+                stop_runner_cache(runner, reason="Backend shutdown.")
                 release = getattr(runner, "release_warm_acp", None)
                 if callable(release):
                     release(reason="shutdown")
         except Exception:
             pass
         try:
+            from .cache_keep_warm import stop_runner_cache
+            stop_runner_cache(_pilot, reason="Backend shutdown.")
             release = getattr(_pilot, "release_warm_acp", None)
             if callable(release):
                 release(reason="shutdown")
@@ -3566,6 +3582,9 @@ def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False,
     atexit.register(_mcp.stop_all)
     atexit.register(_shutdown_warm_acp)
     atexit.register(_cleanup_marker, marker_path, os.getpid())
+    from ._backend_main import ManagedScheduler
+    scheduler_runtime = ManagedScheduler()
+    atexit.register(scheduler_runtime.stop)
 
     def _graceful(signum, frame):
         try:
@@ -3617,6 +3636,7 @@ def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False,
             from pathlib import Path
             lifetime.publish(port, _endpoint_identity().describe(), Path(_TOKEN_FILE))
             atexit.register(lifetime.close)
+        scheduler_runtime.start()
         srv.serve_forever()
     except SystemExit:
         raise
@@ -3633,6 +3653,7 @@ def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False,
             pass
         raise
     finally:
+        scheduler_runtime.stop()
         if lifetime is not None:
             lifetime.close()
         srv.server_close()

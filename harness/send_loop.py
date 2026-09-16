@@ -570,6 +570,9 @@ class SendLoopMixin:
         if busy_gen is None:
             yield ConvEvent("error", {"error": "session busy or replaced: another request owns this runner"})
             return
+        cache_controller = getattr(self, "cache_keep_warm", None)
+        if cache_controller:
+            cache_controller.foreground_start()
         if not resume:
             self._cold_input_hold = False
         self._cancel.clear()
@@ -949,6 +952,8 @@ class SendLoopMixin:
                         self._history[0]["content"] = original_sys
             reset_turn_id(_turn_token)
             self._release_busy(busy_gen)
+            if cache_controller:
+                cache_controller.foreground_end()
 
     def _send_locked(self, user_message: str, images: Optional[list] = None, plan: bool = False, resume: bool = False, *, input_id=None, handoff_token=None) -> Iterator[ConvEvent]:
         from .conversation import ConvEvent
@@ -1623,6 +1628,9 @@ class SendLoopMixin:
             stamp_assistant_phase(
                 assistant_msg, getattr(resp, "assistant_phase", None),
             )
+            if getattr(self, "retain_reasoning", False):
+                from pmharness.drivers.reasoning_envelope import retain_reasoning
+                retain_reasoning(assistant_msg, getattr(resp, "reasoning_envelope", None))
             self._history.append(assistant_msg)
 
             if (yield from iter_extracted_secret_turn(

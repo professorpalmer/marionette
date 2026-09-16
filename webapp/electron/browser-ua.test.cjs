@@ -89,6 +89,11 @@ describe("browserUserAgent", () => {
     assert.match(main, /overrideBrowserWindowOptions[\s\S]*preload:\s*browserPreloadPath\(\)/);
     assert.match(main, /function openPopoutWindow[\s\S]*preload:\s*browserPreloadPath\(\)/);
     assert.match(main, /browser:openExternal/);
+    assert.match(main, /sandbox:\s*true/);
+    assert.match(main, /isAllowedExternalUrl/);
+    assert.match(main, /hardenWebPreferences/);
+    assert.match(main, /webviewTag:\s*true/);
+    assert.match(main, /preload:\s*path\.join\(__dirname,\s*"preload\.cjs"\)/);
   });
 
   it("main.cjs logs fingerprint diagnostics to electron.log", () => {
