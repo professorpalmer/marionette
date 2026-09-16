@@ -245,6 +245,9 @@ def resolve_todo_params(raw: Any, has_existing: bool) -> Tuple[Optional[Dict[str
     if not isinstance(raw, dict):
         return None, "todo arguments must be an object"
     args = dict(raw)
+    if "op" not in args and "list" not in args and isinstance(args.get("init"), list):
+        args["op"] = "init"
+        args["list"] = args.pop("init")
     op = str(args.get("op") or "").strip().lower()
     if not op:
         inferred = infer_todo_op(args, has_existing)
