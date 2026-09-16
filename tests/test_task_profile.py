@@ -122,8 +122,9 @@ def test_micro_visible_tool_names_contract():
     assert "run_parallel" not in names
 
 
-def test_glm53_explicit_swarm_is_not_micro_and_exposes_run_swarm(tmp_path):
+def test_glm53_explicit_swarm_is_not_micro_and_exposes_run_swarm(tmp_path, monkeypatch):
     """F: GLM 5.3 explicit swarm prompt resolves non-MICRO and sees run_swarm."""
+    monkeypatch.setattr("harness.edit_engines.workers_ready", lambda: True)
     from harness.pilot_guards import is_explicit_swarm_user_message
     from harness.task_profile import classify_task_profile
 

@@ -292,6 +292,7 @@ def test_search_tools_loop_executes_and_activates(monkeypatch):
 
 
 def test_visible_schema_parity_when_discovery_disabled(monkeypatch):
+    monkeypatch.setattr("harness.edit_engines.workers_ready", lambda: True)
     monkeypatch.setenv("HARNESS_TOOL_DISCOVERY", "0")
     # Pin browser capability so parity does not depend on whether the host that
     # runs the suite happens to have a standalone Chrome installed.

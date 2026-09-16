@@ -43,6 +43,11 @@ pilots can also inspect screenshots. Native input returns a fresh app state so
 the pilot can verify the outcome. A successful input event alone is not proof
 that a task finished.
 
+The image viewer accepts only the exact, unchanged screenshots returned to the
+current session, even when they are stored outside the workspace. This does not
+grant access to other files. Desktop screenshots are not silently routed to a
+different vision provider when the pilot is text-only.
+
 The pilot cannot approve its own permissions by controlling Marionette.
 Keyboard chords are limited to app-local editing and navigation; OS launchers
 and app-switching shortcuts are not supported by this tool.

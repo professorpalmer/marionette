@@ -393,13 +393,15 @@ class ToolDispatchMixin:
             return False, "exception", str(e)
 
     def _do_view_image(self, act: PilotAction) -> tuple[bool, str, str]:
-        if not self.config.repo:
+        from .desktop_browser import can_view_screenshot
+        desktop_image = can_view_screenshot(getattr(self, "harness_session_id", ""), act.path)
+        if not self.config.repo and not desktop_image:
             return False, "repo_not_open", "No workspace directory (config.repo) is open."
         target_path = act.path
         if not os.path.isabs(target_path):
             target_path = os.path.join(self.config.repo, target_path)
         # Same read roots as read_file (workspace + git toplevel + spill).
-        if not any(is_safe_path(target_path, root) for root in self._read_allowed_roots()):
+        if not desktop_image and not any(is_safe_path(target_path, root) for root in self._read_allowed_roots()):
             return False, "path_traversal", f"Path traversal attempt rejected: {act.path}"
         try:
             if not os.path.exists(target_path):
@@ -416,6 +418,8 @@ class ToolDispatchMixin:
             # sidecar paraphrase (e.g. gpt-5.6-luna must not go through qwen-vl).
             if session_supports_native_images(self):
                 return True, "native_image", target_path
+            if desktop_image:
+                return False, "vision_unavailable", "This pilot cannot receive screenshot pixels. Use accessibility text from computer_use snapshot or choose a vision-capable pilot. Desktop screenshots are not sent to a separate vision provider."
             results = transcribe_images([target_path])
             if not results:
                 return False, "error", "view_image failed: no transcription returned"

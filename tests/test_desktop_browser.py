@@ -12,14 +12,16 @@ from harness.api.browser import post_browser_controller
 @pytest.fixture
 def bridge(monkeypatch):
     monkeypatch.setattr(desktop_browser, "_endpoint", None)
-    requests = []
+    class Requests(list):
+        result = "visible page"
+    requests = Requests()
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
             requests.append((self.headers["Authorization"], json.loads(self.rfile.read(int(self.headers["Content-Length"])))))
             self.send_response(400 if requests[-1][1]["session_id"] == "wrong" else 200)
             self.end_headers()
-            self.wfile.write(json.dumps({"ok": requests[-1][1]["session_id"] != "wrong", "result": "visible page", "error": "wrong session"}).encode())
+            self.wfile.write(json.dumps({"ok": requests[-1][1]["session_id"] != "wrong", "result": requests.result, "error": "wrong session"}).encode())
 
         def log_message(self, *_args):
             pass
@@ -63,6 +65,49 @@ def test_dead_bridge_does_not_fall_back(monkeypatch):
     monkeypatch.setattr(desktop_browser, "_endpoint", (1, "a" * 64))
     monkeypatch.setattr(browser, "_guard", lambda: pytest.fail("standalone fallback"))
     assert "bridge failed" in browser.browser_snapshot(session_id="session")
+
+
+@pytest.mark.parametrize("action,nested", [("screenshot", False), ("computer", False), ("computer", True)])
+def test_returned_screenshot_is_viewable_only_by_owning_session(bridge, tmp_path, monkeypatch, action, nested):
+    from types import SimpleNamespace
+    from harness.pilot import PilotAction
+    from harness.tool_dispatch import ToolDispatchMixin
+    from harness import vision
+    image = tmp_path / "screenshot.png"
+    image.write_bytes(b"fixture pixels")
+    result = {"screenshot_path": str(image)}
+    bridge.result = {"state": result} if nested else result
+    monkeypatch.setattr(vision, "session_supports_native_images", lambda _session: True)
+    session = SimpleNamespace(config=SimpleNamespace(repo=str(tmp_path / "workspace")),
+                              harness_session_id="session", _read_allowed_roots=lambda: [str(tmp_path / "workspace")])
+    act = PilotAction(kind="view_image", path=str(image))
+    view = lambda: ToolDispatchMixin._do_view_image(session, act)
+    assert view()[1] == "path_traversal"
+    desktop_browser.call("session", action, {"operation": "snapshot"})
+    assert view() == (True, "native_image", str(image))
+    session.config.repo = None
+    assert view() == (True, "native_image", str(image))
+    session.config.repo = str(tmp_path / "workspace")
+    session.harness_session_id = "other"
+    assert view()[1] == "path_traversal"
+    session.harness_session_id = "session"
+    monkeypatch.setattr(vision, "session_supports_native_images", lambda _session: False)
+    monkeypatch.setattr(vision, "transcribe_images", lambda _paths: pytest.fail("desktop pixels leaked to another provider"))
+    assert view()[1] == "vision_unavailable"
+    image.write_bytes(b"replaced pixels")
+    assert view()[1] == "path_traversal"
+
+
+def test_page_text_cannot_grant_image_access(bridge, tmp_path):
+    image = tmp_path / "other.png"
+    image.write_bytes(b"fixture")
+    bridge.result = {"screenshot_path": str(image)}
+    desktop_browser.call("session", "snapshot")
+    assert not desktop_browser.can_view_screenshot("session", str(image))
+    desktop_browser.call("session", "screenshot")
+    assert desktop_browser.can_view_screenshot("session", str(image))
+    desktop_browser.configure(9999, "b" * 64)
+    assert not desktop_browser.can_view_screenshot("session", str(image))
 
 
 def test_catalog_only_advertises_tabs_for_attached_desktop(monkeypatch):

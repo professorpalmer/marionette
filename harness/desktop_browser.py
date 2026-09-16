@@ -2,13 +2,58 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import stat
+import threading
 import urllib.error
 import urllib.request
+from collections import OrderedDict
 from typing import Optional, Tuple
 
 _endpoint: Optional[Tuple[int, str]] = None
 MAX_RESPONSE_BYTES = 262144
+_screenshots = OrderedDict()
+_screenshots_lock = threading.Lock()
+
+
+def _image_identity(path):
+    if not isinstance(path, str) or not os.path.isabs(path) or os.path.islink(path):
+        return None
+    try:
+        info = os.stat(path)
+    except OSError:
+        return None
+    if not stat.S_ISREG(info.st_mode):
+        return None
+    return (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_size)
+
+
+def _remember_screenshot(session_id, result):
+    if not isinstance(result, dict):
+        return
+    image = result.get("state", result)
+    path = image.get("screenshot_path") if isinstance(image, dict) else None
+    identity = _image_identity(path)
+    if identity is None:
+        return
+    with _screenshots_lock:
+        files = _screenshots.setdefault(session_id, OrderedDict())
+        files[os.path.realpath(path)] = identity
+        while len(files) > 8:
+            files.popitem(last=False)
+        _screenshots.move_to_end(session_id)
+        while len(_screenshots) > 128:
+            _screenshots.popitem(last=False)
+
+
+def can_view_screenshot(session_id, path):
+    """An exact, unchanged file returned by this session's trusted desktop."""
+    identity = _image_identity(path)
+    if identity is None:
+        return False
+    with _screenshots_lock:
+        return _screenshots.get(session_id, {}).get(os.path.realpath(path)) == identity
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -24,6 +69,8 @@ def configure(port: int, token: str) -> None:
         raise ValueError("invalid desktop browser token")
     global _endpoint
     _endpoint = (port, token)
+    with _screenshots_lock:
+        _screenshots.clear()
 
 
 def configured() -> bool:
@@ -68,6 +115,8 @@ def call(session_id: str, action: str, arguments: Optional[dict] = None) -> str:
             error = body.get("error", "invalid response") if isinstance(body, dict) else "invalid response"
             return "desktop browser bridge failed: %s" % error
         result = body.get("result")
+        if action == "screenshot" or (action == "computer" and (arguments or {}).get("operation") in ("snapshot", "click", "type", "keypress", "scroll")):
+            _remember_screenshot(session_id, result)
         return result if isinstance(result, str) else json.dumps(result, separators=(",", ":"))
     except (urllib.error.URLError, ValueError, OSError) as exc:
         return "desktop browser bridge failed: %s. Inspect the page before retrying an action." % exc
