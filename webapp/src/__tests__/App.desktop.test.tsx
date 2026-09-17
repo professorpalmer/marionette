@@ -73,4 +73,8 @@ it.each([360, 640, 1024])("retains the desktop shell and draft at %ipx", async w
   expect(editor).toHaveValue("unsent draft");
   expect(localStorage.getItem("pmharness.leftW")).toBe("248");
   expect(localStorage.getItem("pmharness.rightW")).toBe("520");
+  const surface = screen.getByTestId("chat-surface");
+  const board = screen.getByTestId("right-board-overlay");
+  expect(surface.contains(board)).toBe(true);
+  expect(board.className).toMatch(/\babsolute\b/);
 });
