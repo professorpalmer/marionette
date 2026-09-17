@@ -226,7 +226,37 @@ test('a replacement installer rebuilds the same production slot at its new pinne
   assert.deepEqual(fs.readdirSync(path.dirname(selected)), ['release']);
   fs.writeFileSync(path.join(selected, 'user-work.txt'), 'preserve even in release slot');
   f.retarget(f.revision);
-  await assert.rejects(f.api.runBootstrap(selected), /Local changes/);
-  assert.equal(fs.readFileSync(path.join(selected, 'user-work.txt'), 'utf8'), 'preserve even in release slot');
+  await f.api.runBootstrap(selected);
+  assert.equal(git(selected, 'rev-parse', 'HEAD'), f.revision);
+  assert.equal(fs.existsSync(path.join(selected, 'user-work.txt')), false);
+  const stashRoot = path.join(path.dirname(selected), 'hotfix-stash');
+  const found = [];
+  for (const stamp of fs.readdirSync(stashRoot)) {
+    const candidate = path.join(stashRoot, stamp, 'user-work.txt');
+    if (fs.existsSync(candidate)) found.push(fs.readFileSync(candidate, 'utf8'));
+  }
+  assert.deepEqual(found, ['preserve even in release slot']);
+});
+
+test('packaged release leftover tracked edits are preserved then the pin checkout proceeds', async t => {
+  const f = fixture(t, true);
+  const selected = f.api.selectPackagedCheckout({ home: path.dirname(f.dest), env: {} });
+  await f.api.runBootstrap(selected);
+  fs.writeFileSync(path.join(selected, 'webapp/package-lock.json'), 'leftover product dirt\n');
+  const next = git(f.origin, 'rev-parse', 'HEAD');
+  f.retarget(next);
+  await f.api.runBootstrap(selected);
   assert.equal(git(selected, 'rev-parse', 'HEAD'), next);
+  assert.equal(fs.readFileSync(path.join(selected, 'webapp/package-lock.json'), 'utf8'), '{"version":2}');
+  const stashRoot = path.join(path.dirname(selected), 'hotfix-stash');
+  let preserved = '';
+  let status = '';
+  for (const stamp of fs.readdirSync(stashRoot)) {
+    const candidate = path.join(stashRoot, stamp, 'webapp/package-lock.json');
+    if (fs.existsSync(candidate)) preserved = fs.readFileSync(candidate, 'utf8');
+    const statusPath = path.join(stashRoot, stamp, 'STATUS.txt');
+    if (fs.existsSync(statusPath)) status += fs.readFileSync(statusPath, 'utf8');
+  }
+  assert.equal(preserved, 'leftover product dirt\n');
+  assert.match(status, /package-lock\.json/);
 });

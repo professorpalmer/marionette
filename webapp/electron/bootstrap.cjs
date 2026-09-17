@@ -74,13 +74,85 @@ function receiptPath(dir) {
   return path.resolve(dir, gitValue(dir, ["rev-parse", "--git-path", RECEIPT]));
 }
 
-function assertCheckout(dir, target) {
+function checkoutPorcelain(dir) {
+  return gitValue(dir, ["status", "--porcelain", "--untracked-files=all", "--no-renames"]);
+}
+
+function assertOrigin(dir, target) {
   if (gitValue(dir, ["remote", "get-url", "origin"]) !== target.repo) {
     throw new Error(`Checkout origin differs from ${target.repo}. Preserve ${dir} and choose a separate checkout or an explicit MARIONETTE_REPO_URL override.`);
   }
+}
+
+function assertCheckout(dir, target) {
+  assertOrigin(dir, target);
   if (gitValue(dir, ["status", "--porcelain", "--untracked-files=all"])) {
     throw new Error(`Local changes in ${dir}. Commit or move your changes before relaunching; bootstrap will not reset or discard them.`);
   }
+}
+
+function isPackagedReleaseSlot(dir, target) {
+  return target.mode === "packaged" && path.basename(dir) === "release";
+}
+
+function preserveReleaseDirt(dir) {
+  const porcelain = checkoutPorcelain(dir);
+  if (!porcelain) return null;
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const dest = path.join(path.dirname(dir), "hotfix-stash", stamp);
+  fs.mkdirSync(dest, { recursive: true });
+  fs.writeFileSync(path.join(dest, "STATUS.txt"), porcelain + "\n");
+  try {
+    fs.writeFileSync(path.join(dest, "HEAD.txt"), gitValue(dir, ["rev-parse", "HEAD"]) + "\n");
+  } catch { /* unborn checkout */ }
+  const names = new Set();
+  for (const args of [
+    ["diff", "--name-only", "HEAD"],
+    ["diff", "--name-only", "--cached"],
+    ["ls-files", "--others", "--exclude-standard"],
+  ]) {
+    try {
+      for (const rel of gitValue(dir, args).split("\n")) {
+        if (rel) names.add(rel);
+      }
+    } catch { /* list what we can */ }
+  }
+  for (const rel of names) {
+    const src = path.join(dir, rel);
+    if (!fs.existsSync(src)) continue;
+    const out = path.join(dest, rel);
+    fs.mkdirSync(path.dirname(out), { recursive: true });
+    fs.cpSync(src, out, { recursive: true });
+  }
+  return dest;
+}
+
+function gitChecked(dir, args) {
+  const result = spawnSync("git", ["-C", dir, ...args], { encoding: "utf8", windowsHide: true });
+  if (result.status !== 0) {
+    throw new Error(`Cannot update checkout at ${dir}: ${(result.stderr || result.stdout || "git failed").trim()}`);
+  }
+  return result.stdout.trim();
+}
+
+// Packaged ~/.marionette/release is installer-owned. Leftover tracked
+// edits from a prior pin must not brick first-run; copy them aside, then
+// reset so the embedded SHA can check out. Development checkouts still
+// refuse dirty trees.
+function preparePackagedReleaseCheckout(dir, target) {
+  assertOrigin(dir, target);
+  if (!checkoutPorcelain(dir)) return null;
+  const stashDir = preserveReleaseDirt(dir);
+  gitChecked(dir, ["reset", "--hard", "HEAD"]);
+  gitChecked(dir, ["clean", "-fd"]);
+  if (checkoutPorcelain(dir)) {
+    throw new Error(
+      `Local changes in ${dir} could not be moved aside` +
+      (stashDir ? ` to ${stashDir}` : "") +
+      "."
+    );
+  }
+  return stashDir;
 }
 
 function installIdentity(dir, target) {
@@ -353,7 +425,14 @@ async function ensureUv(onProgress) {
 async function cloneOrUpdate(dest, target, onProgress) {
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   if (fs.existsSync(path.join(dest, ".git"))) {
-    assertCheckout(dest, target);
+    if (isPackagedReleaseSlot(dest, target)) {
+      const stashDir = preparePackagedReleaseCheckout(dest, target);
+      if (stashDir) {
+        await reportProgress(onProgress, `Preserved leftover checkout changes in ${stashDir}`, 28);
+      }
+    } else {
+      assertCheckout(dest, target);
+    }
   } else {
     if (fs.existsSync(dest) && fs.readdirSync(dest).length) {
       throw new Error(`Checkout directory ${dest} is not empty. Move it aside or choose a separate checkout; bootstrap will not discard files.`);
