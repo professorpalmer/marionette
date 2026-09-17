@@ -384,10 +384,10 @@ def load_compaction_archive_page(state_dir: str, session_id: str, *,
 
 def _append_complete(state_dir: str, sid: str, incoming: list[dict],
                      existing: Optional[dict], commit_id: str) -> bool:
-    # The full source must fit a segment. Refuse oversized individual
-    # compactions rather than silently retaining only part of their source.
-    if not _fits_retention(incoming):
-        return False
+    # One segment stays under the message/byte caps. A fat Compact Now
+    # (400+ tool turns, typical on local hosts) must still retain every
+    # row — split across segments — rather than aborting archive_failed.
+    # A single row that cannot fit a segment still fails closed.
     if existing is not None:
         verified_archive_digest(state_dir, sid, existing)
         if commit_id and existing.get("commit_id") == commit_id:
@@ -403,21 +403,31 @@ def _append_complete(state_dir: str, sid: str, incoming: list[dict],
         if not os.path.exists(path):
             _atomic_write_json(path, segment)
         return digest, count + len(rows)
-    if existing and existing.get("version") == 1:
-        # Migrate bounded legacy documents without applying retention again.
+
+    def publish_batches(rows, parent, count):
         batch = []
-        for row in existing.get("messages") or []:
+        for row in rows:
             if not _fits_retention(batch + [row]):
                 if not batch:
-                    return False
-                head, total = publish(batch, head, total)
+                    return None
+                parent, count = publish(batch, parent, count)
                 batch = []
             if not _fits_retention([row]):
-                return False
+                return None
             batch.append(row)
         if batch:
-            head, total = publish(batch, head, total)
-    head, total = publish(incoming, head, total)
+            parent, count = publish(batch, parent, count)
+        return parent, count
+
+    if existing and existing.get("version") == 1:
+        migrated = publish_batches(list(existing.get("messages") or []), head, total)
+        if migrated is None:
+            return False
+        head, total = migrated
+    published = publish_batches(incoming, head, total)
+    if published is None:
+        return False
+    head, total = published
     manifest = {"version": 2, "session_id": sid, "head": head,
                 "total": total, "commit_id": commit_id}
     verified_archive_digest(state_dir, sid, manifest)

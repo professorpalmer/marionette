@@ -9,6 +9,44 @@ from harness.history_compaction_journal import commit_compacted_transcript
 from harness.sessions import load_transcript
 
 
+def test_complete_append_chunks_middle_over_message_cap(tmp_path):
+    """One Compact of 400+ rows must archive every row, not abort."""
+    state = str(tmp_path)
+    rows = [{"role": "user", "content": f"fat-{i}"} for i in range(archive.ARCHIVE_MAX_MESSAGES + 50)]
+    assert archive.append_compaction_archive(
+        state, "fat", rows, require_complete=True, commit_id="fat-one",
+    )
+    page, total = archive.load_compaction_archive_page(state, "fat", offset=0, limit=3)
+    assert total == len(rows)
+    assert page == rows[:3]
+    last, last_total = archive.load_compaction_archive_page(
+        state, "fat", offset=len(rows) - 2, limit=2,
+    )
+    assert last_total == len(rows)
+    assert last == rows[-2:]
+
+
+def test_complete_append_refuses_a_single_row_over_the_byte_cap(tmp_path):
+    state = str(tmp_path)
+    huge = [{"role": "user", "content": "x" * (archive.ARCHIVE_MAX_SERIALIZED_BYTES + 100)}]
+    assert not archive.append_compaction_archive(
+        state, "huge", huge, require_complete=True, commit_id="too-big",
+    )
+    assert archive.load_compaction_archive_page(state, "huge") == ([], 0)
+
+
+def test_commit_compacted_transcript_fat_middle(tmp_path):
+    state = str(tmp_path)
+    rows = [{"role": "assistant", "content": f"turn-{i}"} for i in range(450)]
+    source = {"history": rows}
+    target = {"history": [{"role": "assistant", "content": "summary"}]}
+    commit_compacted_transcript(state, "fat-commit", source, target, rows)
+    assert load_transcript(state, "fat-commit") == target
+    page, total = archive.load_compaction_archive_page(state, "fat-commit", offset=0, limit=1)
+    assert total == 450
+    assert page == rows[:1]
+
+
 def test_repeated_commits_retain_every_row_and_page(tmp_path):
     state = str(tmp_path)
     expected = []

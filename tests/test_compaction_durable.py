@@ -30,13 +30,21 @@ def test_same_length_source_change_aborts(tmp_path, monkeypatch):
 
 
 def test_archive_retention_cannot_drop_original_middle(tmp_path, monkeypatch):
+    from harness.compaction_archive import load_compaction_archive_page
+
     session = fat_session(tmp_path, monkeypatch)
     monkeypatch.setenv('HARNESS_COMPACTION_RESIDUAL', 'catalog')
     monkeypatch.setattr('harness.compaction_archive.ARCHIVE_MAX_MESSAGES', 3)
     original = copy.deepcopy(session._history)
+    original_middle = original[1:]
     events = list(session._maybe_compact_history(force=True))
-    assert session._history == original
-    assert events[-1].data['aborted']
+    assert not events[-1].data.get('aborted')
+    assert session._history != original
+    page, total = load_compaction_archive_page(str(tmp_path), 'default', offset=0, limit=400)
+    assert total == events[-1].data['summarized_messages']
+    assert total > 3
+    assert page[0] == original_middle[0]
+    assert all(row in original_middle for row in page)
 
 
 def test_changed_turn_generation_aborts(tmp_path, monkeypatch):
