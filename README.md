@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.27.25` is the one
 real dependency the installer puts in the venv.
 
-Current release: **v0.9.513**. Marionette remains deliberately pre-1.0.
+Current release: **v0.9.514**. Marionette remains deliberately pre-1.0.
 
 ## Documentation
 
@@ -239,9 +239,11 @@ After a long chat, Marionette compresses older turns so the next prompt stays
 inside the context window. The factory residual is **catalog**: an extractive
 index of files, tools, handles, and a last-wins selected story, plus a local
 SQLite vault that retrieves matching slices on later asks. Settings >
-General can opt into **hybrid** (paid LLM paragraph plus handles) or
-**summary** (paid paragraph alone). `off` is env-only and is never inferred
-from an empty value.
+General can opt into **hybrid** or **summary**. Those paid paths use a
+cheaper summarizer only when `HARNESS_COMPACTION_MODEL` names a model that
+is not the live pilot and not a local host; otherwise they stay extractive.
+The session pilot is never asked to compact. `off` is env-only and is never
+inferred from an empty value.
 
 The driver and keys are set in the app (Settings pane) or via env. Key vars:
 
@@ -252,6 +254,7 @@ The driver and keys are set in the app (Settings pane) or via env. Key vars:
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_BEARER_TOKEN_BEDROCK` | AWS Bedrock BYOK (Settings can also load `~/.aws`). Pilots and agentic swarms use Converse + ConverseStream (live thinking/tool/text deltas); model pickers discover the account allow-list; prompt-cache hits feed the same token/cost/`cache_savings_usd` meters as Anthropic/OpenRouter. |
 | `HARNESS_VLM_REACH` / `HARNESS_VLM_MODEL` | Explicit vision-sidecar override (e.g. `openrouter` for an open VLM) and its model. |
 | `HARNESS_DRIVER` | Pilot model id. |
+| `HARNESS_COMPACTION_MODEL` | Optional cheaper summarizer for hybrid/summary residuals. Empty, the live pilot, or a local host all stay extractive. |
 | `HARNESS_STATE_DIR` | State home for sessions, transcripts, prompt queue, keys. Defaults to a stable `~/.pmharness/state` so history survives restarts. |
 | `HARNESS_COMMAND_TIMEOUT` | Per-command shell timeout in seconds; 0/off = unbounded. |
 | `HARNESS_COMMAND_HARD_CEILING` | Safety ceiling (seconds) when command timeout is unbounded; default 900. 0/off disables. |

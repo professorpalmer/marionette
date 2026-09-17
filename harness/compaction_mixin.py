@@ -115,11 +115,71 @@ def is_degenerate_summary(raw_summary: str) -> bool:
 
 
 def compaction_model_override() -> str:
-    """Return HARNESS_COMPACTION_MODEL when set; empty string keeps session pilot."""
+    """Return HARNESS_COMPACTION_MODEL when set. Empty means extractive, not the pilot."""
     try:
         return (os.environ.get("HARNESS_COMPACTION_MODEL") or "").strip()
     except Exception:
         return ""
+
+
+def _spec_is_local(value: str) -> bool:
+    try:
+        from .local_models import is_local_spec
+        return bool(is_local_spec(value))
+    except Exception:
+        return str(value or "").strip().lower().startswith("local:")
+
+
+def _pilot_is_local(pilot) -> bool:
+    """True for managed/external local hosts. Those models must not summarize."""
+    if pilot is None:
+        return False
+    try:
+        from .managed_local_driver import ManagedLocalDriver
+        if type(pilot) is ManagedLocalDriver:
+            return True
+    except Exception:
+        pass
+    for attr in ("_spec", "model"):
+        raw = getattr(pilot, attr, None)
+        if raw and _spec_is_local(str(raw)):
+            return True
+    return False
+
+
+def session_uses_local_pilot(session, pilot=None) -> bool:
+    """Local hosted session: config.driver or the live pilot transport."""
+    live = pilot if pilot is not None else getattr(session, "pilot", None)
+    if _pilot_is_local(live):
+        return True
+    cfg = getattr(session, "config", None)
+    driver = getattr(cfg, "driver", "") if cfg is not None else ""
+    return _spec_is_local(str(driver or ""))
+
+
+def compaction_summarizer_model(pilot=None, session=None) -> str:
+    """Cheaper request-local summarizer, or empty to stay extractive.
+
+    The live pilot is never returned. Local hosted specs are never returned.
+    Empty HARNESS_COMPACTION_MODEL used to mean "use the session pilot"; that
+    is what broke local hosts on Compact Now / hybrid / summary.
+    """
+    if session is not None and session_uses_local_pilot(session, pilot):
+        return ""
+    if _pilot_is_local(pilot):
+        return ""
+    override = compaction_model_override()
+    if not override or _spec_is_local(override):
+        return ""
+    if pilot is None:
+        return override
+    pilot_model = str(getattr(pilot, "model", "") or "").strip()
+    if pilot_model and override == pilot_model:
+        return ""
+    spec = str(getattr(pilot, "_spec", "") or "").strip()
+    if spec and override == spec:
+        return ""
+    return override
 
 
 def _min_compactable_tokens() -> int:
@@ -1135,7 +1195,7 @@ class CompactionContextMixin:
         # Hermes anti-thrash: after repeated ineffective reclamations, skip
         # automatic compaction until the shared _compaction_fail_until window
         # elapses. force=True (manual Compact) bypasses the thrash gate and
-        # (below) the summarizer-fail cooldown so the pilot is actually called.
+        # (below) the summarizer-fail cooldown so a cheaper summarizer can run.
         if self._anti_thrash_blocked(force=force):
             strikes = int(getattr(self, "_compaction_ineffective_count", 0) or 0)
             fail_until = float(getattr(self, "_compaction_fail_until", 0.0) or 0.0)
@@ -1394,9 +1454,9 @@ class CompactionContextMixin:
             _compact_timeout = 45.0
         _compact_cooldown = _compaction_cooldown_s()
 
-        # Driver.chat/complete have no model keyword. Select the model on a
-        # request-local driver below, never on the session's active pilot.
-        _compaction_model = compaction_model_override()
+        # Driver.chat/complete have no model keyword. A cheaper request-local
+        # model may run below. The session / local pilot never writes the residual.
+        _compaction_model = compaction_summarizer_model(self.pilot, session=self)
 
         def _fallback() -> str:
             # Same prune discipline as the LLM path — raw middle_block can flood.
@@ -1419,7 +1479,7 @@ class CompactionContextMixin:
         summarizer_ok = False
         now = time.time()
         # Manual force bypasses summarizer-fail cooldown (same as anti-thrash)
-        # so Compact Now actually calls the pilot instead of only falling back.
+        # so Compact Now can call a cheaper summarizer instead of only falling back.
         _fail_until = float(getattr(self, "_compaction_fail_until", 0.0) or 0.0)
 
         def _use_extractive_fallback() -> str:
@@ -1430,6 +1490,9 @@ class CompactionContextMixin:
         if residual_mode == RESIDUAL_CATALOG:
             # Deterministic catalog residual — never call the summarizer.
             # Hybrid uses the same LLM path as summary, then appends handles.
+            summary = _use_extractive_fallback()
+        elif not _compaction_model:
+            # No cheaper summarizer (unset, same as pilot, or local host).
             summary = _use_extractive_fallback()
         elif (not force) and now < _fail_until:
             summary = _use_extractive_fallback()

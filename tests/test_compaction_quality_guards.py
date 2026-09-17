@@ -13,6 +13,7 @@ from harness.compaction_mixin import (
     MIN_SUMMARY_SEED_CHARS,
     _ZERO_WIDTH_SPACE,
     compaction_model_override,
+    compaction_summarizer_model,
     is_degenerate_summary,
     neutralize_compaction_control_tokens,
     summary_ratio_for_middle,
@@ -289,6 +290,7 @@ def test_control_tokens_neutralized(monkeypatch):
 
 
 def test_compaction_model_env_knob(monkeypatch):
+    monkeypatch.delenv("HARNESS_COMPACTION_MODEL", raising=False)
     assert compaction_model_override() == ""
 
     monkeypatch.setenv("HARNESS_COMPACTION_MODEL", "cheap-summarizer-v1")
@@ -308,6 +310,51 @@ def test_compaction_model_env_knob(monkeypatch):
 
     monkeypatch.delenv("HARNESS_COMPACTION_MODEL", raising=False)
     assert compaction_model_override() == ""
+
+
+def test_empty_compaction_model_stays_extractive(monkeypatch):
+    monkeypatch.delenv("HARNESS_COMPACTION_MODEL", raising=False)
+    monkeypatch.setattr("harness.compaction_mixin.MIN_COMPACTABLE_TOKENS", 1)
+    session = _session(budget=2000)
+    pilot = _RecordingPilot(return_text=_GOOD_SUMMARY, model="session-model")
+    session.pilot = pilot  # type: ignore[assignment]
+    _fat_history(session, pairs=12, pad=200)
+
+    events = list(session._maybe_compact_history(force=True))
+
+    assert pilot.chat_calls == []
+    assert events[-1].data.get("mode") == "extractive"
+    assert compaction_summarizer_model(pilot, session=session) == ""
+
+
+def test_local_hosted_pilot_never_summarizes(monkeypatch):
+    monkeypatch.setenv("HARNESS_COMPACTION_MODEL", "cheap-summarizer-v1")
+    monkeypatch.setattr("harness.compaction_mixin.MIN_COMPACTABLE_TOKENS", 1)
+    session = _session(budget=2000)
+    session.config.driver = "local:managed/demo-model"
+    pilot = _RecordingPilot(return_text=_GOOD_SUMMARY, model="demo-model")
+    pilot._spec = "local:managed/demo-model"
+    session.pilot = pilot  # type: ignore[assignment]
+    _fat_history(session, pairs=12, pad=200)
+
+    events = list(session._maybe_compact_history(force=True))
+
+    assert pilot.chat_calls == []
+    assert events[-1].data.get("mode") == "extractive"
+    assert compaction_summarizer_model(pilot, session=session) == ""
+
+
+def test_compaction_summarizer_model_rejects_pilot_and_local():
+    class _P:
+        model = "frontier-pilot"
+        _spec = ""
+
+    assert compaction_summarizer_model(_P()) == "cheap-summarizer-v1"
+    _P.model = "cheap-summarizer-v1"
+    assert compaction_summarizer_model(_P()) == ""
+    _P.model = "phi"
+    _P._spec = "local:managed/phi"
+    assert compaction_summarizer_model(_P()) == ""
 
 
 def test_tail_and_summary_budgets_match_lifted_defaults():

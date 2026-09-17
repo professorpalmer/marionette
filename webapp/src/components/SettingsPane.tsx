@@ -1115,8 +1115,9 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
           <p className="text-[10px] text-muted">
             Default is catalog: keep files, decisions, and the last-wins
             story after compact, then retrieve matching slices later.
-            Hybrid adds a paid LLM paragraph on top. Summary is the paid
-            paragraph alone.
+            The live pilot never writes the residual, including a local
+            hosted model. Hybrid and summary use a cheaper summarizer only
+            when one is configured; otherwise they stay extractive.
           </p>
         </div>
 

@@ -372,6 +372,7 @@ def _isolate_pilot_env(monkeypatch):
         "HARNESS_AUTO_VERIFY",
         "HARNESS_HASH_EDIT",
         "HARNESS_COMPACTION_RESIDUAL",
+        "HARNESS_COMPACTION_MODEL",
         "HARNESS_BROWSER_REAL_PROFILE",
         "HARNESS_VERIFY_COMMAND",
         "HARNESS_COMMAND_TIMEOUT",
@@ -379,6 +380,9 @@ def _isolate_pilot_env(monkeypatch):
         "HARNESS_REPO",
     ):
         monkeypatch.delenv(_var, raising=False)
+    # After clearing ambient, tests that exercise hybrid/summary need a cheaper
+    # summarizer. Empty used to mean "use the session pilot"; that is retired.
+    monkeypatch.setenv("HARNESS_COMPACTION_MODEL", "cheap-summarizer-v1")
 
 
 @pytest.fixture(autouse=True)

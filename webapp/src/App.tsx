@@ -27,7 +27,7 @@ import {
 } from "./components/conversation/composerInput";
 import { openAgentUrl, openAgentWorkspace } from "./lib/agentLinks";
 import { isCloseTabKey, requestCloseFocusedTab } from "./lib/closeTabShortcut";
-import { reclampRailWidths } from "./lib/railLayout";
+import { reclampRailWidths, rightDockInsetPx } from "./lib/railLayout";
 import {
   setConfigured,
   setManual,
@@ -356,14 +356,10 @@ export default function App() {
       <div className="flex-1 min-h-0 min-w-0 flex px-px pt-px">
         <div
           className={`relative flex-1 min-w-0 h-full flex overflow-hidden border border-[var(--shell-panel-border)] ${
-            leftOpen && rightOpen
-              ? "rounded-none"
-              : leftOpen
-                ? "rounded-r-[var(--shell-panel-radius)]"
-                : rightOpen
-                  ? "rounded-l-[var(--shell-panel-radius)]"
-                  : "rounded-[var(--shell-panel-radius)]"
-          } ${leftOpen ? "border-l-0" : ""} ${rightOpen ? "border-r-0" : ""}`}
+            leftOpen
+              ? "rounded-r-[var(--shell-panel-radius)]"
+              : "rounded-[var(--shell-panel-radius)]"
+          } ${leftOpen ? "border-l-0" : ""}`}
           style={{
             backgroundColor: "var(--shell-chat, #0f1113)",
             backgroundImage:
@@ -389,7 +385,10 @@ export default function App() {
                 }}
               />
           )}
-          <div className="relative flex-1 min-w-0 min-h-0 flex flex-col">
+          <div
+            data-testid="chat-surface"
+            className="relative flex-1 min-w-0 min-h-0 flex flex-col"
+          >
             <div className="flex-1 min-h-0 min-w-0 h-full flex flex-col">
               <ErrorBoundary label="Chat">
                 <Conversation
@@ -402,45 +401,51 @@ export default function App() {
             </div>
             <RightDock
               panelsOpen={rightOpen}
+              insetRightPx={rightDockInsetPx(rightOpen, displayed.rightW)}
               onOpenTab={openRightTo}
               onExpand={() => openRightTo(lastRightTab())}
               onCollapse={() => setRightOpen(false)}
             />
-          </div>
-          {rightOpen && (
-            <Resizer
-              side="right"
-              onResize={(dx) => {
-                const next = reclampRailWidths(
-                  leftWRef.current,
-                  displayed.rightW + dx,
-                  leftOpen,
-                  true,
-                  window.innerWidth,
-                );
-                setLeftW(next.leftW);
-                setRightW(next.rightW);
-              }}
-            />
-          )}
-          <div
-            className={`shrink-0 h-full min-w-0 overflow-hidden ${rightOpen ? "" : "hidden"}`}
-            style={{ width: displayed.rightW }}
-          >
-            <ErrorBoundary label="Tool board">
-              <RightPane
-                visible={rightOpen}
-                sessionId={activeSessionId || ""}
-                artifacts={artifacts}
-                onOpenWizard={() => {
-                  setManual(true);
-                  setShowWizard(true);
-                }}
-                initialTab={pendingRightTab.current}
-                onEmpty={closeEmptyRightPane}
-                onRequestMinWidth={requestRightMinWidth}
-              />
-            </ErrorBoundary>
+            <div
+              data-testid="right-board-overlay"
+              className={`pointer-events-none absolute inset-y-0 right-0 z-20 flex ${rightOpen ? "" : "hidden"}`}
+            >
+              <div className="pointer-events-auto h-full">
+                <Resizer
+                  side="right"
+                  onResize={(dx) => {
+                    const next = reclampRailWidths(
+                      leftWRef.current,
+                      displayed.rightW + dx,
+                      leftOpen,
+                      true,
+                      window.innerWidth,
+                    );
+                    setLeftW(next.leftW);
+                    setRightW(next.rightW);
+                  }}
+                />
+              </div>
+              <div
+                className="pointer-events-auto h-full min-w-0 overflow-hidden"
+                style={{ width: displayed.rightW }}
+              >
+                <ErrorBoundary label="Tool board">
+                  <RightPane
+                    visible={rightOpen}
+                    sessionId={activeSessionId || ""}
+                    artifacts={artifacts}
+                    onOpenWizard={() => {
+                      setManual(true);
+                      setShowWizard(true);
+                    }}
+                    initialTab={pendingRightTab.current}
+                    onEmpty={closeEmptyRightPane}
+                    onRequestMinWidth={requestRightMinWidth}
+                  />
+                </ErrorBoundary>
+              </div>
+            </div>
           </div>
         </div>
       </div>
