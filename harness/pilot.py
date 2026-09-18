@@ -2141,6 +2141,14 @@ def build_tools_schema(
                         "additionalProperties": {"type": "string"},
                         "description": "Stdio env KEY->value (avoid pasting secrets into chat when possible)",
                     },
+                    "confirm": {
+                        "type": "boolean",
+                        "description": (
+                            "Required true when adding a stdio server (command=...): "
+                            "that spawns a local process. HTTP/Docker servers (url=...) "
+                            "need no confirmation. Ask the user before setting this."
+                        ),
+                    },
                 },
                 "required": ["action"],
             },
