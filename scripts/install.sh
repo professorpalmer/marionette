@@ -69,14 +69,25 @@ command -v git >/dev/null 2>&1 || die "'git' is required but not on PATH. Instal
 # Verified download, NOT `curl https://astral.sh/uv/install.sh | sh`: that script
 # is served from a mutable URL and is therefore unpinnable by construction. We
 # fetch the immutable versioned release asset for MARIONETTE_UV_VERSION and
-# check it against the SHA256 in scripts/versions.env BEFORE anything runs.
+# check it against the SHA256 BEFORE anything runs.
+#
+# Piped one-liners (`curl | bash`) never see scripts/versions.env because
+# BASH_SOURCE is /dev/fd/N. These fallbacks MUST stay identical to versions.env
+# (enforced by test_version_consistency). Sourced env values still win.
+_UV_VERSION_DEFAULT="0.12.16"
+_UV_SHA_DARWIN_ARM64="b6e03fae61704b1aa622f12b792a69483e837b83068e44f4fd34f8a07a8f74a3"
+_UV_SHA_DARWIN_X64="a42bcc9ce97eb8b364d7f162233a9c6b8c0ee25388e551d362809795127e0c31"
+_UV_SHA_LINUX_ARM64="36d913ee9c647481d64f1a0a0485f85ff2feaee605c341fc22e73398f9212c26"
+_UV_SHA_LINUX_X64="8e5c6e5523dffc2dcf615bd995554c84c9feb4e577808a3fb8698a639d3f8d9c"
+_UV_SHA_WIN_X64="f730454bf09019754e5e5abd71a8aa18683cb739cba0d9c720bac2e7c901160f"
+_UV_SHA_WIN_ARM64="9977129f89c4036edfcb200d2484755571e51fa74517f02e478c1d7bcc353b2e"
 install_uv_verified() {
   local target sha version archive tmpdir
   case "$OS/$ARCH" in
-    Darwin/arm64)   target="aarch64-apple-darwin";      sha="${MARIONETTE_UV_SHA256_DARWIN_ARM64:-}" ;;
-    Darwin/x86_64)  target="x86_64-apple-darwin";       sha="${MARIONETTE_UV_SHA256_DARWIN_X64:-}" ;;
-    Linux/aarch64)  target="aarch64-unknown-linux-gnu"; sha="${MARIONETTE_UV_SHA256_LINUX_ARM64:-}" ;;
-    Linux/x86_64)   target="x86_64-unknown-linux-gnu";  sha="${MARIONETTE_UV_SHA256_LINUX_X64:-}" ;;
+    Darwin/arm64)   target="aarch64-apple-darwin";      sha="${MARIONETTE_UV_SHA256_DARWIN_ARM64:-$_UV_SHA_DARWIN_ARM64}" ;;
+    Darwin/x86_64)  target="x86_64-apple-darwin";       sha="${MARIONETTE_UV_SHA256_DARWIN_X64:-$_UV_SHA_DARWIN_X64}" ;;
+    Linux/aarch64)  target="aarch64-unknown-linux-gnu"; sha="${MARIONETTE_UV_SHA256_LINUX_ARM64:-$_UV_SHA_LINUX_ARM64}" ;;
+    Linux/x86_64)   target="x86_64-unknown-linux-gnu";  sha="${MARIONETTE_UV_SHA256_LINUX_X64:-$_UV_SHA_LINUX_X64}" ;;
     *)
       if [ "${MARIONETTE_UV_ALLOW_UNVERIFIED:-}" = "1" ]; then
         warn "no pinned uv build for $OS/$ARCH with MARIONETTE_UV_ALLOW_UNVERIFIED=1 -- using the UNVERIFIED astral.sh installer"
@@ -86,8 +97,8 @@ install_uv_verified() {
       die "no pinned uv build for $OS/$ARCH. Install uv yourself (https://docs.astral.sh/uv/) and re-run, or set MARIONETTE_UV_ALLOW_UNVERIFIED=1 to accept an unverified installer."
       ;;
   esac
-  version="${MARIONETTE_UV_VERSION:-}"
-  [ -n "$version" ] || die "MARIONETTE_UV_VERSION missing from scripts/versions.env"
+  version="${MARIONETTE_UV_VERSION:-$_UV_VERSION_DEFAULT}"
+  [ -n "$version" ] || die "MARIONETTE_UV_VERSION missing"
   if [ -z "$sha" ]; then
     if [ "${MARIONETTE_UV_ALLOW_UNVERIFIED:-}" = "1" ]; then
       warn "no SHA256 pinned for $target with MARIONETTE_UV_ALLOW_UNVERIFIED=1 -- skipping verification"

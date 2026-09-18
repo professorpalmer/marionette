@@ -20,11 +20,18 @@ const VERSIONS = {
   NODE: "22.14.0",
   NODE_MIN_MAJOR: 20,
   MINGIT: "2.55.0",
+  UV: "0.12.16",
   SHA: {
     NODE_WIN_X64: "55b639295920b219bb2acbcfa00f90393a2789095b7323f79475c9f34795f217",
     NODE_WIN_ARM64: "2d71f5f9b2fffa33baa108c07d74b0d24e0c3dd8f441d567772ae0e3dd4b1a22",
     MINGIT_WIN_X64: "31497e7968196332263459ee319d2524e3ebc5786ab895e2abad34ffdd4f4ebf",
     MINGIT_WIN_ARM64: "377e283290e2de455cdd5cdbd99653bd911db752a8986d1ad914a5ac2fbd1192",
+    UV_DARWIN_ARM64: "b6e03fae61704b1aa622f12b792a69483e837b83068e44f4fd34f8a07a8f74a3",
+    UV_DARWIN_X64: "a42bcc9ce97eb8b364d7f162233a9c6b8c0ee25388e551d362809795127e0c31",
+    UV_LINUX_ARM64: "36d913ee9c647481d64f1a0a0485f85ff2feaee605c341fc22e73398f9212c26",
+    UV_LINUX_X64: "8e5c6e5523dffc2dcf615bd995554c84c9feb4e577808a3fb8698a639d3f8d9c",
+    UV_WIN_X64: "f730454bf09019754e5e5abd71a8aa18683cb739cba0d9c720bac2e7c901160f",
+    UV_WIN_ARM64: "9977129f89c4036edfcb200d2484755571e51fa74517f02e478c1d7bcc353b2e",
   },
 };
 
@@ -408,18 +415,77 @@ async function ensurePortableGit(onProgress) {
   if (!commandExists("git")) throw new Error("Portable git install failed.");
 }
 
+function uvRelease() {
+  const version = VERSIONS.UV;
+  if (process.platform === "win32") {
+    const target = process.arch === "arm64" ? "aarch64-pc-windows-msvc" : "x86_64-pc-windows-msvc";
+    const sha = process.arch === "arm64" ? VERSIONS.SHA.UV_WIN_ARM64 : VERSIONS.SHA.UV_WIN_X64;
+    return { version, target, sha, ext: "zip" };
+  }
+  if (process.platform === "darwin") {
+    const target = process.arch === "arm64" ? "aarch64-apple-darwin" : "x86_64-apple-darwin";
+    const sha = process.arch === "arm64" ? VERSIONS.SHA.UV_DARWIN_ARM64 : VERSIONS.SHA.UV_DARWIN_X64;
+    return { version, target, sha, ext: "tar.gz" };
+  }
+  if (process.platform === "linux") {
+    const target = process.arch === "arm64" ? "aarch64-unknown-linux-gnu" : "x86_64-unknown-linux-gnu";
+    const sha = process.arch === "arm64" ? VERSIONS.SHA.UV_LINUX_ARM64 : VERSIONS.SHA.UV_LINUX_X64;
+    return { version, target, sha, ext: "tar.gz" };
+  }
+  throw new Error(`no pinned uv build for ${process.platform}/${process.arch}`);
+}
+
 async function ensureUv(onProgress) {
   if (commandExists("uv")) return;
-  await reportProgress(onProgress, "Installing uv (Python toolchain)...", 20);
-  if (process.platform === "win32") {
-    await runAsync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "irm https://astral.sh/uv/install.ps1 | iex"], { shell: false });
-    addToPath(path.join(os.homedir(), ".local", "bin"));
-    addToPath(path.join(os.homedir(), ".cargo", "bin"));
-  } else {
-    await runAsync("sh", ["-c", "curl -LsSf https://astral.sh/uv/install.sh | sh"], { shell: false });
-    addToPath(path.join(os.homedir(), ".local", "bin"));
+  const { version, target, sha, ext } = uvRelease();
+  if (!sha) throw new Error(`no SHA256 pinned for uv ${target}`);
+  const destDir = path.join(os.homedir(), ".local", "bin");
+  fs.mkdirSync(destDir, { recursive: true });
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "marionette-uv-"));
+  const archive = path.join(tmp, `uv.${ext}`);
+  const url = `https://github.com/astral-sh/uv/releases/download/${version}/uv-${target}.${ext}`;
+  await reportProgress(onProgress, `Downloading uv ${version} (${target})...`, 20);
+  try {
+    await downloadFile(url, archive);
+    verifySha256(archive, sha);
+    if (ext === "zip") {
+      await runAsync("powershell", [
+        "-NoProfile", "-Command",
+        `Expand-Archive -Force -Path '${archive}' -DestinationPath '${tmp}'`,
+      ], { shell: false });
+    } else {
+      await runAsync("tar", ["-xzf", archive, "-C", tmp], { shell: false });
+    }
+    const names = process.platform === "win32" ? ["uv.exe", "uvx.exe"] : ["uv", "uvx"];
+    for (const name of names) {
+      const found = findFile(tmp, name);
+      if (!found) {
+        if (name.startsWith("uvx")) continue;
+        throw new Error(`${name} not found inside the verified uv archive`);
+      }
+      fs.copyFileSync(found, path.join(destDir, name));
+      if (process.platform !== "win32") fs.chmodSync(path.join(destDir, name), 0o755);
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
   }
+  addToPath(destDir);
   if (!commandExists("uv")) throw new Error("uv install failed -- add ~/.local/bin to PATH and relaunch.");
+}
+
+function findFile(root, name) {
+  const stack = [root];
+  while (stack.length) {
+    const dir = stack.pop();
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) stack.push(full);
+      else if (entry.name === name) return full;
+    }
+  }
+  return "";
 }
 
 async function cloneOrUpdate(dest, target, onProgress) {

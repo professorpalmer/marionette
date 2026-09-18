@@ -39,6 +39,12 @@ $NodeShaArm64 = $env:MARIONETTE_NODE_SHA256_WIN_ARM64
 $GitShaX64 = $env:MARIONETTE_MINGIT_SHA256_WIN_X64
 $GitShaArm64 = $env:MARIONETTE_MINGIT_SHA256_WIN_ARM64
 
+# Piped `irm | iex` never sees scripts/versions.env ($MyInvocation path is empty).
+# Keep these identical to versions.env (enforced by test_version_consistency).
+if (-not $env:MARIONETTE_UV_VERSION) { $env:MARIONETTE_UV_VERSION = "0.12.16" }
+if (-not $env:MARIONETTE_UV_SHA256_WIN_X64) { $env:MARIONETTE_UV_SHA256_WIN_X64 = "f730454bf09019754e5e5abd71a8aa18683cb739cba0d9c720bac2e7c901160f" }
+if (-not $env:MARIONETTE_UV_SHA256_WIN_ARM64) { $env:MARIONETTE_UV_SHA256_WIN_ARM64 = "9977129f89c4036edfcb200d2484755571e51fa74517f02e478c1d7bcc353b2e" }
+
 $ToolRoot = Join-Path $MarionetteHome "tools"
 $NodeDir = Join-Path $ToolRoot "node"
 $GitDir = Join-Path $ToolRoot "git"
