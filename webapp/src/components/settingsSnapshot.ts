@@ -16,6 +16,8 @@ export function toSafeSettingsSnapshot(s: Settings): Settings {
     autoCommandGuard: s.autoCommandGuard,
     browserRealProfile: s.browserRealProfile,
     hash_edit_enabled: s.hash_edit_enabled,
+    jev_enabled: s.jev_enabled,
+    jev_ready: s.jev_ready,
     commandTimeout: s.commandTimeout,
     maxPilotSteps: s.maxPilotSteps,
     maxOutputTokens: s.maxOutputTokens,

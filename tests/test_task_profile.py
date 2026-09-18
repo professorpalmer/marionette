@@ -130,8 +130,9 @@ def test_glm53_explicit_swarm_is_not_micro_and_exposes_run_swarm(tmp_path, monke
 
     prompt = "yeah, puppetmaster swarm glm 5.3 multi-workers via openrouter"
     assert is_explicit_swarm_user_message(prompt) is True
-    assert classify_task_profile(prompt) == MICRO
+    assert classify_task_profile(prompt) == STANDARD
     assert classify_task_profile("typo in file 5.3") == MICRO
+    assert classify_task_profile("beat the world record on llama.cpp decode") == STANDARD
 
     cfg = HarnessConfig(
         driver="stub-oracle-v2",

@@ -39,6 +39,7 @@ def test_settings_get_returns_expected_shape(monkeypatch):
     monkeypatch.delenv("HARNESS_CODEX_REASONING_EFFORT", raising=False)
     monkeypatch.delenv("HARNESS_SWARM_REASONING_EFFORT", raising=False)
     monkeypatch.delenv("HARNESS_BROWSER_REAL_PROFILE", raising=False)
+    monkeypatch.delenv("HARNESS_JEV", raising=False)
     httpd, port, srv = _server()
     try:
         resp = _get(port, "/api/settings")
@@ -52,6 +53,8 @@ def test_settings_get_returns_expected_shape(monkeypatch):
         assert "models" in data
         assert "auto_distill" in data
         assert "hash_edit_enabled" in data
+        assert data["jev_enabled"] is False
+        assert data["jev_ready"] is False
         assert "wiki_auto" in data
         assert "reasoning_effort" in data
         assert data["reasoning_effort"] == "low"
@@ -125,6 +128,42 @@ def test_settings_post_updates_settings_successfully():
             {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN},
         )
         assert restore_resp.status == 200
+    finally:
+        httpd.shutdown()
+
+
+def test_settings_jev_opt_in_default_off_and_persists(monkeypatch):
+    monkeypatch.delenv("HARNESS_JEV", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    httpd, port, srv = _server()
+    try:
+        initial = json.loads(_get(port, "/api/settings").read().decode())
+        assert initial["jev_enabled"] is False
+        assert initial["jev_ready"] is False
+
+        post_resp = _post(
+            port,
+            "/api/settings",
+            {"jev_enabled": True},
+            {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN},
+        )
+        assert post_resp.status == 200
+        post_data = json.loads(post_resp.read().decode())
+        assert post_data["jev_enabled"] is True
+        assert post_data["jev_ready"] is False
+
+        again = json.loads(_get(port, "/api/settings").read().decode())
+        assert again["jev_enabled"] is True
+        assert again["jev_ready"] is False
+
+        restore = _post(
+            port,
+            "/api/settings",
+            {"jev_enabled": False},
+            {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN},
+        )
+        assert restore.status == 200
+        assert json.loads(restore.read().decode())["jev_enabled"] is False
     finally:
         httpd.shutdown()
 

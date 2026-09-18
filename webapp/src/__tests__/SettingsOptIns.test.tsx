@@ -16,6 +16,8 @@ const sample: Settings = {
   models: [],
   auto_distill: false,
   hash_edit_enabled: false,
+  jev_enabled: false,
+  jev_ready: false,
   reviewEditsBeforeApply: false,
   autoVerify: true,
   state_dir: "/tmp/state",
@@ -33,6 +35,7 @@ describe("SettingsOptIns", () => {
     expect([...SETTINGS_OPT_IN_KEYS]).toEqual([
       "auto_distill",
       "hash_edit_enabled",
+      "jev_enabled",
       "reviewEditsBeforeApply",
       "autoVerify",
     ]);
@@ -50,6 +53,8 @@ describe("SettingsOptIns", () => {
     expect(onUpdate).toHaveBeenCalledWith({ reviewEditsBeforeApply: true });
     fireEvent.click(screen.getByTestId("settings-opt-in-hash_edit_enabled"));
     expect(onUpdate).toHaveBeenCalledWith({ hash_edit_enabled: true });
+    fireEvent.click(screen.getByTestId("settings-opt-in-jev_enabled"));
+    expect(onUpdate).toHaveBeenCalledWith({ jev_enabled: true });
     fireEvent.click(screen.getByTestId("settings-opt-in-autoVerify"));
     expect(onUpdate).toHaveBeenCalledWith({ autoVerify: false });
 
@@ -71,10 +76,21 @@ describe("SettingsOptIns", () => {
       repo: "/tmp/repo",
     };
     expect(settingsOptInOn(thin, "hash_edit_enabled", false)).toBe(false);
+    expect(settingsOptInOn(thin, "jev_enabled", false)).toBe(false);
     expect(settingsOptInOn(thin, "autoVerify", true)).toBe(true);
   });
 
-  it("stays a Settings section: no new keys, marketplace, Hermes copy, or flag platform", () => {
+  it("marks Jev idle when opted in without a ready OpenRouter key", () => {
+    render(
+      <SettingsOptIns
+        settings={{ ...sample, jev_enabled: true, jev_ready: false }}
+        onUpdate={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("settings-opt-in-jev_enabled").textContent).toMatch(/idle/i);
+  });
+
+  it("stays a Settings section: no marketplace, Hermes copy, or flag platform", () => {
     expect(src).not.toMatch(/marketplace/i);
     expect(src).not.toMatch(/hermes/i);
     expect(src).not.toMatch(/flag platform|featureFlag|feature_flag/i);

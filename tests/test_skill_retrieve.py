@@ -43,6 +43,15 @@ def _session_with_skills(monkeypatch, tmp_path, skills):
         "harness.plugin_registry.list_enabled_plugin_skills",
         lambda: [],
     )
+    class _Empty:
+        def list(self, state=None):
+            return []
+
+        def render_block(self):
+            return ""
+
+    monkeypatch.setattr("harness.conversation.RuleStore", lambda *_a, **_k: _Empty())
+    monkeypatch.setattr("harness.conversation.MemoryStore", lambda *_a, **_k: _Empty())
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
     cfg.repo = str(tmp_path)
     session = ConversationalSession(cfg)
@@ -152,10 +161,12 @@ def test_zero_overlap_does_not_inject_body(monkeypatch, tmp_path):
         body,
     )
     session = _session_with_skills(monkeypatch, tmp_path, [skill])
+    prefix = session._history[0]["content"]
     out = session._append_turn_context_trailer("hello", "unrelated zebra pineapple")
     assert body not in out
     assert format_retrieved_skill_bodies([]) == ""
-    assert session._history[0]["content"].count("METHOD ONLY") == 1
+    assert session._history[0]["content"] == prefix
+    assert prefix.count("METHOD ONLY") == 1
 
 
 def test_prefix_unchanged_across_two_queries_with_different_hits(

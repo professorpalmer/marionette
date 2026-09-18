@@ -154,6 +154,12 @@ def emit_turn_task_profile(session: Any, user_message: str) -> Iterator[Any]:
 
     begin_turn_task_kernel(session, user_message)
     try:
+        try:
+            from .jev.judge import prefetch_turn_judgment
+
+            prefetch_turn_judgment(session, user_message)
+        except Exception:
+            pass
         profile = session._resolve_task_profile_for_turn(user_message)
         yield ConvEvent("task_profile", {
             "profile": profile,

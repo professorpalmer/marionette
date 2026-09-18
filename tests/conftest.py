@@ -371,6 +371,7 @@ def _isolate_pilot_env(monkeypatch):
         "HARNESS_REVIEW_EDITS_BEFORE_APPLY",
         "HARNESS_AUTO_VERIFY",
         "HARNESS_HASH_EDIT",
+        "HARNESS_JEV",
         "HARNESS_COMPACTION_RESIDUAL",
         "HARNESS_COMPACTION_MODEL",
         "HARNESS_BROWSER_REAL_PROFILE",
