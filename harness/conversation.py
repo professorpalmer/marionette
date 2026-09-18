@@ -318,8 +318,9 @@ from .skill_store import SkillStore
 from .skill_retrieve import (
     format_retrieved_skill_bodies,
     format_skill_catalog,
-    select_skill_bodies,
 )
+from .jev.retrieve import select_turn_skills
+from .jev.judge import suggestion_block
 from .rule_store import RuleStore
 from .memory_store import MemoryStore
 
@@ -1055,6 +1056,7 @@ class ConversationalSession(
         self._task_profile: str = ""
         self._task_profile_source: str = ""
         self._task_profile_escalated_from: Optional[str] = None
+        self._jev_judgment = None
         # Session-level explicit swarm obligation (survives interstitial turns).
         self._pending_swarm_mandate = None
         self._pending_swarm_active = False
@@ -2671,7 +2673,10 @@ class ConversationalSession(
         )
 
         override = getattr(self.config, "task_profile", "auto") or "auto"
-        profile = classify_task_profile(user_message, override=override)
+        judgment = getattr(self, "_jev_judgment", None)
+        profile = classify_task_profile(
+            user_message, override=override, judgment=judgment,
+        )
         norm_override = normalize_profile(override)
         explicit = is_explicit_swarm_user_message(user_message) or session_pending_swarm_active(self)
         if profile == MICRO and explicit:
@@ -2683,6 +2688,11 @@ class ConversationalSession(
             self._task_profile = profile
             if norm_override in ("MICRO", "STANDARD", "DEEP"):
                 self._task_profile_source = "override"
+            elif (
+                judgment is not None
+                and normalize_profile(getattr(judgment, "depth", None)) == profile
+            ):
+                self._task_profile_source = "jev"
             else:
                 self._task_profile_source = "heuristic"
             self._task_profile_escalated_from = None
@@ -2930,13 +2940,18 @@ class ConversationalSession(
             except Exception:
                 pass
             try:
-                retrieved = select_skill_bodies(
+                retrieved, judged = select_turn_skills(
                     user_message,
                     getattr(self, "_retrievable_skills", None) or [],
+                    judgment=getattr(self, "_jev_judgment", None),
                 )
+                self._jev_judgment = judged
                 skill_section = format_retrieved_skill_bodies(retrieved)
                 if skill_section:
                     parts.append(skill_section)
+                note = suggestion_block(judged)
+                if note:
+                    parts.append(note)
             except Exception:
                 pass
             turn_note = self._turn_budget_system_note()

@@ -98,6 +98,10 @@ export type Settings = {
   autoCommandGuard?: boolean;
   browserRealProfile?: boolean;
   hash_edit_enabled?: boolean;
+  /** User opted into Jev. Off by default; never required. */
+  jev_enabled?: boolean;
+  /** Opt-in plus a stored OpenRouter key. Idle when opted in without a key. */
+  jev_ready?: boolean;
   commandTimeout?: string;
   maxPilotSteps?: string;
   maxOutputTokens?: string;

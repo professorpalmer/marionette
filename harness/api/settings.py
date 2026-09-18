@@ -233,6 +233,9 @@ def post_settings(body: dict, svc: SettingsServices) -> tuple[int, JsonPayload]:
     if "hash_edit_enabled" in body:
         he_val = svc.parse_bool(body["hash_edit_enabled"])
         _set_env_setting("HARNESS_HASH_EDIT", "1" if he_val else "0")
+    if "jev_enabled" in body:
+        jev_val = svc.parse_bool(body["jev_enabled"])
+        _set_env_setting("HARNESS_JEV", "1" if jev_val else "0")
     if "session_trace_export" in body:
         ste_val = svc.parse_bool(body["session_trace_export"])
         _set_env_setting("HARNESS_SESSION_TRACE_EXPORT", "1" if ste_val else "0")

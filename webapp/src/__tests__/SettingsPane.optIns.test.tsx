@@ -38,6 +38,8 @@ const sampleSettings: Settings = {
   auto_distill: false,
   reviewEditsBeforeApply: false,
   hash_edit_enabled: false,
+  jev_enabled: false,
+  jev_ready: false,
   autoVerify: true,
   browserRealProfile: false,
   compactionResidual: "catalog",

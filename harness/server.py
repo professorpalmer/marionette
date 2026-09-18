@@ -3304,6 +3304,22 @@ def _settings_compaction_residual():
         return "summary"
 
 
+def _jev_opted_in():
+    try:
+        from .jev.judge import opted_in
+        return bool(opted_in())
+    except Exception:
+        return False
+
+
+def _jev_ready():
+    try:
+        from .jev.judge import enabled
+        return bool(enabled())
+    except Exception:
+        return False
+
+
 def _get_settings_dict():
     from harness.browser_real_profile import real_profile_enabled
     from harness.hash_edit import hash_edit_enabled
@@ -3340,6 +3356,8 @@ def _get_settings_dict():
         "autoCommandGuard": getattr(_pilot, "_auto_command_guard", True),
         "browserRealProfile": real_profile_enabled(),
         "hash_edit_enabled": hash_edit_enabled(),
+        "jev_enabled": _jev_opted_in(),
+        "jev_ready": _jev_ready(),
         "session_trace_export": session_trace_export_enabled(),
         "commandTimeout": (os.environ.get("HARNESS_COMMAND_TIMEOUT", "").strip() or "120"),
         "maxPilotSteps": (os.environ.get("HARNESS_MAX_PILOT_STEPS", "").strip() or "40"),

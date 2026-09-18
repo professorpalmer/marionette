@@ -1072,7 +1072,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
-        {gate("general", "opt-ins optin auto-distill distillation toggle hash edit hash-anchored experimental review edits diff review toggle auto-verify edits typecheck syntax check self-correct diagnostics") && settings && (
+        {gate("general", "opt-ins optin auto-distill distillation toggle hash edit hash-anchored experimental review edits diff review toggle auto-verify edits typecheck syntax check self-correct diagnostics jev typesafe decisions skill retrieve openrouter") && settings && (
           <SettingsOptIns settings={settings} onUpdate={(partial) => { void update(partial); }} saving={saving} />
         )}
         {gate("general", "compaction residual hybrid summary catalog vault compact handle index") && settings && (<>

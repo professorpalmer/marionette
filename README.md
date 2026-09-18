@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.27.27` is the one
 real dependency the installer puts in the venv.
 
-Current release: **v0.9.519**. Marionette remains deliberately pre-1.0.
+Current release: **v0.9.520**. Marionette remains deliberately pre-1.0.
 
 ## Documentation
 
@@ -245,6 +245,14 @@ is not the live pilot and not a local host; otherwise they stay extractive.
 The session pilot is never asked to compact. `off` is env-only and is never
 inferred from an empty value.
 
+### Jev turn judgment (opt-in)
+
+Off by default. Settings > General > Opt-ins, or `HARNESS_JEV=1`. When on
+and an OpenRouter key is already stored, one Decisions call can pick which
+skill body to load. The harness does not require Jev and does not require
+an OpenRouter key. Empty, `auto`, and `0` stay off. Without a key the
+switch is idle and retrieve stays on token overlap.
+
 The driver and keys are set in the app (Settings pane) or via env. Key vars:
 
 | Env var | Purpose |
@@ -260,6 +268,7 @@ The driver and keys are set in the app (Settings pane) or via env. Key vars:
 | `HARNESS_COMMAND_HARD_CEILING` | Safety ceiling (seconds) when command timeout is unbounded; default 900. 0/off disables. |
 | `HARNESS_WORKER_TOKEN_BUDGET` | Default token ceiling for a single unsupervised worker run (default 250000). 0/off/unlimited = no per-worker cap. Values from 1 through 39999 reset to 250000. |
 | `FIRECRAWL_API_KEY` | Optional. Enables the Firecrawl MCP catalog entry (State > MCP); not used by native `web_fetch`. |
+| `HARNESS_JEV` | Opt-in Jev turn judgment. Default off. `1`/`true`/`on`/`yes` only. Never required; no OpenRouter key needed for the harness. |
 | `HARNESS_COMPACTION_RESIDUAL` | Compact residual. Default `catalog` (also the empty/invalid fallback). Settings cycle: catalog, hybrid, summary. `off` is env-only. |
 | `HARNESS_COMPACTION_VAULT` | SQLite FTS retrieve of compacted history (default on). Set `0` to disable inject. |
 | `HARNESS_AUTO_COMMAND_GUARD` | Full-auto danger guard; default on, off to disable. |

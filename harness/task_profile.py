@@ -9,7 +9,7 @@ sandbox, receipts) is never bypassed.
 """
 
 import re
-from typing import FrozenSet, Optional
+from typing import Any, FrozenSet, Optional
 
 MICRO = "MICRO"
 STANDARD = "STANDARD"
@@ -46,8 +46,21 @@ _RENAME_COMMENT_RE = re.compile(
 )
 _FILENAME_RE = re.compile(
     r"(?<![\w./\\-])"
-    r"([A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,12})"
+    r"((?=[A-Za-z0-9_.-]*[A-Za-z])[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,12})"
     r"(?![\w./\\-])"
+)
+
+# A bare filename is not MICRO when the ask is about beating a record,
+# GPUs, or other broad work that just happens to name llama.cpp / foo.py.
+_BROAD_FILE_CONTEXT_RE = re.compile(
+    r"(?:"
+    r"world\s+record|"
+    r"\bgpu\b|\bcuda\b|\bkernel\b|"
+    r"\baudit\b|\brefactor\b|\barchitecture\b|"
+    r"\bthroughout\b|\bcodebase\b|"
+    r"\boptimize\b|\bbenchmark\b"
+    r")",
+    re.IGNORECASE,
 )
 
 # Keep MICRO for short, local asks only.
@@ -111,11 +124,17 @@ def normalize_profile(value: Optional[str]) -> Optional[str]:
     return None
 
 
-def classify_task_profile(message: str, override: Optional[str] = None) -> str:
+def classify_task_profile(
+    message: str,
+    override: Optional[str] = None,
+    judgment: Any = None,
+) -> str:
     """Resolve MICRO / STANDARD / DEEP for a user turn.
 
     Explicit override wins when in {micro, standard, deep, auto}.
-    ``auto`` / None falls through to deterministic heuristics.
+    A Jev depth wins next, except MICRO which still needs a deterministic
+    MICRO cue so a bad judgment cannot starve orchestration. ``auto`` / None
+    falls through to deterministic heuristics.
     """
     normalized = normalize_profile(override)
     if normalized in _PROFILES:
@@ -124,6 +143,10 @@ def classify_task_profile(message: str, override: Optional[str] = None) -> str:
     text = (message or "").strip()
     if is_conversational_followup(text):
         return STANDARD
+    jev_depth = normalize_profile(getattr(judgment, "depth", None) if judgment is not None else None)
+    if jev_depth in _PROFILES:
+        if jev_depth != MICRO or _looks_micro(text) or _TRIVIAL_MICRO_RE.match(text):
+            return jev_depth
     if _looks_deep(text):
         return DEEP
     if _looks_micro(text):
@@ -157,6 +180,8 @@ def _looks_micro(text: str) -> bool:
         return True
     if _RENAME_COMMENT_RE.search(text):
         return True
+    if _BROAD_FILE_CONTEXT_RE.search(text):
+        return False
     filenames = _FILENAME_RE.findall(text)
     if len(filenames) == 1:
         return True

@@ -132,6 +132,17 @@ describe("toSafeSettingsSnapshot", () => {
     expect(stored!).toContain("cursor");
   });
 
+  it("includes jev opt-in fields in safe snapshot fields", () => {
+    const raw = { ...sampleSettings, jev_enabled: true, jev_ready: false };
+    const safe = toSafeSettingsSnapshot(raw);
+    expect(safe.jev_enabled).toBe(true);
+    expect(safe.jev_ready).toBe(false);
+    writeSettingsSnapshot(raw);
+    const stored = JSON.parse(localStorage.getItem(SETTINGS_SNAPSHOT_KEY)!);
+    expect(stored.settings.jev_enabled).toBe(true);
+    expect(stored.settings.jev_ready).toBe(false);
+  });
+
   it("includes compactionResidual in safe snapshot fields", () => {
     const raw = { ...sampleSettings, compactionResidual: "hybrid" as const };
     const safe = toSafeSettingsSnapshot(raw);

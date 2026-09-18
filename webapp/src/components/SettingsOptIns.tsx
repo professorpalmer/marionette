@@ -1,9 +1,10 @@
 import type { Settings } from "../lib/api";
 
-/** Existing Settings keys surfaced by the Opt-ins section. No new flags. */
+/** Persisted Settings keys surfaced by the Opt-ins section. */
 export const SETTINGS_OPT_IN_KEYS = [
   "auto_distill",
   "hash_edit_enabled",
+  "jev_enabled",
   "reviewEditsBeforeApply",
   "autoVerify",
 ] as const;
@@ -34,6 +35,13 @@ const OPT_INS: OptInRow[] = [
     defaultOn: false,
   },
   {
+    key: "jev_enabled",
+    label: "Jev Turn Judgment",
+    summary: "Advanced: Jev skill retrieve",
+    help: "Off by default. Optional OpenRouter Decisions call that can pick which skill body to load. The harness works without this and does not require an OpenRouter key. Without a stored OpenRouter key the switch stays idle and chat is unchanged.",
+    defaultOn: false,
+  },
+  {
     key: "reviewEditsBeforeApply",
     label: "Review Edits",
     summary: "Review edits before applying",
@@ -58,7 +66,7 @@ export function settingsOptInOn(
   return typeof value === "boolean" ? value : defaultOn;
 }
 
-/** Settings Opt-ins: read/write existing keys only. No new settings backend. */
+/** Settings Opt-ins: persisted keys only. Default-off extras stay off. */
 export default function SettingsOptIns({
   settings,
   onUpdate,
@@ -75,11 +83,12 @@ export default function SettingsOptIns({
           Opt-ins
         </label>
         <p className="text-[10px] text-muted">
-          Existing Settings switches. Writes the current keys only.
+          Optional extras. Off stays off. None of these are required for chat.
         </p>
       </div>
       {OPT_INS.map((row) => {
         const on = settingsOptInOn(settings, row.key, row.defaultOn);
+        const idle = row.key === "jev_enabled" && on && settings.jev_ready === false;
         return (
           <div key={row.key} className="space-y-1.5">
             <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
@@ -98,7 +107,7 @@ export default function SettingsOptIns({
             >
               <span className="font-medium text-[11px]">{row.summary}</span>
               <span className="text-[10px] uppercase font-bold tracking-wider">
-                {on ? "on" : "off"}
+                {idle ? "idle" : on ? "on" : "off"}
               </span>
             </button>
             <p className="text-[10px] text-muted">{row.help}</p>

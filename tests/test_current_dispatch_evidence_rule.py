@@ -89,6 +89,16 @@ class TestPilotSystemPrompt:
             "harness.plugin_registry.list_enabled_plugin_skills",
             lambda: [],
         )
+
+        class _EmptyHome:
+            def list(self, state=None):
+                return []
+
+            def render_block(self):
+                return ""
+
+        monkeypatch.setattr("harness.conversation.RuleStore", lambda *_a, **_k: _EmptyHome())
+        monkeypatch.setattr("harness.conversation.MemoryStore", lambda *_a, **_k: _EmptyHome())
         cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
         cfg.repo = str(tmp_path)
         return ConversationalSession(cfg)
@@ -122,6 +132,16 @@ class TestPilotSystemPrompt:
             "harness.plugin_registry.list_enabled_plugin_skills",
             lambda: [],
         )
+
+        class _EmptyHome:
+            def list(self, state=None):
+                return []
+
+            def render_block(self):
+                return ""
+
+        monkeypatch.setattr("harness.conversation.RuleStore", lambda *_a, **_k: _EmptyHome())
+        monkeypatch.setattr("harness.conversation.MemoryStore", lambda *_a, **_k: _EmptyHome())
         cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
         cfg.repo = str(tmp_path)
         system = _system_prompt(ConversationalSession(cfg))

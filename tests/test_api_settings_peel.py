@@ -272,6 +272,16 @@ def test_post_settings_worker_token_budget_floor_accepted(monkeypatch):
     assert dict(calls["persist"])["HARNESS_WORKER_TOKEN_BUDGET"] == "40000"
 
 
+def test_post_settings_jev_enabled_persists_off_by_default():
+    svc, _, _, calls = _svc()
+    code, _ = post_settings({"jev_enabled": True}, svc)
+    assert code == 200
+    assert dict(calls["persist"])["HARNESS_JEV"] == "1"
+    code, _ = post_settings({"jev_enabled": False}, svc)
+    assert code == 200
+    assert dict(calls["persist"])["HARNESS_JEV"] == "0"
+
+
 def test_post_settings_compaction_residual_hybrid(monkeypatch):
     monkeypatch.setattr(
         "harness.auto_registry.sync_agentic_registry_safe", lambda: None
