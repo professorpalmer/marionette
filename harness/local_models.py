@@ -966,6 +966,47 @@ def is_local_spec(spec: str) -> bool:
     return parse_local_spec(spec) is not None
 
 
+def picker_display_name(
+    spec_or_model: str,
+    *,
+    state: Optional[dict] = None,
+    catalog: Optional[dict] = None,
+) -> str:
+    """Human picker label for a local spec or ``endpoint/model`` id.
+
+    Prefers the attached endpoint name when it is not just the endpoint id.
+    Falls back to the selected-model leaf, then the raw id.
+    """
+    text = str(spec_or_model or "").strip()
+    parsed = parse_local_spec(text)
+    if parsed is None and "/" in text:
+        parsed = parse_local_spec("%s:%s" % (LOCAL_PROVIDER, text))
+    if parsed is None:
+        return text
+    endpoint_id, model = parsed
+    if endpoint_id == MANAGED_ENDPOINT_ID:
+        row = curated_model(catalog if catalog is not None else load_catalog(), model)
+        name = str((row or {}).get("name") or "").strip()
+        return name or model
+    current = state if state is not None else load_state()
+    for item in (current or {}).get("externals") or []:
+        if item.get("id") != endpoint_id:
+            continue
+        name = str(item.get("name") or "").strip()
+        selected = str(item.get("selected_model") or model or "").strip()
+        echoes = {
+            endpoint_id.lower(),
+            ("%s/%s" % (endpoint_id, selected)).lower(),
+            ("%s/%s" % (endpoint_id, model)).lower(),
+        }
+        if name and name.lower() not in echoes:
+            return name
+        if selected:
+            return selected.rsplit("/", 1)[-1]
+        break
+    return model.rsplit("/", 1)[-1] if model else text
+
+
 def local_secret_reach(endpoint_id: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9_-]+", "-", str(endpoint_id or "").strip()).strip("-_")
     return "local-%s" % (slug or "endpoint")

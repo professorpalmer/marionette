@@ -142,6 +142,42 @@ def test_canonical_spec_roundtrip():
     assert lm.parse_local_spec("anthropic:claude") is None
 
 
+def test_picker_display_name_uses_attached_name():
+    state = {
+        "externals": [{
+            "id": "openai-compatible-api-adverserial-ai-fea7baefd2",
+            "name": "CyberKimi",
+            "selected_model": "lordx64/cyberkimi",
+        }],
+    }
+    assert lm.picker_display_name(
+        "openai-compatible-api-adverserial-ai-fea7baefd2/lordx64/cyberkimi",
+        state=state,
+    ) == "CyberKimi"
+    assert lm.picker_display_name(
+        "local:openai-compatible-api-adverserial-ai-fea7baefd2/lordx64/cyberkimi",
+        state=state,
+    ) == "CyberKimi"
+
+
+def test_picker_display_name_skips_endpoint_id_echo():
+    state = {
+        "externals": [{
+            "id": "ollama-127-0-0-1-11434",
+            "name": "ollama-127-0-0-1-11434",
+            "selected_model": "llama3",
+        }],
+    }
+    assert lm.picker_display_name(
+        "local:ollama-127-0-0-1-11434/llama3",
+        state=state,
+    ) == "llama3"
+
+
+def test_picker_display_name_managed_uses_catalog():
+    assert lm.picker_display_name("local:managed/qwen3-4b") == "Qwen3 4B"
+
+
 def test_redact_mapping_strips_keys():
     out = lm.redact_mapping({"api_key": "sk-secret-value", "url": "http://127.0.0.1:8080/v1?token=abc"})
     assert "sk-secret-value" not in json.dumps(out)

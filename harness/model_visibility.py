@@ -17,6 +17,8 @@ import re
 import threading
 from typing import Optional
 
+from .local_models import picker_display_name
+
 _LOCK = threading.Lock()
 
 # Dotted (glm-5.2, grok-4.6-fast) then hyphen (claude-opus-4-8). Prefix +
@@ -336,7 +338,7 @@ def catalog(available_only: bool = True, *, force: bool = False) -> list:
             pricing = provider_metadata.get("pricing") or {}
             if p.name == "local":
                 pricing = {"prompt": 0, "completion": 0}
-                display_name = display_name or m
+                display_name = picker_display_name(m) or display_name or m
             out.append({
                 "provider": p.name,
                 "provider_display": p.display_name,

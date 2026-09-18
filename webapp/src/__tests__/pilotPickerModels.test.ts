@@ -92,6 +92,16 @@ describe("filterPilotModels", () => {
     expect(modelLabelOf("opencode-zen:big-pickle", labels)).toBe("Big Pickle");
     expect(modelLabelOf("opencode-zen:mimo-v2.5-free", labels)).toBe("MiMo-V2.5 Free");
   });
+
+  it("uses attached local names and falls back to the model leaf", () => {
+    const spec =
+      "local:openai-compatible-api-adverserial-ai-fea7baefd2/lordx64/cyberkimi";
+    expect(modelLabelOf(spec)).toBe("cyberkimi");
+    expect(modelLabelOf(spec, { [spec]: "CyberKimi" })).toBe("CyberKimi");
+    expect(filterPilotModels([spec], "cyberkimi", { [spec]: "CyberKimi" })).toEqual([
+      spec,
+    ]);
+  });
 });
 
 describe("pinCurrentPilot", () => {

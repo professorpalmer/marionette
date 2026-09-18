@@ -878,6 +878,8 @@ body.is-row-resizing iframe {
 .transcript-msg-body {
   user-select: text;
   font-weight: 400;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .transcript-fold-chrome {
   font-weight: 400;
