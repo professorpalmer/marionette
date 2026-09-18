@@ -97,6 +97,38 @@ def test_puppetmaster_install_and_packaging_pins_match():
         assert set(pins) == {expected}, f"{path}: {pins} differs from {expected}"
 
 
+def _versions_env_pins():
+    pins = {}
+    for line in _read("scripts/versions.env").splitlines():
+        match = re.match(r"^([A-Z0-9_]+)=(\S+)$", line)
+        if match:
+            pins[match.group(1)] = match.group(2)
+    return pins
+
+
+def test_uv_pins_are_embedded_for_piped_installers_and_bootstrap():
+    """One-liners never see versions.env (BASH_SOURCE is /dev/fd; iex has no Path).
+
+    The Fort Knox uv pin is fail-closed when the version/hash is empty, so the
+    public `curl | bash` / `irm | iex` path and the Electron first-run bootstrap
+    must carry the same bytes as scripts/versions.env.
+    """
+    pins = {key: value for key, value in _versions_env_pins().items()
+            if key.startswith("MARIONETTE_UV_")}
+    assert pins.get("MARIONETTE_UV_VERSION")
+    sh = _read("scripts/install.sh")
+    ps1 = _read("scripts/install.ps1")
+    boot = _read("webapp/electron/bootstrap.cjs")
+    for key, value in pins.items():
+        assert value in sh, f"scripts/install.sh missing {key} fallback"
+        assert value in boot, f"webapp/electron/bootstrap.cjs missing {key}"
+    assert pins["MARIONETTE_UV_VERSION"] in ps1
+    assert pins["MARIONETTE_UV_SHA256_WIN_X64"] in ps1
+    assert pins["MARIONETTE_UV_SHA256_WIN_ARM64"] in ps1
+    assert "astral.sh/uv/install.sh | sh" not in boot
+    assert "astral.sh/uv/install.ps1" not in boot
+
+
 def test_uv_lock_matches_project_version_and_puppetmaster_pin():
     packages = {}
     for block in re.split(r"(?m)^\[\[package\]\]\s*$", _read("uv.lock"))[1:]:

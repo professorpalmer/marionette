@@ -39,6 +39,12 @@ $NodeShaArm64 = $env:MARIONETTE_NODE_SHA256_WIN_ARM64
 $GitShaX64 = $env:MARIONETTE_MINGIT_SHA256_WIN_X64
 $GitShaArm64 = $env:MARIONETTE_MINGIT_SHA256_WIN_ARM64
 
+# Piped `irm | iex` never sees scripts/versions.env ($MyInvocation path is empty).
+# Keep these identical to versions.env (enforced by test_version_consistency).
+if (-not $env:MARIONETTE_UV_VERSION) { $env:MARIONETTE_UV_VERSION = "0.12.16" }
+if (-not $env:MARIONETTE_UV_SHA256_WIN_X64) { $env:MARIONETTE_UV_SHA256_WIN_X64 = "f730454bf09019754e5e5abd71a8aa18683cb739cba0d9c720bac2e7c901160f" }
+if (-not $env:MARIONETTE_UV_SHA256_WIN_ARM64) { $env:MARIONETTE_UV_SHA256_WIN_ARM64 = "9977129f89c4036edfcb200d2484755571e51fa74517f02e478c1d7bcc353b2e" }
+
 $ToolRoot = Join-Path $MarionetteHome "tools"
 $NodeDir = Join-Path $ToolRoot "node"
 $GitDir = Join-Path $ToolRoot "git"
@@ -163,18 +169,58 @@ function Ensure-Git {
 function Ensure-Uv {
     $uv = Get-Command uv -ErrorAction SilentlyContinue
     if ($uv) { Step "uv already on PATH ($(& uv --version))"; return }
-    Say "Installing uv (Python toolchain manager)"
+    if (-not $Arch) { $Arch = Get-ArchLabel }
+    $target = if ($Arch -eq "arm64") { "aarch64-pc-windows-msvc" } else { "x86_64-pc-windows-msvc" }
+    $sha = if ($Arch -eq "arm64") { $env:MARIONETTE_UV_SHA256_WIN_ARM64 } else { $env:MARIONETTE_UV_SHA256_WIN_X64 }
+    $version = $env:MARIONETTE_UV_VERSION
+    # Same rule as install.sh: a pinned, immutable release asset verified against
+    # the SHA256 in scripts/versions.env -- never `Invoke-RestMethod ... | iex`,
+    # whose bytes come from a mutable URL and cannot be pinned.
+    if (-not $version -or -not $sha) {
+        if ($env:MARIONETTE_UV_ALLOW_UNVERIFIED -eq "1") {
+            Warn "no pinned uv build for Windows/$Arch with MARIONETTE_UV_ALLOW_UNVERIFIED=1 -- using the UNVERIFIED astral.sh installer"
+            try {
+                Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
+            } catch {
+                Die "uv install failed: $_"
+            }
+            $uvLocalOverride = Join-Path $env:USERPROFILE ".local\bin"
+            Add-SessionPath $uvLocalOverride
+            $cargo = Join-Path $env:USERPROFILE ".cargo\bin"
+            Add-SessionPath $cargo
+            if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+                Die "uv installed but not on PATH. Add ~/.local/bin to PATH and re-run."
+            }
+            Step "uv ready ($(& uv --version))"
+            return
+        }
+        Die "no pinned uv build for Windows/$Arch. Install uv yourself (https://docs.astral.sh/uv/) and re-run, or set MARIONETTE_UV_ALLOW_UNVERIFIED=1 to accept an unverified installer."
+    }
+    Say "Installing uv $version (Python toolchain manager)"
+    $uvLocal = Join-Path $env:USERPROFILE ".local\bin"
+    Ensure-Dir $uvLocal
+    $stamp = [guid]::NewGuid().ToString("N")
+    $zip = Join-Path $env:TEMP "marionette-uv-$stamp.zip"
+    $extract = Join-Path $env:TEMP "marionette-uv-$stamp"
     try {
-        Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
+        Step "downloading uv $version ($target)"
+        Invoke-WebRequest -Uri "https://github.com/astral-sh/uv/releases/download/$version/uv-$target.zip" -OutFile $zip -UseBasicParsing
+        Verify-Sha256 $zip $sha
+        Expand-Archive -Path $zip -DestinationPath $extract -Force
+        # Layout-tolerant: the archive may or may not nest the binaries.
+        $uvExe = Get-ChildItem -Path $extract -Recurse -Filter "uv.exe" | Select-Object -First 1
+        if (-not $uvExe) { Die "uv.exe not found inside the verified archive" }
+        Copy-Item $uvExe.FullName (Join-Path $uvLocal "uv.exe") -Force
+        $uvxExe = Get-ChildItem -Path $extract -Recurse -Filter "uvx.exe" | Select-Object -First 1
+        if ($uvxExe) { Copy-Item $uvxExe.FullName (Join-Path $uvLocal "uvx.exe") -Force }
     } catch {
         Die "uv install failed: $_"
+    } finally {
+        Remove-Item -Recurse -Force $zip, $extract -ErrorAction SilentlyContinue
     }
-    $uvLocal = Join-Path $env:USERPROFILE ".local\bin"
     Add-SessionPath $uvLocal
-    $cargo = Join-Path $env:USERPROFILE ".cargo\bin"
-    Add-SessionPath $cargo
     if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
-        Die "uv installed but not on PATH. Add ~/.local/bin to PATH and re-run."
+        Die "uv installed but not on PATH. Add $uvLocal to PATH and re-run."
     }
     Step "uv ready ($(& uv --version))"
 }
@@ -210,9 +256,23 @@ if (Test-Path ".venv") {
 }
 
 Say "Installing Marionette (editable) + Puppetmaster into .venv"
-& uv pip install --python .venv -e .
+# The pinned runtime spec, mirrored on every operational surface so a version
+# bump must touch them all. The default path below does not need this string:
+# uv.lock carries the same pin WITH SHA256 hashes and `uv sync --frozen` refuses
+# to run if the lock drifts from pyproject. The literal stays declared so the pin
+# remains visible and greppable.
 $puppetSpec = if ($env:MARIONETTE_PUPPETMASTER_SPEC) { $env:MARIONETTE_PUPPETMASTER_SPEC } else { "puppetmaster-ai==1.27.27" }
-& uv pip install --python .venv $puppetSpec
+if ($env:MARIONETTE_PUPPETMASTER_SPEC) {
+    # Developer escape hatch: an arbitrary spec cannot be hash-verified.
+    Warn "MARIONETTE_PUPPETMASTER_SPEC override in use -- installing WITHOUT lock hash verification"
+    & uv pip install --python .venv -e .
+    & uv pip install --python .venv $puppetSpec
+} else {
+    # Hash-verified install: uv.lock pins a SHA256 for every artifact (including
+    # puppetmaster-ai), so the whole graph is checked against recorded hashes.
+    # --frozen never rewrites the lock; --inexact keeps extra local packages.
+    & uv sync --frozen --inexact
+}
 
 Say "Installing node deps + building the renderer"
 Push-Location webapp

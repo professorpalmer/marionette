@@ -42,6 +42,14 @@ test("VERSIONS pins match expected Node minimum", () => {
   assert.match(bootstrap.VERSIONS.NODE, /^\d+\.\d+\.\d+$/);
 });
 
+test("VERSIONS embeds a pinned uv release instead of astral.sh curl|sh", () => {
+  assert.match(bootstrap.VERSIONS.UV, /^\d+\.\d+\.\d+$/);
+  assert.match(bootstrap.VERSIONS.SHA.UV_DARWIN_ARM64, /^[0-9a-f]{64}$/);
+  const source = fs.readFileSync(path.join(__dirname, "bootstrap.cjs"), "utf8");
+  assert.doesNotMatch(source, /astral\.sh\/uv\/install/);
+  assert.match(source, /github\.com\/astral-sh\/uv\/releases\/download/);
+});
+
 test("runAsync keeps the event loop free during child lifetime", async () => {
   // Regression for DMG hang: spawnSync froze Electron's main thread so macOS
   // reported Marionette as hung and the setup window never painted. If runAsync

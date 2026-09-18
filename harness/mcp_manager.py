@@ -20,6 +20,33 @@ from .mcp_client import StdioMcpClient, McpTool, McpError
 from .mcp_http_client import HttpMcpClient
 from .secure_files import restrict_to_owner
 from .diag import note as _diag
+
+
+def stdio_add_confirmation_error(*, name: str, command: str, confirm: bool):
+    """The single rule for gating stdio MCP adds, shared by BOTH entry points.
+
+    Adding a stdio server persists a command that Marionette then spawns as a
+    local process. That must be a deliberate act, not a side effect of an
+    otherwise-innocuous "add". Returns the refusal payload when confirmation is
+    missing, else None.
+
+    Both callers matter: the pilot tool path (via ``manage``) and the HTTP route
+    (``/api/mcp/add``, used by the MCP pane). Enforcing this in only one of them
+    would leave the other as a free bypass.
+    """
+    if not command or confirm:
+        return None
+    return {
+        "ok": False,
+        "name": name,
+        "requires_confirmation": True,
+        "error": (
+            "adding a stdio MCP server ('command') executes a local process and "
+            "therefore requires confirm=true. Re-issue with confirm=true to "
+            "accept the configured stdio command, or use url=... for an "
+            "HTTP/Docker server (no confirmation needed)."
+        ),
+    }
 from .api.redaction import build_auth_failure_attribution
 
 CONFIG_DIR = Path(os.path.expanduser("~/.pmharness"))
@@ -469,11 +496,16 @@ class McpManager:
         command: str = "",
         args: Optional[List[str]] = None,
         env: Optional[Dict[str, str]] = None,
+        confirm: bool = False,
     ) -> dict:
         """Pilot-facing add/start/stop/remove/list for MCP servers.
 
         For Docker / streamable-HTTP servers prefer ``url`` only (secrets stay
         in the container env, not mcp.json).
+
+        ``confirm`` must be True to add a stdio server (``command``): that add
+        spawns a local process, so it is gated rather than performed as a silent
+        side effect. HTTP/Docker adds (``url``) need no confirmation.
         """
         action = (action or "").strip().lower()
         name = (name or "").strip()
@@ -489,6 +521,11 @@ class McpManager:
                     "ok": False,
                     "error": "manage_mcp add requires url (HTTP/Docker) or command (stdio)",
                 }
+            refusal = stdio_add_confirmation_error(
+                name=name, command=command, confirm=confirm,
+            )
+            if refusal is not None:
+                return refusal
             server: dict = {}
             if url:
                 server["url"] = url
@@ -498,6 +535,12 @@ class McpManager:
                     server["args"] = list(args)
                 if env:
                     server["env"] = dict(env)
+            if command:
+                from .diag import note as _diag_note
+                _diag_note(
+                    "mcp.stdio_add",
+                    msg=f"{name}: {command} {' '.join(args or [])}".strip(),
+                )
             self.save_server(name, server)
             try:
                 tools = self.start_server(name)

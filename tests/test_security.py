@@ -476,49 +476,57 @@ def test_api_chat_multi_image_path_traversal_blocked():
 
 
 def test_external_urls_never_receive_auth_header():
-    """Verify that external (non-loopback) URLs never receive X-Harness-Token header.
-    
-    The request interception in Electron should only inject headers for
-    loopback addresses (127.0.0.1, localhost, [::1]). External URLs must
-    never receive the authentication token.
+    """The token-injection filter must cover loopback only, asserted against the
+    REAL interceptor in webapp/electron/main.cjs.
+
+    This used to re-implement Electron's regexes in Python, which meant it kept
+    passing even if main.cjs regressed to injecting X-Harness-Token into
+    non-loopback requests -- a documentation test masquerading as a guard. It
+    now reads the shipped source, so the assertion can actually fail.
     """
-    # This test documents the behavior by checking the constraints.
-    # The actual interception happens in Electron main.cjs via webRequest.onBeforeSendHeaders,
-    # which only matches: ["http://127.0.0.1:*/*", "http://localhost:*/*", "http://[::1]:*/*"]
-    # Any request to a different host (e.g., example.com, attacker.com) will not match
-    # and the header will NOT be injected.
-    
-    # Verify the URL patterns are restrictive to loopback only
-    loopback_patterns = [
-        "http://127.0.0.1:8000/api/chat",
-        "http://127.0.0.1:9999/api/image?path=test.png",
-        "http://localhost:8000/api/export",
-        "http://[::1]:8000/api/run",
-    ]
-    
-    external_urls = [
-        "http://example.com/api/chat",
-        "http://attacker.com:8000/api/image",
-        "https://malicious.site/api/export",
-        "http://192.168.1.100:8000/api/run",  # private but not loopback
-        "http://my-internal.corp/api/chat",
-    ]
-    
-    # The actual test verifies this is documented in the code.
-    # In Electron, the webRequest.onBeforeSendHeaders URLs list is the enforcement point.
     import re
-    
-    # Patterns from Electron main.cjs setupRequestInterception()
-    loopback_patterns_re = [
-        re.compile(r"^http://127\.0\.0\.1:\d+"),
-        re.compile(r"^http://localhost:\d+"),
-        re.compile(r"^http://\[::1\]:\d+"),
-    ]
-    
-    # Verify loopback URLs match
-    for url in loopback_patterns:
-        assert any(p.match(url) for p in loopback_patterns_re), f"{url} should match loopback pattern"
-    
-    # Verify external URLs don't match
-    for url in external_urls:
-        assert not any(p.match(url) for p in loopback_patterns_re), f"{url} should NOT match loopback pattern"
+    from pathlib import Path
+
+    main_cjs = (
+        Path(__file__).resolve().parents[1] / "webapp" / "electron" / "main.cjs"
+    ).read_text(encoding="utf-8")
+
+    # Bind the filter to the site that actually injects the token.
+    m = re.search(
+        r"onBeforeSendHeaders\(\s*\{\s*urls:\s*\[(.*?)\]\s*\},"
+        r"(.*?)harnessToken",
+        main_cjs,
+        re.S,
+    )
+    assert m, (
+        "could not find the onBeforeSendHeaders token-injection block in main.cjs "
+        "-- if the interceptor moved, update this guard rather than deleting it"
+    )
+    patterns = re.findall(r'"([^"]+)"', m.group(1))
+    assert patterns, "the loopback url filter is empty"
+
+    loopback = ("127.0.0.1", "localhost", "[::1]")
+    for pattern in patterns:
+        assert any(host in pattern for host in loopback), (
+            f"token-injection filter covers a non-loopback origin: {pattern}"
+        )
+
+    # And the filter, expressed as a regex, must not admit a foreign host.
+    for pattern in patterns:
+        rx = re.compile("^" + re.escape(pattern).replace(r"\*", ".*"))
+        for external in (
+            "http://example.com/api/chat",
+            "http://attacker.com:8000/api/image",
+            "https://malicious.site/api/export",
+            "http://192.168.1.100:8000/api/run",
+        ):
+            assert not rx.match(external), f"{external} must not match {pattern}"
+        # Each loopback URL must be admitted by at least one pattern.
+        for internal in (
+            "http://127.0.0.1:8000/api/chat",
+            "http://localhost:8000/api/export",
+            "http://[::1]:8000/api/run",
+        ):
+            assert any(
+                internal.startswith(p2.replace("*/*", "").rstrip("*")) for p2 in patterns
+            ), internal

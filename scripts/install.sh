@@ -66,12 +66,66 @@ say "Installing Marionette for $OS/$ARCH"
 command -v git >/dev/null 2>&1 || die "'git' is required but not on PATH. Install git and re-run."
 
 # --- 2. uv (brings its own pinned Python) -----------------------------------
+# Verified download, NOT `curl https://astral.sh/uv/install.sh | sh`: that script
+# is served from a mutable URL and is therefore unpinnable by construction. We
+# fetch the immutable versioned release asset for MARIONETTE_UV_VERSION and
+# check it against the SHA256 BEFORE anything runs.
+#
+# Piped one-liners (`curl | bash`) never see scripts/versions.env because
+# BASH_SOURCE is /dev/fd/N. These fallbacks MUST stay identical to versions.env
+# (enforced by test_version_consistency). Sourced env values still win.
+_UV_VERSION_DEFAULT="0.12.16"
+_UV_SHA_DARWIN_ARM64="b6e03fae61704b1aa622f12b792a69483e837b83068e44f4fd34f8a07a8f74a3"
+_UV_SHA_DARWIN_X64="a42bcc9ce97eb8b364d7f162233a9c6b8c0ee25388e551d362809795127e0c31"
+_UV_SHA_LINUX_ARM64="36d913ee9c647481d64f1a0a0485f85ff2feaee605c341fc22e73398f9212c26"
+_UV_SHA_LINUX_X64="8e5c6e5523dffc2dcf615bd995554c84c9feb4e577808a3fb8698a639d3f8d9c"
+_UV_SHA_WIN_X64="f730454bf09019754e5e5abd71a8aa18683cb739cba0d9c720bac2e7c901160f"
+_UV_SHA_WIN_ARM64="9977129f89c4036edfcb200d2484755571e51fa74517f02e478c1d7bcc353b2e"
+install_uv_verified() {
+  local target sha version archive tmpdir
+  case "$OS/$ARCH" in
+    Darwin/arm64)   target="aarch64-apple-darwin";      sha="${MARIONETTE_UV_SHA256_DARWIN_ARM64:-$_UV_SHA_DARWIN_ARM64}" ;;
+    Darwin/x86_64)  target="x86_64-apple-darwin";       sha="${MARIONETTE_UV_SHA256_DARWIN_X64:-$_UV_SHA_DARWIN_X64}" ;;
+    Linux/aarch64)  target="aarch64-unknown-linux-gnu"; sha="${MARIONETTE_UV_SHA256_LINUX_ARM64:-$_UV_SHA_LINUX_ARM64}" ;;
+    Linux/x86_64)   target="x86_64-unknown-linux-gnu";  sha="${MARIONETTE_UV_SHA256_LINUX_X64:-$_UV_SHA_LINUX_X64}" ;;
+    *)
+      if [ "${MARIONETTE_UV_ALLOW_UNVERIFIED:-}" = "1" ]; then
+        warn "no pinned uv build for $OS/$ARCH with MARIONETTE_UV_ALLOW_UNVERIFIED=1 -- using the UNVERIFIED astral.sh installer"
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        return 0
+      fi
+      die "no pinned uv build for $OS/$ARCH. Install uv yourself (https://docs.astral.sh/uv/) and re-run, or set MARIONETTE_UV_ALLOW_UNVERIFIED=1 to accept an unverified installer."
+      ;;
+  esac
+  version="${MARIONETTE_UV_VERSION:-$_UV_VERSION_DEFAULT}"
+  [ -n "$version" ] || die "MARIONETTE_UV_VERSION missing"
+  if [ -z "$sha" ]; then
+    if [ "${MARIONETTE_UV_ALLOW_UNVERIFIED:-}" = "1" ]; then
+      warn "no SHA256 pinned for $target with MARIONETTE_UV_ALLOW_UNVERIFIED=1 -- skipping verification"
+    else
+      die "no SHA256 pinned for $target in scripts/versions.env; refusing to install an unverified uv. Set MARIONETTE_UV_ALLOW_UNVERIFIED=1 to override."
+    fi
+  fi
+  tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/marionette-uv.XXXXXX")"
+  archive="$tmpdir/uv.tar.gz"
+  step "downloading uv $version ($target)"
+  curl -fsSL -o "$archive" \
+    "https://github.com/astral-sh/uv/releases/download/$version/uv-$target.tar.gz" \
+    || die "uv download failed"
+  verify_sha256 "$archive" "$sha"
+  tar -xzf "$archive" -C "$tmpdir" || die "uv archive extraction failed"
+  mkdir -p "$BIN_DIR"
+  install -m 0755 "$tmpdir/uv-$target/uv" "$BIN_DIR/uv" || die "could not install uv into $BIN_DIR"
+  install -m 0755 "$tmpdir/uv-$target/uvx" "$BIN_DIR/uvx" 2>/dev/null || warn "uvx not installed (uv is)"
+  rm -rf "$tmpdir"
+}
+
 if ! command -v uv >/dev/null 2>&1; then
   say "Installing uv (Python toolchain manager)"
-  curl -LsSf https://astral.sh/uv/install.sh | sh
-  # uv installs to ~/.local/bin (or $XDG_BIN_HOME); make it visible this session.
-  export PATH="$HOME/.local/bin:${PATH:-}"
-  command -v uv >/dev/null 2>&1 || die "uv installed but not on PATH. Add ~/.local/bin to PATH and re-run."
+  install_uv_verified
+  export PATH="$BIN_DIR:$HOME/.local/bin:${PATH:-}"
+  hash -r 2>/dev/null || true
+  command -v uv >/dev/null 2>&1 || die "uv installed but not on PATH. Add $BIN_DIR to PATH and re-run."
 else
   step "uv already on PATH ($(uv --version 2>/dev/null || echo present))"
 fi
@@ -141,11 +195,25 @@ else
   uv venv .venv
 fi
 say "Installing Marionette (editable) + Puppetmaster into .venv"
-uv pip install --python .venv -e .
-# Puppetmaster is the one real runtime dependency; it ships on PyPI as
-# puppetmaster-ai. MARIONETTE_PUPPETMASTER_SPEC lets a contributor point at a
-# local editable checkout instead (e.g. an absolute path).
-uv pip install --python .venv "${MARIONETTE_PUPPETMASTER_SPEC:-puppetmaster-ai==1.27.27}"
+# The pinned runtime spec, mirrored on every operational surface so a version
+# bump must touch them all together. The default path below does not need this
+# string: uv.lock carries the same pin WITH SHA256 hashes and `uv sync --frozen`
+# refuses to run if the lock drifts from pyproject. The literal stays declared
+# here so the pin remains visible and greppable (and is what an override-free
+# pip fallback would install).
+PUPPETMASTER_SPEC="${MARIONETTE_PUPPETMASTER_SPEC:-puppetmaster-ai==1.27.27}"
+if [ -n "${MARIONETTE_PUPPETMASTER_SPEC:-}" ]; then
+  # Developer escape hatch: an arbitrary spec cannot be hash-verified, so say so.
+  warn "MARIONETTE_PUPPETMASTER_SPEC override in use -- installing WITHOUT lock hash verification"
+  uv pip install --python .venv -e .
+  uv pip install --python .venv "$PUPPETMASTER_SPEC"
+else
+  # Hash-verified install: uv.lock pins a SHA256 for every artifact (including
+  # puppetmaster-ai==1.27.27), so the whole dependency graph is checked against
+  # recorded hashes instead of trusting the transport. --frozen never rewrites
+  # the lock; --inexact leaves any packages a contributor already has installed.
+  uv sync --frozen --inexact
+fi
 
 # --- 6. renderer -------------------------------------------------------------
 say "Installing node deps + building the renderer"
@@ -162,7 +230,22 @@ MARIONETTE_DEST="$DEST"
 case "\${1:-}" in
   doctor)  exec bash "\$MARIONETTE_DEST/scripts/doctor.sh" ;;
   dev)     exec bash "\$MARIONETTE_DEST/scripts/dev.sh" ;;
-  update)  git -C "\$MARIONETTE_DEST" pull --ff-only && ( cd "\$MARIONETTE_DEST/webapp" && npm run build ) ;;
+  update)
+    # Self-update runs the checked-out tree's own build, so the update source is
+    # pinned to origin/main and never a user-settable ref. NOTE: this is
+    # transport-trusted (TLS + GitHub), not signature-verified -- the repo's
+    # release tags are lightweight, so there is no signing key to verify against.
+    # Real supply-chain assurance here needs signed release tags (follow-up).
+    git -C "\$MARIONETTE_DEST" fetch --no-tags origin main
+    if ! git -C "\$MARIONETTE_DEST" merge-base --is-ancestor HEAD FETCH_HEAD; then
+      echo "ERROR: local checkout is not an ancestor of origin/main; refusing to update." >&2
+      exit 1
+    fi
+    echo "Incoming commits:"
+    git -C "\$MARIONETTE_DEST" log --oneline "HEAD..FETCH_HEAD" | head -20
+    git -C "\$MARIONETTE_DEST" merge --ff-only FETCH_HEAD
+    ( cd "\$MARIONETTE_DEST/webapp" && npm run build )
+    ;;
   ""|desktop) exec bash "\$MARIONETTE_DEST/scripts/start.sh" ;;
   *) echo "usage: marionette [desktop|dev|doctor|update]" >&2; exit 2 ;;
 esac

@@ -2039,7 +2039,10 @@ export const api = {
   mcp: () => getJSON<{ servers: any[]; tools: any[] }>("/api/mcp"),
   mcpCatalog: () => getJSON<{ catalog: Record<string, any> }>("/api/mcp/catalog"),
   mcpAdd: (name: string, command?: string, args?: string[], env?: Record<string, string>, url?: string) => {
-    const payload = url ? { name, url } : { name, command, args, env };
+    // A stdio server spawns a local process, so the backend requires an explicit
+    // confirm. Setting it here records that a human clicked Add in the MCP pane;
+    // a model-initiated add must pass confirm itself and is audited (mcp.stdio_add).
+    const payload = url ? { name, url } : { name, command, args, env, confirm: true };
     return postJSON<{ ok: boolean; tools?: number; error?: string }>("/api/mcp/add", payload);
   },
   mcpRemove: (name: string) => postJSON<{ ok: boolean }>("/api/mcp/remove", { name }),

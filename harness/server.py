@@ -2468,14 +2468,47 @@ def _endpoint_identity():
 # the primary anti-RCE guard.
 _TOKEN = os.environ.get("HARNESS_TOKEN") or _secrets.token_hex(16)
 _TOKEN_FILE = os.path.join(_state_home(), "token")
+# True when the token file could not be PROVEN owner-only. Surfaced in the
+# diagnostics bundle so a degraded-permissions install (exFAT home, odd umask,
+# a chmod that silently did not take, non-POSIX stubs) is visible rather than
+# assumed secure.
+_TOKEN_FILE_INSECURE = False
+
+
+def _restrict_token_file(path: str) -> bool:
+    """Shrink the token file to owner-only AND verify the mode actually took.
+
+    ``restrict_to_owner`` returning True only means the chmod call did not
+    raise; on some filesystems and runtimes it is a no-op. Re-stat the file on
+    POSIX so the security-relevant claim is the observed mode, not the
+    attempted syscall.
+    """
+    if not restrict_to_owner(path):
+        return False
+    if os.name != "posix":
+        return True
+    try:
+        mode = os.stat(path).st_mode & 0o777
+    except OSError:
+        return False
+    return mode & 0o077 == 0
+
+
 try:
     os.makedirs(os.path.dirname(_TOKEN_FILE), exist_ok=True)
     with open(_TOKEN_FILE, "w", encoding="utf-8") as _tf2:
         _tf2.write(_TOKEN)
-    if not restrict_to_owner(_TOKEN_FILE):
+    if not _restrict_token_file(_TOKEN_FILE):
+        _TOKEN_FILE_INSECURE = True
         _diag("secure_files.restrict_failed", msg=_TOKEN_FILE)
-except OSError:
-    pass
+        print(
+            f"[security] WARNING: {_TOKEN_FILE} is not owner-only; other local "
+            "accounts may be able to read the harness token",
+            file=sys.stderr,
+        )
+except OSError as _token_err:
+    _TOKEN_FILE_INSECURE = True
+    _diag("secure_files.token_file_failed", msg=str(_token_err))
 
 _ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
 
@@ -2717,7 +2750,13 @@ class Handler(BaseHTTPRequestHandler):
         # noise; genuine handler bugs still surface unchanged.
         try:
             super().handle_one_request()
-        except (ConnectionError, TimeoutError):
+        except (ConnectionError, TimeoutError) as _transport_exc:
+            # Still record it: a genuine handler bug that happens to raise
+            # ConnectionError should not vanish without a trace.
+            _diag(
+                "server.transport_closed",
+                msg=f"{type(_transport_exc).__name__}: {_transport_exc}",
+            )
             self.close_connection = True
 
     def log_message(self, fmt, *args):  # quiet but correlated
