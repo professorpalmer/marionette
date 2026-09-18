@@ -13,6 +13,23 @@ from harness.api.economics import (
 )
 
 
+# Window-relative fixtures. Hardcoded calendar dates silently expire: a job
+# pinned to a literal date falls out of the 30-day window on its own schedule
+# and the suite goes red with no code change (this module did exactly that on
+# 2026-09-18). Anchor everything to "now" instead.
+_BASE = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(days=1)
+
+
+def _at(minutes: int = 0) -> str:
+    """A timestamp comfortably inside every window this module exercises."""
+    return (_BASE + timedelta(minutes=minutes)).isoformat()
+
+
+def _stale(days: int = 120) -> str:
+    """A timestamp comfortably outside the 30-day window."""
+    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+
 def _svc(*, repo="/workspace", jobs=None, session_id="sess-1"):
     jobs = list(jobs or [])
 
@@ -248,7 +265,7 @@ def test_recent_job_keeps_model_from_pm_financial_report(monkeypatch):
         "source": "harness",
         "accounting_owned": True,
         "accounting_scope": "marionette",
-        "created_at": "2026-08-20T00:00:00+00:00",
+        "created_at": _at(0),
     }
 
     code, payload = get_economics({}, _svc(jobs=[job]))
@@ -269,7 +286,7 @@ def test_visibility_only_job_listed_but_omitted_from_owned_totals(monkeypatch):
             "source": "harness",
             "accounting_owned": True,
             "accounting_scope": "marionette",
-            "created_at": "2026-08-20T00:00:00+00:00",
+            "created_at": _at(0),
         },
         {
             "id": "vis-1",
@@ -277,7 +294,7 @@ def test_visibility_only_job_listed_but_omitted_from_owned_totals(monkeypatch):
             "source": "cli",
             "accounting_owned": False,
             "accounting_scope": "visibility_only",
-            "created_at": "2026-08-20T00:01:00+00:00",
+            "created_at": _at(1),
         },
     ]
     costs = {
@@ -375,7 +392,7 @@ def test_conversation_scope_filters_to_owned_active_session(monkeypatch):
             "accounting_owned": True,
             "accounting_scope": "marionette",
             "session_id": "sess-1",
-            "created_at": "2026-08-20T00:02:00+00:00",
+            "created_at": _at(2),
         },
         {
             "id": "job_other_session",
@@ -384,7 +401,7 @@ def test_conversation_scope_filters_to_owned_active_session(monkeypatch):
             "accounting_owned": True,
             "accounting_scope": "marionette",
             "session_id": "sess-2",
-            "created_at": "2026-08-20T00:03:00+00:00",
+            "created_at": _at(3),
         },
         {
             "id": "vis-1",
@@ -393,7 +410,7 @@ def test_conversation_scope_filters_to_owned_active_session(monkeypatch):
             "accounting_owned": False,
             "accounting_scope": "visibility_only",
             "session_id": "sess-1",
-            "created_at": "2026-08-20T00:04:00+00:00",
+            "created_at": _at(4),
         },
     ]
     reports, _opened = _patch_pm(monkeypatch)
@@ -431,7 +448,7 @@ def test_conversation_excludes_owned_jobs_without_session(monkeypatch):
             "source": "harness",
             "accounting_owned": True,
             "accounting_scope": "marionette",
-            "created_at": "2026-08-20T00:05:00+00:00",
+            "created_at": _at(5),
         },
     ]
     _patch_pm(monkeypatch)
@@ -456,7 +473,7 @@ def test_conversation_reads_session_id_from_label(monkeypatch):
             "accounting_owned": True,
             "accounting_scope": "marionette",
             "label": '{"session_id": "sess-1"}',
-            "created_at": "2026-08-20T00:06:00+00:00",
+            "created_at": _at(6),
         },
     ]
     _patch_pm(monkeypatch)
@@ -473,7 +490,7 @@ def test_window30_drops_jobs_older_than_thirty_days(monkeypatch):
             "source": "harness",
             "accounting_owned": True,
             "accounting_scope": "marionette",
-            "created_at": "2026-08-19T00:00:00+00:00",
+            "created_at": _at(0),
         },
         {
             "id": "stale",
@@ -481,7 +498,7 @@ def test_window30_drops_jobs_older_than_thirty_days(monkeypatch):
             "source": "harness",
             "accounting_owned": True,
             "accounting_scope": "marionette",
-            "created_at": "2026-06-01T00:00:00+00:00",
+            "created_at": _stale(),
         },
     ]
     _patch_pm(monkeypatch)
@@ -514,7 +531,7 @@ def test_unpriced_job_cost_is_unknown_not_measured_zero(monkeypatch):
             "source": "harness",
             "accounting_owned": True,
             "accounting_scope": "marionette",
-            "created_at": "2026-08-20T00:00:00+00:00",
+            "created_at": _at(0),
         },
     ]
     _patch_pm(monkeypatch)
@@ -579,7 +596,7 @@ def test_conversation_fail_closes_missing_session(monkeypatch):
             "accounting_owned": True,
             "accounting_scope": "marionette",
             "session_id": "sess-1",
-            "created_at": "2026-08-20T00:02:00+00:00",
+            "created_at": _at(2),
         },
     ]
     _patch_pm(monkeypatch)
@@ -600,7 +617,7 @@ def test_repo_economics_drops_cross_project_jobs(monkeypatch):
             "status": "complete",
             "source": "harness",
             "accounting_owned": True,
-            "created_at": "2026-08-20T00:00:00+00:00",
+            "created_at": _at(0),
         },
         {
             "id": "foreign",
@@ -608,7 +625,7 @@ def test_repo_economics_drops_cross_project_jobs(monkeypatch):
             "source": "cli",
             "cross_project": True,
             "accounting_owned": False,
-            "created_at": "2026-08-20T00:01:00+00:00",
+            "created_at": _at(1),
         },
     ]
     _code, repo_payload = get_economics({"scope": ["repo"]}, _svc(jobs=jobs))
@@ -632,7 +649,7 @@ def test_repo_scope_prices_prior_session_pm_jobs_but_session_scope_does_not(monk
             "accounting_owned": True,
             "accounting_scope": "marionette",
             "session_id": "sess-1",
-            "created_at": "2026-08-20T00:02:00+00:00",
+            "created_at": _at(2),
         },
         {
             "id": "job_session_b",
@@ -641,7 +658,7 @@ def test_repo_scope_prices_prior_session_pm_jobs_but_session_scope_does_not(monk
             "accounting_owned": False,
             "accounting_scope": "visibility_only",
             "session_id": "sess-2",
-            "created_at": "2026-08-20T00:01:00+00:00",
+            "created_at": _at(1),
         },
         {
             "id": "job_other_repo",
@@ -651,7 +668,7 @@ def test_repo_scope_prices_prior_session_pm_jobs_but_session_scope_does_not(monk
             "accounting_scope": "visibility_only",
             "cross_project": True,
             "session_id": "sess-3",
-            "created_at": "2026-08-20T00:00:00+00:00",
+            "created_at": _at(0),
         },
     ]
 
@@ -702,7 +719,7 @@ def test_all_projects_prices_job_reports_from_each_existing_pm_store(monkeypatch
             return [SimpleNamespace(
                 id=self.job_id,
                 status="complete",
-                created_at="2026-08-20T00:00:00+00:00",
+                created_at=_at(0),
                 label=None,
             )]
 
@@ -755,7 +772,7 @@ def test_all_projects_prices_job_reports_from_each_existing_pm_store(monkeypatch
             "source": "harness",
             "accounting_owned": True,
             "accounting_scope": "marionette",
-            "created_at": "2026-08-20T00:00:00+00:00",
+            "created_at": _at(0),
         }], store_a, store_a),
         diag=lambda *args, **kwargs: None,
         active_session_id=lambda: "sess-1",
@@ -780,7 +797,7 @@ def test_headline_aggregates_same_job_reports_as_recent_rows(monkeypatch):
             "source": "harness",
             "accounting_owned": True,
             "accounting_scope": "marionette",
-            "created_at": f"2026-08-{idx + 1:02d}T00:00:00+00:00",
+            "created_at": _at(idx),
         }
         for idx in range(13)
     ]
@@ -840,7 +857,7 @@ def test_real_pm_receipt_consumer_drives_headline_and_row(monkeypatch):
         "source": "harness",
         "accounting_owned": True,
         "accounting_scope": "marionette",
-        "created_at": "2026-08-20T00:00:00+00:00",
+        "created_at": _at(0),
     }
     _patch_pm(monkeypatch)
     monkeypatch.setattr(
@@ -897,7 +914,7 @@ def test_owned_job_reports_skip_the_legacy_savings_plane(monkeypatch):
         "source": "harness",
         "accounting_owned": True,
         "accounting_scope": "marionette",
-        "created_at": "2026-08-20T00:00:00+00:00",
+        "created_at": _at(0),
     }
     reports, _opened = _patch_pm(monkeypatch)
 
@@ -916,7 +933,7 @@ def test_supported_pm_builder_failure_does_not_reconstruct_an_economics_answer(m
         "source": "harness",
         "accounting_owned": True,
         "accounting_scope": "marionette",
-        "created_at": "2026-08-20T00:00:00+00:00",
+        "created_at": _at(0),
     }
     _patch_pm(monkeypatch)
     direct_pricing_calls = []
@@ -1246,7 +1263,7 @@ def test_real_pm_builder_drives_fresh_scope_headline_and_row(tmp_path, monkeypat
         "accounting_owned": True,
         "accounting_scope": "marionette",
         "session_id": "sess-1",
-        "created_at": "2026-08-20T00:00:00+00:00",
+        "created_at": _at(0),
     }
     registry = [SimpleNamespace(
         id="cheap",
