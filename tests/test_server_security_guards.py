@@ -238,6 +238,8 @@ def test_restrict_token_file_verifies_the_observed_mode(tmp_path):
     path.write_text("tok", encoding="utf-8")
     os.chmod(path, 0o644)
     assert srv._restrict_token_file(str(path)) is True
+    if os.name != "posix":
+        return
     assert (os.stat(path).st_mode & 0o777) & 0o077 == 0
 
 
