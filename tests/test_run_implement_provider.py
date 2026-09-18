@@ -7,9 +7,19 @@ import subprocess
 from unittest.mock import patch, MagicMock
 from types import SimpleNamespace
 
+import pytest
+
 from harness.worker import WorkerResult
 from harness.conversation import ConversationalSession, ConvEvent
 from harness.config import HarnessConfig
+
+
+@pytest.fixture(autouse=True)
+def _workers_ready(monkeypatch):
+    # workers_ready() only falls through to agentic_available() when the
+    # key/platform probe raises. Isolated CI has no keys, so the send
+    # loop refuses run_implement before per-test agentic_available mocks.
+    monkeypatch.setattr("harness.edit_engines.workers_ready", lambda: True)
 
 # Bind the real runner at import so a leaked xdist subprocess.run mock
 # cannot silently skip git init (macOS then emits run_implement without mode).
