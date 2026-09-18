@@ -1,4 +1,4 @@
-/** Shell rail widths: left rail consumes space; the right board overlays chat. */
+/** Shell rail widths: keep the left rail put and compact the right board first. */
 
 export const MIN_CENTER_W = 360;
 export const LEFT_MIN_W = 180;
@@ -6,43 +6,23 @@ export const LEFT_MAX_W = 420;
 export const RIGHT_MIN_W = 320;
 export const RIGHT_COMPACT_MIN_W = 220;
 
-/** Flex chrome around the center column: shell padding and the left-rail gutter. */
+/** Flex chrome around the center column: shell padding and rail gutters. */
 export const RAIL_GUTTER_W = 6;
-/** Floating dock gap from the chat-surface edge (Tailwind `right-4`). */
-export const RIGHT_DOCK_INSET_PX = 16;
 
 const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
 
-export function layoutChrome(leftOpen: boolean, rightOpen = false): number {
-  // Right board overlays the chat surface and does not take a flex gutter.
-  void rightOpen;
-  return 2 + (leftOpen ? RAIL_GUTTER_W : 0);
-}
-
-export function chatSurfaceWidth(
-  innerWidth: number,
-  leftW: number,
-  leftOpen: boolean,
-): number {
-  const left = leftOpen ? leftW : 0;
-  return Math.max(0, innerWidth - layoutChrome(leftOpen) - left);
-}
-
-export function overlayRightBoardWidth(rightW: number, overlayBudget: number): number {
-  if (overlayBudget <= 0) return 0;
-  const preferred = Math.max(RIGHT_MIN_W, rightW);
-  const minW = Math.min(RIGHT_COMPACT_MIN_W, overlayBudget);
-  return clamp(preferred, minW, overlayBudget);
-}
-
-export function rightDockInsetPx(rightOpen: boolean, rightW: number): number {
-  if (!rightOpen) return RIGHT_DOCK_INSET_PX;
-  return rightW + RAIL_GUTTER_W + RIGHT_DOCK_INSET_PX;
+export function layoutChrome(leftOpen: boolean, rightOpen: boolean): number {
+  let gutters = 0;
+  if (leftOpen) gutters += 1;
+  if (rightOpen) gutters += 1;
+  return 2 + gutters * RAIL_GUTTER_W;
 }
 
 /**
- * Keep the left rail within min/window budget. The right board floats over
- * the chat surface, so opening it must not shrink the centered transcript.
+ * Keep open rails within min/window budget while preserving MIN_CENTER_W.
+ * Opening the right board must not steal width from a left rail that still fits.
+ * If the window cannot hold both preferred widths plus the chat column, compact
+ * the right board first so the left rail stays at its current size.
  */
 export function reclampRailWidths(
   leftW: number,
@@ -51,23 +31,40 @@ export function reclampRailWidths(
   rightOpen: boolean,
   innerWidth: number,
 ): { leftW: number; rightW: number } {
-  const chrome = layoutChrome(leftOpen);
+  const chrome = layoutChrome(leftOpen, rightOpen);
   const availableWidth = Math.max(0, innerWidth - chrome);
+  const preferredLeft = leftOpen ? clamp(leftW, LEFT_MIN_W, LEFT_MAX_W) : 0;
+  const preferredRight = rightOpen ? Math.max(RIGHT_MIN_W, rightW) : 0;
+  const requiredRails = (leftOpen ? LEFT_MIN_W : 0) + (rightOpen ? RIGHT_MIN_W : 0);
+  const centerWidth = Math.min(MIN_CENTER_W, Math.max(0, availableWidth - requiredRails));
+  const railBudget = Math.max(0, availableWidth - centerWidth);
 
   if (!leftOpen && !rightOpen) return { leftW, rightW };
 
+  if (leftOpen && rightOpen) {
+    const compactRightMin = Math.min(RIGHT_MIN_W, RIGHT_COMPACT_MIN_W, railBudget);
+    const compactLeftMin = Math.min(LEFT_MIN_W, Math.max(0, railBudget - compactRightMin));
+    const leftMax = Math.min(LEFT_MAX_W, Math.max(compactLeftMin, railBudget - compactRightMin));
+    const left = clamp(preferredLeft, compactLeftMin, leftMax);
+    const right = clamp(
+      preferredRight,
+      compactRightMin,
+      Math.max(compactRightMin, railBudget - left),
+    );
+    return { leftW: left, rightW: right };
+  }
+
   if (leftOpen) {
-    const leftMin = Math.min(LEFT_MIN_W, availableWidth);
-    const left = clamp(leftW, leftMin, Math.min(LEFT_MAX_W, availableWidth));
-    const overlayBudget = Math.max(0, availableWidth - left);
+    const leftMin = Math.min(LEFT_MIN_W, railBudget);
     return {
-      leftW: left,
-      rightW: rightOpen ? overlayRightBoardWidth(rightW, overlayBudget) : rightW,
+      leftW: clamp(preferredLeft, leftMin, Math.min(LEFT_MAX_W, railBudget)),
+      rightW,
     };
   }
 
+  const rightMin = Math.min(RIGHT_MIN_W, railBudget);
   return {
     leftW,
-    rightW: rightOpen ? overlayRightBoardWidth(rightW, availableWidth) : rightW,
+    rightW: clamp(preferredRight, rightMin, railBudget),
   };
 }

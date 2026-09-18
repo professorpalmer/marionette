@@ -20,7 +20,6 @@ import {
 import { api } from "../lib/api";
 import { lastSelectedProjectRoot } from "../lib/panelTransition";
 import { JOB_SCOPE_CHANGED_EVENT } from "../lib/jobScope";
-import { RIGHT_DOCK_INSET_PX } from "../lib/railLayout";
 
 /** Curated destinations for the floating tool windows — Cursor-style icon strip.
  *  Settings is pinned to the foot of the floating pill. */
@@ -90,13 +89,11 @@ export default function RightDock({
   onExpand,
   onCollapse,
   panelsOpen = true,
-  insetRightPx = RIGHT_DOCK_INSET_PX,
 }: {
   onOpenTab: (tab: string) => void;
   onExpand: () => void;
   onCollapse: () => void;
   panelsOpen?: boolean;
-  insetRightPx?: number;
 }) {
   const [reviewCount, setReviewCount] = useState(0);
   // Live swarm activity dot: the collapsed pill must show running jobs just
@@ -203,8 +200,7 @@ export default function RightDock({
 
   return (
     <aside
-      className="pointer-events-none absolute top-[3.75rem] bottom-10 z-20 flex flex-col items-center select-none"
-      style={{ right: insetRightPx }}
+      className="pointer-events-none absolute right-4 top-[3.75rem] bottom-10 z-20 flex flex-col items-center select-none"
       aria-label="Floating panel shortcuts"
     >
       {/* Same --shell-panel glass as the left rail: slightly darker keep so
