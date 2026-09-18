@@ -4212,6 +4212,7 @@ def dispatch_local_action(
                 command=str(args.get("command") or act.command or ""),
                 args=args.get("args") if isinstance(args.get("args"), list) else None,
                 env=args.get("env") if isinstance(args.get("env"), dict) else None,
+                confirm=bool(args.get("confirm")),
             )
             if action in ("add", "remove", "refresh", "reload", "start", "stop"):
                 inv = getattr(session, "_invalidate_tools_schema", None)

@@ -2207,7 +2207,11 @@ function openPopoutWindow(url) {
   return win;
 }
 
-ipcMain.handle("browser:popout", (_e, url) => {
+ipcMain.handle("browser:popout", (event, url) => {
+  // Same sender+frame check as every other privileged channel: a popout window
+  // is a persistent BrowserWindow, so an untrusted frame must not be able to
+  // drive it. openPopoutWindow still validates the URL itself.
+  if (!isAllowedSender(event)) return { ok: false, error: "untrusted sender" };
   try {
     openPopoutWindow(url);
     return { ok: true };
@@ -2236,7 +2240,10 @@ ipcMain.handle("computer:revoke", event => {
 });
 // Cheap escape hatch when in-app Google/OAuth still rejects: open the URL in
 // the user's real system browser (outside Electron guest fingerprinting).
-ipcMain.handle("browser:openExternal", async (_e, url) => {
+ipcMain.handle("browser:openExternal", async (event, url) => {
+  // shell.openExternal hands the URL to the OS, so this is the one channel that
+  // can launch a handler outside the app: gate the sender, then the scheme.
+  if (!isAllowedSender(event)) return { ok: false, error: "untrusted sender" };
   try {
     const target = typeof url === "string" ? url.trim() : "";
     if (!isAllowedExternalUrl(target)) {

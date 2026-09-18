@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from ..mcp_manager import CATALOG
+from ..mcp_manager import CATALOG, stdio_add_confirmation_error
 from .redaction import redact_secret_text
 
 
@@ -66,13 +66,27 @@ def get_mcp_catalog() -> tuple[int, dict]:
 
 
 def post_mcp_add(body: dict, svc: McpServices) -> tuple[int, dict]:
-    """POST /api/mcp/add — persist server config and try to start it."""
+    """POST /api/mcp/add — persist server config and try to start it.
+
+    A stdio server (``command``) is a local process spawn, so it must carry an
+    explicit ``confirm: true``. This is the same predicate the pilot tool path
+    enforces (``stdio_add_confirmation_error``) -- both entry points must agree,
+    or the unguarded one becomes the bypass. The MCP pane sets confirm for the
+    human clicking Add.
+    """
     name = body.get("name", "")
     server = {
         k: body[k]
         for k in ("command", "args", "env", "cwd", "url", "headers")
         if k in body
     }
+    refusal = stdio_add_confirmation_error(
+        name=name,
+        command=str(server.get("command") or ""),
+        confirm=bool(body.get("confirm")),
+    )
+    if refusal is not None:
+        return 200, refusal
     svc.mcp.save_server(name, server)
     try:
         tools = svc.mcp.start_server(name)

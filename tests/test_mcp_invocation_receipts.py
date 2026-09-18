@@ -254,7 +254,10 @@ def test_lifecycle_handler_errors_redact_secrets(tmp_path, monkeypatch):
     for handler, body in (
         (post_mcp_start, {"name": "leaky"}),
         (post_mcp_refresh, {"name": "leaky"}),
-        (post_mcp_add, {"name": "leaky-add", "command": "false"}),
+        # confirm=True so the add reaches the lifecycle path this test is about;
+        # stdio adds now require explicit confirmation (the refusal contract
+        # itself is covered in tests/test_manage_mcp.py).
+        (post_mcp_add, {"name": "leaky-add", "command": "false", "confirm": True}),
     ):
         code, resp = handler(body, svc)
         assert code == 200
