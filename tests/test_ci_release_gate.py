@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -268,7 +269,13 @@ def test_tests_yml_is_the_fast_dest_into_main_gate():
     mac_job = text[mac_start:mac_end]
     assert "runs-on: macos-latest" in mac_job
     assert 'python-version: "3.11"' in mac_job
-    assert '"puppetmaster-ai==1.27.25"' in mac_job
+    # Derive the pinned runtime from pyproject instead of restating it: a
+    # hardcoded literal here is a 14th surface that silently drifts on every
+    # version bump (test_runtime_pin already reads the same source of truth).
+    pin = re.search(
+        r"puppetmaster-ai==\d+\.\d+\.\d+", (ROOT / "pyproject.toml").read_text()
+    ).group(0)
+    assert f'"{pin}"' in mac_job
     assert "run: python -m pytest -q -p no:cacheprovider -n 4 --dist loadscope" in mac_job
     assert "continue-on-error" not in mac_job
     assert "needs: reuse-green-tree" in mac_job
