@@ -137,6 +137,35 @@ def test_picker_model_labels_uses_catalog_for_visible_specs_only(mv, monkeypatch
     assert "opencode-zen:x-preview-f-free" not in labels
 
 
+def test_catalog_local_row_uses_attached_name(mv, monkeypatch):
+    import harness.providers as prov
+    from harness.local_models import empty_state
+
+    state = empty_state()
+    state["externals"] = [{
+        "id": "openai-compatible-api-adverserial-ai-fea7baefd2",
+        "name": "CyberKimi",
+        "selected_model": "lordx64/cyberkimi",
+        "base_url": "https://api.adverserial.ai/v1",
+        "healthy": True,
+    }]
+    monkeypatch.setattr("harness.local_models.load_state", lambda *a, **k: state)
+    monkeypatch.setattr(
+        "harness.local_model_manager.get_manager",
+        lambda: type("M", (), {
+            "usable_specs": lambda self: [
+                "local:openai-compatible-api-adverserial-ai-fea7baefd2/lordx64/cyberkimi",
+            ],
+        })(),
+    )
+    local = prov.get_provider("local")
+    monkeypatch.setattr(prov, "available_providers", lambda: [local])
+    spec = "local:openai-compatible-api-adverserial-ai-fea7baefd2/lordx64/cyberkimi"
+    rows = [row for row in mv.catalog(available_only=True) if row["spec"] == spec]
+    assert rows and rows[0]["name"] == "CyberKimi"
+    assert mv.picker_model_labels([spec])[spec] == "CyberKimi"
+
+
 def test_picker_model_labels_skips_id_echo_names(mv, monkeypatch):
     monkeypatch.setattr(
         mv,

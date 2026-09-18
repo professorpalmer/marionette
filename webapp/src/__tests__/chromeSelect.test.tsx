@@ -50,6 +50,22 @@ describe("feed selection chrome", () => {
     });
   });
 
+  it("long unbreakable user tokens wrap instead of expanding the bubble past the column", () => {
+    const token = "TURBOPACK".repeat(80);
+    render(
+      <TranscriptList {...listProps([{ kind: "msg", msg: { role: "user", text: token } }])} />,
+    );
+    const body = document.querySelector(".transcript-msg-body");
+    expect(body).toBeTruthy();
+    const wrap = body!.parentElement;
+    expect(wrap).toBeTruthy();
+    expect(wrap!.className).toMatch(/\bmin-w-0\b/);
+    expect(wrap!.className).toMatch(/max-w-\[85%\]/);
+    expect(body!.className).toMatch(/\bmin-w-0\b/);
+    expect(css).toMatch(/\.transcript-msg-body\s*\{[^}]*overflow-wrap:\s*anywhere/);
+    expect(css).toMatch(/\.transcript-msg-body\s*\{[^}]*min-width:\s*0/);
+  });
+
   it("spoken assistant body is regular weight (not semibold/bold on the wrapper)", () => {
     render(
       <TranscriptList

@@ -62,7 +62,12 @@ export function modelIdOf(spec: string): string {
 export function modelLabelOf(spec: string, labels?: Record<string, string>): string {
   const id = modelIdOf(spec);
   const fromMap = labels?.[spec] || labels?.[id] || KNOWN_MODEL_LABELS[id];
-  return (fromMap || id || spec).trim();
+  if (fromMap) return fromMap.trim();
+  if (providerOf(spec) === "local" && id.includes("/")) {
+    const leaf = id.split("/").pop() || id;
+    return leaf.trim();
+  }
+  return (id || spec).trim();
 }
 
 /** Pin the current driver at the front when present; leave others in order. */

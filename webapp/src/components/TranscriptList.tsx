@@ -3536,7 +3536,7 @@ function Bubble({
         {showLabel && (
           <span className="text-[10px] uppercase tracking-wider text-faint px-1 select-none font-semibold mt-1">you</span>
         )}
-        <div className="flex items-center gap-1.5 max-w-[85%] relative pr-1">
+        <div className="flex items-center gap-1.5 min-w-0 max-w-[85%] relative pr-1">
           {onEdit && (
             <button
               onClick={onEdit}
@@ -3546,7 +3546,7 @@ function Bubble({
               <Pencil size={12} />
             </button>
           )}
-          <div className={`transcript-msg-body select-text font-normal rounded-xl px-3 py-1 text-[13px] leading-relaxed whitespace-pre-wrap break-words border transition-all ${
+          <div className={`transcript-msg-body select-text font-normal rounded-xl px-3 py-1 min-w-0 max-w-full text-[13px] leading-relaxed whitespace-pre-wrap break-words border transition-all ${
             isEditing
               ? "bg-accent/10 text-txt border-accent"
               : "bg-accent2 text-txt border-edge/30"
@@ -3608,7 +3608,7 @@ function Bubble({
       {showLabel && (
         <span className="text-[10px] uppercase tracking-wider text-faint px-0.5 select-none font-semibold mt-1">pilot</span>
       )}
-      <div className={`transcript-msg-body select-text font-normal text-[0.8125rem] leading-[1.7] break-words max-w-[95%] py-0.5 w-full relative pr-14 ${isIntermediate ? "text-txt/75" : "text-txt/95"}`}>
+      <div className={`transcript-msg-body select-text font-normal text-[0.8125rem] leading-[1.7] break-words min-w-0 max-w-[95%] py-0.5 w-full relative pr-14 ${isIntermediate ? "text-txt/75" : "text-txt/95"}`}>
         {/* Plan/progress stays ordinary text; final answers keep Markdown
             so code fences / lists render for the user-facing reply.
             Explicit font-normal: spoken body must not inherit semibold from chrome. */}
