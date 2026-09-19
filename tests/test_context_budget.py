@@ -405,3 +405,51 @@ def test_scaled_budget_constrains_oversized_generic_result(tmp_path, clear_budge
         tool_name="web_fetch",
     )
     assert PERSISTED_OUTPUT_TAG in msg
+
+
+def test_maybe_persist_result_keeps_media_inline(tmp_path, clear_budget_env):
+    from harness.context_budget import can_externalize, looks_like_media
+
+    payload = "data:image/png;base64," + ("A" * _GATE_FLOOR_CHARS)
+    assert looks_like_media(payload)
+    assert can_externalize(payload) is False
+    config = BudgetConfig(max_result_chars=10, turn_budget_chars=50)
+    msg = maybe_persist_result(payload, "img1", str(tmp_path), config)
+    assert msg == payload
+    assert PERSISTED_OUTPUT_TAG not in msg
+
+
+def test_maybe_persist_result_respects_sensitive_tools(tmp_path, monkeypatch, clear_budget_env):
+    monkeypatch.setenv("HARNESS_SPILL_SENSITIVE_TOOLS", "run_command,secret_scan")
+    large = "s" * _GATE_FLOOR_CHARS
+    config = BudgetConfig(max_result_chars=10, turn_budget_chars=50)
+    kept = maybe_persist_result(
+        large, "sec1", str(tmp_path), config, tool_name="run_command",
+    )
+    spilled = maybe_persist_result(
+        large, "ok1", str(tmp_path), config, tool_name="read_file",
+    )
+    assert kept == large
+    assert PERSISTED_OUTPUT_TAG in spilled
+
+
+def test_enforce_turn_budget_honors_sensitive_tool_name(tmp_path, monkeypatch, clear_budget_env):
+    monkeypatch.setenv("HARNESS_SPILL_SENSITIVE_TOOLS", "run_command")
+    large = "z" * _GATE_FLOOR_CHARS
+    config = BudgetConfig(max_result_chars=10, turn_budget_chars=100)
+    messages = [
+        {"role": "tool", "tool_call_id": "sec", "content": large, "tool_name": "run_command"},
+        {"role": "tool", "tool_call_id": "ok", "content": "w" * _GATE_FLOOR_CHARS, "tool_name": "read_file"},
+    ]
+    enforce_turn_budget(messages, str(tmp_path), config)
+    assert messages[0]["content"] == large
+    assert PERSISTED_OUTPUT_TAG in messages[1]["content"]
+
+
+def test_maybe_persist_result_requires_read_tool(tmp_path, clear_budget_env):
+    large = "r" * _GATE_FLOOR_CHARS
+    config = BudgetConfig(max_result_chars=10, turn_budget_chars=50)
+    msg = maybe_persist_result(
+        large, "noread", str(tmp_path), config, has_read_tool=False,
+    )
+    assert msg == large

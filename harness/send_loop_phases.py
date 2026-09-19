@@ -68,6 +68,7 @@ from .terminal_cause import (
 from .text_clean import clean_say
 from .tool_timeout import invoke_do, run_with_tool_deadline
 from .workspace_rules_refresh import maybe_refresh_workspace_rules
+from .providers import apply_session_output_cap
 from .url_safety import sanitize_url_for_display
 
 # job_XXXXXXXXXXXX — same pattern the parallel-dispatch stdout scanner used
@@ -1091,6 +1092,10 @@ def dispatch_pilot_provider_call(
     if history and history[-1].get("source") == "goal_mode":
         sys_prompt += "\n\n" + history[-1]["content"]
     _clear_provider_dispatch_invoked(session)
+    try:
+        apply_session_output_cap(session)
+    except Exception:
+        pass
     try:
         session._step_tools_schema = None
     except Exception:

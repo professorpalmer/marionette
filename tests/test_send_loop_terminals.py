@@ -351,6 +351,44 @@ def test_true_step_cap_is_not_empty_loop(tmp_path, monkeypatch):
     assert done.data.get("stop_cause") == "step_cap"
 
 
+def test_empty_after_successful_tools_retries_once(tmp_path, monkeypatch):
+    from harness.terminal_empty_recovery import note_tool_batch
+
+    def fake_execute(session, **_kwargs):
+        note_tool_batch(session, had_actions=True, had_error=False)
+        if False:
+            yield None
+        return None, []
+
+    monkeypatch.setattr("harness.send_loop.execute_turn_actions", fake_execute)
+    replies = [
+        DriverResponse(
+            text='{"say": "", "actions": [{"kind": "run_command", "command": "echo 1"}]}',
+            tokens_out=2,
+            latency_ms=1.0,
+            meta={"finish_reason": "stop"},
+        ),
+        DriverResponse(
+            text='{"say": "", "actions": []}',
+            tokens_out=1,
+            latency_ms=1.0,
+            meta={"finish_reason": "stop"},
+        ),
+        DriverResponse(
+            text='{"say": "", "actions": []}',
+            tokens_out=1,
+            latency_ms=1.0,
+            meta={"finish_reason": "stop"},
+        ),
+    ]
+    pilot = _Scripted(replies)
+    session = _session(tmp_path, monkeypatch, pilot)
+    events = list(session.send("go"))
+    done = next(e for e in events if e.kind == "assistant_done")
+    assert done.data.get("stop_cause") == "empty_loop"
+    assert pilot.calls == 3
+
+
 def test_empty_loop_is_not_step_cap(tmp_path, monkeypatch):
     from harness.pilot import PilotTurn
     monkeypatch.setattr(PilotTurn, "has_actions", True)

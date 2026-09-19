@@ -25,7 +25,7 @@ MIT License text: https://github.com/NousResearch/hermes-agent (LICENSE).
 
 import os
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 from . import opencode_go as _opencode_go
 from . import opencode_zen as _opencode_zen
@@ -498,6 +498,54 @@ def requested_max_output_tokens() -> Optional[int]:
     if n <= 0:
         return None
     return n
+
+
+def _goal_output_token_cap(session: Optional[Any]) -> Optional[int]:
+    if session is None:
+        return None
+    try:
+        goal = getattr(session, "_session_goal", None)
+        cap = getattr(goal, "output_token_cap", None) if goal is not None else None
+        if isinstance(cap, int) and cap > 0:
+            return cap
+    except Exception:
+        return None
+    return None
+
+
+def effective_max_output_tokens(session: Optional[Any] = None) -> Optional[int]:
+    """Tighter of HARNESS_MAX_TOKENS and SessionGoal.output_token_cap."""
+    caps = [
+        cap
+        for cap in (requested_max_output_tokens(), _goal_output_token_cap(session))
+        if isinstance(cap, int) and cap > 0
+    ]
+    if not caps:
+        return None
+    return min(caps)
+
+
+def apply_session_output_cap(session: Optional[Any]) -> Optional[int]:
+    """Stamp the live pilot max_tokens for this request. Best-effort.
+
+    Remembers the factory ceiling on first call so a later None cap
+    (cleared goal, no HARNESS_MAX_TOKENS) can restore it instead of
+    leaving a tighter stamp behind.
+    """
+    try:
+        if session is None:
+            return None
+        pilot = session.pilot
+        if not hasattr(pilot, "_factory_max_tokens"):
+            pilot._factory_max_tokens = getattr(pilot, "max_tokens", None)
+        cap = effective_max_output_tokens(session)
+        if cap is None:
+            pilot.max_tokens = getattr(pilot, "_factory_max_tokens", None)
+            return None
+        pilot.max_tokens = cap
+        return cap
+    except Exception:
+        return None
 
 
 def _required_max_tokens(max_tokens: Optional[int]) -> int:

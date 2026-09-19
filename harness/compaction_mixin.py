@@ -20,6 +20,8 @@ import copy
 import os
 import re
 import threading
+
+_RLock = threading.RLock
 import time
 import uuid
 from contextlib import ExitStack, nullcontext
@@ -79,6 +81,33 @@ REASON_RESIDUAL_OFF = "residual_off"
 REASON_WATERMARK_FENCE = "watermark_fence"
 REASON_IDLE_UNGROWN = "idle_ungrown"
 REASON_ARCHIVE_FAILED = "archive_failed"
+
+# Dest-native skip taxonomy (MiniMax ContextManager names, dest reasons).
+SKIP_DISABLED = "context_manager_disabled"
+SKIP_NOT_ENOUGH_MESSAGES = "context_manager_not_enough_messages"
+SKIP_BELOW_THRESHOLD = "context_manager_below_threshold"
+SKIP_NO_SAFE_CUT = "context_manager_no_safe_cut_point"
+SKIP_DEFERRED_PLUGIN = "context_manager_deferred_by_plugin_hook"
+SKIP_TOKEN_COUNT_FAILED = "context_manager_token_count_failed"
+SKIP_SUMMARY_FAILED = "context_manager_summary_failed"
+SKIP_SUMMARY_EMPTY = "context_manager_summary_empty"
+
+_SKIP_BY_REASON = {
+    REASON_RESIDUAL_OFF: SKIP_DISABLED,
+    REASON_NO_COMPACTABLE: SKIP_NOT_ENOUGH_MESSAGES,
+    REASON_BELOW_MIN_FLOOR: SKIP_NOT_ENOUGH_MESSAGES,
+    REASON_BELOW_TRIGGER: SKIP_BELOW_THRESHOLD,
+    REASON_IDLE_UNGROWN: SKIP_BELOW_THRESHOLD,
+    REASON_WATERMARK_FENCE: SKIP_NO_SAFE_CUT,
+    REASON_CACHE_DEFERRED: SKIP_DEFERRED_PLUGIN,
+    REASON_THRASH_COOLDOWN: SKIP_DEFERRED_PLUGIN,
+    REASON_SUMMARY_REJECTED: SKIP_SUMMARY_FAILED,
+    REASON_ARCHIVE_FAILED: SKIP_SUMMARY_FAILED,
+}
+
+
+def compaction_skip_reason(reason: str) -> Optional[str]:
+    return _SKIP_BY_REASON.get(reason)
 
 
 def _active_message_id(message, index: int) -> int:
@@ -391,10 +420,20 @@ class CompactionContextMixin:
             orphan_in_kept=lambda idx: orphan_tool_result_in_kept(history, idx),
         )
 
+    def _compaction_checkpoint_lock(self):
+        lock = getattr(self, "_compaction_checkpoint_lock_obj", None)
+        if lock is None:
+            lock = _RLock()
+            self._compaction_checkpoint_lock_obj = lock
+        return lock
+
     def _set_compaction_attempt(self, reason: str, **extra) -> None:
         """Record the latest compaction attempt outcome (diagnostic; never raises)."""
         try:
             payload = {"reason": reason}
+            skip = compaction_skip_reason(reason)
+            if skip:
+                payload["skip_reason"] = skip
             payload.update(extra)
             self._last_compaction_attempt = payload
         except Exception:
@@ -1128,6 +1167,18 @@ class CompactionContextMixin:
         return str(self._build_turn_vault_cite(user_message).get("section") or "")
 
     def _maybe_compact_history(
+        self, force: bool = False, emergency: bool = False,
+    ) -> Iterator["ConvEvent"]:
+        lock = self._compaction_checkpoint_lock()
+        lock.acquire()
+        try:
+            yield from self._maybe_compact_history_unlocked(
+                force=force, emergency=emergency,
+            )
+        finally:
+            lock.release()
+
+    def _maybe_compact_history_unlocked(
         self, force: bool = False, emergency: bool = False,
     ) -> Iterator["ConvEvent"]:
         from .conversation import ConvEvent

@@ -52,7 +52,16 @@ from .pilot_tool_recovery import (
 from .local_models import local_send_stale_seconds
 from .send_image_prep import prepare_turn_images
 from .send_loop_actions import execute_turn_actions
+from .send_loop_dispatch import DISPATCH_ACTION_KINDS
 from .repeat_tool_reminder import reset_repeat_chain
+from .runaway_guard import reset_runaway_state
+from .terminal_empty_recovery import (
+    empty_after_tools_decision,
+    inject_empty_retry,
+    last_batch_had_error,
+    note_tool_batch,
+    reset_terminal_empty_recovery,
+)
 from .reasoning_effort import session_reasoning
 from .send_loop_phases import (
     account_provider_attempt,
@@ -1151,6 +1160,8 @@ class SendLoopMixin:
         # Fresh turn: clear guard / stagnation / failed-objective resume state.
         self._turn_guard_state = None
         reset_repeat_chain(self)
+        reset_runaway_state(self)
+        reset_terminal_empty_recovery(self)
         self._stagnation_last_prose = None
         self._stagnation_last_actions = None
         self._stagnation_streak = 0
@@ -1449,6 +1460,18 @@ class SendLoopMixin:
                         turn_note = self._turn_budget_system_note()
                         if turn_note:
                             sys_prompt += "\n\n" + turn_note
+                        try:
+                            from .system_reminder import system_reminder_note
+
+                            sr_note = system_reminder_note(
+                                self,
+                                model=str(getattr(self.pilot, "model", "") or "")
+                                or str(getattr(self.config, "driver", "") or ""),
+                            )
+                            if sr_note:
+                                sys_prompt += "\n\n" + sr_note
+                        except Exception:
+                            pass
                         identity_note = self._pilot_identity_system_note()
                         if identity_note:
                             sys_prompt += "\n\n" + identity_note
@@ -1659,12 +1682,21 @@ class SendLoopMixin:
                 )
                 return
 
-            if (
+            productive = (
                 len(turn.actions) > 0
                 or (cleaned_say_text and len(cleaned_say_text.strip()) > 0)
                 or (_promoted_say and len(_promoted_say.strip()) > 0)
-            ):
+            )
+            empty_decision = empty_after_tools_decision(self, productive)
+            if empty_decision == "ok":
                 consecutive_non_productive = 0
+            elif empty_decision == "retry":
+                inject_empty_retry(self)
+                consecutive_non_productive = 0
+                continue
+            elif empty_decision == "fail":
+                loop_exit_cause = TERMINAL_EMPTY_LOOP
+                break
             else:
                 consecutive_non_productive += 1
 
@@ -1816,6 +1848,20 @@ class SendLoopMixin:
             swarms = _action_counters["swarms"]
             demo_swarms = _action_counters["demo_swarms"]
             synchronous_swarms = _action_counters["synchronous_swarms"]
+            try:
+                kinds = {
+                    (getattr(act, "kind", "") or "")
+                    for act in (getattr(turn, "actions", None) or ())
+                }
+                if not synchronous_swarms and not (kinds & DISPATCH_ACTION_KINDS):
+                    n_actions = len(getattr(turn, "actions", None) or [])
+                    note_tool_batch(
+                        self,
+                        had_actions=bool(n_actions),
+                        had_error=last_batch_had_error(self, n_actions),
+                    )
+            except Exception:
+                pass
             if (yield from iter_secret_action_turn(
                 self, _action_disposition, user_message=user_message, step=step,
                 swarms=swarms, turn_prose=turn_prose, turn_findings=turn_findings,

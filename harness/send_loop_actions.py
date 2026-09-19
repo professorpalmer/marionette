@@ -95,8 +95,10 @@ def execute_turn_actions(
     if prior_guard is None:
         try:
             from .repeat_tool_reminder import reset_repeat_chain
+            from .runaway_guard import reset_runaway_state
 
             reset_repeat_chain(session)
+            reset_runaway_state(session)
         except Exception:
             pass
     nested_implement = bool(getattr(session, "_nested_implement_worker", False))

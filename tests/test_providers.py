@@ -374,5 +374,45 @@ def test_requested_max_output_tokens_default_and_unlimited(monkeypatch):
     assert prov.requested_max_output_tokens() is None
 
 
+def test_effective_max_output_tokens_mins_goal_and_env(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.delenv("HARNESS_MAX_TOKENS", raising=False)
+    session = SimpleNamespace(_session_goal=SimpleNamespace(output_token_cap=800))
+    assert prov.effective_max_output_tokens(session) == 800
+    monkeypatch.setenv("HARNESS_MAX_TOKENS", "400")
+    assert prov.effective_max_output_tokens(session) == 400
+    monkeypatch.setenv("HARNESS_MAX_TOKENS", "1600")
+    assert prov.effective_max_output_tokens(session) == 800
+    assert prov.effective_max_output_tokens(None) == 1600
+
+
+def test_apply_session_output_cap_stamps_pilot(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.delenv("HARNESS_MAX_TOKENS", raising=False)
+    pilot = SimpleNamespace(max_tokens=None)
+    session = SimpleNamespace(
+        pilot=pilot,
+        _session_goal=SimpleNamespace(output_token_cap=256),
+    )
+    assert prov.apply_session_output_cap(session) == 256
+    assert pilot.max_tokens == 256
+
+
+def test_apply_session_output_cap_restores_factory_after_clear(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.delenv("HARNESS_MAX_TOKENS", raising=False)
+    pilot = SimpleNamespace(max_tokens=4096)
+    goal = SimpleNamespace(output_token_cap=256)
+    session = SimpleNamespace(pilot=pilot, _session_goal=goal)
+    assert prov.apply_session_output_cap(session) == 256
+    assert pilot.max_tokens == 256
+    goal.output_token_cap = None
+    assert prov.apply_session_output_cap(session) is None
+    assert pilot.max_tokens == 4096
+
+
 def test_required_max_tokens_uses_high_fallback():
     assert prov._required_max_tokens(None) == 32000

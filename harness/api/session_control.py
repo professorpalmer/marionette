@@ -534,12 +534,23 @@ def post_session_goal(body: dict, svc: SessionControlServices) -> tuple[int, Jso
                 token_budget = int(budget)
             except (TypeError, ValueError):
                 return 400, {"ok": False, "error": "token_budget must be an int"}
+        raw_cap = body.get("output_token_cap")
+        output_token_cap = None
+        if raw_cap not in ("", None):
+            try:
+                output_token_cap = int(raw_cap)
+            except (TypeError, ValueError):
+                return 400, {"ok": False, "error": "output_token_cap must be an int"}
         try:
             if action == "set":
                 text = (body.get("text") or body.get("goal") or "").strip()
                 if not text:
                     return 400, {"ok": False, "error": "missing text"}
-                goal = pilot.set_session_goal(text, token_budget=token_budget)
+                goal = pilot.set_session_goal(
+                    text,
+                    token_budget=token_budget,
+                    output_token_cap=output_token_cap,
+                )
             elif action == "pause":
                 goal = pilot.pause_session_goal()
             elif action == "resume":

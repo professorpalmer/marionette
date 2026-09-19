@@ -25,6 +25,13 @@ _PER_TURN_WINDOW_FRACTION: float = 0.30
 _MIN_RESULT_SIZE_CHARS: int = 2_000
 _MIN_TURN_BUDGET_CHARS: int = 8_000
 
+_MEDIA_MARKERS = (
+    "data:image/",
+    "content-type: image/",
+    "<img ",
+    "![",
+)
+
 
 def byte_size(content: str) -> int:
     """Return the UTF-8 byte length of content (multibyte-aware sizing)."""
@@ -307,6 +314,36 @@ def _notify_compaction(
         pass
 
 
+def looks_like_media(content: str) -> bool:
+    head = (content or "")[:4000]
+    lowered = head.lower()
+    return any(
+        marker in (head if marker == "![" else lowered)
+        for marker in _MEDIA_MARKERS
+    )
+
+
+def sensitive_tool_names() -> frozenset:
+    raw = os.environ.get("HARNESS_SPILL_SENSITIVE_TOOLS", "")
+    return frozenset(part.strip() for part in raw.split(",") if part.strip())
+
+
+def can_externalize(
+    content: str,
+    tool_name: Optional[str] = None,
+    *,
+    has_read_tool: bool = True,
+) -> bool:
+    """Leave media, sensitive tools, and read-less sessions inline."""
+    if not has_read_tool:
+        return False
+    if looks_like_media(content):
+        return False
+    if (tool_name or "") in sensitive_tool_names():
+        return False
+    return True
+
+
 def maybe_persist_result(
     content: str,
     result_id: str,
@@ -318,6 +355,7 @@ def maybe_persist_result(
     on_compaction: Optional[CompactionCallback] = None,
     spill_session_id: Optional[str] = None,
     tool_name: Optional[str] = None,
+    has_read_tool: bool = True,
 ) -> str:
     """Layer 2: persist oversized result, return preview + path. Falls back to inline truncation if write fails.
 
@@ -332,6 +370,8 @@ def maybe_persist_result(
     dedupe: when True the persisted file name carries a content-hash suffix so
     identical large outputs share one file.
     tool_name: optional tool kind for a configured per-tool override.
+    has_read_tool: when False, keep oversized output inline because the
+    model cannot retrieve a spill URI.
     """
     if threshold is not None:
         effective_threshold = threshold
@@ -344,6 +384,9 @@ def maybe_persist_result(
         return content
 
     if len(content) <= effective_threshold:
+        return content
+
+    if not can_externalize(content, tool_name, has_read_tool=has_read_tool):
         return content
 
     if head_tail is None:
@@ -473,6 +516,8 @@ def enforce_turn_budget(
             threshold=0,
             on_compaction=per_msg_compaction,
             spill_session_id=savings_session_id,
+            tool_name=msg.get("tool_name") or msg.get("_spill_tool"),
+            has_read_tool=msg.get("_has_read_tool", True),
         )
         if replacement != content:
             total_size -= size
