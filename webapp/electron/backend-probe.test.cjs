@@ -14,6 +14,7 @@ const {
   isAuthenticatedBackendHealthy,
   probeAuthenticatedBackend,
   waitForAuthenticatedBackend,
+  requestAuthenticatedBackendStop,
 } = require("./backend-probe.cjs");
 
 const GOOD_TOKEN = "feedface0123456789abcdef01234567";
@@ -131,4 +132,93 @@ test("waitForAuthenticatedBackend: succeeds once the backend authenticates", asy
     true
   );
   assert.equal(attempts, 3);
+});
+
+test("requestAuthenticatedBackendStop: already-refused leftover is a successful stop", async () => {
+  const refusingPost = async () => {
+    throw Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+  };
+  assert.equal(
+    await requestAuthenticatedBackendStop({
+      port: 1,
+      token: "x",
+      postRestart: refusingPost,
+      probe: async () => assert.fail("must not probe after refused stop"),
+    }),
+    true,
+  );
+});
+
+test("requestAuthenticatedBackendStop: waits until the leftover exits", async () => {
+  let posts = 0;
+  let probes = 0;
+  const result = await requestAuthenticatedBackendStop({
+    port: 1,
+    token: "x",
+    timeoutMs: 5000,
+    probeIntervalMs: 1,
+    sleep: async () => {},
+    postRestart: async () => {
+      posts += 1;
+      return true;
+    },
+    probe: async () => {
+      probes += 1;
+      if (probes < 3) return true;
+      throw Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+    },
+  });
+  assert.equal(result, true);
+  assert.equal(posts, 1);
+  assert.equal(probes, 3);
+});
+
+test("requestAuthenticatedBackendStop: real HTTP leftover exits after /api/restart", async () => {
+  let acceptedRestart = false;
+  const server = http.createServer((req, res) => {
+    if (req.headers["x-harness-token"] !== GOOD_TOKEN) {
+      res.writeHead(403);
+      res.end("{}");
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/restart") {
+      acceptedRestart = true;
+      res.writeHead(200);
+      res.end('{"ok":true,"restarting":true}');
+      setImmediate(() => server.close());
+      return;
+    }
+    res.writeHead(200);
+    res.end('{"ok":true}');
+  });
+  const port = await new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => resolve(server.address().port));
+  });
+  try {
+    assert.equal(
+      await requestAuthenticatedBackendStop({
+        port,
+        token: GOOD_TOKEN,
+        timeoutMs: 2000,
+        probeIntervalMs: 20,
+      }),
+      true,
+    );
+    assert.equal(acceptedRestart, true);
+  } finally {
+    server.close();
+  }
+});
+
+test("requestAuthenticatedBackendStop: token rejection fails closed", async () => {
+  await assert.rejects(
+    requestAuthenticatedBackendStop({
+      port: 1,
+      token: "x",
+      postRestart: async () => {
+        throw Object.assign(new Error("HTTP 403"), { tokenRejected: true });
+      },
+    }),
+    (err) => err.tokenRejected === true,
+  );
 });

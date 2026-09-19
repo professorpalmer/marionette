@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
 const { validateReceipt, attachBackend } = require('./backend-attach.cjs');
+const { isSameCheckoutSuccessor } = require('./backend-identity.cjs');
 const receipt = { schema: 1, owner: 'external', port: 12345, pid: 42,
   endpoint_id: 'e', boot_id: 'b', launch_id: 'l', repo_root: '/repo',
   token_file: '/token', environment: {source_sha:'abc', source_digest:'digest'} };
@@ -47,7 +48,8 @@ module.exports = { mainSeam, receipt };
 test('stale marker cannot authorize killing or replacing an unowned backend', async () => {
   const ctx = mainSeam({process:{env:{}}, app:{getVersion:()=>''},
     currentBackendIdentity:()=>({}), readPmHarnessStateFile:name=>name==='token'?'test':'{"port":12345,"pid":42}',
-    waitForAuthenticatedBackend:async()=>{}, decideBackendReuse:()=>({action:'replace',reason:'identity_mismatch',marker:{pid:42,port:12345}}),
+    waitForAuthenticatedBackend:async()=>{}, isSameCheckoutSuccessor, requestAuthenticatedBackendStop(){throw Error('unowned leftover stopped');},
+    decideBackendReuse:()=>({action:'replace',reason:'identity_mismatch',marker:{pid:42,port:12345}}),
     logMain(){}, freePort(){throw Error('spawn attempted');}});
   await assert.rejects(ctx._startBackendOnce(), e=>e.code==='BACKEND_NOT_OWNED');
 });

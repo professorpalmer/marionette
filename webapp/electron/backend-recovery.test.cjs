@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 const {EventEmitter} = require('node:events');
-const {decideBackendReuse, buildBackendMarkerPayload} = require('./backend-identity.cjs');
+const {decideBackendReuse, buildBackendMarkerPayload, isSameCheckoutSuccessor} = require('./backend-identity.cjs');
 const {buildPuppetmasterBackendEnv} = require('./inspect-isolation.cjs');
 
 function fixture(t, error, sha = 'old', pidError = 'ESRCH') {
@@ -16,6 +16,7 @@ function fixture(t, error, sha = 'old', pidError = 'ESRCH') {
   fs.writeFileSync(path.join(state, 'backend.json'), marker);
   fs.writeFileSync(path.join(state, 'token'), 'original');
   const spawns = [];
+  const stops = [];
   const source = fs.readFileSync(path.join(__dirname,'main.cjs'),'utf8');
   const ctx = vm.createContext({fs,path,os:{homedir:()=>root},console:{log(){}},
     process:{env:{HOME:root},platform:process.platform,kill(pid,signal){assert.equal(signal,0);assert.equal(pid,42);if(pidError)throw Object.assign(Error(pidError),{code:pidError});},stdout:{write(){}},stderr:{write(){}}},
@@ -27,8 +28,9 @@ function fixture(t, error, sha = 'old', pidError = 'ESRCH') {
     isDev:false,isPackaged:true,app:{getVersion:()=> 'updated'},logMain(){},
     resolveRepoRoot:()=>root,resolveHarnessStateDir:()=>state,pmharnessHome:()=>root,
     stateFileSearchDirs:()=>[state,root],isInspectMode:()=>false,
-    currentBackendIdentity:()=>({repoRoot:root,checkoutSha:'new'}),decideBackendReuse,buildBackendMarkerPayload,
+    currentBackendIdentity:()=>({repoRoot:root,checkoutSha:'new'}),decideBackendReuse,buildBackendMarkerPayload,isSameCheckoutSuccessor,
     waitForAuthenticatedBackend:async()=>{if(error) throw error;},
+    requestAuthenticatedBackendStop:async(...args)=>{stops.push(args[0]||{});return true;},
     readLiveUpdateMarker:()=>null,freePort:async()=>23456,loginShellEnv:()=>({}),
     buildPuppetmasterBackendEnv,secretVault:{injectEnv(){}},require:()=>({safeStorage:{}}),
     venvPython:()=>'/fixture/python',refreshAllowedLoopbackAliases(){},
@@ -44,7 +46,7 @@ function fixture(t, error, sha = 'old', pidError = 'ESRCH') {
   vm.runInContext(source.slice(source.indexOf('function markerPath()'),source.indexOf('function consumeIntentionalRestartSignal()')),ctx);
   vm.runInContext(source.slice(source.indexOf('async function _startBackendOnce()'),source.indexOf('// ---- transport seam')),ctx);
   vm.runInContext(source.slice(source.indexOf("async function cleanupBackend()"),source.indexOf('app.on("window-all-closed"')),ctx);
-  return {ctx,spawns,state,marker,root};
+  return {ctx,spawns,stops,state,marker,root};
 }
 
 test('packaged update relaunch recovers same state and preserves history',async t=>{
@@ -61,7 +63,20 @@ test('packaged update relaunch recovers same state and preserves history',async 
   assert.equal(fs.readFileSync(path.join(state,'history.json'),'utf8'),'existing history');
 });
 
-for(const [name,error] of [['live updated backend',null],['authentication rejection',Object.assign(Error('403'),{tokenRejected:true})],['timeout',Error('timeout')],['reset',Object.assign(Error('reset'),{code:'ECONNRESET'})]]) {
+test('packaged update relaunch replaces same-checkout leftover and preserves history',async t=>{
+  const {ctx,spawns,stops,state}=fixture(t,null);
+  fs.writeFileSync(path.join(state,'history.json'),'existing history');
+  await ctx._startBackendOnce();
+  assert.equal(stops.length,1);
+  assert.equal(stops[0].port,12345);
+  assert.equal(spawns.length,1);
+  assert.equal(spawns[0].opts.env.HARNESS_STATE_DIR,state);
+  assert.equal(JSON.parse(fs.readFileSync(ctx.markerPath())).checkoutSha,'new');
+  assert.equal(ctx.readPmHarnessStateFile('token'),'new');
+  assert.equal(fs.readFileSync(path.join(state,'history.json'),'utf8'),'existing history');
+});
+
+for(const [name,error] of [['authentication rejection',Object.assign(Error('403'),{tokenRejected:true})],['timeout',Error('timeout')],['reset',Object.assign(Error('reset'),{code:'ECONNRESET'})]]) {
   test(`packaged relaunch refuses ${name} without spawning or mutating old state`,async t=>{
     const {ctx,spawns,state,marker}=fixture(t,error);
     await assert.rejects(ctx._startBackendOnce(),e=>e.code==='BACKEND_NOT_OWNED');
@@ -70,6 +85,26 @@ for(const [name,error] of [['live updated backend',null],['authentication reject
     assert.equal(fs.readFileSync(path.join(state,'token'),'utf8'),'original');
   });
 }
+
+test('packaged relaunch refuses a live leftover from another checkout',async t=>{
+  const {ctx,spawns,state,marker,root}=fixture(t,null);
+  ctx.currentBackendIdentity=()=>({repoRoot:path.join(root,'other'),checkoutSha:'new'});
+  await assert.rejects(ctx._startBackendOnce(),e=>e.code==='BACKEND_NOT_OWNED');
+  assert.equal(spawns.length,0);
+  assert.equal(fs.readFileSync(path.join(state,'backend.json'),'utf8'),marker);
+  assert.equal(fs.readFileSync(path.join(state,'token'),'utf8'),'original');
+});
+
+test('packaged relaunch refuses when authenticated stop of leftover fails',async t=>{
+  const {ctx,spawns,state,marker}=fixture(t,null);
+  ctx.requestAuthenticatedBackendStop=async()=>{
+    throw Object.assign(new Error('HTTP 403'),{tokenRejected:true});
+  };
+  await assert.rejects(ctx._startBackendOnce(),e=>e.code==='BACKEND_NOT_OWNED');
+  assert.equal(spawns.length,0);
+  assert.equal(fs.readFileSync(path.join(state,'backend.json'),'utf8'),marker);
+  assert.equal(fs.readFileSync(path.join(state,'token'),'utf8'),'original');
+});
 
 test('packaged same-checkout relaunch authenticates and reuses without ownership',async t=>{
   const {ctx,spawns}=fixture(t,null,'new');

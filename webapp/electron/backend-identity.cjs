@@ -114,6 +114,21 @@ function decideBackendReuse({ markerRaw, expectedIdentity, authenticated = false
 }
 
 /**
+ * True when a live leftover backend is from THIS checkout after an update.
+ * Same resolved repoRoot + identity mismatch means the previous Electron
+ * left the old tree running. Missing repoRoot stays fail-closed: a marker
+ * must not authorize stopping another client's process.
+ */
+function isSameCheckoutSuccessor(marker, expected) {
+  if (!marker || !expected) return false;
+  const left = typeof marker.repoRoot === "string" ? marker.repoRoot.trim() : "";
+  const right = typeof expected.repoRoot === "string" ? expected.repoRoot.trim() : "";
+  if (!left || !right) return false;
+  if (path.resolve(left) !== path.resolve(right)) return false;
+  return !markerMatchesIdentity(marker, expected);
+}
+
+/**
  * Build the JSON payload written to backend.json after a successful spawn.
  */
 function buildBackendMarkerPayload({ port, pid, identity, at = Date.now() }) {
@@ -153,4 +168,5 @@ module.exports = {
   decideBackendReuse,
   buildBackendMarkerPayload,
   liveIdentityMatches,
+  isSameCheckoutSuccessor,
 };
