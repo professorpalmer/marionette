@@ -169,7 +169,7 @@ function installIdentity(dir, target) {
   return { schema: 1, mode: target.mode, repo: target.repo,
     revision: gitValue(dir, ["rev-parse", "HEAD"]), inputs: hash.digest("hex"),
     platform: process.platform, arch: process.arch,
-    puppetmaster: process.env.MARIONETTE_PUPPETMASTER_SPEC || "puppetmaster-ai==1.27.27" };
+    puppetmaster: process.env.MARIONETTE_PUPPETMASTER_SPEC || "puppetmaster-ai==1.27.29" };
 }
 
 function venvPython(dir) {
@@ -523,7 +523,7 @@ async function provisionPython(dest, onProgress) {
   }
   await reportProgress(onProgress, "Installing Marionette + Puppetmaster...", 55);
   await runAsync("uv", ["pip", "install", "--python", ".venv", "-e", "."], { cwd: dest });
-  const spec = process.env.MARIONETTE_PUPPETMASTER_SPEC || "puppetmaster-ai==1.27.27";
+  const spec = process.env.MARIONETTE_PUPPETMASTER_SPEC || "puppetmaster-ai==1.27.29";
   await runAsync("uv", ["pip", "install", "--python", ".venv", spec], { cwd: dest });
 }
 

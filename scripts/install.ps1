@@ -261,7 +261,7 @@ Say "Installing Marionette (editable) + Puppetmaster into .venv"
 # uv.lock carries the same pin WITH SHA256 hashes and `uv sync --frozen` refuses
 # to run if the lock drifts from pyproject. The literal stays declared so the pin
 # remains visible and greppable.
-$puppetSpec = if ($env:MARIONETTE_PUPPETMASTER_SPEC) { $env:MARIONETTE_PUPPETMASTER_SPEC } else { "puppetmaster-ai==1.27.27" }
+$puppetSpec = if ($env:MARIONETTE_PUPPETMASTER_SPEC) { $env:MARIONETTE_PUPPETMASTER_SPEC } else { "puppetmaster-ai==1.27.29" }
 if ($env:MARIONETTE_PUPPETMASTER_SPEC) {
     # Developer escape hatch: an arbitrary spec cannot be hash-verified.
     Warn "MARIONETTE_PUPPETMASTER_SPEC override in use -- installing WITHOUT lock hash verification"
