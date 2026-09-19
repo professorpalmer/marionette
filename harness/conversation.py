@@ -1142,12 +1142,19 @@ class ConversationalSession(
         if store is not None and goal is not None:
             store.save(goal)
 
-    def set_session_goal(self, text: str, token_budget: Optional[int] = None) -> dict:
+    def set_session_goal(
+        self,
+        text: str,
+        token_budget: Optional[int] = None,
+        output_token_cap: Optional[int] = None,
+    ) -> dict:
         from .session_goal import SessionGoal
 
         if not hasattr(self, "_session_goal") or self._session_goal is None:
             self._session_goal = SessionGoal()
-        self._session_goal.set(text, token_budget=token_budget)
+        self._session_goal.set(
+            text, token_budget=token_budget, output_token_cap=output_token_cap,
+        )
         self._persist_session_goal()
         return self._session_goal.to_dict()
 
@@ -3242,7 +3249,8 @@ class ConversationalSession(
             for m in outbound
         ]
         outbound = [{key: value for key, value in message.items()
-                     if key not in ('input_id', 'input_ids')} for message in outbound]
+                     if key not in ('input_id', 'input_ids') and not str(key).startswith('_')}
+                    for message in outbound]
         return canonicalize_outbound_tool_call_ids(outbound)
 
     def _grounded_wiki_answer(self, question: str, raw: str) -> str:
@@ -3378,10 +3386,21 @@ class ConversationalSession(
             clamped_content = note_repeat_and_maybe_nudge(self, act, clamped_content)
         except Exception:
             pass
+        try:
+            from .runaway_guard import note_runaway_and_maybe_steer
+
+            clamped_content = note_runaway_and_maybe_steer(
+                self, act, clamped_content, is_error=semantics.get("is_error"),
+            )
+        except Exception:
+            pass
 
         if is_native:
             msg = {"role": "tool", "tool_call_id": tc_id, "content": clamped_content}
             msg.update(semantics)
+            kind = getattr(act, "kind", None)
+            if kind:
+                msg["_spill_tool"] = kind
             if read_path:
                 msg["_read_path"] = read_path
             # Crash/resume race: an interruption stub may already answer this

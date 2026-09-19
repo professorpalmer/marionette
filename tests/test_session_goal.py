@@ -59,6 +59,23 @@ def test_session_goal_distinct_from_schedule_objective():
     assert schedule.objective == "Schedule cron objective"
 
 
+def test_session_goal_output_token_cap_roundtrip():
+    state_dir = tempfile.mkdtemp()
+    store = SessionGoalStore(state_dir)
+    goal = SessionGoal()
+    goal.set("Cap the child", output_token_cap=512)
+    assert goal.output_token_cap == 512
+    store.save(goal)
+    reloaded = store.load()
+    assert reloaded.output_token_cap == 512
+    assert "Output token cap: 512" in reloaded.context_block()
+    goal.set("No cap", output_token_cap=0)
+    assert goal.output_token_cap is None
+    goal.set("Clear me", output_token_cap=128)
+    goal.clear()
+    assert goal.output_token_cap is None
+
+
 def test_session_goal_counters_increment():
     goal = SessionGoal()
     goal.set("Count me", token_budget=1000)

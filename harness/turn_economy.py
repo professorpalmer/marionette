@@ -46,6 +46,7 @@ class TurnEconomy:
         dedupe: bool = False,
         on_compaction: Optional[CompactionCallback] = None,
         tool_name: Optional[str] = None,
+        has_read_tool: bool = True,
     ) -> str:
         """Delegate to ``maybe_persist_result`` with session spill + savings callback."""
         callback = on_compaction
@@ -67,6 +68,7 @@ class TurnEconomy:
             on_compaction=callback,
             spill_session_id=self.session_id,
             tool_name=tool_name,
+            has_read_tool=has_read_tool,
         )
 
     def enforce_tool_batch(

@@ -29,6 +29,7 @@ class SessionGoal:
     elapsed_seconds: float = 0.0
     continuation_count: int = 0
     token_budget: Optional[int] = None
+    output_token_cap: Optional[int] = None
     budget_exceeded: bool = False
     # Wall-clock anchor for elapsed_seconds while status is active.
     _active_since: float = field(default=0.0, repr=False)
@@ -43,6 +44,7 @@ class SessionGoal:
             "elapsed_seconds": float(self.elapsed_seconds),
             "continuation_count": int(self.continuation_count),
             "token_budget": self.token_budget,
+            "output_token_cap": self.output_token_cap,
             "budget_exceeded": bool(self.budget_exceeded),
         }
 
@@ -62,6 +64,16 @@ class SessionGoal:
                 token_budget = int(budget)
             except (TypeError, ValueError):
                 token_budget = None
+        raw_cap = data.get("output_token_cap")
+        output_token_cap: Optional[int]
+        if raw_cap in ("", None):
+            output_token_cap = None
+        else:
+            try:
+                parsed_cap = int(raw_cap)
+                output_token_cap = parsed_cap if parsed_cap > 0 else None
+            except (TypeError, ValueError):
+                output_token_cap = None
         return cls(
             text=str(data.get("text") or ""),
             status=status,
@@ -71,6 +83,7 @@ class SessionGoal:
             elapsed_seconds=float(data.get("elapsed_seconds") or 0.0),
             continuation_count=int(data.get("continuation_count") or 0),
             token_budget=token_budget,
+            output_token_cap=output_token_cap,
             budget_exceeded=bool(data.get("budget_exceeded")),
             _active_since=float(data.get("_active_since") or 0.0),
         )
@@ -78,7 +91,13 @@ class SessionGoal:
     def is_active(self) -> bool:
         return self.status == "active" and bool((self.text or "").strip())
 
-    def set(self, text: str, *, token_budget: Optional[int] = None) -> "SessionGoal":
+    def set(
+        self,
+        text: str,
+        *,
+        token_budget: Optional[int] = None,
+        output_token_cap: Optional[int] = None,
+    ) -> "SessionGoal":
         now = time.time()
         cleaned = (text or "").strip()
         if not cleaned:
@@ -95,6 +114,12 @@ class SessionGoal:
         if token_budget is not None:
             try:
                 self.token_budget = int(token_budget)
+            except (TypeError, ValueError):
+                pass
+        if output_token_cap is not None:
+            try:
+                parsed_cap = int(output_token_cap)
+                self.output_token_cap = parsed_cap if parsed_cap > 0 else None
             except (TypeError, ValueError):
                 pass
         return self
@@ -128,6 +153,7 @@ class SessionGoal:
         self.status = "cleared"
         self.updated_at = time.time()
         self._active_since = 0.0
+        self.output_token_cap = None
         # Counters retained for audit until a new set() replaces the goal.
         return self
 
@@ -187,6 +213,8 @@ class SessionGoal:
             )
         else:
             lines.append("Goal token usage: %d" % int(self.token_count))
+        if self.output_token_cap is not None:
+            lines.append("Output token cap: %d" % int(self.output_token_cap))
         return "\n".join(lines)
 
     def _fold_elapsed(self) -> None:

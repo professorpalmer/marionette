@@ -63,5 +63,8 @@ def test_receipt_status_is_captured_before_output_compaction(tmp_path):
         session._append_action_result(action, 'call', '{"status":"failed"}', True)
     assert session._history[-1] == {
         'role': 'tool', 'tool_call_id': 'call', 'content': 'output stored elsewhere',
-        'status': 'failed', 'is_error': True,
+        'status': 'failed', 'is_error': True, '_spill_tool': 'run_command_batch',
     }
+    outbound = session._messages_for_provider()[-1]
+    assert '_spill_tool' not in outbound
+    assert 'tool_name' not in outbound
