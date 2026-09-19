@@ -9,6 +9,7 @@ const {
   decideBackendReuse,
   buildBackendMarkerPayload,
   liveIdentityMatches,
+  isSameCheckoutSuccessor,
 } = require("./backend-identity.cjs");
 
 const EXPECTED = {
@@ -135,6 +136,56 @@ test("liveIdentityMatches: handshake against /api/config payload", () => {
       { checkout_sha: "old", package_version: "0.9.161" },
       EXPECTED,
     ),
+    false,
+  );
+});
+
+test("isSameCheckoutSuccessor: same root + sha change is an update leftover", () => {
+  assert.equal(
+    isSameCheckoutSuccessor({
+      port: 1,
+      checkoutSha: "d173bc8old",
+      packageVersion: "0.9.522",
+      repoRoot: EXPECTED.repoRoot,
+    }, EXPECTED),
+    true,
+  );
+});
+
+test("isSameCheckoutSuccessor: missing root stays fail-closed", () => {
+  assert.equal(
+    isSameCheckoutSuccessor({ port: 1, pid: 42, checkoutSha: "old" }, EXPECTED),
+    false,
+  );
+  assert.equal(
+    isSameCheckoutSuccessor({
+      port: 1,
+      checkoutSha: "old",
+      repoRoot: EXPECTED.repoRoot,
+    }, { checkoutSha: "new" }),
+    false,
+  );
+});
+
+test("isSameCheckoutSuccessor: different checkout is not ours to stop", () => {
+  assert.equal(
+    isSameCheckoutSuccessor({
+      port: 1,
+      checkoutSha: "old",
+      repoRoot: "/Users/other/marionette",
+    }, EXPECTED),
+    false,
+  );
+});
+
+test("isSameCheckoutSuccessor: matching identity is reuse, not successor", () => {
+  assert.equal(
+    isSameCheckoutSuccessor({
+      port: 1,
+      checkoutSha: EXPECTED.checkoutSha,
+      packageVersion: EXPECTED.packageVersion,
+      repoRoot: EXPECTED.repoRoot,
+    }, EXPECTED),
     false,
   );
 });

@@ -30,11 +30,12 @@ const {
 } = require("./resource-auth.cjs");
 const { wireStreamResponse, sanitizedStreamConnError } = require("./stream-bridge.cjs");
 const { attachBackend } = require("./backend-attach.cjs");
-const { waitForAuthenticatedBackend } = require("./backend-probe.cjs");
+const { waitForAuthenticatedBackend, requestAuthenticatedBackendStop } = require("./backend-probe.cjs");
 const {
   currentBackendIdentity,
   decideBackendReuse,
   buildBackendMarkerPayload,
+  isSameCheckoutSuccessor,
 } = require("./backend-identity.cjs");
 const {
   createDevServerFallbackLatch,
@@ -801,18 +802,37 @@ async function _startBackendOnce() {
       return;
     }
     if (verdict.action === "replace" && verdict.marker) {
-      let ownerAbsent = false;
-      if (Number.isSafeInteger(verdict.marker.pid) && verdict.marker.pid > 0) {
-        try { process.kill(verdict.marker.pid, 0); }
-        catch (err) { ownerAbsent = err.code === "ESRCH"; }
-      }
-      if (ownerAbsent && !authenticated && probeErr && probeErr.code === "ECONNREFUSED") {
-        // The CLI repeats these checks under its state lease before token initialization.
-        logMain("[backend] absent owner and refused endpoint; attempting same-state restart under launch lease");
+      const successorLeftover = authenticated
+        && verdict.reason === "identity_mismatch"
+        && isSameCheckoutSuccessor(verdict.marker, expectedIdentity);
+      if (successorLeftover) {
+        // SAFETY: HTTP stop of our leftover after update. Never process.kill(marker.pid).
+        try {
+          await requestAuthenticatedBackendStop({
+            port: verdict.marker.port,
+            token: candidateToken,
+          });
+        } catch (stopErr) {
+          throw Object.assign(new Error(
+            `Backend marker cannot be reused (${verdict.reason}); authenticated stop failed. Stop it through its owner before relaunching.`
+          ), { code: "BACKEND_NOT_OWNED", cause: stopErr });
+        }
+        consumeIntentionalRestartSignal();
+        logMain("[backend] same-checkout leftover stopped after update; spawning replacement");
       } else {
-        throw Object.assign(new Error(
-          `Backend marker cannot be reused (${verdict.reason}); its process is not owned by this client. Stop it through its owner before relaunching.`
-        ), { code: "BACKEND_NOT_OWNED" });
+        let ownerAbsent = false;
+        if (Number.isSafeInteger(verdict.marker.pid) && verdict.marker.pid > 0) {
+          try { process.kill(verdict.marker.pid, 0); }
+          catch (err) { ownerAbsent = err.code === "ESRCH"; }
+        }
+        if (ownerAbsent && !authenticated && probeErr && probeErr.code === "ECONNREFUSED") {
+          // The CLI repeats these checks under its state lease before token initialization.
+          logMain("[backend] absent owner and refused endpoint; attempting same-state restart under launch lease");
+        } else {
+          throw Object.assign(new Error(
+            `Backend marker cannot be reused (${verdict.reason}); its process is not owned by this client. Stop it through its owner before relaunching.`
+          ), { code: "BACKEND_NOT_OWNED" });
+        }
       }
     } else if (raw) {
       throw Object.assign(new Error("Backend marker is invalid; resolve its state through the owner before relaunching."),
