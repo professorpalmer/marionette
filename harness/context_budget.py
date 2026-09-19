@@ -516,7 +516,7 @@ def enforce_turn_budget(
             threshold=0,
             on_compaction=per_msg_compaction,
             spill_session_id=savings_session_id,
-            tool_name=msg.get("tool_name") or msg.get("_spill_tool"),
+            tool_name=msg.get("_spill_tool") or msg.get("tool_name"),
             has_read_tool=msg.get("_has_read_tool", True),
         )
         if replacement != content:

@@ -3249,7 +3249,8 @@ class ConversationalSession(
             for m in outbound
         ]
         outbound = [{key: value for key, value in message.items()
-                     if key not in ('input_id', 'input_ids')} for message in outbound]
+                     if key not in ('input_id', 'input_ids') and not str(key).startswith('_')}
+                    for message in outbound]
         return canonicalize_outbound_tool_call_ids(outbound)
 
     def _grounded_wiki_answer(self, question: str, raw: str) -> str:
@@ -3399,7 +3400,7 @@ class ConversationalSession(
             msg.update(semantics)
             kind = getattr(act, "kind", None)
             if kind:
-                msg["tool_name"] = kind
+                msg["_spill_tool"] = kind
             if read_path:
                 msg["_read_path"] = read_path
             # Crash/resume race: an interruption stub may already answer this
