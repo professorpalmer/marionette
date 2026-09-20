@@ -201,7 +201,7 @@ say "Installing Marionette (editable) + Puppetmaster into .venv"
 # refuses to run if the lock drifts from pyproject. The literal stays declared
 # here so the pin remains visible and greppable (and is what an override-free
 # pip fallback would install).
-PUPPETMASTER_SPEC="${MARIONETTE_PUPPETMASTER_SPEC:-puppetmaster-ai==1.27.29}"
+PUPPETMASTER_SPEC="${MARIONETTE_PUPPETMASTER_SPEC:-puppetmaster-ai==1.27.30}"
 if [ -n "${MARIONETTE_PUPPETMASTER_SPEC:-}" ]; then
   # Developer escape hatch: an arbitrary spec cannot be hash-verified, so say so.
   warn "MARIONETTE_PUPPETMASTER_SPEC override in use -- installing WITHOUT lock hash verification"
@@ -209,7 +209,7 @@ if [ -n "${MARIONETTE_PUPPETMASTER_SPEC:-}" ]; then
   uv pip install --python .venv "$PUPPETMASTER_SPEC"
 else
   # Hash-verified install: uv.lock pins a SHA256 for every artifact (including
-  # puppetmaster-ai==1.27.29), so the whole dependency graph is checked against
+  # puppetmaster-ai==1.27.30), so the whole dependency graph is checked against
   # recorded hashes instead of trusting the transport. --frozen never rewrites
   # the lock; --inexact leaves any packages a contributor already has installed.
   uv sync --frozen --inexact

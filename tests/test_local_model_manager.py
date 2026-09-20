@@ -825,6 +825,66 @@ def test_runpod_https_save_with_manual_model(tmp_path, monkeypatch):
     assert resolved["secret_reach"].startswith("local-")
 
 
+def test_set_external_context_updates_without_probe(tmp_path):
+    catalog, _, _ = _tiny_catalog(tmp_path)
+    mgr = LocalModelManager(root=str(tmp_path / "lm"), catalog=catalog)
+    state = mgr._state()
+    state["externals"] = [{
+        "id": "openai-compatible-bonsai",
+        "name": "bonsai",
+        "vendor": "openai-compatible",
+        "base_url": "http://127.0.0.1:8080/v1",
+        "models": ["bonsai-2-27b"],
+        "selected_model": "bonsai-2-27b",
+        "context_length": 98304,
+        "healthy": True,
+        "kind": "loopback",
+        "requires_key": False,
+    }]
+    mgr._save(state)
+    probed = {"n": 0}
+
+    def boom(*a, **k):
+        probed["n"] += 1
+        raise AssertionError("set_external_context must not probe")
+
+    mgr.probe = boom  # type: ignore[method-assign]
+    snap = mgr.set_external_context("openai-compatible-bonsai", 262144)
+    assert probed["n"] == 0
+    assert snap["externals"][0]["context_length"] == 262144
+    with pytest.raises(LocalModelError) as exc:
+        mgr.set_external_context("openai-compatible-bonsai", 0)
+    assert exc.value.code == "invalid_context"
+    with pytest.raises(LocalModelError) as exc:
+        mgr.set_external_context("missing", 8192)
+    assert exc.value.code == "unknown_endpoint"
+
+
+def test_save_external_explicit_context_wins_over_probe(tmp_path):
+    catalog, _, _ = _tiny_catalog(tmp_path)
+
+    def transport(url, **kwargs):
+        return {
+            "payload": {
+                "data": [{"id": "bonsai-2-27b", "max_model_len": 98304}],
+            },
+            "headers": {},
+            "status": 200,
+        }
+
+    mgr = LocalModelManager(
+        root=str(tmp_path / "lm"),
+        catalog=catalog,
+        probe_transport=transport,
+    )
+    snap = mgr.save_external(
+        "http://127.0.0.1:8080/v1",
+        model="bonsai-2-27b",
+        context_length=262144,
+    )
+    assert snap["externals"][0]["context_length"] == 262144
+
+
 def test_runpod_rejected_without_confirmation(tmp_path):
     catalog, _, _ = _tiny_catalog(tmp_path)
     mgr = LocalModelManager(root=str(tmp_path / "lm"), catalog=catalog)

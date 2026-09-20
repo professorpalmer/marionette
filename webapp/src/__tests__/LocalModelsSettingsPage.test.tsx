@@ -213,6 +213,7 @@ describe("LocalModelsSettingsPage", () => {
     await waitFor(() => {
       expect(screen.getByTestId("local-models-probe").textContent).toContain("ollama");
     });
+    expect(screen.getByTestId("local-models-probe-context").textContent).toMatch(/4,?096/);
     fireEvent.click(screen.getByRole("button", { name: /Save/i }));
     await waitFor(() => {
       expect(screen.getByTestId("local-external-ollama-127-0-0-1-11434")).toBeTruthy();
@@ -271,6 +272,93 @@ describe("LocalModelsSettingsPage", () => {
         name: "runpod-qwen",
       });
     });
+  });
+
+  it("includes context_length on save_external when the field is filled", async () => {
+    getLocalModels.mockResolvedValue(snapshot());
+    localModelCommand.mockResolvedValue(snapshot({
+      externals: [{
+        id: "openai-compatible-proxy-runpod-net-8000",
+        name: "runpod-qwen",
+        vendor: "openai-compatible",
+        base_url: "https://proxy.runpod.net/v1",
+        models: ["qwen3-4b"],
+        selected_model: "qwen3-4b",
+        context_length: 262144,
+        healthy: true,
+      }],
+    }));
+    render(<LocalModelsSettingsPage />);
+    await waitFor(() => screen.getByLabelText(/Endpoint URL/i));
+    fireEvent.change(screen.getByLabelText(/Endpoint URL/i), {
+      target: { value: "https://proxy.runpod.net/v1" },
+    });
+    fireEvent.change(screen.getByLabelText(/Model id/i), {
+      target: { value: "qwen3-4b" },
+    });
+    fireEvent.change(screen.getByLabelText(/Context tokens/i), {
+      target: { value: "262144" },
+    });
+    fireEvent.click(screen.getByTestId("local-models-accept-remote").querySelector("input")!);
+    fireEvent.click(screen.getByRole("button", { name: /Save/i }));
+    await waitFor(() => {
+      expect(localModelCommand).toHaveBeenCalledWith({
+        type: "save_external",
+        url: "https://proxy.runpod.net/v1",
+        api_key: "",
+        accept_lan: false,
+        accept_remote: true,
+        model: "qwen3-4b",
+        name: "",
+        context_length: 262144,
+      });
+    });
+  });
+
+  it("sends set_context from a saved external card", async () => {
+    getLocalModels.mockResolvedValue(snapshot({
+      externals: [{
+        id: "openai-compatible-bonsai",
+        name: "bonsai",
+        vendor: "openai-compatible",
+        base_url: "http://127.0.0.1:8080/v1",
+        models: ["bonsai-2-27b"],
+        selected_model: "bonsai-2-27b",
+        context_length: 98304,
+        healthy: true,
+      }],
+    }));
+    localModelCommand.mockResolvedValue(snapshot({
+      externals: [{
+        id: "openai-compatible-bonsai",
+        name: "bonsai",
+        vendor: "openai-compatible",
+        base_url: "http://127.0.0.1:8080/v1",
+        models: ["bonsai-2-27b"],
+        selected_model: "bonsai-2-27b",
+        context_length: 262144,
+        healthy: true,
+      }],
+    }));
+    render(<LocalModelsSettingsPage />);
+    await waitFor(() => screen.getByTestId("local-external-openai-compatible-bonsai"));
+    expect(screen.getByTestId("local-external-context-openai-compatible-bonsai").textContent)
+      .toMatch(/98,?304/);
+    fireEvent.change(screen.getByLabelText(/Context tokens for bonsai/i), {
+      target: { value: "262144" },
+    });
+    const onContextChanged = vi.fn();
+    window.addEventListener("harness-context-changed", onContextChanged);
+    fireEvent.click(screen.getByRole("button", { name: /^Set$/i }));
+    await waitFor(() => {
+      expect(localModelCommand).toHaveBeenCalledWith({
+        type: "set_context",
+        endpoint_id: "openai-compatible-bonsai",
+        context_length: 262144,
+      });
+    });
+    await waitFor(() => expect(onContextChanged).toHaveBeenCalled());
+    window.removeEventListener("harness-context-changed", onContextChanged);
   });
 
   it("surfaces rejection when a public remote is saved without confirmation", async () => {
@@ -713,7 +801,7 @@ describe("managed idle policy", () => {
   it.each(["", "-1", "1.5", "1441"])("does not send invalid minutes %s", async (value) => {
     getLocalModels.mockResolvedValue(installed());
     render(<LocalModelsSettingsPage />);
-    const input = await screen.findByRole("spinbutton");
+    const input = await screen.findByLabelText(/Unload after inactivity/i);
     fireEvent.change(input, {target: {value}});
     fireEvent.click(screen.getByRole("button", {name: "Apply"}));
     expect(localModelCommand).not.toHaveBeenCalled();
@@ -725,7 +813,7 @@ describe("managed idle policy", () => {
     getLocalModels.mockResolvedValue(installed());
     localModelCommand.mockResolvedValue({...installed(7), event_cursor: 3});
     render(<LocalModelsSettingsPage />);
-    const input = await screen.findByRole("spinbutton");
+    const input = await screen.findByLabelText(/Unload after inactivity/i);
     act(() => onEvent?.({kind: "snapshot", cursor: 1, snapshot: {...installed(5), event_cursor: 1}}));
     expect(input).toHaveValue(5);
     fireEvent.change(input, {target: {value: "7"}});
@@ -744,7 +832,7 @@ describe("managed idle policy", () => {
     let resolvePolicy: ((value: LocalModelsSnapshot) => void) | undefined;
     localModelCommand.mockImplementation(() => new Promise<LocalModelsSnapshot>((resolve) => {resolvePolicy = resolve;}));
     render(<LocalModelsSettingsPage />);
-    const input = await screen.findByRole("spinbutton");
+    const input = await screen.findByLabelText(/Unload after inactivity/i);
     fireEvent.change(input, {target: {value: "7"}});
     fireEvent.click(screen.getByRole("button", {name: "Apply"}));
     await waitFor(() => expect(localModelCommand).toHaveBeenCalled());
@@ -765,7 +853,7 @@ describe("managed idle policy", () => {
       getLocalModels.mockResolvedValue({...installed(), managed: {...installed().managed, ...bad}});
       render(<LocalModelsSettingsPage />);
       await waitFor(() => expect(screen.getByTestId("local-models-error")).toHaveTextContent(/invalid/i));
-      expect(screen.queryByRole("spinbutton")).toBeNull();
+      expect(screen.queryByTestId("local-models-idle-policy")).toBeNull();
     },
   );
 });

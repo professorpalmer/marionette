@@ -934,7 +934,7 @@ if "HARNESS_DRIVER" not in os.environ:
             _cfg.driver = _boot_saved_driver
             if "HARNESS_MAX_CONTEXT_TOKENS" not in os.environ:
                 try:
-                    from pmharness.registry import context_window as _boot_ctx_window
+                    from .local_models import resolve_driver_context_window as _boot_ctx_window
                     _cfg.max_context_tokens = _boot_ctx_window(_cfg.driver, default=200000)
                     _cfg.max_context_tokens_pinned = False
                 except Exception as e:
@@ -1061,8 +1061,10 @@ def _resolve_available_driver():
                 # helper is defined later in this module; avoid a forward reference).
                 if "HARNESS_MAX_CONTEXT_TOKENS" not in os.environ:
                     try:
-                        from pmharness.registry import context_window
-                        _cfg.max_context_tokens = context_window(_cfg.driver, default=200000)
+                        from .local_models import resolve_driver_context_window
+                        _cfg.max_context_tokens = resolve_driver_context_window(
+                            _cfg.driver, default=200000,
+                        )
                         _cfg.max_context_tokens_pinned = False
                     except Exception as e:
                         _diag("server.resolve_driver_context_window", e)
@@ -2069,8 +2071,8 @@ def _apply_model_context_window():
     if "HARNESS_MAX_CONTEXT_TOKENS" in os.environ:
         _cfg.max_context_tokens_pinned = True
         return
-    from pmharness.registry import apply_context_window
-    _cfg.max_context_tokens = apply_context_window(_cfg.driver, default=200000)
+    from .local_models import resolve_driver_context_window
+    _cfg.max_context_tokens = resolve_driver_context_window(_cfg.driver, default=200000)
     _cfg.max_context_tokens_pinned = False
 
 
@@ -2242,7 +2244,7 @@ def _ensure_session_driver(session_id: str) -> bool:
     """Apply a session's deferred choice without moving the active view."""
     from .pilot_replacement import LivePilotReplacement, prepare_replacement
     from .session_runners import resolve_session_runner
-    from pmharness.registry import apply_context_window
+    from .local_models import resolve_driver_context_window
     old = resolve_session_runner(_runners, session_id)
     with _pilot_swap_lock:
         if old is None or _runners.get(session_id) is not old:
@@ -2256,7 +2258,7 @@ def _ensure_session_driver(session_id: str) -> bool:
             return _ensure_pilot_matches_driver(desired)
         config = _dc_replace(old.config, driver=desired)
         if "HARNESS_MAX_CONTEXT_TOKENS" not in os.environ:
-            config.max_context_tokens = apply_context_window(desired, default=200000)
+            config.max_context_tokens = resolve_driver_context_window(desired, default=200000)
             config.max_context_tokens_pinned = False
         with LivePilotReplacement(old) as replacement:
             new = _build_conversational_pilot(config=config)

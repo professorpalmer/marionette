@@ -2146,6 +2146,39 @@ class LocalModelManager:
         self._emit("external_saved", {"id": endpoint_id, "model": selected})
         return self.snapshot()
 
+    def set_external_context(self, endpoint_id: str, context_length: int) -> dict:
+        eid = str(endpoint_id or "").strip()
+        if not eid:
+            raise LocalModelError("Unknown external endpoint", code="unknown_endpoint")
+        if not isinstance(context_length, bool) and isinstance(context_length, int):
+            length = context_length
+        else:
+            try:
+                length = int(context_length)
+            except (TypeError, ValueError) as exc:
+                raise LocalModelError(
+                    "context_length must be a positive integer",
+                    code="invalid_context",
+                ) from exc
+        if length <= 0:
+            raise LocalModelError(
+                "context_length must be a positive integer",
+                code="invalid_context",
+            )
+        with self._lock:
+            state = self._state()
+            found = None
+            for item in state.get("externals") or []:
+                if item.get("id") == eid:
+                    item["context_length"] = length
+                    found = item
+                    break
+            if found is None:
+                raise LocalModelError("Unknown external endpoint", code="unknown_endpoint")
+            self._save(state)
+        self._emit("external_context", {"id": eid, "context_length": length})
+        return self.snapshot()
+
     def activate(self, spec: str) -> dict:
         parsed = parse_local_spec(spec)
         if not parsed:

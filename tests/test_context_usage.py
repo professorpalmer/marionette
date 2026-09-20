@@ -201,6 +201,33 @@ def test_context_usage_limit_follows_live_driver_when_unpinned(monkeypatch):
     assert cfg.max_context_tokens == 1000000
 
 
+def test_active_context_limit_uses_stored_local_context(tmp_path, monkeypatch):
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("PMHARNESS_OR_LIVE_WINDOWS", "0")
+    monkeypatch.setattr(
+        "harness.providers.build_pilot",
+        lambda driver: MockPilot(),
+    )
+    from harness import local_models as lm
+
+    state = lm.empty_state()
+    state["externals"] = [{
+        "id": "openai-compatible-bonsai",
+        "selected_model": "bonsai-2-27b",
+        "base_url": "http://127.0.0.1:8080/v1",
+        "healthy": True,
+        "context_length": 262144,
+    }]
+    lm.save_state(state, str(tmp_path / "local-models"))
+    driver = "local:openai-compatible-bonsai/bonsai-2-27b"
+    cfg = HarnessConfig(driver=driver, max_context_tokens=200000)
+    cfg.max_context_tokens_pinned = False
+    session = ConversationalSession(cfg)
+    assert session.active_context_limit() == 262144
+    usage = session.get_context_usage()
+    assert usage["limit"] == 262144
+
+
 def test_context_usage_falls_back_offline():
     """No real usage -> total is the heuristic category sum (unchanged behavior)."""
     s = _session(budget=5000)
