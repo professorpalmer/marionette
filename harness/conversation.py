@@ -2568,9 +2568,11 @@ class ConversationalSession(
         if getattr(cfg, "max_context_tokens_pinned", False):
             return int(getattr(cfg, "max_context_tokens", 200000) or 200000)
         try:
-            from pmharness.registry import context_window
+            from harness.local_models import resolve_driver_context_window
 
-            window = context_window(getattr(cfg, "driver", "") or "", default=200000)
+            window = resolve_driver_context_window(
+                getattr(cfg, "driver", "") or "", default=200000,
+            )
             if window > 0:
                 cfg.max_context_tokens = window
                 try:

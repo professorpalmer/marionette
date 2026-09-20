@@ -1156,7 +1156,8 @@ export type LocalModelCommand =
   | { type: "remove"; target: "model" | "runtime" | "all"; endpoint_id?: string }
   | { type: "activate"; spec: string }
   | { type: "verify_tool_calling"; spec: string }
-  | { type: "set_policy"; idle_timeout_minutes: number };
+  | { type: "set_policy"; idle_timeout_minutes: number }
+  | { type: "set_context"; endpoint_id: string; context_length: number };
 
 export const LOCAL_TOOL_CALLING_STATUSES = [
   "unverified",

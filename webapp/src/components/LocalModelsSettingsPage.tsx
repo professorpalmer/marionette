@@ -102,6 +102,8 @@ export default function LocalModelsSettingsPage() {
   const [apiKey, setApiKey] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [manualModel, setManualModel] = useState("");
+  const [contextTokens, setContextTokens] = useState("");
+  const [cardContext, setCardContext] = useState<Record<string, string>>({});
   const [acceptLan, setAcceptLan] = useState(false);
   const [acceptRemote, setAcceptRemote] = useState(false);
   const [probe, setProbe] = useState<LocalModelProbeResult | null>(null);
@@ -223,6 +225,10 @@ export default function LocalModelsSettingsPage() {
       if (isProbeResult(result)) {
         setProbe(result);
         setSelectedDiscovered(result.models[0] || "");
+        const probedCtx = result.context_length;
+        if (typeof probedCtx === "number" && Number.isFinite(probedCtx) && probedCtx > 0) {
+          setContextTokens((prev) => (prev.trim() ? prev : String(probedCtx)));
+        }
       } else if (isLocalModelsSnapshot(result)) {
         acceptSnapshot(result, "command");
         if (command.type === "set_policy" && idleEditRevision.current === submittedIdleRevision) {
@@ -230,6 +236,9 @@ export default function LocalModelsSettingsPage() {
           setIdleTimeout(String((latestSnapshot.current ?? result).managed.idle_timeout_minutes));
         }
         if (command.type === "save_external") setApiKey("");
+        if (command.type === "set_context" || command.type === "save_external") {
+          window.dispatchEvent(new Event("harness-context-changed"));
+        }
         if (command.type === "activate" || command.type === "start") {
           window.dispatchEvent(new Event("harness-config-changed"));
         }
@@ -579,6 +588,18 @@ export default function LocalModelsSettingsPage() {
           placeholder="Required if the server does not list models"
           className="w-full mb-2 px-2.5 py-1.5 rounded-md bg-panel2 border border-edge/50 text-[12px] text-txt outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
         />
+        <label className="block text-[11px] text-muted mb-1" htmlFor="local-endpoint-context">
+          Context tokens
+        </label>
+        <input
+          id="local-endpoint-context"
+          type="number"
+          min={1}
+          value={contextTokens}
+          onChange={(event) => setContextTokens(event.target.value)}
+          placeholder="262144"
+          className="w-full mb-2 px-2.5 py-1.5 rounded-md bg-panel2 border border-edge/50 text-[12px] text-txt outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+        />
         <label className="block text-[11px] text-muted mb-1" htmlFor="local-endpoint-key">
           Optional API key
         </label>
@@ -624,15 +645,22 @@ export default function LocalModelsSettingsPage() {
             type="button"
             className="px-2.5 py-1.5 rounded-md border border-edge/40 text-[12px] text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
             disabled={busy !== null || !canSave}
-            onClick={() => void run({
-              type: "save_external",
-              url,
-              api_key: apiKey,
-              accept_lan: acceptLan,
-              accept_remote: acceptRemote,
-              model: attachModel,
-              name: displayName,
-            }, "save")}
+            onClick={() => {
+              const parsedContext = Number.parseInt(contextTokens.trim(), 10);
+              const command: LocalModelCommand = {
+                type: "save_external",
+                url,
+                api_key: apiKey,
+                accept_lan: acceptLan,
+                accept_remote: acceptRemote,
+                model: attachModel,
+                name: displayName,
+              };
+              if (Number.isFinite(parsedContext) && parsedContext > 0) {
+                command.context_length = parsedContext;
+              }
+              void run(command, "save");
+            }}
           >
             Save
           </button>
@@ -640,6 +668,11 @@ export default function LocalModelsSettingsPage() {
         {probe ? (
           <div className="mb-3 text-[12px] text-muted" data-testid="local-models-probe">
             <p>Detected {probe.vendor}. {probe.models.length} model{probe.models.length === 1 ? "" : "s"}.</p>
+            {typeof probe.context_length === "number" && probe.context_length > 0 ? (
+              <p data-testid="local-models-probe-context">
+                Context {probe.context_length.toLocaleString()} tokens
+              </p>
+            ) : null}
             {probe.models.length > 0 ? (
               <label className="block mt-2">
                 <span className="text-[11px] text-muted">Discovered model</span>
@@ -681,11 +714,52 @@ export default function LocalModelsSettingsPage() {
                   <p className="text-[11px] text-muted truncate">{endpoint.base_url}</p>
                   <p
                     className="text-[11px] text-muted mt-1"
+                    data-testid={`local-external-context-${endpoint.id}`}
+                  >
+                    {typeof endpoint.context_length === "number" && endpoint.context_length > 0
+                      ? `Context ${endpoint.context_length.toLocaleString()} tokens`
+                      : "Context unknown"}
+                  </p>
+                  <p
+                    className="text-[11px] text-muted mt-1"
                     data-testid={`local-external-tool-calling-${endpoint.id}`}
                   >
                     Tool calling {TOOL_CALLING_LABELS[toolCalling.status]}
                     {toolCalling.reason ? ` · ${toolCalling.reason}` : ""}
                   </p>
+                  <div className="flex flex-wrap items-center gap-2 mt-2">
+                    <input
+                      type="number"
+                      min={1}
+                      aria-label={`Context tokens for ${endpoint.name || endpoint.id}`}
+                      value={cardContext[endpoint.id] ?? ""}
+                      placeholder="262144"
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        setCardContext((prev) => ({ ...prev, [endpoint.id]: value }));
+                      }}
+                      className="w-28 px-2 py-1 rounded-md bg-panel2 border border-edge/50 text-[11px] text-txt outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+                    />
+                    <button
+                      type="button"
+                      className="px-2 py-1 rounded-md border border-edge/40 text-[11px] text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+                      disabled={busy !== null}
+                      onClick={() => {
+                        const parsed = Number.parseInt((cardContext[endpoint.id] || "").trim(), 10);
+                        if (!Number.isFinite(parsed) || parsed <= 0) {
+                          setError("Enter a positive context token count");
+                          return;
+                        }
+                        void run({
+                          type: "set_context",
+                          endpoint_id: endpoint.id,
+                          context_length: parsed,
+                        }, "set_context");
+                      }}
+                    >
+                      Set
+                    </button>
+                  </div>
                   <div className="flex flex-wrap gap-2 mt-2">
                     <button
                       type="button"

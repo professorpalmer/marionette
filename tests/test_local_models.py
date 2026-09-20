@@ -209,6 +209,79 @@ def test_parse_command_rejects_unknown():
         lm.parse_command({"type": "verify_tool_calling"})
 
 
+def test_parse_command_set_context():
+    cmd = lm.parse_command({
+        "type": "set_context",
+        "endpoint_id": "openai-compatible-host-abc123",
+        "context_length": 262144,
+    })
+    assert cmd == {
+        "type": "set_context",
+        "endpoint_id": "openai-compatible-host-abc123",
+        "context_length": 262144,
+    }
+    with pytest.raises(ValueError):
+        lm.parse_command({"type": "set_context", "endpoint_id": "x", "context_length": 0})
+    with pytest.raises(ValueError):
+        lm.parse_command({"type": "set_context", "endpoint_id": "", "context_length": 8192})
+
+
+def test_context_window_for_spec_external_and_managed(tmp_path, monkeypatch):
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    state = lm.empty_state()
+    state["externals"] = [{
+        "id": "openai-compatible-bonsai",
+        "selected_model": "bonsai-2-27b",
+        "base_url": "http://127.0.0.1:8080/v1",
+        "healthy": True,
+        "context_length": 262144,
+    }]
+    assert lm.context_window_for_spec(
+        "local:openai-compatible-bonsai/bonsai-2-27b",
+        state=state,
+    ) == 262144
+    managed = lm.empty_state()
+    managed["managed"]["process"] = {
+        "pid": 1, "port": 8765, "healthy": True, "context_length": 40960,
+    }
+    managed["managed"]["model"] = {"id": "qwen3-4b", "status": "ready"}
+    assert lm.context_window_for_spec("local:managed/qwen3-4b", state=managed) == 40960
+    managed_no_proc = lm.empty_state()
+    managed_no_proc["managed"]["model"] = {"id": "qwen3-4b", "status": "ready"}
+    assert lm.context_window_for_spec(
+        "local:managed/qwen3-4b", state=managed_no_proc,
+    ) == 40960
+    assert lm.context_window_for_spec("local:missing/model", state=state) is None
+    assert lm.context_window_for_spec("glm-5.3", state=state) is None
+    bare = lm.empty_state()
+    bare["externals"] = [{
+        "id": "ollama-127-0-0-1-11434",
+        "selected_model": "llama3",
+        "context_length": None,
+    }]
+    assert lm.context_window_for_spec(
+        "local:ollama-127-0-0-1-11434/llama3", state=bare,
+    ) is None
+
+
+def test_resolve_driver_context_window_prefers_stored_local(tmp_path, monkeypatch):
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("PMHARNESS_OR_LIVE_WINDOWS", "0")
+    state = lm.empty_state()
+    state["externals"] = [{
+        "id": "openai-compatible-bonsai",
+        "selected_model": "bonsai-2-27b",
+        "base_url": "http://127.0.0.1:8080/v1",
+        "healthy": True,
+        "context_length": 262144,
+    }]
+    lm.save_state(state, str(tmp_path / "local-models"))
+    assert lm.resolve_driver_context_window(
+        "local:openai-compatible-bonsai/bonsai-2-27b",
+        default=200000,
+    ) == 262144
+
+
 def test_extract_model_ids_and_context():
     ids = lm.extract_model_ids({"data": [{"id": "qwen"}, "other"]})
     assert ids == ["qwen", "other"]

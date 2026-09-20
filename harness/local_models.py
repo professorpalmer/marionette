@@ -39,6 +39,7 @@ COMMAND_TYPES = (
     "activate",
     "verify_tool_calling",
     "set_policy",
+    "set_context",
 )
 IDLE_TIMEOUT_MAX_MINUTES = 1440
 TOOL_CALLING_STATUSES = (
@@ -1111,6 +1112,15 @@ def parse_command(body: Any) -> dict:
         command["spec"] = spec
     elif command_type == "set_policy":
         command["idle_timeout_minutes"] = validate_idle_timeout(body.get("idle_timeout_minutes"))
+    elif command_type == "set_context":
+        endpoint_id = str(body.get("endpoint_id") or "").strip()
+        if not endpoint_id:
+            raise ValueError("set_context requires endpoint_id")
+        raw_ctx = body.get("context_length")
+        if isinstance(raw_ctx, bool) or not _is_intlike(raw_ctx) or int(raw_ctx) <= 0:
+            raise ValueError("set_context requires a positive context_length")
+        command["endpoint_id"] = endpoint_id
+        command["context_length"] = int(raw_ctx)
     return command
 
 
@@ -1186,6 +1196,44 @@ def usable_local_specs(state: dict, catalog: Optional[dict] = None) -> list:
         if item.get("id") and model and item.get("base_url") and item.get("healthy"):
             specs.append(canonical_spec(item["id"], model))
     return specs
+
+
+def context_window_for_spec(spec: str, state: Optional[dict] = None) -> Optional[int]:
+    """Positive stored context window for a local: spec, or None."""
+    parsed = parse_local_spec(spec)
+    if not parsed:
+        return None
+    endpoint_id, model = parsed
+    current = state if state is not None else load_state()
+    if endpoint_id == MANAGED_ENDPOINT_ID:
+        process = ((current.get("managed") or {}).get("process") or {})
+        proc_ctx = process.get("context_length")
+        if _is_intlike(proc_ctx) and int(proc_ctx) > 0:
+            return int(proc_ctx)
+        managed_model = ((current.get("managed") or {}).get("model") or {}).get("id") or model
+        row = curated_model(load_catalog(), managed_model)
+        cat_ctx = (row or {}).get("context_length") if row else None
+        if _is_intlike(cat_ctx) and int(cat_ctx) > 0:
+            return int(cat_ctx)
+        return None
+    for item in current.get("externals") or []:
+        if item.get("id") != endpoint_id:
+            continue
+        ctx = item.get("context_length")
+        if _is_intlike(ctx) and int(ctx) > 0:
+            return int(ctx)
+        return None
+    return None
+
+
+def resolve_driver_context_window(driver: str, default: int = 200000) -> int:
+    """Local stored window when present; otherwise registry resolution."""
+    stored = context_window_for_spec(driver)
+    if stored is not None and stored > 0:
+        return int(stored)
+    from pmharness.registry import apply_context_window
+
+    return apply_context_window(driver, default=default)
 
 
 def resolve_local_endpoint(state: dict, spec: str) -> Optional[dict]:
