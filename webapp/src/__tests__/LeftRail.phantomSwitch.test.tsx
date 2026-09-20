@@ -37,12 +37,6 @@ vi.mock("../lib/useOperationalDiagnostic", () => ({
 
 const switchSpy = vi.mocked(api.switchSession);
 
-/**
- * End-to-end simulation of the phantom session switch at the component level:
- * a real LeftRail mount, a real click on a real session row button, and a spy
- * on the network boundary (api.switchSession). Clicking the row you are already
- * in must not fire POST /api/sessions/switch.
- */
 describe("LeftRail phantom session switch", () => {
   beforeEach(() => {
     localStorage.clear();
@@ -51,18 +45,25 @@ describe("LeftRail phantom session switch", () => {
   });
 
   it("does NOT call the backend when clicking the already-active session", async () => {
-    render(<LeftRail jobsRefresh={0} />);
+    const onSessionChange = vi.fn();
+    render(<LeftRail jobsRefresh={0} onSessionChange={onSessionChange} />);
     const activeRow = await screen.findByRole("button", { name: /Active chat/ });
+    onSessionChange.mockClear();
+    switchSpy.mockClear();
     fireEvent.click(activeRow);
-    // Give any stray async continuation a chance to fire before asserting.
-    await new Promise((r) => setTimeout(r, 25));
+    await Promise.resolve();
+    await Promise.resolve();
     expect(switchSpy).not.toHaveBeenCalled();
+    expect(onSessionChange).not.toHaveBeenCalled();
   });
 
   it("still switches when clicking a genuinely different session", async () => {
-    render(<LeftRail jobsRefresh={0} />);
+    const onSessionChange = vi.fn();
+    render(<LeftRail jobsRefresh={0} onSessionChange={onSessionChange} />);
     const otherRow = await screen.findByRole("button", { name: /Other chat/ });
+    onSessionChange.mockClear();
     fireEvent.click(otherRow);
     await waitFor(() => expect(switchSpy).toHaveBeenCalledWith("session-b"));
+    expect(onSessionChange).toHaveBeenCalledWith("session-b");
   });
 });

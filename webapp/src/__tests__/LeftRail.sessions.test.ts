@@ -20,17 +20,10 @@ describe("LeftRail session list contracts", () => {
   });
 
   it("treats clicking the already-active session as a redundant switch", () => {
-    // Phantom spin: clicking the row you are already in must NOT fire a backend
-    // /api/sessions/switch round trip (runner re-activate + transcript persist
-    // + harness-config-changed fan-out for zero state change).
     expect(isRedundantSessionSwitch("sess-a", "sess-a")).toBe(true);
-    // A genuinely different session is a real switch.
     expect(isRedundantSessionSwitch("sess-b", "sess-a")).toBe(false);
-    // No active id resolved yet -> fail open and perform the switch.
     expect(isRedundantSessionSwitch("sess-a", "")).toBe(false);
-    // Empty click id is never redundant.
     expect(isRedundantSessionSwitch("", "")).toBe(false);
-    // Internal forced switches (post-remove promote) bypass the guard.
     expect(isRedundantSessionSwitch("sess-a", "sess-a", true)).toBe(false);
   });
 

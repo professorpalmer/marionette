@@ -266,13 +266,7 @@ export function shouldOfferBackgroundStop(
   return status === "running" && !isActive;
 }
 
-/** True when a session-row click targets the session already on screen, so the
- *  backend /api/sessions/switch round trip is pure waste: it re-activates the
- *  runner, persists the transcript, and fans out harness-config-changed to
- *  every panel for zero state change (the phantom "spin" when clicking the row
- *  you are already in). ``force`` marks internal switches (post-remove
- *  promote) that must still run even when the target already reads as active
- *  in the local list. */
+/** Same-id rail click is not a switch. `force` is the post-remove promote path. */
 export function isRedundantSessionSwitch(
   clickedId: string,
   activeId: string,
