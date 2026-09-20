@@ -704,7 +704,7 @@ def test_session_snapshot_prepends_known_canonical_beyond_page_scan(env):
 
 
 def test_all_scope_snapshot_prepends_known_canonical_beyond_page_scan(env):
-    """Tracker always queries scope=all; current-session jobs still prepend."""
+    """ALL prepends known jobs from another session when id-order buries them."""
     store, _, ctx, _, active = env
     ctx = replace(ctx, scope='all')
     jobs = []
@@ -713,14 +713,14 @@ def test_all_scope_snapshot_prepends_known_canonical_beyond_page_scan(env):
         store.save_job(replace(created, status=JobStatus.RUNNING))
         jobs.append(created)
     target = max(jobs, key=lambda item: item.id)
-    store.save_job(replace(target, session_id=ctx.session_id, goal='session-owned-beyond-page',
+    store.save_job(replace(target, session_id='other-known-session', goal='session-owned-beyond-page',
                            status=JobStatus.RUNNING))
     ref = store.job_ref(target.id)
     local = SimpleNamespace(lock=threading.RLock(), rows={
         'local-swarm-target': dict(
-            session_id=ctx.session_id, deleted=False,
+            session_id='other-known-session', deleted=False,
             canonical=dict(source='harness', job_ref=ref.as_dict(),
-                           session_id=ctx.session_id, dispatch_id='dispatch-target'),
+                           session_id='other-known-session', dispatch_id='dispatch-target'),
         ),
     })
     sources = KnownSources.from_roots([
