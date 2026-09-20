@@ -6,7 +6,7 @@ import {
   peekTranscriptCacheEntry,
   writeTranscriptCache,
 } from "../components/conversation/transcriptCache";
-import { actionAfterSessionRemove, buildProjectsList, collectUnreadFinishedSessionIds, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, jobsCacheKey, partitionProjectSessions, patchActiveSessionInCaches, patchSessionArchivedInCaches, patchSessionTitleInCaches, pickFallbackProjectAfterForget, preferLastGoodSessionList, projectSessionsEmptyState, purgeSessionFromRootCaches, remainingOpenAfterRemoveFromCache, SESSION_LEASE_EXHAUSTED_MESSAGE, seedWorkspacesCache, shouldOfferBackgroundStop, writeSessionListCache, workspacesCacheKey } from "../components/LeftRail";
+import { actionAfterSessionRemove, buildProjectsList, collectUnreadFinishedSessionIds, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, isRedundantSessionSwitch, jobsCacheKey, partitionProjectSessions, patchActiveSessionInCaches, patchSessionArchivedInCaches, patchSessionTitleInCaches, pickFallbackProjectAfterForget, preferLastGoodSessionList, projectSessionsEmptyState, purgeSessionFromRootCaches, remainingOpenAfterRemoveFromCache, SESSION_LEASE_EXHAUSTED_MESSAGE, seedWorkspacesCache, shouldOfferBackgroundStop, writeSessionListCache, workspacesCacheKey } from "../components/LeftRail";
 import type { Session } from "../lib/api";
 
 /**
@@ -17,6 +17,21 @@ describe("LeftRail session list contracts", () => {
   afterEach(() => {
     clearSWRCache();
     clearTranscriptCache();
+  });
+
+  it("treats clicking the already-active session as a redundant switch", () => {
+    // Phantom spin: clicking the row you are already in must NOT fire a backend
+    // /api/sessions/switch round trip (runner re-activate + transcript persist
+    // + harness-config-changed fan-out for zero state change).
+    expect(isRedundantSessionSwitch("sess-a", "sess-a")).toBe(true);
+    // A genuinely different session is a real switch.
+    expect(isRedundantSessionSwitch("sess-b", "sess-a")).toBe(false);
+    // No active id resolved yet -> fail open and perform the switch.
+    expect(isRedundantSessionSwitch("sess-a", "")).toBe(false);
+    // Empty click id is never redundant.
+    expect(isRedundantSessionSwitch("", "")).toBe(false);
+    // Internal forced switches (post-remove promote) bypass the guard.
+    expect(isRedundantSessionSwitch("sess-a", "sess-a", true)).toBe(false);
   });
 
   it("purgeSessionFromRootCaches removes id from every root cache", () => {

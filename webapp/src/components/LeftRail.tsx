@@ -53,6 +53,7 @@ export {
   seedWorkspacesCache,
   jobsCacheKey,
   shouldOfferBackgroundStop,
+  isRedundantSessionSwitch,
   collectUnreadFinishedSessionIds,
   isRailWideSwitching,
   projectSessionsEmptyState,
@@ -76,6 +77,7 @@ import {
   workspacesCacheKey,
   seedWorkspacesCache,
   shouldOfferBackgroundStop,
+  isRedundantSessionSwitch,
   collectUnreadFinishedSessionIds,
   isRailWideSwitching,
   projectSessionsEmptyState,
@@ -876,10 +878,26 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       setPruningBranches(false);
     }
   };
-  const switchSession = async (id: string) => {
+  const switchSession = async (id: string, opts?: { force?: boolean }) => {
     if (switchingSessionId || opening) return;
+    // Already viewing this session: a full switch re-activates the runner,
+    // persists the transcript, and fans out harness-config-changed to every
+    // panel -- all for zero state change (the phantom "spin" when clicking the
+    // row you are already in). Clear the local unread marker and no-op the
+    // backend round trip. ``force`` lets internal callers (post-remove promote)
+    // still switch even when the target already reads as active locally.
+    const activeId = sessions.find((s) => s.active)?.id || "";
+    if (isRedundantSessionSwitch(id, activeId, !!opts?.force)) {
+      setUnreadFinishedIds((prev) => {
+        if (!prev[id]) return prev;
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      return;
+    }
     const scope = ++sessionScopeGeneration.current;
-    const previousActiveId = sessions.find((s) => s.active)?.id || "";
+    const previousActiveId = activeId;
     switchingSessionIdRef.current = id;
     setSwitchingSessionId(id);
     setUnreadFinishedIds((prev) => {
@@ -1087,7 +1105,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
         await newSession(projectPath || currentRepo);
         return;
       case "switch":
-        await switchSession(action.sessionId);
+        await switchSession(action.sessionId, { force: true });
         return;
       case "noop":
         return;
