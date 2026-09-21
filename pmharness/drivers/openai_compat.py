@@ -347,14 +347,26 @@ class _OpenAIChatSseAccumulator:
         if "reasoning_content" in delta:
             self.reasoning_content_seen = True
             raw_reasoning_content = delta.get("reasoning_content")
-            if raw_reasoning_content is not None:
+            if raw_reasoning_content:
+                rc_piece = absorb_stream_snapshot(
+                    "".join(self.reasoning_content_pieces),
+                    str(raw_reasoning_content),
+                )
+                if rc_piece:
+                    self.reasoning_content_pieces.append(rc_piece)
+            elif raw_reasoning_content is not None:
                 self.reasoning_content_pieces.append(str(raw_reasoning_content))
         reasoning_delta = delta.get("reasoning") or delta.get("reasoning_content") or ""
         if reasoning_delta:
+            piece = absorb_stream_snapshot(
+                "".join(self.reasoning_pieces),
+                str(reasoning_delta),
+            )
             self.stream_started = True
-            self.reasoning_pieces.append(str(reasoning_delta))
-            if self.on_reasoning_delta is not None:
-                self.on_reasoning_delta(str(reasoning_delta))
+            if piece:
+                self.reasoning_pieces.append(piece)
+                if self.on_reasoning_delta is not None:
+                    self.on_reasoning_delta(piece)
 
         delta_tool_calls = delta.get("tool_calls") or []
         if delta_tool_calls:

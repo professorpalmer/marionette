@@ -109,6 +109,45 @@ def test_duplicate_content_snapshot_does_not_double_text(monkeypatch):
     assert "".join(seen) == phrase
 
 
+def test_duplicate_reasoning_snapshot_does_not_double_text(monkeypatch):
+    phrase = "A hashmap stores key-value pairs."
+    seen = []
+    lines = [
+        _data({"choices": [{"delta": {"reasoning_content": phrase}}]}),
+        _data({"choices": [{"delta": {
+            "reasoning_content": f"\n\n{phrase}",
+            "content": "done",
+        }, "finish_reason": "stop"}]}),
+        b"data: [DONE]\n",
+    ]
+    resp = _run_stream(monkeypatch, _driver(), lines, on_reasoning_delta=seen.append)
+    assert resp.error is None
+    assert "".join(seen) == phrase
+    assert resp.meta.get("reasoning") == phrase
+    assert resp.meta.get("reasoning_content") == phrase
+
+
+def test_incremental_reasoning_then_full_snapshot_does_not_double(monkeypatch):
+    first = "A hashmap stores "
+    rest = "key-value pairs with O(1) lookup."
+    full = first + rest
+    seen = []
+    lines = [
+        _data({"choices": [{"delta": {"reasoning_content": first}}]}),
+        _data({"choices": [{"delta": {"reasoning_content": rest}}]}),
+        _data({"choices": [{"delta": {
+            "reasoning_content": full,
+            "content": "ok",
+        }, "finish_reason": "stop"}]}),
+        b"data: [DONE]\n",
+    ]
+    resp = _run_stream(monkeypatch, _driver(), lines, on_reasoning_delta=seen.append)
+    assert resp.error is None
+    assert "".join(seen) == full
+    assert resp.meta.get("reasoning") == full
+    assert resp.meta.get("reasoning_content") == full
+
+
 def test_finish_reason_length_is_explicit_incomplete(monkeypatch):
     lines = [
         _data({"choices": [{"delta": {"content": "partial "}}]}),
