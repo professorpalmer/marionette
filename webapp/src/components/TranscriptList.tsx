@@ -41,7 +41,6 @@ import {
 import { splitStreamingMarkdown } from "../lib/streamMarkdown";
 import {
   activityWorkDurationMs,
-  foldWorkDurationMs,
   aggregateExplorationSummary,
   cardEffectivelyRunning,
   cardHasDurableJob,
@@ -63,6 +62,7 @@ import {
   toolRowLabel,
   workFoldLabel,
   ranGoalLine,
+  resolveSealedWorkMs,
 } from "../lib/turnProgress";
 import { isAgentLoopOpen } from "./conversation/runnersBusy";
 import {
@@ -937,6 +937,9 @@ function objKey(obj: object): string {
 // Session-prefixed keys (`sessionId::groupId`) so keep-alive panes do not
 // share open/closed prefs. clearActivityFoldPrefs() remains for tests.
 const __activityOpen = new Map<string, boolean>();
+// Last live Worked for wall-clock, keyed by groupId. Prior folds must not
+// inherit the next turn's busy timer or fall back to a 1s thinking slice.
+const __sealedWorkMs = new Map<string, number>();
 // Reasoning expand preference (user click) survives remounts / live→idle flips.
 const __thinkingExpanded = new Map<string, boolean>();
 // Ran N command mid-fold expand preference (user click) survives remounts.
@@ -959,6 +962,7 @@ export function clearActivityFoldPrefs(): void {
   __commandFoldOpen.clear();
   __swarmDoneFoldOpen.clear();
   __activityGroupCanon.clear();
+  __sealedWorkMs.clear();
 }
 
 /**
@@ -2638,16 +2642,15 @@ function ActivityGroup({
   // disagreed with Cursor/Hermes (collapsed until the user opens them).
 
   const sealedWorkMs = (() => {
-    const resolved = foldWorkDurationMs({
+    const { durationMs, rememberMs } = resolveSealedWorkMs({
       fromItems: activityWorkDurationMs(items),
       busyElapsedMs,
       isLiveFold,
+      rememberedMs: __sealedWorkMs.get(groupId) ?? null,
+      hasVisibleWork: actionCount > 0 || thinkingItems.length > 0,
     });
-    if (resolved != null) return resolved;
-    // Tools/thinking ran but no duration was recorded — chrome is visible, so
-    // show at least 1s instead of a bare "Worked for" label.
-    if (actionCount > 0 || thinkingItems.length > 0) return 1000;
-    return null;
+    if (rememberMs != null) __sealedWorkMs.set(groupId, rememberMs);
+    return durationMs;
   })();
 
   const quietSummary = (() => {

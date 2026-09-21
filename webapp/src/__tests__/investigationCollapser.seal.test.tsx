@@ -2,10 +2,14 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   TranscriptList,
+  clearActivityFoldPrefs,
   type Item,
 } from "../components/TranscriptList";
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  clearActivityFoldPrefs();
+});
 
 function sealedCard(id: string, goal: string): Extract<Item, { kind: "card" }> {
   return {
@@ -111,6 +115,68 @@ describe("prior investigation fold stays sealed on new prompt", () => {
     expect(screen.getByText(/Worked for/i)).toBeTruthy();
     // Prior fold still sealed (collapsed); only the live fold is active.
     expect(screen.queryByText(/looking at auth handlers/i)).toBeNull();
+  });
+
+  it("keeps Worked for wall-clock on a prior fold when the next prompt starts", () => {
+    const turn1: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "Hello, Bonsai!" } },
+      { kind: "thinking", text: "greeting", id: "th-bonsai-1" },
+      { kind: "msg", msg: { role: "assistant", text: "Hey! Bonsai here." } },
+    ];
+    const wall = 6 * 60_000 + 22_000;
+
+    const { rerender } = render(
+      <TranscriptList
+        {...listProps(turn1, {
+          turnOpen: false,
+          status: "idle",
+          busyElapsedMs: wall,
+        })}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /Worked for 6m 22s/i })).toBeTruthy();
+
+    rerender(
+      <TranscriptList
+        {...listProps(
+          [...turn1, { kind: "msg", msg: { role: "user", text: "What is a hashmap?" } }],
+          { turnOpen: true, status: "thinking", busyElapsedMs: 1000 },
+        )}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /Worked for 6m 22s/i })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Worked for 1s/i })).toBeNull();
+  });
+
+  it("does not let an early thinking slice replace the remembered wall-clock", () => {
+    const turn1: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "What is a hashmap?" } },
+      { kind: "thinking", text: "hashmap plan", id: "th-bonsai-2", duration_ms: 1000 },
+      { kind: "msg", msg: { role: "assistant", text: "A hashmap stores pairs." } },
+    ];
+    const wall = 6 * 60_000 + 22_000;
+
+    const { rerender } = render(
+      <TranscriptList
+        {...listProps(turn1, {
+          turnOpen: false,
+          status: "idle",
+          busyElapsedMs: wall,
+        })}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /Worked for 6m 22s/i })).toBeTruthy();
+
+    rerender(
+      <TranscriptList
+        {...listProps(
+          [...turn1, { kind: "msg", msg: { role: "user", text: "how many R's?" } }],
+          { turnOpen: true, status: "thinking", busyElapsedMs: 1000 },
+        )}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /Worked for 6m 22s/i })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Worked for 1s/i })).toBeNull();
   });
 });
 
