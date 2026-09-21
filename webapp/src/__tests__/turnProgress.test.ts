@@ -6,6 +6,7 @@ import {
   deriveBusyProgress,
   activityWorkDurationMs,
   foldWorkDurationMs,
+  resolveSealedWorkMs,
   formatBusyElapsed,
   latchWaitingPhaseStartedAt,
   investigatingHeadline,
@@ -1215,6 +1216,29 @@ describe("foldWorkDurationMs", () => {
       busyElapsedMs: 11 * 60_000,
       isLiveFold: false,
     })).toBe(7_000);
+  });
+
+  it("remembers the live wall-clock so a prior fold does not snap to a 1s slice", () => {
+    const wall = 6 * 60_000 + 22_000;
+    const live = resolveSealedWorkMs({
+      fromItems: 1000,
+      busyElapsedMs: wall,
+      isLiveFold: true,
+      rememberedMs: null,
+      hasVisibleWork: true,
+    });
+    expect(live.durationMs).toBe(wall);
+    expect(live.rememberMs).toBe(wall);
+
+    const prior = resolveSealedWorkMs({
+      fromItems: 1000,
+      busyElapsedMs: 1000,
+      isLiveFold: false,
+      rememberedMs: live.rememberMs,
+      hasVisibleWork: true,
+    });
+    expect(prior.durationMs).toBe(wall);
+    expect(prior.rememberMs).toBe(wall);
   });
 
   it("falls back to item sums when the live clock is missing", () => {

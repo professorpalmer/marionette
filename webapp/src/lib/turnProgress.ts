@@ -593,6 +593,46 @@ export function foldWorkDurationMs(opts: {
   return null;
 }
 
+/**
+ * Worked for duration across the live → prior-fold handoff.
+ * Live folds remember the wall-clock busy timer. Prior folds keep that
+ * remembered value even when recorded thinking/tool slices are a 1s crumb
+ * (local Completions often finalize reasoning long before the turn ends).
+ * The cosmetic 1s fallback is never written into memory.
+ */
+export function resolveSealedWorkMs(opts: {
+  fromItems: number | null;
+  busyElapsedMs?: number | null;
+  isLiveFold: boolean;
+  rememberedMs?: number | null;
+  hasVisibleWork: boolean;
+}): { durationMs: number | null; rememberMs: number | null } {
+  const resolved = foldWorkDurationMs({
+    fromItems: opts.fromItems,
+    busyElapsedMs: opts.busyElapsedMs,
+    isLiveFold: opts.isLiveFold,
+  });
+  const remembered =
+    opts.rememberedMs != null
+    && Number.isFinite(opts.rememberedMs)
+    && opts.rememberedMs > 0
+      ? opts.rememberedMs
+      : null;
+  if (opts.isLiveFold && resolved != null && resolved > 0) {
+    return { durationMs: resolved, rememberMs: resolved };
+  }
+  if (remembered != null && (resolved == null || remembered > resolved)) {
+    return { durationMs: remembered, rememberMs: remembered };
+  }
+  if (resolved != null && resolved > 0) {
+    return { durationMs: resolved, rememberMs: remembered };
+  }
+  if (opts.hasVisibleWork) {
+    return { durationMs: 1000, rememberMs: remembered };
+  }
+  return { durationMs: null, rememberMs: remembered };
+}
+
 export type StackedActivityRow<T> =
   | { kind: "thought"; items: T[]; indexes: number[] }
   | { kind: "commands"; items: T[]; indexes: number[] }
