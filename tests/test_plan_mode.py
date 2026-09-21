@@ -174,3 +174,15 @@ def test_plan_mode_filters_browser_actions():
     assert "skipped browser_navigate" in action_results[0].data["error"]
     assert "skipped browser_click" in action_results[1].data["error"]
     assert "File not found" in action_results[2].data["error"]
+
+
+def test_plan_mode_blocks_undeclared_kind():
+    from types import SimpleNamespace
+
+    from harness.pilot import PilotAction
+    from harness.send_loop_phases import dispatch_local_action
+
+    session = SimpleNamespace(_append_action_result=lambda *a, **k: None)
+    act = PilotAction(kind="frobnicate", path="x")
+    events = list(dispatch_local_action(session, act, "p-frob", False, [], plan=True))
+    assert events[0].data.get("error") == "(plan mode: skipped frobnicate)"

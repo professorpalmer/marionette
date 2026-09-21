@@ -29,6 +29,7 @@ from pmharness.bridge import execute_intent
 from pmharness.drivers.base import known_assistant_phase
 
 from .goal_mode import reset_turn_goal_state
+from .tool_capabilities import plan_mode_blocks
 from .local_job_metadata import local_swarm_id
 from .log_reconstruction import check_outbound_reconstruction
 from .request_snapshot import FrozenRequest
@@ -3162,9 +3163,7 @@ def dispatch_local_action(
         session._append_action_result(act, aid, json.dumps(awaiting), is_native, ok=True)
         return
 
-    if plan and (
-        act.kind in PLAN_SKIP_KINDS or act.kind.startswith("browser_")
-    ):
+    if plan and plan_mode_blocks(act.kind):
         yield ConvEvent("action_result", {
             "id": aid,
             "kind": act.kind,

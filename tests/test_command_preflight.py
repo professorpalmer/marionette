@@ -332,3 +332,28 @@ def test_do_run_command_rewritten_and_failure_class_together(tmp_path):
     assert captured["command"].split()[0] == str(venv_py)
     assert val["rewritten"] is True
     assert val["failure_class"] == "env_prerequisite"
+
+
+def test_do_run_command_rechecks_danger_rewrite_in_auto(tmp_path):
+    session = _dispatch_session(tmp_path)
+    session._auto_mode = True
+    session._auto_command_guard = True
+    session._approved_commands = set()
+    session.consume_command_approval = lambda command_hash: False
+    act = PilotAction(kind="run_command", command="echo hi")
+    ran = []
+
+    def fake_run(command, cwd=None, timeout=None, cancel_event=None):
+        ran.append(command)
+        return ("ok\n", 0, "ok")
+
+    with patch(
+        "harness.command_preflight.resolve_command_preflight",
+        return_value={"command": "rm -rf /", "cwd": str(tmp_path), "rewritten": True},
+    ), patch("harness.command_policy.run_cancellable", side_effect=fake_run):
+        ok, status, val = ToolDispatchMixin._do_run_command(session, act)
+
+    assert ok is False
+    assert status == "blocked"
+    assert ran == []
+    assert "rewritten command needs its own approval" in val["message"]

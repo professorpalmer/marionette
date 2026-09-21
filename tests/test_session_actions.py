@@ -8,6 +8,7 @@ import pytest
 from harness.session_actions import (
     ActionKind,
     DeliveryPolicy,
+    MAILBOX_DRAIN_LIMIT,
     SessionActionIllegalTransition,
     SessionActionStore,
     TurnInputMode,
@@ -131,6 +132,55 @@ def test_admit_front_reorders_existing_input_id():
     assert [a.text for a in store] == ["mid", "older", "newer"]
     assert list(store)[0] is mid
     assert list(store)[1] is older
+
+
+def test_command_id_retry_ack_while_inflight():
+    store = SessionActionStore()
+    first = store.admit(ActionKind.STEER, "once", input_id="cmd-1")
+    drained = store.drain_ready(DeliveryPolicy.NEXT_TURN_BOUNDARY, kinds=(ActionKind.STEER,))
+    assert [row.id for row in drained] == ["cmd-1"]
+    again = store.admit(ActionKind.STEER, "ignored", input_id="cmd-1")
+    assert again is first
+    assert len(store) == 0
+
+
+def test_command_id_pin_live_after_settle():
+    store = SessionActionStore()
+    first = store.admit(ActionKind.STEER, "once", input_id="cmd-1")
+    store.drain_ready(DeliveryPolicy.NEXT_TURN_BOUNDARY, kinds=(ActionKind.STEER,))
+    store.settle("cmd-1")
+    again = store.admit(ActionKind.STEER, "ignored", input_id="cmd-1")
+    assert again is first
+    assert len(store) == 0
+
+
+def test_command_gated_fifo_until_settle():
+    store = SessionActionStore()
+    store.admit(ActionKind.START, "first", input_id="start-1")
+    store.admit(ActionKind.START, "second", input_id="start-2")
+    first = store.drain_ready(DeliveryPolicy.NEXT_TURN_BOUNDARY, kinds=(ActionKind.START,))
+    assert [row.id for row in first] == ["start-1"]
+    assert store.drain_ready(DeliveryPolicy.NEXT_TURN_BOUNDARY, kinds=(ActionKind.START,)) == []
+    assert [row.id for row in store] == ["start-2"]
+    store.settle("start-1")
+    second = store.drain_ready(DeliveryPolicy.NEXT_TURN_BOUNDARY, kinds=(ActionKind.START,))
+    assert [row.id for row in second] == ["start-2"]
+
+
+def test_mailbox_drain_is_capped():
+    store = SessionActionStore()
+    for index in range(MAILBOX_DRAIN_LIMIT + 5):
+        store.admit(ActionKind.MAILBOX, "m%s" % index, input_id="mail-%s" % index)
+    drained = store.drain_ready(DeliveryPolicy.WHEN_RUN_IDLE, kinds=(ActionKind.MAILBOX,))
+    assert len(drained) == MAILBOX_DRAIN_LIMIT
+    assert len(store) == 5
+
+
+def test_restore_old_snapshot_without_pin_live():
+    store = SessionActionStore()
+    store.restore({"closed": False, "current_turn_id": None, "actions": []})
+    assert dict(store._inflight) == {}
+    assert list(store._settled) == []
 
 
 def test_normalize_turn_input_mode_rejects_unknown():

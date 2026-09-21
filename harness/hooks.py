@@ -10,6 +10,7 @@ from typing import Any
 from .secure_files import restrict_to_owner
 from .diag import note as _diag
 from .api.redaction import redact_api_secrets
+from .workspace_hook_trust import TRUSTED, evaluate_hook_trust, remember_hooks
 
 logger = logging.getLogger("harness.hooks")
 
@@ -41,6 +42,7 @@ def save_hooks(hooks: list[dict]) -> None:
         os.replace(temp_path, _HOOKS_JSON)
         if not restrict_to_owner(_HOOKS_JSON):
             _diag("secure_files.restrict_failed", msg=_HOOKS_JSON)
+        remember_hooks(_HOOKS_JSON, hooks)
     except Exception:
         logger.error("Failed to save hooks")
 
@@ -100,6 +102,11 @@ def run_hooks(event: str, context: dict) -> list[dict[str, str]]:
         if not _valid_record(hook, event):
             outcomes.append({"id": hook_id, "status": "skipped"})
             logger.warning("Hook skipped: invalid or disabled record")
+            continue
+        trust = evaluate_hook_trust(hook, hooks_json=_HOOKS_JSON)
+        if trust != TRUSTED:
+            outcomes.append({"id": hook_id, "status": trust})
+            logger.warning("Hook skipped: %s", trust)
             continue
         try:
             completed = subprocess.run(

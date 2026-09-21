@@ -405,6 +405,35 @@ def test_load_history_leaves_decided_approvals_display_only(tmp_path):
     ) is None
 
 
+def test_permission_responders_first_win(tmp_path):
+    cfg = HarnessConfig(repo=str(tmp_path), state_dir=str(tmp_path / "st"))
+    session = ConversationalSession(cfg)
+    session.harness_session_id = "session-a"
+    command = "ssh prod systemctl stop nginx"
+    command_hash = hashlib.sha256(command.encode()).hexdigest()
+    pending = session.register_pending_command_approval(
+        command=command,
+        command_hash=command_hash,
+        action_id="call-first-win",
+    )
+    first = session.decide_command_approval(
+        command_hash=command_hash,
+        workspace_root=pending["workspace_root"],
+        expected=ApprovalExpectation(pending["action_id"], pending["approval_id"]),
+        approve=True,
+    )
+    second = session.decide_command_approval(
+        command_hash=command_hash,
+        workspace_root=pending["workspace_root"],
+        expected=ApprovalExpectation(pending["action_id"], pending["approval_id"]),
+        approve=False,
+    )
+    assert first is not None
+    assert second is None
+    assert command_hash in session._approved_commands
+    assert command_hash not in session._pending_command_approvals
+
+
 def test_load_history_refuses_workspace_and_session_mismatch(tmp_path):
     cfg = HarnessConfig(repo=str(tmp_path), state_dir=str(tmp_path / "st"))
     command = "ssh prod reboot"

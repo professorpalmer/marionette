@@ -1897,6 +1897,49 @@ class ToolDispatchMixin:
         preflight = resolve_command_preflight(act.command or "", self.config.repo)
         effective_command = preflight.get("command") or act.command or ""
         effective_cwd = preflight.get("cwd") or self.config.repo
+        original_command = act.command or ""
+        if (
+            effective_command != original_command
+            and getattr(self, "_auto_mode", False)
+            and getattr(self, "_auto_command_guard", None)
+        ):
+            from .permission_recheck import recheck_rewritten_input
+
+            rec = recheck_rewritten_input(original_command, effective_command)
+            if not rec.allowed:
+                rewritten_hash = hashlib.sha256(effective_command.encode("utf-8")).hexdigest()
+                consume_approval = getattr(self, "consume_command_approval", None)
+                from .command_allowlist import allowlist_contains
+
+                approved_rewrite = False
+                if consume_approval is not None:
+                    approved_rewrite = bool(consume_approval(rewritten_hash))
+                if not approved_rewrite:
+                    approved_rewrite = allowlist_contains(
+                        effective_command,
+                        state_dir=getattr(self, "state_dir", None),
+                        workspace_root=str(self.config.repo or ""),
+                        command_hash=rewritten_hash,
+                    )
+                if not approved_rewrite:
+                    from .command_hints import blocked_command_recovery
+                    from .command_policy import classify_command
+
+                    verdict = classify_command(effective_command)
+                    block_msg = (
+                        "BLOCKED in full-auto: rewritten command needs its own "
+                        "approval (%s)." % (rec.reason,)
+                    )
+                    blocked = {
+                        "message": block_msg,
+                        "category": verdict.category or rec.reason,
+                        "reason": verdict.reason or rec.reason,
+                        "matched": verdict.matched or rec.reason,
+                        "command_hash": rewritten_hash,
+                        "cwd": self.config.repo,
+                    }
+                    blocked.update(blocked_command_recovery(effective_command, rewritten_hash))
+                    return False, "blocked", blocked
 
         cmd_timeout = effective_command_timeout()
         from .command_jobs import reap_tmp_marionette_worktrees
