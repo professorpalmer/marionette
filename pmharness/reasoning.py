@@ -1,6 +1,12 @@
 from __future__ import annotations
 import re
 
+from pmharness.stream_snapshot import collapse_repeated_thought_blocks
+
+
+def _thought_key(text: str) -> str:
+    return collapse_repeated_thought_blocks(text).strip()
+
 
 def extract_reasoning(message: dict | object) -> str:
     """
@@ -22,7 +28,7 @@ def extract_reasoning(message: dict | object) -> str:
     reasoning_content = get_val(message, "reasoning_content")
     if reasoning_content:
         rc_str = str(reasoning_content)
-        if rc_str not in reasoning_parts:
+        if _thought_key(rc_str) not in [_thought_key(part) for part in reasoning_parts]:
             reasoning_parts.append(rc_str)
 
     reasoning_details = get_val(message, "reasoning_details")
@@ -37,7 +43,9 @@ def extract_reasoning(message: dict | object) -> str:
                 )
                 if summary:
                     summary_str = str(summary)
-                    if summary_str not in reasoning_parts:
+                    if _thought_key(summary_str) not in [
+                        _thought_key(part) for part in reasoning_parts
+                    ]:
                         reasoning_parts.append(summary_str)
 
     content = get_val(message, "content")
@@ -61,11 +69,13 @@ def extract_reasoning(message: dict | object) -> str:
                 flags = re.DOTALL | re.IGNORECASE
                 for block in re.findall(pattern, content, flags=flags):
                     cleaned = block.strip()
-                    if cleaned and cleaned not in reasoning_parts:
+                    if cleaned and _thought_key(cleaned) not in [
+                        _thought_key(part) for part in reasoning_parts
+                    ]:
                         reasoning_parts.append(cleaned)
 
     if reasoning_parts:
-        return "\n\n".join(reasoning_parts)
+        return collapse_repeated_thought_blocks("\n\n".join(reasoning_parts))
     return ""
 
 

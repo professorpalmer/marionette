@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   TranscriptList,
@@ -515,5 +515,23 @@ describe("prior fold does not stay Investigating after steer flush", () => {
 
     expect(screen.getAllByText(/Investigating/i)).toHaveLength(1);
     expect(screen.getByText(/Swarm · 1 pending/i)).toBeTruthy();
+  });
+
+  it("does not paint the same reasoning paragraph twice in one Thought fold", () => {
+    const phrase =
+      "The user is greeting me again. This is a simple greeting — no tool calls needed. I'll respond briefly and warmly.";
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "Hey, Bonsai!" } },
+      { kind: "thinking", text: phrase, id: "th-live" },
+      { kind: "msg", msg: { role: "assistant", text: "Hey! What's on your mind?" } },
+      { kind: "thinking", text: phrase, id: "th-replay" },
+    ];
+
+    render(
+      <TranscriptList {...listProps(items, { turnOpen: false, status: "idle" })} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Worked for/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Thought/i }));
+    expect(screen.getAllByText(phrase)).toHaveLength(1);
   });
 });

@@ -17,6 +17,7 @@ import {
   resolveActivityGroupOpen,
   resolveThinkingExpanded,
 } from "../components/TranscriptList";
+import { joinThoughtFoldText } from "../lib/turnProgress";
 import type { GroupedItem, Item } from "../components/TranscriptList";
 import { createApplyStreamEvent } from "../components/conversation/streamEventHandler";
 import { flushTypewriterBuffer } from "../components/conversation/streamTypewriter";
@@ -570,6 +571,24 @@ describe("createApplyStreamEvent Sol reasoning coalescing", () => {
     expect(thinking).toHaveLength(1);
     expect(thinking[0].text).toBe("Planning archive and settle");
     expect(thinking[0].stream_id).toBe("rs_1");
+  });
+
+  it("does not keep a replayed thought paragraph after the answer starts", () => {
+    const phrase =
+      "The user is greeting me again. This is a simple greeting — no tool calls needed. I'll respond briefly and warmly.";
+    const state = {
+      items: [{ kind: "msg", msg: { role: "user", text: "Hey, Bonsai!" } }] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    state.itemsRef.current = state.items;
+    const apply = createApplyStreamEvent(makeApplyDeps(state));
+    apply({ kind: "thinking", data: { text: phrase, delta: true } });
+    apply({ kind: "message_delta", data: { text: "Hey! What's on your mind?" } });
+    apply({ kind: "thinking", data: { text: phrase, delta: true } });
+    expect(joinThoughtFoldText(thinkingRows(state.items).map((t) => t.text))).toBe(
+      phrase,
+    );
   });
 
   it("keeps substantive assistant narration as a hard thinking boundary", () => {

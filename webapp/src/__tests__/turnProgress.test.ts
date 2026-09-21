@@ -6,6 +6,7 @@ import {
   deriveBusyProgress,
   activityWorkDurationMs,
   foldWorkDurationMs,
+  joinThoughtFoldText,
   resolveSealedWorkMs,
   formatBusyElapsed,
   latchWaitingPhaseStartedAt,
@@ -1198,6 +1199,23 @@ describe("exploration shelf grouping", () => {
   it("anchors shelf identity on the first card so appends do not remount", () => {
     expect(explorationShelfAnchorId(["r1", "g1"])).toBe("expl-shelf-r1");
     expect(explorationShelfAnchorId(["r1", "g1", "r2"])).toBe("expl-shelf-r1");
+  });
+});
+
+describe("joinThoughtFoldText", () => {
+  const phrase =
+    "The user is greeting me again. This is a simple greeting — no tool calls needed. I'll respond briefly and warmly.";
+
+  it("collapses a Completions-replayed thought paragraph in the fold", () => {
+    expect(joinThoughtFoldText([phrase, phrase])).toBe(phrase);
+    expect(joinThoughtFoldText([`${phrase}\n\n${phrase}`])).toBe(phrase);
+    expect(joinThoughtFoldText([phrase, `${phrase}\n`])).toBe(phrase);
+  });
+
+  it("keeps two different thought phases", () => {
+    expect(joinThoughtFoldText(["phase-one", "phase-two"])).toBe(
+      "phase-one\n\nphase-two",
+    );
   });
 });
 

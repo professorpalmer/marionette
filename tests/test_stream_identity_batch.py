@@ -28,6 +28,8 @@ def test_absorb_stream_snapshot_skips_replay_and_keeps_true_deltas():
     # Prefix crumbs of a long accumulator are also real deltas (dropping them
     # ate later "###" / "**" chunks and painted the answer twice).
     assert absorb_stream_snapshot(phrase, "Received") == "Received"
+    # One Completions frame that already contains P + blank + P.
+    assert absorb_stream_snapshot("", phrase + "\n\n" + phrase) == phrase
 
 
 class _CountingGetQueue(queue.Queue):
