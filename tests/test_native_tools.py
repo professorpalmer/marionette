@@ -129,6 +129,16 @@ def test_extract_reasoning():
     msg_empty = {"content": "Hello! Just prose."}
     assert extract_reasoning(msg_empty) == ""
 
+    phrase = "The user is greeting me again."
+    assert extract_reasoning({
+        "reasoning": phrase,
+        "reasoning_content": phrase + "\n",
+    }) == phrase
+    assert extract_reasoning({
+        "reasoning": phrase,
+        "reasoning_content": phrase + "\n\n" + phrase,
+    }) == phrase
+
 
 def test_stub_driver_chat():
     driver = StubDriver()

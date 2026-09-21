@@ -1,4 +1,4 @@
-import { normalizeToolKind } from "../../lib/turnProgress";
+import { absorbThoughtSnapshot, normalizeToolKind } from "../../lib/turnProgress";
 import type { Item } from "../TranscriptList";
 
 let thinkingIdSeq = 0;
@@ -211,7 +211,9 @@ function mergeThinkingText(
     const sep = /\s$/.test(existing) ? "" : " ";
     return sanitizeThinkingStatusGlue(existing + sep + chunkCore);
   }
-  return sanitizeThinkingStatusGlue(existing + chunk);
+  const piece = absorbThoughtSnapshot(existing, chunk);
+  if (!piece) return existing;
+  return sanitizeThinkingStatusGlue(existing + piece);
 }
 
 function turnStartIndex(items: Item[]): number {
@@ -317,6 +319,12 @@ export function upsertStreamingThinking(
       // Substantive assistant (open or sealed) fences identity-less thinking so
       // a later reasoning phase starts a new row. Trivial crumbs are skipped
       // above so markdown markers cannot mint one REASONING header per word.
+      const replayOfPrior = items.slice(turnStart).some(
+        (row) => row.kind === "thinking" && !absorbThoughtSnapshot(row.text, chunk),
+      );
+      if (replayOfPrior) {
+        return finalizeStreamingThinking(items);
+      }
       const sealed = finalizeStreamingThinking(items);
       return [
         ...sealed,

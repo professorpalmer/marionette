@@ -640,10 +640,59 @@ export type StackedActivityRow<T> =
   | { kind: "shelf"; items: T[]; indexes: number[] }
   | { kind: "item"; item: T; index: number };
 
+const THOUGHT_SNAPSHOT_MIN = 12;
+
+/** Keep one copy when the whole body is the same paragraph repeated. */
+export function collapseRepeatedThoughtBlocks(text: string): string {
+  const raw = String(text || "");
+  const trimmed = raw.trim();
+  if (!trimmed) return raw;
+  const parts = trimmed.split(/\n\s*\n/).map((part) => part.trim()).filter(Boolean);
+  if (
+    parts.length >= 2
+    && parts[0].length >= THOUGHT_SNAPSHOT_MIN
+    && parts.every((part) => part === parts[0])
+  ) {
+    return parts[0];
+  }
+  return trimmed;
+}
+
+/** Return the new suffix to append, or empty when incoming is a replay. */
+export function absorbThoughtSnapshot(
+  accumulated: string,
+  incoming: string,
+  minChunk = THOUGHT_SNAPSHOT_MIN,
+): string {
+  const acc = accumulated || "";
+  const inc = incoming || "";
+  if (!inc) return "";
+  const collapsedInc = collapseRepeatedThoughtBlocks(inc);
+  if (!acc) return collapsedInc;
+  if (inc.startsWith(acc)) {
+    const rest = inc.slice(acc.length);
+    if (!rest.trim()) return acc.length >= minChunk ? "" : inc;
+    if (acc.length >= minChunk && rest.trim() === acc.trim()) return "";
+    if (collapsedInc !== inc && collapsedInc.startsWith(acc)) {
+      return collapsedInc.slice(acc.length);
+    }
+    return rest;
+  }
+  if (acc.length >= minChunk && inc.trim() === acc.trim()) return "";
+  if (acc.length >= minChunk && collapsedInc.trim() === acc.trim()) return "";
+  return inc;
+}
+
 /** Join consecutive sealed reasoning snapshots into one Thought body. */
 export function joinThoughtFoldText(texts: string[]): string {
-  const parts = texts.map((t) => String(t || "").trim()).filter(Boolean);
-  return parts.join("\n\n");
+  const parts: string[] = [];
+  for (const raw of texts) {
+    const next = collapseRepeatedThoughtBlocks(String(raw || "")).trim();
+    if (!next) continue;
+    if (parts[parts.length - 1] === next) continue;
+    parts.push(next);
+  }
+  return collapseRepeatedThoughtBlocks(parts.join("\n\n"));
 }
 
 /**

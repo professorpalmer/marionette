@@ -109,6 +109,28 @@ def test_duplicate_content_snapshot_does_not_double_text(monkeypatch):
     assert "".join(seen) == phrase
 
 
+def test_single_reasoning_frame_internal_duplicate_collapses(monkeypatch):
+    phrase = (
+        "The user is greeting me again. This is a simple greeting — "
+        "no tool calls needed."
+    )
+    lines = [
+        _data({"choices": [{"delta": {"reasoning_content": f"{phrase}\n\n{phrase}"}}]}),
+        _data({"choices": [{"delta": {"content": "Hey!"}, "finish_reason": "stop"}]}),
+        b"data: [DONE]\n",
+    ]
+    seen = []
+    resp = _run_stream(
+        monkeypatch,
+        _driver(),
+        lines,
+        on_reasoning_delta=seen.append,
+    )
+    assert "".join(seen) == phrase
+    assert resp.meta.get("reasoning") == phrase
+    assert resp.meta.get("reasoning_content") == phrase
+
+
 def test_duplicate_reasoning_snapshot_does_not_double_text(monkeypatch):
     phrase = "A hashmap stores key-value pairs."
     seen = []

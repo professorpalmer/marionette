@@ -12,8 +12,28 @@ streamed bubble from the final message and paints the answer twice.
 
 from __future__ import annotations
 
+import re
+
 # Snapshot floor: a "snapshot" of fewer chars than this is just a short delta.
 STREAM_SNAPSHOT_MIN_CHUNK = 12
+
+_BLANK_SPLIT = re.compile(r"\n\s*\n")
+
+
+def collapse_repeated_thought_blocks(text, min_chunk=STREAM_SNAPSHOT_MIN_CHUNK):
+    """Keep one copy when the whole body is the same paragraph repeated."""
+    raw = text or ""
+    trimmed = raw.strip()
+    if not trimmed:
+        return raw
+    parts = [part.strip() for part in _BLANK_SPLIT.split(trimmed) if part.strip()]
+    if (
+        len(parts) >= 2
+        and len(parts[0]) >= min_chunk
+        and all(part == parts[0] for part in parts)
+    ):
+        return parts[0]
+    return raw
 
 
 def absorb_stream_snapshot(accumulated, incoming, min_chunk=STREAM_SNAPSHOT_MIN_CHUNK):
@@ -22,8 +42,9 @@ def absorb_stream_snapshot(accumulated, incoming, min_chunk=STREAM_SNAPSHOT_MIN_
     inc = incoming or ""
     if not inc:
         return ""
+    collapsed_inc = collapse_repeated_thought_blocks(inc, min_chunk=min_chunk)
     if not acc:
-        return inc
+        return collapsed_inc
     if inc.startswith(acc):
         rest = inc[len(acc):]
         if not rest.strip():
@@ -32,7 +53,11 @@ def absorb_stream_snapshot(accumulated, incoming, min_chunk=STREAM_SNAPSHOT_MIN_
             return "" if len(acc) >= min_chunk else inc
         if len(acc) >= min_chunk and rest.strip() == acc.strip():
             return ""
+        if collapsed_inc != inc and collapsed_inc.startswith(acc):
+            return collapsed_inc[len(acc):]
         return rest
     if len(acc) >= min_chunk and inc.strip() == acc.strip():
+        return ""
+    if len(acc) >= min_chunk and collapsed_inc.strip() == acc.strip():
         return ""
     return inc
