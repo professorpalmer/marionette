@@ -10,6 +10,7 @@ Stdlib dataclasses only. Snapshot/restore is JSON-safe.
 import json
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -57,6 +58,9 @@ _KIND_DEFAULTS: Dict[ActionKind, Tuple[DeliveryPolicy, WakePolicy]] = {
 }
 
 _INJECTABLE_KINDS = (ActionKind.STEER, ActionKind.MAILBOX)
+_COMMAND_GATED_KINDS = (ActionKind.START, ActionKind.REDIRECT, ActionKind.RECOVER)
+SETTLED_LRU = 64
+MAILBOX_DRAIN_LIMIT = 20
 
 
 def normalize_turn_input_mode(requested: Optional[str]) -> Optional[str]:
@@ -163,6 +167,8 @@ class SessionActionStore:
         self._actions: List[SessionAction] = []
         self._closed: bool = False
         self._current_turn_id: Optional[str] = None
+        self._inflight: Dict[str, SessionAction] = {}
+        self._settled: "OrderedDict[str, SessionAction]" = OrderedDict()
 
     def __iter__(self):
         return iter(self._actions)
@@ -187,6 +193,7 @@ class SessionActionStore:
     def clear(self) -> List[SessionAction]:
         dropped = list(self._actions)
         self._actions = []
+        self._inflight = {}
         return dropped
 
     def admit(
@@ -251,6 +258,13 @@ class SessionActionStore:
             retain(action)
         if resolved is ActionKind.START and not self._current_turn_id:
             self._current_turn_id = expected or action.id
+        if input_id:
+            inflight = self._inflight.get(action.id)
+            if inflight is not None:
+                return inflight
+            settled = self._settled.get(action.id)
+            if settled is not None:
+                return settled
         existing = next((row for row in self._actions if row.id == action.id), None)
         if existing is not None:
             return existing
@@ -314,14 +328,48 @@ class SessionActionStore:
             )
         ready: List[SessionAction] = []
         kept: List[SessionAction] = []
+        gated_inflight = any(
+            row.kind in _COMMAND_GATED_KINDS for row in self._inflight.values()
+        )
+        mailbox_taken = 0
         for action in self._actions:
             match_kind = kind_set is None or action.kind in kind_set
-            if match_kind and action.delivery is delivery:
-                ready.append(action)
-            else:
+            if not (match_kind and action.delivery is delivery):
                 kept.append(action)
+                continue
+            if action.kind is ActionKind.MAILBOX and mailbox_taken >= MAILBOX_DRAIN_LIMIT:
+                kept.append(action)
+                continue
+            if action.kind in _COMMAND_GATED_KINDS and gated_inflight:
+                kept.append(action)
+                continue
+            ready.append(action)
+            self._inflight[action.id] = action
+            if action.kind in _COMMAND_GATED_KINDS:
+                gated_inflight = True
+            if action.kind is ActionKind.MAILBOX:
+                mailbox_taken += 1
         self._actions = kept
         return ready
+
+    def settle(self, action_id: str) -> Optional[SessionAction]:
+        """Mark a drained or queued command id settled (pin-live retryAck)."""
+        key = str(action_id or "").strip()
+        if not key:
+            return None
+        action = self._inflight.pop(key, None)
+        if action is None:
+            for index, row in enumerate(self._actions):
+                if row.id == key:
+                    action = self._actions.pop(index)
+                    break
+        if action is None:
+            return self._settled.get(key)
+        self._settled[key] = action
+        self._settled.move_to_end(key)
+        while len(self._settled) > SETTLED_LRU:
+            self._settled.popitem(last=False)
+        return action
 
     def requeue_front(self, actions: Sequence[SessionAction]) -> None:
         """Put previously drained actions back at the front (inject defer)."""
@@ -350,6 +398,8 @@ class SessionActionStore:
             "closed": bool(self._closed),
             "current_turn_id": self._current_turn_id,
             "actions": [action.to_dict() for action in self._actions],
+            "inflight": [action.to_dict() for action in self._inflight.values()],
+            "settled": [action.to_dict() for action in self._settled.values()],
         }
         # Fail closed: snapshot must be committible as JSON.
         json.dumps(payload)
@@ -360,6 +410,8 @@ class SessionActionStore:
             self._actions = []
             self._closed = False
             self._current_turn_id = None
+            self._inflight = {}
+            self._settled = OrderedDict()
             return
         if not isinstance(data, dict):
             raise SessionActionIllegalTransition(
@@ -374,6 +426,20 @@ class SessionActionStore:
         self._actions = restored
         self._closed = bool(data.get("closed"))
         self._current_turn_id = _optional_turn_id(data.get("current_turn_id"))
+        self._inflight = {}
+        for row in data.get("inflight") or []:
+            if not isinstance(row, dict):
+                continue
+            action = SessionAction.from_dict(row)
+            if action.id:
+                self._inflight[action.id] = action
+        self._settled = OrderedDict()
+        for row in data.get("settled") or []:
+            if not isinstance(row, dict):
+                continue
+            action = SessionAction.from_dict(row)
+            if action.id:
+                self._settled[action.id] = action
 
 
 def injectable_kinds() -> Tuple[ActionKind, ActionKind]:

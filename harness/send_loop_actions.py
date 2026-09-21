@@ -43,11 +43,11 @@ from .send_loop_dispatch import (
 )
 from .send_loop_phases import (
     LOCAL_ACTION_KINDS,
-    PLAN_SKIP_KINDS,
     READ_ONLY_KINDS,
     action_display_goal,
     dispatch_local_action,
     dispatch_readonly_action,
+    plan_mode_blocks,
     run_parallel_prefetch,
     yield_session_interrupted,
 )
@@ -298,9 +298,7 @@ def execute_turn_actions(
                 "call_id": _tcid or None,
             })
 
-        if plan and (
-            act.kind in PLAN_SKIP_KINDS or act.kind.startswith("browser_")
-        ):
+        if plan and plan_mode_blocks(act.kind):
             if act.kind in ("run_implement", "run_parallel"):
                 yield ConvEvent("action_start", {
                     "id": aid, "kind": act.kind, "goal": act_goal or act.tool,

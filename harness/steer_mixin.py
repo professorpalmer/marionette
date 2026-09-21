@@ -355,6 +355,7 @@ class SteerMixin:
                 if receipts is not None:
                     for action in actions:
                         receipts.transition(action.id, 'dropped', 'stop_before_injection')
+                self._settle_input_actions(actions)
                 self._record_steer_drop_notice([a.text for a in actions])
                 return False
             for action, content in zip(actions, contents):
@@ -365,7 +366,18 @@ class SteerMixin:
             if receipts is not None:
                 from .input_receipts import publish_session_injected
                 publish_session_injected(self, [a.id for a in actions])
+            self._settle_input_actions(actions)
             return True
+
+    def _settle_input_actions(self, actions) -> None:
+        store = self._action_store()
+        settle = getattr(store, "settle", None)
+        if not callable(settle):
+            return
+        for action in actions:
+            action_id = getattr(action, "id", None)
+            if action_id:
+                settle(action_id)
 
     @staticmethod
     def _format_steer_user_content(text: str) -> str:
