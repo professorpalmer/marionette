@@ -6,7 +6,7 @@ import {
   peekTranscriptCacheEntry,
   writeTranscriptCache,
 } from "../components/conversation/transcriptCache";
-import { actionAfterSessionRemove, buildProjectsList, collectUnreadFinishedSessionIds, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, jobsCacheKey, partitionProjectSessions, patchActiveSessionInCaches, patchSessionArchivedInCaches, patchSessionTitleInCaches, pickFallbackProjectAfterForget, preferLastGoodSessionList, projectSessionsEmptyState, purgeSessionFromRootCaches, remainingOpenAfterRemoveFromCache, SESSION_LEASE_EXHAUSTED_MESSAGE, seedWorkspacesCache, shouldOfferBackgroundStop, writeSessionListCache, workspacesCacheKey } from "../components/LeftRail";
+import { actionAfterSessionRemove, buildProjectsList, collectUnreadFinishedSessionIds, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, isRedundantSessionSwitch, jobsCacheKey, partitionProjectSessions, patchActiveSessionInCaches, patchSessionArchivedInCaches, patchSessionTitleInCaches, pickFallbackProjectAfterForget, preferLastGoodSessionList, projectSessionsEmptyState, purgeSessionFromRootCaches, remainingOpenAfterRemoveFromCache, SESSION_LEASE_EXHAUSTED_MESSAGE, seedWorkspacesCache, shouldOfferBackgroundStop, writeSessionListCache, workspacesCacheKey } from "../components/LeftRail";
 import type { Session } from "../lib/api";
 
 /**
@@ -17,6 +17,14 @@ describe("LeftRail session list contracts", () => {
   afterEach(() => {
     clearSWRCache();
     clearTranscriptCache();
+  });
+
+  it("treats clicking the already-active session as a redundant switch", () => {
+    expect(isRedundantSessionSwitch("sess-a", "sess-a")).toBe(true);
+    expect(isRedundantSessionSwitch("sess-b", "sess-a")).toBe(false);
+    expect(isRedundantSessionSwitch("sess-a", "")).toBe(false);
+    expect(isRedundantSessionSwitch("", "")).toBe(false);
+    expect(isRedundantSessionSwitch("sess-a", "sess-a", true)).toBe(false);
   });
 
   it("purgeSessionFromRootCaches removes id from every root cache", () => {

@@ -301,11 +301,11 @@ class MetadataReader:
                         row = rows[jid]
                         if not isinstance(row, dict) or row.get('deleted'):
                             continue
-                        if row.get('session_id') != ctx.session_id:
+                        if ctx.scope != 'all' and row.get('session_id') != ctx.session_id:
                             continue
                         canonical = row.get('canonical')
                         if (not isinstance(canonical, dict) or canonical.get('source') != 'harness'
-                                or canonical.get('session_id') != ctx.session_id):
+                                or (ctx.scope != 'all' and canonical.get('session_id') != ctx.session_id)):
                             continue
                         remember(self._coerce_store_job_ref(canonical.get('job_ref'), selection.state_id))
                 lock = getattr(handle, 'lock', None)
@@ -323,7 +323,7 @@ class MetadataReader:
                 payload = getattr(entry, 'job_ref', None)
                 if payload is None:
                     payload = entry
-            if sid != ctx.session_id:
+            if ctx.scope != 'all' and sid != ctx.session_id:
                 continue
             remember(self._coerce_store_job_ref(payload, selection.state_id))
         return tuple(found[key] for key in sorted(found)[:50])

@@ -53,6 +53,7 @@ export {
   seedWorkspacesCache,
   jobsCacheKey,
   shouldOfferBackgroundStop,
+  isRedundantSessionSwitch,
   collectUnreadFinishedSessionIds,
   isRailWideSwitching,
   projectSessionsEmptyState,
@@ -76,6 +77,7 @@ import {
   workspacesCacheKey,
   seedWorkspacesCache,
   shouldOfferBackgroundStop,
+  isRedundantSessionSwitch,
   collectUnreadFinishedSessionIds,
   isRailWideSwitching,
   projectSessionsEmptyState,
@@ -876,10 +878,23 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       setPruningBranches(false);
     }
   };
-  const switchSession = async (id: string) => {
+  const switchSession = async (id: string, opts?: { force?: boolean }) => {
     if (switchingSessionId || opening) return;
+    // Same-row click still clears unread and fences in-flight opens;
+    // skip persist/attach/config fan-out.
+    const activeId = sessions.find((s) => s.active)?.id || "";
+    if (isRedundantSessionSwitch(id, activeId, !!opts?.force)) {
+      sessionScopeGeneration.current += 1;
+      setUnreadFinishedIds((prev) => {
+        if (!prev[id]) return prev;
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      return;
+    }
     const scope = ++sessionScopeGeneration.current;
-    const previousActiveId = sessions.find((s) => s.active)?.id || "";
+    const previousActiveId = activeId;
     switchingSessionIdRef.current = id;
     setSwitchingSessionId(id);
     setUnreadFinishedIds((prev) => {
@@ -1087,7 +1102,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
         await newSession(projectPath || currentRepo);
         return;
       case "switch":
-        await switchSession(action.sessionId);
+        await switchSession(action.sessionId, { force: true });
         return;
       case "noop":
         return;

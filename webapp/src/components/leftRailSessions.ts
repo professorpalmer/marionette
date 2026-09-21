@@ -266,6 +266,17 @@ export function shouldOfferBackgroundStop(
   return status === "running" && !isActive;
 }
 
+/** Same-id rail click is not a switch. `force` is the post-remove promote path. */
+export function isRedundantSessionSwitch(
+  clickedId: string,
+  activeId: string,
+  force = false,
+): boolean {
+  if (force) return false;
+  if (!clickedId) return false;
+  return clickedId === activeId;
+}
+
 export type RunnerStatus = "running" | "idle" | "attaching" | "missing";
 
 /** Sessions that finished a background turn while the user looked elsewhere. */
