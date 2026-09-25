@@ -472,9 +472,14 @@ class MetadataReader:
             header = self._header(store, row, selection) if not reason and time.monotonic() < deadline else None
             if time.monotonic() >= deadline:
                 header = None
-            _, current, changed = self._selected(selection, pin=True)
-            if not reason and (changed or current.revision != row.revision):
+            # A live job's summary revision advances under every worker write;
+            # that is the same selection. Only identity/ownership loss is a
+            # changed pin — same rule as read_selected_metadata.
+            _, current, later = self._selected(selection, pin=True)
+            if later or (current is not None and current.job_ref != row.job_ref):
                 reason = 'selection_changed'
+            elif not reason and current is not None:
+                row = current
             result = dict(kind='unavailable', reason=reason) if reason else dict(
                 kind='present', row=self._summary(row, ctx, selection.store))
             if result['kind'] == 'present' and header is not None:

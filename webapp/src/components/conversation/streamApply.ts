@@ -64,7 +64,7 @@ export {
  * (ephemeral; action_result drops them).
  */
 export function sealOpenStreamSurfaces(items: Item[]): Item[] {
-  const withThinking = finalizeStreamingThinking(items);
+  const withThinking = finalizeStreamingThinking(dropWorkerStreamBubbles(items));
   let changed = false;
   const next: Item[] = [];
   for (const it of withThinking) {
@@ -1163,6 +1163,16 @@ export function ensureAssistantStreamingBubble(
   ];
 }
 
+/** Drop ephemeral workerStream previews (one or many parallel workers). */
+export function dropWorkerStreamBubbles(items: Item[]): Item[] {
+  const next = items.filter((it) => !(
+    it.kind === "msg"
+    && it.msg.role === "assistant"
+    && it.msg.workerStream
+  ));
+  return next.length === items.length ? items : next;
+}
+
 /** Drop trailing ephemeral workerStream previews (one or many parallel workers). */
 function dropTrailingWorkerStreamBubbles(items: Item[]): Item[] {
   let end = items.length;
@@ -2078,13 +2088,13 @@ export function applySwarmResultToItems(
       )
     )
   ) {
-    return patchExistingResult(
+    return dropWorkerStreamBubbles(patchExistingResult(
       reconcileTerminalJobCards(
         items,
         jobId,
         terminalOutcomeFromSwarmResult(resObj),
       ),
-    );
+    ));
   }
 
   const updated = items.map((item, idx) => {
@@ -2144,15 +2154,15 @@ export function applySwarmResultToItems(
   const reconciled = reconcileTerminalJobCards(updated, jobId, outcome);
 
   if (alreadyHasResult) {
-    return patchExistingResult(reconciled);
+    return dropWorkerStreamBubbles(patchExistingResult(reconciled));
   }
   if (reconciled.some((it) => it.kind === "swarm_result" && it.job_id === jobId)) {
-    return patchExistingResult(reconciled);
+    return dropWorkerStreamBubbles(patchExistingResult(reconciled));
   }
 
   // First insert: coerce absent wire fields to durable defaults (merge path
   // above keeps undefined so prior values can inherit).
-  return [
+  return dropWorkerStreamBubbles([
     ...reconciled,
     {
       ...incomingResult,
@@ -2160,7 +2170,7 @@ export function applySwarmResultToItems(
       files: incomingResult.files ?? [],
       error: incomingResult.error !== undefined ? incomingResult.error : null,
     },
-  ];
+  ]);
 }
 
 /**
