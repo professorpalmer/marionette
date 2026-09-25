@@ -35,6 +35,7 @@ import {
   appendSwarmPending,
   appendVerification,
   appendVerifying,
+  dropWorkerStreamBubbles,
   focusReviewTabAndRefresh,
   ensureAssistantStreamingBubble,
   ensureWorkerStreamingBubble,
@@ -519,7 +520,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       // narration) is still finalized in place.
       flushTypewriter();
       setItems((p) => {
-        let next = d.kind === "run_swarm" ? p : applyActionResultCard(p, d);
+        let next = d.kind === "run_swarm" ? dropWorkerStreamBubbles(p) : applyActionResultCard(p, d);
         // Sync run_swarm early failures emit action_result(error) without a
         // swarm_result — flip the matching local-swarm pill off the spinner.
         if (d.error) next = failSwarmPendingForActionError(next, d.id);

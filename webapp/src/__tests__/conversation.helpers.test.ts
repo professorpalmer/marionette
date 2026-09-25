@@ -4369,6 +4369,66 @@ describe("investigation terminal reconciliation + live ordering", () => {
     expect(live.actions?.[0].status).toBe("running");
   });
 
+  it("drops fenced workerStream previews when swarm_result terminals the pill", () => {
+    let items: Item[] = [
+      {
+        kind: "msg",
+        msg: {
+          role: "assistant",
+          text: "I'll start by locating the engagement folder.",
+          streaming: true,
+          workerStream: true,
+          worker_id: "explore",
+        },
+      },
+      {
+        kind: "msg",
+        msg: {
+          role: "assistant",
+          text: "I'll start by locating the evidence.",
+          streaming: true,
+          workerStream: true,
+          worker_id: "review",
+        },
+      },
+      {
+        kind: "swarm_pending",
+        job_ids: ["job_6660024292f1"],
+        objective: "Adversarially verify",
+        status: "running",
+        terminal_job_ids: [],
+      },
+    ];
+    items = applySwarmResultToItems(items, {
+      job_id: "job_6660024292f1",
+      objective: "Adversarially verify",
+      applied: true,
+      summary: "29 findings",
+      error: null,
+    });
+    expect(items.some((i) => i.kind === "msg" && i.msg.workerStream === true)).toBe(false);
+    expect(items.find((i) => i.kind === "swarm_pending")).toMatchObject({ status: "done" });
+  });
+
+  it("sealOpenStreamSurfaces drops leftover workerStream previews", () => {
+    const items: Item[] = [
+      {
+        kind: "msg",
+        msg: { role: "assistant", text: "preview", streaming: true, workerStream: true },
+      },
+      {
+        kind: "swarm_pending",
+        job_ids: ["j1"],
+        objective: "x",
+        status: "done",
+        resolved: true,
+        terminal_job_ids: ["j1"],
+      },
+    ];
+    const sealed = sealOpenStreamSurfaces(items);
+    expect(sealed.some((i) => i.kind === "msg" && i.msg.workerStream === true)).toBe(false);
+  });
+
   it("applySwarmResultToItems clears matching card.running and nested spinners", () => {
     let items: Item[] = [
       {

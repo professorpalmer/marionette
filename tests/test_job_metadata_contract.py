@@ -221,6 +221,40 @@ def test_selected_reads_use_exact_public_bodies_without_scans_or_writes(case, mo
     assert any('selected_economics_current' in sql for sql in reads)
 
 
+def test_live_revision_advance_during_pin_read_keeps_header(case, monkeypatch):
+    """A worker write landing mid-pin moves the job revision; the pin stays present."""
+    store, job, reader, selection = case
+    store.update_job_status(job.id, 'running')
+    original = reader._header
+
+    def advanced(store_handle, row, sel):
+        store.save_task(Task(job.id, 'worker', 'landed mid-pin'))
+        return original(store_handle, row, sel)
+
+    monkeypatch.setattr(reader, '_header', advanced)
+    pins = reader.read_pins(selection.context, [selection])
+    result = pins['results'][0]['result']
+    assert result['kind'] == 'present'
+    assert result['row']['lifecycle'] == 'running'
+
+
+def test_ownership_change_during_pin_read_is_unavailable(case, monkeypatch):
+    store, job, reader, selection = case
+    original = reader._header
+
+    def changed(store_handle, row, sel):
+        # Pins may follow a session move; losing session identity is a real change.
+        store.save_job(replace(job, session_id=None, origin='other'))
+        return original(store_handle, row, sel)
+
+    monkeypatch.setattr(reader, '_header', changed)
+    pins = reader.read_pins(selection.context, [selection])
+    result = pins['results'][0]['result']
+    assert result['kind'] == 'unavailable'
+    assert result['reason'] == 'selection_changed'
+    assert 'foreign' not in json.dumps(result)
+
+
 def test_live_revision_advance_during_selected_read_keeps_lanes(case, monkeypatch):
     """A worker write landing mid-read moves the job revision; the selection is unchanged."""
     store, job, reader, _ = case

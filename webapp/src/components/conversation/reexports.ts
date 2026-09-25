@@ -113,6 +113,7 @@ export {
   reconcileTerminalJobCards,
   reconcileOrphanInvestigationCards,
   finalizeStreamingBubbleOnActionResult,
+  dropWorkerStreamBubbles,
   workspaceRootFromActionResult,
   appendSwarmPending,
   appendCheckpoint,
