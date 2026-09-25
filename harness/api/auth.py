@@ -11,6 +11,10 @@ from __future__ import annotations
 from .providers import (  # noqa: F401 — re-export surface for Handler
     ProviderServices,
     get_auth_pools,
+    post_auth_claude_cli_login,
+    post_auth_claude_cli_logout,
+    post_auth_claude_cli_models,
+    post_auth_claude_cli_status,
     post_auth_cursor_cli_login,
     post_auth_cursor_cli_logout,
     post_auth_cursor_cli_models,
@@ -44,4 +48,8 @@ __all__ = [
     "post_auth_cursor_cli_trust",
     "post_auth_cursor_cli_logout",
     "post_auth_cursor_cli_models",
+    "post_auth_claude_cli_status",
+    "post_auth_claude_cli_login",
+    "post_auth_claude_cli_logout",
+    "post_auth_claude_cli_models",
 ]

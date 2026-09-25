@@ -1565,6 +1565,41 @@ export const api = {
       "/api/auth/cursor-cli/models",
       {},
     ),
+  getClaudeCliStatus: (opts?: { refresh?: boolean }) =>
+    postJSON<{
+      ok?: boolean;
+      installed?: boolean;
+      authenticated?: boolean;
+      binary?: string | null;
+      label?: string;
+      error?: string;
+      install_hint?: string;
+      auth_kind?: string;
+      billing?: string;
+    }>("/api/auth/claude-cli/status", { refresh: !!opts?.refresh }),
+  startClaudeCliLogin: (opts?: { workspace?: string }) =>
+    postJSON<{
+      ok?: boolean;
+      launched?: boolean;
+      command?: string;
+      hint?: string;
+      error?: string;
+      install_hint?: string;
+      poll_interval?: number;
+      expires_in?: number;
+      auth_kind?: string;
+      workspace?: string | null;
+    }>("/api/auth/claude-cli/login", {
+      workspace: opts?.workspace || "",
+      workspace_root: opts?.workspace || "",
+    }),
+  logoutClaudeCli: () =>
+    postJSON<{ ok?: boolean; error?: string }>("/api/auth/claude-cli/logout", {}),
+  getClaudeCliModels: () =>
+    postJSON<{ ok?: boolean; models?: { id: string }[]; auth_kind?: string; error?: string }>(
+      "/api/auth/claude-cli/models",
+      {},
+    ),
   getRegistry: () => getJSON<{ models: RegistryModel[] }>("/api/registry"),
   saveRegistry: (models: RegistryModel[]) => postJSON<{ ok: boolean; models: RegistryModel[] }>("/api/registry", { models }),
   getRoles: () => getJSON<RolesConfig>("/api/roles"),

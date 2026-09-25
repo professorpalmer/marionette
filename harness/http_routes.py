@@ -365,6 +365,14 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
             _auth_api.post_auth_cursor_cli_logout, needs_body=False),
         "/api/auth/cursor-cli/models": post_json(
             _auth_api.post_auth_cursor_cli_models, needs_body=False),
+        "/api/auth/claude-cli/status": post_json(
+            _auth_api.post_auth_claude_cli_status),
+        "/api/auth/claude-cli/login": post_json(
+            _auth_api.post_auth_claude_cli_login, services=svc.provider_services),
+        "/api/auth/claude-cli/logout": post_json(
+            _auth_api.post_auth_claude_cli_logout, needs_body=False),
+        "/api/auth/claude-cli/models": post_json(
+            _auth_api.post_auth_claude_cli_models, needs_body=False),
         "/api/wiki/handoff": _bind_post_wiki_handoff(svc),
         "/api/git/connect": post_json(_git_api.post_git_connect),
         "/api/git/device/poll": post_json(_git_api.post_git_device_poll),

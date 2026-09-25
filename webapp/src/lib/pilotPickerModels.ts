@@ -22,6 +22,9 @@ const PROVIDER_LABELS: Record<string, string> = {
   "openai-codex": "Codex",
   "openrouter": "OpenRouter",
   "cursor-cli": "Cursor",
+  "claude-code": "Claude Code",
+  "claude-cli": "Claude Code",
+  "claude-max": "Claude Code",
   "cursor": "Cursor",
   local: "Local",
 };

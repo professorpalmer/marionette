@@ -401,6 +401,14 @@ def _isolate_provider_state(monkeypatch, tmp_path_factory):
 
     d = tmp_path_factory.mktemp("pmstate")
     monkeypatch.setenv("HARNESS_STATE_DIR", str(d))
+    monkeypatch.setenv("CLAUDE_CONFIG_HOME", str(d / "claude-home"))
+    monkeypatch.delenv("CLAUDE_CODE_LOGIN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_COMMAND", raising=False)
+    try:
+        from harness.claude_cli_auth import reset_for_tests
+        reset_for_tests()
+    except Exception:
+        pass
     models_path = d / "marionette-models.json"
     if not models_path.exists():
         models_path.write_text("{}\n", encoding="utf-8")

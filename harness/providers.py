@@ -20,6 +20,10 @@ cursor-cli is Marionette-native (no Hermes profile): local `agent` CLI
 stream-json + `agent login` and/or CURSOR_API_KEY (the CLI reads that env).
 Not CredentialPool bearer rotate.
 
+claude-code is also Marionette-native: local `claude --print` +
+`claude auth login` / ~/.claude.json oauthAccount. Distinct from the
+Anthropic Messages API key provider. Child processes drop ANTHROPIC_API_KEY.
+
 MIT License text: https://github.com/NousResearch/hermes-agent (LICENSE).
 """
 
@@ -117,6 +121,12 @@ class Provider:
                 return login_token_if_ready()
             except Exception:
                 return None
+        if self.name == "claude-code":
+            try:
+                from .claude_cli_auth import login_token_if_ready
+                return login_token_if_ready()
+            except Exception:
+                return None
         for ev in self.env_vars:
             v = os.environ.get(ev, "").strip()
             if v:
@@ -146,6 +156,8 @@ class Provider:
             return None
         if self.name == "cursor-cli":
             return "CURSOR_CLI_LOGIN" if self.key() else None
+        if self.name == "claude-code":
+            return "CLAUDE_CODE_LOGIN" if self.key() else None
         for ev in self.env_vars:
             if os.environ.get(ev, "").strip():
                 return ev
@@ -243,6 +255,22 @@ PROVIDERS = (
             "o4-mini",
         ),
         vision_model="gpt-5.4",
+    ),
+    # Claude Code CLI plan pilot. Distinct from the Anthropic Messages API
+    # key provider. Availability = `claude` binary + oauthAccount login.
+    Provider(
+        name="claude-code", aliases=("claude-cli", "claude-max"),
+        env_vars=("CLAUDE_CODE_LOGIN",),
+        base_url="",
+        api_mode="claude_cli", display_name="Claude Code (Max)",
+        pilot_models=(
+            "claude-opus-4-8",
+            "claude-sonnet-4-5",
+            "claude-haiku-4-5",
+            "claude-opus-4-6",
+            "claude-opus-5",
+        ),
+        vision_model="claude-sonnet-4-5",
     ),
     # Cursor Agent CLI plan pilot. Distinct from platform which('cursor') and
     # from CURSOR_API_KEY credential pools. Availability = agent binary + login.
@@ -698,6 +726,14 @@ def build_pilot(spec: str, *, max_tokens: int | None = None):
                 api_key_env=key_env or default_key_env,
                 max_tokens=max_tokens,
                 chatgpt_backend=(provider.api_mode == "codex_responses"),
+            )
+        )
+    if provider.api_mode == "claude_cli":
+        cwd = (os.environ.get("HARNESS_REPO") or "").strip() or None
+        from pmharness.drivers.claude_cli import ClaudeCliDriver
+        return _finalize_driver(
+            ClaudeCliDriver(
+                name=spec, model=model, max_tokens=max_tokens, cwd=cwd,
             )
         )
     if provider.api_mode == "cursor_cli":

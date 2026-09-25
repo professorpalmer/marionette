@@ -118,6 +118,13 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
     error?: string;
     binary?: string | null;
   } | null>(null);
+  const [claudeCliStatus, setClaudeCliStatus] = useState<{
+    installed?: boolean;
+    authenticated?: boolean;
+    label?: string;
+    error?: string;
+    binary?: string | null;
+  } | null>(null);
 
   // AWS Bedrock BYOK (multi-field; separate from single-key providers)
   const [bedrock, setBedrock] = useState<BedrockStatus | null>(null);
@@ -392,6 +399,9 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
     api.getCursorCliStatus({ refresh: false })
       .then(setCursorCliStatus)
       .catch((err) => console.error("Failed to load Cursor CLI status", err));
+    api.getClaudeCliStatus({ refresh: false })
+      .then(setClaudeCliStatus)
+      .catch((err) => console.error("Failed to load Claude Code status", err));
   };
 
   const loadProvidersList = () => {
@@ -646,6 +656,83 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         error: e?.message || "status check failed",
       });
       return null;
+    }
+  };
+
+  const refreshClaudeCliStatus = async (opts?: { refresh?: boolean }) => {
+    try {
+      const st = await api.getClaudeCliStatus({ refresh: opts?.refresh !== false });
+      setClaudeCliStatus(st);
+      return st;
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "status check failed";
+      setClaudeCliStatus({
+        installed: false,
+        authenticated: false,
+        error: message,
+      });
+      return null;
+    }
+  };
+
+  const handleClaudeCliSignIn = async () => {
+    oauthAbortRef.current = false;
+    setOauthBusy(true);
+    setOauthHint("");
+    setError("");
+    const workspace = (settings?.repo || "").trim();
+    try {
+      const start = await api.startClaudeCliLogin(
+        workspace ? { workspace } : undefined,
+      );
+      if (!start.ok && start.error) {
+        throw new Error(start.error);
+      }
+      setOauthHint(
+        start.hint
+        || (start.launched
+          ? "Complete Claude account login in the opened window, then wait…"
+          : `Run \`${start.command || "claude auth login"}\` in a terminal, then wait…`),
+      );
+      const deadline = Date.now() + (start.expires_in || 900) * 1000;
+      const intervalMs = Math.max(2, start.poll_interval || 3) * 1000;
+      while (Date.now() < deadline) {
+        if (oauthAbortRef.current) {
+          setOauthHint("Sign-in cancelled — click Sign in to try again.");
+          return;
+        }
+        await new Promise((r) => setTimeout(r, intervalMs));
+        if (oauthAbortRef.current) {
+          setOauthHint("Sign-in cancelled — click Sign in to try again.");
+          return;
+        }
+        const st = await refreshClaudeCliStatus();
+        if (st?.authenticated) {
+          const label = st.label || "Claude account";
+          setOauthHint(`Signed in as ${label}`);
+          await refreshProviders();
+          window.dispatchEvent(new Event("harness-config-changed"));
+          return;
+        }
+      }
+      setOauthHint("Claude login timed out. Click Sign in to try again.");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Claude Code login failed");
+    } finally {
+      setOauthBusy(false);
+    }
+  };
+
+  const handleClaudeCliLogout = async () => {
+    setOauthBusy(true);
+    try {
+      await api.logoutClaudeCli();
+      await refreshClaudeCliStatus();
+      await refreshProviders();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Claude Code logout failed");
+    } finally {
+      setOauthBusy(false);
     }
   };
 
@@ -1684,6 +1771,52 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                 <button
                   type="button"
                   onClick={() => { refreshCursorCliStatus(); }}
+                  className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px]"
+                >
+                  Refresh status
+                </button>
+              </div>
+            </div>
+
+            <div className="bg-panel2 border border-edge/50 rounded p-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-txt font-medium text-[11px]">
+                  Claude Code (Max){" "}
+                  <span className="text-warn/90 font-normal" title="Claude Code login powers the chat pilot. Puppetmaster claude-code workers can use the same login when that adapter is enabled. It is not an Anthropic API key.">Pilot</span>
+                </span>
+                <span className="text-faint text-[10px] font-mono truncate">
+                  {claudeCliStatus?.installed === false
+                    ? (claudeCliStatus.error || "claude binary not found")
+                    : claudeCliStatus?.authenticated
+                      ? `Signed in as ${claudeCliStatus.label || "Claude account"}`
+                      : (claudeCliStatus?.error || "Not signed in")}
+                </span>
+              </div>
+              <p className="text-[10px] text-muted mt-1 leading-normal">
+                Official Claude Code CLI. Uses your Max/Pro login, not ANTHROPIC_API_KEY.
+              </p>
+              <div className="flex items-center gap-2 flex-wrap mt-1.5">
+                <button
+                  type="button"
+                  onClick={handleClaudeCliSignIn}
+                  disabled={oauthBusy}
+                  className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-[10px] disabled:opacity-30"
+                >
+                  {oauthBusy ? "Waiting for login..." : "Sign in"}
+                </button>
+                {claudeCliStatus?.authenticated ? (
+                  <button
+                    type="button"
+                    onClick={handleClaudeCliLogout}
+                    disabled={oauthBusy}
+                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px] disabled:opacity-30"
+                  >
+                    Sign out
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => { refreshClaudeCliStatus(); }}
                   className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px]"
                 >
                   Refresh status
