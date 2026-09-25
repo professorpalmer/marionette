@@ -7,6 +7,7 @@ def test_cursor_cli_is_pilot_only():
     from harness.provider_capabilities import worker_capability, capability_hint
 
     assert worker_capability("cursor-cli") == "pilot_only"
+    assert worker_capability("claude-code") == "pilot_only"
     hint = capability_hint("pilot_only").lower()
     assert "full stack" in hint
     assert "not required" in hint

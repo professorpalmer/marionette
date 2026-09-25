@@ -552,3 +552,51 @@ def post_auth_cursor_cli_models() -> tuple[int, dict]:
         "models": [{"id": m} for m in models],
         "auth_kind": "cursor_account",
     }
+
+
+def post_auth_claude_cli_status(body: dict) -> tuple[int, dict]:
+    """POST /api/auth/claude-cli/status — installed/auth status."""
+    from ..claude_cli_auth import get_status
+    try:
+        refresh = bool(body.get("refresh")) if isinstance(body, dict) else False
+        res = get_status(refresh=refresh)
+    except Exception as e:
+        return 400, {"error": str(e)}
+    return 200, res
+
+
+def post_auth_claude_cli_login(body: dict, svc: ProviderServices) -> tuple[int, dict]:
+    """POST /api/auth/claude-cli/login — start `claude auth login`."""
+    from ..claude_cli_auth import start_login
+    try:
+        ws = _cursor_cli_workspace(body, svc)
+        res = start_login(workspace=ws or None)
+    except Exception as e:
+        return 400, {"error": str(e)}
+    status = 200 if res.get("ok") else 400
+    return status, res
+
+
+def post_auth_claude_cli_logout() -> tuple[int, dict]:
+    """POST /api/auth/claude-cli/logout — clear Claude Code auth."""
+    from ..claude_cli_auth import logout
+    try:
+        res = logout()
+    except Exception as e:
+        return 400, {"error": str(e)}
+    status = 200 if res.get("ok") else 400
+    return status, res
+
+
+def post_auth_claude_cli_models() -> tuple[int, dict]:
+    """POST /api/auth/claude-cli/models — curated Claude Code pilot models."""
+    from ..claude_cli_auth import list_models
+    try:
+        models = list_models(live=True)
+    except Exception as e:
+        return 400, {"error": str(e)}
+    return 200, {
+        "ok": True,
+        "models": [{"id": m} for m in models],
+        "auth_kind": "claude_account",
+    }

@@ -43,6 +43,7 @@ def test_full_stack_map_covers_settings_keys():
     ):
         assert worker_capability(name) == "full_stack", name
     assert worker_capability("cursor-cli") == "pilot_only"
+    assert worker_capability("claude-code") == "pilot_only"
     assert worker_capability("cursor") == "platform_worker"
 
 

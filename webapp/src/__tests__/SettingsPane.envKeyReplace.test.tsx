@@ -27,6 +27,7 @@ vi.mock("../lib/api", () => ({
     getBedrockStatus: vi.fn().mockResolvedValue(null),
     cursorCliStatus: vi.fn().mockResolvedValue(null),
     getCursorCliStatus: vi.fn().mockResolvedValue(null),
+    getClaudeCliStatus: vi.fn().mockResolvedValue(null),
     gitStatus: vi.fn().mockResolvedValue(null),
     platformAdapters: vi.fn().mockResolvedValue([]),
     clearProviderKey: vi.fn().mockResolvedValue({ ok: true }),
