@@ -32,6 +32,7 @@ FULL_STACK_AGENTIC = frozenset({
 # Cursor CLI (agent login) is distinct from CURSOR_API_KEY platform workers.
 PILOT_ONLY = frozenset({
     "cursor-cli",
+    "claude-code",
 })
 
 # Credential-pool / platform worker auth that is not a harness pilot Provider

@@ -353,6 +353,9 @@ def _fetch_provider_models(provider, key: str) -> list[Any]:
             # Results are memoized by fetch_models(); curated is the offline fallback.
             from .cursor_cli_auth import list_models
             return list(list_models(live=True))
+        if name == "claude-code" or getattr(provider, "api_mode", "") == "claude_cli":
+            from .claude_cli_auth import list_models
+            return list(list_models(live=True))
         if name == "openai-codex" or getattr(provider, "api_mode", "") == "codex_responses":
             # ChatGPT Codex OAuth model list (Hermes-compatible endpoint).
             return _fetch_codex_oauth_models(key)

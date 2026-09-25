@@ -400,7 +400,10 @@ _HARD_PILOT_STEPS_DEFAULT = 40  # safety cap on pilot<->swarm round-trips per us
 def _driver_is_plan_billing(driver_spec: str) -> bool:
     """True when the pilot burns a subscription (not a metered API key)."""
     prov = (driver_spec or "").split(":", 1)[0].strip().lower()
-    return prov in ("cursor-cli", "cursor-agent", "openai-codex", "xai-oauth", "nous")
+    return prov in (
+        "cursor-cli", "cursor-agent", "openai-codex", "xai-oauth", "nous",
+        "claude-code", "claude-cli", "claude-max",
+    )
 
 
 def _friendly_pilot_model_name(model_id: str) -> str:
