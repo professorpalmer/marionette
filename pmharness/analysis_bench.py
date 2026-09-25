@@ -72,8 +72,9 @@ ANALYSIS_QUESTIONS = (
               (Fact('steps', 40),), 'harness/conversation.py:_HARD_PILOT_STEPS_DEFAULT'),
     AnalysisQ('provider_count', 'Count profiles declared in harness/providers.py PROVIDERS '
               'and give at least three distinct canonical provider names as examples.',
-              (Fact('count', 16), Fact('examples', (
-                  'openrouter', 'anthropic', 'openai', 'openai-codex', 'cursor-cli', 'nous',
+              (Fact('count', 17), Fact('examples', (
+                  'openrouter', 'anthropic', 'openai', 'openai-codex', 'claude-code',
+                  'cursor-cli', 'nous',
                   'gemini', 'deepseek', 'zai', 'minimax', 'xai', 'nvidia', 'opencode-go',
                   'opencode-zen', 'local', 'bedrock'), minimum=3)),
               'harness/providers.py:PROVIDERS'),

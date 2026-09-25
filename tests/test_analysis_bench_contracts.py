@@ -87,10 +87,10 @@ def test_strict_numbers_duplicate_keys_and_unrelated_evidence():
 
 def test_provider_count_requires_examples():
     q = next(q for q in ANALYSIS_QUESTIONS if q.id == 'provider_count')
-    result = score_analysis(q, answer(q, {'count': 16}))
+    result = score_analysis(q, answer(q, {'count': 17}))
     assert result['score'] == 0 and result['hit'] is False
     assert (result['matched'], result['required'], result['coverage']) == (1, 4, .25)
-    assert score_analysis(q, answer(q, {'count': 16, 'examples': ['openai', 'local', 'zai']}))['score'] == 1
+    assert score_analysis(q, answer(q, {'count': 17, 'examples': ['openai', 'local', 'zai']}))['score'] == 1
     assert score_analysis(q, answer(q, {'count': 9, 'examples': ['openai', 'local', 'zai']}))['score'] == 0
 
 
