@@ -3079,10 +3079,14 @@ class Handler(BaseHTTPRequestHandler):
     def _get_config(self, session_id: Optional[str] = None):
         from .api.settings import get_config
         with _pilot_swap_lock:
-            sid = _runners.active_view_id or _sessions.active
-            if session_id is not None and (not session_id or session_id != sid
-                                            or session_id != _sessions.active):
-                return self._send(409, json.dumps({"error": "session changed or missing"}))
+            view_id = _runners.active_view_id
+            store_id = _sessions.active
+            if session_id is not None:
+                if not session_id or (session_id != view_id and session_id != store_id):
+                    return self._send(409, json.dumps({"error": "session changed or missing"}))
+                sid = session_id
+            else:
+                sid = view_id or store_id
             status, payload = get_config(_settings_services())
             payload["session_id"] = sid
             if sid:

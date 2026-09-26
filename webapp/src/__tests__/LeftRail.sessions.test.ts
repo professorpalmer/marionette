@@ -6,7 +6,7 @@ import {
   peekTranscriptCacheEntry,
   writeTranscriptCache,
 } from "../components/conversation/transcriptCache";
-import { actionAfterSessionRemove, buildProjectsList, collectUnreadFinishedSessionIds, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, isRedundantSessionSwitch, jobsCacheKey, partitionProjectSessions, patchActiveSessionInCaches, patchSessionArchivedInCaches, patchSessionTitleInCaches, pickFallbackProjectAfterForget, preferLastGoodSessionList, projectSessionsEmptyState, purgeSessionFromRootCaches, remainingOpenAfterRemoveFromCache, SESSION_LEASE_EXHAUSTED_MESSAGE, seedWorkspacesCache, shouldOfferBackgroundStop, writeSessionListCache, workspacesCacheKey } from "../components/LeftRail";
+import { actionAfterSessionRemove, buildProjectsList, collectUnreadFinishedSessionIds, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, isRedundantSessionSwitch, jobsCacheKey, partitionProjectSessions, patchActiveSessionInCaches, patchSessionArchivedInCaches, patchSessionTitleInCaches, pickFallbackProjectAfterForget, preferLastGoodSessionList, projectSessionsEmptyState, purgeSessionFromRootCaches, remainingOpenAfterRemoveFromCache, SESSION_LEASE_EXHAUSTED_MESSAGE, seedWorkspacesCache, sessionSwitchSucceeded, shouldOfferBackgroundStop, shouldPromoteListActive, writeSessionListCache, workspacesCacheKey } from "../components/LeftRail";
 import type { Session } from "../lib/api";
 
 /**
@@ -124,12 +124,16 @@ describe("LeftRail session list contracts", () => {
       },
     ];
 
-    // Mirrors LeftRail onSessionsLoaded guard.
-    const shouldPromote = (forRepo: string, current: string) =>
-      !(forRepo && current && !repoPathsEqual(forRepo, current));
-
-    expect(shouldPromote(staleRepo, currentRepo)).toBe(false);
-    expect(shouldPromote(currentRepo, currentRepo)).toBe(true);
+    expect(shouldPromoteListActive({
+      listActiveId: "stale-active",
+      forRepo: staleRepo,
+      currentRepo,
+    })).toBe(false);
+    expect(shouldPromoteListActive({
+      listActiveId: "keep-me",
+      forRepo: currentRepo,
+      currentRepo,
+    })).toBe(true);
 
     // Even if the stale payload is written under its own key, the active
     // project's cache stays untouched.
@@ -145,6 +149,43 @@ describe("LeftRail session list contracts", () => {
       },
     ]);
     expect(readSWRCache<Session[]>(`sessions:${currentRepo}`)?.[0]?.id).toBe("keep-me");
+  });
+
+  it("does not promote a leftover running session after the click already owns the view", () => {
+    expect(shouldPromoteListActive({
+      switchingSessionId: null,
+      requestedSessionId: "sess-home-new",
+      listActiveId: "sess-running",
+      forRepo: "/repo",
+      currentRepo: "/repo",
+    })).toBe(false);
+    expect(shouldPromoteListActive({
+      switchingSessionId: "sess-home-new",
+      requestedSessionId: "sess-home-new",
+      listActiveId: "sess-running",
+      forRepo: "/repo",
+      currentRepo: "/repo",
+    })).toBe(false);
+    expect(shouldPromoteListActive({
+      switchingSessionId: null,
+      requestedSessionId: "sess-home-new",
+      listActiveId: "sess-home-new",
+      forRepo: "/repo",
+      currentRepo: "/repo",
+    })).toBe(true);
+    expect(shouldPromoteListActive({
+      switchingSessionId: null,
+      requestedSessionId: null,
+      listActiveId: "sess-running",
+      forRepo: "/repo",
+      currentRepo: "/repo",
+    })).toBe(true);
+  });
+
+  it("treats HTTP 200 {ok:false} as a failed session switch", () => {
+    expect(sessionSwitchSucceeded({ ok: true, active: "b" })).toBe(true);
+    expect(sessionSwitchSucceeded({ ok: false, error: "unknown session" })).toBe(false);
+    expect(sessionSwitchSucceeded({ active: "b" })).toBe(true);
   });
 
   it("maps runners statuses to session badge visibility", () => {
