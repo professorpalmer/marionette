@@ -69,6 +69,24 @@ def test_scoped_config_rejects_old_view(owned_server):
     assert h.body["session_id"] == b
 
 
+def test_scoped_config_accepts_store_active_before_view_catches_up(owned_server):
+    """create()/switch() move SessionStore before attach_view updates the view.
+
+    Optimistic GET /api/config?session_id=B must not 409 just because the
+    dashboard/metadata view is still on the outgoing running session.
+    """
+    srv = owned_server
+    a = srv._sessions.active
+    srv._attach_view(a, load_transcript_on_create=False)
+    b = srv._sessions.create()["id"]
+    assert srv._sessions.active == b
+    assert srv._runners.active_view_id == a
+    h = Handler()
+    srv.Handler._get_config(h, b)
+    assert h.code == 200
+    assert h.body["session_id"] == b
+
+
 def test_swap_rechecks_session_after_readiness(owned_server, monkeypatch):
     srv = owned_server
     a = srv._sessions.active

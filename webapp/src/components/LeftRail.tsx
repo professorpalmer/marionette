@@ -54,6 +54,8 @@ export {
   jobsCacheKey,
   shouldOfferBackgroundStop,
   isRedundantSessionSwitch,
+  sessionSwitchSucceeded,
+  shouldPromoteListActive,
   collectUnreadFinishedSessionIds,
   isRailWideSwitching,
   projectSessionsEmptyState,
@@ -78,6 +80,8 @@ import {
   seedWorkspacesCache,
   shouldOfferBackgroundStop,
   isRedundantSessionSwitch,
+  sessionSwitchSucceeded,
+  shouldPromoteListActive,
   collectUnreadFinishedSessionIds,
   isRailWideSwitching,
   projectSessionsEmptyState,
@@ -289,6 +293,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   const [opening, setOpening] = useState(false);
   const [switchingSessionId, setSwitchingSessionId] = useState<string | null>(null);
   const switchingSessionIdRef = useRef<string | null>(null);
+  const requestedSessionIdRef = useRef<string | null>(null);
   const [sessionActivationNotice, setSessionActivationNotice] = useState<string | null>(null);
   const codegraphByRepoRef = useRef<Record<string, string>>({});
   const [railTab, setRailTab] = useState<"projects" | "sessions">(() => {
@@ -400,18 +405,20 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     if (forRepo && currentRepoRef.current && !repoPathsEqual(forRepo, currentRepoRef.current)) {
       return;
     }
-    // Click already owns the view. A late list with a leftover active must
-    // not yank Conversation back to the other project mid-switch.
-    if (switchingSessionIdRef.current) {
+    const active = sess.find((s) => s.active);
+    if (!shouldPromoteListActive({
+      switchingSessionId: switchingSessionIdRef.current,
+      requestedSessionId: requestedSessionIdRef.current,
+      listActiveId: active?.id,
+      forRepo,
+      currentRepo: currentRepoRef.current,
+    })) {
       return;
     }
-    const active = sess.find((s) => s.active);
     // Only push a real id. Passing "" during project open briefly clears the
     // conversation to the empty placeholder before the next root's active
     // session arrives -- keep the prior id until we know the next one.
-    if (active?.id) {
-      onSessionChange?.(active.id);
-    }
+    if (active?.id) onSessionChange?.(active.id);
   }, [onSessionChange]);
 
   const {
@@ -526,6 +533,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     setExpandedProjects((prev) => ({ ...prev, [target]: true }));
     setSessionLoadStates((prev) => ({ ...prev, [target]: "ready" }));
     setSessionsCacheEpoch((n) => n + 1);
+    requestedSessionIdRef.current = created.id;
     onSessionChange?.(created.id);
   };
 
@@ -896,6 +904,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     const scope = ++sessionScopeGeneration.current;
     const previousActiveId = activeId;
     switchingSessionIdRef.current = id;
+    requestedSessionIdRef.current = id;
     setSwitchingSessionId(id);
     setUnreadFinishedIds((prev) => {
       if (!prev[id]) return prev;
@@ -916,6 +925,9 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     onSessionChange?.(id);
     try {
       const res: any = await api.switchSession(id);
+      if (!sessionSwitchSucceeded(res)) {
+        throw res;
+      }
       sessionListGeneration.current += 1;
       if (scope !== sessionScopeGeneration.current) return;
       const repo = (res?.repo || "").trim();
@@ -940,6 +952,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           : undefined;
         if (revertRows) mutateSessions(revertRows);
         setSessionsCacheEpoch((n) => n + 1);
+        requestedSessionIdRef.current = previousActiveId;
         onSessionChange?.(previousActiveId);
       }
       notifySessionActivationBlocked(err);

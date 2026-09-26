@@ -277,6 +277,34 @@ export function isRedundantSessionSwitch(
   return clickedId === activeId;
 }
 
+/** POST /api/sessions/switch is HTTP 200 even when the store refused. */
+export function sessionSwitchSucceeded(res: unknown): boolean {
+  if (!res || typeof res !== "object") return true;
+  return (res as { ok?: unknown }).ok !== false;
+}
+
+/**
+ * Whether a fetched session list may push its `active` id into Conversation.
+ * A leftover running-session active must not yank the view after a click.
+ */
+export function shouldPromoteListActive(opts: {
+  switchingSessionId?: string | null;
+  requestedSessionId?: string | null;
+  listActiveId?: string;
+  forRepo?: string;
+  currentRepo?: string;
+}): boolean {
+  if (opts.forRepo && opts.currentRepo && !repoPathsEqual(opts.forRepo, opts.currentRepo)) {
+    return false;
+  }
+  if (opts.switchingSessionId) return false;
+  const listActiveId = (opts.listActiveId || "").trim();
+  if (!listActiveId) return false;
+  const requested = (opts.requestedSessionId || "").trim();
+  if (requested && listActiveId !== requested) return false;
+  return true;
+}
+
 export type RunnerStatus = "running" | "idle" | "attaching" | "missing";
 
 /** Sessions that finished a background turn while the user looked elsewhere. */

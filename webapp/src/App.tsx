@@ -1,4 +1,5 @@
 import { JobMetadataOwner } from './lib/jobMetadataContext';
+import { configForActiveSession } from './lib/sessionConfig';
 import { useCallback, useEffect, useRef, useState } from "react";
 import { setSettingsOverlayOpen } from "./lib/settingsOverlay";
 import { api, type Config } from "./lib/api";
@@ -75,7 +76,7 @@ export default function App() {
   if (configRequest.current.sessionId !== activeSessionId) {
     configRequest.current = { sessionId: activeSessionId, generation: configRequest.current.generation + 1 };
   }
-  const config = activeSessionId && receivedConfig?.session_id !== activeSessionId ? null : receivedConfig;
+  const config = configForActiveSession(receivedConfig, activeSessionId);
   const handleSessionChange = useCallback((id: string | null, expectedPreviousId?: string) => {
     setActiveSessionId((current) => expectedPreviousId && current !== expectedPreviousId ? current : id);
   }, []);
