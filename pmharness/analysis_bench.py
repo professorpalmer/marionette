@@ -56,7 +56,8 @@ ANALYSIS_QUESTIONS = (
               (Fact('max_repairs', 1),), 'harness/repair.py:drive_with_repair'),
     AnalysisQ('durable_methods', 'List all public methods declared on DurableState in '
               'harness/state.py, excluding underscore-prefixed methods.',
-              (Fact('methods', ('list_jobs', 'format_artifacts', 'job_artifacts', 'events_since')),),
+              (Fact('methods', ('list_jobs', 'list_running_jobs', 'format_artifacts',
+                                'job_artifacts', 'events_since')),),
               'harness/state.py:DurableState'),
     AnalysisQ('registry_return', 'What type of object does pmharness/registry.py build return? '
               'Use the common interface type, not a particular implementation.',
