@@ -85,6 +85,8 @@ class _Act:
     query: str = ""
     goal: str = ""
     model: str = ""
+    adapter: str = ""
+    mode: str = ""
     goals: list = field(default_factory=list)
     roles: list = field(default_factory=list)
     arguments: dict = field(default_factory=dict)
@@ -680,6 +682,33 @@ def test_loop_replays_identical_successful_call():
     assert "[cached repeat of identical call]" in verdict.message
     assert "hello" in verdict.message
     assert "SUPPRESSED" not in verdict.message
+
+
+@pytest.mark.parametrize("kind", ["run_implement", "run_parallel"])
+def test_worker_loop_identity_includes_route_and_mode(kind):
+    from harness.pilot_guards import record_successful_result
+
+    common = {
+        "kind": kind,
+        "goal": "fix the backend",
+        "goals": ["fix the backend"],
+        "adapter": "agentic",
+        "mode": "implement",
+    }
+    pinned = _Act(**common, model="deepseek/deepseek-v4.1-flash")
+    auto = _Act(**common, model="")
+    analysis = _Act(**{**common, "mode": "analysis"}, model="deepseek/deepseek-v4.1-flash")
+    native = _Act(**{**common, "adapter": "codex"}, model="deepseek/deepseek-v4.1-flash")
+    state = new_turn_guard_state()
+    record_action_execution(state, kind, pinned)
+    record_successful_result(state, kind, pinned, "worker complete")
+
+    identical = check_loop_guard(state, kind, pinned)
+    assert identical.suppress is True
+    assert identical.replay is True
+    assert check_loop_guard(state, kind, auto).suppress is False
+    assert check_loop_guard(state, kind, analysis).suppress is False
+    assert check_loop_guard(state, kind, native).suppress is False
 
 
 def test_loop_guard_never_replays_browser_observations():

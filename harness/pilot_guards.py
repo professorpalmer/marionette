@@ -1047,16 +1047,26 @@ def normalize_action_args(kind: str, act: Any) -> str:
         roles = getattr(act, "roles", None) or []
         payload["roles"] = sorted(roles) if isinstance(roles, list) else []
         payload["repo"] = _norm_path(getattr(act, "repo", "") or "")
-        # Model pin is part of identity so changing pin after a plumbing
-        # degrade is a real new dispatch, not a loop-guard collision.
-        if kind == "run_swarm":
-            payload["model"] = _swarm_model_key(act)
+        payload["model"] = _swarm_model_key(act)
+        if kind == "run_implement":
+            payload["adapter"] = (
+                getattr(act, "adapter", "") or args.get("adapter", "") or ""
+            ).strip().lower()
+            payload["mode"] = (
+                getattr(act, "mode", "") or args.get("mode", "") or ""
+            ).strip().lower()
     elif kind == "run_parallel":
         goals = getattr(act, "goals", None) or []
         payload["goals"] = (
             [normalize_objective_key(g) for g in goals] if isinstance(goals, list) else []
         )
-        payload["mode"] = (getattr(act, "mode", "") or "").strip().lower()
+        payload["model"] = _swarm_model_key(act)
+        payload["adapter"] = (
+            getattr(act, "adapter", "") or args.get("adapter", "") or ""
+        ).strip().lower()
+        payload["mode"] = (
+            getattr(act, "mode", "") or args.get("mode", "") or ""
+        ).strip().lower()
         payload["repo"] = _norm_path(getattr(act, "repo", "") or "")
     elif kind == "call_mcp":
         payload["tool"] = (getattr(act, "tool", "") or "").strip().lower()
