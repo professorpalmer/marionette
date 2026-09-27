@@ -338,8 +338,14 @@ def merge_running_cli_jobs_all_projects(
                 loaded = bulk_load_store_tasks(store, jids)
             except Exception:
                 loaded = {}
-            for jid in jids:
+            for row in collected:
+                jid = str(row["id"])
                 tasks = list(loaded.get(jid, []))
+                row["task_count"] = len(tasks)
+                for field in ("role", "adapter"):
+                    if not row.get(field):
+                        row[field] = next((getattr(task, field) for task in tasks
+                                           if getattr(task, field, "")), "")
                 tasks_by_job[job_read_key({"id": jid, "source": "cli", "cli_state_dir": state_dir}, store)] = tasks
         out.extend(collected)
     return out

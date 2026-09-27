@@ -37,9 +37,12 @@ def test_cross_project_running_scan_preserves_ownership_without_history(tmp_path
     from harness.state import DurableState
     from harness.cli_job_merge import merge_scoped_cli_jobs
     from harness.job_scoping import job_label_for_session
+    from puppetmaster.models import Task
 
     durable = DurableState(str(tmp_path))
     durable.store.init()
+    durable.store.save_task(Task(job_id='live', role='implement', adapter='local',
+                                 instruction='fixture', payload={}))
     label = job_label_for_session('session-a')
     with sqlite3.connect(durable.store.db_path) as connection:
         for jid, status, stamp in (
@@ -78,3 +81,6 @@ def test_cross_project_running_scan_preserves_ownership_without_history(tmp_path
     assert [row['id'] for row in rows] == ['live']
     assert rows[0]['label'] == label
     assert rows[0]['session_id'] == 'session-a'
+    assert rows[0]['task_count'] == 1
+    assert rows[0]['role'] == 'implement'
+    assert rows[0]['adapter'] == 'local'
