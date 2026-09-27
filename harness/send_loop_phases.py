@@ -34,6 +34,10 @@ from .local_job_metadata import local_swarm_id
 from .log_reconstruction import check_outbound_reconstruction
 from .request_snapshot import FrozenRequest
 from .pilot import PilotAction, StreamingSayExtractor
+from .pilot_guards import (
+    record_native_workspace_mutation,
+    record_run_command_completion,
+)
 from .stream_identity import StreamDeltaBatch, normalize_delta_payload
 from .stream_performance import (
     STREAM_PERFORMANCE_KEY,
@@ -3342,7 +3346,7 @@ def dispatch_local_action(
         if not session.config.repo:
             error_msg = "No workspace directory (config.repo) is open."
             yield ConvEvent("action_result", {"id": aid, "error": error_msg})
-            session._append_action_result(act, aid, f"(write_file {aid} failed: {error_msg})", is_native)
+            session._append_action_result(act, aid, f"(write_file {aid} failed: {error_msg})", is_native, ok=False)
             return
         target_path = act.path
         if not os.path.isabs(target_path):
@@ -3356,7 +3360,7 @@ def dispatch_local_action(
             ok, status, msg = session._do_write_file(act, write=False)
             if not ok:
                 yield ConvEvent("action_result", {"id": aid, "error": msg})
-                session._append_action_result(act, aid, f"(write_file {act.path} failed: {msg})", is_native)
+                session._append_action_result(act, aid, f"(write_file {act.path} failed: {msg})", is_native, ok=False)
                 return
 
             try:
@@ -3379,8 +3383,12 @@ def dispatch_local_action(
             ok, status, msg = session._do_write_file(act, write=True)
             if not ok:
                 yield ConvEvent("action_result", {"id": aid, "error": msg})
-                session._append_action_result(act, aid, f"(write_file {act.path} failed: {msg})", is_native)
+                session._append_action_result(act, aid, f"(write_file {act.path} failed: {msg})", is_native, ok=False)
                 return
+
+            guard_state = getattr(session, "_turn_guard_state", None)
+            if guard_state is not None:
+                record_native_workspace_mutation(guard_state)
 
             bytes_written = msg
             yield ConvEvent("action_result", {
@@ -3405,14 +3413,14 @@ def dispatch_local_action(
             yield from _yield_task_profile_escalation(session, turn_changed_files)
         except Exception as e:
             yield ConvEvent("action_result", {"id": aid, "error": str(e)})
-            session._append_action_result(act, aid, f"(write_file {act.path} failed: {e})", is_native)
+            session._append_action_result(act, aid, f"(write_file {act.path} failed: {e})", is_native, ok=False)
         return
     # ---- edit_file branch -----------------------------------------
     if act.kind == "edit_file":
         if not session.config.repo:
             error_msg = "No workspace directory (config.repo) is open."
             yield ConvEvent("action_result", {"id": aid, "error": error_msg})
-            session._append_action_result(act, aid, f"(edit_file {aid} failed: {error_msg})", is_native)
+            session._append_action_result(act, aid, f"(edit_file {aid} failed: {error_msg})", is_native, ok=False)
             return
         target_path = act.path
         if not os.path.isabs(target_path):
@@ -3426,7 +3434,7 @@ def dispatch_local_action(
             ok, status, msg = session._do_edit_file(act, write=False)
             if not ok:
                 yield ConvEvent("action_result", {"id": aid, "error": msg})
-                session._append_action_result(act, aid, f"(edit_file {act.path} failed: {msg})", is_native)
+                session._append_action_result(act, aid, f"(edit_file {act.path} failed: {msg})", is_native, ok=False)
                 return
 
             try:
@@ -3449,8 +3457,12 @@ def dispatch_local_action(
             ok, status, msg = session._do_edit_file(act, write=True)
             if not ok:
                 yield ConvEvent("action_result", {"id": aid, "error": msg})
-                session._append_action_result(act, aid, f"(edit_file {act.path} failed: {msg})", is_native)
+                session._append_action_result(act, aid, f"(edit_file {act.path} failed: {msg})", is_native, ok=False)
                 return
+
+            guard_state = getattr(session, "_turn_guard_state", None)
+            if guard_state is not None:
+                record_native_workspace_mutation(guard_state)
 
             headline = msg
             yield ConvEvent("action_result", {
@@ -3473,14 +3485,14 @@ def dispatch_local_action(
             yield from _yield_task_profile_escalation(session, turn_changed_files)
         except Exception as e:
             yield ConvEvent("action_result", {"id": aid, "error": str(e)})
-            session._append_action_result(act, aid, f"(edit_file {act.path} failed: {e})", is_native)
+            session._append_action_result(act, aid, f"(edit_file {act.path} failed: {e})", is_native, ok=False)
         return
     # ---- hash_edit branch -----------------------------------------
     if act.kind == "hash_edit":
         if not session.config.repo:
             error_msg = "No workspace directory (config.repo) is open."
             yield ConvEvent("action_result", {"id": aid, "error": error_msg})
-            session._append_action_result(act, aid, f"(hash_edit {aid} failed: {error_msg})", is_native)
+            session._append_action_result(act, aid, f"(hash_edit {aid} failed: {error_msg})", is_native, ok=False)
             return
         target_path = act.path
         if not os.path.isabs(target_path):
@@ -3494,7 +3506,7 @@ def dispatch_local_action(
             ok, status, msg = session._do_hash_edit(act, write=False)
             if not ok:
                 yield ConvEvent("action_result", {"id": aid, "error": msg})
-                session._append_action_result(act, aid, f"(hash_edit {act.path} failed: {msg})", is_native)
+                session._append_action_result(act, aid, f"(hash_edit {act.path} failed: {msg})", is_native, ok=False)
                 return
 
             try:
@@ -3517,8 +3529,12 @@ def dispatch_local_action(
             ok, status, msg = session._do_hash_edit(act, write=True)
             if not ok:
                 yield ConvEvent("action_result", {"id": aid, "error": msg})
-                session._append_action_result(act, aid, f"(hash_edit {act.path} failed: {msg})", is_native)
+                session._append_action_result(act, aid, f"(hash_edit {act.path} failed: {msg})", is_native, ok=False)
                 return
+
+            guard_state = getattr(session, "_turn_guard_state", None)
+            if guard_state is not None:
+                record_native_workspace_mutation(guard_state)
 
             headline = f"hash_edit {act.path}: {msg}"
             hash_edit_result = {
@@ -3548,7 +3564,7 @@ def dispatch_local_action(
             yield from _yield_task_profile_escalation(session, turn_changed_files)
         except Exception as e:
             yield ConvEvent("action_result", {"id": aid, "error": str(e)})
-            session._append_action_result(act, aid, f"(hash_edit {act.path} failed: {e})", is_native)
+            session._append_action_result(act, aid, f"(hash_edit {act.path} failed: {e})", is_native, ok=False)
         return
     # ---- run_command branch ---------------------------------------
     if act.kind == "run_command":
@@ -3662,11 +3678,24 @@ def dispatch_local_action(
             yield ConvEvent("action_result", {**receipt, "id": aid, "kind": "run_command"})
             session._append_action_result(act, aid, json.dumps(receipt), is_native)
             return
+        command_may_have_run = False
+        command_context_recorded = False
         try:
+            command_may_have_run = True
             ok, status, val = session._do_run_command(act)
+            command_may_have_run = status not in {"blocked", "repo_not_open"}
+            if command_may_have_run:
+                guard_state = getattr(session, "_turn_guard_state", None)
+                if guard_state is not None:
+                    record_run_command_completion(guard_state, act)
+                    command_context_recorded = True
             published = finish_foreground_command_job(session, job_id, ok, status, val)
         except Exception:
             # The executor may have produced effects before losing its result.
+            if command_may_have_run and not command_context_recorded:
+                guard_state = getattr(session, "_turn_guard_state", None)
+                if guard_state is not None:
+                    record_run_command_completion(guard_state, act)
             published = False
         finally:
             release_command_job_launch(session, job_id)

@@ -697,6 +697,11 @@ class TurnGuardState:
     # Prior successful tool-result content keyed by (kind, normalized_args).
     # Used by the loop guard to replay identical calls instead of re-executing.
     successful_results: dict[tuple[str, str], str] = field(default_factory=dict)
+    # Foreground commands are repeatable after an observed execution-context
+    # change (a native file mutation or another completed command). Each
+    # command key records the epoch in which it most recently executed.
+    run_command_context_epoch: int = 0
+    run_command_epochs: dict[tuple[str, str], int] = field(default_factory=dict)
     exploration_count: int = 0
     delegation_seen: bool = False
     user_message: str = ""
@@ -2066,6 +2071,12 @@ def check_loop_guard(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict
     if prior < 1:
         return GuardVerdict(False)
 
+    if (
+        kind == "run_command"
+        and state.run_command_epochs.get(key) != state.run_command_context_epoch
+    ):
+        return GuardVerdict(False)
+
     cached = state.successful_results.get(key)
     # Swarm/implement/parallel: one dispatch per objective fingerprint per turn.
     # Never allow LOOP_REPEAT_CAP re-runs -- twin workers race the same files.
@@ -2123,6 +2134,24 @@ def record_successful_result(state: TurnGuardState, kind: str, act: Any, content
         state.successful_results[key] = content or ""
     except Exception:
         pass
+
+
+def record_native_workspace_mutation(state: TurnGuardState) -> None:
+    """Invalidate only prior run_command repeat/cache context."""
+    state.run_command_context_epoch += 1
+
+
+def record_run_command_completion(state: TurnGuardState, act: Any) -> None:
+    """Advance command context after foreground execution.
+
+    Stamp the command that just completed into the new epoch so an immediate
+    identical repeat remains guarded. Other command fingerprints become stale
+    and may execute once in the changed context. Failed or uncertain execution
+    also advances the context because it may have produced partial effects.
+    """
+    state.run_command_context_epoch += 1
+    key = ("run_command", normalize_action_args("run_command", act))
+    state.run_command_epochs[key] = state.run_command_context_epoch
 
 
 def check_swarm_gate(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict:
@@ -2335,6 +2364,15 @@ def check_pilot_guards(state: TurnGuardState, kind: str, act: Any) -> GuardVerdi
 def record_action_execution(state: TurnGuardState, kind: str, act: Any) -> None:
     """Record a guard-eligible action that is about to execute."""
     key = (kind, normalize_action_args(kind, act))
+    if (
+        kind == "run_command"
+        and key in state.execution_counts
+        and state.run_command_epochs.get(key) != state.run_command_context_epoch
+    ):
+        state.execution_counts.pop(key, None)
+        state.successful_results.pop(key, None)
+    if kind == "run_command":
+        state.run_command_epochs[key] = state.run_command_context_epoch
     state.execution_counts[key] = state.execution_counts.get(key, 0) + 1
 
     if kind in SWARM_DISPATCH_KINDS:
