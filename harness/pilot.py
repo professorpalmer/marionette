@@ -1054,10 +1054,11 @@ def build_tools_schema(
     # 1. read_file
     from .hash_edit import hash_edit_enabled as _hash_edit_on
     read_desc = (
-        "Read a file's contents. For large files, use start_line and limit. "
+        "Read a file's contents from the open workspace or configured read roots. "
+        "For a workspace nested in a larger git clone, the git toplevel is also readable. "
+        "For large files, use start_line and limit. "
         "Prefer search_codegraph/search_files to explore code structure. "
-        "When the workspace is nested under a larger git root, read_file may "
-        "read anywhere under that git toplevel (prefer that over shell cd/type)."
+        "Prefer read_file over shell cd/type for supported paths."
     )
     if _hash_edit_on():
         read_desc += (
@@ -1072,7 +1073,7 @@ def build_tools_schema(
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Absolute or relative path to the file to read"},
+                    "path": {"type": "string", "description": "Absolute or workspace-relative path within the workspace or configured read roots, or a Marionette internal URI"},
                     "start_line": {"type": "integer", "description": "1-based starting line number to read"},
                     "limit": {"type": "integer", "description": "Maximum number of lines to read"}
                 },
@@ -1086,11 +1087,16 @@ def build_tools_schema(
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": "write/create a file atomically. Requires `path` and `content`.",
+            "description": (
+                "Write/create a file atomically within the writable workspace. "
+                "For an explicitly authorized external destination, use run_command "
+                "subject to its existing permissions and preserve the requested location. "
+                "Requires `path` and `content`."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Absolute or relative path to the file to write"},
+                    "path": {"type": "string", "description": "Absolute or relative path that resolves within the writable workspace"},
                     "content": {"type": "string", "description": "The exact content to write/overwrite in the file"}
                 },
                 "required": ["path", "content"]
@@ -1103,11 +1109,11 @@ def build_tools_schema(
         "type": "function",
         "function": {
             "name": "edit_file",
-            "description": "Make a targeted edit to an existing file by replacing an exact substring. STRONGLY PREFERRED over write_file for editing existing files -- only send the small snippet that changes, never the whole file. Requires path, old_str (the EXACT existing text to replace, including surrounding context to make it unique), and new_str (the replacement). To append, set old_str to a unique trailing snippet of the file and include it at the start of new_str.",
+            "description": "Make a targeted edit to an existing file within the writable workspace by replacing an exact substring. STRONGLY PREFERRED over write_file for editing existing files -- only send the small snippet that changes, never the whole file. Requires path, old_str (the EXACT existing text to replace, including surrounding context to make it unique), and new_str (the replacement). To append, set old_str to a unique trailing snippet of the file and include it at the start of new_str.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Absolute or relative path to the file to edit"},
+                    "path": {"type": "string", "description": "Absolute or relative path that resolves within the writable workspace"},
                     "old_str": {"type": "string", "description": "The EXACT existing text to replace, including surrounding context to make it unique"},
                     "new_str": {"type": "string", "description": "The replacement text (may be empty to delete)"}
                 },
@@ -1122,7 +1128,8 @@ def build_tools_schema(
             "function": {
                 "name": "hash_edit",
                 "description": (
-                    "Apply hash-anchored replace/insert/delete ops to an existing file. "
+                    "Apply hash-anchored replace/insert/delete ops to an existing file "
+                    "within the writable workspace. "
                     "Each op references anchor hashes from read_file [@anchor ...] tags; "
                     "stale anchors are rejected with no partial writes. Prefer over edit_file "
                     "when anchors are available."
@@ -1130,7 +1137,7 @@ def build_tools_schema(
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string", "description": "File to edit"},
+                        "path": {"type": "string", "description": "Absolute or relative path that resolves within the writable workspace"},
                         "ops": {
                             "type": "array",
                             "description": "Ordered list of replace/insert/delete operations",

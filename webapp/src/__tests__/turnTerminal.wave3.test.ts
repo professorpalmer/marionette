@@ -330,7 +330,7 @@ describe("Wave 3: live answer stays outside the investigation fold", () => {
     expect(collectIntermediateAssistantItems(after, false).has(sealed)).toBe(false);
   });
 
-  it("does not reparent sealed spoken prose into the fold when a later card exists", () => {
+  it("folds sealed untyped progress when a later native card proves continuation", () => {
     const spoken: Item = {
       kind: "msg",
       msg: { role: "assistant", text: "Here is the patch.", streaming: false },
@@ -364,8 +364,8 @@ describe("Wave 3: live answer stays outside the investigation fold", () => {
       },
     ];
     expect(isLiveAnswerAssistant(spoken.msg)).toBe(false);
-    expect(collectIntermediateAssistantItems(items, true).has(spoken)).toBe(false);
-    expect(collectIntermediateAssistantItems(items, false).has(spoken)).toBe(false);
+    expect(collectIntermediateAssistantItems(items, true).has(spoken)).toBe(true);
+    expect(collectIntermediateAssistantItems(items, false).has(spoken)).toBe(true);
   });
 });
 

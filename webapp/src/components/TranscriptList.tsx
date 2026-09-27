@@ -528,10 +528,10 @@ function VaultCiteChip({
 /**
  * Assistants that belong inside the investigation fold for this turn.
  *
- * Fold only workerStream / isPlan / channel=progress. Spoken assistant
- * prose (the white streamed answer) stays a top-level Bubble after seal —
- * never reparented into the collapsed Investigating/tool fold once a later
- * card or swarm exists.
+ * Fold workerStream / isPlan / channel=progress plus legacy native updates
+ * with structural tool provenance. Spoken assistant prose (the white streamed
+ * answer) stays a top-level Bubble after seal — never reparented merely because
+ * a later card or swarm exists.
  *
  * Open-loop absorption applies ONLY to the current turn — the span after
  * the last user message. Prior turns use the sealed rule for foldable
@@ -546,6 +546,46 @@ function isPlanOrProgressAssistant(msg: Msg): boolean {
 /** Activity-strip narration only — never spoken assistant prose. */
 function isFoldableAssistantNarration(msg: Msg): boolean {
   return Boolean(msg.workerStream) || isPlanOrProgressAssistant(msg);
+}
+
+function isOperatorProgressBoundary(item: Item): boolean {
+  return (
+    (item.kind === "msg" && item.msg.role === "user")
+    || item.kind === "command_approval"
+    || item.kind === "secret_request"
+    || item.kind === "auth_failure"
+    || item.kind === "pending_review"
+    || item.kind === "steer"
+    || item.kind === "turn_terminal"
+  );
+}
+
+function isAssistantProgressBoundary(item: Item): boolean {
+  return (
+    isOperatorProgressBoundary(item)
+    || (item.kind === "msg" && item.msg.role === "assistant")
+  );
+}
+
+/** Infer legacy native progress from a following tool before the next boundary. */
+function isStructurallyProvenNativeProgress(items: Item[], index: number): boolean {
+  const item = items[index];
+  if (item.kind !== "msg" || item.msg.role !== "assistant") return false;
+  const msg = item.msg;
+  if (
+    msg.workerStream
+    || msg.isPlan
+    || msg.streaming === true
+    || String(msg.channel || "").trim()
+  ) {
+    return false;
+  }
+  for (let i = index + 1; i < items.length; i++) {
+    const later = items[i];
+    if (isAssistantProgressBoundary(later)) return false;
+    if (later.kind === "card") return true;
+  }
+  return false;
 }
 
 /** Live/final answer stays a top-level Bubble — never absorbed into ActivityGroup. */
@@ -575,7 +615,7 @@ function laterInvestigationActivity(items: Item[], fromIdx: number): {
   let laterAssistant = false;
   for (let j = fromIdx + 1; j < items.length; j++) {
     const later = items[j];
-    if (later.kind === "msg" && later.msg.role === "user") break;
+    if (isOperatorProgressBoundary(later)) break;
     if (later.kind === "msg" && later.msg.role === "assistant") {
       laterAssistant = true;
     }
@@ -614,10 +654,13 @@ export function collectIntermediateAssistantItems(
     }
     if (item.kind !== "msg" || item.msg.role !== "assistant") continue;
 
-    // Spoken assistant prose stays a top-level Bubble after seal. The leak
-    // was the sealed rule reparenting white streamed text into Investigating
-    // once streaming=false and a later card/swarm existed.
-    if (!isFoldableAssistantNarration(item.msg)) {
+    const structurallyProvenProgress = isStructurallyProvenNativeProgress(items, i);
+    if (!isFoldableAssistantNarration(item.msg) && !structurallyProvenProgress) {
+      continue;
+    }
+
+    if (structurallyProvenProgress) {
+      intermediateItems.add(item);
       continue;
     }
 
@@ -769,8 +812,8 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
         pushActivity(item);
         continue;
       }
-      // Post-tool micro-narration folds into the investigation box. Pre-tool
-      // assistant bubbles stay standalone permanently (no look-ahead reparent).
+      // Explicit plan/progress and structurally proven legacy native updates
+      // fold into the investigation box. Ordinary/final prose stays standalone.
       if (item.msg.role === "assistant" && intermediateItems.has(item)) {
         pushActivity(item);
       } else {
@@ -2709,6 +2752,9 @@ function ActivityGroup({
   ]
     .filter(Boolean)
     .join(" · ");
+  const compactNarrationPreview = narrationMsgs.length > 0
+    ? normalizeReasoningPreview(narrationPreview, 72)
+    : "";
 
   // No timer and no other sealed title → hide the Worked for row entirely.
   if (!investigating && !String(quietSummary || "").trim()) {
@@ -2731,6 +2777,14 @@ function ActivityGroup({
         >
           {quietSummary}
         </span>
+        {!open
+          && compactNarrationPreview
+          && compactNarrationPreview !== quietSummary
+          && !isWorkingEllipsisFallback(compactNarrationPreview) ? (
+            <span className="truncate max-w-[52ch] text-faint/55 normal-case">
+              {compactNarrationPreview}
+            </span>
+          ) : null}
         {cgItems.length > 0 && (
           <span className="ml-0.5 text-[10px] text-faint/40">+ CodeGraph</span>
         )}

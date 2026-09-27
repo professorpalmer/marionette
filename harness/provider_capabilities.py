@@ -100,12 +100,12 @@ def cursor_platform_workers_ready(env: Optional[Any] = None) -> bool:
 
 
 def model_supports_reasoning_effort(provider_name: str, model_id: str) -> bool:
-    """Return True when the given *provider_name*:*model_id* pair supports a
-    reasoning-effort knob over the wire.
+    """Return whether a session reasoning-effort control is wired for a model.
 
     Uses the existing per-adapter logic so no new model-family knowledge is
     duplicated:
 
+    * ``local`` — False until session effort is wired to local inference.
     * ``openai-codex`` / ``codex-plan`` / ``chatgpt-codex`` — always True
       (Codex Responses ``reasoning_effort``).
     * ``anthropic`` / ``bedrock`` — delegates to
@@ -131,6 +131,11 @@ def model_supports_reasoning_effort(provider_name: str, model_id: str) -> bool:
     p = prov.get_provider(name)
     if p is not None:
         name = p.name
+
+    # Local sampling supports per-model reasoning budgets, but the session
+    # reasoning-effort control is not wired to local inference yet.
+    if name == "local":
+        return False
 
     # -- Codex family always supports reasoning_effort --
     if name in ("openai-codex",):
