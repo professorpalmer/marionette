@@ -14,7 +14,7 @@ import { selectNativeMetadataControl } from '../lib/jobControl';
 import { api } from '../lib/api';
 import { jobArtifactKey, selectJobRef } from '../lib/jobArtifacts';
 import type { Job } from '../lib/api';
-import { filterJobsByScope, JOB_SCOPE_CHANGED_EVENT, loadJobScope, saveJobScope, type JobScope } from '../lib/jobScope';
+import { filterJobsByScope, JOB_SCOPE_CHANGED_EVENT, jobScopeForSession, loadJobScopeChoice, saveJobScope, type JobScopeChoice } from '../lib/jobScope';
 // Jobs rail is a compact native strip. The Puppetmaster dashboard stays a
 // webpage — Board pops it out. Row click never replaces this list with an iframe.
 import { useSharedJobMetadata, metadataActivity, metadataJobs, metadataViewSessionId, currentExpert, currentHeader } from '../lib/jobMetadataContext';
@@ -443,7 +443,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
   const [preferences, setPreferences] = useState(() => readPreferences(preferenceKey));
   const [filter, setFilter] = useState('all');
   const [sort, setSort] = useState<'newest' | 'oldest'>('newest');
-  const [jobScope, setJobScope] = useState<JobScope>(loadJobScope);
+  const [jobScopeChoice, setJobScopeChoice] = useState<JobScopeChoice | null>(loadJobScopeChoice);
   const [finishedOpen, setFinishedOpen] = useState(true);
 
   const [notice, setNotice] = useState('');
@@ -482,7 +482,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
   const context = state.view.kind === 'idle' ? null : { ...state.view.target, contextEpoch: state.contextEpoch };
   useEffect(() => { try { localStorage.setItem(preferenceKey, JSON.stringify(preferences)); } catch { /* Optional UI preference. */ } }, [preferences, preferenceKey]);
   useEffect(() => {
-    const sync = () => setJobScope(loadJobScope());
+    const sync = () => setJobScopeChoice(loadJobScopeChoice());
     window.addEventListener(JOB_SCOPE_CHANGED_EVENT, sync);
     return () => window.removeEventListener(JOB_SCOPE_CHANGED_EVENT, sync);
   }, []);
@@ -542,6 +542,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
   }, [focusRequest, enabled, visible, jobs, state.contextEpoch, state.view]);
   if (!enabled) return <p className="p-2 text-xs text-muted">Job metadata paused for this view.</p>;
   const activeSessionId = metadataViewSessionId(state);
+  const jobScope = jobScopeForSession(jobScopeChoice, activeSessionId);
   const scoped = filterJobsByScope(jobs, jobScope, activeSessionId, {
     includeJobIds: pending?.jobId ? [pending.jobId] : undefined,
   });
@@ -733,7 +734,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
             type="button"
             aria-pressed={jobScope === scope}
             aria-label={scope === "session" ? "This session" : scope === "repo" ? "This repo" : "All projects"}
-            onClick={() => { setJobScope(scope); saveJobScope(scope); }}
+            onClick={() => saveJobScope(scope, activeSessionId)}
             className={`flex-1 text-[10px] ${jobScope === scope ? "bg-accent/15 text-txt" : "bg-panel2/40 text-muted hover:text-txt"}`}
           >
             {scope === "session" ? "Session" : scope === "repo" ? "Repo" : "All"}

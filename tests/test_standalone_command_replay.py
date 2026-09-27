@@ -165,7 +165,7 @@ def test_subprocess_crash_two_cold_product_replays(tmp_path, background, boundar
 @pytest.mark.parametrize('fault', ['write', 'fsync', 'replace'])
 def test_product_write_barriers(tmp_path, background, boundary, fault):
     s = session_at(tmp_path)
-    target = {'write': 'json.dump', 'fsync': 'harness.local_jobs.os.fsync', 'replace': 'harness.local_jobs.os.replace'}[fault]
+    target = {'write': 'harness.local_jobs_store.json.dumps', 'fsync': 'harness.local_jobs_store.os.fsync', 'replace': 'harness.local_jobs_store.os.replace'}[fault]
     method = {'registration': '_register_command_job', 'checkpoint': '_checkpoint_command_job_launch', 'terminal': '_finish_command_job'}[boundary]
     original = getattr(s, method)
     def fail(*args, **kwargs):

@@ -81,6 +81,15 @@ class MetadataView:
     def replace_root(self, state_dir, *, local_handle=None):
         with self.lock:
             target = self._target
+            if state_dir == target.state_dir:
+                # Same session/repo/root (placeholder -> real runner): only the
+                # local handle moves. Keep the generation and discovered sources
+                # so a refresh issued right after the switch does not 409.
+                if local_handle is not self._local_handle:
+                    self._local_handle = local_handle
+                    if self.supported:
+                        self._reader = create_metadata_reader(self.capture, self._sources, local_handle)
+                return
             self.select(target.session_id, target.repo, state_dir, force=True, local_handle=local_handle)
 
     def _rotate(self, reason, sources=None):

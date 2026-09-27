@@ -467,6 +467,9 @@ class LocalMetadataIndex:
                 result['summary'] = json.loads(encoded(summary))
                 result['page']['revision'] = revision
                 row = self.owner._local_jobs.get(local_ref['job_id'])
+                if row is None:
+                    # All-scope reads of another session's read-only snapshot.
+                    row = getattr(self.owner, '_foreign_local_jobs', {}).get(local_ref['job_id'])
                 if (not isinstance(row, dict) or row.get('id') != local_ref['job_id']
                         or row.get('session_id') != summary['session_id']):
                     result.pop('summary', None)

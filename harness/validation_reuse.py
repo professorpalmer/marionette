@@ -803,7 +803,12 @@ class ReuseGateDecision:
 
 
 def iter_local_job_candidates(session: Any) -> list[dict[str, Any]]:
-    jobs: list[dict[str, Any]] = []
+    # Other sessions' rows first so this session's own rows win the dedupe.
+    foreign = getattr(session, "_foreign_local_jobs", None)
+    jobs: list[dict[str, Any]] = [
+        row for row in (list(foreign.values()) if isinstance(foreign, dict) else [])
+        if isinstance(row, dict)
+    ]
     try:
         live = session.live_local_jobs() if hasattr(session, "live_local_jobs") else []
         for row in live or []:

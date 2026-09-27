@@ -287,10 +287,22 @@ class MetadataReader:
     def _session_known_job_refs(self, ctx, selection):
         """PM refs the harness already associates with this session (local + registry)."""
         found = {}
+        recency = {}
 
-        def remember(ref):
-            if ref is not None and ref.job_id not in found:
+        def stamp(source):
+            get = source.get if isinstance(source, dict) else (lambda key: getattr(source, key, None))
+            for key in ('updated_at', 'created_at'):
+                value = get(key)
+                if type(value) in (int, float):
+                    return float(value)
+            return 0.0
+
+        def remember(ref, when=0.0):
+            if ref is None:
+                return
+            if ref.job_id not in found:
                 found[ref.job_id] = ref
+            recency[ref.job_id] = max(recency.get(ref.job_id, 0.0), when)
 
         handle = self.local_handle
         if handle is not None:
@@ -307,7 +319,8 @@ class MetadataReader:
                         if (not isinstance(canonical, dict) or canonical.get('source') != 'harness'
                                 or (ctx.scope != 'all' and canonical.get('session_id') != ctx.session_id)):
                             continue
-                        remember(self._coerce_store_job_ref(canonical.get('job_ref'), selection.state_id))
+                        remember(self._coerce_store_job_ref(canonical.get('job_ref'), selection.state_id),
+                                 stamp(row))
                 lock = getattr(handle, 'lock', None)
                 if lock is not None:
                     with lock:
@@ -325,8 +338,10 @@ class MetadataReader:
                     payload = entry
             if ctx.scope != 'all' and sid != ctx.session_id:
                 continue
-            remember(self._coerce_store_job_ref(payload, selection.state_id))
-        return tuple(found[key] for key in sorted(found)[:50])
+            remember(self._coerce_store_job_ref(payload, selection.state_id), stamp(entry))
+        # Most recent first, so the cap never hides new jobs behind old ids.
+        newest = sorted(found, key=lambda key: (-recency[key], key))[:50]
+        return tuple(found[key] for key in newest)
 
     def _exact_owned_row(self, store, job_ref, known, ctx, status):
         try:

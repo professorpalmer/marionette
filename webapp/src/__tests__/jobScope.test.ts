@@ -1,5 +1,68 @@
-import { describe, expect, it } from "vitest";
-import { filterJobsByScope, jobInActiveSession, jobIsForeignForScope, jobOwnedForScope } from "../lib/jobScope";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  filterJobsByScope,
+  JOB_SCOPE_CHANGED_EVENT,
+  JOB_SCOPE_KEY,
+  jobInActiveSession,
+  jobIsForeignForScope,
+  jobOwnedForScope,
+  jobScopeForSession,
+  loadJobScope,
+  parseJobScopeChoice,
+  saveJobScope,
+} from "../lib/jobScope";
+
+describe("session-bound scope choice", () => {
+  afterEach(() => localStorage.clear());
+
+  it("defaults to session when nothing was picked", () => {
+    expect(loadJobScope("sess-1")).toBe("session");
+  });
+
+  it("keeps an all pick only inside the session it was made in", () => {
+    saveJobScope("all", "sess-1");
+    expect(loadJobScope("sess-1")).toBe("all");
+    expect(loadJobScope("sess-2")).toBe("session");
+    // Switching back to the session where all was picked restores it.
+    expect(loadJobScope("sess-1")).toBe("all");
+  });
+
+  it("a pick in the new session replaces the old one", () => {
+    saveJobScope("all", "sess-1");
+    saveJobScope("repo", "sess-2");
+    expect(loadJobScope("sess-2")).toBe("repo");
+    expect(loadJobScope("sess-1")).toBe("session");
+  });
+
+  it("ignores the legacy unbound v1 value", () => {
+    localStorage.setItem("marionette.jobScope.v1", "all");
+    expect(JOB_SCOPE_KEY).not.toBe("marionette.jobScope.v1");
+    expect(loadJobScope("sess-1")).toBe("session");
+  });
+
+  it("fails closed on malformed stored values", () => {
+    for (const raw of ["all", "{", "null", '{"scope":"all"}', '{"scope":"x","sessionId":"sess-1"}',
+      '{"scope":"all","sessionId":""}']) {
+      localStorage.setItem(JOB_SCOPE_KEY, raw);
+      expect(loadJobScope("sess-1")).toBe("session");
+    }
+    expect(parseJobScopeChoice({ scope: "all", sessionId: "sess-1" })).toEqual({ scope: "all", sessionId: "sess-1" });
+  });
+
+  it("without an active session the effective scope is session", () => {
+    expect(jobScopeForSession({ scope: "all", sessionId: "sess-1" }, "")).toBe("session");
+    saveJobScope("all", "");
+    expect(localStorage.getItem(JOB_SCOPE_KEY)).toBeNull();
+  });
+
+  it("announces the change so every tracker re-reads it", () => {
+    const heard = vi.fn();
+    window.addEventListener(JOB_SCOPE_CHANGED_EVENT, heard);
+    saveJobScope("all", "sess-1");
+    window.removeEventListener(JOB_SCOPE_CHANGED_EVENT, heard);
+    expect(heard).toHaveBeenCalledTimes(1);
+  });
+});
 
 const jobs = [
   { id: "a", session_id: "sess-1" },

@@ -81,7 +81,10 @@ def test_registry_aba_detach_drop_replace_invalidate(tmp_path):
     assert view.capture().generation == epoch
     assert not reg.detach_view('B')
     assert view.capture().generation == epoch
+    # Same session/repo/root: only the local handle moves, no new epoch.
     reg.replace('A', runner(tmp_path))
+    assert view.capture().generation == epoch
+    reg.replace('A', runner(tmp_path, 'moved-root'))
     assert view.capture().generation != epoch
     epoch = view.capture().generation
     reg.detach_view('A')
@@ -92,6 +95,27 @@ def test_registry_aba_detach_drop_replace_invalidate(tmp_path):
     reg.drop('A')
     assert view.capture().session_id == ''
     assert view.capture().generation != epoch
+
+
+class _Handle:
+    def describe(self):
+        return dict(available=False, incarnation=None)
+
+
+def test_same_root_replace_swaps_handle_without_rotating(tmp_path):
+    reg, a, _, _, _ = seeded(tmp_path)
+    view = reg.metadata_view
+    before = view.capture().generation
+    sources = view.reader().sources
+    real = runner(tmp_path)
+    real._local_metadata = _Handle()
+    # Deferred cold attach: placeholder -> real runner for the same session.
+    reg.replace('A', real)
+    assert view.capture().generation == before
+    assert view.reader().local_handle is real._local_metadata
+    assert view.reader().sources is sources
+    # The refresh the UI issues right after the switch must not 409.
+    assert refresh_view({'view_generation': before}, view)[0] == 200
 
 
 def test_input_admission_gates_still_precede_epoch_change(tmp_path):
@@ -193,11 +217,14 @@ def test_real_host_attach_rebuild_swap_relocate_workspace_and_clear(owned_server
     view = srv._runners.metadata_view
     assert view.capture().session_id == sid and view.capture().repo == str(a)
     original = view.capture()
+    # Rebuild and model swap keep session, repo, and state dir: the reader
+    # moves to the new runner's handle without a new epoch (no 409 refresh).
     srv._rebuild_pilot_and_session()
-    assert view.capture().generation != original.generation
-    original = view.capture()
+    assert view.capture().generation == original.generation
+    assert view.reader().local_handle is srv._pilot._local_metadata
     srv._perform_pilot_swap(srv._cfg.driver)
-    assert view.capture().generation != original.generation
+    assert view.capture().generation == original.generation
+    assert view.reader().local_handle is srv._pilot._local_metadata
     original = view.capture()
     assert handle_session_relocate({'session_id': sid, 'path': str(b)}, srv._session_services())[0] == 200
     assert view.capture().repo == str(b) and view.capture().session_id == sid
@@ -220,7 +247,7 @@ def test_real_host_attach_rebuild_swap_relocate_workspace_and_clear(owned_server
     assert view.capture().session_id != sid
 
 
-def test_deferred_real_host_publication_rotates_epoch(owned_server, monkeypatch):
+def test_deferred_real_host_publication_keeps_epoch_and_swaps_handle(owned_server, monkeypatch):
     srv = owned_server
     pending = []
     monkeypatch.setenv('HARNESS_DEFER_COLD_ATTACH', '1')
@@ -232,8 +259,11 @@ def test_deferred_real_host_publication_rotates_epoch(owned_server, monkeypatch)
     build, callbacks = pending.pop()
     callbacks['on_done'](build())
     assert view.capture().session_id == row['id']
-    assert view.capture().generation != before.generation
+    # Placeholder -> real keeps session/repo/root: the epoch the client just
+    # captured stays valid (no 409 refresh), and reads see the real handle.
+    assert view.capture().generation == before.generation
     assert srv._pilot is srv._runners.get(row['id'])
+    assert view.reader().local_handle is srv._pilot._local_metadata
 
 
 def test_rejected_transition_restores_context_but_never_old_epoch(tmp_path):

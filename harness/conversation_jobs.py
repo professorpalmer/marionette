@@ -24,6 +24,7 @@ via ConversationalSession inheritance.
 from typing import Iterator, Optional
 
 from ._exec import _puppetmaster_cmd
+from .provenance_sanitize import bound_live_dirty_provenance
 
 
 _WORKER_PROVENANCE_PATH_CAP = 12
@@ -328,8 +329,11 @@ def _worker_provenance_text(provenance: dict, *, expects_diff: bool = True) -> s
     """
     if not isinstance(provenance, dict) or not provenance:
         return ""
-    before = list(provenance.get("live_dirty_paths_before") or [])
-    after = list(provenance.get("live_dirty_paths_after") or [])
+    bounded = bound_live_dirty_provenance(provenance)
+    before = list(bounded.get("live_dirty_paths_before") or [])
+    after = list(bounded.get("live_dirty_paths_after") or [])
+    count_before = int(bounded.get("dirty_count_before") or len(before))
+    count_after = int(bounded.get("dirty_count_after") or len(after))
     requested_mode = str(provenance.get("requested_mode") or "")
     if not requested_mode:
         requested_mode = "implement" if expects_diff else "analysis"
@@ -360,15 +364,16 @@ def _worker_provenance_text(provenance: dict, *, expects_diff: bool = True) -> s
         worker_line = f"{reason}. {worker_line}"
     if error and error in _PROVENANCE_STAGE_CODES and error not in worker_line:
         worker_line = f"{error}: {worker_line}"
-    def path_list(paths: list) -> str:
+    def path_list(paths: list, total: int) -> str:
         shown = [str(item) for item in paths[:_WORKER_PROVENANCE_PATH_CAP]]
-        suffix = f", +{len(paths) - len(shown)} more" if len(paths) > len(shown) else ""
+        suffix = f", +{total - len(shown)} more" if total > len(shown) else ""
         return ", ".join(shown) + suffix if shown else "none"
     text = (
         f"[provenance] {worker_line}; mode={mode}"
         f"{f', path={path}' if path else ''}. "
-        f"User checkout had {len(before)} pre-existing dirty paths before"
-        f" ({path_list(before)}) and {len(after)} after ({path_list(after)})."
+        f"User checkout had {count_before} pre-existing dirty paths before"
+        f" ({path_list(before, count_before)}) and {count_after} after"
+        f" ({path_list(after, count_after)})."
     )
     if str(provenance.get("cleanup_status") or "") == "failed":
         stage = str(provenance.get("cleanup_stage") or "").strip()
@@ -976,6 +981,7 @@ class ConversationJobsMixin:
                     and _is_empty_diff_implement_failure(res, expects_diff=expects_diff)
                 ),
             }
+            provenance = bound_live_dirty_provenance(provenance)
             res.live_dirty_paths_before = list(live_dirty_before)
             res.live_dirty_paths_after = list(live_dirty_after)
             res.managed_worktree_path = provenance["managed_worktree_path"]
@@ -1435,6 +1441,7 @@ class ConversationJobsMixin:
                 "held_for_review": False,
                 "partial_patch": False,
             }
+            failure_provenance = bound_live_dirty_provenance(failure_provenance)
             if self._local_job_cancelled(job_id):
                 # A failure while collecting late facts must not turn a
                 # cancelled job into a failed/completed result or enqueue one.
