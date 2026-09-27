@@ -1652,6 +1652,7 @@ def test_dispatch_readonly_action_read_file_success():
     assert events[0].data["types"] == ["file"]
     session._do_read_file.assert_called_once_with(act)
     assert appended and "returned" in appended[0][0][2]
+    assert appended[0][1]["ok"] is True
 
 
 def test_dispatch_readonly_action_uses_prefetch_hit():
@@ -1665,6 +1666,7 @@ def test_dispatch_readonly_action_uses_prefetch_hit():
     assert events[0].data["types"] == ["dir"]
     session._do_list_dir.assert_not_called()
     session._append_action_result.assert_called_once()
+    assert session._append_action_result.call_args.kwargs["ok"] is True
 
 
 def test_dispatch_readonly_action_read_file_error():
@@ -1676,6 +1678,16 @@ def test_dispatch_readonly_action_read_file_error():
     events = list(dispatch_readonly_action(session, act, 0, "a1", {}, True))
     assert events[0].data.get("error") == "no repo"
     session._append_action_result.assert_called_once()
+    assert session._append_action_result.call_args.kwargs["ok"] is False
+
+
+def test_dispatch_readonly_prefetch_error_preserves_failure_for_legacy_history():
+    act = PilotAction(kind="search_files", query="needle")
+    session = SimpleNamespace(_append_action_result=MagicMock())
+    prefetch = {3: (False, "exception", "search backend unavailable")}
+    events = list(dispatch_readonly_action(session, act, 3, "search-3", prefetch, False))
+    assert events[0].data["error"] == "search backend unavailable"
+    assert session._append_action_result.call_args.kwargs["ok"] is False
 
 
 def test_local_action_kinds_covers_workspace_mutate_browse_mcp():

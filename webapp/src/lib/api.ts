@@ -1165,6 +1165,7 @@ export type LocalSampling = {
   temperature?: number;
   top_p?: number;
   frequency_penalty?: number;
+  reasoning_budget_tokens?: number;
 };
 
 export const LOCAL_TOOL_CALLING_STATUSES = [

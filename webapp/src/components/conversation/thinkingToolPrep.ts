@@ -193,27 +193,20 @@ function mergeThinkingText(
   chunk: string,
   coalesceSnapshots: boolean,
 ): string {
-  // Shared sanitize for both snapshot coalesce and live deltas so Codex/Luna
-  // bold-title frames (`****` between Investigating / Searching) never paint.
   if (coalesceSnapshots) return coalesceThinkingChunk(existing, chunk);
   if (!chunk) return existing;
-  if (isTrivialAssistantCrumb(chunk)) return existing;
-  if (!existing || isTrivialAssistantCrumb(existing)) {
-    return sanitizeThinkingStatusGlue(chunk);
-  }
+  if (!existing) return chunk;
   const existingCore = stripThinkingEmphasisChrome(existing);
   const chunkCore = stripThinkingEmphasisChrome(chunk);
   if (looksLikeStatusHeadline(existingCore) && looksLikeStatusHeadline(chunkCore)) {
     return chunkCore;
   }
   if (looksLikeStatusHeadline(chunkCore) && !looksLikeStatusHeadline(existingCore)) {
-    // Dropped `****` crumbs would otherwise smash "redesign"+"Finalizing...".
-    const sep = /\s$/.test(existing) ? "" : " ";
-    return sanitizeThinkingStatusGlue(existing + sep + chunkCore);
+    const withoutStatusChrome = existing.replace(/(?:[*_`~]+\s*)+$/, "");
+    const sep = !withoutStatusChrome || /\s$/.test(withoutStatusChrome) ? "" : " ";
+    return withoutStatusChrome + sep + chunkCore;
   }
-  const piece = absorbThoughtSnapshot(existing, chunk);
-  if (!piece) return existing;
-  return sanitizeThinkingStatusGlue(existing + piece);
+  return existing + chunk;
 }
 
 function turnStartIndex(items: Item[]): number {
@@ -293,7 +286,7 @@ export function upsertStreamingThinking(
       ...items,
       {
         kind: "thinking",
-        text: sanitizeThinkingStatusGlue(chunk),
+        text: mergeThinkingText("", chunk, coalesceSnapshots),
         streaming: true,
         id: newThinkingId(),
         stream_id: streamId,
@@ -330,7 +323,7 @@ export function upsertStreamingThinking(
         ...sealed,
         {
           kind: "thinking",
-          text: sanitizeThinkingStatusGlue(chunk),
+          text: mergeThinkingText("", chunk, coalesceSnapshots),
           streaming: true,
           id: newThinkingId(),
           started_at_ms: Date.now(),
@@ -354,7 +347,7 @@ export function upsertStreamingThinking(
     ...items,
     {
       kind: "thinking",
-      text: sanitizeThinkingStatusGlue(chunk),
+      text: mergeThinkingText("", chunk, coalesceSnapshots),
       streaming: true,
       id: newThinkingId(),
       started_at_ms: Date.now(),

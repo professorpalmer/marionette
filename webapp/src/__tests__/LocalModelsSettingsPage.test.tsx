@@ -370,7 +370,7 @@ describe("LocalModelsSettingsPage", () => {
       models: ["kimi", "glm"],
       selected_model: "kimi",
       healthy: true,
-      sampling: { glm: { temperature: 0.7 } },
+      sampling: { glm: { temperature: 0.7, reasoning_budget_tokens: -1 } },
     };
     getLocalModels.mockResolvedValue(snapshot({ externals: [endpoint] }));
     localModelCommand.mockResolvedValue(snapshot({ externals: [endpoint] }));
@@ -381,16 +381,21 @@ describe("LocalModelsSettingsPage", () => {
     expect(temp.value).toBe("");
     fireEvent.change(temp, { target: { value: "0.6" } });
     fireEvent.change(screen.getByLabelText("Top P for adv kimi"), { target: { value: "0.95" } });
+    fireEvent.change(screen.getByLabelText("Reasoning budget for adv kimi"), { target: { value: "128" } });
     fireEvent.click(screen.getByRole("button", { name: "Save sampling" }));
     await waitFor(() => expect(localModelCommand).toHaveBeenCalledWith({
       type: "set_sampling",
       endpoint_id: "openai-compatible-host",
       model: "kimi",
-      sampling: { temperature: 0.6, top_p: 0.95 },
+      sampling: { temperature: 0.6, top_p: 0.95, reasoning_budget_tokens: 128 },
     }));
 
     fireEvent.change(screen.getByLabelText("Sampling model for adv"), { target: { value: "glm" } });
     expect((screen.getByLabelText("Temperature for adv glm") as HTMLInputElement).value).toBe("0.7");
+    expect((screen.getByLabelText("Reasoning budget for adv glm") as HTMLInputElement).value).toBe("-1");
+    expect(screen.getByText(/requires endpoint support/i)).toBeInTheDocument();
+    expect(screen.getByText(/does not limit visible answer tokens/i)).toBeInTheDocument();
+    expect(screen.getByText(/not a universal provider setting/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Use server defaults" }));
     await waitFor(() => expect(localModelCommand).toHaveBeenLastCalledWith({
       type: "set_sampling",

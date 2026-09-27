@@ -351,3 +351,60 @@ def test_set_sampling_rebuilds_only_the_pilot_that_uses_it(tmp_path):
     assert status == 200 and rebuilt["n"] == 1
     status, payload = post_local_models({**body, "sampling": {"temperature": 9}}, svc)
     assert status == 400
+
+
+def test_set_sampling_reports_active_rebuild_failure_but_keeps_saved_value(tmp_path):
+    svc, _ = _svc(tmp_path)
+    state = svc.manager._state()
+    state["externals"] = [{
+        "id": "loop", "vendor": "openai-compatible", "base_url": "http://127.0.0.1:8080/v1",
+        "models": ["kimi"], "selected_model": "kimi", "healthy": True,
+        "kind": "loopback", "requires_key": False,
+    }]
+    svc.manager._save(state)
+    svc.cfg.driver = "local:loop/kimi"
+    svc.rebuild_pilot_and_session = lambda: (_ for _ in ()).throw(RuntimeError("pilot busy"))
+
+    status, payload = post_local_models({
+        "type": "set_sampling",
+        "endpoint_id": "loop",
+        "model": "kimi",
+        "sampling": {"temperature": 0.6, "top_p": 0.8},
+    }, svc)
+
+    assert status == 500
+    assert payload == {
+        "error": (
+            "Settings were saved but were not applied to the active pilot. "
+            "Retry saving after the active turn ends."
+        ),
+        "code": "sampling_apply_failed",
+        "saved": True,
+    }
+    saved = svc.manager.snapshot()["externals"][0]["sampling"]
+    assert saved == {"kimi": {"temperature": 0.6, "top_p": 0.8}}
+
+
+def test_set_sampling_rebuild_failure_does_not_expose_exception_secrets(tmp_path):
+    svc, _ = _svc(tmp_path)
+    state = svc.manager._state()
+    state["externals"] = [{
+        "id": "loop", "vendor": "openai-compatible", "base_url": "http://127.0.0.1:8080/v1",
+        "models": ["kimi"], "selected_model": "kimi", "healthy": True,
+        "kind": "loopback", "requires_key": False,
+    }]
+    svc.manager._save(state)
+    svc.cfg.driver = "local:loop/kimi"
+    svc.rebuild_pilot_and_session = lambda: (_ for _ in ()).throw(
+        RuntimeError("api_key=sk-secret-value")
+    )
+
+    status, payload = post_local_models({
+        "type": "set_sampling",
+        "endpoint_id": "loop",
+        "model": "kimi",
+        "sampling": {"temperature": 0.4},
+    }, svc)
+
+    assert status == 500
+    assert "sk-secret-value" not in json.dumps(payload)

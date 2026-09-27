@@ -43,11 +43,12 @@ COMMAND_TYPES = (
     "set_sampling",
 )
 # Per-model sampling overrides for OpenAI-compatible endpoints: (min, max,
-# min_inclusive). Unset fields defer to the server default.
+# min_inclusive, integer_only). Unset fields defer to the server default.
 SAMPLING_BOUNDS = {
-    "temperature": (0.0, 2.0, True),
-    "top_p": (0.0, 1.0, False),
-    "frequency_penalty": (-2.0, 2.0, True),
+    "temperature": (0.0, 2.0, True, False),
+    "top_p": (0.0, 1.0, False, False),
+    "frequency_penalty": (-2.0, 2.0, True, False),
+    "reasoning_budget_tokens": (-1, 262144, True, True),
 }
 IDLE_TIMEOUT_MAX_MINUTES = 1440
 TOOL_CALLING_STATUSES = (
@@ -77,6 +78,9 @@ _SENSITIVE_KEY_RE = re.compile(
     r"(api[_-]?key|authorization|token|secret|password|passwd)",
     re.IGNORECASE,
 )
+_NON_SENSITIVE_KEYS = frozenset({"reasoning_budget_tokens"})
+
+
 def state_root() -> str:
     """Directory for runtime, models, logs, and state.json."""
     explicit = os.environ.get("HARNESS_STATE_DIR")
@@ -1079,7 +1083,7 @@ def redact_mapping(payload: Any) -> Any:
     if isinstance(payload, dict):
         out = {}
         for key, value in payload.items():
-            if _SENSITIVE_KEY_RE.search(str(key)):
+            if str(key) not in _NON_SENSITIVE_KEYS and _SENSITIVE_KEY_RE.search(str(key)):
                 if value:
                     out[key] = redact_secret(value)
                 continue
@@ -1103,13 +1107,18 @@ def parse_sampling(raw: Any) -> dict:
             raise ValueError("unsupported sampling field %r" % key)
         if value is None:
             continue
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ValueError("%s must be a number" % key)
-        low, high, low_inclusive = SAMPLING_BOUNDS[key]
-        number = float(value)
+        low, high, low_inclusive, integer_only = SAMPLING_BOUNDS[key]
+        if integer_only:
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError("%s must be an integer" % key)
+            number = value
+        else:
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError("%s must be a number" % key)
+            number = float(value)
         if number > high or number < low or (number == low and not low_inclusive):
             raise ValueError("%s is out of range" % key)
-        out[key] = number
+        out[key] = value if integer_only else number
     return out
 
 
