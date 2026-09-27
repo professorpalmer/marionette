@@ -230,7 +230,7 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
     expect(surfaceKinds(next)).toEqual(["thinking", "msg:assistant*", "thinking*"]);
   });
 
-  it("pre-tool assistant bubbles stay non-intermediate when cards arrive later", () => {
+  it("folds structurally proven native progress while keeping the trailing answer visible", () => {
     const preTool: Item = {
       kind: "msg",
       msg: { role: "assistant", text: "I will look" },
@@ -259,12 +259,12 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
     ];
 
     const whileOpen = collectIntermediateAssistantItems(items, true);
-    // Live answer stays a top-level Bubble (no absorb → peel remount).
-    expect(whileOpen.has(preTool)).toBe(false);
+    // Untyped legacy progress is proven by the following native card.
+    expect(whileOpen.has(preTool)).toBe(true);
     expect(whileOpen.has(postTool)).toBe(false);
 
     const whenDone = collectIntermediateAssistantItems(items, false);
-    expect(whenDone.has(preTool)).toBe(false);
+    expect(whenDone.has(preTool)).toBe(true);
     // Trailing answer with no card after it stands alone once the loop closes.
     expect(whenDone.has(postTool)).toBe(false);
   });
@@ -360,7 +360,7 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
     expect(whenDone.has(finale)).toBe(false);
   });
 
-  it("sealed spoken prose stays top-level when a later card or swarm arrives", () => {
+  it("folds untyped prose only when a later native card proves progress", () => {
     const firstCard: Item = {
       kind: "card",
       card: {
@@ -408,7 +408,7 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
       laterSwarm,
     ];
     for (const open of [true, false]) {
-      expect(collectIntermediateAssistantItems(withCard, open).has(spoken)).toBe(false);
+      expect(collectIntermediateAssistantItems(withCard, open).has(spoken)).toBe(true);
       expect(collectIntermediateAssistantItems(withSwarm, open).has(spoken)).toBe(false);
     }
 

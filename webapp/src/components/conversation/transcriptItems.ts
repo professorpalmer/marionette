@@ -561,12 +561,17 @@ export function transcriptResponseToItems(res: {
         const rawText = m.text || "";
         const role = m.role as "user" | "assistant";
         const persistedId = String(m.id || m.input_id || "").trim();
+        const channel = typeof m.channel === "string" && m.channel.trim()
+          ? m.channel.trim()
+          : undefined;
         return [{
           kind: "msg" as const,
           msg: {
             role,
             text: role === "user" ? stripUserVisibleText(rawText) : rawText,
             ...(persistedId ? { id: persistedId } : {}),
+            ...(channel ? { channel } : {}),
+            ...(m.is_plan === true || m.isPlan === true ? { isPlan: true } : {}),
           }
         }];
       }
