@@ -5,6 +5,8 @@ from __future__ import annotations
 import tempfile
 from types import SimpleNamespace
 
+import pytest
+
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession
 from harness.prompt_cache_scope import (
@@ -90,6 +92,29 @@ def test_select_scores_name_and_description_not_body():
     )
     assert select_skill_bodies("router audit receipt", [skill]) == []
     assert select_skill_bodies("alpha beta workflow", [skill]) == [skill]
+
+
+def test_generic_single_token_overlap_does_not_select_unrelated_skill():
+    skill = _skill(
+        "long-audit-playbook",
+        "Audit a release for provenance and evidence quality.",
+        "A very long audit method body.",
+    )
+    assert select_skill_bodies("show tool calls in agentic workflows", [skill]) == []
+
+
+@pytest.mark.parametrize("query", [
+    "use jev",
+    "please use evidence-audit",
+])
+def test_explicit_full_skill_identity_preserves_one_word_and_slug(query):
+    skill = _skill(
+        "Jev",
+        "Decision support for evidence review.",
+        "Use Jev's typed finding protocol.",
+        slug="evidence-audit",
+    )
+    assert select_skill_bodies(query, [skill]) == [skill]
 
 
 def test_select_greedy_respects_count_and_budget():
