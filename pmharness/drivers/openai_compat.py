@@ -511,7 +511,7 @@ class OpenAICompatDriver:
         base_url: str,
         api_key_env: str,
         *,
-        temperature: float = 0.0,
+        temperature: float | None = None,
         max_tokens: int | None = 1500,
         timeout: int = 90,
         extra_headers: dict | None = None,
@@ -749,7 +749,7 @@ class OpenAICompatDriver:
         )
 
     def _apply_temperature(self, body: dict) -> None:
-        if not self._uses_openai_gpt5_chat_parameters():
+        if self.temperature is not None and not self._uses_openai_gpt5_chat_parameters():
             body["temperature"] = self.temperature
 
     def _apply_openai_gpt5_chat_constraints(self, body: dict) -> None:
