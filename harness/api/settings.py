@@ -75,6 +75,8 @@ def get_config(svc: SettingsServices) -> tuple[int, JsonPayload]:
         model_labels = picker_model_labels(models, force=False)
     except Exception:
         model_labels = {}
+    from ..model_visibility import compute_reasoning_support
+    reasoning_support = compute_reasoning_support([*models, cfg.driver])
     return 200, {
         "driver": cfg.driver,
         "reach": cfg.reach,
@@ -82,6 +84,7 @@ def get_config(svc: SettingsServices) -> tuple[int, JsonPayload]:
         "state_dir": session.state_dir,
         "models": models,
         "model_labels": model_labels,
+        "reasoning_support": reasoning_support,
         "repo": cfg.repo,
         "swarm_adapter": cfg.swarm_adapter,
         "edit_engine": edit_engine,

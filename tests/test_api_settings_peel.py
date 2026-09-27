@@ -127,6 +127,40 @@ def test_get_config_includes_dynamic_model_labels(monkeypatch):
     assert seen["specs"] == payload["models"]
 
 
+def test_get_config_includes_reasoning_support_for_models_and_current_driver():
+    svc, cfg, _, _ = _svc(
+        available_pilots=lambda: ["openai-codex:gpt-5.6-luna"],
+    )
+    cfg.driver = "local:Qwen/Qwen3-8B"
+
+    code, payload = get_config(svc)
+
+    assert code == 200
+    assert payload["models"] == ["openai-codex:gpt-5.6-luna"]
+    assert payload["reasoning_support"] == {
+        "openai-codex:gpt-5.6-luna": True,
+        "local:Qwen/Qwen3-8B": False,
+    }
+
+
+def test_get_config_retains_reasoning_support_when_model_labels_fail(monkeypatch):
+    def unavailable_labels(*args, **kwargs):
+        raise RuntimeError("catalog labels unavailable")
+
+    monkeypatch.setattr("harness.model_visibility.picker_model_labels", unavailable_labels)
+    monkeypatch.setenv("HARNESS_CODEX_REASONING_EFFORT", "high")
+    svc, cfg, _, calls = _svc(available_pilots=lambda: [])
+    cfg.driver = "local:Qwen/Qwen3-8B"
+
+    code, payload = get_config(svc)
+
+    assert code == 200
+    assert payload["model_labels"] == {}
+    assert payload["reasoning_support"] == {cfg.driver: False}
+    assert payload["reasoning_effort"] == "high"
+    assert calls["persist"] == []
+
+
 def test_post_settings_budget_and_flags(monkeypatch):
     monkeypatch.setattr(
         "harness.auto_registry.sync_agentic_registry_safe", lambda: None

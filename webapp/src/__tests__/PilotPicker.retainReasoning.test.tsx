@@ -88,3 +88,31 @@ describe("PilotPicker thinking retention", () => {
     expect(getCache).not.toHaveBeenCalled();
   });
 });
+
+describe("PilotPicker reasoning capability", () => {
+  it("hides reasoning effort for an explicitly unsupported local driver", () => {
+    render(<PilotPicker config={{
+      ...sonnetConfig,
+      driver: "local:Qwen/Qwen3-8B",
+      models: ["local:Qwen/Qwen3-8B"],
+      reasoning_support: { "local:Qwen/Qwen3-8B": false },
+    }} />);
+
+    expect(screen.queryByTitle("Reasoning effort (Low)")).toBeNull();
+  });
+
+  it("shows reasoning effort for an explicitly supported provider driver", () => {
+    render(<PilotPicker config={{
+      ...sonnetConfig,
+      reasoning_support: { "anthropic:claude-sonnet-4-6": true },
+    }} />);
+
+    expect(screen.getByTitle("Reasoning effort (Low)")).toBeInTheDocument();
+  });
+
+  it("keeps the permissive fallback when reasoning support is missing", () => {
+    render(<PilotPicker config={sonnetConfig} />);
+
+    expect(screen.getByTitle("Reasoning effort (Low)")).toBeInTheDocument();
+  });
+});
