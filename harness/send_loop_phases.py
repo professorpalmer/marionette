@@ -234,7 +234,7 @@ def persist_turn_receipt(session: Any, user_message: str = "") -> None:
             or ""
         )
         if getattr(session, "_turn_ran_command", False) and not verification:
-            verification = "pass"
+            verification = "unknown"
         elif files and not getattr(session, "_turn_ran_command", False) and not verification:
             verification = "skipped"
         model = ""
