@@ -1,14 +1,24 @@
 """Real subprocess effects across logical-action replay and journal recovery."""
+import time
 from unittest.mock import patch
+
+import pytest
 
 from command_shell_helpers import python_shell_command
 
 from test_command_batches import _Session, _wait_batch_terminal
-from harness.command_batches import start_command_batch
+from harness.command_batches import cancel_command_batch, start_command_batch
+from harness.command_jobs import build_pending_receipt, launch_registered_command_job
+from harness.command_policy import _run_cancellable_wait
 
 
-def effect_command(exit_code=1, pause=False, distinct=False):
+def effect_command(exit_code=1, pause=False, distinct=False, startup_delay=0):
     code = "from pathlib import Path; p=Path('effect'); p.open('a').write('x'); raise SystemExit(%d)" % exit_code
+    if startup_delay:
+        code = code.replace(
+            "from pathlib import Path",
+            "import time; time.sleep(%s); from pathlib import Path" % startup_delay,
+        )
     if distinct:
         code = code.replace("p=Path('effect')", "import os; p=Path('effect-%d' % os.getpid())")
     if pause:
@@ -16,25 +26,41 @@ def effect_command(exit_code=1, pause=False, distinct=False):
     return python_shell_command(code)
 
 
-def test_timeout_after_effect_same_action_does_not_repeat(tmp_path):
+def _timeout_after_effect(effect_path, handshake_timeout=3.0):
+    def wait_after_effect(proc, **kwargs):
+        deadline = time.monotonic() + handshake_timeout
+        while not effect_path.exists() and proc.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        if effect_path.exists():
+            kwargs['start'] = time.monotonic()
+        return _run_cancellable_wait(proc, **kwargs)
+    return wait_after_effect
+
+
+@pytest.mark.parametrize('startup_delay', [0, 0.4])
+def test_timeout_after_effect_same_action_does_not_repeat(tmp_path, startup_delay):
     sess = _Session(str(tmp_path), str(tmp_path))
-    command = effect_command(pause=True)
-    with patch('harness.command_policy.effective_command_timeout', return_value=0.2):
+    command = effect_command(pause=True, startup_delay=startup_delay)
+    wait_patch = patch(
+        'harness.command_policy._run_cancellable_wait',
+        side_effect=_timeout_after_effect(tmp_path / 'effect'),
+    )
+    timeout_patch = patch(
+        'harness.command_policy.effective_command_timeout', return_value=0.2,
+    )
+    with wait_patch, timeout_patch:
         first = start_command_batch(sess, [command], 'effect-action')
         settled = _wait_batch_terminal(sess, first['batch_id'])
     assert settled['status'] == 'failed'
     assert settled['children'][0]['status'] == 'timeout'
+    timeout_receipt = settled['children'][0]['terminal_receipt']
+    assert timeout_receipt['status'] == 'timeout'
     assert (tmp_path / 'effect').read_text() == 'x'
     second = start_command_batch(sess, [command], 'effect-action')
     _wait_batch_terminal(sess, second['batch_id'])
     assert (tmp_path / 'effect').read_text() == 'x'
     assert second['child_job_ids'] == first['child_job_ids']
-
-
-import time
-import pytest
-from harness.command_batches import cancel_command_batch
-from harness.command_jobs import launch_registered_command_job, build_pending_receipt
+    assert second['children'][0]['terminal_receipt'] == timeout_receipt
 
 
 def test_nonzero_exit_receipt_and_explicit_new_action(tmp_path):
