@@ -305,6 +305,27 @@ export function shouldPromoteListActive(opts: {
   return true;
 }
 
+/**
+ * The click-requested id fences list promotion only until the switch lands.
+ * Once the list reports it active, later backend-driven changes (project
+ * open, relocate) must promote again.
+ */
+export function requestedSessionAfterList(
+  requestedSessionId: string | null,
+  listActiveId: string | undefined,
+): string | null {
+  if (requestedSessionId && listActiveId === requestedSessionId) return null;
+  return requestedSessionId;
+}
+
+/** The session Conversation shows; the list active can lag or lead it. */
+export function onScreenSessionId(
+  shownSessionId: string | null | undefined,
+  sessions: readonly { id: string; active?: boolean }[],
+): string {
+  return shownSessionId || sessions.find((s) => s.active)?.id || "";
+}
+
 export type RunnerStatus = "running" | "idle" | "attaching" | "missing";
 
 /** Sessions that finished a background turn while the user looked elsewhere. */

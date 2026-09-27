@@ -185,11 +185,11 @@ describe("recovered vision sidecar driver miss is not a failed turn", () => {
     setCorrelationId("");
   });
 
-  it("does not publish Trace/Retry when the sidecar arrives as error then the turn succeeds", () => {
+  it("does not publish Trace/Retry when a non-terminal sidecar error precedes a successful turn", () => {
     resetDiagnosticBus();
     setCorrelationId("trace-sidecar-error-kind");
     const { state, apply } = makeWaitHintApplyDeps();
-    apply({ kind: "error", data: { error: sidecar } });
+    apply({ kind: "error", data: { error: sidecar, terminal: false } });
     expect(state.status).not.toBe("error");
     expect(getActiveDiagnostic()).toBeNull();
     apply({ kind: "message_delta", data: { text: "The turn worked.", stream_id: "a1", channel: "answer" } });
@@ -198,6 +198,18 @@ describe("recovered vision sidecar driver miss is not a failed turn", () => {
     expect(state.status).toBe("done");
     expect(getActiveDiagnostic()).toBeNull();
     setCorrelationId("");
+  });
+
+  it("settles the turn when a driver failure arrives as a terminal error", () => {
+    resetDiagnosticBus();
+    const { state, apply } = makeWaitHintApplyDeps();
+    apply({ kind: "error", data: { error: sidecar } });
+    expect(state.status).toBe("error");
+    const busy = deriveBusyProgress(state.items, state.status, null, {
+      modelLabel: "openrouter:deepseek/deepseek-v4-flash-vision-exp",
+      waitHint: state.waitHint,
+    });
+    expect(busy.label).not.toMatch(/^Waiting on/i);
   });
 
   it("still shows Trace+Retry on a genuinely failed turn", () => {

@@ -10,11 +10,22 @@ function record(value: unknown): value is Record<string, unknown> {
 export function endpointRecoveryError(): Error {
   return Object.assign(new Error('Backend connection changed; retry this action explicitly. Reload this page or restart the local app if recovery keeps failing.'), {code:'ENDPOINT_RECONNECT_REQUIRED'});
 }
+const ENDPOINT_ROTATION_CODES = new Set(['endpoint_mismatch', 'boot_mismatch']);
+
+/**
+ * A stream error that means the backend endpoint/boot rotated. Other 409s
+ * (ring-watch miss, input_session_changed) are session-scoped and must not
+ * drop the global endpoint pin.
+ */
+export function isEndpointRotationError(error: unknown): boolean {
+  return record(error) && error.status === 409
+    && typeof error.code === 'string' && ENDPOINT_ROTATION_CODES.has(error.code);
+}
 export function isEndpointMismatch(response: JSONResponse): boolean {
   if (response.kind !== 'response' || response.status !== 409) return false;
   try {
     const body: unknown = JSON.parse(response.text);
-    return record(body) && (body.code === 'endpoint_mismatch' || body.code === 'boot_mismatch');
+    return record(body) && typeof body.code === 'string' && ENDPOINT_ROTATION_CODES.has(body.code);
   } catch { return false; }
 }
 

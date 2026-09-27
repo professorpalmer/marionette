@@ -3110,7 +3110,16 @@ class Handler(BaseHTTPRequestHandler):
                 sid = view_id or store_id
             status, payload = get_config(_settings_services())
             payload["session_id"] = sid
-            if sid:
+            if sid and view_id and sid != view_id:
+                # Switch in flight: the live pilot still belongs to the outgoing
+                # view, so its driver and efforts are not this session's. Report
+                # only what the target session stored; the client retries once
+                # the view attaches.
+                for key in ("driver", "reasoning_effort", "swarm_reasoning_effort"):
+                    payload.pop(key, None)
+                payload["driver"] = ""
+                payload.update(_sessions.pilot_preferences(sid))
+            elif sid:
                 payload.update(_sessions.pilot_preferences(sid, seed_driver=_cfg.driver))
         return self._send(status, json.dumps(payload))
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Config } from "../lib/api";
-import { configForActiveSession } from "../lib/sessionConfig";
+import { configForActiveSession, pickerConfig } from "../lib/sessionConfig";
 
 const cfg = (sessionId: string): Config => ({
   session_id: sessionId,
@@ -20,7 +20,28 @@ describe("configForActiveSession", () => {
     expect(visible).not.toBeNull();
     expect(visible?.models).toEqual(received.models);
     expect(visible?.repo).toBe(received.repo);
-    expect(visible?.session_id).toBe("sess-home-new");
+    expect(visible?.workers_ready).toBe(true);
+  });
+
+  it("clears session-owned fields instead of relabeling the previous session's driver", () => {
+    const received = { ...cfg("sess-running"), reasoning_effort: "high" as const, swarm_reasoning_effort: "max" as const };
+    const visible = configForActiveSession(received, "sess-home-new");
+    expect(visible?.driver).toBe("");
+    expect(visible?.reasoning_effort).toBeUndefined();
+    expect(visible?.swarm_reasoning_effort).toBeUndefined();
+    expect(visible?.session_id).not.toBe("sess-home-new");
+    expect(visible?.session_id).not.toBe("sess-running");
+  });
+
+  it("gives pickers a loading config while pending and refuses a foreign driver", () => {
+    const pending = configForActiveSession(cfg("sess-running"), "sess-home-new");
+    expect(pickerConfig(pending, "sess-home-new")?.driver).toBe("");
+    expect(pickerConfig(cfg("sess-running"), "sess-home-new")).toBeNull();
+    const own = cfg("sess-home-new");
+    expect(pickerConfig(own, "sess-home-new")).toBe(own);
+    const midSwitch = { ...cfg("sess-home-new"), driver: "" };
+    expect(pickerConfig(midSwitch, "sess-home-new")).toBe(midSwitch);
+    expect(pickerConfig(null, "sess-home-new")).toBeNull();
   });
 
   it("uses a matching payload as-is", () => {
