@@ -1,6 +1,7 @@
 """Tests for real pilot agent tools (read_file, write_file, run_command, list_dir)."""
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -191,6 +192,182 @@ def test_run_command_survives_cancel_poisoned_after_action_start():
         ), f"unexpected headline: {headline!r}"
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def _python_command(source):
+    args = [sys.executable, "-c", source]
+    return subprocess.list2cmdline(args) if os.name == "nt" else shlex.join(args)
+
+
+@pytest.mark.parametrize("rerun_exit_code", [0, 1])
+@pytest.mark.parametrize("mutation_kind", ["write_file", "edit_file", "hash_edit"])
+def test_cached_run_command_reexecutes_after_native_file_mutation(
+    tmp_path, monkeypatch, mutation_kind, rerun_exit_code,
+):
+    monkeypatch.setenv("HARNESS_HASH_EDIT", "1")
+    target = tmp_path / "value.txt"
+    target.write_text("old\n", encoding="utf-8")
+    command = _python_command(
+        "from pathlib import Path; import sys; "
+        "value=Path('value.txt').read_text().strip(); print(value); "
+        f"sys.exit({rerun_exit_code} if value == 'new' else 0)"
+    )
+    mutation = {
+        "write_file": {
+            "kind": "write_file", "path": "value.txt", "content": "new\n",
+        },
+        "edit_file": {
+            "kind": "edit_file", "path": "value.txt", "old_str": "old", "new_str": "new",
+        },
+        "hash_edit": {
+            "kind": "hash_edit",
+            "path": "value.txt",
+            "arguments": {"ops": [{
+                "op": "replace",
+                "start_line": 1,
+                "end_line": 1,
+                "anchor": compute_range_hash(["old"], 1, 1),
+                "text": "new",
+            }]},
+        },
+    }[mutation_kind]
+
+    class MutationPilot:
+        def __init__(self):
+            self.responses = [
+                {"say": "Read old value", "actions": [{"kind": "run_command", "command": command}]},
+                {"say": "Mutate value", "actions": [mutation]},
+                {"say": "Read fresh value", "actions": [{"kind": "run_command", "command": command}]},
+                {"say": "Repeat unchanged", "actions": [{"kind": "run_command", "command": command}]},
+                {"say": "Done", "actions": []},
+            ]
+
+        def complete(self, prompt, system=None):
+            return FakeResponse(text=json.dumps(self.responses.pop(0)))
+
+    session = ConversationalSession(HarnessConfig(repo=str(tmp_path), swarm_adapter="demo"))
+    session.pilot = MutationPilot()
+    events = list(session.send("refresh after mutation"))
+    command_results = [
+        event.data for event in events
+        if event.kind == "action_result" and "command" in (event.data.get("types") or [])
+    ]
+
+    assert [result["output"].strip() for result in command_results] == ["old", "new"]
+    assert [result["exit_code"] for result in command_results] == [0, rerun_exit_code]
+    cached_results = [
+        event for event in events
+        if event.kind == "action_result" and "cached" in (event.data.get("types") or [])
+    ]
+    assert len(cached_results) == (1 if rerun_exit_code == 0 else 0)
+    if rerun_exit_code:
+        assert any(
+            event.kind == "action_result"
+            and "repeat run_command" in event.data.get("error", "")
+            for event in events
+        )
+
+
+@pytest.mark.parametrize("copy_exit_code", [0, 1])
+def test_failed_run_command_reexecutes_after_write_and_different_command(tmp_path, copy_exit_code):
+    check = _python_command(
+        "from pathlib import Path; import sys; p=Path('target.txt'); "
+        "print(p.read_text().strip() if p.exists() else 'missing'); "
+        "sys.exit(0 if p.exists() else 2)"
+    )
+    copy = _python_command(
+        "from shutil import copyfile; import sys; copyfile('source.txt', 'target.txt'); "
+        f"sys.exit({copy_exit_code})"
+    )
+
+    class RetryPilot:
+        def __init__(self):
+            self.responses = [
+                {"say": "Check", "actions": [{"kind": "run_command", "command": check}]},
+                {"say": "Create source", "actions": [{
+                    "kind": "write_file", "path": "source.txt", "content": "ready\n",
+                }]},
+                {"say": "Copy", "actions": [{"kind": "run_command", "command": copy}]},
+                {"say": "Check again", "actions": [{"kind": "run_command", "command": check}]},
+                {"say": "Done", "actions": []},
+            ]
+
+        def complete(self, prompt, system=None):
+            return FakeResponse(text=json.dumps(self.responses.pop(0)))
+
+    session = ConversationalSession(HarnessConfig(repo=str(tmp_path), swarm_adapter="demo"))
+    session.pilot = RetryPilot()
+    events = list(session.send("retry after repairing inputs"))
+    command_results = [
+        event.data for event in events
+        if event.kind == "action_result" and "command" in (event.data.get("types") or [])
+    ]
+
+    assert [result["exit_code"] for result in command_results] == [2, copy_exit_code, 0]
+    assert command_results[-1]["output"].strip() == "ready"
+
+
+@pytest.mark.parametrize("publication_fails", [False, True])
+def test_approval_blocked_command_does_not_invalidate_prior_command_cache(
+    tmp_path, monkeypatch, publication_fails,
+):
+    first = "first-command"
+    blocked = "blocked-command"
+
+    class BlockedPilot:
+        def __init__(self):
+            self.responses = [
+                {"say": "Run", "actions": [{"kind": "run_command", "command": first}]},
+                {"say": "Blocked", "actions": [{"kind": "run_command", "command": blocked}]},
+                {"say": "Repeat", "actions": [{"kind": "run_command", "command": first}]},
+                {"say": "Done", "actions": []},
+            ]
+
+        def complete(self, prompt, system=None):
+            return FakeResponse(text=json.dumps(self.responses.pop(0)))
+
+    session = ConversationalSession(HarnessConfig(repo=str(tmp_path), swarm_adapter="demo"))
+    session.pilot = BlockedPilot()
+
+    def fake_run_command(act):
+        if act.command == blocked:
+            return False, "blocked", {
+                "message": "approval required",
+                "command_hash": "blocked-hash",
+                "category": "test",
+                "reason": "test block",
+            }
+        return True, "success", {
+            "output": "stable output\n",
+            "exit_code": 0,
+            "status": "ok",
+            "cwd": str(tmp_path),
+        }
+
+    monkeypatch.setattr(session, "_do_run_command", fake_run_command)
+    if publication_fails:
+        from harness import command_jobs
+
+        finish = command_jobs.finish_foreground_command_job
+
+        def fail_blocked_publication(session, job_id, ok, status, val):
+            if status == "blocked":
+                raise RuntimeError("publication failed after approval block")
+            return finish(session, job_id, ok, status, val)
+
+        monkeypatch.setattr(command_jobs, "finish_foreground_command_job", fail_blocked_publication)
+    events = list(session.send("do not invalidate on approval block"))
+
+    first_results = [
+        event.data for event in events
+        if event.kind == "action_result" and event.data.get("command") == first
+    ]
+    cached_results = [
+        event.data for event in events
+        if event.kind == "action_result" and "cached" in (event.data.get("types") or [])
+    ]
+    assert len(first_results) == 1
+    assert len(cached_results) == 1
 
 
 @dataclass

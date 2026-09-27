@@ -63,6 +63,8 @@ from harness.pilot_guards import (
     post_implement_tool_allowance,
     puppetmaster_cli_native_mapping,
     record_action_execution,
+    record_native_workspace_mutation,
+    record_run_command_completion,
     session_pending_swarm_active,
     session_pending_swarm_goal,
     swarm_gate_enabled,
@@ -767,6 +769,72 @@ def test_loop_replays_identical_successful_call():
     assert "[cached repeat of identical call]" in verdict.message
     assert "hello" in verdict.message
     assert "SUPPRESSED" not in verdict.message
+
+
+def test_run_command_repeat_stays_blocked_until_execution_context_changes():
+    state = TurnGuardState(iteration_budget=IterationBudget(cap=2))
+    command = _Act(kind="run_command", command="python -m pytest focused_test.py")
+
+    record_action_execution(state, "run_command", command)
+    record_run_command_completion(state, command)
+    assert check_loop_guard(state, "run_command", command).reason == "loop"
+
+    record_native_workspace_mutation(state)
+    assert check_loop_guard(state, "run_command", command).suppress is False
+    record_action_execution(state, "run_command", command)
+    assert state.iteration_budget.used == 2
+    assert check_iteration_budget(state, "run_command", command).suppress is True
+
+
+def test_run_command_success_cache_is_fresh_only_in_current_execution_context():
+    from harness.pilot_guards import record_successful_result
+
+    state = new_turn_guard_state()
+    command = _Act(kind="run_command", command="python verify.py")
+    record_action_execution(state, "run_command", command)
+    record_run_command_completion(state, command)
+    record_successful_result(state, "run_command", command, "old output")
+
+    cached = check_loop_guard(state, "run_command", command)
+    assert cached.replay is True
+
+    record_native_workspace_mutation(state)
+    assert check_loop_guard(state, "run_command", command).suppress is False
+
+    record_action_execution(state, "run_command", command)
+    record_run_command_completion(state, command)
+    record_successful_result(state, "run_command", command, "fresh output")
+    fresh = check_loop_guard(state, "run_command", command)
+    assert fresh.replay is True
+    assert "fresh output" in fresh.message
+
+
+def test_different_completed_command_invalidates_prior_command():
+    state = new_turn_guard_state()
+    first = _Act(kind="run_command", command="python first.py")
+    different = _Act(kind="run_command", command="python second.py")
+
+    record_action_execution(state, "run_command", first)
+    record_run_command_completion(state, first)
+    record_action_execution(state, "run_command", different)
+    record_run_command_completion(state, different)
+
+    assert check_loop_guard(state, "run_command", first).suppress is False
+
+
+def test_command_context_change_does_not_invalidate_read_only_cache():
+    from harness.pilot_guards import record_successful_result
+
+    state = new_turn_guard_state()
+    read = _Act(kind="read_file", path="main.py")
+    record_action_execution(state, "read_file", read)
+    record_successful_result(state, "read_file", read, "source")
+
+    record_native_workspace_mutation(state)
+
+    verdict = check_loop_guard(state, "read_file", read)
+    assert verdict.replay is True
+    assert state.execution_counts[("read_file", normalize_action_args("read_file", read))] == 1
 
 
 @pytest.mark.parametrize("kind", ["run_implement", "run_parallel"])
