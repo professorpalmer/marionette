@@ -393,6 +393,10 @@ describe("LocalModelsSettingsPage", () => {
     fireEvent.change(screen.getByLabelText("Sampling model for adv"), { target: { value: "glm" } });
     expect((screen.getByLabelText("Temperature for adv glm") as HTMLInputElement).value).toBe("0.7");
     expect((screen.getByLabelText("Reasoning budget for adv glm") as HTMLInputElement).value).toBe("-1");
+    expect(screen.getByText(/blank uses the server default/i)).toBeInTheDocument();
+    expect(screen.getByText(/-1 follows server semantics and may inherit its default/i)).toBeInTheDocument();
+    expect(screen.getByText(/0 requests an immediate end to thinking when supported/i)).toBeInTheDocument();
+    expect(screen.getByText(/positive values request a reasoning token budget/i)).toBeInTheDocument();
     expect(screen.getByText(/requires endpoint support/i)).toBeInTheDocument();
     expect(screen.getByText(/does not limit visible answer tokens/i)).toBeInTheDocument();
     expect(screen.getByText(/not a universal provider setting/i)).toBeInTheDocument();
