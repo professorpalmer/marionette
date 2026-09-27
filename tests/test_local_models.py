@@ -179,9 +179,14 @@ def test_picker_display_name_managed_uses_catalog():
 
 
 def test_redact_mapping_strips_keys():
-    out = lm.redact_mapping({"api_key": "sk-secret-value", "url": "http://127.0.0.1:8080/v1?token=abc"})
+    out = lm.redact_mapping({
+        "api_key": "sk-secret-value",
+        "url": "http://127.0.0.1:8080/v1?token=abc",
+        "reasoning_budget_tokens": 128,
+    })
     assert "sk-secret-value" not in json.dumps(out)
     assert out["api_key"].startswith("••••")
+    assert out["reasoning_budget_tokens"] == 128
 
 
 def test_parse_command_rejects_unknown():
@@ -562,13 +567,22 @@ def test_parse_command_set_sampling():
         "type": "set_sampling",
         "endpoint_id": "openai-compatible-host-abc123",
         "model": "kimi",
-        "sampling": {"temperature": 0.6, "top_p": 0.95, "frequency_penalty": None},
+        "sampling": {
+            "temperature": 0.6,
+            "top_p": 0.95,
+            "frequency_penalty": None,
+            "reasoning_budget_tokens": 128,
+        },
     })
     assert cmd == {
         "type": "set_sampling",
         "endpoint_id": "openai-compatible-host-abc123",
         "model": "kimi",
-        "sampling": {"temperature": 0.6, "top_p": 0.95},
+        "sampling": {
+            "temperature": 0.6,
+            "top_p": 0.95,
+            "reasoning_budget_tokens": 128,
+        },
     }
     cleared = lm.parse_command({"type": "set_sampling", "endpoint_id": "e", "model": "m", "sampling": {}})
     assert cleared["sampling"] == {}
@@ -578,6 +592,12 @@ def test_parse_command_set_sampling():
         {"frequency_penalty": -3},
         {"temperature": True},
         {"temperature": "hot"},
+        {"reasoning_budget_tokens": True},
+        {"reasoning_budget_tokens": 1.5},
+        {"reasoning_budget_tokens": float("nan")},
+        {"reasoning_budget_tokens": float("inf")},
+        {"reasoning_budget_tokens": -2},
+        {"reasoning_budget_tokens": 262145},
         {"seed": 1},
     ):
         with pytest.raises(ValueError):
@@ -586,6 +606,13 @@ def test_parse_command_set_sampling():
         lm.parse_command({"type": "set_sampling", "endpoint_id": "", "model": "m", "sampling": {}})
     with pytest.raises(ValueError):
         lm.parse_command({"type": "set_sampling", "endpoint_id": "e", "model": "", "sampling": {}})
+
+
+@pytest.mark.parametrize("value", [-1, 0, 262144])
+def test_parse_sampling_preserves_reasoning_budget_integer(value):
+    parsed = lm.parse_sampling({"reasoning_budget_tokens": value})
+    assert parsed == {"reasoning_budget_tokens": value}
+    assert isinstance(parsed["reasoning_budget_tokens"], int)
 
 
 def test_resolve_local_endpoint_carries_model_sampling():

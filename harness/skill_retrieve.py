@@ -60,6 +60,19 @@ def _estimate_tokens(text: str) -> int:
     return max(0, len(text or "") // CHARS_PER_TOKEN)
 
 
+def _identity_phrase(text: str) -> str:
+    return " ".join(_TOKEN.findall(text or "")).lower()
+
+
+def _explicit_identity_match(query: str, name: str, slug: str) -> bool:
+    query_phrase = " " + _identity_phrase(query) + " "
+    for identity in (name, slug):
+        phrase = _identity_phrase(identity)
+        if phrase and (" " + phrase + " ") in query_phrase:
+            return True
+    return False
+
+
 def skill_slug(skill: Any) -> str:
     """Prefer an explicit slug; otherwise derive one from the name."""
     explicit = getattr(skill, "slug", None)
@@ -114,7 +127,7 @@ def select_skill_bodies(
     max_count: int = DEFAULT_MAX_COUNT,
     token_budget: int = DEFAULT_TOKEN_BUDGET,
 ) -> List[Any]:
-    """Greedy retrieve by nonzero token overlap on name+description.
+    """Greedy retrieve by explicit identity or distinctive token overlap.
 
     Fail-closed: empty query, empty skills, or zero overlap returns [].
     Ranking is overlap size, then original order. A hit whose body would
@@ -137,15 +150,16 @@ def select_skill_bodies(
         for index, skill in enumerate(skills or ()):
             name = str(getattr(skill, "name", "") or "")
             description = str(getattr(skill, "description", "") or "")
+            explicit = _explicit_identity_match(query, name, skill_slug(skill))
             overlap = query_tokens & _tokens(name + " " + description)
-            if not overlap:
+            if not explicit and len(overlap) < 2:
                 continue
-            ranked.append((len(overlap), index, skill))
-        ranked.sort(key=lambda item: (-item[0], item[1]))
+            ranked.append((1 if explicit else 0, len(overlap), index, skill))
+        ranked.sort(key=lambda item: (-item[0], -item[1], item[2]))
 
         selected = []
         used = 0
-        for _score, _index, skill in ranked:
+        for _explicit, _score, _index, skill in ranked:
             if len(selected) >= limit:
                 break
             body = str(getattr(skill, "body", "") or "")

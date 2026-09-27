@@ -86,7 +86,14 @@ def test_compacted_result_in_actual_body(provider, status, error, monkeypatch, t
         payload = json.loads(result['content'])
     assert payload['status'] == status
     assert payload.get('is_error') is error
-    assert payload['output'] == 'output stored elsewhere'
+    expected_output = 'output stored elsewhere'
+    if error is True:
+        expected_output += (
+            '\n\nHost guidance: This tool call failed. Describe this check as failed or '
+            'unverified, preserve any later recovery separately, and infer no cause '
+            'beyond the diagnostic above.'
+        )
+    assert payload['output'] == expected_output
     assert messages == before
 
 

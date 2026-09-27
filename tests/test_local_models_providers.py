@@ -638,9 +638,16 @@ def test_local_endpoint_sampling_reaches_the_request_body(tmp_path, monkeypatch)
         "requires_key": False,
     }]
     mgr._save(state)
-    mgr.set_external_sampling("loop", "kimi", {"temperature": 0.6, "top_p": 0.95})
+    mgr.set_external_sampling(
+        "loop",
+        "kimi",
+        {"temperature": 0.6, "top_p": 0.95, "reasoning_budget_tokens": 128},
+    )
     monkeypatch.setattr("harness.local_model_manager.get_manager", lambda: mgr)
     kimi = prov.build_pilot("local:loop/kimi")._build_chat_body([{"role": "user", "content": "hi"}])
     glm = prov.build_pilot("local:loop/glm")._build_chat_body([{"role": "user", "content": "hi"}])
     assert kimi["temperature"] == 0.6 and kimi["top_p"] == 0.95
+    assert kimi["reasoning_budget_tokens"] == 128
+    assert isinstance(kimi["reasoning_budget_tokens"], int)
     assert "temperature" not in glm and "top_p" not in glm
+    assert "reasoning_budget_tokens" not in glm

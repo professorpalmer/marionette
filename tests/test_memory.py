@@ -167,6 +167,111 @@ def test_render_block(tmp_path):
     assert store.render_block() == expected
 
 
+def test_render_block_budgets_large_history_without_mutating_store(tmp_path):
+    path = tmp_path / "memory.json"
+    store = MemoryStore(path=str(path))
+    for index in range(62):
+        store.add(f"historical-{index:02d}-" + "x" * 1400, source="agent")
+
+    before_bytes = path.read_bytes()
+    before_entries = store.list()
+    rendered = store.render_block()
+
+    assert len(rendered) <= MEMORY_CHAR_LIMIT
+    assert "60 memories omitted" in rendered
+    assert "memory tool with action=list" in rendered
+    assert path.read_bytes() == before_bytes
+    assert store.list() == before_entries
+    assert store.search("historical-00")[0].text == before_entries[0].text
+
+
+def test_render_block_skips_oversized_entry_and_keeps_whole_later_entry(tmp_path):
+    store = MemoryStore(path=str(tmp_path / "memory.json"))
+    oversized = store.add("oversized-" + "z" * MEMORY_CHAR_LIMIT, category="preference", source="user")
+    short = store.add("Keep this short preference", category="preference", source="user")
+
+    rendered = store.render_block()
+
+    assert oversized.text not in rendered
+    assert f"- {short.text}" in rendered
+    assert "1 memory omitted" in rendered
+    assert not any(line.startswith("- oversized-") for line in rendered.splitlines())
+
+
+def test_render_block_prioritizes_user_preferences_newest_first(tmp_path):
+    path = tmp_path / "memory.json"
+    store = MemoryStore(path=str(path))
+    store.add("newest agent " + "a" * 1800, category="fact", source="agent")
+    older_user = store.add("older user preference " + "b" * 1800, category="preference", source="user")
+    newer_user = store.add("newer user preference " + "c" * 1800, category="preference", source="user")
+    rows = json.loads(path.read_text(encoding="utf-8"))
+    rows[0]["created_at"] = 300.0
+    rows[1]["created_at"] = 100.0
+    rows[2]["created_at"] = 200.0
+    path.write_text(json.dumps(rows), encoding="utf-8")
+
+    rendered = store.render_block()
+
+    assert f"- {newer_user.text}" in rendered
+    assert f"- {older_user.text}" in rendered
+    assert "newest agent" not in rendered
+    assert rendered.index(newer_user.text) < rendered.index(older_user.text)
+
+
+def test_render_block_exact_budget_boundary(tmp_path):
+    store = MemoryStore(path=str(tmp_path / "memory.json"))
+    header = "# Durable memory (persistent across sessions -- user facts and preferences)"
+    text = "q" * (MEMORY_CHAR_LIMIT - len(header) - len("\n- "))
+    store.add(text, category="preference", source="user")
+
+    rendered = store.render_block()
+
+    assert len(rendered) == MEMORY_CHAR_LIMIT
+    assert rendered.endswith(text)
+    assert "omitted" not in rendered
+
+
+def test_render_block_keeps_legacy_preferences_before_new_agent_facts(tmp_path):
+    store = MemoryStore(path=str(tmp_path / "memory.json"))
+    preference = store.add("Use focused tests", category="preference", source="agent")
+    for index in range(4):
+        store.add(f"recent fact {index} " + "x" * 1800, source="agent")
+
+    rendered = store.render_block()
+
+    assert f"- {preference.text}" in rendered
+    assert len(rendered) <= MEMORY_CHAR_LIMIT
+    assert len(store.list()) == 5
+
+
+def test_render_block_stable_ties_and_whole_entry_selection(tmp_path):
+    path = tmp_path / "memory.json"
+    tied = [
+        {
+            "text": f"tie-{index}-" + str(index) * 1700,
+            "category": "preference",
+            "created_at": 123.0,
+            "source": "user",
+            "id": f"tie-{index}",
+            "origin": "user",
+            "content_sha256": "",
+            "workspace": "",
+        }
+        for index in range(3)
+    ]
+    path.write_text(json.dumps(tied), encoding="utf-8")
+    store = MemoryStore(path=str(path))
+
+    first = store.render_block()
+    second = store.render_block()
+
+    assert first == second
+    assert first.index("tie-0-") < first.index("tie-1-")
+    assert "tie-2-" not in first
+    memory_lines = [line for line in first.splitlines()[1:] if "omitted" not in line]
+    assert memory_lines == [f"- {tied[0]['text']}", f"- {tied[1]['text']}"]
+
+
 def test_conversational_session_memory_injection(tmp_path, monkeypatch):
     temp_mem_path = tmp_path / "session_memory.json"
     monkeypatch.setattr("harness.memory_store.MEMORY_PATH", temp_mem_path)
@@ -458,4 +563,3 @@ def test_memory_propose_accept_is_idempotent(tmp_path, monkeypatch):
     assert first["ok"] is True
     assert second["ok"] is True
     assert len(session._memory.list()) == 1
-

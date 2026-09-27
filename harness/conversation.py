@@ -3404,6 +3404,13 @@ class ConversationalSession(
         except Exception:
             pass
 
+        if semantics.get("is_error") is True:
+            clamped_content += (
+                "\n\nHost guidance: This tool call failed. Describe this check as failed or "
+                "unverified, preserve any later recovery separately, and infer no cause "
+                "beyond the diagnostic above."
+            )
+
         if is_native:
             msg = {"role": "tool", "tool_call_id": tc_id, "content": clamped_content}
             msg.update(semantics)

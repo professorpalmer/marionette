@@ -4,6 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from harness.send_loop_phases import (
     _yield_task_profile_escalation,
     begin_turn_task_kernel,
@@ -14,7 +16,7 @@ from harness.send_loop_phases import (
 )
 from harness.task_profile import MICRO, STANDARD
 from harness.task_receipt import JSONL_FILENAME, load_receipts, prompt_hash
-from harness.task_transaction import as_dict, new_transaction, note_files
+from harness.task_transaction import as_dict, new_transaction, note_files, note_verification
 from harness.tool_requirement import SoftToolRequirement
 
 
@@ -70,6 +72,56 @@ def test_persist_turn_receipt_writes_jsonl(tmp_path: Path):
     assert rec["changed_files"] == [str(changed)]
     assert rec["adapter"] == "stub-oracle-v2"
     assert (tmp_path / JSONL_FILENAME).is_file()
+
+
+def test_persist_turn_receipt_does_not_treat_arbitrary_command_as_verification(
+    tmp_path: Path,
+):
+    session = SimpleNamespace(
+        config=SimpleNamespace(state_dir=str(tmp_path), repo="", driver="local"),
+        harness_session_id="sess-command",
+        _task_profile=MICRO,
+        _task_profile_source="heuristic",
+        _task_profile_escalated_from=None,
+        _task_tx=new_transaction("inspect files"),
+        _turn_ran_command=True,
+        _turn_verification="",
+        pilot=SimpleNamespace(model="stub"),
+    )
+
+    persist_turn_receipt(session, "inspect files")
+
+    rows = load_receipts(str(tmp_path), limit=1)
+    assert rows[0]["verification"] == "unknown"
+
+
+@pytest.mark.parametrize("source", ["turn", "transaction"])
+@pytest.mark.parametrize("verification", ["pass", "fail"])
+def test_persist_turn_receipt_preserves_explicit_verification(
+    tmp_path: Path, source: str, verification: str,
+):
+    tx = new_transaction("verify change")
+    turn_verification = ""
+    if source == "turn":
+        turn_verification = verification
+    else:
+        tx = note_verification(tx, verification)
+    session = SimpleNamespace(
+        config=SimpleNamespace(state_dir=str(tmp_path), repo="", driver="local"),
+        harness_session_id="sess-explicit",
+        _task_profile=MICRO,
+        _task_profile_source="heuristic",
+        _task_profile_escalated_from=None,
+        _task_tx=tx,
+        _turn_ran_command=True,
+        _turn_verification=turn_verification,
+        pilot=SimpleNamespace(model="stub"),
+    )
+
+    persist_turn_receipt(session, "verify change")
+
+    rows = load_receipts(str(tmp_path), limit=1)
+    assert rows[0]["verification"] == verification
 
 
 def test_persist_turn_receipt_never_raises_without_state_dir():

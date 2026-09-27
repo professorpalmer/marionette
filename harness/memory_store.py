@@ -160,8 +160,41 @@ class MemoryStore:
         entries = self.list()
         if not entries:
             return ""
-        items = "\n".join(f"- {e.text}" for e in entries)
-        return f"# Durable memory (persistent across sessions -- user facts and preferences)\n{items}"
+        header = "# Durable memory (persistent across sessions -- user facts and preferences)"
+        full_block = "\n".join([header, *(f"- {entry.text}" for entry in entries)])
+        if len(full_block) <= MEMORY_CHAR_LIMIT:
+            return full_block
+
+        def omission_marker(count: int) -> str:
+            noun = "memory" if count == 1 else "memories"
+            return (
+                f"- {count} {noun} omitted from this prompt (still saved); "
+                "use the memory tool with action=list to inspect all saved memories."
+            )
+
+        ordered = sorted(
+            entries,
+            key=lambda entry: (
+                0 if entry.category == "preference" else 1,
+                0 if entry.origin == "user" else 1,
+                -entry.created_at,
+            ),
+        )
+        selected: List[str] = []
+        for entry in ordered:
+            line = f"- {entry.text}"
+            omitted = len(entries) - len(selected) - 1
+            candidate = [header, *selected, line]
+            if omitted:
+                candidate.append(omission_marker(omitted))
+            if len("\n".join(candidate)) <= MEMORY_CHAR_LIMIT:
+                selected.append(line)
+
+        omitted = len(entries) - len(selected)
+        rendered = [header, *selected]
+        if omitted:
+            rendered.append(omission_marker(omitted))
+        return "\n".join(rendered)
 
     def search(
         self,
