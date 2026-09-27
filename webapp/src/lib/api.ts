@@ -1157,7 +1157,15 @@ export type LocalModelCommand =
   | { type: "activate"; spec: string }
   | { type: "verify_tool_calling"; spec: string }
   | { type: "set_policy"; idle_timeout_minutes: number }
-  | { type: "set_context"; endpoint_id: string; context_length: number };
+  | { type: "set_context"; endpoint_id: string; context_length: number }
+  | { type: "set_sampling"; endpoint_id: string; model: string; sampling: LocalSampling };
+
+/** Per-model request sampling overrides; an absent field defers to the server default. */
+export type LocalSampling = {
+  temperature?: number;
+  top_p?: number;
+  frequency_penalty?: number;
+};
 
 export const LOCAL_TOOL_CALLING_STATUSES = [
   "unverified",
@@ -1267,6 +1275,7 @@ export type LocalExternalEndpoint = {
   last_error?: string | null;
   healthy?: boolean;
   tool_calling?: unknown;
+  sampling?: Record<string, LocalSampling>;
 };
 
 export type LocalModelsSnapshot = {

@@ -361,6 +361,51 @@ describe("LocalModelsSettingsPage", () => {
     window.removeEventListener("harness-context-changed", onContextChanged);
   });
 
+  it("saves per-model sampling and resets to server defaults", async () => {
+    const endpoint = {
+      id: "openai-compatible-host",
+      name: "adv",
+      vendor: "openai-compatible",
+      base_url: "https://api.example.com/v1",
+      models: ["kimi", "glm"],
+      selected_model: "kimi",
+      healthy: true,
+      sampling: { glm: { temperature: 0.7 } },
+    };
+    getLocalModels.mockResolvedValue(snapshot({ externals: [endpoint] }));
+    localModelCommand.mockResolvedValue(snapshot({ externals: [endpoint] }));
+    render(<LocalModelsSettingsPage />);
+    await waitFor(() => screen.getByTestId("local-external-sampling-openai-compatible-host"));
+
+    const temp = screen.getByLabelText("Temperature for adv kimi") as HTMLInputElement;
+    expect(temp.value).toBe("");
+    fireEvent.change(temp, { target: { value: "0.6" } });
+    fireEvent.change(screen.getByLabelText("Top P for adv kimi"), { target: { value: "0.95" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save sampling" }));
+    await waitFor(() => expect(localModelCommand).toHaveBeenCalledWith({
+      type: "set_sampling",
+      endpoint_id: "openai-compatible-host",
+      model: "kimi",
+      sampling: { temperature: 0.6, top_p: 0.95 },
+    }));
+
+    fireEvent.change(screen.getByLabelText("Sampling model for adv"), { target: { value: "glm" } });
+    expect((screen.getByLabelText("Temperature for adv glm") as HTMLInputElement).value).toBe("0.7");
+    fireEvent.click(screen.getByRole("button", { name: "Use server defaults" }));
+    await waitFor(() => expect(localModelCommand).toHaveBeenLastCalledWith({
+      type: "set_sampling",
+      endpoint_id: "openai-compatible-host",
+      model: "glm",
+      sampling: {},
+    }));
+
+    localModelCommand.mockClear();
+    fireEvent.change(screen.getByLabelText("Temperature for adv glm"), { target: { value: "3" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save sampling" }));
+    await waitFor(() => screen.getByText(/Temperature must be 0 to 2/));
+    expect(localModelCommand).not.toHaveBeenCalled();
+  });
+
   it("surfaces rejection when a public remote is saved without confirmation", async () => {
     getLocalModels.mockResolvedValue(snapshot());
     localModelCommand.mockRejectedValue(new Error("This is a public remote host. Confirm you trust this HTTPS service."));

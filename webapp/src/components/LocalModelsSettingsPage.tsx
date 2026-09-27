@@ -20,6 +20,7 @@ import {
   type LocalToolCallingStatus,
 } from "../lib/api";
 import { isRecord, isLocalModelsSnapshot, parseIdleMinutes, residencyLabel } from "../lib/localModelParsing";
+import ExternalSamplingEditor from "./ExternalSamplingEditor";
 
 const TOOL_CALLING_LABELS: Record<LocalToolCallingStatus, string> = {
   unverified: "Unverified",
@@ -239,7 +240,7 @@ export default function LocalModelsSettingsPage() {
         if (command.type === "set_context" || command.type === "save_external") {
           window.dispatchEvent(new Event("harness-context-changed"));
         }
-        if (command.type === "activate" || command.type === "start") {
+        if (command.type === "activate" || command.type === "start" || command.type === "set_sampling") {
           window.dispatchEvent(new Event("harness-config-changed"));
         }
       } else {
@@ -760,6 +761,12 @@ export default function LocalModelsSettingsPage() {
                       Set
                     </button>
                   </div>
+                  <ExternalSamplingEditor
+                    endpoint={endpoint}
+                    disabled={busy !== null}
+                    onCommand={(command) => void run(command, "set_sampling")}
+                    onError={setError}
+                  />
                   <div className="flex flex-wrap gap-2 mt-2">
                     <button
                       type="button"
