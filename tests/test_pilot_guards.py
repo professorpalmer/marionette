@@ -223,6 +223,77 @@ def test_explicit_swarm_classification_negatives(message):
     assert is_explicit_swarm_user_message(message) is False
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Use local native tools only, no workers or network.",
+        "Do not use a swarm for this change.",
+        "Implement this without delegation.",
+    ],
+)
+def test_delegation_opt_out_is_not_explicit_swarm(message):
+    assert is_explicit_swarm_user_message(message) is False
+
+
+@pytest.mark.parametrize("message", [
+    "Do not use workers for this part, but use a swarm for the audit.",
+    "No workers initially, then use a swarm for the audit.",
+    "No workers, use a swarm for the audit.",
+    "No workers,use a swarm for the audit.",
+])
+def test_mixed_delegation_contrast_honors_positive_swarm_clause(message):
+    assert is_explicit_swarm_user_message(message) is True
+
+
+@pytest.mark.parametrize("opt_out", [
+    "no workers", "no swarms", "no delegation", "do not delegate",
+    "do not use a swarm", "native tools only",
+])
+def test_latest_delegation_opt_out_beats_earlier_request_and_strict_gates(monkeypatch, opt_out):
+    from harness.pilot_guards import swarm_policy_turn_note
+
+    monkeypatch.setenv("HARNESS_SWARM_GATE", "1")
+    monkeypatch.setenv("HARNESS_DELEGATE_GATE", "1")
+    message = f"Use a swarm for this audit. Actually, {opt_out}."
+    state = new_turn_guard_state(message)
+    state.exploration_count = DELEGATE_THRESHOLD + 1
+    state.read_file_count = SWARM_GATE_READ_ALLOWANCE + 1
+    assert state.explicit_swarm is False
+    act = _Act(kind="read_file", path="requirements.md")
+    assert check_swarm_gate(state, act.kind, act).suppress is False
+    assert check_delegate_gate(state, act.kind, act).suppress is False
+    assert "do not dispatch workers" in swarm_policy_turn_note(message).lower()
+
+
+def test_trial_bonsai_native_only_prompt_does_not_suppress_native_tools(monkeypatch):
+    monkeypatch.setenv("HARNESS_SWARM_GATE", "1")
+    prompt = (
+        "In trial_bonsai, implement invoices.py exactly according to requirements.md. "
+        "First call read_file on trial_bonsai/optional_notes.md once; if absent, "
+        "continue with requirements.md. Use local native tools only, no workers or "
+        "network. Add focused unittest tests and run them with "
+        "/opt/homebrew/bin/python3. Keep changes inside trial_bonsai. Finish with a "
+        "concise report of the actual results."
+    )
+    state = new_turn_guard_state(prompt)
+    assert state.explicit_swarm is False
+    assert state.broad_intent is False
+
+    actions = [
+        ("read_file", _Act(kind="read_file", path="trial_bonsai/optional_notes.md")),
+        ("list_dir", _Act(kind="list_dir", path="trial_bonsai")),
+        (
+            "run_command",
+            _Act(
+                kind="run_command",
+                command="/opt/homebrew/bin/python3 -m unittest discover trial_bonsai",
+            ),
+        ),
+    ]
+    for kind, action in actions:
+        assert check_swarm_gate(state, kind, action).suppress is False
+
+
 def test_explicit_swarm_blocks_git_and_scripts_until_run_swarm():
     prompt = "yeah, puppetmaster swarm glm 5.3 multi-workers via openrouter"
     state = new_turn_guard_state(prompt)
@@ -1472,6 +1543,22 @@ def test_pending_swarm_mandate_survives_interstitial_and_clears_on_dispatch():
     clear_session_pending_swarm_mandate(session)
     assert session_pending_swarm_active(session) is False
     assert session_pending_swarm_goal(session) == ""
+
+
+def test_native_only_turn_clears_stale_pending_swarm_mandate():
+    session = type("S", (), {})()
+    swarm_prompt = "run a swarm for the audit"
+    native_prompt = "Use local native tools only, no workers or network."
+
+    assert apply_session_pending_swarm_mandate(session, swarm_prompt) is True
+    assert session_pending_swarm_goal(session) == swarm_prompt
+
+    assert apply_session_pending_swarm_mandate(session, native_prompt) is False
+    assert session_pending_swarm_active(session) is False
+    assert session_pending_swarm_goal(session) == ""
+
+    assert apply_session_pending_swarm_mandate(session, "resume the swarm") is False
+    assert session_pending_swarm_active(session) is False
 
 
 @pytest.mark.parametrize(

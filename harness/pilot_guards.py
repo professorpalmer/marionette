@@ -244,7 +244,7 @@ _EXPLICIT_SWARM_RE = re.compile(
     r"(?:"
     r"\brun_swarm\b|"
     r"\bpuppetmaster\s+(?:swarm|agentic)\b|"
-    r"\b(?:start|spin\s+up|launch|dispatch|run|do)\s+"
+    r"\b(?:start|spin\s+up|launch|dispatch|run|do|use)\s+"
     r"(?:(?:an?\s+)?(?:\w+\s+){0,3})?swarm\b|"
     r"\b(?:please\s+)?swarm\s+(?:the\s+)?(?:repo|codebase|project|code)\b|"
     r"\bswarm\s+(?:glm|kimi|qwen|gpt|deepseek|claude|via|with|using|multi)|"
@@ -277,6 +277,23 @@ _EXPLICIT_SWARM_NEG_RE = re.compile(
     r"what\s+is\s+(?:an?\s+)?(?:agentic\s+)?swarm|"
     r"use\s+(?:just\s+|only\s+)?one\s+worker"
     r")",
+    re.IGNORECASE,
+)
+
+_DELEGATION_OPT_OUT_RE = re.compile(
+    r"(?:"
+    r"\bno\s+(?:(?:additional|more|external|remote|parallel)\s+)?(?:workers?|swarms?|delegation)\b|"
+    r"\b(?:do\s+not|don'?t)\s+(?:delegate|swarm)\b|"
+    r"\b(?:do\s+not|don'?t)\s+(?:use|launch|start|run|dispatch)\s+"
+    r"(?:an?\s+)?(?:swarm|workers?)\b|"
+    r"\bwithout\s+(?:any\s+)?(?:delegation|workers?|a\s+swarm)\b|"
+    r"\b(?:local\s+)?native\s+tools?\s+only\b"
+    r")",
+    re.IGNORECASE,
+)
+
+_INTENT_CLAUSE_SPLIT_RE = re.compile(
+    r"(?:[.!?;]+(?=\s|$)|,|\b(?:but|however|then)\b)",
     re.IGNORECASE,
 )
 
@@ -688,6 +705,7 @@ class TurnGuardState:
     # Stronger than broad_intent: git/scripts/run_implement stay blocked
     # until run_swarm / run_parallel actually dispatch.
     explicit_swarm: bool = False
+    delegation_opt_out: bool = False
     swarm_dispatched: bool = False
     read_file_count: int = 0
     # Count of swarm-gate suppressions this turn (full redirect + short replays).
@@ -754,6 +772,8 @@ SWARM_POLICY_EXPLICIT = "explicit"
 
 def swarm_policy_for_message(message: str) -> str:
     """Deterministic solo vs swarm-first policy for this user turn."""
+    if _is_delegation_opt_out_user_message(message):
+        return SWARM_POLICY_SOLO
     if is_explicit_swarm_user_message(message):
         return SWARM_POLICY_EXPLICIT
     if is_broad_intent_user_message(message):
@@ -765,6 +785,11 @@ def swarm_policy_turn_note(
     message: str, *, delegation_available: bool = True,
 ) -> str:
     """Per-turn trailer. Frozen system prompt cannot change mid-conversation."""
+    if _is_delegation_opt_out_user_message(message):
+        return (
+            "TURN POLICY: the user requested no delegation. Continue with native "
+            "tools; do not dispatch workers. This overrides broad-task delegation gates."
+        )
     if is_conversational_followup(message):
         return (
             "TURN POLICY: this is a conversational follow-up. Answer from the "
@@ -819,6 +844,20 @@ def is_broad_intent_user_message(message: str) -> bool:
     return _is_cross_platform_compare(text)
 
 
+def _delegation_preference(text: str) -> Optional[bool]:
+    """Last explicit delegation clause wins; discussion alone has no preference."""
+    preference = None
+    for clause in _INTENT_CLAUSE_SPLIT_RE.split(text):
+        if _DELEGATION_OPT_OUT_RE.search(clause):
+            preference = False
+        elif (
+            _EXPLICIT_SWARM_RE.search(clause)
+            and not _EXPLICIT_SWARM_NEG_RE.search(clause)
+        ):
+            preference = True
+    return preference
+
+
 def is_explicit_swarm_user_message(message: str) -> bool:
     """True when the user asked to launch a swarm, not merely mentioned one."""
     text = _norm_whitespace(message or "")
@@ -826,9 +865,13 @@ def is_explicit_swarm_user_message(message: str) -> bool:
         return False
     if _NARROW_INTENT_RE.search(text):
         return False
-    if _EXPLICIT_SWARM_NEG_RE.search(text):
-        return False
-    return bool(_EXPLICIT_SWARM_RE.search(text))
+    return _delegation_preference(text) is True
+
+
+def _is_delegation_opt_out_user_message(message: str) -> bool:
+    """True when the last explicit delegation clause declines workers."""
+    text = _norm_whitespace(message or "")
+    return _delegation_preference(text) is False
 
 
 def is_swarm_continuation_user_message(message: str) -> bool:
@@ -860,6 +903,9 @@ def apply_session_pending_swarm_mandate(session: Any, user_message: str) -> bool
         )
         session._pending_swarm_active = True
         return True
+    if _is_delegation_opt_out_user_message(text):
+        clear_session_pending_swarm_mandate(session)
+        return False
     pending = getattr(session, "_pending_swarm_mandate", None)
     if pending and is_swarm_continuation_user_message(text):
         session._pending_swarm_active = True
@@ -2080,7 +2126,7 @@ def record_successful_result(state: TurnGuardState, kind: str, act: Any, content
 
 
 def check_swarm_gate(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict:
-    if not state.delegation_available:
+    if not state.delegation_available or state.delegation_opt_out:
         return GuardVerdict(False)
 
     # Explicit worker intent stays binding when a route exists. Broad-intent
@@ -2133,7 +2179,7 @@ def check_swarm_gate(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict
 
 
 def check_delegate_gate(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict:
-    if not delegate_gate_enabled() or not state.delegation_available:
+    if not delegate_gate_enabled() or not state.delegation_available or state.delegation_opt_out:
         return GuardVerdict(False)
 
     if kind in DELEGATION_EXEMPT_KINDS:
@@ -2333,6 +2379,7 @@ def new_turn_guard_state(
         user_message=user_message or "",
         broad_intent=is_broad_intent_user_message(user_message or ""),
         explicit_swarm=is_explicit_swarm_user_message(user_message or ""),
+        delegation_opt_out=_is_delegation_opt_out_user_message(user_message or ""),
         iteration_budget=IterationBudget(cap) if cap > 0 else None,
         tiny_workspace=tiny,
         nested_implement=bool(nested_implement),
