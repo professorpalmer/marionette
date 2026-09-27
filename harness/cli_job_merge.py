@@ -228,10 +228,7 @@ def _foreign_state_dir_candidates(
     now = time.time()
     ranked: list[tuple[float, str]] = []
     for project in list_project_state_dirs():
-        try:
-            state_dir = str(project.resolve())
-        except Exception:
-            state_dir = str(project)
+        state_dir = os.path.abspath(project)
         if primary_resolved and state_dir == primary_resolved:
             continue
         if is_marionette_host_scratch_dir(state_dir):
@@ -247,7 +244,19 @@ def _foreign_state_dir_candidates(
             continue
         ranked.append((mtime, state_dir))
     ranked.sort(key=lambda item: item[0], reverse=True)
-    return [state_dir for _, state_dir in ranked[: max(0, int(max_opens))]]
+    limit = max(0, int(max_opens))
+    selected: list[str] = []
+    for _, state_dir in ranked:
+        if len(selected) >= limit:
+            break
+        # Resolve only candidates we will open, not every archived project.
+        try:
+            resolved = str(Path(state_dir).resolve())
+        except (OSError, RuntimeError):
+            continue
+        if resolved != primary_resolved and resolved not in selected:
+            selected.append(resolved)
+    return selected
 
 
 def merge_running_cli_jobs_all_projects(
