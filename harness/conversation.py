@@ -697,9 +697,13 @@ class ConversationalSession(
         # set; a bare model resolves against available providers, else OpenRouter.
         try:
             self.pilot = prov.build_pilot(config.driver)
-        except prov.ProviderError:
+        except prov.ProviderError as exc:
             # fall back to the eval registry (OpenRouter field) for known names
-            self.pilot = prov._finalize_driver(reg.build(config.driver, reach=config.reach))
+            try:
+                self.pilot = prov._finalize_driver(reg.build(config.driver, reach=config.reach))
+            except KeyError:
+                from pmharness.drivers.unavailable import UnavailablePilotDriver
+                self.pilot = UnavailablePilotDriver(config.driver, str(exc))
         # Propagate repo/adapter for the bridge. Never clobber a different
         # live workspace — deferred multi-session builds race switches.
         # Never stamp demo into the process env for a live repo (boot poison).

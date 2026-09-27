@@ -293,3 +293,31 @@ def test_deferred_choice_survives_visiting_another_session(owned_server):
             b._busy.release()
     finally:
         a._busy.release()
+
+
+@pytest.mark.parametrize("defer", [False, True])
+def test_session_with_unbuildable_saved_pilot_still_opens_and_recovers(owned_server, monkeypatch, defer):
+    """A session whose saved model was removed must open, not wedge the app.
+
+    Real report (2026-09-26): a session saved on a deleted llama.cpp endpoint
+    failed its deferred build, left a failed placeholder, and every request
+    503'd until restart. The session now opens with an unavailable pilot that
+    names the real reason, and a picker swap repairs it.
+    """
+    srv = owned_server
+    gone = "local:llama-cpp-127-0-0-1-8081/bonsai-2-27b"
+    b = srv._sessions.create()["id"]
+    srv._sessions.pilot_preferences(b, updates={"driver": gone})
+    monkeypatch.setenv("HARNESS_DEFER_COLD_ATTACH", "1" if defer else "0")
+    srv._attach_view(b, load_transcript_on_create=False, defer_cold_build=defer)
+    pilot = srv._ensure_active_pilot_ready()
+    assert pilot is srv._runners.get(b)
+    assert pilot.config.driver == gone
+    assert pilot.pilot.name == gone
+    reply = pilot.pilot.chat([{"role": "user", "content": "hi"}])
+    assert "unavailable" in reply.error
+    assert "unknown model" not in reply.error
+    h = Handler()
+    srv.Handler._swap_pilot(h, "stub-oracle", b)
+    assert h.code == 200, h.body
+    assert srv._pilot.pilot.name == "stub-oracle"
