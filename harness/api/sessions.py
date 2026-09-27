@@ -321,14 +321,15 @@ def post_sessions_create(body: dict, svc: SessionServices) -> tuple[int, dict]:
     if sid:
         try:
             # New session runner starts at zero meters (boot pill sums
-            # carry + all live runners -- do not snapshot from active).
+            # carry + all live runners -- do not snapshot from active) and
+            # empty history, so there is nothing to clear here: the global
+            # pilot may already belong to another session by now.
             svc.attach_view(
                 sid,
                 load_transcript_on_create=False,
                 defer_cold_build=True,
                 view_repo=repo,
             )
-            svc.get_pilot().load_history([])
         except LeaseExhaustedError as e:
             try:
                 with svc.pilot_swap_lock or nullcontext():
