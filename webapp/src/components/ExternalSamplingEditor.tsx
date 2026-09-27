@@ -85,7 +85,8 @@ export default function ExternalSamplingEditor({
         </button>
       </div>
       <p className="mt-1 text-[11px] text-muted">
-        Reasoning budget: -1 is unlimited, 0 disables thinking, and positive values limit hidden reasoning per request.
+        Reasoning budget: blank uses the server default; -1 follows server semantics and may inherit its default;
+        0 requests an immediate end to thinking when supported; positive values request a reasoning token budget.
         Requires endpoint support (for example, llama.cpp/Bonsai); it does not limit visible answer tokens and is not a
         universal provider setting.
       </p>

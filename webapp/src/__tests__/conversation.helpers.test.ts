@@ -4046,6 +4046,43 @@ describe("pilot tool-action visibility (prep promotion + result upsert)", () => 
     expect((quietOk[0] as Extract<Item, { kind: "card" }>).card.open).toBe(false);
   });
 
+  it.each([
+    ["read_file", "src/missing.ts", "could not read file"],
+    ["write_file", "src/locked.ts", "permission denied"],
+  ])("applyActionResultCard keeps failed %s cards collapsed by default", (kind, goal, error) => {
+    const items = applyActionResultCard([], {
+      id: `${kind}-failure`,
+      kind,
+      goal,
+      error,
+    });
+    const card = (items[0] as Extract<Item, { kind: "card" }>).card;
+    expect(card.open).toBe(false);
+    expect(card.result?.error).toBe(error);
+  });
+
+  it.each([true, false])(
+    "applyActionResultCard preserves an explicit open=%s toggle when a tool settles",
+    (open) => {
+      const running: Item[] = [{
+        kind: "card",
+        card: {
+          id: "read-toggle",
+          goal: "src/data.ts",
+          kind: "read_file",
+          running: true,
+          open,
+        },
+      }];
+      const next = applyActionResultCard(running, {
+        id: "read-toggle",
+        kind: "read_file",
+        error: "could not read file",
+      });
+      expect((next[0] as Extract<Item, { kind: "card" }>).card.open).toBe(open);
+    },
+  );
+
   it("applyActionResultCard hydrates spill_uri / output_spilled / output_chars", () => {
     const running: Item[] = [{
       kind: "card",

@@ -67,6 +67,7 @@ from .terminal_cause import (
     provider_tools_are_executable,
 )
 from .text_clean import clean_say
+from .tool_dispatch import _file_tool_path_denial
 from .tool_timeout import invoke_do, run_with_tool_deadline
 from .workspace_rules_refresh import maybe_refresh_workspace_rules
 from .providers import apply_session_output_cap
@@ -3347,9 +3348,9 @@ def dispatch_local_action(
         if not os.path.isabs(target_path):
             target_path = os.path.join(session.config.repo, target_path)
         if not is_safe_path(target_path, session.config.repo):
-            error_msg = f"Path traversal attempt rejected: {act.path}"
+            error_msg = _file_tool_path_denial(act.path, session.config.repo)
             yield ConvEvent("action_result", {"id": aid, "error": error_msg})
-            session._append_action_result(act, aid, f"(write_file {aid} failed: {error_msg})", is_native)
+            session._append_action_result(act, aid, f"(write_file {aid} failed: {error_msg})", is_native, ok=False)
             return
         try:
             ok, status, msg = session._do_write_file(act, write=False)
@@ -3417,9 +3418,9 @@ def dispatch_local_action(
         if not os.path.isabs(target_path):
             target_path = os.path.join(session.config.repo, target_path)
         if not is_safe_path(target_path, session.config.repo):
-            error_msg = f"Path traversal attempt rejected: {act.path}"
+            error_msg = _file_tool_path_denial(act.path, session.config.repo)
             yield ConvEvent("action_result", {"id": aid, "error": error_msg})
-            session._append_action_result(act, aid, f"(edit_file {aid} failed: {error_msg})", is_native)
+            session._append_action_result(act, aid, f"(edit_file {aid} failed: {error_msg})", is_native, ok=False)
             return
         try:
             ok, status, msg = session._do_edit_file(act, write=False)
@@ -3485,9 +3486,9 @@ def dispatch_local_action(
         if not os.path.isabs(target_path):
             target_path = os.path.join(session.config.repo, target_path)
         if not is_safe_path(target_path, session.config.repo):
-            error_msg = f"Path traversal attempt rejected: {act.path}"
+            error_msg = _file_tool_path_denial(act.path, session.config.repo)
             yield ConvEvent("action_result", {"id": aid, "error": error_msg})
-            session._append_action_result(act, aid, f"(hash_edit {aid} failed: {error_msg})", is_native)
+            session._append_action_result(act, aid, f"(hash_edit {aid} failed: {error_msg})", is_native, ok=False)
             return
         try:
             ok, status, msg = session._do_hash_edit(act, write=False)

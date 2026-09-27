@@ -143,6 +143,16 @@ def test_reasoning_support_opencode_zen_and_openrouter():
     assert model_supports_reasoning_effort("opencode_zen", "deepseek-v4-flash-free") is True
 
 
+def test_reasoning_support_local_adapter_is_false_for_managed_and_external_models():
+    from harness.provider_capabilities import model_supports_reasoning_effort
+
+    assert model_supports_reasoning_effort("local", "managed/qwen3-4b") is False
+    assert model_supports_reasoning_effort(
+        "local",
+        "openai-compatible-bonsai/bonsai-2-27b",
+    ) is False
+
+
 def test_reasoning_support_unknown_provider_default_true():
     """Where genuinely unknowable, the user wants the knob to appear."""
     from harness.provider_capabilities import model_supports_reasoning_effort

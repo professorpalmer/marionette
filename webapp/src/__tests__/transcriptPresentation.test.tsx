@@ -1167,7 +1167,7 @@ describe("live command token clicks", () => {
     expect(screen.queryByRole("button", { name: /Investigating|Worked for/i })).toBeNull();
   });
 
-  it("keeps sealed spoken prose outside the collapsed Investigating fold", () => {
+  it("compacts structurally proven native progress into the Investigating fold", () => {
     const spoken: Item = {
       kind: "msg",
       msg: { role: "assistant", text: "I will patch auth next." },
@@ -1200,15 +1200,17 @@ describe("live command token clicks", () => {
         },
       },
     ];
-    expect(collectIntermediateAssistantItems(items, false).has(spoken)).toBe(false);
+    expect(collectIntermediateAssistantItems(items, false).has(spoken)).toBe(true);
     render(<TranscriptList {...listProps(items)} />);
-    // White streamed text stays a top-level Bubble, visible without opening either fold.
+    // The latest progress line remains visible in the compact fold chrome.
     expect(screen.getByText(/I will patch auth next/i)).toBeTruthy();
     const folds = screen.getAllByRole("button", { name: /Worked for|Investigating/i });
     expect(folds.length).toBeGreaterThan(0);
     for (const fold of folds) {
       expect(fold).toHaveAttribute("aria-expanded", "false");
     }
+    fireEvent.click(folds[0]);
+    expect(screen.getByText(/I will patch auth next/i)).toBeVisible();
   });
 
   it("groups consecutive read/search cards into one exploration shelf", () => {
