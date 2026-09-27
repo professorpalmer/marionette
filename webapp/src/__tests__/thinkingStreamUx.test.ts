@@ -112,6 +112,15 @@ describe("upsertStreamingThinking preserves durable id", () => {
     expect(thinkingRows(items)[0].text).toBe("hahah");
   });
 
+  it("preserves standalone whitespace in identity-less live deltas", () => {
+    const chunks = ["Turn", " ", "1", ":", "\n", "start_line", " ", "425", "\n\n", "next"];
+    let items: Item[] = [];
+    for (const chunk of chunks) {
+      items = upsertStreamingThinking(items, chunk);
+    }
+    expect(thinkingRows(items)[0].text).toBe("Turn 1:\nstart_line 425\n\nnext");
+  });
+
   it("keeps the id when streaming ends", () => {
     const live = upsertStreamingThinking([], "reasoning…");
     const id = (live[0] as Extract<Item, { kind: "thinking" }>).id;
@@ -486,6 +495,37 @@ describe("createApplyStreamEvent Sol reasoning coalescing", () => {
     expect(thinking).toHaveLength(1);
     expect(thinking[0].text).toBe("haha");
     expect(thinking[0].streaming).toBe(true);
+  });
+
+  it("preserves standalone whitespace in stream_id live deltas", () => {
+    const state = {
+      items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    state.itemsRef.current = state.items;
+    const apply = createApplyStreamEvent(makeApplyDeps(state));
+    const chunks = ["Turn", " ", "1", ":", "\n", "start_line", " ", "425", "\n\n", "next"];
+    for (const text of chunks) {
+      apply({ kind: "thinking", data: { text, delta: true, stream_id: "rs_1" } });
+    }
+    expect(thinkingRows(state.items)[0].text).toBe("Turn 1:\nstart_line 425\n\nnext");
+  });
+
+  it("preserves split markdown and code markers in ordinary live prose", () => {
+    const state = {
+      items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    state.itemsRef.current = state.items;
+    const apply = createApplyStreamEvent(makeApplyDeps(state));
+    for (const text of ["Use ", "**", "bold", "**", ", ", "`", "code", "`", " and snake_case."]) {
+      apply({ kind: "thinking", data: { text, delta: true, stream_id: "rs_1" } });
+    }
+    expect(thinkingRows(state.items)[0].text).toBe(
+      "Use **bold**, `code` and snake_case.",
+    );
   });
 
   it("drops markdown **** glue between thinking deltas (never redesign****Finalizing)", () => {
