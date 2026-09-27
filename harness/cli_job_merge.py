@@ -203,6 +203,11 @@ def open_cli_durable_at(state_dir: str, *, busy_timeout_ms: int = 5000):
         return None
 
 
+def _running_job_rows(durable) -> list[dict]:
+    read = getattr(durable, "list_running_jobs", None)
+    return list(read() if callable(read) else durable.list_jobs() or [])
+
+
 def _foreign_state_dir_candidates(
     primary_resolved: str,
     *,
@@ -223,10 +228,7 @@ def _foreign_state_dir_candidates(
     now = time.time()
     ranked: list[tuple[float, str]] = []
     for project in list_project_state_dirs():
-        try:
-            state_dir = str(project.resolve())
-        except Exception:
-            state_dir = str(project)
+        state_dir = os.path.abspath(project)
         if primary_resolved and state_dir == primary_resolved:
             continue
         if is_marionette_host_scratch_dir(state_dir):
@@ -242,7 +244,19 @@ def _foreign_state_dir_candidates(
             continue
         ranked.append((mtime, state_dir))
     ranked.sort(key=lambda item: item[0], reverse=True)
-    return [state_dir for _, state_dir in ranked[: max(0, int(max_opens))]]
+    limit = max(0, int(max_opens))
+    selected: list[str] = []
+    for _, state_dir in ranked:
+        if len(selected) >= limit:
+            break
+        # Resolve only candidates we will open, not every archived project.
+        try:
+            resolved = str(Path(state_dir).resolve())
+        except (OSError, RuntimeError):
+            continue
+        if resolved != primary_resolved and resolved not in selected:
+            selected.append(resolved)
+    return selected
 
 
 def merge_running_cli_jobs_all_projects(
@@ -283,7 +297,7 @@ def merge_running_cli_jobs_all_projects(
             continue
         try:
             rows = _retry_on_locked(
-                lambda d=durable: d.list_jobs(), attempts=2, delay=0.05
+                lambda d=durable: _running_job_rows(d), attempts=2, delay=0.05
             )
         except Exception:
             continue
@@ -324,8 +338,14 @@ def merge_running_cli_jobs_all_projects(
                 loaded = bulk_load_store_tasks(store, jids)
             except Exception:
                 loaded = {}
-            for jid in jids:
+            for row in collected:
+                jid = str(row["id"])
                 tasks = list(loaded.get(jid, []))
+                row["task_count"] = len(tasks)
+                for field in ("role", "adapter"):
+                    if not row.get(field):
+                        row[field] = next((getattr(task, field) for task in tasks
+                                           if getattr(task, field, "")), "")
                 tasks_by_job[job_read_key({"id": jid, "source": "cli", "cli_state_dir": state_dir}, store)] = tasks
         out.extend(collected)
     return out

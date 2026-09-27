@@ -7,7 +7,11 @@ Auth/token gates stay on ``server.Handler``; this module never imports
 
 from __future__ import annotations
 
+import copy
+import hashlib
+import json
 import os
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Union
 
@@ -41,9 +45,34 @@ class UsageServices:
     get_pilot: Callable[[], Any]
     get_runner: Callable[[str], Any] = lambda session_id: None
     active_session_id: Callable[[], str] = lambda: ""
+    active_session_fingerprint: Callable[[], Any] = lambda: ()
+    usage_store_fingerprint: Callable[[str, set], Any] = lambda repo, roots: ()
+    usage_request_lock: Callable[[], Any] = nullcontext
 
 
 JsonPayload = Union[dict, list]
+
+
+def _registry_fingerprint(registry: list) -> list:
+    fields = (
+        "id",
+        "adapter_model_name",
+        "input_per_mtok_usd",
+        "output_per_mtok_usd",
+        "cached_input_per_mtok_usd",
+        "cache_write_per_mtok_usd",
+        "billing",
+    )
+    rows = []
+    for entry in registry or []:
+        get = entry.get if isinstance(entry, dict) else lambda key: getattr(entry, key, None)
+        rows.append(tuple(get(field) for field in fields))
+    return sorted(rows, key=lambda row: tuple(str(value or "") for value in row))
+
+
+def _usage_cache_key(parts: dict) -> str:
+    raw = json.dumps(parts, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def _usage_spent_usd(payload: dict) -> float:
@@ -160,7 +189,8 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
     zero and the billing envelope is still returned.
     """
     try:
-        return _get_usage_body(repo_override, svc)
+        with svc.usage_request_lock():
+            return _get_usage_body(repo_override, svc)
     except Exception:
         return 200, attach_billing_envelope({"session": {"read_status": "unavailable"},
                                              "session_total": {"read_status": "unavailable"}, "jobs": []})
@@ -201,20 +231,35 @@ def _get_usage_body(repo_override: str, svc: UsageServices) -> tuple[int, JsonPa
     # spend that already happened on a background runner.
     boot_meters = svc.boot_usage_meters()
     boot_repos_set = svc.boot_repos()
-    # Cache key includes cheap meter fingerprints so a turn that burns
-    # tokens invalidates the burst cache without waiting for TTL.
-    usage_cache_key = "%s|%s|%s|%s|%s|%s" % (
-        (repo_override or "").strip() or (svc.cfg.repo or ""),
-        ",".join(sorted(boot_repos_set)) if boot_repos_set else "",
-        int(boot_meters.get("_tokens_used", 0) or 0),
-        int(boot_meters.get("_tokens_cached", 0) or 0),
-        round(float(boot_meters.get("_worker_cost_usd", 0) or 0.0), 6),
-        round(float(boot_meters.get("_provider_cost_usd", 0) or 0.0), 6),
+    active_repo = (repo_override or "").strip() or (svc.cfg.repo or "")
+    active_session_id = svc.active_session_id() or ""
+    try:
+        pilot = svc.get_pilot()
+    except Exception:
+        pilot = None
+    pilot_driver = getattr(getattr(pilot, "config", None), "driver", "") or ""
+    registry = svc.swarm_registry()
+    active_session_fingerprint = svc.active_session_fingerprint()
+    store_fingerprint = svc.usage_store_fingerprint(active_repo, set(boot_repos_set))
+    fingerprints_available = store_fingerprint is not None and (
+        not active_session_id or active_session_fingerprint is not None
     )
-    cached_usage = svc.usage_cache_get(usage_cache_key)
-    # Active-session totals have independent identity and persisted meters.
-    # A boot-meter fingerprint cannot validate a cached session receipt.
-    if cached_usage is not None and cached_usage.get("session_total") is None:
+    usage_cache_key = _usage_cache_key({
+        "repo": active_repo,
+        "boot_repos": sorted(boot_repos_set),
+        "boot_meters": sorted((str(k), v) for k, v in boot_meters.items()),
+        "active_session_id": active_session_id,
+        "active_session": active_session_fingerprint,
+        "driver": svc.cfg.driver,
+        "pilot_driver": pilot_driver,
+        "price": [price_in, price_out, price_source],
+        "registry": _registry_fingerprint(registry),
+        "stores": store_fingerprint,
+    })
+    cached_usage = svc.usage_cache_get(usage_cache_key) if fingerprints_available else None
+    if cached_usage is not None:
+        cached_usage = copy.deepcopy(cached_usage)
+        cached_usage['session'].update(svc.tool_output_savings_fields(price_in, process_wide=True))
         return 200, attach_billing_envelope(cached_usage)
     tokens_used = int(boot_meters.get("_tokens_used", 0) or 0)
     t_in = int(boot_meters.get("_tokens_in", 0) or 0)
@@ -253,13 +298,12 @@ def _get_usage_body(repo_override: str, svc: UsageServices) -> tuple[int, JsonPa
         from ..job_scoping import filter_accountable_jobs
         from .economics import _conversation_jobs
 
-        session_id = svc.active_session_id() or getattr(svc.get_pilot(), 'harness_session_id', '') or ''
+        session_id = active_session_id or getattr(pilot, 'harness_session_id', '') or ''
 
         # Boot-pill swarm dollars: merge epoch-windowed jobs across every
         # workspace opened this process (not only active _cfg.repo).
         # session_total below still uses the active-workspace set.
         boot_repos = set(boot_repos_set)
-        active_repo = (repo_override or "").strip() or (svc.cfg.repo or "")
         if active_repo:
             boot_repos.add(
                 os.path.abspath(active_repo) if os.path.isdir(active_repo) else active_repo
@@ -317,7 +361,6 @@ def _get_usage_body(repo_override: str, svc: UsageServices) -> tuple[int, JsonPa
             )
         ))
         job_coverage["expected"] = None if usage_incomplete else len(jids)
-        registry = svc.swarm_registry()
         arts_by_job: dict = {}
         unavailable = set()
         ids_by_store: dict = {}
@@ -689,8 +732,16 @@ def _get_usage_body(repo_override: str, svc: UsageServices) -> tuple[int, JsonPa
     except Exception:
         pass
     try:
-        if not usage_incomplete and not session_incomplete:
-            svc.usage_cache_put(usage_cache_key, response_data)
+        identity_unchanged = (svc.active_session_id() or '') == active_session_id
+        if not identity_unchanged:
+            response_data['session_total'] = {'read_status': 'unavailable'}
+        cache_has_session_identity = (not active_session_id and session_total is None) or (
+            active_session_id and isinstance(session_total, dict)
+            and session_total.get('session_id') == active_session_id
+        )
+        if (fingerprints_available and not usage_incomplete and not session_incomplete
+                and identity_unchanged and cache_has_session_identity):
+            svc.usage_cache_put(usage_cache_key, copy.deepcopy(response_data))
     except Exception:
         pass
     return 200, attach_billing_envelope(response_data)

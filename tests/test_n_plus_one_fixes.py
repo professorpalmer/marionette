@@ -124,13 +124,12 @@ def test_state_list_jobs_counts_existing_bulk_artifact_rows_without_per_job_quer
         def list_tasks_for_jobs(self, _jids):
             return []
 
-        def list_artifacts_for_jobs(self, _jids):
+        def count_artifacts_for_jobs(self, _jids):
             self.bulk_artifact_calls += 1
-            return [
-                type("Artifact", (), {"job_id": "j1"})(),
-                type("Artifact", (), {"job_id": "j1"})(),
-                type("Artifact", (), {"job_id": "j2"})(),
-            ]
+            return {"j1": 2, "j2": 1, "j3": 0}
+
+        def list_artifacts_for_jobs(self, _jids):
+            raise AssertionError("artifact bodies must not be loaded for counts")
 
         def count_artifacts(self, _jid):
             self.per_job_count_calls += 1
@@ -149,6 +148,51 @@ def test_state_list_jobs_counts_existing_bulk_artifact_rows_without_per_job_quer
         "j2": 1,
         "j3": 0,
     }
+
+
+def test_state_list_jobs_uses_metadata_counts_without_loading_artifact_bodies():
+    from types import SimpleNamespace
+    from harness import state as state_mod
+
+    class FakeJob:
+        def __init__(self, jid):
+            self.id = jid
+            self.goal = "g"
+            self.status = "done"
+            self.created_at = 0
+
+    class FakeStore:
+        def list_jobs(self):
+            return [FakeJob("j1"), FakeJob("j2")]
+
+        def list_tasks_for_jobs(self, _jids):
+            return []
+
+        def list_job_summaries(self, **_kwargs):
+            return SimpleNamespace(
+                outcome="complete",
+                next_cursor=None,
+                items=(
+                    SimpleNamespace(job_ref=SimpleNamespace(job_id="j1"), artifact_count=7),
+                    SimpleNamespace(job_ref=SimpleNamespace(job_id="j2"), artifact_count=11),
+                ),
+            )
+
+        def list_artifacts_for_jobs(self, _jids):
+            raise AssertionError("artifact payloads must not be loaded for counts")
+
+        def list_artifacts(self, _jid):
+            raise AssertionError("artifact payloads must not be loaded for counts")
+
+        def count_artifacts(self, _jid):
+            raise AssertionError("metadata counts are available")
+
+    ds = state_mod.DurableState.__new__(state_mod.DurableState)
+    ds.store = FakeStore()
+
+    jobs = ds.list_jobs()
+
+    assert {job["id"]: job["artifacts"] for job in jobs} == {"j1": 7, "j2": 11}
 
 
 def test_state_list_jobs_survives_poisoned_status_row(tmp_path):
@@ -181,3 +225,52 @@ def test_state_list_jobs_survives_poisoned_status_row(tmp_path):
     # The poison row either parses (new puppetmaster coerces it) or is kept
     # via the raw fallback -- both are fine; an empty list is the bug.
     assert len(jobs) >= 1
+
+
+def test_sqlite_counts_stay_batched_with_an_open_wal_writer(tmp_path, monkeypatch):
+    import sqlite3
+    from harness.state import DurableState
+    from puppetmaster.models import Artifact, ArtifactType
+
+    durable = DurableState(str(tmp_path))
+    jobs = [durable.store.create_job('fixture') for _ in range(405)]
+    durable.store.save_artifacts([
+        Artifact(job_id=job.id, task_id='fixture', type=ArtifactType.FINDING,
+                 created_by='test', payload={'claim': 'x' * 4096}, confidence=1,
+                 evidence=['fixture'])
+        for job in jobs[::2]
+    ])
+    def forbidden(*args, **kwargs):
+        raise AssertionError('counts must not hydrate artifacts or open one reader per job')
+    monkeypatch.setattr(durable.store, 'list_artifacts_for_jobs', forbidden)
+    monkeypatch.setattr(durable.store, 'count_artifacts', forbidden)
+    monkeypatch.setattr(durable.store, 'list_job_summaries', forbidden)
+    writer = sqlite3.connect(durable.store.db_path)
+    try:
+        writer.execute('PRAGMA journal_mode=WAL')
+        writer.execute('CREATE TABLE fixture_heartbeat (tick INTEGER)')
+        writer.execute('INSERT INTO fixture_heartbeat VALUES (1)')
+        writer.commit()
+        rows = durable.list_jobs()
+    finally:
+        writer.close()
+    counts = {row['id']: row['artifacts'] for row in rows}
+    assert counts == {job.id: int(index % 2 == 0) for index, job in enumerate(jobs)}
+
+
+def test_count_read_failure_keeps_job_identity_without_fabricating_zero(tmp_path, monkeypatch):
+    import sqlite3
+    from harness.state import DurableState
+
+    durable = DurableState(str(tmp_path))
+    job = durable.store.create_job('fixture')
+    def unavailable(*args):
+        raise sqlite3.OperationalError('database is locked')
+    def forbidden(*args):
+        raise AssertionError('a failed grouped read must not trigger per-job queries')
+    monkeypatch.setattr('harness.state._metadata_artifact_counts', unavailable)
+    monkeypatch.setattr(durable.store, 'count_artifacts', forbidden)
+    rows = durable.list_jobs()
+    assert [row['id'] for row in rows] == [job.id]
+    assert rows[0]['artifacts'] is None
+    assert rows[0]['artifacts_read_status'] == 'unavailable'

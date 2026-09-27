@@ -155,7 +155,9 @@ def test_session_only_failure_does_not_poison_boot_or_cache():
     assert not cache
     svc.active_session_total = lambda *args: {'session_id': 's', 'est_cost_usd': 2}
     assert get_usage('', svc)[1]['session_total']['est_cost_usd'] == 2
-    assert cache
+    # A session receipt without an independently captured active identity is
+    # correct but deliberately uncached.
+    assert not cache
 
 
 def test_accounting_failure_preserves_failed_identity_and_known_subtotals(collision):

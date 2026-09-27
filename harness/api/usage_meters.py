@@ -8,10 +8,12 @@ scalars via write-through aliases).
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import threading
 import time
+from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 
@@ -27,36 +29,42 @@ from .cost_accounting import (
 from .cost import _cfg, _diag, _pilot, _runners, _sessions, _server_attr
 from .swarm_cost import _job_swarm_accounting
 
-# Short-TTL cache for /api/usage boot-pill aggregation (StatusBar polls ~10s).
-# Building the response walks every boot-repo job store; serve a hot copy for a
-# few seconds like /api/codegraph status.
-_usage_response_cache: Dict[str, Tuple[float, dict]] = {}
-# Burst dedupe only. StatusBar polls ~10s — a TTL near that interval freezes the
-# boot pill across polls (and poisons hermetic pytest order). Keep this short.
-_USAGE_RESPONSE_TTL = 2.0
+_usage_response_cache: OrderedDict[str, Tuple[float, dict]] = OrderedDict()
+_USAGE_RESPONSE_CACHE_MAX = 32
+# Revisions invalidate accounting immediately; expiry bounds unversioned diagnostics.
+_USAGE_RESPONSE_TTL = 30.0
 _usage_response_lock = threading.Lock()
+_usage_request_guard = threading.RLock()
 
 
 def _usage_cache_get(key: str) -> Optional[dict]:
-    # Hermetic tests share the process-global cache across cases; never serve
-    # a prior test's /api/usage payload.
+    # Test processes share this module global while monkeypatching service
+    # dependencies. Focused cache tests inject an isolated cache instead.
     if os.environ.get("PYTEST_CURRENT_TEST"):
         return None
-    now = time.monotonic()
     with _usage_response_lock:
         hit = _usage_response_cache.get(key)
-        if not hit:
+        if hit is None:
             return None
         expiry, payload = hit
-        if expiry <= now:
+        if expiry <= time.monotonic():
             _usage_response_cache.pop(key, None)
             return None
-        return payload
+        _usage_response_cache.move_to_end(key)
+        return copy.deepcopy(payload)
 
 
 def _usage_cache_put(key: str, payload: dict) -> None:
     with _usage_response_lock:
-        _usage_response_cache[key] = (time.monotonic() + _USAGE_RESPONSE_TTL, payload)
+        _usage_response_cache[key] = (time.monotonic() + _USAGE_RESPONSE_TTL, copy.deepcopy(payload))
+        _usage_response_cache.move_to_end(key)
+        while len(_usage_response_cache) > _USAGE_RESPONSE_CACHE_MAX:
+            _usage_response_cache.popitem(last=False)
+
+
+def _usage_request_lock():
+    """Serialize response builds so concurrent identical polls share one read."""
+    return _usage_request_guard
 
 
 def _usage_cache_clear_for_tests() -> None:
@@ -448,6 +456,32 @@ def _active_session_total(session_job_ids, arts_getter, registry, report_getter=
         "input_tokens": tokens_in,
         "output_tokens": tokens_out,
     }
+
+
+def _active_session_fingerprint() -> tuple:
+    """Cheap persisted-meter identity for the active session usage receipt."""
+    sid = _sessions().active or ""
+    if not sid:
+        return ("",)
+    try:
+        row = next((item for item in _sessions().list() if item.get("id") == sid), None)
+    except Exception:
+        return None
+    if row is None:
+        return None
+    fields = (
+        "estimated_cost_usd",
+        "nominal_cost_usd",
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_savings_usd",
+        "api_calls",
+        "plan_calls",
+        "list_price_complete",
+        "driver",
+    )
+    return (sid,) + tuple(row.get(field) for field in fields)
 
 
 def _repo_session_stamped_meters(repo_root: str) -> dict:

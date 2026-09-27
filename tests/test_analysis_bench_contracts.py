@@ -70,7 +70,7 @@ def test_partial_set_coverage_without_completion_and_extra_members():
     result = score_analysis(q, answer(q, {'methods': ['list_jobs']}))
     assert result['score'] == 0 and result['hit'] is False
     assert result['status'] == 'incomplete'
-    assert (result['matched'], result['required'], result['coverage']) == (1, 4, .25)
+    assert (result['matched'], result['required'], result['coverage']) == (1, 5, .2)
     for methods in (['list_jobs', 'list_jobs'], list(q.facts[0].expected) + ['save']):
         assert score_analysis(q, answer(q, {'methods': methods}))['score'] == 0
 

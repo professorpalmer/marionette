@@ -60,9 +60,10 @@ def test_usage_reads_only_boot_and_session_artifacts(tmp_path, monkeypatch, sele
 
 
 @pytest.mark.parametrize('override', ['', 'third'])
-def test_usage_reuses_same_repo_snapshot_only_within_request(override):
+def test_usage_reuses_unchanged_repo_snapshot_across_hot_requests(override):
     svc, _ = _svc(repo='workspace')
     svc.boot_repos = lambda: {'workspace', 'other'}
+    svc.active_session_id = lambda: 'active'
     svc.active_session_total = lambda *args: {'session_id': 'active'}
     reads = []
 
@@ -72,7 +73,8 @@ def test_usage_reuses_same_repo_snapshot_only_within_request(override):
 
     svc.scoped_jobs_with_stores = scoped
     expected = ['other', 'workspace'] + (['third'] if override else [])
-    for _ in range(2):
-        reads.clear()
-        assert get_usage(override, svc)[0] == 200
-        assert sorted(reads) == sorted(expected)
+    assert get_usage(override, svc)[0] == 200
+    assert sorted(reads) == sorted(expected)
+    reads.clear()
+    assert get_usage(override, svc)[0] == 200
+    assert reads == []
