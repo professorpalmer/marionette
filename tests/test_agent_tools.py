@@ -14,6 +14,7 @@ from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession, is_safe_path
 from harness.hash_edit import compute_range_hash
 from harness.pilot import PilotAction, build_tools_schema
+from pmharness.drivers.base import chat_completions_messages
 
 
 @dataclass
@@ -629,6 +630,119 @@ def test_send_loop_native_file_tools_share_external_path_denial(tmp_path, monkey
         (path.relative_to(workspace).as_posix(), path.read_bytes())
         for path in workspace.rglob("*") if path.is_file()
     ) == [("existing.txt", b"WORKSPACE ORIGINAL\n")]
+
+
+@pytest.mark.parametrize(
+    ("case", "tool_name", "arguments"),
+    [
+        (
+            "write_result_failure",
+            "write_file",
+            {"path": "value.txt", "content": "REPLACED\n"},
+        ),
+        (
+            "write_exception",
+            "write_file",
+            {"path": "value.txt", "content": "REPLACED\n"},
+        ),
+        (
+            "edit_preview_failure",
+            "edit_file",
+            {"path": "value.txt", "old_str": "MISSING", "new_str": "REPLACED"},
+        ),
+        (
+            "hash_preview_failure",
+            "hash_edit",
+            {
+                "path": "value.txt",
+                "ops": [{
+                    "op": "replace",
+                    "start_line": 1,
+                    "end_line": 1,
+                    "anchor": "stale-anchor",
+                    "text": "REPLACED",
+                }],
+            },
+        ),
+    ],
+)
+def test_send_loop_native_file_failures_keep_error_semantics(
+    tmp_path, monkeypatch, case, tool_name, arguments,
+):
+    monkeypatch.setenv("HARNESS_HASH_EDIT", "1")
+    target = tmp_path / "value.txt"
+    target.write_bytes(b"ORIGINAL\n")
+    tool_call_id = f"failed_{case}"
+
+    class FailedFilePilot:
+        name = "failed-file-pilot"
+
+        def __init__(self):
+            self.calls = 0
+
+        def chat(self, messages, *, tools=None, system=None):
+            from pmharness.drivers.openai_compat import DriverResponse
+
+            self.calls += 1
+            if self.calls > 1:
+                return DriverResponse(
+                    text="The native file tool failed.",
+                    meta={"tool_calls": [], "finish_reason": "stop"},
+                )
+            return DriverResponse(
+                text="",
+                meta={
+                    "tool_calls": [{
+                        "id": tool_call_id,
+                        "type": "function",
+                        "function": {
+                            "name": tool_name,
+                            "arguments": json.dumps(arguments),
+                        },
+                    }],
+                    "finish_reason": "tool_calls",
+                },
+            )
+
+    session = ConversationalSession(HarnessConfig(
+        repo=str(tmp_path),
+        state_dir=str(tmp_path / f"state-{case}"),
+        swarm_adapter="demo",
+    ))
+    session.pilot = FailedFilePilot()
+    if case.startswith("write_"):
+        real_write = session._do_write_file
+
+        def fail_actual_write(action, *, write=True):
+            if not write:
+                return real_write(action, write=False)
+            if case == "write_exception":
+                raise PermissionError("Permission denied")
+            return False, "permission_denied", "Permission denied"
+
+        monkeypatch.setattr(session, "_do_write_file", fail_actual_write)
+
+    events = list(session.send(f"Exercise the {tool_name} failure path."))
+    results = [event.data for event in events if event.kind == "action_result"]
+    assert len(results) == 1
+    assert results[0].get("error")
+
+    tool_messages = [
+        message for message in session._history if message.get("role") == "tool"
+    ]
+    assert len(tool_messages) == 1
+    tool_message = tool_messages[0]
+    assert tool_message["tool_call_id"] == tool_call_id
+    assert tool_message["status"] == "error"
+    assert tool_message["is_error"] is True
+    assert "Host guidance: This tool call failed." in tool_message["content"]
+
+    projected = chat_completions_messages([tool_message])[0]
+    projected_content = json.loads(projected["content"])
+    assert projected_content["status"] == "error"
+    assert projected_content["is_error"] is True
+    assert "Host guidance: This tool call failed." in projected_content["output"]
+    assert target.read_bytes() == b"ORIGINAL\n"
 
 
 def _assert_file_tools_reject_path(session, requested, workspace, original):
