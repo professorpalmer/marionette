@@ -426,6 +426,9 @@ def test_api_usage_routing_saved_usd_in_response(tmp_path, monkeypatch):
     """routing_saved_usd: balanced 0.50-0.10=0.40; quality contributes 0."""
     from harness.sessions import SessionStore
 
+    # This seeded routing test must not fetch the unrelated live pricing catalog.
+    monkeypatch.setenv("PMHARNESS_OR_LIVE_WINDOWS", "0")
+
     repo = tmp_path / "repo"
     repo.mkdir()
     harness_dir = tmp_path / "harness-state"
