@@ -108,7 +108,14 @@ def post_local_models(body: dict, svc: LocalModelServices) -> tuple[int, JsonPay
                 try:
                     svc.rebuild_pilot_and_session()
                 except Exception:
-                    pass  # mid-turn: the override applies on the next pilot build
+                    return 500, redact_mapping({
+                        "error": (
+                            "Settings were saved but were not applied to the active pilot. "
+                            "Retry saving after the active turn ends."
+                        ),
+                        "code": "sampling_apply_failed",
+                        "saved": True,
+                    })
             return 200, snapshot
         return 400, {"error": "Unknown local-model command"}
     except LocalModelError as exc:
