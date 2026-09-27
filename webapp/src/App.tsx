@@ -1,5 +1,5 @@
 import { JobMetadataOwner } from './lib/jobMetadataContext';
-import { configForActiveSession } from './lib/sessionConfig';
+import { configForActiveSession, sessionPilotFields, type SessionPilotFields } from './lib/sessionConfig';
 import { useCallback, useEffect, useRef, useState } from "react";
 import { setSettingsOverlayOpen } from "./lib/settingsOverlay";
 import { api, type Config } from "./lib/api";
@@ -78,7 +78,13 @@ export default function App() {
   if (configRequest.current.sessionId !== activeSessionId) {
     configRequest.current = { sessionId: activeSessionId, generation: configRequest.current.generation + 1 };
   }
-  const config = configForActiveSession(receivedConfig, activeSessionId);
+  const knownPilots = useRef(new Map<string, SessionPilotFields>());
+  const answered = sessionPilotFields(receivedConfig);
+  if (answered && receivedConfig?.session_id) knownPilots.current.set(receivedConfig.session_id, answered);
+  const config = configForActiveSession(
+    receivedConfig, activeSessionId,
+    activeSessionId ? knownPilots.current.get(activeSessionId) : null,
+  );
   const handleSessionChange = useCallback((id: string | null, expectedPreviousId?: string) => {
     setActiveSessionId((current) => expectedPreviousId && current !== expectedPreviousId ? current : id);
   }, []);

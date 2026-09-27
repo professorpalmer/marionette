@@ -567,7 +567,7 @@ describe("LeftRail session list contracts", () => {
   });
 
   it("seedWorkspacesCache writes the per-root BRANCHES key", () => {
-    const root = "C:\\Projects\\pentest-playbook-kit";
+    const root = "C:\\Projects\\demo-kit";
     const rows = [{ name: "main", branch: "main", active: true }];
     seedWorkspacesCache(root, rows);
     expect(readSWRCache(workspacesCacheKey(root))).toEqual(rows);

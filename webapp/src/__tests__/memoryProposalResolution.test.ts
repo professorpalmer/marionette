@@ -27,7 +27,7 @@ describe("memoryProposalResolution", () => {
   it("appendMemoryProposal ignores a saved id after session switch replay", () => {
     setActiveMemoryProposalSession("sess-a");
     rememberResolvedMemoryProposal("sess-a", "memprop_1");
-    expect(appendMemoryProposal([], { id: "memprop_1", text: " pentest kit", category: "fact" })).toEqual([]);
+    expect(appendMemoryProposal([], { id: "memprop_1", text: " demo kit", category: "fact" })).toEqual([]);
   });
 });
 
