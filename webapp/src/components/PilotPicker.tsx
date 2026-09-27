@@ -180,10 +180,11 @@ export default function PilotPicker({ config, sessionId = "" }: {
 
   if (!config) return null;
 
-  // Workspace-only config: this session's driver has not landed yet.
-  const loading = !config.driver;
-  const currentLabel = loading ? "Loading model" : labelOf(current);
-  const showReasoning = !loading && showReasoningEffort(config?.reasoning_support, current);
+  // Workspace-only config: this session's driver has not landed yet. Stay
+  // clickable so a lagging view can never strand the user without a picker.
+  const pending = !config.driver;
+  const currentLabel = pending ? "Select model" : labelOf(current);
+  const showReasoning = !pending && showReasoningEffort(config?.reasoning_support, current);
   const hasRows = !!organized.current || organized.groups.some((g) => g.items.length > 0);
 
   const renderRow = (m: string) => {
@@ -218,8 +219,6 @@ export default function PilotPicker({ config, sessionId = "" }: {
       <div className="pilot-model-slot relative min-w-0">
         <button
           ref={modelTriggerRef}
-          disabled={loading}
-          aria-busy={loading}
           onClick={() => {
             setReasonOpen(false);
             setModelOpen((prev) => !prev);

@@ -102,3 +102,40 @@ it('shows a scoped reconnect action without replaying the failed mutation', asyn
   await expect(postJSON('/write',{session:'s'},{failureKind:'action'})).rejects.toThrow();
   expect(getActiveDiagnostic()).toMatchObject({sessionId:'s',code:'ENDPOINT_RECONNECT_REQUIRED',recovery:{kind:'retry',label:'Reconnect'}});
 });
+it('keeps the pin after a socket reset when the backend identity is unchanged', async () => {
+  const {EndpointSessionClient} = await import('../lib/endpointSession');
+  let boot = 'a'; let reachable = true;
+  const discover = async () => {
+    if (!reachable) throw Object.assign(new Error('connect ECONNREFUSED'), {code:'ECONNREFUSED'});
+    return {kind:'response' as const, status:200, text:JSON.stringify(descriptor(boot))};
+  };
+  const client = new EndpointSessionClient();
+  const pin = await client.connect(discover);
+  await client.revalidate(pin, discover);
+  expect(client.isCurrent(pin)).toBe(true);
+  boot = 'b';
+  await client.revalidate(pin, discover);
+  expect(client.isCurrent(pin)).toBe(false);
+  const next = await client.connect(discover);
+  reachable = false;
+  await client.revalidate(next, discover);
+  expect(client.isCurrent(next)).toBe(false);
+});
+it('a request reset mid-switch does not raise reconnect on concurrent requests', async () => {
+  let resetOnce = true;
+  vi.stubGlobal('fetch',vi.fn(async path => {
+    if (path === '/api/endpoint') return response(descriptor());
+    if (path === '/api/session/state' && resetOnce) {
+      resetOnce = false;
+      throw Object.assign(new TypeError('socket hang up'), {code:'ECONNRESET'});
+    }
+    return response({ok:true});
+  }));
+  const {getJSON} = await import('../lib/transport');
+  const failed = getJSON('/api/session/state');
+  const concurrent = getJSON('/api/config');
+  await expect(failed).rejects.toThrow();
+  await expect(failed).rejects.not.toThrow(/retry this action explicitly/);
+  await expect(concurrent).resolves.toEqual({ok:true});
+  await expect(getJSON('/api/config')).resolves.toEqual({ok:true});
+});

@@ -3119,6 +3119,13 @@ class Handler(BaseHTTPRequestHandler):
                     payload.pop(key, None)
                 payload["driver"] = ""
                 payload.update(_sessions.pilot_preferences(sid))
+                if not payload.get("driver"):
+                    # Never empty while a workspace default exists: an empty
+                    # driver leaves the picker loading if the view lags.
+                    row = next((r for r in _sessions.rows() if r.get("id") == sid), None)
+                    payload["driver"] = (
+                        _get_workspace_driver(session_stored_root(row)) if row else None
+                    ) or ""
             elif sid:
                 payload.update(_sessions.pilot_preferences(sid, seed_driver=_cfg.driver))
         return self._send(status, json.dumps(payload))

@@ -51,21 +51,16 @@ export default function SwarmReasoningPicker({ config, sessionId = "" }: { confi
     }
   };
 
-  // No session config yet (or workspace-only while this session's lands).
-  const loading = !config?.driver;
-
   return (
     <div ref={rootRef} className="relative shrink-0" data-testid="swarm-reasoning-picker">
       <button
         type="button"
-        disabled={loading}
-        aria-busy={loading}
         onClick={() => setOpen((prev) => !prev)}
         title="Worker reasoning for swarms and implement (not the chat pilot)"
         className="flex items-center gap-1 text-[11px] text-muted hover:text-txt rounded-md px-2 h-[22px] bg-transparent hover:bg-panel2 border border-edge/40 transition select-none"
       >
         <span className="composer-toolbar-label">Workers</span>
-        <span className="truncate max-w-[72px]">{loading ? "Loading" : labelForEffort(effort)}</span>
+        <span className="truncate max-w-[72px]">{labelForEffort(effort)}</span>
         <ChevronDown size={11} className="shrink-0 opacity-60" />
       </button>
       {open && (
