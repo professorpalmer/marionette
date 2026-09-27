@@ -430,7 +430,7 @@ async function mountCanonicalAlias(options: {
     await (store as unknown as { advanceLocal: (lane: 'active' | 'history') => Promise<unknown> }).advanceLocal('active');
     for (let turn = 0; turn < 24; turn++) await store.advance();
   });
-  localStorage.setItem('marionette.jobScope.v1', 'repo');
+  localStorage.setItem('marionette.jobScope.v2', JSON.stringify({ scope: 'repo', sessionId: c.session_id }));
   const ui = render(
     <JobMetadataContext.Provider value={store}>
       <SwarmPane />

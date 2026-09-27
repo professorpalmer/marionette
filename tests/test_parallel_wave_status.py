@@ -407,6 +407,9 @@ def test_user_cancelled_wave_does_not_relaunch_on_reload(tmp_path, monkeypatch):
         ConversationalSession, "_submit_swarm", lambda *a, **k: launched.append(a) or True,
     )
     second = ConversationalSession(cfg)
+    # A runner loads only its own session's rows once bound.
+    assert "stay-dead" not in second._local_jobs
+    second.harness_session_id = "sess-wave"
     assert second._local_jobs["stay-dead"]["status"] == "cancelled"
     assert second._local_jobs["stay-dead"].get("interrupted_by_restart") is not True
     assert launched == []

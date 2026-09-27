@@ -37,6 +37,77 @@ _MARIONETTE_ENVELOPE_NOTICE = (
 )
 
 
+# A dirty monorepo checkout can list tens of thousands of paths. Durable
+# provenance keeps exact counts plus bounded samples; every persisted job row
+# and artifact must stay small regardless of checkout size.
+LIVE_DIRTY_SAMPLE_CAP = 50
+_LIVE_DIRTY_LIST_KEYS = (
+    "live_dirty_paths_before", "live_dirty_paths_after",
+    "live_dirty_added", "live_dirty_removed",
+)
+
+
+def _dirty_paths(raw: Any) -> List[str]:
+    if not isinstance(raw, list):
+        return []
+    return [str(p) for p in raw if str(p).strip()]
+
+
+def _stored_count(provenance: dict, key: str, sample: List[str]) -> int:
+    count = provenance.get(key)
+    if type(count) is int and count >= len(sample):
+        return count
+    return len(sample)
+
+
+def bound_live_dirty_provenance(provenance: Any) -> Any:
+    """Return provenance with live-dirty path lists replaced by bounded facts.
+
+    Stores ``dirty_count_before/after``, samples of at most
+    ``LIVE_DIRTY_SAMPLE_CAP`` paths under the original list keys, and a bounded
+    added/removed delta. Idempotent: counts and the delta are computed once,
+    from the full lists, and a bounded row passes through unchanged.
+    """
+    if not isinstance(provenance, dict):
+        return provenance
+    if not any(key in provenance for key in _LIVE_DIRTY_LIST_KEYS):
+        return provenance
+    out = dict(provenance)
+    before = _dirty_paths(provenance.get("live_dirty_paths_before"))
+    after = _dirty_paths(provenance.get("live_dirty_paths_after"))
+    count_before = _stored_count(provenance, "dirty_count_before", before)
+    count_after = _stored_count(provenance, "dirty_count_after", after)
+    if "live_dirty_added" not in provenance or "live_dirty_removed" not in provenance:
+        # Only an unbounded row still has the full lists the delta needs.
+        before_set, after_set = set(before), set(after)
+        added = [p for p in after if p not in before_set]
+        removed = [p for p in before if p not in after_set]
+        out["live_dirty_added_count"] = len(added)
+        out["live_dirty_removed_count"] = len(removed)
+    else:
+        added = _dirty_paths(provenance.get("live_dirty_added"))
+        removed = _dirty_paths(provenance.get("live_dirty_removed"))
+    out["dirty_count_before"] = count_before
+    out["dirty_count_after"] = count_after
+    out["live_dirty_paths_before"] = before[:LIVE_DIRTY_SAMPLE_CAP]
+    out["live_dirty_paths_after"] = after[:LIVE_DIRTY_SAMPLE_CAP]
+    out["live_dirty_added"] = added[:LIVE_DIRTY_SAMPLE_CAP]
+    out["live_dirty_removed"] = removed[:LIVE_DIRTY_SAMPLE_CAP]
+    return out
+
+
+def artifact_worker_provenance(provenance: Any) -> dict:
+    """Job provenance for a result artifact: counts only, no path samples.
+
+    The job row owns the bounded samples; artifact read surfaces fall back to
+    the parent row when they need them.
+    """
+    if not isinstance(provenance, dict):
+        return {}
+    return {k: v for k, v in bound_live_dirty_provenance(provenance).items()
+            if k not in _LIVE_DIRTY_LIST_KEYS}
+
+
 def live_dirty_before(provenance: Any) -> List[str]:
     """Extract non-empty live_dirty_paths_before from a provenance dict."""
     if not isinstance(provenance, dict):

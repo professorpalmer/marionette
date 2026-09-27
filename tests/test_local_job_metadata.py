@@ -219,9 +219,11 @@ def test_retained_history_and_classifications(tmp_path):
     runner._persist_local_jobs()
     assert len(runner._local_jobs) == 1208  # existing live history is not silently pruned
     stored = json.loads((tmp_path / 'swarm_local_jobs.json').read_text())['jobs']
-    assert len(stored) == 1202  # all 1002 command receipts + 200 provider/wave history
+    # Newest 500 terminal command receipts + 200 provider/wave history.
+    assert len(stored) == 700
+    assert 'batch' in {r['id'] for r in stored}
     restarted = Runner(tmp_path)
-    assert len(restarted._local_jobs) == 1202
+    assert len(restarted._local_jobs) == 700
     kinds = set()
     cursor = None
     while True:
@@ -311,7 +313,7 @@ def test_failed_command_receipt_remains_unknown_in_projection(tmp_path, monkeypa
     runner._checkpoint_command_job_launch('local-command')
     def fail(*args):
         raise OSError('disk failure')
-    monkeypatch.setattr('harness.local_jobs.os.replace', fail)
+    monkeypatch.setattr('harness.local_jobs_store.os.replace', fail)
     assert runner._finish_command_job('local-command', status='completed', summary='done', exit_code=0, output='done') is False
     row = runner.local_metadata_handle().read_page(ctx())['rows'][0]
     assert row['lifecycle'] == 'unknown' and row['receipts']['terminal'] is False

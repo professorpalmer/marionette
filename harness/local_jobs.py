@@ -17,10 +17,15 @@ BusyControlMixin. This mixin owns only per-job local-job bookkeeping.
 
 Method Resolution Order keeps behavior identical: ``_register_local_job``,
 ``live_local_jobs``, ``cancel_local_job``, etc. still resolve via inheritance.
+
+Persistence is per session: ``_local_jobs`` holds only rows owned by this
+runner's harness session, and persisting rewrites only that session's
+partition of the shared ``swarm_local_jobs.json`` (``local_jobs_store`` owns
+the read-merge-write). Other sessions' rows are mirrored read-only in
+``_foreign_local_jobs`` for all-scope metadata reads.
 """
 
 import copy
-import os
 import threading
 import uuid
 from typing import Any, Iterable, Optional
@@ -34,6 +39,7 @@ from .job_actions import (
     snapshot_actions,
     upsert_action_row,
 )
+from .local_jobs_store import local_jobs_store
 from .model_identity import (
     collapse_engine_prefixes,
     envelope_model_id,
@@ -42,7 +48,11 @@ from .model_identity import (
     model_ids_equal,
     price_lookup_id,
 )
-from .provenance_sanitize import sanitize_clean_tree_claims
+from .provenance_sanitize import (
+    artifact_worker_provenance,
+    bound_live_dirty_provenance,
+    sanitize_clean_tree_claims,
+)
 
 # Job statuses that must never accept a fresh status=running nested row.
 # Includes command-job terminals (timeout/truncated) from Wave 2 durability
@@ -1796,7 +1806,7 @@ class LocalJobsMixin:
             except Exception:
                 pass
             if isinstance(worker_provenance, dict):
-                prov = copy.deepcopy(worker_provenance)
+                prov = copy.deepcopy(bound_live_dirty_provenance(worker_provenance))
                 if files and not prov.get("files"):
                     prov["files"] = list(files)
                 if "retryable" not in prov and not ok:
@@ -1878,7 +1888,8 @@ class LocalJobsMixin:
                 "tokens": int(job.get("tokens") or 0),
                 "est_cost_usd": round(real_cost, 6) if real_cost else 0.0,
                 "cost_provenance": job.get("cost_provenance"),
-                "worker_provenance": copy.deepcopy(job.get("worker_provenance") or {}),
+                "worker_provenance": copy.deepcopy(
+                    artifact_worker_provenance(job.get("worker_provenance"))),
             })
             signal_findings = findings
             if isinstance(worker_provenance, dict) and isinstance(findings, list):
@@ -2109,7 +2120,8 @@ class LocalJobsMixin:
             if not job or job.get("status") != "cancelled":
                 return
             if worker_provenance:
-                job["worker_provenance"] = copy.deepcopy(worker_provenance)
+                job["worker_provenance"] = copy.deepcopy(
+                    bound_live_dirty_provenance(worker_provenance))
             if measured_tokens > 0:
                 job["tokens"] = measured_tokens
             if measured_cost > 0:
@@ -2141,7 +2153,7 @@ class LocalJobsMixin:
                 if artifact.get("id") != f"{job_id}-result":
                     continue
                 if worker_provenance:
-                    artifact["worker_provenance"] = copy.deepcopy(worker_provenance)
+                    artifact["worker_provenance"] = artifact_worker_provenance(worker_provenance)
                 if measured_tokens > 0:
                     artifact["tokens"] = measured_tokens
                 if measured_cost > 0:
@@ -2149,36 +2161,84 @@ class LocalJobsMixin:
                 break
             self._persist_local_jobs_locked()
 
-    # Bound provider history; command identities must survive action replay.
-    _LOCAL_JOBS_HISTORY_CAP = 200
+    @property
+    def harness_session_id(self) -> str:
+        return getattr(self, "_harness_session_id", "")
+
+    @harness_session_id.setter
+    def harness_session_id(self, value: str) -> None:
+        # A runner is constructed unbound and bound to its session once; the
+        # first bind loads that session's partition of the local-jobs file.
+        # Later changes keep the bound partition (rows stamped with another
+        # session still persist into their own partition).
+        self._harness_session_id = value
+        if getattr(self, "_local_jobs_scope", None) == "" and str(value or ""):
+            self._bind_local_jobs_session()
+
+    def _local_jobs_owner_scope(self) -> str:
+        scope = getattr(self, "_local_jobs_scope", None)
+        return scope if scope is not None else str(self.harness_session_id or "")
+
+    def _bind_local_jobs_session(self) -> None:
+        with self._local_jobs_lock:
+            self._persist_local_jobs_locked()
+            # Rows registered in this process own a cancel Event and stay;
+            # reloaded unbound rows go back to the shared store.
+            for jid in [j for j in self._local_jobs if j not in self._local_job_cancels]:
+                del self._local_jobs[jid]
+        self._load_local_jobs()
+
+    def _refresh_foreign_local_jobs_locked(self) -> None:
+        """Mirror other sessions' rows into the metadata index for all-scope
+        reads. Read-only snapshots; only partitions that changed republish."""
+        self._initialize_local_metadata_locked()
+        if not hasattr(self, "_foreign_local_jobs"):
+            self._foreign_local_jobs = {}
+            self._foreign_local_versions = {}
+        seen, foreign = self._foreign_local_versions, self._foreign_local_jobs
+        try:
+            partitions = local_jobs_store(self._local_jobs_path).foreign(
+                self._local_jobs_owner_scope())
+        except (OSError, ValueError):
+            return
+        for sid in [s for s in seen if s not in partitions]:
+            partitions[sid] = (None, [])
+        for sid, (version, rows) in partitions.items():
+            if seen.get(sid) == version:
+                continue
+            ids = set()
+            for row in rows:
+                jid = row.get("id")
+                if not isinstance(jid, str) or jid in self._local_jobs:
+                    continue
+                ids.add(jid)
+                foreign[jid] = row
+                self._local_metadata.publish(jid, row)
+            for jid in [j for j, r in foreign.items()
+                        if str(r.get("session_id") or "") == sid and j not in ids]:
+                del foreign[jid]
+                if jid not in self._local_jobs:
+                    self._local_metadata.publish(jid, None)
+            if version is None:
+                seen.pop(sid, None)
+            else:
+                seen[sid] = version
 
     def _persist_local_jobs_locked(self, *, required: bool = False) -> None:
-        """Atomically mirror the current _local_jobs dict to disk. MUST be called
-        while holding self._local_jobs_lock. Writes a .tmp then os.replace so a
-        crash mid-write never leaves a half-written (corrupt) file. Command
-        barriers require success; provider bookkeeping remains best-effort."""
-        import json
+        """Atomically persist this session's partition of the local-jobs file.
+        MUST be called while holding self._local_jobs_lock. Other sessions'
+        rows are carried over by the shared store (see local_jobs_store), and
+        the file is replaced via .tmp + os.replace so a crash mid-write never
+        leaves it half-written. Command barriers require success; provider
+        bookkeeping remains best-effort."""
         self._publish_local_metadata_locked()
         try:
-            items = list(self._local_jobs.values())
-            # Both unresolved checkpoints and settled receipts prevent replay.
-            command_items = [j for j in items if
-                             j.get("job_kind") in ("run_command", "run_command_batch")
-                             or j.get("role") in ("command", "command_batch")]
-            history = [j for j in items if
-                       j.get("job_kind") not in ("run_command", "run_command_batch")
-                       and j.get("role") not in ("command", "command_batch")]
-            history.sort(key=lambda j: j.get("created_at") or 0.0)
-            items = command_items + history[-self._LOCAL_JOBS_HISTORY_CAP:]
-            tmp = self._local_jobs_path + ".tmp"
-            with open(tmp, "w", encoding="utf-8", newline="\n") as f:
-                json.dump({"jobs": items}, f)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, self._local_jobs_path)
+            local_jobs_store(self._local_jobs_path).write(
+                self._local_jobs_owner_scope(), list(self._local_jobs.values()))
         except Exception:
             if required:
                 raise
+        self._refresh_foreign_local_jobs_locked()
 
     def _persist_local_jobs(self) -> None:
         """Lock-taking wrapper around _persist_local_jobs_locked for callers that
@@ -2198,32 +2258,26 @@ class LocalJobsMixin:
         durable outcome (never rerun or overwrite solely because the process
         restarted). Unfinished command children heal from launch-checkpoint
         facts into unknown outcomes; only unlaunched work is cancelled.
+
+        Only rows owned by this runner's harness session are loaded; other
+        sessions' rows stay in the shared store (see local_jobs_store) and are
+        mirrored read-only into the metadata index. Binding an unbound runner
+        to its session reloads.
         """
-        import json
+        scope = str(self.harness_session_id or "")
         with self._local_jobs_lock:
             self._initialize_local_metadata_locked()
-        try:
-            with open(self._local_jobs_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except FileNotFoundError:
-            return
-        except Exception:
-            # Execution recovery remains tolerant; observation cannot claim empty.
-            self._local_metadata.available = False
-            return
-        jobs = data.get("jobs") if isinstance(data, dict) else None
-        if not isinstance(jobs, list):
-            self._local_metadata.available = False
+            self._local_jobs_scope = scope
+            jobs, status, malformed = local_jobs_store(self._local_jobs_path).load(scope)
+            if status == "corrupt" or malformed:
+                # Execution recovery remains tolerant; observation cannot claim empty.
+                self._local_metadata.available = False
+            self._refresh_foreign_local_jobs_locked()
+        if status != "ok":
             return
         with self._local_jobs_lock:
             for job in jobs:
-                if not isinstance(job, dict):
-                    self._local_metadata.available = False
-                    continue
-                jid = job.get("id")
-                if not isinstance(jid, str) or not jid:
-                    self._local_metadata.available = False
-                    continue
+                jid = job["id"]
                 is_command_job = (
                     job.get("job_kind") == "run_command"
                     or job.get("role") == "command"

@@ -28,7 +28,7 @@ import {
 import { SessionFork } from "./SessionFork";
 import { sharedReadinessNotice } from "../lib/operationalDiagnostic";
 import { useOperationalDiagnostic } from "../lib/useOperationalDiagnostic";
-import { filterJobsByScope, loadJobScope, saveJobScope, type JobScope } from "../lib/jobScope";
+import { filterJobsByScope, jobScopeForSession, loadJobScopeChoice, saveJobScope, type JobScopeChoice } from "../lib/jobScope";
 import {
   BRANCHES_MIN_HEIGHT,
   branchesHeightFromPointerDelta,
@@ -131,9 +131,9 @@ export default function LeftRail({ jobsRefresh, onSessionChange, activeSessionId
     () => localStorage.getItem(SESSION_JOBS_COLLAPSED_KEY) === "1",
   );
   const [hiddenJobIds, setHiddenJobIds] = useState<Set<string>>(loadHiddenSessionJobs);
-  const [jobScope, setJobScope] = useState<JobScope>(() => loadJobScope());
+  const [jobScopeChoice, setJobScopeChoice] = useState<JobScopeChoice | null>(loadJobScopeChoice);
   useEffect(() => {
-    const onScope = () => setJobScope(loadJobScope());
+    const onScope = () => setJobScopeChoice(loadJobScopeChoice());
     window.addEventListener("harness-job-scope-changed", onScope);
     return () => window.removeEventListener("harness-job-scope-changed", onScope);
   }, []);
@@ -1433,6 +1433,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange, activeSessionId
   };
 
   const activeSessionId = sessions.find((session) => session.active)?.id || "";
+  const jobScope = jobScopeForSession(jobScopeChoice, activeSessionId);
   const artifactContext = JSON.stringify([currentRepo, selectedProjectPath, activeSessionId]);
   const artifactContextRef = useRef(artifactContext);
   if (artifactContextRef.current !== artifactContext) {
@@ -2148,7 +2149,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange, activeSessionId
                   type="button"
                   aria-pressed={jobScope === scope}
                   aria-label={scope === "session" ? "This session" : scope === "repo" ? "This repo" : "All projects"}
-                  onClick={(e) => { e.stopPropagation(); setJobScope(scope); saveJobScope(scope); }}
+                  onClick={(e) => { e.stopPropagation(); saveJobScope(scope, activeSessionId); }}
                   className={`min-w-0 text-[9px] uppercase tracking-wider ${jobScope === scope ? "bg-accent/15 text-txt" : "text-muted hover:text-txt"}`}
                 >
                   {scope === "session" ? "Session" : scope === "repo" ? "Repo" : "All"}

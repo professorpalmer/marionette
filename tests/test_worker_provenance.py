@@ -169,8 +169,21 @@ def test_worker_provenance_is_persisted_on_job_and_terminal_artifact(tmp_path):
     saved = json.loads((tmp_path / "jobs.json").read_text(encoding="utf-8"))
     job = saved["jobs"][0]
     terminal = next(item for item in job["artifacts"] if item["type"] == "analysis")
-    assert job["worker_provenance"] == provenance
-    assert terminal["worker_provenance"] == provenance
+    assert job["worker_provenance"] == dict(
+        provenance, dirty_count_before=1, dirty_count_after=1,
+        live_dirty_added=[], live_dirty_removed=[],
+        live_dirty_added_count=0, live_dirty_removed_count=0,
+    )
+    # Result artifacts carry counts, never path lists.
+    assert terminal["worker_provenance"] == {
+        "managed_worktree_mode": "managed",
+        "managed_worktree_path": "/tmp/managed",
+        "worktree_diff_empty": True,
+        "dirty_count_before": 1,
+        "dirty_count_after": 1,
+        "live_dirty_added_count": 0,
+        "live_dirty_removed_count": 0,
+    }
 
 
 def test_cancelled_worker_adds_late_provenance_without_enqueuing_or_applying(
@@ -218,7 +231,12 @@ def test_cancelled_worker_adds_late_provenance_without_enqueuing_or_applying(
     assert job["worker_provenance"]["managed_worktree_mode"] == "managed"
     assert job["worker_provenance"]["worktree_diff_empty"] is False
     terminal = next(item for item in job["artifacts"] if item["id"].endswith("-result"))
-    assert terminal["worker_provenance"] == job["worker_provenance"]
+    assert terminal["worker_provenance"] == {
+        k: v for k, v in job["worker_provenance"].items()
+        if k not in ("live_dirty_paths_before", "live_dirty_paths_after",
+                     "live_dirty_added", "live_dirty_removed")
+    }
+    assert terminal["worker_provenance"]["dirty_count_before"] == 1
 
 
 def test_cancelled_worker_provenance_collection_failure_is_best_effort(
