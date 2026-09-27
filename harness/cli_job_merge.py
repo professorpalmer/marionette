@@ -203,6 +203,11 @@ def open_cli_durable_at(state_dir: str, *, busy_timeout_ms: int = 5000):
         return None
 
 
+def _running_job_rows(durable) -> list[dict]:
+    read = getattr(durable, "list_running_jobs", None)
+    return list(read() if callable(read) else durable.list_jobs() or [])
+
+
 def _foreign_state_dir_candidates(
     primary_resolved: str,
     *,
@@ -283,7 +288,7 @@ def merge_running_cli_jobs_all_projects(
             continue
         try:
             rows = _retry_on_locked(
-                lambda d=durable: d.list_jobs(), attempts=2, delay=0.05
+                lambda d=durable: _running_job_rows(d), attempts=2, delay=0.05
             )
         except Exception:
             continue

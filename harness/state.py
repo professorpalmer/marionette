@@ -213,6 +213,30 @@ class DurableState:
         self.state_dir = state_dir
         self.store = create_store(backend, state_dir)
 
+    def list_running_jobs(self) -> list:
+        """Read only live job headers; completed history needs no enrichment."""
+        from pathlib import Path
+        from puppetmaster.sqlite_store import SQLiteSwarmStore
+
+        if not isinstance(self.store, SQLiteSwarmStore):
+            return self.list_jobs()
+        connection = sqlite3.connect(Path(self.store.db_path).resolve().as_uri() + "?mode=ro",
+                                     uri=True, timeout=0.4)
+        try:
+            rows = connection.execute(
+                "SELECT id, data FROM jobs WHERE CASE WHEN json_valid(data) "
+                "THEN lower(trim(json_extract(data, '$.status'))) END "
+                "IN ('running', 'in_progress', 'pending', 'started')"
+            ).fetchall()
+        finally:
+            connection.close()
+        result = []
+        for job_id, data in rows:
+            row = json.loads(data)
+            row['id'] = job_id
+            result.append(row)
+        return result
+
     def list_jobs(self) -> list:
         try:
             jobs = self.store.list_jobs()
