@@ -45,6 +45,7 @@ import {
 } from "./contextUsageColors";
 import { showStandaloneEditNoticeDismiss } from "./composerSend";
 import { usePanelNotice } from "../../lib/useOperationalDiagnostic";
+import { pickerConfig } from "../../lib/sessionConfig";
 
 export type AttachedImage = { path: string; name: string; previewUrl: string };
 export type MsgQueueItem = { text: string; auto: boolean; plan?: boolean };
@@ -1080,9 +1081,9 @@ export default function ComposerDock({
               <ListChecks size={11} aria-hidden="true" />
             </button>
             <div className="pilot-picker-slot">
-              <PilotPicker key={sessionId} sessionId={sessionId} config={!sessionId || config?.session_id === sessionId ? config : null} />
+              <PilotPicker key={sessionId} sessionId={sessionId} config={pickerConfig(config, sessionId)} />
             </div>
-            <SwarmReasoningPicker key={sessionId} sessionId={sessionId} config={!sessionId || config?.session_id === sessionId ? config : null} />
+            <SwarmReasoningPicker key={sessionId} sessionId={sessionId} config={pickerConfig(config, sessionId)} />
             <button
               type="button"
               onClick={() => {

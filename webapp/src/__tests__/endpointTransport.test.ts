@@ -69,6 +69,28 @@ it('pins browser uploads and SSE and suppresses callbacks after cancellation', a
   const cancelled=vi.fn(); stream('/api/chat?session=s',cancelled)();
   await Promise.resolve(); expect(cancelled).not.toHaveBeenCalled();
 });
+it('fails only the stream on a session-scoped 409 and rediscovers on endpoint rotation', async () => {
+  let discoveries = 0; let body: unknown = {ok:false, error:'ring miss'};
+  vi.stubGlobal('fetch',vi.fn(async path => {
+    if (path==='/api/endpoint') { discoveries++; return response(descriptor()); }
+    return response(body, 409);
+  }));
+  const {stream} = await import('../lib/transport');
+  for (const scoped of [{ok:false,error:'ring miss'}, {ok:false,code:'input_session_changed'}]) {
+    body = scoped;
+    const onError = vi.fn();
+    stream('/api/chat/events?watch=1&session=s', vi.fn(), vi.fn(), onError);
+    await vi.waitFor(()=>expect(onError).toHaveBeenCalledOnce());
+    expect(onError.mock.calls[0][0]).toMatchObject({status:409});
+  }
+  await Promise.resolve();
+  expect(discoveries).toBe(1);
+  body = {ok:false, code:'endpoint_mismatch'};
+  const onError = vi.fn();
+  stream('/api/chat/events?watch=1&session=s', vi.fn(), vi.fn(), onError);
+  await vi.waitFor(()=>expect(onError).toHaveBeenCalledOnce());
+  await vi.waitFor(()=>expect(discoveries).toBe(2));
+});
 it('shows a scoped reconnect action without replaying the failed mutation', async () => {
   let boot='a';
   vi.stubGlobal('fetch',vi.fn(async (path,options)=> path==='/api/endpoint' ? response(descriptor(boot))

@@ -6,7 +6,7 @@ import {
   peekTranscriptCacheEntry,
   writeTranscriptCache,
 } from "../components/conversation/transcriptCache";
-import { actionAfterSessionRemove, buildProjectsList, collectUnreadFinishedSessionIds, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, isRedundantSessionSwitch, jobsCacheKey, partitionProjectSessions, patchActiveSessionInCaches, patchSessionArchivedInCaches, patchSessionTitleInCaches, pickFallbackProjectAfterForget, preferLastGoodSessionList, projectSessionsEmptyState, purgeSessionFromRootCaches, remainingOpenAfterRemoveFromCache, SESSION_LEASE_EXHAUSTED_MESSAGE, seedWorkspacesCache, sessionSwitchSucceeded, shouldOfferBackgroundStop, shouldPromoteListActive, writeSessionListCache, workspacesCacheKey } from "../components/LeftRail";
+import { actionAfterSessionRemove, buildProjectsList, collectUnreadFinishedSessionIds, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, isRedundantSessionSwitch, jobsCacheKey, partitionProjectSessions, patchActiveSessionInCaches, patchSessionArchivedInCaches, patchSessionTitleInCaches, pickFallbackProjectAfterForget, preferLastGoodSessionList, projectSessionsEmptyState, purgeSessionFromRootCaches, remainingOpenAfterRemoveFromCache, SESSION_LEASE_EXHAUSTED_MESSAGE, seedWorkspacesCache, sessionSwitchSucceeded, shouldOfferBackgroundStop, shouldPromoteListActive, onScreenSessionId, requestedSessionAfterList, writeSessionListCache, workspacesCacheKey } from "../components/LeftRail";
 import type { Session } from "../lib/api";
 
 /**
@@ -180,6 +180,42 @@ describe("LeftRail session list contracts", () => {
       forRepo: "/repo",
       currentRepo: "/repo",
     })).toBe(true);
+  });
+
+  it("releases the click fence once the switch lands so later backend actives promote", () => {
+    let requested: string | null = "sess-home-new";
+    // Leftover running active before the switch lands: fence holds.
+    requested = requestedSessionAfterList(requested, "sess-running");
+    expect(requested).toBe("sess-home-new");
+    expect(shouldPromoteListActive({
+      requestedSessionId: requested,
+      listActiveId: "sess-running",
+    })).toBe(false);
+    // Switch landed: the list reports the requested id.
+    requested = requestedSessionAfterList(requested, "sess-home-new");
+    expect(requested).toBeNull();
+    // A later project open / relocate moves the backend active; it must promote.
+    expect(shouldPromoteListActive({
+      requestedSessionId: requested,
+      listActiveId: "sess-opened-project",
+    })).toBe(true);
+    expect(requestedSessionAfterList(null, "sess-any")).toBeNull();
+  });
+
+  it("judges a redundant click against the session on screen, not the list active", () => {
+    const rows = [
+      { id: "sess-list-active", active: true },
+      { id: "sess-shown" },
+    ];
+    const shown = onScreenSessionId("sess-shown", rows);
+    expect(shown).toBe("sess-shown");
+    // List says another session is active but Conversation shows sess-shown:
+    // clicking the list-active row must switch, clicking the shown row must not.
+    expect(isRedundantSessionSwitch("sess-list-active", shown)).toBe(false);
+    expect(isRedundantSessionSwitch("sess-shown", shown)).toBe(true);
+    // Before Conversation has an id, fall back to the list active.
+    expect(onScreenSessionId(null, rows)).toBe("sess-list-active");
+    expect(onScreenSessionId("", [])).toBe("");
   });
 
   it("treats HTTP 200 {ok:false} as a failed session switch", () => {

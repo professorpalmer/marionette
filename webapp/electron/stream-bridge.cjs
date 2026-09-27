@@ -69,6 +69,10 @@ function sanitizedInputError(status, text) {
     const body = JSON.parse(text);
     const code = body && body.code;
     // Preserve allowlisted and other safe input_* codes; never forward bodies.
+    // Endpoint rotation is the only 409 that invalidates the renderer's pin.
+    if (code === "endpoint_mismatch" || code === "boot_mismatch") {
+      return { status, code, message: "Backend connection changed; reconnecting." };
+    }
     if (isSafeInputErrorCode(code)) {
       return {
         status,

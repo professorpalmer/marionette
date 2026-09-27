@@ -87,6 +87,27 @@ def test_scoped_config_accepts_store_active_before_view_catches_up(owned_server)
     assert h.body["session_id"] == b
 
 
+def test_config_during_switch_does_not_leak_outgoing_driver(owned_server, monkeypatch):
+    """A new session created while the view is on A must not report A's model."""
+    srv = owned_server
+    a = srv._sessions.active
+    srv._attach_view(a, load_transcript_on_create=False)
+    monkeypatch.setattr(srv._cfg, "driver", "stub:session-a-model")
+    srv._sessions.pilot_preferences(a, updates={"driver": "stub:session-a-model"})
+    b = srv._sessions.create()["id"]
+    assert srv._runners.active_view_id == a
+    h = Handler()
+    srv.Handler._get_config(h, b)
+    assert h.code == 200
+    assert h.body["session_id"] == b
+    assert h.body["driver"] != "stub:session-a-model"
+    assert "driver" not in srv._sessions.pilot_preferences(b)
+
+    srv._sessions.pilot_preferences(b, updates={"driver": "stub:session-b-model"})
+    srv.Handler._get_config(h, b)
+    assert h.body["driver"] == "stub:session-b-model"
+
+
 def test_swap_rechecks_session_after_readiness(owned_server, monkeypatch):
     srv = owned_server
     a = srv._sessions.active

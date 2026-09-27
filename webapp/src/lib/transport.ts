@@ -5,7 +5,7 @@
 // ONLY this file changes: getJSON/postJSON/stream route through window.harnessIPC
 // (preload bridge) instead of HTTP. Components never know the difference.
 
-import { EndpointSessionClient, endpointRecoveryError, isEndpointMismatch } from "./endpointSession";
+import { EndpointSessionClient, endpointRecoveryError, isEndpointMismatch, isEndpointRotationError } from "./endpointSession";
 
 import {
   DESKTOP_BRIDGE_MISSING,
@@ -453,8 +453,9 @@ export function stream(
         if (cancelled) return;
         cancelled = true;
         cancel?.();
-        // Stream errors are sanitized by Electron, so any 409 forces discovery.
-        if ((error && typeof error === "object" && "status" in error && error.status === 409) || isTransientHarnessConnError(error)) {
+        // Only an endpoint/boot rotation drops the global pin. Session-scoped
+        // 409s (ring-watch miss, session changed) fail this stream alone.
+        if (isEndpointRotationError(error) || isTransientHarnessConnError(error)) {
           endpointClient.invalidate(pin);
           void endpointClient.connect(discoverEndpoint).catch(() => {});
         }
