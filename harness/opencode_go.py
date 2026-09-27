@@ -194,15 +194,18 @@ def _is_deepseek_thinking(bare: str) -> bool:
     return bare == "deepseek-reasoner"
 
 
-def reasoning_body_extras(model: Optional[str], effort: Optional[str] = None) -> dict:
+def reasoning_body_extras(
+    model: Optional[str], effort: Optional[str] = None, *, go_relay: bool = False,
+) -> dict:
     """Extra request-body fields Go needs to honor a reasoning level.
 
     Each family speaks a different dialect and rejects the others, so the
     mapping is per-family rather than one shared knob:
 
-    - GLM-5.3 requires ``thinking.type=enabled`` and accepts
-      ``reasoning_effort`` of ``low`` / ``high`` / ``max``. UI ``none``
-      maps to ``low`` — omitting thinking fails the request.
+    - GLM-5.3 accepts ``reasoning_effort`` of ``low`` / ``high`` / ``max``.
+      UI ``none`` maps to ``low``. Direct hosts also get
+      ``thinking.type=enabled``; the Go relay (*go_relay*) rejects
+      ``thinking`` as an unknown field since Sep 2026.
     - GLM-5.2 exposes ``reasoning_effort`` with only ``high`` and ``max``
       enabled, so Marionette's richer scale collapses onto those two.
     - Kimi K2 and DeepSeek accept ``thinking`` (a binary toggle) OR
@@ -237,6 +240,8 @@ def reasoning_body_extras(model: Optional[str], effort: Optional[str] = None) ->
             effort = "max"
         else:
             effort = "high"
+        if go_relay:
+            return {"reasoning_effort": effort}
         return {"thinking": {"type": "enabled"}, "reasoning_effort": effort}
 
     if _is_glm_5_2(bare):
@@ -287,7 +292,7 @@ def build_driver(
         max_tokens=max_tokens_for_model(bare, max_tokens),
         base_url=driver_base_url(base_url),
         temperature=temperature_for_model(bare),
-        extra_body=reasoning_body_extras(bare),
+        extra_body=reasoning_body_extras(bare, go_relay=True),
     )
 
 

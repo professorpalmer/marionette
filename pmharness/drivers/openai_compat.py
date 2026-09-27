@@ -9,6 +9,7 @@ Keys are read from the environment at call time and never logged.
 """
 
 import json
+import re
 import os
 import time
 import urllib.error
@@ -831,6 +832,38 @@ class OpenAICompatDriver:
             pass
         return None
 
+    def _rejected_optional_field(self, code: int, detail: str, body: dict) -> str | None:
+        """Name the optional request field a 400 rejected, if it is droppable.
+
+        Droppable means the OpenRouter-style ``reasoning`` knob or a provider
+        dialect extra from ``extra_body``. Relays drift (OpenCode Go began
+        rejecting GLM-5.3 ``thinking`` in Sep 2026); dropping the named extra
+        for the session keeps turns alive. Core fields are never dropped.
+        """
+        if self._reasoning_unsupported(code, detail) and body.get("reasoning") is not None:
+            return "reasoning"
+        if code != 400:
+            return None
+        param = None
+        try:
+            err = json.loads(detail).get("error")
+            if isinstance(err, dict):
+                param = err.get("param")
+        except (ValueError, AttributeError):
+            pass
+        if not param:
+            match = re.search(r'unknown (?:field|parameter)[:\s]*\\?["\']?([A-Za-z_][\w.]*)', detail or "", re.I)
+            param = match.group(1) if match else None
+        if isinstance(param, str) and param in self.extra_body and param in body:
+            return param
+        return None
+
+    def _drop_optional_field(self, field: str) -> None:
+        if field == "reasoning":
+            self.enable_reasoning = False
+        else:
+            self.extra_body.pop(field, None)
+
     def _reasoning_unsupported(self, code: int, detail: str) -> bool:
         """True when an endpoint rejected the OpenRouter-style `reasoning` field.
 
@@ -1204,13 +1237,12 @@ class OpenAICompatDriver:
                     raw = json.loads(resp.read().decode("utf-8"))
             except urllib.error.HTTPError as e:
                 detail = e.read().decode("utf-8", "replace")[:500]
-                if (max_attempts > 1 and request_attempts == 1
-                        and self._reasoning_unsupported(e.code, detail)
-                        and body.get("reasoning") is not None):
-                    # Drop the unsupported reasoning field for the rest of the
+                rejected = self._rejected_optional_field(e.code, detail, body)
+                if max_attempts > 1 and request_attempts == 1 and rejected:
+                    # Drop the rejected optional field for the rest of the
                     # session and retry once so the pilot turn succeeds.
-                    self.enable_reasoning = False
-                    body.pop("reasoning", None)
+                    self._drop_optional_field(rejected)
+                    body.pop(rejected, None)
                     data = json.dumps(body).encode("utf-8")
                     if is_cancelled is not None and is_cancelled():
                         return DriverResponse(
@@ -1489,14 +1521,13 @@ class OpenAICompatDriver:
                         idle_armed = _arm_post_answer_idle_timeout(resp, 2.0) or idle_armed
             except urllib.error.HTTPError as e:
                 detail = e.read().decode("utf-8", "replace")[:500]
-                # Endpoint rejected the `reasoning` field: disable it for the
+                # Endpoint rejected an optional field: drop it for the
                 # session and fall back to the non-streaming chat() (which shares
                 # the retry path) so the turn still succeeds. Only safe before any
                 # tokens streamed -- otherwise a partial stream would double-emit.
-                if (stream_request_attempts == 1 and not acc.stream_started
-                        and self._reasoning_unsupported(e.code, detail)
-                        and body.get("reasoning") is not None):
-                    self.enable_reasoning = False
+                rejected = self._rejected_optional_field(e.code, detail, body)
+                if stream_request_attempts == 1 and not acc.stream_started and rejected:
+                    self._drop_optional_field(rejected)
                     return _mark_http_fallback(self.chat(
                         messages, tools=tools, system=system, session_id=session_id,
                         max_attempts=1,
