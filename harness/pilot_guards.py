@@ -802,9 +802,8 @@ def swarm_policy_turn_note(
         )
     return (
         "TURN POLICY: this user message is not broad-intent and did not ask "
-        "for a swarm. Do not open with run_swarm. Answer with search_codegraph "
-        "and search_files (keyword coverage, 'do we have X', opinion). Dispatch "
-        "a swarm only if those tools cannot cover the ask."
+        "for a swarm. Do not open with run_swarm. Choose tools relevant to the "
+        "user request. Dispatch a worker only when delegation materially helps."
     )
 
 

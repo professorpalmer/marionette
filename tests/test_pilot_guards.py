@@ -534,6 +534,20 @@ def test_ace_rce_opinion_is_solo_not_swarm_first():
     assert check_swarm_gate(state, "search_files", _Act(kind="search_files", query="ACE|RCE")).suppress is False
 
 
+def test_generic_agentic_tool_demo_does_not_force_search_tools():
+    from harness.pilot_guards import swarm_policy_turn_note
+
+    message = (
+        "Can you give me a test run of tool calls and agentic things you would "
+        "typically test during agentic workflows?"
+    )
+    note = swarm_policy_turn_note(message)
+    assert "Do not open with run_swarm" in note
+    assert "choose tools relevant to the user request" in note.lower()
+    assert "search_codegraph" not in note
+    assert "search_files" not in note
+
+
 def test_iteration_budget_blocks_after_cap():
     budget = IterationBudget(cap=3)
     state = TurnGuardState(iteration_budget=budget)
