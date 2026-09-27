@@ -172,7 +172,7 @@ function normalizeActionResultExitCode(exitCode: unknown): number | null {
   return null;
 }
 
-/** Keep failed / noisy run_command results expanded so exit + output stay visible. */
+/** Keep command results collapsed; expand failed non-command results. */
 function shouldOpenActionResultCard(
   d: {
     kind?: string;
@@ -183,14 +183,13 @@ function shouldOpenActionResultCard(
   },
   existingKind?: string,
 ): boolean {
-  if (d.error) return true;
-  const exitCode = normalizeActionResultExitCode(d.exit_code);
-  if (exitCode != null && exitCode !== 0) return true;
   const kind = String(d.kind || existingKind || "").trim().toLowerCase();
   const isRun =
     kind === "run_command" || kind === "bash" || kind === "shell" || kind === "execute";
-  const output = typeof d.output === "string" ? d.output.trim() : "";
-  if (isRun && output && exitCode != null && exitCode !== 0) return true;
+  if (isRun) return false;
+  if (d.error) return true;
+  const exitCode = normalizeActionResultExitCode(d.exit_code);
+  if (exitCode != null && exitCode !== 0) return true;
   return false;
 }
 

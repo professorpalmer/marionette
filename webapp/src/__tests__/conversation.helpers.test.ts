@@ -4004,12 +4004,12 @@ describe("pilot tool-action visibility (prep promotion + result upsert)", () => 
     expect(card.kind).toBe("run_command");
     expect(card.goal).toBe("pytest -q");
     expect(card.running).toBe(false);
-    expect(card.open).toBe(true); // error keeps the card expanded
+    expect(card.open).toBe(false);
     expect(card.result?.error).toBe("boom");
     expect(card.result?.duration_ms).toBe(42);
   });
 
-  it("applyActionResultCard opens on non-zero exit and keeps quiet success collapsed", () => {
+  it("applyActionResultCard keeps failed and successful commands collapsed", () => {
     const running: Item[] = [{
       kind: "card",
       card: {
@@ -4017,7 +4017,7 @@ describe("pilot tool-action visibility (prep promotion + result upsert)", () => 
         goal: "pytest -q",
         kind: "run_command",
         running: true,
-        open: true,
+        open: false,
       },
     }];
     const failed = applyActionResultCard(running, {
@@ -4029,7 +4029,7 @@ describe("pilot tool-action visibility (prep promotion + result upsert)", () => 
       artifacts: [{ type: "command", headline: "exit 1 · FAILED tests/test_x.py::test_y" }],
     });
     const failedCard = (failed[0] as Extract<Item, { kind: "card" }>).card;
-    expect(failedCard.open).toBe(true);
+    expect(failedCard.open).toBe(false);
     expect(failedCard.running).toBe(false);
     expect(failedCard.result?.exit_code).toBe(1);
     expect(failedCard.result?.output).toContain("FAILED");
@@ -4076,7 +4076,7 @@ describe("pilot tool-action visibility (prep promotion + result upsert)", () => 
     expect(card.result?.output).toBe("…truncated…");
   });
 
-  it("applyActionResultCard opens on numeric-string exit_code and ignores non-numeric", () => {
+  it("applyActionResultCard stays collapsed for numeric-string and non-numeric exit codes", () => {
     const running: Item[] = [{
       kind: "card",
       card: {
@@ -4093,7 +4093,7 @@ describe("pilot tool-action visibility (prep promotion + result upsert)", () => 
       exit_code: "1",
       output: "",
     });
-    expect((failed[0] as Extract<Item, { kind: "card" }>).card.open).toBe(true);
+    expect((failed[0] as Extract<Item, { kind: "card" }>).card.open).toBe(false);
 
     const junk = applyActionResultCard(running, {
       id: "run-str",
