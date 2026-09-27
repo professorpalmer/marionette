@@ -62,6 +62,26 @@ def _forbidden_tool_result(path: str, state_dir: Optional[str]) -> Optional[tupl
     return None
 
 
+def _file_tool_path_denial(
+    requested_path: str,
+    workspace: str,
+    *,
+    read_scope: bool = False,
+) -> str:
+    if read_scope:
+        boundary = "Outside the file tool read scope"
+        scope = "read_file is limited to this workspace and configured read roots. "
+    else:
+        boundary = "Outside the file tool workspace"
+        scope = "File writes and edits must stay within this workspace. "
+    return (
+        f"{boundary}: requested path {requested_path!r}; workspace {workspace!r}. "
+        f"Request rejected. {scope}"
+        "For an explicitly authorized external destination, use run_command "
+        "subject to its existing permissions, or work within this workspace."
+    )
+
+
 # Directories that never carry searchable source in the Python fallback.
 _SEARCH_SKIP_DIRS = frozenset({
     ".git", "node_modules", "results", "build", "dist", "__pycache__",
@@ -317,7 +337,9 @@ class ToolDispatchMixin:
         if not os.path.isabs(target_path):
             target_path = os.path.join(self.config.repo, target_path)
         if not any(is_safe_path(target_path, root) for root in self._read_allowed_roots()):
-            return False, "path_traversal", f"Path traversal attempt rejected: {act.path}"
+            return False, "path_traversal", _file_tool_path_denial(
+                act.path, self.config.repo, read_scope=True
+            )
         forbidden = _forbidden_tool_result(target_path, getattr(self, "state_dir", None))
         if forbidden is not None:
             return forbidden
@@ -1601,7 +1623,9 @@ class ToolDispatchMixin:
         if not os.path.isabs(target_path):
             target_path = os.path.join(self.config.repo, target_path)
         if not is_safe_path(target_path, self.config.repo):
-            return False, "path_traversal", f"Path traversal attempt rejected: {act.path}"
+            return False, "path_traversal", _file_tool_path_denial(
+                act.path, self.config.repo
+            )
         forbidden = _forbidden_tool_result(target_path, getattr(self, "state_dir", None))
         if forbidden is not None:
             return forbidden
@@ -1675,7 +1699,9 @@ class ToolDispatchMixin:
         if not os.path.isabs(target_path):
             target_path = os.path.join(self.config.repo, target_path)
         if not is_safe_path(target_path, self.config.repo):
-            return False, "path_traversal", f"Path traversal attempt rejected: {act.path}"
+            return False, "path_traversal", _file_tool_path_denial(
+                act.path, self.config.repo
+            )
         if not write:
             return True, "success", 0
         # Re-check immediately before the atomic write (TOCTOU with Stop).
@@ -1732,7 +1758,9 @@ class ToolDispatchMixin:
         if not os.path.isabs(target_path):
             target_path = os.path.join(self.config.repo, target_path)
         if not is_safe_path(target_path, self.config.repo):
-            return False, "path_traversal", f"Path traversal attempt rejected: {act.path}"
+            return False, "path_traversal", _file_tool_path_denial(
+                act.path, self.config.repo
+            )
 
         try:
             if not os.path.exists(target_path):

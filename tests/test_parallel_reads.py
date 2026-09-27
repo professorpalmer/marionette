@@ -101,7 +101,10 @@ def test_parallel_reads_confinement_rejected():
     # First action (outside.txt) should be rejected
     assert ar_events[0].data["id"] == "a1"
     assert "error" in ar_events[0].data
-    assert "Path traversal attempt rejected" in ar_events[0].data["error"]
+    error = ar_events[0].data["error"]
+    assert "Outside the file tool read scope" in error
+    assert "requested path '../outside.txt'" in error
+    assert "run_command subject to its existing permissions" in error
 
 
 def test_parallel_reads_mixed_with_write():

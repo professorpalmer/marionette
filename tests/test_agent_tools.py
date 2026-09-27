@@ -6,8 +6,13 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
+
+import pytest
+
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession, is_safe_path
+from harness.hash_edit import compute_range_hash
+from harness.pilot import PilotAction, build_tools_schema
 
 
 @dataclass
@@ -327,3 +332,139 @@ def test_nested_workspace_read_file_allows_git_toplevel_parent():
         # Writes/edits stay confined to the nested workspace (not the git root).
         assert not is_safe_path(readme, cfg.repo)
         assert is_safe_path(os.path.join(cfg.repo, "local.txt"), cfg.repo)
+
+
+def _tool_schema(name):
+    return next(item["function"] for item in build_tools_schema()
+                if item["function"]["name"] == name)
+
+
+def test_file_tool_schemas_describe_read_and_write_boundaries(monkeypatch):
+    monkeypatch.setenv("HARNESS_HASH_EDIT", "1")
+
+    read_schema = _tool_schema("read_file")
+    assert "configured read roots" in read_schema["description"]
+    assert "workspace-relative" in read_schema["parameters"]["properties"]["path"]["description"]
+
+    for name in ("write_file", "edit_file", "hash_edit"):
+        schema = _tool_schema(name)
+        description = schema["description"]
+        path_description = schema["parameters"]["properties"]["path"]["description"]
+        assert "writable workspace" in description
+        assert "writable workspace" in path_description
+
+
+def _assert_file_tools_reject_path(session, requested, workspace, original):
+    actions = (
+        PilotAction(kind="read_file", path=requested),
+        PilotAction(kind="write_file", path=requested, content="WRITTEN\n"),
+        PilotAction(
+            kind="edit_file",
+            path=requested,
+            old_str="ORIGINAL",
+            new_str="EDITED",
+        ),
+        PilotAction(
+            kind="hash_edit",
+            path=requested,
+            arguments={"ops": [{"op": "delete", "start_line": 1, "end_line": 1}]},
+        ),
+    )
+    handlers = (
+        session._do_read_file,
+        session._do_write_file,
+        session._do_edit_file,
+        session._do_hash_edit,
+    )
+
+    for handler, action in zip(handlers, actions):
+        ok, status, message = handler(action)
+        assert ok is False
+        assert status == "path_traversal"
+        assert repr(requested) in message
+        assert repr(str(workspace)) in message
+        assert "run_command" in message
+        assert "existing permissions" in message
+        assert original.read_text(encoding="utf-8") == "ORIGINAL\n"
+
+
+def test_file_tools_reject_outside_paths_without_writing(tmp_path, monkeypatch):
+    monkeypatch.setenv("HARNESS_HASH_EDIT", "1")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    cfg = HarnessConfig(
+        repo=str(workspace),
+        swarm_adapter="demo",
+        state_dir=str(tmp_path / "state"),
+    )
+    session = ConversationalSession(cfg)
+
+    outside = tmp_path / "outside.txt"
+    sibling = tmp_path / "workspace-sibling" / "outside.txt"
+    sibling.parent.mkdir()
+    for target in (outside, sibling):
+        target.write_text("ORIGINAL\n", encoding="utf-8")
+
+    for requested, target in (
+        (str(outside), outside),
+        (str(sibling), sibling),
+        ("../outside.txt", outside),
+    ):
+        _assert_file_tools_reject_path(session, requested, workspace, target)
+
+
+def test_file_tools_reject_symlink_escape_without_writing(tmp_path, monkeypatch):
+    monkeypatch.setenv("HARNESS_HASH_EDIT", "1")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    outside = outside_dir / "target.txt"
+    outside.write_text("ORIGINAL\n", encoding="utf-8")
+    link = workspace / "linked"
+    try:
+        link.symlink_to(outside_dir, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks not available")
+
+    cfg = HarnessConfig(
+        repo=str(workspace),
+        swarm_adapter="demo",
+        state_dir=str(tmp_path / "state"),
+    )
+    session = ConversationalSession(cfg)
+    _assert_file_tools_reject_path(session, "linked/target.txt", workspace, outside)
+
+
+def test_writable_file_tools_still_work_inside_workspace(tmp_path, monkeypatch):
+    monkeypatch.setenv("HARNESS_HASH_EDIT", "1")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    cfg = HarnessConfig(
+        repo=str(workspace),
+        swarm_adapter="demo",
+        state_dir=str(tmp_path / "state"),
+    )
+    session = ConversationalSession(cfg)
+
+    target = workspace / "inside.txt"
+    write = PilotAction(kind="write_file", path="inside.txt", content="one\n")
+    assert session._do_write_file(write)[:2] == (True, "success")
+
+    edit = PilotAction(kind="edit_file", path="inside.txt", old_str="one", new_str="two")
+    assert session._do_edit_file(edit)[:2] == (True, "success")
+
+    anchor = compute_range_hash(["two"], 1, 1)
+    hashed = PilotAction(
+        kind="hash_edit",
+        path="inside.txt",
+        arguments={"ops": [{
+            "op": "replace",
+            "start_line": 1,
+            "end_line": 1,
+            "anchor": anchor,
+            "text": "three",
+        }]},
+    )
+    assert session._do_hash_edit(hashed)[:2] == (True, "success")
+    assert target.read_text(encoding="utf-8") == "three\n"
