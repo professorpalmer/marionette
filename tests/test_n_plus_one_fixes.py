@@ -256,3 +256,21 @@ def test_sqlite_counts_stay_batched_with_an_open_wal_writer(tmp_path, monkeypatc
         writer.close()
     counts = {row['id']: row['artifacts'] for row in rows}
     assert counts == {job.id: int(index % 2 == 0) for index, job in enumerate(jobs)}
+
+
+def test_count_read_failure_keeps_job_identity_without_fabricating_zero(tmp_path, monkeypatch):
+    import sqlite3
+    from harness.state import DurableState
+
+    durable = DurableState(str(tmp_path))
+    job = durable.store.create_job('fixture')
+    def unavailable(*args):
+        raise sqlite3.OperationalError('database is locked')
+    def forbidden(*args):
+        raise AssertionError('a failed grouped read must not trigger per-job queries')
+    monkeypatch.setattr('harness.state._metadata_artifact_counts', unavailable)
+    monkeypatch.setattr(durable.store, 'count_artifacts', forbidden)
+    rows = durable.list_jobs()
+    assert [row['id'] for row in rows] == [job.id]
+    assert rows[0]['artifacts'] is None
+    assert rows[0]['artifacts_read_status'] == 'unavailable'

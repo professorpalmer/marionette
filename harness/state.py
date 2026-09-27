@@ -258,7 +258,13 @@ class DurableState:
                 tasks_by_job.setdefault(getattr(t, "job_id", None), []).append(t)
         except Exception:
             tasks_by_job = None  # signal per-job fallback below
-        counts_by_job = _metadata_artifact_counts(self.store, jids)
+        try:
+            counts_by_job = _metadata_artifact_counts(self.store, jids)
+        except sqlite3.Error as exc:
+            # Counts are display metadata. Preserve job identities for accounting
+            # rather than losing the store or retrying once per historical job.
+            _diag("state.artifact_counts_unavailable", exc)
+            counts_by_job = dict.fromkeys(jids)
         if counts_by_job is None:
             try:
                 bulk_count = getattr(self.store, "count_artifacts_for_jobs", None)
@@ -303,6 +309,7 @@ class DurableState:
                 "goal": getattr(j, "goal", ""),
                 "status": str(getattr(j, "status", "")),
                 "artifacts": arts,
+                **({"artifacts_read_status": "unavailable"} if arts is None else {}),
                 "created_at": getattr(j, "created_at", None),
                 "role": role,
                 "adapter": adapter,
