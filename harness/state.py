@@ -16,6 +16,57 @@ from .diag import note as _diag
 _EVENT_INCLUDE_MODES = frozenset({"lifecycle", "quiet", "all"})
 
 
+def _metadata_artifact_counts(store: Any, job_ids: list[str]) -> Optional[dict[str, int]]:
+    """Read projection counts without materializing artifact payloads."""
+    from pathlib import Path
+    from puppetmaster.sqlite_store import SQLiteSwarmStore
+
+    if isinstance(store, SQLiteSwarmStore):
+        counts = dict.fromkeys(job_ids, 0)
+        if not counts:
+            return counts
+        connection = sqlite3.connect(Path(store.db_path).resolve().as_uri() + "?mode=ro",
+                                     uri=True, timeout=0.4)
+        try:
+            ids = list(counts)
+            for offset in range(0, len(ids), 400):
+                chunk = ids[offset:offset + 400]
+                placeholders = ",".join("?" for _ in chunk)
+                counts.update(connection.execute(
+                    f"SELECT job_id, COUNT(*) FROM artifacts WHERE job_id IN ({placeholders}) GROUP BY job_id",
+                    chunk,
+                ).fetchall())
+        finally:
+            connection.close()
+        return counts
+    read = getattr(store, "list_job_summaries", None)
+    if not callable(read):
+        return None
+    wanted = set(job_ids)
+    counts = {job_id: 0 for job_id in job_ids}
+    cursor = None
+    seen_cursors = set()
+    try:
+        while True:
+            page = read(cursor=cursor, limit=200, max_scan=1000, max_bytes=262144)
+            if getattr(page, "outcome", "") not in ("complete", "partial"):
+                return None
+            for item in getattr(page, "items", ()) or ():
+                ref = getattr(item, "job_ref", None)
+                job_id = str(getattr(ref, "job_id", "") or "")
+                if job_id in wanted:
+                    counts[job_id] = max(0, int(getattr(item, "artifact_count", 0) or 0))
+            next_cursor = getattr(page, "next_cursor", None)
+            if not next_cursor:
+                return counts if getattr(page, "outcome", "") == "complete" else None
+            if next_cursor in seen_cursors:
+                return None
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+    except Exception:
+        return None
+
+
 def normalize_event_include(include: Any) -> str:
     """Unknown or empty ``include`` fails closed to lifecycle (drop heartbeats)."""
     mode = str(include or "lifecycle").strip() or "lifecycle"
@@ -175,8 +226,7 @@ class DurableState:
         jids = [j.id for j in jobs]
         # Batch the per-job lookups instead of one query per job (the old N+1:
         # count_artifacts + list_tasks per job, scaling with history size).
-        # Tasks: one bulk read regrouped by job_id. Artifact counts: one bulk
-        # count when the store supports it, else fall back to per-job counts.
+        # Count artifacts without decoding their bodies; tasks use one bulk read.
         tasks_by_job: dict = {}
         try:
             all_tasks = self.store.list_tasks_for_jobs(jids)
@@ -184,20 +234,13 @@ class DurableState:
                 tasks_by_job.setdefault(getattr(t, "job_id", None), []).append(t)
         except Exception:
             tasks_by_job = None  # signal per-job fallback below
-        counts_by_job: dict = {}
-        try:
-            if hasattr(self.store, "count_artifacts_for_jobs"):
-                counts_by_job = self.store.count_artifacts_for_jobs(jids)
-            elif hasattr(self.store, "list_artifacts_for_jobs"):
-                counts_by_job = {jid: 0 for jid in jids}
-                for artifact in self.store.list_artifacts_for_jobs(jids):
-                    job_id = getattr(artifact, "job_id", None)
-                    if job_id in counts_by_job:
-                        counts_by_job[job_id] += 1
-            else:
+        counts_by_job = _metadata_artifact_counts(self.store, jids)
+        if counts_by_job is None:
+            try:
+                bulk_count = getattr(self.store, "count_artifacts_for_jobs", None)
+                counts_by_job = bulk_count(jids) if callable(bulk_count) else None
+            except Exception:
                 counts_by_job = None
-        except Exception:
-            counts_by_job = None
 
         out = []
         for j in jobs:
