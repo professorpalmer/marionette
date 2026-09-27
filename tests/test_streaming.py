@@ -371,6 +371,11 @@ def test_conversational_loop_streaming():
     # as a durable assistant message.
     msg_events = [e for e in events if e.kind == "message"]
     assert [event.data["text"] for event in msg_events] == ["Done."]
+    assert s.pilot.calls == 2
+    assert not any(
+        event.kind == "notice" and event.data.get("kind") == "tool_failure_receipt"
+        for event in events
+    )
 
     assistant_history = [
         item for item in s._history if item.get("role") == "assistant"
@@ -390,6 +395,12 @@ def test_conversational_loop_streaming():
     assert replayed[commentary_index]["tool_calls"][0]["id"] == "call_1"
     assert replayed[commentary_index + 1]["role"] == "tool"
     assert replayed[commentary_index + 1]["tool_call_id"] == "call_1"
+    assert "This tool call failed" in replayed[commentary_index + 1]["content"]
+    assert "failed or unverified" in replayed[commentary_index + 1]["content"]
+    assert not any(
+        "Host tool failure receipt" in str(item.get("content", ""))
+        for item in replayed
+    )
 
     # tool_calls assembled from the stream still execute
     assert "action_start" in kinds

@@ -2707,18 +2707,18 @@ def dispatch_readonly_action(
                 "id": aid, "num": 1, "types": ["file"], "adapter": "local", "mode": "tool",
                 "artifacts": [{"type": "file", "headline": f"Read {len(content)} chars from {act.path}"}],
             })
-            session._append_action_result(act, aid, f"(read_file {act.path} returned)\n{content}", is_native)
+            session._append_action_result(act, aid, f"(read_file {act.path} returned)\n{content}", is_native, ok=ok)
             maybe_refresh_workspace_rules(session, act.path)
         else:
             if status == "repo_not_open":
                 yield ConvEvent("action_result", {"id": aid, "error": val})
-                session._append_action_result(act, aid, f"(read_file {aid} failed: {val})", is_native)
+                session._append_action_result(act, aid, f"(read_file {aid} failed: {val})", is_native, ok=ok)
             elif status == "path_traversal":
                 yield ConvEvent("action_result", {"id": aid, "error": val})
-                session._append_action_result(act, aid, f"(read_file {aid} failed: {val})", is_native)
+                session._append_action_result(act, aid, f"(read_file {aid} failed: {val})", is_native, ok=ok)
             else:  # status == "exception"
                 yield ConvEvent("action_result", {"id": aid, "error": val})
-                session._append_action_result(act, aid, f"(read_file {act.path} failed: {val})", is_native)
+                session._append_action_result(act, aid, f"(read_file {act.path} failed: {val})", is_native, ok=ok)
         return
 
     if act.kind == "view_image":
@@ -2738,29 +2738,31 @@ def dispatch_readonly_action(
                 "id": aid, "num": 1, "types": ["image"], "adapter": "local", "mode": "tool",
                 "artifacts": [{"type": "image", "headline": f"Viewed image {act.path}"}],
             })
-            session._append_action_result(act, aid, note, is_native)
             try:
-                session._history.append({
-                    "role": "user",
-                    "content": native_multimodal_user_content(
-                        f"[native vision: contents of {act.path}]",
-                        [val],
-                    ),
-                })
+                native_content = native_multimodal_user_content(
+                    f"[native vision: contents of {act.path}]", [val],
+                )
+                session._append_action_result(act, aid, note, is_native, ok=True)
+                session._history.append({"role": "user", "content": native_content})
             except Exception as e:
+                error = f"native image attach failed: {e}"
                 yield ConvEvent("action_result", {
-                    "id": aid, "error": f"native image attach failed: {e}",
+                    "id": aid, "error": error,
                 })
+                session._append_action_result(
+                    act, aid, f"(view_image {act.path} failed: {error})",
+                    is_native, ok=False,
+                )
         elif ok:
             text = val
             yield ConvEvent("action_result", {
                 "id": aid, "num": 1, "types": ["image"], "adapter": "local", "mode": "tool",
                 "artifacts": [{"type": "image", "headline": f"Viewed image {act.path}"}],
             })
-            session._append_action_result(act, aid, f"(view_image {act.path}):\n{text}", is_native)
+            session._append_action_result(act, aid, f"(view_image {act.path}):\n{text}", is_native, ok=ok)
         else:
             yield ConvEvent("action_result", {"id": aid, "error": val})
-            session._append_action_result(act, aid, f"(view_image {act.path} failed: {val})", is_native)
+            session._append_action_result(act, aid, f"(view_image {act.path} failed: {val})", is_native, ok=ok)
         return
 
     if act.kind == "list_dir":
@@ -2775,17 +2777,17 @@ def dispatch_readonly_action(
                 "id": aid, "num": 1, "types": ["dir"], "adapter": "local", "mode": "tool",
                 "artifacts": [{"type": "dir", "headline": f"Listed {count} items in {act.path or '/'}"}],
             })
-            session._append_action_result(act, aid, f"(list_dir {act.path or '/'} returned)\n{result_text}", is_native)
+            session._append_action_result(act, aid, f"(list_dir {act.path or '/'} returned)\n{result_text}", is_native, ok=ok)
         else:
             if status == "repo_not_open":
                 yield ConvEvent("action_result", {"id": aid, "error": val})
-                session._append_action_result(act, aid, f"(list_dir {aid} failed: {val})", is_native)
+                session._append_action_result(act, aid, f"(list_dir {aid} failed: {val})", is_native, ok=ok)
             elif status == "path_traversal":
                 yield ConvEvent("action_result", {"id": aid, "error": val})
-                session._append_action_result(act, aid, f"(list_dir {aid} failed: {val})", is_native)
+                session._append_action_result(act, aid, f"(list_dir {aid} failed: {val})", is_native, ok=ok)
             else:  # status == "exception"
                 yield ConvEvent("action_result", {"id": aid, "error": val})
-                session._append_action_result(act, aid, f"(list_dir {act.path or '/'} failed: {val})", is_native)
+                session._append_action_result(act, aid, f"(list_dir {act.path or '/'} failed: {val})", is_native, ok=ok)
         return
 
     if act.kind == "web_search":
@@ -2800,10 +2802,10 @@ def dispatch_readonly_action(
                 "id": aid, "num": 1, "types": ["web_search"], "adapter": "local", "mode": "tool",
                 "artifacts": [{"type": "web_search", "headline": f"Searched for '{act.query}'"}],
             })
-            session._append_action_result(act, aid, f"(web_search '{act.query}' returned)\n{result_text}", is_native)
+            session._append_action_result(act, aid, f"(web_search '{act.query}' returned)\n{result_text}", is_native, ok=ok)
         else:
             yield ConvEvent("action_result", {"id": aid, "error": val})
-            session._append_action_result(act, aid, f"(web_search '{act.query}' failed: {val})", is_native)
+            session._append_action_result(act, aid, f"(web_search '{act.query}' failed: {val})", is_native, ok=ok)
         return
 
     if act.kind == "web_fetch":
@@ -2819,11 +2821,11 @@ def dispatch_readonly_action(
                 "id": aid, "num": 1, "types": ["web_fetch"], "adapter": "local", "mode": "tool",
                 "artifacts": [{"type": "web_fetch", "headline": f"Fetched {display_url}"}],
             })
-            session._append_action_result(act, aid, f"(web_fetch '{display_url}' returned)\n{result_text}", is_native)
+            session._append_action_result(act, aid, f"(web_fetch '{display_url}' returned)\n{result_text}", is_native, ok=ok)
         else:
             yield ConvEvent("action_result", {"id": aid, "error": val})
             display_url = sanitize_url_for_display(act.url)
-            session._append_action_result(act, aid, f"(web_fetch '{display_url}' failed: {val})", is_native)
+            session._append_action_result(act, aid, f"(web_fetch '{display_url}' failed: {val})", is_native, ok=ok)
         return
 
     if act.kind == "read_pdf":
@@ -2844,14 +2846,14 @@ def dispatch_readonly_action(
                 "id": aid, "num": 1, "types": ["read_pdf"], "adapter": "local", "mode": "tool",
                 "artifacts": [{"type": "read_pdf", "headline": f"Read PDF from {display_pdf}"}],
             })
-            session._append_action_result(act, aid, f"(read_pdf '{display_pdf}' returned)\n{result_text}", is_native)
+            session._append_action_result(act, aid, f"(read_pdf '{display_pdf}' returned)\n{result_text}", is_native, ok=ok)
         else:
             if status == "repo_not_open":
                 yield ConvEvent("action_result", {"id": aid, "error": val})
-                session._append_action_result(act, aid, f"(read_pdf {aid} failed: {val})", is_native)
+                session._append_action_result(act, aid, f"(read_pdf {aid} failed: {val})", is_native, ok=ok)
             elif status == "path_traversal":
                 yield ConvEvent("action_result", {"id": aid, "error": val})
-                session._append_action_result(act, aid, f"(read_pdf {aid} failed: {val})", is_native)
+                session._append_action_result(act, aid, f"(read_pdf {aid} failed: {val})", is_native, ok=ok)
             else:  # status == "exception"
                 yield ConvEvent("action_result", {"id": aid, "error": val})
                 pdf_target = act.path or act.url
@@ -2860,7 +2862,7 @@ def dispatch_readonly_action(
                     if pdf_target and str(pdf_target).startswith(("http://", "https://"))
                     else pdf_target
                 )
-                session._append_action_result(act, aid, f"(read_pdf '{display_pdf}' failed: {val})", is_native)
+                session._append_action_result(act, aid, f"(read_pdf '{display_pdf}' failed: {val})", is_native, ok=ok)
         return
 
     if act.kind == "search_codegraph":
@@ -2875,17 +2877,17 @@ def dispatch_readonly_action(
                 "id": aid, "num": 1, "types": ["search_codegraph"], "adapter": "local", "mode": "tool",
                 "artifacts": [{"type": "search_codegraph", "headline": f"CodeGraph {kind}: {act.query}"}],
             })
-            session._append_action_result(act, aid, f"(search_codegraph '{act.query}' returned)\n{output}", is_native)
+            session._append_action_result(act, aid, f"(search_codegraph '{act.query}' returned)\n{output}", is_native, ok=ok)
         else:
             if status == "repo_not_open":
                 yield ConvEvent("action_result", {"id": aid, "error": val})
-                session._append_action_result(act, aid, f"(search_codegraph {aid} failed: {val})", is_native)
+                session._append_action_result(act, aid, f"(search_codegraph {aid} failed: {val})", is_native, ok=ok)
             elif status == "filenotfound":
                 yield ConvEvent("action_result", {"id": aid, "error": val})
-                session._append_action_result(act, aid, f"(search_codegraph '{act.query}' failed: CodeGraph CLI not found)", is_native)
+                session._append_action_result(act, aid, f"(search_codegraph '{act.query}' failed: CodeGraph CLI not found)", is_native, ok=ok)
             else:  # status == "exception"
                 yield ConvEvent("action_result", {"id": aid, "error": val})
-                session._append_action_result(act, aid, f"(search_codegraph '{act.query}' failed: {val})", is_native)
+                session._append_action_result(act, aid, f"(search_codegraph '{act.query}' failed: {val})", is_native, ok=ok)
         return
 
     if act.kind == "search_files":
@@ -2900,17 +2902,17 @@ def dispatch_readonly_action(
                 "id": aid, "num": 1, "types": ["search_files"], "adapter": "local", "mode": "tool",
                 "artifacts": [{"type": "search_files", "headline": f"Search Files: {act.query}"}],
             })
-            session._append_action_result(act, aid, f"(search_files '{act.query}' returned)\n{output}", is_native)
+            session._append_action_result(act, aid, f"(search_files '{act.query}' returned)\n{output}", is_native, ok=ok)
         else:
             if status == "repo_not_open":
                 yield ConvEvent("action_result", {"id": aid, "error": val})
-                session._append_action_result(act, aid, f"(search_files {aid} failed: {val})", is_native)
+                session._append_action_result(act, aid, f"(search_files {aid} failed: {val})", is_native, ok=ok)
             elif status == "path_traversal":
                 yield ConvEvent("action_result", {"id": aid, "error": val})
-                session._append_action_result(act, aid, f"(search_files {aid} failed: {val})", is_native)
+                session._append_action_result(act, aid, f"(search_files {aid} failed: {val})", is_native, ok=ok)
             else:  # status == "exception" or "invalid_arguments"
                 yield ConvEvent("action_result", {"id": aid, "error": val})
-                session._append_action_result(act, aid, f"(search_files '{act.query}' failed: {val})", is_native)
+                session._append_action_result(act, aid, f"(search_files '{act.query}' failed: {val})", is_native, ok=ok)
         return
 
     if act.kind == "lsp":
@@ -2926,10 +2928,10 @@ def dispatch_readonly_action(
                 "id": aid, "num": 1, "types": ["lsp"], "adapter": "local", "mode": "tool",
                 "artifacts": [{"type": "lsp", "headline": f"LSP {lang}/{mode}"}],
             })
-            session._append_action_result(act, aid, f"(lsp returned)\n{val}", is_native)
+            session._append_action_result(act, aid, f"(lsp returned)\n{val}", is_native, ok=ok)
         else:
             yield ConvEvent("action_result", {"id": aid, "error": val})
-            session._append_action_result(act, aid, f"(lsp failed: {val})", is_native)
+            session._append_action_result(act, aid, f"(lsp failed: {val})", is_native, ok=ok)
         return
 
     if act.kind == "peek_history":
@@ -2942,10 +2944,10 @@ def dispatch_readonly_action(
                 "id": aid, "num": 1, "types": ["peek_history"], "adapter": "local", "mode": "tool",
                 "artifacts": [{"type": "peek_history", "headline": "peek_history"}],
             })
-            session._append_action_result(act, aid, f"(peek_history returned)\n{val}", is_native)
+            session._append_action_result(act, aid, f"(peek_history returned)\n{val}", is_native, ok=ok)
         else:
             yield ConvEvent("action_result", {"id": aid, "error": val})
-            session._append_action_result(act, aid, f"(peek_history failed: {val})", is_native)
+            session._append_action_result(act, aid, f"(peek_history failed: {val})", is_native, ok=ok)
         return
 
     if act.kind == "peek_artifact":
@@ -2959,10 +2961,10 @@ def dispatch_readonly_action(
                 "id": aid, "num": 1, "types": ["peek_artifact"], "adapter": "local", "mode": "tool",
                 "artifacts": [{"type": "peek_artifact", "headline": f"peek_artifact {uri}"}],
             })
-            session._append_action_result(act, aid, f"(peek_artifact returned)\n{val}", is_native)
+            session._append_action_result(act, aid, f"(peek_artifact returned)\n{val}", is_native, ok=ok)
         else:
             yield ConvEvent("action_result", {"id": aid, "error": val})
-            session._append_action_result(act, aid, f"(peek_artifact failed: {val})", is_native)
+            session._append_action_result(act, aid, f"(peek_artifact failed: {val})", is_native, ok=ok)
         return
 
     if act.kind == "job_findings":
@@ -2976,16 +2978,16 @@ def dispatch_readonly_action(
                 "id": aid, "num": 1, "types": ["job_findings"], "adapter": "local", "mode": "tool",
                 "artifacts": [{"type": "job_findings", "headline": f"job_findings {jid}"}],
             })
-            session._append_action_result(act, aid, f"(job_findings returned)\n{val}", is_native)
+            session._append_action_result(act, aid, f"(job_findings returned)\n{val}", is_native, ok=ok)
         else:
             yield ConvEvent("action_result", {"id": aid, "error": val})
-            session._append_action_result(act, aid, f"(job_findings failed: {val})", is_native)
+            session._append_action_result(act, aid, f"(job_findings failed: {val})", is_native, ok=ok)
         return
 
     # Unknown READ_ONLY_KINDS member — surface so a catalog drift cannot hang.
     err = f"Unhandled read-only action kind: {act.kind}"
     yield ConvEvent("action_result", {"id": aid, "error": err})
-    session._append_action_result(act, aid, err, is_native)
+    session._append_action_result(act, aid, err, is_native, ok=False)
 
 
 def run_auto_verify(
