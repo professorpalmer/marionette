@@ -26,6 +26,8 @@ export function publishTransportFailure(
   // Input failures stay composer-local (inputFailureMessage); codes/status are
   // preserved on the sanitized stream/error object and in electron.log.
   if (isInputFailure(err)) return;
+  // A session switch supersedes in-flight reads; their 409 is not a failure.
+  if (isSupersededBySwitch(err)) return;
   // Only a recognized action with a structured backend reason stays local.
   // Unknown statuses and malformed responses still report operational failure.
   if (ctx.failureKind === "action" && isLocalActionFailure(err)) return;
@@ -61,4 +63,14 @@ function isInputFailure(err: unknown): boolean {
   const body = "body" in err ? err.body : err;
   return !!body && typeof body === "object" && "code" in body
     && typeof body.code === "string" && body.code.startsWith("input_");
+}
+
+const SWITCH_RACE_CODES = new Set(["session_changed", "view_changed", "input_session_changed"]);
+
+function isSupersededBySwitch(err: unknown): boolean {
+  if (!(err instanceof Error) || !("status" in err) || err.status !== 409 || !("body" in err)) return false;
+  const body = err.body;
+  if (!body || typeof body !== "object") return false;
+  if ("code" in body && typeof body.code === "string" && SWITCH_RACE_CODES.has(body.code)) return true;
+  return "error" in body && body.error === "session changed or missing";
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Config } from "../lib/api";
-import { configForActiveSession, pickerConfig } from "../lib/sessionConfig";
+import { configForActiveSession, pickerConfig, sessionPilotFields } from "../lib/sessionConfig";
 
 const cfg = (sessionId: string): Config => ({
   session_id: sessionId,
@@ -8,7 +8,7 @@ const cfg = (sessionId: string): Config => ({
   reach: "cloud",
   budget: 1,
   models: ["openrouter:moonshotai/kimi-k3", "anthropic:claude-opus-4-8"],
-  repo: "/Users/cary/Projects/pentest-playbook-kit",
+  repo: "/Users/cary/Projects/demo",
   workers_ready: true,
   pilot_ready: true,
 });
@@ -42,6 +42,18 @@ describe("configForActiveSession", () => {
     const midSwitch = { ...cfg("sess-home-new"), driver: "" };
     expect(pickerConfig(midSwitch, "sess-home-new")).toBe(midSwitch);
     expect(pickerConfig(null, "sess-home-new")).toBeNull();
+  });
+
+  it("shows the returning session's own last model instead of blanking", () => {
+    const own = { ...cfg("sess-b"), driver: "anthropic:claude-opus-4-8", reasoning_effort: "high" as const };
+    const known = sessionPilotFields(own);
+    const visible = configForActiveSession(cfg("sess-a"), "sess-b", known);
+    expect(visible?.driver).toBe("anthropic:claude-opus-4-8");
+    expect(visible?.reasoning_effort).toBe("high");
+    expect(visible?.session_id).toBe("sess-b");
+    expect(pickerConfig(visible, "sess-b")?.driver).toBe("anthropic:claude-opus-4-8");
+    expect(sessionPilotFields({ ...own, driver: "" })).toBeNull();
+    expect(sessionPilotFields({ ...own, session_id: null })).toBeNull();
   });
 
   it("uses a matching payload as-is", () => {
