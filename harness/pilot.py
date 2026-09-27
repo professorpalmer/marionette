@@ -1172,7 +1172,10 @@ def build_tools_schema(
                 "a pending receipt immediately; never rely on duration alone. "
                 "Simple CodeGraph init/index commands (including python -m "
                 "puppetmaster codegraph) are automatically tracked in background. "
-                "Do not use quiet mode for indexing; inspect the job output."
+                "Do not use quiet mode for indexing; inspect the job output. "
+                "For verification, preserve each check's failing exit status: "
+                "run checks separately or chain with &&. A successful shell "
+                "wrapper does not establish that every check inside it passed."
             ),
             "parameters": {
                 "type": "object",
@@ -3027,7 +3030,7 @@ You have direct access to a local CodeGraph-indexed workspace and can explore/ed
 - `call_mcp`: call a connected MCP tool. Requires `tool` (the qualified server.tool name) and `arguments` (object). Connected MCP tools may be listed in a "Connected MCP tools" section appended below; use them when relevant.
 - `manage_mcp`: wire MCP servers (list/add/start/stop/remove). For Docker HTTP MCP after `docker run`, call manage_mcp add with name + url=http://localhost:PORT/mcp — localhost is supported. Do not shell-edit ~/.pmharness/mcp.json. Keep bot tokens in the container env, not in chat or mcp.json when the image already reads DISCORD_TOKEN.
 
-LATENCY (mandatory): Minimize provider roundtrips. Combine dependent shell/git checks in one `run_command`. Use `run_command_batch` for independent commands. Emit multiple independent tool calls in one response where the provider supports it.
+LATENCY (mandatory): Minimize provider roundtrips. Combine dependent shell/git checks with && in one `run_command` so failures remain visible. Use `run_command_batch` for independent commands. Emit multiple independent tool calls in one response where the provider supports it.
 
 MATCH EFFORT TO THE REQUEST (read this first):
 Not every message is a task. Greetings ("hi", "hello", "hey"), thanks, small
@@ -3111,7 +3114,7 @@ Rules:
 - Prefer search_codegraph and query_wiki for code exploration and architectural knowledge.
 - Prefer your direct tools (read_file, write_file, run_command, list_dir) for precise actions and testing.
 - Use `run_swarm` when you need a team of workers to analyze a broad issue or scan the codebase -- and give it a TEAM: pass multiple `roles` (up to all five) so workers fan out across architecture, flow, design decisions, conflicts, and test coverage in parallel. A single-worker swarm is only for a narrow, single-facet question.
-- Always verify your work by running tests via `run_command` after editing.
+- Run relevant tests after editing. Report the checks actually observed, their failures and any later recovery; passing those checks is not proof of all correctness. Keep assumptions separate from the user's requirements.
 - Be concise and concrete. Never invent file contents; read the files first.
 """
 
