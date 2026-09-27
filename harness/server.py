@@ -154,6 +154,9 @@ from .api.cost import (  # noqa: E402
     _usage_cache_clear_for_tests,
     _usage_cache_get,
     _usage_cache_put,
+    _usage_request_lock,
+    _active_session_fingerprint,
+    _usage_store_fingerprint,
 )
 from .api.swarm_cost import _cache_saved_usd_swarm_detail  # noqa: E402
 
@@ -1965,6 +1968,9 @@ def _usage_services():
         boot_usage_meters=_boot_usage_meters,
         usage_cache_get=_usage_cache_get,
         usage_cache_put=_usage_cache_put,
+        usage_request_lock=_usage_request_lock,
+        active_session_fingerprint=_active_session_fingerprint,
+        usage_store_fingerprint=_usage_store_fingerprint,
         boot_session_cost=_boot_session_cost,
         scoped_jobs_with_stores=_scoped_jobs_with_stores,
         job_in_cost_window=_job_in_cost_window,

@@ -1,6 +1,7 @@
 """Characterization tests for usage API peel."""
 from __future__ import annotations
 
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 from harness.api.usage import UsageServices, get_context_usage, get_usage
@@ -81,6 +82,120 @@ def test_get_usage_cache_hit():
     assert payload["session"]["tokens_used"] == 42
 
 
+def test_get_usage_cache_hit_preserves_session_total_and_skips_store_reads():
+    svc, _ = _svc()
+    calls = {"scoped": 0}
+
+    def scoped(repo_root=None):
+        calls["scoped"] += 1
+        return [], None, None
+
+    svc.scoped_jobs_with_stores = scoped
+    svc.active_session_id = lambda: "session-a"
+    svc.active_session_total = lambda *args: {
+        "session_id": "session-a",
+        "est_cost_usd": 1.25,
+    }
+    svc.usage_store_fingerprint = lambda repo, roots: ("stores", 1)
+    svc.active_session_fingerprint = lambda: ("session-a", 1.25)
+    svc.usage_request_lock = nullcontext
+
+    first = get_usage("", svc)[1]
+    second = get_usage("", svc)[1]
+
+    assert first["session_total"] == second["session_total"]
+    assert calls["scoped"] == 1
+
+
+def test_get_usage_cache_invalidates_on_session_and_store_revision():
+    svc, _ = _svc()
+    state = {"session": "session-a", "store_revision": 1, "persisted": 1}
+    calls = {"scoped": 0}
+
+    def scoped(repo_root=None):
+        calls["scoped"] += 1
+        return [], None, None
+
+    svc.scoped_jobs_with_stores = scoped
+    svc.active_session_id = lambda: state["session"]
+    svc.active_session_total = lambda *args: {
+        "session_id": state["session"],
+        "est_cost_usd": state["persisted"],
+    }
+    svc.usage_store_fingerprint = lambda repo, roots: state["store_revision"]
+    svc.active_session_fingerprint = lambda: (state["session"], state["persisted"])
+
+    get_usage("", svc)
+    get_usage("", svc)
+    assert calls["scoped"] == 1
+
+    state["persisted"] = 2
+    get_usage("", svc)
+    assert calls["scoped"] == 2
+
+    state["store_revision"] = 2
+    get_usage("", svc)
+    assert calls["scoped"] == 3
+
+    state["session"] = "session-b"
+    get_usage("", svc)
+    assert calls["scoped"] == 4
+
+
+def test_get_usage_cache_returns_independent_payloads():
+    svc, _ = _svc()
+    svc.active_session_id = lambda: "session-a"
+    svc.active_session_total = lambda *args: {
+        "session_id": "session-a",
+        "est_cost_usd": 1.0,
+    }
+    first = get_usage("", svc)[1]
+    first["session"]["tokens_used"] = -1
+
+    second = get_usage("", svc)[1]
+
+    assert second["session"]["tokens_used"] == 100
+
+
+def test_get_usage_coalesces_concurrent_identical_requests():
+    import threading
+
+    svc, _ = _svc()
+    gate = threading.Event()
+    release = threading.Event()
+    lock = threading.RLock()
+    calls = {"scoped": 0}
+    results = []
+
+    def scoped(repo_root=None):
+        calls["scoped"] += 1
+        gate.set()
+        assert release.wait(2)
+        return [], None, None
+
+    svc.scoped_jobs_with_stores = scoped
+    svc.active_session_id = lambda: "session-a"
+    svc.active_session_fingerprint = lambda: ("session-a", 0)
+    svc.usage_store_fingerprint = lambda repo, roots: ("stores", 1)
+    svc.active_session_total = lambda *args: {
+        "session_id": "session-a",
+        "est_cost_usd": 0,
+    }
+    svc.usage_request_lock = lambda: lock
+
+    first = threading.Thread(target=lambda: results.append(get_usage("", svc)[1]))
+    second = threading.Thread(target=lambda: results.append(get_usage("", svc)[1]))
+    first.start()
+    assert gate.wait(2)
+    second.start()
+    release.set()
+    first.join(2)
+    second.join(2)
+
+    assert len(results) == 2
+    assert calls["scoped"] == 1
+
+
 def test_get_usage_builds_session_pill(monkeypatch):
     monkeypatch.setattr(
         "pmharness.registry.resolve_price",
@@ -97,6 +212,30 @@ def test_get_usage_builds_session_pill(monkeypatch):
     assert isinstance(payload["session"].get("swarm_by_model"), list)
     assert "jobs" in payload
     assert store  # cached
+
+
+def test_cache_hit_refreshes_volatile_savings_without_rescanning():
+    svc, _ = _svc()
+    counters = {"tool_output_compactions": 1}
+    svc.tool_output_savings_fields = lambda *args, **kwargs: dict(counters)
+    assert get_usage("", svc)[1]["session"]["tool_output_compactions"] == 1
+    counters["tool_output_compactions"] = 2
+    svc.scoped_jobs_with_stores = lambda **kwargs: (_ for _ in ()).throw(
+        AssertionError("cache hit must not rescan"))
+    assert get_usage("", svc)[1]["session"]["tool_output_compactions"] == 2
+
+
+def test_session_switch_during_read_is_unavailable_and_not_cached():
+    svc, cache = _svc()
+    active = ["a"]
+    svc.active_session_id = lambda: active[0]
+    def session_total(*args):
+        active[0] = "b"
+        return {"session_id": "a", "est_cost_usd": 2}
+    svc.active_session_total = session_total
+    response = get_usage("", svc)[1]
+    assert response["session_total"]["read_status"] == "unavailable"
+    assert not cache
 
 
 def test_context_usage_deferred_transition(tmp_path):

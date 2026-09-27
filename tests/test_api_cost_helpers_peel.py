@@ -53,6 +53,61 @@ def test_usage_cache_helpers_live_in_cost():
     assert server._usage_cache_get("peel-key") is None
 
 
+def test_usage_cache_is_bounded_and_returns_copies(monkeypatch):
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    server._usage_cache_clear_for_tests()
+    for index in range(40):
+        server._usage_cache_put(str(index), {"nested": {"value": index}})
+
+    assert len(server._usage_response_cache) == 32
+    assert server._usage_cache_get("0") is None
+    payload = server._usage_cache_get("39")
+    payload["nested"]["value"] = -1
+    assert server._usage_cache_get("39")["nested"]["value"] == 39
+
+
+def test_usage_store_fingerprint_is_attach_free_and_read_only(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from harness.api import cost
+
+    root = tmp_path / "store"
+    root.mkdir()
+    database = root / "state.sqlite3"
+    database.write_bytes(b"sqlite fixture")
+    before = (database.read_bytes(), database.stat().st_mtime_ns)
+
+    monkeypatch.setattr(cost, "_cfg", lambda: SimpleNamespace(state_dir=str(root)))
+    monkeypatch.setattr(
+        "harness.cli_job_merge.resolve_cli_state_dir",
+        lambda repo: str(root),
+    )
+    monkeypatch.setattr(
+        "harness.cli_job_merge._foreign_state_dir_candidates",
+        lambda primary: [],
+    )
+    monkeypatch.setattr(
+        "harness.cli_job_merge.open_cli_durable_at",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not attach")),
+    )
+
+    fingerprint = cost._usage_store_fingerprint(str(tmp_path), {str(tmp_path)})
+
+    assert fingerprint
+    assert (database.read_bytes(), database.stat().st_mtime_ns) == before
+
+
+def test_usage_cache_expiry_bounds_unversioned_inputs(monkeypatch):
+    from harness.api import usage_meters
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    server._usage_cache_clear_for_tests()
+    now = [1.0]
+    monkeypatch.setattr(usage_meters.time, "monotonic", lambda: now[0])
+    server._usage_cache_put("expiry", {"session": {}})
+    assert server._usage_cache_get("expiry") is not None
+    now[0] += usage_meters._USAGE_RESPONSE_TTL + 1
+    assert server._usage_cache_get("expiry") is None
+
+
 def test_pure_job_cost_and_cache_savings():
     assert cost._job_cost(1_000_000, 1_000_000, 0, 1.0, 2.0) == 3.0
     assert cost._cache_savings(1_000_000, 10.0) == 9.0

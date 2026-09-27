@@ -156,6 +156,7 @@ from .usage_meters import (  # noqa: E402
     _BOOT_REPOS,
     _BOOT_USAGE_PERSIST_LOCK,
     _USAGE_RESPONSE_TTL,
+    _active_session_fingerprint,
     _active_session_total,
     _app_run_id,
     _boot_cost_source,
@@ -178,6 +179,7 @@ from .usage_meters import (  # noqa: E402
     _usage_cache_clear_for_tests,
     _usage_cache_get,
     _usage_cache_put,
+    _usage_request_lock,
     _usage_response_cache,
     _usage_response_lock,
 )
@@ -245,6 +247,53 @@ def _scoped_jobs_with_stores(repo_root: str | None = None) -> tuple[list, Any, A
             tasks_by_job=harness_tasks,
         )
         return tagged, store, None
+
+
+def _usage_store_fingerprint(repo_root: str, boot_repos: set) -> Optional[tuple]:
+    """Stat-only revision key for stores and sidecars consumed by /api/usage."""
+    from pathlib import Path
+    from ..cli_job_merge import _foreign_state_dir_candidates, cross_project_scan_enabled, resolve_cli_state_dir
+
+    roots: set[str] = set()
+    harness_root = str(getattr(_cfg(), "state_dir", "") or "").strip()
+    if harness_root:
+        roots.add(str(Path(harness_root).expanduser()))
+
+    repos = {str(repo).strip() for repo in (boot_repos or set()) if str(repo).strip()}
+    if (repo_root or "").strip():
+        repos.add(str(repo_root).strip())
+    primary = ""
+    for repo in sorted(repos):
+        state_dir = resolve_cli_state_dir(repo) or ""
+        if state_dir:
+            roots.add(state_dir)
+            if not primary:
+                primary = state_dir
+    try:
+        if cross_project_scan_enabled():
+            roots.update(_foreign_state_dir_candidates(primary))
+    except Exception:
+        return None
+
+    result = []
+    for root in sorted(roots):
+        files = []
+        base = Path(root)
+        for name in (
+            "state.sqlite3",
+            "state.sqlite3-wal",
+            "metadata.sqlite3",
+            "metadata.sqlite3-wal",
+            "tool_output_savings.jsonl",
+        ):
+            path = base / name
+            try:
+                stat = path.stat()
+                files.append((name, stat.st_ino, stat.st_size, stat.st_mtime_ns))
+            except OSError:
+                files.append((name, None, None, None))
+        result.append((root, tuple(files)))
+    return tuple(result)
 
 
 def _scoped_jobs_snapshot(repo_root: str | None = None) -> list:
