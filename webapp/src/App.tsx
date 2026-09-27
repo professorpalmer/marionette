@@ -41,6 +41,8 @@ const LS = {
 };
 const num = (k: string, d: number) => { const v = Number(localStorage.getItem(k)); return Number.isFinite(v) && v > 0 ? v : d; };
 const bool = (k: string, d: boolean) => { const v = localStorage.getItem(k); return v === null ? d : v === "1"; }
+const CONFIG_PENDING_RETRIES = 20;
+const CONFIG_PENDING_RETRY_MS = 300;
 
 function lastRightTab(): string {
   try {
@@ -129,11 +131,19 @@ export default function App() {
 
   const fetchConfig = useCallback(() => {
     const generation = ++configRequest.current.generation;
-    api.config(activeSessionId).then(value => {
-      if (generation !== configRequest.current.generation || configRequest.current.sessionId !== activeSessionId) return;
-      if (activeSessionId && value.session_id !== activeSessionId) return;
-      setConfig(value);
-    }).catch(() => {});
+    const load = (attempt: number) => {
+      api.config(activeSessionId).then(value => {
+        if (generation !== configRequest.current.generation || configRequest.current.sessionId !== activeSessionId) return;
+        if (activeSessionId && value.session_id !== activeSessionId) return;
+        setConfig(value);
+        // Mid-switch the backend withholds the outgoing view's driver; poll
+        // until this session's pilot attaches.
+        if (activeSessionId && !value.driver && attempt < CONFIG_PENDING_RETRIES) {
+          window.setTimeout(() => load(attempt + 1), CONFIG_PENDING_RETRY_MS);
+        }
+      }).catch(() => {});
+    };
+    load(0);
   }, [activeSessionId]);
 
   const fetchDiagnostics = useCallback(() => {
@@ -372,7 +382,7 @@ export default function App() {
           }}
         >
           <div style={{ width: displayed.leftW }} className={`shell-inset-panel shrink-0 h-full ${leftOpen ? "" : "hidden"}`}>
-            <LeftRail jobsRefresh={jobsRefresh} onSessionChange={handleSessionChange} />
+            <LeftRail jobsRefresh={jobsRefresh} onSessionChange={handleSessionChange} activeSessionId={activeSessionId} />
           </div>
           {leftOpen && (
               <Resizer

@@ -1450,16 +1450,21 @@ def _save_active_transcript() -> None:
     attach cannot replace ``_pilot`` with an empty real session between
     ``export_transcript_data`` and the write. Workspace/open, session
     switch, and create all flush through this helper.
+
+    ``sid`` and its runner resolve together under the lock. Switch/create
+    move the store's active id to the target before ``attach_view``, so the
+    global ``_pilot`` may still be the outgoing session's runner; it is only
+    trusted when the registry's active view is ``sid``.
     """
-    sid = getattr(_sessions, "active", None)
-    if not sid:
-        return
     with _pilot_swap_lock:
+        sid = getattr(_sessions, "active", None)
+        if not sid:
+            return
         runner = _runners.get(sid)
         if runner is None:
+            if _runners.active_view_id != sid or _pilot is None:
+                return
             runner = _pilot
-        if runner is None:
-            return
         persist_live_transcript(
             runner, _sessions_state_dir(), sid, writer=save_transcript,
         )
@@ -2159,8 +2164,24 @@ def _perform_pilot_swap(model: str) -> None:
     Reserves the idle runner through publication. Raises on busy/build failure.
     """
     global _pilot
+    from .api.attach import active_failed_placeholder, replace_failed_placeholder
     from .pilot_replacement import LivePilotReplacement, prepare_replacement
 
+    failed = active_failed_placeholder(_attach_services())
+    if failed is not None:
+        with _pilot_swap_lock:
+            prev_driver = _cfg.driver
+            _cfg.driver = model
+            try:
+                replace_failed_placeholder(_attach_services(), failed)
+            except Exception:
+                _cfg.driver = prev_driver
+                try:
+                    _apply_model_context_window()
+                except Exception as e:
+                    _diag("server.pilot_swap_context_rollback", e)
+                raise
+        return
     expected_id = _runners.active_view_id or _sessions.active
     _ensure_active_pilot_ready()
     with _pilot_swap_lock:
@@ -3089,7 +3110,16 @@ class Handler(BaseHTTPRequestHandler):
                 sid = view_id or store_id
             status, payload = get_config(_settings_services())
             payload["session_id"] = sid
-            if sid:
+            if sid and view_id and sid != view_id:
+                # Switch in flight: the live pilot still belongs to the outgoing
+                # view, so its driver and efforts are not this session's. Report
+                # only what the target session stored; the client retries once
+                # the view attaches.
+                for key in ("driver", "reasoning_effort", "swarm_reasoning_effort"):
+                    payload.pop(key, None)
+                payload["driver"] = ""
+                payload.update(_sessions.pilot_preferences(sid))
+            elif sid:
                 payload.update(_sessions.pilot_preferences(sid, seed_driver=_cfg.driver))
         return self._send(status, json.dumps(payload))
 
@@ -3122,10 +3152,14 @@ class Handler(BaseHTTPRequestHandler):
         with _pilot_swap_lock:
             if not valid():
                 return self._send(409, json.dumps({"error": "session changed or missing"}))
-        try:
-            _ensure_active_pilot_ready()
-        except Exception as e:
-            return self._send(409, json.dumps({"error": str(e)}))
+        from .api.attach import active_failed_placeholder
+        # A failed cold build is recovered by the swap itself; waiting on it
+        # would only re-raise the stale build error.
+        if active_failed_placeholder(_attach_services()) is None:
+            try:
+                _ensure_active_pilot_ready()
+            except Exception as e:
+                return self._send(409, json.dumps({"error": str(e)}))
         with _pilot_swap_lock:
             if not valid():
                 return self._send(409, json.dumps({"error": "session changed or missing"}))

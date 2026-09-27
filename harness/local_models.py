@@ -40,7 +40,15 @@ COMMAND_TYPES = (
     "verify_tool_calling",
     "set_policy",
     "set_context",
+    "set_sampling",
 )
+# Per-model sampling overrides for OpenAI-compatible endpoints: (min, max,
+# min_inclusive). Unset fields defer to the server default.
+SAMPLING_BOUNDS = {
+    "temperature": (0.0, 2.0, True),
+    "top_p": (0.0, 1.0, False),
+    "frequency_penalty": (-2.0, 2.0, True),
+}
 IDLE_TIMEOUT_MAX_MINUTES = 1440
 TOOL_CALLING_STATUSES = (
     "unverified",
@@ -254,7 +262,21 @@ def _normalize_external(raw: dict) -> dict:
         "last_error": raw.get("last_error"),
         "healthy": bool(raw.get("healthy")),
         "tool_calling": normalize_tool_calling(raw.get("tool_calling")),
+        "sampling": _normalize_sampling_map(raw.get("sampling")),
     }
+
+
+def _normalize_sampling_map(raw: Any) -> dict:
+    """Keep only valid per-model sampling overrides read back from disk."""
+    out = {}
+    for model, values in (raw.items() if isinstance(raw, dict) else ()):
+        try:
+            parsed = parse_sampling(values)
+        except ValueError:
+            continue
+        if parsed:
+            out[str(model)] = parsed
+    return out
 
 
 def empty_tool_calling() -> dict:
@@ -1071,6 +1093,26 @@ def redact_mapping(payload: Any) -> Any:
     return payload
 
 
+def parse_sampling(raw: Any) -> dict:
+    """Validate a sampling override map; null values clear that field."""
+    if not isinstance(raw, dict):
+        raise ValueError("sampling must be an object")
+    out = {}
+    for key, value in raw.items():
+        if key not in SAMPLING_BOUNDS:
+            raise ValueError("unsupported sampling field %r" % key)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("%s must be a number" % key)
+        low, high, low_inclusive = SAMPLING_BOUNDS[key]
+        number = float(value)
+        if number > high or number < low or (number == low and not low_inclusive):
+            raise ValueError("%s is out of range" % key)
+        out[key] = number
+    return out
+
+
 def parse_command(body: Any) -> dict:
     if not isinstance(body, dict):
         raise ValueError("command must be a JSON object")
@@ -1121,6 +1163,14 @@ def parse_command(body: Any) -> dict:
             raise ValueError("set_context requires a positive context_length")
         command["endpoint_id"] = endpoint_id
         command["context_length"] = int(raw_ctx)
+    elif command_type == "set_sampling":
+        endpoint_id = str(body.get("endpoint_id") or "").strip()
+        model = str(body.get("model") or "").strip()
+        if not endpoint_id or not model:
+            raise ValueError("set_sampling requires endpoint_id and model")
+        command["endpoint_id"] = endpoint_id
+        command["model"] = model
+        command["sampling"] = parse_sampling(body.get("sampling") or {})
     return command
 
 
@@ -1264,9 +1314,11 @@ def resolve_local_endpoint(state: dict, spec: str) -> Optional[dict]:
                 return None
             kind = _external_kind(item)
             requires_key = _external_requires_key(item)
+            resolved_model = model or item.get("selected_model") or ""
             return {
                 "endpoint_id": endpoint_id,
-                "model": model or item.get("selected_model") or "",
+                "model": resolved_model,
+                "sampling": dict((item.get("sampling") or {}).get(resolved_model) or {}),
                 "base_url": item.get("base_url") or "",
                 "vendor": item.get("vendor") or "openai-compatible",
                 "kind": kind,

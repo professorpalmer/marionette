@@ -87,6 +87,27 @@ def test_scoped_config_accepts_store_active_before_view_catches_up(owned_server)
     assert h.body["session_id"] == b
 
 
+def test_config_during_switch_does_not_leak_outgoing_driver(owned_server, monkeypatch):
+    """A new session created while the view is on A must not report A's model."""
+    srv = owned_server
+    a = srv._sessions.active
+    srv._attach_view(a, load_transcript_on_create=False)
+    monkeypatch.setattr(srv._cfg, "driver", "stub:session-a-model")
+    srv._sessions.pilot_preferences(a, updates={"driver": "stub:session-a-model"})
+    b = srv._sessions.create()["id"]
+    assert srv._runners.active_view_id == a
+    h = Handler()
+    srv.Handler._get_config(h, b)
+    assert h.code == 200
+    assert h.body["session_id"] == b
+    assert h.body["driver"] != "stub:session-a-model"
+    assert "driver" not in srv._sessions.pilot_preferences(b)
+
+    srv._sessions.pilot_preferences(b, updates={"driver": "stub:session-b-model"})
+    srv.Handler._get_config(h, b)
+    assert h.body["driver"] == "stub:session-b-model"
+
+
 def test_swap_rechecks_session_after_readiness(owned_server, monkeypatch):
     srv = owned_server
     a = srv._sessions.active
@@ -293,3 +314,31 @@ def test_deferred_choice_survives_visiting_another_session(owned_server):
             b._busy.release()
     finally:
         a._busy.release()
+
+
+@pytest.mark.parametrize("defer", [False, True])
+def test_session_with_unbuildable_saved_pilot_still_opens_and_recovers(owned_server, monkeypatch, defer):
+    """A session whose saved model was removed must open, not wedge the app.
+
+    Real report (2026-09-26): a session saved on a deleted llama.cpp endpoint
+    failed its deferred build, left a failed placeholder, and every request
+    503'd until restart. The session now opens with an unavailable pilot that
+    names the real reason, and a picker swap repairs it.
+    """
+    srv = owned_server
+    gone = "local:llama-cpp-127-0-0-1-8081/bonsai-2-27b"
+    b = srv._sessions.create()["id"]
+    srv._sessions.pilot_preferences(b, updates={"driver": gone})
+    monkeypatch.setenv("HARNESS_DEFER_COLD_ATTACH", "1" if defer else "0")
+    srv._attach_view(b, load_transcript_on_create=False, defer_cold_build=defer)
+    pilot = srv._ensure_active_pilot_ready()
+    assert pilot is srv._runners.get(b)
+    assert pilot.config.driver == gone
+    assert pilot.pilot.name == gone
+    reply = pilot.pilot.chat([{"role": "user", "content": "hi"}])
+    assert "unavailable" in reply.error
+    assert "unknown model" not in reply.error
+    h = Handler()
+    srv.Handler._swap_pilot(h, "stub-oracle", b)
+    assert h.code == 200, h.body
+    assert srv._pilot.pilot.name == "stub-oracle"

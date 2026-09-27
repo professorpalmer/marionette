@@ -189,6 +189,20 @@ def test_glm_5_3_requires_thinking_and_maps_effort(effort, expected):
     assert go.reasoning_body_extras("glm-5.3", effort) == expected
 
 
+@pytest.mark.parametrize("effort,expected", [
+    ("none", "low"), ("low", "low"), ("high", "high"), ("max", "max"),
+])
+def test_glm_5_3_on_go_relay_omits_thinking(effort, expected):
+    # Go 400s `unknown field "thinking"` (2026-09-26); reasoning_effort alone works.
+    assert go.reasoning_body_extras("glm-5.3", effort, go_relay=True) == {"reasoning_effort": expected}
+
+
+def test_go_driver_for_glm_5_3_sends_no_thinking():
+    driver = go.build_driver(spec="opencode-go:glm-5.3-flash", model="glm-5.3-flash", max_tokens=None)
+    assert "thinking" not in driver.extra_body
+    assert driver.extra_body.get("reasoning_effort")
+
+
 def test_glm_5_3_alias_spellings_are_recognized():
     for alias in ("glm-5-3", "glm-5p3", "opencode-go/glm-5.3", "z-ai/glm-5.3"):
         extras = go.reasoning_body_extras(alias, "high")

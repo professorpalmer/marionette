@@ -28,7 +28,7 @@ import {
 import { SessionFork } from "./SessionFork";
 import { sharedReadinessNotice } from "../lib/operationalDiagnostic";
 import { useOperationalDiagnostic } from "../lib/useOperationalDiagnostic";
-import { filterJobsByScope, loadJobScope, saveJobScope, type JobScope } from "../lib/jobScope";
+import { filterJobsByScope, jobScopeForSession, loadJobScopeChoice, saveJobScope, type JobScopeChoice } from "../lib/jobScope";
 import {
   BRANCHES_MIN_HEIGHT,
   branchesHeightFromPointerDelta,
@@ -56,6 +56,8 @@ export {
   isRedundantSessionSwitch,
   sessionSwitchSucceeded,
   shouldPromoteListActive,
+  requestedSessionAfterList,
+  onScreenSessionId,
   collectUnreadFinishedSessionIds,
   isRailWideSwitching,
   projectSessionsEmptyState,
@@ -82,6 +84,8 @@ import {
   isRedundantSessionSwitch,
   sessionSwitchSucceeded,
   shouldPromoteListActive,
+  requestedSessionAfterList,
+  onScreenSessionId,
   collectUnreadFinishedSessionIds,
   isRailWideSwitching,
   projectSessionsEmptyState,
@@ -92,9 +96,11 @@ import {
 } from "./leftRailSessions";
 import { Section, IconBtn, Empty, JobStatusIcon, RunnerStatusDot, type JobStatus } from "./leftRailPrimitives";
 
-export default function LeftRail({ jobsRefresh, onSessionChange }: {
+export default function LeftRail({ jobsRefresh, onSessionChange, activeSessionId: shownSessionId }: {
   jobsRefresh: number;
   onSessionChange?: (id: string | null, expectedPreviousId?: string) => void;
+  /** The session Conversation is showing. */
+  activeSessionId?: string | null;
 }) {
   const { state: metadata } = useSharedJobMetadata();
   const [forkTarget, setForkTarget] = useState<Pick<Session, "id" | "title" | "forked_from"> | null>(null);
@@ -125,9 +131,9 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     () => localStorage.getItem(SESSION_JOBS_COLLAPSED_KEY) === "1",
   );
   const [hiddenJobIds, setHiddenJobIds] = useState<Set<string>>(loadHiddenSessionJobs);
-  const [jobScope, setJobScope] = useState<JobScope>(() => loadJobScope());
+  const [jobScopeChoice, setJobScopeChoice] = useState<JobScopeChoice | null>(loadJobScopeChoice);
   useEffect(() => {
-    const onScope = () => setJobScope(loadJobScope());
+    const onScope = () => setJobScopeChoice(loadJobScopeChoice());
     window.addEventListener("harness-job-scope-changed", onScope);
     return () => window.removeEventListener("harness-job-scope-changed", onScope);
   }, []);
@@ -406,6 +412,9 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       return;
     }
     const active = sess.find((s) => s.active);
+    if (!switchingSessionIdRef.current) {
+      requestedSessionIdRef.current = requestedSessionAfterList(requestedSessionIdRef.current, active?.id);
+    }
     if (!shouldPromoteListActive({
       switchingSessionId: switchingSessionIdRef.current,
       requestedSessionId: requestedSessionIdRef.current,
@@ -543,6 +552,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   ): Promise<{ ok: boolean; created_session?: boolean; active_session?: string }> => {
     if (!options?.quiet) setOpening(true);
     const scope = ++sessionScopeGeneration.current;
+    // Opening a project hands the active session to the backend.
+    requestedSessionIdRef.current = null;
     workspaceGeneration.current += 1;
     sessionListGeneration.current += 1;
     setSessionLoadStates((prev) => ({ ...prev, [path]: "opening" }));
@@ -828,6 +839,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
         toast(res.error || `Could not switch to ${name}`);
         return;
       }
+      requestedSessionIdRef.current = null;
       await Promise.all([revalidateWorkspaces(), revalidateWorkspace()]);
       window.dispatchEvent(new Event("harness-config-changed"));
     } catch (err: any) {
@@ -890,7 +902,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     if (switchingSessionId || opening) return;
     // Same-row click still clears unread and fences in-flight opens;
     // skip persist/attach/config fan-out.
-    const activeId = sessions.find((s) => s.active)?.id || "";
+    const activeId = onScreenSessionId(shownSessionId, sessions);
     if (isRedundantSessionSwitch(id, activeId, !!opts?.force)) {
       sessionScopeGeneration.current += 1;
       setUnreadFinishedIds((prev) => {
@@ -1041,6 +1053,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       try { localStorage.setItem("pmharness.leftRail.tab", "projects"); } catch { /* ignore */ }
       setExpandedProjects((prev) => ({ ...prev, [root]: true }));
       setSelectedProjectPath(root);
+      requestedSessionIdRef.current = relocatedId || null;
       if (relocatedId) {
         patchActiveSessionInCaches(projectsRef.current.filter(Boolean), relocatedId);
         setSessionsCacheEpoch((n) => n + 1);
@@ -1420,6 +1433,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   };
 
   const activeSessionId = sessions.find((session) => session.active)?.id || "";
+  const jobScope = jobScopeForSession(jobScopeChoice, activeSessionId);
   const artifactContext = JSON.stringify([currentRepo, selectedProjectPath, activeSessionId]);
   const artifactContextRef = useRef(artifactContext);
   if (artifactContextRef.current !== artifactContext) {
@@ -2135,7 +2149,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                   type="button"
                   aria-pressed={jobScope === scope}
                   aria-label={scope === "session" ? "This session" : scope === "repo" ? "This repo" : "All projects"}
-                  onClick={(e) => { e.stopPropagation(); setJobScope(scope); saveJobScope(scope); }}
+                  onClick={(e) => { e.stopPropagation(); saveJobScope(scope, activeSessionId); }}
                   className={`min-w-0 text-[9px] uppercase tracking-wider ${jobScope === scope ? "bg-accent/15 text-txt" : "text-muted hover:text-txt"}`}
                 >
                   {scope === "session" ? "Session" : scope === "repo" ? "Repo" : "All"}

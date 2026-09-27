@@ -555,3 +555,50 @@ def test_idle_policy_legacy_migration_and_roundtrip(tmp_path):
     state['managed']['idle_timeout_minutes'] = 1440
     lm.save_state(state, str(tmp_path))
     assert lm.load_state(str(tmp_path))['managed']['idle_timeout_minutes'] == 1440
+
+
+def test_parse_command_set_sampling():
+    cmd = lm.parse_command({
+        "type": "set_sampling",
+        "endpoint_id": "openai-compatible-host-abc123",
+        "model": "kimi",
+        "sampling": {"temperature": 0.6, "top_p": 0.95, "frequency_penalty": None},
+    })
+    assert cmd == {
+        "type": "set_sampling",
+        "endpoint_id": "openai-compatible-host-abc123",
+        "model": "kimi",
+        "sampling": {"temperature": 0.6, "top_p": 0.95},
+    }
+    cleared = lm.parse_command({"type": "set_sampling", "endpoint_id": "e", "model": "m", "sampling": {}})
+    assert cleared["sampling"] == {}
+    for bad in (
+        {"temperature": 2.5},
+        {"top_p": 0},
+        {"frequency_penalty": -3},
+        {"temperature": True},
+        {"temperature": "hot"},
+        {"seed": 1},
+    ):
+        with pytest.raises(ValueError):
+            lm.parse_command({"type": "set_sampling", "endpoint_id": "e", "model": "m", "sampling": bad})
+    with pytest.raises(ValueError):
+        lm.parse_command({"type": "set_sampling", "endpoint_id": "", "model": "m", "sampling": {}})
+    with pytest.raises(ValueError):
+        lm.parse_command({"type": "set_sampling", "endpoint_id": "e", "model": "", "sampling": {}})
+
+
+def test_resolve_local_endpoint_carries_model_sampling():
+    state = lm.empty_state()
+    state["externals"] = [{
+        "id": "openai-compatible-host",
+        "vendor": "openai-compatible",
+        "base_url": "https://api.example.com/v1",
+        "models": ["kimi", "glm"],
+        "selected_model": "kimi",
+        "healthy": True,
+        "kind": "remote",
+        "sampling": {"kimi": {"temperature": 0.6}},
+    }]
+    assert lm.resolve_local_endpoint(state, "local:openai-compatible-host/kimi")["sampling"] == {"temperature": 0.6}
+    assert lm.resolve_local_endpoint(state, "local:openai-compatible-host/glm")["sampling"] == {}

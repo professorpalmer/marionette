@@ -367,7 +367,7 @@ def test_openai_compat_legacy_provider_keeps_max_tokens(monkeypatch):
     assert response.error is None
     assert captured["max_tokens"] == 1500
     assert "max_completion_tokens" not in captured
-    assert captured["temperature"] == 0.0
+    assert "temperature" not in captured
 
 
 def test_openai_compat_usage_meta_reads_alias_shapes(monkeypatch):

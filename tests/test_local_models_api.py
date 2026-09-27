@@ -330,3 +330,24 @@ def test_idle_policy_command_snapshot_and_replay_agree(tmp_path):
         status, _ = post_local_models({'type': 'set_policy', 'idle_timeout_minutes': value}, svc)
         assert status == 400
     assert svc.manager.snapshot()['managed']['idle_timeout_minutes'] == 5
+
+
+def test_set_sampling_rebuilds_only_the_pilot_that_uses_it(tmp_path):
+    svc, rebuilt = _svc(tmp_path)
+    state = svc.manager._state()
+    state["externals"] = [{
+        "id": "loop", "vendor": "openai-compatible", "base_url": "http://127.0.0.1:8080/v1",
+        "models": ["kimi", "glm"], "selected_model": "kimi", "healthy": True,
+        "kind": "loopback", "requires_key": False,
+    }]
+    svc.manager._save(state)
+    body = {"type": "set_sampling", "endpoint_id": "loop", "model": "glm", "sampling": {"temperature": 0.7}}
+    status, payload = post_local_models(body, svc)
+    assert status == 200
+    assert payload["externals"][0]["sampling"] == {"glm": {"temperature": 0.7}}
+    assert rebuilt["n"] == 0
+    svc.cfg.driver = "local:loop/kimi"
+    status, _ = post_local_models({**body, "model": "kimi"}, svc)
+    assert status == 200 and rebuilt["n"] == 1
+    status, payload = post_local_models({**body, "sampling": {"temperature": 9}}, svc)
+    assert status == 400

@@ -47,9 +47,12 @@ def test_mixin_defines_no_init():
     assert "__init__" not in LocalJobsMixin.__dict__
 
 
-def test_history_cap_lives_on_mixin():
-    assert "_LOCAL_JOBS_HISTORY_CAP" in LocalJobsMixin.__dict__
-    assert ConversationalSession._LOCAL_JOBS_HISTORY_CAP == 200
+def test_history_caps_live_on_the_store():
+    from harness import local_jobs_store
+
+    assert "_LOCAL_JOBS_HISTORY_CAP" not in LocalJobsMixin.__dict__
+    assert local_jobs_store.HISTORY_CAP == 200
+    assert local_jobs_store.COMMAND_RECEIPT_CAP == 500
 
 
 def test_drain_swarm_results_not_on_local_jobs_mixin():

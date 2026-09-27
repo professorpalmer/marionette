@@ -2179,6 +2179,24 @@ class LocalModelManager:
         self._emit("external_context", {"id": eid, "context_length": length})
         return self.snapshot()
 
+    def set_external_sampling(self, endpoint_id: str, model: str, sampling: dict) -> dict:
+        """Store one model's sampling overrides; an empty map clears them."""
+        eid = str(endpoint_id or "").strip()
+        with self._lock:
+            state = self._state()
+            found = next((item for item in state.get("externals") or [] if item.get("id") == eid), None)
+            if found is None:
+                raise LocalModelError("Unknown external endpoint", code="unknown_endpoint")
+            per_model = dict(found.get("sampling") or {})
+            if sampling:
+                per_model[model] = dict(sampling)
+            else:
+                per_model.pop(model, None)
+            found["sampling"] = per_model
+            self._save(state)
+        self._emit("external_sampling", {"id": eid, "model": model})
+        return self.snapshot()
+
     def activate(self, spec: str) -> dict:
         parsed = parse_local_spec(spec)
         if not parsed:

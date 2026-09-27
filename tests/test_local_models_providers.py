@@ -615,3 +615,32 @@ def test_managed_transport_timeout_recovery_keeps_lease(monkeypatch, method):
     assert len(calls) == 2
     assert response.meta['recovery_attempted']
     assert not active
+
+
+def test_local_endpoint_sampling_reaches_the_request_body(tmp_path, monkeypatch):
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    reset_manager_for_tests()
+    catalog = {
+        "version": 1,
+        "runtime": {"id": "llama.cpp", "release": "t", "binary": "llama-server", "assets": {}},
+        "models": [],
+    }
+    mgr = LocalModelManager(root=str(tmp_path / "local-models"), catalog=catalog)
+    state = mgr._state()
+    state["externals"] = [{
+        "id": "loop",
+        "vendor": "openai-compatible",
+        "base_url": "http://127.0.0.1:8080/v1",
+        "models": ["kimi", "glm"],
+        "selected_model": "kimi",
+        "healthy": True,
+        "kind": "loopback",
+        "requires_key": False,
+    }]
+    mgr._save(state)
+    mgr.set_external_sampling("loop", "kimi", {"temperature": 0.6, "top_p": 0.95})
+    monkeypatch.setattr("harness.local_model_manager.get_manager", lambda: mgr)
+    kimi = prov.build_pilot("local:loop/kimi")._build_chat_body([{"role": "user", "content": "hi"}])
+    glm = prov.build_pilot("local:loop/glm")._build_chat_body([{"role": "user", "content": "hi"}])
+    assert kimi["temperature"] == 0.6 and kimi["top_p"] == 0.95
+    assert "temperature" not in glm and "top_p" not in glm

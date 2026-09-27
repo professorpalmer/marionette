@@ -3011,3 +3011,28 @@ def test_adopted_windows_open_failure_distinguishes_absence(monkeypatch, error, 
     monkeypatch.setattr(ctypes, 'WinDLL', lambda *a, **k: kernel, raising=False)
     monkeypatch.setattr(ctypes, 'get_last_error', lambda: error, raising=False)
     assert module._adopted_process_state(424242, {'start_key': 'original'}) == expected
+
+
+def test_set_external_sampling_stores_per_model_and_clears(tmp_path):
+    catalog, _, _ = _tiny_catalog(tmp_path)
+    mgr = LocalModelManager(root=str(tmp_path / "lm"), catalog=catalog)
+    state = mgr._state()
+    state["externals"] = [{
+        "id": "openai-compatible-host",
+        "vendor": "openai-compatible",
+        "base_url": "http://127.0.0.1:8080/v1",
+        "models": ["kimi", "glm"],
+        "selected_model": "kimi",
+        "healthy": True,
+        "kind": "loopback",
+        "requires_key": False,
+    }]
+    mgr._save(state)
+    snap = mgr.set_external_sampling("openai-compatible-host", "kimi", {"temperature": 0.6, "top_p": 0.95})
+    assert snap["externals"][0]["sampling"] == {"kimi": {"temperature": 0.6, "top_p": 0.95}}
+    assert mgr.resolve_spec("local:openai-compatible-host/kimi")["sampling"] == {"temperature": 0.6, "top_p": 0.95}
+    snap = mgr.set_external_sampling("openai-compatible-host", "kimi", {})
+    assert snap["externals"][0]["sampling"] == {}
+    with pytest.raises(LocalModelError) as exc:
+        mgr.set_external_sampling("missing", "kimi", {})
+    assert exc.value.code == "unknown_endpoint"

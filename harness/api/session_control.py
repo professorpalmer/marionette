@@ -1184,6 +1184,9 @@ def get_session_queue(
                 "error": str(build_error),
                 "session_id": session_id,
                 "recovery": [],
+                # Swapping the model rebuilds from the placeholder transcript;
+                # reopening the session drops the failed shell and retries.
+                "recovery_actions": ["pick_model", "reopen"],
             }
         real = getattr(pilot, "real_pilot", None)
         if real is None:

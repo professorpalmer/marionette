@@ -85,6 +85,9 @@ function external(value: unknown): boolean {
     || !nullableNumberFields(value, ["context_length"])
     || !boolFields(value, ["has_key", "lan_accepted", "remote_accepted", "requires_key", "healthy"])
     || !(value.last_error === undefined || value.last_error === null || typeof value.last_error === "string")) return false;
+  const sampling = value.sampling;
+  if (sampling !== undefined && !(isRecord(sampling) && Object.values(sampling).every((entry) =>
+    isRecord(entry) && numberFields(entry, ["temperature", "top_p", "frequency_penalty"])))) return false;
   const tools = value.tool_calling;
   return tools === undefined || (isRecord(tools)
     && typeof tools.status === "string" && textFields(tools, ["reason"])

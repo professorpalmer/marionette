@@ -143,6 +143,17 @@ for (const code of ["input_commit_uncertain", "input_stopped"]) test(`${code} ke
   assert.ok(!JSON.stringify(calls.errors).includes(SECRET_TOKEN));
 });
 
+for (const code of ["endpoint_mismatch", "boot_mismatch"]) test(`${code} 409 keeps its code so the renderer can rediscover`, () => {
+  const res = fakeResponse(409);
+  const calls = wireWithRecorder(res);
+  res.emit("data", JSON.stringify({ ok: false, code, error: SECRET_TOKEN }));
+  res.emit("end");
+  assert.equal(calls.errors.length, 1);
+  assert.equal(calls.errors[0].code, code);
+  assert.equal(calls.errors[0].status, 409);
+  assert.ok(!JSON.stringify(calls.errors).includes(SECRET_TOKEN));
+});
+
 test("safe unknown input_* codes keep their code without forwarding body text", () => {
   const res = fakeResponse(503);
   const calls = wireWithRecorder(res);

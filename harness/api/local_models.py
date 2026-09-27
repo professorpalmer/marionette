@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Union
 
 from ..local_model_manager import LocalModelError, LocalModelManager
-from ..local_models import parse_command, redact_mapping
+from ..local_models import canonical_spec, parse_command, redact_mapping
 from .sse import sse_write
 
 JsonPayload = Union[dict, list]
@@ -98,6 +98,18 @@ def post_local_models(body: dict, svc: LocalModelServices) -> tuple[int, JsonPay
                 command["endpoint_id"],
                 command["context_length"],
             )
+        if kind == "set_sampling":
+            snapshot = manager.set_external_sampling(
+                command["endpoint_id"],
+                command["model"],
+                command["sampling"],
+            )
+            if svc.cfg.driver == canonical_spec(command["endpoint_id"], command["model"]):
+                try:
+                    svc.rebuild_pilot_and_session()
+                except Exception:
+                    pass  # mid-turn: the override applies on the next pilot build
+            return 200, snapshot
         return 400, {"error": "Unknown local-model command"}
     except LocalModelError as exc:
         return 400, redact_mapping({"error": str(exc), "code": exc.code})

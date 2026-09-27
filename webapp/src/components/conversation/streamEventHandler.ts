@@ -709,7 +709,9 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       window.dispatchEvent(new Event("harness-config-changed"));
     } else if (ev.kind === "error") {
       const errText = String(d.error || d.message || "");
-      if (isProviderFailureWaitHint(errText)) {
+      // Route fallbacks arrive as `notice` kind=wait. An `error` is terminal
+      // unless the backend explicitly marks it `terminal: false`.
+      if (d.terminal === false && isProviderFailureWaitHint(errText)) {
         const recovered =
           turnSettledRef.current
           || Boolean(typeBufRef.current)

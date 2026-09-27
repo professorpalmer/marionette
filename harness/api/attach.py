@@ -198,6 +198,14 @@ def attach_view(
                 current = svc.runners.get(session_id)
                 if current is not placeholder:
                     # View dropped or replaced while building — abandon swap.
+                    # Nothing will own ``real``; free its warm ACP before
+                    # handing it to waiters that only read its session id.
+                    try:
+                        release = getattr(real, "release_warm_acp", None)
+                        if callable(release):
+                            release(reason="session_switch")
+                    except Exception as e:
+                        svc.diag("server.deferred_pilot_abandon_release", e)
                     placeholder.mark_ready(real)
                     return
                 # Re-read the placeholder under the swap lock. Callers may
@@ -361,6 +369,64 @@ def attach_view_transcript_payload(
     )
 
 
+def active_failed_placeholder(svc: AttachServices) -> Any:
+    """The active view's deferred placeholder whose build failed, else None."""
+    with svc.pilot_swap_lock:
+        pilot = svc.get_pilot()
+        session_id = svc.runners.active_view_id
+        if (
+            is_deferred_placeholder(pilot)
+            and pilot.build_error is not None
+            and session_id
+            and svc.runners.get(session_id) is pilot
+        ):
+            return pilot
+    return None
+
+
+def replace_failed_placeholder(svc: AttachServices, placeholder: Any) -> Any:
+    """Build a real pilot for ``svc.cfg.driver`` from a failed placeholder.
+
+    ``ensure_ready`` would re-raise the stale build error, so this path builds
+    directly from the placeholder transcript and publishes via
+    ``runners.replace``. Persists the driver choice first so the session
+    reopens on it even if this build fails too.
+    """
+    with svc.pilot_swap_lock:
+        session_id = svc.runners.active_view_id
+        if (
+            not session_id
+            or svc.get_pilot() is not placeholder
+            or svc.runners.get(session_id) is not placeholder
+        ):
+            raise RuntimeError("active session changed while recovering pilot")
+        svc.sessions.pilot_preferences(session_id, updates={"driver": svc.cfg.driver})
+        svc.apply_model_context_window()
+        config = replace(svc.runner_config_snapshot(), state_dir=placeholder.state_dir)
+        real = svc.build_conversational_pilot(config=config)
+        real.harness_session_id = session_id
+        if isinstance(real, ConversationalSession):
+            real.bind_prompt_queue(svc.sessions_state_dir(), session_id)
+        for name in ("reload_session_goal", "reload_session_todos"):
+            reload_fn = getattr(real, name, None)
+            if callable(reload_fn):
+                reload_fn()
+        transcript = placeholder.export_transcript_data()
+        if transcript.get("history") or transcript.get("display") or transcript.get("job_ids"):
+            real.load_history(transcript)
+        svc.runners.replace(session_id, real, notify=False)
+        placeholder._real = real
+        svc.set_pilot(real)
+        try:
+            svc.get_session().state_dir = real.state_dir
+        except Exception:
+            pass
+        svc.bind_pilot_services(real)
+        svc.sync_pilot_session_id()
+    sync_harness_repo_from_cfg(svc.cfg)
+    return real
+
+
 def rebuild_pilot_and_session(svc: AttachServices) -> None:
     """Rebuild the ACTIVE view's runner for the current driver, preserving history.
 
@@ -376,6 +442,10 @@ def rebuild_pilot_and_session(svc: AttachServices) -> None:
     """
     from ..pilot_replacement import LivePilotReplacement, prepare_replacement
 
+    failed = active_failed_placeholder(svc)
+    if failed is not None:
+        replace_failed_placeholder(svc, failed)
+        return
     ensure_active_pilot_ready(svc)
     with svc.pilot_swap_lock:
         old_pilot = ensure_active_pilot_ready(svc)

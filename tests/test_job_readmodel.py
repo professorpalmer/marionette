@@ -797,6 +797,23 @@ def test_scanned_newer_revision_replaces_exact_row(env, monkeypatch):
     assert result['rows'][0]['lifecycle'] == 'complete'
 
 
+def test_all_scope_known_refs_cap_keeps_the_most_recent(env):
+    store, reader, ctx, source, _ = env
+    parents = sorted((job(store, n) for n in range(60)), key=lambda p: p.id)
+    refs = [store.job_ref(parent.id) for parent in parents]
+    # Oldest jobs have the lowest ids, so an id-sorted cap would keep them.
+    rows = {
+        f'local-{i}': dict(session_id=f'session-{i % 3}', updated_at=float(i),
+                           canonical=dict(source='harness', session_id=f'session-{i % 3}',
+                                          job_ref=ref.as_dict()))
+        for i, ref in enumerate(refs)
+    }
+    reader.local_handle = SimpleNamespace(rows=rows)
+    reader._registry = ()
+    found = reader._session_known_job_refs(replace(ctx, scope='all'), source)
+    assert [ref.job_id for ref in found] == [ref.job_id for ref in reversed(refs[-50:])]
+
+
 def test_exact_rows_cannot_consume_scan_pagination_coverage(env, monkeypatch):
     store, reader, ctx, source, _ = env
     parents = [job(store, n) for n in range(65)]

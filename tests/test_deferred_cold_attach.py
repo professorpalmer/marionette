@@ -464,6 +464,7 @@ def test_queue_read_keeps_deferred_build_failure_as_error(tmp_path, monkeypatch)
             assert payload["ok"] is False
             assert payload["state"] == "error"
             assert payload["code"] == "pilot_build_failed"
+            assert payload["recovery_actions"] == ["pick_model", "reopen"]
             assert payload["session_id"] == sid
             assert "queue pilot build failed" in payload["error"]
     finally:

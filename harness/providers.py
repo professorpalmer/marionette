@@ -784,6 +784,9 @@ def build_pilot(spec: str, *, max_tokens: int | None = None):
             pass
         key_env = get_env_var_for_reach(secret_reach) or key_env or "LOCAL_MODEL_API_KEY"
         vendor = str(resolved.get("vendor") or "")
+        sampling = resolved.get("sampling") or {}
+        if sampling:
+            extra_body = {**(extra_body or {}), **sampling}
         if vendor == "llama.cpp":
             driver_name = "llama-cpp:%s" % model
         requires_key = bool(resolved.get("requires_key"))

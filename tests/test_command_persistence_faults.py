@@ -35,7 +35,7 @@ def test_write_failure_prevents_launch(tmp_path, boundary, fault):
     cmd = command()
     if boundary == 'checkpoint':
         session._register_command_job('local-cmd-fault', command=cmd, action_id='fault')
-    target = {'write': 'json.dump', 'replace': 'harness.local_jobs.os.replace', 'fsync': 'harness.local_jobs.os.fsync'}[fault]
+    target = {'write': 'harness.local_jobs_store.json.dumps', 'replace': 'harness.local_jobs_store.os.replace', 'fsync': 'harness.local_jobs_store.os.fsync'}[fault]
     with patch(target, side_effect=OSError('injected disk failure')):
         with pytest.raises(OSError):
             if boundary == 'registration':
@@ -53,7 +53,7 @@ def test_terminal_write_failure_is_unknown_and_cannot_leak_into_next_write(tmp_p
     session._register_command_job('local-cmd-fault', command=cmd, action_id='fault')
     session._checkpoint_command_job_launch('local-cmd-fault')
     subprocess.run(cmd, shell=True, cwd=tmp_path, check=True)
-    with patch('harness.local_jobs.os.replace', side_effect=OSError('injected disk failure')):
+    with patch('harness.local_jobs_store.os.replace', side_effect=OSError('injected disk failure')):
         assert not session._finish_command_job('local-cmd-fault', status='completed', exit_code=0)
     row = session.get_local_job('local-cmd-fault')
     assert row['status'] == 'unknown'
@@ -106,7 +106,7 @@ def checkpoint_crash(jid):
 def finish_crash(*args, **kwargs):
     if boundary == 'terminal_write_failure':
         from unittest.mock import patch
-        with patch('harness.local_jobs.os.replace', side_effect=OSError('disk fault')):
+        with patch('harness.local_jobs_store.os.replace', side_effect=OSError('disk fault')):
             assert finish(*args, **kwargs) is False
     if boundary == 'after_terminal':
         finish(*args, **kwargs)
@@ -147,7 +147,7 @@ def test_batch_registration_failure_never_starts_supervisor(tmp_path):
         if any(row.get('job_kind') == 'run_command_batch' for row in json.loads(Path(src).read_text())['jobs']):
             raise OSError('parent write failed')
         return replace(src, dst)
-    with patch('harness.local_jobs.os.replace', side_effect=fail_parent):
+    with patch('harness.local_jobs_store.os.replace', side_effect=fail_parent):
         with pytest.raises(OSError, match='parent write failed'):
             start_command_batch(session, [command()], 'parent-fault')
     assert not (tmp_path / 'effect').exists()
@@ -168,7 +168,7 @@ def test_registration_collision_preserves_original_row_and_cancel(tmp_path):
 
 def test_provider_write_failure_stays_best_effort(tmp_path):
     session = session_at(tmp_path)
-    with patch('harness.local_jobs.os.replace', side_effect=OSError('disk fault')):
+    with patch('harness.local_jobs_store.os.replace', side_effect=OSError('disk fault')):
         session._persist_local_jobs()
 
 
@@ -184,7 +184,7 @@ def test_failed_terminal_publication_releases_batch_capacity(tmp_path):
             injected = True
             raise OSError('terminal write failed')
         return replace(src, dst)
-    with patch('harness.local_jobs.os.replace', side_effect=fail_first_terminal):
+    with patch('harness.local_jobs_store.os.replace', side_effect=fail_first_terminal):
         first = start_command_batch(session, [command(), command()], 'capacity-fault', max_concurrency=1)
         deadline = time.monotonic() + 4
         while time.monotonic() < deadline:
