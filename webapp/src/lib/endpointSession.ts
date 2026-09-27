@@ -62,6 +62,21 @@ export class EndpointSessionClient {
   }
 
   isCurrent(pin: Endpoint): boolean { return this.pin === pin; }
+  /**
+   * One failed stream or request (a socket reset during a session switch) is
+   * not proof the backend changed. Keep the pin when the handshake still
+   * answers with the same endpoint and boot; drop it only on a real change.
+   */
+  async revalidate(pin: Endpoint, discover: Discovery): Promise<void> {
+    if (!this.isCurrent(pin)) return;
+    if (pin.kind === 'versioned') {
+      try {
+        const value: unknown = parseJSONResponse(await discover(), '/api/endpoint');
+        if (record(value) && value.endpoint_id === pin.endpoint && value.boot_id === pin.boot) return;
+      } catch { /* unreachable backend: fall through and drop the pin */ }
+    }
+    this.invalidate(pin);
+  }
   invalidate(pin: Endpoint): void {
     if (!this.isCurrent(pin)) return;
     this.pin = undefined;

@@ -22,7 +22,7 @@ function desktop(status: number, text: string, connectionCode = '') {
     require: nodeRequire, tryRefreshBackendPortFromMarker() {},
     ipcMain: { on() {}, handle: (name: string, handler: unknown) => handlers.set(name, handler) },
     http: { request(options: {path: string; headers: Record<string, string>}, callback: (res: PassThrough) => void) {
-      sentHeaders.push(options.headers);
+      if (options.path !== '/api/endpoint') sentHeaders.push(options.headers);
       const req = new EventEmitter();
       return Object.assign(req, { write() {}, destroy() {}, end() {
         queueMicrotask(() => {

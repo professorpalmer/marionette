@@ -222,10 +222,11 @@ async function requestJSON<T>(method: "GET" | "POST", path: string, body: unknow
     try {
       response = await rawJSON(method, request.path, body, endpointClient.headers(pin));
     } catch (error) {
-      endpointClient.invalidate(pin);
+      if (isTransientHarnessConnError(error)) await endpointClient.revalidate(pin, discoverEndpoint);
+      else endpointClient.invalidate(pin);
       throw error;
     }
-    if (response.kind === "connection-error") endpointClient.invalidate(pin);
+    if (response.kind === "connection-error") await endpointClient.revalidate(pin, discoverEndpoint);
     if (isEndpointMismatch(response)) {
       endpointClient.invalidate(pin);
       await endpointClient.connect(discoverEndpoint);
@@ -454,10 +455,14 @@ export function stream(
         cancelled = true;
         cancel?.();
         // Only an endpoint/boot rotation drops the global pin. Session-scoped
-        // 409s (ring-watch miss, session changed) fail this stream alone.
-        if (isEndpointRotationError(error) || isTransientHarnessConnError(error)) {
+        // 409s (ring-watch miss, session changed) fail this stream alone, and a
+        // socket reset keeps the pin when the backend is still the same one.
+        if (isEndpointRotationError(error)) {
           endpointClient.invalidate(pin);
           void endpointClient.connect(discoverEndpoint).catch(() => {});
+        } else if (isTransientHarnessConnError(error)) {
+          void endpointClient.revalidate(pin, discoverEndpoint)
+            .then(() => endpointClient.connect(discoverEndpoint)).catch(() => {});
         }
         publishTransportFailure(error, ctx);
         onError?.(error);

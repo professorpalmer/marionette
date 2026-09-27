@@ -108,6 +108,28 @@ def test_config_during_switch_does_not_leak_outgoing_driver(owned_server, monkey
     assert h.body["driver"] == "stub:session-b-model"
 
 
+
+def test_config_during_switch_reports_workspace_model_not_empty(owned_server, monkeypatch):
+    """Mid-switch with no stored preference, report the model the session will boot on.
+
+    An empty driver left the composer picker on "Loading model" whenever the
+    view lagged behind the selected session.
+    """
+    srv = owned_server
+    a = srv._sessions.active
+    srv._attach_view(a, load_transcript_on_create=False)
+    b = srv._sessions.create()["id"]
+    monkeypatch.setattr(srv, "_get_workspace_driver", lambda repo: "stub:workspace-model")
+    h = Handler()
+    srv.Handler._get_config(h, b)
+    assert h.code == 200
+    assert h.body["session_id"] == b
+    assert h.body["driver"] == "stub:workspace-model"
+
+    monkeypatch.setattr(srv, "_get_workspace_driver", lambda repo: None)
+    srv.Handler._get_config(h, b)
+    assert h.body["driver"] == ""
+
 def test_swap_rechecks_session_after_readiness(owned_server, monkeypatch):
     srv = owned_server
     a = srv._sessions.active
