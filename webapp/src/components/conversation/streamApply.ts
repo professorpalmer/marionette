@@ -160,39 +160,6 @@ export function patchCardInItems(
  * Ring-miss / reload can deliver a result without a prior action_start; still
  * paint a card when kind/goal/status/duration/error are present.
  */
-/** Number or numeric string exit codes (e.g. "1"); empty/non-numeric → null. */
-function normalizeActionResultExitCode(exitCode: unknown): number | null {
-  if (typeof exitCode === "number" && Number.isFinite(exitCode)) return exitCode;
-  if (typeof exitCode === "string") {
-    const trimmed = exitCode.trim();
-    if (!trimmed || !/^-?\d+$/.test(trimmed)) return null;
-    const n = Number(trimmed);
-    return Number.isFinite(n) ? n : null;
-  }
-  return null;
-}
-
-/** Keep command results collapsed; expand failed non-command results. */
-function shouldOpenActionResultCard(
-  d: {
-    kind?: string;
-    error?: string;
-    exit_code?: unknown;
-    output?: unknown;
-    [key: string]: unknown;
-  },
-  existingKind?: string,
-): boolean {
-  const kind = String(d.kind || existingKind || "").trim().toLowerCase();
-  const isRun =
-    kind === "run_command" || kind === "bash" || kind === "shell" || kind === "execute";
-  if (isRun) return false;
-  if (d.error) return true;
-  const exitCode = normalizeActionResultExitCode(d.exit_code);
-  if (exitCode != null && exitCode !== 0) return true;
-  return false;
-}
-
 /**
  * Action-result bodies may carry durable command/batch fields (terminal_receipt)
  * that are not yet on the narrow Card.result display type. Keep the fence
@@ -271,7 +238,7 @@ export function applyActionResultCard(
     artifacts?: { type: string; headline: string }[];
     chars?: number;
     auth_failure?: string;
-    /** Wire may send a number or numeric string; normalizeActionResultExitCode handles both. */
+    /** Wire may send a number or numeric string. */
     exit_code?: number | string;
     output?: string;
     command?: string;
@@ -324,7 +291,6 @@ export function applyActionResultCard(
       });
     }
     const settledActions = settleNestedRunning(prev.card.actions, outcome);
-    const keepOpen = shouldOpenActionResultCard(d, prev.card.kind);
     return sealed.map((it, i) => {
       if (i !== matchIdx || it.kind !== "card") return it;
       return {
@@ -332,7 +298,7 @@ export function applyActionResultCard(
         card: {
           ...it.card,
           running: false,
-          open: keepOpen,
+          open: it.card.open,
           result: d as Card["result"],
           ...(d.kind ? { kind: String(d.kind) } : {}),
           ...(d.goal != null && String(d.goal).trim() ? { goal: String(d.goal) } : {}),
@@ -362,7 +328,7 @@ export function applyActionResultCard(
         call_id: callId || undefined,
         goals: Array.isArray(d.goals) ? d.goals.map(String) : undefined,
         running: false,
-        open: shouldOpenActionResultCard(d, kind),
+        open: false,
         result: d as Card["result"],
       },
     },
