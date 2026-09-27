@@ -211,7 +211,10 @@ def test_edit_file_outside_root():
     action_result_events = [e for e in events if e.kind == "action_result"]
     assert len(action_result_events) == 1
     assert "error" in action_result_events[0].data
-    assert "Path traversal attempt rejected" in action_result_events[0].data["error"]
+    error = action_result_events[0].data["error"]
+    assert "Outside the file tool workspace" in error
+    assert "Request rejected" in error
+    assert "run_command subject to its existing permissions" in error
 
 
 def test_parse_tool_calls_truncation():

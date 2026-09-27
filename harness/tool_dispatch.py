@@ -73,12 +73,12 @@ def _file_tool_path_denial(
         scope = "read_file is limited to this workspace and configured read roots. "
     else:
         boundary = "Outside the file tool workspace"
-        scope = "File writes and edits must stay within this workspace. "
+        scope = "Native write_file, edit_file, and hash_edit are limited to this workspace. "
     return (
         f"{boundary}: requested path {requested_path!r}; workspace {workspace!r}. "
         f"Request rejected. {scope}"
         "For an explicitly authorized external destination, use run_command "
-        "subject to its existing permissions, or work within this workspace."
+        "subject to its existing permissions and preserve the requested location."
     )
 
 

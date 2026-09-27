@@ -1087,7 +1087,12 @@ def build_tools_schema(
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": "Write/create a file atomically within the writable workspace. Requires `path` and `content`.",
+            "description": (
+                "Write/create a file atomically within the writable workspace. "
+                "For an explicitly authorized external destination, use run_command "
+                "subject to its existing permissions and preserve the requested location. "
+                "Requires `path` and `content`."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {

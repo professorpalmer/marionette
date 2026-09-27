@@ -353,6 +353,106 @@ def test_file_tool_schemas_describe_read_and_write_boundaries(monkeypatch):
         assert "writable workspace" in description
         assert "writable workspace" in path_description
 
+    write_description = _tool_schema("write_file")["description"]
+    assert "explicitly authorized external destination" in write_description
+    assert "run_command" in write_description
+    assert "preserve the requested location" in write_description
+
+
+def test_send_loop_native_file_tools_share_external_path_denial(tmp_path, monkeypatch):
+    monkeypatch.setenv("HARNESS_HASH_EDIT", "1")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    sentinel = workspace / "existing.txt"
+    sentinel.write_bytes(b"WORKSPACE ORIGINAL\n")
+    external = tmp_path / "invoice_tool" / "invoice_totals.py"
+    external.parent.mkdir()
+    external.write_bytes(b"EXTERNAL ORIGINAL\n")
+
+    class ExternalPathPilot:
+        name = "external-path-pilot"
+
+        def __init__(self, tool_name, arguments):
+            self.calls = 0
+            self.tool_name = tool_name
+            self.arguments = arguments
+
+        def chat(self, messages, *, tools=None, system=None):
+            from pmharness.drivers.openai_compat import DriverResponse
+
+            self.calls += 1
+            if self.calls > 1:
+                return DriverResponse(
+                    text="The native file tools were rejected.",
+                    meta={"tool_calls": [], "finish_reason": "stop"},
+                )
+            return DriverResponse(
+                text="",
+                meta={
+                    "tool_calls": [{
+                        "id": f"external_{self.tool_name}",
+                        "type": "function",
+                        "function": {
+                            "name": self.tool_name,
+                            "arguments": json.dumps(self.arguments),
+                        },
+                    }],
+                    "finish_reason": "tool_calls",
+                },
+            )
+
+    expected = (
+        f"Outside the file tool workspace: requested path {str(external)!r}; "
+        f"workspace {str(workspace)!r}. Request rejected. Native write_file, "
+        "edit_file, and hash_edit are limited to this workspace. For an "
+        "explicitly authorized external destination, use run_command subject "
+        "to its existing permissions and preserve the requested location."
+    )
+    calls = (
+        ("write_file", {"path": str(external), "content": "RELOCATED\n"}),
+        (
+            "edit_file",
+            {
+                "path": str(external),
+                "old_str": "EXTERNAL ORIGINAL",
+                "new_str": "EDITED",
+            },
+        ),
+        (
+            "hash_edit",
+            {
+                "path": str(external),
+                "ops": [{"op": "delete", "start_line": 1, "end_line": 1}],
+            },
+        ),
+    )
+    for tool_name, arguments in calls:
+        session = ConversationalSession(HarnessConfig(
+            repo=str(workspace),
+            state_dir=str(tmp_path / f"state-{tool_name}"),
+            swarm_adapter="demo",
+        ))
+        session.pilot = ExternalPathPilot(tool_name, arguments)
+        events = list(session.send(
+            f"Use {tool_name} in the requested temporary directory; leave my current project untouched."
+        ))
+        results = [event.data for event in events if event.kind == "action_result"]
+        assert [result.get("error") for result in results] == [expected]
+        tool_messages = [
+            message for message in session._history if message.get("role") == "tool"
+        ]
+        assert len(tool_messages) == 1
+        assert expected in tool_messages[0]["content"]
+        assert tool_messages[0].get("is_error") is True
+        assert "Host guidance: This tool call failed." in tool_messages[0]["content"]
+
+    assert external.read_bytes() == b"EXTERNAL ORIGINAL\n"
+    assert sentinel.read_bytes() == b"WORKSPACE ORIGINAL\n"
+    assert sorted(
+        (path.relative_to(workspace).as_posix(), path.read_bytes())
+        for path in workspace.rglob("*") if path.is_file()
+    ) == [("existing.txt", b"WORKSPACE ORIGINAL\n")]
+
 
 def _assert_file_tools_reject_path(session, requested, workspace, original):
     actions = (
