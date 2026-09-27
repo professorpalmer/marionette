@@ -3028,9 +3028,12 @@ def test_set_external_sampling_stores_per_model_and_clears(tmp_path):
         "requires_key": False,
     }]
     mgr._save(state)
-    snap = mgr.set_external_sampling("openai-compatible-host", "kimi", {"temperature": 0.6, "top_p": 0.95})
-    assert snap["externals"][0]["sampling"] == {"kimi": {"temperature": 0.6, "top_p": 0.95}}
-    assert mgr.resolve_spec("local:openai-compatible-host/kimi")["sampling"] == {"temperature": 0.6, "top_p": 0.95}
+    configured = {"temperature": 0.6, "top_p": 0.95, "reasoning_budget_tokens": -1}
+    snap = mgr.set_external_sampling("openai-compatible-host", "kimi", configured)
+    assert snap["externals"][0]["sampling"] == {"kimi": configured}
+    assert mgr.resolve_spec("local:openai-compatible-host/kimi")["sampling"] == configured
+    reloaded = LocalModelManager(root=str(tmp_path / "lm"), catalog=catalog)
+    assert reloaded.resolve_spec("local:openai-compatible-host/kimi")["sampling"] == configured
     snap = mgr.set_external_sampling("openai-compatible-host", "kimi", {})
     assert snap["externals"][0]["sampling"] == {}
     with pytest.raises(LocalModelError) as exc:
