@@ -9,8 +9,10 @@ Keys are read from the environment at call time and never logged.
 """
 
 import json
-import re
 import os
+import re
+import socket
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -43,6 +45,10 @@ _OPENAI_LENGTH_CONTINUE = (
     "prior text. Finish the answer directly.]"
 )
 _OPENAI_MAX_LENGTH_CONTINUES = 3
+_LLAMA_CPP_USAGE_TAIL_SECONDS = 2.0
+_LLAMA_CPP_USAGE_TAIL_BYTES = 64 * 1024
+_LLAMA_CPP_USAGE_TAIL_KEEPALIVES = 8
+_LLAMA_CPP_USAGE_TAIL_READ_BYTES = 4096
 
 
 def _norm_chat_finish(finish) -> str:
@@ -475,6 +481,134 @@ class _OpenAIChatSseAccumulator:
         }
 
 
+def _drain_llama_cpp_usage_tail(resp, acc: _OpenAIChatSseAccumulator) -> None:
+    """Read only a bounded post-terminal usage event from llama.cpp."""
+    read1 = getattr(resp, "read1", None)
+    if not callable(read1):
+        return
+
+    candidates = [resp]
+    seen = set()
+    owned_socket = None
+    while candidates:
+        candidate = candidates.pop()
+        ident = id(candidate)
+        if ident in seen or candidate is None:
+            continue
+        seen.add(ident)
+        if isinstance(candidate, socket.socket):
+            owned_socket = candidate
+            break
+        try:
+            nested_socket = getattr(candidate, "_sock", None)
+        except Exception:
+            nested_socket = None
+        if callable(getattr(nested_socket, "shutdown", None)):
+            owned_socket = nested_socket
+            break
+        for attr in ("fp", "raw"):
+            try:
+                nested = getattr(candidate, attr, None)
+            except Exception:
+                nested = None
+            if nested is not None:
+                candidates.append(nested)
+    if owned_socket is None:
+        return
+
+    from pmharness.drivers.codex_responses import _arm_post_answer_idle_timeout
+
+    deadline = time.monotonic() + _LLAMA_CPP_USAGE_TAIL_SECONDS
+    pending = b""
+    total = 0
+    keepalives = 0
+
+    def consume_event(event: bytes) -> bool:
+        nonlocal keepalives
+        data_lines = []
+        saw_comment = False
+        for raw_line in event.split(b"\n"):
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith(b":"):
+                saw_comment = True
+                continue
+            if line.startswith(b"data:"):
+                data_lines.append(line[5:].strip())
+                continue
+            return True
+        if not data_lines:
+            if saw_comment:
+                keepalives += 1
+            return keepalives >= _LLAMA_CPP_USAGE_TAIL_KEEPALIVES
+        keepalives = 0
+        data = b"\n".join(data_lines)
+        if data == b"[DONE]":
+            acc.feed("data: [DONE]")
+            return True
+        try:
+            payload = json.loads(data.decode("utf-8"))
+        except Exception:
+            return True
+        if not isinstance(payload, dict):
+            return True
+        usage = payload.get("usage")
+        if not isinstance(usage, dict) or not usage:
+            return True
+        acc.feed("data: " + json.dumps({"choices": [], "usage": usage}))
+        return True
+
+    def interrupt_read() -> None:
+        try:
+            owned_socket.shutdown(socket.SHUT_RD)
+        except Exception:
+            pass
+
+    watchdog = threading.Timer(_LLAMA_CPP_USAGE_TAIL_SECONDS, interrupt_read)
+    watchdog.name = "llama-cpp-usage-tail-deadline"
+    watchdog.daemon = True
+    try:
+        watchdog.start()
+    except Exception:
+        return
+    try:
+        while total < _LLAMA_CPP_USAGE_TAIL_BYTES:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                return
+            if not _arm_post_answer_idle_timeout(resp, remaining):
+                return
+            try:
+                chunk = read1(min(
+                    _LLAMA_CPP_USAGE_TAIL_READ_BYTES,
+                    _LLAMA_CPP_USAGE_TAIL_BYTES - total,
+                ))
+            except Exception:
+                return
+            if not chunk:
+                if pending.strip():
+                    consume_event(pending.replace(b"\r\n", b"\n"))
+                return
+            if not isinstance(chunk, bytes):
+                try:
+                    chunk = bytes(chunk)
+                except Exception:
+                    return
+            total += len(chunk)
+            pending = (pending + chunk).replace(b"\r\n", b"\n")
+            while b"\n\n" in pending:
+                event, pending = pending.split(b"\n\n", 1)
+                if consume_event(event):
+                    return
+    finally:
+        watchdog.cancel()
+        try:
+            watchdog.join()
+        except Exception:
+            pass
+
+
 def _consume_openai_chat_sse(
     lines,
     *,
@@ -535,6 +669,7 @@ class OpenAICompatDriver:
         self.extra_body = extra_body or {}
         self.enable_reasoning = enable_reasoning
         self._omitted_provider_controls: set[str] = set()
+        self._omit_stream_options = False
         self.session_id = session_id
         self.vendor = str(vendor or "")
         self.allow_keyless = bool(allow_keyless)
@@ -855,6 +990,13 @@ class OpenAICompatDriver:
         if not param:
             match = re.search(r'unknown (?:field|parameter)[:\s]*\\?["\']?([A-Za-z_][\w.]*)', detail or "", re.I)
             param = match.group(1) if match else None
+        if (self._is_llama_cpp_host() and "stream_options" in body
+                and isinstance(param, str)):
+            normalized = param.strip().lower()
+            if (normalized in {"stream_options", "stream_options.include_usage"}
+                    or (normalized == "include_usage"
+                        and "stream_options" in (detail or "").lower())):
+                return "stream_options"
         if isinstance(param, str) and param in self.extra_body and param in body:
             return param
         return None
@@ -862,6 +1004,9 @@ class OpenAICompatDriver:
     def _drop_optional_field(self, field: str) -> None:
         if field == "reasoning":
             self.enable_reasoning = False
+        elif field == "stream_options" and self._is_llama_cpp_host():
+            self._omit_stream_options = True
+            self.extra_body.pop(field, None)
         else:
             self.extra_body.pop(field, None)
         self._omitted_provider_controls.add(field)
@@ -1193,9 +1338,11 @@ class OpenAICompatDriver:
             "messages": full_messages,
         }
         self._stamp_output_token_limit(body)
-        if stream:
+        if stream and not self._omit_stream_options:
             body['stream'] = True
             body['stream_options'] = {'include_usage': True}
+        elif stream:
+            body['stream'] = True
         self._apply_temperature(body)
         if self.enable_reasoning and not (
             tools and self._uses_openai_gpt5_chat_parameters()
@@ -1212,7 +1359,7 @@ class OpenAICompatDriver:
             system=system,
             session_id=session_id,
         )
-        if stream and (self._is_opencode_go_host() or self._is_llama_cpp_host()):
+        if stream and self._is_opencode_go_host():
             body.pop('stream_options', None)
         self._apply_openrouter_parallel_tool_calls(body, tools)
         return body
@@ -1531,6 +1678,15 @@ class OpenAICompatDriver:
                     )
                     for line in resp:
                         if not acc.feed(line):
+                            stream_options = body.get("stream_options")
+                            requested_usage = (
+                                self._is_llama_cpp_host()
+                                and isinstance(stream_options, dict)
+                                and stream_options.get("include_usage") is True
+                            )
+                            if (requested_usage and bool(acc.finish_reason)
+                                    and acc.stream_raw_usage is None):
+                                _drain_llama_cpp_usage_tail(resp, acc)
                             break
                         if not acc.stream_started:
                             continue

@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import PilotPicker from "../components/PilotPicker";
+import { api } from "../lib/api";
 import { getSessionCache, updateSessionCache, type SessionCache } from "../lib/sessionCache";
 
 vi.mock("../lib/api", async () => {
@@ -114,5 +115,49 @@ describe("PilotPicker reasoning capability", () => {
     render(<PilotPicker config={sonnetConfig} />);
 
     expect(screen.getByTitle("Reasoning effort (Low)")).toBeInTheDocument();
+  });
+});
+
+describe("PilotPicker initial session model", () => {
+  beforeEach(() => {
+    vi.mocked(api.swapPilot).mockClear();
+  });
+
+  it("retains an explicit model choice when no session exists", () => {
+    const onPendingModelChange = vi.fn();
+    render(<PilotPicker
+      config={{
+        ...sonnetConfig,
+        models: ["anthropic:claude-sonnet-4-6", "local:mlx-community/Bonsai2-27B"],
+      }}
+      onPendingModelChange={onPendingModelChange}
+    />);
+
+    fireEvent.click(screen.getByRole("button", { name: "claude-sonnet-4-6" }));
+    fireEvent.click(screen.getByText(/Bonsai2-27B/i));
+
+    expect(onPendingModelChange).toHaveBeenCalledExactlyOnceWith("local:mlx-community/Bonsai2-27B");
+    expect(api.swapPilot).not.toHaveBeenCalled();
+  });
+
+  it("keeps existing-session selection session scoped", async () => {
+    const onSessionModelChange = vi.fn().mockResolvedValue({ ok: true });
+    render(<PilotPicker
+      sessionId="session-a"
+      config={{
+        ...sonnetConfig,
+        models: ["anthropic:claude-sonnet-4-6", "local:mlx-community/Bonsai2-27B"],
+      }}
+      onSessionModelChange={onSessionModelChange}
+    />);
+
+    fireEvent.click(screen.getByRole("button", { name: "claude-sonnet-4-6" }));
+    fireEvent.click(screen.getByText(/Bonsai2-27B/i));
+
+    await waitFor(() => expect(onSessionModelChange).toHaveBeenCalledExactlyOnceWith(
+      "session-a",
+      "local:mlx-community/Bonsai2-27B",
+    ));
+    expect(api.swapPilot).not.toHaveBeenCalled();
   });
 });
