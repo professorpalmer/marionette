@@ -89,6 +89,8 @@ export default function App() {
   sessionPilotSetupsRef.current = sessionPilotSetups;
   const pilotSetupRequest = useRef(0);
   const pilotSwapTails = useRef(new Map<string, Promise<unknown>>());
+  const configRequest = useRef({ sessionId: activeSessionId, generation: 0 });
+  const knownPilots = useRef(new Map<string, SessionPilotFields>());
   const publishPendingPilotSetup = useCallback((next: Extract<PilotSetupGate, { kind: "awaiting_session" }> | undefined) => {
     pendingPilotSetupRef.current = next;
     setPendingPilotSetup(next);
@@ -103,6 +105,15 @@ export default function App() {
     const previous = pilotSwapTails.current.get(sessionId) ?? Promise.resolve();
     const operation = previous.catch(() => {}).then(() => api.swapPilot(model, sessionId)).then(result => {
       if (sessionPilotSetupsRef.current[sessionId]?.requestId === requestId) {
+        if (activeSessionIdRef.current === sessionId) {
+          configRequest.current.generation++;
+          const acknowledged = { ...knownPilots.current.get(sessionId), driver: model };
+          knownPilots.current.set(sessionId, acknowledged);
+          setConfig(current => {
+            const active = configForActiveSession(current, sessionId, acknowledged);
+            return active ? { ...active, ...acknowledged, session_id: sessionId } : current;
+          });
+        }
         publishSessionPilotSetup({ kind: "ready", model, sessionId, requestId });
       }
       return result;
@@ -137,11 +148,9 @@ export default function App() {
       })
       .catch(() => {});
   }, [publishPendingPilotSetup, requestSessionPilot]);
-  const configRequest = useRef({ sessionId: activeSessionId, generation: 0 });
   if (configRequest.current.sessionId !== activeSessionId) {
     configRequest.current = { sessionId: activeSessionId, generation: configRequest.current.generation + 1 };
   }
-  const knownPilots = useRef(new Map<string, SessionPilotFields>());
   const answered = sessionPilotFields(receivedConfig);
   if (answered && receivedConfig?.session_id) knownPilots.current.set(receivedConfig.session_id, answered);
   const config = configForActiveSession(

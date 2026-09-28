@@ -129,6 +129,96 @@ it("creates and binds the selected pilot before the first send without a manual 
   expect(input).toHaveValue("use bonsai");
 });
 
+it("shows the acknowledged pilot while session config is pending, then accepts a fresh external change", async () => {
+  let finishBinding: ((result: { ok: boolean }) => void) | undefined;
+  const sessionConfigResolvers: Array<(value: Config) => void> = [];
+  vi.mocked(api.config).mockImplementation(sessionId => {
+    if (!sessionId) {
+      return Promise.resolve({ ...config, driver: "openrouter:deepseek-v4-flash" });
+    }
+    return new Promise(resolve => sessionConfigResolvers.push(resolve));
+  });
+  vi.mocked(api.swapPilot).mockImplementationOnce(() => new Promise(resolve => {
+    finishBinding = resolve;
+  }));
+
+  await act(async () => { render(<App />); });
+  fireEvent.click(await screen.findByRole("button", { name: "deepseek-v4-flash" }));
+  fireEvent.click(screen.getByText(/Bonsai2-27B/i));
+  const input = screen.getByPlaceholderText("Message the pilot...");
+  fireEvent.change(input, { target: { value: "use acknowledged bonsai" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send", exact: true }));
+  await waitFor(() => expect(api.swapPilot).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(sessionConfigResolvers.length).toBeGreaterThanOrEqual(1));
+
+  await act(async () => {
+    finishBinding?.({ ok: true });
+    await Promise.resolve();
+  });
+  await waitFor(() => expect(api.chat).toHaveBeenCalledTimes(1));
+  await waitFor(() => {
+    expect(screen.getAllByText(/Waiting on Bonsai2-27B/i)).toHaveLength(2);
+  });
+  expect(screen.queryByText(/Waiting on deepseek-v4-flash/i)).toBeNull();
+
+  await act(async () => {
+    sessionConfigResolvers[0]?.({
+      ...config,
+      session_id: "session-new",
+      driver: "openrouter:deepseek-v4-flash",
+    });
+    await Promise.resolve();
+  });
+  expect(screen.getAllByText(/Waiting on Bonsai2-27B/i)).toHaveLength(2);
+
+  await waitFor(() => expect(sessionConfigResolvers.length).toBeGreaterThanOrEqual(2));
+  const newestConfig = sessionConfigResolvers[sessionConfigResolvers.length - 1];
+  await act(async () => {
+    newestConfig?.({
+      ...config,
+      session_id: "session-new",
+      driver: "openrouter:google/gemini-3.7-flash",
+    });
+    await Promise.resolve();
+  });
+  await waitFor(() => {
+    expect(screen.getAllByText(/Waiting on gemini-3.7-flash/i)).toHaveLength(2);
+  });
+});
+
+it("does not publish an acknowledged pilot into a different active session", async () => {
+  let finishBinding: ((result: { ok: boolean }) => void) | undefined;
+  vi.mocked(api.config).mockImplementation(async sessionId => ({
+    ...config,
+    session_id: sessionId || undefined,
+    driver: sessionId === "session-new"
+      ? "local:mlx-community/Bonsai2-27B"
+      : "openrouter:deepseek-v4-flash",
+  }));
+  vi.mocked(api.swapPilot).mockImplementationOnce(() => new Promise(resolve => {
+    finishBinding = resolve;
+  }));
+
+  await act(async () => { render(<App />); });
+  fireEvent.click(await screen.findByRole("button", { name: "deepseek-v4-flash" }));
+  fireEvent.click(screen.getByText(/Bonsai2-27B/i));
+  const input = screen.getByPlaceholderText("Message the pilot...");
+  fireEvent.change(input, { target: { value: "stay with this session" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send", exact: true }));
+  await waitFor(() => expect(api.swapPilot).toHaveBeenCalledTimes(1));
+
+  fireEvent.click(screen.getByRole("button", { name: "Open other session" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "deepseek-v4-flash" })).toBeEnabled());
+  await act(async () => {
+    finishBinding?.({ ok: true });
+    await Promise.resolve();
+  });
+
+  expect(screen.getByRole("button", { name: "deepseek-v4-flash" })).toBeEnabled();
+  expect(screen.queryByRole("button", { name: "Bonsai2-27B" })).toBeNull();
+  expect(api.chat).not.toHaveBeenCalled();
+});
+
 it("keeps the draft and does not dispatch when creation fails, then retries the same selection", async () => {
   vi.mocked(api.createSession).mockRejectedValueOnce(new Error("offline"));
   await act(async () => { render(<App />); });
