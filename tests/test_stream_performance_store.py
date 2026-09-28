@@ -664,6 +664,9 @@ def test_account_provider_attempt_records_before_meter_raise(tmp_path, monkeypat
         meta={
             STREAM_PERFORMANCE_KEY: {PROVIDER_CALL_TOTAL_MS: 9.0},
             "finish_reason": "stop",
+            "omitted_provider_controls": [
+                "reasoning_budget_tokens", "thinking", "Bearer secret value",
+            ],
         },
     )
     session = SimpleNamespace(
@@ -680,6 +683,10 @@ def test_account_provider_attempt_records_before_meter_raise(tmp_path, monkeypat
     assert rows[0]["provider_step"] == 2
     assert rows[0]["provider_attempt"] == 1
     assert rows[0]["stream_performance"][PROVIDER_CALL_TOTAL_MS] == 9.0
+    assert rows[0]["omitted_provider_controls"] == [
+        "reasoning_budget_tokens", "thinking",
+    ]
+    assert "Bearer secret value" not in json.dumps(rows[0])
     assert resp.meta[STREAM_PERFORMANCE_KEY][PROVIDER_CALL_TOTAL_MS] == 9.0
 
 
