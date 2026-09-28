@@ -6,6 +6,21 @@ import { inputFailureMessage } from "../../lib/inputFailure";
 import type { CommandPaletteActionId } from "../../lib/commandPalette";
 import { isPilotMouthBusy } from "./runnersBusy";
 
+export type PilotSetupGate =
+  | { kind: "awaiting_session"; model: string; requestId: number }
+  | { kind: "binding"; model: string; sessionId: string; requestId: number }
+  | { kind: "failed"; model: string; sessionId: string; requestId: number }
+  | { kind: "ready"; model: string; sessionId: string; requestId: number };
+
+export function pilotSetupBlocksDispatch(
+  setup: PilotSetupGate | undefined,
+  activeSessionId: string | null,
+): boolean {
+  if (!setup) return false;
+  if (setup.kind === "awaiting_session") return activeSessionId === null;
+  return setup.sessionId === activeSessionId && setup.kind !== "ready";
+}
+
 /**
  * Enter busy latch — same truth as composerBusy / isPilotMouthBusy.
  * awaiting_swarm does not shut the mouth; Send starts a new turn.
@@ -48,9 +63,12 @@ export function executeSendGate(opts: {
   transcriptStale: boolean;
   resume: boolean;
   userStopped: boolean;
-}): "ok" | "stale" | "stopped_resume" {
+  pilotSetup?: PilotSetupGate;
+  activeSessionId: string | null;
+}): "ok" | "stale" | "stopped_resume" | "pilot_setup" {
   if (opts.transcriptStale && !opts.resume) return "stale";
   if (opts.resume && opts.userStopped) return "stopped_resume";
+  if (pilotSetupBlocksDispatch(opts.pilotSetup, opts.activeSessionId)) return "pilot_setup";
   return "ok";
 }
 

@@ -160,6 +160,7 @@ import {
   EDIT_BUSY_PROGRESS_NOTICE,
   STOP_INTERRUPT_FAILED_NOTICE,
   executeSendGate,
+  pilotSetupBlocksDispatch,
   formatCompactCompleteMessage,
   formatCompactErrorMessage,
   shouldApplyCompactSettle,
@@ -2653,11 +2654,26 @@ describe("composerSend module", () => {
       mode: "interrupt",
     });
     expect(
-      executeSendGate({ transcriptStale: true, resume: false, userStopped: false }),
+      executeSendGate({ transcriptStale: true, resume: false, userStopped: false, activeSessionId: "A" }),
     ).toBe("stale");
     expect(
-      executeSendGate({ transcriptStale: false, resume: true, userStopped: true }),
+      executeSendGate({ transcriptStale: false, resume: true, userStopped: true, activeSessionId: "A" }),
     ).toBe("stopped_resume");
+    const binding = {
+      kind: "binding" as const,
+      model: "local:bonsai",
+      sessionId: "A",
+      requestId: 1,
+    };
+    expect(pilotSetupBlocksDispatch(binding, "A")).toBe(true);
+    expect(pilotSetupBlocksDispatch(binding, "B")).toBe(false);
+    expect(executeSendGate({
+      transcriptStale: false,
+      resume: false,
+      userStopped: false,
+      activeSessionId: "A",
+      pilotSetup: binding,
+    })).toBe("pilot_setup");
     expect(shouldBlockEmptySend({ transcriptStale: false, text: "  ", imageCount: 0 })).toBe(true);
     expect(shouldBlockEmptySend({ transcriptStale: false, text: "", imageCount: 1 })).toBe(false);
     expect(formatHelpSlashReply([{ cmd: "/help", desc: "Help" }])).toMatch(/\/help/);

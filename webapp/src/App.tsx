@@ -26,6 +26,7 @@ import {
   droppedPathIsDirectory,
   resolveDroppedOsPath,
 } from "./components/conversation/composerInput";
+import type { PilotSetupGate } from "./components/conversation/composerSend";
 import { openAgentUrl, openAgentWorkspace } from "./lib/agentLinks";
 import { isCloseTabKey, requestCloseFocusedTab } from "./lib/closeTabShortcut";
 import { reclampRailWidths } from "./lib/railLayout";
@@ -43,6 +44,10 @@ const num = (k: string, d: number) => { const v = Number(localStorage.getItem(k)
 const bool = (k: string, d: boolean) => { const v = localStorage.getItem(k); return v === null ? d : v === "1"; }
 const CONFIG_PENDING_RETRIES = 20;
 const CONFIG_PENDING_RETRY_MS = 300;
+
+function pilotName(model: string): string {
+  return model.split("/").pop()?.split(":").pop() || model;
+}
 
 function lastRightTab(): string {
   try {
@@ -74,6 +79,64 @@ export default function App() {
   const [receivedConfig, setConfig] = useState<Config | null>(null);
   const [availableUpdate, setAvailableUpdate] = useState<UpdateAvailability | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const activeSessionIdRef = useRef<string | null>(activeSessionId);
+  activeSessionIdRef.current = activeSessionId;
+  const [pendingPilotSetup, setPendingPilotSetup] = useState<Extract<PilotSetupGate, { kind: "awaiting_session" }> | undefined>();
+  const pendingPilotSetupRef = useRef(pendingPilotSetup);
+  pendingPilotSetupRef.current = pendingPilotSetup;
+  const [sessionPilotSetups, setSessionPilotSetups] = useState<Record<string, Exclude<PilotSetupGate, { kind: "awaiting_session" }>>>({});
+  const sessionPilotSetupsRef = useRef(sessionPilotSetups);
+  sessionPilotSetupsRef.current = sessionPilotSetups;
+  const pilotSetupRequest = useRef(0);
+  const pilotSwapTails = useRef(new Map<string, Promise<unknown>>());
+  const publishPendingPilotSetup = useCallback((next: Extract<PilotSetupGate, { kind: "awaiting_session" }> | undefined) => {
+    pendingPilotSetupRef.current = next;
+    setPendingPilotSetup(next);
+  }, []);
+  const publishSessionPilotSetup = useCallback((next: Exclude<PilotSetupGate, { kind: "awaiting_session" }>) => {
+    const updated = { ...sessionPilotSetupsRef.current, [next.sessionId]: next };
+    sessionPilotSetupsRef.current = updated;
+    setSessionPilotSetups(updated);
+  }, []);
+  const requestSessionPilot = useCallback((sessionId: string, model: string, requestId = ++pilotSetupRequest.current) => {
+    publishSessionPilotSetup({ kind: "binding", model, sessionId, requestId });
+    const previous = pilotSwapTails.current.get(sessionId) ?? Promise.resolve();
+    const operation = previous.catch(() => {}).then(() => api.swapPilot(model, sessionId)).then(result => {
+      if (sessionPilotSetupsRef.current[sessionId]?.requestId === requestId) {
+        publishSessionPilotSetup({ kind: "ready", model, sessionId, requestId });
+      }
+      return result;
+    }).catch(error => {
+      if (sessionPilotSetupsRef.current[sessionId]?.requestId === requestId) {
+        publishSessionPilotSetup({ kind: "failed", model, sessionId, requestId });
+        window.dispatchEvent(new CustomEvent("harness-toast", {
+          detail: `Could not set ${pilotName(model)} -- choose a model and try again`,
+        }));
+      }
+      throw error;
+    }).finally(() => {
+      if (pilotSwapTails.current.get(sessionId) === operation) {
+        pilotSwapTails.current.delete(sessionId);
+      }
+    });
+    pilotSwapTails.current.set(sessionId, operation);
+    return operation;
+  }, [publishSessionPilotSetup]);
+  const handlePendingPilotModelChange = useCallback((model: string) => {
+    publishPendingPilotSetup({ kind: "awaiting_session", model, requestId: ++pilotSetupRequest.current });
+  }, [publishPendingPilotSetup]);
+  const handleSessionCreated = useCallback((sessionId: string) => {
+    const pending = pendingPilotSetupRef.current;
+    if (!pending) return;
+    publishPendingPilotSetup(undefined);
+    void requestSessionPilot(sessionId, pending.model, pending.requestId)
+      .then(() => {
+        if (activeSessionIdRef.current === sessionId) {
+          window.dispatchEvent(new Event("harness-config-changed"));
+        }
+      })
+      .catch(() => {});
+  }, [publishPendingPilotSetup, requestSessionPilot]);
   const configRequest = useRef({ sessionId: activeSessionId, generation: 0 });
   if (configRequest.current.sessionId !== activeSessionId) {
     configRequest.current = { sessionId: activeSessionId, generation: configRequest.current.generation + 1 };
@@ -86,8 +149,23 @@ export default function App() {
     activeSessionId ? knownPilots.current.get(activeSessionId) : null,
   );
   const handleSessionChange = useCallback((id: string | null, expectedPreviousId?: string) => {
-    setActiveSessionId((current) => expectedPreviousId && current !== expectedPreviousId ? current : id);
-  }, []);
+    if (expectedPreviousId && activeSessionIdRef.current !== expectedPreviousId) return;
+    if (id && pendingPilotSetupRef.current) {
+      publishPendingPilotSetup(undefined);
+    }
+    activeSessionIdRef.current = id;
+    setActiveSessionId(id);
+  }, [publishPendingPilotSetup]);
+  const pilotSetup = activeSessionId
+    ? sessionPilotSetups[activeSessionId]
+    : pendingPilotSetup;
+  const pendingPilotModel = !activeSessionId ? pendingPilotSetup?.model : undefined;
+  const pilotSetupNotice = pilotSetup?.kind === "binding"
+    ? `Setting ${pilotName(pilotSetup.model)} for this session...`
+    : pilotSetup?.kind === "failed"
+      ? `Could not set ${pilotName(pilotSetup.model)}. Choose a model before sending.`
+      : undefined;
+  const pilotSelectionDisabled = pilotSetup?.kind === "binding";
   const [artifacts, setArtifacts] = useState<{ type: string; headline: string; confidence?: number }[]>([]);
   const [jobsRefresh, setJobsRefresh] = useState(0);
 
@@ -388,7 +466,12 @@ export default function App() {
           }}
         >
           <div style={{ width: displayed.leftW }} className={`shell-inset-panel shrink-0 h-full ${leftOpen ? "" : "hidden"}`}>
-            <LeftRail jobsRefresh={jobsRefresh} onSessionChange={handleSessionChange} activeSessionId={activeSessionId} />
+            <LeftRail
+              jobsRefresh={jobsRefresh}
+              onSessionChange={handleSessionChange}
+              onSessionCreated={handleSessionCreated}
+              activeSessionId={activeSessionId}
+            />
           </div>
           {leftOpen && (
               <Resizer
@@ -415,6 +498,12 @@ export default function App() {
                 <Conversation
                   config={config}
                   activeSessionId={activeSessionId}
+                  pilotSetup={pilotSetup}
+                  pendingPilotModel={pendingPilotModel}
+                  pilotSetupNotice={pilotSetupNotice}
+                  pilotSelectionDisabled={pilotSelectionDisabled}
+                  onPendingPilotModelChange={handlePendingPilotModelChange}
+                  onSessionPilotModelChange={requestSessionPilot}
                   onArtifacts={(a) => setArtifacts((prev) => [...a, ...prev])}
                   onJobChange={() => setJobsRefresh((n) => n + 1)}
                 />

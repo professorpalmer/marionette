@@ -77,6 +77,11 @@ export default function ComposerDock({
   queueItems,
   swarmLiveJobs = [],
   sessionId = "",
+  pendingPilotModel,
+  pilotSetupNotice,
+  pilotSelectionDisabled = false,
+  onPendingPilotModelChange,
+  onSessionPilotModelChange,
   queueLoadError,
   attachedDocuments = [],
   onRemoveDocument,
@@ -174,6 +179,11 @@ export default function ComposerDock({
   queueItems: ServerQueueItem[];
   swarmLiveJobs?: Job[];
   sessionId?: string;
+  pendingPilotModel?: string;
+  pilotSetupNotice?: string;
+  pilotSelectionDisabled?: boolean;
+  onPendingPilotModelChange?: (model: string) => void;
+  onSessionPilotModelChange?: (sessionId: string, model: string) => Promise<unknown>;
   queueLoadError?: string | null;
   attachedDocuments?: InputDocument[];
   onRemoveDocument?: (index: number) => void;
@@ -1081,7 +1091,16 @@ export default function ComposerDock({
               <ListChecks size={11} aria-hidden="true" />
             </button>
             <div className="pilot-picker-slot">
-              <PilotPicker key={sessionId} sessionId={sessionId} config={pickerConfig(config, sessionId)} />
+              <PilotPicker
+                key={sessionId}
+                sessionId={sessionId}
+                config={pickerConfig(config, sessionId)}
+                pendingModel={pendingPilotModel}
+                setupNotice={pilotSetupNotice}
+                modelSelectionDisabled={pilotSelectionDisabled}
+                onPendingModelChange={onPendingPilotModelChange}
+                onSessionModelChange={onSessionPilotModelChange}
+              />
             </div>
             <SwarmReasoningPicker key={sessionId} sessionId={sessionId} config={pickerConfig(config, sessionId)} />
             <button

@@ -6,9 +6,22 @@ import { REASONING_LEVELS, labelForEffort, showReasoningEffort } from "../lib/re
 import { useOverlayFocus } from "../lib/overlayFocus";
 import { getSessionCache, updateSessionCache } from "../lib/sessionCache";
 
-export default function PilotPicker({ config, sessionId = "" }: {
+export default function PilotPicker({
+  config,
+  sessionId = "",
+  pendingModel,
+  setupNotice,
+  modelSelectionDisabled = false,
+  onPendingModelChange,
+  onSessionModelChange,
+}: {
   config: Config | null;
   sessionId?: string;
+  pendingModel?: string;
+  setupNotice?: string;
+  modelSelectionDisabled?: boolean;
+  onPendingModelChange?: (model: string) => void;
+  onSessionModelChange?: (sessionId: string, model: string) => Promise<unknown>;
 }) {
   const [models, setModels] = useState<string[]>([]);
   const [current, setCurrent] = useState("");
@@ -43,7 +56,7 @@ export default function PilotPicker({ config, sessionId = "" }: {
     const nextModels = config.models?.length ? config.models : [config.driver].filter(Boolean);
     setModels(nextModels);
     setReasoning(config.reasoning_effort || "low");
-    setCurrent(config.driver);
+    setCurrent(!sessionId && pendingModel ? pendingModel : config.driver);
     if (config.driver && !nextModels.includes(config.driver)) {
       const configuredLabel = modelLabelOf(config.driver, config.model_labels) || config.driver;
       const notice = `Configured pilot ${configuredLabel} is unavailable. Select a model to change it.`;
@@ -51,7 +64,7 @@ export default function PilotPicker({ config, sessionId = "" }: {
     } else {
       setRerouteNotice(null);
     }
-  }, [config]);
+  }, [config, pendingModel, sessionId]);
 
   useEffect(() => {
     const handleOpen = () => setModelOpen(true);
@@ -96,14 +109,22 @@ export default function PilotPicker({ config, sessionId = "" }: {
   }, [sessionId, reasonOpen, reasoning]);
 
   const swap = async (m: string) => {
-    if (!sessionId) return;
+    if (modelSelectionDisabled) return;
+    if (!sessionId) {
+      setCurrent(m);
+      setModelOpen(false);
+      setRerouteNotice(null);
+      onPendingModelChange?.(m);
+      return;
+    }
     const generation = ++operation.current;
     const prev = current;
     setCurrent(m);
     setModelOpen(false);
     setRerouteNotice(null);
     try {
-      await api.swapPilot(m, sessionId);
+      if (onSessionModelChange) await onSessionModelChange(sessionId, m);
+      else await api.swapPilot(m, sessionId);
       if (generation !== operation.current) return;
       window.dispatchEvent(new Event("harness-config-changed"));
     } catch {
@@ -206,19 +227,20 @@ export default function PilotPicker({ config, sessionId = "" }: {
 
   return (
     <div className="relative inline-flex flex-col items-stretch gap-0.5 min-w-0" ref={containerRef}>
-      {rerouteNotice ? (
+      {setupNotice || rerouteNotice ? (
         <div
           role="status"
           className="text-[9.5px] text-warn/90 leading-snug px-0.5"
           data-testid="pilot-reroute-notice"
         >
-          {rerouteNotice}
+          {setupNotice || rerouteNotice}
         </div>
       ) : null}
       <div className="pilot-picker-controls relative inline-flex items-center gap-1 min-w-0">
       <div className="pilot-model-slot relative min-w-0">
         <button
           ref={modelTriggerRef}
+          disabled={modelSelectionDisabled}
           onClick={() => {
             setReasonOpen(false);
             setModelOpen((prev) => !prev);
