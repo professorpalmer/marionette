@@ -3488,7 +3488,7 @@ export default function Conversation({
       return;
     }
     if (pilotSetupBlocksDispatch(setup, activeSessionIdRef.current)) {
-      setEditNotice(pilotSetupNotice);
+      setEditNotice(pilotSetupNotice || "The selected pilot is not ready for this session.");
       return;
     }
     const raw = input;
