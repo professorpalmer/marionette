@@ -96,9 +96,15 @@ import {
 } from "./leftRailSessions";
 import { Section, IconBtn, Empty, JobStatusIcon, RunnerStatusDot, type JobStatus } from "./leftRailPrimitives";
 
-export default function LeftRail({ jobsRefresh, onSessionChange, activeSessionId: shownSessionId }: {
+export default function LeftRail({
+  jobsRefresh,
+  onSessionChange,
+  onSessionCreated,
+  activeSessionId: shownSessionId,
+}: {
   jobsRefresh: number;
   onSessionChange?: (id: string | null, expectedPreviousId?: string) => void;
+  onSessionCreated?: (id: string) => void;
   /** The session Conversation is showing. */
   activeSessionId?: string | null;
 }) {
@@ -543,6 +549,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange, activeSessionId
     setSessionLoadStates((prev) => ({ ...prev, [target]: "ready" }));
     setSessionsCacheEpoch((n) => n + 1);
     requestedSessionIdRef.current = created.id;
+    if (seededEmpty) onSessionCreated?.(created.id);
     onSessionChange?.(created.id);
   };
 
@@ -1105,7 +1112,9 @@ export default function LeftRail({ jobsRefresh, onSessionChange, activeSessionId
       publishActiveSession(created, target, true);
       void refreshSessionsRef.current();
     } catch (err) {
-      notifySessionActivationBlocked(err);
+      if (!notifySessionActivationBlocked(err)) {
+        toast("Could not create session -- try again");
+      }
     } finally {
       pendingSessionRoots.current.delete(target);
       setSessionsCacheEpoch((n) => n + 1);

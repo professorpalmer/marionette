@@ -76,15 +76,17 @@ it('publishes a resolved project without waiting for other project reads', async
 });
 
 it('publishes the server row and identity before background lists finish', async () => {
+  const sessionCreated = vi.fn();
   const changed = vi.fn((id: string) => {
     if (id === created.id) expect(readSWRCache<Session[]>('sessions:/workspace')?.find(row => row.id === id)?.active).toBe(true);
   });
-  render(<LeftRail jobsRefresh={0} onSessionChange={changed} />);
+  render(<LeftRail jobsRefresh={0} onSessionChange={changed} onSessionCreated={sessionCreated} />);
   await screen.findByRole('button', { name: 'Current', exact: true });
   vi.mocked(api.sessions).mockImplementation(() => new Promise(() => {}));
   await act(async () => { fireEvent.click(screen.getByLabelText('New session in workspace')); });
   expect(screen.getByRole('button', { name: 'Server title', exact: true })).toHaveAttribute('aria-current', 'true');
   expect(changed).toHaveBeenLastCalledWith('server-id');
+  expect(sessionCreated).toHaveBeenCalledExactlyOnceWith('server-id');
 });
 it('hides the empty CTA while archive replacement is pending', async () => {
   const next = deferred<Session>();
@@ -151,6 +153,23 @@ it('keeps lease exhaustion visible when automatic replacement cannot start', asy
   expect(screen.getByText(/too many sessions are busy right now/)).toBeVisible();
   expect(screen.queryByTitle('Open workspace and start a session')).toBeNull();
   expect(screen.getByLabelText('New session in workspace')).toBeEnabled();
+});
+
+it('reports a generic session creation failure without publishing a session', async () => {
+  const sessionCreated = vi.fn();
+  const toast = vi.fn();
+  window.addEventListener('harness-toast', toast);
+  vi.mocked(api.createSession).mockRejectedValue(new Error('offline'));
+  render(<LeftRail jobsRefresh={0} onSessionCreated={sessionCreated} />);
+  await screen.findByRole('button', { name: 'Current', exact: true });
+  await act(async () => { fireEvent.click(screen.getByLabelText('New session in workspace')); });
+  expect(sessionCreated).not.toHaveBeenCalled();
+  expect(toast).toHaveBeenCalledTimes(1);
+  const event = toast.mock.calls[0][0];
+  expect(event).toBeInstanceOf(CustomEvent);
+  if (!(event instanceof CustomEvent)) throw new Error('expected toast event');
+  expect(event.detail).toBe('Could not create session -- try again');
+  window.removeEventListener('harness-toast', toast);
 });
 
 it('opens an authoritative empty project once and publishes its usable session immediately', async () => {

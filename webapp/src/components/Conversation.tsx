@@ -113,6 +113,8 @@ import {
   steerResultChrome,
   steerTranscriptItem,
   userOrdinalBeforeIndex,
+  pilotSetupBlocksDispatch,
+  type PilotSetupGate,
 } from "./conversation/composerSend";
 import { runCommandPaletteAction } from "../lib/commandPalette";
 import { focusSettingsPage } from "./SettingsShell";
@@ -265,12 +267,34 @@ export default function Conversation({
   activeSessionId,
   onArtifacts,
   onJobChange,
+  pilotSetup,
+  pendingPilotModel,
+  pilotSetupNotice,
+  pilotSelectionDisabled,
+  onPendingPilotModelChange,
+  onSessionPilotModelChange,
 }: {
   config: Config | null;
   activeSessionId: string | null;
   onArtifacts: (a: { type: string; headline: string }[]) => void;
   onJobChange: () => void;
+  pilotSetup?: PilotSetupGate;
+  pendingPilotModel?: string;
+  pilotSetupNotice?: string;
+  pilotSelectionDisabled?: boolean;
+  onPendingPilotModelChange?: (model: string) => void;
+  onSessionPilotModelChange?: (sessionId: string, model: string) => Promise<unknown>;
 }) {
+  const pilotSetupRef = useRef(pilotSetup);
+  pilotSetupRef.current = pilotSetup;
+  const pendingInitialSendRef = useRef<{
+    requestId: number;
+    draft: string;
+    sessionId?: string;
+  } | null>(null);
+  const cancelPendingInitialSend = () => {
+    pendingInitialSendRef.current = null;
+  };
   const { store: metadataStore, state: metadata } = useSharedJobMetadata();
   const openSwarmJob = useOpenSwarmJob(activeSessionId ?? "");
   const [items, setRenderedItems] = useState<Item[]>([]);
@@ -2270,6 +2294,7 @@ export default function Conversation({
   };
 
   const handleInputChange = (val: string, cursorPosition: number) => {
+    cancelPendingInitialSend();
     setInput(val);
     const trigger = detectComposerTrigger(val, cursorPosition);
     if (trigger.kind === "slash") {
@@ -2301,6 +2326,7 @@ export default function Conversation({
       if (item.type.startsWith("image/")) {
         const file = item.getAsFile();
         if (file) {
+          cancelPendingInitialSend();
           e.preventDefault(); // prevent pasting binary junk text
           if (addedCount >= 8) {
             flashUploadError("Maximum 8 images allowed per message");
@@ -2353,6 +2379,7 @@ export default function Conversation({
     const uploadLive = () => activeSessionIdRef.current === uploadSid && sessionEpochRef.current === uploadGen;
     const files = Array.from(e.dataTransfer.files);
     if (files.length === 0) return;
+    cancelPendingInitialSend();
     const items = Array.from(e.dataTransfer.items || []);
 
     setUploadError(null);
@@ -3064,6 +3091,8 @@ export default function Conversation({
       transcriptStale,
       resume,
       userStopped: userStoppedRef.current || stopInputHoldRef.current,
+      pilotSetup: pilotSetupRef.current,
+      activeSessionId: activeSessionIdRef.current,
     });
     if (gate === "stale") {
       recoveryDispatchingRef.current = false;
@@ -3073,6 +3102,10 @@ export default function Conversation({
       // Keep-alive after Stop must not re-arm the turn.
       resumeQueuedRef.current = false;
       recoveryDispatchingRef.current = false;
+      return;
+    }
+    if (gate === "pilot_setup") {
+      setEditNotice(pilotSetupNotice || "The selected pilot is not ready for this session.");
       return;
     }
     if (!resume) {
@@ -3327,6 +3360,7 @@ export default function Conversation({
   // background-job continuation is pending, let it run first (it re-enters here
   // when it finishes).
   const maybeDrainQueue = () => {
+    if (pilotSetupBlocksDispatch(pilotSetupRef.current, activeSessionIdRef.current)) return;
     if (queueDrainPendingRef.current || queueReadBlockedRef.current || userStoppedRef.current || stopInputHoldRef.current) return;
     if (cancelRef.current || resumeQueuedRef.current) return;
     const next = queueItemsRef.current[0];
@@ -3446,6 +3480,17 @@ export default function Conversation({
 
   const send = (mode?: "interrupt") => {
     if (editBusy) return;
+    const setup = pilotSetupRef.current;
+    if (setup?.kind === "awaiting_session" && !activeSessionIdRef.current) {
+      pendingInitialSendRef.current = { requestId: setup.requestId, draft: input };
+      setEditNotice("Creating a session for the selected pilot...");
+      window.dispatchEvent(new Event("harness-new-session"));
+      return;
+    }
+    if (pilotSetupBlocksDispatch(setup, activeSessionIdRef.current)) {
+      setEditNotice(pilotSetupNotice);
+      return;
+    }
     const raw = input;
     const sid = activeSessionIdRef.current || "_draft";
     const msg = applyTerminalSelectionsToMessage(raw, peekTerminalSelections(sid));
@@ -3972,6 +4017,57 @@ export default function Conversation({
   handleEditMessageRef.current = handleEditMessage;
   const executeSendRef = useRef(executeSend);
   executeSendRef.current = executeSend;
+  const sendRef = useRef(send);
+  sendRef.current = send;
+  useEffect(() => {
+    const pending = pendingInitialSendRef.current;
+    if (!pending) return;
+    if (pending.sessionId && activeSessionId !== pending.sessionId) {
+      pendingInitialSendRef.current = null;
+      return;
+    }
+    if (pilotSetup && pending.requestId !== pilotSetup.requestId) {
+      pendingInitialSendRef.current = null;
+      return;
+    }
+    if (!pilotSetup || pilotSetup.kind === "awaiting_session") return;
+    pending.sessionId ??= pilotSetup.sessionId;
+    if (activeSessionId !== pilotSetup.sessionId) {
+      pendingInitialSendRef.current = null;
+      return;
+    }
+    setInput(current => {
+      const restored = current || pending.draft;
+      composerInputRef.current = restored;
+      return restored;
+    });
+    if (pilotSetup.kind === "binding") return;
+    if (pilotSetup.kind === "failed") {
+      pendingInitialSendRef.current = null;
+      return;
+    }
+    if (transcriptStale) return;
+    const timer = window.setTimeout(() => {
+      if (pendingInitialSendRef.current !== pending) return;
+      if (composerInputRef.current !== pending.draft) {
+        pendingInitialSendRef.current = null;
+        return;
+      }
+      pendingInitialSendRef.current = null;
+      setEditNotice(null);
+      sendRef.current();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [activeSessionId, pilotSetup, transcriptStale]);
+  useEffect(() => {
+    const clearAfterCreateFailure = (event: Event) => {
+      if ((event as CustomEvent<unknown>).detail === "Could not create session -- try again") {
+        pendingInitialSendRef.current = null;
+      }
+    };
+    window.addEventListener("harness-toast", clearAfterCreateFailure);
+    return () => window.removeEventListener("harness-toast", clearAfterCreateFailure);
+  }, []);
   const setCardRef = useRef(setCard);
   setCardRef.current = setCard;
 
@@ -4270,9 +4366,17 @@ export default function Conversation({
         queueItems={queueItems}
         swarmLiveJobs={swarmLiveJobs}
         sessionId={activeSessionId || cachedSessionIdRef.current || ""}
+        pendingPilotModel={pendingPilotModel}
+        pilotSetupNotice={pilotSetupNotice}
+        pilotSelectionDisabled={pilotSelectionDisabled}
+        onPendingPilotModelChange={onPendingPilotModelChange}
+        onSessionPilotModelChange={onSessionPilotModelChange}
         queueLoadError={queueWriteError || queueLoadError}
         attachedDocuments={attachedDocuments}
-        onRemoveDocument={index => setAttachedDocuments(current => current.filter((_, i) => i !== index))}
+        onRemoveDocument={index => {
+          cancelPendingInitialSend();
+          setAttachedDocuments(current => current.filter((_, i) => i !== index));
+        }}
         queueRecovery={queueRecovery}
         onCopyQueueRecovery={(text) => {
           setInput((draft) => draft ? `${draft}\n\n${text}` : text);
@@ -4311,7 +4415,10 @@ export default function Conversation({
         onSetShowContextPanel={setShowContextPanel}
         onSetSelectedFileIndex={setSelectedFileIndex}
         onSetSelectedSlashIndex={setSelectedSlashIndex}
-        onSetAttachedImages={setAttachedImages}
+        onSetAttachedImages={update => {
+          cancelPendingInitialSend();
+          setAttachedImages(update);
+        }}
         onSetUploadError={setUploadError}
         onSetLightboxUrl={setLightboxUrl}
         setSafeTimeout={setSafeTimeout}

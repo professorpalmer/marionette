@@ -7,6 +7,7 @@ import { api, type InputReceipt, type ServerQueueItem } from '../lib/api';
 import { withEndpointDiscovery } from './endpointFixture';
 import { clearComposerAttachmentCache } from '../components/conversation/composerAttachmentCache';
 import { clearComposerDraftCache } from '../components/conversation/composerDraftCache';
+import type { PilotSetupGate } from '../components/conversation/composerSend';
 
 vi.mock('../components/PilotPicker', () => ({ default: () => null }));
 vi.mock('../components/SwarmReasoningPicker', () => ({ default: () => null }));
@@ -18,7 +19,7 @@ const original: InputReceipt = {
     { ref: 'input:A:document', kind: 'document', name: 'notes.txt', byte_length: 20, sha256: 'document' },
   ], model: 'stamped', payload_digest: 'payload', created_at: 1, status: 'uncertain', reason: 'interrupted', held: true,
 };
-async function mount(items: ServerQueueItem[] = [], receipts: InputReceipt[] = []) {
+async function mount(items: ServerQueueItem[] = [], receipts: InputReceipt[] = [], pilotSetupNotice?: string) {
   vi.stubGlobal('fetch', withEndpointDiscovery(async (input) => {
     const path = String(input).split('?')[0];
     const payload = path === '/api/session/queue' ? { ok: true, session_id: 'A', items, held_items: [{ id: 'held', text: 'never drain' }], receipts, recovery: [] }
@@ -30,10 +31,26 @@ async function mount(items: ServerQueueItem[] = [], receipts: InputReceipt[] = [
     return Response.json(payload);
   }));
   const props = { config: null, onArtifacts: () => {}, onJobChange: () => {} };
-  const view = render(<Conversation {...props} activeSessionId="A" />);
+  const initialPilotSetup: PilotSetupGate | undefined = pilotSetupNotice
+    ? { kind: 'binding', model: 'local:mlx-community/Bonsai2-27B', sessionId: 'A', requestId: 1 }
+    : undefined;
+  const view = render(<Conversation {...props} activeSessionId="A" pilotSetup={initialPilotSetup} pilotSetupNotice={pilotSetupNotice} />);
   await act(async () => { await Promise.resolve(); });
   const input = screen.getByPlaceholderText('Message the pilot...');
-  return { input, switchTo: async (id: string) => { view.rerender(<Conversation {...props} activeSessionId={id} />); await act(async () => { await Promise.resolve(); }); } };
+  return {
+    input,
+    switchTo: async (id: string) => {
+      view.rerender(<Conversation {...props} activeSessionId={id} pilotSetup={initialPilotSetup} pilotSetupNotice={pilotSetupNotice} />);
+      await act(async () => { await Promise.resolve(); });
+    },
+    setPilotSetupNotice: async (notice?: string) => {
+      const nextPilotSetup: PilotSetupGate | undefined = notice
+        ? { kind: 'binding', model: 'local:mlx-community/Bonsai2-27B', sessionId: 'A', requestId: 1 }
+        : undefined;
+      view.rerender(<Conversation {...props} activeSessionId="A" pilotSetup={nextPilotSetup} pilotSetupNotice={notice} />);
+      await act(async () => { await Promise.resolve(); });
+    },
+  };
 }
 function queue() { fireEvent.click(screen.getByRole('button', { name: 'Queue', exact: true })); }
 async function send() {
@@ -62,6 +79,28 @@ function streamMock() {
 it('does not surface saved input receipts in the composer', async () => {
   await mount([], [original]);
   expect(screen.queryByText(/Saved inputs/)).toBeNull();
+});
+
+it('blocks first dispatch while the new session pilot is not ready', async () => {
+  const stream = streamMock();
+  const { input } = await mount([], [], 'Setting Bonsai2-27B for this session...');
+  fireEvent.change(input, { target: { value: 'use the selected model' } });
+  await send();
+  expect(stream.chat).not.toHaveBeenCalled();
+  expect(screen.getByText('Setting Bonsai2-27B for this session...')).toBeVisible();
+});
+
+it('does not hand off a queued prompt while the exact session pilot is binding', async () => {
+  const handoff = vi.spyOn(api, 'queueHandoff');
+  const stream = streamMock();
+  const { input, setPilotSetupNotice } = await mount([{ id: 'next', text: 'queued' }]);
+  fireEvent.change(input, { target: { value: 'first turn' } });
+  await send();
+  await setPilotSetupNotice('Setting Bonsai2-27B for this session...');
+  await stream.finish();
+  await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 80)); });
+  expect(handoff).not.toHaveBeenCalled();
+  expect(stream.chat).toHaveBeenCalledTimes(1);
 });
 
 it('refuses image overflow before changing the draft or removing a queued original', async () => {
