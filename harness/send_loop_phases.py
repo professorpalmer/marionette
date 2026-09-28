@@ -2059,7 +2059,7 @@ def yield_session_interrupted(session: Any) -> Iterator[Any]:
 
 
 def _receipt_identity_kwargs(resp: Any, driver: str) -> Dict[str, Any]:
-    """Pull requested/served identity + token totals off a driver response."""
+    """Pull provider identity, omitted controls, and token totals off a response."""
     meta = getattr(resp, "meta", None) if resp is not None else None
     if not isinstance(meta, dict):
         meta = {}
@@ -2092,6 +2092,9 @@ def _receipt_identity_kwargs(resp: Any, driver: str) -> Dict[str, Any]:
             value = meta.get(key)
             if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
                 out[key] = value
+    omitted_controls = meta.get("omitted_provider_controls")
+    if isinstance(omitted_controls, list):
+        out["omitted_provider_controls"] = omitted_controls
     return out
 
 

@@ -518,6 +518,7 @@ def build_receipt(
     cache_read_tokens: Any = None,
     cache_write_tokens: Any = None,
     token_basis: Any = "",
+    omitted_provider_controls: Any = None,
     terminal_cause: Any = "",
     finish_reason: Any = "",
     incomplete_reason: Any = "",
@@ -590,6 +591,16 @@ def build_receipt(
     basis = str(token_basis or "").strip().lower()
     if basis in RECEIPT_TOKEN_BASES:
         receipt["token_basis"] = basis
+    if isinstance(omitted_provider_controls, list):
+        control_names = []
+        for raw_name in omitted_provider_controls[:32]:
+            name = _safe_label(raw_name)
+            if (name and (name[0].isalpha() or name[0] == "_")
+                    and all(char.isalnum() or char in "._-" for char in name)
+                    and name not in control_names):
+                control_names.append(name)
+        if control_names:
+            receipt["omitted_provider_controls"] = control_names
     cause = canonicalize_terminal_cause(terminal_cause)
     if cause and cause in TERMINAL_CAUSES:
         receipt["terminal_cause"] = cause
@@ -651,6 +662,7 @@ def sanitize_receipt(raw: Any) -> Optional[Dict[str, Any]]:
         cache_read_tokens=raw.get("cache_read_tokens"),
         cache_write_tokens=raw.get("cache_write_tokens"),
         token_basis=raw.get("token_basis", ""),
+        omitted_provider_controls=raw.get("omitted_provider_controls"),
         terminal_cause=raw.get("terminal_cause", ""),
         finish_reason=raw.get("finish_reason", ""),
         incomplete_reason=raw.get("incomplete_reason", ""),
