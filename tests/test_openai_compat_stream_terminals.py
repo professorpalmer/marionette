@@ -1,17 +1,23 @@
 """Fail-closed OpenAI chat Completions stream terminals.
 
 Shared parser contract for Ox Alpha / OpenRouter / OpenCode Go hosts.
-Hermetic: no network.
+Hermetic except for owned loopback-socket deadline tests; no external network.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+import http.client
 import io
 import json
+import socket
+import threading
+import time
 import urllib.error
 import urllib.request
 
 import pytest
 
+import pmharness.drivers.openai_compat as openai_compat
 from pmharness.drivers.openai_compat import (
     OpenAICompatDriver,
     _consume_openai_chat_sse,
@@ -41,6 +47,20 @@ class _SseResp:
 
     def __iter__(self):
         return iter(self._lines)
+
+
+class _OwnedReadSocket:
+    def __init__(self, released=None):
+        self.released = released
+        self.shutdown_calls = 0
+
+    def settimeout(self, _seconds):
+        return None
+
+    def shutdown(self, _how):
+        self.shutdown_calls += 1
+        if self.released is not None:
+            self.released.set()
 
 
 def _data(payload) -> bytes:
@@ -1054,11 +1074,25 @@ def test_finish_reason_without_done_settles_when_end_on_finish():
     assert parsed["stream_started"] is True
 
 
-def test_llama_cpp_omits_stream_options_and_stops_on_finish(monkeypatch):
+def test_llama_cpp_requests_and_drains_trailing_usage(monkeypatch):
     captured = {}
-    hung = {"n": 0}
 
     class _LazySse:
+        def __init__(self):
+            self._sock = _OwnedReadSocket()
+            self._tail = io.BytesIO(
+                b"\n"
+                + _data({
+                    "choices": [],
+                    "usage": {
+                        "prompt_tokens": 3741,
+                        "completion_tokens": 32768,
+                        "prompt_tokens_details": {"cached_tokens": 2622},
+                    },
+                })
+                + b"\ndata: [DONE]\n\n"
+            )
+
         def __enter__(self):
             return self
 
@@ -1069,11 +1103,12 @@ def test_llama_cpp_omits_stream_options_and_stops_on_finish(monkeypatch):
             yield _data({
                 "choices": [{"delta": {"content": "pong"}, "finish_reason": "stop"}],
             })
-            while True:
-                hung["n"] += 1
-                if hung["n"] > 50:
-                    raise AssertionError("llama-cpp parser waited for [DONE]")
-                yield b": keepalive\n"
+
+        def settimeout(self, _seconds):
+            return None
+
+        def read1(self, size):
+            return self._tail.read(size)
 
     def fake_urlopen(req, timeout=None):
         captured["body"] = json.loads(req.data.decode("utf-8"))
@@ -1086,17 +1121,801 @@ def test_llama_cpp_omits_stream_options_and_stops_on_finish(monkeypatch):
         model="qwen38-cyber",
         base_url="http://127.0.0.1:8080/v1",
         api_key_env="LLAMA_CPP_API_KEY",
+        extra_body={"stream_options": {"include_usage": True, "future": "ok"}},
     )
     resp = driver.chat_stream(
         [{"role": "user", "content": "ping"}],
         on_delta=lambda _t: None,
     )
-    assert "stream_options" not in captured["body"]
+    assert captured["body"]["stream_options"] == {
+        "include_usage": True,
+        "future": "ok",
+    }
     assert resp.error is None
     assert resp.text == "pong"
+    assert resp.tokens_in == 3741
+    assert resp.tokens_out == 32768
+    assert resp.meta["cache_read_tokens"] == 2622
+    assert resp.meta["raw_usage"]["completion_tokens"] == 32768
     assert resp.meta["finish_reason"] == "stop"
     assert resp.meta["stream_terminal"] == "stop"
     assert resp.meta["saw_done"] is False
+
+
+def test_llama_cpp_usage_on_finish_does_not_read_a_tail(monkeypatch):
+    class _UsageOnFinish:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def __iter__(self):
+            yield _data({
+                "choices": [{"delta": {"content": "pong"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 1},
+            })
+
+        def read1(self, _size):
+            raise AssertionError("usage on the terminal event must not drain a tail")
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _UsageOnFinish())
+    driver = OpenAICompatDriver(
+        name="llama-cpp:qwen",
+        model="qwen",
+        base_url="http://127.0.0.1:8080/v1",
+        api_key_env="UNUSED",
+    )
+    resp = driver.chat_stream(
+        [{"role": "user", "content": "ping"}], on_delta=lambda _t: None,
+    )
+    assert resp.error is None
+    assert (resp.tokens_in, resp.tokens_out) == (3, 1)
+
+
+def test_llama_cpp_done_without_finish_does_not_read_a_tail(monkeypatch):
+    class _DoneWithoutFinish:
+        _sock = _OwnedReadSocket()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def __iter__(self):
+            yield _data({"choices": [{"delta": {"content": "partial"}}]})
+            yield b"data: [DONE]\n"
+
+        def read1(self, _size):
+            raise AssertionError("[DONE] without a finish_reason must not drain")
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _DoneWithoutFinish())
+    driver = OpenAICompatDriver(
+        name="llama-cpp:qwen",
+        model="qwen",
+        base_url="http://127.0.0.1:8080/v1",
+        api_key_env="UNUSED",
+    )
+    resp = driver.chat_stream(
+        [{"role": "user", "content": "ping"}], on_delta=lambda _t: None,
+    )
+    assert resp.error
+    assert resp.text == "partial"
+    assert resp.meta["finish_reason"] == ""
+
+
+def test_llama_cpp_missing_terminal_does_not_read_a_tail(monkeypatch):
+    class _MissingTerminal:
+        _sock = _OwnedReadSocket()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def __iter__(self):
+            yield _data({"choices": [{"delta": {"content": "partial"}}]})
+
+        def read1(self, _size):
+            raise AssertionError("a stream without a terminal must not drain")
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _MissingTerminal())
+    driver = OpenAICompatDriver(
+        name="llama-cpp:qwen",
+        model="qwen",
+        base_url="http://127.0.0.1:8080/v1",
+        api_key_env="UNUSED",
+    )
+    resp = driver.chat_stream(
+        [{"role": "user", "content": "ping"}], on_delta=lambda _t: None,
+    )
+    assert resp.error
+    assert resp.text == "partial"
+    assert resp.meta["stream_terminal"] == "incomplete"
+
+
+def test_llama_cpp_tail_without_owned_socket_is_unavailable(monkeypatch):
+    class _NoInterruptSeam:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def __iter__(self):
+            yield _data({
+                "choices": [{"delta": {"content": "pong"}, "finish_reason": "stop"}],
+            })
+
+        def read1(self, _size):
+            raise AssertionError("an uninterruptible tail must not be read")
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _NoInterruptSeam())
+    driver = OpenAICompatDriver(
+        name="llama-cpp:qwen",
+        model="qwen",
+        base_url="http://127.0.0.1:8080/v1",
+        api_key_env="UNUSED",
+    )
+    resp = driver.chat_stream(
+        [{"role": "user", "content": "ping"}], on_delta=lambda _t: None,
+    )
+    assert resp.error is None
+    assert resp.text == "pong"
+    assert resp.tokens_in == 0
+    assert resp.tokens_out == 0
+
+
+@pytest.mark.parametrize("tail", [b"", b"\ndata: [DONE]\n\n", b"\ndata: not-json\n\n"])
+def test_llama_cpp_missing_or_malformed_usage_preserves_finish(monkeypatch, tail):
+    class _Tail:
+        def __init__(self):
+            self._sock = _OwnedReadSocket()
+            self.tail = io.BytesIO(tail)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def __iter__(self):
+            yield _data({
+                "choices": [{"delta": {"content": "partial"}, "finish_reason": "length"}],
+            })
+
+        def settimeout(self, _seconds):
+            return None
+
+        def read1(self, size):
+            return self.tail.read(size)
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _Tail())
+    driver = OpenAICompatDriver(
+        name="llama-cpp:qwen",
+        model="qwen",
+        base_url="http://127.0.0.1:8080/v1",
+        api_key_env="UNUSED",
+        max_tokens=0,
+    )
+    resp = driver.chat_stream(
+        [{"role": "user", "content": "ping"}], on_delta=lambda _t: None,
+    )
+    assert resp.meta["finish_reason"] == "length"
+    assert resp.meta["stream_terminal"] == "length"
+    assert resp.error
+    assert resp.tokens_in == 0
+    assert resp.tokens_out == 0
+
+
+def test_llama_cpp_tail_never_appends_text_tools_or_later_finish(monkeypatch):
+    trailing_junk = _data({
+        "choices": [{
+            "delta": {
+                "content": "must not appear",
+                "tool_calls": [{
+                    "index": 0,
+                    "id": "late",
+                    "function": {"name": "read_file", "arguments": "{}"},
+                }],
+            },
+            "finish_reason": "tool_calls",
+        }],
+    })
+
+    class _Tail:
+        def __init__(self):
+            self._sock = _OwnedReadSocket()
+            self.tail = io.BytesIO(b"\n" + trailing_junk + b"\ndata: [DONE]\n\n")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def __iter__(self):
+            yield _data({
+                "choices": [{"delta": {"content": "answer"}, "finish_reason": "stop"}],
+            })
+
+        def settimeout(self, _seconds):
+            return None
+
+        def read1(self, size):
+            return self.tail.read(size)
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _Tail())
+    driver = OpenAICompatDriver(
+        name="llama-cpp:qwen",
+        model="qwen",
+        base_url="http://127.0.0.1:8080/v1",
+        api_key_env="UNUSED",
+    )
+    resp = driver.chat_stream(
+        [{"role": "user", "content": "ping"}], on_delta=lambda _t: None,
+    )
+    assert resp.error is None
+    assert resp.text == "answer"
+    assert resp.meta["finish_reason"] == "stop"
+    assert resp.meta["tool_calls"] == []
+
+
+def test_llama_cpp_without_usage_request_keeps_early_finish(monkeypatch):
+    class _NoUsageDriver(OpenAICompatDriver):
+        def _build_chat_body(self, *args, **kwargs):
+            body = super()._build_chat_body(*args, **kwargs)
+            body.pop("stream_options", None)
+            return body
+
+    class _FinishThenFail:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def __iter__(self):
+            yield _data({
+                "choices": [{"delta": {"content": "pong"}, "finish_reason": "stop"}],
+            })
+            raise AssertionError("no-usage request read beyond the finish event")
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _FinishThenFail())
+    driver = _NoUsageDriver(
+        name="llama-cpp:qwen",
+        model="qwen",
+        base_url="http://127.0.0.1:8080/v1",
+        api_key_env="UNUSED",
+    )
+    resp = driver.chat_stream(
+        [{"role": "user", "content": "ping"}], on_delta=lambda _t: None,
+    )
+    assert resp.error is None
+    assert resp.text == "pong"
+
+
+def test_llama_cpp_oversized_tail_stops_without_changing_finish(monkeypatch):
+    class _OversizedTail:
+        def __init__(self):
+            self._sock = _OwnedReadSocket()
+            self.remaining = openai_compat._LLAMA_CPP_USAGE_TAIL_BYTES + 4096
+            self.read_bytes = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def __iter__(self):
+            yield _data({
+                "choices": [{"delta": {"content": "pong"}, "finish_reason": "stop"}],
+            })
+
+        def settimeout(self, _seconds):
+            return None
+
+        def read1(self, size):
+            chunk = b"x" * min(size, self.remaining)
+            self.remaining -= len(chunk)
+            self.read_bytes += len(chunk)
+            return chunk
+
+    response = _OversizedTail()
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: response)
+    driver = OpenAICompatDriver(
+        name="llama-cpp:qwen",
+        model="qwen",
+        base_url="http://127.0.0.1:8080/v1",
+        api_key_env="UNUSED",
+    )
+    resp = driver.chat_stream(
+        [{"role": "user", "content": "ping"}], on_delta=lambda _t: None,
+    )
+    assert resp.error is None
+    assert resp.meta["finish_reason"] == "stop"
+    assert response.read_bytes == openai_compat._LLAMA_CPP_USAGE_TAIL_BYTES
+
+
+def test_llama_cpp_length_with_complete_then_partial_calls_stays_withheld(monkeypatch):
+    calls = {"count": 0}
+
+    class _Tail:
+        def __init__(self):
+            self._sock = _OwnedReadSocket()
+            self.tail = io.BytesIO(b"\n" + _data({
+                "choices": [],
+                "usage": {"prompt_tokens": 8, "completion_tokens": 4},
+            }))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def __iter__(self):
+            yield _data({
+                "choices": [{
+                    "delta": {"tool_calls": [{
+                        "index": 0,
+                        "id": "complete",
+                        "function": {"name": "read_file", "arguments": "{}"},
+                    }, {
+                        "index": 1,
+                        "id": "partial",
+                        "function": {"name": "read_file", "arguments": '{"path":'},
+                    }]},
+                    "finish_reason": "length",
+                }],
+            })
+
+        def settimeout(self, _seconds):
+            return None
+
+        def read1(self, size):
+            return self.tail.read(size)
+
+    def fake_urlopen(*_args, **_kwargs):
+        calls["count"] += 1
+        return _Tail()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    driver = OpenAICompatDriver(
+        name="vendor-qwen",
+        model="qwen",
+        base_url="http://127.0.0.1:8080/v1",
+        api_key_env="UNUSED",
+        vendor="llamacpp",
+    )
+    resp = driver.chat_stream(
+        [{"role": "user", "content": "ping"}],
+        tools=[{"type": "function", "function": {"name": "read_file"}}],
+        on_delta=lambda _t: None,
+    )
+    assert calls["count"] == 1
+    assert resp.meta["finish_reason"] == "length"
+    assert resp.meta["stream_terminal"] == "length"
+    assert resp.meta["tool_calls"] == []
+    assert len(resp.meta["incomplete_tool_calls"]) == 2
+    assert (resp.tokens_in, resp.tokens_out) == (8, 4)
+
+
+def test_llama_cpp_tail_watchdog_interrupts_and_joins(monkeypatch):
+    released = threading.Event()
+
+    class _BlockedTail:
+        def __init__(self):
+            self._sock = _OwnedReadSocket(released)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def __iter__(self):
+            yield _data({
+                "choices": [{"delta": {"content": "pong"}, "finish_reason": "stop"}],
+            })
+
+        def read1(self, _size):
+            assert released.wait(1.0)
+            return b""
+
+    response = _BlockedTail()
+    monkeypatch.setattr(openai_compat, "_LLAMA_CPP_USAGE_TAIL_SECONDS", 0.02)
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: response)
+    driver = OpenAICompatDriver(
+        name="llama-cpp:qwen",
+        model="qwen",
+        base_url="http://127.0.0.1:8080/v1",
+        api_key_env="UNUSED",
+    )
+    started = time.monotonic()
+    resp = driver.chat_stream(
+        [{"role": "user", "content": "ping"}], on_delta=lambda _t: None,
+    )
+    assert time.monotonic() - started < 0.2
+    assert response._sock.shutdown_calls == 1
+    assert not any(
+        thread.name == "llama-cpp-usage-tail-deadline"
+        for thread in threading.enumerate()
+    )
+    assert resp.error is None
+    assert resp.text == "pong"
+
+
+def test_llama_cpp_httpresponse_chunk_header_is_absolutely_bounded(monkeypatch):
+    client, server = socket.socketpair()
+    stop = threading.Event()
+
+    terminal = _data({
+        "choices": [{"delta": {"content": "pong"}, "finish_reason": "stop"}],
+    }) + b"\n"
+
+    def serve():
+        with server:
+            try:
+                server.sendall(
+                    b"HTTP/1.1 200 OK\r\n"
+                    b"Content-Type: text/event-stream\r\n"
+                    b"Transfer-Encoding: chunked\r\n"
+                    b"Connection: close\r\n\r\n"
+                    + f"{len(terminal):x}\r\n".encode("ascii")
+                    + terminal
+                    + b"\r\n"
+                )
+                for _ in range(100):
+                    if stop.wait(0.01):
+                        return
+                    server.sendall(b"1")
+            except OSError:
+                return
+
+    server_thread = threading.Thread(target=serve, daemon=True)
+    server_thread.start()
+    raw_response = http.client.HTTPResponse(client)
+    raw_response.begin()
+    monkeypatch.setattr(openai_compat, "_LLAMA_CPP_USAGE_TAIL_SECONDS", 0.05)
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: raw_response)
+    driver = OpenAICompatDriver(
+        name="llama-cpp:qwen",
+        model="qwen",
+        base_url="http://127.0.0.1:8080/v1",
+        api_key_env="UNUSED",
+    )
+    started = time.monotonic()
+    try:
+        resp = driver.chat_stream(
+            [{"role": "user", "content": "ping"}], on_delta=lambda _t: None,
+        )
+        elapsed = time.monotonic() - started
+    finally:
+        stop.set()
+        client.close()
+        server_thread.join(timeout=2.0)
+
+    assert not server_thread.is_alive()
+    assert elapsed < 0.3
+    assert resp.error is None
+    assert resp.text == "pong"
+    assert resp.meta["finish_reason"] == "stop"
+    assert not any(
+        thread.name == "llama-cpp-usage-tail-deadline"
+        for thread in threading.enumerate()
+    )
+
+
+@pytest.mark.parametrize("rejected_param", [
+    "stream_options",
+    "stream_options.include_usage",
+    "include_usage",
+])
+def test_llama_cpp_stream_options_400_falls_back_once_and_stays_omitted(
+    monkeypatch, rejected_param,
+):
+    bodies = []
+
+    class _JsonResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps({
+                "choices": [{
+                    "message": {"content": "fallback", "tool_calls": []},
+                    "finish_reason": "stop",
+                }],
+                "usage": {"prompt_tokens": 4, "completion_tokens": 1},
+            }).encode("utf-8")
+
+    def fake_urlopen(req, timeout=None):
+        body = json.loads(req.data.decode("utf-8"))
+        bodies.append(body)
+        if len(bodies) == 1:
+            detail = json.dumps({
+                "error": {
+                    "param": rejected_param,
+                    "message": "unsupported stream_options value secret-value",
+                },
+            }).encode("utf-8")
+            raise urllib.error.HTTPError(
+                req.full_url, 400, "bad", {}, io.BytesIO(detail),
+            )
+        if body.get("stream") is True:
+            return _SseResp([
+                _data({
+                    "choices": [{
+                        "delta": {"content": "next"},
+                        "finish_reason": "stop",
+                    }],
+                }),
+            ])
+        return _JsonResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    driver = OpenAICompatDriver(
+        name="llama-cpp:qwen",
+        model="qwen",
+        base_url="http://127.0.0.1:8080/v1",
+        api_key_env="UNUSED",
+    )
+    first = driver.chat_stream(
+        [{"role": "user", "content": "ping"}], on_delta=lambda _t: None,
+    )
+    second = driver.chat_stream(
+        [{"role": "user", "content": "again"}], on_delta=lambda _t: None,
+    )
+
+    assert len(bodies) == 3
+    assert bodies[0]["stream_options"]["include_usage"] is True
+    assert bodies[1].get("stream") is not True
+    assert "stream_options" not in bodies[1]
+    assert bodies[2]["stream"] is True
+    assert "stream_options" not in bodies[2]
+    assert first.text == "fallback"
+    assert first.meta["recovery_attempted"] is True
+    assert first.meta["retry_attempts"] == 2
+    assert first.meta["omitted_provider_controls"] == ["stream_options"]
+    assert second.text == "next"
+    assert second.meta["omitted_provider_controls"] == ["stream_options"]
+    assert "secret-value" not in json.dumps(first.meta)
+    fresh_driver = OpenAICompatDriver(
+        name="llama-cpp:fresh",
+        model="qwen",
+        base_url="http://127.0.0.1:8080/v1",
+        api_key_env="UNUSED",
+    )
+    assert fresh_driver._build_chat_body([], stream=True)["stream_options"] == {
+        "include_usage": True,
+    }
+
+
+def test_llama_cpp_stream_options_rejection_after_activity_does_not_fallback(monkeypatch):
+    calls = []
+
+    class _PartialThenReject:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def __iter__(self):
+            yield _data({"choices": [{"delta": {"content": "partial"}}]})
+            raise urllib.error.HTTPError(
+                "http://127.0.0.1:8080/v1/chat/completions",
+                400,
+                "bad",
+                {},
+                io.BytesIO(json.dumps({
+                    "error": {
+                        "param": "stream_options",
+                        "message": "unsupported stream_options",
+                    },
+                }).encode("utf-8")),
+            )
+
+    def fake_urlopen(req, timeout=None):
+        calls.append(json.loads(req.data.decode("utf-8")))
+        return _PartialThenReject()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    driver = OpenAICompatDriver(
+        name="llama-cpp:qwen",
+        model="qwen",
+        base_url="http://127.0.0.1:8080/v1",
+        api_key_env="UNUSED",
+    )
+    resp = driver.chat_stream(
+        [{"role": "user", "content": "ping"}], on_delta=lambda _t: None,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["stream_options"]["include_usage"] is True
+    assert resp.text == "partial"
+    assert resp.error and "HTTP 400" in resp.error
+    assert not resp.meta.get("recovery_attempted")
+    assert "stream_options" not in resp.meta.get("omitted_provider_controls", [])
+
+
+def test_generic_stream_options_rejection_is_not_llama_cpp_compat(monkeypatch):
+    bodies = []
+
+    def reject(req, timeout=None):
+        bodies.append(json.loads(req.data.decode("utf-8")))
+        raise urllib.error.HTTPError(
+            req.full_url,
+            400,
+            "bad",
+            {},
+            io.BytesIO(json.dumps({
+                "error": {
+                    "param": "stream_options",
+                    "message": "unsupported stream_options",
+                },
+            }).encode("utf-8")),
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", reject)
+    driver = OpenAICompatDriver(
+        name="generic",
+        model="model",
+        base_url="https://example.test/v1",
+        api_key_env="UNUSED",
+    )
+    driver._key = lambda: "test"
+    resp = driver.chat_stream(
+        [{"role": "user", "content": "ping"}], on_delta=lambda _t: None,
+    )
+
+    assert len(bodies) == 1
+    assert bodies[0]["stream_options"]["include_usage"] is True
+    assert resp.error and "HTTP 400" in resp.error
+    assert not resp.meta.get("recovery_attempted")
+
+
+def test_generic_explicit_stream_options_rejection_preserves_default_request(monkeypatch):
+    bodies = []
+
+    def transport(req, timeout=None):
+        body = json.loads(req.data.decode("utf-8"))
+        bodies.append(body)
+        if len(bodies) == 1:
+            detail = json.dumps({"error": {"param": "stream_options"}}).encode()
+            raise urllib.error.HTTPError(req.full_url, 400, "bad", {}, io.BytesIO(detail))
+        if not body.get("stream"):
+            return io.BytesIO(json.dumps({"choices": [{
+                "message": {"content": "fallback"}, "finish_reason": "stop",
+            }]}).encode())
+        return _SseResp([_data({"choices": [{
+            "delta": {"content": "next"}, "finish_reason": "stop",
+        }]}), b"data: [DONE]\n\n"])
+
+    monkeypatch.setattr(urllib.request, "urlopen", transport)
+    driver = _driver(base_url="https://example.test/v1")
+    driver.extra_body = {"stream_options": {"include_usage": True}}
+    first = driver.chat_stream([], on_delta=lambda _text: None)
+    second = driver.chat_stream([], on_delta=lambda _text: None)
+
+    assert len(bodies) == 3
+    assert not first.error and not second.error
+    assert first.meta["recovery_attempted"] is True
+    assert bodies[2]["stream_options"] == {"include_usage": True}
+    assert "stream_options" not in second.meta.get("omitted_provider_controls", [])
+
+
+@contextmanager
+def _real_llama_tail_server(mode):
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    stop = threading.Event()
+    accepted = {}
+
+    def serve():
+        try:
+            conn, _ = listener.accept()
+            accepted["conn"] = conn
+            with conn:
+                request = b""
+                while b"\r\n\r\n" not in request:
+                    part = conn.recv(4096)
+                    if not part:
+                        return
+                    request += part
+                terminal = _data({
+                    "choices": [{
+                        "delta": {"content": "pong"},
+                        "finish_reason": "stop",
+                    }],
+                }) + b"\n"
+                if mode in {"chunk_header", "chunk_body"}:
+                    conn.sendall(
+                        b"HTTP/1.1 200 OK\r\n"
+                        b"Content-Type: text/event-stream\r\n"
+                        b"Transfer-Encoding: chunked\r\n"
+                        b"Connection: close\r\n\r\n"
+                        + f"{len(terminal):x}\r\n".encode("ascii")
+                        + terminal
+                        + b"\r\n"
+                    )
+                    if mode == "chunk_body":
+                        conn.sendall(b"10000\r\n")
+                    for _ in range(100):
+                        if stop.wait(0.01):
+                            return
+                        conn.sendall(b"1")
+                    return
+                conn.sendall(
+                    b"HTTP/1.1 200 OK\r\n"
+                    b"Content-Type: text/event-stream\r\n"
+                    b"Connection: close\r\n\r\n"
+                    + terminal
+                )
+                if mode == "silent":
+                    stop.wait(3.0)
+                    return
+                payload = b": keepalive\n\n" if mode == "keepalive" else b"x"
+                while not stop.wait(0.01):
+                    try:
+                        conn.sendall(payload)
+                    except OSError:
+                        return
+        except OSError:
+            return
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{listener.getsockname()[1]}/v1"
+    finally:
+        stop.set()
+        conn = accepted.get("conn")
+        if conn is not None:
+            try:
+                conn.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        listener.close()
+        thread.join(timeout=2.0)
+        assert not thread.is_alive()
+
+
+@pytest.mark.parametrize(
+    "mode", ["silent", "keepalive", "trickle", "chunk_header", "chunk_body"],
+)
+def test_llama_cpp_real_socket_tail_is_absolutely_bounded(monkeypatch, mode):
+    monkeypatch.setattr(openai_compat, "_LLAMA_CPP_USAGE_TAIL_SECONDS", 0.2)
+    with _real_llama_tail_server(mode) as base_url:
+        driver = OpenAICompatDriver(
+            name="llama-cpp:qwen",
+            model="qwen",
+            base_url=base_url,
+            api_key_env="UNUSED",
+            timeout=3,
+        )
+        started = time.monotonic()
+        resp = driver.chat_stream(
+            [{"role": "user", "content": "ping"}], on_delta=lambda _t: None,
+        )
+        elapsed = time.monotonic() - started
+    assert elapsed < 0.7
+    assert resp.error is None
+    assert resp.text == "pong"
+    assert resp.meta["finish_reason"] == "stop"
+    assert not any(
+        thread.name == "llama-cpp-usage-tail-deadline"
+        for thread in threading.enumerate()
+    )
 
 
 def test_stop_finish_with_complete_tool_calls_is_executable():
