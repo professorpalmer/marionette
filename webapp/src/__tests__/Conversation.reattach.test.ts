@@ -21,13 +21,24 @@ import {
   applyActionResultCard,
   isDurableTerminalActionResult,
   isUpgradeableActionResult,
+  patchCardInItems,
 } from "../components/Conversation";
-import { beginChatStreamGeneration } from "../components/conversation/chatEvents";
+import {
+  beginChatStreamGeneration,
+  recordPrimaryStreamFrame,
+} from "../components/conversation/chatEvents";
 import { api, type StoreEventsSince } from "../lib/api";
 import type { ChatEventsReattachDeps } from "../components/conversation/chatEventsReattach";
+import { createApplyStreamEvent } from "../components/conversation/streamEventHandler";
 import { TranscriptList, type Item } from "../components/TranscriptList";
 import { chatEventsPath, sessionEventsPath } from "../lib/transport";
-import { nextStoreCursor, shouldApplyStoreEvent, storeCursorAfterBatch, STORE_EVENTS_POLL_MS } from "../components/conversation/storeEvents";
+import {
+  nextStoreCursor,
+  shouldApplyStoreEvent,
+  shouldApplyStoreStreamAfterLive,
+  storeCursorAfterBatch,
+  STORE_EVENTS_POLL_MS,
+} from "../components/conversation/storeEvents";
 
 /**
  * Mid-turn chatEvents reattach contracts (cursor + poll gating), plus the
@@ -47,6 +58,23 @@ describe("chatEvents reattach cursor", () => {
       kind: "message_delta",
       data: { text: "hi" },
     })).toEqual({ kind: "message_delta", data: { text: "hi" } });
+  });
+
+  it("keeps the watermark for cursorless primary frames and permits legacy recovery", () => {
+    const lastAppliedRingCursorRef = { current: 7 };
+    const ringGenerationRef: { current: number | undefined } = { current: 3 };
+
+    recordPrimaryStreamFrame({
+      lastAppliedRingCursorRef,
+      ringGenerationRef,
+    }, {});
+
+    expect(lastAppliedRingCursorRef.current).toBe(7);
+    expect(ringGenerationRef.current).toBe(3);
+    expect(shouldApplyStoreStreamAfterLive({
+      ringCursor: undefined,
+      lastAppliedRingCursor: lastAppliedRingCursorRef.current,
+    })).toBe(true);
   });
 });
 
@@ -1741,6 +1769,7 @@ describe("mid-turn store-event cursor reattach", () => {
     const turnSettledRef = { current: false };
     const deps = reattachDeps({
       localStreamActiveRef: { current: true },
+      lastAppliedRingCursorRef: { current: 5 },
       turnSettledRef,
       applyStreamEventRef: {
         current: (event: { kind: string }) => {
@@ -1753,7 +1782,15 @@ describe("mid-turn store-event cursor reattach", () => {
       events: [
         { kind: "runners", data: { state: "idle", runners: { "sess-live": "idle" } } },
         { kind: "stream", data: { kind: "message_delta", data: { text: "already painted" } } },
-        { kind: "stream", data: { kind: "assistant_done", data: { stop_cause: "natural" } } },
+        {
+          kind: "stream",
+          data: {
+            cursor: 6,
+            generation: 1,
+            kind: "assistant_done",
+            data: { stop_cause: "natural" },
+          },
+        },
         { kind: "stream", data: { kind: "done", data: {} } },
       ],
     } as any);
@@ -2269,5 +2306,206 @@ describe("mid-turn store-event cursor reattach", () => {
       "/api/session/events",
     );
     expect(sessionEventsPath({ session: "s1", since: 3 })).toContain("since=3");
+  });
+});
+
+describe("completed local stream durable replay", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("keeps local thought identities and applies only the newer durable receipt", async () => {
+    let items: Item[] = [{ kind: "msg", msg: { role: "user", text: "check replay" } }];
+    const itemsRef = { current: items };
+    const typeBufRef = { current: "" };
+    const pendingJobIdsRef = { current: [] as string[] };
+    const turnSettledRef = { current: false };
+    const setItems = (next: Item[] | ((prev: Item[]) => Item[])) => {
+      items = typeof next === "function" ? next(items) : next;
+      itemsRef.current = items;
+    };
+    const apply = createApplyStreamEvent({
+      setCompactingStatus: () => {},
+      setItems,
+      setDistillNotice: () => {},
+      setWikiPrepared: () => {},
+      setMemoryProposals: () => {},
+      setWaitHint: () => {},
+      setStatus: () => {},
+      setTurnOpen: () => {},
+      setPendingJobIds: () => {},
+      pendingJobIdsRef,
+      setSafeTimeout: () => {},
+      itemsRef,
+      planTurnRef: { current: false },
+      turnSettledRef,
+      resumeQueuedRef: { current: false },
+      typeBufRef,
+      flushTypewriter: () => {},
+      startTypewriter: () => {},
+      appendStreamingText: () => {},
+      setCard: (id, patch) => setItems((prev) => patchCardInItems(prev, id, patch)),
+      onArtifacts: () => {},
+      onJobChange: () => {},
+      handleSwarmResult: () => {},
+      refreshQueue: () => {},
+      fetchContextUsage: () => {},
+    });
+    const repeatedThoughtText = "Checking the durable replay boundary.";
+    const localFrames = [
+      {
+        kind: "thinking",
+        data: { text: repeatedThoughtText, delta: true, stream_id: "thought-initial" },
+        cursor: 1,
+        generation: 1,
+      },
+      {
+        kind: "stream_item_done",
+        data: { stream_id: "thought-initial" },
+        cursor: 2,
+        generation: 1,
+      },
+      {
+        kind: "action_start",
+        data: { id: "cmd-replay-1", kind: "run_command", goal: "Inspect replay source", command: "printf replay" },
+        cursor: 3,
+        generation: 1,
+      },
+      {
+        kind: "action_result",
+        data: {
+          id: "cmd-replay-1",
+          kind: "run_command",
+          command: "printf replay",
+          status: "pending",
+          job_id: "local-cmd-replay-1",
+          terminal_receipt: null,
+        },
+        cursor: 4,
+        generation: 1,
+      },
+      {
+        kind: "thinking",
+        data: { text: repeatedThoughtText, delta: true, stream_id: "thought-final" },
+        cursor: 5,
+        generation: 1,
+      },
+      {
+        kind: "stream_item_done",
+        data: { stream_id: "thought-final" },
+        cursor: 6,
+        generation: 1,
+      },
+      { kind: "message", data: { text: "Replay is fixed." }, cursor: 7, generation: 1 },
+      { kind: "assistant_done", data: { stop_cause: "natural" }, cursor: 8, generation: 1 },
+    ];
+    const lastAppliedRingCursorRef = { current: 0 };
+    const ringGenerationRef: { current: number | undefined } = { current: undefined };
+    localFrames.forEach((frame) => {
+      recordPrimaryStreamFrame({
+        lastAppliedRingCursorRef,
+        ringGenerationRef,
+      }, frame);
+      apply(frame);
+    });
+    const initialThoughtIds = items
+      .filter((item): item is Extract<Item, { kind: "thinking" }> => item.kind === "thinking")
+      .map((item) => item.id);
+    expect(initialThoughtIds).toHaveLength(2);
+    expect(new Set(initialThoughtIds).size).toBe(2);
+    expect(lastAppliedRingCursorRef.current).toBe(8);
+    expect(ringGenerationRef.current).toBe(1);
+
+    const terminalResult = {
+      id: "cmd-replay-1",
+      kind: "run_command",
+      command: "printf replay",
+      status: "completed",
+      job_id: "local-cmd-replay-1",
+      message: "replay checked",
+      terminal_receipt: {
+        status: "completed",
+        exit_code: 0,
+        summary: "exit 0 - replay checked",
+      },
+    };
+
+    vi.spyOn(api, "readEventsSince").mockResolvedValue({
+      ok: true,
+      session_id: "sess-thought-replay",
+      cursor: 9,
+      events: [
+        ...localFrames.map((frame, index) => ({ id: index + 1, kind: "stream", data: frame })),
+        {
+          id: 9,
+          kind: "stream",
+          data: {
+            kind: "action_result",
+            data: terminalResult,
+            cursor: 9,
+            generation: 1,
+          },
+        },
+      ],
+    } satisfies StoreEventsSince);
+
+    const reappliedKinds: string[] = [];
+    const { pullChatEvents } = createChatEventsReattach({
+      cancelled: () => false,
+      loadGen: 1,
+      transcriptLoadGenRef: { current: 1 },
+      streamGenRef: { current: 1 },
+      reattachGen: 1,
+      reattachSid: "sess-thought-replay",
+      cachedSessionIdRef: { current: "sess-thought-replay" },
+      localStreamActiveRef: { current: false },
+      userStoppedRef: { current: false },
+      lastAppliedCursorRef: { current: 0 },
+      lastAppliedRingCursorRef,
+      ringGenerationRef,
+      detachedBusyRef: { current: false },
+      runnerBusyPollGenRef: { current: 0 },
+      itemsRef,
+      transcriptFpRef: { current: "" },
+      chatEventsPollTimerRef: { current: null },
+      chatEventsLiveCancelRef: { current: null },
+      applyStreamEventRef: {
+        current: (event) => {
+          reappliedKinds.push(event.kind);
+          apply(event);
+        },
+      },
+      flushTypewriterRef: { current: () => {} },
+      maybeRunQueuedResumeRef: { current: () => {} },
+      maybeDrainQueueRef: { current: () => {} },
+      clearChatEventsPoll: () => {},
+      setItems,
+      setTranscriptStale: () => {},
+      setTurnOpen: () => {},
+      setStatus: () => {},
+      turnSettledRef,
+    });
+    await pullChatEvents();
+
+    const thoughts = items.filter(
+      (item): item is Extract<Item, { kind: "thinking" }> => item.kind === "thinking",
+    );
+    const cards = items.filter(
+      (item): item is Extract<Item, { kind: "card" }> => item.kind === "card",
+    );
+    const answers = items.filter(
+      (item) => item.kind === "msg" && item.msg.role === "assistant",
+    );
+    expect(thoughts.map((item) => item.id)).toEqual(initialThoughtIds);
+    expect(thoughts.map((item) => item.text)).toEqual([
+      repeatedThoughtText,
+      repeatedThoughtText,
+    ]);
+    expect(reappliedKinds).toEqual(["action_result"]);
+    expect(thoughts).toHaveLength(2);
+    expect(cards).toHaveLength(1);
+    expect(cards[0].card.result).toEqual(terminalResult);
+    expect(answers).toHaveLength(1);
+    expect(answers[0].kind === "msg" && answers[0].msg.text).toBe("Replay is fixed.");
   });
 });

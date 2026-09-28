@@ -19,7 +19,13 @@ from typing import Any, Callable, Optional
 
 from harness.diag import note as _diag_note
 
-from .sse import StreamEventDict, _sse_ring_begin, sse_pump, sse_write
+from .sse import (
+    StreamEventDict,
+    _sse_ring_begin,
+    append_stamped_ring_event,
+    sse_pump,
+    sse_write,
+)
 
 # Event kinds that mean a tool result / action completion has just been appended
 # to _history -- checkpoint immediately (ignoring throttle) when we see one so a
@@ -67,8 +73,14 @@ def _encode_run_sse_frame(ev: Any) -> bytes:
 
 
 def _encode_chat_sse_frame(ev: Any) -> bytes:
-    """ConvEvent chat/auto frame: kind + data only (no ``turn``)."""
+    """ConvEvent chat/auto frame: ring identity when stamped, never ``turn``."""
     frame: StreamEventDict = {"kind": ev.kind, "data": ev.data}
+    cursor = getattr(ev, "cursor", None)
+    generation = getattr(ev, "generation", None)
+    if isinstance(cursor, int):
+        frame["cursor"] = cursor
+    if isinstance(generation, int):
+        frame["generation"] = generation
     return f"data: {json.dumps(frame)}\n\n".encode()
 
 
@@ -782,13 +794,14 @@ def stream_chat(
         # framing done. Framing done is not itself detach.
         for ev in turn_pilot.drain_swarm_results():
             _maybe_checkpoint(ev)
-            if not detached:
-                if not sse_write(handler.wfile, _encode_chat_sse_frame(ev)):
-                    detached = True
+            wire_ev = ev
             try:
-                ring.append(ev.kind, ev.data or {}, getattr(ev, "turn", None))
+                wire_ev = append_stamped_ring_event(ring, ev)
             except Exception as exc:
                 _diag_note("stream_chat.ring_append", exc)
+            if not detached:
+                if not sse_write(handler.wfile, _encode_chat_sse_frame(wire_ev)):
+                    detached = True
         if not detached:
             sse_write(handler.wfile, b"data: {\"kind\": \"done\"}\n\n")
         try:

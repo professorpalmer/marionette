@@ -220,7 +220,10 @@ import SpillPreviewModal, {
   shouldApplySpillPreview,
   type SpillPreviewState,
 } from "./conversation/SpillPreviewModal";
-import { beginChatStreamGeneration } from "./conversation/chatEvents";
+import {
+  beginChatStreamGeneration,
+  recordPrimaryStreamFrame,
+} from "./conversation/chatEvents";
 import { useSessionSwitch } from "./conversation/useSessionSwitch";
 import { useRunnersBusyPoll } from "./conversation/useRunnersBusyPoll";
 import {
@@ -3228,6 +3231,10 @@ export default function Conversation({
         onAccepted?.();
         refreshQueue(streamSid);
       }
+      recordPrimaryStreamFrame({
+        lastAppliedRingCursorRef,
+        ringGenerationRef,
+      }, ev);
       applyStreamEvent(ev);
     }, () => {
          if (!streamLive()) return;

@@ -68,6 +68,8 @@ class StreamEventDict(_StreamEventRequired, total=False):
 
     data: Any
     turn: Any
+    cursor: int
+    generation: int
 
 
 class _SseRingEventRequired(TypedDict):
@@ -171,6 +173,22 @@ class SseEventRing:
                 "retained": len(self._entries),
                 "gap": gap,
             }
+
+
+def append_stamped_ring_event(ring: SseEventRing, ev: Any) -> Any:
+    """Retain one event and return its live-wire view with ring identity."""
+    cursor = ring.append(
+        getattr(ev, "kind", "event"),
+        getattr(ev, "data", None),
+        getattr(ev, "turn", None),
+    )
+    return SimpleNamespace(
+        kind=getattr(ev, "kind", "event"),
+        data=getattr(ev, "data", None),
+        turn=getattr(ev, "turn", None),
+        cursor=cursor,
+        generation=ring.generation,
+    )
 
 
 # session_id -> generation counter; (session_id, generation) -> ring
@@ -565,24 +583,18 @@ def sse_pump(
         ring.pinned = True
     try:
         for ev in gen:
+            wire_ev = ev
+            if ring is not None:
+                try:
+                    wire_ev = append_stamped_ring_event(ring, ev)
+                except Exception as exc:
+                    _diag_note("sse_pump.ring_append", exc)
             # Write the live SSE frame BEFORE on_event (transcript checkpoint).
             # assistant_done used to force-checkpoint first; a slow sidecar
             # write left the UI on Still working with the reply already painted.
             if not detached:
-                if not sse_write(wfile, frame_for_event(ev)):
+                if not sse_write(wfile, frame_for_event(wire_ev)):
                     detached = True
-            if ring is not None:
-                try:
-                    # Match SseEventRing.append: only None becomes {}. Do not use
-                    # `or {}` — falsy-but-valid payloads (e.g. 0, "", False) must
-                    # round-trip; empty dict is already handled by append.
-                    ring.append(
-                        getattr(ev, "kind", "event"),
-                        getattr(ev, "data", None),
-                        getattr(ev, "turn", None),
-                    )
-                except Exception as exc:
-                    _diag_note("sse_pump.ring_append", exc)
             if on_event is not None:
                 on_event(ev)
         if write_done and not detached:
