@@ -534,6 +534,7 @@ class OpenAICompatDriver:
         # `thinking` / `reasoning_effort` dialect) merged into every request.
         self.extra_body = extra_body or {}
         self.enable_reasoning = enable_reasoning
+        self._omitted_provider_controls: set[str] = set()
         self.session_id = session_id
         self.vendor = str(vendor or "")
         self.allow_keyless = bool(allow_keyless)
@@ -863,6 +864,21 @@ class OpenAICompatDriver:
             self.enable_reasoning = False
         else:
             self.extra_body.pop(field, None)
+        self._omitted_provider_controls.add(field)
+
+    def _attach_omitted_provider_controls(
+        self, response: DriverResponse, dispatched_body: dict | None,
+    ) -> DriverResponse:
+        response.meta = dict(response.meta or {})
+        omitted = (
+            self._omitted_provider_controls.difference(dispatched_body)
+            if dispatched_body is not None else set()
+        )
+        if omitted:
+            response.meta["omitted_provider_controls"] = sorted(omitted)
+        else:
+            response.meta.pop("omitted_provider_controls", None)
+        return response
 
     def _reasoning_unsupported(self, code: int, detail: str) -> bool:
         """True when an endpoint rejected the OpenRouter-style `reasoning` field.
@@ -925,6 +941,7 @@ class OpenAICompatDriver:
             # provider-dialect knobs on top.
             if field not in ("model", "messages", "stream", "tools", "tool_choice"):
                 body[field] = value
+        self._omitted_provider_controls.difference_update(body)
         try:
             if "openrouter.ai" in (self.base_url or "").lower():
                 # Ask OpenRouter for prompt_tokens_details (cached / cache_write).
@@ -1218,9 +1235,10 @@ class OpenAICompatDriver:
         data = json.dumps(body).encode("utf-8")
         request_attempts = 0
         fallback_attempted = False
+        last_dispatched_body = None
 
         def _call() -> DriverResponse:
-            nonlocal data, fallback_attempted, request_attempts
+            nonlocal data, fallback_attempted, last_dispatched_body, request_attempts
             request_attempts += 1
             headers = {
                 "Content-Type": "application/json",
@@ -1233,6 +1251,7 @@ class OpenAICompatDriver:
             raw = None
             try:
                 req = http_request(self, url, data=data, headers=headers, method="POST")
+                last_dispatched_body = dict(body)
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     raw = json.loads(resp.read().decode("utf-8"))
             except urllib.error.HTTPError as e:
@@ -1254,6 +1273,7 @@ class OpenAICompatDriver:
                         request_attempts += 1
                         fallback_attempted = True
                         req = http_request(self, url, data=data, headers=headers, method="POST")
+                        last_dispatched_body = dict(body)
                         with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                             raw = json.loads(resp.read().decode("utf-8"))
                     except urllib.error.HTTPError as e2:
@@ -1290,6 +1310,7 @@ class OpenAICompatDriver:
                                 self,
                                 url, data=data, headers=headers, method="POST",
                             )
+                            last_dispatched_body = dict(body)
                             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                                 raw = json.loads(resp.read().decode("utf-8"))
                         except urllib.error.HTTPError as e2:
@@ -1397,7 +1418,7 @@ class OpenAICompatDriver:
         )
         if fallback_attempted:
             result.meta["recovery_attempted"] = True
-        return result
+        return self._attach_omitted_provider_controls(result, last_dispatched_body)
 
     def chat_stream(
         self,
@@ -1415,12 +1436,20 @@ class OpenAICompatDriver:
         body: dict = {}
         data = b""
         stream_request_attempts = 0
+        last_dispatched_body = None
+        used_chat_fallback = False
 
         def _mark_http_fallback(response: DriverResponse) -> DriverResponse:
+            nonlocal used_chat_fallback
+            used_chat_fallback = True
             response.meta = dict(response.meta or {})
             nested_attempts = response.meta.get("retry_attempts", 1)
             if not isinstance(nested_attempts, int) or isinstance(nested_attempts, bool):
                 nested_attempts = 1
+            if nested_attempts == 0:
+                response = self._attach_omitted_provider_controls(
+                    response, last_dispatched_body,
+                )
             response.meta["retry_attempts"] = stream_request_attempts + nested_attempts
             response.meta["recovery_attempted"] = True
             return response
@@ -1466,7 +1495,7 @@ class OpenAICompatDriver:
             )
 
         def _call() -> DriverResponse:
-            nonlocal stream_request_attempts
+            nonlocal last_dispatched_body, stream_request_attempts
             stream_request_attempts += 1
             headers = {
                 "Content-Type": "application/json",
@@ -1484,6 +1513,7 @@ class OpenAICompatDriver:
             )
 
             req = http_request(self, url, data=data, headers=headers, method="POST")
+            last_dispatched_body = dict(body)
             local_cutoff = ""
             idle_armed = False
             try:
@@ -1569,14 +1599,22 @@ class OpenAICompatDriver:
             return result
 
         def _one_stream(msgs: list) -> DriverResponse:
-            nonlocal body, data, messages, stream_request_attempts
+            nonlocal body, data, last_dispatched_body, messages
+            nonlocal stream_request_attempts, used_chat_fallback
             messages = msgs
             stream_request_attempts = 0
+            last_dispatched_body = None
+            used_chat_fallback = False
             body = self._build_chat_body(
                 msgs, tools=tools, system=system, session_id=session_id, stream=True,
             )
             data = json.dumps(body).encode("utf-8")
-            return with_retry(_call, is_cancelled=is_cancelled)
+            response = with_retry(_call, is_cancelled=is_cancelled)
+            if used_chat_fallback:
+                return response
+            return self._attach_omitted_provider_controls(
+                response, last_dispatched_body,
+            )
 
         def _recover_one_stream(
             first_response: DriverResponse, request_messages: list,
