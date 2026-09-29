@@ -219,6 +219,20 @@ export default function FileTree() {
   const [listingCap, setListingCap] = useState<WorkspaceListingCap | null>(null);
   const nameInputRef = useRef<HTMLInputElement | null>(null);
   const loadGenRef = useRef(0);
+  // The tree's own file operations reload it directly; ignore the echo of the
+  // mutation events they fan out (dispatch is synchronous).
+  const ownMutationRef = useRef(false);
+  // Which repo rootNodes were built for, so a switch never paints the old
+  // repo's files under the new name when the new listing fails.
+  const treeRootRef = useRef<string | null>(null);
+  const notifyOwnMutation = (paths?: Parameters<typeof notifyTreeMutated>[0]) => {
+    ownMutationRef.current = true;
+    try {
+      notifyTreeMutated(paths);
+    } finally {
+      ownMutationRef.current = false;
+    }
+  };
   const rootNodesRef = useRef<FileNode[]>([]);
   rootNodesRef.current = rootNodes;
   const retryTimerRef = useRef<number | null>(null);
@@ -236,6 +250,11 @@ export default function FileTree() {
       const cfg = await api.config();
       if (gen !== loadGenRef.current) return;
       const workspacePath = cfg.repo || "";
+      if (treeRootRef.current !== null && treeRootRef.current !== workspacePath) {
+        treeRootRef.current = null;
+        setRootNodes([]);
+        setListingCap(null);
+      }
       setRepoRoot(workspacePath);
       const repoNameFromPath = workspacePath.split(/[/\\]/).pop() || "workspace";
       setRepoName(repoNameFromPath);
@@ -244,6 +263,7 @@ export default function FileTree() {
       if (gen !== loadGenRef.current) return;
       if (res && res.files) {
         const tree = buildTree(res.files);
+        treeRootRef.current = workspacePath;
         setRootNodes(tree);
         setError(null);
         setListingCap(
@@ -297,6 +317,7 @@ export default function FileTree() {
     const handleRefresh = (event: Event) => {
       // Same-project session switch: the tree cannot have changed.
       if (configChangeKeepsRepo(event)) return;
+      if (ownMutationRef.current) return;
       if (debounceTimer != null) window.clearTimeout(debounceTimer);
       debounceTimer = window.setTimeout(() => {
         void loadFiles();
@@ -466,7 +487,7 @@ export default function FileTree() {
           return;
         }
         await loadFiles();
-        notifyTreeMutated();
+        notifyOwnMutation();
         handleFileSelect(rel);
       } catch (err: any) {
         toast(err?.error || err?.message || "Could not create file");
@@ -483,7 +504,7 @@ export default function FileTree() {
           return;
         }
         await loadFiles();
-        notifyTreeMutated();
+        notifyOwnMutation();
       } catch (err: any) {
         toast(err?.error || err?.message || "Could not create folder");
       }
@@ -502,7 +523,7 @@ export default function FileTree() {
       }
       const to = res.to || joinRel(parentDir(node.path), trimmed);
       await loadFiles();
-      notifyTreeMutated({
+      notifyOwnMutation({
         renamed: { from: node.path, to },
       });
       if (selectedPath === node.path) setSelectedPath(to);
@@ -524,7 +545,7 @@ export default function FileTree() {
         return;
       }
       await loadFiles();
-      notifyTreeMutated({ deleted: deletedPath });
+      notifyOwnMutation({ deleted: deletedPath });
       if (selectedPath === deletedPath || selectedPath?.startsWith(deletedPath + "/")) {
         setSelectedPath(null);
       }
