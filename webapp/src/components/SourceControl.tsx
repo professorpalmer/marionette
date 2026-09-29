@@ -237,6 +237,17 @@ export default function SourceControl() {
     }
   };
 
+  // One bulk git operation at a time: they run a git add/reset over the whole
+  // tree, and a second click only queued a duplicate plus another status read.
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const bulkBusyRef = useRef(false);
+  const runBulk = (op: () => Promise<void>) => async () => {
+    if (bulkBusyRef.current) return;
+    bulkBusyRef.current = true;
+    setBulkBusy(true);
+    try { await op(); } finally { bulkBusyRef.current = false; setBulkBusy(false); }
+  };
+
   const handleStageAll = async () => {
     const context = contextRef.current;
     if (!context) return;
@@ -496,8 +507,9 @@ export default function SourceControl() {
               <span>Staged ({stagedFiles.length})</span>
               {stagedFiles.length > 0 && !readOnly && (
                 <button
-                  onClick={handleUnstageAll}
-                  className="text-[9px] text-muted hover:text-accent font-medium uppercase tracking-wider transition"
+                  onClick={runBulk(handleUnstageAll)}
+                  disabled={bulkBusy}
+                  className="text-[9px] text-muted hover:text-accent font-medium uppercase tracking-wider transition disabled:opacity-40"
                 >
                   Unstage all
                 </button>
@@ -557,8 +569,9 @@ export default function SourceControl() {
               <span>Changes ({unstagedFiles.length})</span>
               {unstagedFiles.length > 0 && !readOnly && (
                 <button
-                  onClick={handleStageAll}
-                  className="text-[9px] text-muted hover:text-accent font-medium uppercase tracking-wider transition"
+                  onClick={runBulk(handleStageAll)}
+                  disabled={bulkBusy}
+                  className="text-[9px] text-muted hover:text-accent font-medium uppercase tracking-wider transition disabled:opacity-40"
                 >
                   Stage all
                 </button>
