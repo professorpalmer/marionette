@@ -392,7 +392,7 @@ function SelectedInspection({ job, navigation, compact, onReveal, onOpenDashboar
       {local && <><button className={button} onClick={() => inspect('tasks')}>Inspect workers</button><button className={button} onClick={() => inspect('routing')}>Inspect routing</button><button className={button} onClick={() => inspect('output')}>Inspect output</button><button className={button} onClick={() => inspect('children')}>Inspect children</button></>}
     </div>}
     {!compact && !local && !selectedPM && <p>Artifact preview is unavailable for this selection.</p>}
-    {view.kind === 'view' && (!local || canonicalSelection) && !deferAutoRead && <JobCancellationControl job={authorizedJob} repo={view.context.repo} sessionId={view.context.session_id} disabled={terminal.has(job.status) || view.refresh !== 'idle'} />}
+    {view.kind === 'view' && (!local || canonicalSelection) && !deferAutoRead && <JobCancellationControl job={authorizedJob} repo={view.context.repo} sessionId={view.context.session_id} finished={terminal.has(job.status)} disabled={terminal.has(job.status) || view.refresh !== 'idle'} />}
     {!compact && !deferAutoRead && local && !canonicalSelection && view.kind === 'view' && job.session_id === view.context.session_id && <button className={button} disabled={!nativeSelection || !nativeFresh || (nativeSummary && terminal.has(nativeSummary.lifecycle)) || state.working || stopping} onClick={() => void nativeStop()}>Request native stop</button>}
     {local && !nativeSelection && <p>Native stop unavailable: this identity is not supported by the current execution control API.</p>}
     {stopNotice && <p role="status">{stopNotice}</p>}
@@ -414,6 +414,7 @@ function readPreferences(key: string): JobPreferences {
   return { expanded: [], dismissed: [] };
 }
 const terminal = new Set(['completed', 'complete', 'done', 'failed', 'cancelled', 'timeout', 'timed_out', 'truncated', 'partial', 'interrupted']);
+const succeeded = new Set(['completed', 'complete', 'done']);
 function isFinished(job: Job): boolean {
   // PM stalled is terminal for liveness but recoverable; native stalled has no terminal guarantee.
   return terminal.has(job.status) || (!job.local_ref && job.status === 'stalled');
@@ -601,7 +602,9 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
     || state.local.state === 'unavailable' || state.local.state === 'expired');
   const anyRunning = shown.some(isLiveObservation);
   const runningCount = shown.filter(isLiveObservation).length;
-  const completedCount = shown.filter(j => isFinished(j) && !isNativeActivity(j)).length;
+  // The green check counts successes only; failed / cancelled / timed-out
+  // runs are finished but not completed, and a degraded outcome is not a pass.
+  const completedCount = shown.filter(j => succeeded.has(j.status) && j.outcome?.quality !== 'degraded' && !isNativeActivity(j)).length;
   const hideFinished = () => {
     if (!finishedOpen) return;
     setPreferences(p => ({ ...p, dismissed: [...new Set([...p.dismissed, ...finishedRows.filter(j => j.read_status !== 'unavailable').flatMap(j => j.metadata_key ? [j.metadata_key] : [])])].slice(-200) }));
@@ -685,7 +688,8 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
             {warningCount > 0 && <span className="whitespace-nowrap text-warn/80 normal-case tracking-normal"> · {warningCount} untrustworthy</span>}
           </span>
         </button>
-        <button type="button" aria-label="Hide finished" title="Hide all finished runs from Jobs (stays in Puppetmaster history)" onClick={hideFinished} className="shrink-0 whitespace-nowrap text-[9px] text-faint/70 hover:text-risk uppercase tracking-wider focus:outline-none">Clear</button>
+        {/* Clear acts on the runs you can see; collapsed, it would do nothing. */}
+        {finishedOpen && <button type="button" aria-label="Hide finished" title="Hide all finished runs from Jobs (stays in Puppetmaster history)" onClick={hideFinished} className="shrink-0 whitespace-nowrap text-[9px] text-faint/70 hover:text-risk uppercase tracking-wider focus:outline-none">Clear</button>}
       </div>);
     }
     jobList.push(renderJob(job));
