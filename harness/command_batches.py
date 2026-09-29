@@ -568,21 +568,18 @@ def _start_batch_supervisor(
                 child = lookup_command_job(session, job_id)
                 if child and str(child.get("status") or "") in COMMAND_TERMINAL_STATES:
                     return
-                if not launch_registered_command_job(session, job_id, command, cwd):
+                done = threading.Event()
+                if not launch_registered_command_job(session, job_id, command, cwd, done=done):
                     return
                 # Wait until this child leaves non-terminal states so the
-                # semaphore truly bounds concurrent processes.
-                while True:
+                # semaphore truly bounds concurrent processes. The command
+                # thread signals on exit; the status check is the fallback.
+                while not done.wait(1.0):
                     live = lookup_command_job(session, job_id)
                     if live is None:
                         break
                     if str(live.get("status") or "") in COMMAND_TERMINAL_STATES or live.get("status") == "unknown":
                         break
-                    if str(live.get("status") or "") == "registered":
-                        # Thread may not have flipped to running yet.
-                        time.sleep(0.01)
-                        continue
-                    time.sleep(0.02)
             finally:
                 sem.release()
                 sync = getattr(session, "_sync_command_batch_from_children", None)
