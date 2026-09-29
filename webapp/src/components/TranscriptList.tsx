@@ -3296,7 +3296,7 @@ function FencedCodeBlock({ className, children, commandIndexVersion: commandInde
           })}
         </pre>
       ) : (
-        <code className={`${className || ""} block bg-panel/80 border border-accent/20 rounded-md p-3 pr-10 overflow-x-auto font-mono text-[0.719rem] leading-[1.55] text-txt/90`} {...props}>
+        <code className={`${className || ""} block bg-panel/80 border border-accent/20 rounded-md p-3 pr-10 overflow-x-auto font-mono text-[0.719rem] leading-[1.55] text-txt/90 whitespace-pre`} {...props}>
           {children}
         </code>
       )}
