@@ -387,3 +387,19 @@ it('Enter while an IME is composing confirms the candidate instead of sending', 
   fireEvent.keyDown(input, { key: 'Enter' });
   await waitFor(() => expect(chat).toHaveBeenCalledTimes(1));
 });
+
+it('narrowing the slash menu resets its selection so Enter picks a real command', async () => {
+  const { input } = await mount();
+  fireEvent.change(input, { target: { value: '/', selectionStart: 1 } });
+  for (let i = 0; i < 12; i++) fireEvent.keyDown(input, { key: 'ArrowDown' });
+  fireEvent.change(input, { target: { value: '/cl', selectionStart: 3 } });
+  // React reports handler errors via window "error", not by rethrowing.
+  const errors: string[] = [];
+  const onError = (e: ErrorEvent) => { errors.push(String(e.message)); e.preventDefault(); };
+  window.addEventListener('error', onError);
+  fireEvent.keyDown(input, { key: 'Enter' });
+  window.removeEventListener('error', onError);
+  expect(errors).toEqual([]);
+  await waitFor(() => expect((input as HTMLTextAreaElement).value).toMatch(/^\/\S+/));
+  expect((input as HTMLTextAreaElement).value).not.toContain('\n');
+});

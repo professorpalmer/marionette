@@ -2328,6 +2328,8 @@ export default function Conversation({
     setInput(val);
     const trigger = detectComposerTrigger(val, cursorPosition);
     if (trigger.kind === "slash") {
+      // A new query is a new list: start at its top match, as mentions do.
+      if (trigger.query !== slashSearch) setSelectedSlashIndex(0);
       setSlashSearch(trigger.query);
       setMentionSearch(null);
       setMentionIndex(-1);
@@ -2669,7 +2671,7 @@ export default function Conversation({
           return;
         }
         if (e.key === "Enter") {
-          insertSlashCommand(matchingSlash[selectedSlashIndex].cmd);
+          insertSlashCommand(matchingSlash[clampSelectIndex(selectedSlashIndex, matchingSlash.length)].cmd);
           e.preventDefault();
           return;
         }
