@@ -118,6 +118,7 @@ export default function ModelsSettingsPage() {
   }, []);
 
   const toggle = async (entry: ModelCatalogEntry) => {
+    if (busy === entry.spec) return;
     const next = !entry.enabled;
     setBusy(entry.spec);
     // optimistic
@@ -240,6 +241,7 @@ export default function ModelsSettingsPage() {
                 <button
                   type="button"
                   onClick={() => toggleGroup(g.provider)}
+                  aria-expanded={!collapsed}
                   className="w-full flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-faint font-semibold mb-1.5 px-1 hover:text-txt transition"
                 >
                   {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
@@ -260,11 +262,15 @@ export default function ModelsSettingsPage() {
                           e.stopPropagation();
                           void toggle(entry);
                         }}
-                        disabled={busy === entry.spec}
+                        role="switch"
+                        aria-checked={entry.enabled}
+                        // aria-disabled, not disabled: a disabled button drops
+                        // keyboard focus to <body> while the toggle saves.
+                        aria-disabled={busy === entry.spec || undefined}
                         className={`flex items-center justify-between px-3 py-2 text-left transition
                           ${i > 0 ? "border-t border-edge/30" : ""}
                           ${entry.enabled ? "bg-accent/5 hover:bg-accent/10" : "hover:bg-panel2/60"}
-                          disabled:opacity-50`}
+                          aria-disabled:opacity-50`}
                       >
                         <span className="min-w-0 flex-1">
                           <span className="text-[12px] text-txt truncate block">
