@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import http.client
 import io
-import select
+import socket
 import ssl
 import sys
 import threading
@@ -71,13 +71,29 @@ def _healthy(conn: http.client.HTTPConnection) -> bool:
     sock = conn.sock
     if sock is None:
         return False
+    # Peek one raw byte without blocking. An idle keep-alive socket has nothing
+    # to read ("would block"). EOF means the peer closed it or the read side was
+    # shut down (POSIX); an error means the same on Windows (WSAESHUTDOWN, where
+    # select() does not report a shut-down socket readable); stray bytes mean
+    # the stream is out of step. Only "would block" is reusable. The raw
+    # socket.recv bypasses the TLS layer, which rejects MSG_PEEK.
     try:
-        readable, _, _ = select.select([sock], [], [], 0)
+        previous = sock.gettimeout()
+    except OSError:
+        return False
+    try:
+        sock.settimeout(0)
+        socket.socket.recv(sock, 1, socket.MSG_PEEK)
+    except BlockingIOError:
+        return True
     except (OSError, ValueError):
         return False
-    # An idle keep-alive socket has nothing to read. Readable means EOF (peer
-    # closed, or a driver shut the read side) or stray bytes: unusable either way.
-    return not readable
+    finally:
+        try:
+            sock.settimeout(previous)
+        except OSError:
+            pass
+    return False
 
 
 def _checkout(key: tuple[str, str, int]) -> Optional[http.client.HTTPConnection]:
