@@ -162,3 +162,28 @@ def test_stamp_mismatch_rejected_independently_of_consent(
         enable_plugin(record.id)
     with pytest.raises(AgentPluginError, match="mismatch"):
         verify_integrity_stamp(installed)
+
+
+def test_enabled_load_hashes_each_plugin_once_and_still_catches_tampering(
+    plugins_home: Path, tmp_path: Path, monkeypatch,
+) -> None:
+    import harness.agent_plugins as agent_plugins
+    import harness.plugin_registry as registry
+
+    record = install_from_path(str(_valid_package(tmp_path / "src")))
+    enable_plugin(record.id)
+    calls = []
+    real = agent_plugins.compute_plugin_content_sha256
+    def counting(root):
+        calls.append(root)
+        return real(root)
+    monkeypatch.setattr(agent_plugins, "compute_plugin_content_sha256", counting)
+    monkeypatch.setattr(registry, "compute_package_sha256", counting)
+    assert [pid for pid, _ns, _pkg in registry._load_enabled_packages()] == [record.id]
+    assert len(calls) == 1
+
+    installed = Path(record.path)
+    (installed / "plugin.json").write_text(
+        (installed / "plugin.json").read_text(encoding="utf-8") + "\n", encoding="utf-8",
+    )
+    assert registry._load_enabled_packages() == []

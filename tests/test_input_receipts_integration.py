@@ -523,3 +523,16 @@ def test_missing_sidecar_cannot_restore_an_outdated_bundle(session):
     with pytest.raises(InputReceiptError):
         store.list()
     assert not store.path.exists()
+
+
+def test_live_delivering_input_does_not_parse_transcript_on_list(tmp_path, monkeypatch):
+    # The queue is polled every few seconds for a whole live turn; only a
+    # foreign (cold) owner can be reconciled, so the live owner must not pay
+    # a full transcript + archive parse per poll.
+    store = InputReceiptStore(str(tmp_path), 'sess-live')
+    row = store.admit('hello')
+    store.transition(row['id'], 'delivering')
+    def must_not_parse():
+        raise AssertionError('parsed transcript for a same-instance input')
+    monkeypatch.setattr(store, '_durable_ids', must_not_parse)
+    assert [r['status'] for r in store.list()] == ['delivering']

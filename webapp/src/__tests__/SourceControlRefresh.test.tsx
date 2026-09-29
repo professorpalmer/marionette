@@ -211,3 +211,26 @@ it("immediate stage status discovers an external checkout once before automatic 
   expect(screen.getByText("dev")).toBeInTheDocument();
   expect(nativeGit.branches).toHaveBeenCalledTimes(2);
 });
+it("opens a changed file's diff from the keyboard and reveals its stage button on focus", async () => {
+  vi.mocked(nativeGit.status).mockResolvedValue({ ...status, files: [{ status: " M", path: "kbd.ts" }] });
+  await mount();
+  const row = screen.getByText("kbd.ts").closest("button");
+  expect(row).not.toBeNull();
+  row!.focus();
+  expect(document.activeElement).toBe(row);
+  await act(async () => { fireEvent.click(row!); });
+  expect(nativeGit.diff).toHaveBeenCalledTimes(1);
+  expect(screen.getByTitle("Stage file").className).toContain("focus-visible:opacity-100");
+});
+it("Stage all runs once and stays disabled until git settles", async () => {
+  vi.mocked(nativeGit.status).mockResolvedValue({ ...status, files: [{ status: " M", path: "bulk.ts" }] });
+  const pending = deferred<{ ok: boolean }>();
+  vi.mocked(nativeGit.stageAll).mockReturnValue(pending.promise);
+  await mount();
+  const button = screen.getByRole("button", { name: /Stage all/i });
+  await act(async () => { fireEvent.click(button); fireEvent.click(button); });
+  expect(nativeGit.stageAll).toHaveBeenCalledTimes(1);
+  expect(button).toBeDisabled();
+  await act(async () => { pending.resolve({ ok: true }); });
+  expect(screen.getByRole("button", { name: /Stage all/i })).not.toBeDisabled();
+});

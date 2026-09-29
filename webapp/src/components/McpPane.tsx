@@ -1,6 +1,6 @@
 import { usePolling } from "../lib/usePolling";
 import { useEffect, useRef, useState } from "react";
-import { Plug, Play, Square, Trash2, Plus, Check, X, ChevronDown, ChevronRight, RefreshCw } from "lucide-react";
+import { Plug, Play, Square, Trash2, Plus, Check, X, ChevronDown, ChevronRight, RefreshCw, Loader2 } from "lucide-react";
 import { api } from "../lib/api";
 
 const MCP_TOOLS_COLLAPSED_KEY = "pmharness.mcpPane.toolsCollapsed";
@@ -352,7 +352,6 @@ export default function McpPane({ embedded = false, networkEnabled = true, onSta
           <AddForm
             catalog={catalog}
             onDone={() => { setAdding(false); setActionError(""); refresh(); }}
-            onActionFailed={(msg) => setActionError(msg)}
           />
         )}
       </div>
@@ -428,11 +427,9 @@ export default function McpPane({ embedded = false, networkEnabled = true, onSta
 function AddForm({
   catalog,
   onDone,
-  onActionFailed,
 }: {
   catalog: Record<string, any>;
   onDone: () => void;
-  onActionFailed?: (msg: string) => void;
 }) {
   const [name, setName] = useState("");
   const [command, setCommand] = useState("npx");
@@ -440,6 +437,8 @@ function AddForm({
   const [envStr, setEnvStr] = useState("");
   const [url, setUrl] = useState("");
   const [err, setErr] = useState("");
+  // Adding also starts the server (npx/uvx installs can take seconds).
+  const [submitting, setSubmitting] = useState(false);
 
   const pickPreset = (key: string) => {
     const c = catalog[key];
@@ -450,10 +449,11 @@ function AddForm({
   };
 
   const submit = async () => {
-    const fail = (msg: string) => {
-      setErr(msg);
-      onActionFailed?.(msg);
-    };
+    if (submitting) return;
+    // One sink: the error sits next to the form the user is acting on.
+    const fail = (msg: string) => setErr(msg);
+    setErr("");
+    setSubmitting(true);
     try {
       if (url.trim()) {
         const r = await api.mcpAdd(name.trim(), undefined, undefined, undefined, url.trim());
@@ -468,6 +468,8 @@ function AddForm({
       }
     } catch (e: any) {
       fail(e?.message || "failed to add");
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -499,9 +501,9 @@ function AddForm({
 
       {err && <div className="text-risk text-[10px]">{err}</div>}
       <div className="flex gap-1.5">
-        <button onClick={submit} disabled={!name.trim() || (!url.trim() && !command.trim())}
+        <button onClick={submit} disabled={submitting || !name.trim() || (!url.trim() && !command.trim())}
           className="flex-1 h-6 rounded bg-accent text-black/90 text-[11px] font-semibold flex items-center justify-center gap-1 disabled:opacity-40">
-          <Check size={11} /> Add &amp; start
+          {submitting ? <><Loader2 size={11} className="animate-spin" /> Starting…</> : <><Check size={11} /> Add &amp; start</>}
         </button>
         <button onClick={onDone} className="px-2 h-6 rounded border border-edge text-muted text-[11px] flex items-center gap-1"><X size={11} /></button>
       </div>

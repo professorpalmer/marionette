@@ -211,3 +211,37 @@ describe("McpPane last_invocation and action errors", () => {
     expect(screen.getByRole("alert").textContent).toContain("REDACTED");
   });
 });
+
+describe("McpPane add form", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    mockMcp.mockResolvedValue({ servers: [], tools: [] });
+  });
+
+  const openAndFill = async () => {
+    render(<McpPane embedded />);
+    fireEvent.click(await screen.findByTitle("Add MCP server"));
+    fireEvent.change(screen.getByPlaceholderText(/name \(e\.g\. github\)/), { target: { value: "docs" } });
+    fireEvent.change(screen.getByPlaceholderText(/URL \(for HTTP/), { target: { value: "http://localhost:8000/mcp" } });
+    return screen.getByRole("button", { name: /Add & start/ });
+  };
+
+  it("shows a failed add once, next to the form", async () => {
+    vi.mocked(api.mcpAdd).mockResolvedValue({ ok: false, error: "boom" } as never);
+    fireEvent.click(await openAndFill());
+    await waitFor(() => expect(screen.getAllByText(/boom/)).toHaveLength(1));
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("disables Add & start while the server starts, so it cannot be sent twice", async () => {
+    let resolve!: (v: unknown) => void;
+    vi.mocked(api.mcpAdd).mockReturnValue(new Promise(r => { resolve = r; }) as never);
+    const button = await openAndFill();
+    fireEvent.click(button);
+    await waitFor(() => expect(screen.getByRole("button", { name: /Starting/ })).toBeDisabled());
+    fireEvent.click(screen.getByRole("button", { name: /Starting/ }));
+    expect(api.mcpAdd).toHaveBeenCalledTimes(1);
+    resolve({ ok: true });
+  });
+});

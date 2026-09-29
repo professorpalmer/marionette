@@ -2,11 +2,13 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { History, Play, ShieldAlert, Check, RefreshCw, Eye, EyeOff } from "lucide-react";
 import { api, type Checkpoint, type CheckpointDiff } from "../lib/api";
 import { lastSelectedProjectRoot } from "../lib/panelTransition";
+import { isTransientHarnessConnError } from "../lib/transport";
 import { usePanelNotice } from "../lib/useOperationalDiagnostic";
 
 export default function CheckpointsPane() {
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  // Not loaded yet: the first paint shows Loading, not the empty state.
+  const [isLoading, setIsLoading] = useState(true);
   const [isRestoring, setIsRestoring] = useState<string | null>(null);
   const [snapshotLabel, setSnapshotLabel] = useState("");
   const [isCreatingSnapshot, setIsCreatingSnapshot] = useState(false);
@@ -34,8 +36,12 @@ export default function CheckpointsPane() {
     setIsRestoring(null);
   }, []);
 
-  const fetchCheckpoints = useCallback(async () => {
+  const retryTimerRef = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(retryTimerRef.current), []);
+
+  const fetchCheckpoints = useCallback(async (attempt = 0) => {
     const gen = ++fetchGenRef.current;
+    window.clearTimeout(retryTimerRef.current);
     setIsLoading(true);
     setError(null);
     try {
@@ -46,15 +52,16 @@ export default function CheckpointsPane() {
       setCheckpoints(sorted);
     } catch (err: any) {
       if (gen !== fetchGenRef.current) return;
-      const raw = err?.message || "Failed to fetch checkpoints";
-      // Soften the common boot/respawn race (backend briefly not listening).
-      const soft = /ECONNREFUSED|ECONNRESET|socket hang up/i.test(raw)
-        ? "Harness is starting up — retrying…"
-        : raw;
-      setError(soft);
-    } finally {
-      if (gen === fetchGenRef.current) setIsLoading(false);
+      const transient = isTransientHarnessConnError(err);
+      // The boot/respawn race (backend briefly not listening) is expected:
+      // stay in the loading state and retry with the FileTree backoff.
+      if (transient && attempt < 5) {
+        retryTimerRef.current = window.setTimeout(() => { void fetchCheckpoints(attempt + 1); }, 350 * (attempt + 1));
+        return;
+      }
+      setError(transient ? "Harness briefly unavailable — click refresh" : err?.message || "Failed to fetch checkpoints");
     }
+    if (gen === fetchGenRef.current) setIsLoading(false);
   }, []);
 
   const refreshScope = useCallback(async () => {
@@ -74,31 +81,42 @@ export default function CheckpointsPane() {
     }
   }, []);
 
+  const loadDiff = useCallback(async (id: string) => {
+    setLoadingDiffs((prev) => ({ ...prev, [id]: true }));
+    try {
+      const res = await api.getCheckpointDiff(id);
+      setDiffData((prev) => ({ ...prev, [id]: res }));
+    } catch (err: any) {
+      setDiffData((prev) => ({
+        ...prev,
+        [id]: {
+          ok: false,
+          diff: "",
+          files: [],
+          truncated: false,
+          error: err?.message || "Failed to fetch diff",
+        },
+      }));
+    } finally {
+      setLoadingDiffs((prev) => ({ ...prev, [id]: false }));
+    }
+  }, []);
+
   const toggleDiff = async (id: string) => {
     const isCurrentlyExpanded = !!expandedDiffs[id];
     setExpandedDiffs((prev) => ({ ...prev, [id]: !isCurrentlyExpanded }));
-
-    if (!isCurrentlyExpanded && !diffData[id]) {
-      setLoadingDiffs((prev) => ({ ...prev, [id]: true }));
-      try {
-        const res = await api.getCheckpointDiff(id);
-        setDiffData((prev) => ({ ...prev, [id]: res }));
-      } catch (err: any) {
-        setDiffData((prev) => ({
-          ...prev,
-          [id]: {
-            ok: false,
-            diff: "",
-            files: [],
-            truncated: false,
-            error: err?.message || "Failed to fetch diff",
-          },
-        }));
-      } finally {
-        setLoadingDiffs((prev) => ({ ...prev, [id]: false }));
-      }
-    }
+    if (!isCurrentlyExpanded && !diffData[id]) await loadDiff(id);
   };
+
+  // A diff is "changes since this checkpoint", so any repo mutation (agent
+  // edit, restore) makes every cached diff stale: drop them and reload the
+  // ones the user has open.
+  const expandedDiffsRef = useRef(expandedDiffs);
+  expandedDiffsRef.current = expandedDiffs;
+  const invalidateDiffs = useCallback(() => {
+    setDiffData({});
+    for (const [id, open] of Object.entries(expandedDiffsRef.current)) if (open) void loadDiff(id);
+  }, [loadDiff]);
 
   // Clear + refetch whenever project/session scope changes.
   useEffect(() => {
@@ -122,7 +140,7 @@ export default function CheckpointsPane() {
       clearLocalState();
       void refreshScope();
     };
-    const onMutated = () => fetchCheckpoints();
+    const onMutated = () => { invalidateDiffs(); void fetchCheckpoints(); };
     const onVisible = () => { if (!document.hidden) fetchCheckpoints(); };
     // Electron: main fires this after an unexpected backend respawn on a new
     // port. Re-fetch so a transient ECONNREFUSED doesn't stick in the panel.
@@ -146,7 +164,7 @@ export default function CheckpointsPane() {
       document.removeEventListener("visibilitychange", onVisible);
       try { unsubRespawn?.(); } catch { /* ignore */ }
     };
-  }, [clearLocalState, fetchCheckpoints, refreshScope]);
+  }, [clearLocalState, fetchCheckpoints, refreshScope, invalidateDiffs]);
 
   const handleCreateSnapshot = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -246,7 +264,7 @@ export default function CheckpointsPane() {
           </button>
         </form>
         <button
-          onClick={fetchCheckpoints}
+          onClick={() => void fetchCheckpoints()}
           disabled={isLoading}
           title="Refresh checkpoints"
           className="p-0.5 hover:bg-edge/50 rounded text-faint hover:text-muted transition-colors shrink-0"

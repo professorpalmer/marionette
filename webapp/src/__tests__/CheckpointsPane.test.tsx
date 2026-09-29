@@ -89,3 +89,65 @@ describe("CheckpointsPane diff badges", () => {
     expect(screen.getByText("src/gone.ts")).toBeTruthy();
   });
 });
+
+describe("CheckpointsPane diff freshness", () => {
+  beforeEach(() => {
+    apiMocks.getCheckpoints.mockReset();
+    apiMocks.getCheckpointDiff.mockReset();
+    apiMocks.getWorkspace.mockReset();
+    apiMocks.sessions.mockReset();
+    apiMocks.getWorkspace.mockResolvedValue({ repo: "/repo" });
+    apiMocks.sessions.mockResolvedValue([{ id: "s1", active: true }]);
+    apiMocks.getCheckpoints.mockResolvedValue([{ id: "cp-1", label: "before edits", timestamp: 1, files: [] }]);
+  });
+
+  it("refreshes an open diff after the repo changes", async () => {
+    apiMocks.getCheckpointDiff
+      .mockResolvedValueOnce({ ok: true, diff: "", truncated: false, files: [] })
+      .mockResolvedValue({ ok: true, diff: "", truncated: false, files: [{ path: "a.py", status: "modified" }] });
+    render(<CheckpointsPane />);
+    await waitFor(() => expect(apiMocks.getCheckpoints.mock.calls.length).toBeGreaterThanOrEqual(2));
+    await screen.findByText("before edits");
+    fireEvent.click(screen.getByTitle("View diff"));
+    await waitFor(() => expect(apiMocks.getCheckpointDiff).toHaveBeenCalledTimes(1));
+    window.dispatchEvent(new Event("harness-repo-mutated"));
+    expect(await screen.findByText("a.py")).toBeTruthy();
+    expect(apiMocks.getCheckpointDiff).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("CheckpointsPane startup race", () => {
+  beforeEach(() => {
+    apiMocks.getCheckpoints.mockReset();
+    apiMocks.getWorkspace.mockReset();
+    apiMocks.sessions.mockReset();
+    apiMocks.getWorkspace.mockResolvedValue({ repo: "/repo" });
+    apiMocks.sessions.mockResolvedValue([{ id: "s1", active: true }]);
+  });
+
+  const refused = () => Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:8799"), { code: "ECONNREFUSED" });
+
+  it("retries a refused connection quietly instead of showing a red banner", async () => {
+    apiMocks.getCheckpoints
+      .mockRejectedValueOnce(refused())
+      .mockRejectedValueOnce(refused())
+      .mockResolvedValue([{ id: "cp-1", label: "before edits", timestamp: 1, files: [] }]);
+    render(<CheckpointsPane />);
+    expect(await screen.findByText("before edits", {}, { timeout: 4000 })).toBeTruthy();
+    expect(screen.queryByText(/retrying|unavailable|ECONNREFUSED/i)).toBeNull();
+  });
+
+  it("asks for a manual refresh once the retries are spent", async () => {
+    apiMocks.getCheckpoints.mockRejectedValue(refused());
+    render(<CheckpointsPane />);
+    expect(await screen.findByText(/briefly unavailable/i, {}, { timeout: 8000 })).toBeTruthy();
+  }, 10000);
+});
+
+it("paints Loading, never the empty state, before the first load", async () => {
+  // The first paint is the pre-effect state; server rendering runs no effects.
+  const { renderToString } = await import("react-dom/server");
+  const html = renderToString(<CheckpointsPane />);
+  expect(html).not.toContain("No restore points");
+  expect(html).toContain("Loading restore points");
+});

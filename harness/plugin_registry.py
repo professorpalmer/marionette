@@ -89,9 +89,15 @@ def read_integrity_stamp(plugin_root: Path) -> Optional[str]:
     return value if isinstance(value, str) and value else None
 
 
-def verify_integrity_stamp(plugin_root: Path) -> str:
-    """Return current digest. Raise if stamp missing or mismatched."""
-    current = compute_package_sha256(plugin_root)
+def verify_integrity_stamp(plugin_root: Path, current: Optional[str] = None) -> str:
+    """Return current digest. Raise if stamp missing or mismatched.
+
+    Pass ``current`` when the caller already hashed the package (the loaded
+    package's ``content_sha256``); /api/mcp and /api/plugins poll every few
+    seconds and hashed every enabled plugin twice per call.
+    """
+    if current is None:
+        current = compute_package_sha256(plugin_root)
     stamped = read_integrity_stamp(plugin_root)
     if stamped is None:
         raise AgentPluginError("plugin integrity stamp is missing")
@@ -415,7 +421,7 @@ def discover_plugins() -> List[PluginRecord]:
                 stamp_ok = False
                 digest = package.content_sha256
                 try:
-                    digest = verify_integrity_stamp(package.root)
+                    digest = verify_integrity_stamp(package.root, package.content_sha256)
                     stamp_ok = True
                 except AgentPluginError as stamp_exc:
                     stamp_error = str(stamp_exc)
@@ -708,7 +714,7 @@ def _load_enabled_packages() -> List[Tuple[str, str, AgentPluginPackage]]:
             namespace = portable_skill_namespace(plugin_id)
             try:
                 package = load_agent_plugin(path, plugin_data_root() / namespace)
-                verify_integrity_stamp(path)
+                verify_integrity_stamp(path, package.content_sha256)
                 _require_capability_consent(
                     plugin_id,
                     requested_capabilities_from_manifest(package.manifest),
