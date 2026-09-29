@@ -100,4 +100,13 @@ describe("LeftRail phantom session switch", () => {
     await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
     expect(row).toHaveFocus();
   });
+
+  it("names the project expander and reports whether it is open", async () => {
+    render(<LeftRail jobsRefresh={0} onSessionChange={vi.fn()} />);
+    const expander = await screen.findByRole("button", { name: "workspace sessions" });
+    const before = expander.getAttribute("aria-expanded");
+    expect(before === "true" || before === "false").toBe(true);
+    fireEvent.click(expander);
+    await waitFor(() => expect(expander.getAttribute("aria-expanded")).not.toBe(before));
+  });
 });

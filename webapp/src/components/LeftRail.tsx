@@ -1774,6 +1774,9 @@ export default function LeftRail({
                 >
                   {/* Expand Chevron */}
                   <button
+                    type="button"
+                    aria-label={`${basename} sessions`}
+                    aria-expanded={isExpanded}
                     onClick={(e) => {
                       e.stopPropagation();
                       handleProjectRowClick(projectPath, isExpanded);
