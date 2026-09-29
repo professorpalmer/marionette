@@ -65,3 +65,38 @@ def test_bytes_saved_on_repeated_reads():
     out = _s()._elide_stale_reads(_hist())
     after = sum(len(m["content"]) for m in out)
     assert after < before  # the elision actually reduced payload size
+
+
+def _read(path, start=None, limit=None):
+    from harness.pilot import PilotAction
+    return PilotAction(kind="read_file", path=path, start_line=start, limit=limit)
+
+
+def test_read_key_normalizes_aliases_and_keys_ranges(tmp_path):
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path / "s"), repo=str(tmp_path))
+    s = ConversationalSession(cfg)
+    abs_path = str(tmp_path / "harness" / "x.py")
+    # One file, three spellings: the workspace-relative label.
+    assert s._read_elision_key(_read("harness/x.py")) == "harness/x.py"
+    assert s._read_elision_key(_read("./harness/x.py")) == "harness/x.py"
+    assert s._read_elision_key(_read(abs_path)) == "harness/x.py"
+    # The ~150-line slices read_file recommends are keys of their own.
+    assert s._read_elision_key(_read("harness/x.py", 1, 150)) == "harness/x.py:1+150"
+    assert s._read_elision_key(_read(abs_path, 1, 150)) == "harness/x.py:1+150"
+    assert s._read_elision_key(_read("harness/x.py", 151, 150)) == "harness/x.py:151+150"
+    assert s._read_elision_key(_read("spill://abc")) == "spill://abc"
+
+
+def test_repeated_identical_slice_is_elided_other_slices_kept(tmp_path):
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path / "s"), repo=str(tmp_path))
+    s = ConversationalSession(cfg)
+    msgs = [
+        {"role": "tool", "tool_call_id": "a", "content": "slice one v1", "_read_path": s._read_elision_key(_read("harness/x.py", 1, 150))},
+        {"role": "tool", "tool_call_id": "b", "content": "slice two", "_read_path": s._read_elision_key(_read("harness/x.py", 151, 150))},
+        {"role": "tool", "tool_call_id": "c", "content": "slice one v2", "_read_path": s._read_elision_key(_read(str(tmp_path / "harness/x.py"), 1, 150))},
+    ]
+    out = s._elide_stale_reads(msgs)
+    assert out[0]["content"].startswith("[earlier read of harness/x.py:1+150")
+    assert out[1]["content"] == "slice two"
+    assert out[2]["content"] == "slice one v2"
+
