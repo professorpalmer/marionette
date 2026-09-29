@@ -74,3 +74,24 @@ describe("prefetchSessionTranscripts", () => {
     expect(api.sessionTranscript).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("bounded warm cache", () => {
+  it("evicts the least recently written session, never the shown one", async () => {
+    const { TRANSCRIPT_CACHE_MAX } = await import("../components/conversation/transcriptCache");
+    setShownTranscriptSession("shown");
+    writeTranscriptCache("shown", []);
+    for (let i = 0; i < TRANSCRIPT_CACHE_MAX + 5; i++) writeTranscriptCache(`s${i}`, []);
+    expect(peekTranscriptCache("shown")).toBeDefined();
+    expect(peekTranscriptCache("s0")).toBeUndefined();
+    expect(peekTranscriptCache(`s${TRANSCRIPT_CACHE_MAX + 4}`)).toBeDefined();
+  });
+
+  it("prefetch only fills free room", async () => {
+    const { TRANSCRIPT_CACHE_MAX } = await import("../components/conversation/transcriptCache");
+    for (let i = 0; i < TRANSCRIPT_CACHE_MAX; i++) writeTranscriptCache(`v${i}`, []);
+    vi.mocked(api.sessionTranscript).mockResolvedValue({ display: [] });
+    await expect(prefetchSessionTranscript("new-one")).resolves.toBe(false);
+    expect(api.sessionTranscript).not.toHaveBeenCalled();
+    expect(peekTranscriptCache("v0")).toBeDefined();
+  });
+});

@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { GitBranch, Plus, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2, Circle, Trash2, Brush, Search, X } from "lucide-react";
 import { api, type Workspace, type WorkspaceInfo, type Session, type Job } from "../lib/api";
 import { seedSessionPilots } from "../lib/sessionConfig";
+import { dispatchConfigChanged } from "../lib/configChangedEvent";
 import { useCodegraphIndexPoll } from "../lib/useCodegraphIndexPoll";
 import { pickFolder } from "../lib/transport";
 import { dispatchProjectSelected, dispatchProjectSwitching, panelOpacityClass } from "../lib/panelTransition";
@@ -902,6 +903,7 @@ export default function LeftRail({
   };
   const switchSession = async (id: string, opts?: { force?: boolean }) => {
     if (switchingSessionId || opening) return;
+    const repoBeforeSwitch = currentRepoRef.current;
     // Same-row click still clears unread and fences in-flight opens;
     // skip persist/attach/config fan-out.
     const activeId = onScreenSessionId(shownSessionId, sessions);
@@ -953,7 +955,7 @@ export default function LeftRail({
       // both sessions share a workspace. The optimistic state update above
       // can make the first request arrive before the backend attach finishes;
       // this post-attach event is the authoritative retry for every switch.
-      window.dispatchEvent(new Event("harness-config-changed"));
+      dispatchConfigChanged({ repoChanged: !repo || !repoPathsEqual(repo, repoBeforeSwitch) });
       if (railTab === "sessions") {
         void refreshBankSessions();
       }

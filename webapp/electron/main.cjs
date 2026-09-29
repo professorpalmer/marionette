@@ -152,6 +152,17 @@ function tryRefreshBackendPortFromMarker() {
   return true;
 }
 
+// Writes stay synchronous so a crash never loses its last lines; instead the
+// file rotates once per launch past a cap (it grew without bound, and the
+// diagnostics bundle includes it).
+const ELECTRON_LOG_MAX_BYTES = 5 * 1024 * 1024;
+function rotateElectronLog(file = path.join(os.homedir(), ".pmharness", "electron.log"), maxBytes = ELECTRON_LOG_MAX_BYTES) {
+  try {
+    if (fs.statSync(file).size > maxBytes) fs.renameSync(file, `${file}.1`);
+  } catch { /* missing log or rename race: keep logging */ }
+}
+rotateElectronLog();
+
 // Persistent main-process log, shared with the backend [out]/[err] lines under
 // ~/.pmharness/electron.log so a death is always diagnosable after the fact.
 function logMain(msg) {

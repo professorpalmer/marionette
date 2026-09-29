@@ -651,8 +651,11 @@ def get_sessions_transcript(qs: dict, svc: SessionServices) -> tuple[int, dict]:
         history_list = data
         display_list = []
         job_ids_list = []
+    # The renderer builds rows from display and reads history only for legacy
+    # transcripts without one; sending both doubled what every switch,
+    # preload and settle serialized, downloaded and parsed.
     return 200, {
-        "history": history_list,
+        "history": [] if display_list else history_list,
         "display": display_list,
         "job_ids": job_ids_list,
     }

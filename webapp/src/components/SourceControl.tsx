@@ -6,6 +6,7 @@ import { lastSelectedProjectRoot } from "../lib/panelTransition";
 import { subscribeWorkspaceMutations } from "../lib/workspaceMutationEvents";
 import { usePanelNotice } from "../lib/useOperationalDiagnostic";
 import { createGitRefreshCoordinator, type GitRefreshContext } from "../lib/gitRefreshCoordinator";
+import { configChangeKeepsRepo } from "../lib/configChangedEvent";
 import { gitStatusPaintOnRepoChange, type GitStatusSnapshot } from "../lib/gitStatusPaint";
 
 interface ChangedFile {
@@ -137,7 +138,9 @@ export default function SourceControl() {
       debounceTimer = null;
       void coordinator.request(activate(event.detail), ["status", "branches"]);
     };
-    const onConfig = () => {
+    const onConfig = (event: Event) => {
+      // Same-project session switch: git status and branches are unchanged.
+      if (configChangeKeepsRepo(event)) return;
       if (debounceTimer !== null) clearTimeout(debounceTimer);
       const context = activate(contextRef.current?.path || ".");
       debounceTimer = setTimeout(() => {

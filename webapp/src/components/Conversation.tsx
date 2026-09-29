@@ -2131,8 +2131,21 @@ export default function Conversation({
     ta.style.overflowY = contentH > maxH ? "auto" : "hidden";
   }, [input]);
 
-  // Load workspace files + folders for @-mention dropdown
+  // Load workspace files + folders for @-mention dropdown. Keyed on the repo,
+  // not the session: switching sessions inside one project re-listed the
+  // whole workspace on every click. Opening the picker refreshes a list older
+  // than a few seconds, so files created mid-session still show up.
+  const mentionRepo = config?.repo || "";
+  const mentionListedAtRef = useRef(0);
+  const mentionPickerOpen = mentionSearch !== null;
+  const [mentionListEpoch, setMentionListEpoch] = useState(0);
   useEffect(() => {
+    if (mentionPickerOpen && Date.now() - mentionListedAtRef.current > 5000) {
+      setMentionListEpoch((n) => n + 1);
+    }
+  }, [mentionPickerOpen]);
+  useEffect(() => {
+    mentionListedAtRef.current = Date.now();
     api.getWorkspaceFiles()
       .then((res) => {
         if (res && res.files) {
@@ -2153,7 +2166,7 @@ export default function Conversation({
       .catch((err) => {
         console.error("Failed to load workspace files:", err);
       });
-  }, [activeSessionId]);
+  }, [mentionRepo, mentionListEpoch]);
 
   // Filter files + folders based on @-mention search text (capped; no full tree dump)
   useEffect(() => {

@@ -22,6 +22,16 @@ class InputReceiptError(PromptQueueError):
 
 
 _LOCKS = {}
+# inputs.json path -> signature of the file content this process last validated.
+_VALIDATED = {}
+
+
+def _file_signature(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_ino, st.st_mtime_ns, st.st_size)
 _LOCKS_GUARD = threading.Lock()
 _INPUT_LOCAL = threading.local()
 # Admission limits match the upload default and eight-image composer cap.
@@ -135,7 +145,9 @@ class InputReceiptStore:
 
     def _read(self):
         try:
+            before = _file_signature(self.path)
             data = json.loads(self.path.read_text(encoding='utf-8'))
+            unchanged = before is not None and before == _file_signature(self.path)
         except FileNotFoundError:
             # A missing manifest can be rebuilt from the verified
             # native bundle. Never turn corrupt archive evidence into emptiness.
@@ -171,7 +183,13 @@ class InputReceiptStore:
             )
         except (OSError, ValueError) as exc:
             raise InputReceiptError('input_read_failed', 'Input originals cannot be read. Evidence was retained unchanged.') from exc
-        self.validate(data)
+        # Validation hashes every row's original text; the queue is polled every
+        # few seconds, so skip it for the exact file this process already
+        # validated (same inode, mtime and size, stable across the read).
+        if not (unchanged and _VALIDATED.get(str(self.path)) == before):
+            self.validate(data)
+            if unchanged:
+                _VALIDATED[str(self.path)] = before
         if data['version'] == 1:
             data = self._import_originals(data)
             self._write(data)
@@ -182,6 +200,7 @@ class InputReceiptStore:
         self.validate(data)
         try:
             _atomic_write_json(str(self.path), data)
+            _VALIDATED[str(self.path)] = _file_signature(self.path)
             # The persistent lock inode also records that disappearance is not
             # a new empty session. It contains no original or runnable data.
             from .compaction_archive import json_digest
