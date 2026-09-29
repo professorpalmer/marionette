@@ -77,9 +77,11 @@ export function stripThinkingEmphasisChrome(text: string): string {
   let t = String(text || "").trim();
   // Peel paired wrappers and leftover glue runs (`****` between titles).
   for (let i = 0; i < 4; i++) {
+    // Every alternative is anchored: an unanchored `_+|`+|~+` deleted every
+    // interior underscore, backtick and tilde (snake_case -> snakecase).
     const next = t
-      .replace(/^\*{1,}|_{1,}|`{1,}|~{1,}/g, "")
-      .replace(/\*{1,}$|_{1,}$|`{1,}$|~{1,}$/g, "")
+      .replace(/^(?:\*+|_+|`+|~+)/, "")
+      .replace(/(?:\*+|_+|`+|~+)$/, "")
       .trim();
     if (next === t) break;
     t = next;
@@ -194,6 +196,8 @@ export type UpsertStreamingThinkingOpts = {
   streamId?: string;
 };
 
+const THINKING_HEADLINE_SCAN_MAX = 256;
+
 function mergeThinkingText(
   existing: string,
   chunk: string,
@@ -202,12 +206,17 @@ function mergeThinkingText(
   if (coalesceSnapshots) return coalesceThinkingChunk(existing, chunk);
   if (!chunk) return existing;
   if (!existing) return chunk;
-  const existingCore = stripThinkingEmphasisChrome(existing);
+  // A status headline is at most ~96 chars, so accumulated reasoning past
+  // this bound cannot be one; skipping the strip there keeps each token O(1)
+  // instead of re-scanning the whole reasoning text.
+  const existingIsHeadline = existing.length <= THINKING_HEADLINE_SCAN_MAX
+    && looksLikeStatusHeadline(stripThinkingEmphasisChrome(existing));
   const chunkCore = stripThinkingEmphasisChrome(chunk);
-  if (looksLikeStatusHeadline(existingCore) && looksLikeStatusHeadline(chunkCore)) {
+  const chunkIsHeadline = looksLikeStatusHeadline(chunkCore);
+  if (existingIsHeadline && chunkIsHeadline) {
     return chunkCore;
   }
-  if (looksLikeStatusHeadline(chunkCore) && !looksLikeStatusHeadline(existingCore)) {
+  if (chunkIsHeadline && !existingIsHeadline) {
     const withoutStatusChrome = existing.replace(/(?:[*_`~]+\s*)+$/, "");
     const sep = !withoutStatusChrome || /\s$/.test(withoutStatusChrome) ? "" : " ";
     return withoutStatusChrome + sep + chunkCore;

@@ -2112,3 +2112,21 @@ describe("353 feed extras", () => {
     expect(grouped.map((row) => row.kind)).toEqual(["msg"]);
   });
 });
+
+describe("thinking emphasis stripping", () => {
+  it("peels only wrapper runs, keeping interior underscores, backticks and tildes", async () => {
+    const { stripThinkingEmphasisChrome } = await import("../components/conversation/thinkingToolPrep");
+    expect(stripThinkingEmphasisChrome("**Planning…**")).toBe("Planning…");
+    expect(stripThinkingEmphasisChrome("__Reading__")).toBe("Reading");
+    expect(stripThinkingEmphasisChrome("Reading snake_case in `a_b.py` ~ok")).toBe("Reading snake_case in `a_b.py` ~ok");
+  });
+
+  it("a headline chunk keeps its snake_case when appended to reasoning", async () => {
+    const { upsertStreamingThinking } = await import("../components/conversation/thinkingToolPrep");
+    let items: Item[] = [];
+    items = upsertStreamingThinking(items, "Checking the tests carefully. ");
+    items = upsertStreamingThinking(items, "**Reading test_file_io**");
+    const row = items.find((it) => it.kind === "thinking") as { text: string } | undefined;
+    expect(row?.text).toContain("test_file_io");
+  });
+});
