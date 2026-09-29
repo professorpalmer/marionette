@@ -1208,7 +1208,7 @@ export default function LeftRail({
     toast(ok ? `Copied transcript ID ${sid}` : "Could not copy transcript ID");
   };
 
-  const handleContextMenu = (e: React.MouseEvent, s: Pick<Session, "id" | "title" | "forked_from" | "archived">) => {
+  const handleContextMenu = (e: React.MouseEvent, s: Pick<Session, "id" | "title" | "title_user" | "forked_from" | "archived">) => {
     e.preventDefault();
     if (e.currentTarget instanceof HTMLElement) {
       contextTrigger.current = e.currentTarget;
