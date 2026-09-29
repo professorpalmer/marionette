@@ -595,42 +595,41 @@ export function isLiveAnswerAssistant(msg: Msg): boolean {
   return msg.streaming === true;
 }
 
-function turnHasInvestigationActivity(items: Item[], turnStart: number): boolean {
-  return items.slice(turnStart).some(
-    (row) =>
-      row.kind === "card"
-      || row.kind === "thinking"
-      || row.kind === "swarm_result"
-      || row.kind === "swarm_pending",
-  );
-}
-
-function laterInvestigationActivity(items: Item[], fromIdx: number): {
+type LaterActivity = {
   laterCardOrSwarm: boolean;
   laterThinking: boolean;
   laterAssistant: boolean;
-} {
-  let laterCardOrSwarm = false;
-  let laterThinking = false;
-  let laterAssistant = false;
-  for (let j = fromIdx + 1; j < items.length; j++) {
-    const later = items[j];
-    if (isOperatorProgressBoundary(later)) break;
-    if (later.kind === "msg" && later.msg.role === "assistant") {
-      laterAssistant = true;
-    }
-    if (
-      later.kind === "card"
-      || later.kind === "swarm_result"
-      || later.kind === "swarm_pending"
-    ) {
-      laterCardOrSwarm = true;
-    }
-    if (later.kind === "thinking") {
-      laterThinking = true;
+};
+
+/**
+ * One reverse pass: for each index, the activity after it up to the next
+ * operator boundary (`later`), and whether any investigation activity
+ * follows it anywhere (`activityFrom`). Grouping runs on every streamed
+ * token, so per-message forward scans made it quadratic in transcript length.
+ */
+function investigationTables(items: Item[]): { later: LaterActivity[]; activityFrom: boolean[] } {
+  const n = items.length;
+  const later: LaterActivity[] = new Array(n);
+  const activityFrom: boolean[] = new Array(n + 1);
+  activityFrom[n] = false;
+  let acc: LaterActivity = { laterCardOrSwarm: false, laterThinking: false, laterAssistant: false };
+  for (let j = n - 1; j >= 0; j--) {
+    later[j] = acc;
+    const row = items[j];
+    const investigation = row.kind === "card" || row.kind === "thinking"
+      || row.kind === "swarm_result" || row.kind === "swarm_pending";
+    activityFrom[j] = investigation || activityFrom[j + 1];
+    if (isOperatorProgressBoundary(row)) {
+      acc = { laterCardOrSwarm: false, laterThinking: false, laterAssistant: false };
+    } else {
+      acc = {
+        laterCardOrSwarm: acc.laterCardOrSwarm || row.kind === "card" || row.kind === "swarm_result" || row.kind === "swarm_pending",
+        laterThinking: acc.laterThinking || row.kind === "thinking",
+        laterAssistant: acc.laterAssistant || (row.kind === "msg" && row.msg.role === "assistant"),
+      };
     }
   }
-  return { laterCardOrSwarm, laterThinking, laterAssistant };
+  return { later, activityFrom };
 }
 
 export function collectIntermediateAssistantItems(
@@ -645,13 +644,19 @@ export function collectIntermediateAssistantItems(
   }
   const currentTurnStart = lastUserIdx >= 0 ? lastUserIdx + 1 : 0;
 
+  const { later: laterByIndex, activityFrom } = investigationTables(items);
   let turnStart = 0;
+  let seenCardInTurn = false;
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     if (item.kind === "msg" && item.msg.role === "user") {
       turnStart = i + 1;
+      seenCardInTurn = false;
       continue;
     }
+    // Card-before-this-row within the turn; read before counting row i.
+    const seenCardBefore = seenCardInTurn;
+    if (item.kind === "card") seenCardInTurn = true;
     if (item.kind !== "msg" || item.msg.role !== "assistant") continue;
 
     const structurallyProvenProgress = isStructurallyProvenNativeProgress(items, i);
@@ -672,10 +677,7 @@ export function collectIntermediateAssistantItems(
       continue;
     }
 
-    const seenCardBefore = items
-      .slice(turnStart, i)
-      .some((row) => row.kind === "card");
-    const foldActivity = turnHasInvestigationActivity(items, turnStart);
+    const foldActivity = activityFrom[turnStart];
 
     // Open-loop absorption is current-turn only (see docstring).
     const openAbsorb = agentLoopOpen && i >= currentTurnStart;
@@ -684,7 +686,7 @@ export function collectIntermediateAssistantItems(
       continue;
     }
 
-    const later = laterInvestigationActivity(items, i);
+    const later = laterByIndex[i];
 
     if (!seenCardBefore) {
       // Sealed pre-tool sticky outside — except explicit plan/progress
@@ -1487,13 +1489,13 @@ export const TranscriptList = memo(function TranscriptList({
   editingIndex,
   auto,
   plan,
-  busyElapsedMs = null,
-  modelLabel = "",
-  waitHint = null,
-  providerElapsedMs = null,
-  turnOpen = false,
-  holdSwarmAwait = false,
-  feedSettled = true,
+  busyElapsedMs: busyElapsedMsProp,
+  modelLabel: modelLabelProp,
+  waitHint: waitHintProp,
+  providerElapsedMs: providerElapsedMsProp,
+  turnOpen: turnOpenProp,
+  holdSwarmAwait: holdSwarmAwaitProp,
+  feedSettled: feedSettledProp,
   scrollContainerRef,
   scrollToEndRef,
   viewportRef,
@@ -1507,6 +1509,13 @@ export const TranscriptList = memo(function TranscriptList({
   onAuthFailureRetry,
   sessionId,
 }: TranscriptListProps) {
+  const busyElapsedMs = busyElapsedMsProp ?? null;
+  const modelLabel = modelLabelProp ?? "";
+  const waitHint = waitHintProp ?? null;
+  const providerElapsedMs = providerElapsedMsProp ?? null;
+  const turnOpen = turnOpenProp ?? false;
+  const holdSwarmAwait = holdSwarmAwaitProp ?? false;
+  const feedSettled = feedSettledProp ?? true;
   // Match Conversation's latch — awaiting_swarm plus holdSwarmAwait so
   // Investigating / mid-turn absorption / footer stay armed through idle flaps.
   useEffect(() => {
@@ -1525,9 +1534,18 @@ export const TranscriptList = memo(function TranscriptList({
   const pausePoint =
     status === "awaiting_swarm" || (holdSwarmAwait && !pilotBusy);
 
-  const intermediateItems = collectIntermediateAssistantItems(items, agentLoopOpen);
-  const grouped = groupAgentActivity(items, intermediateItems);
-  const viewportKeys = transcriptViewportKeys(grouped);
+  // Derived from items alone: status flips and busy-clock ticks re-render this
+  // (uncompiled) component without changing the transcript.
+  const { intermediateItems, grouped } = useMemo(() => {
+    const intermediate = collectIntermediateAssistantItems(items, agentLoopOpen);
+    return { intermediateItems: intermediate, grouped: groupAgentActivity(items, intermediate) };
+  }, [items, agentLoopOpen]);
+  const viewportKeys = useMemo(() => transcriptViewportKeys(grouped), [grouped]);
+  const rawIndexByMsg = useMemo(() => {
+    const index = new Map<Msg, number>();
+    items.forEach((raw, i) => { if (raw.kind === "msg" && !index.has(raw.msg)) index.set(raw.msg, i); });
+    return index;
+  }, [items]);
   const lastActivityGroupIdx = liveActivityGroupIndex(grouped);
   const { head: virtualGrouped, tail: liveTailGrouped, tailStartIndex } =
     partitionTranscriptLiveTail(grouped, {
@@ -1685,7 +1703,7 @@ export const TranscriptList = memo(function TranscriptList({
     if (!it) return null;
     const key = stableItemKey(it, i);
     if (it.kind === "msg") {
-      const rawIdx = items.findIndex(raw => raw.kind === "msg" && (raw as { kind: "msg"; msg: Msg }).msg === it.msg);
+      const rawIdx = rawIndexByMsg.get(it.msg) ?? -1;
 
       let prevMsg: Msg | null = null;
       for (let j = i - 1; j >= 0; j--) {
@@ -2397,10 +2415,10 @@ function ActivityGroup({
   items,
   onToggleCard,
   groupId,
-  loopOpen = false,
-  pausePoint = false,
-  isLiveFold = false,
-  busyElapsedMs = null,
+  loopOpen: loopOpenProp,
+  pausePoint: pausePointProp,
+  isLiveFold: isLiveFoldProp,
+  busyElapsedMs: busyElapsedMsProp,
 }: {
   items: ActivityItem[];
   onToggleCard: (card: Card) => void;
@@ -2417,6 +2435,10 @@ function ActivityGroup({
   /** Wall-clock ms for the live busy turn — seeds Worked for when sealing. */
   busyElapsedMs?: number | null;
 }) {
+  const loopOpen = loopOpenProp ?? false;
+  const pausePoint = pausePointProp ?? false;
+  const isLiveFold = isLiveFoldProp ?? false;
+  const busyElapsedMs = busyElapsedMsProp ?? null;
   // Investigation chrome stays collapsed by default (Cursor/Hermes). The
   // headline still tracks Investigating / Explored while closed; the user
   // opens the fold when they want the step list. Seed from the module map so
@@ -3068,15 +3090,17 @@ export function normalizePlainTextNarration(text: string): string {
 
 function ThinkingBlock({
   text,
-  live = false,
+  live: liveProp,
   blockId,
-  durationMs = null,
+  durationMs: durationMsProp,
 }: {
   text: string;
   live?: boolean;
   blockId: string;
   durationMs?: number | null;
 }) {
+  const live = liveProp ?? false;
+  const durationMs = durationMsProp ?? null;
   // Cursor/Hermes-style compression: reasoning stays a single header line
   // by default (faint first-line preview). Expand is user-driven and sticky;
   // live streaming must not auto-open the body. Expanded bodies strip Markdown
@@ -3211,7 +3235,8 @@ function lookupLiveCommand(command: string, indexVersion: number) {
   return indexVersion >= 0 ? lookupAgentCommandSession(command) : null;
 }
 
-function FencedCodeBlock({ className, children, commandIndexVersion = 0, ...props }: any) {
+function FencedCodeBlock({ className, children, commandIndexVersion: commandIndexVersionProp, ...props }: any) {
+  const commandIndexVersion = commandIndexVersionProp ?? 0;
   const [copied, setCopied] = useState(false);
   const codeText = nodeToText(children).replace(/\n$/, "");
   const lines = codeText.split("\n");
@@ -3282,7 +3307,7 @@ function FencedCodeBlock({ className, children, commandIndexVersion = 0, ...prop
           })}
         </pre>
       ) : (
-        <code className={`${className || ""} block bg-panel/80 border border-accent/20 rounded-md p-3 pr-10 overflow-x-auto font-mono text-[0.719rem] leading-[1.55] text-txt/90`} {...props}>
+        <code className={`${className || ""} block bg-panel/80 border border-accent/20 rounded-md p-3 pr-10 overflow-x-auto font-mono text-[0.719rem] leading-[1.55] text-txt/90 whitespace-pre`} {...props}>
           {children}
         </code>
       )}
@@ -3502,11 +3527,12 @@ function StreamingMarkdown({ text }: { text: string }) {
 // added. Restores formatted-while-streaming without the old ~40% CPU cost.
 const Markdown = memo(function Markdown({
   text,
-  streaming = false,
+  streaming: streamingProp,
 }: {
   text: string;
   streaming?: boolean;
 }) {
+  const streaming = streamingProp ?? false;
   if (streaming) return <StreamingMarkdown text={text} />;
   return <PrettyMarkdown text={text} />;
 });
@@ -3719,9 +3745,9 @@ function Bubble({
 function ActionCard({
   card,
   onToggle,
-  duplicateCount = 1,
-  activityGroupOpen = false,
-  ranLine = false,
+  duplicateCount: duplicateCountProp,
+  activityGroupOpen: activityGroupOpenProp,
+  ranLine: ranLineProp,
 }: {
   card: Card;
   onToggle: () => void;
@@ -3736,6 +3762,9 @@ function ActionCard({
   /** Inside Ran N fold: paint as `Ran {goal}` instead of tool-kind chrome. */
   ranLine?: boolean;
 }) {
+  const duplicateCount = duplicateCountProp ?? 1;
+  const activityGroupOpen = activityGroupOpenProp ?? false;
+  const ranLine = ranLineProp ?? false;
   const openSwarmJob = useOpenSwarmJob();
   const toolName = toolRowLabel(card.kind || "");
   // Prefer the real CLI input (path/command/query), recovering from nested
@@ -4339,7 +4368,7 @@ function SwarmJobIdButton({
   );
 }
 
-function SwarmResultCard({ jobId, applied, files, summary, error, objective, cwd, heldForReview, analysisOk, reuseStatus, sourceJobId, reuseReason, invalidatedPaths, artifacts, artifactDelivery, duplicateCount = 1 }: {
+function SwarmResultCard({ jobId, applied, files, summary, error, objective, cwd, heldForReview, analysisOk, reuseStatus, sourceJobId, reuseReason, invalidatedPaths, artifacts, artifactDelivery, duplicateCount: duplicateCountProp }: {
   jobId?: string;
   applied: boolean;
   files: string[];
@@ -4357,6 +4386,7 @@ function SwarmResultCard({ jobId, applied, files, summary, error, objective, cwd
   artifactDelivery?: SwarmArtifactDelivery;
   duplicateCount?: number;
 }) {
+  const duplicateCount = duplicateCountProp ?? 1;
   const [open, setOpen] = useState(false);
   const openSwarmJob = useOpenSwarmJob();
   const [artifactsOpen, setArtifactsOpen] = useState(false);

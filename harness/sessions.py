@@ -914,7 +914,9 @@ def _write_transcript(state_dir: str, safe_sid: str, messages: Any) -> None:
         _invalidate_preview_cache(path)
 
 
-def save_transcript(state_dir: str, session_id: str, messages: Any) -> None:
+def save_transcript(state_dir: str, session_id: str, messages: Any, *, index: bool = True) -> None:
+    """Write the transcript; ``index=False`` skips the search-index rebuild
+    (mid-turn checkpoints: the end-of-turn save indexes once)."""
     if not session_id:
         return
     # Sanitize session_id to prevent directory traversal
@@ -931,6 +933,8 @@ def save_transcript(state_dir: str, session_id: str, messages: Any) -> None:
             recover_compaction_commit(state_dir, safe_sid)
             _write_transcript(state_dir, safe_sid, messages)
     except Exception:
+        return
+    if not index:
         return
     # Best-effort FTS index update — never raise on the hot persist path.
     try:

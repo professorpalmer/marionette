@@ -3198,7 +3198,16 @@ class Handler(BaseHTTPRequestHandler):
         )
 
 
-def _persist_turn_transcript(ctx) -> None:
+def _persist_turn_transcript(ctx, *, checkpoint: bool = False) -> None:
+    """Write the turn-bound runner's transcript if it still owns its session.
+
+    A mid-turn ``checkpoint`` only resolves ownership under the swap lock and
+    writes outside it, without rebuilding the search index: the write runs
+    every 2s on long turns, and holding the global lock through it stalled
+    session switches and config reads. A pilot swap is deferred until the
+    turn ends, so the runner cannot be replaced mid-turn. The end-of-turn
+    save keeps the lock through the write and indexes.
+    """
     with _pilot_swap_lock:
         sid = ""
         pilot = None
@@ -3212,12 +3221,17 @@ def _persist_turn_transcript(ctx) -> None:
         if (getattr(pilot, "_replacement_pending", False)
                 or getattr(pilot, "_replacement_retired", False)):
             return
-        if sid and pilot is not None and _runners.get(sid) is pilot:
-            config = (ctx.get("config") if isinstance(ctx, dict) else None) or getattr(pilot, "config", _cfg)
-            persist_live_transcript(
-                pilot, config.state_dir or _tf.gettempdir(), sid,
-                writer=save_transcript,
-            )
+        if not (sid and pilot is not None and _runners.get(sid) is pilot):
+            return
+        config = (ctx.get("config") if isinstance(ctx, dict) else None) or getattr(pilot, "config", _cfg)
+        state_dir = config.state_dir or _tf.gettempdir()
+        if not checkpoint:
+            persist_live_transcript(pilot, state_dir, sid, writer=save_transcript)
+            return
+    persist_live_transcript(
+        pilot, state_dir, sid,
+        writer=lambda d, s, data: save_transcript(d, s, data, index=False),
+    )
 
 
 def _checkpoint_transcript(ctx=None) -> None:
@@ -3230,7 +3244,7 @@ def _checkpoint_transcript(ctx=None) -> None:
     so a mid-turn view switch cannot overwrite the newly active session's file.
     """
     try:
-        _persist_turn_transcript(ctx)
+        _persist_turn_transcript(ctx, checkpoint=True)
     except Exception as e:
         import sys
         print(f"[transcript checkpoint error] {e!r}", file=sys.stderr)

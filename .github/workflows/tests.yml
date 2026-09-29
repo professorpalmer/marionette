@@ -149,6 +149,7 @@ jobs:
         run: |
           npm ci
           npm test
+          npm run check:compiler
           xvfb-run -a npm run test:electron
           npm run build
 

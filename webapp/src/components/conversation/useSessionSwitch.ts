@@ -12,6 +12,7 @@ import {
   captureTranscriptRead,
   peekTranscriptCacheEntry,
   resolveSwitchTranscript,
+  setShownTranscriptSession,
   writeTranscriptCache,
 } from "./transcriptCache";
 import {
@@ -332,6 +333,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
 
     const loadGen = ++transcriptLoadGenRef.current;
     cachedSessionIdRef.current = activeSessionId;
+    setShownTranscriptSession(activeSessionId);
 
     if (!activeSessionId) {
       // LeftRail preserves the prior ID during project loads. Null means the
