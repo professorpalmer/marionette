@@ -536,3 +536,25 @@ def test_live_delivering_input_does_not_parse_transcript_on_list(tmp_path, monke
         raise AssertionError('parsed transcript for a same-instance input')
     monkeypatch.setattr(store, '_durable_ids', must_not_parse)
     assert [r['status'] for r in store.list()] == ['delivering']
+
+
+def test_unchanged_inputs_file_is_not_revalidated_per_poll(tmp_path, monkeypatch):
+    # validate() hashes every row's original text; the queue polls every few
+    # seconds, so an unchanged file must not be re-hashed on every read.
+    store = InputReceiptStore(str(tmp_path), 'sess-poll')
+    for i in range(5):
+        store.admit(f'prompt {i} ' + 'x' * 2000)
+    calls = []
+    real = InputReceiptStore.validate
+    monkeypatch.setattr(InputReceiptStore, 'validate', lambda self, data: (calls.append(1), real(self, data))[1])
+    for _ in range(4):
+        assert len(store.list()) == 5
+    assert calls == []
+    # A file rewritten outside this process is validated again.
+    import os
+    path = store.path
+    text = path.read_text(encoding='utf-8')
+    os.replace(path, str(path) + '.old')
+    path.write_text(text, encoding='utf-8')
+    assert len(store.list()) == 5
+    assert calls
