@@ -6,6 +6,7 @@ import { jobDisplayTitle } from '../lib/jobDisplayTitle';
 import { useCallback, useEffect, useRef, useState } from "react";
 import { GitBranch, Plus, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2, Circle, Trash2, Brush, Search, X } from "lucide-react";
 import { api, type Workspace, type WorkspaceInfo, type Session, type Job } from "../lib/api";
+import { useCodegraphIndexPoll } from "../lib/useCodegraphIndexPoll";
 import { pickFolder } from "../lib/transport";
 import { dispatchProjectSelected, dispatchProjectSwitching, panelOpacityClass } from "../lib/panelTransition";
 import { repoPathsEqual } from "../lib/pathNormalize";
@@ -725,16 +726,8 @@ export default function LeftRail({
     };
   }, [revalidateWorkspace, revalidateWorkspaces]);
 
-  // Poll workspace status while CodeGraph indexes (or waits on scope) so the
-  // badge flips without opening a session or switching directories.
-  useEffect(() => {
-    const st = workspaceInfo?.codegraph_status;
-    if (st !== "indexing" && st !== "needs_scope") return;
-    const poll = () => { void revalidateWorkspace(); };
-    poll();
-    const timer = setInterval(poll, 4000);
-    return () => clearInterval(timer);
-  }, [workspaceInfo?.codegraph_status, revalidateWorkspace]);
+  // Flip the CodeGraph badge without opening a session or switching directories.
+  useCodegraphIndexPoll(workspaceInfo?.codegraph_status, revalidateWorkspace);
 
   useEffect(() => {
     const st = workspaceInfo?.codegraph_status;
