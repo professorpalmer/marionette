@@ -203,6 +203,30 @@ def test_wiki_client_graph_prefers_direct_graph_endpoint(monkeypatch):
     assert calls == ["https://mywiki.example.com/wiki/graph"]
 
 
+def test_empty_direct_graph_is_authoritative_not_a_per_page_fanout(monkeypatch):
+    class FakeResp:
+        status = 200
+        def __init__(self, payload): self._payload = payload
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return json.dumps(self._payload).encode()
+
+    calls = []
+
+    def fake_urlopen(req, timeout=0):
+        calls.append(req.full_url)
+        if req.full_url.endswith("/wiki/graph"):
+            return FakeResp({"nodes": [], "edges": []})
+        if req.full_url.endswith("/wiki/manifest.json"):
+            return FakeResp({"pages": [{"slug": f"p{i}"} for i in range(50)]})
+        return FakeResp({"edges": []})
+
+    monkeypatch.setattr("harness.wiki._wiki_safe_urlopen", fake_urlopen)
+    res = WikiClient(base_url="https://mywiki.example.com", token="t").graph()
+    assert res == {"nodes": [], "edges": [], "error": None}
+    assert calls == ["https://mywiki.example.com/wiki/graph"]
+
+
 def test_wiki_client_graph_live_mocked(monkeypatch):
     # Legacy fallback: GET /wiki/manifest.json for nodes, then
     # GET /wiki/graph/<slug>?hops=1 for edges.

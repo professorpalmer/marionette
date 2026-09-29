@@ -248,7 +248,8 @@ def test_uvicorn_cmd_prefers_current_interpreter_when_uvicorn_importable(tmp_pat
     monkeypatch.setattr(wiki_backend, "_uvicorn_importable", lambda: True)
     cmd = wiki_backend._uvicorn_cmd(backend, 8123)
     assert cmd[:3] == [wiki_backend.sys.executable, "-m", "uvicorn"]
-    assert cmd[-1] == "8123"
+    assert cmd[cmd.index("--port") + 1] == "8123"
+    assert "--no-access-log" in cmd
 
 
 def test_ensure_reports_no_usable_python(isolated_state, monkeypatch):

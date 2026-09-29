@@ -373,7 +373,7 @@ def _uvicorn_cmd(backend_dir: str, port: int) -> list[str] | None:
 
     Returns None when nothing usable exists rather than spawning a dead stub.
     """
-    args = ["app.main:app", "--host", "127.0.0.1", "--port", str(port)]
+    args = ["app.main:app", "--host", "127.0.0.1", "--port", str(port), "--no-access-log"]
     venv_dir = os.path.join(backend_dir, ".venv")
     venv_uvicorn = _venv_bin(venv_dir, "uvicorn")
     if os.path.isfile(venv_uvicorn):
