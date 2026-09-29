@@ -37,7 +37,8 @@ def test_report_lists_children_threads_and_counts():
         assert body["counts"] == {"session_runners": 2}
         assert body["threads"]["by_kind"].get("probe-thread") == 1
         mine = [c for c in body["children"] if c["pid"] == child.pid]
-        assert mine and mine[0]["kind"] == os.path.basename(sys.executable)
+        # The framework build reports "Python"; Linux shows the full path basename.
+        assert mine and mine[0]["kind"].lower().startswith("python")
         assert body["rss_mb"] and body["rss_mb"] > 0
     finally:
         stop.set()

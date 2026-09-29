@@ -63,7 +63,7 @@ def _children() -> list[dict]:
         return []
     try:
         out = subprocess.run(
-            ["ps", "-Ao", "pid=,ppid=,stat=,rss=,time=,command="],
+            ["ps", "-ww", "-Ao", "pid=,ppid=,stat=,rss=,time=,command="],
             capture_output=True, text=True, timeout=5,
         ).stdout
     except Exception:
@@ -72,7 +72,7 @@ def _children() -> list[dict]:
     rows = []
     for line in out.splitlines():
         parts = line.split(None, 5)
-        if len(parts) < 5 or parts[1] != me or parts[5:] == ["ps -Ao pid=,ppid=,stat=,rss=,time=,command="]:
+        if len(parts) < 5 or parts[1] != me or parts[5:] == ["ps -ww -Ao pid=,ppid=,stat=,rss=,time=,command="]:
             continue
         pid, _ppid, stat, rss, cpu = parts[:5]
         argv = parts[5].split() if len(parts) > 5 else []
