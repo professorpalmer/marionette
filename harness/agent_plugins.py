@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
@@ -81,7 +82,8 @@ class AgentPluginPackage:
     diagnostics: Tuple[AgentPluginDiagnostic, ...]
 
 
-_content_sha_cache: Dict[str, Tuple[tuple, str]] = {}
+_content_sha_cache: Dict[str, Tuple[tuple, str, int]] = {}
+_RACY_WINDOW_NS = 2_000_000_000
 
 
 def compute_plugin_content_sha256(plugin_root: Path) -> str:
@@ -118,12 +120,16 @@ def compute_plugin_content_sha256(plugin_root: Path) -> str:
             raise AgentPluginError(f"cannot hash plugin file {rel}: {exc}") from exc
         files.append((rel, path, (st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_ino)))
     # /api/mcp and /api/plugins poll every few seconds and verify every plugin.
-    # Reuse the digest while no file was added, removed or touched; ctime
-    # changes on any write and cannot be set back, so edits still re-hash.
+    # Reuse the digest while no file was added, removed or touched. Stat
+    # metadata cannot see a same-size rewrite inside one timestamp tick (and
+    # on Windows ctime is creation time), so, like git's racy-index rule, a
+    # digest is trusted only if every file was already older than the hash.
     signature = tuple((rel, meta) for rel, _path, meta in files)
+    newest = max((meta[1] for _rel, _path, meta in files), default=0)
     cached = _content_sha_cache.get(str(root))
-    if cached is not None and cached[0] == signature:
+    if cached is not None and cached[0] == signature and newest < cached[2] - _RACY_WINDOW_NS:
         return cached[1]
+    hashed_at = time.time_ns()
     for rel, path, _meta in files:
         hasher.update(rel.encode("utf-8"))
         hasher.update(b"\0")
@@ -133,7 +139,7 @@ def compute_plugin_content_sha256(plugin_root: Path) -> str:
             raise AgentPluginError(f"cannot hash plugin file {rel}: {exc}") from exc
         hasher.update(b"\0")
     digest = hasher.hexdigest()
-    _content_sha_cache[str(root)] = (signature, digest)
+    _content_sha_cache[str(root)] = (signature, digest, hashed_at)
     return digest
 
 
